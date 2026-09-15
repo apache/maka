@@ -431,3 +431,41 @@ test('keeps project running totals aligned with renderer-local task streaming', 
   assert.ok(description);
   assert.match(description.getAttribute('aria-label') ?? '', /1 running/);
 });
+
+test('names the session location in the hover description only when one is provided', () => {
+  const describe = (markup: string): string => {
+    const { document } = parseHTML(markup);
+    const navigation = document.querySelector<HTMLButtonElement>(
+      '.maka-session-row .astryx-side-nav-item',
+    );
+    const describedBy = navigation?.getAttribute('aria-describedby');
+    return (describedBy ? document.getElementById(describedBy) : null)?.getAttribute(
+      'aria-label',
+    ) ?? '';
+  };
+  const located = renderToStaticMarkup(
+    <LocaleProvider locale="en">
+      <Rail
+        sessions={[session]}
+        sessionLocation={() => '/workspace/maka-agent/.worktree/sidebar'}
+        onSelectSession={() => undefined}
+      />
+    </LocaleProvider>,
+  );
+  const plain = renderToStaticMarkup(
+    <LocaleProvider locale="en">
+      <Rail sessions={[session]} onSelectSession={() => undefined} />
+    </LocaleProvider>,
+  );
+
+  assert.match(
+    describe(located),
+    /\/workspace\/maka-agent\/\.worktree\/sidebar/,
+    'a multi-location project names the session location',
+  );
+  assert.doesNotMatch(
+    describe(plain),
+    /maka-agent\/\.worktree\/sidebar/,
+    'a single-location project stays quiet about its location',
+  );
+});
