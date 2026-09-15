@@ -151,6 +151,54 @@ describe('CodexSessionAdapter', () => {
     });
   });
 
+  test('orders mixed Codex second and millisecond timestamps before paging', async () => {
+    await withCodexHome(async (codexHome) => {
+      const olderPath = await seedMinimalRollout(
+        codexHome,
+        'codex-older-ms',
+        false,
+        '/workspace',
+        'Older milliseconds',
+      );
+      const newerPath = await seedMinimalRollout(
+        codexHome,
+        'codex-newer-seconds',
+        false,
+        '/workspace',
+        'Newer seconds',
+      );
+      await seedStateDatabase(codexHome, [
+        {
+          id: 'codex-older-ms',
+          rolloutPath: olderPath,
+          cwd: '/workspace',
+          name: 'Older milliseconds',
+          createdAtMs: 1_700_000_000_000,
+          updatedAtMs: 1_700_000_000_000,
+          archived: false,
+          source: 'cli',
+        },
+        {
+          id: 'codex-newer-seconds',
+          rolloutPath: newerPath,
+          cwd: '/workspace',
+          name: 'Newer seconds',
+          createdAt: 1_800_000_000,
+          updatedAt: 1_800_000_000,
+          archived: false,
+          source: 'cli',
+        },
+      ]);
+
+      assert.deepEqual(
+        (await new CodexSessionAdapter({ codexHome }).listSessions({ limit: 1 })).map(
+          (session) => session.id,
+        ),
+        ['codex-newer-seconds'],
+      );
+    });
+  });
+
   test('lists every supported Codex thread source (#3693)', async () => {
     // The adapter owned its own token set, so bare `atlas`/`chatgpt` and a
     // wrapped `{"custom":"cli"}` used to drift across readers. Catalog and
@@ -984,8 +1032,10 @@ interface StateRow {
   rolloutPath: string;
   cwd: string;
   name: string;
-  createdAtMs: number;
-  updatedAtMs: number;
+  createdAtMs?: number;
+  updatedAtMs?: number;
+  createdAt?: number;
+  updatedAt?: number;
   archived: boolean;
   source: string;
 }
@@ -1003,14 +1053,17 @@ async function seedStateDatabase(codexHome: string, rows: readonly StateRow[]): 
         name TEXT,
         created_at_ms INTEGER,
         updated_at_ms INTEGER,
+        created_at INTEGER,
+        updated_at INTEGER,
         archived INTEGER,
         source TEXT
       )
     `);
     const insert = database.prepare(`
       INSERT INTO threads (
-        id, rollout_path, cwd, name, created_at_ms, updated_at_ms, archived, source
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        id, rollout_path, cwd, name, created_at_ms, updated_at_ms, created_at, updated_at,
+        archived, source
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     for (const row of rows) {
       insert.run(
@@ -1018,8 +1071,10 @@ async function seedStateDatabase(codexHome: string, rows: readonly StateRow[]): 
         row.rolloutPath,
         row.cwd,
         row.name,
-        row.createdAtMs,
-        row.updatedAtMs,
+        row.createdAtMs ?? null,
+        row.updatedAtMs ?? null,
+        row.createdAt ?? null,
+        row.updatedAt ?? null,
         row.archived ? 1 : 0,
         row.source,
       );
