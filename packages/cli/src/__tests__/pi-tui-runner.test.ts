@@ -6777,6 +6777,212 @@ Slug openai-work<cursor>
     ]);
   });
 
+  test('stages a rewound turn quotes into the replacement submit', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new QuotedRewindDriver(
+      [{ turnId: 'turn-1', label: 'first question' }],
+      [
+        storedUserMessage('user-1', 'turn-1', 'first question'),
+        storedAssistantMessage('assistant-1', 'turn-1', 'first answer'),
+      ],
+    );
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    terminal.input('/rewind');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('first question'));
+    terminal.input('\r');
+    await waitFor(() => driver.rewound.length === 1);
+    // The restored quotes are visible while staging is live: the rewind
+    // notice names them and the status line carries a quotes:<n> segment.
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('quoted context'));
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('quotes:1'));
+
+    // The replacement submit carries the staged QuoteRefs verbatim.
+    terminal.input('answer with this context');
+    terminal.input('\r');
+    await waitFor(() => driver.submittedQuotes.length === 1);
+    assert.deepEqual(driver.submittedQuotes[0], [
+      { text: 'a large pasted excerpt', label: 'earlier turn', sourceTurnId: 'turn-0' },
+    ]);
+    // Staging is consumed by the submit it rode on.
+    terminal.input('plain follow-up');
+    terminal.input('\r');
+    await waitFor(() => driver.submittedQuotes.length === 2);
+    assert.equal(driver.submittedQuotes[1], undefined);
+
+    exitMaka(terminal);
+    await Promise.race([
+      run,
+      delay(CLOSE_BUDGET_MS).then(() => {
+        throw new Error('TUI did not close during test cleanup');
+      }),
+    ]);
+  });
+
+  test('restores a failed quote submit only to its originating session', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new HeldSubmitQuotedDriver(
+      [{ turnId: 'turn-1', label: 'first question' }],
+      [storedUserMessage('user-1', 'turn-1', 'first question')],
+    );
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    terminal.input('/rewind');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('first question'));
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('quotes:1'));
+    terminal.input('resend this');
+    terminal.input('\r');
+    await waitFor(() => driver.submittedQuotes.length === 1);
+
+    // A Session switch lands while the admission is still pending.
+    driver.switchSession('session-other');
+    driver.hold(new Error('admission outcome unknown'));
+    await waitFor(() =>
+      plainTerminalOutput(terminal.output()).includes('admission outcome unknown'),
+    );
+
+    // The next message in the new Session must not carry the old quotes.
+    terminal.input('unrelated follow-up');
+    terminal.input('\r');
+    await waitFor(() => driver.submittedQuotes.length === 2);
+    assert.equal(driver.submittedQuotes[1], undefined);
+
+    exitMaka(terminal);
+    await Promise.race([
+      run,
+      delay(CLOSE_BUDGET_MS).then(() => {
+        throw new Error('TUI did not close during test cleanup');
+      }),
+    ]);
+  });
+
+  test('lets a quote-only rewind reach the submit path unchanged', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new HeldSubmitQuotedDriver(
+      [{ turnId: 'turn-1', label: 'first question' }],
+      [storedUserMessage('user-1', 'turn-1', 'first question')],
+    );
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    terminal.input('/rewind');
+    terminal.input('\r');
+    // The rewound prompt is empty and the quotes stage: they alone are the
+    // replacement content, so Enter with nothing typed must submit them.
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('first question'));
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('quotes:1'));
+    terminal.input('\r');
+    await waitFor(() => driver.submittedQuotes.length === 1);
+    assert.deepEqual(driver.submittedQuotes[0], [
+      { text: 'a large pasted excerpt', label: 'earlier turn', sourceTurnId: 'turn-0' },
+    ]);
+
+    // After the explicit clear an empty draft is truly empty: no submit.
+    terminal.input('/quotes clear');
+    terminal.input('\r');
+    await waitFor(() =>
+      plainTerminalOutput(terminal.output()).includes('Restored quotes discarded'),
+    );
+    terminal.input('\r');
+    await delay(200);
+    assert.equal(driver.submittedQuotes.length, 1);
+
+    exitMaka(terminal);
+    await Promise.race([
+      run,
+      delay(CLOSE_BUDGET_MS).then(() => {
+        throw new Error('TUI did not close during test cleanup');
+      }),
+    ]);
+  });
+
+  test('discards staged quotes only through the explicit /quotes clear', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new QuotedRewindDriver(
+      [{ turnId: 'turn-1', label: 'first question' }],
+      [
+        storedUserMessage('user-1', 'turn-1', 'first question'),
+        storedAssistantMessage('assistant-1', 'turn-1', 'first answer'),
+      ],
+    );
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    terminal.input('/rewind');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('first question'));
+    terminal.input('\r');
+    await waitFor(() => driver.rewound.length === 1);
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('quotes:1'));
+
+    // Ctrl+C clears the refilled draft so /quotes is not appended to it.
+    terminal.input('\x03');
+    // Bare /quotes lists what is staged, including the quote body.
+    terminal.input('/quotes');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('a large pasted excerpt'));
+
+    // The explicit clear drops the staging; the next submit carries nothing.
+    terminal.input('/quotes clear');
+    terminal.input('\r');
+    await waitFor(() =>
+      plainTerminalOutput(terminal.output()).includes('Restored quotes discarded'),
+    );
+    terminal.input('plain');
+    terminal.input('\r');
+    await waitFor(() => driver.submittedQuotes.length === 1);
+    assert.equal(driver.submittedQuotes[0], undefined);
+
+    // And bare /quotes on an empty staging says so.
+    terminal.input('/quotes');
+    terminal.input('\r');
+    await waitFor(() =>
+      plainTerminalOutput(terminal.output()).includes('No restored quotes are staged'),
+    );
+
+    exitMaka(terminal);
+    await Promise.race([
+      run,
+      delay(CLOSE_BUDGET_MS).then(() => {
+        throw new Error('TUI did not close during test cleanup');
+      }),
+    ]);
+  });
+
   test('shows an in-progress notice while the rewind branch is being created', async () => {
     const terminal = new FakeTerminal();
     const driver = new DeferredRewindDriver(
@@ -11965,6 +12171,56 @@ class DeferredRewindDriver extends RewindDriver {
   override async rewindToTurn(turnId: string): Promise<MakaSessionRewindResult> {
     await this.gate.promise;
     return super.rewindToTurn(turnId);
+  }
+}
+
+/**
+ * Rewinds into a branch and returns the selected turn's QuoteRefs, the way
+ * the runtime-host driver does for a quoted turn (#5109). Records every
+ * submit's staged quotes so tests can assert what the replacement prompt
+ * actually carries.
+ */
+class QuotedRewindDriver extends RewindDriver {
+  readonly submittedQuotes: Array<MakaSubmitMessageOptions['quotes']> = [];
+
+  override async rewindToTurn(turnId: string): Promise<MakaSessionRewindResult> {
+    const result = await super.rewindToTurn(turnId);
+    return {
+      ...result,
+      quotes: [{ text: 'a large pasted excerpt', label: 'earlier turn', sourceTurnId: 'turn-0' }],
+    };
+  }
+
+  override submitMessage(
+    text: string,
+    options: MakaSubmitMessageOptions,
+  ): Promise<TurnMessageSubmitResult | undefined> {
+    this.submittedQuotes.push(options.quotes);
+    return super.submitMessage(text, options);
+  }
+}
+
+/**
+ * The submit hangs until the test rejects it, so a failure callback can be
+ * observed after the runner moved on (for example across a Session switch).
+ * The rewound prompt is empty: a quote-only replacement (#5109 review).
+ */
+class HeldSubmitQuotedDriver extends QuotedRewindDriver {
+  hold!: (error: Error) => void;
+
+  override async rewindToTurn(turnId: string): Promise<MakaSessionRewindResult> {
+    const result = await super.rewindToTurn(turnId);
+    return { ...result, prompt: '' };
+  }
+
+  override submitMessage(
+    text: string,
+    options: MakaSubmitMessageOptions,
+  ): Promise<TurnMessageSubmitResult | undefined> {
+    this.submittedQuotes.push(options.quotes);
+    return new Promise((_, reject) => {
+      this.hold = () => reject(new Error('admission outcome unknown'));
+    });
   }
 }
 

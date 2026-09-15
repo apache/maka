@@ -232,6 +232,8 @@ export interface MakaPiTranscriptMetadata {
    * terminal goals leave no segment, matching the desktop chip.
    */
   goal?: GoalProjection | null;
+  /** QuoteRefs staged by a rewind, riding the next submit (#5109). */
+  stagedQuoteCount?: number;
   sideConversation?: {
     view: 'parent' | 'side';
     parentStatus?: MakaSideConversationParentStatus;
@@ -1705,6 +1707,12 @@ export function renderMakaPiStatusLine(metadata: MakaPiTranscriptMetadata, width
     parts.push({ text: ansi.accent('swarm'), dropRank: 4 });
   } else if (metadata.orchestrationMode === 'graph') {
     parts.push({ text: ansi.accent('graph'), dropRank: 4 });
+  }
+  // Staged quotes ride the next submit; the accent salience mirrors the
+  // goal segment — a pending attachment to the next message the user must
+  // not miss. /quotes clear is how it leaves.
+  if (metadata.stagedQuoteCount) {
+    parts.push({ text: ansi.accent(`quotes:${metadata.stagedQuoteCount}`), dropRank: 3 });
   }
   // An autonomous goal burns tokens between prompts; it must never be
   // invisible. Terminal goals show nothing (the desktop chip hides them too).
