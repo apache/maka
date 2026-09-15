@@ -121,9 +121,17 @@ test('dense upward input with real Host history', async () => {
           if ((ticks + 1) % 20 === 0) {
             reachedTurn = await page.evaluate(() => {
               const root = document.querySelector<HTMLElement>('[data-chat-scroll-container]')!;
-              const top = root.getBoundingClientRect().top;
-              const row = [...root.querySelectorAll<HTMLElement>('[data-turn-id]')].find(
-                (el) => el.getBoundingClientRect().bottom > top,
+              const viewport = root.getBoundingClientRect();
+              const row = [...root.querySelectorAll<HTMLElement>('.maka-turn[data-turn-id]')].find(
+                (el) => {
+                  const rect = el.getBoundingClientRect();
+                  return (
+                    rect.height > 0 &&
+                    rect.width > 0 &&
+                    rect.bottom > viewport.top &&
+                    rect.top < viewport.bottom
+                  );
+                },
               );
               return Number(row?.dataset.turnId?.split('-').at(-1));
             });
@@ -133,7 +141,7 @@ test('dense upward input with real Host history', async () => {
             }
           }
         }
-        expect(reachedTurn, 'the visible history landmark must be reached').toBeLessThanOrEqual(
+        expect(reachedTurn, 'a mounted history body must reach the viewport').toBeLessThanOrEqual(
           targetTurn,
         );
         const releasedAt = await page.evaluate(() => {
