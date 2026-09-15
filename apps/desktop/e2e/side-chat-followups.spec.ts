@@ -106,6 +106,9 @@ test('Side Chat follow-ups survive queue actions, Host handoffs and reconnect', 
     const queued = companion.locator('.maka-composer-queue');
     for (const text of ['first follow-up', 'second follow-up', 'retract this follow-up']) {
       await sideComposer.fill(text);
+      // The queue projection can precede the previous send's IPC response.
+      // Enter is ignored while that send is pending, even with a visible row.
+      await expect(companion.locator('button[type="submit"]')).toBeEnabled();
       await sideComposer.press('Enter');
       await expect(queued).toContainText(text);
     }
@@ -151,6 +154,7 @@ test('Side Chat follow-ups survive queue actions, Host handoffs and reconnect', 
     await expect(companion.getByRole('button', { name: '停止', exact: true })).toBeVisible();
     for (const text of ['successor one', 'successor two']) {
       await sideComposer.fill(text);
+      await expect(companion.locator('button[type="submit"]')).toBeEnabled();
       await sideComposer.press('Enter');
       await expect(queued).toContainText(text);
     }
@@ -169,6 +173,7 @@ test('Side Chat follow-ups survive queue actions, Host handoffs and reconnect', 
     await expect(companion.getByRole('button', { name: '停止', exact: true })).toBeVisible();
     for (const text of ['reconnected successor one', 'reconnected successor two']) {
       await sideComposer.fill(text);
+      await expect(companion.locator('button[type="submit"]')).toBeEnabled();
       await sideComposer.press('Enter');
       await expect(queued).toContainText(text);
     }
