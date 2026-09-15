@@ -680,10 +680,8 @@ const NPM_TEST_STDOUT_AT_CANCEL = "\n> maka@0.2.0 test\n> npm run build:test && 
 // This is the interrupted counterpart to RunningStatusDuringToolRun, and the only
 // story that reaches the interrupted tool row. It goes through the real
 // ChatView → materializeTurns → ToolTrow path, so the row renders inside the
-// Real path: the prompt has been admitted but its Turn has not reached the
-// transcript yet. The running cue used to read its start from the client's own
-// send stamp here; it now waits for the Turn's recorded start, so there is no
-// clock in this window. This fixture pins that.
+// Real path: the prompt is admitted, its Turn has not reached the transcript
+// yet. The cue carries no clock until the Turn's own start arrives.
 export const PromptSentBeforeTurnLands: Story = {
   render: () => (
     <ComposedShell
@@ -703,7 +701,7 @@ export const PromptSentBeforeTurnLands: Story = {
   ),
   play: async ({ canvasElement }) => {
     await expect(canvasElement.querySelector('.maka-turn-processing')).not.toBeNull();
-    // No clock before the Turn's own start reaches the client.
+    // No clock before the Turn's own start arrives.
     await expect(canvasElement.querySelector('.maka-turn-elapsed')).toBeNull();
   },
 };

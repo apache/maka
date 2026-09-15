@@ -55,8 +55,7 @@
  * `aria-labelledby` and forwards no click — the `label` selector misses it,
  * so it kept StyleX's hand cursor. Match the stable themeProps class to catch
  * that span too (real <label> field labels are already covered above).
- * Disclosure <summary> controls set cursor:pointer in their own stylesheets;
- * cover the element here so no disclosure re-introduces the hand. */
+ * Disclosure <summary> controls set cursor:pointer in their own stylesheets. */
 :where(
   button,
   label,

@@ -669,9 +669,8 @@ export const TurnView = memo(function TurnView(props: {
         const activityProcessIndex = ownsTurnChrome
           ? segment.items.findLastIndex((item) => item.kind === 'processing')
           : -1;
-        // Live work is disclosed in one place: the same summary row that carries
-        // the process. A Turn with no process content still owns that row (empty)
-        // so the running cue never moves and the row survives settlement.
+        // Every Turn owns this row, empty or not, so the cue never moves and
+        // settlement does not shift the transcript.
         const liveWorkOwnsDisclosure = ownsTurnChrome && activityProcessIndex === -1;
         // Disjoint namespaces: a steering id is any string, so a bare
         // sentinel could collide with a real one.
@@ -705,9 +704,6 @@ export const TurnView = memo(function TurnView(props: {
                   activity={props.liveStreaming?.runningStatus && !props.liveStreaming.providerRetry
                     ? { startedAt: turn.startedAt, label: runningToolLabel }
                     : undefined}
-                  onStreamingSettled={props.liveStreaming?.onStreamingSettled}
-                  onOpenLinkedSession={props.onOpenLinkedSession}
-                  initialLiveContent={props.liveStreaming?.initialLiveContent}
                 />
               )}
               {segment.items.map((item, index) =>
@@ -1004,11 +1000,7 @@ export function TurnFooter(props: {
   );
 }
 
-/**
- * "model · cost" for a settled turn; undefined when there is nothing to say.
- * The elapsed lives in the process disclosure header, so it is not repeated
- * here — a turn with no process disclosure states no elapsed.
- */
+/** "model · cost" for a settled turn; the elapsed lives in the process row. */
 function turnMetaSummary(turn: TurnViewModel): string | undefined {
   const parts: string[] = [];
   if (turn.modelId) parts.push(turn.modelId);
@@ -1347,8 +1339,7 @@ export function ProcessingBlock(props: {
   const copy = getConversationCopy(useUiLocale()).messages;
   // null follows the lifecycle: open while running, collapsed on completion.
   // Settled reader choices survive appended events. Live work stays expanded.
-  // A failed or interrupted tool is an ordinary row inside the disclosure; it
-  // gets no label or auto-reveal of its own.
+  // A failed tool is an ordinary row: no label and no reveal of its own.
   const [manualOpen, setManualOpen] = useState<boolean | null>(null);
   const open = props.running || manualOpen === true;
   const seconds = props.durationMs !== undefined && Number.isFinite(props.durationMs)

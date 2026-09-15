@@ -653,10 +653,7 @@ export function ChatView(props: {
                   ))}
                 </section>
               )}
-              {/* Send feedback while the session is created. It is the same
-                  summary row the process disclosure uses, so the cue does not
-                  change shape when the Turn lands; the click stays off until
-                  the Turn's own start time reaches the client. */}
+              {/* The pre-Turn cue is the same summary row the process uses. */}
               {runningStatus && (
                 <section className="maka-turn" data-live-streaming="true">
                   <ProcessingBlock entries={[]} running activity={{}} />

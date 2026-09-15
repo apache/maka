@@ -164,7 +164,7 @@ test('the pending Turn waits without a clock until the Turn start time reaches t
   };
   await render({});
   assert.equal(container.querySelectorAll('.maka-turn-processing').length, 1);
-  // The optimistic send timestamp is not a Turn start: no clock until one exists.
+  // No Turn start yet, so no clock.
   assert.equal(container.querySelector('.maka-turn-elapsed'), null);
   await act(() => t.mock.timers.tick(2_000));
   assert.equal(container.querySelector('.maka-turn-elapsed'), null);
@@ -173,7 +173,7 @@ test('the pending Turn waits without a clock until the Turn start time reaches t
     messages: [{ type: 'user', id: 'durable-user', turnId: liveTurn.turnId, text: pending.text, ts: pending.ts }],
   });
   assert.equal(container.querySelectorAll('.maka-turn-processing').length, 1);
-  // The Turn's recorded start now drives the clock.
+  // The Turn's own start drives the clock.
   assert.match(container.querySelector('.maka-turn-elapsed')?.textContent ?? '', /2s/);
   await render({ liveTurns: undefined, activeTurn: undefined, transientMessages: [] });
   assert.equal(container.querySelectorAll('.maka-turn-processing').length, 0);

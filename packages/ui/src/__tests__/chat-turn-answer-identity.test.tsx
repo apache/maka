@@ -740,7 +740,7 @@ test('a newly failed tool reveals the process while turn recovery stays outside'
     failedReasonLabel="Read failed"
     safeResumeAction={{ pending: false, onResume() {} }}
   /></LocaleProvider>));
-  // A failed tool is an ordinary row: no attention label, and no reveal of its own.
+  // A failed tool is an ordinary row: no label, no reveal.
   assert.doesNotMatch(summary.textContent ?? '', /Needs attention/);
   assert.equal(summary.textContent, 'Execution process');
   assert.equal(process.hasAttribute('open'), false);
