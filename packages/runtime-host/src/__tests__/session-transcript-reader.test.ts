@@ -22,8 +22,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { seedInvocation, testInvocationOpening } from '@maka/runtime/test-only/invocation-fixture';
-import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
+import { seedInvocation } from '@maka/runtime/test-only/invocation-fixture';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import {
   WORKHUB_COORDINATION_SESSION_ID,
@@ -39,18 +38,15 @@ import { readPageSchema } from '@maka/runtime/read-page';
 import { openToolResultArchiveEvidenceReader } from '@maka/storage/tool-result-archive-evidence';
 import { foldTurnContribution } from '@maka/storage/session-message-projection';
 import type { SessionTurnContribution } from '@maka/storage/execution-stores';
-import {
-  type ExecutionStoresWriter,
-  openInteractiveExecutionStoresForWrite,
-} from '@maka/storage/execution-stores';
+import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-stores';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
 import {
-  ACTIVE_TRANSCRIPT_OVERLAY_MAX_BYTES,
   createSessionTranscriptReader,
+  TRANSCRIPT_TURN_MAX_BYTES,
 } from '../server/session-transcript-reader.js';
 
 for (const coordination of [false, true])
-  test(`keeps ${coordination ? 'WorkHub' : 'ordinary'} durable history separate from the canonical active overlay`, async () => {
+  test(`pages ${coordination ? 'WorkHub' : 'ordinary'} running Turn rows as their events commit`, async () => {
     const base = await mkdtemp(join(tmpdir(), 'maka-session-transcript-'));
     const capability = await resolveStorageRoot({
       path: join(base, 'root'),
@@ -84,8 +80,6 @@ for (const coordination of [false, true])
         created && created.kind !== 'conflict'
           ? created.record.header
           : await stores.sessionStore.create(input);
-      // An ended Turn is what the durable half is made of; the running one below
-      // belongs to the overlay and must not appear in a durable page.
       await seedInvocation(stores.runtimeEventStore, {
         sessionId: session.id,
         runId: 'run-0',
@@ -303,36 +297,32 @@ for (const coordination of [false, true])
         stores,
         canonicalPermissionOutcomes: { readPermissionOutcome: async () => undefined },
       });
-      const messages = await read.readActiveOverlay(session.id, {
-        sessionId: session.id,
-        turnId: 'turn-1',
-        runId: 'run-1',
-        status: 'running',
-      });
+      const messages: StoredMessage[] = [];
+      for (let position: number | null = 0; position !== null; ) {
+        const running: Awaited<ReturnType<typeof read.readDurableRecords>> =
+          await read.readDurableRecords(session.id, {
+            direction: 'newer',
+            position,
+            maxStoredBytes: TRANSCRIPT_TURN_MAX_BYTES,
+            maxMessages: 64,
+          });
+        messages.push(
+          ...running.records
+            .map(({ message }) => message)
+            .filter((message) => message.turnId === 'turn-1'),
+        );
+        position = running.nextPosition;
+      }
 
       assert.deepEqual(
-        messages.slice(0, 4).map((message) => ({ type: message.type, id: message.id })),
+        messages.slice(0, 2).map((message) => ({ type: message.type, id: message.id })),
         [
           { type: 'user', id: 'user-1' },
-          { type: 'assistant', id: 'assistant-1' },
-          { type: 'assistant', id: 'assistant-2' },
           { type: 'assistant', id: 'assistant-3' },
         ],
       );
-      assert.equal(messages.length, 4 + resultCount * 2);
-      const firstAssistant = messages[1];
-      assert.equal(firstAssistant?.type, 'assistant');
-      if (firstAssistant?.type === 'assistant') {
-        assert.equal(firstAssistant.text, 'still streaming');
-        assert.equal(firstAssistant.thinking?.text, 'deep thought');
-      }
-      const thinkingOnly = messages[2];
-      assert.equal(thinkingOnly?.type, 'assistant');
-      if (thinkingOnly?.type === 'assistant') {
-        assert.equal(thinkingOnly.text, '');
-        assert.equal(thinkingOnly.thinking?.text, 'still reasoning');
-      }
-      const completedAssistant = messages[3];
+      assert.equal(messages.length, 2 + resultCount * 2);
+      const completedAssistant = messages[1];
       assert.equal(completedAssistant?.type, 'assistant');
       if (completedAssistant?.type === 'assistant')
         assert.equal(completedAssistant.text, 'final text');
@@ -363,9 +353,9 @@ for (const coordination of [false, true])
       }
 
       const durable = await read.readDurablePage(session.id, {
-        direction: 'older',
+        direction: 'newer',
         maxBytes: 1024,
-        maxMessages: 10,
+        maxMessages: 3,
       });
       assert.equal(durable.throughSequence, await read.readDurableHighWater(session.id));
       assert.ok(durable.throughSequence !== null);
@@ -375,8 +365,9 @@ for (const coordination of [false, true])
           return { type: message.type, id: message.id };
         }),
         [
-          { type: 'turn_state', id: 'terminal-0' },
           { type: 'user', id: 'user-0' },
+          { type: 'turn_state', id: 'terminal-0' },
+          { type: 'user', id: 'user-1' },
         ],
       );
       if (largeBash) {
@@ -406,20 +397,9 @@ for (const coordination of [false, true])
             },
           }),
         );
-        if (!coordination) {
-          // The handoff membership check must hash this large prefix without
-          // loading it as a second RuntimeEvent array.
-          const handoff = await read.readActiveOverlay(session.id, {
-            sessionId: session.id,
-            turnId: 'turn-1',
-            runId: 'run-1',
-            status: 'running',
-          });
-          assertLargeBashResult(handoff, largeBash);
-        }
         const recovered = await read.readDurableRecords(session.id, {
           direction: 'older',
-          maxStoredBytes: ACTIVE_TRANSCRIPT_OVERLAY_MAX_BYTES,
+          maxStoredBytes: TRANSCRIPT_TURN_MAX_BYTES,
           maxMessages: 32,
         });
         assertLargeBashResult(
@@ -602,17 +582,6 @@ test('pages the ledger without materializing Turns it takes no rows from', async
       read.readDurablePage(session.id, { direction: 'newer', maxBytes: 1024, maxMessages: 1 }),
     );
     assert.equal(JSON.parse(head.fragments[0]!.data.toString()).text, 'prompt 0');
-    assert.deepEqual(
-      await decoding('lookup miss', ONE_BIG_TURN_BUDGET, () =>
-        read.readDurableMessagesById(session.id, {
-          throughSequence: through,
-          messageIds: ['missing-stream'],
-          maxBytes: 1024,
-          maxMessages: 1,
-        }),
-      ),
-      [],
-    );
     const landmarks = await decoding('landmarks', SMALL_TURN_BUDGET, () =>
       read.readDurableTurnLandmarks(session.id, 3),
     );
@@ -662,15 +631,6 @@ test('pages the ledger without materializing Turns it takes no rows from', async
     assert.deepEqual(contributions, [...folded.values()]);
     const assistant = records.find((record) => record.message.id === 'assistant-final');
     assert.ok(assistant);
-    assert.deepEqual(
-      await read.readDurableMessagesById(session.id, {
-        throughSequence: through,
-        messageIds: ['assistant-final'],
-        maxBytes: 4096,
-        maxMessages: 1,
-      }),
-      [assistant.message],
-    );
     // Reassemble the same multibyte message in either direction, inside one row.
     for (const direction of ['older', 'newer'] as const) {
       let byteOffset: number | undefined;
@@ -721,106 +681,6 @@ test('pages the ledger without materializing Turns it takes no rows from', async
     await owner.close();
     await rm(base, { recursive: true, force: true });
   }
-});
-
-test('stops scanning a control-only ledger at the cumulative immutable event limit', async () => {
-  const sessionId = 'session-1';
-  const events = Array.from({ length: 8_193 }, (_, index) =>
-    runtimeEvent(sessionId, {
-      id: `artifact-${index}`,
-      ts: index + 1,
-      role: 'system',
-      author: 'system',
-      actions: { artifactDelta: { bytes: index } },
-    }),
-  );
-  let scanned = 0;
-  const stores = {
-    agentRunStore: {},
-    runtimeEventStore: {
-      readRunInvocation: async () => testInvocation(sessionId),
-      readRuntimeEventsBounded: async () => ({ status: 'limit_exceeded' as const }),
-      scanRuntimeEvents: async (
-        _sessionId: string,
-        _runId: string,
-        budget: { readonly maxImmutableRecords: number },
-        visit: (batch: readonly RuntimeEvent[]) => void,
-      ) => {
-        for (let offset = 0; offset < events.length; offset += 128) {
-          const batch = events.slice(offset, offset + 128);
-          if (offset + batch.length > budget.maxImmutableRecords) {
-            return { status: 'limit_exceeded' as const };
-          }
-          scanned += batch.length;
-          visit(batch);
-        }
-        return { status: 'complete' as const };
-      },
-    },
-  } as unknown as ExecutionStoresWriter<'interactive'>;
-  const read = createSessionTranscriptReader({
-    stores,
-    canonicalPermissionOutcomes: { readPermissionOutcome: async () => undefined },
-  });
-
-  await assert.rejects(
-    read.readActiveOverlay(sessionId, {
-      sessionId,
-      turnId: 'turn-1',
-      runId: 'run-1',
-      status: 'running',
-    }),
-    /storage scan limit/,
-  );
-  assert.equal(scanned, 8_192);
-});
-
-test('stops an oversized active projection before retaining the full RuntimeEvent ledger', async () => {
-  const sessionId = 'session-1';
-  const events = Array.from({ length: 8_193 }, (_, index) =>
-    runtimeEvent(sessionId, {
-      id: `user-${index}`,
-      ts: index + 1,
-      role: 'user',
-      author: 'user',
-      content: { kind: 'text', text: 'x' },
-      refs: { storedMessageId: `message-${index}` },
-    }),
-  );
-  let visited = 0;
-  const stores = {
-    agentRunStore: {},
-    runtimeEventStore: {
-      readRunInvocation: async () => testInvocation(sessionId),
-      scanRuntimeEvents: async (
-        _sessionId: string,
-        _runId: string,
-        _budget: unknown,
-        visit: (batch: readonly RuntimeEvent[]) => void,
-      ) => {
-        for (let offset = 0; offset < events.length; offset += 128) {
-          visited += Math.min(128, events.length - offset);
-          visit(events.slice(offset, offset + 128));
-        }
-        return { status: 'complete' as const };
-      },
-    },
-  } as unknown as ExecutionStoresWriter<'interactive'>;
-  const read = createSessionTranscriptReader({
-    stores,
-    canonicalPermissionOutcomes: { readPermissionOutcome: async () => undefined },
-  });
-
-  await assert.rejects(
-    read.readActiveOverlay(sessionId, {
-      sessionId,
-      turnId: 'turn-1',
-      runId: 'run-1',
-      status: 'running',
-    }),
-    /exceeds its presentation limit/,
-  );
-  assert.ok(visited < events.length);
 });
 
 test('pages a nested Turn the same way a single sweep reads it', async () => {
@@ -934,9 +794,7 @@ function assertLargeBashResult(
     (message) => message.type === 'tool_result' && message.toolUseId === 'large-bash-0',
   );
   assert.ok(result?.type === 'tool_result');
-  assert.ok(
-    Buffer.byteLength(JSON.stringify(result), 'utf8') < ACTIVE_TRANSCRIPT_OVERLAY_MAX_BYTES,
-  );
+  assert.ok(Buffer.byteLength(JSON.stringify(result), 'utf8') < TRANSCRIPT_TURN_MAX_BYTES);
   assert.ok(result.content.kind === 'terminal');
   assert.equal(result.content.status, 'failed');
   assert.equal(result.content.exitCode, 7);
@@ -949,15 +807,4 @@ function assertLargeBashResult(
   assert.match(result.content.output.stdout, /maka:\/\/runtime\/tool-results\/large-bash-0-result/);
   assert.equal(result.content.output.stdoutTruncated, true);
   assert.equal(result.content.output.stderrTruncated, true);
-}
-
-function testInvocation(sessionId: string): RuntimeInvocationRecord {
-  return {
-    sessionId,
-    invocationId: 'run-1',
-    runId: 'run-1',
-    turnId: 'turn-1',
-    openedAt: 1,
-    opening: testInvocationOpening(),
-  };
 }

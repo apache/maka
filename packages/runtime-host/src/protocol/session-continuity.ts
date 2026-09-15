@@ -367,8 +367,7 @@ export const SESSION_CONTINUITY_OPERATION_SPECS = {
       if (
         input.transcript.kind === 'tail' &&
         output.transcript &&
-        output.transcript.durable.rawBytes + output.transcript.overlay.rawBytes >
-          input.transcript.maxBytes
+        output.transcript.durable.rawBytes > input.transcript.maxBytes
       ) {
         throw invalidProtocolFrame('Session transcript bootstrap exceeds requested byte limit');
       }
