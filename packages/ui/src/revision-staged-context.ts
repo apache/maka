@@ -247,6 +247,12 @@ export interface RevisionToastApi {
  * Everything a surface must inject so the edit-and-resend lifecycle can run
  * without knowing the bridge, the locale catalog, or the attempt tracker:
  * desktop touchpoints arrive as values and callbacks, never as imports.
+ *
+ * Why this lives in @maka/ui: the desktop renderer's debt ratchet forbids
+ * new dependency edges in the legacy shell files, and the lifecycle needs a
+ * runtime import of this module's composer types. Surfaces that already hold
+ * an @maka/ui edge (app-shell) assemble the env; the injected shell file
+ * keeps only type-level contact with this module.
  */
 export interface RevisionActionsEnv<
   Phase,
