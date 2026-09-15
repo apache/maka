@@ -1162,10 +1162,6 @@ function matchesQuery(entry: ExternalSessionSummary, query: ExternalSessionQuery
   return externalSessionMatchesQuery(entry, query);
 }
 
-function compareCatalogEntries(a: CodexCatalogEntry, b: CodexCatalogEntry): number {
-  return (b.updatedAt ?? b.createdAt ?? 0) - (a.updatedAt ?? a.createdAt ?? 0);
-}
-
 function stateGeneration(path: string): number {
   return Number(path.match(/\d+/)?.[0] ?? 0);
 }

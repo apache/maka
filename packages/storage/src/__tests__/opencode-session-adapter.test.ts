@@ -279,6 +279,22 @@ describe('OpenCodeSessionAdapter', () => {
     });
   });
 
+  test('a root Session with no directory is both listed and importable', async () => {
+    await withOpenCodeHome(async (home) => {
+      const fixture = await seed(home);
+      const db = new DatabaseSync(join(home, 'opencode.db'));
+      try {
+        db.prepare('UPDATE session SET directory = NULL WHERE id = ?').run(fixture.session.id);
+      } finally {
+        db.close();
+      }
+      const adapter = new OpenCodeSessionAdapter({ opencodeHome: home });
+
+      assert.equal((await adapter.listSessions())[0]?.cwd, '');
+      assert.equal((await adapter.readSession(fixture.session.id)).metadata.cwd, '');
+    });
+  });
+
   test('converts the captured session into canonical Maka messages', async () => {
     await withOpenCodeHome(async (home) => {
       const fixture = await seed(home);
@@ -377,6 +393,19 @@ describe('OpenCodeSessionAdapter', () => {
         ),
         (error) =>
           error instanceof ExternalSessionLimitError && error.limit.kind === 'transcript_bytes',
+      );
+    });
+  });
+
+  test('rejects canonical output that exceeds the conversion budget', async () => {
+    await withOpenCodeHome(async (home) => {
+      const fixture = await seed(home);
+      await assert.rejects(
+        new OpenCodeSessionAdapter({ opencodeHome: home, maxConvertedBytes: 10 }).readSession(
+          fixture.session.id,
+        ),
+        (error) =>
+          error instanceof ExternalSessionLimitError && error.limit.kind === 'converted_bytes',
       );
     });
   });
@@ -720,7 +749,7 @@ async function seed(
     db.exec(`
       CREATE TABLE session (
         id text PRIMARY KEY, project_id text, workspace_id text, parent_id text,
-        slug text, directory text NOT NULL, path text, title text,
+        slug text, directory text, path text, title text,
         version text, time_created integer, time_updated integer,
         time_compacting integer, time_archived integer
       );
