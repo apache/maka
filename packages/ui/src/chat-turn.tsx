@@ -994,12 +994,14 @@ export function TurnFooter(props: {
   );
 }
 
-/** "model · duration · cost" for a settled turn; undefined when there is nothing to say. */
+/**
+ * "model · cost" for a settled turn; undefined when there is nothing to say.
+ * The elapsed lives in the process disclosure header, so it is not repeated
+ * here — a turn with no process disclosure states no elapsed.
+ */
 function turnMetaSummary(turn: TurnViewModel): string | undefined {
   const parts: string[] = [];
   if (turn.modelId) parts.push(turn.modelId);
-  // Duration counts whole seconds, so anything under one would read「0s」.
-  if (turn.durationMs && turn.durationMs >= 1_000) parts.push(formatTurnDuration(turn.durationMs));
   if (turn.tokens?.costUsd && turn.tokens.costUsd > 0) parts.push(`$${turn.tokens.costUsd.toFixed(4)}`);
   return parts.length > 0 ? parts.join(' · ') : undefined;
 }
