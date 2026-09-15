@@ -616,14 +616,6 @@ export interface SessionStore {
   settleSandboxBoundaryRequest?(
     input: SettleSandboxBoundaryRequest,
   ): Promise<SandboxBoundarySettlement>;
-  setExecutionBoundaryKind(
-    sessionId: string,
-    kind: 'managed' | 'bypass',
-    projection?: {
-      permissionMode: SessionHeader['permissionMode'];
-      labels?: readonly string[];
-    },
-  ): Promise<ExecutionBoundary>;
   createAgentGraphOperator?(
     input: CreateSessionInput,
     request: AgentGraphOperatorProvisionRequest,
@@ -652,16 +644,14 @@ export interface SessionStore {
     expectedRevision: number,
   ): Promise<VersionedSessionHeader>;
   /**
-   * Versioned configuration authority requires both this method and
-   * updateSessionConfiguration. Stores may omit these capabilities when they
-   * do not support configuration changes; Runtime rejects those operations
-   * with operation_unavailable rather than falling back to unversioned writes.
+   * Configuration changes require both readHeaderRecordSnapshot and
+   * updateSessionConfiguration. Production SessionAuthorityStore requires both;
+   * Runtime keeps them optional for stores that do not mutate configuration,
+   * such as execution-only test fixtures. Missing either makes changes unavailable,
+   * without an unversioned fallback. Implementations must atomically check the
+   * expected revision and commit configuration, execution boundary and revision.
    */
   readHeaderRecordSnapshot?(sessionId: string): Promise<VersionedSessionHeader>;
-  /**
-   * Atomically check the expected revision and commit configuration, execution
-   * boundary and the new revision. Requires readHeaderRecordSnapshot.
-   */
   updateSessionConfiguration?(
     sessionId: string,
     input: SessionConfigurationStoreUpdate,
@@ -1840,43 +1830,6 @@ export class SessionManager {
   async listActiveInteractions(sessionId: string): Promise<ActiveInteractionRequestEvent[]> {
     await this.deps.store.readHeader(sessionId);
     return this.runtimeKernel.listActiveInteractions?.(sessionId) ?? [];
-  }
-
-  async setExecutionBoundaryKind(
-    sessionId: string,
-    kind: 'managed' | 'bypass',
-  ): Promise<ExecutionBoundary> {
-    const current = await this.deps.store.readExecutionBoundary(sessionId);
-    const header = await this.deps.store.readHeader(sessionId);
-    // Managed includes Explore. Match Storage's default projection, then pass
-    // it explicitly so classification and commit describe the same transition.
-    const permissionMode =
-      kind === 'bypass'
-        ? 'bypass'
-        : header.permissionMode === 'bypass'
-          ? 'ask'
-          : header.permissionMode;
-    const narrows = narrowsExecutionAuthority(current, permissionMode);
-    if (narrows && this.runtimeKernel.hasActiveRuns(sessionId)) {
-      throw new SessionConfigurationTransitionError(
-        'session_busy',
-        'Execution boundary cannot change while a Turn is running',
-      );
-    }
-    if (header.status === 'waiting_for_user') {
-      throw new SessionConfigurationTransitionError(
-        'session_busy',
-        'Execution boundary cannot change while an Interaction is pending',
-      );
-    }
-    const boundary = await this.commitExecutionBoundaryTransition(
-      sessionId,
-      current,
-      permissionMode,
-      async () => () =>
-        this.deps.store.setExecutionBoundaryKind(sessionId, kind, { permissionMode }),
-    );
-    return boundary;
   }
 
   private async commitExecutionBoundaryTransition<T>(
