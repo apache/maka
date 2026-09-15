@@ -734,20 +734,21 @@ test('a newly failed tool reveals the process while turn recovery stays outside'
   const process = container.querySelector('details.maka-processing-sequence');
   const summary = process?.querySelector('summary');
   assert.ok(process && summary);
-  await act(() => { summary.dispatchEvent(new window.Event('click', { bubbles: true, cancelable: true })); });
   assert.equal(process.hasAttribute('open'), true);
   await act(() => root.render(<LocaleProvider locale="en"><TurnView
     turn={{ ...turnWith([PROCESS_TEXT, { kind: 'tools', items: [{ toolUseId: 'tool-1', toolName: 'read', args: {}, status: 'errored' }] }]), status: 'failed' }}
     failedReasonLabel="Read failed"
     safeResumeAction={{ pending: false, onResume() {} }}
   /></LocaleProvider>));
-  assert.equal(process.hasAttribute('open'), true);
-  assert.match(summary.textContent ?? '', /Needs attention/);
+  // A failed tool is an ordinary row: no attention label, and no reveal of its own.
+  assert.doesNotMatch(summary.textContent ?? '', /Needs attention/);
+  assert.equal(summary.textContent, 'Execution process');
+  assert.equal(process.hasAttribute('open'), false);
   assert.doesNotMatch(process.textContent ?? '', /Continue this turn/);
   assert.match(container.textContent ?? '', /Continue this turn/);
   await act(() => { summary.dispatchEvent(new window.Event('click', { bubbles: true, cancelable: true })); });
-  assert.equal(process.hasAttribute('open'), false);
-  assert.match(container.textContent ?? '', /Continue this turn/);
+  assert.equal(process.hasAttribute('open'), true);
+  assert.equal(container.querySelectorAll('.maka-processing-summary').length, 1);
 });
 
 test('uses a generic process label when no duration is recorded, and localizes known duration', async () => {

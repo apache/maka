@@ -1341,21 +1341,14 @@ function ProcessingBlock(props: {
   const copy = getConversationCopy(useUiLocale()).messages;
   // null follows the lifecycle: open while running, collapsed on completion.
   // Settled reader choices survive appended events. Live work stays expanded.
+  // A failed or interrupted tool is an ordinary row inside the disclosure; it
+  // gets no label or auto-reveal of its own.
   const [manualOpen, setManualOpen] = useState<boolean | null>(null);
-  const needsAttention = props.entries.some((entry) => entry.kind === 'tools'
-    && entry.items.some((tool) => tool.status === 'errored' || tool.status === 'interrupted'));
-  // Reveal a new failure even if a prior settled process was collapsed.
-  // They can close it again once settled; its attention label remains visible. Permission
-  // requests and turn recovery banners are owned outside the timeline.
-  useEffect(() => {
-    if (needsAttention) setManualOpen(null);
-  }, [needsAttention]);
-  const open = props.running || (manualOpen ?? needsAttention);
+  const open = props.running || manualOpen === true;
   const seconds = props.durationMs !== undefined && Number.isFinite(props.durationMs)
     ? Math.floor(Math.max(0, props.durationMs) / 1000)
     : undefined;
-  const label = needsAttention ? copy.processNeedsAttention
-    : props.running || seconds === undefined ? copy.processDetails
+  const label = props.running || seconds === undefined ? copy.processDetails
     : copy.processDuration(Math.floor(seconds / 60), seconds % 60);
   return (
     <details
@@ -1374,7 +1367,7 @@ function ProcessingBlock(props: {
           if (!props.running) setManualOpen(!open);
         }}
       >
-        {props.activity && !needsAttention ? (
+        {props.activity ? (
           <TurnRunningStatus
             startedAt={props.activity.startedAt}
             activityLabel={props.activity.label}
