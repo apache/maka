@@ -3347,12 +3347,12 @@ describe('AiSdkBackend model history', () => {
     const model = completionModel();
     const backend = createBackend({
       connection: {
-        slug: 'deepseek',
-        providerType: 'deepseek',
-        defaultModel: 'deepseek-v4-flash',
+        slug: 'alibaba-token-plan-cn',
+        providerType: 'alibaba-token-plan-cn',
+        defaultModel: 'qwen3.8-max',
       },
-      apiKey: 'deepseek-token',
-      modelId: 'deepseek-v4-flash',
+      apiKey: 'alibaba-token',
+      modelId: 'qwen3.8-max',
       modelFactory: () => model,
       tools: [],
     });
@@ -3426,12 +3426,12 @@ describe('AiSdkBackend model history', () => {
     const model = completionModel();
     const backend = createBackend({
       connection: {
-        slug: 'deepseek',
-        providerType: 'deepseek',
-        defaultModel: 'deepseek-v4-flash',
+        slug: 'alibaba-token-plan-cn',
+        providerType: 'alibaba-token-plan-cn',
+        defaultModel: 'qwen3.8-max',
       },
       apiKey: '[redacted]',
-      modelId: 'deepseek-v4-flash',
+      modelId: 'qwen3.8-max',
       modelFactory: () => model,
       tools: [],
     });

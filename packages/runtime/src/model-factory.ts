@@ -52,6 +52,11 @@ import {
 import type { OpenAiResponsesTransportState } from './openai-responses-websocket.js';
 import { openResponsesUrl } from './provider-urls.js';
 import { createOpenResponsesCompatibilityFinalizer } from './open-responses-compatibility.js';
+import {
+  createDeepSeekOpenResponsesExtensions,
+  usesDeepSeekOpenResponsesExtensions,
+  wrapFetchForDeepSeekOpenResponsesExtensions,
+} from './deepseek-open-responses-extensions.js';
 import { resolveModelRuntime, type ResolvedModelRuntime } from './model-runtime.js';
 import { runtimeProviderName, type RuntimeProviderAdapter } from './provider-runtime-policy.js';
 import { openAiCodexHeaders } from './subscription-auth.js';
@@ -155,20 +160,32 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
           const finalizeBody = createOpenResponsesCompatibilityFinalizer(
             reasoningReplay.contract.compatibility,
           );
+          const deepSeekExtensions = usesDeepSeekOpenResponsesExtensions(connection.providerType);
+          // Discriminator rewrite sits closest to the network so overlays still
+          // see SDK namespaced types. @ai-sdk/open-responses@2.0.44 only accepts
+          // `<namespace>:<type>`; DeepSeek documents bare `web_search` /
+          // `web_search_call`. Drop the wrap when vercel/ai#19939 ships.
+          const transportFetch = deepSeekExtensions
+            ? wrapFetchForDeepSeekOpenResponsesExtensions(baseFetch)
+            : baseFetch;
           // Request customization is applied first; provider compatibility is
           // the final authority before network dispatch, so an overlay cannot
           // re-enable storage or violate the provider's tool-choice contract.
-          const responsesFetch = finalizeBody
-            ? createRequestCustomizationFetch(baseFetch, {
-                ...requestCustomization,
-                finalizeBody,
-              })
-            : requestFetch;
+          const responsesFetch =
+            finalizeBody || deepSeekExtensions
+              ? createRequestCustomizationFetch(transportFetch, {
+                  ...requestCustomization,
+                  ...(finalizeBody ? { finalizeBody } : {}),
+                })
+              : requestFetch;
           return createOpenResponses({
             name: runtimeProviderName(adapter, connection),
             apiKey,
             url: openResponsesUrl(baseURL),
             fetch: responsesFetch,
+            ...(deepSeekExtensions
+              ? { experimental_extensions: createDeepSeekOpenResponsesExtensions() }
+              : {}),
           })(modelId);
         }
         return createOpenAI({
