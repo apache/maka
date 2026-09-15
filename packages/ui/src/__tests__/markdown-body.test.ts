@@ -491,6 +491,23 @@ it('preserves links and images with labels past the defensive scan bound', () =>
   assert.doesNotMatch(imgMarkup, /MAKA_MATH/);
 });
 
+it('resolves labels far beyond any scan bound without a length cliff', () => {
+  const bigLink = `[\\[DISCUSS\\] ${'a'.repeat(100_000)}](https://example.com/huge)`;
+  const cache = createMarkdownMathCache();
+  const prepared = prepareMarkdownMath(bigLink, cache);
+
+  assert.equal(cache.safeSourceEnd, bigLink.length);
+
+  const markup = renderToStaticMarkup(createElement(LocaleProvider, {
+    locale: 'en',
+    children: createElement(MarkdownBody, { text: bigLink }),
+  }));
+
+  assert.match(markup, /<a\b[^>]*href="https:\/\/example\.com\/huge"/);
+  assert.match(markup, /\[DISCUSS\]/);
+  assert.doesNotMatch(markup, /maka-math-display|katex-display/);
+});
+
 it('does not rescan malformed link tails quadratically', () => {
   const input = '[x]('.repeat(32_000);
   const cache = createMarkdownMathCache();

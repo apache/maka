@@ -407,11 +407,12 @@ function readDelimitedMath(
 }
 
 const MAX_LINK_LABEL_DEPTH = 32;
-// Bounds incomplete label scans the same way tails are bounded: a close found
-// anywhere inside still resolves and settles, so only genuinely unfinished
-// input pays per-chunk rescan cost. Complete labels beyond this fall back to
-// literal text, matching the tail behaviour.
-const MAX_LINK_LABEL_LENGTH = 65536;
+// NOTE: label scans deliberately have no length cap (tails keep theirs).
+// Finding a close is linear, settling is permanent, and per-chunk rescan cost
+// while a label is still open matches the base behaviour for unclosed math.
+// Capping labels instead degrades complete long labels to literal text,
+// which both breaks the link and pushes a giant literal run downstream that
+// renders far slower than the structured link would have.
 const MAX_LINK_TAIL_DEPTH = 32;
 const MAX_LINK_TAIL_LENGTH = 65536;
 
@@ -493,9 +494,10 @@ function isEscaped(source: string, pos: number): boolean {
 
 /**
  * Find the `]` closing a link label opened before `from`, skipping escapes,
- * code spans, and nested labels. Blank lines, excessive nesting, and labels
- * running past the length bound can never form a label here; running out of
- * input means more text may still complete it.
+ * code spans, and nested labels. Blank lines and excessive nesting can never
+ * form a label here; running out of input means more text may still complete
+ * it. There is deliberately no length bound: a close found anywhere resolves
+ * and settles, so incomplete input is the only case that rescans per chunk.
  */
 function findLabelEnd(
   source: string,
@@ -504,9 +506,6 @@ function findLabelEnd(
   let depth = 0;
   let i = from;
   while (i < source.length) {
-    if (i - from >= MAX_LINK_LABEL_LENGTH) {
-      return { kind: 'invalid', end: findInvalidLinkBoundary(source, i) };
-    }
     const ch = source[i] ?? '';
     if (ch === '\n' && source[i + 1] === '\n') return { kind: 'invalid', end: i };
     if (ch === '\\') {
