@@ -5957,7 +5957,7 @@ Slug openai-work<cursor>
     ]);
   });
 
-  test('reconciles an outcome-unknown import from fresh Host catalog state', async () => {
+  test('keeps an outcome-unknown import uncertain even when a catalog copy appears', async () => {
     const terminal = new FakeTerminal();
     const driver = new SlashCommandDriver([]);
     let catalogReads = 0;
@@ -5965,10 +5965,9 @@ Slug openai-work<cursor>
       listSources: async () => ['opencode'],
       listSessions: async () => {
         catalogReads += 1;
-        // Read 1 loaded the picker, read 2 is the baseline taken just before
-        // the request, and read 3 is the reconciliation. The copy appears
-        // between the baseline and the reconciliation, which is the only shape
-        // that proves the import made it.
+        // A catalog copy appearing after dispatch cannot be attributed to this
+        // request: another client may have made it while this client lost its
+        // result. Unknown outcomes must therefore never switch Sessions.
         const afterRequest = catalogReads > 2;
         return {
           sessions: [
@@ -6012,14 +6011,15 @@ Slug openai-work<cursor>
       plainTerminalOutput(terminal.output()).includes('Imported after disconnect'),
     );
     terminal.input('\r');
-    await waitFor(() => driver.sessionIds.includes('imported-after-loss'));
-    assert.equal(catalogReads, 3);
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('result is uncertain'));
+    assert.equal(driver.sessionIds.includes('imported-after-loss'), false);
+    assert.equal(catalogReads, 1);
 
     exitMaka(terminal);
     await run;
   });
 
-  test('keeps an outcome-unknown import uncertain when catalog reconciliation is ambiguous', async () => {
+  test('keeps an outcome-unknown import uncertain when multiple copies could have appeared', async () => {
     const terminal = new FakeTerminal();
     const driver = new SlashCommandDriver([]);
     let catalogReads = 0;
@@ -6077,11 +6077,8 @@ Slug openai-work<cursor>
   });
 
   test('keeps an outcome-unknown import uncertain when another client made the copy', async () => {
-    // The picker showed no copies, a Desktop import finished before this
-    // request was dispatched, and this request's outcome is unknown. The
-    // baseline taken immediately before the dispatch already holds Desktop's
-    // copy, so the count does not grow and the id is not this import's —
-    // opening it would hand the user someone else's conversation.
+    // A source may already have a copy from another client when this request's
+    // outcome is unknown. Catalog state cannot establish ownership.
     const terminal = new FakeTerminal();
     const driver = new SlashCommandDriver([]);
     let catalogReads = 0;
@@ -6134,67 +6131,6 @@ Slug openai-work<cursor>
     terminal.input('\r');
     await waitFor(() => plainTerminalOutput(terminal.output()).includes('result is uncertain'));
     assert.equal(driver.sessionIds.includes('desktop-copy'), false);
-
-    exitMaka(terminal);
-    await run;
-  });
-
-  test('opens the copy when a full recent-id window drops its oldest id', async () => {
-    // The published count is what says how many copies landed; the id list is
-    // only a window of the most recent eight. A source with eight copies drops
-    // one the moment a ninth arrives, and reading that slide as a second
-    // import would leave this import's own copy unopened every time.
-    const terminal = new FakeTerminal();
-    const driver = new SlashCommandDriver([]);
-    let catalogReads = 0;
-    const full = ['copy-8', 'copy-7', 'copy-6', 'copy-5', 'copy-4', 'copy-3', 'copy-2', 'copy-1'];
-    const externalSessions = {
-      listSources: async () => ['opencode'],
-      listSessions: async () => {
-        catalogReads += 1;
-        const imported = catalogReads > 2;
-        return {
-          sessions: [
-            {
-              id: 'ses_external',
-              name: 'Saturated window',
-              hostCwd: '/repo',
-              importState: {
-                importedCount: imported ? 9 : 8,
-                importedSessionIds: imported ? ['copy-9', ...full.slice(0, 7)] : full,
-                isImporting: false,
-              },
-            },
-          ],
-          nextCursor: null,
-        };
-      },
-      importSession: async () => {
-        throw {
-          operation: 'external-session.import',
-          code: 'commit_outcome_unknown',
-        };
-      },
-    };
-    const run = runMakaPiTui({
-      title: 'Maka',
-      driver,
-      cwd: '/repo',
-      model: 'claude-sonnet-4-5',
-      connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
-      terminal,
-      externalSessions,
-    });
-
-    terminal.input('/session');
-    terminal.input('\r');
-    await waitFor(() => plainTerminalOutput(terminal.output()).includes('Import external session'));
-    terminal.input('\r');
-    await waitFor(() => plainTerminalOutput(terminal.output()).includes('Saturated window'));
-    terminal.input('\r');
-    await waitFor(() => driver.sessionIds.includes('copy-9'));
-    assert.equal(driver.sessionIds.includes('copy-8'), false);
 
     exitMaka(terminal);
     await run;

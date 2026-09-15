@@ -2990,86 +2990,12 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     }
   };
 
-  /**
-   * What the Host says about one source's copies right now.
-   *
-   * Read fresh rather than taken from the row the user picked: those rows were
-   * loaded when the picker opened, and a copy another client made since then is
-   * not evidence of this import's outcome. The whole catalog is walked because
-   * the source is not promised to be on the first page.
-   */
-  const readExternalImportState = async (
-    adapterId: string,
-    sourceSessionId: string,
-  ): Promise<{ importedCount: number; importedSessionIds: ReadonlySet<string> } | undefined> => {
-    if (!input.externalSessions) return undefined;
-    let cursor: string | undefined;
-    const seenCursors = new Set<string>();
-    do {
-      const page = await input.externalSessions.listSessions({
-        adapterId,
-        scope: 'all',
-        ...(cursor ? { cursor } : {}),
-      });
-      const source = page.sessions.find((session) => session.id === sourceSessionId);
-      if (source) {
-        return {
-          importedCount: source.importState.importedCount,
-          importedSessionIds: new Set(source.importState.importedSessionIds),
-        };
-      }
-      if (page.nextCursor === null || seenCursors.has(page.nextCursor)) break;
-      seenCursors.add(page.nextCursor);
-      cursor = page.nextCursor;
-    } while (cursor);
-    return undefined;
-  };
-
-  /**
-   * The copy an unknown-outcome import made, when the Host's own counts prove
-   * it.
-   *
-   * `commit_outcome_unknown` means this client cannot tell what the Host
-   * committed, so the only evidence left is that a copy appeared since the
-   * request was dispatched. That is evidence only when nothing else could have
-   * made it: the source's published count must have grown by exactly one, and
-   * exactly one id must be new.
-   *
-   * The count is the authority on how many copies landed, and it counts every
-   * one that has been published. The id list is only a window of the most
-   * recent, so a source that already has a full window drops an id whenever a
-   * new one arrives — reading that slide as a second import would leave this
-   * import's own copy unopened forever. Two copies landing in the window are
-   * two, and the count says so.
-   *
-   * A copy this import committed but did not finish publishing is in neither:
-   * the Host counts published copies, and the Session list shows published
-   * Sessions. That window stays uncertain, which is what the uncertain notice
-   * is for — the copy appears once the Host finishes materializing it, and the
-   * user is told to look rather than handed someone else's conversation.
-   */
-  const reconcileImportedExternalSession = async (
-    adapterId: string,
-    sourceSessionId: string,
-    before: { importedCount: number; importedSessionIds: ReadonlySet<string> } | undefined,
-  ): Promise<string | undefined> => {
-    if (!before) return undefined;
-    const after = await readExternalImportState(adapterId, sourceSessionId);
-    if (!after || after.importedCount !== before.importedCount + 1) return undefined;
-    const added = [...after.importedSessionIds].filter((id) => !before.importedSessionIds.has(id));
-    return added.length === 1 ? added[0] : undefined;
-  };
-
   const importExternalSession = async (
     adapterId: string,
     source: ExternalSessionCatalogItem,
   ): Promise<void> => {
     if (!input.externalSessions) return;
     const copy = TUI_SESSION_ACTIONS_COPY[locale];
-    // The reconciliation baseline is read here, immediately before the
-    // request, so a copy that already existed when the picker opened cannot be
-    // mistaken for this import's result.
-    const before = await readExternalImportState(adapterId, source.id).catch(() => undefined);
     let importedSessionId: string | undefined;
     try {
       const result = await input.externalSessions.importSession({
@@ -3097,15 +3023,8 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         state.entries.push({ kind: 'notice', level: 'error', text: copy.externalImportFailed });
         return;
       }
-      importedSessionId = await reconcileImportedExternalSession(
-        adapterId,
-        source.id,
-        before,
-      ).catch(() => undefined);
-      if (!importedSessionId) {
-        state.entries.push({ kind: 'notice', level: 'error', text: copy.externalImportUncertain });
-        return;
-      }
+      state.entries.push({ kind: 'notice', level: 'error', text: copy.externalImportUncertain });
+      return;
     }
     try {
       await switchSession(importedSessionId);

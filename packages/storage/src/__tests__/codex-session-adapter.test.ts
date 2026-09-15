@@ -18,7 +18,17 @@
  */
 
 import assert from 'node:assert/strict';
-import { appendFile, mkdir, mkdtemp, open, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import {
+  appendFile,
+  mkdir,
+  mkdtemp,
+  open,
+  readFile,
+  rm,
+  stat,
+  utimes,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, mock, test } from 'node:test';
@@ -425,20 +435,55 @@ describe('CodexSessionAdapter', () => {
     });
   });
 
-  test('filesystem fallback pages in traversal order without rebuilding a full rollout list', async () => {
+  test('filesystem fallback pages globally by rollout mtime across active and archived roots', async () => {
     await withCodexHome(async (codexHome) => {
-      for (const id of ['codex-page-a', 'codex-page-b', 'codex-page-c']) {
-        await seedMinimalRollout(codexHome, id, false, '/workspace/root', id);
-      }
+      const staleActive = await seedMinimalRollout(
+        codexHome,
+        'codex-page-z-stale',
+        false,
+        '/workspace/root',
+        'stale active',
+      );
+      const freshActive = await seedMinimalRollout(
+        codexHome,
+        'codex-page-a-fresh',
+        false,
+        '/workspace/root',
+        'fresh active',
+      );
+      const newestArchived = await seedMinimalRollout(
+        codexHome,
+        'codex-page-archived-newest',
+        true,
+        '/workspace/root',
+        'newest archived',
+      );
+      await utimes(staleActive, new Date('2026-08-01T00:00:00Z'), new Date('2026-08-01T00:00:00Z'));
+      await utimes(freshActive, new Date('2026-08-02T00:00:00Z'), new Date('2026-08-02T00:00:00Z'));
+      await utimes(
+        newestArchived,
+        new Date('2026-08-03T00:00:00Z'),
+        new Date('2026-08-03T00:00:00Z'),
+      );
       const adapter = new CodexSessionAdapter({ codexHome });
 
       assert.deepEqual(
-        (await adapter.listSessions({ offset: 0, limit: 2 })).map(({ id }) => id),
-        ['codex-page-c', 'codex-page-b'],
+        (await adapter.listSessions({ includeArchived: true, offset: 0, limit: 1 })).map(
+          ({ id }) => id,
+        ),
+        ['codex-page-archived-newest'],
       );
       assert.deepEqual(
-        (await adapter.listSessions({ offset: 2, limit: 2 })).map(({ id }) => id),
-        ['codex-page-a'],
+        (await adapter.listSessions({ includeArchived: true, offset: 1, limit: 1 })).map(
+          ({ id }) => id,
+        ),
+        ['codex-page-a-fresh'],
+      );
+      assert.deepEqual(
+        (await adapter.listSessions({ includeArchived: true, offset: 2, limit: 1 })).map(
+          ({ id }) => id,
+        ),
+        ['codex-page-z-stale'],
       );
     });
   });

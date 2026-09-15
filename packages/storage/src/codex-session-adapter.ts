@@ -216,31 +216,33 @@ export class CodexSessionAdapter implements ExternalSessionAdapter {
   private async scanRolloutCatalog(query: ExternalSessionQuery): Promise<CodexCatalogEntry[]> {
     const offset = query.offset ?? 0;
     const limit = query.limit ?? Number.MAX_SAFE_INTEGER;
+    // The fallback has no state database to order from, so metadata discovery
+    // establishes one global source order before pagination. Rollout contents
+    // remain unread until a candidate is reached in that order.
+    const candidates = [
+      ...(await walkRolloutFiles(join(this.codexHome, 'sessions'), false)),
+      ...(query.includeArchived
+        ? await walkRolloutFiles(join(this.codexHome, 'archived_sessions'), true)
+        : []),
+    ].sort(compareRolloutCandidates);
     const entries: CodexCatalogEntry[] = [];
     let matched = 0;
-    for (const [root, archived] of [
-      [join(this.codexHome, 'sessions'), false],
-      ...(query.includeArchived
-        ? ([[join(this.codexHome, 'archived_sessions'), true]] as const)
-        : []),
-    ] as const) {
-      for await (const candidate of iterateRolloutFiles(root, archived)) {
-        const head = await readUtf8Prefix(candidate.path, CODEX_ROLLOUT_HEAD_BYTES).catch(
-          () => undefined,
-        );
-        if (head === undefined) continue;
-        const entry = catalogEntryFromRolloutHead(head, candidate);
-        if (!entry || !matchesQuery(entry, query)) continue;
-        // Resolved before the page is counted, not after: a candidate the page
-        // cannot deliver is not a row of the source. Counting it here would
-        // advance the Host's cursor past a row the page never returned, and
-        // the next page would repeat this one's last row instead.
-        const rolloutPath = await this.resolveRolloutPath(candidate.path, entry.id);
-        if (!rolloutPath) continue;
-        if (matched++ < offset) continue;
-        entries.push({ ...entry, rolloutPath });
-        if (entries.length === limit) return entries;
-      }
+    for (const candidate of candidates) {
+      const head = await readUtf8Prefix(candidate.path, CODEX_ROLLOUT_HEAD_BYTES).catch(
+        () => undefined,
+      );
+      if (head === undefined) continue;
+      const entry = catalogEntryFromRolloutHead(head, candidate);
+      if (!entry || !matchesQuery(entry, query)) continue;
+      // Resolved before the page is counted, not after: a candidate the page
+      // cannot deliver is not a row of the source. Counting it here would
+      // advance the Host's cursor past a row the page never returned, and
+      // the next page would repeat this one's last row instead.
+      const rolloutPath = await this.resolveRolloutPath(candidate.path, entry.id);
+      if (!rolloutPath) continue;
+      if (matched++ < offset) continue;
+      entries.push({ ...entry, rolloutPath });
+      if (entries.length === limit) return entries;
     }
     return entries;
   }
@@ -890,8 +892,9 @@ async function* iterateRolloutFiles(
     return;
   }
   // Codex nests active rollouts under YYYY/MM/DD and prefixes filenames with
-  // an ISO timestamp. Reverse lexical traversal therefore preserves the
-  // previous newest-first catalog order without materializing the whole tree.
+  // an ISO timestamp. Reverse lexical traversal reaches recent creation paths
+  // first for exact-id lookup; catalog paging separately orders candidates by
+  // file mtime.
   entries.sort((left, right) => right.name.localeCompare(left.name));
   for (const entry of entries) {
     const path = join(root, entry.name);
@@ -909,6 +912,16 @@ async function* iterateRolloutFiles(
       }
     }
   }
+}
+
+async function walkRolloutFiles(root: string, archived: boolean): Promise<RolloutCandidate[]> {
+  const files: RolloutCandidate[] = [];
+  for await (const candidate of iterateRolloutFiles(root, archived)) files.push(candidate);
+  return files;
+}
+
+function compareRolloutCandidates(left: RolloutCandidate, right: RolloutCandidate): number {
+  return right.mtimeMs - left.mtimeMs || left.path.localeCompare(right.path);
 }
 
 async function readUtf8Prefix(path: string, maxBytes: number): Promise<string> {
