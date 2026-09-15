@@ -636,6 +636,59 @@ describe('CodexSessionAdapter', () => {
     });
   });
 
+  test('database keyset paging stays on the state generation that issued the cursor', async () => {
+    await withCodexHome(async (codexHome) => {
+      const oldRows: StateRow[] = [];
+      for (let index = 1; index <= 4; index++) {
+        const id = `codex-old-${index}`;
+        oldRows.push({
+          id,
+          rolloutPath: await seedMinimalRollout(codexHome, id, false, '/workspace', id),
+          cwd: '/workspace',
+          name: id,
+          createdAtMs: index * 1000,
+          updatedAtMs: index * 1000,
+          archived: false,
+          source: 'cli',
+        });
+      }
+      await seedStateDatabase(codexHome, oldRows);
+
+      const adapter = new CodexSessionAdapter({ codexHome });
+      const first = await adapter.listSessionPage!({ limit: 2 });
+      assert.deepEqual(
+        first.items.map(({ summary }) => summary.id),
+        ['codex-old-4', 'codex-old-3'],
+      );
+      const cursor = first.items.at(-1)?.nextCursor;
+      assert.ok(cursor);
+
+      const newId = 'codex-new-100';
+      await seedStateDatabase(
+        codexHome,
+        [
+          {
+            id: newId,
+            rolloutPath: await seedMinimalRollout(codexHome, newId, false, '/workspace', newId),
+            cwd: '/workspace',
+            name: newId,
+            createdAtMs: 100_000,
+            updatedAtMs: 100_000,
+            archived: false,
+            source: 'cli',
+          },
+        ],
+        'state_6.sqlite',
+      );
+
+      const second = await adapter.listSessionPage!({ cursor, limit: 2 });
+      assert.deepEqual(
+        second.items.map(({ summary }) => summary.id),
+        ['codex-old-2', 'codex-old-1'],
+      );
+    });
+  });
+
   test('rejects corrupt interior records, tolerates a torn tail, and bounds scanned bytes', async () => {
     await withCodexHome(async (codexHome) => {
       const fixture = await readFile(CURRENT_FIXTURE, 'utf8');
@@ -1056,9 +1109,13 @@ interface StateRow {
   source: string;
 }
 
-async function seedStateDatabase(codexHome: string, rows: readonly StateRow[]): Promise<void> {
+async function seedStateDatabase(
+  codexHome: string,
+  rows: readonly StateRow[],
+  filename = 'state_5.sqlite',
+): Promise<void> {
   const { DatabaseSync } = await import('node:sqlite');
-  const database = new DatabaseSync(join(codexHome, 'state_5.sqlite'));
+  const database = new DatabaseSync(join(codexHome, filename));
   try {
     database.exec(`
       PRAGMA journal_mode = WAL;
