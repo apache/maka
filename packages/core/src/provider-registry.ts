@@ -647,6 +647,17 @@ const moonshotModelIds = toolCallingModelIds('Moonshot', GENERATED_MODELS_DEV_ME
   'kimi-k2.6',
   'kimi-k2.7-code',
 ]).filter((id) => GENERATED_MODELS_DEV_METADATA.moonshot[id]?.lifecycle !== 'deprecated');
+const moonshotGlobal = GENERATED_MODELS_DEV_PROVIDER_FACTS['moonshot-global'];
+if (moonshotGlobal.id !== 'moonshotai' || moonshotGlobal.api !== 'https://api.moonshot.ai/v1') {
+  throw new Error(
+    'models.dev Moonshot Global provider facts are missing the international id or API',
+  );
+}
+const moonshotGlobalModelIds = toolCallingModelIds(
+  'Moonshot Global',
+  GENERATED_MODELS_DEV_METADATA['moonshot-global'],
+  ['kimi-k3'],
+).filter((id) => GENERATED_MODELS_DEV_METADATA['moonshot-global'][id]?.lifecycle !== 'deprecated');
 const cloudflareWorkersAi = GENERATED_MODELS_DEV_PROVIDER_FACTS['cloudflare-workers-ai'];
 if (cloudflareWorkersAi.id !== 'cloudflare-workers-ai') {
   throw new Error(
@@ -944,6 +955,19 @@ const providerRegistry = {
     catalogGroup: 'api',
     signupUrl: 'https://platform.kimi.com/console/api-keys',
     catalogOrder: 4,
+  },
+  'moonshot-global': {
+    label: 'Moonshot Global',
+    baseUrl: moonshotGlobal.api,
+    authKind: 'api_key',
+    fallbackModels: moonshotGlobalModelIds,
+    status: 'ready',
+    runtimeAdapter: { kind: 'openai', apiProtocol: 'openai-responses' },
+    modelDiscovery: { kind: 'protocol' },
+    category: 'overseas',
+    catalogGroup: 'api',
+    signupUrl: 'https://platform.kimi.ai/console/api-keys',
+    catalogOrder: 4.1,
   },
   'zai-coding-plan': {
     label: 'Z.AI Coding Plan',
