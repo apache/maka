@@ -79,7 +79,7 @@ const BrowserPanel = lazy(() =>
   import('../tools/browser/browser-panel').then((module) => ({ default: module.BrowserPanel })),
 );
 const SessionInspectorPanel = lazy(() =>
-  import('../tools/inspector/session-inspector-panel').then((module) => ({
+  import('../../../application/contracts/session-inspector/session-inspector-panel.js').then((module) => ({
     default: module.SessionInspectorPanel,
   })),
 );
@@ -562,6 +562,7 @@ export function WorkbarSurface(props: {
             <Suspense fallback={<WorkbarPanelLoading label={copy.inspector} />}>
               <SessionInspectorPanel
                 inspector={inspector}
+                copy={getDesktopConversationCopy(locale).inspector}
                 key={props.sessionId}
                 sessionId={props.sessionId!}
                 active={!props.hidden && active}

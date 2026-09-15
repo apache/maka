@@ -19,8 +19,8 @@
 
 import { useWorkbarServices } from '../../services-context.js';
 import type { ReactElement, ReactNode } from 'react';
-import type { LiveContextUsage } from './live-context-usage.js';
-import { useLiveContextUsage } from './use-live-context-usage.js';
+import type { LiveContextUsage } from '../../../../application/contracts/session-inspector/live-context-usage.js';
+import { useLiveContextUsage } from '../../../../application/contracts/session-inspector/use-live-context-usage.js';
 
 /**
  * Render-prop boundary for the composer context gauge (#4717).

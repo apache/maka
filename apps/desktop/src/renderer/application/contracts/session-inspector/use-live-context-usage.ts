@@ -18,7 +18,7 @@
  */
 
 import { useEffect, useState } from 'react';
-import type { WorkbarInspectorService } from '../../ports.js';
+import type { SessionInspectorService } from './service.js';
 import {
   createLiveContextUsageTracker,
   type LiveContextUsage,
@@ -38,7 +38,7 @@ import { TRACE_REFRESH_DEBOUNCE_MS } from './session-trace-refresh.js';
  * hook says nothing, and the caller falls back to the per-turn anchor.
  */
 export function useLiveContextUsage(input: {
-  readonly inspector: WorkbarInspectorService;
+  readonly inspector: SessionInspectorService;
   readonly sessionId: string | undefined;
   readonly model: string | undefined;
   readonly providerType: string | undefined;

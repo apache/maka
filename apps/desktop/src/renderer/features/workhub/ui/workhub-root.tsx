@@ -21,9 +21,10 @@ import { useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } fro
 import { ChatSurfaceLayout, UserQuestionPrompt, MakaWordmark, useUiLocale, type ComposerHandle } from '@maka/ui';
 import { Button, IconButton } from '@astryxdesign/core';
 import { ChevronDown, PictureInPicture2, Undo2, X } from '@maka/ui/icons';
-import { useLiveContextUsage } from '../../workbar/tools/inspector/use-live-context-usage.js';
-import { SessionInspectorPanel } from '../../workbar/tools/inspector/session-inspector-panel.js';
-import { selectLatestRequestUsage } from '../../../chat-composer-region.js';
+import { useLiveContextUsage } from '../../../application/contracts/session-inspector/use-live-context-usage.js';
+import { SessionInspectorPanel } from '../../../application/contracts/session-inspector/session-inspector-panel.js';
+import { selectLatestRequestUsage } from '../../../application/contracts/session-inspector/latest-request-usage.js';
+import { getDesktopConversationCopy } from '../../../locales/conversation-copy.js';
 import { WorkHubProgressCard } from './workhub-progress-card.js';
 import { WorkHubComposer } from './workhub-composer.js';
 import { WorkHubConversation } from './workhub-conversation.js';
@@ -377,7 +378,7 @@ function WorkHubContents() {
         <div className="workhub-conversation-shell">
         {inspectingContext && session ? <div className="workHubContextInspector">
           <Button variant="ghost" size="sm" label={t.backToConversation} onClick={() => setInspectingContext(false)} />
-          <SessionInspectorPanel sessionId={session.id} active={showConversation} inspector={services.inspector} />
+          <SessionInspectorPanel sessionId={session.id} active={showConversation} inspector={services.inspector} copy={getDesktopConversationCopy(locale).inspector} />
         </div> : <WorkHubConversation
           promptStates={promptStates}
           workLinks={linksWithFeedback}

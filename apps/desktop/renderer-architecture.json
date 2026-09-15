@@ -1085,6 +1085,7 @@
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
+          "./application/contracts/session-inspector/latest-request-usage.js": 1,
           "./composer-mentions.js": 1,
           "./new-task-reload-intent.js": 1,
           "@maka/ui": 1,
