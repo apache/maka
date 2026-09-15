@@ -317,11 +317,17 @@ lets the stop reach a terminal resolution.
   replacement recovery and direct stop are implemented. Direct
   stop uses durable `delegation_stop_requested` / `delegation_stop_resolved`
   facts, exact Message ownership, and first-claim-wins arbitration with
-  replacement. Its target comes from the shared Session Resolver port, whose
-  first implementation is a temporary exact-name baseline; replacing it changes
-  recall only, because admission revalidates opaque identity and expected state
-  rather than any display name. Named resume uses ordinary Session continuation admission. Pause and
+  replacement. Its target comes from the shared Session Resolver port.
+  Named resume uses ordinary Session continuation admission. Pause and
   pronoun-based stop controls remain later work.
+
+  > **Status (2026-09, verified against `main`):** the Resolver's "temporary
+  > exact-name baseline" above was never implemented. Coordination today is
+  > model-driven: the coordination model discovers candidate Sessions,
+  > admission revalidates opaque identity and expected state (this invariant
+  > is unchanged), and stop/resume proposals travel with explicit durable
+  > targets rather than any display name. The exact-name baseline and the
+  > deferred recall-only replacement plan are historical.
 
 Reevaluate the per-Host decision if supported workflows require one WorkHub
 conversation to coordinate ordinary Sessions on multiple Runtime Hosts, or if Host
