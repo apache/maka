@@ -220,6 +220,7 @@ function createFirstRunSessionDriver(): MakaSessionDriver {
   };
   return {
     getSessionId: () => null,
+    getWorkspaceTarget: () => undefined,
     listSessions: async () => [],
     preparePrompt: unavailable,
     submitMessage: unavailable,

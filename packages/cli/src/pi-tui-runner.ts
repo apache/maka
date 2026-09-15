@@ -32,6 +32,7 @@ import {
   type Terminal,
 } from '@earendil-works/pi-tui';
 import type { PermissionMode } from '@maka/core/permission';
+import type { ExternalSessionLimit } from '@maka/core/external-session';
 import { CurrentTodoStore, TodoOverlay, renderTodoIndicator } from './pi-tui-todo.js';
 import { isThinkingLevel, type ThinkingLevel } from '@maka/core/model-thinking';
 import { deriveConnectionSlug, type ProviderType } from '@maka/core/llm-connections';
@@ -339,6 +340,17 @@ function isExternalImportOutcomeUnknown(error: unknown): boolean {
   );
 }
 
+function externalImportFailureCode(
+  error: unknown,
+): 'model_unavailable' | 'source_unreadable' | undefined {
+  if (typeof error !== 'object' || error === null) return undefined;
+  const value = error as { readonly operation?: unknown; readonly code?: unknown };
+  if (value.operation !== 'external-session.import') return undefined;
+  return value.code === 'model_unavailable' || value.code === 'source_unreadable'
+    ? value.code
+    : undefined;
+}
+
 function isExternalCatalogCursorExpired(error: unknown): boolean {
   if (typeof error !== 'object' || error === null) return false;
   const value = error as { readonly operation?: unknown; readonly code?: unknown };
@@ -437,6 +449,8 @@ interface TuiSessionActionsCopy {
   readonly externalEmpty: string;
   readonly externalImportedCount: string;
   readonly externalImportFailed: string;
+  readonly externalImportModelUnavailable: string;
+  readonly externalImportSourceUnreadable: string;
   readonly externalImportLimit: string;
   readonly externalImportLimitTranscriptBytes: string;
   readonly externalImportLimitRecordBytes: string;
@@ -471,7 +485,10 @@ const TUI_SESSION_ACTIONS_COPY = resolveUiMessageCatalog(
  * `record_bytes` limit has been handed an implementation detail instead of an
  * explanation.
  */
-function externalImportLimitLabel(copy: TuiSessionActionsCopy, kind: string): string {
+function externalImportLimitLabel(
+  copy: TuiSessionActionsCopy,
+  kind: ExternalSessionLimit['kind'],
+): string {
   switch (kind) {
     case 'transcript_bytes':
       return copy.externalImportLimitTranscriptBytes;
@@ -483,8 +500,6 @@ function externalImportLimitLabel(copy: TuiSessionActionsCopy, kind: string): st
       return copy.externalImportLimitConvertedBytes;
     case 'messages':
       return copy.externalImportLimitMessages;
-    default:
-      return kind;
   }
 }
 
@@ -3026,6 +3041,23 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       }
       importedSessionId = result.session.id;
     } catch (error) {
+      const code = externalImportFailureCode(error);
+      if (code === 'model_unavailable') {
+        state.entries.push({
+          kind: 'notice',
+          level: 'error',
+          text: copy.externalImportModelUnavailable,
+        });
+        return;
+      }
+      if (code === 'source_unreadable') {
+        state.entries.push({
+          kind: 'notice',
+          level: 'error',
+          text: copy.externalImportSourceUnreadable,
+        });
+        return;
+      }
       if (!isExternalImportOutcomeUnknown(error)) {
         state.entries.push({ kind: 'notice', level: 'error', text: copy.externalImportFailed });
         return;
@@ -3035,13 +3067,18 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     }
     try {
       await switchSession(importedSessionId);
-      await discardCurrentSidePair();
     } catch {
       state.entries.push({
         kind: 'notice',
         level: 'error',
         text: formatUiMessage(copy.externalOpenFailed, { sessionId: importedSessionId }, locale),
       });
+      return;
+    }
+    try {
+      await discardCurrentSidePair();
+    } catch (error) {
+      reportError(error);
     }
   };
 
@@ -3137,18 +3174,9 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     );
   };
 
-  /**
-   * The scope the external catalog is asked for, which is the Session list's.
-   *
-   * A profile with a Host workspace lists every Session because it has no
-   * workspace of its own to narrow by, and this picker has to answer the same
-   * question: `current_workspace` reaches the Host without a workspace when the
-   * driver has none, and the Host reads that as every workspace. Asking for a
-   * scope the profile cannot express would label one question and answer
-   * another.
-   */
+  /** External catalogs follow the Host attachment, not the Maka picker tab. */
   const externalCatalogScope = (): 'current_workspace' | 'all' =>
-    sessionListScope === 'all' ? 'all' : 'current_workspace';
+    input.driver.getWorkspaceTarget() === undefined ? 'all' : 'current_workspace';
 
   const showExternalSourcePicker = (adapterIds: readonly string[]): void => {
     if (adapterIds.length === 1) {
