@@ -1087,7 +1087,10 @@ function codexThreadQuery(
   const orderColumns = ['updated_at_ms', 'updated_at', 'created_at_ms', 'created_at'].filter(
     (column) => columns.has(column),
   );
-  const orderExpression = orderColumns.length > 0 ? `coalesce(${orderColumns.join(', ')}, 0)` : '0';
+  const orderValues = orderColumns.map((column) =>
+    column.endsWith('_ms') ? column : `(${column} * 1000)`,
+  );
+  const orderExpression = orderValues.length > 0 ? `coalesce(${orderValues.join(', ')}, 0)` : '0';
   return {
     sql:
       `SELECT ${wanted.join(', ')} FROM threads` +
