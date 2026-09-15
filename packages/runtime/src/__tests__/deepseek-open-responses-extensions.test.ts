@@ -19,13 +19,22 @@
 
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
+import { encodeCanonicalRuntimeEvent } from '@maka/core/canonical-runtime-event';
 import type { LlmConnection } from '@maka/core/llm-connections';
+import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { LanguageModelV4ProviderTool, LanguageModelV4StreamPart } from '@ai-sdk/provider';
+import { AiSdkMessageProjection } from '../ai-sdk-message-projection.js';
 import { getAIModel } from '../model-factory.js';
-import { lowerModelTools } from '../model-adapter.js';
+import { ModelAdapter, lowerModelTools } from '../model-adapter.js';
+import { buildRuntimeEventModelReplayPlan } from '../model-history.js';
 import {
+  attachOpenResponsesExtensionReplayItem,
   createDeepSeekOpenResponsesExtensions,
   DEEPSEEK_OPEN_RESPONSES_WEB_SEARCH_EXTENSION_ID,
+  OPEN_RESPONSES_EXTENSION_REPLAY_KIND,
+  openResponsesExtensionReplayCarrierPart,
+  openResponsesExtensionReplayItem,
+  openResponsesExtensionReplayReferenceOptions,
   openResponsesSupportsBareExtensionTypes,
   rewriteDeepSeekOpenResponsesIncomingValue,
   rewriteDeepSeekOpenResponsesOutgoingBody,
@@ -43,6 +52,43 @@ function conn(providerType: LlmConnection['providerType'], slug = 'test'): LlmCo
     enabled: true,
     createdAt: 0,
     updatedAt: 0,
+  };
+}
+
+function deepSeekAdapter(): ModelAdapter {
+  return new ModelAdapter({
+    connection: {
+      slug: 'deepseek',
+      providerType: 'deepseek',
+      defaultModel: 'deepseek-v4-flash',
+    },
+    apiKey: 'test-key',
+    modelId: 'deepseek-v4-flash',
+    modelFactory: () => ({}),
+    newId: () => 'id-1',
+    now: () => 1,
+  });
+}
+
+function runtimeEvent(input: {
+  id: string;
+  role: RuntimeEvent['role'];
+  author: RuntimeEvent['author'];
+  content: RuntimeEvent['content'];
+  refs?: RuntimeEvent['refs'];
+}): RuntimeEvent {
+  return {
+    id: input.id,
+    invocationId: 'inv-durable',
+    runId: 'run-durable',
+    sessionId: 'sess-durable',
+    turnId: 'turn-durable',
+    ts: 1,
+    partial: false,
+    role: input.role,
+    author: input.author,
+    content: input.content,
+    ...(input.refs ? { refs: input.refs } : {}),
   };
 }
 
@@ -397,6 +443,215 @@ describe('DeepSeek Open Responses extension codecs', () => {
     assert.equal(replayed?.[0]?.id, 'ws_opaque');
     assert.equal(replayed?.[0]?.provider_trace, 'opaque-replay');
     assert.deepEqual(replayed?.[0]?.action, { type: 'open_page', url: 'https://maka.example/' });
+  });
+
+  test('merges the opaque replay item onto tool-call provider options', () => {
+    const item = {
+      id: 'ws_merge',
+      type: 'openai:web_search_call',
+      status: 'completed',
+      provider_trace: 'opaque-merge',
+    };
+    const merged = attachOpenResponsesExtensionReplayItem(
+      { deepseek: { openResponsesExtension: { id: 'openai.web_search', itemId: 'ws_merge' } } },
+      { deepseek: { openResponsesExtension: { id: 'openai.web_search', item } } },
+    );
+    assert.equal(openResponsesExtensionReplayItem(merged)?.provider_trace, 'opaque-merge');
+    assert.equal(
+      openResponsesExtensionReplayCarrierPart(merged)?.kind,
+      OPEN_RESPONSES_EXTENSION_REPLAY_KIND,
+    );
+    assert.deepEqual(openResponsesExtensionReplayReferenceOptions(merged), {
+      deepseek: { openResponsesExtension: { id: 'openai.web_search', itemId: 'ws_merge' } },
+    });
+  });
+
+  test('replays the hosted search item through the durable RuntimeEvent boundary', async () => {
+    const adapter = deepSeekAdapter();
+    const item = {
+      id: 'ws_durable',
+      type: 'openai:web_search_call',
+      status: 'completed',
+      provider_trace: 'opaque-durable-trace',
+      action: { type: 'search', query: 'durable replay' },
+    };
+    assert.deepEqual(
+      adapter.translateChunk({
+        type: 'custom',
+        kind: OPEN_RESPONSES_EXTENSION_REPLAY_KIND,
+        providerMetadata: {
+          deepseek: { openResponsesExtension: { id: 'openai.web_search', item } },
+        },
+      }),
+      [],
+    );
+    const translated = adapter.translateChunk({
+      type: 'tool-call',
+      toolCallId: 'ws_durable',
+      toolName: 'WebSearch',
+      input: JSON.stringify(item.action),
+      providerExecuted: true,
+      providerMetadata: {
+        deepseek: { openResponsesExtension: { id: 'openai.web_search', itemId: 'ws_durable' } },
+      },
+    });
+    const callEvent = translated[0];
+    assert.equal(callEvent?.kind, 'tool-call');
+    const persistedOptions =
+      callEvent?.kind === 'tool-call' ? callEvent.toolCall.providerOptions : undefined;
+    assert.equal(
+      openResponsesExtensionReplayItem(persistedOptions)?.provider_trace,
+      'opaque-durable-trace',
+    );
+    assert.ok(persistedOptions);
+
+    const persisted = [
+      runtimeEvent({
+        id: 'evt-user-durable',
+        role: 'user',
+        author: 'user',
+        content: { kind: 'text', text: 'search and remember the trace' },
+      }),
+      runtimeEvent({
+        id: 'evt-search-call',
+        role: 'model',
+        author: 'agent',
+        refs: { toolCallId: 'ws_durable', stepId: 'step-durable' },
+        content: {
+          kind: 'function_call',
+          id: 'ws_durable',
+          name: 'WebSearch',
+          args: item.action,
+          providerExecuted: true,
+          providerOptions: persistedOptions,
+        },
+      }),
+      runtimeEvent({
+        id: 'evt-search-result',
+        role: 'tool',
+        author: 'tool',
+        refs: { toolCallId: 'ws_durable' },
+        content: {
+          kind: 'function_response',
+          id: 'ws_durable',
+          name: 'WebSearch',
+          result: { type: 'web_search_call', status: 'completed', action: item.action },
+          providerExecuted: true,
+          providerOutput: { type: 'web_search_call', status: 'completed', action: item.action },
+          isError: false,
+        },
+      }),
+    ].map((event) => encodeCanonicalRuntimeEvent(event).event);
+
+    assert.equal(adapter.runtimeEventReplaySupport().providerExecutedTools, true);
+    const plan = buildRuntimeEventModelReplayPlan(persisted);
+    const projection = new AiSdkMessageProjection({
+      modelAdapter: adapter,
+      applyPatchProfile: null,
+    });
+    const replayPlan = projection.dropUnsupportedReplayItems(plan);
+    assert.equal(
+      replayPlan.items.filter((entry) => entry.kind === 'tool_call' || entry.kind === 'tool_result')
+        .length,
+      2,
+      JSON.stringify(replayPlan.items.map((entry) => entry.kind)),
+    );
+    const messages = await projection.materializeRuntimeReplayPlan(
+      replayPlan,
+      { used: 0, decisions: new Map() },
+      undefined,
+      new Set(),
+    );
+    const assistant = messages.find(
+      (message) =>
+        message.role === 'assistant' &&
+        Array.isArray(message.content) &&
+        message.content.some((part) => part.type === 'tool-call'),
+    );
+    assert.ok(assistant && Array.isArray(assistant.content), JSON.stringify(messages));
+    const carrier = assistant.content.find(
+      (part) => part.type === 'custom' && part.kind === OPEN_RESPONSES_EXTENSION_REPLAY_KIND,
+    );
+    assert.equal(
+      openResponsesExtensionReplayItem(
+        carrier && 'providerOptions' in carrier ? carrier.providerOptions : undefined,
+      )?.provider_trace,
+      'opaque-durable-trace',
+      JSON.stringify(assistant.content),
+    );
+
+    const bodies: Record<string, unknown>[] = [];
+    const fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return Response.json(completedResponse([]));
+    }) as unknown as typeof globalThis.fetch;
+    const model = getAIModel({
+      connection: conn('deepseek'),
+      apiKey: 'test-key',
+      modelId: 'deepseek-v4-flash',
+      fetch,
+    });
+    const result = await model.doGenerate({
+      prompt: [
+        ...(messages as never[]),
+        { role: 'user', content: [{ type: 'text', text: 'continue' }] },
+      ],
+      tools: [webSearchTool()],
+    });
+
+    const replayed = (bodies[0]?.input as Array<Record<string, unknown>> | undefined)?.filter(
+      (entry) => entry.type === 'web_search_call',
+    );
+    assert.equal(replayed?.length, 1, JSON.stringify(bodies[0]?.input));
+    assert.equal(replayed?.[0]?.id, 'ws_durable');
+    assert.equal(replayed?.[0]?.provider_trace, 'opaque-durable-trace');
+    assert.deepEqual(replayed?.[0]?.action, item.action);
+    assert.equal(
+      result.warnings?.some(
+        (warning) =>
+          warning.type === 'unsupported' &&
+          warning.feature ===
+            `provider-defined tool ${DEEPSEEK_OPEN_RESPONSES_WEB_SEARCH_EXTENSION_ID} tool-result history`,
+      ),
+      false,
+      JSON.stringify(result.warnings),
+    );
+  });
+
+  test('marks a failed hosted search item as an error result', async () => {
+    const fetch = (async () =>
+      Response.json(
+        completedResponse([
+          {
+            id: 'ws_failed',
+            type: 'web_search_call',
+            status: 'failed',
+            action: { type: 'search', query: 'missing page' },
+          },
+        ]),
+      )) as unknown as typeof globalThis.fetch;
+    const model = getAIModel({
+      connection: conn('deepseek'),
+      apiKey: 'test-key',
+      modelId: 'deepseek-v4-flash',
+      fetch,
+    });
+    const result = await model.doGenerate({
+      prompt: [{ role: 'user', content: [{ type: 'text', text: 'search' }] }],
+      tools: [webSearchTool()],
+    });
+    const searchResult = result.content.find((part) => part.type === 'tool-result');
+    assert.equal(
+      searchResult && 'providerExecuted' in searchResult
+        ? searchResult.providerExecuted
+        : undefined,
+      true,
+    );
+    assert.equal(
+      searchResult && 'isError' in searchResult ? searchResult.isError : undefined,
+      true,
+    );
+    assert.match(JSON.stringify(searchResult), /failed/);
   });
 
   test('streams hosted-search progress then finishes without a client tool call', async () => {

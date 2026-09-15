@@ -26,6 +26,7 @@ import {
   type Experimental_OpenResponsesExtensionStreamPart,
 } from '@ai-sdk/open-responses';
 import type { JSONObject, JSONValue, LanguageModelV4ProviderTool } from '@ai-sdk/provider';
+import type { CustomPart, ProviderOptions } from './model-protocol.js';
 import { NATIVE_WEB_SEARCH_TOOL_NAME } from './native-web-search-tool.js';
 
 /**
@@ -44,6 +45,9 @@ import { NATIVE_WEB_SEARCH_TOOL_NAME } from './native-web-search-tool.js';
  * DeepSeek's first-party wire uses the bare `web_search` tool instead.
  */
 export const DEEPSEEK_OPEN_RESPONSES_WEB_SEARCH_EXTENSION_ID = 'openai.web_search';
+
+/** SDK custom part that carries the original extension item for lossless replay. */
+export const OPEN_RESPONSES_EXTENSION_REPLAY_KIND = 'open-responses.extension-replay';
 
 const WEB_SEARCH_ITEM = 'web_search_call';
 const WEB_SEARCH_TOOL = 'web_search';
@@ -119,6 +123,98 @@ export function openResponsesSupportsBareExtensionTypes(): boolean {
 
 export function usesDeepSeekOpenResponsesExtensions(providerType: string): boolean {
   return providerType === 'deepseek';
+}
+
+export function isOpenResponsesExtensionReplayChunk(chunk: {
+  type: string;
+  kind?: unknown;
+}): boolean {
+  return chunk.type === 'custom' && chunk.kind === OPEN_RESPONSES_EXTENSION_REPLAY_KIND;
+}
+
+/** Original opaque item stored on an Open Responses extension replay carrier. */
+export function openResponsesExtensionReplayItem(container: unknown): JSONObject | undefined {
+  if (!isRecord(container)) return undefined;
+  for (const value of Object.values(container)) {
+    if (!isRecord(value) || !isRecord(value.openResponsesExtension)) continue;
+    const item = jsonObject(value.openResponsesExtension.item);
+    if (item && typeof item.id === 'string') return item;
+  }
+  return undefined;
+}
+
+export function attachOpenResponsesExtensionReplayItem(
+  toolCallProviderOptions: unknown,
+  carrierProviderOptions: unknown,
+): ProviderOptions | undefined {
+  const item = openResponsesExtensionReplayItem(carrierProviderOptions);
+  const base = isRecord(toolCallProviderOptions)
+    ? { ...toolCallProviderOptions }
+    : isRecord(carrierProviderOptions)
+      ? { ...carrierProviderOptions }
+      : {};
+  if (!item || !isRecord(carrierProviderOptions)) {
+    return Object.keys(base).length > 0 ? (base as ProviderOptions) : undefined;
+  }
+  for (const [key, value] of Object.entries(carrierProviderOptions)) {
+    if (!isRecord(value) || !isRecord(value.openResponsesExtension)) continue;
+    const existing = isRecord(base[key]) ? base[key] : {};
+    const existingExt = isRecord(existing.openResponsesExtension)
+      ? existing.openResponsesExtension
+      : {};
+    base[key] = {
+      ...existing,
+      openResponsesExtension: {
+        ...existingExt,
+        ...value.openResponsesExtension,
+        item,
+      },
+    };
+  }
+  return base as ProviderOptions;
+}
+
+export function openResponsesExtensionReplayCarrierPart(
+  providerOptions: unknown,
+): CustomPart | undefined {
+  if (!openResponsesExtensionReplayItem(providerOptions) || !isRecord(providerOptions)) {
+    return undefined;
+  }
+  return {
+    type: 'custom',
+    kind: OPEN_RESPONSES_EXTENSION_REPLAY_KIND,
+    providerOptions: providerOptions as ProviderOptions,
+  };
+}
+
+export function openResponsesExtensionReplayReferenceOptions(
+  providerOptions: unknown,
+): ProviderOptions | undefined {
+  if (!isRecord(providerOptions)) return undefined;
+  const next: Record<string, unknown> = {};
+  let rewritten = false;
+  for (const [key, value] of Object.entries(providerOptions)) {
+    if (!isRecord(value) || !isRecord(value.openResponsesExtension)) {
+      next[key] = value;
+      continue;
+    }
+    const extension = value.openResponsesExtension;
+    const item = jsonObject(extension.item);
+    const id = typeof extension.id === 'string' ? extension.id : undefined;
+    const itemId =
+      typeof extension.itemId === 'string'
+        ? extension.itemId
+        : item && typeof item.id === 'string'
+          ? item.id
+          : undefined;
+    if (!id || !itemId) {
+      next[key] = value;
+      continue;
+    }
+    next[key] = { ...value, openResponsesExtension: { id, itemId } };
+    rewritten = true;
+  }
+  return rewritten ? (next as ProviderOptions) : (providerOptions as ProviderOptions);
 }
 
 export function createDeepSeekOpenResponsesExtensions(): readonly Experimental_OpenResponsesExtension[] {
@@ -269,6 +365,7 @@ function decodeDeepSeekWebSearchItem(options: {
       toolName: NATIVE_WEB_SEARCH_TOOL_NAME,
       result,
       providerExecuted: true,
+      ...(item.status === 'failed' ? { isError: true } : {}),
     } as Experimental_OpenResponsesExtensionContentPart);
   }
   return parts;
@@ -284,8 +381,8 @@ function encodeDeepSeekWebSearchInputItem(
   const part = options.part;
   if (part.type !== 'tool-call') return undefined;
   const stored =
-    storedReplayItem(part.providerOptions) ??
-    storedReplayItem((part as { providerMetadata?: unknown }).providerMetadata);
+    openResponsesExtensionReplayItem(part.providerOptions) ??
+    openResponsesExtensionReplayItem((part as { providerMetadata?: unknown }).providerMetadata);
   if (stored && isWebSearchCallType(String(stored.type))) {
     return {
       ...stored,
@@ -345,16 +442,6 @@ function actionFromToolInput(input: unknown): JSONObject | undefined {
     }
   }
   return jsonObject(input);
-}
-
-function storedReplayItem(container: unknown): JSONObject | undefined {
-  if (!isRecord(container)) return undefined;
-  for (const value of Object.values(container)) {
-    if (!isRecord(value) || !isRecord(value.openResponsesExtension)) continue;
-    const item = jsonObject(value.openResponsesExtension.item);
-    if (item && typeof item.id === 'string') return item;
-  }
-  return undefined;
 }
 
 function jsonObject(value: unknown): JSONObject | undefined {

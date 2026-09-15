@@ -215,7 +215,7 @@ describe('ModelAdapter stream and error normalization', () => {
     assert.deepEqual(adapter.runtimeEventReplaySupport(), {
       toolCalls: true,
       toolResults: true,
-      providerExecutedTools: false,
+      providerExecutedTools: true,
       signedThinking: false,
       unsignedThinking: false,
       responsesReasoning: 'plaintext-content',
@@ -721,6 +721,94 @@ describe('ModelAdapter stream and error normalization', () => {
             type: 'web_search_tool_result_error',
             errorCode: 'max_uses_exceeded',
           },
+          isError: true,
+        },
+      ],
+    );
+  });
+
+  test('merges Open Responses extension replay carriers onto the matching tool call', () => {
+    const adapter = new ModelAdapter({
+      connection: {
+        slug: 'deepseek',
+        providerType: 'deepseek',
+        defaultModel: 'deepseek-v4-flash',
+      },
+      apiKey: 'deepseek-token',
+      modelId: 'deepseek-v4-flash',
+      modelFactory: () => ({}),
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+    const item = {
+      id: 'ws_opaque',
+      type: 'openai:web_search_call',
+      status: 'completed',
+      provider_trace: 'opaque-replay',
+    };
+    assert.deepEqual(
+      adapter.translateChunk({
+        type: 'custom',
+        kind: 'open-responses.extension-replay',
+        providerMetadata: {
+          deepseek: { openResponsesExtension: { id: 'openai.web_search', item } },
+        },
+      }),
+      [],
+    );
+    assert.deepEqual(
+      adapter.translateChunk({
+        type: 'tool-call',
+        toolCallId: 'ws_opaque',
+        toolName: 'WebSearch',
+        input: '{"type":"search"}',
+        providerExecuted: true,
+        providerMetadata: {
+          deepseek: { openResponsesExtension: { id: 'openai.web_search', itemId: 'ws_opaque' } },
+        },
+      }),
+      [
+        {
+          kind: 'tool-call',
+          toolCall: {
+            type: 'tool-call',
+            toolCallId: 'ws_opaque',
+            toolName: 'WebSearch',
+            input: { type: 'search' },
+            providerExecuted: true,
+            providerOptions: {
+              deepseek: {
+                openResponsesExtension: {
+                  id: 'openai.web_search',
+                  itemId: 'ws_opaque',
+                  item,
+                },
+              },
+            },
+          },
+        },
+      ],
+    );
+  });
+
+  test('marks failed provider-executed tool results as errors', () => {
+    const adapter = newAdapter();
+    type Chunk = Parameters<typeof adapter.translateChunk>[0];
+    assert.deepEqual(
+      adapter.translateChunk({
+        type: 'tool-result',
+        toolCallId: 'ws_failed',
+        toolName: 'WebSearch',
+        providerExecuted: true,
+        isError: true,
+        result: { type: 'web_search_call', status: 'failed' },
+      } as Chunk),
+      [
+        {
+          kind: 'provider-tool-result',
+          toolCallId: 'ws_failed',
+          toolName: 'WebSearch',
+          output: { type: 'web_search_call', status: 'failed' },
           isError: true,
         },
       ],
