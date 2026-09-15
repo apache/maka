@@ -602,8 +602,10 @@ export function findLocalMemoryEntryDraftRange(
     };
   };
 
+  const isCodeFenceLine = createMemoryCodeFenceTracker();
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index] ?? '';
+    if (isCodeFenceLine(line)) continue;
     const heading = /^##\s+(.+?)\s*$/.exec(line);
     if (heading) {
       const matched = matchCurrent(index);
@@ -708,7 +710,12 @@ function parseLocalMemoryMarkdownRaw(input: string): LocalMemoryRawParseResult {
     current = null;
   };
 
+  const isCodeFenceLine = createMemoryCodeFenceTracker();
   for (const line of lines) {
+    if (isCodeFenceLine(line)) {
+      current?.body.push(line);
+      continue;
+    }
     const heading = /^##\s+(.+?)\s*$/.exec(line);
     if (heading) {
       flush();
@@ -742,6 +749,28 @@ function toPreviewParseResult(parsed: LocalMemoryRawParseResult): LocalMemoryPar
 function stripPromptContent(entry: LocalMemoryRawEntry): LocalMemoryEntryPreview {
   const { promptContent: _promptContent, ...preview } = entry;
   return preview;
+}
+
+// 所有条目读取和编辑路径共享围栏状态，代码示例中的标题与元数据不能分割记忆。
+function createMemoryCodeFenceTracker(): (line: string) => boolean {
+  let fence: { marker: string; length: number } | undefined;
+  return (line) => {
+    const match = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+    if (fence) {
+      if (
+        match &&
+        match[1][0] === fence.marker &&
+        match[1].length >= fence.length &&
+        match[2].trim() === ''
+      ) {
+        fence = undefined;
+      }
+      return true;
+    }
+    if (!match || (match[1][0] === '`' && match[2].includes('`'))) return false;
+    fence = { marker: match[1][0], length: match[1].length };
+    return true;
+  };
 }
 
 function parseMetaComment(line: string): Record<string, string> | null {
@@ -784,8 +813,10 @@ function findLocalMemoryEntrySection(
     return id === entryId || proposalId === entryId ? { id, ...current } : null;
   };
 
+  const isCodeFenceLine = createMemoryCodeFenceTracker();
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index] ?? '';
+    if (isCodeFenceLine(line)) continue;
     const heading = /^##\s+(.+?)\s*$/.exec(line);
     if (heading) {
       const matched = matchCurrent();
@@ -849,8 +880,13 @@ function findLocalMemoryEntryFullSection(
     };
   };
 
+  const isCodeFenceLine = createMemoryCodeFenceTracker();
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index] ?? '';
+    if (isCodeFenceLine(line)) {
+      current?.body.push(line);
+      continue;
+    }
     const heading = /^##\s+(.+?)\s*$/.exec(line);
     if (heading) {
       const matched = matchCurrent(index);
