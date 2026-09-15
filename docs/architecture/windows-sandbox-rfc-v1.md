@@ -3,10 +3,11 @@ doc_id: architecture.windows-sandbox-rfc-v1
 title: "Windows sandbox RFC v1"
 language: en
 source_language: en
+counterpart: ./windows-sandbox-rfc-v1.zh-CN.md
 implementation_status: current
 document_status: current
 translation_status: synced
-last_verified: 2026-09-04
+last_verified: 2026-09-15
 owners:
   - maka-backend
 ---
@@ -33,7 +34,7 @@ owners:
 
 - Status: implementation baseline selected; first preview slice ([#2961](https://github.com/apache/maka/pull/2961)) merged 2026-08-17; product integration continuing under release validation (preview scope in §6.5)
 - Tracking: Windows Phase 4 in [issue #2142](https://github.com/apache/maka/issues/2142)
-- Updated: 2026-08-18
+- Updated: 2026-09-15
 - Owners: `@maka/runtime` sandbox boundary and Runtime Host execution composition
 - Chinese version: [windows-sandbox-rfc-v1.zh-CN.md](./windows-sandbox-rfc-v1.zh-CN.md)
 
