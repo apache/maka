@@ -21,8 +21,10 @@
 
 Workbar is a vertical renderer feature. Its application-level model owns the
 right/bottom panel topology, active tabs, dimensions and persisted collapse
-state. Tool data remains session-scoped, and the session content surface is
-remounted when the active session changes.
+state. Tool data remains session-scoped. The content surface stays mounted
+across navigation; tools receive a new `sessionId` in place and must reset
+any session-derived data themselves. Side Chat keeps its immutable source owner
+while navigating that source's revision family and linked descendants.
 
 ## Dependency direction
 
@@ -80,7 +82,9 @@ remounted when the active session changes.
 - Removing a Session from the authoritative catalog retires its Terminal views.
   Host owns admission of Session retirement while processes are live.
 - Side Chat survives panel collapse and is cleaned only when its tab closes or
-  when navigation leaves its source session.
+  when navigation leaves its source Session and linked descendants. Unknown
+  navigation targets defer cleanup only while the previous source remains in
+  the current catalog.
 - Fork creation hides the internal Session until cleanup succeeds. Catalog
   absence does not confirm cleanup because a snapshot may predate creation.
 - Disposed Side Chat operations are fenced at every fork/send boundary; a late
