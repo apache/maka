@@ -189,7 +189,7 @@ test('Ctrl and Meta wheel zoom preserve following without requesting history', (
   });
 });
 
-test('available rows publish during wheel, touch and scrollbar input without ending the gesture', () => {
+test('wheel and touch publish immediately; a held thumb leaves publication with its owner', () => {
   withObservers(() => {
     for (const input of ['wheel', 'touch', 'scrollbar'] as const) {
       const root = fakeRoot();
@@ -201,8 +201,13 @@ test('available rows publish during wheel, touch and scrollbar input without end
       else root.grabScrollbar();
       assert.equal(authority.isInputActive(), true);
       authority.commitRange(() => commits++);
-      assert.equal(commits, 1, `${input} must not starve visible history`);
+      assert.equal(commits, input === 'scrollbar' ? 0 : 1);
       assert.equal(authority.isInputActive(), true, 'publication does not retire native input');
+      if (input === 'scrollbar') {
+        root.ownerDocument.dispatchEvent(new Event('pointerup'));
+        authority.commitRange(() => commits++);
+        assert.equal(commits, 1, 'release admits publication');
+      }
       detach();
     }
   });
@@ -236,14 +241,44 @@ test('range publication coalesces within a microtask and uses the viewport ancho
   const commits: number[] = [];
   let scheduled = 0;
   publication.attachCommitScheduler('session', {
+    subscribeToReaderScroll: () => () => {},
     commitRange(commit) { scheduled++; commit(); },
   });
   publication.commitRange('session', () => commits.push(1));
   publication.commitRange('session', () => commits.push(2));
-  assert.deepEqual(commits, []);
+  assert.deepEqual([...commits], []);
   await Promise.resolve();
   assert.deepEqual(commits, [2]);
   assert.equal(scheduled, 1);
+});
+
+test('held publication retains only the latest update and drains on settle or detach', async () => {
+  const publication = createTranscriptViewportNavigation();
+  const commits: number[] = [];
+  let held = true;
+  let settled!: () => void;
+  const detach = publication.attachCommitScheduler('session', {
+    commitRange(commit) { if (!held) commit(); },
+    subscribeToReaderScroll(listener) {
+      settled = () => { listener('settled'); };
+      return () => {};
+    },
+  });
+  publication.commitRange('session', () => commits.push(1));
+  await Promise.resolve();
+  publication.commitRange('session', () => commits.push(2));
+  await Promise.resolve();
+  assert.deepEqual([...commits], []);
+  held = false;
+  settled();
+  await Promise.resolve();
+  assert.deepEqual(commits, [2]);
+  held = true;
+  publication.commitRange('session', () => commits.push(3));
+  await Promise.resolve();
+  detach();
+  await Promise.resolve();
+  assert.deepEqual(commits, [2, 3], 'closing the viewport cannot strand source publication');
 });
 
 test('content that grows under a pinned transcript keeps the tail on screen', () => {

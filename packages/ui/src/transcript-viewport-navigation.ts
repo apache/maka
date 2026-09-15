@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import type { TranscriptScrollAuthority } from './transcript-scroll-authority.js';
+
 /** Bridge the active surface's scroll authority to conversation commands and publication.
  * Publication outlives a viewport: only the source owner can invalidate its data. */
 export function createTranscriptViewportNavigation() {
@@ -34,13 +36,15 @@ export function createTranscriptViewportNavigation() {
     else commit();
   };
   return {
-    attachCommitScheduler(sessionId: string, authority: {
-      commitRange(commit: () => void): void;
-    }): () => void {
+    attachCommitScheduler(sessionId: string, authority: Pick<TranscriptScrollAuthority, 'commitRange' | 'subscribeToReaderScroll'>): () => void {
       const attached = { sessionId, commitRange: authority.commitRange };
       viewport = attached;
+      const unsubscribe = authority.subscribeToReaderScroll((phase) => {
+        if (phase === 'settled') drain();
+      });
       queueMicrotask(drain);
       return () => {
+        unsubscribe();
         if (viewport !== attached) return;
         viewport = undefined;
         // React cleanup may be running. Publish after it, without depending

@@ -63,7 +63,7 @@ export interface TranscriptScrollSnapshot {
 export interface TranscriptScrollAuthority {
   /** Whether native input is still active; window eviction waits for it. */
   isInputActive(): boolean;
-  /** Publish available rows and preserve the current reading anchor. */
+  /** Publish with a reading anchor, or leave publication pending during a thumb hold. */
   commitRange(commit: () => void): void;
   /** Explicit navigation outranks preservation during the same publication. */
   revealTurn(element: HTMLElement, options: ScrollIntoViewOptions): void;
@@ -121,6 +121,9 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
   const isInputActive = (): boolean => gesture !== undefined || pointer !== undefined || touchHeld;
   let revealVersion = 0;
   const commitRange = (commit: () => void): void => {
+    // Chromium owns thumb-to-content mapping until release. A synchronous
+    // scrollTop correction cannot preserve it across a range replacement.
+    if (pointer !== undefined) return;
     const target = root;
     if (!target) { commit(); return; }
     const version = revealVersion;
@@ -251,6 +254,7 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
           if (gesture !== pending || pending.direction !== undefined) return;
           gesture = undefined;
           if (pinned) writeToTail();
+          reportReader('settled');
         });
       };
       let touchY: number | undefined;
@@ -316,7 +320,7 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
           // An anchor navigation can supersede the last in-flight page while
           // the gesture is held. Recheck its edge once after publication;
           // waiting for another movement would strand a reader at scrollTop 0.
-          if (ended.direction) reportReader('settled');
+          reportReader('settled');
         }));
       };
       target.addEventListener('wheel', onWheel, { passive: true });
@@ -383,12 +387,15 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
       };
     },
     pinToTail() {
+      const endedInput = isInputActive();
       gesture = undefined;
       pointer = undefined;
       touchHeld = false;
       pinned = true;
       writeToTail();
       publish();
+      // Tail navigation can run in a React effect; publish after that commit.
+      if (endedInput) queueMicrotask(() => reportReader('settled'));
     },
     releasePin() {
       gesture = undefined;

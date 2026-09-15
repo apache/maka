@@ -398,7 +398,7 @@ test('an older request at offset zero does not move the reader', async () => {
   assert.equal(transcript.scrollTop, 0, 'publication owns anchoring; input must not nudge the reader');
 });
 
-test('range admission commits the React DOM even if native input starts before publication', async () => {
+test('range admission waits for a held native thumb before committing the React DOM', async () => {
   const navigation = createTranscriptViewportNavigation();
   const { document, window } = parseHTML('<main id="mount"></main><section id="scroller"></section>');
   const { frames } = installScrollTestEnvironment(document, window);
@@ -431,8 +431,8 @@ test('range admission commits the React DOM even if native input starts before p
     });
     transcript.scroller.dispatchEvent(down);
     await Promise.resolve();
-    assert.equal(document.querySelector('#mount')!.textContent, 'held',
-      'available rows must reach React while native input remains held');
+    assert.equal(document.querySelector('#mount')!.textContent, 'new',
+      'a pending range must not change native thumb mapping');
   });
   await act(() => document.dispatchEvent(new window.Event('pointerup')));
   await act(() => {
@@ -440,6 +440,19 @@ test('range admission commits the React DOM even if native input starts before p
     for (const callback of pending) callback(0);
   });
   assert.equal(document.querySelector('#mount')!.textContent, 'held');
+  await act(async () => {
+    const down = new window.Event('pointerdown');
+    Object.defineProperties(down, {
+      button: { value: 0 }, pointerType: { value: 'mouse' }, pointerId: { value: 2 },
+    });
+    transcript.scroller.dispatchEvent(down);
+    navigation.commitRange('admission', () => publish('latest'));
+    await Promise.resolve();
+    assert.equal(document.querySelector('#mount')!.textContent, 'held');
+    authority.pinToTail();
+  });
+  assert.equal(document.querySelector('#mount')!.textContent, 'latest',
+    'explicit tail navigation must not strand a deferred range');
 });
 
 test('a source publication survives viewport unmount without another source update', async () => {
@@ -588,7 +601,7 @@ test(`a fill publishes before eviction when input settles ${settlesBeforePublica
     assert.deepEqual(retained, [], 'an unfinished read cannot be trimmed using the old window');
   }
   await act(() => finishRead());
-  assert.equal(publications, 1);
+  assert.equal(publications, settlesBeforePublication ? 1 : 0);
   if (!settlesBeforePublication) {
     assert.deepEqual(retained, [], 'active input still prevents eviction');
     assert.equal(requests, 1, 'the fill does not eagerly chain while input is active');

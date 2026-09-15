@@ -75,7 +75,7 @@
     },
     "scroll-geometry.spec.ts": {
       "tests": 1,
-      "electron": "a real Host history batch crosses preload during a held native scrollbar drag and must publish before release; the rendered reading Turn survives release and return to latest reads the Host tail"
+      "electron": "a real Host history batch crosses preload during a native scrollbar drag; stationary held samples preserve the rendered reader, then release publishes history and return to latest reads the Host tail"
     },
     "workhub-layout.spec.ts": {
       "tests": 2,

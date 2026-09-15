@@ -148,6 +148,7 @@ describe('session workspace action identity', () => {
     let blocked = true;
     let idle!: () => void;
     const detach = workspace.sessionUiController.transcriptViewportNavigation.attachCommitScheduler(sessionC, {
+      subscribeToReaderScroll: () => () => {},
       commitRange: (commit) => { if (blocked) idle = commit; else commit(); },
     });
     let publications = 0;

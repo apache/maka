@@ -17,12 +17,12 @@
  * under the License.
  */
 
-// Host history delivered through preload must publish during held input, then
-// preserve the reading Turn on release. Fixed-range geometry runs in Storybook.
+// Host history delivered through preload waits for thumb release; the reader
+// stays on the same rendered Turn while the pointer is stationary. Fixed-range geometry runs in Storybook.
 import { test, expect } from '@playwright/test';
 import { withE2eWindow } from './fixtures';
 
-test('native thumb admits Host history during input and preserves the reader on release', async () => {
+test('native thumb preserves the held reader and admits Host history on release', async () => {
   test.setTimeout(180_000);
   await withE2eWindow(
     {
@@ -132,8 +132,18 @@ test('native thumb admits Host history during input and preserves the reader on 
           buttons: 1,
           clickCount: 1,
         });
-        for (let step = 1; step <= 40; step++) {
-          const y = startY + ((start.top + 8 - startY) * step) / 40;
+        const visible = () => page.evaluate(() => {
+          const root = document.querySelector('[data-chat-scroll-container]')!;
+          const view = root.getBoundingClientRect();
+          const turn = [...root.querySelectorAll<HTMLElement>('.maka-turn[data-turn-id]')].find((el) => {
+            const box = el.getBoundingClientRect();
+            return box.height > 0 && box.width > 0 && box.bottom > view.top && box.top < view.bottom;
+          });
+          return { id: turn?.dataset.turnId, top: turn?.getBoundingClientRect().top };
+        });
+        const stationary: Array<{ before: Awaited<ReturnType<typeof visible>>; after: Awaited<ReturnType<typeof visible>> }> = [];
+        for (let step = 1; step <= 10; step++) {
+          const y = startY + ((start.top + 8 - startY) * step) / 10;
           await cdp.send('Input.dispatchMouseEvent', {
             type: 'mouseMoved',
             x: start.x,
@@ -141,9 +151,21 @@ test('native thumb admits Host history during input and preserves the reader on 
             button: 'left',
             buttons: 1,
           });
-          await page.waitForTimeout(25);
+          await page.waitForTimeout(50);
+          const before = await visible();
+          await page.waitForTimeout(300);
+          const after = await visible();
+          stationary.push({ before, after });
         }
         await page.waitForTimeout(400);
+        await test.info().attach('held-reader-samples', {
+          body: JSON.stringify(stationary), contentType: 'application/json',
+        });
+        for (const { before, after } of stationary) {
+          expect(before.id, 'the held viewport must contain a rendered Turn').toBeTruthy();
+          expect(after.id, 'a stationary pointer must not replace the reader').toBe(before.id);
+          expect(Math.abs(after.top! - before.top!), 'the held reader must stay in place').toBeLessThanOrEqual(1);
+        }
         const reading = await page.evaluate(() => {
           const root = document.querySelector('[data-chat-scroll-container]')!;
           const viewport = root.getBoundingClientRect();
@@ -197,7 +219,7 @@ test('native thumb admits Host history during input and preserves the reader on 
         expect(result.pointerUp).toBe(1);
         // Prepending Host pages changes both height and scrollTop. Neither is
         // a reader-displacement metric; measure the rendered Turn on release.
-        expect(ranges.size, 'Host history must publish before input releases').toBeGreaterThan(1);
+        expect(ranges.size, 'Host history waits until the native thumb releases').toBe(1);
         const released = result.frames.filter((f: any) => !f.held && f.anchorTop !== undefined);
         expect(
           Math.max(...released.map((f: any) => Math.abs(f.anchorTop - reading.top))),
