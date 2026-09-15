@@ -26,6 +26,7 @@ import { ModulePage } from './primitives/module-page.js';
 import { useUiLocale } from './locale-context.js';
 import { getSharedUiCopy } from './shared-ui-copy.js';
 import { getSkillsCopy } from './skills-copy.js';
+import { DailyReviewPanel } from './daily-review-panel.js';
 import type { ModuleHubHeader } from './module-hub-selector.js';
 import type {
   BundledSkillCatalogEntry,
@@ -39,7 +40,6 @@ import type {
 } from './module-panel-types.js';
 
 const SkillsModuleMain = lazy(() => import('./skills-panel.js').then((module) => ({ default: module.SkillsModuleMain })));
-const DailyReviewPanel = lazy(() => import('./daily-review-panel.js').then((module) => ({ default: module.DailyReviewPanel })));
 const ScheduledTaskPanel = lazy(() => import('./scheduled-task-panel.js').then((module) => ({ default: module.ScheduledTaskPanel })));
 
 /** Skills renders its own labelled region inside the lazy chunk, so its fallback must too. */
@@ -137,9 +137,7 @@ export function DailyReviewPage(props: {
         // The page header lives INSIDE the panel: its primary action (生成分析 /
         // 查看分析) rides the panel's run state, exactly like 定时任务's 新建.
         // The bridge-less fallback keeps its own static header below.
-        (<Suspense fallback={<ModulePanelFallback message={copy.loadingDailyReview} />}>
-          <DailyReviewPanel {...props} bridge={props.bridge} />
-        </Suspense>)
+        (<DailyReviewPanel {...props} bridge={props.bridge} />)
       ) : (
         // The disconnected state keeps the module switch: it is the only
         // in-page way back to 定时任务, and a page you cannot leave is a worse
