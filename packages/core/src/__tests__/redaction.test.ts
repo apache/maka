@@ -27,6 +27,29 @@ import {
 } from '../redaction.js';
 
 describe('redactSecrets', () => {
+  test('masks whole quoted assignments without consuming adjacent diagnostics', () => {
+    const cases = [
+      [
+        'password="correct horse battery staple" next=visible',
+        'password="[redacted]" next=visible',
+      ],
+      [
+        "client_secret: 'two secret words' next=visible",
+        "client_secret: '[redacted]' next=visible",
+      ],
+      [
+        String.raw`password="a \"quoted\" secret" next=visible`,
+        'password="[redacted]" next=visible',
+      ],
+      ["password='first\nsecond' next=visible", "password='[redacted]' next=visible"],
+      ['AWS_SECRET_ACCESS_KEY="two secret words"', 'AWS_SECRET_ACCESS_KEY="[redacted]"'],
+      ['label="two visible words" next=visible', 'label="two visible words" next=visible'],
+    ];
+    for (const [input, expected] of cases) {
+      assert.equal(redactSecrets(input), expected);
+    }
+  });
+
   test('masks bearer tokens and provider key prefixes', () => {
     const text = redactSecrets(
       'Authorization: Bearer sk-live-secret-token-value Proxy-Authorization: Basic opaque-proxy-value and ghp_abcdefghijklmnopqrstuvwxyz',
