@@ -184,6 +184,34 @@ export const FullConversationAndWorkIdentity: Story = {
   },
 };
 export const FullConversationNarrow: Story = { ...FullConversationAndWorkIdentity, parameters: { viewport: { defaultViewport: 'tablet' } } };
+// Real path: docked WorkHub conversation → composer usage indicator → usage side panel.
+export const UsageInspector: Story = {
+  render: () => <Surface history />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByText(/END_OF_FULL_RESPONSE/)).toBeInTheDocument());
+    const conversation = canvasElement.querySelector('.workhub-conversation-shell')!;
+    const answer = canvas.getByText(/END_OF_FULL_RESPONSE/);
+    const before = conversation.getBoundingClientRect();
+    const trigger = canvas.getByRole('button', { name: '打开用量追踪' });
+    await userEvent.click(trigger);
+    const close = await canvas.findByRole('button', { name: '关闭用量侧栏' });
+    expect(answer.isConnected).toBe(true);
+    const after = conversation.getBoundingClientRect();
+    expect(after.x).toBe(before.x);
+    expect(after.width).toBe(before.width);
+    const panel = close.closest('aside')!;
+    expect(panel.getBoundingClientRect().right).toBeLessThanOrEqual(canvasElement.getBoundingClientRect().right);
+    await userEvent.keyboard('{Escape}');
+    await waitFor(() => expect(panel.isConnected).toBe(false));
+    expect(trigger).toHaveFocus();
+    expect(answer.isConnected).toBe(true);
+    await userEvent.click(trigger);
+    await userEvent.click(await canvas.findByRole('button', { name: '关闭用量侧栏' }));
+    expect(answer.isConnected).toBe(true);
+    await userEvent.click(trigger);
+  },
+};
 // Real path: the docked WorkHub composer opens its model wheel before sending.
 export const StandardComposer: Story = {
   render: () => <Surface />,

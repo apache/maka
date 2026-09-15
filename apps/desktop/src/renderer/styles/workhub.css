@@ -175,7 +175,10 @@
   .workHubLive[data-placement='floating'][data-conversation-expanded='false'] .maka-thinking-level-menu {
     max-height: min(300px, calc(100dvh - 8px));
   }
-  .workHubContextInspector { height: 100%; overflow: auto; padding: var(--space-3); }
+  .workHubContextInspector { position: absolute; inset: 0 0 0 auto; z-index: 5; width: min(480px, calc(100% - 32px)); display: flex; flex-direction: column; background: var(--background-elevated); border-left: 1px solid var(--border); box-shadow: -8px 0 24px rgb(0 0 0 / 12%); }
+  .workHubContextInspectorHeader { display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; padding: var(--space-3); border-bottom: 1px solid var(--border); }
+  .workHubContextInspectorBody { min-height: 0; flex: 1; overflow: auto; padding: var(--space-3); }
+  .workHubLive[data-placement='floating'] .workHubContextInspector { top: 32px; }
   .workHubComposerActions { display: flex; align-items: center; gap: 2px; margin-left: auto; }
   .workHubRevealMark { position: absolute; inset: 32px 0 calc(var(--workhub-composer-height, 96px) + 12px); display: grid; place-items: center; z-index: 3; color: var(--foreground); opacity: 0; pointer-events: none; }
   .workHubRevealMark svg { filter: drop-shadow(0 2px 12px var(--background)); }

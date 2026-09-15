@@ -74,6 +74,10 @@ export function WorkHubRoot() {
   return <WorkHubHighlightProvider><WorkHubContents /></WorkHubHighlightProvider>;
 }
 
+function focusInspector(element: HTMLElement | null) {
+  element?.querySelector<HTMLButtonElement>('button')?.focus({ preventScroll: true });
+}
+
 function WorkHubContents() {
   const { selectWork } = useContext(WorkHubHighlightContext);
   const controller = useWorkHubController(() => selectWork(undefined));
@@ -84,6 +88,11 @@ function WorkHubContents() {
   const thinkingLevels = modelChoice?.thinkingLevels ?? [];
   const liveContextUsage = useLiveContextUsage({ inspector: services.inspector, sessionId: controller.sessionId, model: session?.model, providerType: modelChoice?.providerType });
   const [inspectingContext, setInspectingContext] = useState(false);
+  const inspectorTrigger = useRef<HTMLElement | null>(null);
+  const closeInspector = () => {
+    setInspectingContext(false);
+    inspectorTrigger.current?.focus({ preventScroll: true });
+  };
   const thinkingLevel = session?.thinkingLevel && thinkingLevels.includes(session.thinkingLevel) ? session.thinkingLevel : undefined;
   const locale = useUiLocale();
   const t = workHubLiveCopy[locale];
@@ -349,6 +358,7 @@ function WorkHubContents() {
                 meteredContextWindow: liveContextUsage?.contextWindow,
                 metadataContextWindow: modelChoice?.contextWindow,
                 onOpen: () => {
+                  inspectorTrigger.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
                   setInspectingContext(true);
                   setConversationExpanded(true);
                   if (progress) call(services.presentation.expandProgress(presentation.progressRequest));
@@ -376,10 +386,7 @@ function WorkHubContents() {
         <div className="workhub-body">
         <WorkHubNavigationRail locale={locale} sessions={tasks} delegatedSessionIds={delegatedSessionIds} copy={getWorkHubRailCopy(locale)} />
         <div className="workhub-conversation-shell">
-        {inspectingContext && session ? <div className="workHubContextInspector">
-          <Button variant="ghost" size="sm" label={t.backToConversation} onClick={() => setInspectingContext(false)} />
-          <SessionInspectorPanel sessionId={session.id} active={showConversation} inspector={services.inspector} copy={getDesktopConversationCopy(locale).inspector} />
-        </div> : <WorkHubConversation
+        <WorkHubConversation
           promptStates={promptStates}
           workLinks={linksWithFeedback}
           onReadAttachmentBytes={services.readAttachmentBytes}
@@ -405,10 +412,28 @@ function WorkHubContents() {
               <p>{t.hint}</p>
             </div>
           }
-        />}
+        />
         </div></div>
         </div>
       </ChatSurfaceLayout>
+      {inspectingContext && showConversation && session && (
+        <aside ref={focusInspector} className="workHubContextInspector" aria-label={getDesktopConversationCopy(locale).inspector.ariaLabel}
+          onKeyDown={(event) => {
+            if (event.key === 'Escape' && !event.defaultPrevented) {
+              event.preventDefault();
+              event.stopPropagation();
+              closeInspector();
+            }
+          }}>
+          <header className="workHubContextInspectorHeader">
+            <strong>{getDesktopConversationCopy(locale).inspector.ariaLabel}</strong>
+            <IconButton variant="ghost" size="sm" icon={<X size={16} />} label={t.closeInspector} onClick={closeInspector} />
+          </header>
+          <div className="workHubContextInspectorBody">
+            <SessionInspectorPanel sessionId={session.id} active inspector={services.inspector} copy={getDesktopConversationCopy(locale).inspector} />
+          </div>
+        </aside>
+      )}
     </section>
     </WorkHubHueProvider>
   );
