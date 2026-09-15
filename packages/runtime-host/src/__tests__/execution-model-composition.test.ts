@@ -29,6 +29,10 @@ import { promisify } from 'node:util';
 import { test } from 'node:test';
 import { z } from 'zod';
 import {
+  DEFAULT_BASH_TIMEOUT_MS,
+  MAX_FOREGROUND_BASH_TIMEOUT_MS,
+} from '@maka/runtime/shell-run-contract';
+import {
   clientCapabilityConnectionIdentity,
   clientCapabilityCoordinatorTestAdmission,
 } from './fixtures/client-capability.js';
@@ -151,7 +155,7 @@ const MAX_IMPLEMENTATION_CHILD_REQUESTS =
 const HEADLESS_CODING_V1_PROMPT_HASH =
   'sha256:b2773282ac4755dc8d8a663eafdec68c3fa6f5680ec8557d261b5f723672b467';
 const HEADLESS_CODING_V1_TOOLS_HASH =
-  'sha256:913e6f31d62da225cd7995a23f71cf031845167eeb64d181a9d07cfd87c0ac13';
+  'sha256:5cd4bc0df70d35f251065a3163fbaf1c54763b73838406514a21bccfb4552f2e';
 const execFileAsync = promisify(execFile);
 test('backend creation resolves a bound Session by immutable Connection identity', async () => {
   let observedRef: unknown;
@@ -2554,9 +2558,21 @@ test('hosted execution freezes the headless coding provider wire contract', asyn
     ]);
     const bash = (tools as Array<Record<string, unknown>>).find((tool) => tool.name === 'Bash');
     assert.ok(bash);
-    assert.match(JSON.stringify(bash), /run_in_background/u);
-    assert.match(JSON.stringify(bash), /"pty"/u);
-    assert.match(JSON.stringify(bash), /timeout 120000ms, maximum 600000ms/u);
+    // The Eval session runs with Full access: the product Bash, minus the
+    // boundary declaration that Full access has nothing to enforce.
+    assert.deepEqual(
+      Object.keys((bash.parameters as { properties: Record<string, unknown> }).properties),
+      ['command', 'timeout_ms', 'run_in_background', 'pty'],
+    );
+    assert.match(
+      String(bash.description),
+      new RegExp(
+        `timeout ${DEFAULT_BASH_TIMEOUT_MS}ms, maximum ${MAX_FOREGROUND_BASH_TIMEOUT_MS}ms`,
+        'u',
+      ),
+    );
+    assert.doesNotMatch(String(bash.description), /sandbox boundary/u);
+    assert.equal(responsesToolNames(request?.body).includes('request_sandbox_boundary'), false);
 
     const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
     assert.equal(
