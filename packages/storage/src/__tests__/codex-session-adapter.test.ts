@@ -33,6 +33,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, mock, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { ExternalSessionCatalogCursorError } from '@maka/core/external-session';
 import { decodeCanonicalMessage } from '@maka/core/session';
 import { CodexSessionAdapter } from '../codex-session-adapter.js';
 import { createExternalSessionAdapterRegistry } from '../external-session-adapters.js';
@@ -576,7 +577,7 @@ describe('CodexSessionAdapter', () => {
       assert.ok(Buffer.byteLength(cursor, 'utf8') <= 512);
       await assert.rejects(
         adapter.listSessionPage!({ cursor, cwd: '/another/workspace', limit: 16 }),
-        /Invalid Codex catalog cursor/,
+        (error: unknown) => error instanceof ExternalSessionCatalogCursorError,
       );
 
       const newest = new Date('2026-09-15T00:00:00Z');

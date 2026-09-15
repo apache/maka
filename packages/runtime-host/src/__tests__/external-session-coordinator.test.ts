@@ -142,6 +142,31 @@ test('Codex filesystem keyset paging never repeats a row moved ahead of the curs
   }
 });
 
+test('reports an invalid source-owned catalog cursor as invalid_request', async () => {
+  const codexHome = await mkdtemp(join(tmpdir(), 'maka-codex-invalid-catalog-cursor-'));
+  try {
+    await mkdir(join(codexHome, 'sessions'));
+    const adapter = createExternalSessionAdapterRegistry({ codex: { codexHome } }).require('codex');
+    const fixture = coordinatorFixture([adapter]);
+
+    assert.deepEqual(
+      await fixture.coordinator.handlers['external-session.catalog.query'](
+        { adapterId: 'codex', cursor: 'not-a-codex-cursor' },
+        context,
+      ),
+      {
+        ok: false,
+        error: {
+          code: 'invalid_request',
+          message: 'External Session catalog cursor is invalid',
+        },
+      },
+    );
+  } finally {
+    await rm(codexHome, { recursive: true, force: true });
+  }
+});
+
 test('Codex state keyset paging never repeats a row moved ahead of the cursor', async () => {
   const codexHome = await mkdtemp(join(tmpdir(), 'maka-codex-state-catalog-snapshot-'));
   try {

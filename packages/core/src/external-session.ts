@@ -60,6 +60,15 @@ export interface ExternalSessionCatalogPage {
   readonly hasMore: boolean;
 }
 
+/** An opaque source cursor is malformed, stale, or belongs to another query. */
+export class ExternalSessionCatalogCursorError extends Error {
+  readonly name = 'ExternalSessionCatalogCursorError';
+
+  constructor(message = 'External Session catalog cursor is invalid') {
+    super(message);
+  }
+}
+
 /** Lightweight source-native identity used by session pickers and import commands. */
 export interface ExternalSessionSummary {
   id: string;
