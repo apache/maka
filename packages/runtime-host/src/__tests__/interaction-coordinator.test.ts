@@ -1178,6 +1178,7 @@ async function withStore(run: (context: StoreContext) => Promise<void>): Promise
   try {
     await run({ owner, store, stores });
   } finally {
+    await stores.sessionStore.close?.();
     if (!owner.closed) await owner.close();
     await rm(owner.controlDirectory, { recursive: true, force: true });
     await rm(base, { recursive: true, force: true });

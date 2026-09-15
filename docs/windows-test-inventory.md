@@ -15,11 +15,11 @@ Locations intentionally omit line numbers so unrelated edits do not invalidate t
 
 | Classification | Count |
 |---|---:|
-| windows-backend-gap | 27 |
+| windows-backend-gap | 30 |
 | portable-candidate | 32 |
 | platform-contract | 36 |
 
-Total Windows-excluded declarations: **95**
+Total Windows-excluded declarations: **98**
 
 ## Inventory
 
@@ -60,6 +60,9 @@ Total Windows-excluded declarations: **95**
 | platform-contract | `packages/runtime-host/src/__tests__/host-kernel.test.ts` publishes private POSIX endpoint and registration permissions | `process.platform === 'win32'` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/managed-activation.test.ts` two real managed activations converge on one Host and exit at true idle | `process.platform === 'win32' ? 'requires a POSIX package-entrypoint symlink' : false` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/memory-two-client-uds.test.ts` two UDS clients share one recoverable Memory authority across Host death | `process.platform === 'win32' ? 'POSIX process death gate' : false` |
+| windows-backend-gap | `packages/runtime-host/src/__tests__/oauth-execution-authority.test.ts` reconciles a published OAuth lease claim before the next demand | `process.platform === 'win32' ? 'POSIX directory-sync publication failure only' : false` |
+| windows-backend-gap | `packages/runtime-host/src/__tests__/oauth-execution-authority.test.ts` reconciles a published OAuth refresh finalization before the next demand | `process.platform === 'win32' ? 'POSIX directory-sync publication failure only' : false` |
+| windows-backend-gap | `packages/runtime-host/src/__tests__/oauth-execution-authority.test.ts` reconciles a published OAuth lease release before retrying refresh | `process.platform === 'win32' ? 'POSIX directory-sync publication failure only' : false` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/project-catalog-two-client-uds.test.ts` two UDS clients converge on one Host-owned Project Catalog | `process.platform === 'win32'` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/runtime-policy-coordinator.test.ts` invalidates when a real published mutation loses its commit reply | `process.platform === 'win32'` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/runtime-resource-process.test.ts` real Host Runtime Resource process lifecycle | `process.platform === 'win32'` |

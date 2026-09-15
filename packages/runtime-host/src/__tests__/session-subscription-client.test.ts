@@ -1556,7 +1556,13 @@ async function withProtocolPeer(
     hostEpoch,
   });
   const serverTask = deferred<void>();
+  let accepting = false;
   const server = createServer((socket) => {
+    // ACL preparation probes the named pipe before the test client connects.
+    if (!accepting) {
+      socket.destroy();
+      return;
+    }
     void serve(new FramedTransport(socket), hostEpoch, capability.rootId).then(
       serverTask.resolve,
       serverTask.reject,
@@ -1565,6 +1571,7 @@ async function withProtocolPeer(
   try {
     await listen(server, endpoint.path);
     await endpoint.prepareAfterListen();
+    accepting = true;
     await writeHostRegistration(controlDirectory, {
       kind: 'maka-runtime-host',
       schemaVersion: RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION,

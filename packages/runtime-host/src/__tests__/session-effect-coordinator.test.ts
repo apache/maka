@@ -441,8 +441,8 @@ async function withHarness(
   const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
   const owner = await tryAcquireInteractiveRootOwner(capability);
   assert.ok(owner);
+  const store = await openInteractiveArtifactStoreForWrite(owner.lease);
   try {
-    const store = await openInteractiveArtifactStoreForWrite(owner.lease);
     const modelCalls = { count: 0 };
     const model: HostSessionEffectModel =
       overrideModel ??
@@ -473,6 +473,7 @@ async function withHarness(
     });
     await coordinator.close();
   } finally {
+    store.close();
     await owner.close();
     await rm(root, { recursive: true, force: true });
   }

@@ -2852,7 +2852,7 @@ describe('non-serving Runtime Host kernel', () => {
     });
   });
 
-  test('answers an admitted bootstrap with draining after shutdown commits', async () => {
+  test('answers an admitted bootstrap with draining after shutdown commits', async (t) => {
     await withHostPaths(async (paths) => {
       const candidate = await startTestRuntimeHostCandidate(paths, {
         rootPath: paths.root,
@@ -2861,9 +2861,24 @@ describe('non-serving Runtime Host kernel', () => {
       assert.equal(candidate.kind, 'winner');
       if (candidate.kind !== 'winner') return;
 
+      // Client connect does not prove the server accepted a Windows pipe yet.
+      // Observe the server's handshake read before committing shutdown.
+      let admit!: () => void;
+      const admitted = new Promise<void>((resolve) => {
+        admit = resolve;
+      });
+      const read = FramedTransport.prototype.read;
+      t.mock.method(
+        FramedTransport.prototype,
+        'read',
+        function (this: FramedTransport, ...args: Parameters<typeof read>) {
+          admit();
+          return read.apply(this, args);
+        },
+      );
       const socket = await openSocket(candidate.host.endpoint);
       const transport = new FramedTransport(socket);
-      await new Promise<void>((resolve) => setImmediate(resolve));
+      await admitted;
       const closing = candidate.host.close();
       await writeClientFrame(transport, {
         kind: 'hello',

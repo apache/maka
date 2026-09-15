@@ -1602,7 +1602,11 @@ test('WorkHub does not record resume while safe-boundary resume is disabled', as
       });
       await composition.close();
       const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
-      assert.equal(await stores.sessionStore.readWorkHubActionClaim(actionId), undefined);
+      try {
+        assert.equal(await stores.sessionStore.readWorkHubActionClaim(actionId), undefined);
+      } finally {
+        await stores.sessionStore.close?.();
+      }
     } finally {
       await composition.close();
     }

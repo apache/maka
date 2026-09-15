@@ -20,6 +20,7 @@
 import { randomUUID } from 'node:crypto';
 import { chmod, lstat, open, readFile, rename, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { decodeHostRegistration, type HostRegistration } from '../protocol/index.js';
 
 export const RUNTIME_HOST_REGISTRATION_FILE = 'registration.json';
@@ -89,7 +90,23 @@ export async function writeHostRegistration(
     } finally {
       await handle.close();
     }
-    await rename(tempPath, path);
+    // Windows readers and scanners can briefly prevent atomic replacement.
+    // Keep the prior registration intact and bound retries; persistent access
+    // failures still reject and the finally block removes only our temp file.
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await rename(tempPath, path);
+        break;
+      } catch (error) {
+        if (
+          process.platform !== 'win32' ||
+          attempt >= 5 ||
+          !['EPERM', 'EACCES', 'EBUSY'].some((code) => isNodeError(error, code))
+        )
+          throw error;
+        await delay(10 * 2 ** attempt);
+      }
+    }
     replaced = true;
     await chmod(path, 0o600).catch(() => undefined);
     await syncDirectory(controlDirectory);
