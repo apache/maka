@@ -18,6 +18,7 @@
  */
 
 import { deriveTurnRecords, isUserVisibleSessionSystemNote } from '@maka/core/session';
+import { foldTimeline } from './timeline-fold.js';
 import {
   isInFlightToolStatus,
   toolResultActivityStatus,
@@ -348,7 +349,8 @@ function mergeLiveOverPersisted(
  * One entry on a turn's render timeline — interleaved thinking, answer, tool,
  * and mid-turn user messages in conversational order. This is the
  * rendering source of truth (see `TurnViewModel.timeline`); the aggregate
- * `assistant` aggregate is kept for older consumers (copy, export, prompt rail).
+ * `assistant` field is a legacy aggregate; it does not identify the reply
+ * used by rendering, copy or prompt rail previews.
  *
  * - `thinking`: one reasoning block (a step's thinking; adjacent blocks are
  *   pre-merged with `\n\n`). Rendered as a collapsed "深度思考" disclosure.
@@ -898,18 +900,12 @@ export function materializeTurns(
 }
 
 /**
- * The turn's final reply: the last answer step on the timeline. Intermediate
- * steps (text emitted between tool calls) narrate the work in progress; the
- * clipboard wants only the answer the turn settled on (#2407), not the
- * `\n\n`-joined `assistant.text` aggregate. Falls back to the aggregate for
- * turns with no timeline text entry.
+ * Copy, action availability and previews consume the same reply identity as
+ * the turn body. Process commentary and answers before a new user instruction
+ * must not become the current reply. The aggregate is not an answer fallback.
  */
 export function finalAssistantReplyText(turn: TurnViewModel): string {
-  for (let index = turn.timeline.length - 1; index >= 0; index -= 1) {
-    const item = turn.timeline[index];
-    if (item?.kind === "text" && item.text.length > 0) return item.text;
-  }
-  return turn.assistant?.text ?? "";
+  return foldTimeline(turn.timeline).finalReply?.text ?? "";
 }
 
 /**
