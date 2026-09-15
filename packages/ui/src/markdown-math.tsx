@@ -407,7 +407,11 @@ function readDelimitedMath(
 }
 
 const MAX_LINK_LABEL_DEPTH = 32;
-const MAX_LINK_LABEL_LENGTH = 4096;
+// Bounds incomplete label scans the same way tails are bounded: a close found
+// anywhere inside still resolves and settles, so only genuinely unfinished
+// input pays per-chunk rescan cost. Complete labels beyond this fall back to
+// literal text, matching the tail behaviour.
+const MAX_LINK_LABEL_LENGTH = 65536;
 const MAX_LINK_TAIL_DEPTH = 32;
 const MAX_LINK_TAIL_LENGTH = 65536;
 
@@ -489,8 +493,9 @@ function isEscaped(source: string, pos: number): boolean {
 
 /**
  * Find the `]` closing a link label opened before `from`, skipping escapes,
- * code spans, and nested labels. Blank lines and excessive nesting can never
- * form a label; running out of input means more text may still complete it.
+ * code spans, and nested labels. Blank lines, excessive nesting, and labels
+ * running past the length bound can never form a label here; running out of
+ * input means more text may still complete it.
  */
 function findLabelEnd(
   source: string,

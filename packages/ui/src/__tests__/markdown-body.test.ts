@@ -468,6 +468,29 @@ it('keeps escaped image alt text identical between incremental and one-shot scan
   assert.doesNotMatch(markup, /MAKA_MATH/);
 });
 
+it('preserves links and images with labels past the defensive scan bound', () => {
+  const longLink = `[\\[DISCUSS\\] ${'a'.repeat(4096)}](https://example.com/long)`;
+  const linkMarkup = renderToStaticMarkup(createElement(LocaleProvider, {
+    locale: 'en',
+    children: createElement(MarkdownBody, { text: longLink }),
+  }));
+
+  assert.match(linkMarkup, /<a\b[^>]*href="https:\/\/example\.com\/long"/);
+  assert.match(linkMarkup, /\[DISCUSS\]/);
+  assert.doesNotMatch(linkMarkup, /maka-math-display|katex-display/);
+
+  const longImg = `![\\[alt\\] ${'b'.repeat(4096)}](https://example.com/y.png)`;
+  const imgMarkup = renderToStaticMarkup(createElement(LocaleProvider, {
+    locale: 'en',
+    children: createElement(MarkdownBody, { text: longImg }),
+  }));
+
+  assert.match(imgMarkup, /<img\b[^>]*src="https:\/\/example\.com\/y\.png"/);
+  assert.match(imgMarkup, /alt="\[alt\] b/);
+  assert.doesNotMatch(imgMarkup, /maka-math/);
+  assert.doesNotMatch(imgMarkup, /MAKA_MATH/);
+});
+
 it('does not rescan malformed link tails quadratically', () => {
   const input = '[x]('.repeat(32_000);
   const cache = createMarkdownMathCache();
