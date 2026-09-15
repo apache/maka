@@ -31,6 +31,7 @@ import {
   type SessionToolProfile,
 } from '@maka/core/session';
 import { isThinkingLevel, type ThinkingLevel } from '@maka/core/model-thinking';
+import { isExecutorId } from '@maka/core/executor-id';
 import type { ExecutionBoundarySummary } from '@maka/core/sandbox-boundary';
 export type { ExecutionBoundarySummary } from '@maka/core/sandbox-boundary';
 import {
@@ -123,6 +124,7 @@ const PROJECTION_FIELDS = [
   'revisionOfTurnId',
   'revisionIndex',
   'revisionState',
+  'executorId',
   'thinkingLevel',
   'lastReadMessageId',
   'liveRunState',
@@ -154,7 +156,10 @@ export interface SessionCreateInput {
   readonly mode?: SessionStartMode;
   readonly name?: string;
   readonly labels?: readonly string[];
-  readonly modelTarget: SessionModelTarget;
+  /** Required for native execution and omitted for a plugin executor. */
+  readonly modelTarget?: SessionModelTarget;
+  /** Named black-box executor contributed by a Host plugin. */
+  readonly executorId?: string;
   readonly thinkingLevel?: ThinkingLevel;
   readonly toolProfile?: SessionToolProfile;
   readonly permissionMode?: PermissionMode;
@@ -236,6 +241,7 @@ export interface SessionCatalogProjection {
   readonly revisionIndex?: number;
   readonly revisionState?: 'preparing' | 'committed';
   readonly backend: PersistedBackendKind;
+  readonly executorId?: string;
   readonly llmConnectionId: string | null;
   readonly llmConnectionSlug: string;
   readonly connectionLocked: boolean;
@@ -513,11 +519,13 @@ export function decodeSessionCreateInput(value: unknown): SessionCreateInput {
   const input = requireShapedRecord(
     value,
     'Session create input',
-    ['sessionId', 'workspace', 'modelTarget'],
+    ['sessionId', 'workspace'],
     [
       'mode',
       'name',
       'labels',
+      'modelTarget',
+      'executorId',
       'thinkingLevel',
       'toolProfile',
       'permissionMode',
@@ -525,13 +533,21 @@ export function decodeSessionCreateInput(value: unknown): SessionCreateInput {
       'orchestrationMode',
     ],
   );
+  const executorId = Object.hasOwn(input, 'executorId')
+    ? executorIdValue(input.executorId)
+    : undefined;
+  const target = Object.hasOwn(input, 'modelTarget') ? modelTarget(input.modelTarget) : undefined;
+  if ((executorId === undefined) === (target === undefined)) {
+    throw invalidProtocolFrame('Session creation requires exactly one model target or executor id');
+  }
   return {
     sessionId: requireEntityId(input.sessionId, 'sessionId'),
     workspace: decodeWorkspaceTarget(input.workspace),
     ...(Object.hasOwn(input, 'mode') ? { mode: sessionStartMode(input.mode) } : {}),
     ...(Object.hasOwn(input, 'name') ? { name: sessionName(input.name) } : {}),
     ...(Object.hasOwn(input, 'labels') ? { labels: labels(input.labels) } : {}),
-    modelTarget: modelTarget(input.modelTarget),
+    ...(target ? { modelTarget: target } : {}),
+    ...(executorId ? { executorId } : {}),
     ...(Object.hasOwn(input, 'thinkingLevel')
       ? { thinkingLevel: thinkingLevel(input.thinkingLevel) }
       : {}),
@@ -760,6 +776,7 @@ export function decodeSessionCatalogProjection(value: unknown): SessionCatalogPr
     ...optionalRevisionIndex(record),
     ...optionalRevisionState(record),
     backend: backend(record.backend),
+    ...optionalExecutorId(record),
     llmConnectionId:
       record.llmConnectionId === null
         ? null
@@ -776,6 +793,9 @@ export function decodeSessionCatalogProjection(value: unknown): SessionCatalogPr
     collaborationMode: collaborationMode(record.collaborationMode),
     orchestrationMode: orchestrationMode(record.orchestrationMode),
   };
+  if ((projection.backend === 'plugin-executor') !== (projection.executorId !== undefined)) {
+    throw invalidProtocolFrame('Session executor identity does not match its backend');
+  }
   requireEncodedByteLimit(
     projection,
     'Session catalog projection',
@@ -997,10 +1017,25 @@ function optionalThinkingLevel(
 // header's durable backend, and rows written by builds that shipped
 // FakeBackend still hold it (#3211).
 function backend(value: unknown): SessionCatalogProjection['backend'] {
-  if (value !== 'ai-sdk' && value !== 'fake') {
+  if (value !== 'ai-sdk' && value !== 'plugin-executor' && value !== 'fake') {
     throw invalidProtocolFrame('Invalid Session backend');
   }
   return value;
+}
+
+function executorIdValue(value: unknown): string {
+  const id = requireUtf8String(value, 'Executor id', 128);
+  if (!isExecutorId(id)) {
+    throw invalidProtocolFrame('Invalid Executor id');
+  }
+  return id;
+}
+
+function optionalExecutorId(
+  record: Record<string, unknown>,
+): Pick<SessionCatalogProjection, 'executorId'> | Record<string, never> {
+  if (record.executorId === undefined) return {};
+  return { executorId: executorIdValue(record.executorId) };
 }
 
 function thinkingLevel(value: unknown): ThinkingLevel {

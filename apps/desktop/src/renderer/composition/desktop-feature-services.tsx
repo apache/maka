@@ -31,6 +31,7 @@ import { ModuleHubServicesProvider } from '../features/module-hub';
 import { RuntimeHostManagementServicesProvider } from '../features/runtime-host-management';
 import { SessionCollaborationServicesProvider } from '../features/session-collaboration';
 import { SessionNavigationServicesProvider } from '../features/session-navigation';
+import { SearchServicesProvider } from '../features/search/index.js';
 import { SessionSettingsServicesProvider } from '../features/session-settings';
 import { TaskEntryServicesProvider } from '../features/task-entry';
 import { WorkbarServicesProvider } from '../features/workbar';
@@ -41,6 +42,7 @@ import { createDesktopModuleHubServices } from '../platform/desktop/create-modul
 import { createDesktopRuntimeHostManagementServices } from '../platform/desktop/create-runtime-host-management-services';
 import { createDesktopSessionCollaborationServices } from '../platform/desktop/create-session-collaboration-services';
 import { createDesktopSessionNavigationServices } from '../platform/desktop/create-session-navigation-services';
+import { createDesktopSearchServices } from '../platform/desktop/create-search-services.js';
 import { SessionBundleServicesProvider } from '../features/session-bundle';
 import { createDesktopSessionBundleServices } from '../platform/desktop/create-session-bundle-services.js';
 import { createDesktopSessionSettingsServices } from '../platform/desktop/create-session-settings-services';
@@ -65,6 +67,7 @@ export function createDesktopFeatureServices() {
     runtimeHostManagement: createDesktopRuntimeHostManagementServices(),
     sessionCollaboration: createDesktopSessionCollaborationServices(),
     sessionNavigation: createDesktopSessionNavigationServices(),
+    search: createDesktopSearchServices(),
     sessionBundle: createDesktopSessionBundleServices(),
     sessionSettings: createDesktopSessionSettingsServices(),
     taskEntry: createDesktopTaskEntryServices(),
@@ -91,7 +94,9 @@ export function DesktopFeatureServicesProvider(props: {
                         <ConversationServicesProvider services={props.services.conversation}>
                           <WorkHubServicesProvider services={props.services.workHub}>
                             <SessionBundleServicesProvider services={props.services.sessionBundle}>
-                              {props.children}
+                              <SearchServicesProvider services={props.services.search}>
+                                {props.children}
+                              </SearchServicesProvider>
                             </SessionBundleServicesProvider>
                           </WorkHubServicesProvider>
                         </ConversationServicesProvider>

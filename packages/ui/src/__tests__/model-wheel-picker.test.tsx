@@ -58,14 +58,14 @@ test('the wheel applies settled selection once and restores the saved model on f
   try {
     await act(() => root.render(<Harness />));
     const wheel = document.querySelector<HTMLElement>('[role="listbox"]')!;
-    assert.equal(wheel.scrollTop, 44, 'opening centers the current model');
+    assert.equal(wheel.scrollTop, 132, 'opening centers the current model');
     await act(() => wheel.dispatchEvent(event('scroll')));
     await settle();
     assert.deepEqual(calls, [], 'initial positioning never changes the model');
 
     await act(() => {
       wheel.dispatchEvent(event('wheel'));
-      wheel.scrollTop = 88;
+      wheel.scrollTop = 176;
       wheel.dispatchEvent(event('scroll'));
     });
     await settle();
@@ -85,12 +85,16 @@ test('the wheel applies settled selection once and restores the saved model on f
     await act(() => wheel.dispatchEvent(Object.assign(event('keydown'), { key: 'Home' })));
     assert.deepEqual(calls, ['C', 'A'], 'keyboard navigation also applies immediately');
     await act(async () => { finish?.(false); });
-    assert.equal(wheel.scrollTop, 88, 'a failed save recenters the authoritative value');
+    assert.equal(wheel.scrollTop, 176, 'a failed save recenters the authoritative value');
     assert.equal(wheel.querySelector('[aria-selected="true"]')?.textContent, 'C');
+
+    await act(() => wheel.dispatchEvent(Object.assign(event('keydown'), { key: 'ArrowDown' })));
+    assert.deepEqual(calls, ['C', 'A', 'A'], 'the last model wraps to its visible next neighbor');
+    await act(async () => { finish?.(true); });
 
     await act(() => root.render(<Harness disabled />));
     await act(() => wheel.dispatchEvent(Object.assign(event('keydown'), { key: 'Home' })));
-    assert.deepEqual(calls, ['C', 'A'], 'disabled navigation does not change the model');
+    assert.deepEqual(calls, ['C', 'A', 'A'], 'disabled navigation does not change the model');
   } finally {
     await act(() => root.unmount());
     Object.assign(globalThis, original);

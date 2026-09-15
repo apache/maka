@@ -56,7 +56,11 @@ import {
   type DetachedCandidateLaunch,
   type DetachedCandidateInput,
 } from '../client/launcher.js';
-import { readHostRegistration, RUNTIME_HOST_REGISTRATION_FILE } from '../control/registration.js';
+import {
+  readHostRegistration,
+  writeHostRegistration,
+  RUNTIME_HOST_REGISTRATION_FILE,
+} from '../control/registration.js';
 import {
   readCandidateStartupDiagnostic,
   writeCandidateStartupDiagnostic,
@@ -3581,6 +3585,51 @@ describe('non-serving Runtime Host kernel', () => {
       const owner = await tryAcquireInteractiveRootOwner(replacement);
       assert.ok(owner);
       await owner?.close();
+    });
+  });
+
+  test('preserves a stale endpoint errno through connection and election diagnostics', async () => {
+    await withHostPaths(async (paths) => {
+      const candidate = await startTestRuntimeHostCandidate(paths, {
+        rootPath: paths.root,
+        idleGraceMs: 10_000,
+      });
+      assert.equal(candidate.kind, 'winner');
+      if (candidate.kind !== 'winner') return;
+      const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
+      const { controlDirectory } = await prepareStorageRootControlDirectory(capability);
+      const registration = await readHostRegistration(controlDirectory);
+      assert.ok(registration);
+      await candidate.host.close();
+      await writeHostRegistration(controlDirectory, registration);
+
+      const connection = await connectRuntimeHost({
+        rootPath: paths.root,
+        protocol: CURRENT_PROTOCOL,
+      });
+      assert.equal(connection.kind, 'unavailable');
+      if (connection.kind !== 'unavailable') return;
+      assert.equal(connection.reason, 'connect_failed');
+      assert.deepEqual(connection.connectionFailure, { phase: 'connect', code: 'ENOENT' });
+
+      const result = await connectOrSpawnRuntimeHostWithDependencies(
+        {
+          rootPath: paths.root,
+          protocol: CURRENT_PROTOCOL,
+          compositionId: KERNEL_COMPOSITION.descriptor.id,
+          candidateEntrypoint: KERNEL_CANDIDATE_ENTRYPOINT,
+          electionDeadlineMs: 1_000,
+        },
+        {
+          random: () => 0.5,
+          launchCandidate: () => ({ spawned: Promise.resolve({ pid: process.pid }) }),
+        },
+      );
+      assert.equal(result.kind, 'failed');
+      if (result.kind !== 'failed') return;
+      assert.equal(result.reason, 'startup_timeout');
+      assert.deepEqual(result.diagnostic?.lastConnectionFailure, connection.connectionFailure);
+      assert.equal(JSON.stringify(result.diagnostic).includes(registration.endpoint), false);
     });
   });
 

@@ -20,7 +20,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { SearchError, SearchResult } from '@maka/core/search';
-import { collectThreadSearchResponses } from '../../preload/multi-host-thread-search.js';
+import { deferred } from '@maka/core/test-only/async-primitives';
+import { collectThreadSearchResponses, createThreadSearchClient } from '../../preload/multi-host-thread-search.js';
 
 const RESULT: SearchResult = {
   source: 'thread',
@@ -73,4 +74,38 @@ test('shares a bounded result window across ready Hosts', async () => {
     ),
     [result('A1'), result('B1'), result('A2')],
   );
+});
+
+test('canceling before Host discovery finishes never dispatches the abandoned search', async () => {
+  const scopes = deferred<readonly string[]>();
+  const calls: string[] = [];
+  const client = createThreadSearchClient({
+    scopes: () => scopes.promise,
+    search: async (scope: string) => { calls.push(scope); return []; },
+    cancel: async () => {},
+  });
+  const task = client.thread({ source: 'thread', query: 'old', limit: 10 }, 'old');
+  await client.cancelThread('old');
+  assert.deepEqual(await task, { ok: false, reason: 'aborted', message: 'History search was aborted.' });
+  scopes.resolve(['a', 'b']);
+  await Promise.resolve();
+  assert.deepEqual(calls, []);
+});
+
+test('canceling a multi-Host query reaches every dispatched Host without waiting for search results', async () => {
+  const started = deferred<void>();
+  const cancelled: string[] = [];
+  let count = 0;
+  const client = createThreadSearchClient({
+    scopes: async () => ['a', 'b'],
+    search: async () => { if (++count === 2) started.resolve(); return new Promise<never>(() => {}); },
+    cancel: async (scope, requestId) => { cancelled.push(`${scope}:${requestId}`); },
+  });
+  const task = client.thread({ source: 'thread', query: 'old', limit: 10 }, 'old');
+  await started.promise;
+  await client.cancelThread('old');
+  assert.equal((await task as SearchError).reason, 'aborted');
+  assert.deepEqual(cancelled, ['a:old', 'b:old']);
+  await client.cancelThread('old');
+  assert.equal(cancelled.length, 2);
 });

@@ -18,10 +18,20 @@
  */
 
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import {
+  appendFile,
+  mkdir,
+  mkdtemp,
+  open,
+  rename,
+  rm,
+  stat,
+  truncate,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, test } from 'node:test';
+import { describe, mock, test } from 'node:test';
 import { decodeCanonicalMessage, type StoredMessage } from '@maka/core/session';
 import { ClaudeCodeSessionAdapter } from '../claude-code-session-adapter.js';
 import { createExternalSessionAdapterRegistry } from '../external-session-adapters.js';
@@ -275,6 +285,451 @@ describe('ClaudeCodeSessionAdapter', () => {
     });
   });
 
+  test('a transcript larger than the import budget remains visible in the catalog', async () => {
+    await withClaudeHome(async (home) => {
+      const sessionId = 'aaaaaaaa-0000-4000-8000-000000000016';
+      await seed(home, sessionId, [userRecord('x'.repeat(512))]);
+
+      const adapter = new ClaudeCodeSessionAdapter({
+        claudeHome: home,
+        maxTranscriptBytes: 100,
+      });
+      assert.deepEqual(
+        (await adapter.listSessions()).map((session) => session.id),
+        [sessionId],
+      );
+      await assert.rejects(adapter.readSession(sessionId), /exceeds 100 bytes/u);
+    });
+  });
+
+  test('a transcript with a first record beyond the former summary window remains visible', async () => {
+    await withClaudeHome(async (home) => {
+      const sessionId = 'aaaaaaaa-0000-4000-8000-000000000029';
+      await seed(home, sessionId, [userRecord(`keep-${'x'.repeat(5 * 1024 * 1024)}`)]);
+
+      const adapter = new ClaudeCodeSessionAdapter({ claudeHome: home });
+      assert.deepEqual(
+        (await adapter.listSessions()).map((session) => session.id),
+        [sessionId],
+      );
+      assert.equal((await adapter.readSession(sessionId)).messages[0]?.type, 'user');
+    });
+  });
+
+  test('an oversized JSONL record falls back to a visible catalog row', async () => {
+    await withClaudeHome(async (home) => {
+      const sessionId = 'aaaaaaaa-0000-4000-8000-000000000035';
+      const dir = join(home, 'projects', CWD.replace(/\//gu, '-'));
+      await mkdir(dir, { recursive: true });
+      const path = join(dir, `${sessionId}.jsonl`);
+      const handle = await open(path, 'w');
+      try {
+        await handle.write(
+          `{"type":"user","cwd":${JSON.stringify(CWD)},"timestamp":"2026-08-01T00:00:00.000Z","message":{"role":"user","content":"`,
+        );
+        const chunk = 'x'.repeat(1024 * 1024);
+        for (let index = 0; index < 65; index += 1) await handle.write(chunk);
+        await handle.write('"}}\n');
+      } finally {
+        await handle.close();
+      }
+      const mtimeMs = (await stat(path)).mtimeMs;
+      const adapter = new ClaudeCodeSessionAdapter({ claudeHome: home });
+
+      assert.deepEqual(await adapter.listSessions(), [
+        { id: sessionId, name: sessionId, cwd: '', updatedAt: mtimeMs },
+      ]);
+      await assert.rejects(adapter.readSession(sessionId), /record exceeds 67108864 bytes/u);
+    });
+  });
+
+  test('streams valid transcripts larger than the legacy 64 MiB whole-file limit', async () => {
+    await withClaudeHome(async (home) => {
+      const sessionId = 'aaaaaaaa-0000-4000-8000-000000000017';
+      const path = await seed(home, sessionId, [
+        userRecord('Keep this message'),
+        assistantRecord({ text: 'Kept.', stopReason: 'end_turn' }),
+      ]);
+      const ignoredRecord = `${JSON.stringify({
+        type: 'progress',
+        cwd: CWD,
+        timestamp: '2026-08-01T00:00:02.000Z',
+        padding: 'x'.repeat(1024 * 1024),
+      })}\n`;
+      const handle = await open(path, 'a');
+      try {
+        for (let index = 0; index < 65; index += 1) await handle.write(ignoredRecord);
+      } finally {
+        await handle.close();
+      }
+      assert.ok((await stat(path)).size > 64 * 1024 * 1024);
+
+      const adapter = new ClaudeCodeSessionAdapter({ claudeHome: home });
+      assert.deepEqual(
+        (await adapter.listSessions()).map((session) => session.id),
+        [sessionId],
+      );
+      const session = await adapter.readSession(sessionId);
+      assert.deepEqual(
+        session.messages
+          .filter((message) => message.type === 'user')
+          .map((message) => message.text),
+        ['Keep this message'],
+      );
+      assert.equal(terminalState(session.messages)?.status, 'completed');
+    });
+  });
+
+  test('rejects an oversized JSONL record without buffering the complete transcript', async () => {
+    await withClaudeHome(async (home) => {
+      const sessionId = 'aaaaaaaa-0000-4000-8000-000000000018';
+      await seed(home, sessionId, [userRecord('x'.repeat(512))]);
+
+      await assert.rejects(
+        new ClaudeCodeSessionAdapter({ claudeHome: home, maxRecordBytes: 100 }).readSession(
+          sessionId,
+        ),
+        /record exceeds 100 bytes/u,
+      );
+    });
+  });
+
+  test('rejects transcripts that exceed the parsed-record limit', async () => {
+    await withClaudeHome(async (home) => {
+      const sessionId = 'aaaaaaaa-0000-4000-8000-000000000019';
+      await seed(home, sessionId, [
+        userRecord('one'),
+        { type: 'progress', timestamp: '2026-08-01T00:00:00.500Z' },
+        { type: 'progress', timestamp: '2026-08-01T00:00:00.750Z' },
+        assistantRecord({ text: 'done', stopReason: 'end_turn' }),
+      ]);
+
+      await assert.rejects(
+        new ClaudeCodeSessionAdapter({ claudeHome: home, maxRecords: 3 }).readSession(sessionId),
+        /more than 3 records/u,
+      );
+    });
+  });
+
+  test('rejects converted histories that exceed message count or byte budgets', async () => {
+    await withClaudeHome(async (home) => {
+      const sessionId = 'aaaaaaaa-0000-4000-8000-000000000020';
+      await seed(home, sessionId, [
+        userRecord('hello'),
+        assistantRecord({ text: 'world', stopReason: 'end_turn' }),
+      ]);
+
+      await assert.rejects(
+        new ClaudeCodeSessionAdapter({ claudeHome: home, maxMessages: 1 }).readSession(sessionId),
+        /more than 1 messages/u,
+      );
+      await assert.rejects(
+        new ClaudeCodeSessionAdapter({ claudeHome: home, maxConvertedBytes: 10 }).readSession(
+          sessionId,
+        ),
+        /more than 10 bytes/u,
+      );
+    });
+  });
+
+  test('parses a UTF-8 JSONL record split across read buffers', async () => {
+    await withClaudeHome(async (home) => {
+      const sessionId = 'aaaaaaaa-0000-4000-8000-000000000021';
+      const dir = join(home, 'projects', CWD.replace(/\//gu, '-'));
+      await mkdir(dir, { recursive: true });
+      const template = JSON.stringify(userRecord('__MESSAGE__'));
+      const [prefix, suffix] = template.split('__MESSAGE__');
+      assert.ok(prefix !== undefined && suffix !== undefined);
+      const paddingBytes = 64 * 1024 - Buffer.byteLength(prefix, 'utf8') - 1;
+      assert.ok(paddingBytes > 0);
+      await writeFile(
+        join(dir, `${sessionId}.jsonl`),
+        `${prefix}${'x'.repeat(paddingBytes)}你${suffix}\n`,
+      );
+
+      const messages = await read(home, sessionId);
+      assert.equal(messages[0]?.type, 'user');
+      assert.equal(
+        messages[0]?.type === 'user' ? messages[0].text : undefined,
+        `${'x'.repeat(paddingBytes)}你`,
+      );
+    });
+  });
+
+  test('rejects a transcript truncated before its fixed snapshot is complete', async () => {
+    await withClaudeHome(async (home) => {
+      const sessionId = 'aaaaaaaa-0000-4000-8000-000000000022';
+      const path = await seed(home, sessionId, [
+        userRecord('keep this'),
+        assistantRecord({ text: 'done', stopReason: 'end_turn' }),
+        { type: 'progress', padding: 'x'.repeat(128 * 1024) },
+      ]);
+      let readCalls = 0;
+      await withFileReadMock(
+        path,
+        async (readOriginal, buffer) => {
+          readCalls += 1;
+          if (readCalls === 2) {
+            await truncate(path, 0);
+            return { bytesRead: 0, buffer };
+          }
+          return readOriginal();
+        },
+        () =>
+          assert.rejects(
+            new ClaudeCodeSessionAdapter({ claudeHome: home }).readSession(sessionId),
+            /changed while being read/u,
+          ),
+      );
+    });
+  });
+
+  test('keeps reading the opened snapshot when the transcript path is replaced', async () => {
+    await withClaudeHome(async (home) => {
+      const sessionId = 'aaaaaaaa-0000-4000-8000-000000000023';
+      const path = await seed(home, sessionId, [
+        userRecord('original'),
+        assistantRecord({ text: 'original reply', stopReason: 'end_turn' }),
+      ]);
+      let replaced = false;
+      await withFileReadMock(
+        path,
+        async (readOriginal) => {
+          const result = await readOriginal();
+          if (!replaced) {
+            replaced = true;
+            const replacement = `${path}.replacement`;
+            await writeFile(
+              replacement,
+              `${JSON.stringify(userRecord('replacement'))}\n${JSON.stringify(
+                assistantRecord({ text: 'replacement reply', stopReason: 'end_turn' }),
+              )}\n`,
+            );
+            await rename(replacement, path);
+          }
+          return result;
+        },
+        async () => {
+          const session = await new ClaudeCodeSessionAdapter({ claudeHome: home }).readSession(
+            sessionId,
+          );
+          assert.deepEqual(
+            session.messages
+              .filter((message) => message.type === 'user')
+              .map((message) => message.text),
+            ['original'],
+          );
+        },
+      );
+    });
+  });
+
+  test('rejects an in-place rewrite between streaming passes', async () => {
+    await withClaudeHome(async (home) => {
+      const sessionId = 'aaaaaaaa-0000-4000-8000-000000000027';
+      const path = await seed(home, sessionId, [
+        userRecord('before'),
+        assistantRecord({ text: 'reply1', stopReason: 'end_turn' }),
+      ]);
+      const replacement = [
+        JSON.stringify({ ...userRecord('after!'), cwd: CWD }),
+        JSON.stringify({
+          ...assistantRecord({ text: 'reply2', stopReason: 'end_turn' }),
+          cwd: CWD,
+        }),
+        '',
+      ].join('\n');
+      assert.equal(Buffer.byteLength(replacement), (await stat(path)).size);
+
+      let rewritten = false;
+      await withFileReadMock(
+        path,
+        async (readOriginal) => {
+          const result = await readOriginal();
+          if (!rewritten) {
+            rewritten = true;
+            await writeFile(path, replacement);
+          }
+          return result;
+        },
+        () =>
+          assert.rejects(
+            new ClaudeCodeSessionAdapter({ claudeHome: home }).readSession(sessionId),
+            /changed while being read/u,
+          ),
+      );
+    });
+  });
+
+  test('ignores records appended after the transcript snapshot is opened', async () => {
+    await withClaudeHome(async (home) => {
+      const sessionId = 'aaaaaaaa-0000-4000-8000-000000000024';
+      const path = await seed(home, sessionId, [
+        userRecord('original'),
+        assistantRecord({ text: 'original reply', stopReason: 'end_turn' }),
+      ]);
+      let appended = false;
+      await withFileReadMock(
+        path,
+        async (readOriginal) => {
+          const result = await readOriginal();
+          if (!appended) {
+            appended = true;
+            await appendFile(path, `${JSON.stringify(userRecord('appended'))}\n`);
+          }
+          return result;
+        },
+        async () => {
+          const session = await new ClaudeCodeSessionAdapter({ claudeHome: home }).readSession(
+            sessionId,
+          );
+          assert.deepEqual(
+            session.messages
+              .filter((message) => message.type === 'user')
+              .map((message) => message.text),
+            ['original'],
+          );
+        },
+      );
+    });
+  });
+
+  test('uses a custom title in both the catalog and imported metadata', async () => {
+    await withClaudeHome(async (home) => {
+      const sessionId = 'aaaaaaaa-0000-4000-8000-000000000025';
+      await seed(home, sessionId, [
+        userRecord('first prompt'),
+        { type: 'custom-title', customTitle: 'Chosen title' },
+        assistantRecord({ text: 'done', stopReason: 'end_turn' }),
+      ]);
+      const adapter = new ClaudeCodeSessionAdapter({ claudeHome: home });
+
+      assert.equal((await adapter.listSessions())[0]?.name, 'Chosen title');
+      assert.equal((await adapter.readSession(sessionId)).metadata.name, 'Chosen title');
+    });
+  });
+
+  test('uses a custom title outside the catalog head and tail windows', async () => {
+    await withClaudeHome(async (home) => {
+      const sessionId = 'aaaaaaaa-0000-4000-8000-000000000034';
+      await seed(home, sessionId, [
+        userRecord('first prompt'),
+        { type: 'progress', padding: 'x'.repeat(5 * 1024 * 1024) },
+        { type: 'custom-title', customTitle: 'Middle title' },
+        { type: 'progress', padding: 'y'.repeat(128 * 1024) },
+        assistantRecord({ text: 'done', stopReason: 'end_turn' }),
+      ]);
+      const adapter = new ClaudeCodeSessionAdapter({ claudeHome: home });
+
+      assert.equal((await adapter.listSessions())[0]?.name, 'Middle title');
+      assert.equal((await adapter.readSession(sessionId)).metadata.name, 'Middle title');
+    });
+  });
+
+  test('large streaming imports preserve rewinds and fragmented responses', async () => {
+    await withClaudeHome(async (home) => {
+      const sessionId = 'aaaaaaaa-0000-4000-8000-000000000026';
+      const path = await seed(home, sessionId, [
+        { type: 'system', uuid: 'root', parentUuid: null },
+        { ...userRecord('withdrawn'), uuid: 'u-old', parentUuid: 'root' },
+        {
+          ...assistantFragment('msg-old', [{ type: 'text', text: 'withdrawn reply' }]),
+          uuid: 'a-old',
+          parentUuid: 'u-old',
+        },
+        { ...userRecord('kept prompt'), uuid: 'u-new', parentUuid: 'root' },
+        {
+          ...assistantFragment('msg-kept', [{ type: 'thinking', thinking: 'first fragment' }]),
+          uuid: 'a-new-1',
+          parentUuid: 'u-new',
+        },
+        {
+          ...assistantFragment('msg-kept', [{ type: 'text', text: 'kept reply' }]),
+          uuid: 'a-new-2',
+          parentUuid: 'a-new-1',
+        },
+      ]);
+      const ignoredRecord = `${JSON.stringify({
+        type: 'progress',
+        cwd: CWD,
+        padding: 'x'.repeat(1024 * 1024),
+      })}\n`;
+      const handle = await open(path, 'a');
+      try {
+        for (let index = 0; index < 65; index += 1) await handle.write(ignoredRecord);
+      } finally {
+        await handle.close();
+      }
+
+      const messages = await read(home, sessionId);
+      assert.deepEqual(
+        messages.filter((message) => message.type === 'user').map((message) => message.text),
+        ['kept prompt'],
+      );
+      assert.deepEqual(
+        messages
+          .filter(
+            (message): message is Extract<StoredMessage, { type: 'assistant' }> =>
+              message.type === 'assistant',
+          )
+          .map((message) => message.thinking?.text || message.text),
+        ['first fragment', 'kept reply'],
+      );
+    });
+  });
+
+  test('large streaming imports preserve deduplication and compaction boundaries', async () => {
+    await withClaudeHome(async (home) => {
+      const sessionId = 'aaaaaaaa-0000-4000-8000-000000000028';
+      const prompt = { ...userRecord('before compaction'), uuid: 'u-before', parentUuid: null };
+      const path = await seed(home, sessionId, [
+        prompt,
+        prompt,
+        {
+          ...assistantRecord({ text: 'before reply', stopReason: 'end_turn' }),
+          uuid: 'a-before',
+          parentUuid: 'u-before',
+        },
+        {
+          type: 'system',
+          subtype: 'compact_boundary',
+          uuid: 'boundary',
+          parentUuid: null,
+          timestamp: '2026-08-01T00:00:02.000Z',
+        },
+        { ...userRecord('after compaction'), uuid: 'u-after', parentUuid: 'boundary' },
+        {
+          ...assistantRecord({ text: 'after reply', stopReason: 'end_turn' }),
+          uuid: 'a-after',
+          parentUuid: 'u-after',
+        },
+      ]);
+      const ignoredRecord = `${JSON.stringify({
+        type: 'progress',
+        cwd: CWD,
+        padding: 'x'.repeat(1024 * 1024),
+      })}\n`;
+      const handle = await open(path, 'a');
+      try {
+        for (let index = 0; index < 65; index += 1) await handle.write(ignoredRecord);
+      } finally {
+        await handle.close();
+      }
+
+      const messages = await read(home, sessionId);
+      assert.deepEqual(
+        messages.filter((message) => message.type === 'user').map((message) => message.text),
+        ['before compaction', 'after compaction'],
+      );
+      assert.equal(
+        messages.filter(
+          (message) => message.type === 'system_note' && message.kind === 'context_compacted',
+        ).length,
+        1,
+      );
+    });
+  });
+
   test('a text query filters the source, before paging', async () => {
     // The catalog pages 16 at a time over a source with 1128 sessions here, so
     // the term has to reach the adapter. A filter applied to an assembled page
@@ -509,11 +964,13 @@ async function seed(
   sessionId: string,
   records: readonly Record<string, unknown>[],
   cwd = CWD,
-): Promise<void> {
+): Promise<string> {
   const dir = join(home, 'projects', cwd.replace(/\//gu, '-'));
   await mkdir(dir, { recursive: true });
   const lines = records.map((record) => JSON.stringify({ ...record, cwd }));
-  await writeFile(join(dir, `${sessionId}.jsonl`), `${lines.join('\n')}\n`);
+  const path = join(dir, `${sessionId}.jsonl`);
+  await writeFile(path, `${lines.join('\n')}\n`);
+  return path;
 }
 
 async function withClaudeHome(run: (home: string) => Promise<void>): Promise<void> {
@@ -522,5 +979,44 @@ async function withClaudeHome(run: (home: string) => Promise<void>): Promise<voi
     await run(home);
   } finally {
     await rm(home, { recursive: true, force: true });
+  }
+}
+
+type PositionalRead = (
+  buffer: Buffer,
+  offset: number,
+  length: number,
+  position: number,
+) => Promise<{ bytesRead: number; buffer: Buffer }>;
+
+async function withFileReadMock(
+  path: string,
+  read: (
+    readOriginal: () => ReturnType<PositionalRead>,
+    buffer: Buffer,
+  ) => ReturnType<PositionalRead>,
+  run: () => Promise<void>,
+): Promise<void> {
+  const probe = await open(path, 'r');
+  const fileHandlePrototype = Object.getPrototypeOf(probe) as { read: PositionalRead };
+  const originalRead = fileHandlePrototype.read;
+  await probe.close();
+  const readMock = mock.method(
+    fileHandlePrototype,
+    'read',
+    async function (
+      this: typeof probe,
+      buffer: Buffer,
+      offset: number,
+      length: number,
+      position: number,
+    ) {
+      return read(() => originalRead.call(this, buffer, offset, length, position), buffer);
+    },
+  );
+  try {
+    await run();
+  } finally {
+    readMock.mock.restore();
   }
 }

@@ -101,9 +101,11 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 153 as const;
-// 153: Agent Graph operator snapshots carry bounded output previews and metrics.
-// Epoch-152 peers reject the additional `output` field on strict operator shapes.
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 155 as const;
+// 155: Agent Graph operator snapshots carry bounded output previews and metrics.
+// Epoch-154 peers reject the additional `output` field on strict operator shapes.
+// 154: External Session import results distinguish committed Sessions from typed source limits.
+// 153: Sessions may select plugin executors and Plugin Platform queries expose them.
 // 152: Assistant completions and transcript rows preserve interrupted responses.
 // 151: WorkHub selects and delegates through a durable Host Form interaction.
 // 150: Message admission accepts an empty-text Message that carries a quote or

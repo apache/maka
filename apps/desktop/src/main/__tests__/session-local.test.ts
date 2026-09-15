@@ -638,6 +638,47 @@ test('attachment retries across restart reuse committed uploads and release stag
   assert.deepEqual(db.store.stagedAttachments('authority', 'message-1'), []);
 });
 
+test('local creation preserves a plugin executor in the pending Session projection', async (t) => {
+  const { store, beforeClose } = await database(t);
+  const target: DesktopSessionLocalTarget = {
+    partition: 'authority',
+    profileId: 'profile',
+    scope: { hostId: 'root', targetEpoch: 'target' },
+  };
+  const service = new DesktopSessionLocalService(store, {
+    targets: () => [target],
+    changed() {},
+    onError: (error) => assert.fail(String(error)),
+  });
+  beforeClose.push(() => service.close());
+  type Ipc = Parameters<typeof registerDesktopSessionLocalIpc>[0]['ipcMain'];
+  let create!: Parameters<Ipc['handle']>[1];
+  registerDesktopSessionLocalIpc({
+    ipcMain: {
+      handle: (channel, handler) => {
+        if (channel === 'session-local:create') create = handler;
+      },
+    },
+    service,
+    approvals: createAttachmentApprovalRegistry(),
+    resizeImage: async (bytes) => bytes,
+    resolveWorkspace: async () => ({ kind: 'host_path', path: '/workspace' }),
+    changed() {},
+  });
+
+  const summary = (await create(
+    {} as IpcMainInvokeEvent,
+    target.scope,
+    { executorId: 'codex.app-server' },
+  )) as DesktopSessionSummaryInput;
+  assert.equal(summary.backend, 'plugin-executor');
+  assert.equal(summary.executorId, 'codex.app-server');
+  assert.equal(summary.llmConnectionId, undefined);
+  assert.equal(summary.llmConnectionSlug, 'executor:codex.app-server');
+  assert.equal(summary.model, 'codex.app-server');
+  assert.equal(store.creation(target.partition, summary.id)?.executorId, 'codex.app-server');
+});
+
 test('local submit preserves picked-file approvals until durable admission succeeds', async (t) => {
   const { store, path, beforeClose } = await database(t);
   const file = join(path, '..', 'picked.txt');

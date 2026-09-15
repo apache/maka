@@ -146,6 +146,7 @@ function shellRunStateContent(record: ShellRunRecord): ShellRunCompactResult {
     cmd: record.command,
     startedAt: record.startedAt,
     updatedAt: record.updatedAt,
+    ...(record.pid !== undefined ? { pid: record.pid } : {}),
     ...(record.completedAt !== undefined ? { completedAt: record.completedAt } : {}),
     ...(record.timeoutMs !== undefined ? { timeoutMs: record.timeoutMs } : {}),
     ...(record.exitCode !== undefined ? { exitCode: record.exitCode } : {}),

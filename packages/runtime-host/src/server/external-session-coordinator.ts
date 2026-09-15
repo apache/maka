@@ -19,14 +19,15 @@
 
 import { JsonArrayPageBudget } from './json-array-page-budget.js';
 
-import type {
-  ExternalSessionAdapter,
-  ExternalSessionAdapterRegistry,
-  ExternalSessionSummary,
+import {
+  ExternalSessionLimitError,
+  type ExternalSessionAdapter,
+  type ExternalSessionAdapterRegistry,
+  type ExternalSessionSummary,
 } from '@maka/core/external-session';
 import type { CreateSessionInput } from '@maka/core/runtime-inputs';
 import type { SessionExternalOrigin, SessionHeader, StoredMessage } from '@maka/core/session';
-import type { ExternalSessionImportLookupResult } from '@maka/storage/session-store';
+import type { ExternalSessionImportLookupResult } from '@maka/storage/execution-stores';
 import type { SessionCatalogRecord } from '@maka/storage/execution-stores';
 import { ExternalSessionImporter } from '@maka/storage/external-sessions';
 import {
@@ -274,6 +275,15 @@ export class HostExternalSessionCoordinator {
       });
     } catch (error) {
       if (!commitAttempted) {
+        if (error instanceof ExternalSessionLimitError) {
+          return {
+            ok: true,
+            result: {
+              kind: 'source_limit_exceeded',
+              limit: { kind: error.limit.kind, max: error.limit.max },
+            },
+          };
+        }
         return importFailure(
           isSourceSessionNotFound(error) ? 'not_found' : 'source_unreadable',
           isSourceSessionNotFound(error)
@@ -304,7 +314,10 @@ export class HostExternalSessionCoordinator {
 
     try {
       const record = await this.#sessions.readCatalogRecord(header.id);
-      return { ok: true, result: { session: projectSessionCatalogRecord(record) } };
+      return {
+        ok: true,
+        result: { kind: 'imported', session: projectSessionCatalogRecord(record) },
+      };
     } catch {
       this.#requestDrain();
       return importFailure(

@@ -134,6 +134,12 @@ export type RuntimeHostUnavailableReason =
   | 'handshake_failed'
   | 'epoch_mismatch';
 
+export interface RuntimeHostConnectionFailure {
+  readonly phase: 'registration' | 'connect';
+  /** An errno identifier only; never include messages or endpoint paths. */
+  readonly code?: string;
+}
+
 export type ConnectRuntimeHostResult =
   | {
       kind: 'connected';
@@ -165,6 +171,7 @@ export type ConnectRuntimeHostResult =
       kind: 'unavailable';
       reason: RuntimeHostUnavailableReason;
       registration?: HostRegistration;
+      connectionFailure?: RuntimeHostConnectionFailure;
     };
 
 export interface ConnectRemoteRuntimeHostInput {
@@ -1218,6 +1225,7 @@ function finalizeConnectRuntimeHostResult(
       kind: 'unavailable',
       reason: result.reason,
       ...(result.registration ? { registration: result.registration } : {}),
+      ...(result.connectionFailure ? { connectionFailure: result.connectionFailure } : {}),
     };
   }
   return result;
@@ -1264,7 +1272,12 @@ export async function connectResolvedRuntimeHost(
     if (error instanceof RuntimeHostRegistrationError && error.code === 'invalid_registration') {
       return { kind: 'unavailable', reason: 'invalid_registration', endpointConnected: false };
     }
-    return { kind: 'unavailable', reason: 'connect_failed', endpointConnected: false };
+    return {
+      kind: 'unavailable',
+      reason: 'connect_failed',
+      endpointConnected: false,
+      connectionFailure: connectionFailure('registration', error),
+    };
   }
   if (!registration) {
     return { kind: 'unavailable', reason: 'not_registered', endpointConnected: false };
@@ -1298,6 +1311,7 @@ export async function connectResolvedRuntimeHost(
       reason: 'connect_failed',
       endpointConnected: false,
       registration,
+      connectionFailure: { phase: 'connect', code: 'ETIMEDOUT' },
     };
   }
   let transport: FramedTransport;
@@ -1316,6 +1330,7 @@ export async function connectResolvedRuntimeHost(
       reason: 'connect_failed',
       endpointConnected: false,
       registration,
+      connectionFailure: connectionFailure('connect', error),
     };
   }
   const handshakeDeadline = phaseDeadline(handshakeTimeoutMs, input.electionDeadline);
@@ -1713,7 +1728,7 @@ function openTransport(
       reject(
         exhaustsElection
           ? new ElectionDeadlineElapsedError()
-          : new Error('Timed out connecting to Runtime Host'),
+          : Object.assign(new Error('Timed out connecting to Runtime Host'), { code: 'ETIMEDOUT' }),
       );
     }, timeoutMs);
     const onConnect = () => {
@@ -1734,6 +1749,21 @@ function openTransport(
     socket.once('connect', onConnect);
     socket.once('error', onError);
   });
+}
+
+function connectionFailure(
+  phase: RuntimeHostConnectionFailure['phase'],
+  error: unknown,
+): RuntimeHostConnectionFailure {
+  const cause = error instanceof RuntimeHostRegistrationError ? error.cause : error;
+  const code =
+    cause instanceof Error && 'code' in cause && typeof cause.code === 'string'
+      ? cause.code
+      : undefined;
+  return {
+    phase,
+    ...(code && /^E[A-Z0-9_]{1,63}$/u.test(code) ? { code } : {}),
+  };
 }
 
 function requireTimeout(value: number, label: string): number {

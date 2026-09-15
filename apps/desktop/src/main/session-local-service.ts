@@ -537,10 +537,18 @@ export function registerDesktopSessionLocalIpc(deps: {
         labels: [...(creation.labels ?? [])],
         hasUnread: false,
         status: 'active',
-        backend: 'ai-sdk',
-        llmConnectionSlug: input.llmConnectionSlug ?? '',
-        model: input.model ?? '',
-        ...(input.llmConnectionId ? { llmConnectionId: input.llmConnectionId } : {}),
+        backend: creation.executorId ? 'plugin-executor' : 'ai-sdk',
+        ...(creation.executorId
+          ? {
+              executorId: creation.executorId,
+              llmConnectionSlug: `executor:${creation.executorId}`,
+              model: creation.executorId,
+            }
+          : {
+              llmConnectionSlug: input.llmConnectionSlug ?? '',
+              model: input.model ?? '',
+              ...(input.llmConnectionId ? { llmConnectionId: input.llmConnectionId } : {}),
+            }),
         connectionLocked: false,
         permissionMode: creation.permissionMode ?? 'ask',
         collaborationMode: creation.collaborationMode,

@@ -73,7 +73,6 @@ describe('settleModelStepOutcome', () => {
       failure,
       sawFinish: true,
       finishReason: 'content-filter',
-      request: {},
     });
 
     assert.ok(outcome.kind === 'failed');
@@ -86,7 +85,6 @@ describe('settleModelStepOutcome', () => {
       sawFinish: true,
       finishReason: 'error',
       rawFinishReason: '503',
-      request: {},
     });
 
     assert.ok(outcome.kind === 'failed');
@@ -288,7 +286,6 @@ describe('ModelAdapter.startStream onError', () => {
     assert.deepEqual(await result.outcome, {
       kind: 'failed',
       failure: failures[0],
-      request: { messages: [{ role: 'user', content: 'hi' }] },
       continuation: 'none',
     });
   });
@@ -370,7 +367,6 @@ describe('ModelAdapter.startStream onError', () => {
         totalTokens: 2,
         rawFinishReason: 'stop',
       },
-      request: { messages: [{ role: 'user', content: 'hi' }] },
       continuation: 'none',
     });
   });
@@ -382,8 +378,10 @@ describe('ModelAdapter.startStream onError', () => {
       { type: 'text-delta', id: 'text-1', delta: 'partial' },
     ]);
 
-    assert.equal(outcome.kind, 'truncated');
-    if (outcome.kind !== 'truncated') return;
+    assert.equal(outcome.kind, 'failed');
+    if (outcome.kind !== 'failed') return;
+    assert.equal(outcome.failure.kind, 'stream_truncated');
+    assert.equal(outcome.failure.retryable, true);
     assert.equal(outcome.failure.message, 'Provider stream ended without finishing (other)');
     assert.equal(outcome.continuation, 'none');
   });
@@ -435,7 +433,8 @@ describe('ModelAdapter.startStream onError', () => {
       controller.signal,
     );
 
-    assert.equal(outcome.kind, 'aborted');
+    assert.equal(outcome.kind, 'failed');
+    if (outcome.kind === 'failed') assert.equal(outcome.failure.kind, 'abort');
   });
 
   // streamText's default onError is `console.error(error)`, which dumps the
