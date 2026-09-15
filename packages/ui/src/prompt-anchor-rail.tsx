@@ -236,8 +236,7 @@ export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRe
   useEffect(() => {
     const root = scrollRef.current;
     if (!root) return;
-    // Astryx renders the dock as the scroll container's last child; the
-    // scroll-geometry spec reads it the same way for want of a published hook.
+    // Astryx renders the dock as the scroll container's last child.
     const dock = root.lastElementChild;
     const measure = (): void => {
       setSafeArea((previous) => {
