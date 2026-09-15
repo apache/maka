@@ -400,23 +400,35 @@ describe('AppUpdateService', () => {
     assert.equal(verificationCalls, 2);
   });
 
-  test('replaces a stale check error with a later download or provenance failure', async () => {
+  test('keeps repeated errors in the download phase while its promise is pending', async () => {
     const { service, updater } = createHarness();
-    updater.emit('error', new Error('temporary network failure'));
-    const firstStatus = service.getStatus();
-    assert.equal(firstStatus.state, 'error');
-    assert.equal(firstStatus.state === 'error' ? firstStatus.operation : undefined, 'check');
+    let finishDownload!: (paths: string[]) => void;
+    const downloadPromise = new Promise<string[]>((resolve) => { finishDownload = resolve; });
+    updater.checkForUpdates = async () => {
+      updater.emit('checking-for-update');
+      updater.emit('update-available', updateInfo('1.1.0'));
+      return { isUpdateAvailable: true, downloadPromise };
+    };
 
-    updater.emit('update-available', updateInfo('1.1.0'));
-    updater.emit('error', new Error('root was signed by 0/3 keys'));
+    try {
+      await service.checkForUpdatesNow();
+      updater.emit('error', new Error('temporary download failure'));
+      assert.equal(service.getStatus().state, 'error');
+      // 首次错误已覆盖可见阶段，第二次错误只能由尚未结束的下载任务判定阶段。
+      updater.emit('error', new Error('root was signed by 0/3 keys'));
 
-    assert.deepEqual(service.getStatus(), {
-      state: 'error',
-      currentVersion: '1.0.0',
-      latestVersion: '1.1.0',
-      operation: 'download',
-      message: 'root was signed by 0/3 keys',
-    });
+      assert.deepEqual(service.getStatus(), {
+        state: 'error',
+        currentVersion: '1.0.0',
+        latestVersion: '1.1.0',
+        operation: 'download',
+        message: 'root was signed by 0/3 keys',
+      });
+    } finally {
+      finishDownload([]);
+      await settleUpdateVerification();
+      service.dispose();
+    }
   });
 
   test('cancels a stalled auto-download before retrying it', async () => {
