@@ -61,10 +61,6 @@ test('remote Project capabilities do not dispatch Client-local actions', async (
   globalThis.window = {
     maka: {
       projects: {
-        add: async () => {
-          clientActionCalls += 1;
-          return { ok: false, reason: 'cancelled' };
-        },
         select: async () => {
           clientActionCalls += 1;
           return { project: null, path: '' };
@@ -80,7 +76,6 @@ test('remote Project capabilities do not dispatch Client-local actions', async (
   try {
     const actions = createTestProjectActions(actionsModule);
 
-    assert.equal(await actions.addProject(), null);
     await actions.selectNoProject();
     assert.equal(await actions.relinkProject('remote'), null);
     assert.equal(clientActionCalls, 0);
@@ -98,6 +93,7 @@ test('Project errors preserve the Host authority of the failed operation', async
     error: (_title: string, _description?: string, _details?: string, target?: unknown) => {
       diagnosticTargets.push(target);
     },
+    confirm: async () => false,
   };
   globalThis.window = {
     maka: {

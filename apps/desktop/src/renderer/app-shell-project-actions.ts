@@ -57,7 +57,6 @@ type ToastApi = {
 
 export interface AppShellProjectActions {
   refreshProjects(): Promise<ProjectRecord[]>;
-  addProject(): Promise<ProjectRecord | null>;
   selectProject(projectId: string): Promise<boolean>;
   selectNoProject(): Promise<void>;
   prepareDefaultProject(): Promise<boolean>;
@@ -146,42 +145,6 @@ export function createAppShellProjectActions(deps: {
     const selected = await window.maka.projects.select(project.id, host);
     if (!selected.project) return false;
     return applySelectedProject(selected.project, selected.path, notify, host);
-  }
-
-  async function addProject(): Promise<ProjectRecord | null> {
-    if (!projectCapabilities.chooseClientDirectory) return null;
-    if (projectPickerPendingRef.current) return null;
-    const requestId = projectPickerRequestRef.current + 1;
-    projectPickerRequestRef.current = requestId;
-    projectPickerPendingRef.current = true;
-    setProjectPickerPending(true);
-    const isCurrentProjectPickerRequest = () =>
-      rendererMountedRef.current && projectPickerRequestRef.current === requestId;
-    try {
-      const result = await runOnDefaultRuntimeHost(async (host) => {
-        const added = await window.maka.projects.add(host);
-        if (!added.ok) return added;
-        await applySelectedProject(added.project, added.path, true, host);
-        return added;
-      });
-      if (!isCurrentProjectPickerRequest()) return null;
-      if (!result.value.ok) return null;
-      return result.value.project;
-    } catch (error) {
-      if (isCurrentProjectPickerRequest()) {
-        showDefaultProjectError(
-          copy.selectDirectoryFailedTitle,
-          localizedShellErrorMessage(error, copy.readPathFailedFallback, uiLocale),
-          error,
-        );
-      }
-      return null;
-    } finally {
-      if (projectPickerRequestRef.current === requestId) {
-        projectPickerPendingRef.current = false;
-        if (rendererMountedRef.current) setProjectPickerPending(false);
-      }
-    }
   }
 
   async function selectProject(projectId: string): Promise<boolean> {
@@ -400,7 +363,6 @@ export function createAppShellProjectActions(deps: {
 
   return {
     refreshProjects,
-    addProject,
     selectProject,
     selectNoProject,
     prepareDefaultProject,

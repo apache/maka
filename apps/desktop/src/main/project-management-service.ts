@@ -31,7 +31,8 @@ type DirectoryActionResult =
   | { ok: false; reason: 'cancelled' };
 type SelectedDirectoryActionResult =
   | { ok: true; project: ProjectRecord; path: string }
-  | { ok: false; reason: 'cancelled' };
+  | { ok: false; reason: 'cancelled' }
+  | { ok: false; reason: 'archived'; projectId: string };
 
 export interface ProjectManagementService {
   current(): Promise<CurrentProjectSelection>;
@@ -122,6 +123,9 @@ export function createProjectManagementService(deps: {
       const path = await deps.chooseDirectory();
       if (!path) return { ok: false, reason: 'cancelled' };
       const project = await deps.catalog.register(path);
+      if (project.archivedAt !== undefined) {
+        return { ok: false, reason: 'archived', projectId: project.id };
+      }
       const selected = requireSelectableProject(project);
       if (options?.select !== false) {
         deps.selection.setSelection(selected.id, selected.preferredPath);

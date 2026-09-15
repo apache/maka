@@ -283,6 +283,10 @@ export type SettingsProjectsCopy = {
   section: string;
   sectionHelp: string;
   addProject: string;
+  archivedProjectTitle: string;
+  archivedProjectDescription: string;
+  archivedProjectRestore: string;
+  archivedProjectCancel: string;
   defaultBadge: string;
   setDefault: string;
   setDefaultTitle: string;
@@ -641,6 +645,10 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
     // happens before they set one.
     sectionHelp: '新任务默认打开此项目；未设置时沿用上次使用的项目。任何任务都能在输入框旁临时切换。',
     addProject: '添加项目',
+    archivedProjectTitle: '项目已归档',
+    archivedProjectDescription: '该项目已归档，是否需要恢复？',
+    archivedProjectRestore: '恢复',
+    archivedProjectCancel: '取消',
     defaultBadge: '默认',
     setDefault: '设为默认',
     setDefaultTitle: '新任务默认打开这个项目',
@@ -979,6 +987,10 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
     // happens before they set one.
     sectionHelp: '新任務預設開啟此專案；未設定時沿用上次使用的專案。任何任務都能在輸入框旁臨時切換。',
     addProject: '新增專案',
+    archivedProjectTitle: '專案已歸檔',
+    archivedProjectDescription: '該專案已歸檔，是否需要恢復？',
+    archivedProjectRestore: '恢復',
+    archivedProjectCancel: '取消',
     defaultBadge: '預設',
     setDefault: '設為預設',
     setDefaultTitle: '新任務預設開啟這個專案',
@@ -1335,6 +1347,10 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
     sectionHelp:
       'New tasks open in the default project; without one, they reuse the project you last used. You can switch any task to a different project next to the input box.',
     addProject: 'Add project',
+    archivedProjectTitle: 'Project archived',
+    archivedProjectDescription: 'This project is archived. Restore it?',
+    archivedProjectRestore: 'Restore',
+    archivedProjectCancel: 'Cancel',
     defaultBadge: 'Default',
     setDefault: 'Set as default',
     setDefaultTitle: 'Open new tasks in this project',
