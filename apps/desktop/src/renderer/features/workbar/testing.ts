@@ -34,7 +34,6 @@ export * from './tools/artifacts/artifact-list-keyboard.js';
 export * from './tools/artifacts/artifact-visibility.js';
 export * from './tools/inspector/session-inspector-panel-model.js';
 export {
-  compactNumberFormatter,
   InspectorCompositionSection,
   RING_ACTIVE_MIN_SWEEP,
   RING_MIN_SWEEP,

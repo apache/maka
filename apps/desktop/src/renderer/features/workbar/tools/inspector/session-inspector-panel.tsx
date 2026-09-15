@@ -27,7 +27,7 @@ import { Section } from '@astryxdesign/core/Section';
 import { Text } from '@astryxdesign/core/Text';
 import { uiLocaleToIntlLocale, type UiLocale } from '@maka/core/ui-locale';
 import { traceTurnIdentityKey } from '@maka/core/session-trace';
-import { useToast, useUiLocale } from '@maka/ui';
+import { formatCompactTokenCount, useToast, useUiLocale } from '@maka/ui';
 import { ICON_SIZE, Activity, AlertTriangle, Copy } from '@maka/ui/icons';
 import {
   getDesktopConversationCopy,
@@ -273,7 +273,6 @@ function InspectorOverview(props: {
 }) {
   const { copy, overview } = props;
   const formatNumber = numberFormatter(props.locale);
-  const formatCompactNumber = compactNumberFormatter(props.locale);
   const context = overview.context;
   // Local bindings so the JSX guards narrow into the map callbacks below.
   const tokenUsage = overview.tokenUsage;
@@ -305,7 +304,7 @@ function InspectorOverview(props: {
             kind: segment.kind,
             label: copy.tokenUsage.segment[segment.kind],
             swatch: `token-${segment.kind}`,
-            value: `${formatCompactNumber(segment.tokens)} · ${formatPercent(
+            value: `${formatCompactTokenCount(segment.tokens)} · ${formatPercent(
               segment.tokens / tokenUsage.total,
             )}`,
           }))}
@@ -358,7 +357,6 @@ function InspectorOverview(props: {
         <InspectorContextSection
           copy={copy}
           context={context}
-          formatCompactNumber={formatCompactNumber}
           formatNumber={formatNumber}
         />
       )}
@@ -627,10 +625,9 @@ function FactRow(props: {
 function InspectorContextSection(props: {
   copy: InspectorCopy;
   context: NonNullable<ReturnType<typeof deriveInspectorOverviewModel>['context']>;
-  formatCompactNumber: (value: number) => string;
   formatNumber: (value: number) => string;
 }) {
-  const { context, copy, formatCompactNumber, formatNumber } = props;
+  const { context, copy, formatNumber } = props;
   const level = context.ratio >= 0.9 ? 'error' : context.ratio >= 0.7 ? 'warning' : undefined;
 
   return (
@@ -640,7 +637,7 @@ function InspectorContextSection(props: {
           {copy.overview.context}
         </Heading>
         <span className="maka-inspector-section-readout">
-          {formatCompactNumber(context.usedTokens)} / {formatCompactNumber(context.windowTokens)} ·{' '}
+          {formatCompactTokenCount(context.usedTokens)} / {formatCompactTokenCount(context.windowTokens)} ·{' '}
           {formatPercent(context.ratio)}
         </span>
       </div>
@@ -786,19 +783,6 @@ export function InspectorCompositionSection(props: {
 function numberFormatter(locale: UiLocale): (value: number) => string {
   const formatter = new Intl.NumberFormat(uiLocaleToIntlLocale(locale));
   return (value) => formatter.format(value);
-}
-
-export function compactNumberFormatter(_locale: UiLocale): (value: number) => string {
-  return (value) => {
-    if (value < 1_000) return String(value);
-
-    if (value < 1_000_000) {
-      const thousands = Math.round(value / 100) / 10;
-      return thousands >= 1_000 ? '1M' : `${thousands}K`;
-    }
-
-    return `${Math.round(value / 100_000) / 10}M`;
-  };
 }
 
 function formatPercent(ratio: number): string {

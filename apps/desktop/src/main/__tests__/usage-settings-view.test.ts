@@ -163,6 +163,49 @@ const flush = async () => {
 };
 
 describe('Usage feature scope', () => {
+  it('renders large token totals and breakdowns in compact form on the Usage page', async () => {
+    const { container, root } = setupDom();
+    const base = mergeSettings(createDefaultSettings(), {
+      usage: { range: '24h', activeTab: 'providers' },
+    });
+    const stats = statsWithRequests(1);
+    Object.assign(stats.summary, {
+      totalTokens: 12_647_391,
+      inputTokens: 12_497_391,
+      outputTokens: 150_000,
+      cacheTokens: 10_000_000,
+      cacheMiss: 2_497_391,
+      cacheRead: 9_500_000,
+      cacheCreation: 500_000,
+    });
+    const services: UsageServices = {
+      loadUsageStats: async () => stats,
+      updateUsageSettings: async (patch) => mergeSettings(base, { usage: patch }).usage,
+    };
+
+    try {
+      await act(async () => {
+        root.render(tree({ active: true, settings: base, targetKey: 'hostA:1', services }));
+        await flush();
+      });
+
+      const tiles = Array.from(container.querySelectorAll('[data-slot="stat-tile"]'));
+      for (const [label, value, detail] of [
+        ['Total tokens', '12.6M', 'Input 12.5M / output 150K'],
+        ['Cache tokens', '10M', 'New 2.5M / hit 9.5M / created 500K'],
+      ]) {
+        const tile = tiles.find(
+          (element) => element.querySelector('[data-slot="stat-tile-label"]')?.textContent === label,
+        );
+        assert.ok(tile, `${label} tile should render`);
+        assert.equal(tile.querySelector('[data-slot="stat-tile-value"]')?.textContent, value);
+        assert.equal(tile.querySelector('[data-slot="stat-tile-detail"]')?.textContent, detail);
+      }
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
   it('re-displays the last snapshot immediately when returning to the section, then refreshes', async () => {
     const { container, root } = setupDom();
     const base: AppSettings = mergeSettings(createDefaultSettings(), {
