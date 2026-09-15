@@ -129,10 +129,18 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
       if (version === revealVersion) writeToTail();
       return;
     }
-    // Keep the browser's existing reading anchor. A JS scrollTop correction
-    // also moves Chromium's pressed-thumb origin, so the next native move can
-    // undo it. Native scroll anchoring preserves that origin through layout.
+    // At the scroll origin Chromium does not establish a native anchor. Keep
+    // the existing first row there; everywhere else native anchoring owns the
+    // correction, including the pressed thumb's input origin.
+    const anchor = target.scrollTop === 0
+      ? target.querySelector<HTMLElement>('[data-turn-id]') : null;
+    const anchorId = anchor?.dataset.turnId;
+    const anchorTop = anchor?.getBoundingClientRect().top;
     flushSync(commit);
+    if (pinned || version !== revealVersion || root !== target || anchorTop === undefined) return;
+    if (anchor?.isConnected && anchor.dataset.turnId === anchorId) {
+      target.scrollTop += anchor.getBoundingClientRect().top - anchorTop;
+    }
   };
   let readingTurnId: string | undefined;
   let snapshot: TranscriptScrollSnapshot = { pinned, awayFromTail, readingTurnId };

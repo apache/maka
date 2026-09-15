@@ -213,26 +213,30 @@ test('range publication leaves native input and reading geometry with the browse
   });
 });
 
-test('an explicit reveal during range publication outranks the old reading anchor', () => {
+test('explicit navigation during range publication outranks the old reading anchor', () => {
   withObservers(() => {
-    const root = fakeRoot();
-    root.turns = [{ turnId: 'old', top: 0, height: 400 }];
-    const anchor = {
-      dataset: { turnId: 'old' },
-      getBoundingClientRect: () => ({ top: -root.scrollTop, bottom: 400 - root.scrollTop }),
-    };
-    root.querySelectorAll = () => [anchor];
-    Object.assign(root, { querySelector: () => anchor });
-    const authority = createTranscriptScrollAuthority();
-    const detach = authority.attach(root as unknown as HTMLElement);
-    authority.releasePin();
-    root.scrollTop = 0;
-    authority.commitRange(() => {
-      authority.revealTurn({ scrollIntoView: () => { root.scrollTop = 1_200; } } as unknown as HTMLElement,
-        { block: 'start' });
-    });
-    assert.equal(root.scrollTop, 1_200);
-    detach();
+    for (const command of ['reveal', 'tail'] as const) {
+      const root = fakeRoot();
+      root.turns = [{ turnId: 'old', top: 0, height: 400 }];
+      const anchor = {
+        isConnected: true,
+        dataset: { turnId: 'old' },
+        getBoundingClientRect: () => ({ top: -root.scrollTop, bottom: 400 - root.scrollTop }),
+      };
+      root.querySelectorAll = () => [anchor];
+      Object.assign(root, { querySelector: () => anchor });
+      const authority = createTranscriptScrollAuthority();
+      const detach = authority.attach(root as unknown as HTMLElement);
+      authority.releasePin();
+      root.scrollTop = 0;
+      authority.commitRange(() => {
+        if (command === 'tail') authority.pinToTail();
+        else authority.revealTurn({ scrollIntoView: () => { root.scrollTop = 1_200; } } as unknown as HTMLElement,
+          { block: 'start' });
+      });
+      assert.equal(root.scrollTop, command === 'tail' ? root.scrollHeight - root.clientHeight : 1_200);
+      detach();
+    }
   });
 });
 

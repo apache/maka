@@ -74,6 +74,7 @@ test('native thumb preserves a cold reader while admitting Host history', async 
             done: false,
             pointerDown: 0,
             pointerUp: 0,
+            originVisits: 0,
             readingId: undefined as string | undefined,
             sample: undefined as number | undefined,
             frames: [] as Array<{
@@ -88,6 +89,9 @@ test('native thumb preserves a cold reader while admitting Host history', async 
             }>,
           };
           (window as any).__windowGeometry = state;
+          root.addEventListener('scroll', () => {
+            if (state.held && root.scrollTop === 0) state.originVisits++;
+          }, { capture: true });
           root.addEventListener('pointerdown', () => {
             state.pointerDown++;
             state.held = true;
@@ -135,10 +139,12 @@ test('native thumb preserves a cold reader while admitting Host history', async 
           buttons: 1,
           clickCount: 1,
         });
-        const visible = (sample?: number) => page.evaluate((sample) => {
+        const visible = (sample?: number, anchorId?: string) => page.evaluate(({ sample, anchorId }) => {
           const root = document.querySelector('[data-chat-scroll-container]')!;
           const view = root.getBoundingClientRect();
-          const turn = [...root.querySelectorAll<HTMLElement>('.maka-turn[data-turn-id]')].find((el) => {
+          const turn = anchorId
+            ? root.querySelector<HTMLElement>(`.maka-turn[data-turn-id="${anchorId}"]`)
+            : [...root.querySelectorAll<HTMLElement>('.maka-turn[data-turn-id]')].find((el) => {
             const box = el.getBoundingClientRect();
             return box.height > 0 && box.width > 0 && box.bottom > view.top && box.top < view.bottom;
           });
@@ -150,12 +156,15 @@ test('native thumb preserves a cold reader while admitting Host history', async 
             id: turn?.dataset.turnId, top: turn?.getBoundingClientRect().top,
             scrollHeight: root.scrollHeight, scrollTop: root.scrollTop,
           };
-        }, sample);
+        }, { sample, anchorId });
         const stationary: Array<{ before: Awaited<ReturnType<typeof visible>>; after: Awaited<ReturnType<typeof visible>> }> = [];
-        for (let step = 1; step <= 16; step++) {
+        const positions = [10, 6, 10, 4];
+        for (let step = 1; step <= positions.length; step++) {
           await page.evaluate(() => { (window as any).__windowGeometry.sample = undefined; });
-          const progress = step <= 10 ? step : 20 - step;
-          const y = startY + ((start.top + 8 - startY) * progress) / 10;
+          const progress = positions[step - 1];
+          // Cross the real origin, where native anchoring is unavailable,
+          // before reversing the same held thumb.
+          const y = startY + ((start.top + 1 - startY) * progress) / 10;
           await cdp.send('Input.dispatchMouseEvent', {
             type: 'mouseMoved',
             x: start.x,
@@ -166,7 +175,7 @@ test('native thumb preserves a cold reader while admitting Host history', async 
           await page.waitForTimeout(50);
           const before = await visible(step);
           await page.waitForTimeout(300);
-          const after = await visible();
+          const after = await visible(undefined, before.id);
           stationary.push({ before, after });
         }
         await page.waitForTimeout(400);
@@ -180,7 +189,7 @@ test('native thumb preserves a cold reader while admitting Host history', async 
           if (index > 0) {
             const previous = Number(stationary[index - 1].after.id!.split('-').at(-1));
             const current = Number(before.id!.split('-').at(-1));
-            if (index < 10) expect(current, 'upward input must not move toward newer Turns').toBeLessThanOrEqual(previous);
+            if (positions[index] > positions[index - 1]) expect(current, 'upward input must not move toward newer Turns').toBeLessThanOrEqual(previous);
             else expect(current, 'reversing input must move toward newer Turns').toBeGreaterThanOrEqual(previous);
           }
         }
@@ -201,7 +210,7 @@ test('native thumb preserves a cold reader while admitting Host history', async 
         await cdp.send('Input.dispatchMouseEvent', {
           type: 'mouseReleased',
           x: start.x,
-          y: startY + (start.top + 8 - startY) * 0.4,
+          y: startY + (start.top + 1 - startY) * 0.4,
           button: 'left',
           buttons: 0,
           clickCount: 1,
@@ -228,6 +237,7 @@ test('native thumb preserves a cold reader while admitting Host history', async 
           state.done = true;
           return state;
         });
+        expect(result.originVisits, 'the held thumb must exercise the scroll origin').toBeGreaterThan(0);
         const held = result.frames.filter((f: any) => f.held);
         await test.info().attach('scroll-geometry-frames', {
           body: JSON.stringify(result),
