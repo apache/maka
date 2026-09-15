@@ -559,6 +559,9 @@ const guestSessionMountService = createDesktopGuestSessionMountService({
     if (!state) return undefined;
     return {
       readiness: state.readiness,
+      connectionEpoch: state.readiness === 'ready'
+        ? JSON.stringify([state.epoch, state.candidate.client.hostEpoch])
+        : state.epoch,
       ...(state.readiness !== 'ready' && state.error ? { error: state.error } : {}),
       ...(state.readiness === 'ready' && state.candidate.client.peerPath
         ? { peerPath: state.candidate.client.peerPath }
@@ -1178,6 +1181,7 @@ const createLocalRuntimeHostManager = () => createRuntimeHostDesktopManager(
     onTargetStateChanged: (state) => {
       const localTarget = localSessionTarget(state);
       if (localTarget) {
+        sessionLocal.connectionChanged(localTarget);
         sessionLocalStore.bindAuthority(localTarget.profileId, localTarget.partition);
         if (state.readiness === 'unavailable' && state.error instanceof RuntimeHostProfileConnectionError && state.error.reason === 'credential_rejected') sessionLocal.purge(localTarget);
       }

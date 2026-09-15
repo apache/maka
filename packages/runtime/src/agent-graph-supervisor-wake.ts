@@ -25,6 +25,7 @@ import {
 import type { ContextCompactionOutcome } from '@maka/core/events';
 import { type SessionEvent } from '@maka/core/events';
 import { type UserMessageInput } from '@maka/core/runtime-inputs';
+import type { SessionBackgroundActivity } from '@maka/core/session';
 import type { RuntimeInvocationOutcome } from '@maka/core/runtime-invocation';
 import type {
   GoalTurnOutcome,
@@ -240,6 +241,7 @@ export interface AgentGraphSupervisorWakeInput {
   maxDeliveryAttempts?: number;
   onDiagnostic?(diagnostic: AgentGraphSupervisorWakeDiagnostic): void | Promise<void>;
   onError?(rootSessionId: string, error: unknown): void | Promise<void>;
+  onSessionActivityChanged?(rootSessionId: string): void;
 }
 
 /**
@@ -256,6 +258,10 @@ export class AgentGraphSupervisorWakeCoordinator {
   readonly #tasks = new Set<Promise<void>>();
   readonly #tasksBySession = new Map<string, Set<Promise<void>>>();
   readonly #pendingWakeIds = new Set<string>();
+  readonly #sessionAttention = new Map<string, SessionBackgroundActivity>();
+  readonly #parkedWakeIds = new Map<string, string>();
+  readonly #activityVersions = new Map<string, number>();
+  readonly #publishedActivity = new Map<string, SessionBackgroundActivity>();
   readonly #abortController = new AbortController();
   readonly #sessionAbortControllers = new Map<string, AbortController>();
   readonly #sessionWakeSuppressions = new Map<string, number>();
@@ -270,6 +276,27 @@ export class AgentGraphSupervisorWakeCoordinator {
     }
   }
 
+  /** Includes queued checkpoint delivery before a supervisor Turn is admitted. */
+  readSessionActivity(rootSessionId: string): SessionBackgroundActivity {
+    if (this.#closed || this.#sessionWakesSuppressed(rootSessionId)) return 'idle';
+    const attention = this.#sessionAttention.get(rootSessionId);
+    if (attention === 'waiting_for_user') return attention;
+    if (this.#tasksBySession.has(rootSessionId)) return 'running';
+    return attention ?? 'idle';
+  }
+
+  #publishSessionActivity(rootSessionId: string): void {
+    const activity = this.readSessionActivity(rootSessionId);
+    if ((this.#publishedActivity.get(rootSessionId) ?? 'idle') === activity) return;
+    if (activity === 'idle') this.#publishedActivity.delete(rootSessionId);
+    else this.#publishedActivity.set(rootSessionId, activity);
+    try {
+      this.#input.onSessionActivityChanged?.(rootSessionId);
+    } catch {
+      // A catalog observer never controls wake delivery.
+    }
+  }
+
   notify(
     rootSessionId: string,
     result?: AgentGraphScheduleReconciliationResult,
@@ -281,11 +308,12 @@ export class AgentGraphSupervisorWakeCoordinator {
     ) {
       return undefined;
     }
-    return this.#runTracked(rootSessionId, async (abortSignal) => {
+    return this.#runTracked(rootSessionId, async (abortSignal, setAttention) => {
       try {
-        await this.#wake(rootSessionId, abortSignal, result);
+        await this.#wake(rootSessionId, abortSignal, setAttention, result);
       } catch (error) {
         if (!this.#closed && !isAbortError(error)) {
+          setAttention('blocked');
           await notifyError(this.#input.onError, rootSessionId, error);
         }
       }
@@ -301,11 +329,14 @@ export class AgentGraphSupervisorWakeCoordinator {
    */
   notifyPermissionResponse(rootSessionId: string): Promise<void> | undefined {
     if (this.#closed || this.#sessionWakesSuppressed(rootSessionId)) return undefined;
-    return this.#runTracked(rootSessionId, async (abortSignal) => {
+    this.#sessionAttention.delete(rootSessionId);
+    this.#parkedWakeIds.delete(rootSessionId);
+    return this.#runTracked(rootSessionId, async (abortSignal, setAttention) => {
       try {
-        await this.#settlePermissionResponse(rootSessionId, abortSignal);
+        await this.#settlePermissionResponse(rootSessionId, abortSignal, setAttention);
       } catch (error) {
         if (!this.#closed && !isAbortError(error)) {
+          setAttention('blocked');
           await notifyError(this.#input.onError, rootSessionId, error);
         }
       }
@@ -355,6 +386,11 @@ export class AgentGraphSupervisorWakeCoordinator {
   }
 
   async retireSessions(rootSessionIds: readonly string[]): Promise<number> {
+    for (const rootSessionId of rootSessionIds) {
+      this.#sessionAttention.delete(rootSessionId);
+      this.#parkedWakeIds.delete(rootSessionId);
+      this.#publishSessionActivity(rootSessionId);
+    }
     return this.#input.wakeStore.supersedeAgentGraphSupervisorWakes({
       rootSessionIds,
       reason: 'session_retired',
@@ -365,6 +401,8 @@ export class AgentGraphSupervisorWakeCoordinator {
     if (this.#closed) return;
     this.#closed = true;
     this.#abortController.abort();
+    for (const sessionId of [...this.#publishedActivity.keys()])
+      this.#publishSessionActivity(sessionId);
   }
 
   async close(): Promise<void> {
@@ -372,17 +410,29 @@ export class AgentGraphSupervisorWakeCoordinator {
     await this.waitForIdle();
     this.#sessionAbortControllers.clear();
     this.#tasksBySession.clear();
+    this.#sessionAttention.clear();
+    this.#parkedWakeIds.clear();
+    this.#activityVersions.clear();
   }
 
   async #wake(
     rootSessionId: string,
     abortSignal: AbortSignal,
+    setAttention: (activity: SessionBackgroundActivity) => void,
     result?: AgentGraphScheduleReconciliationResult,
   ): Promise<void> {
     abortSignal.throwIfAborted();
     if (!(await this.#isSessionDeliverable(rootSessionId))) return;
     const snapshot = await this.#input.readSnapshot(rootSessionId);
     abortSignal.throwIfAborted();
+    const parkedWakeId = this.#parkedWakeIds.get(rootSessionId);
+    if (
+      parkedWakeId &&
+      (snapshot.closed || parkedWakeId !== `${snapshot.graphId}:${snapshot.snapshotVersion}`)
+    ) {
+      this.#parkedWakeIds.delete(rootSessionId);
+      setAttention('idle');
+    }
     const wakeDecision = await this.#input.shouldWake?.(rootSessionId, result, snapshot);
     abortSignal.throwIfAborted();
     if (
@@ -403,9 +453,18 @@ export class AgentGraphSupervisorWakeCoordinator {
         snapshotVersion: snapshot.snapshotVersion,
         rootSessionId,
       });
-      if (this.#closed || claimed.wake.status === 'delivered') return;
+      if (this.#closed) return;
+      if (claimed.wake.status === 'delivered') {
+        this.#parkedWakeIds.delete(rootSessionId);
+        setAttention('idle');
+        return;
+      }
+      if (claimed.wake.status === 'waiting_permission') {
+        this.#parkedWakeIds.set(rootSessionId, wakeId);
+        setAttention('waiting_for_user');
+      }
       abortSignal.throwIfAborted();
-      await this.#deliverWake(claimed.wake, snapshot, abortSignal, result);
+      await this.#deliverWake(claimed.wake, snapshot, abortSignal, setAttention, result);
     } finally {
       this.#pendingWakeIds.delete(wakeId);
     }
@@ -414,11 +473,12 @@ export class AgentGraphSupervisorWakeCoordinator {
   #scheduleRecoveredWake(wake: AgentGraphSupervisorWakeRecord): void {
     if (this.#closed || this.#pendingWakeIds.has(wake.wakeId)) return;
     this.#pendingWakeIds.add(wake.wakeId);
-    void this.#runTracked(wake.rootSessionId, async (abortSignal) => {
+    void this.#runTracked(wake.rootSessionId, async (abortSignal, setAttention) => {
       try {
-        await this.#resumeWake(wake, abortSignal);
+        await this.#resumeWake(wake, abortSignal, setAttention);
       } catch (error) {
         if (!this.#closed && !isAbortError(error)) {
+          setAttention('blocked');
           await notifyError(this.#input.onError, wake.rootSessionId, error);
         }
       } finally {
@@ -429,17 +489,41 @@ export class AgentGraphSupervisorWakeCoordinator {
 
   #runTracked(
     rootSessionId: string,
-    operation: (abortSignal: AbortSignal) => Promise<void>,
+    operation: (
+      abortSignal: AbortSignal,
+      setAttention: (activity: SessionBackgroundActivity) => void,
+    ) => Promise<void>,
   ): Promise<void> {
+    // Duplicate checkpoint notifications share the in-flight generation. They
+    // cannot invalidate the outcome of the attempt already holding the wake.
+    const version =
+      (this.#activityVersions.get(rootSessionId) ?? 0) +
+      (this.#tasksBySession.has(rootSessionId) ? 0 : 1);
+    this.#activityVersions.set(rootSessionId, version);
+    if (this.#sessionAttention.get(rootSessionId) !== 'waiting_for_user') {
+      this.#sessionAttention.delete(rootSessionId);
+    }
+    const setAttention = (activity: SessionBackgroundActivity): void => {
+      if (
+        this.#closed ||
+        this.#sessionWakesSuppressed(rootSessionId) ||
+        this.#activityVersions.get(rootSessionId) !== version
+      )
+        return;
+      if (activity === 'idle') this.#sessionAttention.delete(rootSessionId);
+      else this.#sessionAttention.set(rootSessionId, activity);
+      this.#publishSessionActivity(rootSessionId);
+    };
     const residency = this.#input.acquireResidency?.(rootSessionId);
     const abortSignal = this.#sessionAbortSignal(rootSessionId);
     const task = Promise.resolve()
-      .then(() => operation(abortSignal))
+      .then(() => operation(abortSignal, setAttention))
       .finally(() => residency?.release());
     this.#tasks.add(task);
     const sessionTasks = this.#tasksBySession.get(rootSessionId) ?? new Set<Promise<void>>();
     sessionTasks.add(task);
     this.#tasksBySession.set(rootSessionId, sessionTasks);
+    this.#publishSessionActivity(rootSessionId);
     void task.then(
       () => this.#forgetTask(rootSessionId, task),
       () => this.#forgetTask(rootSessionId, task),
@@ -447,7 +531,11 @@ export class AgentGraphSupervisorWakeCoordinator {
     return task;
   }
 
-  async #resumeWake(wake: AgentGraphSupervisorWakeRecord, abortSignal: AbortSignal): Promise<void> {
+  async #resumeWake(
+    wake: AgentGraphSupervisorWakeRecord,
+    abortSignal: AbortSignal,
+    setAttention: (activity: SessionBackgroundActivity) => void,
+  ): Promise<void> {
     abortSignal.throwIfAborted();
     if (!(await this.#isSessionDeliverable(wake.rootSessionId))) {
       await this.#supersedeSession(wake.rootSessionId, 'session_unavailable');
@@ -466,13 +554,14 @@ export class AgentGraphSupervisorWakeCoordinator {
       return;
     }
     abortSignal.throwIfAborted();
-    await this.#deliverWake(wake, snapshot, abortSignal);
+    await this.#deliverWake(wake, snapshot, abortSignal, setAttention);
   }
 
   async #deliverWake(
     wake: AgentGraphSupervisorWakeRecord,
     snapshot: AgentGraphClientSnapshot,
     abortSignal: AbortSignal,
+    setAttention: (activity: SessionBackgroundActivity) => void,
     result?: AgentGraphScheduleReconciliationResult,
   ): Promise<void> {
     const presentation = (await this.#input.renderWake?.(wake.rootSessionId, snapshot, result)) ?? {
@@ -501,6 +590,8 @@ export class AgentGraphSupervisorWakeCoordinator {
           turnId,
         });
         if (!admission.acquired) return;
+        this.#parkedWakeIds.delete(wake.rootSessionId);
+        setAttention('idle');
         if (this.#sessionWakesSuppressed(wake.rootSessionId)) return;
         if (this.#closed) {
           await this.#markRetryable(wake.graphId, wake.wakeId, attemptId, 'host_shutdown');
@@ -534,6 +625,8 @@ export class AgentGraphSupervisorWakeCoordinator {
               attemptId,
               status: 'delivered',
             });
+            this.#parkedWakeIds.delete(wake.rootSessionId);
+            setAttention('idle');
             return;
           }
           if (outcome.kind === 'superseded') {
@@ -553,6 +646,8 @@ export class AgentGraphSupervisorWakeCoordinator {
               attemptId,
               status: 'waiting_permission',
             });
+            this.#parkedWakeIds.set(wake.rootSessionId, wake.wakeId);
+            setAttention('waiting_for_user');
             return;
           }
           lastFailure = wakeOutcomeFailure(outcome);
@@ -690,6 +785,9 @@ export class AgentGraphSupervisorWakeCoordinator {
   }
 
   #supersedeSession(rootSessionId: string, reason: string): Promise<number> {
+    this.#sessionAttention.delete(rootSessionId);
+    this.#parkedWakeIds.delete(rootSessionId);
+    this.#publishSessionActivity(rootSessionId);
     return this.#input.wakeStore.supersedeAgentGraphSupervisorWakes({
       rootSessionIds: [rootSessionId],
       reason,
@@ -725,7 +823,11 @@ export class AgentGraphSupervisorWakeCoordinator {
     return 1;
   }
 
-  async #settlePermissionResponse(rootSessionId: string, abortSignal: AbortSignal): Promise<void> {
+  async #settlePermissionResponse(
+    rootSessionId: string,
+    abortSignal: AbortSignal,
+    setAttention: (activity: SessionBackgroundActivity) => void,
+  ): Promise<void> {
     const activity = await this.#input.activityRegistry.acquire(rootSessionId, abortSignal);
     const retryable: AgentGraphSupervisorWakeRecord[] = [];
     try {
@@ -749,6 +851,8 @@ export class AgentGraphSupervisorWakeCoordinator {
             attemptId,
             status: 'delivered',
           });
+          this.#parkedWakeIds.delete(rootSessionId);
+          setAttention('idle');
           continue;
         }
         retryable.push(
@@ -769,6 +873,10 @@ export class AgentGraphSupervisorWakeCoordinator {
   #beginSessionWakeSuppression(rootSessionId: string): void {
     const count = this.#sessionWakeSuppressions.get(rootSessionId) ?? 0;
     this.#sessionWakeSuppressions.set(rootSessionId, count + 1);
+    this.#activityVersions.set(rootSessionId, (this.#activityVersions.get(rootSessionId) ?? 0) + 1);
+    this.#sessionAttention.delete(rootSessionId);
+    this.#parkedWakeIds.delete(rootSessionId);
+    this.#publishSessionActivity(rootSessionId);
     if (count === 0) {
       const controller = this.#sessionAbortControllers.get(rootSessionId) ?? new AbortController();
       this.#sessionAbortControllers.set(rootSessionId, controller);
@@ -784,6 +892,7 @@ export class AgentGraphSupervisorWakeCoordinator {
       return;
     }
     this.#sessionWakeSuppressions.delete(rootSessionId);
+    this.#publishSessionActivity(rootSessionId);
     if (!this.#tasksBySession.has(rootSessionId)) {
       this.#sessionAbortControllers.delete(rootSessionId);
     }
@@ -812,10 +921,14 @@ export class AgentGraphSupervisorWakeCoordinator {
     this.#tasks.delete(task);
     const sessionTasks = this.#tasksBySession.get(rootSessionId);
     sessionTasks?.delete(task);
-    if (sessionTasks?.size === 0) this.#tasksBySession.delete(rootSessionId);
+    if (sessionTasks?.size === 0) {
+      this.#tasksBySession.delete(rootSessionId);
+      if (!this.#sessionAttention.has(rootSessionId)) this.#activityVersions.delete(rootSessionId);
+    }
     if (!this.#sessionWakesSuppressed(rootSessionId) && !this.#tasksBySession.has(rootSessionId)) {
       this.#sessionAbortControllers.delete(rootSessionId);
     }
+    this.#publishSessionActivity(rootSessionId);
   }
 }
 

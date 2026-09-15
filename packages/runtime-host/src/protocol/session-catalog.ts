@@ -27,6 +27,7 @@ import {
   isSessionToolProfile,
   SESSION_MODEL_ID_MAX_BYTES,
   type PersistedBackendKind,
+  type SessionBackgroundActivity,
   type SessionBlockedReason,
   type SessionStatus,
   type SessionSubagentProjection,
@@ -131,6 +132,7 @@ const PROJECTION_FIELDS = [
   'thinkingLevel',
   'lastReadMessageId',
   'liveRunState',
+  'backgroundActivity',
 ] as const;
 
 export type SessionCatalogRevision = `sha256:${string}`;
@@ -244,6 +246,7 @@ export interface SessionCatalogProjection {
   readonly lastMessagePreview?: string;
   readonly status: SessionStatus;
   readonly liveRunState?: SessionCatalogLiveRunState;
+  readonly backgroundActivity?: SessionBackgroundActivity;
   readonly blockedReason?: SessionBlockedReason;
   readonly statusUpdatedAt?: number;
   readonly parentSessionId?: string;
@@ -285,6 +288,7 @@ export interface SharedSessionCatalogProjection {
   readonly lastMessagePreview?: string;
   readonly status: SessionStatus;
   readonly liveRunState?: SessionCatalogLiveRunState;
+  readonly backgroundActivity?: SessionBackgroundActivity;
   readonly blockedReason?: SessionBlockedReason;
   readonly statusUpdatedAt?: number;
 }
@@ -448,7 +452,14 @@ export function decodeSharedSessionCatalogProjection(
     value,
     'shared Session catalog projection',
     ['kind', 'id', 'revision', 'createdAt', 'activityAt', 'name', 'status'],
-    ['lastMessageAt', 'lastMessagePreview', 'liveRunState', 'blockedReason', 'statusUpdatedAt'],
+    [
+      'lastMessageAt',
+      'lastMessagePreview',
+      'liveRunState',
+      'backgroundActivity',
+      'blockedReason',
+      'statusUpdatedAt',
+    ],
   );
   if (exact.kind !== 'shared_session') throw invalidProtocolFrame('Invalid shared Session kind');
   return {
@@ -462,6 +473,7 @@ export function decodeSharedSessionCatalogProjection(
     ...optionalText(exact, 'lastMessagePreview', SESSION_CATALOG_PREVIEW_MAX_BYTES),
     status: decodeSessionStatus(exact.status),
     ...optionalLiveRunState(exact),
+    ...optionalBackgroundActivity(exact),
     ...optionalBlockedReason(exact),
     ...optionalTimestamp(exact, 'statusUpdatedAt'),
   };
@@ -833,6 +845,7 @@ export function decodeSessionCatalogProjection(value: unknown): SessionCatalogPr
     ...optionalText(record, 'lastMessagePreview', SESSION_CATALOG_PREVIEW_MAX_BYTES),
     status: decodeSessionStatus(record.status),
     ...optionalLiveRunState(record),
+    ...optionalBackgroundActivity(record),
     ...optionalBlockedReason(record),
     ...optionalTimestamp(record, 'statusUpdatedAt'),
     ...optionalEntityId(record, 'parentSessionId'),
@@ -997,6 +1010,21 @@ function optionalBlockedReason(
     throw invalidProtocolFrame('Invalid Session blocked reason');
   }
   return { blockedReason: record.blockedReason };
+}
+
+function optionalBackgroundActivity(
+  record: Record<string, unknown>,
+): Pick<SessionCatalogProjection, 'backgroundActivity'> {
+  const activity = record.backgroundActivity;
+  if (activity === undefined) return {};
+  if (
+    activity !== 'idle' &&
+    activity !== 'running' &&
+    activity !== 'waiting_for_user' &&
+    activity !== 'blocked'
+  )
+    throw invalidProtocolFrame('Invalid Session background activity');
+  return { backgroundActivity: activity };
 }
 
 function optionalLiveRunState(
