@@ -17,6 +17,14 @@
  * under the License.
  */
 
-export { SearchServicesProvider } from './services-context.js';
-export { useShellSearch } from './use-shell-search.js';
-export type { SearchServices } from './services-context.js';
+/**
+ * The turn a Search result asked the transcript to scroll to. The nonce tells
+ * two picks of the same turn apart; the transcript reading-position owner
+ * clears the target when navigation finishes.
+ */
+export interface SearchScrollTarget {
+  readonly sessionId: string;
+  readonly turnId: string;
+  readonly sequence?: number;
+  readonly nonce: number;
+}

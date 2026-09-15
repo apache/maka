@@ -17,14 +17,27 @@
  * under the License.
  */
 
-import type { MakaBridge } from '../../../preload/bridge-contract.js';
-import type { SearchServices } from '../../features/search/index.js';
+/**
+ * The Command Palette's row contract. The palette renders rows; the shell and
+ * its command builders decide what the rows do, so the type is the only thing
+ * the two share.
+ */
 
-export function createDesktopSearchServices(
-  bridge: Pick<MakaBridge, 'search'> = window.maka,
-): SearchServices {
-  return {
-    searchThread: (...args: Parameters<MakaBridge['search']['thread']>) => bridge.search.thread(...args),
-    cancelThread: (requestId: string) => bridge.search.cancelThread(requestId),
+import type { LucideIcon } from '@maka/ui/icons';
+
+export type CommandKind = 'action' | 'session';
+
+export interface Command {
+  id: string;
+  kind: CommandKind;
+  label: string;
+  hint?: string;
+  platformHint?: {
+    apple: string;
+    other: string;
   };
+  group: string;
+  Icon: LucideIcon;
+  keywords?: string[];
+  run(): void | Promise<void>;
 }

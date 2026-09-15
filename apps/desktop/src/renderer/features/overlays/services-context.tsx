@@ -17,17 +17,13 @@
  * under the License.
  */
 
-import type { SearchError, SearchRequest, SearchResult } from '@maka/core/search';
 import { createServicesContext } from '../../application/contracts/feature-services.js';
+import type { OverlaysServices } from './ports.js';
 
-export interface SearchServices {
-  searchThread(request: SearchRequest, requestId?: string): Promise<SearchResult[] | SearchError>;
-  cancelThread(requestId: string): Promise<void>;
-}
+const { Provider, useServices } = createServicesContext<OverlaysServices>('OverlaysServicesProvider');
 
-const { Provider, useServices } = createServicesContext<SearchServices>('SearchServicesProvider');
+export const OverlaysServicesProvider = Provider;
 
-export const SearchServicesProvider = Provider;
-export function useSearchServices(): SearchServices {
+export function useOverlaysServices(): OverlaysServices {
   return useServices();
 }

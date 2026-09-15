@@ -17,9 +17,12 @@
  * under the License.
  */
 
-import type { ComponentProps } from 'react';
-import { AppShell as LegacyAppShell } from '../app-shell';
-import { WorkHubRoot, WorkHubSurfaceSwitch } from '../features/workhub';
-export function AppShell(props: ComponentProps<typeof LegacyAppShell>) {
-  return <WorkHubSurfaceSwitch main={<LegacyAppShell {...props} />} workhub={<WorkHubRoot />} />;
-}
+export { OverlaysServicesProvider } from './services-context.js';
+export { OverlaysRoot } from './ui/overlays-root.js';
+export { OverlaysConsumer } from './ui/overlays-context.js';
+export { KeyboardHelpModal } from './ui/keyboard-help-modal.js';
+export { CommandPalette } from './ui/command-palette.js';
+export { SearchModalHost } from './ui/search-modal-host.js';
+export type { OverlaysServices } from './ports.js';
+export type { Command } from './model/command.js';
+export type { OverlaysShellProjection } from './model/overlays-projection.js';

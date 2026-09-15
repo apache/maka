@@ -17,27 +17,21 @@
  * under the License.
  */
 
-/**
- * Shared types for the Command Palette. Pulled out of
- * `command-palette.tsx` so non-JSX consumers can import them under the
- * main-process tsconfig that does not compile JSX.
- */
+import { createContext, useContext, type ReactNode } from 'react';
+import type { OverlaysShellProjection } from '../model/overlays-projection.js';
 
-import type { LucideIcon } from '@maka/ui/icons';
+export const OverlaysContext = createContext<OverlaysShellProjection | null>(null);
 
-export type CommandKind = 'action' | 'session';
+/** Reads the overlays; a mount outside `OverlaysRoot` is a bug, not a quiet idle. */
+export function useOverlays(): OverlaysShellProjection {
+  const overlays = useContext(OverlaysContext);
+  if (!overlays) throw new Error('OverlaysRoot is missing');
+  return overlays;
+}
 
-export interface Command {
-  id: string;
-  kind: CommandKind;
-  label: string;
-  hint?: string;
-  platformHint?: {
-    apple: string;
-    other: string;
-  };
-  group: string;
-  Icon: LucideIcon;
-  keywords?: string[];
-  run(): void | Promise<void>;
+/** The overlay layer's read of the overlays, as a component so it owns no hook of its own. */
+export function OverlaysConsumer(props: {
+  readonly children: (overlays: OverlaysShellProjection) => ReactNode;
+}): ReactNode {
+  return props.children(useOverlays());
 }
