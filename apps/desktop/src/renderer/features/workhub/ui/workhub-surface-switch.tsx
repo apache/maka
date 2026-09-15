@@ -20,17 +20,15 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { AstryxLocaleProvider, LocaleProvider, ToastProvider } from '@maka/ui';
 import { useWorkHubServices } from '../services.js';
-import type { SessionWorkspaceComponent } from '../../../application/contracts/session-workspace.js';
-import { WorkHubRoot } from './workhub-root.js';
 
-export function WorkHubSurfaceSwitch({ main, workspace }: { main: ReactNode; workspace: SessionWorkspaceComponent }) {
+export function WorkHubSurfaceSwitch({ main, workhub }: { main: ReactNode; workhub: ReactNode }) {
   const services = useWorkHubServices();
-  return services.surface === 'workhub' ? <WorkHubApplication workspace={workspace} /> : main;
+  return services.surface === 'workhub' ? <WorkHubApplication>{workhub}</WorkHubApplication> : main;
 }
-function WorkHubApplication({ workspace }: { workspace: SessionWorkspaceComponent }) {
+function WorkHubApplication({ children }: { children: ReactNode }) {
   const services = useWorkHubServices();
   const [locale, setLocale] = useState(services.initialLocale);
   useEffect(() => services.subscribeAppearance(setLocale), [services]);
   useEffect(() => { void services.presentation.ready(); }, [services]);
-  return <LocaleProvider locale={locale}><AstryxLocaleProvider><ToastProvider><WorkHubRoot workspace={workspace} /></ToastProvider></AstryxLocaleProvider></LocaleProvider>;
+  return <LocaleProvider locale={locale}><AstryxLocaleProvider><ToastProvider>{children}</ToastProvider></AstryxLocaleProvider></LocaleProvider>;
 }

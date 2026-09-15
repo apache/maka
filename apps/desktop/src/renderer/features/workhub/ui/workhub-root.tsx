@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { ChatSurfaceLayout, UserQuestionPrompt, MakaWordmark, useUiLocale, type ComposerHandle } from '@maka/ui';
 import { Button, IconButton } from '@astryxdesign/core';
 import { ChevronDown, PictureInPicture2, Undo2, X } from '@maka/ui/icons';
@@ -29,7 +29,7 @@ import { WorkHubComposer } from './workhub-composer.js';
 import { WorkHubConversation } from './workhub-conversation.js';
 import { FormInteractionPrompt } from '@maka/ui';
 import { WorkHubNavigationRail } from './workhub-navigation-rail.js';
-import { WorkHubHighlightProvider, WorkHubHighlightContext, WorkHubHueProvider } from './workhub-work-identity.js';
+import { useWorkHubHighlightState, WorkHubHighlightContext, WorkHubHueProvider } from './workhub-work-identity.js';
 import { getWorkHubRailCopy } from '../../../locales/workhub-copy.js';
 import { useWorkHubController } from '../controller/use-workhub-controller.js';
 import type { WorkHubControlSnapshot } from '../../../../shared/workhub-control.js';
@@ -69,13 +69,9 @@ function revealWordmark(element: HTMLDivElement | null, content: HTMLDivElement 
   }
 }
 
-export function WorkHubRoot({ workspace }: { workspace: SessionWorkspaceComponent }) {
-  return <WorkHubHighlightProvider><WorkHubContents workspace={workspace} /></WorkHubHighlightProvider>;
-}
-
-function WorkHubContents({ workspace: Workspace }: { workspace: SessionWorkspaceComponent }) {
-  const { selectWork } = useContext(WorkHubHighlightContext);
-  const controller = useWorkHubController(() => selectWork(undefined));
+export function WorkHubRoot({ workspace: Workspace }: { workspace: SessionWorkspaceComponent }) {
+  const highlight = useWorkHubHighlightState();
+  const controller = useWorkHubController(() => highlight.selectWork(undefined));
   const { services, session, transcript, busy } = controller;
   const sessionIds = useMemo(() => controller.sessionId
     ? new Set([...controller.sessions.map((candidate) => candidate.id), controller.sessionId])
@@ -277,6 +273,7 @@ function WorkHubContents({ workspace: Workspace }: { workspace: SessionWorkspace
     void task.catch(controller.report);
   };
   return (
+    <WorkHubHighlightContext.Provider value={highlight}>
     <WorkHubHueProvider sessionIds={[...tasks.map((task) => task.target.sessionId), ...delegatedSessionIds]}>
     <section ref={surface} data-progress={progress} data-progress-editing={editingProgress} className="workHubLive workhub-surface" data-placement={presentation?.placement ?? 'docked'} data-conversation-expanded={showConversation} aria-label={t.title}>
       {progress && <WorkHubProgressCard ref={progressHeader} request={presentation.progressRequest!} control={control} liveTurn={controller.liveTurn} messages={transcript.messages} busy={Boolean(controller.activeTurn) || controller.sending} onOpen={() => {
@@ -413,5 +410,6 @@ function WorkHubContents({ workspace: Workspace }: { workspace: SessionWorkspace
       </Workspace>
     </section>
     </WorkHubHueProvider>
+    </WorkHubHighlightContext.Provider>
   );
 }
