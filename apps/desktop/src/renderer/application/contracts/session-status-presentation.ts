@@ -68,6 +68,11 @@ export function isActionableBlocked(reason: SessionBlockedReason | undefined): b
  * (`active`), so every display consumer agrees on the same projection.
  */
 export function normalizeSessionSummaryForDisplay<T extends SessionSummary & { localState?: 'pending' | 'cached' }>(session: T): T {
+  // Cached history cannot establish whether child work is still running or waiting.
+  if (session.localState === 'cached' && session.backgroundActivity !== undefined) {
+    const { backgroundActivity: _backgroundActivity, ...cached } = session;
+    session = cached as T;
+  }
   const liveNormalized: T =
     session.status === 'running' && (session.runningTurnIds?.length === 0 || session.localState === 'cached')
       ? ({ ...session, status: 'active' as const } as T)

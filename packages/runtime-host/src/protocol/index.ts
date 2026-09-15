@@ -104,7 +104,8 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 208 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 212 as const;
+// 212: Session catalogs carry Host-owned background activity; older closed decoders reject it.
 // 208: Usage queries filter by model call kind. Epoch-207 peers reject the
 // filter or ignore it.
 // 206: `storage.retention.query` and `storage.retention.set` read and change the

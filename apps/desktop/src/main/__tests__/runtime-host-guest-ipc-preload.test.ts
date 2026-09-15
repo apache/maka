@@ -24,7 +24,8 @@ import { runInNewContext } from 'node:vm';
 import test from 'node:test';
 import { build } from 'esbuild';
 import { deferred } from '@maka/core/test-only/async-primitives';
-import type { MakaBridge } from '../../preload/bridge-contract.js';
+import type { DesktopSessionSummary, MakaBridge } from '../../preload/bridge-contract.js';
+import { normalizeSessionSummaryForDisplay } from '../../renderer/session-status-presentation.js';
 
 test('onboarding and workspace search never fan out Owner IPC to a ready Guest', async () => {
   const owner = {
@@ -107,4 +108,72 @@ test('onboarding and workspace search never fan out Owner IPC to a ready Guest',
   for (const channel of ['onboarding:getSnapshot', 'search:recall', 'search:recall:cancel']) {
     assert.equal(calls.filter(call => call.channel === channel && call.hostId === owner.hostId).length, 1);
   }
+});
+
+test('the actual Guest preload preserves cached history without projecting its old running state', async () => {
+  const owner = { hostId: 'owner', targetEpoch: 'epoch', profileId: 'local', profileName: 'Local',
+    profileKind: 'local', profileAccess: 'owner', readiness: 'ready' };
+  let readiness = 'ready';
+  let sessionState: 'live' | 'cached' | undefined = 'live';
+  const session = {
+    kind: 'shared_session', id: 'shared', revision: 1, createdAt: 1, activityAt: 1,
+    name: 'Shared graph', status: 'running', backgroundActivity: 'running',
+    liveRunState: { schemaVersion: 1, runningTurnIds: ['own-turn'] },
+  };
+  const ipcRenderer = {
+    on() {}, off() {}, send() {},
+    async invoke(channel: string) {
+      switch (channel) {
+        case 'runtime-host:identities': return [{ ...owner, epoch: owner.targetEpoch, isDefault: true }];
+        case 'session-local:catalog': return [{ scope: owner, sessions: [], authoritative: true }];
+        case 'session-collaboration:mount:list': return [{
+          mountId: 'guest', name: 'Guest', hostId: 'guest-host', readiness, sessionState, session,
+        }];
+        default: throw new Error(`Unexpected channel: ${channel}`);
+      }
+    },
+  };
+  let bridge: MakaBridge | undefined;
+  const bundle = await build({
+    entryPoints: [fileURLToPath(new URL('../../../src/preload/preload.ts', import.meta.url))],
+    bundle: true, write: false, platform: 'node', format: 'cjs', external: ['electron'],
+  });
+  const require = createRequire(import.meta.url);
+  runInNewContext(bundle.outputFiles[0]!.text, {
+    require: (id: string) => id === 'electron' ? {
+      ipcRenderer,
+      contextBridge: { exposeInMainWorld: (name: string, value: MakaBridge) => {
+        if (name === 'maka') bridge = value;
+      } },
+    } : require(id),
+    process: { env: {} }, Buffer, console, setTimeout, clearTimeout, TextEncoder, TextDecoder,
+    crypto: globalThis.crypto,
+  });
+  assert.ok(bridge);
+  const live = (await bridge.sessions.list())[0]!;
+  assert.equal(live.backgroundActivity, 'running');
+  assert.equal(live.runningTurnIds?.[0], 'own-turn');
+  assert.equal(live.localState, undefined);
+  for (const state of [
+    { readiness: 'reconnecting', sessionState: 'live' as const },
+    { readiness: 'ready', sessionState: 'cached' as const },
+    { readiness: 'unavailable', sessionState: 'cached' as const },
+    { readiness: 'ready', sessionState: undefined },
+  ]) {
+    readiness = state.readiness;
+    sessionState = state.sessionState;
+    const cached: DesktopSessionSummary = normalizeSessionSummaryForDisplay((await bridge.sessions.list())[0]!);
+    assert.equal(cached.name, 'Shared graph');
+    assert.equal(cached.localState, 'cached');
+    assert.equal(cached.backgroundActivity, undefined);
+    assert.equal(cached.runningTurnIds, undefined);
+    assert.equal(cached.status, 'active', 'cached persisted running cannot supply the fallback pulse');
+  }
+  readiness = 'ready';
+  sessionState = 'live';
+  session.backgroundActivity = 'idle';
+  session.liveRunState.runningTurnIds = [];
+  const settled = (await bridge.sessions.list())[0]!;
+  assert.equal(settled.localState, undefined);
+  assert.equal(settled.backgroundActivity, 'idle', 'only a live snapshot can assert completion');
 });
