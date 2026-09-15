@@ -147,11 +147,10 @@ export function buildAppShellCommandList(
     onOpenSettings: () => optionsRef.current.openSettings(),
     onOpenSettingsSection: (section) =>
       optionsRef.current.openSettingsSection(section),
-    // PR-UX-POLISH-1 commit 4 (WAWQAQ `e0dbad11` + kenji `2844f64f`):
-    // use the openHelp callback returned by useKeyboardHelp directly,
-    // instead of dispatching a synthetic KeyboardEvent. Same effect,
-    // clearer intent, and avoids the foot-gun where a typed `?` in a
-    // text input would be swallowed by the global keydown listener.
+    // `openHelp` is the overlays owner's command (`overlays.commands.openHelp`),
+    // handed in by the shell, rather than a synthetic KeyboardEvent: same
+    // effect, clearer intent, and a typed `?` in a text input is never
+    // swallowed by the global keydown listener.
     onOpenShortcuts: () => optionsRef.current.openHelp(),
     onSetTheme: (next) => optionsRef.current.setThemePref(next),
     onTestConnection: async (slug) => {
