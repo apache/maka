@@ -72,8 +72,7 @@ npm run lint
 npm run format:check
 npm run build
 npm run typecheck
-npx knip --workspace apps/desktop
-npx knip --workspace packages/ui
+npx knip
 ```
 
 架构说明见 [ARCHITECTURE.zh-CN.md](./ARCHITECTURE.zh-CN.md)；Eval 的命令与 contract 见 [`packages/eval`](./packages/eval)。
