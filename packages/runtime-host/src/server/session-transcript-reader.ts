@@ -19,10 +19,7 @@
 
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { DURABLE_TOOL_RESULT_PROJECTION_MAX_BYTES } from '@maka/core/durable-tool-result-projection';
-import { readRunInvocation } from '@maka/core/runtime-event-store';
 import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
-import { runtimeHandoffPause } from '@maka/core/runtime-handoff';
-import { readLogicalRuntimeExecution } from '@maka/core/runtime-logical-execution';
 import { WORKHUB_COORDINATION_SESSION_ID, type StoredMessage } from '@maka/core/session';
 import {
   createRuntimeEventStoredMessageProjector,
@@ -36,7 +33,6 @@ import {
 } from '@maka/runtime/interaction-authority';
 import type {
   ExecutionStoresWriter,
-  SessionTranscriptMessageLookupRequest,
   SessionTranscriptPageRequest,
   SessionTranscriptRecordScanPage,
   SessionTranscriptRecordScanRequest,
@@ -49,14 +45,13 @@ import type {
   RuntimeTranscriptInvocationHeader,
 } from '@maka/storage/execution-stores';
 import { foldTurnContribution } from '@maka/storage/session-message-projection';
-import { SESSION_TRANSCRIPT_OVERLAY_MAX_MESSAGES, type TurnSnapshot } from '../protocol/index.js';
 
 const PERMISSION_OUTCOME_READ_CONCURRENCY = 8;
 /** One event can emit content, a permission, usage, and terminal/notice rows. */
 const EVENT_SEQUENCE_STRIDE = 8;
-export const ACTIVE_TRANSCRIPT_OVERLAY_MAX_MESSAGES = SESSION_TRANSCRIPT_OVERLAY_MAX_MESSAGES;
-export const ACTIVE_TRANSCRIPT_OVERLAY_MAX_BYTES = 16 * 1024 * 1024;
-const TRANSCRIPT_SOURCE_MAX_EVENTS = ACTIVE_TRANSCRIPT_OVERLAY_MAX_MESSAGES * 2;
+const TRANSCRIPT_TURN_MAX_MESSAGES = 4_096;
+export const TRANSCRIPT_TURN_MAX_BYTES = 16 * 1024 * 1024;
+const TRANSCRIPT_SOURCE_MAX_EVENTS = TRANSCRIPT_TURN_MAX_MESSAGES * 2;
 // One RuntimeEvent can carry both the raw Tool Result and its durable model projection.
 const TRANSCRIPT_SOURCE_MAX_RECORD_BYTES =
   DURABLE_TOOL_RESULT_PROJECTION_MAX_BYTES * 2 + 256 * 1024;
@@ -64,16 +59,8 @@ const TRANSCRIPT_SOURCE_MAX_RECORD_BYTES =
 // separate from the bounded amount of immutable input it may visit.
 const TRANSCRIPT_SOURCE_MAX_BYTES =
   TRANSCRIPT_SOURCE_MAX_EVENTS * TRANSCRIPT_SOURCE_MAX_RECORD_BYTES;
-const ACTIVE_TRANSCRIPT_SCAN_BATCH_MAX_BYTES = 256 * 1024;
 /** Turns per storage round trip: one, so a page loads no Turn it cannot use. */
 const TRANSCRIPT_TURN_SCAN_LIMIT = 1;
-/**
- * How far back the live-to-durable handoff looks for a message id. The ids come
- * from assistant streams the subscriber is still watching, so they are in the
- * newest Turn or the one it continued from; an id that is in neither is treated
- * as absent rather than searched for down the Session.
- */
-const TRANSCRIPT_LOOKUP_MAX_TURNS = 2;
 
 export function createSessionTranscriptReader(input: {
   stores: ExecutionStoresWriter<'interactive'>;
@@ -96,8 +83,6 @@ export function createSessionTranscriptReader(input: {
       (await prepared(sessionId)).readPage(sessionId, request),
     readDurableRecords: async (sessionId, request) =>
       (await prepared(sessionId)).readRecords(sessionId, request),
-    readDurableMessagesById: async (sessionId, request) =>
-      (await prepared(sessionId)).readMessagesById(sessionId, request),
     readDurableTurnContributions: async (sessionId, throughSequence, position, maxContributions) =>
       (await prepared(sessionId)).readTurnContributions(
         sessionId,
@@ -107,47 +92,6 @@ export function createSessionTranscriptReader(input: {
       ),
     readDurableTurnLandmarks: async (sessionId, maxLandmarks) =>
       (await prepared(sessionId)).readTurnLandmarks(sessionId, maxLandmarks),
-    readActiveOverlay: async (sessionId, rootTurn) => {
-      if (!rootTurn || isTerminalTurn(rootTurn)) return [];
-
-      const store = input.stores.runtimeEventStore;
-      const root = await readRunInvocation(store, sessionId, rootTurn.runId);
-      if (!root) return [];
-      const invocations = new Map<string, RuntimeInvocationRecord>([[root.runId, root]]);
-      let runIds: readonly string[] = [root.runId];
-      if (root.terminalEvent && runtimeHandoffPause(root.terminalEvent)) {
-        const logical = await readLogicalRuntimeExecution(
-          {
-            ...store,
-            readRunInvocation: async (id, runId) => {
-              const run = await readRunInvocation(store, id, runId);
-              if (run) invocations.set(runId, run);
-              return run;
-            },
-            readImmutableRuntimePrefixProof: (prefix) =>
-              store.readImmutableRuntimePrefixProof(prefix, {
-                maxEvents: TRANSCRIPT_SOURCE_MAX_EVENTS,
-                maxBytes: TRANSCRIPT_SOURCE_MAX_BYTES,
-                maxRecordBytes: TRANSCRIPT_SOURCE_MAX_RECORD_BYTES,
-              }),
-          },
-          { sessionId, turnId: rootTurn.turnId, runId: rootTurn.runId },
-          root,
-          { mode: 'membership' },
-        );
-        if (!logical) return [];
-        runIds = logical.runIds;
-      }
-      const pending = createTranscriptProjection(runIds.map((runId) => invocations.get(runId)!));
-      for (const runId of runIds)
-        await scanActiveRuntimeEvents(input.stores, sessionId, runId, pending.push);
-      const projected = await pending.finish(input.canonicalPermissionOutcomes);
-      if (projected.diagnostics.some(isHardRuntimeEventReadModelDiagnostic)) {
-        throw new Error('Active RuntimeEvent transcript projection is incomplete');
-      }
-      assertActiveOverlayBounded(projected.messages);
-      return projected.messages;
-    },
   };
 }
 
@@ -161,10 +105,6 @@ export interface SessionTranscriptReader {
     sessionId: string,
     request: SessionTranscriptRecordScanRequest,
   ): Promise<SessionTranscriptRecordScanPage>;
-  readDurableMessagesById(
-    sessionId: string,
-    request: SessionTranscriptMessageLookupRequest,
-  ): Promise<readonly StoredMessage[]>;
   readDurableTurnContributions(
     sessionId: string,
     throughSequence: number | null,
@@ -175,10 +115,6 @@ export interface SessionTranscriptReader {
     sessionId: string,
     maxLandmarks: number,
   ): Promise<SessionTurnLandmarkSnapshot>;
-  readActiveOverlay(
-    sessionId: string,
-    rootTurn: TurnSnapshot | null,
-  ): Promise<readonly StoredMessage[]>;
 }
 
 /**
@@ -271,8 +207,6 @@ function createDurableLedgerTranscriptReader(input: {
       direction: 'older' | 'newer';
       throughSequence?: number | null;
       position?: number;
-      /** Stops the walk after this many Turns, for a read that may find nothing. */
-      maxTurns?: number;
     },
   ): AsyncGenerator<{ sequence: number; message: StoredMessage }> {
     const throughSequence =
@@ -292,13 +226,11 @@ function createDurableLedgerTranscriptReader(input: {
             })
           )[0];
     let ordinal = ordinalOf(position);
-    let walked = 0;
     let carried: PendingTranscriptTurn | undefined;
     while (ordinal >= 0 && ordinal <= throughOrdinal) {
       const first = carried ?? (await readTurnAt(ordinal));
       carried = undefined;
       if (first === undefined) return;
-      if (request.maxTurns !== undefined && walked >= request.maxTurns) return;
       // A page resumes from one record's sequence and drops everything the other
       // side of it, so what this yields has to be monotone in sequence. Turns
       // whose ordinal ranges overlap — a nested run inside its parent — are
@@ -317,7 +249,6 @@ function createDurableLedgerTranscriptReader(input: {
         low = Math.min(low, next.firstOrdinal);
         high = Math.max(high, next.lastOrdinal);
       }
-      walked += cluster.length;
       const records = (await Promise.all(cluster.map(projectTurn)))
         .flat()
         .filter(
@@ -419,8 +350,6 @@ interface TranscriptRecordSource {
       direction: 'older' | 'newer';
       throughSequence?: number | null;
       position?: number;
-      /** Stops the walk after this many Turns, for a read that may find nothing. */
-      maxTurns?: number;
     },
   ): AsyncGenerator<{ sequence: number; message: StoredMessage }>;
 }
@@ -513,38 +442,6 @@ function pagedTranscriptReads(source: TranscriptRecordSource) {
       }
       return { throughSequence, records, nextPosition };
     },
-
-    /**
-     * The durable rows behind a set of message ids.
-     *
-     * The ids come from the assistant streams a subscriber is still watching,
-     * so they belong to the Session's newest Turns. The scan walks back from
-     * the watermark a Turn at a time and stops as soon as every id is found,
-     * rather than keeping an index from message id to event. An id that is not
-     * there stops the walk after the newest Turns instead of reading the
-     * Session: the handoff shows what the tail holds, not everything it could.
-     */
-    async readMessagesById(
-      sessionId: string,
-      request: SessionTranscriptMessageLookupRequest,
-    ): Promise<StoredMessage[]> {
-      if (request.throughSequence === null || request.messageIds.length === 0) return [];
-      const wanted = new Set(request.messageIds);
-      const found: Array<{ sequence: number; message: StoredMessage }> = [];
-      let bytes = 0;
-      for await (const record of source.scan(sessionId, {
-        direction: 'older',
-        throughSequence: request.throughSequence,
-        maxTurns: TRANSCRIPT_LOOKUP_MAX_TURNS,
-      })) {
-        if (!wanted.delete(record.message.id)) continue;
-        bytes += Buffer.byteLength(JSON.stringify(record.message), 'utf8');
-        if (found.length >= request.maxMessages || bytes > request.maxBytes) break;
-        found.push(record);
-        if (wanted.size === 0) break;
-      }
-      return found.sort((a, b) => a.sequence - b.sequence).map((record) => record.message);
-    },
   };
 }
 
@@ -552,15 +449,15 @@ function ordinalOf(sequence: number): number {
   return Math.floor(sequence / EVENT_SEQUENCE_STRIDE);
 }
 
-function assertActiveOverlayBounded(messages: readonly StoredMessage[]): void {
-  if (messages.length > ACTIVE_TRANSCRIPT_OVERLAY_MAX_MESSAGES) {
-    throw new Error('Active Session transcript overlay exceeds its message limit');
+function assertTurnPresentationBounded(messages: readonly StoredMessage[]): void {
+  if (messages.length > TRANSCRIPT_TURN_MAX_MESSAGES) {
+    throw new Error('Session transcript Turn exceeds its message limit');
   }
   let encodedBytes = 0;
   for (const message of messages) {
     encodedBytes += Buffer.byteLength(JSON.stringify(message), 'utf8');
-    if (encodedBytes > ACTIVE_TRANSCRIPT_OVERLAY_MAX_BYTES) {
-      throw new Error('Active Session transcript overlay exceeds its byte limit');
+    if (encodedBytes > TRANSCRIPT_TURN_MAX_BYTES) {
+      throw new Error('Session transcript Turn exceeds its byte limit');
     }
   }
 }
@@ -582,39 +479,13 @@ async function readCanonicalPermissionOutcomes(
     for (const item of batch) {
       if (!item.outcome) continue;
       encodedBytes += Buffer.byteLength(JSON.stringify(item.outcome), 'utf8');
-      if (encodedBytes > ACTIVE_TRANSCRIPT_OVERLAY_MAX_BYTES) {
-        throw new Error('Active Session permission outcomes exceed the transcript byte limit');
+      if (encodedBytes > TRANSCRIPT_TURN_MAX_BYTES) {
+        throw new Error('Session permission outcomes exceed the transcript byte limit');
       }
       outcomes.set(item.requestId, item.outcome);
     }
   }
   return outcomes;
-}
-
-async function scanActiveRuntimeEvents(
-  stores: ExecutionStoresWriter<'interactive'>,
-  sessionId: string,
-  runId: string,
-  visit: (event: RuntimeEvent) => void,
-): Promise<void> {
-  const result = await stores.runtimeEventStore.scanRuntimeEvents(
-    sessionId,
-    runId,
-    {
-      maxBatchBytes: ACTIVE_TRANSCRIPT_SCAN_BATCH_MAX_BYTES,
-      maxRecordBytes: TRANSCRIPT_SOURCE_MAX_RECORD_BYTES,
-      maxImmutableRecords: TRANSCRIPT_SOURCE_MAX_EVENTS,
-      maxImmutableBytes: TRANSCRIPT_SOURCE_MAX_BYTES,
-      maxPartialRecords: TRANSCRIPT_SOURCE_MAX_EVENTS,
-      maxPartialBytes: ACTIVE_TRANSCRIPT_OVERLAY_MAX_BYTES,
-    },
-    (batch) => {
-      for (const event of batch) visit(event);
-    },
-  );
-  if (result.status === 'limit_exceeded') {
-    throw new Error('Active RuntimeEvent transcript exceeds its storage scan limit');
-  }
 }
 
 interface PendingTranscriptTurn extends RuntimeTranscriptInvocationHeader {
@@ -636,10 +507,7 @@ function createTranscriptProjection(invocations: readonly RuntimeInvocationRecor
     onMessage: (message) => {
       messageCount += 1;
       messageBytes += Buffer.byteLength(JSON.stringify(message));
-      if (
-        messageCount > ACTIVE_TRANSCRIPT_OVERLAY_MAX_MESSAGES ||
-        messageBytes > ACTIVE_TRANSCRIPT_OVERLAY_MAX_BYTES
-      )
+      if (messageCount > TRANSCRIPT_TURN_MAX_MESSAGES || messageBytes > TRANSCRIPT_TURN_MAX_BYTES)
         throw new Error('Session transcript projection exceeds its presentation limit');
     },
   });
@@ -655,9 +523,9 @@ function createTranscriptProjection(invocations: readonly RuntimeInvocationRecor
           : event;
       sourceBytes += Buffer.byteLength(JSON.stringify(measured));
       if (eventCount > TRANSCRIPT_SOURCE_MAX_EVENTS)
-        throw new Error('Active RuntimeEvent transcript exceeds its event limit');
-      if (sourceBytes > ACTIVE_TRANSCRIPT_OVERLAY_MAX_BYTES)
-        throw new Error('Active RuntimeEvent transcript exceeds its byte limit');
+        throw new Error('RuntimeEvent transcript exceeds its event limit');
+      if (sourceBytes > TRANSCRIPT_TURN_MAX_BYTES)
+        throw new Error('RuntimeEvent transcript exceeds its byte limit');
       projector.push(event);
     },
     async finish(reader: CanonicalPermissionOutcomeReader) {
@@ -667,12 +535,8 @@ function createTranscriptProjection(invocations: readonly RuntimeInvocationRecor
       );
       for (const [id, outcome] of outcomes) canonicalPermissionOutcomes.set(id, outcome);
       const projected = projector.finish();
-      assertActiveOverlayBounded(projected.messages);
+      assertTurnPresentationBounded(projected.messages);
       return projected;
     },
   };
-}
-
-function isTerminalTurn(turn: TurnSnapshot): boolean {
-  return turn.status === 'completed' || turn.status === 'failed' || turn.status === 'cancelled';
 }

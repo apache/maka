@@ -58,14 +58,9 @@ const PERSISTED_GRANT_MIGRATIONS: ReadonlyMap<string, PersistedGrantMigration> =
   string,
   PersistedGrantMigration
 >([
-  // The transcript query split into paging and its overlay release.
-  [
-    'session.transcript.query',
-    {
-      kind: 'replace',
-      successors: ['session.transcript.page', 'session.transcript.overlay.release'],
-    },
-  ],
+  ['session.transcript.query', { kind: 'replace', successors: ['session.transcript.page'] }],
+  // Retired with the active transcript overlay; pages alone carry a running Turn.
+  ['session.transcript.overlay.release', { kind: 'release' }],
   // The Turn query kept its name and gained a separate landmark query beside it.
   [
     'session.turns.query',
@@ -105,7 +100,6 @@ export const SESSION_GUEST_OPERATION_GRANTS = Object.freeze([
   'subscription.close',
   'subscription.pty_interest.set',
   'session.transcript.page',
-  'session.transcript.overlay.release',
 ] as const satisfies readonly OperationKey[]);
 
 // A Client Capability provider serves exactly this much and nothing else. It

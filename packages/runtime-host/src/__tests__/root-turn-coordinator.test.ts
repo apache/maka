@@ -5921,15 +5921,19 @@ test('repeated handoffs preserve one logical admission, decreasing budget and ex
           stores: fixture.stores,
           canonicalPermissionOutcomes: { readPermissionOutcome: async () => undefined },
         });
-        const overlay = await transcript.readActiveOverlay(fixture.sessionId, {
-          sessionId: fixture.sessionId,
-          turnId: 'repeated-handoff',
-          runId: rootRunId,
-          status: 'running',
+        const page = await transcript.readDurablePage(fixture.sessionId, {
+          direction: 'newer',
+          throughSequence: await transcript.readDurableHighWater(fixture.sessionId),
+          maxBytes: 512 * 1024,
+          maxMessages: 256,
         });
+        assert.equal(page.next, null);
         assert.deepEqual(
-          overlay.filter((message) => message.type === 'assistant').map((message) => message.id),
-          ['assistant-0', 'assistant-1', 'assistant-2'],
+          page.fragments
+            .map((fragment) => JSON.parse(Buffer.from(fragment.data).toString('utf8')))
+            .filter((message) => message.type === 'assistant')
+            .map((message) => message.id),
+          ['assistant-0', 'assistant-1'],
         );
       }
       const submitted = await fixture.messages.handlers['turn.message.submit'](

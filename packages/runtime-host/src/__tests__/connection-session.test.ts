@@ -175,7 +175,6 @@ test('transcript pages are serialized per connection before their responses are 
         result: {
           kind: 'page',
           sessionId: 'session-1',
-          source: input.source,
           direction: input.direction,
           throughSequence: input.throughSequence,
           rawBytes: 0,
@@ -207,7 +206,6 @@ test('transcript pages are serialized per connection before their responses are 
         operation: 'session.transcript.page',
         input: {
           subscriptionId: 'subscription-1',
-          source: 'durable',
           direction: 'older',
           throughSequence: null,
           cursor: null,
@@ -526,10 +524,6 @@ test('flushes concurrent subscription opens before activating their live frame s
       'subscription.close': async (input) => ({
         ok: true,
         result: { subscriptionId: input.subscriptionId },
-      }),
-      'session.transcript.overlay.release': async () => ({
-        ok: false,
-        error: { code: 'operation_unavailable', message: 'not used' },
       }),
       'session.transcript.page': async () => ({
         ok: false,
@@ -1781,17 +1775,14 @@ function transcriptBootstrapFor(sessionId: string) {
   const contents = Buffer.from('t'.repeat(16 * 1024));
   return {
     throughSequence: 0,
-    overlayMessageCount: 0,
     durable: {
       kind: 'page' as const,
       sessionId,
-      source: 'durable' as const,
       direction: 'older' as const,
       throughSequence: 0,
       rawBytes: contents.byteLength,
       fragments: [
         {
-          kind: 'durable' as const,
           sequence: 0,
           byteOffset: 0,
           totalBytes: contents.byteLength,
@@ -1799,18 +1790,6 @@ function transcriptBootstrapFor(sessionId: string) {
           data: contents.toString('base64'),
         },
       ],
-      rangeBoundarySequence: null,
-      protectedTurnSequence: null,
-      nextCursor: null,
-    },
-    overlay: {
-      kind: 'page' as const,
-      sessionId,
-      source: 'overlay' as const,
-      direction: 'older' as const,
-      throughSequence: 0,
-      rawBytes: 0,
-      fragments: [],
       rangeBoundarySequence: null,
       protectedTurnSequence: null,
       nextCursor: null,
