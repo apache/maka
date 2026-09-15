@@ -20,9 +20,9 @@
 // Claude Code transcripts as Maka Sessions.
 //
 // Transcripts live at `~/.claude/projects/<encoded-cwd>/<uuid>.jsonl`, one
-// JSON object per line, discriminated by `type`. The parsing primitives are
-// shared by the external Session adapters rather than reimplemented: catalog
-// titles and imported messages must agree about what the user actually said.
+// JSON object per line, discriminated by `type`. This adapter owns the format
+// parsing used by both catalog titles and imported messages, so the two paths
+// agree about what the user actually said without exporting Claude internals.
 //
 // The directory name cannot answer which session belongs to which project —
 // it encodes the cwd by replacing separators, so `-Users-a-b` is ambiguous
@@ -33,15 +33,7 @@ import { createHash } from 'node:crypto';
 import { open, readdir, stat, type FileHandle } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
-import {
-  claudeAssistantText,
-  claudeUserAuthoredText,
-  collectClaudeTitle,
-  isSyntheticClaudeUserText,
-  pickClaudeTitle,
-  sanitizeExternalSessionTitle,
-  type ClaudeTitleCandidates,
-} from '@maka/core/external-session';
+import { sanitizeExternalSessionTitle } from '@maka/core/external-session';
 import {
   ExternalSessionLimitError,
   externalSessionMatchesQuery,
@@ -310,6 +302,14 @@ interface ClaudeTranscriptLimits {
   readonly maxConvertedBytes: number;
   readonly maxMessages: number;
   readonly maxRecords: number;
+}
+
+interface ClaudeTitleCandidates {
+  customTitle?: string;
+  aiTitle?: string;
+  summary?: string;
+  lastPrompt?: string;
+  firstUserMessage?: string;
 }
 
 type ClaudeTranscriptReadLimits = Pick<ClaudeTranscriptLimits, 'maxRecordBytes' | 'maxRecords'>;
@@ -687,6 +687,82 @@ function collectLegacyClaudeTitle(record: TranscriptRecord, titles: ClaudeTitleC
   } else if (record.type === 'last-prompt') {
     titles.lastPrompt = take(record.lastPrompt ?? record.prompt) ?? titles.lastPrompt;
   }
+}
+
+function collectClaudeTitle(record: TranscriptRecord, titles: ClaudeTitleCandidates): void {
+  if (typeof record.customTitle === 'string' && record.customTitle.length > 0) {
+    titles.customTitle = record.customTitle;
+  }
+  if (typeof record.aiTitle === 'string' && record.aiTitle.length > 0)
+    titles.aiTitle = record.aiTitle;
+  if (typeof record.summary === 'string' && record.summary.length > 0)
+    titles.summary = record.summary;
+  if (typeof record.lastPrompt === 'string' && record.lastPrompt.length > 0) {
+    titles.lastPrompt = record.lastPrompt;
+  }
+  if (titles.firstUserMessage === undefined) {
+    const candidate = claudeFirstPromptCandidate(record);
+    if (candidate !== undefined) titles.firstUserMessage = candidate;
+  }
+}
+
+function claudeFirstPromptCandidate(record: TranscriptRecord): string | undefined {
+  if (record.type !== 'user' || record.isMeta === true || record.isCompactSummary === true) {
+    return undefined;
+  }
+  const raw = claudeMessageText(record);
+  if (raw === undefined) return undefined;
+  const commandName = raw.match(/<command-name>([^<]+)<\/command-name>/);
+  if (commandName) return commandName[1]!.trim();
+  const bashInput = raw.match(/<bash-input>([^<]+)<\/bash-input>/);
+  if (bashInput) return `! ${bashInput[1]!.trim()}`;
+  const text = raw.trim();
+  if (isSyntheticClaudeUserText(text)) return undefined;
+  return text.length > 0 ? text : undefined;
+}
+
+function isSyntheticClaudeUserText(text: string): boolean {
+  const value = text.trimStart();
+  return (
+    value.startsWith('[Request interrupted by user') ||
+    /^<\/?(command-(name|message|args|contents)|local-command-(stdout|stderr)|bash-(input|stdout|stderr))[\s>]/.test(
+      value,
+    )
+  );
+}
+
+function pickClaudeTitle(titles: ClaudeTitleCandidates): string {
+  return sanitizeExternalSessionTitle(
+    titles.customTitle ??
+      titles.aiTitle ??
+      titles.lastPrompt ??
+      titles.summary ??
+      titles.firstUserMessage,
+  );
+}
+
+function claudeUserAuthoredText(record: TranscriptRecord): string | undefined {
+  if (record.isMeta === true || record.isCompactSummary === true) return undefined;
+  const text = claudeMessageText(record);
+  return text === undefined || isSyntheticClaudeUserText(text) ? undefined : text;
+}
+
+function claudeAssistantText(record: TranscriptRecord): string | undefined {
+  return claudeMessageText(record);
+}
+
+function claudeMessageText(record: TranscriptRecord): string | undefined {
+  const message = asMessageRecord(record);
+  if (!message) return undefined;
+  const content = message.content;
+  if (typeof content === 'string') return content.length > 0 ? content : undefined;
+  if (!Array.isArray(content)) return undefined;
+  const text = contentBlocks(message)
+    .filter((block) => block.type === 'text')
+    .map((block) => (typeof block.text === 'string' ? block.text : ''))
+    .join('\n')
+    .trim();
+  return text.length > 0 ? text : undefined;
 }
 
 function assertSafeSessionId(sessionId: string): void {

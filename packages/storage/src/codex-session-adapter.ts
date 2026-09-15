@@ -27,7 +27,6 @@ import type { StoredMessage } from '@maka/core/session';
 import {
   ExternalSessionCursorExpiredError,
   externalSessionMatchesQuery,
-  isSupportedCodexThreadSource,
   sanitizeExternalSessionTitle,
 } from '@maka/core/external-session';
 import type {
@@ -50,6 +49,7 @@ const CODEX_ROLLOUT_MAX_MESSAGES = 250_000;
 const CODEX_SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 const CODEX_CATALOG_SNAPSHOT_TTL_MS = 5 * 60 * 1000;
 const CODEX_CATALOG_SNAPSHOT_MAX_ITEMS = 32;
+const CODEX_SUPPORTED_THREAD_SOURCES = ['cli', 'exec', 'vscode', 'atlas', 'chatgpt'] as const;
 const CODEX_UNSAFE_PATH_CHARS =
   /[\u0000-\u001F\u007F\u0080-\u009F\u061C\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\uFEFF]/;
 
@@ -1194,6 +1194,31 @@ async function readUtf8Prefix(path: string, maxBytes: number): Promise<string> {
 
 function asRecord(value: unknown): JsonRecord | undefined {
   return isRecord(value) ? value : undefined;
+}
+
+function codexSourceToken(value: unknown): string | undefined {
+  if (typeof value === 'string') {
+    if (value.length === 0) return undefined;
+    if ((CODEX_SUPPORTED_THREAD_SOURCES as readonly string[]).includes(value)) return value;
+    if (!value.startsWith('{')) return undefined;
+    try {
+      return codexSourceToken(JSON.parse(value) as unknown);
+    } catch {
+      return undefined;
+    }
+  }
+  if (typeof value === 'object' && value !== null) {
+    const custom = (value as Record<string, unknown>).custom;
+    return typeof custom === 'string' &&
+      (CODEX_SUPPORTED_THREAD_SOURCES as readonly string[]).includes(custom)
+      ? custom
+      : undefined;
+  }
+  return undefined;
+}
+
+function isSupportedCodexThreadSource(value: unknown): boolean {
+  return value === undefined || value === null || codexSourceToken(value) !== undefined;
 }
 
 function isRecord(value: unknown): value is JsonRecord {
