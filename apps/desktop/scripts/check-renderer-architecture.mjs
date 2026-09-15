@@ -317,8 +317,13 @@ function validateArchitectureConfig(config, label, violations) {
   return valid;
 }
 
+// Several visitors walk the same AST, so enumerate each node's children once.
+const CHILD_NODES = Symbol('childNodes');
+
 function childNodes(node) {
+  if (node[CHILD_NODES]) return node[CHILD_NODES];
   const children = [];
+  Object.defineProperty(node, CHILD_NODES, { value: children });
   for (const [key, value] of Object.entries(node)) {
     if (['comments', 'end', 'errors', 'extra', 'loc', 'start', 'tokens'].includes(key)) continue;
     if (Array.isArray(value)) {
