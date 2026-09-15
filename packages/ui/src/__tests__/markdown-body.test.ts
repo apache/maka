@@ -417,6 +417,10 @@ it('renders images whose alt contains escaped brackets', () => {
       alt: '[alt] preview',
     },
     {
+      text: '![\\[alt\\] preview][pic]\n\n[pic]: https://example.com/x.png',
+      alt: '[alt] preview',
+    },
+    {
       text: '![visible][\\[topic\\]]\n\n[\\[topic\\]]: https://example.com/image.png',
       alt: 'visible',
     },
@@ -441,6 +445,27 @@ it('renders images whose alt contains escaped brackets', () => {
     assert.doesNotMatch(markup, /maka-math/, text);
     assert.doesNotMatch(markup, /MAKA_MATH/, text);
   }
+});
+
+it('keeps escaped image alt text identical between incremental and one-shot scans', () => {
+  const full = '![\\[alt\\] preview](https://example.com/a.png)';
+  const cache = createMarkdownMathCache();
+  let incremental = '';
+  for (let end = 1; end <= full.length; end++) {
+    incremental = prepareMarkdownMath(full.slice(0, end), cache);
+  }
+
+  assert.equal(incremental, prepareMarkdownMath(full, createMarkdownMathCache()));
+
+  const markup = renderToStaticMarkup(createElement(LocaleProvider, {
+    locale: 'en',
+    children: createElement(MarkdownBody, { text: full }),
+  }));
+
+  assert.match(markup, /<img\b[^>]*src="https:\/\/example\.com\/a\.png"/);
+  assert.match(markup, /alt="\[alt\] preview"/);
+  assert.doesNotMatch(markup, /maka-math/);
+  assert.doesNotMatch(markup, /MAKA_MATH/);
 });
 
 it('does not rescan malformed link tails quadratically', () => {
