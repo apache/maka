@@ -21,8 +21,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
-import { createServer, request as httpRequest } from 'node:http';
-import { connect } from 'node:net';
+import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -32,7 +31,7 @@ import {
   resolveExistingStorageRootControlDirectory,
 } from '@maka/storage/root-authority';
 
-test('official Maka shim keeps authenticated initialization through preflight and Host restart', {
+test('official Maka shim uses one Host for preflight and execution across retries and key rotation', {
   timeout: 60_000,
 }, async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-eval-initialization-'));
@@ -43,12 +42,17 @@ test('official Maka shim keeps authenticated initialization through preflight an
   const proxyPassword = 'eval-fixture-proxy-secret';
   const requests: { path: string; body: Record<string, unknown> }[] = [];
   const policies: string[] = [];
-  const tunnels: string[] = [];
   const failures: unknown[] = [];
   const owners: number[] = [];
   let rejectPreflight = true;
-  const provider = createServer(async (request, response) => {
+  const proxy = createServer(async (request, response) => {
     try {
+      const url = new URL(request.url!);
+      assert.equal(url.origin, 'http://provider.invalid');
+      assert.equal(
+        request.headers['proxy-authorization'],
+        `Basic ${Buffer.from(`eval-user:${proxyPassword}`).toString('base64')}`,
+      );
       assert.equal(request.headers.authorization, `Bearer ${expectedApiKey}`);
       const policy = await readFile(join(state, 'runtime-policy.json'), 'utf8');
       assert.equal(JSON.parse(policy).policy.privacy.incognitoActive, true);
@@ -61,8 +65,8 @@ test('official Maka shim keeps authenticated initialization through preflight an
       let raw = '';
       for await (const chunk of request) raw += chunk;
       const body = raw ? JSON.parse(raw) : {};
-      requests.push({ path: request.url!, body });
-      if (request.url === '/v1/models') {
+      requests.push({ path: url.pathname, body });
+      if (url.pathname === '/v1/models') {
         if (rejectPreflight) {
           response.writeHead(401).end();
           return;
@@ -73,7 +77,7 @@ test('official Maka shim keeps authenticated initialization through preflight an
         );
         return;
       }
-      assert.equal(request.url, '/v1/chat/completions');
+      assert.equal(url.pathname, '/v1/chat/completions');
       assert.equal(body.model, 'deepseek-chat');
       if (body.stream !== true) {
         response.setHeader('content-type', 'application/json');
@@ -137,56 +141,9 @@ test('official Maka shim keeps authenticated initialization through preflight an
       response.writeHead(401).end();
     }
   });
-  await new Promise<void>((resolve) => provider.listen(0, '127.0.0.1', resolve));
-  const address = provider.address();
-  assert.ok(address && typeof address === 'object');
-  const proxy = createServer((request, response) => {
-    const url = new URL(request.url!);
-    tunnels.push(url.host);
-    if (
-      url.hostname !== 'provider.invalid' ||
-      request.headers['proxy-authorization'] !==
-        `Basic ${Buffer.from(`eval-user:${proxyPassword}`).toString('base64')}`
-    ) {
-      failures.push(new Error('Unexpected proxy target or missing authentication'));
-      response.writeHead(407).end();
-      return;
-    }
-    const upstream = httpRequest(
-      {
-        hostname: '127.0.0.1',
-        port: address.port,
-        path: url.pathname,
-        method: request.method,
-        headers: request.headers,
-      },
-      (received) => {
-        response.writeHead(received.statusCode!, received.headers);
-        received.pipe(response);
-      },
-    );
-    upstream.on('error', () => response.destroy());
-    request.pipe(upstream);
-  });
-  proxy.on('connect', (request, socket, head) => {
-    tunnels.push(request.url!);
-    if (
-      request.url !== 'provider.invalid:80' ||
-      request.headers['proxy-authorization'] !==
-        `Basic ${Buffer.from(`eval-user:${proxyPassword}`).toString('base64')}`
-    ) {
-      failures.push(new Error('Unexpected proxy target or missing authentication'));
-      socket.end('HTTP/1.1 407 Proxy Authentication Required\r\n\r\n');
-      return;
-    }
-    const upstream = connect(address.port, '127.0.0.1', () => {
-      socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
-      if (head.length) upstream.write(head);
-      socket.pipe(upstream).pipe(socket);
-    });
-    upstream.on('error', () => socket.destroy());
-    socket.on('error', () => upstream.destroy());
-    socket.on('close', () => upstream.destroy());
+  proxy.on('connect', (request, socket) => {
+    failures.push(new Error(`Unexpected CONNECT ${request.url}`));
+    socket.end('HTTP/1.1 403 Forbidden\r\n\r\n');
   });
   await new Promise<void>((resolve) => proxy.listen(0, '127.0.0.1', resolve));
   const proxyAddress = proxy.address();
@@ -255,7 +212,7 @@ test('official Maka shim keeps authenticated initialization through preflight an
       assert.equal(
         exit,
         0,
-        `${stdout}\n${stderr}\n${JSON.stringify({ requests, tunnels })}\n${await readFile(join(state, 'runtime-host-candidate.log'), 'utf8').catch(() => '')}`,
+        `${stdout}\n${stderr}\n${JSON.stringify(requests)}\n${await readFile(join(state, 'runtime-host-candidate.log'), 'utf8').catch(() => '')}`,
       );
       const frame = stdout.split('\n').find((line) => line.startsWith('MAKA-EVAL-RESULT-V1 '));
       assert.ok(frame);
@@ -270,9 +227,8 @@ test('official Maka shim keeps authenticated initialization through preflight an
         requests.filter((request) => request.body.stream === true).length,
         phase === 'rotated' ? 4 : 2,
       );
-      assert.ok(tunnels.length >= 2);
       assert.equal(new Set(policies).size, 1);
-      assert.equal(new Set(owners).size, phase === 'rotated' ? 5 : 3);
+      assert.equal(new Set(owners).size, phase === 'rotated' ? 3 : 2);
       assert.ok((await readdir(artifacts)).includes('runtime.sqlite'));
       for (const file of await readdir(artifacts)) {
         const contents = await readFile(join(artifacts, file));
@@ -282,11 +238,7 @@ test('official Maka shim keeps authenticated initialization through preflight an
     }
   } finally {
     proxy.closeAllConnections();
-    provider.closeAllConnections();
-    await Promise.all([
-      new Promise<void>((resolve) => proxy.close(() => resolve())),
-      new Promise<void>((resolve) => provider.close(() => resolve())),
-    ]);
+    await new Promise<void>((resolve) => proxy.close(() => resolve()));
     await rm(root, { recursive: true, force: true });
   }
 });

@@ -35,7 +35,6 @@ export interface HostedExecutionTargetInput {
 }
 
 export interface ConfiguredHostedExecutionTarget {
-  readonly changed: boolean;
   readonly connectionId: string;
   readonly connectionSlug: string;
 }
@@ -46,8 +45,7 @@ export async function configureHostedExecutionTarget(
   signal?: AbortSignal,
 ): Promise<ConfiguredHostedExecutionTarget> {
   const before = await abortable(() => readRuntimeHostConnectionCatalog(connection), signal);
-  let target = before.connections.find((candidate) => candidate.slug === input.connectionSlug);
-  let changed = false;
+  const target = before.connections.find((candidate) => candidate.slug === input.connectionSlug);
   const onboarding = input.connection;
   if (onboarding && target && target.providerType !== onboarding.providerType) {
     throw new Error('Runtime Host connection provider does not match');
@@ -72,9 +70,10 @@ export async function configureHostedExecutionTarget(
       signal,
     );
     if (saved.kind !== 'saved') throw new Error('Runtime Host connection onboarding failed');
-    const catalog = await abortable(() => readRuntimeHostConnectionCatalog(connection), signal);
-    target = catalog.connections.find((candidate) => candidate.slug === input.connectionSlug);
-    changed = true;
+    return {
+      connectionId: saved.connection.connectionId,
+      connectionSlug: saved.connection.slug,
+    };
   }
   if (!target) throw new Error('Runtime Host connection is unavailable');
 
@@ -98,7 +97,6 @@ export async function configureHostedExecutionTarget(
     if (updated.kind !== 'committed') {
       throw new Error(`Runtime Host connection update was not committed: ${updated.kind}`);
     }
-    changed = true;
   }
 
   // Best-effort: a fetch here is how the target picks up wire metadata for a
@@ -108,14 +106,13 @@ export async function configureHostedExecutionTarget(
   // in both cases the user's selection still authorizes the model — the
   // admission check below is what decides.
   if (endpointChanged || !target.models.some((model) => model.id === input.model)) {
-    const fetched = await abortable(
+    await abortable(
       () =>
         connection.request('connection.models.fetch', {
           connectionId: target.connectionId,
         }),
       signal,
     );
-    if (fetched.kind === 'committed') changed = true;
   }
 
   const after = await abortable(() => readRuntimeHostConnectionCatalog(connection), signal);
@@ -130,7 +127,6 @@ export async function configureHostedExecutionTarget(
     throw new Error('Runtime Host did not admit the requested model target');
   }
   return {
-    changed,
     connectionId: configured.connectionId,
     connectionSlug: configured.slug,
   };

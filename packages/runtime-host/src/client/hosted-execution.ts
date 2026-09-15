@@ -72,7 +72,7 @@ export async function runHostedExecutionWithDependencies(
   if (input.signal?.aborted) {
     return indeterminate(input.execution.executionId, 'Hosted execution was cancelled');
   }
-  const initial = await dependencies.connectOwnedRuntimeHost({
+  const connected = await dependencies.connectOwnedRuntimeHost({
     ...(input.initialization ? { initialization: input.initialization } : {}),
     rootPath: input.rootPath,
     protocol: {
@@ -82,17 +82,13 @@ export async function runHostedExecutionWithDependencies(
     compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
     ...(input.signal ? { signal: input.signal } : {}),
   });
-  if (initial.kind !== 'connected') {
+  if (connected.kind !== 'connected') {
     if (input.signal?.aborted) {
       return indeterminate(input.execution.executionId, 'Hosted execution was cancelled');
     }
-    const cause = initial.kind === 'failed' ? initial.reason : initial.kind;
+    const cause = connected.kind === 'failed' ? connected.reason : connected.kind;
     return indeterminate(input.execution.executionId, `Runtime Host did not start: ${cause}`);
   }
-  let connected: Extract<
-    Awaited<ReturnType<typeof connectOwnedRuntimeHost>>,
-    { kind: 'connected' }
-  > = initial;
   let projection: HostedExecutionProjection;
   try {
     input.signal?.throwIfAborted();
@@ -116,29 +112,6 @@ export async function runHostedExecutionWithDependencies(
         connectionSlug: configured.connectionSlug,
         model: target.model,
       };
-      if (configured.changed) {
-        await connected.connection.close().catch(() => undefined);
-        if (!(await connected.host.settle(input.hostSettlementTimeoutMs ?? 15_000))) {
-          return indeterminate(input.execution.executionId, 'Runtime Host did not exit cleanly');
-        }
-        const reconnected = await dependencies.connectOwnedRuntimeHost({
-          rootPath: input.rootPath,
-          protocol: {
-            min: RUNTIME_HOST_PROTOCOL_VERSION,
-            max: RUNTIME_HOST_PROTOCOL_VERSION,
-          },
-          compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
-          ...(input.signal ? { signal: input.signal } : {}),
-        });
-        if (reconnected.kind !== 'connected') {
-          if (input.signal?.aborted) {
-            return indeterminate(input.execution.executionId, 'Hosted execution was cancelled');
-          }
-          const cause = reconnected.kind === 'failed' ? reconnected.reason : reconnected.kind;
-          return indeterminate(input.execution.executionId, `Runtime Host did not start: ${cause}`);
-        }
-        connected = reconnected;
-      }
     }
     projection = await executeHostedExecution(
       connected.connection,
