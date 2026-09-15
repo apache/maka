@@ -97,9 +97,9 @@ async function testSlack(channel: BotChannelSettings): Promise<BotTestResult> {
     const { WebClient } = createRequire(import.meta.url)(
       '@slack/web-api',
     ) as typeof import('@slack/web-api');
-    const identity = await new WebClient(botToken).auth.test();
+    const identity = await new WebClient(botToken, { fetch: proxiedFetch }).auth.test();
     if (!identity.ok) return { ok: false, error: identity.error ?? 'Slack auth.test failed' };
-    const socket = await new WebClient(appToken).apps.connections.open();
+    const socket = await new WebClient(appToken, { fetch: proxiedFetch }).apps.connections.open();
     if (!socket.ok || !socket.url) {
       return { ok: false, error: socket.error ?? 'Slack Socket Mode connection failed' };
     }
