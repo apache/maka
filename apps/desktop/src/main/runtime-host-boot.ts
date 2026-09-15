@@ -1730,6 +1730,7 @@ function registerHostClientIpc(
         health: computerUseServiceHealth(
           native.computerUse.backendId,
           executorState,
+          native.computerUse.unavailableReason,
         ),
       };
     },

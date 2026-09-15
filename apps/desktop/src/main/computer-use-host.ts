@@ -141,6 +141,22 @@ export function createDesktopPhysicalInputGuard(
 }
 
 /**
+ * Why a `none` selection is none, as a code the capability surface can show.
+ *
+ * Three ways to have no executor used to project one word, so an unbound
+ * platform, a missing artifact and a backend that failed to construct all read
+ * as an integrity problem. The distinction is the point of carrying the reason
+ * this far; a `none` without one is still an undistributable artifact.
+ */
+function unavailableReasonCode(
+  reason: SelectedComputerUseBackend['unavailableReason'],
+): CapabilityReasonCode {
+  if (reason === 'unsupported_platform') return 'cu_platform_unsupported';
+  if (reason === 'backend_failed') return 'cu_backend_unavailable';
+  return 'cu_executor_undistributable';
+}
+
+/**
  * One executor, one state.
  *
  * cua-driver ran as a pair of roles — one process to act, one to capture — so
@@ -150,11 +166,15 @@ export function createDesktopPhysicalInputGuard(
 export function computerUseServiceHealth(
   backendId: SelectedComputerUseBackend['backendId'],
   state: MakaCuServiceSnapshot | undefined,
+  unavailableReason?: SelectedComputerUseBackend['unavailableReason'],
 ): {
   state: 'not_available' | 'not_run' | 'healthy' | 'degraded';
   reason: CapabilityReasonCode;
 } {
-  if (backendId === 'none' || !state) {
+  if (backendId === 'none') {
+    return { state: 'not_available', reason: unavailableReasonCode(unavailableReason) };
+  }
+  if (!state) {
     return { state: 'not_available', reason: 'cu_executor_undistributable' };
   }
   switch (state.state) {
