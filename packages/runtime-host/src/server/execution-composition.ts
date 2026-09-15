@@ -1004,6 +1004,8 @@ export async function createExecutionRuntimeHostComposition(
           resolveHostTavilyWebSearchReadiness(runtimePolicyStores.operations),
         ...(scheduledTaskTool ? { scheduledTaskTool } : {}),
         planStore: openedPlanStore,
+        onPlanExecutionChanged: (sessionId) =>
+          requireContinuity(continuity).enqueueSessionDomainChanged(sessionId, 'plan'),
         deepResearchTools: requireDeepResearch(deepResearch).toolsForSession(
           backendContext.sessionId,
         ),

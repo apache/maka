@@ -62,9 +62,27 @@ export function usePlanModeState(session: SessionSummary | undefined): PlanModeS
     turnId: string;
   } | undefined>(undefined);
 
+  const planReadSequence = useRef(0);
   const refresh = useCallback(async () => {
     if (!session) return;
-    setState(await window.maka.sessions.getPlanState(session.id));
+    // Plan execution writes now refresh while the Turn runs, so reads can
+    // overlap: only the newest read may publish, or a slower earlier response
+    // puts stale progress back on screen, and a response for the Session the
+    // user just left can land after the switch.
+    const sequence = planReadSequence.current + 1;
+    planReadSequence.current = sequence;
+    let next: PlanSessionState;
+    try {
+      next = await window.maka.sessions.getPlanState(session.id);
+    } catch (cause) {
+      // A superseded read owns nothing, including its failure: report it only
+      // while it is still the newest read, so a late rejection cannot raise an
+      // error for a Session the panel has already left.
+      if (planReadSequence.current !== sequence) return;
+      throw cause;
+    }
+    if (planReadSequence.current !== sequence) return;
+    setState(next);
   }, [session?.id]);
 
   useEffect(() => {
@@ -90,6 +108,9 @@ export function usePlanModeState(session: SessionSummary | undefined): PlanModeS
       refreshOrReport,
     );
     return () => {
+      // Supersedes every read this run started: a Session switch, a close and an
+      // unmount all pass through here, and the next effect refreshes again.
+      planReadSequence.current += 1;
       unsubscribeEvents();
       unsubscribePlanChanges();
     };

@@ -19,6 +19,7 @@
 
 import { classifyToolUse } from '@maka/core/permission';
 import type { CollaborationMode } from '@maka/core/collaboration';
+import type { PlanExecution, PlanProposal } from '@maka/core/plan';
 
 import type { MakaTool } from './tool-runtime.js';
 
@@ -64,6 +65,39 @@ export function selectCollaborationTools(input: {
     }
     return true;
   });
+}
+
+/**
+ * Renders the durable execution request the Host sends when a Plan execution is
+ * approved or resumed — the transition Turn's own user content.
+ *
+ * The approved steps are replayed here because the execution's step ids and
+ * current statuses exist nowhere else the model can read: `update_plan` requires
+ * every step id on every call, and no tool exposes the execution's steps. Keep
+ * this text stable per Turn: it is persisted as the Turn's user message, so a
+ * later replay must reproduce it byte for byte (see the removal of the volatile
+ * turn-tail injection in #4278).
+ */
+export function renderPlanExecutionRequest(input: {
+  kind: 'approve_proposal' | 'resume_execution';
+  proposal: PlanProposal;
+  execution: PlanExecution;
+}): string {
+  const { proposal, execution } = input;
+  const verb = input.kind === 'approve_proposal' ? 'Execute' : 'Resume';
+  const progress =
+    input.kind === 'approve_proposal'
+      ? 'call it before you start work, with the first actionable step in_progress'
+      : 'call it before you continue, with the step you are resuming in_progress';
+  return [
+    `${verb} the approved plan execution ${execution.executionId}.`,
+    '',
+    `Plan: ${proposal.title} (revision ${proposal.revision})`,
+    'Steps:',
+    ...execution.steps.map((step) => `- ${step.id} [${step.status}] ${step.title}`),
+    '',
+    `Keep this execution's progress current with update_plan: ${progress}; send every step id above with its status and keep at most one step in_progress. Call it again each time a step finishes, and make the last call before your final response leave every step completed or skipped so the execution closes — do not call update_plan again after the execution has closed. If I abandon the plan, call cancel_plan. Do not delegate to subagents while this execution is active.`,
+  ].join('\n');
 }
 
 export function renderPlanModePrompt(input: { fullAccess?: boolean } = {}): string {
