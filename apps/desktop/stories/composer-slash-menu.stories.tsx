@@ -37,11 +37,16 @@ import { useMemo, useState } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { expect, userEvent, waitFor, within } from 'storybook/test';
 import { slashCommandsForSurface } from '@maka/core/slash-command-catalog';
+import type { SessionChangedEvent } from '@maka/core/session';
 import { Composer } from '@maka/ui';
 import {
   ComposerMentionsProvider,
   useComposerMentionsContext,
 } from '../src/renderer/composer-mentions';
+import {
+  ConversationServicesProvider,
+  type ConversationServices,
+} from '../src/renderer/features/conversation';
 import { desktopSlashCommandAvailability } from '../src/renderer/desktop-slash-command';
 import { getShellCopy } from '../src/renderer/locales/shell-copy';
 import { withScopedMakaBridge } from './maka-bridge';
@@ -106,8 +111,8 @@ const makaBridge = {
     subscribeChanges: () => () => {},
   },
   sessions: {
-    subscribeChanges(listener: (event: { sessionId: string; reason: string }) => void) {
-      publishSessionUpdate = () => listener({ sessionId: SESSION_ID, reason: 'updated' });
+    subscribeChanges(listener: (event: SessionChangedEvent) => void) {
+      publishSessionUpdate = () => listener({ sessionId: SESSION_ID, reason: 'updated', ts: Date.now() });
       return () => {
         publishSessionUpdate = undefined;
       };
@@ -115,6 +120,33 @@ const makaBridge = {
   },
   mcp: { subscribeChanges: () => () => {} },
   workspace: { searchFiles: async () => ({ ok: true, files: [] }) },
+};
+
+const conversationServices: ConversationServices = {
+  listMessages: async () => [],
+  cancelMessage: async () => undefined,
+  reconcileMessage: async () => undefined,
+  subscribeChanges: () => () => undefined,
+  sessions: {
+    list: async () => [],
+    subscribeChanges(listener: (event: SessionChangedEvent) => void) {
+      publishSessionUpdate = () => listener({ sessionId: SESSION_ID, reason: 'updated', ts: Date.now() });
+      return () => {
+        publishSessionUpdate = undefined;
+      };
+    },
+    readSnapshot: async () => {
+      throw new Error('Session snapshots are not used in slash menu stories');
+    },
+  },
+  skills: { listInvocable: loadProjection },
+  workspace: { searchFiles: async () => ({ ok: true, files: [] }) },
+  newTasks: {
+    subscribeChanges: () => () => undefined,
+    listInvocableSkills: loadProjection,
+    searchFiles: async () => ({ ok: true, files: [] }),
+  },
+  mcp: { subscribeChanges: () => () => undefined },
 };
 
 function SlashMenuComposer({
@@ -154,18 +186,20 @@ function SlashMenuHarness({
 }): React.ReactElement {
   return (
     <div style={{ display: 'flex', alignItems: 'flex-end', height: 520, padding: 24 }}>
-      <ComposerMentionsProvider
-        skillCatalogRevision={0}
-        sessionId={hasSession ? SESSION_ID : undefined}
-        projectPath="/workspace/maka-agent"
-        newTaskTarget={
-          hasSession
-            ? undefined
-            : { profileId: 'profile-local', hostId: 'host-local', projectId: 'project-maka' }
-        }
-      >
-        <SlashMenuComposer hasSession={hasSession} streaming={streaming} />
-      </ComposerMentionsProvider>
+      <ConversationServicesProvider services={conversationServices}>
+        <ComposerMentionsProvider
+          skillCatalogRevision={0}
+          sessionId={hasSession ? SESSION_ID : undefined}
+          projectPath="/workspace/maka-agent"
+          newTaskTarget={
+            hasSession
+              ? undefined
+              : { profileId: 'profile-local', hostId: 'host-local', projectId: 'project-maka' }
+          }
+        >
+          <SlashMenuComposer hasSession={hasSession} streaming={streaming} />
+        </ComposerMentionsProvider>
+      </ConversationServicesProvider>
     </div>
   );
 }
@@ -184,16 +218,18 @@ function ContextSwitchHarness(): React.ReactElement {
         Switch to new task
       </button>
       <div style={{ display: 'flex', flex: 1, alignItems: 'flex-end' }}>
-        <ComposerMentionsProvider
-          skillCatalogRevision={0}
-          sessionId={hasSession ? SESSION_ID : undefined}
-          projectPath="/workspace/maka-agent"
-          newTaskTarget={hasSession
-            ? undefined
-            : { profileId: 'profile-local', hostId: 'host-local', projectId: 'project-maka' }}
-        >
-          <SlashMenuComposer hasSession={hasSession} streaming={false} />
-        </ComposerMentionsProvider>
+        <ConversationServicesProvider services={conversationServices}>
+          <ComposerMentionsProvider
+            skillCatalogRevision={0}
+            sessionId={hasSession ? SESSION_ID : undefined}
+            projectPath="/workspace/maka-agent"
+            newTaskTarget={hasSession
+              ? undefined
+              : { profileId: 'profile-local', hostId: 'host-local', projectId: 'project-maka' }}
+          >
+            <SlashMenuComposer hasSession={hasSession} streaming={false} />
+          </ComposerMentionsProvider>
+        </ConversationServicesProvider>
       </div>
     </div>
   );
