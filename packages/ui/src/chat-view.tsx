@@ -400,7 +400,18 @@ export function ChatView(props: {
   // which does not see that overlaid row, so it must treat this as visible
   // content or the row is hidden behind the empty hero.
   const hasLiveCompactionRow = isCompactionLive && (activeContent?.steps.length ?? 0) === 0;
-  const streamingActive = props.activeTurn !== undefined && !isCompactionLive;
+  // The Host owns execution identity, while the durable transcript owns the
+  // terminal outcome. If they temporarily disagree for the same Turn, the
+  // recorded terminal state must fence stale activity presentation.
+  const activeTurnProjection = props.activeTurn
+    ? turns.find((turn) => turn.turnId === props.activeTurn?.turnId)
+    : undefined;
+  const activeTurnRecordedAsEnded =
+    activeTurnProjection?.statusSource === 'recorded' && activeTurnProjection.status !== 'running';
+  const streamingActive =
+    props.activeTurn !== undefined &&
+    !isCompactionLive &&
+    !activeTurnRecordedAsEnded;
   const tailTurnId = streamingActive ? props.activeTurn?.turnId : undefined;
   const runningStatus = streamingActive && !props.activeTurn?.awaitingInput;
   const hasRenderedLiveTurn = tailTurnId !== undefined && turns.some((turn) => turn.turnId === tailTurnId);
