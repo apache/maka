@@ -17,12 +17,12 @@
  * under the License.
  */
 
-// Host history delivered through preload waits for thumb release; the reader
-// stays on the same rendered Turn while the pointer is stationary. Fixed-range geometry runs in Storybook.
+// Host history delivered through preload waits for thumb release; an already
+// measured reader stays in place. Cold-height correction runs in Storybook.
 import { test, expect } from '@playwright/test';
 import { withE2eWindow } from './fixtures';
 
-test('native thumb preserves the held reader and admits Host history on release', async () => {
+test('native thumb preserves a measured reader and admits Host history on release', async () => {
   test.setTimeout(180_000);
   await withE2eWindow(
     {
@@ -66,6 +66,32 @@ test('native thumb preserves the held reader and admits Host history on release'
         // Baseline app admission, not a geometry-settled assertion. Prefetch can
         // still happen during the subsequent held drag and must be recorded.
         await page.waitForTimeout(500);
+        // Isolate Host publication from the accepted first-layout correction.
+        // Measure only this resident page; older Host pages remain unread.
+        const residentIds = () => page.locator('.maka-transcript-turn').evaluateAll(
+          (els) => els.map((el) => (el as HTMLElement).dataset.transcriptTurnId!),
+        );
+        const resident = await residentIds();
+        await page.evaluate(async () => {
+          const root = document.querySelector<HTMLElement>('[data-chat-scroll-container]')!;
+          // Release follow before programmatic setup, then retire that gesture
+          // so setup scrolls cannot request adjacent history.
+          root.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
+          root.dispatchEvent(new Event('scrollend'));
+          await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+        });
+        for (const id of resident) {
+          await page.locator(`[data-transcript-turn-id="${id}"]`).evaluate(
+            (el) => el.scrollIntoView({ block: 'center', behavior: 'instant' }),
+          );
+          await expect(page.locator(`.maka-turn[data-turn-id="${id}"]`)).toBeVisible();
+        }
+        await page.evaluate(async () => {
+          const root = document.querySelector<HTMLElement>('[data-chat-scroll-container]')!;
+          root.scrollTo({ top: root.scrollHeight, behavior: 'instant' });
+          await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+        });
+        expect(await residentIds(), 'setup must not publish another history page').toEqual(resident);
         const start = await page.evaluate(() => {
           const root = document.querySelector<HTMLElement>('[data-chat-scroll-container]')!;
           const box = root.getBoundingClientRect();
@@ -139,7 +165,10 @@ test('native thumb preserves the held reader and admits Host history on release'
             const box = el.getBoundingClientRect();
             return box.height > 0 && box.width > 0 && box.bottom > view.top && box.top < view.bottom;
           });
-          return { id: turn?.dataset.turnId, top: turn?.getBoundingClientRect().top };
+          return {
+            id: turn?.dataset.turnId, top: turn?.getBoundingClientRect().top,
+            scrollHeight: root.scrollHeight, scrollTop: root.scrollTop,
+          };
         });
         const stationary: Array<{ before: Awaited<ReturnType<typeof visible>>; after: Awaited<ReturnType<typeof visible>> }> = [];
         for (let step = 1; step <= 10; step++) {
