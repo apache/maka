@@ -75,6 +75,7 @@ import {
   type EffectivePricingEntry,
   type ExternalSessionCatalogQueryInput,
   type ExternalSessionCatalogQueryResult,
+  type ExternalSessionImportResult,
   type ExternalSessionSourceQueryResult,
   type ClientCapabilityReplaceResult,
   type ClientCapabilityUnregisterResult,
@@ -1011,6 +1012,10 @@ export class DesktopRuntimeHostClient {
     return this.request("workhub.coordination.candidates", {});
   }
 
+  selectAndDelegateWorkHubTarget(input: OperationInput<'workhub.coordination.selectAndDelegate'>) {
+    return this.request('workhub.coordination.selectAndDelegate', input);
+  }
+
   actWorkHubCoordinationFromTurn(input: OperationInput<'workhub.coordination.actFromTurn'>) {
     return this.request('workhub.coordination.actFromTurn', input);
   }
@@ -1028,9 +1033,11 @@ export class DesktopRuntimeHostClient {
   async importExternalSession(input: {
     readonly adapterId: string;
     readonly sourceSessionId: string;
-  }): Promise<SessionCatalogProjection> {
+  }): Promise<ExternalSessionImportResult<SessionCatalogProjection>> {
     const result = await this.request("external-session.import", input);
-    return requireSessionProjection(result.session);
+    return result.kind === 'imported'
+      ? { kind: 'imported', session: requireSessionProjection(result.session) }
+      : result;
   }
 
   exportSessionBundle(input: {

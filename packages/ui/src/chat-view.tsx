@@ -45,6 +45,7 @@ import { Button, ButtonGroup, ChatMessageList, EmptyState, HStack, Spinner, Text
 import { useChatLayoutContext } from '@astryxdesign/core/Chat';
 import { useLayer } from '@astryxdesign/core/Layer';
 import { materializeChat } from './materialize.js';
+import { selectTailTransientMessages } from './transient-placement.js';
 import { useTranscriptProjection } from './use-transcript-projection.js';
 import { useTranscriptKnownSpace } from './use-transcript-known-space.js';
 import { useTranscriptHeightEstimates } from './transcript-height-estimate.js';
@@ -204,6 +205,8 @@ export function ChatView(props: {
    * the regular prompt-suggestion hero shows.
    */
   emptyOverride?: ReactNode;
+  /** Optional host-owned identity beside a turn; absent for ordinary transcripts. */
+  turnDecorations?: ReadonlyMap<string, { header: ReactNode; accentColor?: string; promptStatus?: ReactNode; messageRail?: ReactNode }>;
   /** Session-owned records anchored after a durable conversation turn. */
   conversationItems?: ReadonlyArray<{
     id: string;
@@ -258,7 +261,7 @@ export function ChatView(props: {
    * switching and hands the matched turn id here after selection; the
    * chat view only scrolls/highlights the already-rendered turn.
    */
-  scrollTargetTurn?: { turnId: string; nonce: number };
+  scrollTargetTurn?: { turnId: string; nonce: number; preserveFocus?: boolean };
   /** Runtime-only reading position restored without search focus or highlight. */
   restoreTargetTurn?: { turnId: string; unavailable?: boolean };
   viewportNavigation?: TranscriptViewportNavigation;
@@ -549,6 +552,13 @@ export function ChatView(props: {
   const knownSpace = useTranscriptKnownSpace(scrollRef, props.activeSession?.id,
     turns.map((turn) => turn.turnId), Boolean(props.onRetainWindow), estimatedHeights);
   const virtualized = Boolean(props.onRetainWindow) && typeof IntersectionObserver !== 'undefined';
+  // The tail slot renders what no Turn took inline; a durable local copy the
+  // transcript already shows as a Turn's own user row must not render again.
+  const tailTransientMessages = selectTailTransientMessages(
+    transientMessages,
+    inlineTransientMessageIds,
+    turns,
+  );
   const { highlightedTurnId } = useChatScroll({
     scrollRef,
     sessionId: props.activeSession?.id,
@@ -635,9 +645,17 @@ export function ChatView(props: {
                   ))}
                 </>
               ) : null}
-              {transientMessages.map((message) => (
-                <TransientUserMessage key={message.id} message={message} />
-              ))}
+              {/* Tail rows have no Turn ancestor, so the reading measure that
+                  `.maka-turn` owns would not reach them: without the wrapper
+                  the bubble stretches across the full window width. */}
+              {transientMessages.length > 0 && (
+                <section className="maka-turn">
+                  {transientMessages.map((message) => (
+                    <TransientUserMessage key={message.id} message={message}
+                      status={message.hostTurnId ? props.turnDecorations?.get(message.hostTurnId)?.promptStatus : undefined} />
+                  ))}
+                </section>
+              )}
               {/* The optimistic message supplies the clock while the session is created. */}
               {runningStatus && (
                 <section className="maka-turn" data-live-streaming="true">
@@ -756,6 +774,7 @@ export function ChatView(props: {
               {knownSpace.before > 0 && <div data-known-before={knownSpace.before}
                 aria-hidden="true" style={{ height: knownSpace.beforeHeight, flexShrink: 0, overflowAnchor: 'none' }} />}
               {turns.map((turn) => {
+                const decoration = props.turnDecorations?.get(turn.turnId);
                 return (
                   <VirtualTranscriptTurn
                     key={`${props.activeSession?.id}:${turn.turnId}`}
@@ -767,10 +786,14 @@ export function ChatView(props: {
                       || turn.turnId === props.restoreTargetTurn?.turnId}
                     getHeight={knownSpace.height}
                     onMeasure={knownSpace.measure}
+                    accentColor={decoration?.accentColor}
                   >
                     <TurnView
                       turn={turn}
                       activityObserved={turn.turnId === props.activeTurn?.turnId}
+                      messageHeader={decoration?.header}
+                      messageRail={decoration?.messageRail}
+                      promptStatus={decoration?.promptStatus}
                       transientMessages={inlineTransientMessagesByTurn.get(turn.turnId)}
                       userLabel={props.userLabel}
                       footerActions={turnPresentation?.footerActionsByTurn[turn.turnId]}
@@ -819,14 +842,21 @@ export function ChatView(props: {
                   </VirtualTranscriptTurn>
                 );
               })}
-              {transientMessages.filter(
-                (message) => !inlineTransientMessageIds.has(message.id),
-              ).map((message) => (
-                <TransientUserMessage
-                  key={message.id}
-                  message={message}
-                />
-              ))}
+              {/* A local copy the transcript already shows as the tail Turn's
+                  own user row must not render again below the running status;
+                  the inline slot drops it, so the tail slot drops it too.
+                  Same reading-measure reasoning as the optimistic path above. */}
+              {tailTransientMessages.length > 0 && (
+                <section className="maka-turn">
+                  {tailTransientMessages.map((message) => (
+                    <TransientUserMessage
+                      key={message.id}
+                      message={message}
+                      status={message.hostTurnId ? props.turnDecorations?.get(message.hostTurnId)?.promptStatus : undefined}
+                    />
+                  ))}
+                </section>
+              )}
               {/* A send arm already names its Turn, but the transcript may not
                   contain it yet. Keep feedback below the pending prompt until
                   that same TurnView can take over. */}

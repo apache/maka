@@ -145,6 +145,7 @@ describe('Host WorkHub Coordination coordinator', () => {
         }),
         isSessionExecutionIdle: () => true,
         readActiveWorkHubRoutingRequest: async () => ({
+          runId: 'active-run',
           content: { text: 'Tell me how routing works' },
           decision: { kind: 'routing', disposition: 'answer_here' },
         }),
@@ -201,7 +202,7 @@ describe('Host WorkHub Coordination coordinator', () => {
         {
           ...executions,
           readActiveWorkHubRoutingRequest: async (turnId) =>
-            turnId === 'active-turn' ? { content: canonical } : undefined,
+            turnId === 'active-turn' ? { content: canonical, runId: 'active-run' } : undefined,
         },
         admission,
         {
@@ -2312,7 +2313,9 @@ function coordinator(
       ...executions,
       readActiveWorkHubRoutingRequest: async (turnId) => {
         const content = activeRequests.get(turnId);
-        return content ? { content } : executions.readActiveWorkHubRoutingRequest(turnId);
+        return content
+          ? { content, runId: 'active-run' }
+          : executions.readActiveWorkHubRoutingRequest(turnId);
       },
     },
     sessionActions: {

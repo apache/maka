@@ -44,6 +44,7 @@ apps/desktop/src/renderer/features/runtime-host-management/ui/runtime-host-conne
 apps/desktop/src/renderer/features/runtime-host-management/ui/runtime-host-peer-mesh-dialog.tsx
 apps/desktop/src/renderer/features/runtime-host-management/ui/runtime-host-profile-pairing-actions.tsx
 apps/desktop/src/renderer/features/runtime-host-management/ui/runtime-host-resource-dialog.tsx
+apps/desktop/src/renderer/features/search/services-context.tsx
 apps/desktop/src/renderer/features/session-bundle/export-tree.tsx
 apps/desktop/src/renderer/features/session-bundle/services-context.tsx
 apps/desktop/src/renderer/features/session-bundle/session-bundle-tasks.tsx
@@ -222,6 +223,7 @@ packages/ui/src/chat-model-switcher.tsx
 packages/ui/src/chat-surface-layout.tsx
 packages/ui/src/chat-turn.tsx
 packages/ui/src/chat-view.tsx
+packages/ui/src/choice-panel.tsx
 packages/ui/src/client-capability-prompt.tsx
 packages/ui/src/components.tsx
 packages/ui/src/composer-message-queue.tsx
@@ -273,4 +275,5 @@ packages/ui/src/tool-activity/tool-result-preview.tsx
 packages/ui/src/transcript-scroll-authority.tsx
 packages/ui/src/ui.tsx
 packages/ui/src/user-question-prompt.tsx
+packages/ui/src/virtual-transcript-turn.tsx
 packages/ui/src/workspace-picker.tsx

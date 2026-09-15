@@ -58,6 +58,34 @@ describe('SQLite SessionStore', () => {
     }
   });
 
+  test('persists a plugin executor route across reloads and catalog projection', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-plugin-executor-route-'));
+    let store = createSessionStore(root);
+    try {
+      const created = await store.create(
+        makeInput({
+          cwd: root,
+          executorId: 'codex',
+          llmConnectionSlug: 'executor:codex',
+          model: 'codex',
+        }),
+      );
+      assert.equal(created.backend, 'plugin-executor');
+      assert.equal(created.executorId, 'codex');
+      assert.equal(created.llmConnectionId, undefined);
+
+      await store.close?.();
+      store = createSessionStore(root);
+      const reloaded = await store.readHeader(created.id);
+      assert.equal(reloaded.backend, 'plugin-executor');
+      assert.equal(reloaded.executorId, 'codex');
+      assert.equal((await store.list())[0]?.executorId, 'codex');
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('requires the reserved WorkHub Coordination identity and role together', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-workhub-coordination-identity-role-'));
     const store = createSessionStore(root);

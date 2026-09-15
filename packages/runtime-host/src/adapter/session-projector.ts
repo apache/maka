@@ -38,6 +38,7 @@ import type {
 } from '../protocol/index.js';
 
 interface AssistantAccumulator {
+  interrupted?: true;
   kind: 'text' | 'thinking';
   turnId: string;
   messageId: string;
@@ -125,12 +126,13 @@ export class RuntimeHostSessionProjector {
           replacing: false,
         });
       }
-      if (message.text) {
+      if (message.text || message.interrupted) {
         this.#accumulators.set(accumulatorKey('text', message.id), {
           kind: 'text',
           turnId: root.turnId,
           messageId: message.id,
           text: message.text,
+          ...(message.interrupted ? { interrupted: true } : {}),
           complete: true,
           replacing: false,
         });
@@ -271,7 +273,7 @@ export class RuntimeHostSessionProjector {
           text: message.thinking.text,
         });
       }
-      if (message.text) {
+      if (message.text || message.interrupted) {
         events.push({
           type: 'text_complete',
           id: `${terminal.id}:text:${message.id}`,
@@ -279,6 +281,7 @@ export class RuntimeHostSessionProjector {
           messageId: message.id,
           ts: terminal.ts,
           text: message.text,
+          ...(message.interrupted ? { interrupted: true } : {}),
         });
       }
     }
@@ -366,6 +369,7 @@ export class RuntimeHostSessionProjector {
         turnId: delta.turnId,
         messageId: delta.messageId,
         text: folded.text,
+        ...(delta.interrupted ? { interrupted: true } : {}),
         complete: delta.complete === true,
         replacing: delta.complete === true ? false : replacing,
       });
@@ -377,6 +381,7 @@ export class RuntimeHostSessionProjector {
           messageId: delta.messageId,
           ts: this.#now(),
           text: folded.text,
+          ...(delta.interrupted ? { interrupted: true } : {}),
         });
       } else if (folded.tail && !replacing) {
         events.push({
@@ -484,6 +489,7 @@ export class RuntimeHostSessionProjector {
         messageId: accumulator.messageId,
         ts: this.#now(),
         text: accumulator.text,
+        ...(accumulator.interrupted ? { interrupted: true } : {}),
       });
     }
     if (root.status === 'completed') {

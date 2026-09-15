@@ -881,6 +881,7 @@ export const ProviderRetrying: Story = {
         activeTurn: { turnId: 'turn-rr' },
         messages: [
           user('msg-rr-1', 'turn-rr', 1, '把这份长文档翻译成英文。'),
+          { ...assistant('failed-rr', 'turn-rr', 0, 'The project aims to improve the reliability of'), interrupted: true } as StoredMessage,
           { type: 'turn_state', id: 'state-rr', turnId: 'turn-rr', ts: NOW - 20_000, status: 'running' },
         ],
         liveTurns: [{
@@ -894,10 +895,10 @@ export const ProviderRetrying: Story = {
               turnId: 'turn-rr',
               ts: NOW - 5_000,
               attempt: 2,
-              maxAttempts: 5,
+              maxAttempts: 10,
               delayMs: 30_000,
               remainingMs: 30_000,
-              reason: 'rate_limit',
+              reason: 'stream_truncated',
             },
             receivedAtMs: NOW - 5_000,
           },
@@ -909,6 +910,19 @@ export const ProviderRetrying: Story = {
     await waitFor(() =>
       expect(canvasElement.querySelector('.maka-turn-provider-retry')).not.toBeNull(),
     );
+  },
+};
+
+export const RecoveredResponse: Story = {
+  render: () => <ComposedShell chat={{ messages: [
+    user('retry-user', 'retry-turn', 1, '把这份长文档翻译成英文。'),
+    { ...assistant('retry-failed', 'retry-turn', 0, 'The project aims to improve the reliability of'), interrupted: true } as StoredMessage,
+    assistant('retry-success', 'retry-turn', 0, 'The project aims to improve the reliability of model responses and preserve completed work when a connection is interrupted.'),
+    { type: 'turn_state', id: 'retry-complete', turnId: 'retry-turn', ts: NOW, status: 'completed' },
+  ] }} />,
+  play: async ({ canvasElement }) => {
+    await waitFor(() => expect(canvasElement.querySelectorAll('[data-response-interrupted="true"]')).toHaveLength(1));
+    expect(canvasElement.textContent).toContain('preserve completed work');
   },
 };
 
@@ -2724,6 +2738,16 @@ export const OversizedTurnHoldsAReadingAnchorOnColdScroll: Story = {
     const root = tailScroller();
     await document.fonts.ready;
     await waitFor(() => expect(document.querySelector('.maka-markdown-pending')).toBeNull());
+    // Real path: open the completed process, then start reading from its
+    // bottom. Live processes already start open. No upward warm-up traversal.
+    const process = root.querySelector<HTMLDetailsElement>('.maka-processing-sequence');
+    if (process && !process.open) {
+      process.querySelector('summary')!.click();
+      await waitFor(() => expect(process.open).toBe(true));
+      await waitFor(() => expect(document.querySelector('.maka-markdown-pending')).toBeNull());
+      scrollAsReader(root, root.scrollHeight);
+      await painted(4);
+    }
     await waitFor(() => expect(tailMetrics().distance).toBeLessThanOrEqual(4));
     // A single Turn taller than several viewports is the point; without the
     // overflow the rest proves nothing.
@@ -3751,4 +3775,76 @@ export const ContextCompactionFailed: Story = {
       }}
     />
   ),
+};
+
+// Stored events go through ChatView's production materializer; both grouping
+// and the 3m 33s duration are derived, not asserted on a hand-built turn.
+const processDisclosureMessages: StoredMessage[] = [
+  { type: 'user', id: 'process-ask', turnId: 'process-turn', ts: NOW - 213_000, text: '修复刷新页面后登录状态丢失的问题。' },
+  { type: 'turn_state', id: 'process-running', turnId: 'process-turn', ts: NOW - 213_000, status: 'running' },
+  { type: 'assistant', id: 'process-check', turnId: 'process-turn', ts: NOW - 200_000, text: '我先检查登录状态的存储和恢复逻辑。', thinking: { text: '检查初始化时机与会话恢复顺序。' }, modelId: 'claude-sonnet-4-5' },
+  { type: 'tool_call', id: 'process-read', turnId: 'process-turn', ts: NOW - 190_000, toolName: 'Read', activityKind: 'read', stepId: 'process-check', args: { path: 'src/auth-store.ts' } },
+  { type: 'tool_result', id: 'process-read-result', turnId: 'process-turn', ts: NOW - 185_000, toolUseId: 'process-read', isError: false, content: { kind: 'text', text: 'export function restoreSession() { return storage.getItem("session"); }' } },
+  { type: 'assistant', id: 'process-fix', turnId: 'process-turn', ts: NOW - 170_000, text: '恢复时机有问题，接下来补上初始化。', modelId: 'claude-sonnet-4-5' },
+  { type: 'tool_call', id: 'process-edit', turnId: 'process-turn', ts: NOW - 160_000, toolName: 'Edit', activityKind: 'edit', stepId: 'process-fix', args: { path: 'src/auth-store.ts', old_string: 'const session = null;', new_string: 'const session = restoreSession();' } },
+  { type: 'tool_result', id: 'process-edit-result', turnId: 'process-turn', ts: NOW - 150_000, toolUseId: 'process-edit', isError: false, content: { kind: 'text', text: 'Updated src/auth-store.ts' } },
+  { type: 'assistant', id: 'process-verify', turnId: 'process-turn', ts: NOW - 100_000, text: '初始化已补齐，现在运行登录状态的回归测试。', modelId: 'claude-sonnet-4-5' },
+  { type: 'tool_call', id: 'process-test', turnId: 'process-turn', ts: NOW - 90_000, toolName: 'Bash', activityKind: 'command', stepId: 'process-verify', args: { command: 'npm test -- auth-store.test.ts' } },
+  { type: 'tool_result', id: 'process-test-result', turnId: 'process-turn', ts: NOW - 5_000, toolUseId: 'process-test', isError: false, content: { kind: 'text', text: 'Tests passed: 4' } },
+  { type: 'assistant', id: 'process-answer', turnId: 'process-turn', ts: NOW, text: '已修复登录状态恢复。\n\n刷新页面后会恢复已有会话；相关测试通过。', modelId: 'claude-sonnet-4-5' },
+  { type: 'turn_state', id: 'process-completed', turnId: 'process-turn', ts: NOW, status: 'completed' },
+];
+
+// Real path: session → a completed multi-step reply. Intermediate commentary,
+// reasoning and tools are collapsed above the answer in the real chat frame.
+export const CompletedProcessCollapsed: Story = {
+  render: () => <ComposedShell sidebarCollapsed chat={{ messages: processDisclosureMessages, scrollBehavior: 'auto' }} />,
+  play: async ({ canvasElement }) => {
+    const process = canvasElement.querySelector<HTMLDetailsElement>('.maka-processing-sequence');
+    await expect(process).not.toBeNull();
+    await expect(process!.open).toBe(false);
+    const answer = await within(canvasElement).findByText('已修复登录状态恢复。');
+    await expect(answer).toBeVisible();
+    await expect(await within(canvasElement).findByText('我先检查登录状态的存储和恢复逻辑。')).not.toBeVisible();
+    // Real geometry: process consumes only its single summary row.
+    const summary = process!.querySelector('summary')!;
+    await expect(process!.getBoundingClientRect().height).toBeLessThanOrEqual(summary.getBoundingClientRect().height + 1);
+    await expect(answer.getBoundingClientRect().top).toBeGreaterThanOrEqual(process!.getBoundingClientRect().bottom);
+  },
+};
+
+// Real path: the same completed reply → open the elapsed-time disclosure.
+// Browser coverage checks its focus and that collapsing the process preserves
+// a selection in the final answer. Native summary keyboard activation remains
+// browser-owned; userEvent does not emulate its Enter or focus behavior.
+export const CompletedProcessExpanded: Story = {
+  render: CompletedProcessCollapsed.render,
+  play: async ({ canvasElement }) => {
+    const process = canvasElement.querySelector<HTMLDetailsElement>('.maka-processing-sequence')!;
+    const summary = process.querySelector('summary')!;
+    await within(canvasElement).findByText('已修复登录状态恢复。');
+    summary.focus();
+    summary.click();
+    await waitFor(() => expect(process.open).toBe(true));
+    await expect(summary).toHaveFocus();
+    await expect(await within(canvasElement).findByText('我先检查登录状态的存储和恢复逻辑。')).toBeVisible();
+    const answer = await within(canvasElement).findByText('已修复登录状态恢复。');
+    await expect(answer).toBeVisible();
+    const selection = window.getSelection()!;
+    const range = document.createRange();
+    range.selectNodeContents(answer);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    const selected = selection.toString();
+    await expect(selected).toBe('已修复登录状态恢复。');
+    // Programmatic activation avoids the pointer's native selection clearing;
+    // this checks React/layout identity, rather than browser mouse semantics.
+    summary.click();
+    await waitFor(() => expect(process.open).toBe(false));
+    await expect(selection.toString()).toBe(selected);
+    await expect(answer.isConnected).toBe(true);
+    summary.click();
+    await waitFor(() => expect(process.open).toBe(true));
+    selection.removeAllRanges();
+  },
 };

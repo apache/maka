@@ -88,7 +88,10 @@ test('applies authoritative replacement once and does not complete it again at T
     ['text_delta'],
   );
   assert.deepEqual(projector.accept(deltaFrame(1, 0, 'final', { reset: true })).events, []);
-  const completed = projector.accept(deltaFrame(2, 5, '', { complete: true })).events;
+  const completed = projector.accept(
+    deltaFrame(2, 5, '', { complete: true, interrupted: true }),
+  ).events;
+  assert.ok(completed[0]?.type === 'text_complete' && completed[0].interrupted === true);
   assert.deepEqual(
     completed.map((event) => [event.type, 'text' in event ? event.text : '']),
     [['text_complete', 'final']],
@@ -916,7 +919,7 @@ function deltaFrame(
   sequence: number,
   startOffset: number,
   text: string,
-  flags: { reset?: true; complete?: true } = {},
+  flags: { reset?: true; complete?: true; interrupted?: true } = {},
 ): SubscriptionFrame {
   return {
     kind: 'subscription.session_delta',

@@ -19,8 +19,7 @@
 
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { runHostedExecution } from '@maka/runtime-host/client';
-import type { HostedExecutionStartInput } from '@maka/runtime-host/protocol';
+import { runHostedExecution, type RunHostedExecutionInput } from '@maka/runtime-host/client';
 import { captureMakaRuntimeArtifacts, writeMakaArtifactCollectionError } from './maka-artifacts.js';
 import { makaEvalRuntimePolicyDocument } from './maka-runtime-policy.js';
 import { takeRelayResultToken, writeRelayResult } from './relay-result-frame.js';
@@ -32,7 +31,7 @@ const payload = JSON.parse(Buffer.from(process.argv[2] ?? '', 'base64url').toStr
   artifactRoot: string;
   baseUrl: string;
   hostSettlementTimeoutMs: number;
-  execution: HostedExecutionStartInput;
+  execution: RunHostedExecutionInput['execution'];
 };
 const abort = new AbortController();
 let artifactCapture = Promise.resolve();

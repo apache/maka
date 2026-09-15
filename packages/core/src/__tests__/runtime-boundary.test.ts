@@ -22,6 +22,7 @@ import { describe, it } from 'node:test';
 import { decodeRuntimeEvent, type RuntimeEvent } from '../runtime-event.js';
 import {
   buildImmutableRuntimePrefix,
+  buildImmutableRuntimePrefixProof,
   createRuntimeBoundaryCursor,
   decodeContinuationClaim,
   decodeRuntimeBoundaryCursor,
@@ -61,6 +62,40 @@ describe('immutable RuntimeEvent boundary', () => {
     });
     assert.match(prefix.prefixDigest, /^sha256:[0-9a-f]{64}$/);
     assert.equal(prefix.prefixDigest, equivalent.prefixDigest);
+  });
+
+  it('folds the bounded endpoint proof to the exact released prefix digest', () => {
+    const identity = runtimeIdentity('run-proof');
+    const rows = [
+      { eventSeq: 1, event: event('event-1', identity) },
+      { eventSeq: 2, event: event('event-2', identity) },
+      { eventSeq: 3, event: event('event-3', identity) },
+    ];
+    const prefix = buildImmutableRuntimePrefix(identity, rows);
+    const proof = buildImmutableRuntimePrefixProof(
+      identity,
+      (function* () {
+        yield* rows;
+      })(),
+    );
+
+    assert.equal(proof.prefixDigest, prefix.prefixDigest);
+    assert.deepEqual(proof.position, prefix.position);
+    assert.equal(proof.firstEvent.id, 'event-1');
+    assert.equal(proof.lastEvent.id, 'event-3');
+    assert.deepEqual(runtimePrefixSegment(proof), runtimePrefixSegment(prefix));
+  });
+
+  it('rejects gaps while streaming a bounded prefix proof', () => {
+    const identity = runtimeIdentity('run-proof-gap');
+    assert.throws(
+      () =>
+        buildImmutableRuntimePrefixProof(identity, [
+          { eventSeq: 1, event: event('event-1', identity) },
+          { eventSeq: 3, event: event('event-3', identity) },
+        ]),
+      /event_seq gap/,
+    );
   });
 
   it('preserves the released Automation prefix identity after semantic decoding', () => {

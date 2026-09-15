@@ -24,10 +24,7 @@ import type {
 
 export type CompactionStage = 'priorReplay' | 'activeStep';
 export type CompactionSourceKind = 'runtimeEvents' | 'providerMessages';
-export type CompactionBoundaryKind =
-  | 'historyCompact'
-  | 'staleToolResultPrune'
-  | 'activeToolResultPrune';
+export type CompactionBoundaryKind = 'historyCompact' | 'toolResultPrune';
 export type CompactionDecisionKind = 'unchanged' | 'replaced' | 'failedOpen';
 
 export interface CompactionCoverage {

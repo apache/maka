@@ -17,11 +17,11 @@
  * under the License.
  */
 
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from 'react';
 
 /** Mounts near the viewport; measured heights belong to the shared geometry ledger. */
 export function VirtualTranscriptTurn({
-  turnId, scrollRef, enabled, required, getHeight, onMeasure, children,
+  turnId, scrollRef, enabled, required, getHeight, onMeasure, children, accentColor,
 }: {
   turnId: string;
   scrollRef: RefObject<HTMLElement | null>;
@@ -30,6 +30,7 @@ export function VirtualTranscriptTurn({
   getHeight(id: string): number;
   onMeasure(id: string, height: number): void;
   children: ReactNode;
+  accentColor?: string;
 }) {
   const root = useRef<HTMLDivElement>(null);
   const measure = useRef(onMeasure);
@@ -89,6 +90,10 @@ export function VirtualTranscriptTurn({
     data-transcript-turn-id={turnId}
     data-turn-id={mounted ? undefined : turnId}
     data-virtual-placeholder={mounted ? undefined : ''}
-    style={mounted ? undefined : { height: getHeight(turnId), flexShrink: 0 }}
+    data-turn-accent={accentColor ? 'true' : undefined}
+    style={{
+      ...(mounted ? undefined : { height: getHeight(turnId), flexShrink: 0 }),
+      ...(accentColor ? { '--maka-turn-accent': accentColor } : undefined),
+    } as CSSProperties}
   >{mounted ? children : null}</div>;
 }

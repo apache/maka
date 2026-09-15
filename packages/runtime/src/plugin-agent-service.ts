@@ -57,6 +57,7 @@ export interface PluginAgentCreateOptions {
   readonly cwd?: string;
   readonly prompt?: string;
   readonly agentProfile?: AgentProfile;
+  readonly executorId?: string;
   readonly model?: string;
   readonly permissionMode?: PermissionMode;
   readonly signal?: AbortSignal;

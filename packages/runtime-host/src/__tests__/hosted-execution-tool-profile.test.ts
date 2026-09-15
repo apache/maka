@@ -166,11 +166,12 @@ test('WorkHub v2 can read its attachments without inheriting terminal, browser, 
     makeTool('mcp__desktop_browser__browser_navigate'),
     control,
     tasks,
+    makeTool('AskUserQuestion'),
   ];
   const projected = projectHostedExecutionTools(tools, 'workhub-coordination-v2');
   assert.deepEqual(
     projected.map(({ name }) => name),
-    [control.name, tasks.name, 'Read'],
+    [control.name, tasks.name, 'Read', 'AskUserQuestion'],
   );
   const read = projected[2]!;
   const context = {
@@ -182,15 +183,15 @@ test('WorkHub v2 can read its attachments without inheriting terminal, browser, 
     abortSignal: new AbortController().signal,
     emitOutput() {},
   };
-  assert.deepEqual(await read.impl({ ref: 'maka://runtime/attachments/attachment-1' }, context), {
+  assert.deepEqual(await read.impl({ path: 'maka://runtime/attachments/attachment-1' }, context), {
     kind: 'text',
     text: 'attachment contents',
   });
   assert.deepEqual(reads, [{ sessionId: 'workhub', artifactId: 'attachment-1' }]);
   for (const input of [
     { path: '/etc/passwd' },
-    { ref: 'maka://runtime/background-tasks/task-1' },
-    { ref: 'maka://runtime/attachments/a?session=other' },
+    { path: 'maka://runtime/background-tasks/task-1' },
+    { path: 'maka://runtime/attachments/a?session=other' },
   ]) {
     assert.throws(() => read.impl(input, context));
   }

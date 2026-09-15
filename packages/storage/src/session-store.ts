@@ -36,6 +36,7 @@ import {
   OPERATIONAL_STATE_DATABASE_NAME,
 } from './operational-state-store.js';
 import { DEFAULT_SESSION_NAME, normalizeUserSessionName } from '@maka/core/session-name';
+import { isExecutorId } from '@maka/core/executor-id';
 import {
   decodeCanonicalMessage,
   deriveTurnRecords,
@@ -1340,7 +1341,8 @@ function buildSessionHeader(
     ...(input.revisionIndex !== undefined ? { revisionIndex: input.revisionIndex } : {}),
     ...(input.revisionState ? { revisionState: input.revisionState } : {}),
     hasUnread: false,
-    backend: 'ai-sdk',
+    backend: input.executorId ? 'plugin-executor' : 'ai-sdk',
+    ...(input.executorId ? { executorId: input.executorId } : {}),
     ...(input.llmConnectionId === undefined ? {} : { llmConnectionId: input.llmConnectionId }),
     llmConnectionSlug: input.llmConnectionSlug,
     // A subagent Session's route is chosen by the spawn that created it and is
@@ -1405,6 +1407,7 @@ export function normalizeSessionHeader(
     (header.lastReadMessageId === undefined || typeof header.lastReadMessageId === 'string') &&
     typeof header.hasUnread === 'boolean' &&
     isPersistedBackendKind(header.backend) &&
+    isValidExecutorSelection(header) &&
     (header.llmConnectionId === undefined ||
       (typeof header.llmConnectionId === 'string' && header.llmConnectionId.length > 0)) &&
     typeof header.llmConnectionSlug === 'string' &&
@@ -1566,7 +1569,14 @@ function isValidSubagentSessionLineage(header: SessionHeader): boolean {
  * FakeBackend fail `normalizeSessionHeader` and read back as malformed (#3211).
  */
 function isPersistedBackendKind(value: unknown): value is SessionHeader['backend'] {
-  return value === 'ai-sdk' || value === 'fake';
+  return value === 'ai-sdk' || value === 'plugin-executor' || value === 'fake';
+}
+
+function isValidExecutorSelection(header: SessionHeader): boolean {
+  if (header.backend === 'plugin-executor') {
+    return isExecutorId(header.executorId);
+  }
+  return header.executorId === undefined;
 }
 
 function isFiniteNumber(value: unknown): value is number {
@@ -1641,6 +1651,7 @@ function toSummary(header: SessionHeader): SessionSummary {
     ...(header.revisionIndex !== undefined ? { revisionIndex: header.revisionIndex } : {}),
     ...(header.revisionState ? { revisionState: header.revisionState } : {}),
     backend: header.backend,
+    ...(header.executorId ? { executorId: header.executorId } : {}),
     ...(header.llmConnectionId === undefined ? {} : { llmConnectionId: header.llmConnectionId }),
     llmConnectionSlug: header.llmConnectionSlug,
     connectionLocked: header.connectionLocked,

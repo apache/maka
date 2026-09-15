@@ -81,6 +81,127 @@ function stringField(record: TranscriptRecord, key: string): string | undefined 
   return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
 
+interface TranscriptNode {
+  readonly uuid: string;
+  readonly parentUuid?: string;
+  readonly isPrompt: boolean;
+  readonly isSidechain: boolean;
+}
+
+export interface TranscriptLineageIndex {
+  /** Records dropped as descending from a withdrawn prompt. */
+  readonly abandoned: number;
+  /** Prompts withdrawn by a later sibling. */
+  readonly withdrawnPrompts: number;
+  /** `uuid` repeats ignored after their first occurrence. */
+  readonly duplicates: number;
+  /** `compact_boundary` records in the de-duplicated source. */
+  readonly compactBoundaries: number;
+  createFilter(): TranscriptLineageFilter;
+}
+
+export interface TranscriptLineageFilter {
+  keep(record: TranscriptRecord): boolean;
+}
+
+/**
+ * Incremental lineage index used by large transcript imports.
+ *
+ * It retains only graph identity, never complete transcript records. Once the
+ * first pass is complete, independent filters can replay the fixed source
+ * snapshot while applying the same de-duplication and rewind selection as
+ * {@link resolveTranscriptLineage}.
+ */
+export class TranscriptLineageIndexer {
+  readonly #nodes = new Map<string, TranscriptNode>();
+  #duplicates = 0;
+  #compactBoundaries = 0;
+
+  accept(record: TranscriptRecord): void {
+    const uuid = stringField(record, 'uuid');
+    if (uuid !== undefined && this.#nodes.has(uuid)) {
+      this.#duplicates += 1;
+      return;
+    }
+    if (record.subtype === 'compact_boundary') this.#compactBoundaries += 1;
+    if (uuid === undefined) return;
+    const parentUuid = transcriptParentUuid(record);
+    this.#nodes.set(uuid, {
+      uuid,
+      ...(parentUuid !== undefined ? { parentUuid } : {}),
+      isPrompt: isPromptRecord(record),
+      isSidechain: record.isSidechain === true,
+    });
+  }
+
+  finish(): TranscriptLineageIndex {
+    const main = [...this.#nodes.values()].filter((node) => !node.isSidechain);
+    const present = new Set(main.map((node) => node.uuid));
+    const childrenOf = new Map<string, string[]>();
+    const promptsOf = new Map<string, string[]>();
+    for (const node of main) {
+      const key =
+        node.parentUuid !== undefined && present.has(node.parentUuid) ? node.parentUuid : ROOT_KEY;
+      const children = childrenOf.get(key);
+      if (children) children.push(node.uuid);
+      else childrenOf.set(key, [node.uuid]);
+      if (node.isPrompt) {
+        const prompts = promptsOf.get(key);
+        if (prompts) prompts.push(node.uuid);
+        else promptsOf.set(key, [node.uuid]);
+      }
+    }
+
+    const withdrawn: string[] = [];
+    for (const prompts of promptsOf.values()) {
+      if (prompts.length > 1) withdrawn.push(...prompts.slice(0, -1));
+    }
+    const dropped = new Set<string>();
+    const stack = [...withdrawn];
+    while (stack.length > 0) {
+      const uuid = stack.pop() as string;
+      if (dropped.has(uuid)) continue;
+      dropped.add(uuid);
+      for (const child of childrenOf.get(uuid) ?? []) stack.push(child);
+    }
+
+    return new FinishedTranscriptLineageIndex(
+      dropped,
+      withdrawn.length,
+      this.#duplicates,
+      this.#compactBoundaries,
+    );
+  }
+}
+
+class FinishedTranscriptLineageIndex implements TranscriptLineageIndex {
+  readonly #dropped: ReadonlySet<string>;
+  readonly abandoned: number;
+
+  constructor(
+    dropped: ReadonlySet<string>,
+    readonly withdrawnPrompts: number,
+    readonly duplicates: number,
+    readonly compactBoundaries: number,
+  ) {
+    this.#dropped = dropped;
+    this.abandoned = this.#dropped.size;
+  }
+
+  createFilter(): TranscriptLineageFilter {
+    const seen = new Set<string>();
+    return {
+      keep: (record) => {
+        const uuid = stringField(record, 'uuid');
+        if (uuid === undefined) return true;
+        if (seen.has(uuid)) return false;
+        seen.add(uuid);
+        return !this.#dropped.has(uuid);
+      },
+    };
+  }
+}
+
 /**
  * The parent a record hangs from: `parentUuid`, and nothing else.
  *
@@ -115,96 +236,22 @@ export function isPromptRecord(record: TranscriptRecord): boolean {
   );
 }
 
-/**
- * Drop repeats of a `uuid` already seen, keeping the first.
- *
- * A record written twice replays whatever identity it carries — a prompt, a
- * turn boundary, a tool call. Measured: 3 repeats across 1130 local
- * transcripts. Rare enough to be invisible in testing, permanent once it is
- * persisted as canonical history.
- */
-function deduplicate(records: readonly TranscriptRecord[]): {
-  readonly kept: readonly TranscriptRecord[];
-  readonly duplicates: number;
-} {
-  const seen = new Set<string>();
-  const kept: TranscriptRecord[] = [];
-  let duplicates = 0;
-  for (const record of records) {
-    const uuid = stringField(record, 'uuid');
-    if (uuid !== undefined) {
-      if (seen.has(uuid)) {
-        duplicates += 1;
-        continue;
-      }
-      seen.add(uuid);
-    }
-    kept.push(record);
-  }
-  return { kept, duplicates };
-}
-
 const ROOT_KEY = ' root';
 
 export function resolveTranscriptLineage(
   rawRecords: readonly TranscriptRecord[],
 ): LineageResolution {
-  const { kept: records, duplicates } = deduplicate(rawRecords);
-  const compactBoundaries = records.filter((r) => r.subtype === 'compact_boundary').length;
-
-  const main = records.filter(
-    (r) => r.isSidechain !== true && stringField(r, 'uuid') !== undefined,
-  );
-  if (main.length === 0) {
-    return { records, abandoned: 0, withdrawnPrompts: 0, duplicates, compactBoundaries };
-  }
-
-  const present = new Set(main.map((r) => stringField(r, 'uuid') as string));
-  const childrenOf = new Map<string, TranscriptRecord[]>();
-  for (const record of main) {
-    const parent = transcriptParentUuid(record);
-    // A parent outside this file is no parent: the record roots its own
-    // segment rather than being orphaned into nothing.
-    const key = parent !== undefined && present.has(parent) ? parent : ROOT_KEY;
-    const siblings = childrenOf.get(key);
-    if (siblings) siblings.push(record);
-    else childrenOf.set(key, [record]);
-  }
-
-  // Among sibling prompts the last written is the one that was asked; the
-  // earlier ones were withdrawn by the edit that replaced them.
-  const withdrawn: TranscriptRecord[] = [];
-  for (const [, siblings] of childrenOf) {
-    const prompts = siblings.filter(isPromptRecord);
-    if (prompts.length < 2) continue;
-    withdrawn.push(...prompts.slice(0, -1));
-  }
-  if (withdrawn.length === 0) {
-    return { records, abandoned: 0, withdrawnPrompts: 0, duplicates, compactBoundaries };
-  }
-
-  // A withdrawn prompt takes its subtree: the answer to a question that was
-  // never asked is not conversation either.
-  const dropped = new Set<string>();
-  const stack = [...withdrawn];
-  while (stack.length > 0) {
-    const record = stack.pop() as TranscriptRecord;
-    const uuid = stringField(record, 'uuid') as string;
-    if (dropped.has(uuid)) continue;
-    dropped.add(uuid);
-    for (const child of childrenOf.get(uuid) ?? []) stack.push(child);
-  }
-
-  const resolved = records.filter((record) => {
-    const uuid = stringField(record, 'uuid');
-    return uuid === undefined || !dropped.has(uuid);
-  });
+  const indexer = new TranscriptLineageIndexer();
+  for (const record of rawRecords) indexer.accept(record);
+  const index = indexer.finish();
+  const filter = index.createFilter();
+  const resolved = rawRecords.filter((record) => filter.keep(record));
 
   return {
     records: resolved,
-    abandoned: dropped.size,
-    withdrawnPrompts: withdrawn.length,
-    duplicates,
-    compactBoundaries,
+    abandoned: index.abandoned,
+    withdrawnPrompts: index.withdrawnPrompts,
+    duplicates: index.duplicates,
+    compactBoundaries: index.compactBoundaries,
   };
 }

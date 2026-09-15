@@ -275,7 +275,9 @@ async function settled(page: Page): Promise<void> {
 
 async function moveToTail(page: Page): Promise<void> {
   await settled(page);
-  await page.locator(TURN).last().scrollIntoViewIfNeeded();
+  // The bounded transcript can replace its last Turn between locator
+  // resolution and scrolling. The scroll container owns this movement.
+  await page.locator(SCROLLER).evaluate((element) => { element.scrollTop = element.scrollHeight; });
   await page.evaluate(() => new Promise<void>((resolve) =>
     requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
   ));

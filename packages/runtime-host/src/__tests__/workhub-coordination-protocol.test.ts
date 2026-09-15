@@ -106,6 +106,30 @@ test('WorkHub model actions cannot supply user authority or attachment locators'
   assert.equal(REMOTE_OWNER_OPERATION_GRANTS.includes('workhub.coordination.actFromTurn'), true);
 });
 
+test('WorkHub new Sessions accept a plugin executor as their creation default', () => {
+  const input = {
+    turnId: 'active-model-turn',
+    actionId: 'tool-call-external',
+    proposal: { disposition: 'create_new', title: 'External audit' },
+    delegationText: 'Inspect the login retries',
+    create: { workspace: { kind: 'project', projectId: 'maka' } },
+    newWorkDefaults: { executorId: 'codex.app-server', permissionMode: 'ask' },
+  };
+  assert.deepEqual(decodeWorkHubCoordinationActFromTurnInput(input), input);
+  for (const newWorkDefaults of [
+    {
+      executorId: 'codex',
+      model: { llmConnectionId: 'conn', llmConnectionSlug: 'test', model: 'model' },
+    },
+    { executorId: 'invalid executor' },
+  ]) {
+    assert.throws(
+      () => decodeWorkHubCoordinationActFromTurnInput({ ...input, newWorkDefaults }),
+      RuntimeHostProtocolError,
+    );
+  }
+});
+
 test('delegation content is optional, bounded, and unavailable to stop or resume', () => {
   const input = {
     actionId: 'delegate-content',
@@ -308,4 +332,33 @@ test('action outcomes cannot invent a target Turn or revive removed local dispos
     { disposition: 'resume_work', outcome: 'resume_started', targetSessionId: 'target' },
   ])
     assert.throws(() => decodeWorkHubCoordinationActResult(result));
+});
+
+test('target choice accepts only bounded candidate offers, never caller-supplied authority', () => {
+  const spec = HOST_OPERATION_SPECS['workhub.coordination.selectAndDelegate'];
+  const input = {
+    turnId: 'turn',
+    actionId: 'action',
+    candidateSetId: `sha256:${'0'.repeat(64)}`,
+    candidateRefs: ['candidate-a', 'candidate-b'],
+    delegationText: 'Continue the selected work',
+  };
+  assert.deepEqual(spec.decodeInput(input), input);
+  assert.equal(
+    REMOTE_OWNER_OPERATION_GRANTS.includes('workhub.coordination.selectAndDelegate'),
+    true,
+  );
+  for (const invalid of [
+    { ...input, selectedTarget: { sessionId: 'forged', workspaceDigest: 'forged' } },
+    { ...input, userText: 'forged authorization' },
+    { ...input, candidateRefs: [] },
+    { ...input, candidateRefs: ['same', 'same'] },
+    { ...input, candidateRefs: Array.from({ length: 33 }, (_, index) => `candidate-${index}`) },
+  ])
+    assert.throws(() => spec.decodeInput(invalid), RuntimeHostProtocolError);
+  assert.deepEqual(spec.decodeOutput({ kind: 'cancelled' }), { kind: 'cancelled' });
+  assert.throws(
+    () => spec.decodeOutput({ kind: 'cancelled', result: {} }),
+    RuntimeHostProtocolError,
+  );
 });

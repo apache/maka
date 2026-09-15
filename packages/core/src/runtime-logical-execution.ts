@@ -22,6 +22,8 @@ import {
   createRuntimeBoundaryCursor,
   invocationMatchesClaimTarget,
   runtimePrefixSegment,
+  type ImmutableRuntimePrefixProofV1,
+  type ImmutableRuntimePrefixV1,
   type RuntimePrefixSegmentV1,
 } from './runtime-boundary.js';
 import type { RuntimeEvent } from './runtime-event.js';
@@ -48,21 +50,47 @@ export interface LogicalRuntimeExecution {
   readonly pendingHandoff?: RuntimeHandoffPause;
 }
 
-type LogicalExecutionReader = Pick<
+export type LogicalRuntimeExecutionMembership = Omit<LogicalRuntimeExecution, 'events'>;
+
+type LogicalExecutionAuthorityReader = Pick<
   RuntimeContinuationAuthorityStore,
-  | 'readRunInvocation'
-  | 'listSessionInvocations'
-  | 'readImmutableRuntimeEvents'
-  | 'readImmutableRuntimePrefix'
-  | 'readContinuationClaimStateByBoundary'
+  'readRunInvocation' | 'listSessionInvocations' | 'readContinuationClaimStateByBoundary'
 >;
 
-/** All logical snapshot and command routing paths share these edge checks. */
-export async function readLogicalRuntimeExecution(
+export type LogicalExecutionMembershipReader = LogicalExecutionAuthorityReader & {
+  readImmutableRuntimePrefixProof(input: {
+    sessionId: string;
+    runId: string;
+    upToEventSeq?: number;
+  }): Promise<ImmutableRuntimePrefixProofV1>;
+};
+
+type LogicalExecutionReader = LogicalExecutionAuthorityReader &
+  Pick<
+    RuntimeContinuationAuthorityStore,
+    'readImmutableRuntimeEvents' | 'readImmutableRuntimePrefix'
+  >;
+
+export function readLogicalRuntimeExecution(
   store: LogicalExecutionReader,
   identity: { sessionId: string; runId: string; turnId: string },
   knownRoot?: RuntimeInvocationRecord,
-): Promise<LogicalRuntimeExecution | undefined> {
+): Promise<LogicalRuntimeExecution | undefined>;
+export function readLogicalRuntimeExecution(
+  store: LogicalExecutionMembershipReader,
+  identity: { sessionId: string; runId: string; turnId: string },
+  knownRoot: RuntimeInvocationRecord | undefined,
+  options: { mode: 'membership' },
+): Promise<LogicalRuntimeExecutionMembership | undefined>;
+
+/** All logical snapshot and command routing paths share these edge checks. */
+export async function readLogicalRuntimeExecution(
+  store: LogicalExecutionReader | LogicalExecutionMembershipReader,
+  identity: { sessionId: string; runId: string; turnId: string },
+  knownRoot?: RuntimeInvocationRecord,
+  options?: { mode: 'membership' },
+): Promise<LogicalRuntimeExecution | LogicalRuntimeExecutionMembership | undefined> {
+  const membership = options?.mode === 'membership';
   const root = knownRoot ?? (await readRunInvocation(store, identity.sessionId, identity.runId));
   if (!root) return undefined;
   if (
@@ -80,15 +108,26 @@ export async function readLogicalRuntimeExecution(
     if (seen.has(tip.runId) || seen.size >= 64)
       throw new Error('Invalid logical execution handoff lineage');
     seen.add(tip.runId);
-    const events = await store.readImmutableRuntimeEvents(identity.sessionId, tip.runId);
-    const last = events.at(-1);
+    const events = membership
+      ? undefined
+      : await (store as LogicalExecutionReader).readImmutableRuntimeEvents(
+          identity.sessionId,
+          tip.runId,
+        );
+    const last = membership ? tip.terminalEvent : events?.at(-1);
     const pause = last && runtimeHandoffPause(last);
-    if (!pause) return { root, tip, events, runIds: [...seen] };
+    if (!pause) return logicalExecutionResult(root, tip, [...seen], events);
     if (pause.rootRunId !== root.runId) throw new Error('Handoff seal changes the logical root');
-    const prefix = await store.readImmutableRuntimePrefix({
-      sessionId: identity.sessionId,
-      runId: tip.runId,
-    });
+    const prefix = membership
+      ? await (store as LogicalExecutionMembershipReader).readImmutableRuntimePrefixProof({
+          sessionId: identity.sessionId,
+          runId: tip.runId,
+        })
+      : await (store as LogicalExecutionReader).readImmutableRuntimePrefix({
+          sessionId: identity.sessionId,
+          runId: tip.runId,
+        });
+    const segment = runtimePrefixSegment(prefix);
     if (prefix.position.lastEventId !== last.id)
       throw new Error('Handoff source changed after its seal');
     if (!segments) {
@@ -101,16 +140,20 @@ export async function readLogicalRuntimeExecution(
         const initial = await store.readContinuationClaimStateByBoundary(source.boundaryDigest);
         if (
           !initial ||
-          initial.startEventId !== prefix.events[0]?.id ||
+          initial.startEventId !== prefixFirstEvent(prefix).id ||
           !invocationMatchesClaimTarget(root, initial.claim) ||
-          !continuationStartEventMatchesClaim(prefix.events[0], initial.claim, initial.startKind)
+          !continuationStartEventMatchesClaim(
+            prefixFirstEvent(prefix),
+            initial.claim,
+            initial.startKind,
+          )
         ) {
           throw new Error('Handoff root continuation is not authenticated');
         }
         segments = [...initial.claim.boundary.segments];
       } else segments = [];
     }
-    segments.push(runtimePrefixSegment(prefix));
+    segments.push(segment);
     const boundary = createRuntimeBoundaryCursor(
       segments as [RuntimePrefixSegmentV1, ...RuntimePrefixSegmentV1[]],
     );
@@ -123,14 +166,27 @@ export async function readLogicalRuntimeExecution(
     }
     if (!state) {
       if (next) throw new Error('Handoff successor opened without its continuation claim');
-      return { root, tip, events, runIds: [...seen], pendingHandoff: pause };
+      return logicalExecutionResult(root, tip, [...seen], events, pause);
     }
     assertHandoffClaimSource(state.claim, prefix);
     if (!next) {
       if (state.startEventId) throw new Error('Handoff successor opening is missing');
-      return { root, tip, events, runIds: [...seen], pendingHandoff: pause };
+      return logicalExecutionResult(root, tip, [...seen], events, pause);
     }
-    const first = (await store.readImmutableRuntimeEvents(identity.sessionId, next.runId))[0];
+    const first = membership
+      ? prefixFirstEvent(
+          await (store as LogicalExecutionMembershipReader).readImmutableRuntimePrefixProof({
+            sessionId: identity.sessionId,
+            runId: next.runId,
+            upToEventSeq: 1,
+          }),
+        )
+      : (
+          await (store as LogicalExecutionReader).readImmutableRuntimeEvents(
+            identity.sessionId,
+            next.runId,
+          )
+        )[0];
     if (
       state.startEventId !== first?.id ||
       !invocationMatchesClaimTarget(next, state.claim) ||
@@ -140,6 +196,26 @@ export async function readLogicalRuntimeExecution(
     }
     tip = next;
   }
+}
+
+function prefixFirstEvent(
+  prefix: ImmutableRuntimePrefixV1 | ImmutableRuntimePrefixProofV1,
+): RuntimeEvent {
+  const first =
+    prefix.protocol === 'immutable_runtime_prefix_v1' ? prefix.events[0] : prefix.firstEvent;
+  if (!first) throw new Error('immutable RuntimeEvent prefix is empty');
+  return first;
+}
+
+function logicalExecutionResult(
+  root: RuntimeInvocationRecord,
+  tip: RuntimeInvocationRecord,
+  runIds: readonly string[],
+  events?: readonly RuntimeEvent[],
+  pendingHandoff?: RuntimeHandoffPause,
+): LogicalRuntimeExecution | LogicalRuntimeExecutionMembership {
+  const result = { root, tip, runIds, ...(pendingHandoff ? { pendingHandoff } : {}) };
+  return events ? { ...result, events } : result;
 }
 
 /** Resolve a durable physical proof back to its root, then authenticate membership. */
