@@ -90,21 +90,34 @@ function kindOf(action: CuPresentationAction): CursorActionKind | undefined {
  * just been launched to a new position — and only lets it sink into the
  * target's own layer once the target is genuinely the window under the cursor.
  *
- * Maka has one of those two reasons available and not the other. The launch
- * half is the sink's own business (the presentation layer is what knows when a
- * motion settles). The frontmost/covered half needs a per-observation record of
- * what is stacked over the target, which the runtime does not collect, so it is
- * deliberately not modelled here rather than declared as a field nothing sets.
- *
- * What is left is the ordering: with a window id to order against, the cursor
- * does not need a level to stay visible — its position in the target's own
- * z-order is what keeps it readable, exactly as it is for Codex. Staying
- * elevated on top of that is what put the cursor over the user's own windows.
- * With no window to order against there is nothing to sink to, so it stays up:
- * an unseen cursor is the failure this whole path exists to avoid.
+ * The launch half is the sink's own business. The covered half is the aim
+ * point against `obscuringRects` from the last observation: a control on the
+ * top edge can be visible while the middle of the window is buried, so a
+ * non-empty rect list is not enough to stay up. Missing rects must not flip
+ * window-bound cursors to stay-up — that is what put the cursor over the
+ * user's own windows. With no window to order against there is nothing to
+ * sink to, so it stays up: an unseen cursor is the failure this path exists
+ * to avoid.
  */
+function pointInRect(
+  point: { x: number; y: number },
+  rect: { x: number; y: number; width: number; height: number },
+): boolean {
+  if (!(rect.width > 0) || !(rect.height > 0)) return false;
+  return (
+    point.x >= rect.x &&
+    point.x < rect.x + rect.width &&
+    point.y >= rect.y &&
+    point.y < rect.y + rect.height
+  );
+}
+
 function keepElevated(context: CuOverlayHookContext): boolean {
-  return context.targetWindowId === undefined;
+  if (context.targetWindowId === undefined) return true;
+  const point = context.presentationScreenPoint;
+  const rects = context.obscuringRects;
+  if (!point || !rects || rects.length === 0) return false;
+  return rects.some((rect) => pointInRect(point, rect));
 }
 
 export function createComputerUseOverlayHook(controller: OverlayCursorSink): CuOverlayHook {
