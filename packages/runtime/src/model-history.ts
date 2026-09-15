@@ -519,6 +519,15 @@ export interface RuntimeEventModelReplayPlan {
 export interface BuildRuntimeEventModelReplayPlanOptions {
   includeSystemEvents?: boolean;
   /**
+   * Admit only the suffix beginning with the first model-visible user event.
+   *
+   * Imported transcripts may durably begin with an assistant message, but an
+   * ordinary provider request still needs a user-headed conversation. This is
+   * a projection rule only: the discarded prefix remains in the RuntimeEvent
+   * ledger and in the Session transcript.
+   */
+  startAtFirstUserBoundary?: boolean;
+  /**
    * Turn IDs known — from the FULL prior ledger — to contain tool activity.
    *
    * The signed-thinking-in-tool-turn skip (see `turnsWithToolActivity` in the
@@ -561,6 +570,15 @@ export function buildRuntimeEventModelReplayPlan(
   options: BuildRuntimeEventModelReplayPlanOptions = {},
 ): RuntimeEventModelReplayPlan {
   const includeSystemEvents = options.includeSystemEvents ?? false;
+  const firstUserIndex = options.startAtFirstUserBoundary
+    ? events.findIndex(
+        (event) =>
+          !isPartialRuntimeEvent(event) &&
+          event.role === 'user' &&
+          runtimeEventHasModelVisibleContent(event),
+      )
+    : 0;
+  const replayEvents = firstUserIndex < 0 ? [] : events.slice(firstUserIndex);
   const items: RuntimeEventModelReplayItem[] = [];
   const diagnostics: RuntimeEventReplayDiagnostic[] = [];
   const callsById = new Map<
@@ -593,7 +611,7 @@ export function buildRuntimeEventModelReplayPlan(
   // are step-paired — without it every sliced tool turn would degrade.
   const pairedToolTurnIds = new Set<string>();
   const unpairedToolTurnIds = new Set<string>();
-  for (const event of events) {
+  for (const event of replayEvents) {
     if (isPartialRuntimeEvent(event)) continue;
     if (event.modelVisibility === 'hidden') continue;
     if (event.content?.kind === 'function_call' && event.turnId) {
@@ -605,7 +623,7 @@ export function buildRuntimeEventModelReplayPlan(
     if (!pairedToolTurnIds.has(id)) unpairedToolTurnIds.add(id);
   }
 
-  for (const event of events) {
+  for (const event of replayEvents) {
     if (isPartialRuntimeEvent(event)) {
       diagnostics.push(
         diagnostic(event, 'partial_skipped', 'partial RuntimeEvent skipped for model replay'),

@@ -2782,7 +2782,14 @@ export class AiSdkTurn {
       // `runtimeContext` may be a budget/history-search slice; the tool-turn
       // thinking skip is a whole-history invariant, so seed it from the full
       // prior ledger so a sliced-in tool-turn thinking still gets skipped.
-      { toolActivityTurnIds: collectToolActivityTurnIds(priorRuntimeContext) },
+      {
+        toolActivityTurnIds: collectToolActivityTurnIds(priorRuntimeContext),
+        // Preserve an imported assistant-only opening in durable history while
+        // admitting ordinary provider requests at the first valid user head.
+        // Explicit continuations use their separately admitted boundary.
+        startAtFirstUserBoundary:
+          this.deps.backend.header.externalOrigin !== undefined && !input.continuation,
+      },
     );
     const hasProviderHistoryCompactCheckpoint =
       projectedHistoryCompactCheckpoint !== undefined &&
