@@ -2766,9 +2766,13 @@ export const OversizedTurnHoldsAReadingAnchorOnColdScroll: Story = {
       process.querySelector('summary')!.click();
       await waitFor(() => expect(process.open).toBe(true));
       await waitFor(() => expect(document.querySelector('.maka-markdown-pending')).toBeNull());
-      // Opening is animated. Measure cold scrolling after that user action
-      // finishes, rather than treating a partially expanded process as layout.
-      await Promise.all(process.getAnimations({ subtree: true }).map((animation) => animation.finished));
+      // Start cold scrolling only once the expanding clip exposes its full body.
+      await waitFor(() => {
+        const clip = process.querySelector('.maka-processing-clip')!.getBoundingClientRect();
+        const content = process.querySelector('.maka-processing-content')!.getBoundingClientRect();
+        expect(content.height).toBeGreaterThan(0);
+        expect(Math.abs(clip.height - content.height)).toBeLessThanOrEqual(1);
+      });
       scrollAsReader(root, root.scrollHeight);
       await painted(4);
     }
