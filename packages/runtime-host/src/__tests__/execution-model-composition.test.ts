@@ -17,7 +17,12 @@
  * under the License.
  */
 
-import { deferred, type Deferred, waitFor } from '@maka/core/test-only/async-primitives';
+import {
+  deferred,
+  type Deferred,
+  waitFor,
+  withTimeout,
+} from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -128,7 +133,10 @@ import {
   OAuthExecutionCredentialError,
 } from '../server/oauth-execution-authority.js';
 import type { HostSkillCatalogCoordinator } from '../server/skill-catalog-coordinator.js';
-import { AgentGraphProviderScenario } from './fixtures/agent-graph-provider-scenario.js';
+import {
+  AgentGraphProviderScenario,
+  GatedSwarmProviderScenario,
+} from './fixtures/agent-graph-provider-scenario.js';
 import { readLedgerMessages } from './fixtures/ledger-transcript.js';
 
 const MODEL_ID = 'hosted-real-model';
@@ -3007,6 +3015,231 @@ test('production Host executes a canonical ai-sdk Session against a real provide
   }
 });
 
+test('production Host keeps Swarm catalog activity running across three children, yield, and synthesis', {
+  timeout: 30_000,
+}, async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-host-swarm-activity-'));
+  const root = join(base, 'interactive');
+  const project = join(base, 'project');
+  const provider = await startProvider();
+  const scenario = provider.configureGatedSwarmFlow();
+  const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(owner);
+  let composition: Awaited<ReturnType<typeof createExecutionRuntimeHostComposition>> | undefined;
+  let changeSubscription: { close(): void } | undefined;
+  const catalogChanges: string[] = [];
+  const context: ConnectionContext = {
+    hostEpoch: 'swarm-activity-test-epoch',
+    connectionId: 'swarm-activity-test-client',
+    principal: 'local_os_user',
+    acquireResidency: () => ({ release: () => undefined }),
+  };
+  try {
+    await mkdir(project);
+    await writeFile(join(project, 'README.md'), '# Swarm activity fixture\n');
+    const policy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+    const created = await policy.connectionCatalog.create({
+      expectedCatalogRevision: 0,
+      connection: {
+        slug: 'hosted-swarm-provider',
+        name: 'Hosted Swarm provider',
+        providerType: 'moonshot',
+        baseUrl: provider.baseUrl,
+        enabled: true,
+        enabledModelIds: [MODEL_ID],
+      },
+    });
+    assert.equal(created.kind, 'committed');
+    if (created.kind !== 'committed') return;
+    const connection = created.snapshot.connections[0]!;
+    assert.equal(
+      (
+        await policy.credentialVault.set({
+          locator: { scope: 'connection', connectionId: connection.connectionId, kind: 'api_key' },
+          expected: null,
+          secret: API_KEY,
+        })
+      ).kind,
+      'committed',
+    );
+    await publishConnectionModel(policy, connection.connectionId, MODEL_ID, 32_768);
+    const execution = await openInteractiveExecutionStoresForWrite(owner.lease);
+    const session = await execution.sessionStore.create({
+      cwd: project,
+      llmConnectionId: connection.connectionId,
+      llmConnectionSlug: connection.slug,
+      model: MODEL_ID,
+      permissionMode: 'bypass',
+      orchestrationMode: 'swarm',
+    });
+    composition = await createExecutionRuntimeHostComposition({
+      owner,
+      hostEpoch: context.hostEpoch,
+      acquireResidency: context.acquireResidency,
+      retainUntilProcessExit: () => undefined,
+      requestDrain: () => assert.fail('The healthy Swarm must not drain the Host'),
+    });
+    await composition.recover();
+    const host = composition;
+    assert.ok(host.hostChanges);
+    // A sidebar observes the global catalog even with no selected Session subscription.
+    changeSubscription = host.hostChanges.attachConnection(
+      context.connectionId,
+      { sessionCatalog: true },
+      {
+        send: async (frame) => {
+          if (frame.kind === 'session.catalog.changed') catalogChanges.push(frame.sessionId);
+        },
+      },
+    );
+    const readParent = async () => {
+      const queried = await host.handlers['session.catalog.query'](
+        { kind: 'get', sessionId: session.id },
+        context,
+      );
+      assert.equal(queried.ok, true);
+      if (!queried.ok || queried.result.kind !== 'session') assert.fail('Parent query failed');
+      const parent = queried.result.session;
+      assert.ok(parent && !('kind' in parent));
+      return parent;
+    };
+    const assertWaitingForChildren = async () => {
+      const parent = await readParent();
+      assert.equal(parent.backgroundActivity, 'running');
+      assert.deepEqual(parent.liveRunState?.runningTurnIds, []);
+      const listed = await host.handlers['session.catalog.query']({ kind: 'list_start' }, context);
+      assert.equal(listed.ok, true);
+      if (!listed.ok || listed.result.kind !== 'page') assert.fail('Catalog list failed');
+      const listedParent = listed.result.sessions.find((item) => item.id === session.id);
+      assert.ok(listedParent && !('kind' in listedParent));
+      assert.equal(listedParent.backgroundActivity, 'running');
+      assert.deepEqual(listedParent.liveRunState?.runningTurnIds, []);
+    };
+    const turnId = 'hosted-swarm-activity-turn';
+    const started = await host.handlers['turn.start'](
+      {
+        sessionId: session.id,
+        turnId,
+        content: { text: 'Inspect three independent areas with an asynchronous swarm.' },
+        turnOrchestration: { mode: 'swarm', source: 'host_api' },
+      },
+      context,
+    );
+    assert.equal(started.ok, true);
+    if (!started.ok || started.result.kind !== 'started') assert.fail('Swarm turn did not start');
+    await withTimeout(
+      Promise.all(scenario.childrenStarted.map((child) => child.promise)),
+      10_000,
+      'The provider did not receive all three Swarm child requests',
+    );
+    const initialTerminal = await waitForTerminal(
+      host,
+      session.id,
+      turnId,
+      started.result.turn,
+      context,
+    );
+    assert.equal(initialTerminal.status, 'completed');
+    const initialEvents = await execution.agentRunStore.readEvents(
+      session.id,
+      initialTerminal.runId,
+    );
+    assert.ok(
+      initialEvents.some((event) => event.type === 'graph_supervisor_yielded'),
+      'The root must actually yield, leaving its three child requests gated at the provider',
+    );
+    await assertWaitingForChildren();
+    assert.ok(
+      catalogChanges.includes(session.id),
+      'Global catalog observers must see parent activity',
+    );
+
+    const children = (await execution.sessionStore.listForRecovery()).filter(
+      (candidate) => candidate.subagentParent?.parentSessionId === session.id,
+    );
+    assert.equal(children.length, 3);
+    const completedChildren = async () => {
+      const runs = await Promise.all(
+        children.map((child) => execution.runtimeEventStore.listSessionInvocations(child.id)),
+      );
+      return runs.filter((invocations) =>
+        invocations.some((run) => runtimeInvocationOutcome(run) === 'completed'),
+      ).length;
+    };
+    for (const index of [0, 1]) {
+      scenario.releaseChild(index);
+      await waitFor(async () => (await completedChildren()) === index + 1, {
+        timeoutMs: 5_000,
+        pollMs: 10,
+        message: `Swarm child ${index + 1} did not finish`,
+      });
+      await assertWaitingForChildren();
+    }
+
+    const changesBeforeWake = catalogChanges.filter((id) => id === session.id).length;
+    scenario.releaseChild(2);
+    await withTimeout(
+      scenario.synthesisStarted.promise,
+      10_000,
+      'The Swarm supervisor did not finish the graph',
+    );
+    assert.equal(await completedChildren(), 3);
+    const synthesizing = await readParent();
+    assert.ok(synthesizing.liveRunState && synthesizing.liveRunState.runningTurnIds.length > 0);
+    assert.equal(synthesizing.backgroundActivity, 'running');
+    const rootRuns = await execution.runtimeEventStore.listSessionInvocations(session.id);
+    const wake = rootRuns.find((run) => run.opening.root.kind === 'agent_graph_supervisor_wake');
+    assert.ok(wake);
+    assert.ok(synthesizing.liveRunState.runningTurnIds.includes(wake.turnId));
+
+    scenario.releaseSynthesis();
+    await waitFor(
+      async () => {
+        const parent = await readParent();
+        return (
+          parent.backgroundActivity === 'idle' && parent.liveRunState?.runningTurnIds.length === 0
+        );
+      },
+      {
+        timeoutMs: 5_000,
+        pollMs: 10,
+        message: 'The completed Swarm left catalog activity running',
+      },
+    );
+    const finalPage = await host.handlers['session.catalog.query']({ kind: 'list_start' }, context);
+    assert.ok(finalPage.ok && finalPage.result.kind === 'page');
+    const finalParent = finalPage.result.sessions.find((item) => item.id === session.id);
+    assert.ok(finalParent && !('kind' in finalParent));
+    assert.equal(finalParent.backgroundActivity, 'idle');
+    assert.deepEqual(finalParent.liveRunState?.runningTurnIds, []);
+    assert.ok(
+      catalogChanges.filter((id) => id === session.id).length > changesBeforeWake,
+      'Global catalog observers must receive parent invalidation through wake and completion',
+    );
+  } catch (error) {
+    throw new Error(
+      `Swarm activity regression: ${JSON.stringify(providerRequestTrace(provider.requests))}`,
+      {
+        cause: error,
+      },
+    );
+  } finally {
+    scenario.releaseAll();
+    changeSubscription?.close();
+    try {
+      await composition?.close();
+    } finally {
+      try {
+        await owner.close();
+      } finally {
+        await provider.close();
+        await rm(base, { recursive: true, force: true });
+      }
+    }
+  }
+});
+
 test('production Host executes and durably supervises an Agent Graph over a real provider wire', {
   timeout: 20_000,
 }, async () => {
@@ -5499,7 +5732,10 @@ type ProviderFlow =
       ptyReadCount: number;
       stopRequested: boolean;
     }
-  | { readonly kind: 'agent_graph'; readonly scenario: AgentGraphProviderScenario };
+  | {
+      readonly kind: 'agent_graph';
+      readonly scenario: AgentGraphProviderScenario | GatedSwarmProviderScenario;
+    };
 
 async function startProvider(): Promise<{
   readonly baseUrl: string;
@@ -5518,6 +5754,7 @@ async function startProvider(): Promise<{
   configureChildAgentFlow(): void;
   configureImplementationChildAgentFlow(): void;
   configureAgentGraphFlow(): void;
+  configureGatedSwarmFlow(): GatedSwarmProviderScenario;
   configurePayloadProportionalUsage(): void;
   close(): Promise<void>;
 }> {
@@ -5586,6 +5823,12 @@ async function startProvider(): Promise<{
         kind: 'agent_graph',
         scenario: new AgentGraphProviderScenario(CHILD_AGENT_RESULT_TEXT),
       };
+    },
+    configureGatedSwarmFlow: () => {
+      if (flow.kind !== 'default') throw new Error('Provider flow is already configured');
+      const scenario = new GatedSwarmProviderScenario();
+      flow = { kind: 'agent_graph', scenario };
+      return scenario;
     },
     configurePayloadProportionalUsage: () => {
       usageTracksPayload = true;
@@ -5767,7 +6010,7 @@ async function handleProviderRequest(
     return;
   }
   if (flow.kind === 'agent_graph') {
-    flow.scenario.respond(body, {
+    await flow.scenario.respond(body, {
       text: (text) => respondProviderText(response, text),
       toolCall: (toolName, args) =>
         respondProviderToolCall(response, streamRequestIndex, toolName, args),

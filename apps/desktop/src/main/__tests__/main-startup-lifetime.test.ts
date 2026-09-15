@@ -30,6 +30,18 @@ const bootSource = readFileSync(
   fileURLToPath(new URL('../../../src/main/runtime-host-boot.ts', import.meta.url)),
   'utf8',
 );
+
+test('Owner catalog sees every connection transition before the renderer can refresh', () => {
+  const stateChanged = bootSource.indexOf('onTargetStateChanged: (state) => {');
+  const notification = bootSource.indexOf('mainWindowController.send("runtime-host-profiles:changed"', stateChanged);
+  assert.ok(stateChanged >= 0 && notification > stateChanged);
+  assert.match(
+    bootSource.slice(stateChanged, notification),
+    /if \(localTarget\) \{\s*sessionLocal\.connectionChanged\(localTarget\);/u,
+    'Owner outages must invalidate catalog authority even without an offline catalog read',
+  );
+});
+
 const appIpcSource = readFileSync(
   fileURLToPath(new URL('../../../src/main/app-ipc-main.ts', import.meta.url)),
   'utf8',

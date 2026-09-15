@@ -95,6 +95,20 @@ test('starts a fresh catalog read after the previous refresh settles', async () 
   assert.equal(reads, 2);
 });
 
+test('accepts authoritative idle and unknown without reviving an earlier background run', () => {
+  const running = { ...ownerSession('root', 1), backgroundActivity: 'running' as const };
+  for (const fresh of [
+    { ...ownerSession('root', 2), backgroundActivity: 'idle' as const },
+    ownerSession('root', 2),
+  ]) {
+    const result = reconcileRuntimeHostSessionCatalog([running], {
+      sessions: [fresh], completeHostIds: ['owner-host'], knownOwnerProfileIds: ['owner-profile'], guestSessions: [],
+    });
+    assert.deepEqual(result, [fresh]);
+    assert.equal(result[0]?.backgroundActivity, fresh.backgroundActivity);
+  }
+});
+
 test('does not commit a catalog read superseded while it is in flight', async () => {
   let resolveFirst!: (sessions: DesktopSessionSummary[]) => void;
   const firstRead = new Promise<DesktopSessionSummary[]>((resolve) => {

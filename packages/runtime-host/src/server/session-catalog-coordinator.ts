@@ -44,6 +44,7 @@ import {
   isWorkHubCoordinationSessionId,
   isWorkHubCoordinationSessionTarget,
   type SessionHeader,
+  type SessionBackgroundActivity,
   type SessionHeaderPatch,
   type StoredMessage,
 } from '@maka/core/session';
@@ -194,6 +195,7 @@ export interface HostSessionCatalogCoordinatorOptions {
   readonly turnIndex: SessionTurnIndexReader;
   readonly runtimePolicy: SessionRuntimePolicyStores;
   readonly manager: SessionConfigurationAuthority;
+  readonly readBackgroundActivity?: (sessionId: string) => SessionBackgroundActivity;
   readonly admission: SessionAdmissionGate;
   readonly continuity: SessionContinuity;
   readonly workspaceResolver: HostWorkspaceResolver;
@@ -306,6 +308,7 @@ export class HostSessionCatalogCoordinator {
   readonly #turnIndex: SessionTurnIndexReader;
   readonly #runtimePolicy: SessionRuntimePolicyStores;
   readonly #manager: SessionConfigurationAuthority;
+  readonly #readBackgroundActivity: ((sessionId: string) => SessionBackgroundActivity) | undefined;
   readonly #admission: SessionAdmissionGate;
   readonly #continuity: SessionContinuity;
   readonly #workspaceResolver: HostWorkspaceResolver;
@@ -320,6 +323,7 @@ export class HostSessionCatalogCoordinator {
     this.#turnIndex = options.turnIndex;
     this.#runtimePolicy = options.runtimePolicy;
     this.#manager = options.manager;
+    this.#readBackgroundActivity = options.readBackgroundActivity;
     this.#admission = options.admission;
     this.#continuity = options.continuity;
     this.#workspaceResolver = options.workspaceResolver;
@@ -486,6 +490,7 @@ export class HostSessionCatalogCoordinator {
             ? projectSharedSessionCatalogRecord(
                 record,
                 projectCatalogLiveRunState(this.#manager.runningTurnIds(record.header.id)),
+                this.#readBackgroundActivity?.(record.header.id),
               )
             : null,
         },
@@ -502,6 +507,7 @@ export class HostSessionCatalogCoordinator {
     return projectSessionCatalogRecord(
       record,
       projectCatalogLiveRunState(this.#manager.runningTurnIds(record.header.id)),
+      this.#readBackgroundActivity?.(record.header.id),
     );
   }
 
@@ -1435,6 +1441,7 @@ function createRequestFingerprint(
 export function projectSessionCatalogRecord(
   record: SessionCatalogRecord,
   liveRunState?: SessionCatalogLiveRunState,
+  backgroundActivity?: SessionBackgroundActivity,
 ): SessionCatalogItem {
   const { header, summary } = record;
   const projectedLabels = projectCatalogLabels(header.labels);
@@ -1465,6 +1472,7 @@ export function projectSessionCatalogRecord(
       : { lastMessagePreview: summary.lastMessagePreview }),
     status: header.status,
     ...(liveRunState === undefined ? {} : { liveRunState }),
+    ...(backgroundActivity === undefined ? {} : { backgroundActivity }),
     ...(header.blockedReason === undefined ? {} : { blockedReason: header.blockedReason }),
     ...(header.statusUpdatedAt === undefined ? {} : { statusUpdatedAt: header.statusUpdatedAt }),
     ...(header.parentSessionId === undefined ? {} : { parentSessionId: header.parentSessionId }),
@@ -1521,6 +1529,7 @@ export function projectSessionCatalogRecord(
 function projectSharedSessionCatalogRecord(
   record: SessionCatalogRecord,
   liveRunState?: SessionCatalogLiveRunState,
+  backgroundActivity?: SessionBackgroundActivity,
 ): SharedSessionCatalogProjection {
   const { header, summary } = record;
   const shared: SharedSessionCatalogProjection = {
@@ -1536,6 +1545,7 @@ function projectSharedSessionCatalogRecord(
       : { lastMessagePreview: summary.lastMessagePreview }),
     status: header.status,
     ...(liveRunState === undefined ? {} : { liveRunState }),
+    ...(backgroundActivity === undefined ? {} : { backgroundActivity }),
     ...(header.blockedReason === undefined ? {} : { blockedReason: header.blockedReason }),
     ...(header.statusUpdatedAt === undefined ? {} : { statusUpdatedAt: header.statusUpdatedAt }),
   };

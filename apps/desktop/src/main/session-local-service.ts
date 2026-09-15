@@ -23,6 +23,7 @@ import type { IpcMain } from 'electron';
 import { AttachmentIngestBlockedError, MAX_ATTACHMENT_COUNT } from '@maka/core/attachments';
 import type { CreateSessionRequestInput } from '@maka/core/runtime-inputs';
 import {
+  abortable,
   RuntimeHostOperationError,
   RuntimeHostRequestInterruptedError,
 } from '@maka/runtime-host/client';
@@ -68,6 +69,13 @@ export interface DesktopSessionLocalTarget {
   readonly submit?: (input: TurnMessageSubmitInput) => Promise<TurnMessageSubmitResult>;
 }
 
+interface SessionCatalogConnection {
+  readonly client: DesktopSessionLocalTarget['client'];
+  readonly hostEpoch: string | undefined;
+  readonly targetEpoch: string;
+  readonly controller: AbortController;
+}
+
 /** Includes the credential's lifetime without persisting a reusable secret. */
 export function desktopSessionLocalPartition(input: {
   profileId: string;
@@ -96,7 +104,8 @@ export class DesktopSessionLocalService {
     { target: DesktopSessionLocalTarget; snapshot: DesktopTranscriptReplicaSnapshot }
   >();
   readonly #catalogTasks = new Map<string, Promise<void>>();
-  readonly #catalogFresh = new Map<string, { epoch: string; at: number }>();
+  readonly #catalogConnections = new Map<string, SessionCatalogConnection>();
+  readonly #catalogFresh = new Map<string, { connection: SessionCatalogConnection; at: number }>();
   readonly #revoked = new Set<string>();
   #scheduled = false;
   #closed = false;
@@ -136,6 +145,13 @@ export class DesktopSessionLocalService {
       if (target) this.#catalogFresh.delete(target.partition);
     }
     this.wake();
+  }
+
+  connectionChanged(target: DesktopSessionLocalTarget): void {
+    if (this.#closed || this.#revoked.has(target.partition)) return;
+    // Record outages even when no renderer reads the catalog before recovery.
+    // Reusing the same Host process or client cannot revive its old snapshot.
+    this.#observeCatalogConnection(target);
   }
 
   wake(): void {
@@ -237,8 +253,9 @@ export class DesktopSessionLocalService {
       .targets()
       .filter((target) => !this.#revoked.has(target.partition))
       .map((target) => {
+        const connection = this.#observeCatalogConnection(target);
         const fresh = this.#catalogFresh.get(target.partition);
-        const authoritative = !!target.client && fresh?.epoch === target.client.hostEpoch;
+        const authoritative = !this.#closed && !!target.client && fresh?.connection === connection;
         const sessions = this.store
           .sessions(target.partition)
           .map((session) =>
@@ -246,18 +263,45 @@ export class DesktopSessionLocalService {
               ? { ...session, localState: 'pending' as const }
               : authoritative
                 ? session
-                : { ...session, runningTurnIds: undefined, localState: 'cached' as const },
+                : { ...session, runningTurnIds: undefined, backgroundActivity: undefined, localState: 'cached' as const },
           );
         if (
           target.client &&
-          (!fresh || fresh.epoch !== target.client.hostEpoch || Date.now() - fresh.at > 5000)
+          (!authoritative || !fresh || Date.now() - fresh.at > 5000)
         )
-          this.#refreshCatalog(target);
+          this.#refreshCatalog(target, connection);
         return { scope: target.scope, sessions, authoritative };
       });
   }
 
-  #refreshCatalog(target: DesktopSessionLocalTarget): void {
+  #observeCatalogConnection(target: DesktopSessionLocalTarget): SessionCatalogConnection {
+    const previous = this.#catalogConnections.get(target.partition);
+    if (previous && previous.client === target.client &&
+      previous.hostEpoch === target.client?.hostEpoch &&
+      previous.targetEpoch === target.scope.targetEpoch) return previous;
+    const connection: SessionCatalogConnection = {
+      client: target.client,
+      hostEpoch: target.client?.hostEpoch,
+      targetEpoch: target.scope.targetEpoch,
+      controller: new AbortController(),
+    };
+    this.#catalogConnections.set(target.partition, connection);
+    this.#catalogFresh.delete(target.partition);
+    // A retired read must not occupy a current connection's catalog slot.
+    // Its finally handler also checks task identity before releasing that slot.
+    this.#catalogTasks.delete(target.partition);
+    previous?.controller.abort(new Error('Owner Session catalog connection changed'));
+    return connection;
+  }
+
+  #currentCatalogConnection(target: DesktopSessionLocalTarget, connection: SessionCatalogConnection): boolean {
+    if (this.#closed || this.#revoked.has(target.partition) || connection.controller.signal.aborted)
+      return false;
+    const current = this.deps.targets().find(({ partition }) => partition === target.partition);
+    return !!current?.client && this.#observeCatalogConnection(current) === connection;
+  }
+
+  #refreshCatalog(target: DesktopSessionLocalTarget, connection: SessionCatalogConnection): void {
     if (
       !target.client ||
       this.#catalogTasks.has(target.partition) ||
@@ -267,26 +311,26 @@ export class DesktopSessionLocalService {
       return;
     const client = target.client;
     const revision = this.store.revision;
-    const task = client
-      .listSessions()
+    const task = abortable(() => client.listSessions(), connection.controller.signal)
       .then((sessions) => {
-        if (!this.#current(target)) return;
+        if (!this.#currentCatalogConnection(target, connection)) return;
         // A late catalog cannot erase a Session created/removed while it read.
         if (this.store.revision !== revision) return;
         this.store.saveCatalog(target.partition, sessions.map(toDesktopHostSessionSummary));
-        this.#catalogFresh.set(target.partition, { epoch: client.hostEpoch, at: Date.now() });
+        this.#catalogFresh.set(target.partition, { connection, at: Date.now() });
         this.deps.changed(target.scope);
       })
       .catch((error: unknown) => {
-        if (!this.#current(target)) return;
+        if (!this.#currentCatalogConnection(target, connection)) return;
         if (error instanceof RuntimeHostOperationError && error.code === 'unauthorized')
           this.purge(target, true);
         else this.deps.onError(error);
       })
       .finally(() => {
-        this.#catalogTasks.delete(target.partition);
+        if (this.#catalogTasks.get(target.partition) === task)
+          this.#catalogTasks.delete(target.partition);
         if (
-          this.#current(target) &&
+          this.#currentCatalogConnection(target, connection) &&
           !this.#catalogFresh.has(target.partition) &&
           this.store.revision !== revision
         )
@@ -303,6 +347,9 @@ export class DesktopSessionLocalService {
     for (const [key, entry] of this.#snapshots)
       if (entry.target.partition === target.partition) this.#snapshots.delete(key);
     this.store.purge(target.partition);
+    this.#catalogConnections.get(target.partition)?.controller.abort(new Error('Owner Session authority was removed'));
+    this.#catalogConnections.delete(target.partition);
+    this.#catalogTasks.delete(target.partition);
     this.#catalogFresh.delete(target.partition);
     this.deps.changed(target.scope);
   }
@@ -345,6 +392,11 @@ export class DesktopSessionLocalService {
 
   close(): void {
     this.#closed = true;
+    for (const connection of this.#catalogConnections.values())
+      connection.controller.abort(new Error('Owner Session catalog service is closed'));
+    this.#catalogConnections.clear();
+    this.#catalogTasks.clear();
+    this.#catalogFresh.clear();
     this.#snapshots.clear();
     for (const timer of this.#retries.values()) clearTimeout(timer);
     this.#retries.clear();
