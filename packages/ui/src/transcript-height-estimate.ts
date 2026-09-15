@@ -110,11 +110,15 @@ export function useTranscriptHeightEstimates(
         const md = row.querySelector<HTMLElement>('.astryx-markdown');
         const user = row.querySelector<HTMLElement>('.maka-chat-message-bubble-user');
         if (!md || !user || md.querySelector('img,table,ul,ol,blockquote,h1,h2,h3,h4,h5,h6')) continue;
+        // Sample an actual inter-block margin in pixels, not a token recipe
+        // whose declared unit may be rem or a calc() expression.
+        const secondBlock = md.children[1];
+        if (!secondBlock) continue;
         const style = getComputedStyle(md), userStyle = getComputedStyle(user);
         const px = (value: string) => Number.parseFloat(value) || 0;
         const next: TranscriptHeightProfile = {
           width: md.getBoundingClientRect().width, font: px(style.fontSize), line: px(style.lineHeight),
-          gap: px(style.getPropertyValue('--md-gap-block')),
+          gap: px(getComputedStyle(secondBlock).marginBlockStart),
           chrome: row.getBoundingClientRect().height - md.getBoundingClientRect().height - user.getBoundingClientRect().height,
           userFont: px(userStyle.fontSize), userLine: px(userStyle.lineHeight),
           userPadding: px(userStyle.paddingTop) + px(userStyle.paddingBottom),
