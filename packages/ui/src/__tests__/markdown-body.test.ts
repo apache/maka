@@ -543,6 +543,39 @@ it('resolves a streamed label once its closer arrives', () => {
   assert.match(markup, /<a\b[^>]*href="https:\/\/example\.com\/closed"/);
 });
 
+it('streams an unfinished reference identifier without rescanning from its opener', () => {
+  const head = `[visible][${'c'.repeat(64_000)}`;
+  const cache = createMarkdownMathCache();
+  const started = performance.now();
+  let incremental = '';
+  for (let end = 1024; end <= head.length; end += 1024) {
+    incremental = prepareMarkdownMath(head.slice(0, end), cache);
+  }
+  if (head.length % 1024 !== 0) {
+    incremental = prepareMarkdownMath(head, cache);
+  }
+  const elapsed = performance.now() - started;
+
+  assert.equal(incremental, head);
+  assert.equal(cache.safeSourceEnd, 0);
+  assert.ok(elapsed < 5_000, `unfinished identifier streaming took ${elapsed.toFixed(1)}ms`);
+
+  const id = 'c'.repeat(64_000);
+  const full = `[visible][${id}]\n\n[${id}]: https://example.com/ref`;
+  incremental = prepareMarkdownMath(full, cache);
+
+  assert.equal(incremental, prepareMarkdownMath(full, createMarkdownMathCache()));
+  assert.equal(cache.safeSourceEnd, full.length);
+
+  const markup = renderToStaticMarkup(createElement(LocaleProvider, {
+    locale: 'en',
+    children: createElement(MarkdownBody, { text: full }),
+  }));
+
+  assert.match(markup, /<a\b[^>]*href="https:\/\/example\.com\/ref"/);
+  assert.match(markup, />visible</);
+});
+
 it('does not rescan malformed link tails quadratically', () => {
   const input = '[x]('.repeat(32_000);
   const cache = createMarkdownMathCache();
