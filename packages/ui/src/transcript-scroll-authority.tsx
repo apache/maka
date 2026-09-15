@@ -136,6 +136,7 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
     const anchor = [...target.querySelectorAll<HTMLElement>('[data-turn-id]')]
       .find((turn) => turn.getBoundingClientRect().bottom > top);
     if (!anchor) { flushSync(commit); return; }
+    const anchorId = anchor.dataset.turnId!;
     const before = anchor.getBoundingClientRect().top;
     // A gap notice is a poor native anchor: it survives a range replacement
     // while the paragraph beneath it moves. Restore a content Turn once, with
@@ -144,7 +145,7 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
     try {
       flushSync(commit);
       if (version !== revealVersion) return;
-      const next = target.querySelector<HTMLElement>(`[data-turn-id="${CSS.escape(anchor.dataset.turnId!)}"]`);
+      const next = target.querySelector<HTMLElement>(`[data-turn-id="${CSS.escape(anchorId)}"]`);
       if (next) target.scrollTop += next.getBoundingClientRect().top - before;
     } finally {
       target.style.overflowAnchor = pinned ? 'none' : 'auto';
@@ -243,10 +244,14 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
         if (pointer === event.pointerId) gesture ??= { top: target.scrollTop };
       };
       const onPointerUp = (): void => {
+        if (pointer === undefined) return;
         pointer = undefined;
         onScrollEnd();
         const pending = gesture;
-        if (!pending || pending.direction !== undefined) return;
+        // Navigation can retire the gesture while native input remains held.
+        // Its end still releases publication; gesture history is not ownership.
+        if (!pending) { reportReader('settled'); return; }
+        if (pending.direction !== undefined) return;
         // Native track clicks can start their smooth scroll after pointerup.
         // Scroll steps precede rAF; retire a click that still has not moved
         // there, rather than leaving a non-scrolling click armed indefinitely.

@@ -443,12 +443,26 @@ test('range admission waits for a held native thumb before committing the React 
   await act(async () => {
     const down = new window.Event('pointerdown');
     Object.defineProperties(down, {
+      button: { value: 0 }, pointerType: { value: 'mouse' }, pointerId: { value: 3 },
+    });
+    transcript.scroller.dispatchEvent(down);
+    navigation.commitRange('admission', () => publish('navigation'));
+    await Promise.resolve();
+    authority.releasePin();
+    assert.equal(document.querySelector('#mount')!.textContent, 'held');
+    document.dispatchEvent(new window.Event('pointerup'));
+  });
+  assert.equal(document.querySelector('#mount')!.textContent, 'navigation',
+    'ending physical input publishes navigation even when its gesture was superseded');
+  await act(async () => {
+    const down = new window.Event('pointerdown');
+    Object.defineProperties(down, {
       button: { value: 0 }, pointerType: { value: 'mouse' }, pointerId: { value: 2 },
     });
     transcript.scroller.dispatchEvent(down);
     navigation.commitRange('admission', () => publish('latest'));
     await Promise.resolve();
-    assert.equal(document.querySelector('#mount')!.textContent, 'held');
+    assert.equal(document.querySelector('#mount')!.textContent, 'navigation');
     authority.pinToTail();
   });
   assert.equal(document.querySelector('#mount')!.textContent, 'latest',

@@ -236,6 +236,32 @@ test('an explicit reveal during range publication outranks the old reading ancho
   });
 });
 
+test('a reading anchor keeps its identity when publication mounts its body', () => {
+  withObservers(() => {
+    const root = fakeRoot();
+    let top = 100;
+    const shell = {
+      dataset: { turnId: 'reader' } as { turnId?: string },
+      getBoundingClientRect: () => ({ top: top - root.scrollTop, bottom: top + 400 - root.scrollTop }),
+    };
+    root.querySelectorAll = () => [shell];
+    Object.assign(root, {
+      querySelector: (selector: string) => selector === '[data-turn-id="reader"]' ? shell : null,
+    });
+    const authority = createTranscriptScrollAuthority();
+    const detach = authority.attach(root as unknown as HTMLElement);
+    authority.releasePin();
+    root.scrollTop = 100;
+    authority.commitRange(() => {
+      // The stable shell remains, but its placeholder marker moves to the body.
+      delete shell.dataset.turnId;
+      top += 800;
+    });
+    assert.equal(root.scrollTop, 900, 'publication preserves the same reading line');
+    detach();
+  });
+});
+
 test('range publication coalesces within a microtask and uses the viewport anchor owner', async () => {
   const publication = createTranscriptViewportNavigation();
   const commits: number[] = [];
