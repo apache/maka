@@ -167,16 +167,16 @@ function untrackInFlight(sessionId: string, ctrl: AbortController): void {
 }
 
 /**
- * The window switched to `shownSessionId` (or to nothing): abort any browser
- * action still running for a DIFFERENT conversation. The visible lease is
+ * A renderer selection changed: abort any browser action whose session is no
+ * longer shown by an owned renderer. The visible lease is
  * continuous, not a one-time preflight — an action that started while visible
  * must not keep reading or driving a page the user can no longer see. Severs the
  * connection like a timeout/abort; the page itself survives for when the user
  * switches back. Called from main's browser:active-session handler.
  */
-export function revokeHiddenBrowserActions(shownSessionId: string | null): void {
+export function revokeHiddenBrowserActions(isSessionShown: (sessionId: string) => boolean): void {
   for (const [sessionId, set] of inFlightBySession) {
-    if (sessionId === shownSessionId) continue;
+    if (isSessionShown(sessionId)) continue;
     for (const ctrl of set) ctrl.abort();
   }
 }
@@ -410,32 +410,35 @@ export async function withBrowserPage<T>(
 }
 
 /**
- * The session was deleted or archived: drop its browser connection and have the
- * desktop destroy its view outright. A session that never attached, or a
- * non-existent id, no-ops at every step.
+ * Drop a session's browser connection and have the desktop destroy its view
+ * outright when the page, Session, or owning renderer goes away. A session that
+ * never attached, or a non-existent id, no-ops at every step.
  */
 export async function releaseBrowserSession(sessionId: string): Promise<void> {
   // Bump first: an acquire still in flight for this conversation unwinds itself
   // when it sees the new epoch (see acquire) — it cannot be awaited here because
   // it may not have registered in pendingAcquires yet, and a hung endpoint
-  // resolution must not block the session's deletion.
+  // resolution must not block resource release.
   const epoch = releaseEpochs.get(sessionId);
   if (epoch !== undefined) releaseEpochs.set(sessionId, epoch + 1);
   const conn = bySession.get(sessionId);
+  let closeConnection: Promise<void> = Promise.resolve();
   if (conn) {
     bySession.delete(sessionId);
     conn.closed = true;
-    await conn.bridge.close().catch(() => {});
+    closeConnection = conn.bridge.close().catch(() => {});
   }
   // Dispose unconditionally, not just when a connection exists: a conversation
   // the user browsed by hand has a live view but never had a CDP connection, and
-  // its view must still die with the session. disposeSession implies the bridge
-  // detach that releaseSession would have done.
-  if (browserAutomationAvailable()) {
-    await browserViewHost()
+  // its view must still die with its owner. disposeSession implies the bridge
+  // detach that releaseSession would have done. Start disposal before awaiting
+  // the client close so a new renderer cannot reuse this dying controller.
+  const disposeView = browserAutomationAvailable()
+    ? browserViewHost()
       .disposeSession(sessionId)
-      .catch(() => {});
-  }
+      .catch(() => {})
+    : Promise.resolve();
+  await Promise.all([closeConnection, disposeView]);
 }
 
 export { browserAutomationAvailable };

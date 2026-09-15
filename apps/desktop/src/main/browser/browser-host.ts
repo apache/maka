@@ -84,7 +84,7 @@ export interface BrowserViewHost {
    */
   releaseSession(sessionId: string): Promise<void>;
   /**
-   * The conversation is gone (deleted or archived): destroy its view outright —
+   * The page, Session, or owning renderer is gone: destroy its view outright —
    * page, history, automation. A no-op for sessions that never had a view.
    */
   disposeSession(sessionId: string): Promise<void>;

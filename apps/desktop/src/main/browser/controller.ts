@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { type BrowserWindow, type Session, shell, WebContentsView } from 'electron';
+import { type Session, shell, type View, WebContentsView } from 'electron';
 import { CdpBridge, type AutomationEndpoint } from './cdp-bridge.js';
 import type { BrowserOriginLease } from './browser-host.js';
 import { BrowserOriginLeaseTracker } from './browser-origin-lease.js';
@@ -45,14 +45,14 @@ const VIEWPORT_RESTORE_POLL_MS = 16;
 
 /**
  * Owns ONE embedded browser per conversation: a native WebContentsView attached
- * to the single app window, floating above the renderer DOM. The renderer
- * reserves a strip and mirrors its on-screen rect via setViewport; the view
- * starts hidden + zero-bounds so an ordinary chat reserves nothing. Page,
- * history, and the CDP automation live and die with the conversation.
+ * to one app-owned renderer's native parent, floating above its renderer DOM.
+ * The renderer reserves a strip and mirrors its on-screen rect via setViewport;
+ * the view starts hidden + zero-bounds so an ordinary chat reserves nothing.
+ * Page, history, and the CDP automation live and die with the conversation.
  *
- * The window is shared, but each conversation gets its own controller/view, so
- * switching conversations never shows another conversation's page (the view
- * manager hides the ones not in front).
+ * Each conversation gets its own controller/view under its renderer's native
+ * parent. Main and WorkHub own disjoint Session sets; dock/float reparents the
+ * persistent WorkHub View that contains its browser child.
  */
 export class BrowserViewController {
   private readonly view: WebContentsView;
@@ -65,15 +65,19 @@ export class BrowserViewController {
   );
 
   constructor(
-    private readonly window: BrowserWindow,
+    private readonly parent: View,
     private readonly sessionId: string,
     private readonly onState: (sessionId: string, state: BrowserState) => void,
   ) {
     this.view = new WebContentsView({ webPreferences: browserViewWebPreferences() });
-    this.window.contentView.addChildView(this.view);
+    this.parent.addChildView(this.view);
     this.view.setVisible(false);
     this.applySecurityBackstop();
     this.wireEvents();
+  }
+
+  hasParent(parent: View): boolean {
+    return this.parent === parent;
   }
 
   private get wc() {
@@ -200,9 +204,9 @@ export class BrowserViewController {
     // SHOWN view keeps full speed: a native CDP click hit-tests a composited
     // frame, which the OS drops on a throttled view whenever the app isn't
     // focused — so "shown but app unfocused" still has to stay un-throttled to
-    // let the approved click land. (hideAllExcept fires setViewport(null) on
-    // every switch away, so this is where a conversation going off screen
-    // restores its throttle.)
+    // let the approved click land. The selection owner sends setViewport(null)
+    // on every switch away, so this is where a conversation going off screen
+    // restores its throttle.
     if (show !== this.shownWithBounds && !this.wc.isDestroyed()) {
       this.wc.setBackgroundThrottling(!show);
     }
@@ -218,7 +222,12 @@ export class BrowserViewController {
 
   /** Visible-lease input: the view is on screen with non-empty bounds (see canDrive). */
   hasLiveViewport(): boolean {
-    return !this.destroyed && this.shownWithBounds;
+    if (this.destroyed || !this.shownWithBounds) return false;
+    try {
+      return this.parent.getVisible();
+    } catch {
+      return false;
+    }
   }
 
   /** True when this view's renderer is background-throttled (hidden). Read-only. */
@@ -289,7 +298,7 @@ export class BrowserViewController {
     await this.automation?.stop().catch(() => {});
     this.automation = null;
     try {
-      if (!this.window.isDestroyed()) this.window.contentView.removeChildView(this.view);
+      this.parent.removeChildView(this.view);
     } catch {
       /* window already torn down */
     }

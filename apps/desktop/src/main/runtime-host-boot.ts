@@ -930,7 +930,7 @@ const workHubPresentation = createWorkHubPresentation({
   mainModuleDirectory: import.meta.dirname,
   viteDevServerUrl: process.env.VITE_DEV_SERVER_URL,
   preloadPath: join(import.meta.dirname, '..', 'preload', 'preload.cjs'),
-  onViewCreated: (contents) => mainWindowController.registerAuxiliaryRenderer(contents),
+  onViewCreated: (contents, view) => mainWindowController.registerAuxiliaryRenderer(contents, view),
 });
 workHubPresentation.registerIpc();
 const windowsAppTray = createWindowsAppTray({

@@ -423,14 +423,17 @@ test('application broadcasts reach registered auxiliaries once and stop after re
     isDestroyed: () => false,
     send: (channel: string) => { messages.push(channel); },
   }) as unknown as Electron.WebContents;
-  const release = controller.registerAuxiliaryRenderer(renderer);
+  const parent = {} as Electron.View;
+  const release = controller.registerAuxiliaryRenderer(renderer, parent);
   assert.equal(controller.ownsRenderer(renderer), true);
+  assert.equal(controller.browserParentForRenderer(renderer), parent);
   controller.send('settings:changed');
   assert.deepEqual(messages, ['settings:changed']);
   release();
   controller.send('settings:changed');
   assert.deepEqual(messages, ['settings:changed']);
   assert.equal(controller.ownsRenderer(renderer), false);
+  assert.equal(controller.browserParentForRenderer(renderer), undefined);
   controller.registerAuxiliaryRenderer(renderer);
   renderer.emit('destroyed');
   assert.equal(controller.ownsRenderer(renderer), false);

@@ -32,10 +32,9 @@ import type { BrowserViewManager } from './view-manager.js';
  * endpoint and its secret stay same-process values, never crossing renderer IPC
  * or preload.
  *
- * `shownSessionId` reads main's live record of the conversation the window shows
- * (browser:active-session). Call
- * provideBrowserViewHost(createBrowserViewHost(manager, () => shownBrowserSessionId))
- * once in main.ts.
+ * `isSessionShown` reads main's live renderer-owned selections
+ * (browser:active-session). More than one app-owned renderer can concurrently
+ * show its own session, while each session has one current renderer owner.
  */
 // Ceiling on how long a mutate waits for the renderer to restore the strip
 // viewport after a permission modal closes. The restore is normally sub-100ms;
@@ -44,7 +43,7 @@ const VIEWPORT_RESTORE_WAIT_MS = 1000;
 
 export function createBrowserViewHost(
   manager: BrowserViewManager<BrowserViewController>,
-  shownSessionId: () => string | null,
+  isSessionShown: (sessionId: string) => boolean,
 ): BrowserViewHost {
   return {
     currentUrl(sessionId) {
@@ -54,7 +53,7 @@ export function createBrowserViewHost(
       return manager.getOrCreate(sessionId).openOriginLease(approvedUrl, kind);
     },
     canDrive(sessionId, kind, opts) {
-      const shown = sessionId === shownSessionId();
+      const shown = isSessionShown(sessionId);
       const controller = manager.get(sessionId);
       if (browserActionAllowed(kind, { shown, hasViewport: controller?.hasLiveViewport() ?? false })) {
         return true;
@@ -70,7 +69,7 @@ export function createBrowserViewHost(
           .waitForLiveViewport(VIEWPORT_RESTORE_WAIT_MS, opts?.signal)
           .then(() =>
             browserActionAllowed('mutate', {
-              shown: sessionId === shownSessionId(),
+              shown: isSessionShown(sessionId),
               hasViewport: controller.hasLiveViewport(),
             }),
           );
@@ -83,8 +82,8 @@ export function createBrowserViewHost(
     async releaseSession(sessionId) {
       await manager.get(sessionId)?.detachAutomation();
     },
-    // The conversation was deleted or archived: its view dies with it (page,
-    // history, automation, the WebContentsView itself).
+    // The page, Session, or owning renderer is gone: destroy its browser
+    // resources (page, history, automation, and the WebContentsView itself).
     async disposeSession(sessionId) {
       await manager.dispose(sessionId);
     },

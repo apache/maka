@@ -118,7 +118,7 @@ async function runSmoke() {
   // bounds, mirroring a displayed page.
   const win = new BrowserWindow({ show: false, width: 1024, height: 768 });
   win.showInactive();
-  const controller = new BrowserViewController(win, 'smoke', () => {});
+  const controller = new BrowserViewController(win.contentView, 'smoke', () => {});
   controller.setViewport({ x: 0, y: 0, width: 1024, height: 768 });
   const bridge = new CDPBridge();
   // The visible-lease section (below) wires a real host over this manager;
@@ -136,7 +136,7 @@ async function runSmoke() {
     // not once per view: a second view must NOT add a second will-download listener.
     const partition = session.fromPartition('persist:maka-browser');
     const downloadListenersBefore = partition.listenerCount('will-download');
-    const controller2 = new BrowserViewController(win, 'smoke-backstop', () => {});
+    const controller2 = new BrowserViewController(win.contentView, 'smoke-backstop', () => {});
     check(
       'security backstop installs once per partition (no listener pileup)',
       downloadListenersBefore === 1 &&
@@ -181,9 +181,9 @@ async function runSmoke() {
     // owns the window (the native click needs the one composited frame).
     await bridge.close().catch(() => {});
     await controller.dispose().catch(() => {});
-    leaseManager = new BrowserViewManager({ create: (id) => new BrowserViewController(win, id, () => {}) });
+    leaseManager = new BrowserViewManager({ create: (id) => new BrowserViewController(win.contentView, id, () => {}) });
     let shownSession = null;
-    provideBrowserViewHost(createBrowserViewHost(leaseManager, () => shownSession));
+    provideBrowserViewHost(createBrowserViewHost(leaseManager, (sessionId) => sessionId === shownSession));
 
     // Background conversation (not the one on screen): EVERY kind — read,
     // navigate, mutate — is rejected, and the gate runs before acquire, so no
@@ -299,7 +299,7 @@ async function runSmoke() {
     longRead.catch(() => {}); // asserted below; pre-handle so the reject is never unhandled
     await new Promise((resolve) => setTimeout(resolve, 20)); // reuse the cached conn + enter run()
     shownSession = 'other-conversation';
-    revokeHiddenBrowserActions('other-conversation');
+    revokeHiddenBrowserActions((sessionId) => sessionId === shownSession);
     try {
       await longRead;
     } catch (err) {

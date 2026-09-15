@@ -25,6 +25,8 @@ import type { Meta, StoryObj } from '@storybook/react-vite';
 import { expect, fn, userEvent, within, waitFor } from 'storybook/test';
 import { WorkHubRoot, WorkHubServicesProvider, type WorkHubServices, type WorkHubTranscriptSnapshot } from '../src/renderer/features/workhub/index.js';
 import { WorkHubConversation, WorkHubHighlightContext } from '../src/renderer/features/workhub/testing.js';
+import { WorkbarServicesProvider, WorkbarWorkspace } from '../src/renderer/features/workbar';
+import { createFakeWorkbarServices } from '../src/renderer/features/workbar/testing.js';
 import { desktopSessionKey } from '../src/shared/runtime-host-identity.js';
 
 // Real host: a persistent WebContentsView mounts WorkHubRoot once and moves between windows.
@@ -35,7 +37,7 @@ const choices = ['model-a', 'model-b'].map((model, index) => ({
   connectionId: 'connection-test', connectionSlug: 'test', connectionName: 'Test', providerType: 'openai' as const,
   providerLabel: 'OpenAI', model, label: model, contextWindow: 100_000, isDefault: index === 0, thinkingLevels: ['low', 'high'] as ThinkingLevel[],
 }));
-function makeServices(failFirst: boolean, withHistory: boolean, coloredHistory: boolean, selectTarget = false, question = false, progress = false): WorkHubServices {
+function makeServices(failFirst: boolean, withHistory: boolean | 'usage', coloredHistory: boolean, selectTarget = false, question = false, progress = false): WorkHubServices {
   let failures = failFirst ? 1 : 0;
   let session: SessionSummary & { revision: number } = {
     id: sessionId, name: 'WorkHub', revision: 1, isFlagged: false, isArchived: false, labels: [], hasUnread: false,
@@ -45,7 +47,7 @@ function makeServices(failFirst: boolean, withHistory: boolean, coloredHistory: 
   const target = { ...session, id: targetId, name: '支付回调幂等性', cwd: '/projects/maka' };
   let messages: StoredMessage[] = withHistory ? [
     { type: 'user', id: 'user-1', turnId: 'turn-1', ts: 1, text: '继续支付回调幂等性，补充重复投递测试点。' },
-    { type: 'assistant', id: 'answer-1', turnId: 'turn-1', ts: 2, modelId: 'model-a', text: '已将任务交给支付回调工作。完整说明保留在工作台。\n\n' + '重复请求需要保持同一响应。'.repeat(70) + '\n\nEND_OF_FULL_RESPONSE' },
+    { type: 'assistant', id: 'answer-1', turnId: 'turn-1', ts: 2, modelId: 'model-a', text: withHistory === 'usage' ? '已补充重复投递测试：同一支付回调多次到达时，只记录一次支付结果，并返回一致的响应。\n\n接下来会核对并发回调的处理结果。' : '已将任务交给支付回调工作。完整说明保留在工作台。\n\n' + '重复请求需要保持同一响应。'.repeat(70) + '\n\nEND_OF_FULL_RESPONSE' },
     { type: 'workhub_coordination', kind: 'delegation_assigned', id: 'link-1', turnId: 'turn-1', coordinationTurnId: 'turn-1', ts: 3, schemaVersion: 1, actionId: 'action-1', actionFingerprint: `sha256:${'0'.repeat(64)}`, disposition: 'delegate_existing', userText: '继续支付回调幂等性，补充重复投递测试点。', targetSessionId: targetId, targetSessionName: target.name, targetTurnId: 'target-turn', targetMessageId: 'target-message', delegationId: 'delegation-1' },
   ] : [];
   const secondTarget = { ...target, id: desktopSessionKey({ hostId: 'story-host', sessionId: 'release' }), name: '发布检查清单', cwd: '/projects/desktop' };
@@ -78,8 +80,13 @@ function makeServices(failFirst: boolean, withHistory: boolean, coloredHistory: 
   return {
     inspector: {
       context: async () => ({ ok: true, data: { status: 'available', completedAt: 1, modelId: session.model, providerId: 'openai', inputTokens: 1000, contextWindow: 100_000 } }),
-      trace: async () => ({ ok: false, error: { code: 'unavailable', message: 'No trace in this fixture' } }),
-      summary: async () => ({ ok: false, error: { code: 'unavailable', message: 'No usage summary in this fixture' } }),
+      trace: async () => ({ ok: true, data: { trace: { schemaVersion: 1, sessionId, turns: [], coverage: { modelCalls: 'none', turnsMissingModelCalls: [], unreadableRecords: 0, oversizedRuns: 0, turnsWithFewerModelCallsThanSteps: [] } }, nextCursor: null } }),
+      summary: async () => ({ ok: true, data: {
+        range: { from: 1, to: 2 }, totalRequests: 1, totalCostUsd: 0.002, totalDurationMs: 3400,
+        totalTokens: { input: 1000, output: 120, cacheMiss: 400, cacheRead: 600, cacheWrite: 0, reasoning: 40, total: 1120 },
+        cacheHitRequests: 1, cacheCreateRequests: 0, errorRequests: 0,
+        provenance: { coverage: { attempts: 1, pricedAttempts: 1, unpricedAttempts: 0, usageReportedAttempts: 1, usagePartialAttempts: 0, usageMissingAttempts: 0 }, legacyRecords: 0, unreadableRecords: 0, pendingRepairs: 0 },
+      } }),
       subscribeSessionEvents: () => () => {},
       subscribeUsageChanges: () => () => {},
     },
@@ -153,7 +160,7 @@ function makeServices(failFirst: boolean, withHistory: boolean, coloredHistory: 
 
   };
 }
-function Surface({ failFirst = false, history = false, colors = false, selectTarget = false, question = false, progress = false }: { failFirst?: boolean; history?: boolean; colors?: boolean; selectTarget?: boolean; question?: boolean; progress?: boolean }) {
+function Surface({ failFirst = false, history = false, colors = false, selectTarget = false, question = false, progress = false }: { failFirst?: boolean; history?: boolean | 'usage'; colors?: boolean; selectTarget?: boolean; question?: boolean; progress?: boolean }) {
   const [progressHeight, setProgressHeight] = useState(112);
   const [services] = useState(() => {
     const services = makeServices(failFirst, history, colors, selectTarget, question, progress);
@@ -162,9 +169,12 @@ function Surface({ failFirst = false, history = false, colors = false, selectTar
     if (progress) services.presentation.resizeProgress = async (_request, height) => { setProgressHeight(height); };
     return services;
   });
-  return <LocaleProvider locale="zh-CN"><AstryxLocaleProvider><ToastProvider><WorkHubServicesProvider services={services}><div style={{ height: progress ? progressHeight : '100dvh', width: progress ? 360 : undefined, maxWidth: '100%' }}><WorkHubRoot /></div></WorkHubServicesProvider></ToastProvider></AstryxLocaleProvider></LocaleProvider>;
+  const [workbarServices] = useState(() => createFakeWorkbarServices({ inspector: services.inspector }));
+  return <LocaleProvider locale="zh-CN"><AstryxLocaleProvider><ToastProvider><WorkbarServicesProvider services={workbarServices}><WorkHubServicesProvider services={services}><div style={{ height: progress ? progressHeight : '100dvh', width: progress ? 360 : undefined, maxWidth: '100%' }}><WorkHubRoot workspace={WorkbarWorkspace} /></div></WorkHubServicesProvider></WorkbarServicesProvider></ToastProvider></AstryxLocaleProvider></LocaleProvider>;
 }
-const meta = { title: 'Product/WorkHub', parameters: { layout: 'fullscreen' } } satisfies Meta;
+const meta = { title: 'Product/WorkHub', parameters: { layout: 'fullscreen' }, beforeEach: () => {
+  for (const key of Object.keys(localStorage)) if (key.startsWith('workhub:')) localStorage.removeItem(key);
+} } satisfies Meta;
 export default meta;
 type Story = StoryObj<typeof meta>;
 
@@ -184,32 +194,41 @@ export const FullConversationAndWorkIdentity: Story = {
   },
 };
 export const FullConversationNarrow: Story = { ...FullConversationAndWorkIdentity, parameters: { viewport: { defaultViewport: 'tablet' } } };
-// Real path: docked WorkHub conversation → composer usage indicator → usage side panel.
+// Real path: WorkHub composer usage → the same Workbar used by ordinary sessions.
 export const UsageInspector: Story = {
-  render: () => <Surface history />,
+  render: () => <Surface history="usage" />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await waitFor(() => expect(canvas.getByText(/END_OF_FULL_RESPONSE/)).toBeInTheDocument());
+    await canvas.findByText(/接下来会核对并发回调的处理结果/);
     const conversation = canvasElement.querySelector('.workhub-conversation-shell')!;
-    const answer = canvas.getByText(/END_OF_FULL_RESPONSE/);
-    const before = conversation.getBoundingClientRect();
+    const editor = canvasElement.querySelector('[contenteditable="true"]')!;
+    await userEvent.click(editor);
+    await userEvent.type(editor, '再检查一下并发回调。');
+    const answer = canvas.getByText(/接下来会核对并发回调的处理结果/);
     const trigger = canvas.getByRole('button', { name: '打开用量追踪' });
     await userEvent.click(trigger);
-    const close = await canvas.findByRole('button', { name: '关闭用量侧栏' });
+    const close = await canvas.findByRole('button', { name: '收起任务工作栏' });
+    const panel = close.closest('.maka-session-workbar')!;
+    await waitFor(() => {
+      const panelRect = panel.getBoundingClientRect();
+      const mainRect = canvasElement.querySelector('.mainColumn')!.getBoundingClientRect();
+      if (matchMedia('(max-width: 990px)').matches) expect(panelRect.top).toBeGreaterThanOrEqual(mainRect.bottom);
+      else expect(panelRect.left).toBeGreaterThanOrEqual(mainRect.right);
+    });
     expect(answer.isConnected).toBe(true);
-    const after = conversation.getBoundingClientRect();
-    expect(after.x).toBe(before.x);
-    expect(after.width).toBe(before.width);
-    const panel = close.closest('aside')!;
-    expect(panel.getBoundingClientRect().right).toBeLessThanOrEqual(canvasElement.getBoundingClientRect().right);
+    expect(conversation.isConnected).toBe(true);
+    expect(editor).toHaveTextContent('再检查一下并发回调。');
+    await userEvent.click(close);
+    expect(answer.isConnected).toBe(true);
+    expect(editor).toHaveTextContent('再检查一下并发回调。');
+    await userEvent.click(canvas.getByRole('button', { name: '展开任务工作栏' }));
+    await expect(canvas.findByRole('tab', { name: '追踪' })).resolves.toBeVisible();
+    await userEvent.click(canvas.getByRole('button', { name: '打开或关闭工作栏的面' }));
+    const page = within(canvasElement.ownerDocument.body);
+    for (const name of ['变更', '终端', '工作看板', '浏览器', '生成文件', '追踪', '侧边对话']) {
+      await expect(page.findByRole('menuitem', { name })).resolves.toBeEnabled();
+    }
     await userEvent.keyboard('{Escape}');
-    await waitFor(() => expect(panel.isConnected).toBe(false));
-    expect(trigger).toHaveFocus();
-    expect(answer.isConnected).toBe(true);
-    await userEvent.click(trigger);
-    await userEvent.click(await canvas.findByRole('button', { name: '关闭用量侧栏' }));
-    expect(answer.isConnected).toBe(true);
-    await userEvent.click(trigger);
   },
 };
 // Real path: the docked WorkHub composer opens its model wheel before sending.
@@ -275,7 +294,7 @@ export const ThinkingLevelPicker: Story = {
     const usage = canvas.getByRole('button', { name: '打开用量追踪' });
     await waitFor(() => expect(usage.textContent).toContain('1%'));
     await userEvent.click(usage);
-    await userEvent.click(await canvas.findByRole('button', { name: '返回对话' }));
+    await userEvent.click(await canvas.findByRole('button', { name: '收起任务工作栏' }));
     await userEvent.click(canvas.getByRole('button', { name: '思考级别: 默认' }));
     await userEvent.click(page.getByRole('menuitemradio', { name: /^高$/ }));
     await waitFor(() => expect(canvas.getByRole('button', { name: '思考级别: 高' })).toBeEnabled());

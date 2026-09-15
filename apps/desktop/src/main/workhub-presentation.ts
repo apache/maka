@@ -39,7 +39,7 @@ export interface WorkHubPresentationDeps {
   viteDevServerUrl?: string;
   preloadPath: string;
   onError?: (error: unknown) => void;
-  onViewCreated?: (contents: Electron.WebContents) => (() => void) | void;
+  onViewCreated?: (contents: Electron.WebContents, view: WebContentsView) => (() => void) | void;
 }
 
 /** One renderer owns the conversation, draft and model selection for its entire lifetime. */
@@ -130,7 +130,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     rendererCrashed = false;
     view.setVisible(false);
     view.setBackgroundColor('#00000000');
-    const release = deps.onViewCreated?.(view.webContents);
+    const release = deps.onViewCreated?.(view.webContents, view);
     releaseView = typeof release === 'function' ? release : undefined;
     view.webContents.once('destroyed', releaseViewRegistration);
     installMainWindowPermissionPolicy(view.webContents, entry.url);

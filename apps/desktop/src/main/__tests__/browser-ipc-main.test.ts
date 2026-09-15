@@ -1,0 +1,211 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
+import { registerHooks } from 'node:module';
+import test from 'node:test';
+import { desktopSessionResourceKey, type DesktopTargetScope } from '../../shared/runtime-host-identity.js';
+import type { BrowserViewRect } from '../browser/logic.js';
+
+type IpcListener = (event: Electron.IpcMainEvent, ...args: unknown[]) => void;
+type IpcHandler = (event: Electron.IpcMainInvokeEvent, ...args: unknown[]) => unknown;
+
+class FakeController {
+  readonly viewports: Array<BrowserViewRect | null> = [];
+  readonly navigations: string[] = [];
+  disposed = false;
+
+  constructor(readonly parent: Electron.View, private readonly url: string) {}
+
+  hasParent(parent: Electron.View): boolean { return this.parent === parent; }
+  setViewport(rect: BrowserViewRect | null): void { this.viewports.push(rect); }
+  navigate(url: string): Promise<void> { this.navigations.push(url); return Promise.resolve(); }
+  goBack(): void {}
+  goForward(): void {}
+  reload(): void {}
+  stop(): void {}
+  state(): { hasPage: boolean; url: string } { return { hasPage: true, url: this.url }; }
+  hasLiveViewport(): boolean { return this.viewports.at(-1) !== null; }
+  waitForLiveViewport(): Promise<boolean> { return Promise.resolve(this.hasLiveViewport()); }
+  openOriginLease(): never { throw new Error('unused'); }
+  attachAutomation(): never { throw new Error('unused'); }
+  detachAutomation(): Promise<void> { return Promise.resolve(); }
+  dispose(): Promise<void> { this.disposed = true; return Promise.resolve(); }
+}
+
+class FakeRenderer extends EventEmitter {
+  destroyed = false;
+  readonly mainFrame: { frameToken: string };
+
+  constructor(token: string) {
+    super();
+    this.mainFrame = { frameToken: token };
+  }
+
+  isDestroyed(): boolean { return this.destroyed; }
+  destroy(): void {
+    this.destroyed = true;
+    this.emit('destroyed');
+  }
+}
+
+test('browser IPC isolates owned renderer documents and their native parents', async () => {
+  const listeners = new Map<string, IpcListener>();
+  const handlers = new Map<string, IpcHandler>();
+  const ipcMain = {
+    on(channel: string, listener: IpcListener) { listeners.set(channel, listener); return this; },
+    handle(channel: string, handler: IpcHandler) { handlers.set(channel, handler); },
+  };
+  const testGlobal = globalThis as typeof globalThis & { __makaBrowserIpcMain?: typeof ipcMain };
+  testGlobal.__makaBrowserIpcMain = ipcMain;
+  const electronUrl = `data:text/javascript,export const ipcMain=globalThis.__makaBrowserIpcMain`;
+  const hooks = registerHooks({
+    resolve(specifier, context, nextResolve) {
+      return specifier === 'electron'
+        ? { url: electronUrl, shortCircuit: true }
+        : nextResolve(specifier, context);
+    },
+  });
+
+  try {
+    const { registerBrowserIpc } = await import('../browser-ipc-main.js');
+    const main = new FakeRenderer('main-document-frame');
+    const workHub = new FakeRenderer('workhub-document-frame');
+    const mainParent = { name: 'main-parent' } as unknown as Electron.View;
+    const workHubParent = { name: 'workhub-parent' } as unknown as Electron.View;
+    const owned = new Map<Electron.WebContents, Electron.View>([
+      [main as unknown as Electron.WebContents, mainParent],
+      [workHub as unknown as Electron.WebContents, workHubParent],
+    ]);
+    const scope: DesktopTargetScope = { hostId: 'host', targetEpoch: 'epoch' };
+    const mainKey = desktopSessionResourceKey({ ...scope, sessionId: 'main-session' });
+    const workHubKey = desktopSessionResourceKey({ ...scope, sessionId: 'workhub-session' });
+    let parentResolver: ((sessionId: string) => Electron.View | undefined) | undefined;
+    const controllers = new Map<string, FakeController>([
+      [mainKey, new FakeController(mainParent, 'https://preserved.example/')],
+    ]);
+    const manager = {
+      get(sessionId: string) { return controllers.get(sessionId); },
+      getOrCreate(sessionId: string) {
+        let controller = controllers.get(sessionId);
+        if (!controller) {
+          const parent = parentResolver?.(sessionId);
+          assert.ok(parent, 'lazy browser creation resolves the selected renderer parent');
+          controller = new FakeController(parent, '');
+          controllers.set(sessionId, controller);
+        }
+        return controller;
+      },
+      sessionIds() { return [...controllers.keys()]; },
+      async dispose(sessionId: string) {
+        const controller = controllers.get(sessionId);
+        controllers.delete(sessionId);
+        await controller?.dispose();
+      },
+    };
+    const mainWindowController = {
+      getBrowserViews: () => manager,
+      ownsRenderer: (contents: Electron.WebContents) => !contents.isDestroyed() && owned.has(contents),
+      browserParentForRenderer: (contents: Electron.WebContents) => owned.get(contents),
+      setBrowserViewParentResolver: (resolve: typeof parentResolver) => { parentResolver = resolve; },
+    };
+    registerBrowserIpc({
+      mainWindowController: mainWindowController as never,
+      isHostActive: (candidate) => candidate.hostId === scope.hostId && candidate.targetEpoch === scope.targetEpoch,
+    });
+
+    const event = (renderer: FakeRenderer) => ({
+      sender: renderer,
+      senderFrame: renderer.mainFrame,
+    }) as unknown as Electron.IpcMainEvent & Electron.IpcMainInvokeEvent;
+    const emit = (channel: string, renderer: FakeRenderer, ...args: unknown[]) => {
+      const listener = listeners.get(channel);
+      assert.ok(listener, `missing ${channel} listener`);
+      listener(event(renderer), ...args);
+    };
+    const invoke = async (channel: string, renderer: FakeRenderer, ...args: unknown[]) => {
+      const handler = handlers.get(channel);
+      assert.ok(handler, `missing ${channel} handler`);
+      return handler(event(renderer), ...args);
+    };
+
+    // State restoration is read-only and must work before the remounted parent
+    // Workbar effect has announced its active selection.
+    assert.deepEqual(await invoke('browser:get-state', main, scope, 'main-session'), {
+      hasPage: true,
+      url: 'https://preserved.example/',
+    });
+
+    emit('browser:document-ready', main, 'main-document');
+    emit('browser:document-ready', workHub, 'workhub-document');
+    emit('browser:active-session', main, scope, 'main-session', 'main-document', 1);
+    emit('browser:active-session', workHub, scope, 'workhub-session', 'workhub-document', 1);
+
+    const mainRect = { x: 10, y: 20, width: 300, height: 200 };
+    const workHubRect = { x: 4, y: 8, width: 220, height: 160 };
+    emit('browser:setViewport', main, scope, { sessionId: 'main-session', rect: mainRect }, 'main-document', 1);
+    await invoke('browser:navigate', main, scope, 'main-session', 'https://main.example/');
+    await invoke('browser:navigate', workHub, scope, 'workhub-session', 'https://workhub.example/');
+    emit('browser:setViewport', workHub, scope, { sessionId: 'workhub-session', rect: workHubRect }, 'workhub-document', 1);
+
+    const mainController = controllers.get(mainKey)!;
+    const workHubController = controllers.get(workHubKey)!;
+    assert.equal(mainController.parent, mainParent);
+    assert.equal(workHubController.parent, workHubParent);
+    assert.deepEqual(mainController.viewports, [mainRect]);
+    assert.deepEqual(workHubController.viewports, [workHubRect]);
+    assert.deepEqual(mainController.navigations, ['https://main.example/']);
+    assert.deepEqual(workHubController.navigations, ['https://workhub.example/']);
+
+    // Neither a stale document/generation nor another renderer's selected
+    // session can move or navigate the current native view.
+    emit('browser:setViewport', main, scope, { sessionId: 'main-session', rect: workHubRect }, 'old-document', 1);
+    emit('browser:setViewport', main, scope, { sessionId: 'main-session', rect: workHubRect }, 'main-document', 0);
+    emit('browser:setViewport', main, scope, { sessionId: 'workhub-session', rect: mainRect }, 'main-document', 1);
+    await invoke('browser:navigate', main, scope, 'workhub-session', 'https://cross-owner.example/');
+    assert.deepEqual(mainController.viewports, [mainRect]);
+    assert.deepEqual(workHubController.viewports, [workHubRect]);
+    assert.deepEqual(workHubController.navigations, ['https://workhub.example/']);
+
+    emit('browser:active-session', workHub, scope, 'main-session', 'workhub-document', 2);
+    await invoke('browser:navigate', workHub, scope, 'main-session', 'https://stolen.example/');
+    assert.deepEqual(mainController.navigations, ['https://main.example/']);
+    assert.equal(mainController.parent, mainParent);
+    assert.deepEqual(mainController.viewports, [mainRect]);
+
+    // Renderer-process loss preserves the native page for reload. Even if the
+    // replacement document reads it before selecting the Session, destroying
+    // the owning WebContents must still release the page by its fixed parent.
+    workHub.emit('render-process-gone');
+    assert.deepEqual(await invoke('browser:get-state', workHub, scope, 'workhub-session'), {
+      hasPage: true,
+      url: '',
+    });
+    emit('browser:document-ready', workHub, 'workhub-reloaded-document');
+    workHub.destroy();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(workHubController.disposed, true);
+    assert.equal(controllers.get(mainKey), mainController, 'destroying WorkHub preserves the main browser session');
+    assert.equal(mainController.disposed, false);
+  } finally {
+    hooks.deregister();
+    delete testGlobal.__makaBrowserIpcMain;
+  }
+});

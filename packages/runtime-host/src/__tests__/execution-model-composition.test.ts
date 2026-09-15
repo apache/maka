@@ -37,6 +37,10 @@ import {
   clientCapabilityCoordinatorTestAdmission,
 } from './fixtures/client-capability.js';
 import {
+  WORKHUB_BROWSER_TOOL_NAMES,
+  workHubDesktopCapabilityOffers,
+} from './fixtures/workhub-capabilities.js';
+import {
   createBypassExecutionBoundary,
   createManagedExecutionBoundary,
   type ExecutionBoundary,
@@ -2181,20 +2185,7 @@ test('cold WorkHub recovery waits for Desktop tools across pending-message and a
       const result = await handlers['client.capability.replace'](
         {
           registrationId,
-          offers: [
-            {
-              offerId: 'desktop-workhub',
-              version: '0',
-              affinity: 'session',
-              hostPathAccess: 'none',
-              label: 'Desktop WorkHub',
-              tools: names.map((name) => ({
-                serverId: 'desktop_workhub',
-                name,
-                inputSchema: { type: 'object', additionalProperties: false },
-              })),
-            },
-          ],
+          offers: workHubDesktopCapabilityOffers(names),
         },
         { ...context, connectionId },
       );
@@ -2410,7 +2401,11 @@ test('cold WorkHub recovery waits for Desktop tools across pending-message and a
         .slice(requestsBeforeRecovery)
         .filter((request) => Array.isArray(request.body.tools));
       assert.equal(requests.length, 1, 'the recovered successor executes exactly once');
-      for (const name of ['mcp__desktop_workhub__control', 'mcp__desktop_workhub__tasks']) {
+      for (const name of [
+        'mcp__desktop_workhub__control',
+        'mcp__desktop_workhub__tasks',
+        ...WORKHUB_BROWSER_TOOL_NAMES.map((name) => `mcp__desktop_browser__${name}`),
+      ]) {
         assert.ok(responsesToolNames(requests[0]?.body).includes(name));
       }
       const users = (await readLedgerMessages(recoveredStores.runtimeEventStore, sessionId)).filter(

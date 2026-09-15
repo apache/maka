@@ -17,16 +17,22 @@
  * under the License.
  */
 
-// `WorkbarSurface` is deliberately absent: `workbar-host` reaches it through
-// `lazy(() => import('./workbar-surface'))`, and re-exporting it here would
-// pull the surface and its five nested tool panels back into the eager chunk
-// for every importer of this barrel. Stories reach it through `stories`,
-// which nothing shipped imports.
-export { WorkbarHost } from './ui/workbar-host';
-export { WorkbarTitlebarActions } from './ui/workbar-toggle';
-export { WorkbarServicesProvider } from './services-context';
-export { useWorkbarController } from './controller/use-workbar-controller';
-export type { SessionWorkbarTabKind } from './model/workbar-tabs';
-export type { WorkbarServices } from './ports';
+import type { ComponentType, ReactNode, RefObject } from 'react';
+import type { SessionSummary } from '@maka/core/session';
+import type { ChatModelChoice, ComposerHandle } from '@maka/ui';
 
-export { WorkbarWorkspace } from './ui/workbar-workspace.js';
+/** Composition supplies the same session workspace used by ordinary conversations. */
+export interface SessionWorkspaceProps {
+  className?: string;
+  layoutScope?: string;
+  session?: SessionSummary;
+  sessionIds: ReadonlySet<string> | undefined;
+  modelChoices: readonly ChatModelChoice[];
+  visible: boolean;
+  composerRef: RefObject<ComposerHandle | null>;
+  onShowConversation(): void;
+  onOpenSession(sessionId: string): void;
+  children(workbar: { openUsage(): void; toggle: ReactNode }): ReactNode;
+}
+
+export type SessionWorkspaceComponent = ComponentType<SessionWorkspaceProps>;

@@ -22,9 +22,8 @@ import { ChatSurfaceLayout, UserQuestionPrompt, MakaWordmark, useUiLocale, type 
 import { Button, IconButton } from '@astryxdesign/core';
 import { ChevronDown, PictureInPicture2, Undo2, X } from '@maka/ui/icons';
 import { useLiveContextUsage } from '../../../application/contracts/session-inspector/use-live-context-usage.js';
-import { SessionInspectorPanel } from '../../../application/contracts/session-inspector/session-inspector-panel.js';
 import { selectLatestRequestUsage } from '../../../application/contracts/session-inspector/latest-request-usage.js';
-import { getDesktopConversationCopy } from '../../../locales/conversation-copy.js';
+import type { SessionWorkspaceComponent } from '../../../application/contracts/session-workspace.js';
 import { WorkHubProgressCard } from './workhub-progress-card.js';
 import { WorkHubComposer } from './workhub-composer.js';
 import { WorkHubConversation } from './workhub-conversation.js';
@@ -70,29 +69,22 @@ function revealWordmark(element: HTMLDivElement | null, content: HTMLDivElement 
   }
 }
 
-export function WorkHubRoot() {
-  return <WorkHubHighlightProvider><WorkHubContents /></WorkHubHighlightProvider>;
+export function WorkHubRoot({ workspace }: { workspace: SessionWorkspaceComponent }) {
+  return <WorkHubHighlightProvider><WorkHubContents workspace={workspace} /></WorkHubHighlightProvider>;
 }
 
-function focusInspector(element: HTMLElement | null) {
-  element?.querySelector<HTMLButtonElement>('button')?.focus({ preventScroll: true });
-}
-
-function WorkHubContents() {
+function WorkHubContents({ workspace: Workspace }: { workspace: SessionWorkspaceComponent }) {
   const { selectWork } = useContext(WorkHubHighlightContext);
   const controller = useWorkHubController(() => selectWork(undefined));
   const { services, session, transcript, busy } = controller;
+  const sessionIds = useMemo(() => controller.sessionId
+    ? new Set([...controller.sessions.map((candidate) => candidate.id), controller.sessionId])
+    : undefined, [controller.sessions, controller.sessionId]);
   const modelChoice = controller.choices.find((choice) =>
     choice.connectionId === session?.llmConnectionId && choice.connectionSlug === session?.llmConnectionSlug && choice.model === session?.model,
   );
   const thinkingLevels = modelChoice?.thinkingLevels ?? [];
   const liveContextUsage = useLiveContextUsage({ inspector: services.inspector, sessionId: controller.sessionId, model: session?.model, providerType: modelChoice?.providerType });
-  const [inspectingContext, setInspectingContext] = useState(false);
-  const inspectorTrigger = useRef<HTMLElement | null>(null);
-  const closeInspector = () => {
-    setInspectingContext(false);
-    inspectorTrigger.current?.focus({ preventScroll: true });
-  };
   const thinkingLevel = session?.thinkingLevel && thinkingLevels.includes(session.thinkingLevel) ? session.thinkingLevel : undefined;
   const locale = useUiLocale();
   const t = workHubLiveCopy[locale];
@@ -299,7 +291,13 @@ function WorkHubContents() {
         </div>
       </div>}
       <div className="workHubRevealMark" ref={revealMark} aria-hidden="true"><MakaWordmark width={192} /></div>
-      <ChatSurfaceLayout
+      <Workspace className="workHubWorkspace" layoutScope="workhub" session={session} sessionIds={sessionIds} modelChoices={controller.choices} visible={showConversation} composerRef={composer}
+        onShowConversation={() => {
+          setConversationExpanded(true);
+          if (progress) call(services.presentation.expandProgress(presentation.progressRequest));
+        }}
+        onOpenSession={(id) => call(services.presentation.openSession(id))}>
+      {(workbar) => <ChatSurfaceLayout
         scrollButton={showConversation ? undefined : null}
         style={!showConversation ? { height: expandedLayoutHeight, flex: 'none', position: 'absolute', bottom: 0, width: '100%' } : undefined}
         onReturnToTail={transcript.hasNewer ? controller.loadLatest : undefined}
@@ -357,12 +355,7 @@ function WorkHubContents() {
                 declaredContextWindow: modelChoice?.declaredContextWindow,
                 meteredContextWindow: liveContextUsage?.contextWindow,
                 metadataContextWindow: modelChoice?.contextWindow,
-                onOpen: () => {
-                  inspectorTrigger.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-                  setInspectingContext(true);
-                  setConversationExpanded(true);
-                  if (progress) call(services.presentation.expandProgress(presentation.progressRequest));
-                },
+                onOpen: workbar.openUsage,
               } : undefined}
               activeThinkingLevels={thinkingLevels}
               activeThinkingLevel={thinkingLevel}
@@ -370,6 +363,7 @@ function WorkHubContents() {
               modelSwitchHasHistory={transcript.messages.length > 0}
               footerAccessory={
                 <div className="workHubComposerActions">
+                  {workbar.toggle}
                   {control?.canUndo && <IconButton type="button" size="sm" variant="ghost" icon={<Undo2 size={16} />} label={t.undo} isDisabled={busy} onClick={() => call(services.control.undo())} />}
                   {!floating && <IconButton type="button" size="sm" variant="ghost" icon={<PictureInPicture2 size={16} />} label={t.float} tooltip={`${t.float} · ${shortcutLabel}`} onClick={() => call(services.presentation.detach())} />}
                 </div>
@@ -415,25 +409,8 @@ function WorkHubContents() {
         />
         </div></div>
         </div>
-      </ChatSurfaceLayout>
-      {inspectingContext && showConversation && session && (
-        <aside ref={focusInspector} className="workHubContextInspector" aria-label={getDesktopConversationCopy(locale).inspector.ariaLabel}
-          onKeyDown={(event) => {
-            if (event.key === 'Escape' && !event.defaultPrevented) {
-              event.preventDefault();
-              event.stopPropagation();
-              closeInspector();
-            }
-          }}>
-          <header className="workHubContextInspectorHeader">
-            <strong>{getDesktopConversationCopy(locale).inspector.ariaLabel}</strong>
-            <IconButton variant="ghost" size="sm" icon={<X size={16} />} label={t.closeInspector} onClick={closeInspector} />
-          </header>
-          <div className="workHubContextInspectorBody">
-            <SessionInspectorPanel sessionId={session.id} active inspector={services.inspector} copy={getDesktopConversationCopy(locale).inspector} />
-          </div>
-        </aside>
-      )}
+      </ChatSurfaceLayout>}
+      </Workspace>
     </section>
     </WorkHubHueProvider>
   );
