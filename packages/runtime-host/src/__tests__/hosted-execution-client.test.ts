@@ -19,7 +19,26 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { runHostedExecutionWithDependencies } from '../client/hosted-execution.js';
+import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import {
+  runHostedExecution,
+  runHostedExecutionWithDependencies,
+} from '../client/hosted-execution.js';
+
+test('real startup preparation failure reaches the hosted execution result', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'maka-hosted-startup-error-'));
+  try {
+    const rootPath = join(directory, 'file');
+    await writeFile(rootPath, 'not a directory');
+    const result = await runHostedExecution({ ...input(), rootPath });
+    assert.match(result.failureReason ?? '', /invalid_root/);
+    assert.doesNotMatch(result.failureReason ?? '', /host_unresponsive/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 test('diagnostics disconnect after settlement preserves the canonical result', async () => {
   for (const status of ['completed', 'failed'] as const) {

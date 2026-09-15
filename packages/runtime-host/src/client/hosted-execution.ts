@@ -86,7 +86,12 @@ export async function runHostedExecutionWithDependencies(
     if (input.signal?.aborted) {
       return indeterminate(input.execution.executionId, 'Hosted execution was cancelled');
     }
-    const cause = connected.kind === 'failed' ? connected.reason : connected.kind;
+    const cause =
+      connected.kind === 'failed'
+        ? connected.reason === 'startup_failed'
+          ? connected.detail
+          : connected.reason
+        : connected.kind;
     return indeterminate(input.execution.executionId, `Runtime Host did not start: ${cause}`);
   }
   let projection: HostedExecutionProjection;
