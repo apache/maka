@@ -25,6 +25,7 @@ import { basename, join, resolve, sep } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import type { StoredMessage } from '@maka/core/session';
 import {
+  ExternalSessionCatalogCursorError,
   externalSessionMatchesQuery,
   sanitizeExternalSessionTitle,
 } from '@maka/core/external-session';
@@ -284,9 +285,9 @@ export class CodexSessionAdapter implements ExternalSessionAdapter {
       const dbPath = stateDatabases.find(
         (candidate) => basename(candidate) === keyset.stateDatabase,
       );
-      if (!dbPath) throw new Error('Invalid Codex catalog cursor');
+      if (!dbPath) throw new ExternalSessionCatalogCursorError();
       const page = await this.readStateCatalogKeysetPage(dbPath, query, keyset, limit);
-      if (!page) throw new Error('Invalid Codex catalog cursor');
+      if (!page) throw new ExternalSessionCatalogCursorError();
       return page;
     }
     if (!keyset) {
@@ -1151,28 +1152,28 @@ function decodeCatalogKeyset(
   if (cursor === undefined) return undefined;
   const parts = cursor.split(':');
   if (parts[1] !== catalogKeysetQueryHash(query)) {
-    throw new Error('Invalid Codex catalog cursor');
+    throw new ExternalSessionCatalogCursorError();
   }
   if (parts[0] === 'd') {
-    if (parts.length !== 5) throw new Error('Invalid Codex catalog cursor');
+    if (parts.length !== 5) throw new ExternalSessionCatalogCursorError();
     const encodedStateDatabase = parts[2]!;
     const stateDatabase = Buffer.from(encodedStateDatabase, 'base64url').toString('utf8');
     if (
       !/^state_\d+\.sqlite$/.test(stateDatabase) ||
       Buffer.from(stateDatabase).toString('base64url') !== encodedStateDatabase
     ) {
-      throw new Error('Invalid Codex catalog cursor');
+      throw new ExternalSessionCatalogCursorError();
     }
     const sortTimestamp = decodeCursorNumber(parts[3]!);
     const encodedId = parts[4]!;
     const id = Buffer.from(encodedId, 'base64url').toString('utf8');
     if (!isSafeCodexSessionId(id) || Buffer.from(id).toString('base64url') !== encodedId) {
-      throw new Error('Invalid Codex catalog cursor');
+      throw new ExternalSessionCatalogCursorError();
     }
     return { kind: 'database', stateDatabase, sortTimestamp, id };
   }
   if (parts[0] === 'f') {
-    if (parts.length !== 4) throw new Error('Invalid Codex catalog cursor');
+    if (parts.length !== 4) throw new ExternalSessionCatalogCursorError();
     const mtimeMs = decodeCursorNumber(parts[2]!);
     const encodedPathKey = parts[3]!;
     const pathKey = Buffer.from(encodedPathKey, 'base64url').toString('utf8');
@@ -1181,11 +1182,11 @@ function decodeCatalogKeyset(
       Buffer.from(pathKey).toString('base64url') !== encodedPathKey ||
       !/^[as]\/[^\u0000-\u001f\u007f]+$/.test(pathKey)
     ) {
-      throw new Error('Invalid Codex catalog cursor');
+      throw new ExternalSessionCatalogCursorError();
     }
     return { kind: 'filesystem', mtimeMs, pathKey };
   }
-  throw new Error('Invalid Codex catalog cursor');
+  throw new ExternalSessionCatalogCursorError();
 }
 
 function encodeCursorNumber(value: number): string {
@@ -1197,10 +1198,10 @@ function encodeCursorNumber(value: number): string {
 function decodeCursorNumber(value: string): number {
   const buffer = Buffer.from(value, 'base64url');
   if (buffer.length !== 8 || buffer.toString('base64url') !== value) {
-    throw new Error('Invalid Codex catalog cursor');
+    throw new ExternalSessionCatalogCursorError();
   }
   const number = buffer.readDoubleBE();
-  if (!Number.isFinite(number)) throw new Error('Invalid Codex catalog cursor');
+  if (!Number.isFinite(number)) throw new ExternalSessionCatalogCursorError();
   return number;
 }
 

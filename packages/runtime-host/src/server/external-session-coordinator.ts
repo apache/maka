@@ -20,6 +20,7 @@
 import { JsonArrayPageBudget } from './json-array-page-budget.js';
 
 import {
+  ExternalSessionCatalogCursorError,
   ExternalSessionLimitError,
   type ExternalSessionAdapter,
   type ExternalSessionAdapterRegistry,
@@ -252,6 +253,9 @@ export class HostExternalSessionCoordinator {
     } catch (error) {
       if (error instanceof WorkspaceResolutionError) {
         return queryFailure('invalid_request', error.message);
+      }
+      if (error instanceof ExternalSessionCatalogCursorError) {
+        return queryFailure('invalid_request', 'External Session catalog cursor is invalid');
       }
       return queryFailure('persistence_failed', 'External Session catalog could not be read');
     }
