@@ -22,13 +22,11 @@ import { readSettledMessages } from './platform/desktop/session-message-settleme
 import { getDesktopConversationCopy } from './locales/conversation-copy.js';
 import { localizedShellErrorMessage } from './locales/shell-copy.js';
 import { isSessionWorkspaceUnavailableError, showSessionWorkspaceUnavailableToast } from './session-workspace-errors.js';
-import type {
-  TurnRevisionDraftBase,
-  RevisionActionsEnv,
-} from '@maka/ui';
 import {
   createRevisionActions,
   createTurnRevisionCopyHelpers,
+  type RevisionActionsEnv,
+  type TurnRevisionDraftBase,
 } from '@maka/ui';
 
 /**

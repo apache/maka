@@ -572,7 +572,7 @@
           "@maka/ui": 1
         },
         "importSpecifiers": 6,
-        "nonTriviaTokens": 513
+        "nonTriviaTokens": 508
       },
       "src/renderer/app-shell-session-events.ts": {
         "importDeclarations": 2,
