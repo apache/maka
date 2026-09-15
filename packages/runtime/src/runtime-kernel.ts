@@ -287,6 +287,8 @@ export interface RuntimeKernelDeps {
   safeBoundaryResumeEnabled?: boolean;
   continuationFailpoint?: (point: RuntimeContinuationFailpoint) => Promise<void>;
   runBackendActivation?: BackendActivationBoundary;
+  /** Host policy for a fresh turn; continuations retain their invocation snapshot. */
+  resolveFreshTurnToolMode?: (header: SessionHeader) => Promise<ToolMode | undefined>;
   /** Hosted composition capability. When present, the Host owns all message queues. */
   messageAuthority?: RuntimeMessageAuthority;
   /** Hosted composition capability. Omit for embedded interaction ownership. */
@@ -685,6 +687,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
       const run = new AgentRun({
         sessionId,
         header,
+        effectiveToolMode: await this.deps.resolveFreshTurnToolMode?.(header),
         userInput: input,
         runId: options.runId,
         userMessageId: options.userMessageId,

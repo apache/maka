@@ -18,7 +18,7 @@
  */
 
 import { _electron as electron, test as base, expect } from '@playwright/test';
-import type { ElectronApplication, Page } from '@playwright/test';
+import type { ElectronApplication, Locator, Page } from '@playwright/test';
 import { execFile } from 'node:child_process';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -80,7 +80,7 @@ export async function ensureSidebarExpanded(page: Page): Promise<void> {
  * The control reflects local admission readiness, not Host connectivity.
  * Merely mounting the editor does not mean target selection has finished.
  */
-export async function awaitSendReady(page: Page): Promise<void> {
+export async function awaitSendReady(page: Page | Locator): Promise<void> {
   await expect(page.locator('.maka-composer button[type="submit"]')).toBeEnabled({
     timeout: 20_000,
   });

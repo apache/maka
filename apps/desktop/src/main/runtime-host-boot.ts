@@ -191,6 +191,8 @@ import { registerClientSettingsIpc } from "./client-settings-ipc-main.js";
 import { startClientSettingsWatcher } from "./client-settings-watcher.js";
 import { registerRuntimeHostGitHubCopilotIpc } from "./runtime-host-github-copilot-ipc-main.js";
 import { registerRuntimeHostArtifactsIpc } from "./runtime-host-artifacts-ipc-main.js";
+import { ManagedArtifactPreview } from './managed-artifact-preview.js';
+import { buildManagedArtifactPreviewTools } from './managed-artifact-preview-tools.js';
 import type { DesktopRuntimeHostClient } from "./runtime-host-client.js";
 import type {
   DesktopRuntimeHostCandidateControls,
@@ -1032,6 +1034,7 @@ const clientSettingsTools = buildClientSettingsTools({
     return result.response === 0;
   },
 });
+const managedArtifactPreview = new ManagedArtifactPreview();
 const clientSettingsWatcher = startClientSettingsWatcher(
   workspaceRoot,
   () => {
@@ -1167,6 +1170,17 @@ const startLocalRuntimeHostManager = () => startRuntimeHostDesktopManager(
         }
         return [
           workHubControl.group(scope),
+          {
+            offerId: 'desktop_artifact_preview',
+            label: 'HTML Artifact preview',
+            description: 'Prepare an isolated, temporary HTTP preview of a generated HTML Artifact.',
+            tools: buildManagedArtifactPreviewTools(async (sessionId, artifactId, signal) => {
+              if (!scope || !runtimeHostManager?.ownsScope(scope)) throw new Error('Preview target is unavailable');
+              const target = runtimePolicyTargetsByEpoch.get(scope.targetEpoch);
+              if (!target?.isActive()) throw new Error('Preview target is no longer active');
+              return managedArtifactPreview.prepare(scope.targetEpoch, target.client, sessionId, artifactId, signal);
+            }),
+          },
           {
             offerId: "desktop_settings",
             label: "Client settings",
@@ -1675,6 +1689,7 @@ function registerHostClientIpc(
     mainWindowController,
     showItemInFolder: (path) => shell.showItemInFolder(path),
     openPath: (path) => shell.openPath(path),
+    preview: { service: managedArtifactPreview, scope: scope.targetEpoch, openExternal: (url) => shell.openExternal(url) },
   });
   registerExternalAgentSetupIpc({ ipcMain: scopedIpc, client, presentation: oauthPresentation,
     selectExecutable: async () => {
@@ -1886,6 +1901,7 @@ function registerHostClientIpc(
   return async () => {
     clientPluginTransport.release(client);
     unsubscribeConfigurationChanges();
+    await managedArtifactPreview.closeScope(scope.targetEpoch);
     unsubscribeConnectionCatalogChanges();
     unsubscribeSessionCatalogChanges();
     unsubscribeProjectCatalogChanges();
@@ -2188,6 +2204,7 @@ async function disposeRuntimeHostDesktop(): Promise<void> {
       }
     });
   const results = await Promise.allSettled([
+    managedArtifactPreview.close(),
     Promise.resolve().then(() => windowsAppTray.dispose()),
     workHubControl.close(),
     Promise.resolve().then(() => workHubPresentation.dispose()),

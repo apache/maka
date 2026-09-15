@@ -29,6 +29,7 @@ import {
   requireCount,
   requireEntityId,
   requireExactRecord,
+  requireOpaqueIdentity,
   requireRecord,
   requireString,
 } from './codec.js';
@@ -580,7 +581,7 @@ export function decodeClientCapabilityHostFrame(value: unknown): ClientCapabilit
         arguments: argumentsValue,
         sessionId: requireEntityId(frame.sessionId, 'sessionId'),
         turnId: requireEntityId(frame.turnId, 'turnId'),
-        toolCallId: requireEntityId(frame.toolCallId, 'toolCallId'),
+        toolCallId: requireOpaqueIdentity(frame.toolCallId, 'toolCallId'),
         ...(frame.cwd === undefined ? {} : { cwd: requireString(frame.cwd, 'cwd', 4_096) }),
       };
     }
