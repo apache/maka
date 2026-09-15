@@ -1080,7 +1080,10 @@ async function nextRolloutCatalogBatch(
   return candidates;
 }
 
-function compareRolloutCandidates(left: RolloutCandidate, right: RolloutCandidate): number {
+function compareRolloutCandidates(
+  left: Pick<RolloutCandidate, 'mtimeMs' | 'catalogKey'>,
+  right: Pick<RolloutCandidate, 'mtimeMs' | 'catalogKey'>,
+): number {
   return right.mtimeMs - left.mtimeMs || left.catalogKey.localeCompare(right.catalogKey);
 }
 
@@ -1089,8 +1092,10 @@ function rolloutCandidateIsAfter(
   keyset: Extract<CodexCatalogKeyset, { kind: 'filesystem' }>,
 ): boolean {
   return (
-    candidate.mtimeMs < keyset.mtimeMs ||
-    (candidate.mtimeMs === keyset.mtimeMs && candidate.catalogKey > keyset.pathKey)
+    compareRolloutCandidates(candidate, {
+      mtimeMs: keyset.mtimeMs,
+      catalogKey: keyset.pathKey,
+    }) > 0
   );
 }
 

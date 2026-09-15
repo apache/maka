@@ -596,6 +596,46 @@ describe('CodexSessionAdapter', () => {
     });
   });
 
+  test('filesystem keyset paging uses one path order across equal-mtime pages', async () => {
+    await withCodexHome(async (codexHome) => {
+      const underscore = await seedMinimalRollout(
+        codexHome,
+        'codex_a',
+        false,
+        '/workspace/root',
+        'underscore',
+      );
+      const hyphen = await seedMinimalRollout(
+        codexHome,
+        'codex-a',
+        false,
+        '/workspace/root',
+        'hyphen',
+      );
+      const tied = new Date('2026-08-08T00:00:00Z');
+      await utimes(underscore, tied, tied);
+      await utimes(hyphen, tied, tied);
+      const adapter = new CodexSessionAdapter({ codexHome });
+
+      const first = await adapter.listSessionPage!({ limit: 1 });
+      assert.deepEqual(
+        first.items.map(({ summary }) => summary.id),
+        ['codex_a'],
+      );
+      assert.equal(first.hasMore, true);
+
+      const second = await adapter.listSessionPage!({
+        cursor: first.items[0]!.nextCursor,
+        limit: 1,
+      });
+      assert.deepEqual(
+        second.items.map(({ summary }) => summary.id),
+        ['codex-a'],
+      );
+      assert.equal(second.hasMore, false);
+    });
+  });
+
   test('rejects corrupt interior records, tolerates a torn tail, and bounds scanned bytes', async () => {
     await withCodexHome(async (codexHome) => {
       const fixture = await readFile(CURRENT_FIXTURE, 'utf8');
