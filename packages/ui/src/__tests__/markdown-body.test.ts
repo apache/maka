@@ -576,6 +576,25 @@ it('streams an unfinished reference identifier without rescanning from its opene
   assert.match(markup, />visible</);
 });
 
+it('reparses an earlier delimiter that closes after a pending label', () => {
+  const cases = [
+    // Unclosed code span, then its closer plus display math.
+    { head: '`[', full: '`[` $$x$$' },
+    // Unclosed inline math, then its closer plus display math.
+    { head: '\\([x', full: '\\([x\\) $$y$$' },
+    // Unclosed display math, then its closer plus display math.
+    { head: '$$[', full: '$$[$$ $$y$$' },
+  ];
+
+  for (const { head, full } of cases) {
+    const cache = createMarkdownMathCache();
+    prepareMarkdownMath(head, cache);
+    const incremental = prepareMarkdownMath(full, cache);
+
+    assert.equal(incremental, prepareMarkdownMath(full, createMarkdownMathCache()), head);
+  }
+});
+
 it('does not rescan malformed link tails quadratically', () => {
   const input = '[x]('.repeat(32_000);
   const cache = createMarkdownMathCache();

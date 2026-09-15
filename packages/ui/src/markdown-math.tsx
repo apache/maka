@@ -217,7 +217,13 @@ function protectMarkdownMath(
 
     const link = readMarkdownLink(source, index);
     if (link?.kind === 'pending') {
-      if (link.labelState !== undefined) onLabelPending?.(link.labelState);      text += source.slice(index, link.end);
+      // Remember the scan only when everything before its opener already
+      // settled: an earlier unresolved backtick or math opener must be
+      // reparsed together with later chunks, and resuming just the label
+      // would skip it forever.
+      if (link.labelState !== undefined && safeSourceEnd === index) {
+        onLabelPending?.(link.labelState);
+      }      text += source.slice(index, link.end);
       index = link.end;
       atLineStart = false;
       if (isFinalSegment) {
