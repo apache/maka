@@ -95,6 +95,10 @@ This page is the authority map for Maka documentation. Code and contract tests r
 - [Workspace privacy context](./workspace-privacy-context.md)
 - [Runtime sandbox boundary](../packages/runtime/src/sandbox/README.md)
 
+## Proposed contracts
+
+- [Revision-consistent Usage screen reads](./architecture/usage-screen-revision-consistency-draft.md) — design draft; Storage semantics are pending review.
+
 ## Historical material
 
 - [Runtime kernel extraction](./archive/runtime-kernel.md)
