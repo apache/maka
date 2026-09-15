@@ -135,8 +135,9 @@ Maka 使用 Discord Gateway 接收事件，并使用 REST 调用发送回复；�
 3. 将 Bot token 填入 Maka 的 `token`，将 app-level token 填入 `appSecret`，并为
    workspace 测试订阅所需的消息事件。
 
-Slack 使用 WebSocket 接收事件，使用 Web API client 回复。验证权限和 allowlist
-行为时，应使用私有开发 workspace。
+Slack 使用 WebSocket 接收事件，使用 Web API client 回复。Slack 的 HTTP API 请求会使用
+Maka 的全局活动网络代理，但 Socket Mode WebSocket 仍可能需要 TUN 这样的系统级路由。
+验证权限和消息事件订阅时，应使用私有开发 workspace。
 
 ### 钉钉
 

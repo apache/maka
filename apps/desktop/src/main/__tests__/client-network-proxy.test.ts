@@ -37,18 +37,24 @@ const RESOLVED: NetworkProxyResolveResult = {
 function harness(
   profileKind: "local" | "environment" | "remote",
   resolve: () => Promise<NetworkProxyResolveResult>,
+  options: { active?: () => boolean } = {},
 ) {
   const applied: (ProxySettings | null)[] = [];
+  let blocked = 0;
   const errors: unknown[] = [];
   const scheduled: { run: () => void; delayMs: number }[] = [];
   const applier = createClientNetworkProxyApplier({
     profileKind,
     resolve,
+    isAuthoritativeTarget: options.active,
     apply: (proxy) => applied.push(proxy),
+    applyBlocked: () => { blocked += 1; },
     onError: (error) => errors.push(error),
-    schedule: (run, delayMs) => scheduled.push({ run, delayMs }),
+    schedule: (run, delayMs) => {
+      scheduled.push({ run, delayMs });
+    },
   });
-  return { applier, applied, errors, scheduled };
+  return { applier, applied, blocked: () => blocked, errors, scheduled };
 }
 
 const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
@@ -66,12 +72,13 @@ describe("createClientNetworkProxyApplier", () => {
     assert.deepStrictEqual(applied, [null]);
   });
 
-  test("applies direct when the proxy credential is missing", async () => {
-    const { applier, applied } = harness("local", async () => ({
+  test("blocks client-owned requests when the proxy credential is missing", async () => {
+    const { applier, applied, blocked } = harness("local", async () => ({
       kind: "credential_not_configured",
     }));
     await applier.refresh();
-    assert.deepStrictEqual(applied, [null]);
+    assert.deepStrictEqual(applied, []);
+    assert.equal(blocked(), 1);
   });
 
   test("never adopts a non-local Host's proxy policy", async () => {
@@ -173,5 +180,33 @@ describe("createClientNetworkProxyApplier", () => {
     await second;
     assert.deepStrictEqual(order, ["start:0", "end:0", "start:1", "end:1"]);
     assert.deepStrictEqual(applied, [RESOLVED.proxy, null]);
+  });
+
+  test("fences a late resolution after the target stops being authoritative", async () => {
+    let active = true;
+    let resolveRequest!: (result: NetworkProxyResolveResult) => void;
+    const { applier, applied } = harness(
+      "local",
+      () => new Promise((resolve) => { resolveRequest = resolve; }),
+      { active: () => active },
+    );
+    const refresh = applier.refresh();
+    await flush();
+    active = false;
+    resolveRequest(RESOLVED);
+    await refresh;
+    assert.deepStrictEqual(applied, []);
+  });
+
+  test("disposes pending retries and ignores a late retry callback", async () => {
+    const { applier, scheduled, applied } = harness("local", async () => {
+      throw new Error("host_not_ready");
+    });
+    await applier.refresh();
+    assert.equal(scheduled.length, 1);
+    applier.dispose();
+    scheduled[0]?.run();
+    await flush();
+    assert.deepStrictEqual(applied, []);
   });
 });

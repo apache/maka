@@ -24,7 +24,7 @@ import { getEventListeners } from 'node:events';
 import { createServer } from 'node:http';
 import net from 'node:net';
 import { PROXY_DEFAULTS } from '@maka/core/settings/network-settings';
-import { setActiveProxy } from '../../network/active-proxy-state.js';
+import { setActiveProxy, setActiveProxyBlocked } from '../../network/active-proxy-state.js';
 import { proxiedFetch } from '../proxied-fetch.js';
 // A minimal HTTP proxy that is also the fake upstream. It accepts either
 // proxy request form (CONNECT tunneling, or the absolute-form forwarding
@@ -96,6 +96,18 @@ function startStreamingProxy(): Promise<{
 }
 
 describe('proxiedFetch', () => {
+  test('fails closed when the configured proxy credentials are unavailable', async () => {
+    setActiveProxyBlocked();
+    try {
+      await assert.rejects(
+        () => proxiedFetch('http://127.0.0.1:1'),
+        /configured network proxy is unavailable/iu,
+      );
+    } finally {
+      setActiveProxy(null);
+    }
+  });
+
   test('returns a streaming proxied response at headers, before body EOF', async () => {
     const proxy = await startStreamingProxy();
     setActiveProxy({

@@ -20,11 +20,27 @@
 import type { ProxySettings } from '@maka/core/settings/network-settings';
 
 let activeProxy: ProxySettings | null = null;
+let activeProxyBlocked = false;
 
 export function setActiveProxy(proxy: ProxySettings | null): void {
   activeProxy = proxy?.enabled ? proxy : null;
+  activeProxyBlocked = false;
+}
+
+/**
+ * Keeps client-owned requests fail-closed when policy requires a proxy but
+ * the Host cannot provide its credentials. This must not be represented by
+ * `null`, because `null` deliberately means that direct routing is allowed.
+ */
+export function setActiveProxyBlocked(): void {
+  activeProxy = null;
+  activeProxyBlocked = true;
 }
 
 export function resolveActiveProxy(): ProxySettings | null {
   return activeProxy;
+}
+
+export function isActiveProxyBlocked(): boolean {
+  return activeProxyBlocked;
 }

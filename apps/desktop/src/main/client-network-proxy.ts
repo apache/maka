@@ -31,7 +31,10 @@
 import type { ProxySettings } from "@maka/core/settings/network-settings";
 import type { RuntimeHostProfileKind } from "@maka/runtime-host/profile-kind";
 import type { NetworkProxyResolveResult } from "@maka/runtime-host/protocol";
-import { setActiveProxy } from "@maka/runtime/network/active-proxy-state";
+import {
+  setActiveProxy,
+  setActiveProxyBlocked,
+} from "@maka/runtime/network/active-proxy-state";
 
 /**
  * The first resolution runs while the Host connection is still settling, so a
@@ -43,30 +46,42 @@ const RETRY_DELAYS_MS = [1_000, 5_000, 15_000] as const;
 export interface ClientNetworkProxyDeps {
   readonly profileKind: RuntimeHostProfileKind;
   readonly resolve: () => Promise<NetworkProxyResolveResult>;
+  /** The default Host owns the process-wide BotRegistry transport policy. */
+  readonly isAuthoritativeTarget?: () => boolean;
   readonly apply?: (proxy: ProxySettings | null) => void;
+  readonly applyBlocked?: () => void;
   readonly onError?: (error: unknown) => void;
-  readonly schedule?: (run: () => void, delayMs: number) => void;
+  readonly schedule?: (run: () => void, delayMs: number) => void | (() => void);
 }
 
 export interface ClientNetworkProxyApplier {
   /** Re-resolves and applies. Safe to call concurrently; calls are serialized. */
   refresh(): Promise<void>;
+  /** Cancels retries and fences any in-flight result from this target. */
+  dispose(): void;
 }
 
 export function createClientNetworkProxyApplier(
   deps: ClientNetworkProxyDeps,
 ): ClientNetworkProxyApplier {
   const apply = deps.apply ?? setActiveProxy;
+  const applyBlocked = deps.applyBlocked ?? setActiveProxyBlocked;
+  const isAuthoritativeTarget = deps.isAuthoritativeTarget ?? (() => true);
   const schedule =
     deps.schedule ??
     ((run, delayMs) => {
-      setTimeout(run, delayMs).unref?.();
+      const timer = setTimeout(run, delayMs);
+      timer.unref?.();
+      return () => clearTimeout(timer);
     });
   let lane: Promise<void> = Promise.resolve();
   let lastReportedError: string | undefined;
   let attempt = 0;
+  let disposed = false;
+  let cancelRetry: (() => void) | undefined;
 
   const refreshWithoutLane = async (): Promise<void> => {
+    if (disposed || !isAuthoritativeTarget()) return;
     // A non-local Host describes a different machine's network. The bot
     // bridges dial out from this one, so its proxy policy does not apply and
     // guessing would be worse than staying direct.
@@ -78,6 +93,7 @@ export function createClientNetworkProxyApplier(
     try {
       resolved = await deps.resolve();
     } catch (error) {
+      if (disposed || !isAuthoritativeTarget()) return;
       // Keep the last applied proxy. A Host that is briefly unreachable is not
       // evidence that the user wants direct connections.
       const message = error instanceof Error ? error.message : String(error);
@@ -88,16 +104,27 @@ export function createClientNetworkProxyApplier(
       const delayMs = RETRY_DELAYS_MS[attempt];
       if (delayMs !== undefined) {
         attempt += 1;
-        schedule(() => void enqueue(), delayMs);
+        cancelRetry?.();
+        const cancel = schedule(() => {
+          cancelRetry = undefined;
+          void enqueue();
+        }, delayMs);
+        cancelRetry = typeof cancel === "function" ? cancel : undefined;
       }
       return;
     }
+    if (disposed || !isAuthoritativeTarget()) return;
     lastReportedError = undefined;
     attempt = 0;
-    apply(resolved.kind === "ready" ? (resolved.proxy ?? null) : null);
+    if (resolved.kind === "credential_not_configured") {
+      applyBlocked();
+    } else {
+      apply(resolved.proxy ?? null);
+    }
   };
 
   const enqueue = (): Promise<void> => {
+    if (disposed) return Promise.resolve();
     const result = lane.then(refreshWithoutLane, refreshWithoutLane);
     lane = result.then(
       () => undefined,
@@ -108,10 +135,18 @@ export function createClientNetworkProxyApplier(
 
   return {
     refresh() {
+      if (disposed) return Promise.resolve();
       // An explicit refresh means the policy changed, so the pending retry
       // budget from an earlier failure no longer applies.
+      cancelRetry?.();
+      cancelRetry = undefined;
       attempt = 0;
       return enqueue();
+    },
+    dispose() {
+      disposed = true;
+      cancelRetry?.();
+      cancelRetry = undefined;
     },
   };
 }

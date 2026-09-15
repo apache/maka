@@ -154,7 +154,9 @@ a system-level route such as TUN, followed by an app restart.
 
 Slack uses a WebSocket connection for events and a Web API client for replies.
 Keep the app in a private development workspace while validating scopes and
-allowlist behavior.
+message-event permissions. Slack's HTTP API requests use Maka's active global
+network proxy, while the Socket Mode WebSocket may still require a system-level
+route such as TUN.
 
 ### DingTalk
 
