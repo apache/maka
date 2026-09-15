@@ -122,6 +122,22 @@ class RelayAgent(BaseAgent):
         )
         if prepared.return_code != 0:
             raise RuntimeError("Maka Eval could not prepare task-owned artifact directories")
+        # Storage coordinates by the system account home, not the subject's
+        # temporary HOME. Provision an absent home without changing task identity
+        # or taking ownership of an existing directory.
+        uid = owner.split(":", 1)[0]
+        home_script = (
+            f"set -eu; account=$(getent passwd {uid}); "
+            "task_home=$(printf '%s' \"$account\" | cut -d: -f6) && "
+            'case "$task_home" in /*) ;; *) exit 1 ;; esac; '
+            'if [ ! -e "$task_home" ] && [ ! -L "$task_home" ]; then '
+            f'mkdir -p -- "$task_home" && chown {owner} "$task_home" && '
+            'chmod 700 "$task_home" || exit 1; fi; '
+            'test -d "$task_home"'
+        )
+        prepared_home = await environment.exec(home_script, user="root")
+        if prepared_home.return_code != 0:
+            raise RuntimeError("Maka Eval could not prepare the task account home")
         self._subject_owner = owner
 
     async def run(self, instruction: str, environment: Any, context: Any) -> None:
