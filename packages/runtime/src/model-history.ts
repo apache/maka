@@ -581,12 +581,14 @@ export function buildRuntimeEventModelReplayPlan(
       )
     : 0;
   const boundaryEnd = firstUserIndex < 0 ? events.length : firstUserIndex;
-  const repairedAssistantIndex = events.findIndex(
-    (event) =>
-      event.refs?.storedMessageId !== undefined &&
-      event.role === 'model' &&
-      (event.content?.kind === 'text' || event.content?.kind === 'thinking'),
-  );
+  const repairedAssistantIndex = options.startAtFirstUserBoundary
+    ? events.findIndex(
+        (event) =>
+          event.refs?.storedMessageId !== undefined &&
+          event.role === 'model' &&
+          (event.content?.kind === 'text' || event.content?.kind === 'thinking'),
+      )
+    : -1;
   const hasRepairedAssistantPrefix =
     repairedAssistantIndex !== -1 && repairedAssistantIndex < boundaryEnd;
   const replayEvents = hasRepairedAssistantPrefix

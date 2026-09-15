@@ -1051,6 +1051,94 @@ describe('ImportTasksSettingsPage batch import', () => {
     assert.equal(masterBox(container).checked, true);
   });
 
+  it('select all and batch submission exclude a source the Host is already importing', async () => {
+    const { container, importedIds } = await renderPage({
+      catalog: {
+        sessions: [
+          externalSession({
+            id: 'running',
+            importState: { importedCount: 0, importedSessionIds: [], isImporting: true },
+          }),
+          externalSession({ id: 'available' }),
+        ],
+        nextCursor: null,
+      },
+      importBySource: { available: 'ok' },
+    });
+
+    await tick(masterBox(container), true);
+    assert.deepEqual(rows(container).map((box) => box.checked), [false, true]);
+    assert.match(container.textContent ?? '', /1 \/ 1 selected/);
+
+    const run = buttonWithText(container, 'Import selected');
+    assert.ok(run);
+    await act(async () => run.click());
+    assert.deepEqual(importedIds(), ['available']);
+  });
+
+  it('does not carry a selected source id into another adapter', async () => {
+    const { container } = await renderPage({
+      adapterIds: ['codex', 'claude-code'],
+      bySource: {
+        codex: [catalog(externalSession({ id: 'shared', name: 'Codex shared' }))],
+        'claude-code': [catalog(externalSession({ id: 'shared', name: 'Claude shared' }))],
+      },
+    });
+
+    await tick(rows(container)[0]!, true);
+    assert.equal(buttonWithText(container, 'Import selected')?.disabled, false);
+    await act(async () => {
+      segment(container, 'claude-code')?.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    assert.match(container.textContent ?? '', /Claude shared/);
+    assert.equal(rows(container)[0]?.checked, false);
+    assert.equal(buttonWithText(container, 'Import selected')?.disabled, true);
+  });
+
+  it('does not let a completed batch refresh overwrite a newer source selection', async () => {
+    let finishImport:
+      | ((result: { ok: false; reason: 'commit_outcome_unknown' }) => void)
+      | undefined;
+    const pendingImport = new Promise<{ ok: false; reason: 'commit_outcome_unknown' }>((resolve) => {
+      finishImport = resolve;
+    });
+    const { container } = await renderPage({
+      adapterIds: ['codex', 'claude-code'],
+      bySource: {
+        codex: [
+          catalog(externalSession({ id: 'codex', name: 'Codex conversation' })),
+          catalog(externalSession({ id: 'codex', name: 'Stale Codex refresh' })),
+        ],
+        'claude-code': [catalog(externalSession({ id: 'claude', name: 'Claude conversation' }))],
+      },
+      importResult: pendingImport,
+    });
+
+    await tick(rows(container)[0]!, true);
+    const run = buttonWithText(container, 'Import selected');
+    assert.ok(run);
+    await act(async () => {
+      run.click();
+      await Promise.resolve();
+      segment(container, 'claude-code')?.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    assert.match(container.textContent ?? '', /Claude conversation/);
+
+    await act(async () => {
+      finishImport?.({ ok: false, reason: 'commit_outcome_unknown' });
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    assert.match(container.textContent ?? '', /Claude conversation/);
+    assert.doesNotMatch(container.textContent ?? '', /Stale Codex refresh/);
+  });
+
   it('imports the marked rows one at a time and counts each outcome once', async () => {
     // Sequential on purpose: a progress count is only true when one thing is
     // happening, and the summary must preserve the catalog order the user chose.
@@ -1115,6 +1203,51 @@ describe('ImportTasksSettingsPage batch import', () => {
     assert.doesNotMatch(text, /could not be imported/);
     // It surfaces through the fail-closed unconfirmed banner.
     assert.match(text, /unconfirmed|Unconfirmed|outcome/i);
+  });
+
+  it('an uncertain source cannot be selected or submitted by a later batch', async () => {
+    const { container, importedIds } = await renderPage({
+      catalog: {
+        sessions: [
+          externalSession({ id: 'uncertain', name: 'Uncertain' }),
+          externalSession({ id: 'available', name: 'Available' }),
+        ],
+        nextCursor: null,
+      },
+      importBySource: { uncertain: 'unknown', available: 'ok' },
+    });
+
+    await tick(rows(container)[0]!, true);
+    const firstRun = buttonWithText(container, 'Import selected');
+    assert.ok(firstRun);
+    await act(async () => {
+      firstRun.click();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    assert.deepEqual(importedIds(), ['uncertain']);
+    assert.equal(rows(container)[0]?.disabled, true, 'the uncertain source stays locked');
+    assert.equal(rows(container)[1]?.disabled, false, 'another source remains eligible');
+
+    await tick(masterBox(container), true);
+    assert.deepEqual(
+      rows(container).map((box) => box.checked),
+      [false, true],
+      'select all excludes the uncertain source',
+    );
+    assert.match(container.textContent ?? '', /1 \/ 1 selected/);
+
+    const secondRun = buttonWithText(container, 'Import selected');
+    assert.ok(secondRun);
+    await act(async () => {
+      secondRun.click();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    assert.deepEqual(importedIds(), ['uncertain', 'available']);
   });
 
   it('keeps source limit details in the batch summary after the catalog refresh', async () => {

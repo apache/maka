@@ -8549,10 +8549,8 @@ describe('SessionManager permission mode updates', () => {
   });
 
   test('sendMessage admits assistant-first repaired history at a user boundary', async () => {
-    for (const externalOrigin of [
-      undefined,
-      { adapterId: 'opencode', sourceSessionId: 'assistant-first' },
-    ] as const) {
+    {
+      const externalOrigin = { adapterId: 'opencode', sourceSessionId: 'assistant-first' };
       const store = new MemorySessionStore();
       const runStore = new MemoryAgentRunStore();
       const backends = new BackendRegistry();

@@ -20,7 +20,6 @@
 import { JsonArrayPageBudget } from './json-array-page-budget.js';
 
 import {
-  ExternalSessionCursorExpiredError,
   ExternalSessionLimitError,
   type ExternalSessionAdapter,
   type ExternalSessionAdapterRegistry,
@@ -198,6 +197,9 @@ export class HostExternalSessionCoordinator {
         });
       } else {
         const offset = input.cursor === undefined ? 0 : Number(input.cursor);
+        if (!Number.isSafeInteger(offset) || offset < 0) {
+          return queryFailure('invalid_request', 'Invalid external Session catalog cursor');
+        }
         const sourceSessions = await adapter.listSessions({ ...query, offset });
         hasMore = sourceSessions.length > EXTERNAL_SESSION_PAGE_MAX_ITEMS;
         const sourceCandidates = sourceSessions.slice(0, EXTERNAL_SESSION_PAGE_MAX_ITEMS);
@@ -226,9 +228,7 @@ export class HostExternalSessionCoordinator {
               // between overspending and hiding a Session. An id is a key, not
               // display text, so one that cannot go on the wire is dropped
               // rather than truncated into an id that resolves to nothing.
-              importedSessionIds: (state?.recentSessionIds ?? [])
-                .filter(wireSessionId)
-                .slice(0, EXTERNAL_SESSION_IMPORTED_SESSION_IDS_MAX_ITEMS),
+              importedSessionIds: (state?.recentSessionIds ?? []).filter(wireSessionId),
               isImporting: this.#importsInFlight.has(importKey(input.adapterId, session.id)),
             },
           },
@@ -252,9 +252,6 @@ export class HostExternalSessionCoordinator {
     } catch (error) {
       if (error instanceof WorkspaceResolutionError) {
         return queryFailure('invalid_request', error.message);
-      }
-      if (error instanceof ExternalSessionCursorExpiredError) {
-        return queryFailure('cursor_expired', 'External Session catalog expired');
       }
       return queryFailure('persistence_failed', 'External Session catalog could not be read');
     }
@@ -409,15 +406,8 @@ function toWireSummary(summary: ExternalSessionSummary): ExternalSessionCatalogI
   };
 }
 
-/**
- * One page of the catalog, under the encoded-result budget.
- *
- * Exported so the assembly can be tested directly: a row large enough to fill a
- * page by itself is not reachable through the request path, because the
- * per-field wire bounds cap one row far below this budget. What the assembly
- * has to guarantee is that such a row still advances the cursor.
- */
-export function boundedCatalogPage(
+/** One page of the catalog, under the encoded-result budget. */
+function boundedCatalogPage(
   candidates: readonly {
     session: ExternalSessionCatalogItem;
     nextSourceCursor: number | string;
@@ -438,24 +428,9 @@ export function boundedCatalogPage(
       page.push(candidate.session);
       continue;
     }
-    // A row that does not fit ends the page.
-    //
-    // The first one is still delivered whatever it costs: stepping over it is
-    // the only way the cursor could move, and the Session the user asked to see
-    // would vanish behind an empty page. Delivering it and stopping is also what
-    // keeps the overshoot to one row — an appended row the budget refused would
-    // leave the total under-counted for every row after it.
-    //
-    // Its cursor is the position immediately after that row, where a later
-    // row's would be its predecessor's: a page that stops before the row it
-    // could not take resumes at that row, and one that took it resumes after
-    // it. Taking the predecessor's cursor there would step over rows the page
-    // never returned.
-    if (page.length === 0) {
-      page.push(candidate.session);
-      return { sessions: page, nextSourceCursor: candidate.nextSourceCursor };
-    }
-    return { sessions: page, nextSourceCursor: candidates[index - 1]?.nextSourceCursor };
+    // Every wire-valid row fits by itself. Resume after the last row returned,
+    // so the candidate that did not fit remains visible on the next page.
+    return { sessions: page, nextSourceCursor: candidates[index - 1]!.nextSourceCursor };
   }
   return { sessions: page };
 }

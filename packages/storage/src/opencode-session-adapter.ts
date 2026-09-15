@@ -70,12 +70,9 @@ const EXTERNAL_SNAPSHOT_ABORT_SOURCE = 'external_session_snapshot';
 /**
  * Guards a source field before it reaches JavaScript.
  *
- * These are memory bounds, not display limits. A title's display length is
- * decided by `sanitizeExternalSessionTitle` (120 code points) and the wire
- * (320 bytes), both of which truncate; bounding it here instead would hide a
- * conversation from the catalog and refuse its import because of a long title —
- * and 320 bytes is 106 Chinese characters, which real titles reach. The bound
- * only has to be small enough that a field nobody typed cannot be read whole.
+ * These are memory bounds, not display limits. Display length is enforced by
+ * `sanitizeExternalSessionTitle` and the wire protocol; these larger bounds
+ * only prevent malformed source fields from being loaded whole.
  */
 const OPENCODE_CATALOG_ID_MAX_BYTES = 512;
 const OPENCODE_CATALOG_TITLE_MAX_BYTES = 64 * 1024;

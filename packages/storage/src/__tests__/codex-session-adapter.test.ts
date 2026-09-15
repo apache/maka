@@ -167,6 +167,13 @@ describe('CodexSessionAdapter', () => {
         '/workspace',
         'Newer seconds',
       );
+      const newestPath = await seedMinimalRollout(
+        codexHome,
+        'codex-newest-ms-in-legacy-column',
+        false,
+        '/workspace',
+        'Newest milliseconds in legacy column',
+      );
       await seedStateDatabase(codexHome, [
         {
           id: 'codex-older-ms',
@@ -188,13 +195,23 @@ describe('CodexSessionAdapter', () => {
           archived: false,
           source: 'cli',
         },
+        {
+          id: 'codex-newest-ms-in-legacy-column',
+          rolloutPath: newestPath,
+          cwd: '/workspace',
+          name: 'Newest milliseconds in legacy column',
+          createdAt: 1_900_000_000_000,
+          updatedAt: 1_900_000_000_000,
+          archived: false,
+          source: 'cli',
+        },
       ]);
 
       assert.deepEqual(
         (await new CodexSessionAdapter({ codexHome }).listSessions({ limit: 1 })).map(
           (session) => session.id,
         ),
-        ['codex-newer-seconds'],
+        ['codex-newest-ms-in-legacy-column'],
       );
     });
   });
@@ -536,7 +553,7 @@ describe('CodexSessionAdapter', () => {
     });
   });
 
-  test('filesystem fallback keeps one mtime order across page requests', async () => {
+  test('filesystem keyset paging never repeats a row moved ahead of the cursor', async () => {
     await withCodexHome(async (codexHome) => {
       const paths: string[] = [];
       for (let index = 0; index < 20; index += 1) {
@@ -556,7 +573,7 @@ describe('CodexSessionAdapter', () => {
         ),
       );
       const cursor = first.items.at(-1)!.nextCursor;
-      assert.ok(Buffer.byteLength(cursor, 'utf8') <= 32);
+      assert.ok(Buffer.byteLength(cursor, 'utf8') <= 512);
       await assert.rejects(
         adapter.listSessionPage!({ cursor, cwd: '/another/workspace', limit: 16 }),
         /Invalid Codex catalog cursor/,
@@ -569,53 +586,12 @@ describe('CodexSessionAdapter', () => {
         limit: 16,
       });
       const ids = [...first.items, ...second.items].map(({ summary }) => summary.id);
-      assert.equal(new Set(ids).size, 20);
+      assert.equal(new Set(ids).size, ids.length);
       assert.deepEqual(
         ids,
-        Array.from(
-          { length: 20 },
-          (_, index) => `codex-snapshot-${String(19 - index).padStart(2, '0')}`,
-        ),
-      );
-      await assert.rejects(adapter.listSessionPage!({ cursor, limit: 16 }), /cursor expired/);
-    });
-  });
-
-  test('state database snapshot returns its first page without materializing the catalog', async () => {
-    await withCodexHome(async (codexHome) => {
-      const rows: StateRow[] = [];
-      for (let index = 0; index < 2_000; index += 1) {
-        const id = `codex-bounded-${String(index).padStart(4, '0')}`;
-        rows.push({
-          id,
-          rolloutPath: await seedMinimalRollout(codexHome, id, false, '/workspace/root', id),
-          cwd: '/workspace/root',
-          name: id,
-          createdAtMs: index,
-          updatedAtMs: index,
-          archived: false,
-          source: 'cli',
-        });
-      }
-      await seedStateDatabase(codexHome, rows);
-
-      const boundedStart = performance.now();
-      assert.equal(
-        (await new CodexSessionAdapter({ codexHome }).listSessions({ limit: 16 })).length,
-        16,
-      );
-      const boundedMs = performance.now() - boundedStart;
-
-      const snapshotStart = performance.now();
-      assert.equal(
-        (await new CodexSessionAdapter({ codexHome }).listSessionPage!({ limit: 16 })).items.length,
-        16,
-      );
-      const snapshotMs = performance.now() - snapshotStart;
-
-      assert.ok(
-        snapshotMs < boundedMs * 8 + 50,
-        `first snapshot page took ${snapshotMs.toFixed(1)} ms; bounded page took ${boundedMs.toFixed(1)} ms`,
+        Array.from({ length: 20 }, (_, index) => 19 - index)
+          .filter((index) => index !== 1)
+          .map((index) => `codex-snapshot-${String(index).padStart(2, '0')}`),
       );
     });
   });

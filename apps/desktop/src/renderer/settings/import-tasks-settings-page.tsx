@@ -391,6 +391,14 @@ export function ImportTasksSettingsPage(props: {
 
   const loadCatalog = useCallback(
     async (sourceId: string, cursor?: string) => {
+      const selection = catalogSelectionRef.current;
+      if (
+        selection.adapterId !== sourceId ||
+        selection.includeArchived !== includeArchived ||
+        selection.search !== search
+      ) {
+        return;
+      }
       const generation = ++requestGeneration.current;
       const append = cursor !== undefined;
       const key = catalogSelectionKey(sourceId, includeArchived, search);
@@ -586,9 +594,26 @@ export function ImportTasksSettingsPage(props: {
     [host],
   );
 
+  const uncertainSourceIds = useMemo(
+    () =>
+      new Set(
+        uncertainImports
+          .filter((attempt) => attempt.adapterId === adapterId)
+          .map((attempt) => attempt.sourceSessionId),
+      ),
+    [adapterId, uncertainImports],
+  );
+  const isImportEligible = useCallback(
+    (session: DesktopExternalSessionCatalogItem) =>
+      !session.importState.isImporting && !uncertainSourceIds.has(session.id),
+    [uncertainSourceIds],
+  );
+
   const importConversation = useCallback(
     async (session: DesktopExternalSessionCatalogItem) => {
-      if (adapterId === null || importRun.kind !== 'idle') return;
+      if (adapterId === null || importRun.kind !== 'idle' || !isImportEligible(session)) {
+        return;
+      }
       const attempt: ImportAttempt = {
         adapterId,
         sourceSessionId: session.id,
@@ -644,6 +669,7 @@ export function ImportTasksSettingsPage(props: {
       copy.importFailedNoModel,
       copy.importFailedSourceUnreadable,
       copy.importFailedSourceLimit,
+      isImportEligible,
       locale,
       mountedRef,
       props,
@@ -651,9 +677,9 @@ export function ImportTasksSettingsPage(props: {
     ],
   );
 
-  const listedSourceIds = useMemo(
-    () => catalog.sessions.map((session) => session.id),
-    [catalog.sessions],
+  const eligibleSourceIds = useMemo(
+    () => catalog.sessions.filter(isImportEligible).map((session) => session.id),
+    [catalog.sessions, isImportEligible],
   );
   /**
    * The marked rows that are still on screen — derived, not reconciled.
@@ -666,10 +692,10 @@ export function ImportTasksSettingsPage(props: {
    * the renderer debt ledger will not let grow.
    */
   const marked = useMemo(
-    () => pruneListedSelection(selection, listedSourceIds).selectedIds,
-    [listedSourceIds, selection],
+    () => pruneListedSelection(selection, eligibleSourceIds).selectedIds,
+    [eligibleSourceIds, selection],
   );
-  const masterState = listedSelectionMasterState({ selectedIds: marked }, listedSourceIds);
+  const masterState = listedSelectionMasterState({ selectedIds: marked }, eligibleSourceIds);
 
   const busy = importRun.kind !== 'idle';
 
@@ -678,7 +704,9 @@ export function ImportTasksSettingsPage(props: {
     // Frozen at the press, in the catalog's own order rather than the set's
     // insertion order, so the progress count walks the list the way the user
     // reads it.
-    const targets = catalog.sessions.filter((session) => marked.has(session.id));
+    const targets = catalog.sessions.filter(
+      (session) => marked.has(session.id) && isImportEligible(session),
+    );
     if (targets.length === 0) return;
     setImportError(null);
     setImportRun({ kind: 'batch', done: 0, total: targets.length, current: targets[0]?.id });
@@ -772,6 +800,7 @@ export function ImportTasksSettingsPage(props: {
     adapterId,
     busy,
     catalog.sessions,
+    isImportEligible,
     loadCatalog,
     mountedRef,
     requestImport,
@@ -850,7 +879,10 @@ export function ImportTasksSettingsPage(props: {
               value={adapterId}
               layout="fill"
               size="sm"
-              onChange={setAdapterId}
+              onChange={(nextAdapterId) => {
+                setSelection(EMPTY_LISTED_SELECTION);
+                setAdapterId(nextAdapterId);
+              }}
               isDisabled={catalogLoading}
             >
               {sourceIds.map((id) => (
@@ -1008,18 +1040,18 @@ export function ImportTasksSettingsPage(props: {
                 label={copy.selectAllAriaLabel}
                 isLabelHidden
                 value={masterState}
-                isDisabled={busy}
+                isDisabled={busy || eligibleSourceIds.length === 0}
                 // Plain checkbox semantics, including from the partial state:
                 // an indeterminate box becomes ticked, which selects all. It is
                 // what the platform does and what the Session rail's own master
                 // box does, and one surface inventing a second rule for the
                 // same control is worse than either rule.
                 onChange={(checked) =>
-                  setSelection(setAllListedSelected(listedSourceIds, checked))
+                  setSelection(setAllListedSelected(eligibleSourceIds, checked))
                 }
               />
               <span className="maka-import-selection-count" aria-live="polite">
-                {copy.selectedCount(marked.size, listedSourceIds.length)}
+                {copy.selectedCount(marked.size, eligibleSourceIds.length)}
               </span>
               <span className="maka-import-selection-spacer" />
               <Button
@@ -1041,6 +1073,7 @@ export function ImportTasksSettingsPage(props: {
               aria-busy={loadingMore || undefined}
             >
               {catalog.sessions.map((session) => {
+                const importEligible = isImportEligible(session);
                 const timestamp = session.updatedAt ?? session.createdAt;
                 const description = [
                   session.cwd,
@@ -1076,7 +1109,7 @@ export function ImportTasksSettingsPage(props: {
                           label={copy.selectRowAriaLabel(session.name)}
                           isLabelHidden
                           value={marked.has(session.id)}
-                          isDisabled={busy || isImporting}
+                          isDisabled={busy || !importEligible}
                           onChange={(checked) =>
                             setSelection((current) =>
                               toggleListedSelection(current, session.id, checked),
@@ -1101,11 +1134,7 @@ export function ImportTasksSettingsPage(props: {
                           variant="secondary"
                           size="sm"
                           isLoading={isImporting}
-                          isDisabled={
-                            isImporting ||
-                            busy ||
-                            uncertainImports.length > 0
-                          }
+                          isDisabled={busy || !importEligible}
                           // `onClick`, not `clickAction`. Astryx runs
                           // `clickAction` inside a React 19 async transition, and
                           // React holds a transition's state updates until the
