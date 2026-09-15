@@ -585,10 +585,10 @@
           "./platform/desktop/session-message-settlement.js": 1,
           "./session-copy-attempt.js": 1,
           "./session-workspace-errors.js": 1,
-          "@maka/core/session": 1
+          "@maka/ui": 1
         },
-        "importSpecifiers": 8,
-        "nonTriviaTokens": 2155
+        "importSpecifiers": 6,
+        "nonTriviaTokens": 508
       },
       "src/renderer/app-shell-session-events.ts": {
         "importDeclarations": 2,
@@ -862,7 +862,7 @@
           "react": 1
         },
         "importSpecifiers": 100,
-        "nonTriviaTokens": 13288
+        "nonTriviaTokens": 13246
       },
       "src/renderer/use-app-shell-composer-quotes.ts": {
         "importDeclarations": 2,

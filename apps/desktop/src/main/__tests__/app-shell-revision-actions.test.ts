@@ -37,6 +37,12 @@ function userMessage(turnId: string, text: string, extra: Record<string, unknown
 function createActions(input: { messages: StoredMessage[] }) {
   const drafts: unknown[] = [];
   let composerText = '';
+  const staged: {
+    quotes: unknown[];
+    attachments: unknown[];
+    restoredQuotes: unknown[][];
+    restoredAttachments: unknown[][];
+  } = { quotes: [], attachments: [], restoredQuotes: [], restoredAttachments: [] };
   const revisionDraftRef: { current: unknown } = { current: null };
   const actions = createAppShellRevisionActions({
     uiLocale: 'en' as never,
@@ -56,6 +62,24 @@ function createActions(input: { messages: StoredMessage[] }) {
     },
     messages: input.messages,
     hasPendingAttachments: () => false,
+    stagedContext: () => ({
+      quotes: staged.quotes,
+      attachments: staged.attachments,
+      restoreQuotes: (_ownerKey: string, quotes: unknown[]) => {
+        staged.restoredQuotes.push(quotes);
+        staged.quotes.push(...quotes);
+      },
+      restoreAttachments: (_ownerKey: string, refs: unknown[]) => {
+        staged.restoredAttachments.push(refs);
+        staged.attachments.push(...refs);
+      },
+      removeQuote: (index: number) => {
+        staged.quotes.splice(index, 1);
+      },
+      removeAttachment: (index: number) => {
+        staged.attachments.splice(index, 1);
+      },
+    }),
     openSessionInChat: () => {},
     refreshMessages: async () => true,
     refreshSessions: async () => [],
@@ -70,7 +94,11 @@ function createActions(input: { messages: StoredMessage[] }) {
       error: () => {},
     },
   } as never);
-  return Object.assign(actions, { drafts, composerState: { get text(): string { return composerText; } } });
+  return Object.assign(actions, {
+    drafts,
+    staged,
+    composerState: { get text(): string { return composerText; } },
+  });
 }
 
 describe('app-shell revision actions with structured context (#5109)', () => {
@@ -98,25 +126,49 @@ describe('app-shell revision actions with structured context (#5109)', () => {
     assert.equal(h.composerState.text, 'plain follow-up');
   });
 
-  it('rejects a source message that itself carries attachments', () => {
+  it('stages a source message attachments for the replacement submit', () => {
+    const attachmentRef = {
+      kind: 'image',
+      name: 'chart.png',
+      mimeType: 'image/png',
+      bytes: 10,
+      ref: { kind: 'session_file', sessionId: 'session-1', relativePath: 'a.png' },
+    };
     const h = createActions({
-      messages: [
-        userMessage('turn-1', 'with image', {
-          attachments: [
-            {
-              kind: 'image',
-              name: 'chart.png',
-              mimeType: 'image/png',
-              bytes: 10,
-              ref: { kind: 'session_file', sessionId: 'session-1', relativePath: 'a.png' },
-            },
-          ],
-        }),
-      ],
+      messages: [userMessage('turn-1', 'with image', { attachments: [attachmentRef] })],
     });
 
     h.beginEditUserMessage('turn-1');
 
-    assert.equal(h.drafts.at(-1), undefined, 'attachment-bearing sources stay explicitly rejected');
+    const draft = h.drafts.at(-1) as { originalAttachments?: unknown[] } | undefined;
+    assert.ok(draft, 'an attachment-bearing source message is editable now');
+    assert.deepEqual(
+      draft?.originalAttachments,
+      [attachmentRef],
+      'the draft records the source attachments for the unchanged comparison',
+    );
+    assert.deepEqual(
+      h.staged.restoredAttachments.at(-1),
+      [attachmentRef],
+      'the source attachments stage into the composer as retained refs',
+    );
+  });
+
+  it('stages a source message quotes into the composer', () => {
+    const quote = { text: 'a large pasted excerpt', sourceTurnId: 'turn-0' };
+    const h = createActions({
+      messages: [userMessage('turn-1', 'explain this', { quotes: [quote] })],
+    });
+
+    h.beginEditUserMessage('turn-1');
+
+    const draft = h.drafts.at(-1) as { originalQuotes?: unknown[] } | undefined;
+    assert.ok(draft, 'a quote-carrying source message is editable now');
+    assert.deepEqual(draft?.originalQuotes, [quote]);
+    assert.deepEqual(
+      h.staged.restoredQuotes.at(-1),
+      [quote],
+      'the source quotes stage into the composer verbatim',
+    );
   });
 });
