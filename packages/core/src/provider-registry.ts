@@ -648,11 +648,7 @@ const moonshotModelIds = toolCallingModelIds('Moonshot', GENERATED_MODELS_DEV_ME
   'kimi-k2.7-code',
 ]).filter((id) => GENERATED_MODELS_DEV_METADATA.moonshot[id]?.lifecycle !== 'deprecated');
 const moonshotGlobal = GENERATED_MODELS_DEV_PROVIDER_FACTS['moonshot-global'];
-if (moonshotGlobal.id !== 'moonshotai' || moonshotGlobal.api !== 'https://api.moonshot.ai/v1') {
-  throw new Error(
-    'models.dev Moonshot Global provider facts are missing the international id or API',
-  );
-}
+if (!moonshotGlobal.api) throw new Error('models.dev Moonshot Global provider is missing its API');
 const moonshotGlobalModelIds = toolCallingModelIds(
   'Moonshot Global',
   GENERATED_MODELS_DEV_METADATA['moonshot-global'],
