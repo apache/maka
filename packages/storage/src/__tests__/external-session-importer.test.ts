@@ -38,7 +38,7 @@ describe('ExternalSessionImporter', () => {
     const calls: SessionExternalOrigin[] = [];
     const adapter = fakeAdapter({
       metadata: { name: 'Imported parser work', cwd: '/external/repo' },
-      messages: [],
+      messages: [message()],
     });
     const importer = new ExternalSessionImporter(new ExternalSessionAdapterRegistry([adapter]), {
       createImportedSession: async (_input, _messages, externalOrigin) => {
@@ -118,7 +118,7 @@ describe('ExternalSessionImporter', () => {
     const sessions = createSessionStore(root);
     const importer = new ExternalSessionImporter(
       new ExternalSessionAdapterRegistry([
-        fakeAdapter({ metadata: { name: 'Source name', cwd: '/source' }, messages: [] }),
+        fakeAdapter({ metadata: { name: 'Source name', cwd: '/source' }, messages: [message()] }),
       ]),
       sessions,
     );
@@ -138,12 +138,79 @@ describe('ExternalSessionImporter', () => {
     }
   });
 
+  test('rejects rows that hold no conversation the Ledger would keep', async () => {
+    // The rows are individually valid and the array is not empty, but an
+    // imported transcript materializes as `conversation_text` — the user's
+    // words and the model's — so this converts to a Session with no history at
+    // all. It has to be refused before anything is persisted, not published.
+    let creates = 0;
+    const importer = new ExternalSessionImporter(
+      new ExternalSessionAdapterRegistry([
+        fakeAdapter({
+          metadata: { name: 'Tool noise', cwd: '/source' },
+          messages: [
+            {
+              type: 'assistant',
+              id: 'assistant-thought',
+              turnId: 'turn-1',
+              ts: 1,
+              text: '',
+              thinking: { text: 'weighing options' },
+              modelId: 'external-model',
+            },
+            {
+              type: 'tool_call',
+              id: 'call-1',
+              turnId: 'turn-1',
+              ts: 2,
+              toolName: 'read',
+              args: { path: '/repo/a.ts' },
+            },
+            {
+              type: 'tool_result',
+              id: 'result-1',
+              turnId: 'turn-1',
+              ts: 3,
+              toolUseId: 'call-1',
+              content: { kind: 'text', text: 'contents' },
+              isError: false,
+            },
+            {
+              type: 'system_note',
+              id: 'note-1',
+              turnId: 'turn-1',
+              ts: 4,
+              kind: 'context_compacted',
+              data: { text: 'compacted' },
+            },
+            { type: 'turn_state', id: 'state-1', turnId: 'turn-1', ts: 5, status: 'completed' },
+          ],
+        }),
+      ]),
+      {
+        createImportedSession: async () => {
+          creates += 1;
+          return {} as SessionHeader;
+        },
+      },
+    );
+
+    await assert.rejects(
+      importer.import({ adapterId: 'fake', sourceSessionId: 'source-1', target: target() }),
+      /no importable conversation/,
+    );
+    assert.equal(creates, 0);
+  });
+
   test('rejects invalid adapter messages without exposing a partial Session', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-external-session-invalid-'));
     const sessions = createSessionStore(root);
+    // A user row is conversation by type, so it passes the import projection and
+    // the persistence decoder is what has to refuse it — which is the case a
+    // malformed row that claims to be a user turn would otherwise reach.
     const adapter = fakeAdapter({
       metadata: { name: 'Invalid import', cwd: '/repo' },
-      messages: [{ type: 'assistant' } as unknown as StoredMessage],
+      messages: [{ type: 'user' } as unknown as StoredMessage],
     });
     const importer = new ExternalSessionImporter(
       new ExternalSessionAdapterRegistry([adapter]),
@@ -176,6 +243,10 @@ function target(overrides: Partial<ExternalSessionImportTarget> = {}): ExternalS
   };
 }
 
+function message(): StoredMessage {
+  return { type: 'user', id: 'user-1', turnId: 'turn-1', ts: 1, text: 'hello' };
+}
+
 function fakeAdapter(
   session: Pick<
     Awaited<ReturnType<ExternalSessionAdapter['readSession']>>,
@@ -185,7 +256,7 @@ function fakeAdapter(
   return {
     id: 'fake',
     detect: async () => true,
-    listSessions: async () => [],
+    listSessionPage: async () => ({ items: [], hasMore: false }),
     readSession: async (sourceSessionId) => ({ sourceSessionId, ...session }),
   };
 }

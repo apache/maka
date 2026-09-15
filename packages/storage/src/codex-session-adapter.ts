@@ -21,15 +21,22 @@ import type { Dirent } from 'node:fs';
 import { open, readdir, realpath, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, join, resolve, sep } from 'node:path';
+import type { DatabaseSync } from 'node:sqlite';
 import type { StoredMessage } from '@maka/core/session';
-import { isSupportedCodexThreadSource, sanitizeForeignTitle } from '@maka/core/foreign-session';
-import { externalSessionMatchesQuery } from '@maka/core/external-session';
+import {
+  ExternalSessionCatalogCursorError,
+  externalSessionMatchesQuery,
+  sanitizeExternalSessionTitle,
+} from '@maka/core/external-session';
 import type {
   ExternalMakaSession,
   ExternalSessionAdapter,
+  ExternalSessionCatalogPage,
+  ExternalSessionCatalogPageQuery,
   ExternalSessionQuery,
   ExternalSessionSummary,
 } from '@maka/core/external-session';
+import { externalSessionCatalogQueryHash } from './offset-external-session-catalog.js';
 
 export const CODEX_SESSION_ADAPTER_ID = 'codex';
 export const CODEX_ROLLOUT_MAX_BYTES = 2 * 1024 * 1024 * 1024;
@@ -40,6 +47,7 @@ const CODEX_ROLLOUT_MAX_RECORD_BYTES = 64 * 1024 * 1024;
 const CODEX_ROLLOUT_MAX_CONVERTED_BYTES = 256 * 1024 * 1024;
 const CODEX_ROLLOUT_MAX_MESSAGES = 250_000;
 const CODEX_SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
+const CODEX_SUPPORTED_THREAD_SOURCES = ['cli', 'exec', 'vscode', 'atlas', 'chatgpt'] as const;
 const CODEX_UNSAFE_PATH_CHARS =
   /[\u0000-\u001F\u007F\u0080-\u009F\u061C\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\uFEFF]/;
 
@@ -76,7 +84,21 @@ interface CodexThreadRow {
   source?: unknown;
 }
 
+interface CodexThreadQuery {
+  readonly sql: string;
+  readonly params: readonly (string | number)[];
+}
+
 type JsonRecord = Record<string, unknown>;
+
+type CodexCatalogKeyset =
+  | {
+      readonly kind: 'database';
+      readonly stateDatabase: string;
+      readonly sortTimestamp: number;
+      readonly id: string;
+    }
+  | { readonly kind: 'filesystem'; readonly mtimeMs: number; readonly pathKey: string };
 
 /**
  * Read-only adapter for Codex rollout JSONL.
@@ -124,6 +146,15 @@ export class CodexSessionAdapter implements ExternalSessionAdapter {
     return entries.map(({ rolloutPath: _rolloutPath, ...summary }) => summary);
   }
 
+  async listSessionPage(
+    query: ExternalSessionCatalogPageQuery,
+  ): Promise<ExternalSessionCatalogPage> {
+    const limit = query.limit ?? Number.MAX_SAFE_INTEGER;
+    if (!Number.isSafeInteger(limit) || limit < 0) throw new Error('Invalid Codex catalog page');
+    if (limit === 0) return { items: [], hasMore: false };
+    return this.listCatalogKeysetPage(query, limit);
+  }
+
   async readSession(sessionId: string): Promise<ExternalMakaSession> {
     assertSafeCodexSessionId(sessionId);
     const catalogEntry = await this.findCatalogEntry(sessionId);
@@ -140,14 +171,34 @@ export class CodexSessionAdapter implements ExternalSessionAdapter {
   }
 
   private async listCatalog(query: ExternalSessionQuery): Promise<CodexCatalogEntry[]> {
+    const offset = query.offset ?? 0;
+    const limit = query.limit ?? Number.MAX_SAFE_INTEGER;
+    if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 0) {
+      throw new Error('Invalid Codex catalog page');
+    }
+    if (limit === 0) return [];
     for (const dbPath of await codexStateDbsNewestFirst(this.codexHome)) {
-      const rows = await readCodexThreadRows(dbPath, query);
-      if (rows === undefined) continue;
-      const entries = await Promise.all(rows.map((row) => this.entryFromRow(row)));
-      return entries
-        .filter((entry): entry is CodexCatalogEntry => entry !== undefined)
-        .filter((entry) => matchesQuery(entry, query))
-        .sort(compareCatalogEntries);
+      const page: CodexCatalogEntry[] = [];
+      let matched = 0;
+      let rawOffset = 0;
+      const batchSize = Math.max(32, Math.min(256, limit * 2));
+      while (page.length < limit) {
+        const rows = await readCodexThreadRows(dbPath, query, undefined, {
+          offset: rawOffset,
+          limit: batchSize,
+        });
+        if (rows === undefined) break;
+        for (const row of rows) {
+          const entry = await this.entryFromRow(row);
+          if (!entry || !matchesQuery(entry, query)) continue;
+          if (matched++ < offset) continue;
+          page.push(entry);
+          if (page.length === limit) break;
+        }
+        rawOffset += rows.length;
+        if (rows.length < batchSize) return page;
+      }
+      if (page.length > 0 || rawOffset > 0) return page;
     }
 
     return this.scanRolloutCatalog(query);
@@ -191,13 +242,19 @@ export class CodexSessionAdapter implements ExternalSessionAdapter {
   }
 
   private async scanRolloutCatalog(query: ExternalSessionQuery): Promise<CodexCatalogEntry[]> {
+    const offset = query.offset ?? 0;
+    const limit = query.limit ?? Number.MAX_SAFE_INTEGER;
+    // The fallback has no state database to order from, so metadata discovery
+    // establishes one global source order before pagination. Rollout contents
+    // remain unread until a candidate is reached in that order.
     const candidates = [
       ...(await walkRolloutFiles(join(this.codexHome, 'sessions'), false)),
       ...(query.includeArchived
         ? await walkRolloutFiles(join(this.codexHome, 'archived_sessions'), true)
         : []),
-    ].sort((a, b) => b.mtimeMs - a.mtimeMs);
+    ].sort(compareRolloutCandidates);
     const entries: CodexCatalogEntry[] = [];
+    let matched = 0;
     for (const candidate of candidates) {
       const head = await readUtf8Prefix(candidate.path, CODEX_ROLLOUT_HEAD_BYTES).catch(
         () => undefined,
@@ -205,10 +262,90 @@ export class CodexSessionAdapter implements ExternalSessionAdapter {
       if (head === undefined) continue;
       const entry = catalogEntryFromRolloutHead(head, candidate);
       if (!entry || !matchesQuery(entry, query)) continue;
+      // Resolved before the page is counted, not after: a candidate the page
+      // cannot deliver is not a row of the source. Counting it here would
+      // advance the Host's cursor past a row the page never returned, and
+      // the next page would repeat this one's last row instead.
       const rolloutPath = await this.resolveRolloutPath(candidate.path, entry.id);
-      if (rolloutPath) entries.push({ ...entry, rolloutPath });
+      if (!rolloutPath) continue;
+      if (matched++ < offset) continue;
+      entries.push({ ...entry, rolloutPath });
+      if (entries.length === limit) return entries;
     }
-    return entries.sort(compareCatalogEntries);
+    return entries;
+  }
+
+  private async listCatalogKeysetPage(
+    query: ExternalSessionCatalogPageQuery,
+    limit: number,
+  ): Promise<ExternalSessionCatalogPage> {
+    const keyset = decodeCatalogKeyset(query.cursor, query);
+    if (keyset?.kind === 'database') {
+      const stateDatabases = await codexStateDbsNewestFirst(this.codexHome);
+      const dbPath = stateDatabases.find(
+        (candidate) => basename(candidate) === keyset.stateDatabase,
+      );
+      if (!dbPath) throw new ExternalSessionCatalogCursorError();
+      const page = await this.readStateCatalogKeysetPage(dbPath, query, keyset, limit);
+      if (!page) throw new ExternalSessionCatalogCursorError();
+      return page;
+    }
+    if (!keyset) {
+      for (const dbPath of await codexStateDbsNewestFirst(this.codexHome)) {
+        const page = await this.readStateCatalogKeysetPage(dbPath, query, keyset, limit);
+        if (page !== undefined) return page;
+      }
+    }
+
+    const candidates = await nextRolloutCatalogBatch(
+      this.codexHome,
+      query,
+      keyset?.kind === 'filesystem' ? keyset : undefined,
+      limit + 1,
+      (candidate, id) => this.resolveRolloutPath(candidate.path, id),
+    );
+    const items = candidates.slice(0, limit).map(({ candidate, summary }) => ({
+      summary,
+      nextCursor: encodeCatalogKeyset(query, candidateKeyset(candidate)),
+    }));
+    return { items, hasMore: candidates.length > items.length };
+  }
+
+  private async readStateCatalogKeysetPage(
+    dbPath: string,
+    query: ExternalSessionCatalogPageQuery,
+    keyset: CodexCatalogKeyset | undefined,
+    limit: number,
+  ): Promise<ExternalSessionCatalogPage | undefined> {
+    if (keyset?.kind === 'filesystem') return undefined;
+    let db: DatabaseSync | undefined;
+    try {
+      const sqlite = await import('node:sqlite');
+      db = new sqlite.DatabaseSync(dbPath, { readOnly: true });
+      const spec = codexThreadQuery(db, query, undefined, keyset);
+      if (!spec) return undefined;
+      const items: ExternalSessionCatalogPage['items'][number][] = [];
+      for (const row of db.prepare(spec.sql).iterate(...spec.params) as Iterable<CodexThreadRow>) {
+        const entry = await this.entryFromRow(row);
+        if (!entry || !matchesQuery(entry, query)) continue;
+        if (items.length === limit) return { items, hasMore: true };
+        const { rolloutPath: _rolloutPath, ...summary } = entry;
+        items.push({
+          summary,
+          nextCursor: encodeCatalogKeyset(query, {
+            kind: 'database',
+            stateDatabase: basename(dbPath),
+            sortTimestamp: codexRowSortTimestamp(row),
+            id: entry.id,
+          }),
+        });
+      }
+      return { items, hasMore: false };
+    } catch {
+      return undefined;
+    } finally {
+      db?.close();
+    }
   }
 
   private async findRolloutEntry(sessionId: string): Promise<CodexCatalogEntry | undefined> {
@@ -216,7 +353,7 @@ export class CodexSessionAdapter implements ExternalSessionAdapter {
       [join(this.codexHome, 'sessions'), false],
       [join(this.codexHome, 'archived_sessions'), true],
     ] as const) {
-      for (const candidate of await walkRolloutFiles(root, archived)) {
+      for await (const candidate of iterateRolloutFiles(root, archived)) {
         if (!rolloutFilenameMatchesId(basename(candidate.path), sessionId)) continue;
         const head = await readUtf8Prefix(candidate.path, CODEX_ROLLOUT_HEAD_BYTES).catch(
           () => undefined,
@@ -250,6 +387,7 @@ export class CodexSessionAdapter implements ExternalSessionAdapter {
 
 interface RolloutCandidate {
   path: string;
+  catalogKey: string;
   mtimeMs: number;
   archived: boolean;
 }
@@ -566,8 +704,8 @@ class CodexRolloutConverter {
       throw new Error(`Codex rollout Session id mismatch: expected ${this.expectedSessionId}`);
     }
     const name =
-      sanitizeForeignTitle(this.fallbackName) ||
-      sanitizeForeignTitle(this.firstUserText) ||
+      sanitizeExternalSessionTitle(this.fallbackName) ||
+      sanitizeExternalSessionTitle(this.firstUserText) ||
       this.expectedSessionId;
     return {
       sourceSessionId: this.expectedSessionId,
@@ -750,7 +888,7 @@ function catalogEntryFromRolloutHead(
   if (!rolloutFilenameMatchesId(basename(candidate.path), id)) return undefined;
   return {
     id,
-    name: sanitizeForeignTitle(firstUserText) || id,
+    name: sanitizeExternalSessionTitle(firstUserText) || id,
     cwd,
     ...(createdAt !== undefined ? { createdAt } : {}),
     updatedAt: candidate.mtimeMs,
@@ -762,61 +900,16 @@ async function readCodexThreadRows(
   dbPath: string,
   query: ExternalSessionQuery,
   exactId?: string,
+  page?: { offset: number; limit: number },
 ): Promise<CodexThreadRow[] | undefined> {
   try {
     const sqlite = await import('node:sqlite');
     const db = new sqlite.DatabaseSync(dbPath, { readOnly: true });
     try {
-      const columns = new Set(
-        (db.prepare('PRAGMA table_info(threads)').all() as { name?: unknown }[])
-          .map((column) => (typeof column.name === 'string' ? column.name : ''))
-          .filter(Boolean),
-      );
-      if (!columns.has('id') || !columns.has('rollout_path')) return undefined;
-      const wanted = [
-        'id',
-        'rollout_path',
-        'cwd',
-        'name',
-        'title',
-        'preview',
-        'first_user_message',
-        'created_at_ms',
-        'created_at',
-        'updated_at_ms',
-        'updated_at',
-        'archived',
-        'source',
-      ].filter((column) => columns.has(column));
-      const where: string[] = [];
-      const params: Array<string | number> = [];
-      if (exactId !== undefined) {
-        where.push('id = ?');
-        params.push(exactId);
-      }
-      if (!query.includeArchived && columns.has('archived')) {
-        where.push('(archived IS NULL OR archived = 0)');
-      }
-      // No cwd clause. `cwd IN (...)` enumerated spelling variants of the
-      // query, but SQLite compares them exactly: a row stored `C:\\Repo\\App`
-      // was discarded before `matchesQuery` could see that `c:/repo/app` names
-      // the same project. A prefilter that cannot express the matcher's own
-      // equivalence is not an optimization, it is a second, weaker rule — so
-      // the shared matcher below is the only authority on which project a row
-      // belongs to. The archived clause stays: that one is an exact boolean
-      // and agrees with the matcher by construction.
-      //
-      // The statement has no LIMIT, so dropping the clause widens the read
-      // rather than truncating it.
-      const orderColumn = columns.has('updated_at_ms')
-        ? 'updated_at_ms'
-        : columns.has('updated_at')
-          ? 'updated_at'
-          : 'id';
-      const sql =
-        `SELECT ${wanted.join(', ')} FROM threads` +
-        (where.length > 0 ? ` WHERE ${where.join(' AND ')}` : '') +
-        ` ORDER BY ${orderColumn} DESC`;
+      const spec = codexThreadQuery(db, query, exactId);
+      if (!spec) return undefined;
+      const sql = spec.sql + (page ? ' LIMIT ? OFFSET ?' : '');
+      const params = page ? [...spec.params, page.limit, page.offset] : spec.params;
       return db.prepare(sql).all(...params) as CodexThreadRow[];
     } finally {
       db.close();
@@ -824,6 +917,85 @@ async function readCodexThreadRows(
   } catch {
     return undefined;
   }
+}
+
+function codexThreadQuery(
+  db: DatabaseSync,
+  query: ExternalSessionQuery,
+  exactId?: string,
+  keyset?: Extract<CodexCatalogKeyset, { kind: 'database' }>,
+): CodexThreadQuery | undefined {
+  const columns = new Set(
+    (db.prepare('PRAGMA table_info(threads)').all() as { name?: unknown }[])
+      .map((column) => (typeof column.name === 'string' ? column.name : ''))
+      .filter(Boolean),
+  );
+  if (!columns.has('id') || !columns.has('rollout_path')) return undefined;
+  const wanted = [
+    'id',
+    'rollout_path',
+    'cwd',
+    'name',
+    'title',
+    'preview',
+    'first_user_message',
+    'created_at_ms',
+    'created_at',
+    'updated_at_ms',
+    'updated_at',
+    'archived',
+    'source',
+  ].filter((column) => columns.has(column));
+  const where: string[] = [];
+  const params: Array<string | number> = [];
+  if (exactId !== undefined) {
+    where.push('id = ?');
+    params.push(exactId);
+  }
+  if (!query.includeArchived && columns.has('archived')) {
+    where.push('(archived IS NULL OR archived = 0)');
+  }
+  // No cwd clause. SQLite cannot express the matcher's cross-platform path
+  // equivalence, so the shared matcher remains the only workspace authority.
+  const orderColumns = ['updated_at_ms', 'updated_at', 'created_at_ms', 'created_at'].filter(
+    (column) => columns.has(column),
+  );
+  const orderValues = orderColumns.map((column) =>
+    column.endsWith('_ms')
+      ? column
+      : `(CASE WHEN ${column} >= 1000000000000 THEN ${column} ELSE ${column} * 1000 END)`,
+  );
+  const orderExpression = orderValues.length > 0 ? `coalesce(${orderValues.join(', ')}, 0)` : '0';
+  if (keyset) {
+    where.push(`(${orderExpression} < ? OR (${orderExpression} = ? AND id < ?))`);
+    params.push(keyset.sortTimestamp, keyset.sortTimestamp, keyset.id);
+  }
+  return {
+    sql:
+      `SELECT ${wanted.join(', ')} FROM threads` +
+      (where.length > 0 ? ` WHERE ${where.join(' AND ')}` : '') +
+      ` ORDER BY ${orderExpression} DESC, id DESC`,
+    params,
+  };
+}
+
+function codexRowSortTimestamp(row: CodexThreadRow): number {
+  return (
+    finiteNumber(row.updated_at_ms) ??
+    normalizeEpochMs(row.updated_at) ??
+    finiteNumber(row.created_at_ms) ??
+    normalizeEpochMs(row.created_at) ??
+    0
+  );
+}
+
+function finiteNumber(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string' && value.length > 0) {
+    const numeric = Number(value);
+    if (Number.isFinite(numeric)) return numeric;
+  }
+  return undefined;
 }
 
 async function codexStateDbsNewestFirst(codexHome: string): Promise<string[]> {
@@ -844,34 +1016,180 @@ async function codexStateDbsNewestFirst(codexHome: string): Promise<string[]> {
   }
 }
 
-async function walkRolloutFiles(root: string, archived: boolean): Promise<RolloutCandidate[]> {
-  const files: RolloutCandidate[] = [];
-  const visit = async (directory: string): Promise<void> => {
-    let entries: Dirent<string>[];
-    try {
-      entries = await readdir(directory, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const entry of entries) {
-      const path = join(directory, entry.name);
-      if (entry.isDirectory()) {
-        await visit(path);
-      } else if (
-        entry.isFile() &&
-        entry.name.startsWith('rollout-') &&
-        entry.name.endsWith('.jsonl')
-      ) {
-        try {
-          files.push({ path, mtimeMs: (await stat(path)).mtimeMs, archived });
-        } catch {
-          // The external store may change while it is being scanned.
-        }
+async function* iterateRolloutFiles(
+  root: string,
+  archived: boolean,
+  relativeRoot = '',
+): AsyncGenerator<RolloutCandidate> {
+  let entries: Dirent<string>[];
+  try {
+    entries = await readdir(root, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  // Codex nests active rollouts under YYYY/MM/DD and prefixes filenames with
+  // an ISO timestamp. Reverse lexical traversal reaches recent creation paths
+  // first for exact-id lookup; catalog paging separately orders candidates by
+  // file mtime.
+  entries.sort((left, right) => right.name.localeCompare(left.name));
+  for (const entry of entries) {
+    const path = join(root, entry.name);
+    const relativePath = relativeRoot ? `${relativeRoot}/${entry.name}` : entry.name;
+    if (entry.isDirectory()) {
+      yield* iterateRolloutFiles(path, archived, relativePath);
+    } else if (
+      entry.isFile() &&
+      entry.name.startsWith('rollout-') &&
+      entry.name.endsWith('.jsonl')
+    ) {
+      try {
+        yield {
+          path,
+          catalogKey: `${archived ? 'a' : 's'}/${relativePath}`,
+          mtimeMs: (await stat(path)).mtimeMs,
+          archived,
+        };
+      } catch {
+        // The external store may change while it is being scanned.
       }
     }
-  };
-  await visit(root);
+  }
+}
+
+async function walkRolloutFiles(root: string, archived: boolean): Promise<RolloutCandidate[]> {
+  const files: RolloutCandidate[] = [];
+  for await (const candidate of iterateRolloutFiles(root, archived)) files.push(candidate);
   return files;
+}
+
+async function nextRolloutCatalogBatch(
+  codexHome: string,
+  query: ExternalSessionCatalogPageQuery,
+  keyset: Extract<CodexCatalogKeyset, { kind: 'filesystem' }> | undefined,
+  limit: number,
+  resolvePath: (candidate: RolloutCandidate, id: string) => Promise<string | undefined>,
+): Promise<ReadonlyArray<{ candidate: RolloutCandidate; summary: ExternalSessionSummary }>> {
+  const candidates: Array<{ candidate: RolloutCandidate; summary: ExternalSessionSummary }> = [];
+  const roots: ReadonlyArray<readonly [string, boolean]> = [
+    [join(codexHome, 'sessions'), false],
+    ...(query.includeArchived ? ([[join(codexHome, 'archived_sessions'), true]] as const) : []),
+  ];
+  for (const [root, archived] of roots) {
+    for await (const candidate of iterateRolloutFiles(root, archived)) {
+      if (keyset && !rolloutCandidateIsAfter(candidate, keyset)) continue;
+      const head = await readUtf8Prefix(candidate.path, CODEX_ROLLOUT_HEAD_BYTES).catch(
+        () => undefined,
+      );
+      if (head === undefined) continue;
+      const entry = catalogEntryFromRolloutHead(head, candidate);
+      if (!entry || !matchesQuery(entry, query)) continue;
+      const rolloutPath = await resolvePath(candidate, entry.id);
+      if (!rolloutPath) continue;
+      const { rolloutPath: _rolloutPath, ...summary } = { ...entry, rolloutPath };
+      const index = candidates.findIndex(
+        (existing) => compareRolloutCandidates(candidate, existing.candidate) < 0,
+      );
+      candidates.splice(index < 0 ? candidates.length : index, 0, { candidate, summary });
+      if (candidates.length > limit) candidates.pop();
+    }
+  }
+  return candidates;
+}
+
+function compareRolloutCandidates(
+  left: Pick<RolloutCandidate, 'mtimeMs' | 'catalogKey'>,
+  right: Pick<RolloutCandidate, 'mtimeMs' | 'catalogKey'>,
+): number {
+  return right.mtimeMs - left.mtimeMs || left.catalogKey.localeCompare(right.catalogKey);
+}
+
+function rolloutCandidateIsAfter(
+  candidate: RolloutCandidate,
+  keyset: Extract<CodexCatalogKeyset, { kind: 'filesystem' }>,
+): boolean {
+  return (
+    compareRolloutCandidates(candidate, {
+      mtimeMs: keyset.mtimeMs,
+      catalogKey: keyset.pathKey,
+    }) > 0
+  );
+}
+
+function candidateKeyset(
+  candidate: RolloutCandidate,
+): Extract<CodexCatalogKeyset, { kind: 'filesystem' }> {
+  return { kind: 'filesystem', mtimeMs: candidate.mtimeMs, pathKey: candidate.catalogKey };
+}
+
+function encodeCatalogKeyset(
+  query: ExternalSessionCatalogPageQuery,
+  keyset: CodexCatalogKeyset,
+): string {
+  const queryHash = externalSessionCatalogQueryHash(query);
+  if (keyset.kind === 'database') {
+    return `d:${queryHash}:${Buffer.from(keyset.stateDatabase).toString('base64url')}:${encodeCursorNumber(keyset.sortTimestamp)}:${Buffer.from(keyset.id).toString('base64url')}`;
+  }
+  return `f:${queryHash}:${encodeCursorNumber(keyset.mtimeMs)}:${Buffer.from(keyset.pathKey).toString('base64url')}`;
+}
+
+function decodeCatalogKeyset(
+  cursor: string | undefined,
+  query: ExternalSessionCatalogPageQuery,
+): CodexCatalogKeyset | undefined {
+  if (cursor === undefined) return undefined;
+  const parts = cursor.split(':');
+  if (parts[1] !== externalSessionCatalogQueryHash(query)) {
+    throw new ExternalSessionCatalogCursorError();
+  }
+  if (parts[0] === 'd') {
+    if (parts.length !== 5) throw new ExternalSessionCatalogCursorError();
+    const encodedStateDatabase = parts[2]!;
+    const stateDatabase = Buffer.from(encodedStateDatabase, 'base64url').toString('utf8');
+    if (
+      !/^state_\d+\.sqlite$/.test(stateDatabase) ||
+      Buffer.from(stateDatabase).toString('base64url') !== encodedStateDatabase
+    ) {
+      throw new ExternalSessionCatalogCursorError();
+    }
+    const sortTimestamp = decodeCursorNumber(parts[3]!);
+    const encodedId = parts[4]!;
+    const id = Buffer.from(encodedId, 'base64url').toString('utf8');
+    if (!isSafeCodexSessionId(id) || Buffer.from(id).toString('base64url') !== encodedId) {
+      throw new ExternalSessionCatalogCursorError();
+    }
+    return { kind: 'database', stateDatabase, sortTimestamp, id };
+  }
+  if (parts[0] === 'f') {
+    if (parts.length !== 4) throw new ExternalSessionCatalogCursorError();
+    const mtimeMs = decodeCursorNumber(parts[2]!);
+    const encodedPathKey = parts[3]!;
+    const pathKey = Buffer.from(encodedPathKey, 'base64url').toString('utf8');
+    if (
+      Buffer.byteLength(pathKey, 'utf8') > 320 ||
+      Buffer.from(pathKey).toString('base64url') !== encodedPathKey ||
+      !/^[as]\/[^\u0000-\u001f\u007f]+$/.test(pathKey)
+    ) {
+      throw new ExternalSessionCatalogCursorError();
+    }
+    return { kind: 'filesystem', mtimeMs, pathKey };
+  }
+  throw new ExternalSessionCatalogCursorError();
+}
+
+function encodeCursorNumber(value: number): string {
+  const buffer = Buffer.allocUnsafe(8);
+  buffer.writeDoubleBE(value);
+  return buffer.toString('base64url');
+}
+
+function decodeCursorNumber(value: string): number {
+  const buffer = Buffer.from(value, 'base64url');
+  if (buffer.length !== 8 || buffer.toString('base64url') !== value) {
+    throw new ExternalSessionCatalogCursorError();
+  }
+  const number = buffer.readDoubleBE();
+  if (!Number.isFinite(number)) throw new ExternalSessionCatalogCursorError();
+  return number;
 }
 
 async function readUtf8Prefix(path: string, maxBytes: number): Promise<string> {
@@ -888,6 +1206,31 @@ async function readUtf8Prefix(path: string, maxBytes: number): Promise<string> {
 
 function asRecord(value: unknown): JsonRecord | undefined {
   return isRecord(value) ? value : undefined;
+}
+
+function codexSourceToken(value: unknown): string | undefined {
+  if (typeof value === 'string') {
+    if (value.length === 0) return undefined;
+    if ((CODEX_SUPPORTED_THREAD_SOURCES as readonly string[]).includes(value)) return value;
+    if (!value.startsWith('{')) return undefined;
+    try {
+      return codexSourceToken(JSON.parse(value) as unknown);
+    } catch {
+      return undefined;
+    }
+  }
+  if (typeof value === 'object' && value !== null) {
+    const custom = (value as Record<string, unknown>).custom;
+    return typeof custom === 'string' &&
+      (CODEX_SUPPORTED_THREAD_SOURCES as readonly string[]).includes(custom)
+      ? custom
+      : undefined;
+  }
+  return undefined;
+}
+
+function isSupportedCodexThreadSource(value: unknown): boolean {
+  return value === undefined || value === null || codexSourceToken(value) !== undefined;
 }
 
 function isRecord(value: unknown): value is JsonRecord {
@@ -925,7 +1268,7 @@ function safeCodexCwd(value: unknown): string {
 
 function firstNonEmptyTitle(...values: unknown[]): string | undefined {
   for (const value of values) {
-    const title = sanitizeForeignTitle(value);
+    const title = sanitizeExternalSessionTitle(value);
     if (title.length > 0) return title;
   }
   return undefined;
@@ -955,10 +1298,6 @@ function matchesQuery(entry: ExternalSessionSummary, query: ExternalSessionQuery
   // other adapter. The local path helpers this file used to keep were only
   // reachable from the SQL prefilter that has been removed.
   return externalSessionMatchesQuery(entry, query);
-}
-
-function compareCatalogEntries(a: CodexCatalogEntry, b: CodexCatalogEntry): number {
-  return (b.updatedAt ?? b.createdAt ?? 0) - (a.updatedAt ?? a.createdAt ?? 0);
 }
 
 function stateGeneration(path: string): number {

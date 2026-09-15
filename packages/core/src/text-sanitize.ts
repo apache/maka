@@ -20,10 +20,10 @@
 /**
  * Unicode text-sanitize pipeline — single source of truth (#1404).
  *
- * `session-name.ts` and `foreign-session.ts` each used to carry their own copy
+ * Session naming and external Session import each used to carry their own copy
  * of the "NFC + control/bidi/zero-width + whitespace-collapse + code-point
  * cap" pipeline, and the two had drifted: `session-name` was missing 8 code
- * points that `foreign-session` (and its own `FOREIGN_UNSAFE_CHARS` id guard)
+ * points that the former external-session scanner
  * already covered. This module is the one place that pipeline lives now.
  *
  * Boundary: this helper does ONE thing — given an already-type-checked string,

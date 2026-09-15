@@ -18,7 +18,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import { deriveTurnRecords } from '@maka/core/session';
+import { deriveTurnRecords, isConversationTextMessage } from '@maka/core/session';
 import { DEFAULT_TOOL_MODE } from '@maka/core/tool-mode';
 import type { RuntimeEvent, RuntimeEventInvocationOpenedContent } from '@maka/core/runtime-event';
 import type { RuntimeEventStore } from '@maka/core/runtime-event-store';
@@ -83,10 +83,11 @@ export class RuntimeLedgerRepair {
 
       for await (const scanned of this.readTurnsInPages(sessionId)) {
         const turnMessages = scanned.messages;
-        // A turn whose only user row was steering is not a turn of its own: the
-        // steering was said into a Turn some durable Root already owns, so
-        // converting it would stand a second, synthetic run beside that one.
-        if (!turnMessages.some((message) => message.type === 'user')) continue;
+        // The page reader already removed steering projections. What remains
+        // starts a transcript-derived turn when it carries conversation text,
+        // regardless of whether the Session originated inside or outside Maka.
+        const startsATurn = turnMessages.some(isConversationTextMessage);
+        if (!startsATurn) continue;
         const [turn] = deriveTurnRecords(turnMessages);
         if (!turn) continue;
         if (ownedTurnIds.has(turn.turnId)) continue;

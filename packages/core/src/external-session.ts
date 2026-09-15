@@ -18,6 +18,8 @@
  */
 
 import type { StoredMessage } from './session.js';
+import { redactSecrets } from './redaction.js';
+import { sanitizeUnicodeText } from './text-sanitize.js';
 
 /** Stable identifier for one external Agent integration, for example `codex`. */
 export type ExternalAgentId = string;
@@ -36,6 +38,35 @@ export interface ExternalSessionQuery {
    * worse than offering no search at all.
    */
   text?: string;
+  /** Compatibility offset used inside concrete adapters, outside the Host adapter seam. */
+  offset?: number;
+  /** Maximum summaries returned. Adapters must apply it before returning to the Host. */
+  limit?: number;
+}
+
+export interface ExternalSessionCatalogPageQuery extends Omit<ExternalSessionQuery, 'offset'> {
+  /** Source-owned opaque continuation token. */
+  cursor?: string;
+}
+
+export interface ExternalSessionCatalogPageItem {
+  readonly summary: ExternalSessionSummary;
+  /** Cursor immediately after this source row. */
+  readonly nextCursor: string;
+}
+
+export interface ExternalSessionCatalogPage {
+  readonly items: readonly ExternalSessionCatalogPageItem[];
+  readonly hasMore: boolean;
+}
+
+/** An opaque source cursor is malformed, stale, or belongs to another query. */
+export class ExternalSessionCatalogCursorError extends Error {
+  readonly name = 'ExternalSessionCatalogCursorError';
+
+  constructor(message = 'External Session catalog cursor is invalid') {
+    super(message);
+  }
 }
 
 /** Lightweight source-native identity used by session pickers and import commands. */
@@ -46,6 +77,16 @@ export interface ExternalSessionSummary {
   createdAt?: number;
   updatedAt?: number;
   archived?: boolean;
+}
+
+const EXTERNAL_SESSION_TITLE_MAX_CODE_POINTS = 120;
+
+/** Sanitize and redact a source-owned title before it reaches a Maka surface. */
+export function sanitizeExternalSessionTitle(input: unknown): string {
+  if (typeof input !== 'string') return '';
+  return redactSecrets(
+    sanitizeUnicodeText(input, { maxCodePoints: EXTERNAL_SESSION_TITLE_MAX_CODE_POINTS }),
+  );
 }
 
 /**
@@ -202,7 +243,8 @@ export interface ExternalSessionAdapter {
 
   detect(): Promise<boolean>;
 
-  listSessions(query?: ExternalSessionQuery): Promise<readonly ExternalSessionSummary[]>;
+  /** Source-owned paging; callers never interpret the opaque continuation key. */
+  listSessionPage(query: ExternalSessionCatalogPageQuery): Promise<ExternalSessionCatalogPage>;
 
   readSession(sessionId: string): Promise<ExternalMakaSession>;
 }

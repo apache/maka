@@ -47,7 +47,7 @@ export const EXTERNAL_SESSION_NAME_MAX_BYTES = 320;
 export const EXTERNAL_SESSION_SOURCE_SESSION_ID_MAX_BYTES = 512;
 export const EXTERNAL_SESSION_SOURCE_MAX_ITEMS = 16;
 export const EXTERNAL_SESSION_IMPORTED_SESSION_IDS_MAX_ITEMS = 8;
-const EXTERNAL_SESSION_CURSOR_MAX_BYTES = 32;
+const EXTERNAL_SESSION_CURSOR_MAX_BYTES = 512;
 
 const QUERY_ERRORS = [
   'host_not_ready',
@@ -57,6 +57,7 @@ const QUERY_ERRORS = [
   'persistence_failed',
   'internal_failure',
 ] as const;
+const CATALOG_QUERY_ERRORS = QUERY_ERRORS;
 const IMPORT_ERRORS = [
   ...QUERY_ERRORS,
   'not_found',
@@ -127,12 +128,12 @@ export const EXTERNAL_SESSION_OPERATION_SPECS = {
   'external-session.catalog.query': defineHostPathOperation<
     ExternalSessionCatalogQueryInput,
     ExternalSessionCatalogQueryResult,
-    (typeof QUERY_ERRORS)[number]
+    (typeof CATALOG_QUERY_ERRORS)[number]
   >(
     {
       mode: 'query',
       availability: 'ready',
-      errors: QUERY_ERRORS,
+      errors: CATALOG_QUERY_ERRORS,
       decodeInput: decodeExternalSessionCatalogQueryInput,
       decodeOutput: decodeExternalSessionCatalogQueryResult,
     },
@@ -353,7 +354,7 @@ function cursor(value: unknown): string {
     'external Session cursor',
     EXTERNAL_SESSION_CURSOR_MAX_BYTES,
   );
-  if (!/^\d+$/.test(decoded) || !Number.isSafeInteger(Number(decoded))) {
+  if (!/^[A-Za-z0-9][A-Za-z0-9:_-]*$/.test(decoded)) {
     throw invalidProtocolFrame('Invalid external Session cursor');
   }
   return decoded;

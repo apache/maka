@@ -18,11 +18,22 @@
  */
 
 import assert from 'node:assert/strict';
-import { appendFile, mkdir, mkdtemp, open, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import {
+  appendFile,
+  mkdir,
+  mkdtemp,
+  open,
+  readFile,
+  rm,
+  stat,
+  utimes,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, mock, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { ExternalSessionCatalogCursorError } from '@maka/core/external-session';
 import { decodeCanonicalMessage } from '@maka/core/session';
 import { CodexSessionAdapter } from '../codex-session-adapter.js';
 import { createExternalSessionAdapterRegistry } from '../external-session-adapters.js';
@@ -90,6 +101,18 @@ describe('CodexSessionAdapter', () => {
         (await adapter.listSessions({ includeArchived: true })).map((session) => session.id),
         ['codex-session-1', 'codex-session-archived'],
       );
+      assert.deepEqual(
+        (await adapter.listSessions({ includeArchived: true, offset: 0, limit: 1 })).map(
+          (session) => session.id,
+        ),
+        ['codex-session-1'],
+      );
+      assert.deepEqual(
+        (await adapter.listSessions({ includeArchived: true, offset: 1, limit: 1 })).map(
+          (session) => session.id,
+        ),
+        ['codex-session-archived'],
+      );
 
       // The same text query the Claude Code adapter honours. A catalog filter
       // that silently worked for one source and not the other would be worse
@@ -129,10 +152,75 @@ describe('CodexSessionAdapter', () => {
     });
   });
 
-  test('lists every thread source the foreign-session scanner accepts (#3693)', async () => {
+  test('orders mixed Codex second and millisecond timestamps before paging', async () => {
+    await withCodexHome(async (codexHome) => {
+      const olderPath = await seedMinimalRollout(
+        codexHome,
+        'codex-older-ms',
+        false,
+        '/workspace',
+        'Older milliseconds',
+      );
+      const newerPath = await seedMinimalRollout(
+        codexHome,
+        'codex-newer-seconds',
+        false,
+        '/workspace',
+        'Newer seconds',
+      );
+      const newestPath = await seedMinimalRollout(
+        codexHome,
+        'codex-newest-ms-in-legacy-column',
+        false,
+        '/workspace',
+        'Newest milliseconds in legacy column',
+      );
+      await seedStateDatabase(codexHome, [
+        {
+          id: 'codex-older-ms',
+          rolloutPath: olderPath,
+          cwd: '/workspace',
+          name: 'Older milliseconds',
+          createdAtMs: 1_700_000_000_000,
+          updatedAtMs: 1_700_000_000_000,
+          archived: false,
+          source: 'cli',
+        },
+        {
+          id: 'codex-newer-seconds',
+          rolloutPath: newerPath,
+          cwd: '/workspace',
+          name: 'Newer seconds',
+          createdAt: 1_800_000_000,
+          updatedAt: 1_800_000_000,
+          archived: false,
+          source: 'cli',
+        },
+        {
+          id: 'codex-newest-ms-in-legacy-column',
+          rolloutPath: newestPath,
+          cwd: '/workspace',
+          name: 'Newest milliseconds in legacy column',
+          createdAt: 1_900_000_000_000,
+          updatedAt: 1_900_000_000_000,
+          archived: false,
+          source: 'cli',
+        },
+      ]);
+
+      assert.deepEqual(
+        (await new CodexSessionAdapter({ codexHome }).listSessions({ limit: 1 })).map(
+          (session) => session.id,
+        ),
+        ['codex-newest-ms-in-legacy-column'],
+      );
+    });
+  });
+
+  test('lists every supported Codex thread source (#3693)', async () => {
     // The adapter owned its own token set, so bare `atlas`/`chatgpt` and a
-    // wrapped `{"custom":"cli"}` were dropped here while the scanner in
-    // `@maka/core/foreign-session` listed them. Both gates now share one
+    // wrapped `{"custom":"cli"}` used to drift across readers. Catalog and
+    // import now use the same source eligibility gate.
     // authority, so the catalog and the scan agree on every shape.
     await withCodexHome(async (codexHome) => {
       const sources = ['cli', 'exec', 'vscode', 'atlas', 'chatgpt'] as const;
@@ -410,6 +498,195 @@ describe('CodexSessionAdapter', () => {
         ['codex-root-fallback'],
       );
       await assert.rejects(adapter.readSession(subagentId), /not found/);
+    });
+  });
+
+  test('filesystem fallback pages globally by rollout mtime across active and archived roots', async () => {
+    await withCodexHome(async (codexHome) => {
+      const staleActive = await seedMinimalRollout(
+        codexHome,
+        'codex-page-z-stale',
+        false,
+        '/workspace/root',
+        'stale active',
+      );
+      const freshActive = await seedMinimalRollout(
+        codexHome,
+        'codex-page-a-fresh',
+        false,
+        '/workspace/root',
+        'fresh active',
+      );
+      const newestArchived = await seedMinimalRollout(
+        codexHome,
+        'codex-page-archived-newest',
+        true,
+        '/workspace/root',
+        'newest archived',
+      );
+      await utimes(staleActive, new Date('2026-08-01T00:00:00Z'), new Date('2026-08-01T00:00:00Z'));
+      await utimes(freshActive, new Date('2026-08-02T00:00:00Z'), new Date('2026-08-02T00:00:00Z'));
+      await utimes(
+        newestArchived,
+        new Date('2026-08-03T00:00:00Z'),
+        new Date('2026-08-03T00:00:00Z'),
+      );
+      const adapter = new CodexSessionAdapter({ codexHome });
+
+      assert.deepEqual(
+        (await adapter.listSessions({ includeArchived: true, offset: 0, limit: 1 })).map(
+          ({ id }) => id,
+        ),
+        ['codex-page-archived-newest'],
+      );
+      assert.deepEqual(
+        (await adapter.listSessions({ includeArchived: true, offset: 1, limit: 1 })).map(
+          ({ id }) => id,
+        ),
+        ['codex-page-a-fresh'],
+      );
+      assert.deepEqual(
+        (await adapter.listSessions({ includeArchived: true, offset: 2, limit: 1 })).map(
+          ({ id }) => id,
+        ),
+        ['codex-page-z-stale'],
+      );
+    });
+  });
+
+  test('filesystem keyset paging never repeats a row moved ahead of the cursor', async () => {
+    await withCodexHome(async (codexHome) => {
+      const paths: string[] = [];
+      for (let index = 0; index < 20; index += 1) {
+        const id = `codex-snapshot-${String(index).padStart(2, '0')}`;
+        const path = await seedMinimalRollout(codexHome, id, false, '/workspace/root', id);
+        const time = new Date(Date.UTC(2026, 7, 1, 0, 0, index));
+        await utimes(path, time, time);
+        paths.push(path);
+      }
+      const adapter = new CodexSessionAdapter({ codexHome });
+      const first = await adapter.listSessionPage!({ limit: 16 });
+      assert.deepEqual(
+        first.items.map(({ summary }) => summary.id),
+        Array.from(
+          { length: 16 },
+          (_, index) => `codex-snapshot-${String(19 - index).padStart(2, '0')}`,
+        ),
+      );
+      const cursor = first.items.at(-1)!.nextCursor;
+      assert.ok(Buffer.byteLength(cursor, 'utf8') <= 512);
+      await assert.rejects(
+        adapter.listSessionPage!({ cursor, cwd: '/another/workspace', limit: 16 }),
+        (error: unknown) => error instanceof ExternalSessionCatalogCursorError,
+      );
+
+      const newest = new Date('2026-09-15T00:00:00Z');
+      await utimes(paths[1]!, newest, newest);
+      const second = await adapter.listSessionPage!({
+        cursor,
+        limit: 16,
+      });
+      const ids = [...first.items, ...second.items].map(({ summary }) => summary.id);
+      assert.equal(new Set(ids).size, ids.length);
+      assert.deepEqual(
+        ids,
+        Array.from({ length: 20 }, (_, index) => 19 - index)
+          .filter((index) => index !== 1)
+          .map((index) => `codex-snapshot-${String(index).padStart(2, '0')}`),
+      );
+    });
+  });
+
+  test('filesystem keyset paging uses one path order across equal-mtime pages', async () => {
+    await withCodexHome(async (codexHome) => {
+      const underscore = await seedMinimalRollout(
+        codexHome,
+        'codex_a',
+        false,
+        '/workspace/root',
+        'underscore',
+      );
+      const hyphen = await seedMinimalRollout(
+        codexHome,
+        'codex-a',
+        false,
+        '/workspace/root',
+        'hyphen',
+      );
+      const tied = new Date('2026-08-08T00:00:00Z');
+      await utimes(underscore, tied, tied);
+      await utimes(hyphen, tied, tied);
+      const adapter = new CodexSessionAdapter({ codexHome });
+
+      const first = await adapter.listSessionPage!({ limit: 1 });
+      assert.deepEqual(
+        first.items.map(({ summary }) => summary.id),
+        ['codex_a'],
+      );
+      assert.equal(first.hasMore, true);
+
+      const second = await adapter.listSessionPage!({
+        cursor: first.items[0]!.nextCursor,
+        limit: 1,
+      });
+      assert.deepEqual(
+        second.items.map(({ summary }) => summary.id),
+        ['codex-a'],
+      );
+      assert.equal(second.hasMore, false);
+    });
+  });
+
+  test('database keyset paging stays on the state generation that issued the cursor', async () => {
+    await withCodexHome(async (codexHome) => {
+      const oldRows: StateRow[] = [];
+      for (let index = 1; index <= 4; index++) {
+        const id = `codex-old-${index}`;
+        oldRows.push({
+          id,
+          rolloutPath: await seedMinimalRollout(codexHome, id, false, '/workspace', id),
+          cwd: '/workspace',
+          name: id,
+          createdAtMs: index * 1000,
+          updatedAtMs: index * 1000,
+          archived: false,
+          source: 'cli',
+        });
+      }
+      await seedStateDatabase(codexHome, oldRows);
+
+      const adapter = new CodexSessionAdapter({ codexHome });
+      const first = await adapter.listSessionPage!({ limit: 2 });
+      assert.deepEqual(
+        first.items.map(({ summary }) => summary.id),
+        ['codex-old-4', 'codex-old-3'],
+      );
+      const cursor = first.items.at(-1)?.nextCursor;
+      assert.ok(cursor);
+
+      const newId = 'codex-new-100';
+      await seedStateDatabase(
+        codexHome,
+        [
+          {
+            id: newId,
+            rolloutPath: await seedMinimalRollout(codexHome, newId, false, '/workspace', newId),
+            cwd: '/workspace',
+            name: newId,
+            createdAtMs: 100_000,
+            updatedAtMs: 100_000,
+            archived: false,
+            source: 'cli',
+          },
+        ],
+        'state_6.sqlite',
+      );
+
+      const second = await adapter.listSessionPage!({ cursor, limit: 2 });
+      assert.deepEqual(
+        second.items.map(({ summary }) => summary.id),
+        ['codex-old-2', 'codex-old-1'],
+      );
     });
   });
 
@@ -825,17 +1102,24 @@ interface StateRow {
   rolloutPath: string;
   cwd: string;
   name: string;
-  createdAtMs: number;
-  updatedAtMs: number;
+  createdAtMs?: number;
+  updatedAtMs?: number;
+  createdAt?: number;
+  updatedAt?: number;
   archived: boolean;
   source: string;
 }
 
-async function seedStateDatabase(codexHome: string, rows: readonly StateRow[]): Promise<void> {
+async function seedStateDatabase(
+  codexHome: string,
+  rows: readonly StateRow[],
+  filename = 'state_5.sqlite',
+): Promise<void> {
   const { DatabaseSync } = await import('node:sqlite');
-  const database = new DatabaseSync(join(codexHome, 'state_5.sqlite'));
+  const database = new DatabaseSync(join(codexHome, filename));
   try {
     database.exec(`
+      PRAGMA journal_mode = WAL;
       CREATE TABLE threads (
         id TEXT PRIMARY KEY,
         rollout_path TEXT NOT NULL,
@@ -843,14 +1127,17 @@ async function seedStateDatabase(codexHome: string, rows: readonly StateRow[]): 
         name TEXT,
         created_at_ms INTEGER,
         updated_at_ms INTEGER,
+        created_at INTEGER,
+        updated_at INTEGER,
         archived INTEGER,
         source TEXT
       )
     `);
     const insert = database.prepare(`
       INSERT INTO threads (
-        id, rollout_path, cwd, name, created_at_ms, updated_at_ms, archived, source
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        id, rollout_path, cwd, name, created_at_ms, updated_at_ms, created_at, updated_at,
+        archived, source
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     for (const row of rows) {
       insert.run(
@@ -858,8 +1145,10 @@ async function seedStateDatabase(codexHome: string, rows: readonly StateRow[]): 
         row.rolloutPath,
         row.cwd,
         row.name,
-        row.createdAtMs,
-        row.updatedAtMs,
+        row.createdAtMs ?? null,
+        row.updatedAtMs ?? null,
+        row.createdAt ?? null,
+        row.updatedAt ?? null,
         row.archived ? 1 : 0,
         row.source,
       );

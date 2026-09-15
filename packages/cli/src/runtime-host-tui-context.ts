@@ -56,6 +56,7 @@ import {
 } from './runtime-host-cli-context.js';
 import type {
   ConnectionIdentity,
+  MakaExternalSessionSurface,
   MakaPiTuiTurnActivitySurface,
   ModelChoice,
   SessionRecapGenerator,
@@ -114,6 +115,7 @@ export interface RuntimeHostTuiContext {
   };
   readonly recap: SessionRecapGenerator;
   readonly onboarding: ReturnType<typeof createRuntimeHostOnboardingSurface>;
+  readonly externalSessions: MakaExternalSessionSurface;
   readonly mcp?: TuiMcpManagement;
   readonly profile: RuntimeHostProfile;
   close(): Promise<void>;
@@ -261,6 +263,21 @@ export async function createRuntimeHostTuiContext(
       agentGraphHistory: createRuntimeHostAgentGraphHistory(connection),
       recap: createRuntimeHostRecapGenerator(connection),
       onboarding,
+      externalSessions: {
+        listSources: async () =>
+          (await connection.request('external-session.source.query', {})).adapterIds,
+        listSessions: ({ adapterId, scope, cursor }) => {
+          const currentWorkspace = driver.getWorkspaceTarget();
+          return connection.request('external-session.catalog.query', {
+            adapterId,
+            ...(scope === 'current_workspace' && currentWorkspace
+              ? { workspace: currentWorkspace }
+              : {}),
+            ...(cursor ? { cursor } : {}),
+          });
+        },
+        importSession: (request) => connection.request('external-session.import', request),
+      },
       ...(mcp ? { mcp } : {}),
       profile: connected.profile,
       close: () => closeRuntimeHostTuiContext(onboarding, mcp, owner, connected.close),

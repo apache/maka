@@ -8548,6 +8548,129 @@ describe('SessionManager permission mode updates', () => {
     assert.strictEqual(repairedRuns.filter((run) => run.turnId === 'turn-2').length, 1);
   });
 
+  test('sendMessage admits assistant-first repaired history at a user boundary', async () => {
+    {
+      const externalOrigin = { adapterId: 'opencode', sourceSessionId: 'assistant-first' };
+      const store = new MemorySessionStore();
+      const runStore = new MemoryAgentRunStore();
+      const backends = new BackendRegistry();
+      const model = new MockLanguageModelV4({
+        doStream: async () => ({
+          stream: simulateReadableStream({
+            chunks: [
+              { type: 'stream-start', warnings: [] },
+              { type: 'text-start', id: 'text-1' },
+              { type: 'text-delta', id: 'text-1', delta: 'continued' },
+              { type: 'text-end', id: 'text-1' },
+              {
+                type: 'finish',
+                finishReason: { unified: 'stop', raw: 'stop' },
+                usage: {
+                  inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+                  outputTokens: { total: 1, text: 1, reasoning: 0 },
+                },
+              },
+            ] as LanguageModelV4StreamPart[],
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        }),
+      });
+      backends.register('ai-sdk', (ctx) =>
+        createTestAiSdkBackend({
+          sessionId: ctx.sessionId,
+          header: ctx.header,
+          connection: {
+            slug: 'anthropic',
+            providerType: 'anthropic',
+            defaultModel: 'claude-test',
+          },
+          apiKey: 'sk-test',
+          modelId: 'claude-test',
+          modelFactory: () => model,
+          tools: [],
+          loadTurnRuntimeEvents: ctx.loadTurnRuntimeEvents,
+          newId: nextId(),
+          now: nextNow(1),
+        }),
+      );
+      const manager = new SessionManager({
+        store,
+        runStore,
+        runtimeEventStore: runStore,
+        backends,
+        newId: nextId(),
+        now: nextNow(7_035),
+      });
+      const session = await manager.createSession(
+        makeInput({
+          llmConnectionSlug: 'anthropic',
+          model: 'claude-test',
+          permissionMode: 'bypass',
+        }),
+      );
+      await store.updateHeader(session.id, {
+        createdAt: 100,
+        transcriptLedgerVersion: 0,
+        ...(externalOrigin ? { externalOrigin } : {}),
+      });
+      await store.appendMessages(session.id, [
+        {
+          type: 'assistant',
+          id: 'imported-assistant',
+          turnId: 'imported-turn',
+          ts: 1,
+          text: 'Imported opening reply',
+          modelId: 'external-model',
+        },
+        {
+          type: 'turn_state',
+          id: 'imported-state',
+          turnId: 'imported-turn',
+          ts: 2,
+          status: 'completed',
+        },
+        {
+          type: 'user',
+          id: 'imported-user',
+          turnId: 'imported-user-turn',
+          ts: 3,
+          text: 'Imported question',
+        },
+        {
+          type: 'assistant',
+          id: 'imported-answer',
+          turnId: 'imported-user-turn',
+          ts: 4,
+          text: 'Imported answer',
+          modelId: 'external-model',
+        },
+        {
+          type: 'turn_state',
+          id: 'imported-user-state',
+          turnId: 'imported-user-turn',
+          ts: 5,
+          status: 'completed',
+        },
+      ]);
+      await manager.prepareImportedSessionHistory(session.id);
+
+      await drain(manager.sendMessage(session.id, { turnId: 'continued-turn', text: 'Continue' }));
+
+      assert.deepStrictEqual(
+        model.doStreamCalls[0]?.prompt.map((message) => message.role),
+        ['user', 'assistant', 'user'],
+      );
+      assert.doesNotMatch(JSON.stringify(model.doStreamCalls[0]?.prompt), /Imported opening reply/);
+      assert.strictEqual(
+        (await manager.getMessages(session.id)).some(
+          (message) => message.type === 'assistant' && message.text === 'Imported opening reply',
+        ),
+        true,
+      );
+    }
+  });
+
   test('sendMessage rejects an imported Session while its history is staging', async () => {
     const store = new MemorySessionStore();
     const runStore = new MemoryAgentRunStore();

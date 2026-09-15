@@ -94,23 +94,17 @@ function writeCatalogCache(
   }
 }
 
-type CatalogWindow = CatalogState & {
-  targetSource: DesktopExternalSessionCatalogItem | undefined;
-};
-
 async function readCatalogWindow(input: {
   adapterId: string;
   includeArchived: boolean;
   text: string;
   minimumItemCount: number;
-  targetSourceSessionId?: string;
   host?: DesktopRuntimeHostRef;
   isCurrent(): boolean;
-}): Promise<CatalogWindow | undefined> {
+}): Promise<CatalogState | undefined> {
   const sessions: DesktopExternalSessionCatalogItem[] = [];
   const seenCursors = new Set<string>();
   let cursor: string | undefined;
-  let targetSource: DesktopExternalSessionCatalogItem | undefined;
 
   do {
     const result = await window.maka.externalSessions.list(
@@ -124,14 +118,9 @@ async function readCatalogWindow(input: {
     );
     if (!input.isCurrent()) return undefined;
     sessions.push(...result.sessions);
-    targetSource ??= result.sessions.find(
-      (session) => session.id === input.targetSourceSessionId,
-    );
     const loadedWindowComplete = sessions.length >= input.minimumItemCount;
-    const targetSearchComplete =
-      input.targetSourceSessionId === undefined || targetSource !== undefined;
-    if (result.nextCursor === null || (loadedWindowComplete && targetSearchComplete)) {
-      return { sessions, nextCursor: result.nextCursor, targetSource };
+    if (result.nextCursor === null || loadedWindowComplete) {
+      return { sessions, nextCursor: result.nextCursor };
     }
     if (seenCursors.has(result.nextCursor)) {
       throw new Error('External Session catalog repeated a cursor');
@@ -155,11 +144,6 @@ type ImportAttempt = {
   adapterId: string;
   sourceSessionId: string;
   name: string;
-  includeArchived: boolean;
-  text: string;
-  importedCountBefore: number;
-  latestImportedSessionIdBefore: string | undefined;
-  loadedCatalogItemCountBefore: number;
 };
 
 /**
@@ -196,8 +180,8 @@ type ImportBatchDisposition = 'imported' | 'duplicated' | 'failed' | 'unknown';
  * a user who marked twelve and reads "imported 12" deserves to know that two of
  * them now exist twice.
  *
- * `unknown` is neither a success nor a failure: the call did not answer, and
- * only a catalog read settles whether the conversion landed. Folding it into
+ * `unknown` is neither a success nor a failure: the call did not answer, and a
+ * catalog delta cannot prove which request created a task. Folding it into
  * failures is what would invite the retry that makes a second copy.
  */
 type ImportBatchOutcome = {
@@ -240,10 +224,6 @@ function recordImportBatchResult(
       return { ...outcome, unknown: [...outcome.unknown, sourceSessionId] };
   }
 }
-
-type ImportRecovery =
-  | { kind: 'landed'; attempt: ImportAttempt; importedSessionId: string }
-  | { kind: 'not_recorded'; attempt: ImportAttempt };
 
 function isSameAttempt(
   attempt: ImportAttempt,
@@ -326,14 +306,12 @@ export function ImportTasksSettingsPage(props: {
   const [sourceError, setSourceError] = useState<string | null>(null);
   const [catalogError, setCatalogError] = useState<string | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
-  const [importRecovery, setImportRecovery] = useState<ImportRecovery | null>(null);
-  const [recoveryLoading, setRecoveryLoading] = useState(false);
   const [catalogPollTick, setCatalogPollTick] = useState(0);
   /**
-   * Re-importing a conversation whose outcome is unknown is how you end up with
-   * two copies of it, so its row stays disabled only while the authoritative
-   * catalog recovery itself is unavailable. A successful recovery removes the
-   * local lock and either exposes the landed task or allows a safe retry.
+   * The Host did not identify whether an unknown import committed, so the page
+   * cannot safely attribute any later catalog row to that request. Keep those
+   * attempts blocked for this page lifetime and direct the user to the task
+   * list; only an operation-specific identity could resolve them automatically.
    */
   const [uncertainImports, setUncertainImports] = useState<readonly ImportAttempt[]>([]);
   /**
@@ -346,7 +324,6 @@ export function ImportTasksSettingsPage(props: {
   // archived filter while a page is in flight would otherwise land the old
   // source's rows under the new source's label.
   const requestGeneration = useRef(0);
-  const recoveryGeneration = useRef(0);
   // Last loaded catalog per selection key, so revisiting a source or filter is
   // instant. Read/written only inside the async loaders; never rendered
   // directly (the `catalog` state is what renders).
@@ -414,6 +391,14 @@ export function ImportTasksSettingsPage(props: {
 
   const loadCatalog = useCallback(
     async (sourceId: string, cursor?: string) => {
+      const selection = catalogSelectionRef.current;
+      if (
+        selection.adapterId !== sourceId ||
+        selection.includeArchived !== includeArchived ||
+        selection.search !== search
+      ) {
+        return;
+      }
       const generation = ++requestGeneration.current;
       const append = cursor !== undefined;
       const key = catalogSelectionKey(sourceId, includeArchived, search);
@@ -432,11 +417,9 @@ export function ImportTasksSettingsPage(props: {
         // view until this hit's background refresh happens to land.
         setCatalogLoading(false);
         setLoadingMore(false);
-        setImportRecovery(null);
       } else {
         setCatalogLoading(true);
         setCatalog(EMPTY_CATALOG);
-        setImportRecovery(null);
       }
       setCatalogError(null);
       setImportError(null);
@@ -504,7 +487,7 @@ export function ImportTasksSettingsPage(props: {
     async (sourceId: string, loadedItemCount: number) => {
       // Observe, don't preempt: the poll captures the current generation rather
       // than claiming a new one, so it defers to any in-flight authoritative
-      // load/recovery instead of retiring that load's own catalogLoading reset.
+      // load instead of retiring that load's own catalogLoading reset.
       const generation = requestGeneration.current;
       try {
         const result = await readCatalogWindow({
@@ -611,117 +594,33 @@ export function ImportTasksSettingsPage(props: {
     [host],
   );
 
-  const recoverUnknownImport = useCallback(
-    async (attempt: ImportAttempt) => {
-      const generation = ++recoveryGeneration.current;
-      setRecoveryLoading(true);
-      try {
-        const result = await readCatalogWindow({
-          adapterId: attempt.adapterId,
-          includeArchived: attempt.includeArchived,
-          text: attempt.text,
-          minimumItemCount: attempt.loadedCatalogItemCountBefore,
-          targetSourceSessionId: attempt.sourceSessionId,
-          host,
-          isCurrent: () => mountedRef.current && generation === recoveryGeneration.current,
-        });
-        if (result === undefined) return;
-        const recoveredSource = result.targetSource;
-        if (recoveredSource === undefined) {
-          throw new Error('External Session source disappeared during import recovery');
-        }
-
-        const recoveredState: CatalogState = {
-          sessions: result.sessions,
-          nextCursor: result.nextCursor,
-        };
-        // Always refresh the cache for the selection this attempt came from, even
-        // if the user has since switched source or filter. Recovery has confirmed
-        // the import landed; leaving the pre-import rows in the cache would greet
-        // the user with an "Import" button (not "Import again") when they return,
-        // inviting a duplicate import until a later background refresh corrects it.
-        writeCatalogCache(
-          catalogCacheRef.current,
-          catalogSelectionKey(attempt.adapterId, attempt.includeArchived, attempt.text),
-          recoveredState,
-        );
-
-        // Publish to screen whenever the user is currently viewing the same
-        // selection tuple this attempt came from. Match the tuple, not the
-        // generation captured at import time: navigating A→B→A lands back on the
-        // same selection with a *newer* generation, and a generation check would
-        // refuse to publish there — leaving a clickable "Import" on a row that
-        // already imported until a slow background refresh happened to catch up.
-        const currentSelection = catalogSelectionRef.current;
-        if (
-          currentSelection.adapterId === attempt.adapterId &&
-          currentSelection.includeArchived === attempt.includeArchived &&
-          currentSelection.search === attempt.text
-        ) {
-          // Recovery is the newest authoritative read for this exact catalog
-          // selection. Retire an older poll/load-more/revisit response before
-          // publishing it so that response cannot put pre-import state back up.
-          requestGeneration.current += 1;
-          setCatalogLoading(false);
-          setLoadingMore(false);
-          setCatalog(recoveredState);
-        }
-        setUncertainImports((current) =>
-          current.filter(
-            (entry) =>
-              entry.adapterId !== attempt.adapterId ||
-              entry.sourceSessionId !== attempt.sourceSessionId,
-          ),
-        );
-        const recoveredSessionId = recoveredSource.importState.importedSessionIds[0];
-        const landed =
-          recoveredSessionId !== undefined &&
-          (recoveredSource.importState.importedCount > attempt.importedCountBefore ||
-            recoveredSessionId !== attempt.latestImportedSessionIdBefore);
-        setImportRecovery(
-          landed
-            ? { kind: 'landed', attempt, importedSessionId: recoveredSessionId }
-            : { kind: 'not_recorded', attempt },
-        );
-      } catch (error) {
-        if (!mountedRef.current || generation !== recoveryGeneration.current) return;
-        setUncertainImports((current) =>
-          current.some(
-            (entry) =>
-              entry.adapterId === attempt.adapterId &&
-              entry.sourceSessionId === attempt.sourceSessionId,
-          )
-            ? current
-            : [...current, attempt],
-        );
-      } finally {
-        if (mountedRef.current && generation === recoveryGeneration.current) {
-          setRecoveryLoading(false);
-        }
-      }
-    },
-    [host, mountedRef],
+  const uncertainSourceIds = useMemo(
+    () =>
+      new Set(
+        uncertainImports
+          .filter((attempt) => attempt.adapterId === adapterId)
+          .map((attempt) => attempt.sourceSessionId),
+      ),
+    [adapterId, uncertainImports],
+  );
+  const isImportEligible = useCallback(
+    (session: DesktopExternalSessionCatalogItem) =>
+      !session.importState.isImporting && !uncertainSourceIds.has(session.id),
+    [uncertainSourceIds],
   );
 
   const importConversation = useCallback(
     async (session: DesktopExternalSessionCatalogItem) => {
-      if (adapterId === null || importRun.kind !== 'idle') return;
+      if (adapterId === null || importRun.kind !== 'idle' || !isImportEligible(session)) {
+        return;
+      }
       const attempt: ImportAttempt = {
         adapterId,
         sourceSessionId: session.id,
         name: session.name,
-        includeArchived,
-        // The search term is part of the attempt for the same reason the
-        // archived filter is: recovery re-reads the catalog window this row
-        // came from, and a cleared box would look at a different list.
-        text: search,
-        importedCountBefore: session.importState.importedCount,
-        latestImportedSessionIdBefore: session.importState.importedSessionIds[0],
-        loadedCatalogItemCountBefore: catalog.sessions.length,
       };
       setImportRun({ kind: 'single', attempt });
       setImportError(null);
-      setImportRecovery(null);
       try {
         const outcome = await requestImport(attempt.adapterId, attempt.sourceSessionId);
         // Navigating away from Settings unmounts this page while the import is
@@ -730,11 +629,19 @@ export function ImportTasksSettingsPage(props: {
         // the user has left steering the shell somewhere they did not ask for.
         if (!mountedRef.current) return;
         if (!outcome.ok) {
-          // Only an unknown commit outcome is a maybe-landed task to reconcile;
-          // the other reasons are clean failures with an actionable banner.
+          // Only an unknown commit outcome remains unconfirmed; the other
+          // reasons are clean failures with an actionable banner.
           // Exhaustive by design — a new reason is a compile error until handled.
           if (outcome.reason === 'commit_outcome_unknown') {
-            await recoverUnknownImport(attempt);
+            setUncertainImports((current) =>
+              current.some(
+                (entry) =>
+                  entry.adapterId === attempt.adapterId &&
+                  entry.sourceSessionId === attempt.sourceSessionId,
+              )
+                ? current
+                : [...current, attempt],
+            );
           } else if (outcome.reason === 'no_model') {
             setImportError(copy.importFailedNoModel);
           } else if (outcome.reason === 'source_unreadable') {
@@ -758,24 +665,21 @@ export function ImportTasksSettingsPage(props: {
     [
       importRun.kind,
       adapterId,
-      catalog.sessions.length,
       copy.importFailedFallback,
       copy.importFailedNoModel,
       copy.importFailedSourceUnreadable,
       copy.importFailedSourceLimit,
+      isImportEligible,
       locale,
       mountedRef,
       props,
-      recoverUnknownImport,
       requestImport,
-      includeArchived,
-      search,
     ],
   );
 
-  const listedSourceIds = useMemo(
-    () => catalog.sessions.map((session) => session.id),
-    [catalog.sessions],
+  const eligibleSourceIds = useMemo(
+    () => catalog.sessions.filter(isImportEligible).map((session) => session.id),
+    [catalog.sessions, isImportEligible],
   );
   /**
    * The marked rows that are still on screen — derived, not reconciled.
@@ -788,10 +692,10 @@ export function ImportTasksSettingsPage(props: {
    * the renderer debt ledger will not let grow.
    */
   const marked = useMemo(
-    () => pruneListedSelection(selection, listedSourceIds).selectedIds,
-    [listedSourceIds, selection],
+    () => pruneListedSelection(selection, eligibleSourceIds).selectedIds,
+    [eligibleSourceIds, selection],
   );
-  const masterState = listedSelectionMasterState({ selectedIds: marked }, listedSourceIds);
+  const masterState = listedSelectionMasterState({ selectedIds: marked }, eligibleSourceIds);
 
   const busy = importRun.kind !== 'idle';
 
@@ -800,10 +704,11 @@ export function ImportTasksSettingsPage(props: {
     // Frozen at the press, in the catalog's own order rather than the set's
     // insertion order, so the progress count walks the list the way the user
     // reads it.
-    const targets = catalog.sessions.filter((session) => marked.has(session.id));
+    const targets = catalog.sessions.filter(
+      (session) => marked.has(session.id) && isImportEligible(session),
+    );
     if (targets.length === 0) return;
     setImportError(null);
-    setImportRecovery(null);
     setImportRun({ kind: 'batch', done: 0, total: targets.length, current: targets[0]?.id });
     let outcome = EMPTY_IMPORT_BATCH_OUTCOME;
     try {
@@ -813,11 +718,6 @@ export function ImportTasksSettingsPage(props: {
           adapterId,
           sourceSessionId: session.id,
           name: session.name,
-          includeArchived,
-          text: search,
-          importedCountBefore: session.importState.importedCount,
-          latestImportedSessionIdBefore: session.importState.importedSessionIds[0],
-          loadedCatalogItemCountBefore: catalog.sessions.length,
         };
         // A row that already had a copy is selectable on purpose — re-importing
         // is how a conversation is refreshed — but the summary owes the user
@@ -833,15 +733,9 @@ export function ImportTasksSettingsPage(props: {
               wasImported ? 'duplicated' : 'imported',
             );
           } else if (result.reason === 'commit_outcome_unknown') {
-            // Not `failed`: the call did not answer, and only a catalog read
-            // settles whether the conversion landed. Calling it a failure is
-            // what invites the retry that makes a second copy. Recorded, not
-            // recovered — a single import recovers inline, but recovery re-reads
-            // the whole catalog window per attempt, and doing that between
-            // conversions would interleave N full reads with the batch and race
-            // the writes it is making. The unconfirmed banner names every one of
-            // these and its 重试 resolves them a press at a time, removing each
-            // as it settles.
+            // Not `failed`: the call did not answer. A later catalog delta cannot
+            // identify which request created a task, so keep this unconfirmed
+            // instead of claiming another client's import or inviting a retry.
             outcome = recordImportBatchResult(outcome, session.id, 'unknown');
             setUncertainImports((current) =>
               current.some(
@@ -906,11 +800,10 @@ export function ImportTasksSettingsPage(props: {
     adapterId,
     busy,
     catalog.sessions,
-    includeArchived,
+    isImportEligible,
     loadCatalog,
     mountedRef,
     requestImport,
-    search,
     marked,
   ]);
 
@@ -986,7 +879,10 @@ export function ImportTasksSettingsPage(props: {
               value={adapterId}
               layout="fill"
               size="sm"
-              onChange={setAdapterId}
+              onChange={(nextAdapterId) => {
+                setSelection(EMPTY_LISTED_SELECTION);
+                setAdapterId(nextAdapterId);
+              }}
               isDisabled={catalogLoading}
             >
               {sourceIds.map((id) => (
@@ -1107,42 +1003,6 @@ export function ImportTasksSettingsPage(props: {
               description={copy.importOutcomeUnknownDescription(
                 uncertainImports.map((entry) => entry.name),
               )}
-              endContent={
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  label={copy.retry}
-                  isLoading={recoveryLoading}
-                  isDisabled={recoveryLoading}
-                  onClick={() => void recoverUnknownImport(uncertainImports[0]!)}
-                />
-              }
-            />
-          )}
-
-          {importRecovery?.kind === 'landed' && (
-            <Banner
-              status="success"
-              title={copy.importRecoveredTitle}
-              description={copy.importRecoveredDescription(importRecovery.attempt.name)}
-              endContent={
-                props.onOpenImported ? (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    label={copy.openLatestImportedTask}
-                    onClick={() => props.onOpenImported?.(importRecovery.importedSessionId)}
-                  />
-                ) : undefined
-              }
-            />
-          )}
-
-          {importRecovery?.kind === 'not_recorded' && (
-            <Banner
-              status="info"
-              title={copy.importNotRecordedTitle}
-              description={copy.importNotRecordedDescription}
             />
           )}
 
@@ -1180,18 +1040,18 @@ export function ImportTasksSettingsPage(props: {
                 label={copy.selectAllAriaLabel}
                 isLabelHidden
                 value={masterState}
-                isDisabled={busy}
+                isDisabled={busy || eligibleSourceIds.length === 0}
                 // Plain checkbox semantics, including from the partial state:
                 // an indeterminate box becomes ticked, which selects all. It is
                 // what the platform does and what the Session rail's own master
                 // box does, and one surface inventing a second rule for the
                 // same control is worse than either rule.
                 onChange={(checked) =>
-                  setSelection(setAllListedSelected(listedSourceIds, checked))
+                  setSelection(setAllListedSelected(eligibleSourceIds, checked))
                 }
               />
               <span className="maka-import-selection-count" aria-live="polite">
-                {copy.selectedCount(marked.size, listedSourceIds.length)}
+                {copy.selectedCount(marked.size, eligibleSourceIds.length)}
               </span>
               <span className="maka-import-selection-spacer" />
               <Button
@@ -1213,6 +1073,7 @@ export function ImportTasksSettingsPage(props: {
               aria-busy={loadingMore || undefined}
             >
               {catalog.sessions.map((session) => {
+                const importEligible = isImportEligible(session);
                 const timestamp = session.updatedAt ?? session.createdAt;
                 const description = [
                   session.cwd,
@@ -1248,7 +1109,7 @@ export function ImportTasksSettingsPage(props: {
                           label={copy.selectRowAriaLabel(session.name)}
                           isLabelHidden
                           value={marked.has(session.id)}
-                          isDisabled={busy || isImporting}
+                          isDisabled={busy || !importEligible}
                           onChange={(checked) =>
                             setSelection((current) =>
                               toggleListedSelection(current, session.id, checked),
@@ -1273,11 +1134,7 @@ export function ImportTasksSettingsPage(props: {
                           variant="secondary"
                           size="sm"
                           isLoading={isImporting}
-                          isDisabled={
-                            isImporting ||
-                            busy ||
-                            uncertainImports.length > 0
-                          }
+                          isDisabled={busy || !importEligible}
                           // `onClick`, not `clickAction`. Astryx runs
                           // `clickAction` inside a React 19 async transition, and
                           // React holds a transition's state updates until the
