@@ -49,16 +49,22 @@ export async function configureHostedExecutionTarget(
   let target = before.connections.find((candidate) => candidate.slug === input.connectionSlug);
   let changed = false;
   const onboarding = input.connection;
-  if (!target && onboarding) {
+  if (onboarding && target && target.providerType !== onboarding.providerType) {
+    throw new Error('Runtime Host connection provider does not match');
+  }
+  if (onboarding) {
+    const onboardingTarget = target
+      ? { kind: 'existing' as const, connectionId: target.connectionId }
+      : {
+          kind: 'create' as const,
+          providerType: onboarding.providerType,
+          slug: input.connectionSlug,
+          name: input.connectionSlug,
+        };
     const saved = await abortable(
       () =>
         connection.request('connection.onboarding.save', {
-          target: {
-            kind: 'create',
-            providerType: onboarding.providerType,
-            slug: input.connectionSlug,
-            name: input.connectionSlug,
-          },
+          target: onboardingTarget,
           apiKey: onboarding.apiKey,
           baseUrl: input.baseUrl,
           enabledModelIds: [input.model],
@@ -71,9 +77,6 @@ export async function configureHostedExecutionTarget(
     changed = true;
   }
   if (!target) throw new Error('Runtime Host connection is unavailable');
-  if (input.connection && target.providerType !== input.connection.providerType) {
-    throw new Error('Runtime Host connection provider does not match');
-  }
 
   const baseUrl = new URL(input.baseUrl).toString();
   const enabledModelIds = [...new Set([...target.enabledModelIds, input.model])];

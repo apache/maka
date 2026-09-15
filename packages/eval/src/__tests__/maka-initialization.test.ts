@@ -39,6 +39,7 @@ test('official Maka shim keeps authenticated initialization through preflight an
   const state = join(root, 'state');
   const artifacts = join(root, 'artifacts');
   const apiKey = 'eval-fixture-api-secret';
+  let expectedApiKey = apiKey;
   const proxyPassword = 'eval-fixture-proxy-secret';
   const requests: { path: string; body: Record<string, unknown> }[] = [];
   const policies: string[] = [];
@@ -48,7 +49,7 @@ test('official Maka shim keeps authenticated initialization through preflight an
   let rejectPreflight = true;
   const provider = createServer(async (request, response) => {
     try {
-      assert.equal(request.headers.authorization, `Bearer ${apiKey}`);
+      assert.equal(request.headers.authorization, `Bearer ${expectedApiKey}`);
       const policy = await readFile(join(state, 'runtime-policy.json'), 'utf8');
       assert.equal(JSON.parse(policy).policy.privacy.incognitoActive, true);
       policies.push(policy);
@@ -133,7 +134,7 @@ test('official Maka shim keeps authenticated initialization through preflight an
       response.end('data: [DONE]\n\n');
     } catch (error) {
       failures.push(error);
-      response.writeHead(500).end();
+      response.writeHead(401).end();
     }
   });
   await new Promise<void>((resolve) => provider.listen(0, '127.0.0.1', resolve));
@@ -208,8 +209,11 @@ test('official Maka shim keeps authenticated initialization through preflight an
         maxSteps: 4,
       },
     };
-    for (const failPreflight of [true, false]) {
+    for (const phase of ['rejected', 'created', 'rotated']) {
+      const failPreflight = phase === 'rejected';
       rejectPreflight = failPreflight;
+      if (phase === 'rotated') expectedApiKey = `${apiKey}-rotated`;
+      payload.execution.executionId = randomUUID();
       const child: ReturnType<typeof spawn> = spawn(
         process.execPath,
         [
@@ -223,7 +227,7 @@ test('official Maka shim keeps authenticated initialization through preflight an
             OPENAI_API_KEY: '',
             ANTHROPIC_API_KEY: '',
             DEEPSEEK_API_KEY: '',
-            MAKA_FIXTURE_API_KEY: apiKey,
+            MAKA_FIXTURE_API_KEY: expectedApiKey,
             HTTPS_PROXY: `http://eval-user:${proxyPassword}@127.0.0.1:${proxyAddress.port}`,
             MAKA_EVAL_RESULT_TOKEN: '1'.repeat(32),
           },
@@ -258,11 +262,17 @@ test('official Maka shim keeps authenticated initialization through preflight an
       const result = JSON.parse(Buffer.from(frame.split(' ')[4]!, 'base64url').toString());
       assert.equal(result.status, 'completed');
       assert.ok(result.usage.inputTokens > 0);
-      assert.equal(requests.filter((request) => request.path === '/v1/models').length, 2);
-      assert.equal(requests.filter((request) => request.body.stream === true).length, 2);
+      assert.equal(
+        requests.filter((request) => request.path === '/v1/models').length,
+        phase === 'rotated' ? 3 : 2,
+      );
+      assert.equal(
+        requests.filter((request) => request.body.stream === true).length,
+        phase === 'rotated' ? 4 : 2,
+      );
       assert.ok(tunnels.length >= 2);
       assert.equal(new Set(policies).size, 1);
-      assert.equal(new Set(owners).size, 3);
+      assert.equal(new Set(owners).size, phase === 'rotated' ? 5 : 3);
       assert.ok((await readdir(artifacts)).includes('runtime.sqlite'));
       for (const file of await readdir(artifacts)) {
         const contents = await readFile(join(artifacts, file));
