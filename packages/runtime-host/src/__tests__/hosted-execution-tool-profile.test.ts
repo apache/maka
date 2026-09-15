@@ -55,11 +55,13 @@ test('hosted execution tool profiles are durable Session creation inputs', () =>
   );
 });
 
-test('the headless coding profile freezes prompt, tools, memory, and foreground Bash', async () => {
+test('the headless coding profile freezes prompt, tools, and memory and passes product Bash through', () => {
   const profile = hostedExecutionRunProfile('headless-coding-v1');
   assert.ok(profile);
   assert.deepEqual(profile.toolNames, [
     'Bash',
+    'StopBackgroundTask',
+    'WriteStdin',
     'Read',
     'Write',
     'Edit',
@@ -114,15 +116,7 @@ test('the headless coding profile freezes prompt, tools, memory, and foreground 
     profileTools.map(({ name }) => name),
     profile.toolNames,
   );
-  const bash = profileTools[0];
-  assert.ok(bash);
-  const schema = bash.parameters as z.ZodType;
-  assert.equal((await schema.safeParseAsync({ command: 'true' })).success, true);
-  assert.equal(
-    (await schema.safeParseAsync({ command: 'true', run_in_background: true })).success,
-    false,
-  );
-  assert.equal((await schema.safeParseAsync({ command: 'true', pty: true })).success, false);
+  assert.equal(profileTools[0], original);
 });
 
 test('the WorkHub coordination profile has conversational authority but zero tools', () => {

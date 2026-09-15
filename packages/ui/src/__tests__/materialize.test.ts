@@ -51,7 +51,7 @@ test('keeps interrupted and replacement responses distinct live and after reload
     })!;
   }
   for (const turn of [materializeTurns(reloaded, 'en')[0], overlayLiveTurn(materializeTurns([originalUser], 'en'), live, 'en')[0]]) {
-    const responses = foldTimeline(turn!.timeline).filter((entry) => entry.kind === 'text');
+    const responses = foldTimeline(turn!.timeline).entries.filter((entry) => entry.kind === 'text');
     assert.deepEqual(responses.map((entry) => [entry.text, entry.interrupted === true]), [
       ['Partial answer', true], ['Recovered answer', false],
     ]);

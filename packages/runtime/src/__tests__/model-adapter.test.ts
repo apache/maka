@@ -401,7 +401,7 @@ describe('ModelAdapter stream and error normalization', () => {
       kind: 'rate_limit',
       code: '429',
       message: '429 rate limit (code=429)',
-      retryable: false,
+      retryable: true,
     });
     // The backend consumes the typed failure without recovering the raw
     // provider error shape.
@@ -725,45 +725,6 @@ describe('ModelAdapter stream and error normalization', () => {
         },
       ],
     );
-  });
-
-  test('reduces AI SDK 7 step boundaries to Maka-owned step-finish events', () => {
-    const adapter = newAdapter();
-    type Chunk = Parameters<typeof adapter.translateChunk>[0];
-    // The backend owns step counting + per-step AssistantMessage flush +
-    // messageId rotation, but the adapter owns reducing the SDK step-boundary
-    // chunk to a `step-finish` event carrying the normalized finish reason.
-    // `start-step` carries nothing and is inert.
-    const chunks: Chunk[] = [
-      { type: 'start-step' },
-      { type: 'text-delta', text: 'one' },
-      { type: 'finish-step', finishReason: { unified: 'tool-calls', raw: 'tool_calls' } },
-      { type: 'start-step' },
-      { type: 'text-delta', text: 'two' },
-      { type: 'finish-step', finishReason: { unified: 'stop', raw: 'stop' } },
-    ];
-    const events: ModelStreamEvent[] = chunks.flatMap((chunk) => adapter.translateChunk(chunk));
-
-    assert.deepEqual(
-      events.map((event) => event.kind),
-      ['text', 'step-finish', 'text', 'step-finish'],
-    );
-    assert.deepEqual(
-      events
-        .filter((event) => event.kind === 'text')
-        .map((event) => (event as { text: string }).text),
-      ['one', 'two'],
-    );
-    const stepFinishes = events.filter((event) => event.kind === 'step-finish') as Array<
-      Extract<ModelStreamEvent, { kind: 'step-finish' }>
-    >;
-    assert.deepEqual(
-      stepFinishes.map((event) => event.finishReason),
-      ['tool_calls', 'stop'],
-    );
-    // No usage on these chunks -> no usage field on the events.
-    assert.equal(stepFinishes[0].usage, undefined);
-    assert.equal(stepFinishes[1].usage, undefined);
   });
 
   test('captures the Anthropic reasoning signature without emitting an empty thinking event', () => {

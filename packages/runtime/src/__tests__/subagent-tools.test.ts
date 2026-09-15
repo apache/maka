@@ -111,6 +111,7 @@ describe('subagent tools', () => {
     assert.deepStrictEqual(Object.keys(await advertisedProperties(buildSubagentSpawnTool())), [
       'profile',
       'subagent_id',
+      'executor_id',
       'task',
       'write_back',
       'isolation',
@@ -412,6 +413,7 @@ describe('subagent tools', () => {
     const result = await tool.impl(
       {
         profile: LOCAL_READ_AGENT_PROFILE,
+        executor_id: 'codex',
         task: 'Inspect the runtime tests.',
       },
       {
@@ -464,10 +466,12 @@ describe('subagent tools', () => {
     assert.strictEqual(calls.length, 1);
     const call = calls[0] as {
       agentProfile: string;
+      executorId?: string;
       prompt: string;
       onEvent?: (event: SessionEvent) => void;
     };
     assert.strictEqual(call.agentProfile, LOCAL_READ_AGENT_PROFILE);
+    assert.strictEqual(call.executorId, 'codex');
     assert.strictEqual(call.prompt, 'Inspect the runtime tests.');
     assert.strictEqual(typeof call.onEvent, 'function');
     assert.deepStrictEqual(output, [

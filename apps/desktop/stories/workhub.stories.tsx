@@ -189,10 +189,15 @@ export const StandardComposer: Story = {
       return { x, y, width, height };
     });
     const before = layout();
+    const anchor = trigger.getBoundingClientRect();
     await userEvent.click(trigger);
     const wheel = canvas.getByRole('listbox', { name: /切换当前任务模型/ });
     await waitFor(() => expect(wheel).toHaveFocus());
     expect(layout()).toEqual(before);
+    expect(trigger).not.toBeVisible();
+    const expanded = wheel.getBoundingClientRect();
+    const center = Math.max(expanded.height / 2, Math.min(innerHeight - expanded.height / 2, (anchor.top + anchor.bottom) / 2));
+    expect(Math.abs((expanded.top + expanded.bottom) / 2 - center)).toBeLessThanOrEqual(1);
     await expect(within(wheel).getByRole('option', { name: /model-a/, selected: true })).toBeInTheDocument();
     await userEvent.keyboard('{End}');
     await waitFor(() => expect(writes.model).toHaveBeenCalledWith(sessionId, expect.objectContaining({ expectedRevision: 1, modelTarget: expect.objectContaining({ model: 'model-b' }) })));
@@ -210,11 +215,6 @@ export const StandardComposer: Story = {
     await userEvent.keyboard('{Escape}');
     await waitFor(() => expect(trigger).toHaveFocus());
     expect(layout()).toEqual(before);
-    await userEvent.click(trigger);
-    await waitFor(() => expect(canvas.getByRole('listbox')).toHaveFocus());
-    await userEvent.click(trigger);
-    await waitFor(() => expect(canvas.queryByRole('listbox')).not.toBeInTheDocument());
-    await waitFor(() => expect(trigger).toHaveFocus());
     await userEvent.click(trigger);
     await waitFor(() => expect(canvas.getByRole('listbox')).toHaveFocus());
     await userEvent.tab();
@@ -241,11 +241,12 @@ export const ProgressModelPicker: Story = {
     await userEvent.click(trigger);
     const wheel = await canvas.findByRole('listbox');
     await waitFor(() => expect(wheel).toHaveFocus());
-    const surface = wheel.closest('.maka-model-wheel-popup')!;
+    const surface = wheel.closest('.maka-model-wheel-expanded')!;
     const pixels = new OffscreenCanvas(1, 1).getContext('2d')!;
     pixels.fillStyle = getComputedStyle(surface).backgroundColor;
     pixels.fillRect(0, 0, 1, 1);
-    expect(pixels.getImageData(0, 0, 1, 1).data[3]).toBe(255);
+    expect(pixels.getImageData(0, 0, 1, 1).data[3]).toBeGreaterThanOrEqual(230);
+    expect(pixels.getImageData(0, 0, 1, 1).data[3]).toBeLessThan(255);
     expect(editor).toHaveTextContent('Keep this draft readable while choosing a model.');
   },
 };

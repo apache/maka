@@ -400,7 +400,20 @@ export const ManyConnections: Story = {
     await userEvent.click(trigger);
     const menu = within(document.body);
     await expect(await menu.findAllByRole('option')).toHaveLength(MANY_CHOICES.length);
+    const wheel = menu.getByRole('listbox');
+    const expectFilledEdges = async () => waitFor(() => {
+      const bounds = wheel.getBoundingClientRect();
+      const rows = Array.from(wheel.querySelectorAll('.maka-model-wheel-option'))
+        .map((row) => row.getBoundingClientRect());
+      for (const y of [bounds.top + 8, bounds.bottom - 8]) {
+        expect(rows.some((row) => row.top <= y && row.bottom >= y)).toBe(true);
+      }
+      const selected = wheel.querySelector('[aria-selected="true"]')!.getBoundingClientRect();
+      expect(Math.abs((selected.top + selected.bottom - bounds.top - bounds.bottom) / 2)).toBeLessThanOrEqual(1);
+    });
+    await expectFilledEdges();
     await userEvent.keyboard('{End}');
+    await expectFilledEdges();
     await expect(await menu.findByRole('option', { name: /vendor\/gamma/, selected: true })).toBeInTheDocument();
   },
 };
