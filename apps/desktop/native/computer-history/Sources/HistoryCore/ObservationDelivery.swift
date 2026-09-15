@@ -17,7 +17,25 @@
  * under the License.
  */
 
+import Darwin
 import Foundation
+
+/// Kernel lifetime identity also exists for apps launched without LaunchServices.
+public struct ObservationProcessIdentity: Hashable {
+    public let pid: pid_t
+    private let seconds: UInt64
+    private let microseconds: UInt64
+
+    public static func read(_ pid: pid_t) -> Self? {
+        guard pid > 0 else { return nil }
+        var info = proc_bsdinfo()
+        let size = Int32(MemoryLayout<proc_bsdinfo>.size)
+        guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size,
+              info.pbi_pid == UInt32(pid), info.pbi_start_tvsec > 0,
+              info.pbi_start_tvusec < 1_000_000 else { return nil }
+        return Self(pid: pid, seconds: info.pbi_start_tvsec, microseconds: info.pbi_start_tvusec)
+    }
+}
 
 public struct OpaqueSourceRegistry<Key: Hashable> {
     private var entries: [(key: Key, id: String)] = []

@@ -21,6 +21,26 @@ import XCTest
 @testable import HistoryCore
 
 final class ObservationDeliveryTests: XCTestCase {
+    func testKernelProcessIdentitySurvivesDirectLaunchAndRejectsExitedProcess() throws {
+        XCTAssertNil(ObservationProcessIdentity.read(-1))
+        XCTAssertNil(ObservationProcessIdentity.read(0))
+        let parent = try XCTUnwrap(ObservationProcessIdentity.read(getpid()))
+        XCTAssertEqual(parent.pid, getpid())
+        XCTAssertEqual(ObservationProcessIdentity.read(getpid()), parent)
+        let child = Process()
+        child.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        child.arguments = ["30"]
+        try child.run()
+        defer { if child.isRunning { child.terminate(); child.waitUntilExit() } }
+        let launched = try XCTUnwrap(ObservationProcessIdentity.read(child.processIdentifier))
+        XCTAssertEqual(launched.pid, child.processIdentifier)
+        XCTAssertNotEqual(launched, parent)
+        XCTAssertEqual(ObservationProcessIdentity.read(child.processIdentifier), launched)
+        child.terminate()
+        child.waitUntilExit()
+        XCTAssertNotEqual(ObservationProcessIdentity.read(child.processIdentifier), launched)
+    }
+
     func testOpaqueWindowIdentityDistinguishesEqualTitlesProcessReuseAndEviction() throws {
         struct Source: Hashable {
             let pid: Int

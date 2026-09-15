@@ -334,6 +334,49 @@ final class ObservationCaptureTests: XCTestCase {
         XCTAssertFalse(ax.contentReads.contains { ["text", "denied", "secret"].contains($0.node) })
     }
 
+    func testUnfocusedTextBodyRetainsTailAndReportsByteTruncation() throws {
+        for role in ["AXTextArea", "AXStaticText"] {
+            let ax = fixture(web: false)
+            let body = String(repeating: "Reading ordinary document text. ", count: 40) + "BODY_TAIL"
+            ax.add("body", role: role, parent: "window", value: body)
+            let complete = try XCTUnwrap(capture(ax, browser: false))
+            XCTAssertEqual(complete.element?.value, "safe field")
+            XCTAssertTrue(complete.ax?.text.contains("BODY_TAIL") == true)
+            XCTAssertEqual(complete.ax?.truncated, false)
+
+            ax.attributes["body"]?["AXValue"] = String(repeating: "\u{6587}", count: 4_000) + "OMITTED_TAIL"
+            let clipped = try XCTUnwrap(capture(ax, browser: false))
+            XCTAssertEqual(clipped.contentState, .available)
+            XCTAssertEqual(clipped.ax?.truncated, true)
+            XCTAssertFalse(clipped.ax?.text.contains("OMITTED_TAIL") == true)
+            XCTAssertLessThanOrEqual(try XCTUnwrap(clipped.ax).text.utf8.count, 32_768)
+            let line = try XCTUnwrap(clipped.ax?.text.split(separator: "\n").first { $0.contains(role) })
+            let value = try XCTUnwrap(line.range(of: "AXValue="))
+            let encoded = Data(line[value.upperBound...].utf8)
+            let decoded = try JSONDecoder().decode(String.self, from: encoded)
+            XCTAssertEqual(decoded, String(repeating: "\u{6587}", count: 8_192 / 3))
+
+            ax.attributes["body"]?["AXValue"] = "ESCAPED_BODY " + String(repeating: "\u{0001}", count: 6_000)
+            let escaped = try XCTUnwrap(capture(ax, browser: false))
+            let escapedTree = try XCTUnwrap(escaped.ax)
+            XCTAssertEqual(escapedTree.truncated, true)
+            XCTAssertTrue(escapedTree.text.contains("ESCAPED_BODY"))
+            XCTAssertLessThanOrEqual(escapedTree.text.utf8.count, 32_768)
+            let escapedLine = try XCTUnwrap(escapedTree.text.split(separator: "\n").first { $0.contains("ESCAPED_BODY") })
+            let escapedStart = try XCTUnwrap(escapedLine.range(of: "AXValue="))
+            let escapedValue = try JSONDecoder().decode(String.self, from: Data(escapedLine[escapedStart.upperBound...].utf8))
+            XCTAssertTrue(escapedValue.hasPrefix("ESCAPED_BODY "))
+            XCTAssertTrue(escapedValue.dropFirst("ESCAPED_BODY ".count).allSatisfy { $0 == "\u{0001}" })
+            XCTAssertGreaterThan(escapedValue.count, 400)
+
+            ax.roles["body"] = ObservationRole("AXSecureTextField")
+            ax.contentReads.removeAll()
+            let secure = try XCTUnwrap(capture(ax, browser: false))
+            XCTAssertFalse(secure.ax?.text.contains("ESCAPED_BODY") == true)
+            XCTAssertFalse(ax.contentReads.contains { $0.node == "body" })
+        }
+    }
+
     func testSecureAncestorAndUnreadableSecuritySubtreeAreExcludedBeforeTextReads() {
         for role in [ObservationRole("AXSecureTextField"), ObservationRole("AXTextField", subrole: "AXSecureTextField")] {
             let ax = fixture()

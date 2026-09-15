@@ -204,7 +204,9 @@ final class HistoryRecorder {
         guard access.owns(origin) else { return }
         if [kAXFocusedWindowChangedNotification, kAXFocusedUIElementChangedNotification].contains(notification) {
             lifecycle.invalidatePendingWork()
-            discardPendingWork()
+            // Focus invalidates pending input, not the last persisted snapshot.
+            // Source/window metadata still detects actual window transitions.
+            discardPendingContent()
         }
         if [kAXFocusedWindowChangedNotification, kAXFocusedUIElementChangedNotification,
             kAXTitleChangedNotification].contains(notification) {

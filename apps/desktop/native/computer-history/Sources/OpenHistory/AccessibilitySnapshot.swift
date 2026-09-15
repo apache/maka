@@ -69,15 +69,13 @@ struct NativeAccessibility: ObservationAccessibility {
 /// AX equality, not titles or CGWindow heuristics, defines lifetime identity.
 final class WindowSources {
     private struct Source: Hashable {
-        let pid: pid_t
-        let launchedAt: Date?
+        let process: ObservationProcessIdentity
         let window: AXNode
     }
     private var sources = OpaqueSourceRegistry<Source>()
 
-    func id(for window: AXNode, application: NSRunningApplication) -> String? {
-        guard let launchedAt = application.launchDate else { return nil }
-        return sources.id(for: Source(pid: application.processIdentifier, launchedAt: launchedAt, window: window))
+    func id(for window: AXNode, process: ObservationProcessIdentity) -> String {
+        sources.id(for: Source(process: process, window: window))
     }
 
     func remove(window: AXNode) {
@@ -114,12 +112,16 @@ enum AccessibilityReader {
         expectedWindow: AXNode? = nil, includeTree: Bool = true
     ) -> AccessibilitySnapshot? {
         guard !IsSecureEventInputEnabled(),
+              let processIdentity = ObservationProcessIdentity.read(processIdentifier),
               let running = NSRunningApplication(processIdentifier: processIdentifier), !running.isTerminated else { return nil }
         let app = EventStreamApp(name: running.localizedName, secureInput: false, processIdentifier: nil, bundleIdentifier: running.bundleIdentifier)
         guard policy.allowsApplication(running.bundleIdentifier ?? "") else { return nil }
         let access = NativeAccessibility(processIdentifier: processIdentifier)
         let capture = ObservationCapture(access: access, policy: policy)
         let application = AXNode(element: AXUIElementCreateApplication(processIdentifier))
+        // Chromium activates its native AX provider when the application role
+        // is queried. Focus alone can remain absent on a cold browser.
+        guard access.owns(application), access.role(application)?.name == "AXApplication" else { return nil }
         let focused = access.node(application, "AXFocusedUIElement")
         var target = origin ?? focused
         if let point {
@@ -166,7 +168,8 @@ enum AccessibilityReader {
                   !IsSecureEventInputEnabled(), access.node(application, "AXFocusedUIElement") == focused
             else { return nil }
         }
-        let sourceId = observation.windowNode.flatMap { sources.id(for: $0, application: running) }
+        guard !running.isTerminated, ObservationProcessIdentity.read(processIdentifier) == processIdentity else { return nil }
+        let sourceId = observation.windowNode.map { sources.id(for: $0, process: processIdentity) }
         let available = sourceId != nil && observation.contentState == .available
         return AccessibilitySnapshot(
             app: app, window: observation.window,

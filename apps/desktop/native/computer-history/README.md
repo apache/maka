@@ -191,6 +191,12 @@ URLs, unsupported schemes, and remote file hosts remain unavailable.
 AX trees are self-contained bounded snapshots (32 KiB, 256 nodes, depth 14),
 not deltas requiring an unavailable baseline. The decoder retains support for
 older deltas, but Desktop never sends those deltas to the analysis model.
+Admitted leaf values retain up to 8 KiB, including read-only document bodies
+outside the focused control; other leaf attributes retain up to 400 bytes.
+Attribute clipping sets `truncated` and preserves UTF-8 boundaries. These
+per-attribute limits do not expand the tree's total byte or traversal budgets.
+The serialized byte budget includes JSON escaping; an oversized attribute
+retains a valid JSON-encoded prefix instead of dropping its entire leaf.
 With text enabled the producer omits secure nodes and descendants before
 rendering. Private-window detection depends on
 the supported browser bundle IDs and title markers, and secure detection depends
@@ -201,7 +207,14 @@ An empty children array can make the ranged AX API return `illegalArgument`.
 Only a successful zero child count resolves that case to a leaf; messaging
 errors remain unreadable. Cancelling pending sensitive content preserves
 retained metadata deduplication, so an unavailable snapshot does not create
-a new identical window-change event every three seconds.
+a new identical window-change event every three seconds. Control focus changes
+also cancel stale input and callbacks without resetting persisted window
+identity; actual source/window changes still produce a window-change event.
+Window identity combines AX equality with the kernel PID/start time, validated
+before and after capture. It does not depend on LaunchServices `launchDate`,
+which may be absent for directly launched apps. Reading the owned application's
+AX role before its focus lets Chromium initialize native accessibility on cold
+startup; the collector does not write accessibility-mode attributes.
 
 Local persistence and model transmission are independent permissions. Desktop's
 `summaryTextEnabled` setting defaults off and is not a native capture permission.

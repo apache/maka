@@ -339,11 +339,18 @@ public struct ObservationCapture<Access: ObservationAccessibility> {
             reads.append((node, parent, role, !attributes.isEmpty))
             for attribute in attributes {
                 guard now() < deadline else { truncated = true; break }
-                if let value = boundedText(access.string(node, attribute), bytes: 400), !value.isEmpty {
+                let raw = access.string(node, attribute)
+                // Read-only editors expose their body as a leaf value, even
+                // while focus stays on another control. Match the target budget.
+                let limit = attribute == "AXValue" ? 8_192 : 400
+                if (raw?.utf8.count ?? 0) > limit { truncated = true }
+                if let value = boundedText(raw, bytes: limit), !value.isEmpty {
                     // JSON escaping keeps document text from impersonating tree structure.
-                    if let data = try? JSONEncoder().encode(value), let escaped = String(data: data, encoding: .utf8) {
-                        parts.append("\(attribute)=\(escaped)")
-                    }
+                    let prefix = "[\(lines.count)] " + parts.joined(separator: " ") + " \(attribute)="
+                    let remaining = 32_768 - size - prefix.utf8.count - 1
+                    guard let encoded = boundedJSON(value, bytes: remaining) else { truncated = true; break }
+                    truncated = truncated || encoded.clipped
+                    parts.append("\(attribute)=\(encoded.text)")
                 }
             }
             let line = "[\(lines.count)] " + parts.joined(separator: " ")
@@ -357,6 +364,32 @@ public struct ObservationCapture<Access: ObservationAccessibility> {
         }
         visit(root, parent: nil, depth: 0, allowLocal: allowLocal)
         return EventStreamAXTree(mode: .fullTree, text: lines.joined(separator: "\n"), truncated: truncated)
+    }
+
+    private func boundedJSON(_ value: String, bytes: Int) -> (text: String, clipped: Bool)? {
+        guard bytes >= 2 else { return nil }
+        let encoder = JSONEncoder()
+        func encode(_ value: String) -> String? {
+            guard let data = try? encoder.encode(value) else { return nil }
+            return String(data: data, encoding: .utf8)
+        }
+        guard let full = encode(value) else { return nil }
+        if full.utf8.count <= bytes { return (full, false) }
+        // Escape expansion counts against the tree budget as well as raw text.
+        var lower = 0
+        var upper = value.utf8.count
+        var retained = "\"\""
+        while lower < upper {
+            let middle = (lower + upper + 1) / 2
+            guard let prefix = boundedText(value, bytes: middle), let encoded = encode(prefix) else { return nil }
+            if encoded.utf8.count <= bytes {
+                lower = middle
+                retained = encoded
+            } else {
+                upper = middle - 1
+            }
+        }
+        return (retained, true)
     }
 
     public static func documentURL(_ value: String?) -> String? {
