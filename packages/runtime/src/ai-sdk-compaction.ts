@@ -70,7 +70,6 @@ import {
 } from './history-compact-error.js';
 import { createHash } from 'node:crypto';
 import type { ModelMessage, NormalizedUsage } from './model-protocol.js';
-import type { ModelAdapter } from './model-adapter.js';
 import type {
   RequestProjection,
   RequestProjectionContext,
@@ -157,7 +156,6 @@ export interface AiSdkCompactionDeps {
   targetConnectionId: string | undefined;
   targetProviderStateIdentity: `sha256:${string}` | undefined;
   now: () => number;
-  modelAdapter: ModelAdapter;
   /**
    * A ready tracker for a compaction call that has none of its own. The backend
    * hands over the built tracker rather than the capture, attempt, and id sinks
@@ -190,7 +188,6 @@ export class AiSdkCompaction {
   private readonly targetConnectionId: string | undefined;
   private readonly targetProviderStateIdentity: `sha256:${string}` | undefined;
   private readonly now: () => number;
-  private readonly modelAdapter: ModelAdapter;
   private readonly createProviderRequestTracker: (input: {
     turnId: string;
     callKind: ModelCallKind;
@@ -222,7 +219,6 @@ export class AiSdkCompaction {
     this.targetConnectionId = deps.targetConnectionId;
     this.targetProviderStateIdentity = deps.targetProviderStateIdentity;
     this.now = deps.now;
-    this.modelAdapter = deps.modelAdapter;
     this.createProviderRequestTracker = deps.createProviderRequestTracker;
     this.materializeRuntimeReplayPlan = deps.materializeRuntimeReplayPlan;
     this.canReplayProviderNative = deps.canReplayProviderNative;
@@ -1184,7 +1180,6 @@ export class AiSdkCompaction {
         // Memory extraction is fail-open and must never perturb Compaction.
       }
     }
-    state.previousCheckpoint = plan.checkpoint;
     state.projectionCheckpoint = plan.checkpoint;
     return {
       decision: 'compacted',
@@ -1210,7 +1205,6 @@ export class AiSdkCompaction {
    * already better than the old fake end_turn.
    */
   public async recoverFromOverflowError(input: {
-    error: unknown;
     midTurnState: MidTurnCapacityCompactState | undefined;
     turnId: string;
     stepNumber: number;
@@ -1227,7 +1221,6 @@ export class AiSdkCompaction {
     if (!state || state.stepShaping.has('fold') || state.stepShaping.has('omit_images')) {
       return undefined;
     }
-    if (this.modelAdapter.classifyError(input.error) !== 'context_overflow') return undefined;
 
     const eligibleImages = collectHistoricalImageToolResults(state.priorContentEvents);
     const imageOmission = omitHistoricalImageToolResults(input.currentMessages, eligibleImages);
@@ -1381,17 +1374,21 @@ export class MidTurnCapacityCompactState {
    * be accepted but leave the reply no room (#4559).
    */
   replyReserveTokens = 0;
-  /** Latest durable checkpoint (loaded or written) for roll-forward summaries. */
-  previousCheckpoint: HistoryCompactCheckpoint | undefined;
+  /** Pre-turn checkpoint the turn starts from, before any fold of its own. */
+  seedCheckpoint: HistoryCompactCheckpoint | undefined;
   /** Checkpoint accepted during this send; pins every later durable projection. */
   projectionCheckpoint: HistoryCompactCheckpoint | undefined;
+  /** Latest durable checkpoint (loaded or written) for roll-forward summaries. */
+  get previousCheckpoint(): HistoryCompactCheckpoint | undefined {
+    return this.projectionCheckpoint ?? this.seedCheckpoint;
+  }
   /**
-   * What has reshaped the history since the last request a provider accepted.
-   * The turn clears it at that acceptance, every shaper records itself here,
-   * and every consumer reads it here — an empty set is the only proof that the
-   * next request is a pure append of its predecessor.
+   * What has reshaped the request since the last one a provider accepted. The
+   * turn clears it at that acceptance, every shaper records itself here, and
+   * every consumer reads it here — an empty set is the only proof that the next
+   * request is a pure append of its predecessor.
    */
-  readonly stepShaping = new Set<'fold' | 'prune' | 'omit_images'>();
+  readonly stepShaping = new Set<'fold' | 'prune' | 'omit_images' | 'tools'>();
   /**
    * finish-step boundaries the event pump has flushed into the session-event
    * queue. The capacity hook's durability wait needs it: only after the pump

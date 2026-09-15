@@ -1195,7 +1195,7 @@ export class AiSdkTurn {
       // Roll-forward seed: the latest durable checkpoint (loaded or written at
       // turn start) so a mid-turn summary only re-reads the newly folded span.
       const checkpoint = priorReplay.latestHistoryCompactCheckpoint;
-      midTurnState.previousCheckpoint =
+      midTurnState.seedCheckpoint =
         checkpoint &&
         canContinueHistoryCompactCheckpointForModel(
           checkpoint,
@@ -1519,6 +1519,16 @@ export class AiSdkTurn {
             : undefined;
           const projectedMessages = shaped?.messages ?? contextualRequestMessages;
           const activeToolsForRequest = resolveDispatch(shaped?.activeTools).activeTools;
+          // A finalization step resolves an empty tool set, so its request
+          // legitimately drops several thousand schema tokens with no fold,
+          // prune or image omission. Maka shaped that request; the provider did
+          // not drop anything.
+          if (
+            lastStepActiveToolCount !== undefined &&
+            activeToolsForRequest.length < lastStepActiveToolCount
+          ) {
+            midTurnState?.stepShaping.add('tools');
+          }
           const requestCompositionId =
             this.runId && this.deps.backend.recordRequestComposition
               ? await this.deps.backend.recordRequestComposition(this.runId, {
@@ -1818,13 +1828,6 @@ export class AiSdkTurn {
               // reply's reasoning may not be resent, so input + output is
               // not the floor of the next input on every wire.
               const completedRequestIndex = runtimeSteps - 1;
-              // A finalization step resolves an empty tool set, so its
-              // request legitimately drops several thousand schema tokens
-              // with no fold, prune or image omission. Maka shaped that
-              // request; the provider did not drop anything.
-              const toolSchemaShrank =
-                lastStepActiveToolCount !== undefined &&
-                activeToolsForRequest.length < lastStepActiveToolCount;
               // Across the send boundary the comparison is the same one,
               // against the last request a provider accepted before this
               // send. A provider that truncates to a fixed window reports
@@ -1841,7 +1844,6 @@ export class AiSdkTurn {
                 : lastStepInputTokens;
               if (
                 !this.deps.session.contextProviderDroppingReported &&
-                !toolSchemaShrank &&
                 midTurnState &&
                 priorInput !== undefined &&
                 midTurnState.stepShaping.size === 0 &&
@@ -2002,10 +2004,10 @@ export class AiSdkTurn {
               const stepBudgetRemains = maxSteps === undefined || runtimeSteps < maxSteps;
               const recovered =
                 stepBudgetRemains &&
+                failure.kind === 'context_overflow' &&
                 providerAttempt < MAX_PROVIDER_ATTEMPTS_PER_STEP &&
                 attemptHasNoObservableOutput()
                   ? await this.deps.compaction.recoverFromOverflowError({
-                      error: failure,
                       midTurnState,
                       turnId,
                       stepNumber: runtimeSteps,
