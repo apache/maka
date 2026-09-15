@@ -50,6 +50,7 @@ import {
 } from '@maka/core/computer-history';
 import type { UiLocale } from '@maka/core/ui-locale';
 import { ComputerHistoryApplications } from './computer-history-applications.js';
+import { acquireWindowsHistoryOwnership } from './computer-history-windows-ownership.js';
 import { projectHistorySummaryEvent, summaryScopeKey } from './computer-history-evidence.js';
 import {
   ComputerHistorySummaries,
@@ -91,6 +92,7 @@ type HelperStatus = {
   inputMonitoring: boolean;
   state: string;
   recorderActive?: boolean;
+  captureError?: string;
   failed?: boolean;
 };
 
@@ -131,6 +133,7 @@ export class ComputerHistoryService {
   readonly #showItemInFolder?: (path: string) => void;
   readonly #resolveLocale: () => UiLocale | Promise<UiLocale>;
   readonly #onEnabled?: () => void;
+  readonly #acquireWindowsOwnership: typeof acquireWindowsHistoryOwnership;
   #recorder?: ChildProcess;
   #recorderEpoch = 0;
   #lastError?: string;
@@ -159,6 +162,7 @@ export class ComputerHistoryService {
     showItemInFolder?: (path: string) => void;
     resolveLocale?: () => UiLocale | Promise<UiLocale>;
     onEnabled?: () => void;
+    acquireWindowsOwnership?: typeof acquireWindowsHistoryOwnership;
     generateSummary?: (
       input: ComputerHistorySummaryInput,
       signal: AbortSignal,
@@ -172,6 +176,7 @@ export class ComputerHistoryService {
     this.#showItemInFolder = input.showItemInFolder;
     this.#resolveLocale = input.resolveLocale ?? (() => 'en');
     this.#onEnabled = input.onEnabled;
+    this.#acquireWindowsOwnership = input.acquireWindowsOwnership ?? acquireWindowsHistoryOwnership;
     this.#applications = new ComputerHistoryApplications({
       helperPath: this.#helperPath, platform: this.#platform, spawn: this.#spawn, now: this.#now,
     });
@@ -325,11 +330,12 @@ export class ComputerHistoryService {
 
   async #start(reconcile: boolean, epoch = this.#recorderEpoch): Promise<void> {
     if (this.#disposed || this.#storageMaintenance || this.#collectorConfigError ||
-        this.#platform !== 'darwin' || this.#recorder) return;
+        !this.#platformSupported() || this.#recorder) return;
     if (!(await this.#helperAvailable())) return;
     const status = await this.#helperStatus();
     if (reconcile && (status.failed || await this.#analysisPaused(status) ||
         !(await this.settings()).enabled || this.#maintenance)) return;
+    const enabled = (await this.settings()).enabled;
     // Keep consent as the final awaited read, then fence every earlier read
     // against stop/pause before spawning without another asynchronous gap.
     if (this.#disposed || this.#storageMaintenance || this.#collectorConfigError ||
@@ -338,14 +344,19 @@ export class ComputerHistoryService {
       this.#lastError = RECORDER_OCCUPIED;
       throw new Error(RECORDER_OCCUPIED);
     }
+    if (!enabled) return;
     if (!status.accessibility || !status.inputMonitoring) return;
     this.#lastError = undefined;
     const recorder = this.#spawn(this.#helperPath, ['record', '--no-prompt', '--parent-pid', String(process.pid)], {
       env: this.#environment(),
       shell: false,
-      stdio: ['ignore', 'ignore', 'pipe'],
+      windowsHide: true,
+      stdio: [this.#platform === 'win32' ? 'pipe' : 'ignore', 'ignore', 'pipe'],
     });
     this.#recorder = recorder;
+    // Windows does not deliver POSIX SIGTERM to console helpers. Closing this
+    // owner-held pipe requests a clean stop; a dead Desktop also closes it.
+    recorder.stdin?.on('error', () => {});
     recorder.stderr?.setEncoding('utf8');
     recorder.stderr?.on('data', (chunk: string) => {
       this.#lastError = boundedMessage(chunk);
@@ -382,7 +393,8 @@ export class ComputerHistoryService {
         resolvePromise();
       };
       recorder.once('exit', onExit);
-      recorder.kill('SIGTERM');
+      if (this.#platform === 'win32' && recorder.stdin) recorder.stdin.end();
+      else recorder.kill('SIGTERM');
     });
     if (this.#recorder === recorder) this.#recorder = undefined;
     await this.#assertNoForeignRecorder();
@@ -420,7 +432,7 @@ export class ComputerHistoryService {
     } catch (error) {
       readError = `Computer History settings could not be read: ${boundedMessage(String(error))}`;
     }
-    const platformSupported = this.#platform === 'darwin';
+    const platformSupported = this.#platformSupported();
     const helperAvailable = platformSupported && (await this.#helperAvailable());
     const helper = helperAvailable ? await this.#helperStatus() : undefined;
     // A user can enable collection before granting OS access in Permission Center.
@@ -436,7 +448,8 @@ export class ComputerHistoryService {
     }
     const inventory = await this.#inventory();
     const ownershipError = !this.#recorder && !this.#storageLockHeld && helper && recorderActive(helper) ? RECORDER_OCCUPIED : undefined;
-    const error = readError ?? this.#collectorConfigError ?? this.#evidenceError ?? inventory.error ?? ownershipError ?? this.#initializationError ?? this.#retentionError ?? this.#lastError;
+    const captureError = settings.enabled && this.#recorder ? helper?.captureError : undefined;
+    const error = readError ?? this.#collectorConfigError ?? this.#evidenceError ?? inventory.error ?? ownershipError ?? this.#initializationError ?? this.#retentionError ?? this.#lastError ?? captureError;
     const permissionsReady = Boolean(helper?.accessibility && helper.inputMonitoring);
     const state: ComputerHistoryStatus['state'] = error
       ? 'error'
@@ -445,7 +458,7 @@ export class ComputerHistoryService {
       : !helperAvailable
         ? 'unavailable'
         : !permissionsReady
-            ? 'needs_permission'
+            ? this.#platform === 'win32' ? 'unavailable' : 'needs_permission'
             : !settings.enabled
               ? 'stopped'
               : helper?.state === 'paused'
@@ -858,7 +871,7 @@ export class ComputerHistoryService {
     } catch (error) {
       if (!isMissing(error)) throw error;
     }
-    if (this.#platform !== 'darwin') return false;
+    if (!this.#platformSupported()) return false;
     const status = helper ?? await this.#helperStatus();
     if (status.failed) throw new Error('Cannot verify Computer History analysis admission');
     return status.state === 'paused';
@@ -867,6 +880,7 @@ export class ComputerHistoryService {
   async #withStorageMaintenance<T>(operation: () => Promise<T>, restart = false): Promise<T> {
     this.#storageMaintenance = true;
     let lock: Awaited<ReturnType<typeof open>> | undefined;
+    let windowsOwnership: Awaited<ReturnType<typeof acquireWindowsHistoryOwnership>> | undefined;
     let admitted = false;
     try {
       await this.stop();
@@ -879,12 +893,19 @@ export class ComputerHistoryService {
         const admitted = await this.#runHelper(['maintenance', '--parent-pid', String(process.pid)], lock.fd);
         if (admitted !== 'maintenance-admitted') throw new Error('Invalid Computer History maintenance admission');
         this.#storageLockHeld = true;
+      } else if (this.#platform === 'win32') {
+        await mkdir(this.#home, { recursive: true, mode: 0o700 });
+        await this.#validateWindowsHome();
+        windowsOwnership = await this.#acquireWindowsOwnership(this.#home);
+        await this.#validateWindowsHome();
+        this.#storageLockHeld = true;
       }
       admitted = true;
       return await operation();
     } finally {
       try {
         await lock?.close();
+        await windowsOwnership?.close();
       } finally {
         this.#storageLockHeld = false;
         this.#storageMaintenance = false;
@@ -911,6 +932,16 @@ export class ComputerHistoryService {
     return join(this.#home, 'maka-settings.json');
   }
 
+  #platformSupported(): boolean {
+    return this.#platform === 'darwin' || this.#platform === 'win32';
+  }
+
+  async #validateWindowsHome(): Promise<void> {
+    if (await this.#runHelper(['validate-home']) !== 'history-home-valid') {
+      throw new Error('Invalid Windows Computer History home validation');
+    }
+  }
+
   #environment(): NodeJS.ProcessEnv {
     return {
       ...process.env,
@@ -919,7 +950,7 @@ export class ComputerHistoryService {
   }
 
   async #assertNoForeignRecorder(): Promise<void> {
-    if (this.#recorder || this.#storageLockHeld || this.#platform !== 'darwin' || !(await this.#helperAvailable())) return;
+    if (this.#recorder || this.#storageLockHeld || !this.#platformSupported() || !(await this.#helperAvailable())) return;
     const status = await this.#helperStatus();
     if (recorderActive(status)) {
       this.#lastError = RECORDER_OCCUPIED;
@@ -930,7 +961,7 @@ export class ComputerHistoryService {
 
   async #helperAvailable(): Promise<boolean> {
     try {
-      await access(this.#helperPath, constants.R_OK | constants.X_OK);
+      await access(this.#helperPath, this.#platform === 'win32' ? constants.R_OK : constants.R_OK | constants.X_OK);
       return true;
     } catch {
       return false;
@@ -944,6 +975,9 @@ export class ComputerHistoryService {
       if (!isRecord(value) || typeof value.accessibility !== 'boolean' ||
           typeof value.inputMonitoring !== 'boolean' ||
           !['running', 'paused', 'stopped'].includes(String(value.state)) ||
+          (this.#platform === 'win32' && (value.permissionModel !== 'interactive-session' ||
+            typeof value.recorderActive !== 'boolean' ||
+            (value.captureError !== undefined && value.captureError !== 'windows_capture_failed'))) ||
           (value.recorderActive !== undefined && typeof value.recorderActive !== 'boolean')) {
         throw new Error('Invalid Computer History helper status');
       }
@@ -952,6 +986,9 @@ export class ComputerHistoryService {
         inputMonitoring: value.inputMonitoring === true,
         state: typeof value.state === 'string' ? value.state : 'stopped',
         ...(typeof value.recorderActive === 'boolean' ? { recorderActive: value.recorderActive } : {}),
+        ...(this.#platform === 'win32' && value.captureError === 'windows_capture_failed'
+          ? { captureError: 'Windows activity capture is repeatedly failing. Check the interactive session and application accessibility.' }
+          : {}),
       };
       if (!recorderActive(status) && this.#lastError === RECORDER_OCCUPIED) this.#lastError = undefined;
       return status;
@@ -967,6 +1004,7 @@ export class ComputerHistoryService {
       const child = this.#spawn(this.#helperPath, args, {
         env: this.#environment(),
         shell: false,
+        windowsHide: true,
         stdio: ['ignore', 'pipe', 'pipe', ...(inheritedLock === undefined ? [] : [inheritedLock])],
       });
       let stdout = '';

@@ -1,0 +1,133 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+name: Computer History Windows
+
+on:
+  pull_request:
+    paths:
+      - 'apps/desktop/native/computer-history-windows/**'
+      - 'apps/desktop/scripts/build-computer-history-helper*.mjs'
+      - 'apps/desktop/scripts/computer-history-windows-native.test.mjs'
+      - 'apps/desktop/src/main/computer-history-main.ts'
+      - 'apps/desktop/src/main/__tests__/computer-history-main.test.ts'
+      - 'apps/desktop/src/main/runtime-host-boot.ts'
+      - 'apps/desktop/src/main/computer-history-windows-ownership.ts'
+      - 'apps/desktop/src/main/__tests__/computer-history-windows-ownership.test.ts'
+      - 'apps/desktop/electron-builder.config.mjs'
+      - 'apps/desktop/resources/licenses/computer-history-windows/**'
+      - 'scripts/generate-computer-history-windows-notices*.mjs'
+      - 'docs/computer-history-integration.md'
+      - 'apps/desktop/package.json'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/computer-history-windows.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'apps/desktop/native/computer-history-windows/**'
+      - 'apps/desktop/scripts/build-computer-history-helper*.mjs'
+      - 'apps/desktop/scripts/computer-history-windows-native.test.mjs'
+      - 'apps/desktop/src/main/computer-history-main.ts'
+      - 'apps/desktop/src/main/__tests__/computer-history-main.test.ts'
+      - 'apps/desktop/src/main/runtime-host-boot.ts'
+      - 'apps/desktop/src/main/computer-history-windows-ownership.ts'
+      - 'apps/desktop/src/main/__tests__/computer-history-windows-ownership.test.ts'
+      - 'apps/desktop/electron-builder.config.mjs'
+      - 'apps/desktop/resources/licenses/computer-history-windows/**'
+      - 'scripts/generate-computer-history-windows-notices*.mjs'
+      - 'docs/computer-history-integration.md'
+      - 'apps/desktop/package.json'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/computer-history-windows.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: computer-history-windows-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  native:
+    name: Windows x64 synthetic tests and build
+    runs-on: windows-2025
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    env:
+      CARGO_TERM_COLOR: always
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Prepare native Windows toolchain
+        run: |
+          node -e "if (process.platform !== 'win32' || process.arch !== 'x64') process.exit(1)"
+          rustup update stable --no-self-update
+          rustup component add --toolchain stable rustfmt clippy
+          rustup target add --toolchain stable x86_64-pc-windows-msvc
+      - name: Check native formatting
+        run: cargo +stable fmt --manifest-path apps/desktop/native/computer-history-windows/Cargo.toml --check
+      - name: Lint native Windows targets
+        run: cargo +stable clippy --manifest-path apps/desktop/native/computer-history-windows/Cargo.toml --locked --all-targets --target x86_64-pc-windows-msvc -- -D warnings
+      # The native tests use synthetic events and stores, never a live desktop recorder.
+      - name: Run synthetic native tests
+        run: cargo +stable test --manifest-path apps/desktop/native/computer-history-windows/Cargo.toml --locked --all-targets --target x86_64-pc-windows-msvc
+      - name: Install build-test dependencies without application hooks
+        run: npm ci --ignore-scripts
+      - name: Test build and platform packaging contracts
+        run: node --test apps/desktop/scripts/build-computer-history-helper.test.mjs scripts/generate-computer-history-windows-notices.test.mjs
+      - name: Check Windows Cargo dependency notices
+        env:
+          RUSTUP_TOOLCHAIN: stable
+        run: node scripts/generate-computer-history-windows-notices.mjs --check
+      - name: Build and stage the release helper
+        env:
+          RUSTUP_TOOLCHAIN: stable
+          _LINK_: /Brepro /DEBUG:NONE
+        run: node apps/desktop/scripts/build-computer-history-helper.mjs
+      - name: Test Node and native ownership namespace parity
+        run: node --test apps/desktop/scripts/computer-history-windows-native.test.mjs
+      - name: Check the staged executable architecture
+        run: |
+          node --input-type=module -e "
+            import assert from 'node:assert/strict';
+            import { readFile } from 'node:fs/promises';
+            const bytes = await readFile('apps/desktop/resources/bin/open-history.exe');
+            assert.equal(bytes.readUInt16LE(0), 0x5a4d);
+            const offset = bytes.readUInt32LE(0x3c);
+            assert.equal(bytes.toString('ascii', offset, offset + 4), 'PE\0\0');
+            assert.equal(bytes.readUInt16LE(offset + 4), 0x8664);
+          "
+      - name: Preserve the tested Windows helper
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: computer-history-windows-x64-${{ github.sha }}
+          path: |
+            apps/desktop/resources/bin/open-history.exe
+            apps/desktop/resources/licenses/computer-history-windows/THIRD_PARTY_NOTICES.txt
+          if-no-files-found: error
+          retention-days: 14

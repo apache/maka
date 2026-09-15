@@ -21,23 +21,50 @@
 import { copyFile, mkdir } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const desktopRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const packageRoot = resolve(desktopRoot, 'native', 'computer-history');
-const output = resolve(desktopRoot, 'resources', 'bin', 'open-history');
 
-if (process.platform !== 'darwin') {
-  console.log('[computer-history] macOS helper skipped on this platform');
-  process.exit(0);
+export async function buildComputerHistoryHelper({
+  platform = process.platform,
+  arch = process.arch,
+  root = desktopRoot,
+  run = runCommand,
+} = {}) {
+  if (platform !== 'darwin' && platform !== 'win32') return null;
+  if (platform === 'win32' && arch !== 'x64') {
+    throw new Error('The Computer History Windows helper must be built on Windows x64');
+  }
+
+  const windows = platform === 'win32';
+  const packageRoot = resolve(root, 'native', windows ? 'computer-history-windows' : 'computer-history');
+  const binaryName = windows ? 'open-history.exe' : 'open-history';
+  const output = resolve(root, 'resources', 'bin', binaryName);
+  let source;
+  if (windows) {
+    const target = 'x86_64-pc-windows-msvc';
+    const targetDirectory = resolve(packageRoot, 'target');
+    await run('cargo', [
+      'build',
+      '--manifest-path', resolve(packageRoot, 'Cargo.toml'),
+      '--package', 'maka-computer-history-windows',
+      '--bin', 'open-history',
+      '--release',
+      '--locked',
+      '--target', target,
+      '--target-dir', targetDirectory,
+    ]);
+    source = resolve(targetDirectory, target, 'release', binaryName);
+  } else {
+    await run('swift', ['build', '--package-path', packageRoot, '-c', 'release', '--product', 'open-history']);
+    source = resolve(packageRoot, '.build', 'release', binaryName);
+  }
+  await mkdir(dirname(output), { recursive: true });
+  await copyFile(source, output);
+  return output;
 }
 
-await run('swift', ['build', '--package-path', packageRoot, '-c', 'release', '--product', 'open-history']);
-await mkdir(dirname(output), { recursive: true });
-await copyFile(resolve(packageRoot, '.build', 'release', 'open-history'), output);
-console.log(`[computer-history] helper ready: ${output}`);
-
-function run(command, args) {
+function runCommand(command, args) {
   return new Promise((resolvePromise, reject) => {
     const child = spawn(command, args, { stdio: 'inherit', shell: false });
     child.once('error', reject);
@@ -46,4 +73,11 @@ function run(command, args) {
       else reject(new Error(`${command} failed (${signal ?? code ?? 'unknown'})`));
     });
   });
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  const output = await buildComputerHistoryHelper();
+  console.log(output
+    ? `[computer-history] helper ready: ${output}`
+    : '[computer-history] native helper skipped on this platform');
 }

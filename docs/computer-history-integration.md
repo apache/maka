@@ -28,7 +28,9 @@ It does not record screenshots, video, or audio.
 
 The integration has five boundaries:
 
-1. A macOS helper records Accessibility and Core Graphics interaction events.
+1. A platform helper records admitted foreground activity. macOS uses
+   Accessibility and Core Graphics; the Windows x64 backend uses WinEvents
+   and bounded UI Automation snapshots. Windows does not record keystrokes.
 2. The Electron main process owns the helper lifecycle, raw files, privacy
    settings, retention, deletion, and timeline projection.
 3. The preload bridge exposes bounded status, controls, and reduced timeline
@@ -434,7 +436,11 @@ Cancellation cannot retract evidence already transmitted to a provider.
 ## Implementation map
 
 - Shared contract: `packages/core/src/computer-history.ts`
-- Native collector: `apps/desktop/native/computer-history`
+- macOS native collector: `apps/desktop/native/computer-history`
+- Windows native collector and support limits:
+  [`apps/desktop/native/computer-history-windows`](../apps/desktop/native/computer-history-windows/README.md)
+- Windows main-held storage admission:
+  `apps/desktop/src/main/computer-history-windows-ownership.ts`
 - Helper build: `apps/desktop/scripts/build-computer-history-helper.mjs`
 - Main authority and IPC: `apps/desktop/src/main/computer-history-main.ts`
 - Main-only content projection: `apps/desktop/src/main/computer-history-evidence.ts`
@@ -449,7 +455,7 @@ Cancellation cannot retract evidence already transmitted to a provider.
 - Capability/health projection: `apps/desktop/src/main/capability-snapshot.ts`
 - Visual fixtures: `apps/desktop/stories/computer-history.stories.tsx`
 
-The vendored collector is the MIT-licensed clean-room implementation from
+The vendored macOS collector is the MIT-licensed clean-room implementation from
 `hqhq1025/open-codex-computer-history`, pinned to revision
 `30c99f904d9375a01e17a05516f896ebda24a544`. Attribution is preserved in root
 `LICENSE`, adapted source headers, and the packaged license directory.
@@ -470,8 +476,11 @@ the Host's existing auxiliary-model execution and accounting.
 
 ## Verification boundaries
 
-Packaged/notarized helper verification and Windows collection remain separate
-gaps. No live activity capture or paid model run is implied by fixture tests.
+Packaged/notarized helper verification and live Windows UIA acceptance remain
+separate gaps. Windows collection now has a native implementation and build,
+packaging, lifecycle, and synthetic persistence tests; cross-compilation is
+not proof of interactive Windows coverage. No live activity capture or paid
+model run is implied by fixture tests.
 Deterministic tests cover native persistence, main-process lifecycle, retention,
 corrupt-data recovery, cancellation, bounded projections, and renderer service
 and draft ownership. Synthetic visual fixtures exercise the production page;

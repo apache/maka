@@ -549,11 +549,11 @@ const computerHistoryService = new ComputerHistoryService({
   showItemInFolder: (path) => shell.showItemInFolder(path),
   onEnabled: () => { void computerHistorySkillInstaller.refresh(); },
   helperPath: app.isPackaged
-    ? join(process.resourcesPath, "bin", "open-history")
-    : join(app.getAppPath(), "resources", "bin", "open-history"),
+    ? join(process.resourcesPath, "bin", process.platform === "win32" ? "open-history.exe" : "open-history")
+    : join(app.getAppPath(), "resources", "bin", process.platform === "win32" ? "open-history.exe" : "open-history"),
   generateSummary: async (input, signal) => {
     signal.throwIfAborted();
-    // Activity belongs to this Mac, even while the selected task uses a remote Host.
+    // Activity belongs to this computer, even while the selected task uses a remote Host.
     const client = runtimeHostManager?.current('local')?.candidate?.client;
     if (!client) throw new Error('Local analysis Host is unavailable');
     // Bound acknowledgement time beyond the Host's 180-second model deadline.

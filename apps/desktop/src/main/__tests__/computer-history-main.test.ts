@@ -50,6 +50,131 @@ const SUMMARY: ComputerHistorySummaryContent = {
   body: 'The observed activity concerned the release checklist.',
 };
 
+test('Windows uses shared settings and summaries, parent-owned admission and pipe shutdown without TCC', async (t) => {
+  const collector = fakeCollector();
+  let held = false;
+  let admissions = 0;
+  const acquireWindowsOwnership = async () => {
+    assert.equal(held, false);
+    assert.equal(collector.active, false);
+    held = true;
+    admissions++;
+    return { close: async () => { held = false; } };
+  };
+  const { service, home, segment } = await fixture(t, {
+    platform: 'win32', helperPath: process.execPath, spawn: collector.spawn,
+    acquireWindowsOwnership, generateSummary: async () => SUMMARY,
+  });
+  await service.initialize();
+  assert.equal(admissions, 1);
+  assert.equal(held, false);
+  assert.equal(collector.recordArgs.length, 0);
+  assert.equal((await service.permissionStatus()).accessibility, 'unsupported');
+  await service.start();
+  assert.equal(collector.recordArgs.length, 0, 'direct start cannot bypass disabled consent');
+  await service.updateSettings({ enabled: true, summariesEnabled: true });
+  assert.equal((await service.status()).state, 'running');
+  assert.equal(collector.recordArgs.length, 1);
+  assert.equal(collector.spawnOptions.at(-1)?.windowsHide, true);
+  assert.ok(collector.recordArgs[0]!.includes(String(process.pid)));
+  await seedClosedInterval(segment);
+  await service.summarize();
+  assert.equal((await service.timeline()).entries.some((entry) => entry.summaryLevel === '10min'), true);
+  await service.pause();
+  assert.equal((await service.status()).state, 'paused');
+  await service.resume();
+  await service.updateSettings({ enabled: false });
+  assert.ok(collector.calls.includes('stdin-ended'));
+  assert.ok(!collector.calls.includes('SIGTERM'));
+  assert.ok(!collector.calls.includes('maintenance'), 'Windows cannot inherit POSIX flock');
+  assert.ok(!collector.calls.includes('permissions'), 'Windows has no macOS permission requests');
+  assert.equal(JSON.parse(await readFile(join(home, 'config.json'), 'utf8')).captureText, false);
+  assert.equal((await service.status()).state, 'stopped');
+});
+
+test('Windows maintenance admission failure preserves settings and raw history', async (t) => {
+  const collector = fakeCollector();
+  let refuse = false;
+  const { service, home, segment } = await fixture(t, {
+    platform: 'win32', helperPath: process.execPath, spawn: collector.spawn,
+    acquireWindowsOwnership: async () => {
+      if (refuse) throw new Error('recorder_occupied');
+      return { close: async () => {} };
+    },
+  });
+  await service.initialize();
+  await seedClosedInterval(segment);
+  const before = await readFile(join(segment, 'events.jsonl'), 'utf8');
+  refuse = true;
+  await assert.rejects(service.clear('all'), /recorder_occupied/);
+  await assert.rejects(service.updateSettings({ captureText: true }), /recorder_occupied/);
+  assert.equal(await readFile(join(segment, 'events.jsonl'), 'utf8'), before);
+  assert.equal(existsSync(join(home, 'maka-settings.json')), false);
+});
+
+test('Windows unavailable desktop and malformed readiness never start recording or request a TCC grant', async (t) => {
+  const collector = fakeCollector();
+  collector.accessibility = false;
+  collector.inputMonitoring = false;
+  const { service } = await fixture(t, {
+    platform: 'win32', helperPath: process.execPath, spawn: collector.spawn,
+    acquireWindowsOwnership: async () => ({ close: async () => {} }),
+  });
+  await service.initialize();
+  await service.updateSettings({ enabled: true });
+  assert.equal((await service.status()).state, 'unavailable');
+  assert.deepEqual(collector.recordArgs, []);
+  collector.statusFails = true;
+  assert.equal((await service.status()).state, 'error');
+  assert.deepEqual(collector.recordArgs, []);
+  collector.statusFails = false;
+});
+
+test('Windows capture failure reports an error and clears on provider recovery without restarting', async (t) => {
+  const collector = fakeCollector();
+  const { service } = await fixture(t, {
+    platform: 'win32', helperPath: process.execPath, spawn: collector.spawn,
+    acquireWindowsOwnership: async () => ({ close: async () => {} }),
+  });
+  await service.initialize();
+  await service.updateSettings({ enabled: true });
+  collector.captureError = 'windows_capture_failed';
+  const failed = await service.status();
+  assert.equal(failed.state, 'error');
+  assert.match(failed.error!, /activity capture is repeatedly failing/);
+  collector.captureError = undefined;
+  const recovered = await service.status();
+  assert.equal(recovered.state, 'running');
+  assert.equal(recovered.error, undefined);
+  assert.equal(collector.recordArgs.length, 1);
+  await service.updateSettings({ enabled: false });
+});
+
+test('Windows native home validation must pass on both sides of maintenance admission', async (t) => {
+  const collector = fakeCollector();
+  let held = false;
+  let invalidateAfterAdmission = false;
+  const { service, home, segment } = await fixture(t, {
+    platform: 'win32', helperPath: process.execPath, spawn: collector.spawn,
+    acquireWindowsOwnership: async () => {
+      held = true;
+      if (invalidateAfterAdmission) collector.homeValid = false;
+      return { close: async () => { held = false; } };
+    },
+  });
+  await service.initialize();
+  await seedClosedInterval(segment);
+  const before = await readFile(join(segment, 'events.jsonl'), 'utf8');
+  invalidateAfterAdmission = true;
+  await assert.rejects(service.clear('all'), /history_requires_local_ntfs/);
+  assert.equal(held, false, 'a failed post-admission validator must release Node ownership');
+  assert.equal(await readFile(join(segment, 'events.jsonl'), 'utf8'), before);
+  await assert.rejects(service.updateSettings({ captureText: true }), /history_requires_local_ntfs/);
+  assert.equal(held, false);
+  assert.equal(existsSync(join(home, 'maka-settings.json')), false);
+  collector.homeValid = true;
+});
+
 test('permission-only probe uses no-prompt helper without history reads, collection, or consent writes', async (t) => {
   const collector = fakeCollector();
   collector.accessibility = false;
@@ -2710,7 +2835,7 @@ function deferred<T>() {
 
 type FixtureOptions = Partial<Pick<
   ConstructorParameters<typeof ComputerHistoryService>[0],
-  'generateSummary' | 'now' | 'platform' | 'helperPath' | 'spawn' | 'showItemInFolder' | 'resolveLocale' | 'onEnabled'
+  'generateSummary' | 'now' | 'platform' | 'helperPath' | 'spawn' | 'showItemInFolder' | 'resolveLocale' | 'onEnabled' | 'acquireWindowsOwnership'
 >>;
 
 async function fixture(t: TestContext, options: FixtureOptions = {}) {
@@ -2743,11 +2868,14 @@ function fakeCollector() {
     permissionsOutput: undefined as unknown,
     recorder: undefined as ChildProcess | undefined,
     recordArgs: [] as string[][],
+    spawnOptions: [] as (Parameters<typeof spawn>[2])[],
     active: false,
     foreignActive: false,
     nativeAdmission: true,
     runtimeState: undefined as string | undefined,
     statusFails: false,
+    homeValid: true,
+    captureError: undefined as string | undefined,
     autoExit: true,
     stopped,
     paused,
@@ -2755,7 +2883,9 @@ function fakeCollector() {
       const command = (args[1] as string[])[0]!;
       collector.calls.push(command);
       collector.helperArgs.push([...(args[1] as string[])]);
+      collector.spawnOptions.push(args[2]);
       const child = Object.assign(new EventEmitter(), {
+        stdin: args[2]?.stdio?.[0] === 'pipe' ? new PassThrough() : null,
         stdout: new PassThrough(),
         stderr: new PassThrough(),
         kill: (signal: string) => {
@@ -2770,8 +2900,18 @@ function fakeCollector() {
         collector.recordArgs.push([...(args[1] as string[])]);
         collector.active = true;
         child.once('exit', () => { collector.active = false; });
+        child.stdin?.once('finish', () => {
+          collector.calls.push('stdin-ended');
+          if (collector.autoExit) queueMicrotask(() => child.emit('exit', 0, null));
+        });
       } else {
         queueMicrotask(async () => {
+          if (command === 'validate-home') {
+            if (collector.homeValid) child.stdout!.emit('data', 'history-home-valid');
+            else child.stderr!.emit('data', 'history_requires_local_ntfs');
+            child.emit('exit', collector.homeValid ? 0 : 1, null);
+            return;
+          }
           if (command === 'maintenance') {
             const occupied = collector.active || collector.foreignActive;
             if (occupied) child.stderr!.emit('data', 'Another Computer History recorder is active.');
@@ -2799,6 +2939,8 @@ function fakeCollector() {
           }
           child.stdout!.emit('data', JSON.stringify({
             accessibility: collector.accessibility, inputMonitoring: collector.inputMonitoring,
+            permissionModel: 'interactive-session',
+            ...(collector.captureError ? { captureError: collector.captureError } : {}),
             state: collector.runtimeState ?? (
               collector.active || collector.foreignActive ? 'running' : 'stopped'
             ),

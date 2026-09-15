@@ -185,6 +185,7 @@ export const exclusionRules = [
       'Third-party license and notice texts redistributed with the product. An ASF header on any of them would assert ASF provenance over content ASF does not own. The upstream texts additionally have to stay byte-identical to what their projects published, and the aggregated notices are generator output that a hand-written header would not survive.',
     matches: isOneOf(
       'apps/desktop/resources/licenses/cargo/THIRD_PARTY_NOTICES.txt',
+      'apps/desktop/resources/licenses/computer-history-windows/THIRD_PARTY_NOTICES.txt',
       'apps/desktop/resources/licenses/npm/THIRD_PARTY_NOTICES.txt',
       'apps/desktop/resources/licenses/open-computer-history/LICENSE',
       'apps/desktop/resources/licenses/renderer/ALLOGO_LICENSE.txt',
@@ -237,6 +238,7 @@ export const exclusionRules = [
     justification:
       'Mechanically derived from a generator in this repository. A hand-written header would be reverted by the next regeneration; the generators themselves carry the header.',
     matches: isOneOf(
+      'apps/desktop/native/computer-history-windows/Cargo.lock',
       'apps/desktop/src/renderer/astryx-theme/maka.css',
       'apps/desktop/src/renderer/astryx-theme/maka.d.ts',
       'apps/desktop/src/renderer/astryx-theme/maka.js',

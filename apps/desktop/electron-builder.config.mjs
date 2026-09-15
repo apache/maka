@@ -276,6 +276,16 @@ const baseDesktopBuilderConfig = {
     writeUpdateInfo: false,
   },
   win: {
+    extraResources: [
+      {
+        from: 'resources/bin/open-history.exe',
+        to: 'bin/open-history.exe',
+      },
+      {
+        from: 'resources/licenses/computer-history-windows/THIRD_PARTY_NOTICES.txt',
+        to: 'licenses/computer-history-windows/THIRD_PARTY_NOTICES.txt',
+      },
+    ],
     artifactName: 'Maka-${version}-win-${arch}.${ext}',
     // Same reason as `mac.icon` above: the .exe, the installer and the
     // shortcut are drawn by the OS from this file, not by us.

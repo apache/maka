@@ -260,8 +260,29 @@ describe('ASF header classification', () => {
   test('keeps Maka-authored files out of the third-party and fixture rules', () => {
     assert.equal(classifyPath('patches/README.md').status, 'covered');
     assert.equal(
+      classifyPath('apps/desktop/native/computer-history-windows/src/main.rs').status,
+      'covered',
+    );
+    assert.equal(
+      classifyPath('apps/desktop/native/computer-history-windows/Cargo.toml').status,
+      'covered',
+    );
+    assert.equal(
       classifyPath('docs/eval/terminal-bench-2.1-maka-vs-kimi-code-v11.md').status,
       'covered',
+    );
+  });
+
+  test('classifies only the Windows history lockfile and notices as generated or third-party', () => {
+    assert.deepEqual(classifyPath('apps/desktop/native/computer-history-windows/Cargo.lock'), {
+      status: 'excluded',
+      rule: 'generated-files',
+    });
+    assert.deepEqual(
+      classifyPath(
+        'apps/desktop/resources/licenses/computer-history-windows/THIRD_PARTY_NOTICES.txt',
+      ),
+      { status: 'excluded', rule: 'third-party-license-texts' },
     );
   });
 
