@@ -488,6 +488,51 @@ describe('CodexSessionAdapter', () => {
     });
   });
 
+  test('filesystem fallback keeps one mtime order across page requests', async () => {
+    await withCodexHome(async (codexHome) => {
+      const paths: string[] = [];
+      for (let index = 0; index < 20; index += 1) {
+        const id = `codex-snapshot-${String(index).padStart(2, '0')}`;
+        const path = await seedMinimalRollout(codexHome, id, false, '/workspace/root', id);
+        const time = new Date(Date.UTC(2026, 7, 1, 0, 0, index));
+        await utimes(path, time, time);
+        paths.push(path);
+      }
+      const adapter = new CodexSessionAdapter({ codexHome });
+      const first = await adapter.listSessionPage!({ limit: 16 });
+      assert.deepEqual(
+        first.items.map(({ summary }) => summary.id),
+        Array.from(
+          { length: 16 },
+          (_, index) => `codex-snapshot-${String(19 - index).padStart(2, '0')}`,
+        ),
+      );
+      const cursor = first.items.at(-1)!.nextCursor;
+      assert.ok(Buffer.byteLength(cursor, 'utf8') <= 32);
+      await assert.rejects(
+        adapter.listSessionPage!({ cursor, cwd: '/another/workspace', limit: 16 }),
+        /Invalid Codex catalog cursor/,
+      );
+
+      const newest = new Date('2026-09-15T00:00:00Z');
+      await utimes(paths[1]!, newest, newest);
+      const second = await adapter.listSessionPage!({
+        cursor,
+        limit: 16,
+      });
+      const ids = [...first.items, ...second.items].map(({ summary }) => summary.id);
+      assert.equal(new Set(ids).size, 20);
+      assert.deepEqual(
+        ids,
+        Array.from(
+          { length: 20 },
+          (_, index) => `codex-snapshot-${String(19 - index).padStart(2, '0')}`,
+        ),
+      );
+      await assert.rejects(adapter.listSessionPage!({ cursor, limit: 16 }), /cursor expired/);
+    });
+  });
+
   test('rejects corrupt interior records, tolerates a torn tail, and bounds scanned bytes', async () => {
     await withCodexHome(async (codexHome) => {
       const fixture = await readFile(CURRENT_FIXTURE, 'utf8');

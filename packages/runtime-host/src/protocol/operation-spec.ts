@@ -40,6 +40,7 @@ export type HostOperationErrorCode =
   | 'source_unreadable'
   | 'projection_incomplete'
   | 'stale_cursor'
+  | 'cursor_expired'
   | 'persistence_failed'
   | 'commit_outcome_unknown'
   | 'already_resolved'

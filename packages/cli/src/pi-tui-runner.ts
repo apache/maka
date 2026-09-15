@@ -339,6 +339,12 @@ function isExternalImportOutcomeUnknown(error: unknown): boolean {
   );
 }
 
+function isExternalCatalogCursorExpired(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  const value = error as { readonly operation?: unknown; readonly code?: unknown };
+  return value.operation === 'external-session.catalog.query' && value.code === 'cursor_expired';
+}
+
 export function resolveTaskbarProgress(
   setting: boolean | undefined,
   environment: TaskbarProgressEnvironment = {
@@ -420,6 +426,7 @@ interface TuiConnectionIdentityCopy {
 
 interface TuiSessionActionsCopy {
   readonly externalCatalogFailed: string;
+  readonly externalCatalogExpired: string;
   readonly externalImport: string;
   readonly externalImportDescription: string;
   readonly externalSourceTitle: string;
@@ -3053,7 +3060,13 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         scope,
         ...(cursor ? { cursor } : {}),
       });
-    } catch {
+    } catch (error) {
+      if (cursor && isExternalCatalogCursorExpired(error)) {
+        state.entries.push({ kind: 'notice', level: 'info', text: copy.externalCatalogExpired });
+        requestRender();
+        await showExternalSessionPage(adapterId, scope);
+        return;
+      }
       state.entries.push({ kind: 'notice', level: 'error', text: copy.externalCatalogFailed });
       requestRender();
       return;

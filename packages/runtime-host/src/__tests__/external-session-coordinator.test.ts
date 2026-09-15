@@ -25,12 +25,13 @@ import {
 } from '../protocol/index.js';
 
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import {
   ExternalSessionAdapterRegistry,
+  ExternalSessionCursorExpiredError,
   ExternalSessionLimitError,
   type ExternalSessionAdapter,
 } from '@maka/core/external-session';
@@ -91,6 +92,58 @@ test('discovers detected adapters and pages bounded source summaries', async () 
   assert.equal(second.result.nextCursor, null);
 });
 
+test('keeps a Codex filesystem catalog snapshot stable while an unseen rollout changes', async () => {
+  const codexHome = await mkdtemp(join(tmpdir(), 'maka-codex-catalog-snapshot-'));
+  try {
+    const directory = join(codexHome, 'sessions', '2026', '09', '15');
+    await mkdir(directory, { recursive: true });
+    const paths: string[] = [];
+    for (let index = 0; index < 20; index += 1) {
+      const id = `snapshot-${String(index).padStart(2, '0')}`;
+      const path = join(directory, `rollout-2026-09-15T00-00-00-${id}.jsonl`);
+      await writeFile(
+        path,
+        `${JSON.stringify({
+          timestamp: '2026-09-15T00:00:00.000Z',
+          type: 'session_meta',
+          payload: { id, cwd: '/workspace/root', source: 'cli' },
+        })}\n${JSON.stringify({
+          timestamp: '2026-09-15T00:00:01.000Z',
+          type: 'event_msg',
+          payload: { type: 'user_message', message: id },
+        })}`,
+      );
+      const time = new Date(Date.UTC(2026, 8, 15, 0, 0, index));
+      await utimes(path, time, time);
+      paths.push(path);
+    }
+    const adapter = createExternalSessionAdapterRegistry({ codex: { codexHome } }).require('codex');
+    const fixture = coordinatorFixture([adapter]);
+    const first = await fixture.coordinator.handlers['external-session.catalog.query'](
+      { adapterId: 'codex' },
+      context,
+    );
+    assert.ok(first.ok);
+    assert.equal(first.result.sessions.length, 16);
+
+    const newest = new Date('2026-09-16T00:00:00Z');
+    await utimes(paths[1]!, newest, newest);
+    const second = await fixture.coordinator.handlers['external-session.catalog.query'](
+      { adapterId: 'codex', cursor: first.result.nextCursor ?? undefined },
+      context,
+    );
+    assert.ok(second.ok);
+    const ids = [...first.result.sessions, ...second.result.sessions].map(({ id }) => id);
+    assert.equal(new Set(ids).size, 20);
+    assert.deepEqual(
+      ids,
+      Array.from({ length: 20 }, (_, index) => `snapshot-${String(19 - index).padStart(2, '0')}`),
+    );
+  } finally {
+    await rm(codexHome, { recursive: true, force: true });
+  }
+});
+
 test('advances the catalog cursor by source rows when an adapter row is not wire-safe', async () => {
   const summaries = Array.from({ length: 18 }, (_, index) => ({
     id: index === 5 ? 'invalid\u0000source' : `source-${index}`,
@@ -121,6 +174,24 @@ test('advances the catalog cursor by source rows when an adapter row is not wire
   assert.deepEqual(
     [...first.result.sessions, ...second.result.sessions].map(({ id }) => id),
     summaries.filter(({ id }) => !id.includes('\u0000')).map(({ id }) => id),
+  );
+});
+
+test('reports an expired source catalog cursor explicitly', async () => {
+  const adapter = adapterFixture();
+  adapter.listSessionPage = async () => {
+    throw new ExternalSessionCursorExpiredError();
+  };
+  const fixture = coordinatorFixture([adapter]);
+  assert.deepEqual(
+    await fixture.coordinator.handlers['external-session.catalog.query'](
+      { adapterId: 'codex', cursor: 'expired' },
+      context,
+    ),
+    {
+      ok: false,
+      error: { code: 'cursor_expired', message: 'External Session catalog expired' },
+    },
   );
 });
 
@@ -268,14 +339,14 @@ test('a row too large to share a page still advances the cursor', () => {
   // after it, not after the row the budget refused before it (which would step
   // over every row in between) and not at the same offset (which would never
   // move).
-  const oversized = (id: string, nextSourceOffset: number) => ({
+  const oversized = (id: string, nextSourceCursor: number) => ({
     session: {
       id,
       name: id,
       hostCwd: `/${'x'.repeat(80 * 1024)}`,
       importState: { importedCount: 0, importedSessionIds: [], isImporting: false },
     },
-    nextSourceOffset,
+    nextSourceCursor,
   });
 
   const first = boundedCatalogPage([oversized('a', 1), oversized('b', 2), oversized('c', 3)], true);
@@ -283,7 +354,7 @@ test('a row too large to share a page still advances the cursor', () => {
     first.sessions.map((session) => session.id),
     ['a'],
   );
-  assert.equal(first.nextSourceOffset, 1);
+  assert.equal(first.nextSourceCursor, 1);
 
   // Several such rows in a row: each page carries exactly one and moves on, so
   // the walk still reaches every row.
@@ -292,7 +363,7 @@ test('a row too large to share a page still advances the cursor', () => {
     second.sessions.map((session) => session.id),
     ['b'],
   );
-  assert.equal(second.nextSourceOffset, 2);
+  assert.equal(second.nextSourceCursor, 2);
 });
 
 test('the largest row the wire bounds allow still shares a page', async () => {

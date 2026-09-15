@@ -57,6 +57,7 @@ const QUERY_ERRORS = [
   'persistence_failed',
   'internal_failure',
 ] as const;
+const CATALOG_QUERY_ERRORS = [...QUERY_ERRORS, 'cursor_expired'] as const;
 const IMPORT_ERRORS = [
   ...QUERY_ERRORS,
   'not_found',
@@ -127,12 +128,12 @@ export const EXTERNAL_SESSION_OPERATION_SPECS = {
   'external-session.catalog.query': defineHostPathOperation<
     ExternalSessionCatalogQueryInput,
     ExternalSessionCatalogQueryResult,
-    (typeof QUERY_ERRORS)[number]
+    (typeof CATALOG_QUERY_ERRORS)[number]
   >(
     {
       mode: 'query',
       availability: 'ready',
-      errors: QUERY_ERRORS,
+      errors: CATALOG_QUERY_ERRORS,
       decodeInput: decodeExternalSessionCatalogQueryInput,
       decodeOutput: decodeExternalSessionCatalogQueryResult,
     },
@@ -353,7 +354,7 @@ function cursor(value: unknown): string {
     'external Session cursor',
     EXTERNAL_SESSION_CURSOR_MAX_BYTES,
   );
-  if (!/^\d+$/.test(decoded) || !Number.isSafeInteger(Number(decoded))) {
+  if (!/^[A-Za-z0-9][A-Za-z0-9:_-]*$/.test(decoded)) {
     throw invalidProtocolFrame('Invalid external Session cursor');
   }
   return decoded;
