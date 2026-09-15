@@ -18,6 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { describe, it } from 'node:test';
 import { markPersisted } from '../persisted-value.js';
 import {
@@ -179,6 +180,62 @@ describe('scheduled-task catalog', () => {
     const monthly = { kind: 'calendar' as const, recurrence: 'monthly' as const, anchorAt: runAt };
     const february = computeNextFireAt(monthly, runAt);
     assert.equal(new Date(february!).getDate(), 28);
+  });
+
+  it('reconstructs daily and weekly wall times after a DST gap', () => {
+    const moduleUrl = new URL('../scheduled-task.js', import.meta.url).href;
+    const cases = [
+      {
+        timezone: 'America/New_York',
+        anchor: '2026-03-01T02:30:15.125-05:00',
+        after: '2026-03-08T04:00:00-04:00',
+        daily: '2026-03-09T02:30:15.125-04:00',
+        weekly: '2026-03-15T02:30:15.125-04:00',
+      },
+      {
+        timezone: 'America/New_York',
+        anchor: '2026-03-03T02:30:15.125-05:00',
+        after: '2026-03-08T00:00:00-05:00',
+        daily: '2026-03-08T03:30:15.125-04:00',
+        weekly: '2026-03-10T02:30:15.125-04:00',
+      },
+      {
+        timezone: 'Australia/Lord_Howe',
+        anchor: '2026-09-27T02:15:15.125+10:30',
+        after: '2026-10-04T04:00:00+11:00',
+        daily: '2026-10-05T02:15:15.125+11:00',
+        weekly: '2026-10-11T02:15:15.125+11:00',
+      },
+      {
+        timezone: 'America/New_York',
+        anchor: '2026-10-25T01:30:15.125-04:00',
+        after: '2026-11-01T01:30:15.125-05:00',
+        daily: '2026-11-02T01:30:15.125-05:00',
+        weekly: '2026-11-08T01:30:15.125-05:00',
+      },
+    ];
+    for (const scenario of cases) {
+      const script = `
+        import { computeNextFireAt } from ${JSON.stringify(moduleUrl)};
+        const scenario = ${JSON.stringify(scenario)};
+        const result = ['daily', 'weekly'].map((recurrence) =>
+          computeNextFireAt({
+            kind: 'calendar', recurrence, anchorAt: Date.parse(scenario.anchor),
+          }, Date.parse(scenario.after)));
+        process.stdout.write(JSON.stringify(result));
+      `;
+      const actual = JSON.parse(
+        execFileSync(process.execPath, ['--input-type=module', '-e', script], {
+          env: { ...process.env, TZ: scenario.timezone },
+          encoding: 'utf8',
+        }),
+      );
+      assert.deepEqual(
+        actual,
+        [Date.parse(scenario.daily), Date.parse(scenario.weekly)],
+        `${scenario.timezone}: ${scenario.after}`,
+      );
+    }
   });
 
   it('rejects tasks whose first fire is not before expiration', () => {
