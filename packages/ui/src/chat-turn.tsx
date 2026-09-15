@@ -64,7 +64,7 @@ import { foldTimeline, type FoldedTimelineChild, type FoldedTimelineEntry } from
 import { AttachmentKindIcon } from './attachment-kinds.js';
 import { QuoteRefChip } from './quote-ref-chip.js';
 import { Marker, markerVariants } from './primitives/chat.js';
-import { ToolTrow, toolTrowHasVisibleSpinner } from './tool-activity.js';
+import { ToolTrow } from './tool-activity.js';
 import { formatBytes } from './tool-activity/preview-utils.js';
 import { useUiLocale } from './locale-context.js';
 import type { UiLocale } from '@maka/core/ui-locale';
@@ -500,9 +500,6 @@ export const TurnView = memo(function TurnView(props: {
     () => splitTimelineAtUserMessages(foldedTimeline, showAssistantMessage),
     [foldedTimeline, showAssistantMessage],
   );
-  const toolSurfaceOwnsSpinner = turn.timeline.some(
-    (item) => item.kind === 'tools' && toolTrowHasVisibleSpinner(item.items),
-  );
   return (
     <section
       className="maka-turn"
@@ -672,6 +669,10 @@ export const TurnView = memo(function TurnView(props: {
         const activityProcessIndex = ownsTurnChrome
           ? segment.items.findLastIndex((item) => item.kind === 'processing')
           : -1;
+        // Live work is disclosed in one place: the same summary row that carries
+        // the process. A Turn with no process content still owns that row (empty)
+        // so the running cue never moves and the row survives settlement.
+        const liveWorkOwnsDisclosure = ownsTurnChrome && activityProcessIndex === -1;
         // Disjoint namespaces: a steering id is any string, so a bare
         // sentinel could collide with a real one.
         const assistantKey =
@@ -694,6 +695,21 @@ export const TurnView = memo(function TurnView(props: {
                 and Astryx tool group in the order the model produced them.
                 Intermediate text, reasoning and tools share a disclosure;
                 the final reply and inserted user instructions stay outside. */}
+              {liveWorkOwnsDisclosure && (
+                <ProcessingBlock
+                  key="processing-status"
+                  activityObserved={props.activityObserved}
+                  entries={[]}
+                  running={!!props.liveStreaming || turn.status === 'running'}
+                  durationMs={turn.durationMs}
+                  activity={props.liveStreaming?.runningStatus && !props.liveStreaming.providerRetry
+                    ? { startedAt: turn.startedAt, label: runningToolLabel }
+                    : undefined}
+                  onStreamingSettled={props.liveStreaming?.onStreamingSettled}
+                  onOpenLinkedSession={props.onOpenLinkedSession}
+                  initialLiveContent={props.liveStreaming?.initialLiveContent}
+                />
+              )}
               {segment.items.map((item, index) =>
                 item.kind === 'processing' ? (
                   <ProcessingBlock
@@ -797,12 +813,6 @@ export const TurnView = memo(function TurnView(props: {
                 live={!!props.liveStreaming}
                 activity={props.liveStreaming?.providerRetry ? (
                   <ModelProviderRetryIndicator retry={props.liveStreaming.providerRetry} />
-                ) : props.liveStreaming?.runningStatus && activityProcessIndex === -1 ? (
-                  <TurnRunningStatus
-                    startedAt={turn.startedAt}
-                    showSpinner={!toolSurfaceOwnsSpinner}
-                    activityLabel={runningToolLabel}
-                  />
                 ) : undefined}
                 context={answerContext}
                 onAction={
@@ -1029,7 +1039,6 @@ const WORKING_PHRASE_INTERVAL_MS = 20_000;
  */
 export function TurnRunningStatus(props: {
   startedAt?: number;
-  showSpinner?: boolean;
   activityLabel?: string;
 }) {
   const copy = getConversationCopy(useUiLocale()).messages;
@@ -1048,9 +1057,6 @@ export function TurnRunningStatus(props: {
       aria-label={props.activityLabel ?? copy.processing}
       ref={rootRef}
     >
-      {props.showSpinner !== false && (
-        <Spinner size="md" shade="subtle" aria-hidden="true" />
-      )}
       {/* Name the activity once; the clock must not announce each second. */}
       <span className="maka-turn-indicator-text" aria-hidden="true">
         <span className="maka-turn-status-label">
@@ -1327,7 +1333,7 @@ function TurnTimelineEntry(props: {
   );
 }
 
-function ProcessingBlock(props: {
+export function ProcessingBlock(props: {
   activityObserved?: boolean;
   entries: FoldedTimelineChild[];
   running: boolean;
@@ -1371,7 +1377,6 @@ function ProcessingBlock(props: {
           <TurnRunningStatus
             startedAt={props.activity.startedAt}
             activityLabel={props.activity.label}
-            showSpinner={false}
           />
         ) : <span>{label}</span>}
         {!props.running && <ChevronRight size={ICON_SIZE.meta} aria-hidden="true" />}

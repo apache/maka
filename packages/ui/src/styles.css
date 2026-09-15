@@ -278,6 +278,9 @@
 .maka-processing-summary[aria-disabled='true']:hover { color: var(--muted-foreground); }
 .maka-processing-sequence[open] > .maka-processing-summary > svg { transform: rotate(90deg); }
 .maka-processing-content { display: flex; min-width: 0; flex-direction: column; gap: 8px; padding-block: 12px 4px; }
+/* A disclosure with no work yet is only its summary row, so the running cue can
+   live there without an empty panel's padding. */
+.maka-processing-content:empty { display: none; }
 /* Match Astryx ChatToolCalls' grid disclosure motion. The native details
    content remains rendered through exit, without a second open state or timer.
    Unsupported browsers retain the native immediate disclosure. */

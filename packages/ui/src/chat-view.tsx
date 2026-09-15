@@ -51,7 +51,7 @@ import type { LiveTurnProjection } from './live-turn-projection.js';
 import {
   ModelProviderRetryIndicator,
   LocalizedChatMessage,
-  TurnRunningStatus,
+  ProcessingBlock,
   TurnFooter,
   TurnView,
   TransientUserMessage,
@@ -653,19 +653,13 @@ export function ChatView(props: {
                   ))}
                 </section>
               )}
-              {/* Send feedback while the session is created. The elapsed clock
-                  stays off until the Turn's own start time reaches the client
-                  (turn.startedAt): a client send timestamp is not a second
-                  authority for when the Turn began. */}
+              {/* Send feedback while the session is created. It is the same
+                  summary row the process disclosure uses, so the cue does not
+                  change shape when the Turn lands; the click stays off until
+                  the Turn's own start time reaches the client. */}
               {runningStatus && (
                 <section className="maka-turn" data-live-streaming="true">
-                  <LocalizedChatMessage
-                    accessibleLabel={conversationCopy.messages.assistantAriaLabel}
-                    sender="assistant"
-                    className="maka-chat-message maka-assistant-answer"
-                  >
-                    <TurnFooter actions={[]} live context="" activity={<TurnRunningStatus />} />
-                  </LocalizedChatMessage>
+                  <ProcessingBlock entries={[]} running activity={{}} />
                 </section>
               )}
             </>
@@ -853,19 +847,19 @@ export function ChatView(props: {
                   that same TurnView can take over. */}
               {streamingActive && !hasRenderedLiveTurn && (
                 <section className="maka-turn" data-live-streaming="true">
-                  <LocalizedChatMessage
-                    accessibleLabel={conversationCopy.messages.assistantAriaLabel}
-                    sender="assistant"
-                    className="maka-chat-message maka-assistant-answer"
-                  >
-                    <TurnFooter actions={[]} live context="" activity={
-                      activeContent?.turnId === tailTurnId && activeContent?.providerRetry ? (
+                  {activeContent && activeContent.turnId === tailTurnId && activeContent.providerRetry ? (
+                    <LocalizedChatMessage
+                      accessibleLabel={conversationCopy.messages.assistantAriaLabel}
+                      sender="assistant"
+                      className="maka-chat-message maka-assistant-answer"
+                    >
+                      <TurnFooter actions={[]} live context="" activity={
                         <ModelProviderRetryIndicator retry={activeContent.providerRetry} />
-                      ) : (
-                        (runningStatus && <TurnRunningStatus />)
-                      )
-                    } />
-                  </LocalizedChatMessage>
+                      } />
+                    </LocalizedChatMessage>
+                  ) : runningStatus ? (
+                    <ProcessingBlock entries={[]} running activity={{}} />
+                  ) : null}
                 </section>
               )}
               {conversationItemPlacement.orphan && (
