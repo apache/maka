@@ -36,6 +36,7 @@ import {
   WORKHUB_COORDINATION_SESSION_ID,
   WORKHUB_COORDINATION_SESSION_ROLE,
   type SessionHeader,
+  type SessionBackgroundActivity,
 } from '@maka/core/session';
 import {
   SessionConfigurationTransitionError,
@@ -290,6 +291,7 @@ test('metadata replacement preserves execution-semantic labels and ignores injec
   }
   assert.deepEqual(outcome.result.session.labels, ['new-user-label', 'mode:deep_research']);
   assert.equal(Object.hasOwn(outcome.result.session, 'liveRunState'), false);
+  assert.equal(Object.hasOwn(outcome.result.session, 'backgroundActivity'), false);
   assert.equal(fixture.drainRequests(), 0);
 });
 
@@ -358,6 +360,42 @@ test('ordinary catalog lookup hides the WorkHub Coordination Session', async () 
     ok: true,
     result: { kind: 'session', session: null },
   });
+});
+
+test('catalog get and list retain Graph activity after the parent Turn completes', async () => {
+  let backgroundActivity: SessionBackgroundActivity = 'running';
+  const fixture = createFixture({
+    manager: { runningTurnIds: () => [] },
+    readBackgroundActivity: (sessionId) => {
+      assert.equal(sessionId, 'session-1');
+      return backgroundActivity;
+    },
+  });
+  for (const activity of ['running', 'waiting_for_user', 'blocked', 'idle'] as const) {
+    backgroundActivity = activity;
+    for (const input of [
+      { kind: 'get', sessionId: fixture.sessionId },
+      { kind: 'list_start' },
+    ] as const) {
+      const outcome = await fixture.coordinator.handlers['session.catalog.query'](input, context);
+      assert.ok(outcome.ok);
+      const result = outcome.result;
+      const session =
+        result.kind === 'session'
+          ? result.session
+          : result.kind === 'page'
+            ? result.sessions[0]
+            : undefined;
+      assert.ok(session && !('kind' in session));
+      assert.equal(session.backgroundActivity, activity);
+      assert.deepEqual(
+        session.liveRunState?.runningTurnIds,
+        [],
+        'child turns are never parent turns',
+      );
+      assert.equal(session.status, 'active', 'the completed parent is not rewritten as running');
+    }
+  }
 });
 
 test('catalog queries de-duplicate Runtime live turn ids in stable order', async () => {
@@ -2148,6 +2186,7 @@ function createFixture(
     readonly stores?: Partial<CatalogStores>;
     readonly turnIndex?: Partial<CatalogTurnIndex>;
     readonly manager?: Partial<ConfigurationAuthority>;
+    readonly readBackgroundActivity?: HostSessionCatalogCoordinatorOptions['readBackgroundActivity'];
     readonly continuity?: Partial<SessionContinuity>;
     readonly connection?: FixtureConnection;
     readonly runtimePolicy?: RuntimePolicy;
@@ -2239,6 +2278,9 @@ function createFixture(
     turnIndex,
     runtimePolicy,
     manager,
+    ...(options.readBackgroundActivity
+      ? { readBackgroundActivity: options.readBackgroundActivity }
+      : {}),
     admission: new SessionAdmissionGate(),
     continuity,
     workspaceResolver: new HostWorkspaceResolver(

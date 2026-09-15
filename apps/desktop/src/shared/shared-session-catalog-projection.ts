@@ -24,10 +24,12 @@ export interface DesktopSharedSessionSummary extends SessionCatalogSummary {
   readonly labelsTruncated: false;
   readonly revision: number;
   readonly shared: true;
+  readonly localState?: 'cached';
 }
 
 export function projectDesktopSharedSessionSummary(
   session: SharedSessionCatalogProjection,
+  options: { cached?: boolean } = {},
 ): DesktopSharedSessionSummary {
   return {
     id: session.id,
@@ -44,7 +46,9 @@ export function projectDesktopSharedSessionSummary(
       ? {}
       : { lastMessagePreview: session.lastMessagePreview }),
     status: session.status,
-    ...(session.liveRunState === undefined
+    ...(options.cached ? { localState: 'cached' as const } : {}),
+    ...(options.cached || session.backgroundActivity === undefined ? {} : { backgroundActivity: session.backgroundActivity }),
+    ...(options.cached || session.liveRunState === undefined
       ? {}
       : { runningTurnIds: [...session.liveRunState.runningTurnIds] }),
     ...(session.blockedReason === undefined ? {} : { blockedReason: session.blockedReason }),
