@@ -268,7 +268,10 @@ test('uses trace endpoints verbatim and appends the signal path only to a generi
       'https://collector.example/',
     ],
     [
-      { OTEL_EXPORTER_OTLP_ENDPOINT: 'https://collector.example/base/' },
+      {
+        OTEL_EXPORTER_OTLP_ENDPOINT: 'https://collector.example/base/',
+        OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: '',
+      },
       'https://collector.example/base/v1/traces',
     ],
   ] as const) {
@@ -310,13 +313,9 @@ test('trace headers override generic headers and retain outbound validation', as
     await exporter.close();
     assert.equal(
       headers.authorization,
-      traceHeaders === undefined
-        ? 'Bearer generic-token'
-        : traceHeaders
-          ? 'Bearer trace-token'
-          : undefined,
+      traceHeaders ? 'Bearer trace-token' : 'Bearer generic-token',
     );
-    assert.equal(headers['x-generic'], traceHeaders === undefined ? 'yes' : undefined);
+    assert.equal(headers['x-generic'], traceHeaders ? undefined : 'yes');
     assert.equal(headers['content-type'], 'application/json');
     assert.equal(headers['x-bad'], undefined);
   }
@@ -354,7 +353,7 @@ test('exports only known error classes for arbitrary tool Error.name values', as
 test('logs collector failures once until a successful export', async (t) => {
   const errors: unknown[][] = [];
   t.mock.method(console, 'error', (...args: unknown[]) => errors.push(args));
-  const statuses = [503, 503, 200, 503, 503];
+  const statuses = [400, 400, 200, 400, 400];
   const exporter = createOtlpTelemetryExporter({
     env: { OTEL_EXPORTER_OTLP_ENDPOINT: 'https://collector.example' },
     fetch: async () => new Response(null, { status: statuses.shift() }),
@@ -372,6 +371,7 @@ test('cancels stalled export requests with generic and trace-specific timeouts',
   t.mock.method(console, 'error', () => {});
   for (const timeoutEnv of [
     { OTEL_EXPORTER_OTLP_TIMEOUT: '40' },
+    { OTEL_EXPORTER_OTLP_TIMEOUT: '40', OTEL_EXPORTER_OTLP_TRACES_TIMEOUT: '' },
     { OTEL_EXPORTER_OTLP_TIMEOUT: '60000', OTEL_EXPORTER_OTLP_TRACES_TIMEOUT: '40' },
   ]) {
     let signal: AbortSignal | undefined;
@@ -419,3 +419,92 @@ function toolRecord(): PersistedToolInvocationRecord {
     ts: 2,
   };
 }
+
+test('retries retryable collector responses without changing the batch identity', async () => {
+  for (const status of [429, 502, 503, 504]) {
+    const requests: string[] = [];
+    let bodyCancelled = false;
+    const exporter = createOtlpTelemetryExporter({
+      env: { OTEL_EXPORTER_OTLP_ENDPOINT: 'https://collector.example' },
+      fetch: async (_url, init) => {
+        requests.push(String(init?.body));
+        if (requests.length > 1) {
+          assert.equal(bodyCancelled, true);
+          return new Response(null);
+        }
+        return new Response(
+          new ReadableStream({
+            cancel() {
+              bodyCancelled = true;
+            },
+          }),
+          {
+            status,
+            headers: { 'retry-after': '0' },
+          },
+        );
+      },
+    });
+    assert.ok(exporter);
+    await exporter.exportToolInvocation(toolRecord());
+    await exporter.flush();
+    await exporter.close();
+    assert.equal(requests.length, 2);
+    assert.equal(requests[0], requests[1]);
+  }
+});
+
+test('retries connection failures using exponential backoff with jitter', async (t) => {
+  t.mock.method(Math, 'random', () => 0);
+  const requestTimes: number[] = [];
+  const exporter = createOtlpTelemetryExporter({
+    env: { OTEL_EXPORTER_OTLP_ENDPOINT: 'https://collector.example' },
+    fetch: async () => {
+      requestTimes.push(performance.now());
+      if (requestTimes.length < 3) throw new Error('connection reset');
+      return new Response(null);
+    },
+  });
+  assert.ok(exporter);
+  t.after(() => exporter.close());
+  await exporter.exportToolInvocation(toolRecord());
+  await exporter.flush();
+  assert.equal(requestTimes.length, 3);
+  assert.ok(requestTimes[1] - requestTimes[0] >= 490);
+  assert.ok(requestTimes[2] - requestTimes[1] >= 990);
+});
+
+test('bounds Retry-After waits by the batch timeout and the shutdown grace period', async (t) => {
+  t.mock.method(console, 'error', () => {});
+  for (const close of [false, true]) {
+    t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 1_700_000_000_000 });
+    let requests = 0;
+    let signal: AbortSignal | undefined;
+    const exporter = createOtlpTelemetryExporter({
+      env: {
+        OTEL_EXPORTER_OTLP_ENDPOINT: 'https://collector.example',
+        OTEL_EXPORTER_OTLP_TIMEOUT: close ? '60000' : '40',
+      },
+      fetch: async (_url, init) => {
+        requests += 1;
+        signal = init?.signal ?? undefined;
+        return new Response(null, {
+          status: 503,
+          headers: { 'retry-after': new Date(Date.now() + 120_000).toUTCString() },
+        });
+      },
+    });
+    assert.ok(exporter);
+    await exporter.exportToolInvocation(toolRecord());
+    const flushed = exporter.flush();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const closed = close ? exporter.close() : undefined;
+    t.mock.timers.tick(close ? 1_000 : 40);
+    await flushed;
+    await closed;
+    assert.equal(requests, 1);
+    assert.equal(signal?.aborted, true);
+    await exporter.close();
+    t.mock.timers.reset();
+  }
+});

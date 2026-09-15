@@ -70,12 +70,14 @@ maka
 
 `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` overrides the generic endpoint and is used as-is, including
 custom paths and trailing slashes. Only `OTEL_EXPORTER_OTLP_ENDPOINT` has `/v1/traces` appended.
-`OTEL_EXPORTER_OTLP_TRACES_HEADERS` overrides the generic header variable (an empty override
-disables those headers). `OTEL_RESOURCE_ATTRIBUTES` adds URL-encoded `key=value` resource attributes.
+`OTEL_EXPORTER_OTLP_TRACES_HEADERS` overrides the generic header variable. Empty trace-specific
+endpoint, header and timeout variables behave as unset and fall back to the generic variables. `OTEL_RESOURCE_ATTRIBUTES` adds URL-encoded `key=value` resource attributes.
 `OTEL_EXPORTER_OTLP_TRACES_TIMEOUT` overrides `OTEL_EXPORTER_OTLP_TIMEOUT`; both accept positive
 integer milliseconds and default to 10000 for missing or invalid values. On shutdown, export
 requests share a maximum 1000 ms grace period before cancellation, regardless of the request
-timeout. Unsent spans are discarded after this grace period.
+timeout. Connection failures and HTTP 429/502/503/504 responses retry with exponential backoff
+and jitter, honoring `Retry-After`, within the original batch timeout. Unsent spans are discarded
+after the timeout or shutdown grace period; permanent HTTP errors are not retried.
 
 Exported spans contain provider/model identifiers, model-call kind, tool name, duration, status,
 token counts, cost, byte counts, and a fixed allowlist of error classes; arbitrary error names

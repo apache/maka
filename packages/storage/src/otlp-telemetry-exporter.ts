@@ -18,6 +18,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { setTimeout as delay } from 'node:timers/promises';
 import type {
   PersistedLlmCallRecord,
   PersistedToolInvocationRecord,
@@ -31,6 +32,9 @@ const MAX_HEADER_NAME_LENGTH = 128;
 const MAX_HEADER_VALUE_LENGTH = 8_192;
 const MAX_HEADER_BYTES = 64 * 1_024;
 const DEFAULT_TIMEOUT_MS = 10_000;
+const INITIAL_RETRY_DELAY_MS = 1_000;
+const MAX_RETRY_DELAY_MS = 30_000;
+const RETRYABLE_HTTP_STATUSES = new Set([429, 502, 503, 504]);
 // Host 在 10 秒后强制终止；导出器关闭最多占用 1 秒，为其余资源清理保留时间。
 const CLOSE_TIMEOUT_MS = 1_000;
 const ERROR_CLASSES = new Set([
@@ -100,7 +104,7 @@ export function createOtlpTelemetryExporter(
   const endpoint = resolveEndpoint(env);
   if (!endpoint) return undefined;
   const headers = parseHeaders(
-    env.OTEL_EXPORTER_OTLP_TRACES_HEADERS ?? env.OTEL_EXPORTER_OTLP_HEADERS,
+    env.OTEL_EXPORTER_OTLP_TRACES_HEADERS || env.OTEL_EXPORTER_OTLP_HEADERS,
   );
   warnForInsecureAuthorization(endpoint, headers);
   return new OtlpTelemetryExporterImpl(
@@ -241,7 +245,10 @@ class OtlpTelemetryExporterImpl implements OtlpTelemetryExporter {
     });
     try {
       // 同时约束请求及响应释放；即使注入的 transport 不响应 AbortSignal，也不阻塞关闭。
-      const response = await Promise.race([this.sendRequest(spans, controller.signal), cancelled]);
+      const response = await Promise.race([
+        this.sendWithRetry(spans, controller.signal),
+        cancelled,
+      ]);
       if (response.ok) {
         this.#failureReported = false;
       } else {
@@ -252,6 +259,25 @@ class OtlpTelemetryExporterImpl implements OtlpTelemetryExporter {
     } finally {
       clearTimeout(timer);
       this.#shutdown.signal.removeEventListener('abort', abort);
+    }
+  }
+
+  private async sendWithRetry(spans: OtlpSpan[], signal: AbortSignal): Promise<Response> {
+    let backoffMs = INITIAL_RETRY_DELAY_MS;
+    for (;;) {
+      signal.throwIfAborted();
+      let response: Response | undefined;
+      try {
+        response = await this.sendRequest(spans, signal);
+        if (!RETRYABLE_HTTP_STATUSES.has(response.status)) return response;
+      } catch {
+        signal.throwIfAborted();
+      }
+      // 整个批次共享超时和关闭信号，重试不延长发送预算，也不改变 span 标识。
+      const retryAfter = response?.headers.get('retry-after');
+      const retryMs = retryAfterDelay(retryAfter) ?? backoffMs * (0.5 + Math.random());
+      await delay(Math.min(retryMs, this.#timeoutMs), undefined, { signal });
+      backoffMs = Math.min(backoffMs * 2, MAX_RETRY_DELAY_MS);
     }
   }
 
@@ -278,6 +304,14 @@ class OtlpTelemetryExporterImpl implements OtlpTelemetryExporter {
     this.#failureReported = true;
     console.error(`[telemetry] OTLP export failed: ${reason}`);
   }
+}
+
+function retryAfterDelay(value: string | null | undefined): number | undefined {
+  if (!value) return undefined;
+  const seconds = /^\d+$/.test(value) ? Number(value) : Number.NaN;
+  if (Number.isFinite(seconds)) return seconds * 1_000;
+  const date = Date.parse(value);
+  return Number.isFinite(date) ? Math.max(0, date - Date.now()) : undefined;
 }
 
 function toSpan(input: {
@@ -311,11 +345,12 @@ function numberAttribute(key: string, value: number): OtlpAttribute {
 }
 
 function resolveEndpoint(env: Environment): string | undefined {
-  const configured = env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT ?? env.OTEL_EXPORTER_OTLP_ENDPOINT;
+  const tracesEndpoint = env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT || undefined;
+  const configured = tracesEndpoint ?? env.OTEL_EXPORTER_OTLP_ENDPOINT;
   if (!configured) return undefined;
   try {
     const url = new URL(configured);
-    if (env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT === undefined) {
+    if (tracesEndpoint === undefined) {
       url.pathname = `${url.pathname.replace(/\/+$/u, '')}/v1/traces`;
     }
     return url.toString();
@@ -325,7 +360,7 @@ function resolveEndpoint(env: Environment): string | undefined {
 }
 
 function resolveTimeout(env: Environment): number {
-  const configured = env.OTEL_EXPORTER_OTLP_TRACES_TIMEOUT ?? env.OTEL_EXPORTER_OTLP_TIMEOUT;
+  const configured = env.OTEL_EXPORTER_OTLP_TRACES_TIMEOUT || env.OTEL_EXPORTER_OTLP_TIMEOUT;
   const timeout = Number(configured);
   return Number.isInteger(timeout) && timeout > 0 && timeout <= 2_147_483_647
     ? timeout
