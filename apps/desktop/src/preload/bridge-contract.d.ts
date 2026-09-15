@@ -1328,7 +1328,7 @@ export interface MakaBridge {
   externalSessions: {
     listSources(host?: DesktopRuntimeHostRef): Promise<{ adapterIds: string[] }>;
     list(
-      input: { adapterId: string; includeArchived?: boolean; cursor?: string },
+      input: { adapterId: string; includeArchived?: boolean; cursor?: string; text?: string },
       host?: DesktopRuntimeHostRef,
     ): Promise<{
       sessions: DesktopExternalSessionCatalogItem[];
