@@ -30,7 +30,31 @@ const MAX_HEADER_COUNT = 32;
 const MAX_HEADER_NAME_LENGTH = 128;
 const MAX_HEADER_VALUE_LENGTH = 8_192;
 const MAX_HEADER_BYTES = 64 * 1_024;
-const MAX_ERROR_CLASS_LENGTH = 128;
+const DEFAULT_TIMEOUT_MS = 10_000;
+// Host 在 10 秒后强制终止；导出器关闭最多占用 1 秒，为其余资源清理保留时间。
+const CLOSE_TIMEOUT_MS = 1_000;
+const ERROR_CLASSES = new Set([
+  'Abort',
+  'Auth',
+  'ContextLength',
+  'Network',
+  'Timeout',
+  'RateLimit',
+  'ProviderBilling',
+  'ProviderCapacity',
+  'ProviderUnavailable',
+  'Other',
+  'ExclusiveStepConflict',
+  'InvalidArguments',
+  'AmbiguousComputerTarget',
+  'LoopGate',
+  'DeferredNotLoaded',
+  'ExecutionBoundaryUnavailable',
+  'ClientCapabilityBoundary',
+  'ClientCapabilityPreparation',
+  'RuntimeLimit',
+  'OutcomeUnknown',
+]);
 const HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/u;
 const PROTECTED_HEADERS = new Set([
   'connection',
@@ -75,13 +99,16 @@ export function createOtlpTelemetryExporter(
   const env = options.env ?? process.env;
   const endpoint = resolveEndpoint(env);
   if (!endpoint) return undefined;
-  const headers = parseHeaders(env.OTEL_EXPORTER_OTLP_HEADERS);
+  const headers = parseHeaders(
+    env.OTEL_EXPORTER_OTLP_TRACES_HEADERS ?? env.OTEL_EXPORTER_OTLP_HEADERS,
+  );
   warnForInsecureAuthorization(endpoint, headers);
   return new OtlpTelemetryExporterImpl(
     endpoint,
     headers,
     resourceAttributes(env),
     options.fetch ?? fetch,
+    resolveTimeout(env),
   );
 }
 
@@ -91,20 +118,26 @@ class OtlpTelemetryExporterImpl implements OtlpTelemetryExporter {
   readonly #resourceAttributes: OtlpAttribute[];
   readonly #fetch: FetchLike;
   readonly #pending: OtlpSpan[] = [];
+  readonly #timeoutMs: number;
+  readonly #shutdown = new AbortController();
   #timer: NodeJS.Timeout | undefined;
   #flushPromise: Promise<void> | undefined;
   #closed = false;
+  #closePromise: Promise<void> | undefined;
+  #failureReported = false;
 
   constructor(
     endpoint: string,
     headers: Record<string, string>,
     resourceAttributes: OtlpAttribute[],
     fetchFn: FetchLike,
+    timeoutMs: number,
   ) {
     this.#endpoint = endpoint;
     this.#headers = headers;
     this.#resourceAttributes = resourceAttributes;
     this.#fetch = fetchFn;
+    this.#timeoutMs = timeoutMs;
   }
 
   async exportLlmCall(record: PersistedLlmCallRecord): Promise<void> {
@@ -162,11 +195,14 @@ class OtlpTelemetryExporterImpl implements OtlpTelemetryExporter {
     }
   }
 
-  async close(): Promise<void> {
+  close(): Promise<void> {
+    if (this.#closePromise) return this.#closePromise;
     this.#closed = true;
     if (this.#timer) clearTimeout(this.#timer);
     this.#timer = undefined;
-    await this.flush();
+    const timer = setTimeout(() => this.#shutdown.abort(), CLOSE_TIMEOUT_MS);
+    this.#closePromise = this.flush().finally(() => clearTimeout(timer));
+    return this.#closePromise;
   }
 
   private async enqueue(input: {
@@ -191,25 +227,56 @@ class OtlpTelemetryExporterImpl implements OtlpTelemetryExporter {
   }
 
   private async send(spans: OtlpSpan[]): Promise<void> {
+    if (this.#shutdown.signal.aborted) return;
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    const timer = setTimeout(abort, this.#timeoutMs);
+    this.#shutdown.signal.addEventListener('abort', abort, { once: true });
+    const cancelled = new Promise<never>((_resolve, reject) => {
+      controller.signal.addEventListener(
+        'abort',
+        () => reject(new Error('OTLP request cancelled')),
+        { once: true },
+      );
+    });
     try {
-      const response = await this.#fetch(this.#endpoint, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', ...this.#headers },
-        body: JSON.stringify({
-          resourceSpans: [
-            {
-              resource: { attributes: this.#resourceAttributes },
-              scopeSpans: [{ scope: { name: 'maka.storage' }, spans }],
-            },
-          ],
-        }),
-      });
-      if (!response.ok) {
-        console.error(`[telemetry] OTLP export failed: HTTP ${response.status}`);
+      // 同时约束请求及响应释放；即使注入的 transport 不响应 AbortSignal，也不阻塞关闭。
+      const response = await Promise.race([this.sendRequest(spans, controller.signal), cancelled]);
+      if (response.ok) {
+        this.#failureReported = false;
+      } else {
+        this.reportFailure(`HTTP ${response.status}`);
       }
     } catch {
-      console.error('[telemetry] OTLP export failed: request error');
+      this.reportFailure('request error');
+    } finally {
+      clearTimeout(timer);
+      this.#shutdown.signal.removeEventListener('abort', abort);
     }
+  }
+
+  private async sendRequest(spans: OtlpSpan[], signal: AbortSignal): Promise<Response> {
+    const response = await this.#fetch(this.#endpoint, {
+      method: 'POST',
+      signal,
+      headers: { 'content-type': 'application/json', ...this.#headers },
+      body: JSON.stringify({
+        resourceSpans: [
+          {
+            resource: { attributes: this.#resourceAttributes },
+            scopeSpans: [{ scope: { name: 'maka.storage' }, spans }],
+          },
+        ],
+      }),
+    });
+    await response.body?.cancel();
+    return response;
+  }
+
+  private reportFailure(reason: string): void {
+    if (this.#failureReported) return;
+    this.#failureReported = true;
+    console.error(`[telemetry] OTLP export failed: ${reason}`);
   }
 }
 
@@ -248,12 +315,21 @@ function resolveEndpoint(env: Environment): string | undefined {
   if (!configured) return undefined;
   try {
     const url = new URL(configured);
-    const pathname = url.pathname.replace(/\/+$/u, '');
-    url.pathname = pathname.endsWith('/v1/traces') ? pathname : `${pathname}/v1/traces`;
+    if (env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT === undefined) {
+      url.pathname = `${url.pathname.replace(/\/+$/u, '')}/v1/traces`;
+    }
     return url.toString();
   } catch {
     return undefined;
   }
+}
+
+function resolveTimeout(env: Environment): number {
+  const configured = env.OTEL_EXPORTER_OTLP_TRACES_TIMEOUT ?? env.OTEL_EXPORTER_OTLP_TIMEOUT;
+  const timeout = Number(configured);
+  return Number.isInteger(timeout) && timeout > 0 && timeout <= 2_147_483_647
+    ? timeout
+    : DEFAULT_TIMEOUT_MS;
 }
 
 function parseHeaders(value: string | undefined): Record<string, string> {
@@ -314,9 +390,8 @@ function warnForInsecureAuthorization(endpoint: string, headers: Record<string, 
 
 function boundedErrorClass(value: string | undefined): string | undefined {
   if (!value) return undefined;
-  const sanitized = value.trim().replace(/[\u0000-\u001f\u007f-\u009f]/gu, '');
-  if (!sanitized) return undefined;
-  return Array.from(sanitized).slice(0, MAX_ERROR_CLASS_LENGTH).join('');
+  // Error.name 可由工具任意设置，长度限制不能保证其中不含凭据。
+  return ERROR_CLASSES.has(value) ? value : 'Other';
 }
 
 function normalizeTimestamp(value: number): number {

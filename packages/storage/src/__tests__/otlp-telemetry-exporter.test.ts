@@ -19,7 +19,10 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type { PersistedLlmCallRecord } from '../telemetry-file-schema.js';
+import type {
+  PersistedLlmCallRecord,
+  PersistedToolInvocationRecord,
+} from '../telemetry-file-schema.js';
 import {
   createOtlpTelemetryExporter,
   type OtlpTelemetryExporterOptions,
@@ -131,7 +134,7 @@ test('bounds exported error classes and preserves exact nanosecond timestamps', 
   assert.equal(span.endTimeUnixNano, '1234567890126000000');
   const errorClass = span.attributes.find((item) => item.key === 'maka.error.class')?.value
     .stringValue;
-  assert.equal(errorClass, 'x'.repeat(128));
+  assert.equal(errorClass, 'Other');
 });
 
 test('warns when authorization is configured for a non-HTTPS collector', () => {
@@ -166,7 +169,7 @@ test('does not create an exporter without an OTLP endpoint', () => {
   assert.equal(createOtlpTelemetryExporter({ env: {} }), undefined);
 });
 
-test('normalizes an explicitly configured traces endpoint with a trailing slash', async () => {
+test('preserves an explicitly configured traces endpoint including its trailing slash', async () => {
   const requests: string[] = [];
   const exporter = createOtlpTelemetryExporter({
     env: { OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: 'https://collector.example.test/v1/traces/' },
@@ -198,7 +201,7 @@ test('normalizes an explicitly configured traces endpoint with a trailing slash'
   });
   await exporter.close();
 
-  assert.deepEqual(requests, ['https://collector.example.test/v1/traces']);
+  assert.deepEqual(requests, ['https://collector.example.test/v1/traces/']);
 });
 
 test('flush drains spans queued while another batch is in flight', async () => {
@@ -250,3 +253,169 @@ test('flush drains spans queued while another batch is in flight', async () => {
 
   assert.deepEqual(payloads, [{ spanCount: 32 }, { spanCount: 1 }]);
 });
+
+test('uses trace endpoints verbatim and appends the signal path only to a generic endpoint', async () => {
+  for (const [env, expected] of [
+    [
+      {
+        OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: 'https://collector.example/custom/traces?route=a',
+        OTEL_EXPORTER_OTLP_ENDPOINT: 'https://ignored.example',
+      },
+      'https://collector.example/custom/traces?route=a',
+    ],
+    [
+      { OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: 'https://collector.example/' },
+      'https://collector.example/',
+    ],
+    [
+      { OTEL_EXPORTER_OTLP_ENDPOINT: 'https://collector.example/base/' },
+      'https://collector.example/base/v1/traces',
+    ],
+  ] as const) {
+    const urls: string[] = [];
+    const exporter = createOtlpTelemetryExporter({
+      env,
+      fetch: async (url) => {
+        urls.push(url);
+        return new Response(null);
+      },
+    });
+    assert.ok(exporter);
+    await exporter.exportToolInvocation(toolRecord());
+    await exporter.close();
+    assert.deepEqual(urls, [expected]);
+  }
+});
+
+test('trace headers override generic headers and retain outbound validation', async () => {
+  for (const traceHeaders of [
+    'authorization=Bearer%20trace-token,content-type=text/plain,x-bad=bad%0Avalue',
+    '',
+    undefined,
+  ]) {
+    let headers: Record<string, string> = {};
+    const exporter = createOtlpTelemetryExporter({
+      env: {
+        OTEL_EXPORTER_OTLP_ENDPOINT: 'https://collector.example',
+        OTEL_EXPORTER_OTLP_HEADERS: 'authorization=Bearer%20generic-token,x-generic=yes',
+        OTEL_EXPORTER_OTLP_TRACES_HEADERS: traceHeaders,
+      },
+      fetch: async (_url, init) => {
+        headers = init?.headers as Record<string, string>;
+        return new Response(null);
+      },
+    });
+    assert.ok(exporter);
+    await exporter.exportToolInvocation(toolRecord());
+    await exporter.close();
+    assert.equal(
+      headers.authorization,
+      traceHeaders === undefined
+        ? 'Bearer generic-token'
+        : traceHeaders
+          ? 'Bearer trace-token'
+          : undefined,
+    );
+    assert.equal(headers['x-generic'], traceHeaders === undefined ? 'yes' : undefined);
+    assert.equal(headers['content-type'], 'application/json');
+    assert.equal(headers['x-bad'], undefined);
+  }
+});
+
+test('exports only known error classes for arbitrary tool Error.name values', async () => {
+  const classes: string[] = [];
+  const exporter = createOtlpTelemetryExporter({
+    env: { OTEL_EXPORTER_OTLP_ENDPOINT: 'https://collector.example' },
+    fetch: async (_url, init) => {
+      const payload = JSON.parse(String(init?.body));
+      for (const span of payload.resourceSpans[0].scopeSpans[0].spans) {
+        classes.push(
+          span.attributes.find((item: { key: string }) => item.key === 'maka.error.class').value
+            .stringValue,
+        );
+      }
+      assert.equal(String(init?.body).includes('sk-live-secret-value'), false);
+      return new Response(null);
+    },
+  });
+  assert.ok(exporter);
+  for (const errorClass of [
+    'sk-live-secret-value',
+    'password=two words',
+    'Timeout',
+    'InvalidArguments',
+  ]) {
+    await exporter.exportToolInvocation({ ...toolRecord(), errorClass, status: 'error' });
+  }
+  await exporter.close();
+  assert.deepEqual(classes, ['Other', 'Other', 'Timeout', 'InvalidArguments']);
+});
+
+test('logs collector failures once until a successful export', async (t) => {
+  const errors: unknown[][] = [];
+  t.mock.method(console, 'error', (...args: unknown[]) => errors.push(args));
+  const statuses = [503, 503, 200, 503, 503];
+  const exporter = createOtlpTelemetryExporter({
+    env: { OTEL_EXPORTER_OTLP_ENDPOINT: 'https://collector.example' },
+    fetch: async () => new Response(null, { status: statuses.shift() }),
+  });
+  assert.ok(exporter);
+  for (let index = 0; index < 5; index += 1) {
+    await exporter.exportToolInvocation(toolRecord());
+    await exporter.flush();
+  }
+  await exporter.close();
+  assert.equal(errors.length, 2);
+});
+
+test('cancels stalled export requests with generic and trace-specific timeouts', async (t) => {
+  t.mock.method(console, 'error', () => {});
+  for (const timeoutEnv of [
+    { OTEL_EXPORTER_OTLP_TIMEOUT: '40' },
+    { OTEL_EXPORTER_OTLP_TIMEOUT: '60000', OTEL_EXPORTER_OTLP_TRACES_TIMEOUT: '40' },
+  ]) {
+    let signal: AbortSignal | undefined;
+    let release!: (response: Response) => void;
+    const pending = new Promise<Response>((resolve) => {
+      release = resolve;
+    });
+    const exporter = createOtlpTelemetryExporter({
+      env: { OTEL_EXPORTER_OTLP_ENDPOINT: 'https://collector.example', ...timeoutEnv },
+      fetch: async (_url, init) => {
+        signal = init?.signal ?? undefined;
+        return pending;
+      },
+    });
+    assert.ok(exporter);
+    let deadline: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await exporter.exportToolInvocation(toolRecord());
+      const completed = await Promise.race([
+        exporter.flush().then(() => true),
+        new Promise<boolean>((resolve) => {
+          deadline = setTimeout(() => resolve(false), 500);
+        }),
+      ]);
+      assert.equal(completed, true, 'request must settle even if a transport ignores cancellation');
+      assert.equal(signal?.aborted, true);
+    } finally {
+      clearTimeout(deadline);
+      release(new Response(null));
+      await exporter.close();
+    }
+  }
+});
+
+function toolRecord(): PersistedToolInvocationRecord {
+  return {
+    id: 'tool-export',
+    toolName: 'Bash',
+    durationMs: 1,
+    status: 'success',
+    bytesIn: 1,
+    bytesOut: 2,
+    date: '1970-01-01',
+    startedAt: 1,
+    ts: 2,
+  };
+}

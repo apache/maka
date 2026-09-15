@@ -18,6 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
 import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -55,6 +56,67 @@ import { acquireOperationalStateDatabase } from '../operational-state-store.js';
 import { removeControlDirectory } from './fixtures/control-directory-hygiene.js';
 
 describe('InteractiveUsageStores', () => {
+  test('closes a file-backed writer while its OTLP collector never returns headers', async (t) => {
+    t.mock.method(console, 'error', () => {});
+    const keys = [
+      'OTEL_EXPORTER_OTLP_TRACES_ENDPOINT',
+      'OTEL_EXPORTER_OTLP_TRACES_TIMEOUT',
+      'OTEL_EXPORTER_OTLP_TRACES_HEADERS',
+    ] as const;
+    const previous = keys.map((key) => process.env[key]);
+    t.after(() => {
+      keys.forEach((key, index) => {
+        if (previous[index] === undefined) delete process.env[key];
+        else process.env[key] = previous[index];
+      });
+    });
+    let received = false;
+    const server = createServer((_request, _response) => {
+      received = true;
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    assert.ok(address && typeof address === 'object');
+    process.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT = `http://127.0.0.1:${address.port}/traces`;
+    process.env.OTEL_EXPORTER_OTLP_TRACES_TIMEOUT = '60000';
+    process.env.OTEL_EXPORTER_OTLP_TRACES_HEADERS = '';
+    try {
+      await withInteractiveRoot(async ({ capability }) => {
+        const owner = await tryAcquireInteractiveRootOwner(capability);
+        assert(owner);
+        const stores = await openInteractiveUsageStoresForWrite(owner.lease);
+        let deadline: ReturnType<typeof setTimeout> | undefined;
+        try {
+          await stores.telemetry.recordToolInvocation(toolRecord());
+          const closed = await Promise.race([
+            stores.close().then(() => true),
+            new Promise<boolean>((resolve) => {
+              deadline = setTimeout(() => resolve(false), 2_500);
+            }),
+          ]);
+          assert.equal(
+            received,
+            true,
+            'the real collector must receive the persisted usage export',
+          );
+          assert.equal(
+            closed,
+            true,
+            'OTLP must release shutdown before the Host termination budget',
+          );
+        } finally {
+          clearTimeout(deadline);
+          server.closeAllConnections();
+          await stores.close();
+          await owner.close();
+        }
+      });
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
   test('classifies facade failures without exposing concrete errors to callers', () => {
     assert.deepEqual(
       classifyInteractiveUsageStoresFailure(new PricingRevisionConflictError(3, 4)),
