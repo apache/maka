@@ -69,6 +69,17 @@ const EMPTY_CONTROLLER: TaskEntryController = {
     selectLocalProject: () => false,
     addProject() {},
     async chooseProjectForProfile() {},
+    resolveWorkBoardTarget: (
+      _item: Parameters<TaskEntryControllerCommands['resolveWorkBoardTarget']>[0],
+    ): ReturnType<TaskEntryControllerCommands['resolveWorkBoardTarget']> => ({
+      ok: false as const,
+      reason: 'unavailable' as const,
+      message: 'Work Board task start is unavailable.',
+    }),
+    prepareWorkBoardDraft: (
+      _target: Parameters<TaskEntryControllerCommands['prepareWorkBoardDraft']>[0],
+      _draft: Parameters<TaskEntryControllerCommands['prepareWorkBoardDraft']>[1],
+    ): ReturnType<TaskEntryControllerCommands['prepareWorkBoardDraft']> => undefined,
   },
   selectors: {
     draftKey: taskEntryDraftKey(undefined),
@@ -101,6 +112,14 @@ function createTaskEntryOwner(): TaskEntryOwner & {
       addProject: () => current.commands.addProject(),
       chooseProjectForProfile: (profileId: string) =>
         current.commands.chooseProjectForProfile(profileId),
+      resolveWorkBoardTarget: (
+        item: Parameters<TaskEntryControllerCommands['resolveWorkBoardTarget']>[0],
+      ) => current.commands.resolveWorkBoardTarget(item),
+      prepareWorkBoardDraft: (
+        target: Parameters<TaskEntryControllerCommands['prepareWorkBoardDraft']>[0],
+        draft: Parameters<TaskEntryControllerCommands['prepareWorkBoardDraft']>[1],
+      ) =>
+        current.commands.prepareWorkBoardDraft(target, draft),
     },
     publish(controller: TaskEntryController): void {
       if (current === controller) return;

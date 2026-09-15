@@ -21,15 +21,21 @@ import { assertMaximalJsonPages } from './fixtures/json-pages.js';
 import { EXTERNAL_SESSION_PAGE_MAX_ITEMS } from '../protocol/index.js';
 
 import assert from 'node:assert/strict';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
 import {
   ExternalSessionAdapterRegistry,
+  ExternalSessionLimitError,
   type ExternalSessionAdapter,
 } from '@maka/core/external-session';
 import { type SessionHeader } from '@maka/core/session';
 import { headerToSummary } from '@maka/runtime/session-manager';
 import type { SessionCatalogRecord } from '@maka/storage/execution-stores';
+import { createExternalSessionAdapterRegistry } from '@maka/storage/external-sessions';
 import {
+  decodeResponseFrame,
   EXTERNAL_SESSION_IMPORTED_SESSION_IDS_MAX_ITEMS,
   EXTERNAL_SESSION_RESULT_MAX_BYTES,
 } from '../protocol/index.js';
@@ -287,7 +293,13 @@ test('imports through the generic importer and treats repeats as independent cop
   assert.equal(first.ok, true);
   assert.equal(second.ok, true);
   if (!first.ok || !second.ok) assert.fail('Expected both imports to commit');
+  assert.equal(first.result.kind, 'imported');
+  assert.equal(second.result.kind, 'imported');
+  if (first.result.kind !== 'imported' || second.result.kind !== 'imported')
+    assert.fail('Expected imported Sessions');
   assert.notEqual(first.result.session.id, second.result.session.id);
+  const response = { requestId: 'import-request', operation: 'external-session.import', ...first };
+  assert.deepEqual(decodeResponseFrame(JSON.parse(JSON.stringify(response))), response);
   assert.deepEqual(
     fixture.creates.map(({ input, messages, externalOrigin }) => ({
       cwd: input.cwd,
@@ -336,6 +348,8 @@ test('coalesces a repeat import issued while the first is still running', async 
   assert.equal(first.ok, true);
   assert.equal(second.ok, true);
   if (!first.ok || !second.ok) assert.fail('Expected the coalesced import to commit');
+  if (first.result.kind !== 'imported' || second.result.kind !== 'imported')
+    assert.fail('Expected imported Sessions');
   // Same task, and only one of them was ever created. Both callers are told
   // about it, so the one that clicked twice still gets taken to the result.
   assert.equal(first.result.session.id, second.result.session.id);
@@ -350,7 +364,8 @@ test('coalesces a repeat import issued while the first is still running', async 
     context,
   );
   assert.equal(later.ok, true);
-  if (!later.ok) assert.fail('Expected a later repeat to commit its own copy');
+  if (!later.ok || later.result.kind !== 'imported')
+    assert.fail('Expected a later repeat to commit its own copy');
   assert.notEqual(later.result.session.id, first.result.session.id);
   assert.equal(fixture.creates.length, 2);
 });
@@ -408,6 +423,118 @@ test('reports conversion errors before persistence and store uncertainty after e
     },
   );
   assert.equal(persistenceFailure.drainRequests(), 1);
+});
+
+test('carries visible Claude transcript limits through the import response before persistence', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'maka-claude-import-limit-'));
+  try {
+    const sourceSessionId = 'aaaaaaaa-0000-4000-8000-000000000001';
+    const directory = join(home, 'projects', '-private-workspace');
+    await mkdir(directory, { recursive: true });
+    await writeFile(
+      join(directory, `${sourceSessionId}.jsonl`),
+      [
+        {
+          type: 'user',
+          cwd: '/private/workspace',
+          message: { role: 'user', content: 'x'.repeat(512) },
+        },
+        {
+          type: 'assistant',
+          message: {
+            id: 'reply',
+            role: 'assistant',
+            content: [{ type: 'text', text: 'done' }],
+            stop_reason: 'end_turn',
+          },
+        },
+      ]
+        .map((record) => JSON.stringify(record))
+        .join('\n'),
+    );
+    for (const [options, kind, max] of [
+      [{ maxTranscriptBytes: 100 }, 'transcript_bytes', 100],
+      [{ maxRecordBytes: 100 }, 'record_bytes', 100],
+      [{ maxRecords: 1 }, 'records', 1],
+      [{ maxMessages: 1 }, 'messages', 1],
+      // The response collector and final message converter both retain bytes.
+      [{ maxConvertedBytes: 10 }, 'converted_bytes', 10],
+      [{ maxConvertedBytes: 300 }, 'converted_bytes', 300],
+    ] as const) {
+      const adapter = createExternalSessionAdapterRegistry({
+        claudeCode: { claudeHome: home, ...options },
+      }).require('claude-code');
+      const fixture = coordinatorFixture([adapter]);
+      const catalog = await fixture.coordinator.handlers['external-session.catalog.query'](
+        { adapterId: 'claude-code' },
+        context,
+      );
+      assert.ok(catalog.ok);
+      assert.equal(catalog.result.sessions[0]?.id, sourceSessionId);
+
+      const outcome = await fixture.coordinator.handlers['external-session.import'](
+        { adapterId: 'claude-code', sourceSessionId },
+        context,
+      );
+      assert.deepEqual(outcome, {
+        ok: true,
+        result: { kind: 'source_limit_exceeded', limit: { kind, max } },
+      });
+      const response = {
+        requestId: 'limit-request',
+        operation: 'external-session.import',
+        ...outcome,
+      };
+      assert.deepEqual(decodeResponseFrame(JSON.parse(JSON.stringify(response))), response);
+      assert.equal(fixture.creates.length, 0);
+      assert.equal(fixture.drainRequests(), 0);
+      const settled = await fixture.coordinator.handlers['external-session.catalog.query'](
+        { adapterId: 'claude-code' },
+        context,
+      );
+      assert.ok(settled.ok);
+      assert.equal(settled.result.sessions[0]?.importState.isImporting, false);
+    }
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test('does not classify untyped source errors or errors after persistence as source limits', async () => {
+  const untyped = coordinatorFixture([
+    adapterFixture({
+      readSession: async () => {
+        throw Object.assign(new Error('record exceeds 100 bytes: /private/transcript.jsonl'), {
+          limit: { kind: 'record_bytes', max: 100 },
+        });
+      },
+    }),
+  ]);
+  assert.deepEqual(
+    await untyped.coordinator.handlers['external-session.import'](
+      { adapterId: 'codex', sourceSessionId: 'source-0' },
+      context,
+    ),
+    {
+      ok: false,
+      error: {
+        code: 'source_unreadable',
+        message: 'External Session could not be read or converted',
+      },
+    },
+  );
+  const committed = coordinatorFixture([adapterFixture()], {
+    createImportedSession: async () => {
+      throw new ExternalSessionLimitError('record_bytes', 100, 'private persistence details');
+    },
+  });
+  const outcome = await committed.coordinator.handlers['external-session.import'](
+    { adapterId: 'codex', sourceSessionId: 'source-0' },
+    context,
+  );
+  assert.ok(!outcome.ok);
+  assert.equal(outcome.error.code, 'commit_outcome_unknown');
+  assert.equal(committed.drainRequests(), 1);
 });
 
 test('reports a model-target failure before any commit is attempted', async () => {

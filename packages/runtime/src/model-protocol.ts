@@ -342,15 +342,6 @@ export interface ModelFailure {
   code?: string;
 }
 
-/**
- * Provider request metadata reduced to the Maka-owned message projection.
- * Headers and provider request bodies stay with ProviderRequestTracker, their
- * existing capture owner, instead of being retained again by the stream result.
- */
-export interface ModelRequestMetadata {
-  messages?: readonly ModelMessage[];
-}
-
 // ---------------------------------------------------------------------------
 // Stream-event / stream-result contract
 // ---------------------------------------------------------------------------
@@ -362,16 +353,13 @@ export interface ModelRequestMetadata {
  *
  * - `text` / `thinking`: incremental assistant content deltas for the current
  *   step. The backend accumulates them per step and flushes one
- *   `AssistantMessage` (+ terminal text/thinking `SessionEvent`s) at the
- *   next `step-finish`.
+ *   `AssistantMessage` (+ terminal text/thinking `SessionEvent`s) when the
+ *   request settles through `ModelStepOutcome`.
  * - `thinking-signature`: a provider-signed reasoning signature (Anthropic)
  *   delivered out-of-band from the thinking text.
- * - `step-finish`: a provider step boundary. Carries the step's normalized
- *   usage (already reduced to `NormalizedUsage`) and normalized finish
- *   reason. The backend owns step counting, the per-step `AssistantMessage`
- *   flush, and the messageId rotation.
- * - `finish`: the terminal stream boundary, carrying the normalized finish
- *   reason.
+ * The adapter consumes SDK finish boundaries internally. Terminal status,
+ * normalized usage, finish reason, and continuation belong to
+ * `ModelStepOutcome`; they are not incremental stream events.
  * - `error`: a request-level provider failure, already classified and scrubbed
  *   by the adapter. The backend uses its stable kind for overflow/transport
  *   recovery and terminal error emission.
@@ -416,8 +404,6 @@ export type ModelStreamEvent =
       output: unknown;
       isError?: boolean;
     }
-  | { kind: 'step-finish'; usage?: NormalizedUsage; finishReason?: ModelFinishReason }
-  | { kind: 'finish'; finishReason?: ModelFinishReason }
   | { kind: 'error'; failure: ModelFailure };
 
 export type ModelStepOutcome =
@@ -425,14 +411,12 @@ export type ModelStepOutcome =
       kind: 'completed';
       finishReason: ModelFinishReason;
       usage?: NormalizedUsage;
-      request: ModelRequestMetadata;
       continuation: 'none' | 'pending';
     }
   | {
-      kind: 'truncated' | 'failed' | 'aborted';
+      kind: 'failed';
       failure: ModelFailure;
       usage?: NormalizedUsage;
-      request: ModelRequestMetadata;
       continuation: 'none';
     };
 

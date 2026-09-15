@@ -21,11 +21,12 @@ import type { SessionToolProfile } from '@maka/core/session';
 import type { WorkHubRoutingDecision } from '@maka/core/workhub-routing';
 import { parseAttachmentResourceRef } from '@maka/core/attachments';
 import type { MakaTool } from '@maka/runtime/tool-runtime';
-import { z } from 'zod';
 import { readParameters, resolveReadInput } from '@maka/runtime/read-page';
 
 const HEADLESS_CODING_V1_TOOL_NAMES = [
   'Bash',
+  'StopBackgroundTask',
+  'WriteStdin',
   'Read',
   'Write',
   'Edit',
@@ -40,16 +41,6 @@ const HEADLESS_CODING_V1_SYSTEM_PROMPT = [
   'Verify the result when practical.',
   'Stop when the task is complete.',
 ].join('\n');
-
-const HEADLESS_CODING_V1_BASH_DESCRIPTION =
-  'Run a foreground shell command in the session cwd. Use Bash for inspection, builds, tests, and task-local generation. Background execution and PTY sessions are unavailable in this profile.';
-
-const HEADLESS_CODING_V1_BASH_PARAMETERS = z
-  .object({
-    command: z.string().describe('The shell command to execute'),
-    timeout_ms: z.number().int().positive().max(600_000).optional(),
-  })
-  .strict();
 
 const WORKHUB_COORDINATION_V1_SYSTEM_PROMPT = [
   'You are the conversational coordinator for WorkHub.',
@@ -162,12 +153,6 @@ export function projectHostedExecutionTools(
           impl: (input, context) =>
             tool.impl(WORKHUB_ATTACHMENT_READ_PARAMETERS.parse(input), context),
         }
-      : tool.name === 'Bash'
-        ? {
-            ...tool,
-            description: HEADLESS_CODING_V1_BASH_DESCRIPTION,
-            parameters: HEADLESS_CODING_V1_BASH_PARAMETERS,
-          }
-        : tool,
+      : tool,
   );
 }

@@ -18,6 +18,7 @@
  */
 
 import { isWorkHubActionReceipt, type WorkHubActionReceipt } from './workhub-action-result.js';
+import { isExecutorId } from './executor-id.js';
 
 import {
   MODEL_FAILURE_MESSAGE_MAX_BYTES,
@@ -297,6 +298,8 @@ export interface SessionHeader {
 
   // Backend / model config
   backend: PersistedBackendKind;
+  /** Named black-box executor contributed by a plugin. Present exactly for plugin-executor. */
+  executorId?: string;
   /** Immutable Connection entity identity. Optional only on legacy Session records. */
   llmConnectionId?: string;
   llmConnectionSlug: string;
@@ -344,7 +347,7 @@ export function isWorkHubCoordinationSessionTarget(
  * shipped build may choose it, so it is not a member here. Values read back
  * from durable state use {@link PersistedBackendKind} instead.
  */
-export type BackendKind = 'ai-sdk';
+export type BackendKind = 'ai-sdk' | 'plugin-executor';
 
 /**
  * The backend value a persisted record may carry.
@@ -408,6 +411,7 @@ export interface SessionSummary {
   revisionIndex?: number;
   revisionState?: 'preparing' | 'committed';
   backend: PersistedBackendKind;
+  executorId?: string;
   /** Immutable Connection entity identity. Optional only on legacy summaries. */
   llmConnectionId?: string;
   llmConnectionSlug: string;
@@ -945,6 +949,8 @@ export type WorkHubDelegationWorkspace =
 
 /** User-selected creation defaults; never applied to an existing Work. */
 export interface WorkHubCreateDefaults {
+  /** Named plugin executor for the new Session. Mutually exclusive with model. */
+  readonly executorId?: string;
   readonly model?: {
     readonly llmConnectionId: string;
     readonly llmConnectionSlug: string;
@@ -956,10 +962,14 @@ export interface WorkHubCreateDefaults {
 export function isWorkHubCreateDefaults(value: unknown): value is WorkHubCreateDefaults {
   if (
     !isRecord(value) ||
-    Object.keys(value).some((key) => key !== 'model' && key !== 'permissionMode')
+    Object.keys(value).some(
+      (key) => key !== 'executorId' && key !== 'model' && key !== 'permissionMode',
+    )
   )
     return false;
   if (value.permissionMode !== undefined && !isPermissionMode(value.permissionMode)) return false;
+  if (value.executorId !== undefined && !isExecutorId(value.executorId)) return false;
+  if (value.executorId !== undefined && value.model !== undefined) return false;
   if (value.model === undefined) return true;
   const model = value.model;
   return (
