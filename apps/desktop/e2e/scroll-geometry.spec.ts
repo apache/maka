@@ -17,12 +17,12 @@
  * under the License.
  */
 
-// Real native scrollbar input: stable held geometry, preserved reading anchor,
-// and history progress after release. Fixed-range cold scrolling runs in CI too.
+// Host history delivered through preload must publish during held input, then
+// preserve the reading Turn on release. Fixed-range geometry runs in Storybook.
 import { test, expect } from '@playwright/test';
 import { withE2eWindow } from './fixtures';
 
-test('native thumb keeps its geometry and releases history without moving the reader', async () => {
+test('native thumb admits Host history during input and preserves the reader on release', async () => {
   test.setTimeout(180_000);
   await withE2eWindow(
     {
@@ -104,7 +104,7 @@ test('native thumb keeps its geometry and releases history without moving the re
               held: state.held,
               ms: performance.now(),
               anchorTop: state.readingId
-                ? root.querySelector(`[data-turn-id="${state.readingId}"]`)?.getBoundingClientRect()
+                ? root.querySelector(`.maka-turn[data-turn-id="${state.readingId}"]`)?.getBoundingClientRect()
                     .top
                 : undefined,
             });
@@ -146,10 +146,14 @@ test('native thumb keeps its geometry and releases history without moving the re
         await page.waitForTimeout(400);
         const reading = await page.evaluate(() => {
           const root = document.querySelector('[data-chat-scroll-container]')!;
-          const top = root.getBoundingClientRect().top;
-          const turn = [...root.querySelectorAll<HTMLElement>('[data-turn-id]')].find(
-            (el) => el.getBoundingClientRect().bottom > top,
-          )!;
+          const viewport = root.getBoundingClientRect();
+          const turn = [...root.querySelectorAll<HTMLElement>('.maka-turn[data-turn-id]')].find(
+            (el) => {
+              const box = el.getBoundingClientRect();
+              return box.height > 0 && box.width > 0 && box.bottom > viewport.top && box.top < viewport.bottom;
+            },
+          );
+          if (!turn) throw new Error('Native drag left no rendered reading Turn');
           (window as any).__windowGeometry.readingId = turn.dataset.turnId;
           return { id: turn.dataset.turnId!, top: turn.getBoundingClientRect().top };
         });
@@ -188,17 +192,12 @@ test('native thumb keeps its geometry and releases history without moving the re
           body: JSON.stringify(result),
           contentType: 'application/json',
         });
-        const heightDrift =
-          Math.max(...held.map((f: any) => f.h)) - Math.min(...held.map((f: any) => f.h));
         const ranges = new Set(held.map((f: any) => f.range));
         expect(result.pointerDown).toBe(1);
         expect(result.pointerUp).toBe(1);
-        expect(heightDrift, 'height must remain constant while held').toBeLessThanOrEqual(1);
-        expect(ranges.size, 'resident membership must remain constant while held').toBe(1);
-        expect(
-          Math.max(0, ...held.slice(1).map((f: any, i: number) => f.t - held[i].t)),
-          'upward native drag must not reverse',
-        ).toBeLessThanOrEqual(1);
+        // Prepending Host pages changes both height and scrollTop. Neither is
+        // a reader-displacement metric; measure the rendered Turn on release.
+        expect(ranges.size, 'Host history must publish before input releases').toBeGreaterThan(1);
         const released = result.frames.filter((f: any) => !f.held && f.anchorTop !== undefined);
         expect(
           Math.max(...released.map((f: any) => Math.abs(f.anchorTop - reading.top))),
@@ -213,7 +212,7 @@ test('native thumb keeps its geometry and releases history without moving the re
               ),
           )
           .not.toBe(held[0].range);
-        const anchor = page.locator('[data-turn-id="' + reading.id + '"]');
+        const anchor = page.locator('.maka-turn[data-turn-id="' + reading.id + '"]');
         await expect(anchor).toHaveCount(1);
         await expect
           .poll(async () => Math.abs((await anchor.boundingBox())!.y - reading.top))
