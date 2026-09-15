@@ -809,5 +809,5 @@ test('uses a generic process label when no duration is recorded, and localizes k
   await renderTurn(root, turn);
   assert.equal(container.querySelector('.maka-processing-summary')?.textContent, 'Execution process');
   await act(() => root.render(<LocaleProvider locale="zh-CN"><TurnView turn={{ ...turn, durationMs: 213_000 }} /></LocaleProvider>));
-  assert.equal(container.querySelector('.maka-processing-summary')?.textContent, '用时 3分 33秒');
+  assert.equal(container.querySelector('.maka-processing-summary')?.textContent, '用时 3 分 33 秒');
 });
