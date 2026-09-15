@@ -60,8 +60,26 @@ describe('Computer Use host health', () => {
     });
   });
 
-  it('reports a missing backend as unavailable', () => {
-    assert.equal(computerUseServiceHealth('none', undefined).state, 'not_available');
+  it('keeps the three ways to have no backend apart in the projected reason', () => {
+    assert.deepEqual(
+      [
+        computerUseServiceHealth('none', undefined, 'unsupported_platform'),
+        computerUseServiceHealth('none', undefined, 'missing_executable'),
+        computerUseServiceHealth('none', undefined, 'backend_failed'),
+      ],
+      [
+        { state: 'not_available', reason: 'cu_platform_unsupported' },
+        { state: 'not_available', reason: 'cu_executor_undistributable' },
+        { state: 'not_available', reason: 'cu_backend_unavailable' },
+      ],
+    );
+  });
+
+  it('reports a missing backend with no typed reason as undistributable', () => {
+    assert.deepEqual(computerUseServiceHealth('none', undefined), {
+      state: 'not_available',
+      reason: 'cu_executor_undistributable',
+    });
   });
 
   it('constructs a backend only when the local artifact matches the manifest hash', async () => {
@@ -169,6 +187,17 @@ describe('Computer Use host health', () => {
           selected.selected.unavailableReason,
           'unsupported_platform',
           `${platform} must report a typed unsupported selection`,
+        );
+        // The same projection the Desktop boot feeds the capability snapshot:
+        // an unbound platform must not read as an integrity failure.
+        assert.equal(
+          computerUseServiceHealth(
+            selected.selected.backendId,
+            selected.selected.backend?.executorState?.(),
+            selected.selected.unavailableReason,
+          ).reason,
+          'cu_platform_unsupported',
+          `${platform} must reach the capability surface as a platform fact`,
         );
       }
     } finally {
