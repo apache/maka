@@ -95,6 +95,7 @@ function protectMarkdownMath(
   startsAtLineStart = true,
   allowDisplayMath = true,
   protectEscapedBrackets = false,
+  isFinalSegment = false,
 ): {
   text: string;
   safeSourceEnd: number;
@@ -116,6 +117,10 @@ function protectMarkdownMath(
     const fence = atLineStart ? readFence(source, index) : undefined;
     if (fence?.kind === 'pending') {
       text += source.slice(index);
+      index = source.length;
+      // A bounded nested substring is final: end-of-input uncertainty there
+      // is literal text, so only streaming input stays unsettled here.
+      if (isFinalSegment) markSafe();
       break;
     }
     if (fence?.kind === 'match') {
@@ -144,6 +149,8 @@ function protectMarkdownMath(
     const literalToken = readLiteralToken(source, index);
     if (literalToken?.kind === 'pending') {
       text += source.slice(index);
+      index = source.length;
+      if (isFinalSegment) markSafe();
       break;
     }
     if (literalToken?.kind === 'match') {
@@ -163,7 +170,11 @@ function protectMarkdownMath(
         text += run;
         index = runEnd;
         atLineStart = false;
-        canMarkSafe = false;
+        if (isFinalSegment) {
+          markSafe();
+        } else {
+          canMarkSafe = false;
+        }
         continue;
       }
       const end = close + run.length;
@@ -179,7 +190,11 @@ function protectMarkdownMath(
       text += source.slice(index, link.end);
       index = link.end;
       atLineStart = false;
-      canMarkSafe = false;
+      if (isFinalSegment) {
+        markSafe();
+      } else {
+        canMarkSafe = false;
+      }
       continue;
     }
     if (link?.kind === 'match') {
@@ -190,15 +205,32 @@ function protectMarkdownMath(
       const mayGrowTail = link.end === link.labelEnd + 1 && link.end >= source.length;
       if (link.isImage) {
         // Image alt text is rendered as a raw attribute, not as Markdown
-        // inline content. Leave its source untouched and continue scanning
-        // the destination normally.
-        text += source.slice(index, link.end);
+        // inline content, so it stays verbatim: rewriting its escapes would
+        // leak transport tokens into the attribute. The explicit identifier
+        // of a full image reference still needs the same normalization as
+        // link identifiers, or use and definition diverge.
+        let middle = source.slice(link.labelEnd, link.end);
+        let tailSafe = true;
+        if (link.refLabelStart !== undefined && link.refLabelEnd !== undefined) {
+          const protectedImageRef = protectMarkdownMath(
+            source.slice(link.refLabelStart, link.refLabelEnd),
+            false,
+            false,
+            true,
+            true,
+          );
+          middle = source.slice(link.labelEnd, link.refLabelStart)
+            + protectedImageRef.text
+            + source.slice(link.refLabelEnd, link.end);
+          tailSafe = protectedImageRef.safeSourceEnd >= link.refLabelEnd - link.refLabelStart;
+        }
+        text += source.slice(index, link.labelEnd) + middle;
         index = link.end;
         atLineStart = false;
-        if (mayGrowTail) {
-          canMarkSafe = false;
-        } else {
+        if (tailSafe && !mayGrowTail) {
           markSafe();
+        } else {
+          canMarkSafe = false;
         }
         continue;
       }
@@ -214,6 +246,7 @@ function protectMarkdownMath(
         false,
         false,
         true,
+        true,
       );
       // The explicit identifier of a full reference must go through the same
       // transform, or use-site and definition IDs diverge and the link breaks.
@@ -224,6 +257,7 @@ function protectMarkdownMath(
           source.slice(link.refLabelStart, link.refLabelEnd),
           false,
           false,
+          true,
           true,
         );
         protectedRefText = protectedRef.text;
@@ -252,7 +286,11 @@ function protectMarkdownMath(
       text += source.slice(index, inlineDelim.end);
       index = inlineDelim.end;
       atLineStart = false;
-      canMarkSafe = false;
+      if (isFinalSegment) {
+        markSafe();
+      } else {
+        canMarkSafe = false;
+      }
       continue;
     }
     if (inlineDelim?.kind === 'match') {
@@ -271,7 +309,11 @@ function protectMarkdownMath(
         text += source.slice(index, displayDelim.end);
         index = displayDelim.end;
         atLineStart = false;
-        canMarkSafe = false;
+        if (isFinalSegment) {
+          markSafe();
+        } else {
+          canMarkSafe = false;
+        }
         continue;
       }
       if (displayDelim?.kind === 'match') {
@@ -288,8 +330,9 @@ function protectMarkdownMath(
     index++;
     atLineStart = character === '\n';
     if (
-      index < source.length ||
-      (character !== '\\' && character !== '$' && character !== '`')
+      isFinalSegment
+      || index < source.length
+      || (character !== '\\' && character !== '$' && character !== '`')
     ) {
       markSafe();
     }
@@ -420,7 +463,9 @@ function readMarkdownLink(source: string, index: number): MarkdownLinkScan {
   let openerEnd: number;
   let isImage = false;
   if (source[index] === '!') {
-    if (index + 1 >= source.length) return undefined;
+    // A trailing `!` may yet become an image opener once `[` arrives; caching
+    // it as safe would lose the `!` context and mistype the label as a link.
+    if (index + 1 >= source.length) return { kind: 'pending', end: index + 1 };
     if (source[index + 1] !== '[') return undefined;
     if (isEscaped(source, index)) return undefined;
     openerEnd = index + 2;

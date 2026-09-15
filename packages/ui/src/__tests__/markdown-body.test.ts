@@ -346,6 +346,61 @@ it('keeps link targets identical between one-shot and incremental scans', () => 
   assert.match(markup, /href="https:\/\/example\.com\/\$\$value\$\$"/);
 });
 
+it('matches escaped image reference identifiers between use and definition', () => {
+  const markup = renderToStaticMarkup(createElement(LocaleProvider, {
+    locale: 'en',
+    children: createElement(MarkdownBody, {
+      text: '![visible][\\[topic\\]]\n\n[\\[topic\\]]: https://example.com/image.png',
+    }),
+  }));
+
+  assert.match(markup, /<img\b[^>]*src="https:\/\/example\.com\/image\.png"/);
+  assert.match(markup, /alt="visible"/);
+  assert.doesNotMatch(markup, /maka-math-display|katex-display/);
+});
+
+it('keeps image alt escapes out of math without leaking transport tokens', () => {
+  const markup = renderToStaticMarkup(createElement(LocaleProvider, {
+    locale: 'en',
+    children: createElement(MarkdownBody, {
+      text: '![\\[alt\\] preview](https://example.com/x.png)',
+    }),
+  }));
+
+  assert.doesNotMatch(markup, /maka-math/);
+  assert.doesNotMatch(markup, /MAKA_MATH/);
+});
+
+it('keeps a split image opener identical between incremental and one-shot scans', () => {
+  const full = '!![alt \\[x\\]](https://example.com/a.png)';
+  const cache = createMarkdownMathCache();
+  let incremental = '';
+  for (let end = 1; end <= full.length; end++) {
+    incremental = prepareMarkdownMath(full.slice(0, end), cache);
+  }
+
+  assert.equal(incremental, prepareMarkdownMath(full, createMarkdownMathCache()));
+  assert.doesNotMatch(incremental, /MAKA_MATH/);
+});
+
+it('settles bounded labels ending in $ instead of rescanning the stream', () => {
+  const head = '[price$](https://example.com)';
+  const filler = `\n\n${'lorem ipsum dolor sit amet. '.repeat(16_384)}`;
+  const full = head + filler;
+  const cache = createMarkdownMathCache();
+  const updates = 64;
+  const started = performance.now();
+  let incremental = '';
+  for (let step = 1; step <= updates; step++) {
+    incremental = prepareMarkdownMath(full.slice(0, Math.ceil((full.length * step) / updates)), cache);
+  }
+  const elapsed = performance.now() - started;
+
+  assert.equal(incremental, prepareMarkdownMath(full, createMarkdownMathCache()));
+  assert.equal(cache.safeSourceEnd, full.length);
+  assert.ok(elapsed < 5_000, `label-$ streaming scan took ${elapsed.toFixed(1)}ms`);
+});
+
 it('does not rescan malformed link tails quadratically', () => {
   const input = '[x]('.repeat(32_000);
   const cache = createMarkdownMathCache();
