@@ -24,6 +24,10 @@ import {
   type SessionRailData,
   type SessionRailSelection,
 } from '../src/session-rail-context.js';
+import {
+  SidebarUpdateProjectionProvider,
+  type SidebarUpdateProjection,
+} from '../src/sidebar-update-projection-context.js';
 
 export type SessionRailStoryProps = Partial<SessionRailData> &
   Partial<SessionRailChrome> &
@@ -35,6 +39,8 @@ export type SessionRailStoryProps = Partial<SessionRailData> &
      * already the shell's NavSelection.
      */
     railSelection?: SessionRailSelection;
+    updateReminder?: SidebarUpdateProjection['reminder'];
+    onOpenUpdate?: SidebarUpdateProjection['onOpenUpdate'];
   };
 
 /**
@@ -75,17 +81,19 @@ export function SessionRail(props: SessionRailStoryProps) {
     onSelect: props.onSelect ?? (() => undefined),
     onNew: props.onNew ?? (() => undefined),
     onOpenSettings: props.onOpenSettings ?? (() => undefined),
-    updateReminder: props.updateReminder,
-    onOpenUpdate: props.onOpenUpdate,
     workHubEntry: props.workHubEntry,
   };
   return (
-    <SessionRailProvider
-      data={data}
-      chrome={chrome}
-      {...(props.railSelection ? { selection: props.railSelection } : {})}
+    <SidebarUpdateProjectionProvider
+      value={{ reminder: props.updateReminder, onOpenUpdate: props.onOpenUpdate }}
     >
-      <SessionListPanel />
-    </SessionRailProvider>
+      <SessionRailProvider
+        data={data}
+        chrome={chrome}
+        {...(props.railSelection ? { selection: props.railSelection } : {})}
+      >
+        <SessionListPanel />
+      </SessionRailProvider>
+    </SidebarUpdateProjectionProvider>
   );
 }

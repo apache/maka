@@ -46,3 +46,5 @@ export function clientCapabilityCoordinatorTestAdmission() {
     },
   };
 }
+
+export { withClientCapabilityFormHost } from './client-capability-form-host.js';

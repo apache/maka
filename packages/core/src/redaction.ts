@@ -70,6 +70,7 @@ export function redactSecrets(value: string): string {
 
 function redactTextSecrets(value: string): string {
   let next = value;
+  next = redactUrlUserinfoSecrets(next);
   next = redactUrlQuerySecrets(next);
   next = next.replace(QUOTED_SECRET_KEY_VALUE_PATTERN, (match, prefix: string, key: string) =>
     isSensitiveKey(key) ? `${prefix}[redacted]` : match,
@@ -170,6 +171,18 @@ function redactJsonValue(value: unknown): { value: unknown; changed: boolean } {
   return { value: next, changed };
 }
 
+function redactUrlUserinfoSecrets(value: string): string {
+  // Authority runs through the first `/`, `?`, `#`, whitespace, quote, or
+  // angle bracket. If it contains `@`, everything from the host-start through
+  // the last `@` is userinfo. The class matches display-redaction's
+  // streamingTerminator so a bare `https://host` followed later by an
+  // email/`@package` (including across JSON quotes) cannot swallow the gap.
+  // Known boundary: punctuation like commas can still join a bare URL to a
+  // later `@` into one fake credentialed match; a proper fix would restrict
+  // userinfo to the RFC 3986 set instead of exclusion. http(s) only for now.
+  return value.replace(/(https?:\/\/)[^\s"'<>/?#]*@/gi, '$1[redacted]@');
+}
+
 function redactUrlQuerySecrets(value: string): string {
   return value.replace(/([?&])([^=\s&?#]+)=([^&\s#]*)/g, (match, sep: string, key: string) => {
     if (!isSensitiveKey(key)) return match;
@@ -230,6 +243,10 @@ export function classifyGeneralizedError(error: unknown): GeneralizedErrorClass 
   if (
     lower.includes('network') ||
     lower.includes('fetch') ||
+    // Chromium network stack error codes (`net::ERR_CONNECTION_RESET`,
+    // `net::ERR_NAME_NOT_RESOLVED`, ...) never match the Node errno
+    // spellings below.
+    lower.includes('net::err') ||
     lower.includes('econn') ||
     lower.includes('enotfound')
   )
@@ -278,4 +295,30 @@ export function generalizedErrorMessage(error: unknown, fallback = 'Operation fa
 
 export function isAuthenticationErrorText(message: string): boolean {
   return message.replace(/\bauthorit\w*/g, '').includes('auth');
+}
+
+const reportedFailures = new WeakSet<object>();
+
+/** Redacted diagnostics channel for unexpected operation failures. Copy
+ * catalogs live here (bare-importable) because a depended-on copy catalog may
+ * only hold bare package runtime imports. */
+export function reportUnexpectedOperation(scope: string, error: unknown): void {
+  // One failure, one diagnostic: a rejection formatted again by an outer layer
+  // is the same defect, not a second one.
+  if (typeof error === 'object' && error !== null) {
+    if (reportedFailures.has(error)) return;
+    reportedFailures.add(error);
+  }
+  const detail =
+    error instanceof Error ? (error.stack ?? `${error.name}: ${error.message}`) : String(error);
+  console.error(`[${scope}] operation failed:`, redactSecrets(detail));
+}
+
+export function unexpectedOperationFallback(
+  error: unknown,
+  fallback: string,
+  scope: string,
+): string {
+  reportUnexpectedOperation(scope, error);
+  return fallback;
 }

@@ -202,26 +202,6 @@ export async function dismissCompanionCopy(
 }
 
 /**
- * The shared Composer's `streaming` input means Host work is interruptible, not
- * merely that a text delta has arrived. A pending admission remains stoppable
- * before it owns a Turn; an admitted Turn remains stoppable through live output.
- */
-export function deriveCompanionComposerState(
-  hasPendingAdmission: boolean,
-  activeTurnId: string | null,
-  liveTurn: LiveTurnProjection | undefined,
-): { streaming: boolean; processing: boolean } {
-  const activeTurnStreaming = activeTurnId !== null && liveTurn?.terminal !== true;
-  const streaming = hasPendingAdmission || activeTurnStreaming;
-  return {
-    streaming,
-    processing:
-      streaming &&
-      (!activeTurnStreaming || !liveTurn || liveTurn.phase === 'waiting'),
-  };
-}
-
-/**
  * The main-process cleanup authority durably records the fork before attempting
  * the complete session-removal path. A rejection here means the intent remains
  * queued for the next `sessions.list` call or Desktop restart, so renderer
@@ -415,7 +395,6 @@ export type CompanionRunEventEffect =
   | { kind: 'ignore' }
   | {
       kind: 'active';
-      terminal: boolean;
       /** Undefined keeps the existing error, null clears it. */
       error?: string | null;
     };
@@ -436,7 +415,6 @@ export function companionRunEventEffect(
   if (event.type === 'error') {
     return {
       kind: 'active',
-      terminal: true,
       error: stopRequested ? null : sessionEventErrorMessage(event, locale),
     };
   }
@@ -444,11 +422,10 @@ export function companionRunEventEffect(
     event.type === 'abort' ||
     (event.type === 'complete' && event.stopReason === 'user_stop')
   ) {
-    return { kind: 'active', terminal: true, error: null };
+    return { kind: 'active', error: null };
   }
   return {
     kind: 'active',
-    terminal: isCompanionTurnTerminal(event),
   };
 }
 
@@ -476,6 +453,6 @@ export function applyCompanionInteractionEvent(
     case 'tool_result':
       return dequeueInteractionByToolUseId(queues, sessionId, event.toolUseId);
     default:
-      return isCompanionTurnTerminal(event) ? clearInteractions(queues, sessionId) : queues;
+      return isCompanionTurnTerminal(event) ? clearInteractions(queues, sessionId, event.turnId) : queues;
   }
 }

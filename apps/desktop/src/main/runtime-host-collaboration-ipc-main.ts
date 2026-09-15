@@ -40,6 +40,7 @@ export function registerRuntimeHostCollaborationIpc(
     | 'queryCollaborationAccess'
     | 'revokeCollaborationGrant'
     | 'revokeCollaborationPrincipal'
+    | 'renameCollaborationPrincipal'
   >,
   ipcMain: ReconnectableReadIpcMain,
   resolveConnectionTarget: () =>
@@ -145,6 +146,11 @@ export function registerRuntimeHostCollaborationIpc(
     'session-collaboration:revokePrincipal',
     (_event, principalId: unknown) =>
       client.revokeCollaborationPrincipal(requiredId(principalId, 'Principal')),
+  );
+  ipcMain.handle(
+    'session-collaboration:renamePrincipal',
+    (_event, principalId: unknown, displayName: unknown) =>
+      client.renameCollaborationPrincipal(requiredId(principalId, 'Principal'), requiredId(displayName, 'Alias')),
   );
 }
 

@@ -27,7 +27,8 @@ const [rootPath, expectedRootId, mode] = process.argv.slice(2);
 if (!rootPath || !expectedRootId) {
   throw new Error('usage: detached-launcher <root> <expected-root-id>');
 }
-const closeOnLauncherExit = mode === 'close-on-launcher-exit';
+const invocationOwned = mode === 'invocation-owned';
+const closeOnLauncherExit = mode === 'close-on-launcher-exit' || invocationOwned;
 const stderrMarkerPath = closeOnLauncherExit ? undefined : mode;
 const candidateEntrypoint = closeOnLauncherExit
   ? new URL('../../execution-candidate-main.js', import.meta.url)
@@ -46,8 +47,16 @@ const launchInput = {
     ? { env: { MAKA_TEST_STDERR_AFTER_PARENT_EXIT_MARKER: stderrMarkerPath } }
     : {}),
 } satisfies DetachedCandidateInput;
-const launch = closeOnLauncherExit
-  ? launchOwnedRuntimeHostCandidate(launchInput)
-  : launchDetachedRuntimeHostCandidate(launchInput);
+const launch =
+  closeOnLauncherExit && !invocationOwned
+    ? launchOwnedRuntimeHostCandidate(launchInput)
+    : launchDetachedRuntimeHostCandidate(launchInput);
+if (invocationOwned) {
+  process.on('message', function finishInvocation(message) {
+    if (message !== 'exit-naturally') return;
+    process.off('message', finishInvocation);
+    process.disconnect?.();
+  });
+}
 const attempt = await launch.spawned;
 process.send?.({ type: 'launched', pid: attempt.pid });

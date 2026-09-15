@@ -27,6 +27,7 @@
  */
 
 import * as nodeCrypto from 'node:crypto';
+import type { ModelRetryDecision } from './model-failure.js';
 import { CONTEXT_OFFLOAD_ID_MAX_CODE_POINTS, type SessionContextRef } from './context-offload.js';
 import type {
   AdditionalPermissionRequest,
@@ -166,6 +167,30 @@ const MESSAGE_CONTENT_SHAPE = defineObjectShape<MessageContent>()(
   ['text'],
   ['displayText', 'attachments', 'directoryReferences', 'quotes', 'inlineReferences'],
 );
+
+/**
+ * A Turn message is meaningful when at least one of its four content carriers
+ * is present: inline text, an inline excerpt, an attachment reference, or a
+ * directory reference. Admission, compaction estimates, replay visibility,
+ * and recap projection must share this one predicate (#4804) — restating it
+ * per layer is how a quote-only message ends up admitted by one boundary and
+ * silently dropped by the next.
+ *
+ * The inline text is deliberately NOT trimmed. Admission asks "is this frame
+ * legal"; replay visibility asks "will the model see this already-persisted
+ * event", and that answer must stay compatible with everything admission has
+ * ever accepted — trimming here retroactively re-reads stored history as
+ * invisible and blocks replay on it (#4815 review). Surfaces that want the
+ * trimmed judgement (the desktop guard) trim at their own boundary.
+ */
+export function hasMeaningfulMessageContent(content: MessageContent): boolean {
+  return (
+    content.text.length > 0 ||
+    (content.quotes?.length ?? 0) > 0 ||
+    (content.attachments?.length ?? 0) > 0 ||
+    (content.directoryReferences?.length ?? 0) > 0
+  );
+}
 const ATTACHMENT_REF_SHAPE = defineObjectShape<AttachmentRef>()(
   ['kind', 'name', 'mimeType', 'bytes', 'ref'],
   [],
@@ -579,7 +604,8 @@ export type SessionEvent =
   | ProviderRetryEvent
   | ErrorEvent
   | CompleteEvent
-  | AbortEvent;
+  | AbortEvent
+  | ContextCompactionStartedEvent;
 
 export interface TextDeltaEvent extends BaseEvent {
   type: 'text_delta';
@@ -591,6 +617,7 @@ export interface TextDeltaEvent extends BaseEvent {
 
 export interface TextCompleteEvent extends BaseEvent {
   type: 'text_complete';
+  interrupted?: true;
   messageId: string;
   text: string;
   /** Provider-owned text metadata such as Responses URL citations. */
@@ -607,6 +634,7 @@ export interface ThinkingDeltaEvent extends BaseEvent {
 
 export interface ThinkingCompleteEvent extends BaseEvent {
   type: 'thinking_complete';
+  interrupted?: true;
   messageId: string;
   text: string;
   /** Anthropic signed thinking — MUST be re-sent on replay. */
@@ -756,6 +784,7 @@ type ShellRunResultMetadata = {
   kind: 'shell_run';
   ref: string;
   status: ShellRunStatus;
+  pid?: number;
   cwd: string;
   cmd: string;
   startedAt: number;
@@ -834,6 +863,7 @@ export type ToolResultContent =
       toolCallId: string;
       toolName: string;
       artifactId?: string;
+      resourceRef?: string;
       bodySha256?: string;
       originalEstimatedTokens: number;
       originalBytes: number;
@@ -843,6 +873,7 @@ export type ToolResultContent =
        * (#4283), so the archived-result read model spans both reasons.
        */
       reason:
+        | 'tool_result_pruned'
         | 'stale_tool_result_pruned_before_compact'
         | 'active_current_turn_tool_result_pruned_before_next_step';
     }
@@ -1203,6 +1234,7 @@ export interface QueueUpdateEvent extends BaseEvent {
 }
 
 export type ProviderRetryReason =
+  | 'stream_truncated'
   | 'network'
   | 'provider_capacity'
   | 'provider_unavailable'
@@ -1248,6 +1280,7 @@ export interface ProviderRetryStartedEvent extends BaseEvent {
 
 export interface ErrorEvent extends BaseEvent {
   type: 'error';
+  retry?: ModelRetryDecision;
   recoverable: boolean;
   code?: string;
   /** Stable machine-readable reason for UI / telemetry routing. */
@@ -1291,6 +1324,16 @@ export function failureClassFromCompleteStopReason(
 export interface AbortEvent extends BaseEvent {
   type: 'abort';
   reason: 'user_stop' | 'redirect' | 'timeout' | 'crash';
+}
+
+/**
+ * A host-owned explicit context-compaction Turn has started. Synthesized by the
+ * Runtime Host session projector (not the kernel) purely so a client can render
+ * a "compacting" transcript row while the Turn is in flight; it carries no
+ * durable state and is excluded from `BackendSessionEvent` like `queue_update`.
+ */
+export interface ContextCompactionStartedEvent extends BaseEvent {
+  type: 'context_compaction_started';
 }
 
 // ============================================================================

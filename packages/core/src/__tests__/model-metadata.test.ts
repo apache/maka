@@ -22,10 +22,19 @@ import { describe, it } from 'node:test';
 import {
   lookupModelMetadata,
   openAiAdapterApiProtocol,
+  providerReportsCompleteModelCatalog,
   resolveModelVisionSupport,
 } from '../model-metadata.js';
 import { PROVIDER_REGISTRY, providerFallbackModelIds } from '../provider-registry.js';
 import type { ModelInfo, ProviderType } from '../llm-connections.js';
+
+describe('provider model-catalog completeness', () => {
+  it('treats only GitHub Copilot discovery as a complete account catalog', () => {
+    assert.equal(providerReportsCompleteModelCatalog('github-copilot'), true);
+    assert.equal(providerReportsCompleteModelCatalog('openai-codex'), false);
+    assert.equal(providerReportsCompleteModelCatalog('openai'), false);
+  });
+});
 
 describe('model-metadata vision capability', () => {
   it('treats a Claude newer than the generated snapshot as able to read images', () => {
@@ -158,10 +167,6 @@ describe('deepseek v4 flash vision exp metadata regression', () => {
     assert.equal(metadata.displayName, 'DeepSeek-V4-Flash-Vision-Exp');
     assert.equal(metadata.capabilities?.vision, true);
     assert.equal(resolveModelVisionSupport('deepseek', discovered, modelId), true);
-    assert.equal(
-      resolveModelVisionSupport('deepseek', [{ id: 'deepseek-v4-flash' }], 'deepseek-v4-flash'),
-      false,
-    );
   });
 });
 

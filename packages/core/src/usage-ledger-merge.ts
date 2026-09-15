@@ -17,19 +17,13 @@
  * under the License.
  */
 
-import type { ModelCallAttempt, ModelCallCoverage } from './model-call-attempt.js';
-import {
-  projectModelCallUsageBuckets,
-  projectModelCallUsageLogs,
-  projectModelCallUsageSummary,
-} from './model-call-usage-projection.js';
+import type { ModelCallCoverage } from './model-call-attempt.js';
 import type {
-  UsageBucket,
-  UsageGroupBy,
-  UsageLogRow,
-  UsageQuery,
-  UsageSummaryV2,
-} from './usage-stats/types.js';
+  ModelCallUsageBuckets,
+  ModelCallUsageLogs,
+  ModelCallUsageSummary,
+} from './model-call-usage-projection.js';
+import type { UsageBucket, UsageLogRow, UsageSummaryV2 } from './usage-stats/types.js';
 
 /**
  * Merges the canonical `ModelCallAttempt` ledger with the frozen pre-cutover
@@ -141,19 +135,22 @@ export interface MergedUsageLogs {
   provenance: UsageProvenance;
 }
 
-export interface CanonicalUsageSource {
-  attempts: readonly ModelCallAttempt[];
+/**
+ * One canonical answer, already aggregated by the ledger, with what qualifies
+ * it: rows in the window whose pricing was lost, and runs the projection has
+ * not folded in yet.
+ */
+export interface CanonicalUsageSource<T> {
+  projection: T;
   unreadableRecords: number;
   pendingRepairs: number;
 }
 
 export function mergeUsageSummary(
   legacy: UsageSummaryV2,
-  canonical: CanonicalUsageSource,
-  query: UsageQuery,
-  now: number,
+  canonical: CanonicalUsageSource<ModelCallUsageSummary>,
 ): MergedUsageSummary {
-  const projected = projectModelCallUsageSummary(canonical.attempts, query, now);
+  const projected = canonical.projection;
   return {
     range: projected.range,
     totalRequests: legacy.totalRequests + projected.totalRequests,
@@ -184,21 +181,17 @@ export function mergeUsageSummary(
 
 export function mergeUsageBuckets(
   legacy: readonly UsageBucket[],
-  canonical: CanonicalUsageSource,
-  query: UsageQuery,
-  groupBy: UsageGroupBy,
-  now: number,
+  canonical: CanonicalUsageSource<ModelCallUsageBuckets>,
 ): MergedUsageBuckets {
-  const projected = projectModelCallUsageBuckets(canonical.attempts, query, groupBy, now);
   const merged = new Map<string, UsageBucket>();
-  for (const bucket of [...legacy, ...projected]) {
+  for (const bucket of [...legacy, ...canonical.projection.buckets]) {
     const existing = merged.get(bucket.key);
     merged.set(bucket.key, existing ? combineBuckets(existing, bucket) : { ...bucket });
   }
   return {
     buckets: [...merged.values()].sort((left, right) => right.requests - left.requests),
     provenance: {
-      coverage: projectModelCallUsageSummary(canonical.attempts, query, now).coverage,
+      coverage: canonical.projection.coverage,
       legacyRecords: legacy.reduce((total, bucket) => total + bucket.requests, 0),
       unreadableRecords: canonical.unreadableRecords,
       pendingRepairs: canonical.pendingRepairs,
@@ -213,13 +206,11 @@ export function mergeUsageBuckets(
  */
 export function mergeUsageLogs(
   legacy: { rows: readonly UsageLogRow[]; total: number },
-  canonical: CanonicalUsageSource,
-  query: UsageQuery,
-  now: number,
+  canonical: CanonicalUsageSource<ModelCallUsageLogs>,
   offset: number,
   limit: number,
 ): MergedUsageLogs {
-  const projected = projectModelCallUsageLogs(canonical.attempts, query, now, 0, offset + limit);
+  const projected = canonical.projection;
   const rows: UsageLogRow[] = [];
   let left = 0;
   let right = 0;

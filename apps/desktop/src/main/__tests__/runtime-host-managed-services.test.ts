@@ -18,11 +18,14 @@
  */
 
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
 import { createClientRuntimeHostProfileCatalog } from "@maka/runtime-host/client";
+import { resolveDesktopRuntimeHostStartup } from "../runtime-host-profile-service.js";
 import {
   createDesktopRuntimeHostManagedServiceStore,
   findDesktopRuntimeHostManagedServiceBinding,
@@ -250,4 +253,45 @@ test("persists a WSL deployment through its environment control route", async ()
     /already bound/u,
   );
   await assert.rejects(store.save(profile, deployedService), /already bound/u);
+});
+
+
+test("waits for a live deployment writer and recovers after it is killed", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "maka-managed-deployment-lock-"));
+  roots.push(root);
+  const store = createDesktopRuntimeHostManagedServiceStore(root);
+  await store.save(profile, deployedService);
+  const before = await store.read();
+  const child = spawn(process.execPath, [
+    "--input-type=module",
+    "--eval",
+    [
+      `import { withProcessLifetimeFileUpdateLock } from ${JSON.stringify(import.meta.resolve("@maka/storage/process-lifetime-file-update-lock"))};`,
+      "await withProcessLifetimeFileUpdateLock(process.argv[1], async () => {",
+      "  process.send('locked');",
+      "  await new Promise(() => setInterval(() => {}, 1000));",
+      "});",
+    ].join("\n"),
+    join(root, "runtime-host-deployments.json"),
+  ], { stdio: ["ignore", "ignore", "inherit", "ipc"] });
+  const exited = once(child, "exit");
+  t.after(async () => {
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    await exited;
+  });
+  await Promise.race([
+    once(child, "message"),
+    exited.then(() => { throw new Error("Deployment writer exited before acquiring its lock"); }),
+  ]);
+
+  // Startup may reclaim old directory markers, but cannot remove a current
+  // writer's marker or release its OS lease.
+  await resolveDesktopRuntimeHostStartup(root);
+  let settled = false;
+  const pending = store.read().finally(() => { settled = true; });
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(settled, false);
+  child.kill("SIGKILL");
+  await exited;
+  assert.deepEqual(await pending, before);
 });

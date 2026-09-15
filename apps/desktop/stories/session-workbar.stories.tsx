@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { CSSProperties } from 'react';
+import { useState, type CSSProperties } from 'react';
 import type { Decorator, Meta, StoryObj } from '@storybook/react-vite';
 import { expect, userEvent, waitFor, within } from 'storybook/test';
 import type { ArtifactRecord } from '@maka/core/artifacts';
@@ -27,7 +27,7 @@ import type { SessionSummary } from '@maka/core/session';
 import type { SessionTrace } from '@maka/core/session-trace';
 import type { ContextDiagnosticsResult } from '@maka/runtime-host/protocol';
 import { ToastProvider } from '@maka/ui';
-import { WorkbarServicesProvider } from '../src/renderer/features/workbar';
+import { WorkbarServicesProvider, WorkbarTitlebarActions } from '../src/renderer/features/workbar';
 import { WorkbarSurface } from '../src/renderer/features/workbar/stories';
 import {
   createFakeWorkbarServices,
@@ -39,7 +39,7 @@ import {
   type QuoteCompanionPanelState,
   type SessionWorkbarTab,
   type SessionWorkbarTabKind,
-  type WorkbarSessionUsageSummary,
+  type SessionUsageSummary,
 } from '../src/renderer/features/workbar/testing';
 
 // Fidelity convention (#1433): every story below names the real app path
@@ -301,7 +301,7 @@ const fileLineCapGitReviewSnapshot: GitReviewSnapshot = {
 // Source-level truncation: a large changeset whose file list the source capped,
 // so `truncated` is set and the panel shows its 变化过多 banner. Each file is
 // ordinary — no single file trips the per-file cap here.
-const sourceTruncatedFiles: GitReviewSnapshot['files'] = Array.from({ length: 24 }, (_, index) => {
+const sourceTruncatedFiles: GitReviewSnapshot['files'] = Array.from({ length: 40 }, (_, index) => {
   const path = `src/feature-${String(index).padStart(2, '0')}.ts`;
   return {
     path,
@@ -683,7 +683,7 @@ const olderTrace: SessionTrace = {
   ],
 };
 
-const emptyUsageSummary: WorkbarSessionUsageSummary = {
+const emptyUsageSummary: SessionUsageSummary = {
   range: { from: NOW, to: NOW },
   totalRequests: 0,
   totalCostUsd: 0,
@@ -715,7 +715,7 @@ const emptyUsageSummary: WorkbarSessionUsageSummary = {
   },
 };
 
-const populatedUsageSummary: WorkbarSessionUsageSummary = {
+const populatedUsageSummary: SessionUsageSummary = {
   range: { from: NOW, to: NOW + 43_600 },
   totalRequests: 3,
   totalCostUsd: 0.0243,
@@ -785,6 +785,7 @@ function bridge(options: {
       readBinary: async () => ({ ok: false, reason: 'unsupported_mime' }),
       delete: async () => undefined,
       openPath: async () => ({ ok: true, opened: 'artifact-patch' }),
+      showInFolder: async () => ({ ok: true, opened: 'artifact-patch' }),
       saveAs: async () => ({ ok: true, saved: 'slice-9-conversation.diff' }),
     },
     inspector: {
@@ -825,10 +826,13 @@ function bridge(options: {
       subscribeSessionEvents: unsubscribe,
     },
     terminal: {
+      recover: async () => ({ resources: [], closes: [] }),
+      subscribeCloseChanges: () => () => undefined,
+      subscribeUpdates: () => () => undefined,
       start: async () => {
         throw new Error('Terminal stories mount an existing resource');
       },
-      stop: async () => null,
+      stop: async () => undefined,
       attach: async () => {
         if (options.terminalAttach === 'missing') return null;
         return {
@@ -842,7 +846,6 @@ function bridge(options: {
       detach: async () => undefined,
       write: async () => {
         if (options.terminalWriteFails) throw new Error('write failed');
-        return null;
       },
       subscribePtyData: unsubscribe,
       subscribeResync: unsubscribe,
@@ -860,7 +863,6 @@ function bridge(options: {
       close: async () => undefined,
       getState: async () => browserState,
       subscribeState: unsubscribe,
-      subscribeLive: unsubscribe,
     },
     sideChat: {
       listSessions: async () => [TOOL_PICKER_SOURCE_SESSION, SIDE_CHAT_SESSION],
@@ -868,7 +870,6 @@ function bridge(options: {
         {
           turnId: 'source-turn',
           status: 'completed',
-          partialOutputRetained: false,
         },
       ],
       readSettledMessages: async () => ({ messages: [], settled: true }),
@@ -892,7 +893,14 @@ function bridge(options: {
       }),
       send: async () => ({ ok: true, turnId: 'story-side-chat-turn' }),
       stop: async () => undefined,
-      steer: async () => ({ kind: 'started', turnId: 'story-side-chat-turn' }),
+      submitFollowUp: async () => ({ kind: 'started', turnId: 'story-side-chat-turn' }),
+      queryMessageExecutions: async (_sessionId, messageIds) => ({
+        resolutions: messageIds.map((messageId) => ({ messageId, state: 'pending' as const })),
+      }),
+      retractQueueEntry: async () => undefined,
+      promoteQueueEntry: async () => undefined,
+      updateQueueEntry: async () => undefined,
+      reorderQueueEntries: async () => undefined,
       setPermissionMode: async (_sessionId, mode) => ({
         ...SIDE_CHAT_SESSION,
         permissionMode: mode,
@@ -927,7 +935,13 @@ function Workbar(props: {
   sourceSession?: SessionSummary;
   /** Overrides the restored column width, the way the resize handle does. */
   width?: number;
+  /**
+   * Lets the column's own collapse toggle and the titlebar's restore
+   * affordance drive `rightCollapsed`, the way the app's reducer does.
+   */
+  collapsible?: boolean;
 }) {
+  const [collapsed, setCollapsed] = useState(false);
   const emptyTabsState = createSessionWorkbarTabsState();
   let tab: SessionWorkbarTab | undefined;
   let quotes: QuoteCompanionPanelState[] | undefined;
@@ -985,13 +999,21 @@ function Workbar(props: {
           ...(props.width ? { '--maka-session-workbar-width': `${props.width}px` } : {}),
         } as CSSProperties}
       >
-        <div className="mainColumn" />
+        <div className="mainColumn">
+          {props.collapsible && (
+            <WorkbarTitlebarActions
+              available
+              collapsed={collapsed}
+              onToggle={() => setCollapsed(false)}
+            />
+          )}
+        </div>
         <WorkbarSurface
           sessionId={SESSION_ID}
           hidden={false}
-          onDismissPanel={noop}
+          onDismissPanel={props.collapsible ? () => setCollapsed(true) : noop}
           panelsState={createSessionWorkbarPanelsState(tabsState)}
-          rightCollapsed={false}
+          rightCollapsed={collapsed}
           bottomOpen={false}
           onActivateTab={noop}
           onCloseTab={noop}
@@ -1074,6 +1096,62 @@ export const SeveralFacesAtColumnFloor: Story = {
   render: () => (
     <Workbar tab="review" alsoOpen={['browser', 'files']} width={320} />
   ),
+  play: async ({ canvasElement }) => {
+    // Astryx's TabList hides its own overflow scrollbar (`scrollbar-width:
+    // none`) and scrolls the strip instead. The app default must not override
+    // that: as a `*` rule in `layer(components)` it out-ranked the component
+    // layer and re-showed the bar (#2538). The app default now lives in the
+    // lower `base` layer, so it no longer competes with the strip's `none`.
+    const tablist = await within(canvasElement).findByRole('tablist');
+    const nodes = [tablist, ...tablist.querySelectorAll<HTMLElement>('*')];
+    const strip = nodes.find((node) => getComputedStyle(node).overflowX === 'auto');
+    if (!strip) {
+      throw new Error('expected the tab strip to expose a horizontal scroll container');
+    }
+    expect(getComputedStyle(strip).scrollbarWidth).toBe('none');
+
+    // Keeping the default universal is equally important: `scrollbar-width`
+    // does not inherit, so a root-only rule would leave this scrollport `auto`.
+    const reviewPanel = await waitFor(() => {
+      const element = canvasElement.querySelector<HTMLElement>(
+        '.maka-session-review-panel',
+      );
+      if (!element) throw new Error('expected the review panel to render');
+      return element;
+    });
+    expect(getComputedStyle(reviewPanel).scrollbarWidth).toBe('thin');
+  },
+};
+
+// Below 991px the column stacks under the conversation at full width. The
+// wide-window ease (app-shell.stories.tsx holds that contract) must not reach
+// it: the face spans the row, and collapsing removes the row instead of
+// leaving an empty band. The smoke lane sizes stories named `narrow` to 720px.
+export const CollapseNarrowStack: Story = {
+  parameters: { viewport: { options: STACKED_WINDOW_VIEWPORT } },
+  globals: { viewport: { value: 'makaStackedWindow', isRotated: false } },
+  decorators: [bridge()],
+  render: () => <Workbar tab="review" collapsible />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const frame = canvasElement.querySelector<HTMLElement>(
+      '.maka-session-workbar[data-placement="right"]',
+    )!;
+    const panel = canvasElement.querySelector<HTMLElement>(
+      '.maka-session-workbar-panel[data-overlay][data-placement="right"]',
+    )!;
+    const toolbar = frame.querySelector<HTMLElement>('.maka-session-workbar-toolbar')!;
+    await canvas.findByRole('region', { name: 'Git 变更' });
+    expect(window.innerWidth).toBeLessThanOrEqual(990);
+    expect(toolbar.getBoundingClientRect().width).toBe(frame.getBoundingClientRect().width);
+    expect(panel.firstElementChild!.getBoundingClientRect().width).toBe(
+      panel.getBoundingClientRect().width,
+    );
+
+    await userEvent.click(canvas.getByRole('button', { name: '收起任务工作栏' }));
+    await waitFor(() => expect(getComputedStyle(frame).display).toBe('none'));
+    expect(getComputedStyle(panel).display).toBe('none');
+  },
 };
 
 // Real path: 任务工作栏 → 变更 on a session whose branch matches its base. The
@@ -1118,7 +1196,22 @@ export const ChangesTruncated: Story = {
   decorators: [bridge({ review: { ok: true, snapshot: sourceTruncatedGitReviewSnapshot } })],
   render: () => <Workbar tab="review" />,
   play: async ({ canvasElement }) => {
-    await within(canvasElement).findByText('变化过多，仅显示前一部分文件');
+    const canvas = within(canvasElement);
+    await canvas.findByText('变化过多，仅显示前一部分文件');
+    await userEvent.click(await canvas.findByRole('button', { name: '再显示 20 个文件' }));
+
+    const panel = canvasElement.querySelector<HTMLElement>('.maka-session-review-panel');
+    if (!panel) throw new Error('the changes panel is missing');
+    await waitFor(() => {
+      expect(
+        canvasElement.querySelectorAll('.maka-session-review-file').length,
+      ).toBe(40);
+      expect(panel.scrollHeight).toBeGreaterThan(panel.clientHeight);
+    });
+
+    panel.scrollTop = panel.scrollHeight;
+    await waitFor(() => expect(panel.scrollTop).toBeGreaterThan(0));
+    panel.scrollTop = 0;
   },
 };
 

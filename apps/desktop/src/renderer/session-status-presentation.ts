@@ -35,6 +35,7 @@
 
 import { SANDBOX_BOUNDARY_RESTART_CLOSURE_CLASS } from '@maka/core/sandbox-boundary';
 import type { SessionBlockedReason, SessionSummary } from '@maka/core/session';
+import type { ModelRetryDecision } from '@maka/core/model-failure';
 import type { UiLocale } from '@maka/core/ui-locale';
 import { getDesktopConversationCopy } from './locales/conversation-copy.js';
 import { describeSessionErrorReason } from './session-error-presentation.js';
@@ -66,9 +67,9 @@ export function isActionableBlocked(reason: SessionBlockedReason | undefined): b
  * Non-actionable blocked sessions read as ordinary resumable sessions
  * (`active`), so every display consumer agrees on the same projection.
  */
-export function normalizeSessionSummaryForDisplay<T extends SessionSummary>(session: T): T {
+export function normalizeSessionSummaryForDisplay<T extends SessionSummary & { localState?: 'pending' | 'cached' }>(session: T): T {
   const liveNormalized: T =
-    session.status === 'running' && session.runningTurnIds?.length === 0
+    session.status === 'running' && (session.runningTurnIds?.length === 0 || session.localState === 'cached')
       ? ({ ...session, status: 'active' as const } as T)
       : session;
   if (
@@ -82,48 +83,27 @@ export function normalizeSessionSummaryForDisplay<T extends SessionSummary>(sess
   return { ...rest, status: 'active' } as T;
 }
 
-/**
- * Generalized Chinese phrasing for a failed turn's `errorClass`
- * Mirrors `describeBlockedReason()` in `@maka/ui`, under the same rule: a UI
- * label must never display the raw enum identifier.
- *
- * Recognized classes are written by the runtime via `classifyError()`,
- * `classifyHttpStatus()`, and `event.reason` / `event.code`. The set is
- * open-ended (any string the runtime emits is possible), so we map a
- * known prefix-list and fall back to "未知错误" for anything else.
- *
- * Importantly, this helper accepts strings — not a typed enum — so
- * future runtime additions (e.g. a new tool failure class) don't break
- * the UI; they just fall through to the catch-all until the mapping
- * is extended.
- */
 export function describeTurnErrorClass(errorClass: string | undefined, locale: UiLocale): string {
   const copy = getDesktopConversationCopy(locale).turnError;
   if (!errorClass) return copy.unknown;
   const reasonDescription = describeSessionErrorReason(errorClass, locale);
   if (reasonDescription) return reasonDescription;
-  const lower = errorClass.toLowerCase();
-  // Checked before the generic prefix list: a boundary closure is a specific
-  // restart outcome the user must be able to tell apart from a bare restart
-  // (#1612), and it must never fall through to the "permission"/"tool" catch-alls.
-  if (lower === SANDBOX_BOUNDARY_RESTART_CLOSURE_CLASS) return copy.sandboxBoundaryClosed;
-  if (lower === 'timeout' || lower.includes('timeout')) return copy.timeout;
-  if (lower === 'auth' || lower.includes('auth') || lower === '401' || lower === '403') return copy.auth;
-  if (lower === 'rate_limit' || lower.includes('rate')) return copy.rateLimit;
-  if (lower === 'network' || lower.includes('network') || lower.includes('fetch') || lower.includes('econn')) {
-    return copy.network;
+  switch (errorClass.toLowerCase()) {
+    // Before #3758, transport failures could persist their raw code as the class.
+    case 'econnreset': case 'econnrefused': case 'econnaborted': return copy.network;
+    case SANDBOX_BOUNDARY_RESTART_CLOSURE_CLASS: return copy.sandboxBoundaryClosed;
+    case 'server_error': case 'providerunavailable': return copy.provider;
+    case 'contextlength': return copy.contextOverflow;
+    case 'providerbilling': return copy.providerBilling;
+    case 'providercapacity': return copy.providerCapacity;
+    case 'ratelimit': return copy.rateLimit;
+    case 'requestrejected': return copy.requestRejected;
+    case 'tool_step_cap_reached': return copy.stepCap;
+    case 'tool_failed': return copy.tool;
+    case 'permission_required': return copy.permission;
+    case 'app_restarted': return copy.restarted;
+    default: return copy.unknown;
   }
-  if (
-    lower === 'provider_unavailable' ||
-    lower === 'server_error' ||
-    /\b5\d\d\b/.test(lower)
-  )
-    return copy.provider;
-  if (lower === 'tool_step_cap_reached') return copy.stepCap;
-  if (lower === 'tool_failed' || lower.includes('tool')) return copy.tool;
-  if (lower === 'permission_required' || lower.includes('permission')) return copy.permission;
-  if (lower === 'app_restarted') return copy.restarted;
-  return copy.unknown;
 }
 
 /**
@@ -149,7 +129,7 @@ export function deriveFailedTurnSeverity(errorClass: string | undefined): Failed
 }
 
 export interface FailedTurnExecutionState {
-  partialOutputRetained: boolean;
+  retry?: ModelRetryDecision;
   toolActivityCount: number;
   erroredToolCount: number;
 }
@@ -165,15 +145,18 @@ export interface FailedTurnExecutionState {
  * "inspect the tool result" and dropped "sign in again" — the only step that
  * could actually change the outcome. Both facts are true at once and the
  * banner has a slot for each (`title` / `description`), so neither has to
- * lose. Returns undefined when the turn produced nothing worth re-reading.
+ * lose. Without a recorded retry decision or tool activity, there is no
+ * supplementary guidance; loading older answer text must not change it.
  */
 export function describeFailedTurnExecutionState(
   state: FailedTurnExecutionState,
   locale: UiLocale,
 ): string | undefined {
-  const copy = getDesktopConversationCopy(locale).turnError.executionState;
+  const turnCopy = getDesktopConversationCopy(locale).turnError;
+  if (state.retry?.decision === 'exhausted') return turnCopy.retryExhausted;
+  if (state.retry?.decision === 'declined') return turnCopy.retryDeclined[state.retry.because];
+  const copy = turnCopy.executionState;
   if (state.erroredToolCount > 0) return copy.erroredTool;
   if (state.toolActivityCount > 0) return copy.toolRan;
-  if (state.partialOutputRetained) return copy.partialOutput;
   return undefined;
 }

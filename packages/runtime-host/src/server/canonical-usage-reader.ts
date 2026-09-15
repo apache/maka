@@ -17,10 +17,17 @@
  * under the License.
  */
 
-import { resolveUsageRange } from '@maka/core/model-call-usage-projection';
-import type { UsageQuery } from '@maka/core/usage-stats/types';
+import type {
+  ModelCallUsageBuckets,
+  ModelCallUsageLogs,
+  ModelCallUsageSummary,
+} from '@maka/core/model-call-usage-projection';
+import type { UsageGroupBy, UsageQuery } from '@maka/core/usage-stats/types';
 import type { CanonicalUsageSource } from '@maka/core/usage-ledger-merge';
-import type { InteractiveUsageStoresWriter } from '@maka/storage/usage-stores';
+import type {
+  InteractiveUsageStoresWriter,
+  ModelCallLedgerResult,
+} from '@maka/storage/usage-stores';
 export class CanonicalUsageProjectionIncompleteError extends Error {
   constructor() {
     super('Canonical Usage projection is incomplete');
@@ -28,16 +35,19 @@ export class CanonicalUsageProjectionIncompleteError extends Error {
   }
 }
 
-/** Reads and repairs the canonical usage source shared by Host-owned projections. */
-export async function readCanonicalUsage(
+/**
+ * Repairs the projection, then asks the ledger for one answer.
+ *
+ * `catchUpModelCallProjection` is a write. Paged log reads call this once per
+ * page, so a caller that already repaired on its first page passes
+ * `repair: false` on later pages to avoid a redundant repair write per page.
+ */
+async function readCanonical<T>(
   stores: InteractiveUsageStoresWriter,
   query: UsageQuery,
-  now: number,
-  repair = true,
-): Promise<CanonicalUsageSource> {
-  // `catchUpModelCallProjection` is a write. Paged log reads call this once per
-  // page, so a caller that already repaired on its first page can pass
-  // `repair: false` on later pages to avoid a redundant repair write per page.
+  repair: boolean,
+  ask: () => Promise<ModelCallLedgerResult<T>>,
+): Promise<CanonicalUsageSource<T>> {
   const repairOutcome = repair
     ? await stores.modelCalls
         .catchUpModelCallProjection(
@@ -45,24 +55,56 @@ export async function readCanonicalUsage(
         )
         .catch(() => ({ pendingRuns: 1, unreadableEvents: 0 }))
     : { pendingRuns: 0, unreadableEvents: 0 };
-  const page = await stores.modelCalls.modelCallAttempts(
-    resolveUsageRange(query.range, now),
-    query.sessionId,
-  );
+  const answer = await ask();
   return {
-    attempts: page.attempts,
-    unreadableRecords: page.unreadableRecords + repairOutcome.unreadableEvents,
+    projection: answer.projection,
+    unreadableRecords: answer.unreadableRecords + repairOutcome.unreadableEvents,
     pendingRepairs: repairOutcome.pendingRuns,
   };
 }
 
-/** Runs one bounded repair pass and rejects data still unsafe for durable derivatives. */
-export async function readCompleteCanonicalUsage(
+export function readCanonicalUsageSummary(
   stores: InteractiveUsageStoresWriter,
   query: UsageQuery,
   now: number,
-): Promise<CanonicalUsageSource> {
-  const source = await readCanonicalUsage(stores, query, now);
+  repair = true,
+): Promise<CanonicalUsageSource<ModelCallUsageSummary>> {
+  return readCanonical(stores, query, repair, () => stores.modelCalls.modelCallSummary(query, now));
+}
+
+export function readCanonicalUsageBuckets(
+  stores: InteractiveUsageStoresWriter,
+  query: UsageQuery,
+  groupBy: UsageGroupBy,
+  now: number,
+  repair = true,
+): Promise<CanonicalUsageSource<ModelCallUsageBuckets>> {
+  return readCanonical(stores, query, repair, () =>
+    stores.modelCalls.modelCallBuckets(query, groupBy, now),
+  );
+}
+
+export function readCanonicalUsageLogs(
+  stores: InteractiveUsageStoresWriter,
+  query: UsageQuery,
+  now: number,
+  limit: number,
+  repair = true,
+): Promise<CanonicalUsageSource<ModelCallUsageLogs>> {
+  // Both sources are newest-first, so a merged page can only be drawn from each
+  // source's own first `offset + limit` rows.
+  return readCanonical(stores, query, repair, () =>
+    stores.modelCalls.modelCallLogs(query, now, 0, limit),
+  );
+}
+
+/** Runs one bounded repair pass and rejects data still unsafe for durable derivatives. */
+export async function readCompleteCanonicalUsageSummary(
+  stores: InteractiveUsageStoresWriter,
+  query: UsageQuery,
+  now: number,
+): Promise<CanonicalUsageSource<ModelCallUsageSummary>> {
+  const source = await readCanonicalUsageSummary(stores, query, now);
   if (source.unreadableRecords > 0 || source.pendingRepairs > 0) {
     throw new CanonicalUsageProjectionIncompleteError();
   }

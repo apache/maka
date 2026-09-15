@@ -20,6 +20,7 @@
 import { randomUUID } from 'node:crypto';
 import {
   PROVIDER_REGISTRY,
+  effectiveBaseUrl,
   providerDefaultsOf,
   providerFallbackModelIds,
   connectionModelsEnumerateAccount,
@@ -28,7 +29,7 @@ import {
   type ConnectionTestResult,
   type LlmConnection,
 } from '@maka/core/llm-connections';
-import { anthropicV1Url, googleApiUrl, openResponsesUrl } from './provider-urls.js';
+import { openResponsesUrl } from './provider-urls.js';
 import { resolveModelRuntime } from './model-runtime.js';
 import { fetchGitHubCopilotModels } from './model-fetcher.js';
 import {
@@ -159,7 +160,10 @@ async function testConnectionStrict(
   if (!defaults) {
     return { ok: false, errorMessage: `Unknown provider type "${connection.providerType}"` };
   }
-  const sessionId = connection.providerType === 'opencode-go' ? randomUUID() : undefined;
+  const sessionId =
+    connection.providerType === 'opencode-go' || connection.providerType === 'opencode-free'
+      ? randomUUID()
+      : undefined;
   const auth = defaults.authKind;
   const secret = auth === 'none' ? '' : apiKey;
   const testModel = resolveConnectionTestModel(
@@ -230,24 +234,15 @@ async function testConnectionModel(
   if (providerDefaultsOf(connection.providerType)?.runtimeAdapter.kind === 'unavailable') {
     return retiredProviderTestResult(connection.providerType);
   }
+  if (connection.providerType === 'github-copilot') {
+    return probeGitHubCopilot(effectiveBaseUrl(connection), secret, testModel, t0, fetchFn);
+  }
   const { adapter, baseUrl, wire } = resolveModelRuntime(connection, testModel);
   const requestHeaders = withOpenCodeSessionHeader(connection.providerType, sessionId);
 
   switch (adapter.kind) {
     case 'anthropic':
-      return await probeAnthropic(
-        connection,
-        baseUrl,
-        secret,
-        testModel,
-        t0,
-        fetchFn,
-        requestHeaders,
-      );
-    case 'unavailable':
-      // Unreachable: the guard above returns first. The arm keeps the switch
-      // exhaustive so a newly retired provider cannot slip past it.
-      return retiredProviderTestResult(connection.providerType);
+      return await probeAnthropic(adapter, baseUrl, secret, testModel, t0, fetchFn, requestHeaders);
     case 'openai':
       return wire === 'openai-responses'
         ? await probeOpenAIResponses(baseUrl, secret, testModel, t0, fetchFn, requestHeaders)
@@ -276,8 +271,6 @@ async function testConnectionModel(
             timeoutMs,
             requestHeaders,
           );
-    case 'github-copilot':
-      return await probeGitHubCopilot(baseUrl, secret, testModel, t0, fetchFn);
     case 'google':
       return await probeGoogle(
         baseUrl,
@@ -367,7 +360,10 @@ function retiredProviderTestResult(providerType: string): ConnectionTestResult {
 }
 
 async function probeAnthropic(
-  connection: Pick<ConnectionEffectConnection, 'providerType'>,
+  adapter: Extract<
+    import('./provider-runtime-policy.js').RuntimeProviderAdapter,
+    { kind: 'anthropic' }
+  >,
   baseUrl: string,
   secret: string,
   model: string,
@@ -377,12 +373,15 @@ async function probeAnthropic(
 ): Promise<ConnectionTestResult> {
   const headers: Record<string, string> = {
     ...requestHeaders,
-    'x-api-key': secret,
+    ...(adapter.auth === 'bearer'
+      ? { authorization: `Bearer ${secret}` }
+      : { 'x-api-key': secret }),
     'anthropic-version': '2023-06-01',
     'content-type': 'application/json',
   };
 
-  const r = await fetchForConnectionEffect(fetchFn, anthropicV1Url(baseUrl, '/messages'), {
+  const url = `${stripTrailing(baseUrl)}/messages`;
+  const r = await fetchForConnectionEffect(fetchFn, url, {
     method: 'POST',
     headers,
     body: JSON.stringify({
@@ -482,9 +481,7 @@ async function probeGoogle(
   normalizeBaseUrl: boolean,
   fetchFn: ConnectionEffectFetch | undefined,
 ): Promise<ConnectionTestResult> {
-  const url = normalizeBaseUrl
-    ? googleApiUrl(baseUrl, `/models/${encodeURIComponent(model)}:generateContent`, apiKey)
-    : `${stripTrailing(baseUrl)}/models/${encodeURIComponent(model)}:generateContent`;
+  const url = `${stripTrailing(baseUrl)}/models/${encodeURIComponent(model)}:generateContent${normalizeBaseUrl ? `?key=${encodeURIComponent(apiKey)}` : ''}`;
   const r = await fetchForConnectionEffect(fetchFn, url, {
     method: 'POST',
     headers: {
@@ -508,8 +505,6 @@ async function httpFailure(r: ConnectionEffectResponse, t0: number): Promise<Con
     await r.cancel();
     return {
       ok: false,
-      errorMessage:
-        'OAuth 已登录，但当前账号或 provider 正在 rate limit。请稍后重试，或先切换到其它可用模型。',
       statusCode,
       errorClass: 'provider_unavailable',
       latencyMs: Date.now() - t0,

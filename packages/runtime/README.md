@@ -23,7 +23,15 @@
 
 ## Public seam
 
-The package root barrel and the subpaths declared in `package.json` are supported public APIs. Do not import undeclared internal source paths from another package. The main integration points are:
+The supported public API is the set of subpaths declared in the `exports` map of `package.json`. The package root is not exported: `import('@maka/runtime')` fails with `ERR_PACKAGE_PATH_NOT_EXPORTED`. Do not import undeclared internal source paths from another package. For example:
+
+```ts
+import { SessionManager, BackendRegistry } from '@maka/runtime/session-manager';
+import { AiSdkBackend } from '@maka/runtime/ai-sdk-backend';
+import { buildBuiltinTools } from '@maka/runtime/builtin-tools';
+```
+
+The main integration points are:
 
 - `SessionManager` for session and turn orchestration.
 - `BackendRegistry` and `AgentBackend` for backend selection.
@@ -32,14 +40,26 @@ The package root barrel and the subpaths declared in `package.json` are supporte
 - `buildBuiltinTools()` and the workspace executor interfaces for tool composition.
 - `RuntimeKernel`, runtime events, projections, and recovery helpers for execution lifecycle.
 
-Desktop composition lives in `apps/desktop/src/main/main.ts`. Other clients execute Maka through Runtime Host rather than composing Runtime directly.
+Shared execution composition — where `BackendRegistry` and `SessionManager` are constructed — lives in the Runtime Host at [`packages/runtime-host/src/server/execution-composition.ts`](../runtime-host/src/server/execution-composition.ts). Clients, including Desktop, execute Maka through Runtime Host rather than composing Runtime directly.
+
+## Background-task readiness
+
+`Bash` background runs return a durable runtime-task ref and expose the native
+process id when available. A process id published after startup is captured on
+the next task observation, output flush, or finalization.
+`BackgroundTaskHealth` deliberately keeps
+the process lifecycle (`starting`, `running`, or terminal, with timestamps and
+captured output) separate from endpoint readiness. An endpoint is `healthy`
+only after an explicit HTTP(S) probe succeeds; an omitted probe is
+`not_checked`, and a failed or policy-blocked probe is `unknown`. Consumers must
+not infer HTTP readiness from the process status alone.
 
 ## Extension rules
 
 - Add backend behavior behind `AgentBackend` and register it through the existing registry.
 - Add tools through the builtin/tool composition seams; keep filesystem and shell effects behind `WorkspaceExecutor`.
 - Put shared pure contracts in `packages/core` and interactive Runtime state in the SQLite control plane owned by `packages/storage`.
-- Expose supported package APIs through the root barrel or a declared `package.json` subpath rather than importing internal files from another package.
+- Expose supported package APIs through a declared `package.json` `exports` subpath rather than importing internal files from another package.
 - Keep provider credentials and Electron IPC outside this package. The product shell resolves credentials and passes only the dependencies required for execution.
 
 For the system-level model and code-reading map, start with the root `ARCHITECTURE.md`. Sandbox-specific contracts live in `src/sandbox/README.md`.

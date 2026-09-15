@@ -24,6 +24,7 @@ import { Spinner } from '@astryxdesign/core/Spinner';
 import { Composer, useToast, useUiLocale } from '@maka/ui';
 import type { ChatModelChoice } from '@maka/core/chat-model-choice';
 import type { SessionSummary } from '@maka/core/session';
+import type { WorkBoardItem, WorkBoardLinkedSession } from '@maka/core/work-board';
 import { confirmBypassPermission, getShellCopy } from '../../../locales/shell-copy';
 import type {
   SessionWorkbarPanelsState,
@@ -113,6 +114,10 @@ export interface WorkbarHostModel {
   activeSideChatPanelIds?: ReadonlySet<string>;
   sourceSession?: SessionSummary;
   modelChoices?: readonly ChatModelChoice[];
+  onStartWorkBoardTask?: (item: WorkBoardItem) => void;
+  resolveWorkBoardStartTask?: (item: WorkBoardItem) => { ok: boolean; message?: string };
+  onOpenWorkBoardSession?: (link: WorkBoardLinkedSession) => void;
+  workBoardStartTaskEnabled?: boolean;
   closeConfirmation: {
     key: string;
     open: boolean;
@@ -127,7 +132,6 @@ export function WorkbarHost({ model: props }: { model: WorkbarHostModel }) {
   const toast = useToast();
   const copy = getShellCopy(locale).app;
   const style = {
-    '--maka-session-workbar-width': `${props.rightWidth}px`,
     '--maka-session-bottom-panel-height': `${props.bottomHeight}px`,
   } as CSSProperties;
 
@@ -155,23 +159,21 @@ export function WorkbarHost({ model: props }: { model: WorkbarHostModel }) {
           label={copy.resizeWorkbar}
         />
       )}
-      {props.activeId && (
         <div className="maka-workbar-layout-vars" style={style}>
           <Suspense
             fallback={
               <SessionWorkbarFallback
-                hidden={props.hidden}
+                hidden={props.hidden || !props.activeId}
                 rightCollapsed={props.rightCollapsed}
                 bottomOpen={props.bottomOpen}
               />
             }
           >
             <WorkbarSurface
-              key={props.activeId}
               sessionId={props.activeId}
               projectId={props.projectId}
               projectAliases={props.projectAliases}
-              hidden={props.hidden}
+              hidden={props.hidden || !props.activeId}
               onDismissPanel={props.onDismissPanel}
               panelsState={props.panelsState}
               rightCollapsed={props.rightCollapsed}
@@ -192,11 +194,14 @@ export function WorkbarHost({ model: props }: { model: WorkbarHostModel }) {
               activeSideChatPanelIds={props.activeSideChatPanelIds}
               sourceSession={props.sourceSession}
               modelChoices={props.modelChoices}
+              onStartWorkBoardTask={props.onStartWorkBoardTask}
+              resolveWorkBoardStartTask={props.resolveWorkBoardStartTask}
+              onOpenWorkBoardSession={props.onOpenWorkBoardSession}
+              workBoardStartTaskEnabled={props.workBoardStartTaskEnabled}
               confirmBypass={() => confirmBypassPermission(toast, locale)}
             />
           </Suspense>
         </div>
-      )}
       <SideChatCloseConfirmation
         key={props.closeConfirmation.key}
         open={props.closeConfirmation.open}

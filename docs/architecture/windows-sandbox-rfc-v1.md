@@ -1,3 +1,15 @@
+---
+doc_id: architecture.windows-sandbox-rfc-v1
+title: "Windows sandbox RFC v1"
+language: en
+source_language: en
+implementation_status: current
+document_status: current
+translation_status: synced
+last_verified: 2026-09-04
+owners:
+  - maka-backend
+---
 <!--
   Licensed to the Apache Software Foundation (ASF) under one
   or more contributor license agreements.  See the NOTICE file
@@ -19,8 +31,8 @@
 
 # Windows sandbox backend RFC v1
 
-- Status: implementation baseline selected; first preview slice ([#2961](https://github.com/maka-agent/maka-agent/pull/2961)) merged 2026-08-17; product integration continuing under release validation (preview scope in §6.5)
-- Tracking: Windows Phase 4 in [issue #2142](https://github.com/maka-agent/maka-agent/issues/2142)
+- Status: implementation baseline selected; first preview slice ([#2961](https://github.com/apache/maka/pull/2961)) merged 2026-08-17; product integration continuing under release validation (preview scope in §6.5)
+- Tracking: Windows Phase 4 in [issue #2142](https://github.com/apache/maka/issues/2142)
 - Updated: 2026-08-18
 - Owners: `@maka/runtime` sandbox boundary and Runtime Host execution composition
 - Chinese version: [windows-sandbox-rfc-v1.zh-CN.md](./windows-sandbox-rfc-v1.zh-CN.md)
@@ -241,13 +253,14 @@ Lexical prefix checks are never authorization evidence.
 ### 6.5 Preview implementation status (2026-08-24)
 
 The first product slice — the packaged Windows 11 x64 AppContainer backend in
-[#2961](https://github.com/maka-agent/maka-agent/pull/2961), merged 2026-08-17 — enforces a subset
+[#2961](https://github.com/apache/maka/pull/2961), merged 2026-08-17 — enforces a subset
 of the guarantees above. This subsection aligns the documented guarantees with what the code
-actually ships so the RFC does not overclaim. Bullets tagged with a follow-up PR number
-(`(#3161)` readiness probe, `(#3174)` private-desktop placement) land in that PR rather than the
-merged #2961 slice; the untagged bullets are enforced by #2961 today. The remaining guarantees are
+actually ships so the RFC does not overclaim. Bullets tagged with a follow-up PR number — `(#3722)`
+for the launch-owner handle, the 64-launch soak, and the malicious-child matrix, `(#3174)` for the
+readiness probe and private-desktop placement — land in that PR rather than the merged #2961 slice;
+the remaining untagged bullets are enforced by #2961 today. The remaining guarantees are
 designed but explicitly deferred as later gates, tracked by Phase 4 in
-[#2142](https://github.com/maka-agent/maka-agent/issues/2142).
+[#2142](https://github.com/apache/maka/issues/2142).
 
 Enforced (merged in #2961 unless tagged with a follow-up PR):
 
@@ -260,14 +273,14 @@ Enforced (merged in #2961 unless tagged with a follow-up PR):
 - inheritance limited to declared stdio/protocol handles through `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`
   (§6.3);
 - a closed, sorted, allowlisted environment (§6.3);
-- a kernel-observed Runtime Host owner handle on the packaged one-shot broker: owner exit interrupts
+- a kernel-observed Runtime Host owner handle on the packaged one-shot broker **(#3722)**: owner exit interrupts
   the first launch, terminates and drains the AppContainer Job, and releases the launch ledger/ACEs;
-- a packaged 64-launch repeated-wave concurrency soak with disjoint launch identities, followed by
+- a packaged 64-launch repeated-wave concurrency soak with disjoint launch identities **(#3722)**, followed by
   process and ACL-ledger residue assertions;
 - a packaged malicious-child matrix covering recursive junction and multi-hard-link admission,
   outside-file access, TCP connection denial, host named-pipe access, ambient environment,
   host HKCU values, parent-token access, descendant AppContainer/Job inheritance, and quarantined
-  identity non-reuse;
+  identity non-reuse **(#3722)**;
 - per-launch private-desktop **placement** (§6.3) **(#3174)**: each production launch and the readiness probe
   create an alternate desktop on the current window station whose DACL grants only the launching user,
   Local System, and that launch's AppContainer SID — the SID getting only minimal non-interactive
@@ -282,7 +295,7 @@ Enforced (merged in #2961 unless tagged with a follow-up PR):
   stops in-process code from `OpenDesktopW("Default")` + `SetThreadDesktop`, and the clipboard is
   window-station-scoped and remains shared (a no-Win32k mitigation, a dedicated window station, and a
   token boundary are deferred gates below);
-- a production-identity readiness probe (§6.4) **(#3161)**: `--readiness-probe` stands up the real
+- a production-identity readiness probe (§6.4) **(#3174)**: `--readiness-probe` stands up the real
   AppContainer identity and token, a kill-on-close Job, and the private desktop, then launches a
   throwaway confined child on that desktop (`cmd.exe /d /c exit 0`, with AutoRun disabled so a host's
   shell customization cannot skew the result), so availability fails closed on hosts where the OS
@@ -290,7 +303,7 @@ Enforced (merged in #2961 unless tagged with a follow-up PR):
   a machine-readable attestation of the verified facts (exact-SID match, specific-Job membership,
   settlement, private-desktop placement) that the release smoke asserts field by field, so the gate
   cannot silently degrade into a hollow exit-0 check;
-- a dedicated, cross-process-serialized readiness profile lifecycle (§6.4) **(#3161)**: the probe profile lives
+- a dedicated, cross-process-serialized readiness profile lifecycle (§6.4) **(#3174)**: the probe profile lives
   in a namespace disjoint from production, its reserved `requestId` is rejected by validation, a
   DACL-hardened per-user named mutex serializes its delete→create→probe→drop cycle, an unsettled
   probe fails closed rather than claiming a clean boundary (relying on the kill-on-close Job and a

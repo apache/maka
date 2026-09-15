@@ -25,10 +25,8 @@ import {
   MODEL_CALL_ATTEMPT_SCHEMA_VERSION,
   PROMPT_COMPOSITION_MAX_TOOLS,
   decodeModelCallAttempt,
+  dedupeModelCallAttempts,
   groupModelCallAttempts,
-  settledAttempt,
-  sumModelCallCostUsd,
-  summarizeModelCallCoverage,
   type ModelCallAttempt,
 } from '../model-call-attempt.js';
 
@@ -323,72 +321,27 @@ describe('ModelCallAttempt codec', () => {
 });
 
 describe('ModelCallAttempt projections', () => {
-  test('groups retries under one logical call and derives the settled attempt', () => {
+  test('groups retries under one logical call', () => {
     const groups = groupModelCallAttempts([
       attempt({ attemptId: 'a-0', attempt: 0, status: 'failed', costUsd: 0.001 }),
       attempt({ attemptId: 'a-1', attempt: 1, status: 'completed', costUsd: 0.004 }),
       attempt({ attemptId: 'b-0', logicalCallId: 'call-2' }),
     ]);
     assert.equal(groups.length, 2);
-    const retried = groups.find((g) => g.logicalCallId === 'call-1');
-    assert.equal(retried?.attempts.length, 2);
-    assert.equal(settledAttempt(retried!)?.attemptId, 'a-1');
+    assert.equal(groups.find((g) => g.logicalCallId === 'call-1')?.attempts.length, 2);
   });
 
-  test('coverage counts priced, unpriced, and usage bases separately', () => {
-    const coverage = summarizeModelCallCoverage([
-      attempt({ attemptId: 'a' }),
-      attempt({ attemptId: 'b', costBasis: 'unpriced', costUsd: undefined }),
-      attempt({
-        attemptId: 'c',
-        costBasis: 'unpriced',
-        costUsd: undefined,
-        usageBasis: 'missing',
-        inputTokens: undefined,
-        outputTokens: undefined,
-      }),
-      attempt({ attemptId: 'd', usageBasis: 'partial', outputTokens: undefined }),
-    ]);
-    assert.deepEqual(coverage, {
-      attempts: 4,
-      pricedAttempts: 2,
-      unpricedAttempts: 2,
-      usageReportedAttempts: 2,
-      usagePartialAttempts: 1,
-      usageMissingAttempts: 1,
-    });
-  });
-
-  test('cost sum reports the qualifying coverage alongside the total', () => {
-    const { costUsd, coverage } = sumModelCallCostUsd([
-      attempt({ attemptId: 'a', costUsd: 0.004 }),
-      attempt({ attemptId: 'b', costUsd: 0.006 }),
-      attempt({ attemptId: 'c', costBasis: 'unpriced', costUsd: undefined }),
-    ]);
-    assert.equal(Math.round(costUsd * 1000) / 1000, 0.01);
-    assert.equal(coverage.unpricedAttempts, 1);
-  });
-
-  test('a replayed attemptId is counted once through sum and coverage', () => {
+  test('a replayed attemptId is the same call, kept at its last value', () => {
     const stream = [
       attempt({ attemptId: 'a', logicalCallId: 'call-1', costUsd: 0.004 }),
       attempt({ attemptId: 'b', logicalCallId: 'call-2', costUsd: 0.006 }),
       attempt({ attemptId: 'a', logicalCallId: 'call-1', costUsd: 0.005 }),
     ];
-    const { costUsd, coverage } = sumModelCallCostUsd(stream);
-    assert.equal(Math.round(costUsd * 1000) / 1000, 0.011);
-    assert.equal(coverage.attempts, 2);
-    assert.equal(coverage.pricedAttempts, 2);
-    assert.equal(summarizeModelCallCoverage(stream).attempts, 2);
+    const unique = dedupeModelCallAttempts(stream);
+    assert.deepEqual(
+      unique.map((a) => a.costUsd),
+      [0.005, 0.006],
+    );
     assert.equal(groupModelCallAttempts(stream).length, 2);
-  });
-
-  test('a genuinely free priced call is distinguishable from an unpriced one', () => {
-    const free = attempt({ attemptId: 'free', costBasis: 'priced', costUsd: 0 });
-    const unknown = attempt({ attemptId: 'unknown', costBasis: 'unpriced', costUsd: undefined });
-    const { costUsd, coverage } = sumModelCallCostUsd([free, unknown]);
-    assert.equal(costUsd, 0);
-    assert.equal(coverage.pricedAttempts, 1);
-    assert.equal(coverage.unpricedAttempts, 1);
   });
 });

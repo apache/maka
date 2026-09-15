@@ -19,12 +19,20 @@
 
 import { randomUUID } from "node:crypto";
 import type { IpcMainInvokeEvent } from "electron";
-import { MAX_ATTACHMENT_COUNT } from '@maka/core/attachments';
+import {
+  AttachmentIngestBlockedError,
+  MAX_ATTACHMENT_COUNT,
+  type AttachmentIngestBlockedCode,
+} from '@maka/core/attachments';
 import { isSideConversationSession } from '@maka/core/side-conversation';
 import {
   RuntimeHostOperationError,
   RuntimeHostRequestInterruptedError,
 } from '@maka/runtime-host/client';
+import {
+  MESSAGE_QUEUE_MAX_ENTRIES,
+  type TurnMessageExecutionResolution,
+} from '@maka/runtime-host/protocol';
 import {
   type SessionChangedEvent,
   type SessionChangedReason,
@@ -54,13 +62,20 @@ import {
 } from "./ipc-reconnect-policy.js";
 import type { DesktopRuntimeHostClient } from "./runtime-host-client.js";
 import type { SessionCopyCleanupAuthority } from '@maka/storage/session-copy-cleanup';
-import type { RuntimeHostSessionObservationRegistry } from "./runtime-host-session-observation-registry.js";
+import type { RuntimeHostObservationIpcResult } from '../shared/runtime-host-observation-ipc.js';
+import {
+  RuntimeHostObservationCancelledError,
+  type RuntimeHostSessionObservationRegistry,
+} from "./runtime-host-session-observation-registry.js";
 import {
   RuntimeHostSessionObserver,
   type RuntimeHostSessionObserverTarget,
   type RuntimeHostTranscriptTarget,
 } from "./runtime-host-session-observer.js";
-import type { DesktopTranscriptRangeRequest } from '../preload/transcript-contract.js';
+import type {
+  DesktopTranscriptRangeRequest,
+  DesktopTranscriptTailAcknowledgement,
+} from '../preload/transcript-contract.js';
 import type { DesktopSessionStopResult } from '../preload/bridge-contract.js';
 import { toDesktopHostSessionSummary } from "./runtime-host-session-catalog-ipc-main.js";
 import { mergeWorkspaceFileInlineReferences } from "./session-workspace-inline-references.js";
@@ -115,6 +130,7 @@ type RuntimeHostSessionExecutionClient = Pick<
 
 /** No Skill was named, so the Host resolved none. */
 const EMPTY_SKILL_INVOCATION = { loaded: [], failed: [], receipts: [] } as const;
+const DESKTOP_MESSAGE_QUERY_MAX_ENTRIES = 4_096;
 
 async function submitMessageWithReconnect(
   client: Pick<RuntimeHostSessionExecutionClient, 'getSession' | 'submitMessage'>,
@@ -171,12 +187,52 @@ export interface RuntimeHostSessionExecutionIpcDeps {
   newId?: () => string;
 }
 
+type MessageAttachmentResult =
+  | { readonly ok: true; readonly attachments: AttachmentRef[] }
+  | { readonly ok: false; readonly reason: 'attachment_blocked'; readonly code: AttachmentIngestBlockedCode };
+
+async function prepareMessageAttachments(input: {
+  deps: Pick<RuntimeHostSessionExecutionIpcDeps, 'attachmentApprovals' | 'client' | 'resizeImage' | 'stat'>;
+  getSenderId: () => number;
+  sessionId: string;
+  retainedAttachments: readonly AttachmentRef[];
+  attachmentItems: unknown;
+}): Promise<MessageAttachmentResult> {
+  const attachments = retainedAttachmentsForSession(input.sessionId, input.retainedAttachments);
+  try {
+    if (input.attachmentItems !== undefined) {
+      const files = await resolveIngestItems({
+        senderId: input.getSenderId(),
+        items: input.attachmentItems,
+        approvals: input.deps.attachmentApprovals,
+        stat: input.deps.stat,
+      });
+      attachments.push(...await resolveAttachmentRefs({
+        files,
+        resizeImage: input.deps.resizeImage,
+        snapshot: ({ name, mimeType, content }) =>
+          input.deps.client.ingestAttachment({ sessionId: input.sessionId, name, mimeType, content }),
+      }));
+    }
+  } catch (error) {
+    if (error instanceof AttachmentIngestBlockedError) {
+      return { ok: false, reason: 'attachment_blocked', code: error.code };
+    }
+    throw error;
+  }
+  return attachments.length > MAX_ATTACHMENT_COUNT
+    ? { ok: false, reason: 'attachment_blocked', code: 'count_limit' }
+    : { ok: true, attachments };
+}
+
 export interface RuntimeHostSessionObservationIpcDeps {
   observations: Pick<
     RuntimeHostSessionObservationRegistry,
+    | 'acknowledgeTranscriptTail'
     | 'loadTranscriptAround'
     | 'loadTranscriptBefore'
     | 'loadTranscriptAfter'
+    | 'loadTranscriptLatest'
     | 'observe'
     | 'openTranscript'
   >;
@@ -193,21 +249,25 @@ export function registerRuntimeHostSessionObservationIpc(
     'sessions:observe',
     async (event, sessionId: unknown, observerId: unknown) => {
       const normalizedSessionId = requiredId(sessionId, 'Session');
-      await deps.observations.observe(
-        normalizedSessionId,
-        requiredId(observerId, 'Session observer'),
-        event.sender as RuntimeHostSessionObserverTarget,
-        await deps.resolveSideConversation(normalizedSessionId),
+      return observationIpcResult(
+        deps.observations.observe(
+          normalizedSessionId,
+          requiredId(observerId, 'Session observer'),
+          event.sender as RuntimeHostSessionObserverTarget,
+          await deps.resolveSideConversation(normalizedSessionId),
+        ),
       );
     },
   );
   ipcMain.handle(
     'sessions:transcript:open',
     async (event, sessionId: unknown, consumerId: unknown) =>
-      deps.observations.openTranscript(
-        requiredId(sessionId, 'Session'),
-        requiredId(consumerId, 'Transcript consumer'),
-        event.sender as RuntimeHostTranscriptTarget,
+      observationIpcResult(
+        deps.observations.openTranscript(
+          requiredId(sessionId, 'Session'),
+          requiredId(consumerId, 'Transcript consumer'),
+          event.sender as RuntimeHostTranscriptTarget,
+        ),
       ),
   );
   ipcMain.handle('sessions:transcript:load-before', async (event, input: unknown) => {
@@ -228,6 +288,29 @@ export function registerRuntimeHostSessionObservationIpc(
       event.sender.id,
     );
   });
+  ipcMain.handle('sessions:transcript:load-latest', async (event, input: unknown) => {
+    await deps.observations.loadTranscriptLatest(
+      normalizeTranscriptRangeRequest(input),
+      event.sender.id,
+    );
+  });
+  ipcMain.handle('sessions:transcript:acknowledge-tail', async (event, input: unknown) => {
+    await deps.observations.acknowledgeTranscriptTail(
+      normalizeTranscriptTailAcknowledgement(input),
+      event.sender.id,
+    );
+  });
+}
+
+async function observationIpcResult<T>(
+  operation: Promise<T>,
+): Promise<RuntimeHostObservationIpcResult<T>> {
+  try {
+    return { kind: 'ready', value: await operation };
+  } catch (error) {
+    if (error instanceof RuntimeHostObservationCancelledError) return { kind: 'cancelled' };
+    throw error;
+  }
 }
 
 /**
@@ -261,16 +344,47 @@ export function registerRuntimeHostSessionExecutionIpc(
   ipcMain.handle(
     'sessions:queryCancelledMessages',
     async (_event, sessionId: string, messageIds: unknown) => {
-      if (!Array.isArray(messageIds)) throw new Error('Invalid Message identities');
-      return deps.client.queryMessages({ sessionId, messageIds });
+      const normalizedSessionId = requiredId(sessionId, 'Session');
+      const normalizedMessageIds = requiredMessageIds(messageIds);
+      // Keep the transport limit at the Runtime Host seam so renderer callers
+      // can query their complete optimistic projection as one operation.
+      const cancelledMessageIds: string[] = [];
+      for (
+        let from = 0;
+        from < normalizedMessageIds.length;
+        from += MESSAGE_QUEUE_MAX_ENTRIES
+      ) {
+        const result = await deps.client.queryMessages({
+          sessionId: normalizedSessionId,
+          messageIds: normalizedMessageIds.slice(from, from + MESSAGE_QUEUE_MAX_ENTRIES),
+        });
+        cancelledMessageIds.push(...result.cancelledMessageIds);
+      }
+      if (new Set(cancelledMessageIds).size !== cancelledMessageIds.length) {
+        throw new Error('Duplicate cancelled Message identities');
+      }
+      return { cancelledMessageIds };
     },
   );
 
   ipcMain.handle(
     'sessions:queryMessageExecutions',
     async (_event, sessionId: string, messageIds: unknown) => {
-      if (!Array.isArray(messageIds)) throw new Error('Invalid Message identities');
-      return deps.client.queryMessageExecutions({ sessionId, messageIds });
+      const normalizedSessionId = requiredId(sessionId, 'Session');
+      const normalizedMessageIds = requiredMessageIds(messageIds);
+      const resolutions: TurnMessageExecutionResolution[] = [];
+      for (
+        let from = 0;
+        from < normalizedMessageIds.length;
+        from += MESSAGE_QUEUE_MAX_ENTRIES
+      ) {
+        const result = await deps.client.queryMessageExecutions({
+          sessionId: normalizedSessionId,
+          messageIds: normalizedMessageIds.slice(from, from + MESSAGE_QUEUE_MAX_ENTRIES),
+        });
+        resolutions.push(...result.resolutions);
+      }
+      return { resolutions };
     },
   );
 
@@ -307,35 +421,15 @@ export function registerRuntimeHostSessionExecutionIpc(
         throw new Error(`Runtime Host Session not found: ${sessionId}`);
       const sideConversation = isSideConversationSession(session.labels);
       const turnId = command.turnId ?? newId();
-      let attachments = retainedAttachmentsForSession(
+      const attachmentResult = await prepareMessageAttachments({
+        deps,
+        getSenderId: () => event.sender.id,
         sessionId,
-        command.retainedAttachments ?? [],
-      );
-      if (command.attachmentItems !== undefined) {
-        const files = await resolveIngestItems({
-          senderId: event.sender.id,
-          items: command.attachmentItems,
-          approvals: deps.attachmentApprovals,
-          stat: deps.stat,
-        });
-        attachments = [
-          ...attachments,
-          ...(await resolveAttachmentRefs({
-            files,
-            resizeImage: deps.resizeImage,
-            snapshot: ({ name, mimeType, content }) =>
-              deps.client.ingestAttachment({
-                sessionId,
-                name,
-                mimeType,
-                content,
-              }),
-          })),
-        ];
-      }
-      if (attachments.length > MAX_ATTACHMENT_COUNT) {
-        throw new Error("Too many attachments");
-      }
+        retainedAttachments: command.retainedAttachments ?? [],
+        attachmentItems: command.attachmentItems,
+      });
+      if (!attachmentResult.ok) return attachmentResult;
+      const { attachments } = attachmentResult;
       const displayText =
         command.displayText ??
         (command.text.trim().length > 0
@@ -428,39 +522,17 @@ export function registerRuntimeHostSessionExecutionIpc(
       // the row it already rendered, and what makes a retry the same Message.
       // Minting one here would hand back an identity the caller never showed.
       if (!command.messageId) throw new Error("Submitted message has no identity");
-      const session = await deps.client.getSession(sessionId);
-      if (!session) {
-        throw new Error(`Runtime Host Session not found: ${sessionId}`);
-      }
-      let attachments = retainedAttachmentsForSession(
+      // Host admission validates the target, including reserved Sessions
+      // such as WorkHub that intentionally do not appear in the task catalog.
+      const attachmentResult = await prepareMessageAttachments({
+        deps,
+        getSenderId: () => event.sender.id,
         sessionId,
-        command.retainedAttachments ?? [],
-      );
-      if (command.attachmentItems !== undefined) {
-        const files = await resolveIngestItems({
-          senderId: event.sender.id,
-          items: command.attachmentItems,
-          approvals: deps.attachmentApprovals,
-          stat: deps.stat,
-        });
-        attachments = [
-          ...attachments,
-          ...(await resolveAttachmentRefs({
-            files,
-            resizeImage: deps.resizeImage,
-            snapshot: ({ name, mimeType, content }) =>
-              deps.client.ingestAttachment({
-                sessionId,
-                name,
-                mimeType,
-                content,
-              }),
-          })),
-        ];
-      }
-      if (attachments.length > MAX_ATTACHMENT_COUNT) {
-        throw new Error("Too many attachments");
-      }
+        retainedAttachments: command.retainedAttachments ?? [],
+        attachmentItems: command.attachmentItems,
+      });
+      if (!attachmentResult.ok) return attachmentResult;
+      const { attachments } = attachmentResult;
       const displayText =
         command.displayText ??
         (command.text.trim().length > 0
@@ -827,12 +899,36 @@ function normalizeTranscriptRangeRequest(input: unknown): DesktopTranscriptRange
   if (!Number.isSafeInteger(maxBytes)) {
     throw new Error('Invalid Desktop transcript range byte limit');
   }
+  if (
+    !Number.isSafeInteger(value.navigation) || (value.navigation as number) < 0
+  ) {
+    throw new Error('Invalid Desktop transcript navigation');
+  }
   return {
     consumerId: requiredId(value.consumerId, 'Transcript consumer'),
     sessionId: requiredId(value.sessionId, 'Session'),
     hostEpoch: requiredId(value.hostEpoch, 'Host epoch'),
     anchorSequence: anchorSequence as number | null,
     maxBytes: maxBytes as number,
+    navigation: value.navigation as number,
+  };
+}
+
+function normalizeTranscriptTailAcknowledgement(
+  input: unknown,
+): DesktopTranscriptTailAcknowledgement {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    throw new Error('Invalid Desktop transcript tail acknowledgement');
+  }
+  const value = input as Record<string, unknown>;
+  if (!Number.isSafeInteger(value.through) || (value.through as number) < 0) {
+    throw new Error('Invalid Desktop transcript tail watermark');
+  }
+  return {
+    consumerId: requiredId(value.consumerId, 'Transcript consumer'),
+    sessionId: requiredId(value.sessionId, 'Session'),
+    hostEpoch: requiredId(value.hostEpoch, 'Host epoch'),
+    through: value.through as number,
   };
 }
 
@@ -948,6 +1044,24 @@ async function requireInteraction(
 function requiredId(value: unknown, label: string): string {
   if (typeof value !== "string" || value.length === 0 || value.length > 256) {
     throw new Error(`Invalid ${label} identity`);
+  }
+  return value;
+}
+
+function requiredMessageIds(value: unknown): string[] {
+  if (!Array.isArray(value) || value.length > DESKTOP_MESSAGE_QUERY_MAX_ENTRIES) {
+    throw new Error('Invalid Message identities');
+  }
+  const messageIds = value.map(requiredMessageId);
+  if (new Set(messageIds).size !== messageIds.length) {
+    throw new Error('Duplicate Message identities');
+  }
+  return messageIds;
+}
+
+function requiredMessageId(value: unknown): string {
+  if (typeof value !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/u.test(value)) {
+    throw new Error('Invalid Message identity');
   }
   return value;
 }

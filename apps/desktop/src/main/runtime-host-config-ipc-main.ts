@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 import { readFile, writeFile } from 'node:fs/promises';
 import { isDeepStrictEqual } from 'node:util';
 import type { IpcMain } from 'electron';
@@ -67,6 +68,7 @@ import {
 } from '@maka/storage/config-transfer';
 
 interface RuntimeHostConfigIpcDeps {
+  uiLocale(): UiLocale;
   readonly ipcMain: Pick<IpcMain, 'handle'>;
   readonly client: DesktopRuntimeHostClient;
   readonly mainWindowController: ReturnType<typeof createMainWindowController>;
@@ -100,7 +102,7 @@ export function registerRuntimeHostConfigIpc(
       }
       const today = new Date().toISOString().slice(0, 10);
       const result = await deps.mainWindowController.showSaveDialog({
-        title: '导出 Maka 配置',
+        title: CONFIG_DIALOG_COPY[deps.uiLocale()].exportTitle,
         defaultPath: `maka-config-${today}.json`,
         filters: [{ name: 'Maka Config', extensions: ['json'] }],
       });
@@ -129,7 +131,7 @@ export function registerRuntimeHostConfigIpc(
     'config:import',
     async (_event, input: { strategy?: unknown } = {}) => {
       const result = await deps.mainWindowController.showOpenDialog({
-        title: '导入 Maka 配置',
+        title: CONFIG_DIALOG_COPY[deps.uiLocale()].importTitle,
         properties: ['openFile'],
         filters: [{ name: 'Maka Config', extensions: ['json'] }],
       });
@@ -349,7 +351,7 @@ export async function saveConnection(
         // Import-overwrite is snapshot replacement: absent in the snapshot
         // must CLEAR, not inherit — the update contract's "absent means
         // untouched" would otherwise resurrect the old profiles.
-        relayModelProfiles: connection.relayModelProfiles ?? null,
+        modelOverrides: connection.modelOverrides ?? null,
         requestBodyOverlay: connection.requestBodyOverlay ?? null,
       },
     );
@@ -357,7 +359,7 @@ export async function saveConnection(
       throw new Error(`Unable to update imported Connection: ${updated.kind}`);
     }
   } else {
-    const importedProfiles = connection.relayModelProfiles;
+    const importedProfiles = connection.modelOverrides;
     const created = await client.createConnection(catalog.revision, {
       slug: connection.slug,
       name: connection.name,
@@ -365,7 +367,7 @@ export async function saveConnection(
       ...(connection.baseUrl ? { baseUrl: connection.baseUrl } : {}),
       enabled: connection.enabled,
       enabledModelIds: [...(connection.enabledModelIds ?? [])],
-      ...(importedProfiles === undefined ? {} : { relayModelProfiles: importedProfiles }),
+      ...(importedProfiles === undefined ? {} : { modelOverrides: importedProfiles }),
       ...(connection.requestBodyOverlay === undefined
         ? {}
         : { requestBodyOverlay: connection.requestBodyOverlay }),
@@ -656,3 +658,9 @@ function sanitizeCategories(value: unknown): ConfigCategory[] {
 function sanitizeStrategy(value: unknown): ConnectionConflictStrategy {
   return value === 'overwrite' ? 'overwrite' : 'skip';
 }
+
+const CONFIG_DIALOG_COPY = {
+  'zh-CN': { exportTitle: '导出 Maka 配置', importTitle: '导入 Maka 配置' },
+  'zh-TW': { exportTitle: '匯出 Maka 設定', importTitle: '匯入 Maka 設定' },
+  en: { exportTitle: 'Export Maka configuration', importTitle: 'Import Maka configuration' },
+} satisfies UiCatalog<{ exportTitle: string; importTitle: string }>;

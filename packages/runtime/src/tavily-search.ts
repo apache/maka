@@ -153,9 +153,12 @@ function mapTavilyRows(raw: unknown, limit: number): WebSearchResultRow[] | null
     if (!location) continue;
     rows.push({
       provider: 'tavily',
-      title: safeString(rawRow.title, location.url).slice(0, TAVILY_RESULT_TITLE_MAX_CHARS),
+      title: truncateResultText(
+        safeString(rawRow.title, location.url),
+        TAVILY_RESULT_TITLE_MAX_CHARS,
+      ),
       url: location.url,
-      snippet: safeString(rawRow.content).slice(0, TAVILY_RESULT_SNIPPET_MAX_CHARS),
+      snippet: truncateResultText(safeString(rawRow.content), TAVILY_RESULT_SNIPPET_MAX_CHARS),
       source: location.source,
     });
     if (rows.length >= limit) break;
@@ -197,6 +200,12 @@ async function readBoundedJson(response: Response, maxBytes: number): Promise<un
 
 function safeString(value: unknown, fallback = ''): string {
   return typeof value === 'string' ? value : fallback;
+}
+
+function truncateResultText(value: string, maxChars: number): string {
+  if (value.length <= maxChars) return value;
+  // Detach bounded results from large provider strings, preserving even unpaired UTF-16 surrogates.
+  return Buffer.from(value.slice(0, maxChars), 'utf16le').toString('utf16le');
 }
 
 function normalizeResultLocation(

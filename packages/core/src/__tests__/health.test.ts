@@ -298,7 +298,6 @@ function capability(
     },
     canRevoke: false,
     canPause: false,
-    guidance: [],
     auditEvents: [],
     updatedAt: 1,
     ...patch,

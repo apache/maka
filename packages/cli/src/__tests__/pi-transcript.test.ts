@@ -18,6 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { buildBuiltinTools } from '@maka/runtime/builtin-tools';
 import { describe, test } from 'node:test';
 import { visibleWidth } from '@earendil-works/pi-tui';
 import type { PipeShellOutput, PtyShellOutput } from '@maka/core/shell-run';
@@ -54,6 +55,24 @@ function toolStatus(entry: MakaPiToolEntry | undefined): string | undefined {
 }
 
 describe('Maka Pi TUI transcript', () => {
+  test('renders neutral provider dropping guidance', () => {
+    const state = createMakaPiTranscriptState();
+    replaceTranscriptWithStoredMessages(state, [
+      {
+        type: 'system_note',
+        id: 'drop-1',
+        turnId: 't1',
+        ts: 1,
+        kind: 'context_provider_dropping',
+        data: { inputTokens: 100, priorInputTokens: 100 },
+      },
+    ]);
+    assert.match(
+      renderMakaPiTranscript(state, meta(), 120).map(stripAnsi).join('\n'),
+      /truncated or rewritten/,
+    );
+  });
+
   test('renders manual compaction from the typed terminal outcome', async () => {
     for (const [outcome, expected] of [
       [{ kind: 'compacted' as const, checkpointId: 'checkpoint-1' }, 'Context compacted.'],
@@ -969,7 +988,6 @@ describe('Maka Pi TUI transcript', () => {
         turnId: 'turn-1',
         ts: 2,
         status: 'running',
-        partialOutputRetained: true,
       },
     ]);
 
@@ -1055,7 +1073,6 @@ describe('Maka Pi TUI transcript', () => {
         turnId: 'turn-1',
         ts: 5,
         status: 'completed',
-        partialOutputRetained: true,
       },
     ]);
 
@@ -1419,7 +1436,6 @@ describe('Maka Pi TUI transcript', () => {
         turnId: 'turn-1',
         ts: 2,
         status: 'completed',
-        partialOutputRetained: false,
       },
     ] satisfies StoredMessage[]);
 
@@ -2630,7 +2646,7 @@ describe('Maka Pi TUI transcript', () => {
         type: 'tool_start',
         toolUseId: 'read-bg',
         toolName: 'Read',
-        args: { ref },
+        args: { path: ref },
       }),
     );
 
@@ -2893,12 +2909,84 @@ describe('Maka Pi TUI transcript', () => {
     assert.equal(poll?.toolUseId, 'read-bg');
     assert.equal(poll?.toolName, 'Read');
     assert.equal(toolStatus(poll), 'error');
-    const rendered = renderMakaPiTranscript(state, meta(), 100).map(stripAnsi).join('\n');
+    // Assert the semantic row after stripping ANSI, as it appears with
+    // NO_COLOR; the failure label must not depend on the red disc.
+    const rendered = renderMakaPiTranscript(state, meta(), 80).map(stripAnsi).join('\n');
     assert.match(rendered, /● Read/);
-    // The error disc carries the failure state; free-text error content stays
-    // out of the compact row under #1086.
-    assert.match(rendered, /\(1 line · 32 bytes\)/);
+    // The compact row names the failure even without ANSI color; free-text
+    // error content stays out of the row and remains available when expanded.
+    assert.match(rendered, /● Read.*\(failed\)/);
+    // Error-text size must not look like successfully read resource content.
+    assert.doesNotMatch(rendered, /32 bytes/);
     assert.doesNotMatch(rendered, /background task no longer exists/);
+    assert.ok(
+      visibleWidth(rendered.split('\n').find((line) => line.includes('● Read')) ?? '') <= 80,
+    );
+  });
+
+  test('keeps generic compact text outcomes distinct by real presentation status', () => {
+    const cases = [
+      {
+        id: 'generic-success',
+        toolName: 'mcp__local__result',
+        args: {},
+        isError: false,
+        content: { kind: 'text', text: 'ok\n' } as const,
+        expected: '(1 line · 3 bytes)',
+      },
+      {
+        id: 'generic-error',
+        toolName: 'mcp__local__result',
+        args: {},
+        isError: true,
+        content: { kind: 'text', text: 'failed because of a bad input' } as const,
+        expected: '(failed)',
+      },
+      {
+        id: 'subagent-failed',
+        toolName: 'agent_spawn',
+        args: { profile: 'local_read', task: 'read' },
+        isError: true,
+        content: subagentResult({ status: 'failed', summary: 'child failed' }),
+        expected: '(failed)',
+      },
+      {
+        id: 'subagent-aborted',
+        toolName: 'agent_spawn',
+        args: { profile: 'local_read', task: 'read' },
+        isError: true,
+        content: subagentResult({ status: 'cancelled', summary: 'child stopped' }),
+        expected: '(aborted)',
+      },
+    ];
+
+    for (const testCase of cases) {
+      const state = createMakaPiTranscriptState();
+      applyMakaSessionEventToTranscript(
+        state,
+        event({
+          type: 'tool_start',
+          toolUseId: testCase.id,
+          toolName: testCase.toolName,
+          args: testCase.args,
+        }),
+      );
+      applyMakaSessionEventToTranscript(
+        state,
+        event({
+          type: 'tool_result',
+          toolUseId: testCase.id,
+          isError: testCase.isError,
+          content: testCase.content,
+        }),
+      );
+
+      const rendered = renderMakaPiTranscript(state, meta(), 120).map(stripAnsi).join('\n');
+      assert.match(rendered, new RegExp(`\\(${testCase.expected.slice(1, -1)}\\)`));
+      if (testCase.expected === '(failed)' || testCase.expected === '(aborted)') {
+        assert.doesNotMatch(rendered, /bytes/);
+      }
+    }
   });
 
   test('surfaces a failed poll at the tail without rewriting scrollback', () => {
@@ -3846,7 +3934,7 @@ describe('Maka Pi TUI transcript', () => {
     );
   });
 
-  test('folds a background-task Read result into its parent Bash card', () => {
+  test('folds the real Read observation into its Bash card while the model gets a bounded page', async () => {
     const state = createMakaPiTranscriptState();
     const ref = 'maka://runtime/background-tasks/bg-1';
     applyMakaSessionEventToTranscript(
@@ -3873,21 +3961,41 @@ describe('Maka Pi TUI transcript', () => {
         type: 'tool_start',
         toolUseId: 'read-bg',
         toolName: 'Read',
-        args: { ref },
+        args: { path: ref },
       }),
     );
+    const observation = shellRun({
+      ref,
+      status: 'failed',
+      stdout: 'starting\n' + 'failure detail\n'.repeat(900),
+      updatedAt: 5_000,
+    });
+    const read = buildBuiltinTools({
+      runtimeResources: { readRuntimeResource: async () => observation },
+    }).find((tool) => tool.name === 'Read')!;
+    const args = { path: ref };
+    const result = await read.impl(args, {
+      sessionId: 'session-1',
+      turnId: 'turn-1',
+      toolCallId: 'read-bg',
+      cwd: '/repo',
+      abortSignal: new AbortController().signal,
+      emitOutput() {},
+    });
+    assert.deepEqual(result, observation);
+    const modelOutput = read.toModelOutput!({ toolCallId: 'read-bg', input: args, output: result });
+    assert.equal(modelOutput?.type, 'json');
+    if (modelOutput?.type === 'json') {
+      assert.ok(JSON.stringify(modelOutput.value).length <= 7_500);
+      assert.ok((modelOutput.value as { next: unknown }).next);
+    }
     applyMakaSessionEventToTranscript(
       state,
       event({
         type: 'tool_result',
         toolUseId: 'read-bg',
         isError: false,
-        content: shellRun({
-          ref,
-          status: 'running',
-          stdout: 'starting\nstill running\n',
-          updatedAt: 5_000,
-        }),
+        content: result as ToolResultContent,
       }),
     );
 
@@ -3898,14 +4006,15 @@ describe('Maka Pi TUI transcript', () => {
       tools[0]?.result?.kind === 'shell_run' && tools[0].result.output?.mode === 'pipes'
         ? tools[0].result.output.stdout
         : '',
-      'starting\nstill running\n',
+      observation.output?.mode === 'pipes' ? observation.output.stdout : '',
     );
+    assert.equal(tools[0]?.result?.kind === 'shell_run' && tools[0].result.status, 'failed');
     const rendered = renderMakaPiTranscript(state, meta(), 100).map(stripAnsi).join('\n');
     assert.doesNotMatch(rendered, /● Read/);
     // Running card keeps the live tail in the expanded card.
     assert.equal(toggleAllToolExpansion(state), true);
     const expanded = renderMakaPiTranscript(state, meta(), 100).map(stripAnsi).join('\n');
-    assert.match(expanded, /still running/);
+    assert.match(expanded, /failure detail/);
   });
 
   test('shows polled background output instead of a stale live delta', () => {
@@ -5129,7 +5238,6 @@ function inFlightBackgroundPollFixture(): {
         turnId: 'turn-1',
         ts: 1,
         status: 'running',
-        partialOutputRetained: true,
       },
       { type: 'tool_call', id: 'bash-bg', turnId: 'turn-1', ts: 2, toolName: 'Bash', args: {} },
       {

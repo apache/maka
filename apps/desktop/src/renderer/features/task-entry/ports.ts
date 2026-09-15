@@ -28,6 +28,12 @@ export interface TaskEntryHostRef {
   readonly hostId: string;
 }
 
+export interface TaskEntryError {
+  readonly title: string;
+  readonly description?: string;
+  readonly profileId: string;
+}
+
 export interface TaskEntryTarget extends TaskEntryHostRef {
   readonly projectId: string | null;
 }

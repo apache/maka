@@ -28,6 +28,7 @@ import {
 import type { ResizableProps } from '@astryxdesign/core/Resizable';
 import {
   loadWorkbarLayout,
+  isSessionWorkbarCollapsed,
   persistWorkbarLayout,
   reduceWorkbarLayout,
   SESSION_BOTTOM_PANEL_MAX_HEIGHT,
@@ -45,14 +46,28 @@ const LAYOUT_PERSIST_DEBOUNCE_MS = 200;
 
 /**
  * Owns the application-level Workbar topology, dimensions and persistence.
- * Session-owned panel data deliberately lives below this boundary.
+ * Right-panel visibility belongs to each Session; topology and sizes stay global.
  */
-export function useWorkbarLayoutState() {
+export function useWorkbarLayoutState(
+  activeSessionId: string | undefined,
+  authoritativeSessionIds: ReadonlySet<string> | undefined,
+) {
   const [state, dispatch] = useReducer(
     reduceWorkbarLayout,
-    undefined,
+    activeSessionId,
     loadWorkbarLayout,
   );
+  // Bind the owner before this render commits. An effect-based mirror would
+  // briefly show the previous Session's panel and could overwrite an open
+  // action issued by another layout effect in the activation commit.
+  if (state.activeSessionId !== activeSessionId) {
+    dispatch({ type: 'activate-session', sessionId: activeSessionId });
+  }
+  useEffect(() => {
+    if (authoritativeSessionIds) {
+      dispatch({ type: 'retain-sessions', sessionIds: authoritativeSessionIds });
+    }
+  }, [authoritativeSessionIds, activeSessionId, state.panels]);
   const stateRef = useRef(state);
   stateRef.current = state;
   const rightDragStartRef = useRef(state.rightWidth);
@@ -126,6 +141,14 @@ export function useWorkbarLayoutState() {
       dispatch({ type: 'open', placement, tab }),
     [],
   );
+  const restoreTerminals = useCallback(
+    (tabs: readonly SessionWorkbarTab[]) => dispatch({ type: 'restore-terminals', tabs }),
+    [],
+  );
+  const closeTerminal = useCallback(
+    (sessionId: string, ref: string) => dispatch({ type: 'close-terminal', sessionId, ref }),
+    [],
+  );
   const activateWorkbarTab = useCallback(
     (placement: SessionWorkbarPlacement, tabId: string) =>
       dispatch({ type: 'activate', placement, tabId }),
@@ -137,8 +160,16 @@ export function useWorkbarLayoutState() {
     [],
   );
   const closeWorkbarTabs = useCallback(
-    (placement: SessionWorkbarPlacement, tabIds: readonly string[]) =>
-      dispatch({ type: 'close', placement, tabIds }),
+    (
+      placement: SessionWorkbarPlacement,
+      tabIds: readonly string[],
+      options?: { preserveVisibility?: boolean },
+    ) =>
+      dispatch({
+        type: options?.preserveVisibility ? 'remove-stale' : 'close',
+        placement,
+        tabIds,
+      }),
     [],
   );
   const openWorkbarLauncher = useCallback(
@@ -163,7 +194,7 @@ export function useWorkbarLayoutState() {
   }, [state.rightWidth]);
   useEffect(() => {
     persistWorkbarLayout(stateRef.current, 'right-visibility');
-  }, [state.rightCollapsed]);
+  }, [state.collapsedBySession]);
   useEffect(() => {
     const handle = window.setTimeout(() => {
       persistWorkbarLayout(stateRef.current, 'bottom-size');
@@ -181,7 +212,7 @@ export function useWorkbarLayoutState() {
     (next: SetStateAction<boolean>) => {
       const collapsed =
         typeof next === 'function'
-          ? next(stateRef.current.rightCollapsed)
+          ? next(isSessionWorkbarCollapsed(stateRef.current))
           : next;
       dispatch({ type: 'collapse', placement: 'right', collapsed });
     },
@@ -201,7 +232,7 @@ export function useWorkbarLayoutState() {
   );
 
   return {
-    workbarCollapsed: state.rightCollapsed,
+    workbarCollapsed: isSessionWorkbarCollapsed(state),
     setWorkbarCollapsed,
     bottomPanelOpen: state.bottomOpen,
     setBottomPanelOpen,
@@ -212,9 +243,11 @@ export function useWorkbarLayoutState() {
     workbarPanelsState: state.panels,
     openWorkbarTab,
     openDynamicWorkbarTab,
+    restoreTerminals,
     activateWorkbarTab,
     closeWorkbarTab,
     closeWorkbarTabs,
+    closeTerminal,
     moveWorkbarTabToPanel,
     titleWorkbarTab,
     openWorkbarLauncher,

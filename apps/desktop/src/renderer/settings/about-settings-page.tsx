@@ -17,10 +17,21 @@
  * under the License.
  */
 
-import { useEffect, useState, type ReactNode } from 'react';
-import { Link, Text } from '@astryxdesign/core';
-import { Banner, Button, useMountedRef, useToast, useUiLocale } from '@maka/ui';
-import type { AppUpdateStatus } from '../../preload/bridge-contract.js';
+import { useEffect, useState, type ReactNode, type RefObject } from 'react';
+import { Link, Text, VStack } from '@astryxdesign/core';
+import {
+  Banner,
+  Button,
+  MakaWordmark,
+  useMountedRef,
+  useToast,
+  useUiLocale,
+  type ToastApi,
+} from '@maka/ui';
+import {
+  AppUpdateAboutProjectionConsumer,
+  type AppUpdateAboutProjection,
+} from '../features/app-update/index.js';
 import { SettingsPage, SettingsRow, SettingsSection } from './settings-section.js';
 import { settingsActionErrorMessage } from './settings-error-copy.js';
 import { SettingsSkeletonStack } from './settings-skeleton.js';
@@ -39,34 +50,90 @@ const ISSUE_TRACKER_URL = `${REPOSITORY_URL}/issues`;
 const RELEASES_URL = `${REPOSITORY_URL}/releases`;
 
 /**
- * The page is rows of one shape — label, one quiet line, one control at the
- * end — because that is the Astryx settings idiom (the CLI's settings-sidebar
- * template), and because every second vocabulary on this page (a keycap, a
- * token, secondary buttons, a bulleted list) was a second thing to read on a
- * page whose content is four facts and three actions.
+ * The page is an identity lead over rows of one shape — label, one quiet line,
+ * one control at the end — the Astryx settings idiom (the CLI's
+ * settings-sidebar template).
  *
- * Two control faces remain, and that split is Astryx's own rule, not ours:
- * `Button` "is for actions like saving, deleting, or submitting"; `Link` is
- * for "navigating between pages or to external URLs" and its docs say not to
- * use it "for actions that do not navigate". So 检查更新, 复制 and 查看 are
- * buttons (secondary or ghost "based on emphasis"), and the two places that
- * leave the app are links. The link takes the button's inline inset so both
- * faces end on one text edge.
+ * Two control faces, and that split is Astryx's own rule, not ours: `Button`
+ * "is for actions like saving, deleting, or submitting"; `Link` is for
+ * "navigating between pages or to external URLs" and its docs say not to use
+ * it "for actions that do not navigate". So 检查更新, 重启安装, 复制 and 查看
+ * are buttons, and the places that leave the app are links. The row-end link
+ * takes the button's inline inset so both faces end on one text edge.
  */
 
 /* The ghost `sm` button pads its label by one spacing step; without the same
    inset the link's text sits 12px further right than the buttons' text. */
 const linkInRowEnd = { paddingInline: 'var(--spacing-3)' } as const;
+type AboutCopy = ReturnType<typeof getSettingsPreferencesCopy>['about'];
+
+/**
+ * About's update row for a packaged install. A component rather than the
+ * consumer's render callback because the action guard is a hook.
+ */
+function AboutUpdateStatusRow(props: {
+  readonly update: AppUpdateAboutProjection;
+  readonly copy: AboutCopy;
+  readonly locale: ReturnType<typeof useUiLocale>;
+  readonly toast: ToastApi;
+  readonly mountedRef: RefObject<boolean>;
+}) {
+  const { update, copy, locale, toast, mountedRef } = props;
+  const checkUpdateGuard = useActionGuard<'check'>();
+  const row = aboutUpdateRow(update.status, copy, {
+    errorDetail: (message) => settingsActionErrorMessage(message, locale),
+  });
+
+  async function checkForUpdates() {
+    if (!checkUpdateGuard.begin('check')) return;
+    try {
+      const status = await update.checkForUpdates();
+      if (status.state === 'error') {
+        toast.error(
+          copy.updateFailed[status.operation],
+          settingsActionErrorMessage(status.message, locale),
+        );
+      }
+    } catch (error) {
+      if (mountedRef.current) {
+        toast.error(copy.updateFailed.check, settingsActionErrorMessage(error, locale));
+      }
+    } finally {
+      checkUpdateGuard.finish();
+    }
+  }
+
+  /* One button in every state, so the row never changes shape: the updater's
+     own work only disables it, and a downloaded update swaps its label. */
+  const end = row.action === 'install' ? (
+    <Button
+      variant="primary"
+      size="sm"
+      isLoading={update.installPending}
+      onClick={() => update.installDownloadedUpdate?.()}
+      label={copy.installUpdate}
+    />
+  ) : (
+    <Button
+      variant="secondary"
+      size="sm"
+      isDisabled={row.action === 'busy'}
+      isLoading={update.checking || row.action === 'checking'}
+      onClick={() => void checkForUpdates()}
+      label={copy.checkForUpdates}
+    />
+  );
+
+  return <SettingsRow label={row.label} description={row.description} end={end} />;
+}
+
 export function AboutSettingsPage(props: { onOpenKeyboardHelp?(): void }) {
   const locale = useUiLocale();
   const copy = getSettingsPreferencesCopy(locale).about;
   const [info, setInfo] = useState<AppInfo | null>(null);
   const [infoError, setInfoError] = useState<string | null>(null);
   const [copyingDiagnostics, setCopyingDiagnostics] = useState(false);
-  const [updateStatus, setUpdateStatus] = useState<AppUpdateStatus | null>(null);
-  const [checkingUpdate, setCheckingUpdate] = useState(false);
   const diagnosticCopyGuard = useActionGuard<'copy'>();
-  const checkUpdateGuard = useActionGuard<'check'>();
   const aboutPageMountedRef = useMountedRef();
   const toast = useToast();
 
@@ -96,23 +163,6 @@ export function AboutSettingsPage(props: { onOpenKeyboardHelp?(): void }) {
     };
   }, [copy.loadFailed, locale, toast]);
 
-  useEffect(() => {
-    let cancelled = false;
-    window.maka.app
-      .updateStatus()
-      .then((status) => {
-        if (!cancelled) setUpdateStatus(status);
-      })
-      .catch(() => undefined);
-    const unsubscribe = window.maka.app.subscribeUpdateStatus((status) => {
-      if (!cancelled) setUpdateStatus(status);
-    });
-    return () => {
-      cancelled = true;
-      unsubscribe();
-    };
-  }, []);
-
   async function copyDiagnostics() {
     if (!diagnosticCopyGuard.begin('copy')) return;
     setCopyingDiagnostics(true);
@@ -129,90 +179,68 @@ export function AboutSettingsPage(props: { onOpenKeyboardHelp?(): void }) {
     }
   }
 
-  async function checkForUpdates() {
-    if (!checkUpdateGuard.begin('check')) return;
-    setCheckingUpdate(true);
-    try {
-      const status = await window.maka.app.checkForUpdates();
-      if (aboutPageMountedRef.current) setUpdateStatus(status);
-      if (status.state === 'error') {
-        toast.error(
-          copy.updateFailed[status.operation],
-          settingsActionErrorMessage(status.message, locale),
-        );
-      }
-    } catch (error) {
-      if (aboutPageMountedRef.current) {
-        toast.error(copy.updateFailed.check, settingsActionErrorMessage(error, locale));
-      }
-    } finally {
-      checkUpdateGuard.finish();
-      if (aboutPageMountedRef.current) setCheckingUpdate(false);
-    }
-  }
-
   let identity: ReactNode;
   if (!info && !infoError) {
     identity = (
-      <SettingsSection variant="bare">
-        <SettingsSkeletonStack
-          label={copy.loading}
-          lines={[
-            { width: '38%', size: 'lg' },
-            { width: '70%' },
-            { width: '52%' },
-          ]}
-        />
-      </SettingsSection>
+      <SettingsSkeletonStack
+        label={copy.loading}
+        lines={[
+          { width: '38%', size: 'lg' },
+          { width: '70%' },
+          { width: '52%' },
+        ]}
+      />
     );
   } else if (!info) {
-    identity = (
-      <SettingsSection variant="bare">
-        <Banner status="info" role="alert" title={copy.unavailable} description={infoError} />
-      </SettingsSection>
-    );
+    identity = <Banner status="info" role="alert" title={copy.unavailable} description={infoError} />;
   } else {
-    const update = aboutUpdateRow(updateStatus, copy, {
-      errorDetail: (message) => settingsActionErrorMessage(message, locale),
-    });
+    /* The wordmark names the product, so the version stands alone; as text,
+       not a Heading, so it does not rank beside the 更新 and 支持 group titles. */
     identity = (
-      /* The two facts a user opens this page for, as the unlabeled lead group:
-         which build this is, and whether it is current. Unlabeled because the
-         page title already says 关于.
-
-         A dev checkout follows no feed, so it gets no update row at all: its
-         channel line already says it does not update. Everywhere else the row
-         offers 检查更新 only where the service would honour one; a downloaded
-         update says where the restart is (the sidebar footer owns that
-         handshake) rather than growing a second one here. */
-      <SettingsSection>
-        <SettingsRow label={`Maka v${info.appVersion}`} description={aboutChannelSummary(info, copy)} />
-        {info.buildMode === 'dev' ? null : (
-          <SettingsRow
-            label={update.label}
-            description={update.description ?? undefined}
-            end={update.action === 'none' ? undefined : (
-              /* Secondary, not primary: the page has no task to complete, and
-                 the one action the update flow cannot do without (the restart)
-                 lives in the sidebar reminder. Not ghost either: unlike 复制
-                 and 查看 below, this changes the updater's state. */
-              <Button
-                variant="secondary"
-                size="sm"
-                isLoading={checkingUpdate || update.action === 'checking'}
-                onClick={() => void checkForUpdates()}
-                label={copy.checkForUpdates}
-              />
-            )}
-          />
-        )}
-      </SettingsSection>
+      <VStack gap={1}>
+        <Text weight="semibold">{`v${info.appVersion}`}</Text>
+        <Text type="supporting" color="secondary">{aboutChannelSummary(info, copy)}</Text>
+      </VStack>
     );
   }
 
   return (
     <SettingsPage>
-      {identity}
+      {/* Unlabeled because the page title already says 关于. */}
+      <SettingsSection variant="bare">
+        <VStack gap={4}>
+          <MakaWordmark width={128} title="Maka" />
+          {identity}
+          <Text type="supporting" color="secondary">
+            {copy.openSourceSummary}
+            {' · '}
+            <Link href={REPOSITORY_URL} target="_blank" rel="noreferrer noopener" type="inherit">
+              {copy.sourceCode}
+            </Link>
+            {' · '}
+            <Link href={RELEASES_URL} target="_blank" rel="noreferrer noopener" type="inherit">
+              {copy.releaseNotes}
+            </Link>
+          </Text>
+        </VStack>
+      </SettingsSection>
+      {/* A dev checkout follows no feed, so it gets no update group at all: its
+          channel line already says it does not update. */}
+      {info && info.buildMode !== 'dev' ? (
+        <SettingsSection title={copy.updateTitle}>
+          <AppUpdateAboutProjectionConsumer>
+            {(update) => (
+              <AboutUpdateStatusRow
+                update={update}
+                copy={copy}
+                locale={locale}
+                toast={toast}
+                mountedRef={aboutPageMountedRef}
+              />
+            )}
+          </AppUpdateAboutProjectionConsumer>
+        </SettingsSection>
+      ) : null}
       {/* Support lives OUTSIDE the info conditional on purpose: copying
           diagnostics must not depend on `app.info` succeeding — that is the
           very moment a user needs it. The keyboard sheet used to be reachable
@@ -268,21 +296,6 @@ export function AboutSettingsPage(props: { onOpenKeyboardHelp?(): void }) {
             )}
           />
         ) : null}
-      </SettingsSection>
-      {/* Provenance is one quiet line, not a group: nothing here is a setting
-          or an action the user came for. */}
-      <SettingsSection variant="bare">
-        <Text type="supporting" color="secondary">
-          {copy.openSourceSummary}
-          {' · '}
-          <Link href={REPOSITORY_URL} target="_blank" rel="noreferrer noopener" type="inherit">
-            {copy.sourceCode}
-          </Link>
-          {' · '}
-          <Link href={RELEASES_URL} target="_blank" rel="noreferrer noopener" type="inherit">
-            {copy.releaseNotes}
-          </Link>
-        </Text>
       </SettingsSection>
     </SettingsPage>
   );

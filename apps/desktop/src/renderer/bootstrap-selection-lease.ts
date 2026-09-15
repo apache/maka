@@ -17,12 +17,16 @@
  * under the License.
  */
 
-export interface BootstrapSelectionLease<Summary extends { id: string; lastMessageAt?: number }> {
+import type { SessionSummary } from '@maka/core/session';
+
+type BootstrapSession = Pick<SessionSummary, 'id' | 'lastMessageAt' | 'isArchived'>;
+
+export interface BootstrapSelectionLease<Summary extends BootstrapSession> {
   reconcile(sessions: readonly Summary[]): boolean;
   release(): void;
 }
 
-export function createBootstrapSelectionLease<Summary extends { id: string; lastMessageAt?: number }>(options: {
+export function createBootstrapSelectionLease<Summary extends BootstrapSession>(options: {
   readActiveId: () => string | undefined;
   readSelectionRevision: () => number;
   select: (sessionId: string | undefined) => void;
@@ -37,11 +41,13 @@ export function createBootstrapSelectionLease<Summary extends { id: string; last
         return false;
       }
 
+      // The catalog includes archived history; automatic selection must not.
+      const candidates = sessions.filter((session) => !session.isArchived);
       const current = options.readActiveId();
-      const next = current && sessions.some((session) => session.id === current)
+      const next = current && candidates.some((session) => session.id === current)
         ? current
-        : sessions[0]?.lastMessageAt
-          ? sessions[0].id
+        : candidates[0]?.lastMessageAt
+          ? candidates[0].id
           : undefined;
       if (next !== current) options.select(next);
       ownedRevision = options.readSelectionRevision();

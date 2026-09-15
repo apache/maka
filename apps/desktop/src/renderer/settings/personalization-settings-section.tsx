@@ -188,6 +188,7 @@ export function PersonalizationSettingsSection(props: {
           settled value and opens on demand; Cancel puts the draft back. */}
       {props.runtimeHostSettingsAvailable ? (
         <SettingsExpandableRow
+          assistantTarget="displayName"
           label={copy.displayName}
           value={value.displayName || copy.displayNameUnset}
           actionLabel={value.displayName ? copy.displayNameChange : copy.displayNameSet}
@@ -210,7 +211,7 @@ export function PersonalizationSettingsSection(props: {
             }
           }}
         >
-          <TextInput
+          <div data-maka-assistant-target="displayName.input"><TextInput
             type="text"
             value={displayName}
             onChange={(value) => setDisplayName(value.slice(0, 60))}
@@ -220,7 +221,7 @@ export function PersonalizationSettingsSection(props: {
             isLabelHidden
             width="100%"
             isDisabled={!props.runtimeHostSettingsInteractive}
-          />
+          /></div>
         </SettingsExpandableRow>
       ) : props.showRuntimeHostSettingsPlaceholder ? (
         <SettingsRowSkeleton
@@ -239,13 +240,13 @@ export function PersonalizationSettingsSection(props: {
         label={copy.interfaceLanguage}
         description={copy.interfaceLanguageHelp}
         end={
-          <Selector
+          <span data-maka-assistant-target="language"><Selector
             label={copy.interfaceLanguage}
             isLabelHidden
             value={uiLocale}
             options={copy.localeOptions.map(([value, label]) => ({ value, label }))}
             onChange={(next) => persistLocale(next as UiLocalePreference)}
-          />
+          /></span>
         }
       />
       {props.runtimeHostSettingsAvailable ? <SettingsField>

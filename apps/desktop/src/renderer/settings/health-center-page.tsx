@@ -28,6 +28,7 @@ import { HEALTH_SIGNAL_LAYERS } from '@maka/core/health';
 import type { UiLocale } from '@maka/core/ui-locale';
 import { Text, VStack } from '@astryxdesign/core';
 import { Button, RelativeTime, StatusDot, useUiLocale, Banner } from '@maka/ui';
+import { capabilityReasonMessage } from '../locales/capability-reason-copy';
 import { getHealthCenterCopy, type HealthCenterCopy } from '../locales/settings-health-copy';
 import { botStatusReasonCopy } from '../locales/settings-bot-copy';
 import { settingsActionErrorMessage } from './settings-error-copy';
@@ -201,12 +202,9 @@ export function HealthCenterPage() {
 }
 
 function HealthSignalRow(props: { signal: HealthSignal; copy: HealthCenterCopy; locale: UiLocale }) {
-  const { signal, copy } = props;
+  const { signal, copy, locale } = props;
   const statusCopy = copy.statuses[signal.status];
-  // Copy catalogs may not runtime-import each other, so bot capability reasons
-  // (machine codes from the bridge) pre-resolve here; the catalog still owns
-  // the per-locale fallback sentences for every other producer.
-  const detail = localizedSignalDetail(signal, copy, props.locale);
+  const detail = localizedSignalDetail(signal, copy, locale);
   return (
     <SettingsRow
       align="start"
@@ -254,15 +252,22 @@ function HealthSignalRow(props: { signal: HealthSignal; copy: HealthCenterCopy; 
   );
 }
 
-/** Exported as a test seam: copy catalogs may not runtime-import each other,
- * so bot capability reasons resolve here before the catalog's own fallback. */
-export function localizedSignalDetail(signal: HealthSignal, copy: HealthCenterCopy, locale: UiLocale): string | undefined {
+/** Exported as a test seam. Copy catalogs may not runtime-import each other, so
+ * capability codes and bot bridge reasons resolve here before the catalog's own fallback. */
+export function localizedSignalDetail(
+  signal: HealthSignal,
+  copy: HealthCenterCopy,
+  locale: UiLocale,
+): string | undefined {
   const detail = signal.detail;
-  if (detail?.kind === 'capability_reason' && signal.relatedCapabilityId?.startsWith('bot:')) {
-    const botReason = botStatusReasonCopy(detail.reason, locale);
-    if (botReason) return botReason;
-  }
-  return copy.signalDetail(signal);
+  if (detail?.kind !== 'capability_reason') return copy.signalDetail(signal);
+  return (
+    capabilityReasonMessage(detail.reason, locale) ??
+    (signal.relatedCapabilityId?.startsWith('bot:')
+      ? botStatusReasonCopy(detail.reason, locale)
+      : undefined) ??
+    copy.signalDetail(signal)
+  );
 }
 
 function groupSignalsByLayer(signals: HealthSignal[]): Record<HealthSignalLayer, HealthSignal[]> {

@@ -108,7 +108,9 @@ jobs:
         run: cargo test --locked
       - name: Report Rust build cache
         shell: bash
-        run: kache report --format github >> "$GITHUB_STEP_SUMMARY"
+        run: |
+          set -o pipefail
+          kache report --format github | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Save Rust build cache
         if: github.ref_name == github.event.repository.default_branch
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0

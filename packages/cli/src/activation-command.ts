@@ -42,7 +42,6 @@ const ACTIVATION_STIMULUS_TYPES = new Set(['message', 'schedule', 'system']);
 
 export type MakaActivationStatus = 'completed' | 'blocked' | 'retryable_failure' | 'fatal_failure';
 
-export type MakaActivationBlockedReason = 'permission_denied' | 'permission_required';
 export type MakaActivationRequiredAction = 'grant_permission' | 'retry_activation';
 
 export interface MakaActivationOptions {
