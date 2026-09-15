@@ -2784,11 +2784,11 @@ export class AiSdkTurn {
       // prior ledger so a sliced-in tool-turn thinking still gets skipped.
       {
         toolActivityTurnIds: collectToolActivityTurnIds(priorRuntimeContext),
-        // Preserve an imported assistant-only opening in durable history while
-        // admitting ordinary provider requests at the first valid user head.
-        // Explicit continuations use their separately admitted boundary.
-        startAtFirstUserBoundary:
-          this.deps.backend.header.externalOrigin !== undefined && !input.continuation,
+        // Transcript repair can preserve an assistant-only opening from either
+        // an imported or a native legacy Session. Ordinary provider requests
+        // admit both at the first valid user head; explicit continuations use
+        // their separately admitted boundary.
+        startAtFirstUserBoundary: !input.continuation,
       },
     );
     const hasProviderHistoryCompactCheckpoint =

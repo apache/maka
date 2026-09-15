@@ -27,7 +27,10 @@ import type { RuntimeEvent } from '@maka/core/runtime-event';
 
 test('model history can admit an imported transcript at its first user boundary', () => {
   const events = [
-    assistantText('opening-assistant', 'opening-step', 'Imported opening'),
+    {
+      ...assistantText('opening-assistant', 'opening-step', 'Imported opening'),
+      refs: { providerEventId: 'opening-step', storedMessageId: 'stored-opening' },
+    },
     event({
       id: 'first-user',
       role: 'user',

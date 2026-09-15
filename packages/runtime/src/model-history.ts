@@ -521,10 +521,12 @@ export interface BuildRuntimeEventModelReplayPlanOptions {
   /**
    * Admit only the suffix beginning with the first model-visible user event.
    *
-   * Imported transcripts may durably begin with an assistant message, but an
+   * Repaired transcripts may durably begin with an assistant message, but an
    * ordinary provider request still needs a user-headed conversation. This is
    * a projection rule only: the discarded prefix remains in the RuntimeEvent
-   * ledger and in the Session transcript.
+   * ledger and in the Session transcript. The boundary applies only when that
+   * prefix contains assistant conversation backfilled from a StoredMessage;
+   * ordinary RuntimeEvent tool and diagnostic history keeps its own projection.
    */
   startAtFirstUserBoundary?: boolean;
   /**
@@ -578,7 +580,20 @@ export function buildRuntimeEventModelReplayPlan(
           runtimeEventHasModelVisibleContent(event),
       )
     : 0;
-  const replayEvents = firstUserIndex < 0 ? [] : events.slice(firstUserIndex);
+  const boundaryEnd = firstUserIndex < 0 ? events.length : firstUserIndex;
+  const repairedAssistantIndex = events.findIndex(
+    (event) =>
+      event.refs?.storedMessageId !== undefined &&
+      event.role === 'model' &&
+      (event.content?.kind === 'text' || event.content?.kind === 'thinking'),
+  );
+  const hasRepairedAssistantPrefix =
+    repairedAssistantIndex !== -1 && repairedAssistantIndex < boundaryEnd;
+  const replayEvents = hasRepairedAssistantPrefix
+    ? firstUserIndex < 0
+      ? []
+      : events.slice(firstUserIndex)
+    : events;
   const items: RuntimeEventModelReplayItem[] = [];
   const diagnostics: RuntimeEventReplayDiagnostic[] = [];
   const callsById = new Map<
