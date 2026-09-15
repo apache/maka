@@ -31,8 +31,11 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import {
   ExternalSessionAdapterRegistry,
+  ExternalSessionCatalogCursorError,
   ExternalSessionLimitError,
   type ExternalSessionAdapter,
+  type ExternalSessionCatalogPageQuery,
+  type ExternalSessionSummary,
 } from '@maka/core/external-session';
 import { type SessionHeader } from '@maka/core/session';
 import { headerToSummary } from '@maka/runtime/session-manager';
@@ -251,7 +254,7 @@ test('advances the catalog cursor by source rows when an adapter row is not wire
     updatedAt: index,
   }));
   const adapter = adapterFixture();
-  adapter.listSessions = async (query) => pageFixtureSummaries(summaries, query);
+  adapter.listSessionPage = async (query) => catalogPageFixtureSummaries(summaries, query);
   const fixture = coordinatorFixture([adapter]);
 
   const first = await fixture.coordinator.handlers['external-session.catalog.query'](
@@ -276,13 +279,8 @@ test('advances the catalog cursor by source rows when an adapter row is not wire
   );
 });
 
-test('rejects malformed numeric catalog cursors before calling an offset adapter', async () => {
-  let calls = 0;
+test('maps malformed source-owned catalog cursors to invalid_request', async () => {
   const adapter = adapterFixture();
-  adapter.listSessions = async () => {
-    calls += 1;
-    return [];
-  };
   const fixture = coordinatorFixture([adapter]);
 
   for (const cursor of ['NaN', '-1', '1.5']) {
@@ -294,15 +292,14 @@ test('rejects malformed numeric catalog cursors before calling an offset adapter
     if (outcome.ok) assert.fail('Expected malformed cursor rejection');
     assert.equal(outcome.error.code, 'invalid_request');
   }
-  assert.equal(calls, 0);
 });
 
 test('resolves a Project filter before calling the Host adapter', async () => {
   const adapter = adapterFixture();
   const filters: unknown[] = [];
-  adapter.listSessions = async (input) => {
+  adapter.listSessionPage = async (input) => {
     filters.push(input);
-    return [];
+    return { items: [], hasMore: false };
   };
   const fixture = coordinatorFixture([adapter]);
 
@@ -320,7 +317,6 @@ test('resolves a Project filter before calling the Host adapter', async () => {
     {
       cwd: '/resolved-project',
       includeArchived: true,
-      offset: 0,
       limit: EXTERNAL_SESSION_PAGE_MAX_ITEMS + 1,
     },
   ]);
@@ -451,8 +447,8 @@ test('the largest row the wire bounds allow still shares a page', async () => {
     cwd: `/${'c'.repeat(1024 * 1024)}`,
   });
   const adapter = adapterFixture({ count: 2 });
-  adapter.listSessions = async (query) =>
-    pageFixtureSummaries([longestRow('0'), longestRow('1')], query);
+  adapter.listSessionPage = async (query) =>
+    catalogPageFixtureSummaries([longestRow('0'), longestRow('1')], query);
   const fixture = coordinatorFixture([adapter], {
     lookupExternalSessionImports: async (_adapterId, sourceSessionIds) =>
       sourceSessionIds.map((sourceSessionId) => ({
@@ -486,8 +482,8 @@ test('the largest row the wire bounds allow still shares a page', async () => {
 
 test('stops catalog pages before the encoded result limit', async () => {
   const adapter = adapterFixture({ count: 20 });
-  adapter.listSessions = async (query) =>
-    pageFixtureSummaries(
+  adapter.listSessionPage = async (query) =>
+    catalogPageFixtureSummaries(
       Array.from({ length: 20 }, (_, index) => ({
         id: `source-${index}`,
         name: `Source ${index}`,
@@ -1106,8 +1102,8 @@ function adapterFixture(
   return {
     id: options.id ?? 'codex',
     detect: async () => options.detected ?? true,
-    listSessions: async (query) =>
-      pageFixtureSummaries(
+    listSessionPage: async (query) =>
+      catalogPageFixtureSummaries(
         Array.from({ length: count }, (_, index) => ({
           id: `source-${index}`,
           name: `Source ${index}`,
@@ -1176,4 +1172,22 @@ function pageFixtureSummaries<T>(
     throw new Error('Invalid external Session adapter page');
   }
   return summaries.slice(offset, offset + limit);
+}
+
+function catalogPageFixtureSummaries<T extends ExternalSessionSummary>(
+  summaries: readonly T[],
+  query: ExternalSessionCatalogPageQuery,
+) {
+  const offset = query.cursor === undefined ? 0 : Number(query.cursor);
+  if (!Number.isSafeInteger(offset) || offset < 0) {
+    throw new ExternalSessionCatalogCursorError();
+  }
+  const page = pageFixtureSummaries(summaries, { offset, limit: query.limit });
+  return {
+    items: page.map((summary, index) => ({
+      summary,
+      nextCursor: String(offset + index + 1),
+    })),
+    hasMore: offset + page.length < summaries.length,
+  };
 }

@@ -838,11 +838,18 @@ describe('ClaudeCodeSessionAdapter', () => {
       }
       const adapter = new ClaudeCodeSessionAdapter({ claudeHome: home });
 
-      const first = await adapter.listSessions({ offset: 0, limit: 2 });
-      const second = await adapter.listSessions({ offset: 2, limit: 2 });
-      assert.equal(first.length, 2);
-      assert.equal(second.length, 1);
-      assert.deepEqual(new Set([...first, ...second].map(({ id }) => id)), new Set(ids));
+      const first = await adapter.listSessionPage({ limit: 2 });
+      const cursor = first.items.at(-1)?.nextCursor;
+      assert.ok(cursor);
+      const second = await adapter.listSessionPage({ cursor, limit: 2 });
+      assert.equal(first.items.length, 2);
+      assert.equal(first.hasMore, true);
+      assert.equal(second.items.length, 1);
+      assert.equal(second.hasMore, false);
+      assert.deepEqual(
+        new Set([...first.items, ...second.items].map(({ summary }) => summary.id)),
+        new Set(ids),
+      );
     });
   });
 

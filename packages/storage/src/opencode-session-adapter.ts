@@ -44,10 +44,13 @@ import {
 import type {
   ExternalMakaSession,
   ExternalSessionAdapter,
+  ExternalSessionCatalogPage,
+  ExternalSessionCatalogPageQuery,
   ExternalSessionQuery,
   ExternalSessionSummary,
 } from '@maka/core/external-session';
 import type { StoredMessage } from '@maka/core/session';
+import { listOffsetExternalSessionCatalogPage } from './offset-external-session-catalog.js';
 
 export const OPENCODE_SESSION_ADAPTER_ID = 'opencode';
 /**
@@ -136,6 +139,12 @@ export class OpenCodeSessionAdapter implements ExternalSessionAdapter {
 
   async listSessions(query: ExternalSessionQuery = {}): Promise<readonly ExternalSessionSummary[]> {
     return this.#readSessionPage(query);
+  }
+
+  async listSessionPage(
+    query: ExternalSessionCatalogPageQuery,
+  ): Promise<ExternalSessionCatalogPage> {
+    return listOffsetExternalSessionCatalogPage(query, (pageQuery) => this.listSessions(pageQuery));
   }
 
   async readSession(sessionId: string): Promise<ExternalMakaSession> {

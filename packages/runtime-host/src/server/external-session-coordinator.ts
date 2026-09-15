@@ -178,38 +178,18 @@ export class HostExternalSessionCoordinator {
         ...(input.text === undefined ? {} : { text: input.text }),
         limit: EXTERNAL_SESSION_PAGE_MAX_ITEMS + 1,
       };
-      let hasMore: boolean;
-      let sourcePageEndCursor: number | string | undefined;
-      let candidates: {
-        session: ExternalSessionCatalogItem;
-        nextSourceCursor: number | string;
-      }[];
-      if (adapter.listSessionPage) {
-        const sourcePage = await adapter.listSessionPage({
-          ...query,
-          ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
-        });
-        hasMore = sourcePage.hasMore || sourcePage.items.length > EXTERNAL_SESSION_PAGE_MAX_ITEMS;
-        const sourceItems = sourcePage.items.slice(0, EXTERNAL_SESSION_PAGE_MAX_ITEMS);
-        sourcePageEndCursor = sourceItems.at(-1)?.nextCursor;
-        candidates = sourceItems.flatMap(({ summary, nextCursor }) => {
-          const session = toWireSummary(summary);
-          return session ? [{ session, nextSourceCursor: nextCursor }] : [];
-        });
-      } else {
-        const offset = input.cursor === undefined ? 0 : Number(input.cursor);
-        if (!Number.isSafeInteger(offset) || offset < 0) {
-          return queryFailure('invalid_request', 'Invalid external Session catalog cursor');
-        }
-        const sourceSessions = await adapter.listSessions({ ...query, offset });
-        hasMore = sourceSessions.length > EXTERNAL_SESSION_PAGE_MAX_ITEMS;
-        const sourceCandidates = sourceSessions.slice(0, EXTERNAL_SESSION_PAGE_MAX_ITEMS);
-        sourcePageEndCursor = offset + sourceCandidates.length;
-        candidates = sourceCandidates.flatMap((summary, index) => {
-          const session = toWireSummary(summary);
-          return session ? [{ session, nextSourceCursor: offset + index + 1 }] : [];
-        });
-      }
+      const sourcePage = await adapter.listSessionPage({
+        ...query,
+        ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
+      });
+      const hasMore =
+        sourcePage.hasMore || sourcePage.items.length > EXTERNAL_SESSION_PAGE_MAX_ITEMS;
+      const sourceItems = sourcePage.items.slice(0, EXTERNAL_SESSION_PAGE_MAX_ITEMS);
+      const sourcePageEndCursor = sourceItems.at(-1)?.nextCursor;
+      const candidates = sourceItems.flatMap(({ summary, nextCursor }) => {
+        const session = toWireSummary(summary);
+        return session ? [{ session, nextSourceCursor: nextCursor }] : [];
+      });
       const imports = await this.#sessions.lookupExternalSessionImports(
         input.adapterId,
         candidates.map(({ session }) => session.id),
