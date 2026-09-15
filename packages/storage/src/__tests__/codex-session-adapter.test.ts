@@ -533,6 +533,45 @@ describe('CodexSessionAdapter', () => {
     });
   });
 
+  test('state database snapshot returns its first page without materializing the catalog', async () => {
+    await withCodexHome(async (codexHome) => {
+      const rows: StateRow[] = [];
+      for (let index = 0; index < 2_000; index += 1) {
+        const id = `codex-bounded-${String(index).padStart(4, '0')}`;
+        rows.push({
+          id,
+          rolloutPath: await seedMinimalRollout(codexHome, id, false, '/workspace/root', id),
+          cwd: '/workspace/root',
+          name: id,
+          createdAtMs: index,
+          updatedAtMs: index,
+          archived: false,
+          source: 'cli',
+        });
+      }
+      await seedStateDatabase(codexHome, rows);
+
+      const boundedStart = performance.now();
+      assert.equal(
+        (await new CodexSessionAdapter({ codexHome }).listSessions({ limit: 16 })).length,
+        16,
+      );
+      const boundedMs = performance.now() - boundedStart;
+
+      const snapshotStart = performance.now();
+      assert.equal(
+        (await new CodexSessionAdapter({ codexHome }).listSessionPage!({ limit: 16 })).items.length,
+        16,
+      );
+      const snapshotMs = performance.now() - snapshotStart;
+
+      assert.ok(
+        snapshotMs < boundedMs * 8 + 50,
+        `first snapshot page took ${snapshotMs.toFixed(1)} ms; bounded page took ${boundedMs.toFixed(1)} ms`,
+      );
+    });
+  });
+
   test('rejects corrupt interior records, tolerates a torn tail, and bounds scanned bytes', async () => {
     await withCodexHome(async (codexHome) => {
       const fixture = await readFile(CURRENT_FIXTURE, 'utf8');
@@ -956,6 +995,7 @@ async function seedStateDatabase(codexHome: string, rows: readonly StateRow[]): 
   const database = new DatabaseSync(join(codexHome, 'state_5.sqlite'));
   try {
     database.exec(`
+      PRAGMA journal_mode = WAL;
       CREATE TABLE threads (
         id TEXT PRIMARY KEY,
         rollout_path TEXT NOT NULL,
