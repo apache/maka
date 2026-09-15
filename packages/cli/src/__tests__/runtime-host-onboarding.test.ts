@@ -1069,6 +1069,20 @@ describe('createRuntimeHostOnboardingSurface', () => {
 });
 
 describe('projectRuntimeHostModelChoices', () => {
+  test('keeps the model maximum separate from its Desktop-configured compaction target', () => {
+    const choices = projectRuntimeHostModelChoices(
+      catalog([
+        {
+          ...live,
+          models: [{ id: 'gpt-5-mini', contextWindow: 1_000_000 }],
+          modelOverrides: { 'gpt-5-mini': { compactionThreshold: 256_000 } },
+        },
+      ]),
+    );
+    assert.equal(choices[0]?.contextWindow, 1_000_000);
+    assert.equal(choices[0]?.declaredContextWindow, 256_000);
+  });
+
   test('a retained retired connection contributes no /model choices', () => {
     // Retirement keeps the connection enabled so its credential stays visible
     // and deletable. Filtering on `enabled` alone listed its models here and

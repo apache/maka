@@ -138,6 +138,24 @@ export interface ModelOverride {
 
 export type ModelOverrides = Readonly<Record<string, ModelOverride>>;
 
+/** Update only the selected model's compaction target, preserving other declarations. */
+export function modelOverridesWithContextTarget(
+  overrides: ModelOverrides | undefined,
+  modelId: string,
+  target: number | undefined,
+): ModelOverrides | null {
+  if (target === undefined && overrides?.[modelId] === undefined) return overrides ?? null;
+  const { compactionThreshold: _threshold, ...otherDeclarations } = overrides?.[modelId] ?? {};
+  // Empty overrides retain manually added models; Auto must not delete that identity.
+  return {
+    ...overrides,
+    [modelId]:
+      target === undefined
+        ? otherDeclarations
+        : { ...otherDeclarations, compactionThreshold: target },
+  };
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

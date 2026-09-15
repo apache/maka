@@ -45,6 +45,8 @@ export interface ModelChoice {
   isDefaultConnection: boolean;
   /** Maximum context tokens for this model, resolved from the connection or provider catalog. */
   contextWindow?: number;
+  /** User-selected proactive compaction target, independent of the model maximum. */
+  declaredContextWindow?: number;
   /**
    * Thinking levels this model exposes, as the Host resolved them — a relay's
    * declared `modelOverrides[model].thinkingLevels` included. Empty for a
@@ -59,6 +61,13 @@ export type ConnectionIdentity = {
   readonly connectionSlug: string;
   readonly enabled: boolean;
 };
+
+export interface ModelContextTargetUpdate {
+  readonly connectionId: string;
+  readonly connectionSlug: string;
+  readonly model: string;
+  readonly target: number | undefined;
+}
 
 export interface OnboardableProvider {
   providerType: ProviderType;

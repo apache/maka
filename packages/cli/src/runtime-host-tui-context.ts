@@ -58,6 +58,7 @@ import type {
   ConnectionIdentity,
   MakaPiTuiTurnActivitySurface,
   ModelChoice,
+  ModelContextTargetUpdate,
   SessionRecapGenerator,
 } from './pi-tui-contracts.js';
 import {
@@ -75,6 +76,7 @@ import {
   type TuiMcpManagement,
 } from './tui-mcp-control.js';
 import { createRemoteTuiMcpPublicationTarget } from './tui-mcp-remote-publication.js';
+import { updateRuntimeHostModelContextTarget } from './model-context-target.js';
 
 export interface RuntimeHostTuiContext {
   readonly connection: RuntimeHostConnection;
@@ -87,6 +89,7 @@ export interface RuntimeHostTuiContext {
   readonly model: string;
   readonly modelContextWindow?: number;
   readonly modelChoices: readonly ModelChoice[];
+  readonly setModelContextTarget: (input: ModelContextTargetUpdate) => Promise<void>;
   /**
    * The Host now resolves connection catalogs differently — it refreshed its
    * models.dev catalog. Re-read and re-project rather than patching what is
@@ -233,6 +236,7 @@ export async function createRuntimeHostTuiContext(
       model: selectedTarget.model,
       ...(modelContextWindow === undefined ? {} : { modelContextWindow }),
       modelChoices,
+      setModelContextTarget: (update) => updateRuntimeHostModelContextTarget(connection, update),
       subscribeModelCatalogChanges: (listener) =>
         connection.subscribeConnectionCatalogChanges(() => {
           void readRuntimeHostConnectionCatalog(connection)

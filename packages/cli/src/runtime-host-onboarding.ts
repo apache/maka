@@ -511,6 +511,9 @@ export function projectRuntimeHostModelChoices(catalog: ConnectionCatalogSnapsho
         displayName: entry.displayName,
         isDefaultConnection: catalog.defaultTarget?.connectionId === connection.connectionId,
         contextWindow: entry.contextWindow,
+        ...(entry.compactionThreshold === undefined
+          ? {}
+          : { declaredContextWindow: entry.compactionThreshold }),
         thinkingLevels: entry.thinkingLevels,
       });
     }
