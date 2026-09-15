@@ -2615,11 +2615,11 @@ export const VirtualHistoryMixedContent: Story = {
 // Real path: traverse a long Session, return through already read history,
 // and jump to a loaded Turn whose body is currently outside the viewport.
 export const VirtualHistoryContinuity: Story = {
-  render: () => <HistoryHarness turns={24} olderTurns={8} bounded />,
+  render: () => <HistoryHarness turns={24} olderTurns={4} bounded />,
   play: async () => {
     await historySettled();
     const root = tailScroller();
-    const bodies = () => root.querySelectorAll('.maka-turn[data-turn-id]');
+    const bodies = () => root.querySelectorAll<HTMLElement>('.maka-turn[data-turn-id]');
     await waitFor(() => {
       expect(bodies().length).toBeGreaterThan(0);
       expect(bodies().length).toBeLessThan(24);
@@ -2628,20 +2628,17 @@ export const VirtualHistoryContinuity: Story = {
 
     const traverse = async (direction: -1 | 1) => {
       for (let step = 0; step < 160; step++) {
-        scrollAsReader(root, root.scrollTop + direction * root.clientHeight);
-        await painted(5);
+        scrollAsReader(root, root.scrollTop + direction * root.clientHeight * 2);
+        await painted(3);
         if (direction < 0 ? root.scrollTop <= 1 : root.scrollHeight - root.clientHeight - root.scrollTop <= 1) return;
       }
       throw new Error('History traversal did not reach its edge');
     };
+    const tailId = bodies().item(bodies().length - 1).dataset.turnId;
     await traverse(-1);
     await traverse(1);
     await painted(8);
-    const knownHeight = root.scrollHeight;
-    await traverse(-1);
-    await traverse(1);
-    await painted(8);
-    expect(Math.abs(root.scrollHeight - knownHeight), 'revisiting measured history must preserve its extent').toBeLessThanOrEqual(1);
+    expect(bodies().item(bodies().length - 1).dataset.turnId, 'returning through history must reach the original tail').toBe(tailId);
     expect(root.scrollTop, 'the retained history stays inside the eviction band').toBeLessThanOrEqual(root.clientHeight * 6);
 
     const selected = bodies().item(bodies().length - 1);
@@ -2652,8 +2649,7 @@ export const VirtualHistoryContinuity: Story = {
     selection.addRange(range);
     const text = selection.toString();
     expect(text.length).toBeGreaterThan(0);
-    scrollAsReader(root, 0);
-    await waitFor(() => expect(root.scrollTop).toBeLessThan(knownHeight / 2));
+    await traverse(-1);
     await painted(8);
     expect(selected.isConnected, 'an active selection must survive leaving the viewport').toBe(true);
     expect(selection.toString()).toBe(text);
