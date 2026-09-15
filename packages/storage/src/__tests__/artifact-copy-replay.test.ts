@@ -95,10 +95,7 @@ test('verified copy rejects conflicting ownership and every retained metadata fi
         changed.relativePath = `${changed.sessionId}/${changed.id}-${changed.name}`;
         metadata.applyChanges({ upserts: [changed] });
         await assert.rejects(store.copyConversationArtifacts(copyInput), conflict);
-        assert.deepEqual(
-          metadata.readAll().find((r) => r.id === original.id),
-          changed,
-        );
+        assert.deepEqual(metadata.getById(original.id), changed);
         assert.equal(
           await readFile(join(root, 'artifacts', original.relativePath), 'utf8'),
           'requirements',
