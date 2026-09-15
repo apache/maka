@@ -189,7 +189,7 @@ test('Ctrl and Meta wheel zoom preserve following without requesting history', (
   });
 });
 
-test('wheel and touch publish immediately; a held thumb leaves publication with its owner', () => {
+test('range publication leaves native input and reading geometry with the browser', () => {
   withObservers(() => {
     for (const input of ['wheel', 'touch', 'scrollbar'] as const) {
       const root = fakeRoot();
@@ -201,12 +201,12 @@ test('wheel and touch publish immediately; a held thumb leaves publication with 
       else root.grabScrollbar();
       assert.equal(authority.isInputActive(), true);
       authority.commitRange(() => commits++);
-      assert.equal(commits, input === 'scrollbar' ? 0 : 1);
+      assert.equal(commits, 1);
       assert.equal(authority.isInputActive(), true, 'publication does not retire native input');
       if (input === 'scrollbar') {
         root.ownerDocument.dispatchEvent(new Event('pointerup'));
         authority.commitRange(() => commits++);
-        assert.equal(commits, 1, 'release admits publication');
+        assert.equal(commits, 2, 'publication remains available after release');
       }
       detach();
     }
@@ -232,32 +232,6 @@ test('an explicit reveal during range publication outranks the old reading ancho
         { block: 'start' });
     });
     assert.equal(root.scrollTop, 1_200);
-    detach();
-  });
-});
-
-test('a reading anchor keeps its identity when publication mounts its body', () => {
-  withObservers(() => {
-    const root = fakeRoot();
-    let top = 100;
-    const shell = {
-      dataset: { turnId: 'reader' } as { turnId?: string },
-      getBoundingClientRect: () => ({ top: top - root.scrollTop, bottom: top + 400 - root.scrollTop }),
-    };
-    root.querySelectorAll = () => [shell];
-    Object.assign(root, {
-      querySelector: (selector: string) => selector === '[data-turn-id="reader"]' ? shell : null,
-    });
-    const authority = createTranscriptScrollAuthority();
-    const detach = authority.attach(root as unknown as HTMLElement);
-    authority.releasePin();
-    root.scrollTop = 100;
-    authority.commitRange(() => {
-      // The stable shell remains, but its placeholder marker moves to the body.
-      delete shell.dataset.turnId;
-      top += 800;
-    });
-    assert.equal(root.scrollTop, 900, 'publication preserves the same reading line');
     detach();
   });
 });

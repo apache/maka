@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import {
   ICON_SIZE,
   AlertTriangle,
@@ -47,9 +47,6 @@ import { useLayer } from '@astryxdesign/core/Layer';
 import { finalAssistantReplyText, materializeChat } from './materialize.js';
 import { selectTailTransientMessages } from './transient-placement.js';
 import { useTranscriptProjection } from './use-transcript-projection.js';
-import { useTranscriptKnownSpace } from './use-transcript-known-space.js';
-import { useTranscriptHeightEstimates } from './transcript-height-estimate.js';
-import { VirtualTranscriptTurn } from './virtual-transcript-turn.js';
 import type { LiveTurnProjection } from './live-turn-projection.js';
 import {
   ModelProviderRetryIndicator,
@@ -548,10 +545,6 @@ export function ChatView(props: {
     inlineTransientMessagesByTurn.set(turn.turnId, messages);
     inlineTransientMessageIds.add(message.id);
   }
-  const estimatedHeights = useTranscriptHeightEstimates(scrollRef, turns, Boolean(props.onRetainWindow));
-  const knownSpace = useTranscriptKnownSpace(scrollRef, props.activeSession?.id,
-    turns.map((turn) => turn.turnId), Boolean(props.onRetainWindow), estimatedHeights);
-  const virtualized = Boolean(props.onRetainWindow) && typeof IntersectionObserver !== 'undefined';
   // The tail slot renders what no Turn took inline; a durable local copy the
   // transcript already shows as a Turn's own user row must not render again.
   const tailTransientMessages = selectTailTransientMessages(
@@ -771,22 +764,16 @@ export function ChatView(props: {
                 && !streamingActive
                 ? emptyContent
                 : null}
-              {knownSpace.before > 0 && <div data-known-before={knownSpace.before}
-                aria-hidden="true" style={{ height: knownSpace.beforeHeight, flexShrink: 0, overflowAnchor: 'none' }} />}
               {turns.map((turn) => {
                 const decoration = props.turnDecorations?.get(turn.turnId);
                 return (
-                  <VirtualTranscriptTurn
+                  <div
                     key={`${props.activeSession?.id}:${turn.turnId}`}
-                    turnId={turn.turnId}
-                    scrollRef={scrollRef}
-                    enabled={virtualized}
-                    required={turn.turnId === props.activeTurn?.turnId
-                      || turn.turnId === scrollTargetTurn?.turnId
-                      || turn.turnId === props.restoreTargetTurn?.turnId}
-                    getHeight={knownSpace.height}
-                    onMeasure={knownSpace.measure}
-                    accentColor={decoration?.accentColor}
+                    className="maka-transcript-turn"
+                    data-transcript-turn-id={turn.turnId}
+                    data-turn-accent={decoration?.accentColor ? 'true' : undefined}
+                    style={decoration?.accentColor
+                      ? { '--maka-turn-accent': decoration.accentColor } as CSSProperties : undefined}
                   >
                     <TurnView
                       turn={turn}
@@ -839,7 +826,7 @@ export function ChatView(props: {
                     {conversationItemPlacement.byTurn.get(turn.turnId)?.map((item) => (
                       <Fragment key={item.id}>{item.content}</Fragment>
                     ))}
-                  </VirtualTranscriptTurn>
+                  </div>
                 );
               })}
               {/* A local copy the transcript already shows as the tail Turn's
@@ -877,8 +864,6 @@ export function ChatView(props: {
                   </LocalizedChatMessage>
                 </section>
               )}
-              {knownSpace.after > 0 && <div data-known-after={knownSpace.after}
-                aria-hidden="true" style={{ height: knownSpace.afterHeight, flexShrink: 0, overflowAnchor: 'none' }} />}
               {conversationItemPlacement.orphan && (
                 <Fragment key={conversationItemPlacement.orphan.id}>
                   {conversationItemPlacement.orphan.content}

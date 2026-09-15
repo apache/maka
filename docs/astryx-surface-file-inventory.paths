@@ -275,5 +275,4 @@ packages/ui/src/tool-activity/tool-result-preview.tsx
 packages/ui/src/transcript-scroll-authority.tsx
 packages/ui/src/ui.tsx
 packages/ui/src/user-question-prompt.tsx
-packages/ui/src/virtual-transcript-turn.tsx
 packages/ui/src/workspace-picker.tsx

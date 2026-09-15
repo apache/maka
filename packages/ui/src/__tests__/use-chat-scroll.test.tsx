@@ -30,7 +30,6 @@ import {
 } from '../transcript-scroll-authority.js';
 import { useChatScroll } from '../use-chat-scroll.js';
 import { createTranscriptViewportNavigation } from '../transcript-viewport-navigation.js';
-import { VirtualTranscriptTurn } from '../virtual-transcript-turn.js';
 
 const originalGlobals = {
   CSS: globalThis.CSS,
@@ -398,7 +397,7 @@ test('an older request at offset zero does not move the reader', async () => {
   assert.equal(transcript.scrollTop, 0, 'publication owns anchoring; input must not nudge the reader');
 });
 
-test('range admission waits for a held native thumb before committing the React DOM', async () => {
+test('range publication commits React synchronously through native input', async () => {
   const navigation = createTranscriptViewportNavigation();
   const { document, window } = parseHTML('<main id="mount"></main><section id="scroller"></section>');
   const { frames } = installScrollTestEnvironment(document, window);
@@ -431,8 +430,8 @@ test('range admission waits for a held native thumb before committing the React 
     });
     transcript.scroller.dispatchEvent(down);
     await Promise.resolve();
-    assert.equal(document.querySelector('#mount')!.textContent, 'new',
-      'a pending range must not change native thumb mapping');
+    assert.equal(document.querySelector('#mount')!.textContent, 'held',
+      'an arriving range publishes while the browser owns the reading anchor');
   });
   await act(() => document.dispatchEvent(new window.Event('pointerup')));
   await act(() => {
@@ -449,7 +448,7 @@ test('range admission waits for a held native thumb before committing the React 
     navigation.commitRange('admission', () => publish('navigation'));
     await Promise.resolve();
     authority.releasePin();
-    assert.equal(document.querySelector('#mount')!.textContent, 'held');
+    assert.equal(document.querySelector('#mount')!.textContent, 'navigation');
     document.dispatchEvent(new window.Event('pointerup'));
   });
   assert.equal(document.querySelector('#mount')!.textContent, 'navigation',
@@ -462,7 +461,7 @@ test('range admission waits for a held native thumb before committing the React 
     transcript.scroller.dispatchEvent(down);
     navigation.commitRange('admission', () => publish('latest'));
     await Promise.resolve();
-    assert.equal(document.querySelector('#mount')!.textContent, 'navigation');
+    assert.equal(document.querySelector('#mount')!.textContent, 'latest');
     authority.pinToTail();
   });
   assert.equal(document.querySelector('#mount')!.textContent, 'latest',
@@ -581,6 +580,9 @@ test(`a fill publishes before eviction when input settles ${settlesBeforePublica
               [...transcript.scroller.children].forEach((turn, index) => {
                 (turn as HTMLElement).dataset.turnId = `turn-${index - 2}`;
               });
+              // Linkedom has no layout or native scroll anchoring. Model the
+              // browser retaining turn-0; real geometry is checked in Chromium.
+              transcript.scroller.scrollTop += 800;
             });
             resolve(true);
           };
@@ -615,7 +617,7 @@ test(`a fill publishes before eviction when input settles ${settlesBeforePublica
     assert.deepEqual(retained, [], 'an unfinished read cannot be trimmed using the old window');
   }
   await act(() => finishRead());
-  assert.equal(publications, settlesBeforePublication ? 1 : 0);
+  assert.equal(publications, 1);
   if (!settlesBeforePublication) {
     assert.deepEqual(retained, [], 'active input still prevents eviction');
     assert.equal(requests, 1, 'the fill does not eagerly chain while input is active');
@@ -1050,32 +1052,6 @@ test('a session switch restores a Turn anchor after async fill and preserves tai
   assert.equal(authority?.getSnapshot().pinned, false);
   assert.equal(authority?.getSnapshot().awayFromTail, false);
   assert.equal(anchors.get('session-a'), 'turn-a-latest', 'range geometry does not report a new reading intent');
-});
-
-test('a virtual Turn consumes the latest visibility in a batched observer delivery', async () => {
-  const { document, window } = parseHTML('<main id="mount"></main><section id="scroller"></section>');
-  installScrollTestEnvironment(document, window);
-  Object.assign(document, { getSelection: () => null });
-  let deliver: IntersectionObserverCallback;
-  globalThis.IntersectionObserver = class {
-    constructor(callback: IntersectionObserverCallback) { deliver = callback; }
-    observe() {}
-    disconnect() {}
-  } as unknown as typeof IntersectionObserver;
-  const mount = document.querySelector('#mount')!;
-  mountedRoot = createRoot(mount);
-  await act(() => mountedRoot!.render(
-    <VirtualTranscriptTurn turnId="turn-0" scrollRef={{ current: document.querySelector('#scroller') }}
-      enabled required={false} getHeight={() => 320} onMeasure={() => {}}>
-      <p>Visible body</p>
-    </VirtualTranscriptTurn>,
-  ));
-  for (const visibility of [[false, true], [true, false]]) {
-    const entries = visibility.map((isIntersecting, time) => ({ isIntersecting, time })) as IntersectionObserverEntry[];
-    await act(() => deliver!(entries, {} as IntersectionObserver));
-    assert.equal(Boolean(mount.querySelector('p')), visibility.at(-1),
-      'the latest entry decides whether the body is mounted');
-  }
 });
 
 test('a target lands on the render that mounts its Turn, whatever moved the range', async () => {

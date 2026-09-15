@@ -2622,12 +2622,9 @@ export const VirtualHistoryContinuity: Story = {
     const bodies = () => root.querySelectorAll('.maka-turn[data-turn-id]');
     await waitFor(() => {
       expect(bodies().length).toBeGreaterThan(0);
-      expect(bodies().length).toBeLessThan(root.querySelectorAll('.maka-transcript-turn').length);
+      expect(bodies().length).toBeLessThan(24);
+      expect(bodies().length).toBe(root.querySelectorAll('.maka-transcript-turn').length);
     });
-    const placeholder = root.querySelector<HTMLElement>('[data-virtual-placeholder]')!;
-    const target = placeholder.dataset.turnId!;
-    scrollAsReader(root, root.scrollTop + placeholder.getBoundingClientRect().top - root.getBoundingClientRect().top);
-    await waitFor(() => expect(root.querySelector(`.maka-turn[data-turn-id="${target}"]`)).not.toBeNull());
 
     const traverse = async (direction: -1 | 1) => {
       for (let step = 0; step < 160; step++) {
@@ -2645,7 +2642,7 @@ export const VirtualHistoryContinuity: Story = {
     await traverse(1);
     await painted(8);
     expect(Math.abs(root.scrollHeight - knownHeight), 'revisiting measured history must preserve its extent').toBeLessThanOrEqual(1);
-    expect(bodies().length).toBeLessThan(16);
+    expect(root.scrollTop, 'the retained history stays inside the eviction band').toBeLessThanOrEqual(root.clientHeight * 6);
 
     const selected = bodies().item(bodies().length - 1);
     const selection = document.getSelection()!;

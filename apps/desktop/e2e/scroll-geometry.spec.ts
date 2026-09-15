@@ -17,12 +17,12 @@
  * under the License.
  */
 
-// Host history delivered through preload waits for thumb release; an already
-// measured reader stays in place. Cold-height correction runs in Storybook.
+// Host history delivered through preload must preserve the reader throughout
+// native input, including the first layout of previously unseen rows.
 import { test, expect } from '@playwright/test';
 import { withE2eWindow } from './fixtures';
 
-test('native thumb preserves a measured reader and admits Host history on release', async () => {
+test('native thumb preserves a cold reader while admitting Host history', async () => {
   test.setTimeout(180_000);
   await withE2eWindow(
     {
@@ -30,7 +30,7 @@ test('native thumb preserves a measured reader and admits Host history on releas
       readinessSelector: '[data-turn-id]',
       e2eFixtureScenario: 'chat-prompt-rail',
       locale: 'zh-CN',
-      showWindow: true,
+      showWindow: false,
     },
     async (page) => {
       await page.setViewportSize({ width: 1000, height: 700 });
@@ -66,32 +66,6 @@ test('native thumb preserves a measured reader and admits Host history on releas
         // Baseline app admission, not a geometry-settled assertion. Prefetch can
         // still happen during the subsequent held drag and must be recorded.
         await page.waitForTimeout(500);
-        // Isolate Host publication from the accepted first-layout correction.
-        // Measure only this resident page; older Host pages remain unread.
-        const residentIds = () => page.locator('.maka-transcript-turn').evaluateAll(
-          (els) => els.map((el) => (el as HTMLElement).dataset.transcriptTurnId!),
-        );
-        const resident = await residentIds();
-        await page.evaluate(async () => {
-          const root = document.querySelector<HTMLElement>('[data-chat-scroll-container]')!;
-          // Release follow before programmatic setup, then retire that gesture
-          // so setup scrolls cannot request adjacent history.
-          root.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
-          root.dispatchEvent(new Event('scrollend'));
-          await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
-        });
-        for (const id of resident) {
-          await page.locator(`[data-transcript-turn-id="${id}"]`).evaluate(
-            (el) => el.scrollIntoView({ block: 'center', behavior: 'instant' }),
-          );
-          await expect(page.locator(`.maka-turn[data-turn-id="${id}"]`)).toBeVisible();
-        }
-        await page.evaluate(async () => {
-          const root = document.querySelector<HTMLElement>('[data-chat-scroll-container]')!;
-          root.scrollTo({ top: root.scrollHeight, behavior: 'instant' });
-          await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
-        });
-        expect(await residentIds(), 'setup must not publish another history page').toEqual(resident);
         const start = await page.evaluate(() => {
           const root = document.querySelector<HTMLElement>('[data-chat-scroll-container]')!;
           const box = root.getBoundingClientRect();
@@ -101,6 +75,7 @@ test('native thumb preserves a measured reader and admits Host history on releas
             pointerDown: 0,
             pointerUp: 0,
             readingId: undefined as string | undefined,
+            sample: undefined as number | undefined,
             frames: [] as Array<{
               h: number;
               t: number;
@@ -109,6 +84,7 @@ test('native thumb preserves a measured reader and admits Host history on releas
               held: boolean;
               ms: number;
               anchorTop?: number;
+              sample?: number;
             }>,
           };
           (window as any).__windowGeometry = state;
@@ -129,6 +105,7 @@ test('native thumb preserves a measured reader and admits Host history on releas
               range: turns.map((t) => t.dataset.transcriptTurnId).join(','),
               held: state.held,
               ms: performance.now(),
+              sample: state.sample,
               anchorTop: state.readingId
                 ? root.querySelector(`.maka-turn[data-turn-id="${state.readingId}"]`)?.getBoundingClientRect()
                     .top
@@ -158,21 +135,27 @@ test('native thumb preserves a measured reader and admits Host history on releas
           buttons: 1,
           clickCount: 1,
         });
-        const visible = () => page.evaluate(() => {
+        const visible = (sample?: number) => page.evaluate((sample) => {
           const root = document.querySelector('[data-chat-scroll-container]')!;
           const view = root.getBoundingClientRect();
           const turn = [...root.querySelectorAll<HTMLElement>('.maka-turn[data-turn-id]')].find((el) => {
             const box = el.getBoundingClientRect();
             return box.height > 0 && box.width > 0 && box.bottom > view.top && box.top < view.bottom;
           });
+          if (sample !== undefined) {
+            (window as any).__windowGeometry.sample = sample;
+            (window as any).__windowGeometry.readingId = turn?.dataset.turnId;
+          }
           return {
             id: turn?.dataset.turnId, top: turn?.getBoundingClientRect().top,
             scrollHeight: root.scrollHeight, scrollTop: root.scrollTop,
           };
-        });
+        }, sample);
         const stationary: Array<{ before: Awaited<ReturnType<typeof visible>>; after: Awaited<ReturnType<typeof visible>> }> = [];
-        for (let step = 1; step <= 10; step++) {
-          const y = startY + ((start.top + 8 - startY) * step) / 10;
+        for (let step = 1; step <= 16; step++) {
+          await page.evaluate(() => { (window as any).__windowGeometry.sample = undefined; });
+          const progress = step <= 10 ? step : 20 - step;
+          const y = startY + ((start.top + 8 - startY) * progress) / 10;
           await cdp.send('Input.dispatchMouseEvent', {
             type: 'mouseMoved',
             x: start.x,
@@ -181,7 +164,7 @@ test('native thumb preserves a measured reader and admits Host history on releas
             buttons: 1,
           });
           await page.waitForTimeout(50);
-          const before = await visible();
+          const before = await visible(step);
           await page.waitForTimeout(300);
           const after = await visible();
           stationary.push({ before, after });
@@ -190,12 +173,19 @@ test('native thumb preserves a measured reader and admits Host history on releas
         await test.info().attach('held-reader-samples', {
           body: JSON.stringify(stationary), contentType: 'application/json',
         });
-        for (const { before, after } of stationary) {
+        for (const [index, { before, after }] of stationary.entries()) {
           expect(before.id, 'the held viewport must contain a rendered Turn').toBeTruthy();
           expect(after.id, 'a stationary pointer must not replace the reader').toBe(before.id);
           expect(Math.abs(after.top! - before.top!), 'the held reader must stay in place').toBeLessThanOrEqual(1);
+          if (index > 0) {
+            const previous = Number(stationary[index - 1].after.id!.split('-').at(-1));
+            const current = Number(before.id!.split('-').at(-1));
+            if (index < 10) expect(current, 'upward input must not move toward newer Turns').toBeLessThanOrEqual(previous);
+            else expect(current, 'reversing input must move toward newer Turns').toBeGreaterThanOrEqual(previous);
+          }
         }
         const reading = await page.evaluate(() => {
+          (window as any).__windowGeometry.sample = undefined;
           const root = document.querySelector('[data-chat-scroll-container]')!;
           const viewport = root.getBoundingClientRect();
           const turn = [...root.querySelectorAll<HTMLElement>('.maka-turn[data-turn-id]')].find(
@@ -211,7 +201,7 @@ test('native thumb preserves a measured reader and admits Host history on releas
         await cdp.send('Input.dispatchMouseEvent', {
           type: 'mouseReleased',
           x: start.x,
-          y: start.top + 8,
+          y: startY + (start.top + 8 - startY) * 0.4,
           button: 'left',
           buttons: 0,
           clickCount: 1,
@@ -244,25 +234,24 @@ test('native thumb preserves a measured reader and admits Host history on releas
           contentType: 'application/json',
         });
         const ranges = new Set(held.map((f: any) => f.range));
+        for (const [index, { before }] of stationary.entries()) {
+          const frames = held.filter((f: any) => f.sample === index + 1);
+          expect(frames.length, 'every stationary hold must be observed across frames').toBeGreaterThan(1);
+          for (const frame of frames) {
+            expect(frame.anchorTop, 'the held reader must remain mounted').toBeDefined();
+            expect(Math.abs(frame.anchorTop - before.top!), 'every stationary frame retains the reading line').toBeLessThanOrEqual(1);
+          }
+        }
         expect(result.pointerDown).toBe(1);
         expect(result.pointerUp).toBe(1);
         // Prepending Host pages changes both height and scrollTop. Neither is
         // a reader-displacement metric; measure the rendered Turn on release.
-        expect(ranges.size, 'Host history waits until the native thumb releases').toBe(1);
+        expect(ranges.size, 'the hold must exercise actual Host history publication').toBeGreaterThan(1);
         const released = result.frames.filter((f: any) => !f.held && f.anchorTop !== undefined);
         expect(
           Math.max(...released.map((f: any) => Math.abs(f.anchorTop - reading.top))),
           'reading anchor must survive every release frame',
         ).toBeLessThanOrEqual(1);
-        await expect
-          .poll(() =>
-            page
-              .locator('.maka-transcript-turn')
-              .evaluateAll((els) =>
-                els.map((el) => (el as HTMLElement).dataset.transcriptTurnId).join(','),
-              ),
-          )
-          .not.toBe(held[0].range);
         const anchor = page.locator('.maka-turn[data-turn-id="' + reading.id + '"]');
         await expect(anchor).toHaveCount(1);
         await expect

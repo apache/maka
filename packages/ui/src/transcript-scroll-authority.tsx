@@ -121,9 +121,6 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
   const isInputActive = (): boolean => gesture !== undefined || pointer !== undefined || touchHeld;
   let revealVersion = 0;
   const commitRange = (commit: () => void): void => {
-    // Chromium owns thumb-to-content mapping until release. A synchronous
-    // scrollTop correction cannot preserve it across a range replacement.
-    if (pointer !== undefined) return;
     const target = root;
     if (!target) { commit(); return; }
     const version = revealVersion;
@@ -132,24 +129,10 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
       if (version === revealVersion) writeToTail();
       return;
     }
-    const top = target.getBoundingClientRect().top;
-    const anchor = [...target.querySelectorAll<HTMLElement>('[data-turn-id]')]
-      .find((turn) => turn.getBoundingClientRect().bottom > top);
-    if (!anchor) { flushSync(commit); return; }
-    const anchorId = anchor.dataset.turnId!;
-    const before = anchor.getBoundingClientRect().top;
-    // A gap notice is a poor native anchor: it survives a range replacement
-    // while the paragraph beneath it moves. Restore a content Turn once, with
-    // native compensation disabled for the same synchronous publication.
-    target.style.overflowAnchor = 'none';
-    try {
-      flushSync(commit);
-      if (version !== revealVersion) return;
-      const next = target.querySelector<HTMLElement>(`[data-turn-id="${CSS.escape(anchorId)}"]`);
-      if (next) target.scrollTop += next.getBoundingClientRect().top - before;
-    } finally {
-      target.style.overflowAnchor = pinned ? 'none' : 'auto';
-    }
+    // Keep the browser's existing reading anchor. A JS scrollTop correction
+    // also moves Chromium's pressed-thumb origin, so the next native move can
+    // undo it. Native scroll anchoring preserves that origin through layout.
+    flushSync(commit);
   };
   let readingTurnId: string | undefined;
   let snapshot: TranscriptScrollSnapshot = { pinned, awayFromTail, readingTurnId };

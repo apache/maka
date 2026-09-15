@@ -194,12 +194,8 @@ export function useChatScroll(input: {
     const check = (): void => {
       if (!root.isConnected || bandCheck.current !== check) return;
       const screen = Math.max(320, root.clientHeight);
-      // Experiment: request from the mounted edges, not from the remembered
-      // extent. Otherwise a preserved spacer would prevent reloading its rows.
-      const before = Number(root.querySelector('[data-known-before]')?.getAttribute('data-known-before') ?? 0);
-      const after = Number(root.querySelector('[data-known-after]')?.getAttribute('data-known-after') ?? 0);
-      const above = Math.max(0, root.scrollTop - before);
-      const below = Math.max(0, root.scrollHeight - root.clientHeight - root.scrollTop - after);
+      const above = Math.max(0, root.scrollTop);
+      const below = Math.max(0, root.scrollHeight - root.clientHeight - root.scrollTop);
       if (canLoad('up') && above < screen * 2) requestHistory('up');
       if (canLoad('down') && below < screen * 2) requestHistory('down');
       // A read owns its pending range until publication finishes. Input may
@@ -246,12 +242,19 @@ export function useChatScroll(input: {
     // leaves the pin and the reading Turn alone reaches nothing but this.
     const size = new ResizeObserver(() => check());
     size.observe(root);
+    // The retained window also protects focus and selection. Releasing either
+    // makes distant rows eligible for the same existing eviction pass.
+    const afterFocus = () => queueMicrotask(check);
+    root.addEventListener('focusout', afterFocus);
+    root.ownerDocument.addEventListener('selectionchange', check);
     const frame = window.requestAnimationFrame(check);
     return () => {
       window.cancelAnimationFrame(frame);
       if (bandCheck.current === check) bandCheck.current = undefined;
       stopWatchingReader();
       size.disconnect();
+      root.removeEventListener('focusout', afterFocus);
+      root.ownerDocument.removeEventListener('selectionchange', check);
     };
   }, [authority, input.hasOlderHistory, input.hasNewerHistory, canPrefetch,
     input.scrollRef, input.sessionId]);

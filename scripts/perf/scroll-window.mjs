@@ -35,77 +35,8 @@ const scenes = (
 const trials = Number(process.env.SCROLL_WINDOW_TRIALS ?? 3);
 assert(Number.isInteger(trials) && trials > 0);
 
-// A real virtual row can enter the viewport before IntersectionObserver's
-// mounting delivery. Hold that delivery to exercise the otherwise intermittent
-// transition from an estimated shell to measured content deterministically.
-async function verifyMountAnchor() {
-  const page = await browser.newPage({ viewport: { width: 1352, height: 932 } });
-  try {
-    await page.addInitScript(() => {
-      const Original = IntersectionObserver;
-      window.__mountAnchor = { hold: false, deliveries: [] };
-      window.IntersectionObserver = class extends Original {
-        constructor(callback, options) {
-          super((entries, observer) => {
-            if (window.__mountAnchor.hold) {
-              window.__mountAnchor.deliveries.push(() => callback(entries, observer));
-            } else callback(entries, observer);
-          }, options);
-        }
-      };
-    });
-    await page.goto(
-      `${server.baseUrl}/iframe.html?id=product-shell-official-appshell--history-window-traversal&viewMode=story`,
-    );
-    await page.locator('[data-virtual-placeholder]').first().waitFor();
-    await page.evaluate(() => document.fonts.ready);
-    await page.waitForFunction(() => !document.querySelector('.maka-markdown-pending'));
-    await page.waitForTimeout(1200);
-    const result = await page.evaluate(async () => {
-      const painted = async (count) => {
-        for (let i = 0; i < count; i++) await new Promise(requestAnimationFrame);
-      };
-      const root = document.querySelector('[data-chat-scroll-container]');
-      const target = [...root.querySelectorAll('[data-virtual-placeholder]')].at(-1);
-      if (!target) throw new Error('Missing estimated shell');
-      const reader = [...root.querySelectorAll('.maka-turn[data-turn-id]')].find(
-        (turn) => turn.getBoundingClientRect().top >= target.getBoundingClientRect().bottom,
-      );
-      if (!reader) throw new Error('Missing rendered reader after the estimated shell');
-      window.__mountAnchor.hold = true;
-      root.dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY: -100 }));
-      root.scrollTop += target.getBoundingClientRect().top - root.getBoundingClientRect().top + 100;
-      root.dispatchEvent(new Event('scroll'));
-      await painted(3);
-      const before = reader.getBoundingClientRect().top;
-      const deliveries = window.__mountAnchor.deliveries.splice(0);
-      window.__mountAnchor.hold = false;
-      for (const deliver of deliveries) deliver();
-      await painted(8);
-      return {
-        deliveries: deliveries.length,
-        before,
-        after: reader.getBoundingClientRect().top,
-        mounted: target.querySelector('.maka-turn') !== null,
-      };
-    });
-    await writeFile(
-      path.join(outputDir, 'virtual-mount-anchor.json'),
-      JSON.stringify(result, null, 2),
-    );
-    assert(result.deliveries > 0 && result.mounted, 'the delayed virtual row must actually mount');
-    assert(
-      Math.abs(result.after - result.before) <= 1,
-      `mounting estimated rows must preserve the rendered reading anchor: ${JSON.stringify(result)}`,
-    );
-    console.log(JSON.stringify({ scenario: 'virtual-mount-anchor', ...result }));
-  } finally {
-    await page.close();
-  }
-}
 await mkdir(outputDir, { recursive: true });
 try {
-  await verifyMountAnchor();
   for (const scene of scenes) {
     for (let trial = 0; trial < trials; trial++) {
       const page = await browser.newPage({ viewport: { width: 1352, height: 932 } });
@@ -266,10 +197,16 @@ try {
       assert(last.height - last.viewport - last.top <= 1, 'return traversal must reach the tail');
       const shrink = data.frames.slice(1).flatMap((frame, i) => {
         const delta = frame.height - data.frames[i].height;
-        return delta < -1 ? [{ ...frame, delta }] : [];
+        return delta < -1
+          ? [{ ...frame, delta, sameMembership: frame.membership === data.frames[i].membership }]
+          : [];
       });
       const blankFrames = data.frames.filter((frame) => frame.visibleCount === 0);
-      const revisitShrink = shrink.filter((frame) => frame.phase.startsWith('up-repeat'));
+      // Evicting real rows legitimately changes the window extent. Revisited
+      // rows must not resize when the window itself has not changed.
+      const revisitShrink = shrink.filter(
+        (frame) => frame.phase.startsWith('up-repeat') && frame.sameMembership,
+      );
       const coldChanges = data.frames.slice(1).flatMap((frame, i) => {
         const previous = data.frames[i];
         if (!frame.phase.startsWith('up-') || frame.phase.startsWith('up-repeat')) return [];
