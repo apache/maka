@@ -203,44 +203,15 @@ function protectMarkdownMath(
       // scan that tail without the label context. Once any byte follows the
       // label the link question is decided and settling is safe again.
       const mayGrowTail = link.end === link.labelEnd + 1 && link.end >= source.length;
-      if (link.isImage) {
-        // Image alt text is rendered as a raw attribute, not as Markdown
-        // inline content, so it stays verbatim: rewriting its escapes would
-        // leak transport tokens into the attribute. The explicit identifier
-        // of a full image reference still needs the same normalization as
-        // link identifiers, or use and definition diverge.
-        let middle = source.slice(link.labelEnd, link.end);
-        let tailSafe = true;
-        if (link.refLabelStart !== undefined && link.refLabelEnd !== undefined) {
-          const protectedImageRef = protectMarkdownMath(
-            source.slice(link.refLabelStart, link.refLabelEnd),
-            false,
-            false,
-            true,
-            true,
-          );
-          middle = source.slice(link.labelEnd, link.refLabelStart)
-            + protectedImageRef.text
-            + source.slice(link.refLabelEnd, link.end);
-          tailSafe = protectedImageRef.safeSourceEnd >= link.refLabelEnd - link.refLabelStart;
-        }
-        text += source.slice(index, link.labelEnd) + middle;
-        index = link.end;
-        atLineStart = false;
-        if (tailSafe && !mayGrowTail) {
-          markSafe();
-        } else {
-          canMarkSafe = false;
-        }
-        continue;
-      }
       // Display math renders as a block, which cannot live inside an inline
       // link label, and Markdown reads `\[` / `\]` there as literal escaped
       // brackets. Re-run every closed label with display math disabled so
       // escaped brackets survive for Markdown to unescape; inline math still
       // renders inside. Astryx decides later whether the label is an inline
-      // link, reference use, shortcut, or definition, so all forms must share
-      // this transport representation.
+      // link, reference use, shortcut, image, or definition, so all forms
+      // must share this transport representation. Image alt text included:
+      // Astryx keeps alt as a raw string, and the image component below
+      // restores literal tokens, so no private-use characters reach the DOM.
       const protectedLabel = protectMarkdownMath(
         source.slice(link.labelStart, link.labelEnd),
         false,
@@ -446,7 +417,6 @@ type MarkdownLinkScan =
       labelStart: number;
       labelEnd: number;
       end: number;
-      isImage: boolean;
       refLabelStart?: number;
       refLabelEnd?: number;
     }
@@ -461,7 +431,6 @@ type MarkdownLinkScan =
  */
 function readMarkdownLink(source: string, index: number): MarkdownLinkScan {
   let openerEnd: number;
-  let isImage = false;
   if (source[index] === '!') {
     // A trailing `!` may yet become an image opener once `[` arrives; caching
     // it as safe would lose the `!` context and mistype the label as a link.
@@ -469,7 +438,6 @@ function readMarkdownLink(source: string, index: number): MarkdownLinkScan {
     if (source[index + 1] !== '[') return undefined;
     if (isEscaped(source, index)) return undefined;
     openerEnd = index + 2;
-    isImage = true;
   } else if (source[index] === '[') {
     if (isEscaped(source, index)) return undefined;
     openerEnd = index + 1;
@@ -486,7 +454,6 @@ function readMarkdownLink(source: string, index: number): MarkdownLinkScan {
     labelStart: openerEnd,
     labelEnd,
     end,
-    isImage,
   });
 
   const tail = source[labelEnd + 1] ?? '';
@@ -626,6 +593,21 @@ function mathToken(formula: string, displayMode: boolean): string {
 
 function transportToken(value: string, kind: '0' | '1' | '2'): string {
   return `${TOKEN_START}${kind}:${encodeFormula(value)}${TOKEN_END}`;
+}
+
+const TRANSPORT_TOKEN_RESTORE_PATTERN = /\uE000MAKA_MATH:[012]:([0-9a-f]+)\uE001/g;
+
+/**
+ * Restore transport tokens in image alt text to plain text. Astryx keeps alt
+ * as a raw string, so tokens that survive preprocessing would otherwise leak
+ * private-use characters into the DOM. Literal tokens decode to their
+ * characters; math tokens decode to their formula text, since KaTeX cannot
+ * render inside an attribute.
+ */
+export function restoreTransportTokens(text: string): string {
+  return text.replace(TRANSPORT_TOKEN_RESTORE_PATTERN, (_, encoded: string) =>
+    decodeFormula(encoded),
+  );
 }
 
 function encodeFormula(formula: string): string {

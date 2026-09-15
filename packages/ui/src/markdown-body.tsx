@@ -50,6 +50,7 @@ import {
   createMarkdownMathCache,
   MARKDOWN_MATH_PLUGINS,
   prepareMarkdownMath,
+  restoreTransportTokens,
 } from './markdown-math.js';
 import { parseAttachmentResourceRef } from '@maka/core/attachments';
 import { useAttachmentImageSource } from './attachment-image.js';
@@ -269,25 +270,28 @@ function MarkdownCode(props: {
 }
 
 function MarkdownImage(props: { src: string; alt: string }) {
+  // Alt arrives as a raw string, so restore any transport tokens the math
+  // preprocessing left there back to plain text before rendering.
+  const alt = restoreTransportTokens(props.alt);
   const attachment = parseAttachmentResourceRef(props.src);
   const attachmentSrc = useAttachmentImageSource(
     attachment ? { artifactId: attachment.artifactId } : undefined,
   );
   if (attachment) {
-    if (!attachmentSrc) return <span>[{props.alt}]</span>;
+    if (!attachmentSrc) return <span>[{alt}]</span>;
     return (
       <img
         className="maka-markdown-attachment-image"
         src={attachmentSrc}
-        alt={props.alt}
+        alt={alt}
       />
     );
   }
-  if (!isSafeMarkdownImageUrl(props.src)) return <span>[{props.alt}]</span>;
+  if (!isSafeMarkdownImageUrl(props.src)) return <span>[{alt}]</span>;
   // Remote images can be badges or sentence-level icons, so preserve Maka's
   // existing inline presentation. Session attachments above are content
   // previews and deliberately own a block presentation instead.
-  return <img src={props.src} alt={props.alt} style={{ display: 'inline-block' }} />;
+  return <img src={props.src} alt={alt} style={{ display: 'inline-block' }} />;
 }
 
 function isSafeMarkdownImageUrl(url: string): boolean {

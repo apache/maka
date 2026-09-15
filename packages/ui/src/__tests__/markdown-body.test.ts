@@ -380,7 +380,16 @@ it('keeps a split image opener identical between incremental and one-shot scans'
   }
 
   assert.equal(incremental, prepareMarkdownMath(full, createMarkdownMathCache()));
-  assert.doesNotMatch(incremental, /MAKA_MATH/);
+
+  const markup = renderToStaticMarkup(createElement(LocaleProvider, {
+    locale: 'en',
+    children: createElement(MarkdownBody, { text: full }),
+  }));
+
+  assert.match(markup, /<img\b[^>]*src="https:\/\/example\.com\/a\.png"/);
+  assert.match(markup, /alt="alt \[x\]"/);
+  assert.doesNotMatch(markup, /maka-math/);
+  assert.doesNotMatch(markup, /MAKA_MATH/);
 });
 
 it('settles bounded labels ending in $ instead of rescanning the stream', () => {
@@ -399,6 +408,39 @@ it('settles bounded labels ending in $ instead of rescanning the stream', () => 
   assert.equal(incremental, prepareMarkdownMath(full, createMarkdownMathCache()));
   assert.equal(cache.safeSourceEnd, full.length);
   assert.ok(elapsed < 5_000, `label-$ streaming scan took ${elapsed.toFixed(1)}ms`);
+});
+
+it('renders images whose alt contains escaped brackets', () => {
+  const cases = [
+    {
+      text: '![\\[alt\\] preview](https://example.com/x.png)',
+      alt: '[alt] preview',
+    },
+    {
+      text: '![visible][\\[topic\\]]\n\n[\\[topic\\]]: https://example.com/image.png',
+      alt: 'visible',
+    },
+    {
+      text: '![\\[topic\\]][]\n\n[\\[topic\\]]: https://example.com/image.png',
+      alt: '[topic]',
+    },
+    {
+      text: '![\\[topic\\]]\n\n[\\[topic\\]]: https://example.com/image.png',
+      alt: '[topic]',
+    },
+  ];
+
+  for (const { text, alt } of cases) {
+    const markup = renderToStaticMarkup(createElement(LocaleProvider, {
+      locale: 'en',
+      children: createElement(MarkdownBody, { text }),
+    }));
+
+    assert.match(markup, /<img\b[^>]*src="https:\/\/example\.com\//, text);
+    assert.match(markup, new RegExp(`alt="${alt.replace(/[[\]]/g, '\\$&')}"`), text);
+    assert.doesNotMatch(markup, /maka-math/, text);
+    assert.doesNotMatch(markup, /MAKA_MATH/, text);
+  }
 });
 
 it('does not rescan malformed link tails quadratically', () => {
