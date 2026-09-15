@@ -17,12 +17,14 @@
  * under the License.
  */
 
+import { randomBytes } from 'node:crypto';
 import type { Dirent } from 'node:fs';
 import { open, readdir, realpath, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, join, resolve, sep } from 'node:path';
 import type { StoredMessage } from '@maka/core/session';
 import {
+  ExternalSessionCursorExpiredError,
   externalSessionMatchesQuery,
   isSupportedCodexThreadSource,
   sanitizeExternalSessionTitle,
@@ -30,6 +32,8 @@ import {
 import type {
   ExternalMakaSession,
   ExternalSessionAdapter,
+  ExternalSessionCatalogPage,
+  ExternalSessionCatalogPageQuery,
   ExternalSessionQuery,
   ExternalSessionSummary,
 } from '@maka/core/external-session';
@@ -43,6 +47,8 @@ const CODEX_ROLLOUT_MAX_RECORD_BYTES = 64 * 1024 * 1024;
 const CODEX_ROLLOUT_MAX_CONVERTED_BYTES = 256 * 1024 * 1024;
 const CODEX_ROLLOUT_MAX_MESSAGES = 250_000;
 const CODEX_SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
+const CODEX_CATALOG_SNAPSHOT_TTL_MS = 5 * 60 * 1000;
+const CODEX_CATALOG_SNAPSHOT_MAX_ITEMS = 32;
 const CODEX_UNSAFE_PATH_CHARS =
   /[\u0000-\u001F\u007F\u0080-\u009F\u061C\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\uFEFF]/;
 
@@ -61,6 +67,12 @@ export interface CodexSessionAdapterOptions {
 
 interface CodexCatalogEntry extends ExternalSessionSummary {
   rolloutPath: string;
+}
+
+interface CodexCatalogSnapshot {
+  readonly candidates: readonly RolloutCandidate[];
+  readonly queryKey: string;
+  lastAccessedAt: number;
 }
 
 interface CodexThreadRow {
@@ -99,6 +111,7 @@ export class CodexSessionAdapter implements ExternalSessionAdapter {
   private readonly maxRecordBytes: number;
   private readonly maxConvertedBytes: number;
   private readonly maxMessages: number;
+  private readonly catalogSnapshots = new Map<string, CodexCatalogSnapshot>();
 
   constructor(options: CodexSessionAdapterOptions = {}) {
     this.codexHome = resolve(
@@ -125,6 +138,32 @@ export class CodexSessionAdapter implements ExternalSessionAdapter {
   async listSessions(query: ExternalSessionQuery = {}): Promise<readonly ExternalSessionSummary[]> {
     const entries = await this.listCatalog(query);
     return entries.map(({ rolloutPath: _rolloutPath, ...summary }) => summary);
+  }
+
+  async listSessionPage(
+    query: ExternalSessionCatalogPageQuery,
+  ): Promise<ExternalSessionCatalogPage> {
+    const limit = query.limit ?? Number.MAX_SAFE_INTEGER;
+    if (!Number.isSafeInteger(limit) || limit < 0) throw new Error('Invalid Codex catalog page');
+    if (limit === 0) return { items: [], hasMore: false };
+
+    const offsetCursor = decodeOffsetCatalogCursor(query.cursor);
+    if (
+      offsetCursor !== undefined ||
+      (query.cursor === undefined && (await codexStateDbsNewestFirst(this.codexHome)).length > 0)
+    ) {
+      const offset = offsetCursor ?? 0;
+      const sessions = await this.listSessions({ ...query, offset, limit });
+      return {
+        items: sessions.map((summary, index) => ({
+          summary,
+          nextCursor: `o:${offset + index + 1}`,
+        })),
+        hasMore: sessions.length === limit,
+      };
+    }
+
+    return this.scanRolloutCatalogPage(query, limit);
   }
 
   async readSession(sessionId: string): Promise<ExternalMakaSession> {
@@ -245,6 +284,75 @@ export class CodexSessionAdapter implements ExternalSessionAdapter {
       if (entries.length === limit) return entries;
     }
     return entries;
+  }
+
+  private async scanRolloutCatalogPage(
+    query: ExternalSessionCatalogPageQuery,
+    limit: number,
+  ): Promise<ExternalSessionCatalogPage> {
+    this.pruneCatalogSnapshots();
+    const queryKey = catalogSnapshotQueryKey(query);
+    const decoded = decodeSnapshotCatalogCursor(query.cursor);
+    let token: string;
+    let offset: number;
+    let snapshot: CodexCatalogSnapshot;
+    if (decoded) {
+      token = decoded.token;
+      offset = decoded.offset;
+      const existing = this.catalogSnapshots.get(token);
+      if (!existing) throw new ExternalSessionCursorExpiredError();
+      if (existing.queryKey !== queryKey) throw new Error('Invalid Codex catalog cursor');
+      existing.lastAccessedAt = Date.now();
+      this.catalogSnapshots.delete(token);
+      this.catalogSnapshots.set(token, existing);
+      snapshot = existing;
+    } else {
+      if (query.cursor !== undefined) throw new Error('Invalid Codex catalog cursor');
+      token = randomBytes(12).toString('base64url');
+      offset = 0;
+      snapshot = {
+        candidates: [
+          ...(await walkRolloutFiles(join(this.codexHome, 'sessions'), false)),
+          ...(query.includeArchived
+            ? await walkRolloutFiles(join(this.codexHome, 'archived_sessions'), true)
+            : []),
+        ].sort(compareRolloutCandidates),
+        queryKey,
+        lastAccessedAt: Date.now(),
+      };
+      this.catalogSnapshots.set(token, snapshot);
+      this.pruneCatalogSnapshots();
+    }
+
+    const items: ExternalSessionCatalogPage['items'][number][] = [];
+    for (let index = offset; index < snapshot.candidates.length; index += 1) {
+      const candidate = snapshot.candidates[index]!;
+      const head = await readUtf8Prefix(candidate.path, CODEX_ROLLOUT_HEAD_BYTES).catch(
+        () => undefined,
+      );
+      if (head === undefined) continue;
+      const entry = catalogEntryFromRolloutHead(head, candidate);
+      if (!entry || !matchesQuery(entry, query)) continue;
+      const rolloutPath = await this.resolveRolloutPath(candidate.path, entry.id);
+      if (!rolloutPath) continue;
+      const { rolloutPath: _rolloutPath, ...summary } = { ...entry, rolloutPath };
+      items.push({ summary, nextCursor: `f:${token}:${index + 1}` });
+      if (items.length === limit) return { items, hasMore: true };
+    }
+    this.catalogSnapshots.delete(token);
+    return { items, hasMore: false };
+  }
+
+  private pruneCatalogSnapshots(): void {
+    const cutoff = Date.now() - CODEX_CATALOG_SNAPSHOT_TTL_MS;
+    for (const [token, snapshot] of this.catalogSnapshots) {
+      if (snapshot.lastAccessedAt < cutoff) this.catalogSnapshots.delete(token);
+    }
+    while (this.catalogSnapshots.size > CODEX_CATALOG_SNAPSHOT_MAX_ITEMS) {
+      const oldest = this.catalogSnapshots.keys().next().value;
+      if (oldest === undefined) break;
+      this.catalogSnapshots.delete(oldest);
+    }
   }
 
   private async findRolloutEntry(sessionId: string): Promise<CodexCatalogEntry | undefined> {
@@ -922,6 +1030,32 @@ async function walkRolloutFiles(root: string, archived: boolean): Promise<Rollou
 
 function compareRolloutCandidates(left: RolloutCandidate, right: RolloutCandidate): number {
   return right.mtimeMs - left.mtimeMs || left.path.localeCompare(right.path);
+}
+
+function catalogSnapshotQueryKey(query: ExternalSessionCatalogPageQuery): string {
+  return JSON.stringify({
+    cwd: query.cwd ?? null,
+    includeArchived: query.includeArchived ?? false,
+    text: query.text ?? null,
+  });
+}
+
+function decodeOffsetCatalogCursor(cursor: string | undefined): number | undefined {
+  if (cursor === undefined || !cursor.startsWith('o:')) return undefined;
+  const offset = Number(cursor.slice(2));
+  if (!Number.isSafeInteger(offset) || offset < 0) throw new Error('Invalid Codex catalog cursor');
+  return offset;
+}
+
+function decodeSnapshotCatalogCursor(
+  cursor: string | undefined,
+): { token: string; offset: number } | undefined {
+  if (cursor === undefined || !cursor.startsWith('f:')) return undefined;
+  const match = /^f:([A-Za-z0-9_-]{16}):(\d{1,10})$/.exec(cursor);
+  if (!match) throw new Error('Invalid Codex catalog cursor');
+  const offset = Number(match[2]);
+  if (!Number.isSafeInteger(offset)) throw new Error('Invalid Codex catalog cursor');
+  return { token: match[1]!, offset };
 }
 
 async function readUtf8Prefix(path: string, maxBytes: number): Promise<string> {

@@ -20,6 +20,7 @@
 import { JsonArrayPageBudget } from './json-array-page-budget.js';
 
 import {
+  ExternalSessionCursorExpiredError,
   ExternalSessionLimitError,
   type ExternalSessionAdapter,
   type ExternalSessionAdapterRegistry,
@@ -171,32 +172,48 @@ export class HostExternalSessionCoordinator {
       const cwd = input.workspace
         ? (await this.#workspaceResolver.resolve(input.workspace)).cwd
         : undefined;
-      const offset = input.cursor === undefined ? 0 : Number(input.cursor);
-      const sourceSessions =
-        // The term reaches the adapter rather than being applied to the page
-        // below: paging happens after this call, so filtering afterwards would
-        // search the 16 rows already fetched instead of the source.
-        await adapter.listSessions({
-          ...(cwd === undefined ? {} : { cwd }),
-          ...(input.includeArchived === undefined
-            ? {}
-            : { includeArchived: input.includeArchived }),
-          ...(input.text === undefined ? {} : { text: input.text }),
-          offset,
-          limit: EXTERNAL_SESSION_PAGE_MAX_ITEMS + 1,
+      const query = {
+        ...(cwd === undefined ? {} : { cwd }),
+        ...(input.includeArchived === undefined ? {} : { includeArchived: input.includeArchived }),
+        ...(input.text === undefined ? {} : { text: input.text }),
+        limit: EXTERNAL_SESSION_PAGE_MAX_ITEMS + 1,
+      };
+      let hasMore: boolean;
+      let sourcePageEndCursor: number | string | undefined;
+      let candidates: {
+        session: ExternalSessionCatalogItem;
+        nextSourceCursor: number | string;
+      }[];
+      if (adapter.listSessionPage) {
+        const sourcePage = await adapter.listSessionPage({
+          ...query,
+          ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
         });
-      const sourceCandidates = sourceSessions.slice(0, EXTERNAL_SESSION_PAGE_MAX_ITEMS);
-      const candidates = sourceCandidates.flatMap((summary, index) => {
-        const session = toWireSummary(summary);
-        return session ? [{ session, nextSourceOffset: offset + index + 1 }] : [];
-      });
+        hasMore = sourcePage.hasMore || sourcePage.items.length > EXTERNAL_SESSION_PAGE_MAX_ITEMS;
+        const sourceItems = sourcePage.items.slice(0, EXTERNAL_SESSION_PAGE_MAX_ITEMS);
+        sourcePageEndCursor = sourceItems.at(-1)?.nextCursor;
+        candidates = sourceItems.flatMap(({ summary, nextCursor }) => {
+          const session = toWireSummary(summary);
+          return session ? [{ session, nextSourceCursor: nextCursor }] : [];
+        });
+      } else {
+        const offset = input.cursor === undefined ? 0 : Number(input.cursor);
+        const sourceSessions = await adapter.listSessions({ ...query, offset });
+        hasMore = sourceSessions.length > EXTERNAL_SESSION_PAGE_MAX_ITEMS;
+        const sourceCandidates = sourceSessions.slice(0, EXTERNAL_SESSION_PAGE_MAX_ITEMS);
+        sourcePageEndCursor = offset + sourceCandidates.length;
+        candidates = sourceCandidates.flatMap((summary, index) => {
+          const session = toWireSummary(summary);
+          return session ? [{ session, nextSourceCursor: offset + index + 1 }] : [];
+        });
+      }
       const imports = await this.#sessions.lookupExternalSessionImports(
         input.adapterId,
         candidates.map(({ session }) => session.id),
         EXTERNAL_SESSION_IMPORTED_SESSION_IDS_MAX_ITEMS,
       );
       const importsBySource = new Map(imports.map((state) => [state.sourceSessionId, state]));
-      const enrichedCandidates = candidates.map(({ session, nextSourceOffset }) => {
+      const enrichedCandidates = candidates.map(({ session, nextSourceCursor }) => {
         const state = importsBySource.get(session.id);
         return {
           session: {
@@ -215,18 +232,15 @@ export class HostExternalSessionCoordinator {
               isImporting: this.#importsInFlight.has(importKey(input.adapterId, session.id)),
             },
           },
-          nextSourceOffset,
+          nextSourceCursor,
         };
       });
-      const page = boundedCatalogPage(
-        enrichedCandidates,
-        sourceSessions.length > EXTERNAL_SESSION_PAGE_MAX_ITEMS,
-      );
+      const page = boundedCatalogPage(enrichedCandidates, hasMore);
       const nextCursor =
-        page.nextSourceOffset !== undefined
-          ? String(page.nextSourceOffset)
-          : sourceSessions.length > EXTERNAL_SESSION_PAGE_MAX_ITEMS
-            ? String(offset + sourceCandidates.length)
+        page.nextSourceCursor !== undefined
+          ? String(page.nextSourceCursor)
+          : hasMore && sourcePageEndCursor !== undefined
+            ? String(sourcePageEndCursor)
             : null;
       return {
         ok: true,
@@ -238,6 +252,9 @@ export class HostExternalSessionCoordinator {
     } catch (error) {
       if (error instanceof WorkspaceResolutionError) {
         return queryFailure('invalid_request', error.message);
+      }
+      if (error instanceof ExternalSessionCursorExpiredError) {
+        return queryFailure('cursor_expired', 'External Session catalog expired');
       }
       return queryFailure('persistence_failed', 'External Session catalog could not be read');
     }
@@ -403,10 +420,10 @@ function toWireSummary(summary: ExternalSessionSummary): ExternalSessionCatalogI
 export function boundedCatalogPage(
   candidates: readonly {
     session: ExternalSessionCatalogItem;
-    nextSourceOffset: number;
+    nextSourceCursor: number | string;
   }[],
   hasMore: boolean,
-): { sessions: ExternalSessionCatalogItem[]; nextSourceOffset?: number } {
+): { sessions: ExternalSessionCatalogItem[]; nextSourceCursor?: number | string } {
   const page: ExternalSessionCatalogItem[] = [];
   const budget = new JsonArrayPageBudget(EXTERNAL_SESSION_RESULT_MAX_BYTES, {
     sessions: [],
@@ -415,7 +432,7 @@ export function boundedCatalogPage(
   for (const [index, candidate] of candidates.entries()) {
     const fits = budget.tryAppend(
       candidate.session,
-      hasMore || index + 1 < candidates.length ? String(candidate.nextSourceOffset) : null,
+      hasMore || index + 1 < candidates.length ? String(candidate.nextSourceCursor) : null,
     );
     if (fits) {
       page.push(candidate.session);
@@ -429,16 +446,16 @@ export function boundedCatalogPage(
     // keeps the overshoot to one row — an appended row the budget refused would
     // leave the total under-counted for every row after it.
     //
-    // Its cursor is its own offset, where a later row's would be its
-    // predecessor's: a page that stops before the row it could not take resumes
-    // at that row, and one that took it resumes after it. Taking the
-    // predecessor's offset there would step over the rows the page never
-    // returned.
+    // Its cursor is the position immediately after that row, where a later
+    // row's would be its predecessor's: a page that stops before the row it
+    // could not take resumes at that row, and one that took it resumes after
+    // it. Taking the predecessor's cursor there would step over rows the page
+    // never returned.
     if (page.length === 0) {
       page.push(candidate.session);
-      return { sessions: page, nextSourceOffset: candidate.nextSourceOffset };
+      return { sessions: page, nextSourceCursor: candidate.nextSourceCursor };
     }
-    return { sessions: page, nextSourceOffset: candidates[index - 1]?.nextSourceOffset };
+    return { sessions: page, nextSourceCursor: candidates[index - 1]?.nextSourceCursor };
   }
   return { sessions: page };
 }

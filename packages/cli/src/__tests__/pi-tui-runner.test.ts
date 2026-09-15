@@ -6187,6 +6187,65 @@ Slug openai-work<cursor>
     await run;
   });
 
+  test('reloads the external catalog from the first page when its cursor expires', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new SlashCommandDriver([]);
+    const cursors: Array<string | undefined> = [];
+    const externalSessions = {
+      listSources: async () => ['codex'],
+      listSessions: async ({ cursor }: { cursor?: string }) => {
+        cursors.push(cursor);
+        if (cursor) {
+          throw {
+            operation: 'external-session.catalog.query',
+            code: 'cursor_expired',
+          };
+        }
+        const refreshed = cursors.length > 1;
+        return {
+          sessions: [
+            {
+              id: refreshed ? 'fresh' : 'stale',
+              name: refreshed ? 'refreshed page' : 'first snapshot',
+              hostCwd: '/repo',
+              importState: { importedCount: 0, importedSessionIds: [], isImporting: false },
+            },
+          ],
+          nextCursor: refreshed ? null : 'expired-snapshot',
+        };
+      },
+      importSession: async () => {
+        throw new Error('unused');
+      },
+    };
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      locale: 'en',
+      terminal,
+      externalSessions,
+    });
+
+    terminal.input('/session');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('Import external session'));
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('first snapshot'));
+    terminal.input('\x1b[B');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('refreshed page'));
+    assert.deepEqual(cursors, [undefined, 'expired-snapshot', undefined]);
+    assert.match(plainTerminalOutput(terminal.output()), /session list expired and was reloaded/i);
+
+    terminal.input('\x1b');
+    exitMaka(terminal);
+    await run;
+  });
+
   test('reports the durable Session id when import succeeds but opening fails', async () => {
     const terminal = new FakeTerminal();
     const driver = new FailingSwitchSessionDriver([]);

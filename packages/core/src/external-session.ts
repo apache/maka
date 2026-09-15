@@ -44,6 +44,22 @@ export interface ExternalSessionQuery {
   limit?: number;
 }
 
+export interface ExternalSessionCatalogPageQuery extends Omit<ExternalSessionQuery, 'offset'> {
+  /** Source-owned opaque continuation token. */
+  cursor?: string;
+}
+
+export interface ExternalSessionCatalogPageItem {
+  readonly summary: ExternalSessionSummary;
+  /** Cursor immediately after this source row. */
+  readonly nextCursor: string;
+}
+
+export interface ExternalSessionCatalogPage {
+  readonly items: readonly ExternalSessionCatalogPageItem[];
+  readonly hasMore: boolean;
+}
+
 /** Lightweight source-native identity used by session pickers and import commands. */
 export interface ExternalSessionSummary {
   id: string;
@@ -333,6 +349,14 @@ export class ExternalSessionLimitError extends Error {
   }
 }
 
+/** A source-owned catalog snapshot no longer exists for a continuation cursor. */
+export class ExternalSessionCursorExpiredError extends Error {
+  constructor() {
+    super('External Session catalog cursor expired');
+    this.name = 'ExternalSessionCursorExpiredError';
+  }
+}
+
 /** Read-only, source-specific conversion boundary for one external Agent. */
 export interface ExternalSessionAdapter {
   readonly id: ExternalAgentId;
@@ -340,6 +364,9 @@ export interface ExternalSessionAdapter {
   detect(): Promise<boolean>;
 
   listSessions(query?: ExternalSessionQuery): Promise<readonly ExternalSessionSummary[]>;
+
+  /** Optional source-owned paging for catalogs whose order needs a stable snapshot. */
+  listSessionPage?(query: ExternalSessionCatalogPageQuery): Promise<ExternalSessionCatalogPage>;
 
   readSession(sessionId: string): Promise<ExternalMakaSession>;
 }

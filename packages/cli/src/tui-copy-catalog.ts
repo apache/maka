@@ -1343,6 +1343,7 @@ export const TUI_COPY_RESOURCES = {
   'session-actions': {
     en: {
       externalCatalogFailed: 'Could not read external sessions.',
+      externalCatalogExpired: 'The session list expired and was reloaded.',
       externalImport: 'Import external session…',
       externalImportDescription: 'from the connected Runtime Host',
       externalSourceTitle: 'Choose external source',
@@ -1368,6 +1369,7 @@ export const TUI_COPY_RESOURCES = {
     },
     'zh-CN': {
       externalCatalogFailed: '无法读取外部会话目录。',
+      externalCatalogExpired: '会话列表已过期，已重新加载。',
       externalImport: '导入外部会话…',
       externalImportDescription: '来自当前连接的 Runtime Host',
       externalSourceTitle: '选择外部来源',
@@ -1390,6 +1392,7 @@ export const TUI_COPY_RESOURCES = {
     },
     'zh-TW': {
       externalCatalogFailed: '無法讀取外部工作階段目錄。',
+      externalCatalogExpired: '工作階段列表已過期，已重新載入。',
       externalImport: '匯入外部工作階段…',
       externalImportDescription: '來自目前連線的 Runtime Host',
       externalSourceTitle: '選擇外部來源',
