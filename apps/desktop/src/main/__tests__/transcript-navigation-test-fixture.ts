@@ -34,8 +34,7 @@ const FIXTURE_EPOCH = Date.UTC(2026, 0, 2, 3, 4, 5);
 /**
  * The real SQLite ledger and Host reader used by the navigation regressions.
  * Legacy-shaped input keeps the payload fixture legible, but every page is
- * projected by the production RuntimeEvent reader. Running Turns live only in
- * the active overlay; their rows acquire sparse durable sequences on ending.
+ * projected by the production RuntimeEvent reader.
  */
 export async function openTranscriptNavigationLedger(messages: readonly StoredMessage[]) {
   const base = await mkdtemp(join(tmpdir(), 'maka-transcript-navigation-'));
@@ -106,16 +105,6 @@ export async function openTranscriptNavigationLedger(messages: readonly StoredMe
         }
         appendedThrough = index;
         return reader.readDurableHighWater(sessionId);
-      },
-      async appendPartialAssistant(turnId: string, messageId: string, text: string) {
-        const runId = `run-${turnId}`;
-        assert.ok(opened.has(turnId));
-        await runtimeEventStore.appendRuntimeEvent(sessionId, runId, {
-          id: `partial-${messageId}`, sessionId, runId, invocationId: runId, turnId,
-          ts: FIXTURE_EPOCH + appendedThrough + 0.5,
-          partial: true, role: 'model', author: 'agent',
-          content: { kind: 'text', text }, refs: { providerEventId: messageId },
-        });
       },
       async durableRecords() {
         const result = await reader.readDurableRecords(sessionId, {

@@ -21,7 +21,6 @@ import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 import { act, createElement, createRef, type ComponentProps } from 'react';
 import { deferred } from '@maka/core/test-only/async-primitives';
-import type { StoredMessage } from '@maka/core/session';
 import type { DesktopTranscriptHandle } from '../../preload/transcript-contract.js';
 import { encodeDesktopTranscriptSnapshot } from '../desktop-transcript-ipc.js';
 import { createDesktopTranscriptRangeController, DesktopTranscriptRangeStore } from '../../renderer/platform/desktop/desktop-transcript-range-store.js';
@@ -51,7 +50,7 @@ test('a resident navigation supersedes a pending history replacement without rer
       sessionId: 'session-1', generation: 'generation-1', hostEpoch: 'host-1',
       durableThrough: 20, durable: [{ sequence, message: {
         type: 'assistant', id: `answer-${turnId}`, turnId, text: turnId, ts: 1, modelId: 'fixture',
-      } }], overlay: [], hasOlder: true, hasNewer: true,
+      } }], hasOlder: true, hasNewer: true,
     }, navigation)) store.accept(batch);
   };
   publish(20);
@@ -104,7 +103,7 @@ test('sending before transcript open completes supersedes the queued bookmark wi
       durableThrough: 20,
       durable: [{ sequence: sequence ?? 20, message: {
         type: 'assistant', id: `answer-${turnId}`, turnId, text: turnId, ts: 1, modelId: 'fixture',
-      } }], overlay: [], hasOlder: true, hasNewer: sequence !== null,
+      } }], hasOlder: true, hasNewer: sequence !== null,
     }, navigation)) store.accept(batch);
   };
   const handle: DesktopTranscriptHandle = {
@@ -143,49 +142,11 @@ test('sending before transcript open completes supersedes the queued bookmark wi
       durableThrough: 20,
       durable: [{ sequence: 10, message: {
         type: 'assistant', id: 'answer-a', turnId: 'a', text: 'a', ts: 1, modelId: 'fixture',
-      } }], overlay: [], hasOlder: false, hasNewer: true,
+      } }], hasOlder: false, hasNewer: true,
     }, 1)) assert.equal(store.accept(batch), false);
     assert.strictEqual(store.snapshot(), latest, 'a late history response must not replace the latest range');
   } finally {
     opening.resolve(handle);
-    await controller.close();
-  }
-});
-
-test('an overlay-only bookmark stays available without loading another range', async () => {
-  const sessionId = JSON.stringify(['host-1', 'session-1']);
-  const store = new DesktopTranscriptRangeStore(sessionId);
-  const overlay: StoredMessage = {
-    type: 'assistant', id: 'answer-b', turnId: 'b', text: 'partial B', ts: 1, modelId: 'fixture',
-  };
-  for (const batch of encodeDesktopTranscriptSnapshot({
-    sessionId: 'session-1', generation: 'generation-1', hostEpoch: 'host-1',
-    durableThrough: null, durable: [], overlay: [overlay], hasOlder: false, hasNewer: false,
-  })) store.accept(batch);
-  const controller = createDesktopTranscriptRangeController(store, async () => ({
-    sessionId, generation: 'generation-1', hostEpoch: 'host-1', readThroughMessageId: null,
-    acknowledgeTail: async () => {},
-    loadBefore: async () => {}, loadAfter: async () => {}, close: async () => {},
-    loadAround: async () => assert.fail('an overlay-only bookmark has no page to load'),
-    loadLatest: async () => assert.fail('an overlay-only bookmark has no page to load'),
-  }));
-  const lifecycle = createTranscriptRestoreLifecycle();
-  let unavailable = 0;
-  let cleared = 0;
-  const restore = () => restoreSessionTranscriptRange({
-    lifecycle, sessionId, controller, readingAnchor: { turnId: 'b' },
-    isCurrent: () => true,
-    setReadingAnchor: (_sessionId, anchor) => { if (!anchor) cleared += 1; },
-    onRestoreUnavailable: () => { unavailable += 1; }, onError: (error) => assert.fail(String(error)),
-  });
-  try {
-    restore();
-    await new Promise((resolve) => setImmediate(resolve));
-    restore();
-    assert.equal(store.sequenceForTurn('b'), null);
-    assert.equal(unavailable, 0);
-    assert.equal(cleared, 0);
-  } finally {
     await controller.close();
   }
 });

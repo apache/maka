@@ -143,7 +143,7 @@ describe('session workspace action identity', () => {
     act(() => workspace.setActiveId(sessionC));
     for (const batch of encodeDesktopTranscriptSnapshot({
       sessionId: 'c', generation: 'publication', hostEpoch: 'host',
-      durableThrough: null, durable: [], overlay: c, hasOlder: false, hasNewer: false,
+      durableThrough: 0, durable: c.map((message, sequence) => ({ sequence, message })), hasOlder: false, hasNewer: false,
     })) readerC.store.accept(batch);
     let blocked = true;
     let idle!: () => void;

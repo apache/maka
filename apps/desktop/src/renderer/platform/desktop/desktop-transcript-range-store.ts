@@ -349,9 +349,6 @@ export function createRecoveringDesktopTranscriptRangeController(
 }
 
 interface PendingRecord {
-  readonly source: 'durable' | 'overlay';
-  readonly identity: number | string;
-  readonly order: number | null;
   readonly totalBytes: number;
   readonly bytes: Uint8Array;
   receivedBytes: number;
@@ -360,10 +357,6 @@ interface PendingRecord {
 interface StoredRecord {
   readonly message: StoredMessage;
   readonly encoded: string;
-}
-
-interface OverlayRecord extends StoredRecord {
-  readonly order: number;
 }
 
 export interface DesktopTranscriptRangeState {
@@ -396,13 +389,6 @@ interface TranscriptWindow {
   readonly newestUserSequence: number | null;
 }
 
-/** The Host tail, which is not a window member: the view shows it only at the tail. */
-interface TranscriptTail {
-  readonly through: number | null;
-  readonly overlay: ReadonlyMap<string, OverlayRecord>;
-  readonly overlayOrder: readonly string[];
-}
-
 /**
  * One answer under construction. Batches accumulate here so that `#window`
  * changes exactly once per answer, from one complete value to the next.
@@ -420,9 +406,8 @@ interface TranscriptAssembly {
   durableThrough: number | null;
   hasOlder: boolean | undefined;
   hasNewer: boolean | undefined;
-  readonly fragments: Map<string, PendingRecord>;
+  readonly fragments: Map<number, PendingRecord>;
   readonly rows: Map<number, StoredRecord>;
-  readonly overlay: Map<string, OverlayRecord>;
 }
 
 const EMPTY_WINDOW: TranscriptWindow = {
@@ -434,14 +419,13 @@ const EMPTY_WINDOW: TranscriptWindow = {
   newestUserSequence: null,
 };
 
-const EMPTY_TAIL: TranscriptTail = { through: null, overlay: new Map(), overlayOrder: [] };
-
 export class DesktopTranscriptRangeStore {
   readonly sessionId: string;
   readonly #hostId: string;
   readonly #expectedSessionId: string;
   #window: TranscriptWindow = EMPTY_WINDOW;
-  #tail: TranscriptTail = EMPTY_TAIL;
+  /** The Host's durable watermark, which the window may not reach. */
+  #durableThrough: number | null = null;
   #assembly: TranscriptAssembly | undefined;
   #pendingNavigation: number | undefined;
   #navigations = 0;
@@ -520,17 +504,13 @@ export class DesktopTranscriptRangeStore {
         navigation: batch.navigation,
         extension: batch.extends,
         coversFrom: batch.coversFrom,
-        // A tail answer this window cannot join contributes nothing but its
-        // watermark, unless an overlay row is waiting to learn it has settled.
-        collects: kind !== 'tail' ||
-          this.#tail.overlay.size > 0 ||
-          this.#joinsTail(batch.coversFrom),
+        // A tail answer this window cannot join contributes nothing but its watermark.
+        collects: kind !== 'tail' || this.#joinsTail(batch.coversFrom),
         durableThrough: batch.durableThrough,
         hasOlder: undefined,
         hasNewer: undefined,
         fragments: new Map(),
         rows: new Map(),
-        overlay: new Map(),
       };
       this.#assembly = assembly;
     }
@@ -549,26 +529,13 @@ export class DesktopTranscriptRangeStore {
    * still the edge it was read from, because nothing else proves them adjacent.
    */
   #apply(answer: TranscriptAssembly): boolean {
-    const tail = this.#tail;
+    const durableThrough = this.#durableThrough;
     const window = this.#window;
-    let overlay = answer.kind === 'replace' ? answer.overlay : tail.overlay;
-    let overlayOrder = answer.kind === 'replace' ? orderOverlay(answer.overlay) : tail.overlayOrder;
-    // A durable row retires the overlay it settles, whether or not this window
-    // keeps the row: seeing it is what proves the overlay obsolete.
-    if (overlay.size > 0) {
-      const settled = new Map(overlay);
-      for (const record of answer.rows.values()) settled.delete(record.message.id);
-      if (settled.size !== overlay.size) {
-        overlay = settled;
-        overlayOrder = overlayOrder.filter((messageId) => settled.has(messageId));
-      }
-    }
-    const through = answer.durableThrough !== null &&
-      (tail.through === null || answer.durableThrough > tail.through)
-      ? answer.durableThrough
-      : tail.through;
-    if (through !== tail.through || overlay !== tail.overlay) {
-      this.#tail = { through, overlay, overlayOrder };
+    if (
+      answer.durableThrough !== null &&
+      (durableThrough === null || answer.durableThrough > durableThrough)
+    ) {
+      this.#durableThrough = answer.durableThrough;
     }
     const installed = this.#install(answer);
     if (installed) this.#window = installed;
@@ -577,7 +544,7 @@ export class DesktopTranscriptRangeStore {
       this.#pendingNavigation = undefined;
     }
     const ready = this.#ready || (answer.kind === 'replace' && installed !== undefined);
-    const changed = this.#tail !== tail || this.#window !== window || ready !== this.#ready;
+    const changed = this.#durableThrough !== durableThrough || this.#window !== window || ready !== this.#ready;
     this.#ready = ready;
     if (changed) this.#commit();
     for (const notify of this.#durableWaiters) notify();
@@ -698,7 +665,7 @@ export class DesktopTranscriptRangeStore {
       sessionId: this.sessionId,
       generation: this.#generation,
       hostEpoch: this.#hostEpoch,
-      durableThrough: this.#tail.through,
+      durableThrough: this.#durableThrough,
       oldestSequence: window.order[0] ?? null,
       newestSequence: window.order.at(-1) ?? null,
       hasOlder: window.hasOlder,
@@ -711,8 +678,8 @@ export class DesktopTranscriptRangeStore {
   #hasNewer(): boolean {
     const window = this.#window;
     return window.hasNewerAtThrough ||
-      (this.#tail.through !== null &&
-        (window.through === null || this.#tail.through > window.through));
+      (this.#durableThrough !== null &&
+        (window.through === null || this.#durableThrough > window.through));
   }
 
   hasDurableMessage(messageId: string): boolean {
@@ -772,25 +739,17 @@ export class DesktopTranscriptRangeStore {
     fragment: DesktopTranscriptFragment,
     collects: boolean,
   ): void {
-    const key = `${fragment.source}:${typeof fragment.identity}:${fragment.identity}`;
-    let pending = assembly.fragments.get(key);
+    const sequence = fragment.sequence;
+    let pending = assembly.fragments.get(sequence);
     if (!pending) {
       pending = {
-        source: fragment.source,
-        identity: fragment.identity,
-        order: fragment.order,
         totalBytes: fragment.totalBytes,
         bytes: new Uint8Array(fragment.totalBytes),
         receivedBytes: 0,
       };
-      assembly.fragments.set(key, pending);
+      assembly.fragments.set(sequence, pending);
     }
-    if (
-      pending.source !== fragment.source ||
-      pending.identity !== fragment.identity ||
-      pending.order !== fragment.order ||
-      pending.totalBytes !== fragment.totalBytes
-    ) {
+    if (pending.totalBytes !== fragment.totalBytes) {
       throw new Error('Desktop transcript fragment identity changed');
     }
     const bytes = fragment.data;
@@ -806,41 +765,21 @@ export class DesktopTranscriptRangeStore {
     pending.bytes.set(bytes, fragment.byteOffset);
     pending.receivedBytes += bytes.byteLength;
     if (pending.receivedBytes < pending.totalBytes) return;
-    assembly.fragments.delete(key);
+    assembly.fragments.delete(sequence);
     if (!collects) return;
     const encoded = new TextDecoder('utf-8', { fatal: true }).decode(pending.bytes);
     const message = freezeTranscriptValue(projectDesktopStoredMessage(
       { hostId: this.#hostId },
       decodeStoredMessage(markPersisted<StoredMessage>(JSON.parse(encoded))),
     ));
-    const projected = JSON.stringify(message);
-    if (pending.source === 'durable') {
-      if (!Number.isSafeInteger(pending.identity) || (pending.identity as number) < 0) {
-        throw new Error('Invalid Desktop transcript durable identity');
-      }
-      assembly.rows.set(pending.identity as number, { message, encoded: projected });
-      return;
-    }
-    if (typeof pending.identity !== 'string' || message.id !== pending.identity) {
-      throw new Error('Desktop transcript overlay identity changed');
-    }
-    if (pending.order === null || !Number.isSafeInteger(pending.order) || pending.order < 0) {
-      throw new Error('Invalid Desktop transcript overlay order');
-    }
-    assembly.overlay.set(pending.identity, { message, encoded: projected, order: pending.order });
+    assembly.rows.set(sequence, { message, encoded: JSON.stringify(message) });
   }
 
   #createSnapshot(): DesktopTranscriptRangeSnapshot {
     const window = this.#window;
-    const tail = this.#tail;
-    const messages = Object.freeze([
-      ...window.order.map((sequence) => window.rows.get(sequence)!.message),
-      // The overlay is a fact about the tail, so it belongs to the view only
-      // while the window is at the tail.
-      ...(this.#hasNewer()
-        ? []
-        : tail.overlayOrder.map((messageId) => tail.overlay.get(messageId)!.message)),
-    ]);
+    const messages = Object.freeze(
+      window.order.map((sequence) => window.rows.get(sequence)!.message),
+    );
     return Object.freeze({
       ...this.range(),
       messages,
@@ -905,13 +844,6 @@ function sameWindow(current: TranscriptWindow, candidate: TranscriptWindow): Tra
     }
   }
   return current;
-}
-
-function orderOverlay(overlay: ReadonlyMap<string, OverlayRecord>): string[] {
-  return [...overlay.keys()].sort((left, right) => {
-    const order = overlay.get(left)!.order - overlay.get(right)!.order;
-    return order === 0 ? left.localeCompare(right) : order;
-  });
 }
 
 function freezeTranscriptValue<T>(value: T): T {

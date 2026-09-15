@@ -482,7 +482,7 @@ test('a removed authority cannot be repopulated by an in-flight admission', asyn
   assert.deepEqual(store.list('authority'), []);
 });
 
-test('cache restoration never includes live overlay and expires independently of the outbox', async (t) => {
+test('cache restoration expires independently of the outbox', async (t) => {
   let now = 1;
   const { store } = await database(t, () => now);
   store.enqueue('authority', intent());
@@ -497,11 +497,10 @@ test('cache restoration never includes live overlay and expires independently of
         message: { type: 'user', id: 'durable-1', turnId: 'turn', ts: 1, text: 'persisted' },
       },
     ],
-    overlay: [{ type: 'user', id: 'live-1', turnId: 'turn', ts: 2, text: 'in flight' }],
     hasOlder: false,
     hasNewer: false,
   });
-  assert.deepEqual(store.transcript('authority', 'session-1')?.snapshot.overlay, []);
+  assert.equal(store.transcript('authority', 'session-1')?.snapshot.durableThrough, 1);
   assert.equal(store.transcript('different-authority', 'session-1'), undefined);
   now += 31 * 24 * 60 * 60 * 1000;
   assert.equal(store.transcript('authority', 'session-1'), undefined);
@@ -551,7 +550,6 @@ test('durable Host evidence retires delivery independently of cache admission an
               },
             },
           ],
-          overlay: [],
           hasOlder: false,
           hasNewer: false,
         };
