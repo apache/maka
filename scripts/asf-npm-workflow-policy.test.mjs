@@ -41,6 +41,7 @@ test('ASF npm preflight validates the source RC package without publishing', () 
     workflow,
     /uses: \.\/\.github\/workflows\/cli-package-validation\.yml[\s\S]*?source_commit: \$\{\{ github\.sha \}\}/u,
   );
+  assert.match(workflow, /fence_predecessor: false/u);
   assert.doesNotMatch(
     workflow,
     /id-token: write|npm (?:stage )?publish|npm dist-tag|download-artifact|\.sha512|asf-candidate\.json/u,
