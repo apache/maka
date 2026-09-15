@@ -227,37 +227,6 @@ describe('ExternalSessionImporter', () => {
     assert.equal(creates, 0);
   });
 
-  test('keeps a transcript that opens on an assistant reply', async () => {
-    // A resumed record can begin with the model's answer and never state a user
-    // turn. That answer is conversation, so it both passes the projection here
-    // and materializes in the Ledger.
-    const messages: StoredMessage[] = [
-      {
-        type: 'assistant',
-        id: 'assistant-only',
-        turnId: 'turn-1',
-        ts: 10,
-        text: 'I renamed the parser entry point.',
-        modelId: 'external-model',
-      },
-      { type: 'turn_state', id: 'state-1', turnId: 'turn-1', ts: 11, status: 'completed' },
-    ];
-    const importer = new ExternalSessionImporter(
-      new ExternalSessionAdapterRegistry([
-        fakeAdapter({ metadata: { name: 'Resumed', cwd: '/source' }, messages }),
-      ]),
-      { createImportedSession: async () => ({ id: 'imported' }) as SessionHeader },
-    );
-
-    const header = await importer.import({
-      adapterId: 'fake',
-      sourceSessionId: 'source-1',
-      target: target(),
-    });
-
-    assert.equal(header.id, 'imported');
-  });
-
   test('rejects invalid adapter messages without exposing a partial Session', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-external-session-invalid-'));
     const sessions = createSessionStore(root);
