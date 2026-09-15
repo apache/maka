@@ -6057,6 +6057,7 @@ Slug openai-work<cursor>
     const terminal = new FakeTerminal();
     const driver = new SlashCommandDriver([]);
     let catalogReads = 0;
+    let importCalls = 0;
     const externalSessions = {
       listSources: async () => ['opencode'],
       listSessions: async () => {
@@ -6082,6 +6083,7 @@ Slug openai-work<cursor>
         };
       },
       importSession: async () => {
+        importCalls += 1;
         throw {
           operation: 'external-session.import',
           code: 'commit_outcome_unknown',
@@ -6110,6 +6112,85 @@ Slug openai-work<cursor>
     await waitFor(() => plainTerminalOutput(terminal.output()).includes('result is uncertain'));
     assert.equal(driver.sessionIds.includes('imported-after-loss'), false);
     assert.equal(catalogReads, 1);
+
+    terminal.input('/session');
+    terminal.input('\r');
+    await waitFor(() =>
+      plainTerminalOutput(terminal.screenOutput()).includes('Import external session'),
+    );
+    terminal.input('\r');
+    await waitFor(() => catalogReads === 2);
+    await waitFor(() =>
+      /not currently available to import/i.test(plainTerminalOutput(terminal.screenOutput())),
+    );
+    assert.match(
+      plainTerminalOutput(terminal.screenOutput()),
+      /not currently available to import/i,
+    );
+    assert.doesNotMatch(plainTerminalOutput(terminal.screenOutput()), /No external sessions found/);
+    terminal.input('\r');
+    await waitFor(() => importCalls === 2 || catalogReads === 3);
+    assert.equal(importCalls, 1, 'the uncertain source cannot be submitted again');
+
+    exitMaka(terminal);
+    await run;
+  });
+
+  test('does not submit an external source the Host reports as already importing', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new SlashCommandDriver([]);
+    let catalogReads = 0;
+    let importCalls = 0;
+    const externalSessions = {
+      listSources: async () => ['opencode'],
+      listSessions: async () => {
+        catalogReads += 1;
+        return {
+          sessions: [
+            {
+              id: 'ses_running',
+              name: 'Already importing',
+              hostCwd: '/repo',
+              importState: { importedCount: 0, importedSessionIds: [], isImporting: true },
+            },
+          ],
+          nextCursor: null,
+        };
+      },
+      importSession: async () => {
+        importCalls += 1;
+        throw new Error('must not import');
+      },
+    };
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      locale: 'en',
+      terminal,
+      externalSessions,
+    });
+
+    terminal.input('/session');
+    terminal.input('\r');
+    await waitFor(() =>
+      plainTerminalOutput(terminal.screenOutput()).includes('Import external session'),
+    );
+    terminal.input('\r');
+    await waitFor(() => catalogReads === 1);
+    await waitFor(() =>
+      /not currently available to import/i.test(plainTerminalOutput(terminal.screenOutput())),
+    );
+    assert.match(
+      plainTerminalOutput(terminal.screenOutput()),
+      /not currently available to import/i,
+    );
+    terminal.input('\r');
+    await waitFor(() => catalogReads === 2 || importCalls === 1);
+    assert.equal(importCalls, 0);
 
     exitMaka(terminal);
     await run;
@@ -6162,65 +6243,6 @@ Slug openai-work<cursor>
     assert.deepEqual(cursors, [undefined, 'next']);
     assert.match(plainTerminalOutput(terminal.output()), /first page/);
 
-    exitMaka(terminal);
-    await run;
-  });
-
-  test('reloads the external catalog from the first page when its cursor expires', async () => {
-    const terminal = new FakeTerminal();
-    const driver = new SlashCommandDriver([]);
-    const cursors: Array<string | undefined> = [];
-    const externalSessions = {
-      listSources: async () => ['codex'],
-      listSessions: async ({ cursor }: { cursor?: string }) => {
-        cursors.push(cursor);
-        if (cursor) {
-          throw {
-            operation: 'external-session.catalog.query',
-            code: 'cursor_expired',
-          };
-        }
-        const refreshed = cursors.length > 1;
-        return {
-          sessions: [
-            {
-              id: refreshed ? 'fresh' : 'stale',
-              name: refreshed ? 'refreshed page' : 'first snapshot',
-              hostCwd: '/repo',
-              importState: { importedCount: 0, importedSessionIds: [], isImporting: false },
-            },
-          ],
-          nextCursor: refreshed ? null : 'expired-snapshot',
-        };
-      },
-      importSession: async () => {
-        throw new Error('unused');
-      },
-    };
-    const run = runMakaPiTui({
-      title: 'Maka',
-      driver,
-      cwd: '/repo',
-      model: 'claude-sonnet-4-5',
-      connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
-      locale: 'en',
-      terminal,
-      externalSessions,
-    });
-
-    terminal.input('/session');
-    terminal.input('\r');
-    await waitFor(() => plainTerminalOutput(terminal.output()).includes('Import external session'));
-    terminal.input('\r');
-    await waitFor(() => plainTerminalOutput(terminal.output()).includes('first snapshot'));
-    terminal.input('\x1b[B');
-    terminal.input('\r');
-    await waitFor(() => plainTerminalOutput(terminal.output()).includes('refreshed page'));
-    assert.deepEqual(cursors, [undefined, 'expired-snapshot', undefined]);
-    assert.match(plainTerminalOutput(terminal.output()), /session list expired and was reloaded/i);
-
-    terminal.input('\x1b');
     exitMaka(terminal);
     await run;
   });

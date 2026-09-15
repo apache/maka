@@ -228,14 +228,6 @@ export class ExternalSessionLimitError extends Error {
   }
 }
 
-/** A source-owned catalog snapshot no longer exists for a continuation cursor. */
-export class ExternalSessionCursorExpiredError extends Error {
-  constructor() {
-    super('External Session catalog cursor expired');
-    this.name = 'ExternalSessionCursorExpiredError';
-  }
-}
-
 /** Read-only, source-specific conversion boundary for one external Agent. */
 export interface ExternalSessionAdapter {
   readonly id: ExternalAgentId;
@@ -244,7 +236,7 @@ export interface ExternalSessionAdapter {
 
   listSessions(query?: ExternalSessionQuery): Promise<readonly ExternalSessionSummary[]>;
 
-  /** Optional source-owned paging for catalogs whose order needs a stable snapshot. */
+  /** Optional source-owned paging for catalogs with an opaque continuation key. */
   listSessionPage?(query: ExternalSessionCatalogPageQuery): Promise<ExternalSessionCatalogPage>;
 
   readSession(sessionId: string): Promise<ExternalMakaSession>;

@@ -325,36 +325,25 @@ function externalSourceLabel(adapterId: string): string {
   }
 }
 
-function isExternalImportOutcomeUnknown(error: unknown): boolean {
-  if (typeof error !== 'object' || error === null) return false;
+function externalImportErrorCode(
+  error: unknown,
+): 'commit_outcome_unknown' | 'model_unavailable' | 'source_unreadable' | undefined {
+  if (typeof error !== 'object' || error === null) return undefined;
   const value = error as {
     readonly operation?: unknown;
     readonly code?: unknown;
     readonly mode?: unknown;
     readonly dispatch?: unknown;
   };
-  if (value.operation !== 'external-session.import') return false;
-  return (
-    value.code === 'commit_outcome_unknown' ||
-    (value.mode === 'command' && value.dispatch === 'dispatched')
-  );
-}
-
-function externalImportFailureCode(
-  error: unknown,
-): 'model_unavailable' | 'source_unreadable' | undefined {
-  if (typeof error !== 'object' || error === null) return undefined;
-  const value = error as { readonly operation?: unknown; readonly code?: unknown };
   if (value.operation !== 'external-session.import') return undefined;
-  return value.code === 'model_unavailable' || value.code === 'source_unreadable'
+  if (value.mode === 'command' && value.dispatch === 'dispatched') {
+    return 'commit_outcome_unknown';
+  }
+  return value.code === 'commit_outcome_unknown' ||
+    value.code === 'model_unavailable' ||
+    value.code === 'source_unreadable'
     ? value.code
     : undefined;
-}
-
-function isExternalCatalogCursorExpired(error: unknown): boolean {
-  if (typeof error !== 'object' || error === null) return false;
-  const value = error as { readonly operation?: unknown; readonly code?: unknown };
-  return value.operation === 'external-session.catalog.query' && value.code === 'cursor_expired';
 }
 
 export function resolveTaskbarProgress(
@@ -438,7 +427,6 @@ interface TuiConnectionIdentityCopy {
 
 interface TuiSessionActionsCopy {
   readonly externalCatalogFailed: string;
-  readonly externalCatalogExpired: string;
   readonly externalImport: string;
   readonly externalImportDescription: string;
   readonly externalSourceTitle: string;
@@ -447,6 +435,7 @@ interface TuiSessionActionsCopy {
   readonly externalAllWorkspaces: string;
   readonly externalCurrentWorkspace: string;
   readonly externalEmpty: string;
+  readonly externalUnavailable: string;
   readonly externalImportedCount: string;
   readonly externalImportFailed: string;
   readonly externalImportModelUnavailable: string;
@@ -563,6 +552,15 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   let orchestrationMode = input.driver.getOrchestrationMode?.() ?? 'default';
   let thinkingLevel: ThinkingLevel | undefined = undefined;
   let sessionListScope: 'current' | 'all' = input.sessionListScope ?? 'current';
+  const uncertainExternalImportKeys = new Set<string>();
+  const externalImportKey = (adapterId: string, sourceSessionId: string): string =>
+    JSON.stringify([adapterId, sourceSessionId]);
+  const isExternalImportEligible = (
+    adapterId: string,
+    source: ExternalSessionCatalogItem,
+  ): boolean =>
+    !source.importState.isImporting &&
+    !uncertainExternalImportKeys.has(externalImportKey(adapterId, source.id));
   let connectionIdentityNotice: string | undefined;
   let busy = false;
   let closed = false;
@@ -3018,6 +3016,18 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   ): Promise<void> => {
     if (!input.externalSessions) return;
     const copy = TUI_SESSION_ACTIONS_COPY[locale];
+    const importKey = externalImportKey(adapterId, source.id);
+    if (!isExternalImportEligible(adapterId, source)) {
+      state.entries.push({
+        kind: 'notice',
+        level: 'error',
+        text: uncertainExternalImportKeys.has(importKey)
+          ? copy.externalImportUncertain
+          : copy.externalUnavailable,
+      });
+      requestRender();
+      return;
+    }
     let importedSessionId: string | undefined;
     try {
       const result = await input.externalSessions.importSession({
@@ -3041,7 +3051,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       }
       importedSessionId = result.session.id;
     } catch (error) {
-      const code = externalImportFailureCode(error);
+      const code = externalImportErrorCode(error);
       if (code === 'model_unavailable') {
         state.entries.push({
           kind: 'notice',
@@ -3058,10 +3068,11 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         });
         return;
       }
-      if (!isExternalImportOutcomeUnknown(error)) {
+      if (code !== 'commit_outcome_unknown') {
         state.entries.push({ kind: 'notice', level: 'error', text: copy.externalImportFailed });
         return;
       }
+      uncertainExternalImportKeys.add(importKey);
       state.entries.push({ kind: 'notice', level: 'error', text: copy.externalImportUncertain });
       return;
     }
@@ -3097,23 +3108,22 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         scope,
         ...(cursor ? { cursor } : {}),
       });
-    } catch (error) {
-      if (cursor && isExternalCatalogCursorExpired(error)) {
-        state.entries.push({ kind: 'notice', level: 'info', text: copy.externalCatalogExpired });
-        requestRender();
-        await showExternalSessionPage(adapterId, scope);
-        return;
-      }
+    } catch {
       state.entries.push({ kind: 'notice', level: 'error', text: copy.externalCatalogFailed });
       requestRender();
       return;
     }
     if (closed || turnRunning) return;
     const sessions = [...loaded, ...page.sessions];
-    const byValue = new Map<string, ExternalSessionCatalogItem>(
-      sessions.map((session) => [`external:${adapterId}:${session.id}`, session] as const),
+    const selectableSessions = sessions.filter((session) =>
+      isExternalImportEligible(adapterId, session),
     );
-    const items: SelectItem[] = sessions.map((session) => ({
+    const byValue = new Map<string, ExternalSessionCatalogItem>(
+      selectableSessions.map(
+        (session) => [`external:${adapterId}:${session.id}`, session] as const,
+      ),
+    );
+    const items: SelectItem[] = selectableSessions.map((session) => ({
       value: `external:${adapterId}:${session.id}`,
       label: session.name,
       description: [
@@ -3169,7 +3179,11 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       {
         minPrimaryColumnWidth: 24,
         maxPrimaryColumnWidth: 52,
-        ...(sessions.length === 0 ? { notice: copy.externalEmpty } : {}),
+        ...(sessions.length === 0
+          ? { notice: copy.externalEmpty }
+          : selectableSessions.length === 0
+            ? { notice: copy.externalUnavailable }
+            : {}),
       },
     );
   };

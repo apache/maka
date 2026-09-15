@@ -17,15 +17,14 @@
  * under the License.
  */
 
-import { randomBytes } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import type { Dirent } from 'node:fs';
 import { open, readdir, realpath, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, join, resolve, sep } from 'node:path';
-import type { DatabaseSync, StatementSync } from 'node:sqlite';
+import type { DatabaseSync } from 'node:sqlite';
 import type { StoredMessage } from '@maka/core/session';
 import {
-  ExternalSessionCursorExpiredError,
   externalSessionMatchesQuery,
   sanitizeExternalSessionTitle,
 } from '@maka/core/external-session';
@@ -47,8 +46,6 @@ const CODEX_ROLLOUT_MAX_RECORD_BYTES = 64 * 1024 * 1024;
 const CODEX_ROLLOUT_MAX_CONVERTED_BYTES = 256 * 1024 * 1024;
 const CODEX_ROLLOUT_MAX_MESSAGES = 250_000;
 const CODEX_SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
-const CODEX_CATALOG_SNAPSHOT_TTL_MS = 5 * 60 * 1000;
-const CODEX_CATALOG_SNAPSHOT_MAX_ITEMS = 32;
 const CODEX_SUPPORTED_THREAD_SOURCES = ['cli', 'exec', 'vscode', 'atlas', 'chatgpt'] as const;
 const CODEX_UNSAFE_PATH_CHARS =
   /[\u0000-\u001F\u007F\u0080-\u009F\u061C\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\uFEFF]/;
@@ -70,22 +67,6 @@ interface CodexCatalogEntry extends ExternalSessionSummary {
   rolloutPath: string;
 }
 
-interface CodexCatalogSnapshotBase {
-  readonly queryKey: string;
-  lastAccessedAt: number;
-  expires?: ReturnType<typeof setTimeout>;
-}
-
-type CodexCatalogSnapshot =
-  | (CodexCatalogSnapshotBase & {
-      readonly kind: 'state_database';
-      readonly reader: CodexThreadSnapshotReader;
-    })
-  | (CodexCatalogSnapshotBase & {
-      readonly kind: 'filesystem';
-      readonly candidates: readonly RolloutCandidate[];
-    });
-
 interface CodexThreadRow {
   id?: unknown;
   rollout_path?: unknown;
@@ -102,17 +83,16 @@ interface CodexThreadRow {
   source?: unknown;
 }
 
-interface CodexThreadSnapshotReader {
-  read(offset: number, limit: number): CodexThreadRow[];
-  close(): void;
-}
-
 interface CodexThreadQuery {
   readonly sql: string;
   readonly params: readonly (string | number)[];
 }
 
 type JsonRecord = Record<string, unknown>;
+
+type CodexCatalogKeyset =
+  | { readonly kind: 'database'; readonly sortTimestamp: number; readonly id: string }
+  | { readonly kind: 'filesystem'; readonly mtimeMs: number; readonly pathKey: string };
 
 /**
  * Read-only adapter for Codex rollout JSONL.
@@ -132,7 +112,6 @@ export class CodexSessionAdapter implements ExternalSessionAdapter {
   private readonly maxRecordBytes: number;
   private readonly maxConvertedBytes: number;
   private readonly maxMessages: number;
-  private readonly catalogSnapshots = new Map<string, CodexCatalogSnapshot>();
 
   constructor(options: CodexSessionAdapterOptions = {}) {
     this.codexHome = resolve(
@@ -167,7 +146,7 @@ export class CodexSessionAdapter implements ExternalSessionAdapter {
     const limit = query.limit ?? Number.MAX_SAFE_INTEGER;
     if (!Number.isSafeInteger(limit) || limit < 0) throw new Error('Invalid Codex catalog page');
     if (limit === 0) return { items: [], hasMore: false };
-    return this.listCatalogSnapshotPage(query, limit);
+    return this.listCatalogKeysetPage(query, limit);
   }
 
   async readSession(sessionId: string): Promise<ExternalMakaSession> {
@@ -290,136 +269,67 @@ export class CodexSessionAdapter implements ExternalSessionAdapter {
     return entries;
   }
 
-  private async listCatalogSnapshotPage(
+  private async listCatalogKeysetPage(
     query: ExternalSessionCatalogPageQuery,
     limit: number,
   ): Promise<ExternalSessionCatalogPage> {
-    this.pruneCatalogSnapshots();
-    const queryKey = catalogSnapshotQueryKey(query);
-    const decoded = decodeSnapshotCatalogCursor(query.cursor);
-    let token: string;
-    let offset: number;
-    let snapshot: CodexCatalogSnapshot;
-    if (decoded) {
-      token = decoded.token;
-      offset = decoded.offset;
-      const existing = this.catalogSnapshots.get(token);
-      if (!existing) throw new ExternalSessionCursorExpiredError();
-      if (existing.queryKey !== queryKey) throw new Error('Invalid Codex catalog cursor');
-      this.touchCatalogSnapshot(token, existing);
-      snapshot = existing;
-    } else {
-      if (query.cursor !== undefined) throw new Error('Invalid Codex catalog cursor');
-      token = randomBytes(12).toString('base64url');
-      offset = 0;
-      const stateReader = await openCodexThreadSnapshot(this.codexHome, query);
-      snapshot = stateReader
-        ? {
-            kind: 'state_database',
-            reader: stateReader,
-            queryKey,
-            lastAccessedAt: Date.now(),
-          }
-        : {
-            kind: 'filesystem',
-            candidates: [
-              ...(await walkRolloutFiles(join(this.codexHome, 'sessions'), false)),
-              ...(query.includeArchived
-                ? await walkRolloutFiles(join(this.codexHome, 'archived_sessions'), true)
-                : []),
-            ].sort(compareRolloutCandidates),
-            queryKey,
-            lastAccessedAt: Date.now(),
-          };
-      this.touchCatalogSnapshot(token, snapshot);
-      this.pruneCatalogSnapshots();
-    }
-
-    if (snapshot.kind === 'state_database') {
-      return this.readStateCatalogSnapshotPage(snapshot, query, token, offset, limit);
-    }
-
-    const items: ExternalSessionCatalogPage['items'][number][] = [];
-    for (let index = offset; index < snapshot.candidates.length; index += 1) {
-      const candidate = snapshot.candidates[index]!;
-      const head = await readUtf8Prefix(candidate.path, CODEX_ROLLOUT_HEAD_BYTES).catch(
-        () => undefined,
-      );
-      if (head === undefined) continue;
-      const entry = catalogEntryFromRolloutHead(head, candidate);
-      if (!entry || !matchesQuery(entry, query)) continue;
-      const rolloutPath = await this.resolveRolloutPath(candidate.path, entry.id);
-      if (!rolloutPath) continue;
-      const { rolloutPath: _rolloutPath, ...summary } = { ...entry, rolloutPath };
-      items.push({ summary, nextCursor: `f:${token}:${index + 1}` });
-      if (items.length === limit) return { items, hasMore: true };
-    }
-    this.deleteCatalogSnapshot(token);
-    return { items, hasMore: false };
-  }
-
-  private async readStateCatalogSnapshotPage(
-    snapshot: Extract<CodexCatalogSnapshot, { kind: 'state_database' }>,
-    query: ExternalSessionCatalogPageQuery,
-    token: string,
-    offset: number,
-    limit: number,
-  ): Promise<ExternalSessionCatalogPage> {
-    const items: ExternalSessionCatalogPage['items'][number][] = [];
-    let rawOffset = offset;
-    const batchSize = Math.max(32, Math.min(256, limit * 2));
-    try {
-      while (true) {
-        const rows = snapshot.reader.read(rawOffset, batchSize);
-        for (const [index, row] of rows.entries()) {
-          const entry = await this.entryFromRow(row);
-          if (!entry || !matchesQuery(entry, query)) continue;
-          if (items.length === limit) return { items, hasMore: true };
-          const { rolloutPath: _rolloutPath, ...summary } = entry;
-          items.push({ summary, nextCursor: `f:${token}:${rawOffset + index + 1}` });
-        }
-        rawOffset += rows.length;
-        if (rows.length < batchSize) {
-          this.deleteCatalogSnapshot(token);
-          return { items, hasMore: false };
-        }
+    const keyset = decodeCatalogKeyset(query.cursor, query);
+    if (keyset?.kind !== 'filesystem') {
+      for (const dbPath of await codexStateDbsNewestFirst(this.codexHome)) {
+        const page = await this.readStateCatalogKeysetPage(dbPath, query, keyset, limit);
+        if (page !== undefined) return page;
       }
-    } catch (error) {
-      this.deleteCatalogSnapshot(token);
-      throw error;
+      if (keyset) throw new Error('Invalid Codex catalog cursor');
     }
-  }
 
-  private pruneCatalogSnapshots(): void {
-    const cutoff = Date.now() - CODEX_CATALOG_SNAPSHOT_TTL_MS;
-    for (const [token, snapshot] of this.catalogSnapshots) {
-      if (snapshot.lastAccessedAt < cutoff) this.deleteCatalogSnapshot(token);
-    }
-    while (this.catalogSnapshots.size > CODEX_CATALOG_SNAPSHOT_MAX_ITEMS) {
-      const oldest = this.catalogSnapshots.keys().next().value;
-      if (oldest === undefined) break;
-      this.deleteCatalogSnapshot(oldest);
-    }
-  }
-
-  private touchCatalogSnapshot(token: string, snapshot: CodexCatalogSnapshot): void {
-    clearTimeout(snapshot.expires);
-    snapshot.lastAccessedAt = Date.now();
-    snapshot.expires = setTimeout(
-      () => this.deleteCatalogSnapshot(token),
-      CODEX_CATALOG_SNAPSHOT_TTL_MS,
+    const candidates = await nextRolloutCatalogBatch(
+      this.codexHome,
+      query,
+      keyset?.kind === 'filesystem' ? keyset : undefined,
+      limit + 1,
+      (candidate, id) => this.resolveRolloutPath(candidate.path, id),
     );
-    snapshot.expires.unref();
-    this.catalogSnapshots.delete(token);
-    this.catalogSnapshots.set(token, snapshot);
+    const items = candidates.slice(0, limit).map(({ candidate, summary }) => ({
+      summary,
+      nextCursor: encodeCatalogKeyset(query, candidateKeyset(candidate)),
+    }));
+    return { items, hasMore: candidates.length > items.length };
   }
 
-  private deleteCatalogSnapshot(token: string): void {
-    const snapshot = this.catalogSnapshots.get(token);
-    if (!snapshot) return;
-    clearTimeout(snapshot.expires);
-    if (snapshot.kind === 'state_database') snapshot.reader.close();
-    this.catalogSnapshots.delete(token);
+  private async readStateCatalogKeysetPage(
+    dbPath: string,
+    query: ExternalSessionCatalogPageQuery,
+    keyset: CodexCatalogKeyset | undefined,
+    limit: number,
+  ): Promise<ExternalSessionCatalogPage | undefined> {
+    if (keyset?.kind === 'filesystem') return undefined;
+    let db: DatabaseSync | undefined;
+    try {
+      const sqlite = await import('node:sqlite');
+      db = new sqlite.DatabaseSync(dbPath, { readOnly: true });
+      const spec = codexThreadQuery(db, query, undefined, keyset);
+      if (!spec) return undefined;
+      const items: ExternalSessionCatalogPage['items'][number][] = [];
+      for (const row of db.prepare(spec.sql).iterate(...spec.params) as Iterable<CodexThreadRow>) {
+        const entry = await this.entryFromRow(row);
+        if (!entry || !matchesQuery(entry, query)) continue;
+        if (items.length === limit) return { items, hasMore: true };
+        const { rolloutPath: _rolloutPath, ...summary } = entry;
+        items.push({
+          summary,
+          nextCursor: encodeCatalogKeyset(query, {
+            kind: 'database',
+            sortTimestamp: codexRowSortTimestamp(row),
+            id: entry.id,
+          }),
+        });
+      }
+      return { items, hasMore: false };
+    } catch {
+      return undefined;
+    } finally {
+      db?.close();
+    }
   }
 
   private async findRolloutEntry(sessionId: string): Promise<CodexCatalogEntry | undefined> {
@@ -461,6 +371,7 @@ export class CodexSessionAdapter implements ExternalSessionAdapter {
 
 interface RolloutCandidate {
   path: string;
+  catalogKey: string;
   mtimeMs: number;
   archived: boolean;
 }
@@ -992,65 +903,11 @@ async function readCodexThreadRows(
   }
 }
 
-async function openCodexThreadSnapshot(
-  codexHome: string,
-  query: ExternalSessionQuery,
-): Promise<CodexThreadSnapshotReader | undefined> {
-  for (const dbPath of await codexStateDbsNewestFirst(codexHome)) {
-    let db: DatabaseSync | undefined;
-    try {
-      const sqlite = await import('node:sqlite');
-      db = new sqlite.DatabaseSync(dbPath, { readOnly: true });
-      const journal = db.prepare('PRAGMA journal_mode').get() as { journal_mode?: unknown };
-      if (
-        typeof journal.journal_mode !== 'string' ||
-        journal.journal_mode.toLowerCase() !== 'wal'
-      ) {
-        db.close();
-        continue;
-      }
-      const spec = codexThreadQuery(db, query);
-      if (!spec) {
-        db.close();
-        continue;
-      }
-      db.exec('BEGIN');
-      const statement = db.prepare(`${spec.sql} LIMIT ? OFFSET ?`);
-      return codexThreadSnapshotReader(db, statement, spec.params);
-    } catch {
-      db?.close();
-    }
-  }
-  return undefined;
-}
-
-function codexThreadSnapshotReader(
-  db: DatabaseSync,
-  statement: StatementSync,
-  params: readonly (string | number)[],
-): CodexThreadSnapshotReader {
-  let closed = false;
-  return {
-    read: (offset, limit) => {
-      if (closed) throw new ExternalSessionCursorExpiredError();
-      return statement.all(...params, limit, offset) as CodexThreadRow[];
-    },
-    close: () => {
-      if (closed) return;
-      closed = true;
-      try {
-        db.exec('ROLLBACK');
-      } finally {
-        db.close();
-      }
-    },
-  };
-}
-
 function codexThreadQuery(
   db: DatabaseSync,
   query: ExternalSessionQuery,
   exactId?: string,
+  keyset?: Extract<CodexCatalogKeyset, { kind: 'database' }>,
 ): CodexThreadQuery | undefined {
   const columns = new Set(
     (db.prepare('PRAGMA table_info(threads)').all() as { name?: unknown }[])
@@ -1088,9 +945,15 @@ function codexThreadQuery(
     (column) => columns.has(column),
   );
   const orderValues = orderColumns.map((column) =>
-    column.endsWith('_ms') ? column : `(${column} * 1000)`,
+    column.endsWith('_ms')
+      ? column
+      : `(CASE WHEN ${column} >= 1000000000000 THEN ${column} ELSE ${column} * 1000 END)`,
   );
   const orderExpression = orderValues.length > 0 ? `coalesce(${orderValues.join(', ')}, 0)` : '0';
+  if (keyset) {
+    where.push(`(${orderExpression} < ? OR (${orderExpression} = ? AND id < ?))`);
+    params.push(keyset.sortTimestamp, keyset.sortTimestamp, keyset.id);
+  }
   return {
     sql:
       `SELECT ${wanted.join(', ')} FROM threads` +
@@ -1098,6 +961,25 @@ function codexThreadQuery(
       ` ORDER BY ${orderExpression} DESC, id DESC`,
     params,
   };
+}
+
+function codexRowSortTimestamp(row: CodexThreadRow): number {
+  return (
+    finiteNumber(row.updated_at_ms) ??
+    normalizeEpochMs(row.updated_at) ??
+    finiteNumber(row.created_at_ms) ??
+    normalizeEpochMs(row.created_at) ??
+    0
+  );
+}
+
+function finiteNumber(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string' && value.length > 0) {
+    const numeric = Number(value);
+    if (Number.isFinite(numeric)) return numeric;
+  }
+  return undefined;
 }
 
 async function codexStateDbsNewestFirst(codexHome: string): Promise<string[]> {
@@ -1121,6 +1003,7 @@ async function codexStateDbsNewestFirst(codexHome: string): Promise<string[]> {
 async function* iterateRolloutFiles(
   root: string,
   archived: boolean,
+  relativeRoot = '',
 ): AsyncGenerator<RolloutCandidate> {
   let entries: Dirent<string>[];
   try {
@@ -1135,15 +1018,21 @@ async function* iterateRolloutFiles(
   entries.sort((left, right) => right.name.localeCompare(left.name));
   for (const entry of entries) {
     const path = join(root, entry.name);
+    const relativePath = relativeRoot ? `${relativeRoot}/${entry.name}` : entry.name;
     if (entry.isDirectory()) {
-      yield* iterateRolloutFiles(path, archived);
+      yield* iterateRolloutFiles(path, archived, relativePath);
     } else if (
       entry.isFile() &&
       entry.name.startsWith('rollout-') &&
       entry.name.endsWith('.jsonl')
     ) {
       try {
-        yield { path, mtimeMs: (await stat(path)).mtimeMs, archived };
+        yield {
+          path,
+          catalogKey: `${archived ? 'a' : 's'}/${relativePath}`,
+          mtimeMs: (await stat(path)).mtimeMs,
+          archived,
+        };
       } catch {
         // The external store may change while it is being scanned.
       }
@@ -1157,27 +1046,131 @@ async function walkRolloutFiles(root: string, archived: boolean): Promise<Rollou
   return files;
 }
 
+async function nextRolloutCatalogBatch(
+  codexHome: string,
+  query: ExternalSessionCatalogPageQuery,
+  keyset: Extract<CodexCatalogKeyset, { kind: 'filesystem' }> | undefined,
+  limit: number,
+  resolvePath: (candidate: RolloutCandidate, id: string) => Promise<string | undefined>,
+): Promise<ReadonlyArray<{ candidate: RolloutCandidate; summary: ExternalSessionSummary }>> {
+  const candidates: Array<{ candidate: RolloutCandidate; summary: ExternalSessionSummary }> = [];
+  const roots: ReadonlyArray<readonly [string, boolean]> = [
+    [join(codexHome, 'sessions'), false],
+    ...(query.includeArchived ? ([[join(codexHome, 'archived_sessions'), true]] as const) : []),
+  ];
+  for (const [root, archived] of roots) {
+    for await (const candidate of iterateRolloutFiles(root, archived)) {
+      if (keyset && !rolloutCandidateIsAfter(candidate, keyset)) continue;
+      const head = await readUtf8Prefix(candidate.path, CODEX_ROLLOUT_HEAD_BYTES).catch(
+        () => undefined,
+      );
+      if (head === undefined) continue;
+      const entry = catalogEntryFromRolloutHead(head, candidate);
+      if (!entry || !matchesQuery(entry, query)) continue;
+      const rolloutPath = await resolvePath(candidate, entry.id);
+      if (!rolloutPath) continue;
+      const { rolloutPath: _rolloutPath, ...summary } = { ...entry, rolloutPath };
+      const index = candidates.findIndex(
+        (existing) => compareRolloutCandidates(candidate, existing.candidate) < 0,
+      );
+      candidates.splice(index < 0 ? candidates.length : index, 0, { candidate, summary });
+      if (candidates.length > limit) candidates.pop();
+    }
+  }
+  return candidates;
+}
+
 function compareRolloutCandidates(left: RolloutCandidate, right: RolloutCandidate): number {
-  return right.mtimeMs - left.mtimeMs || left.path.localeCompare(right.path);
+  return right.mtimeMs - left.mtimeMs || left.catalogKey.localeCompare(right.catalogKey);
 }
 
-function catalogSnapshotQueryKey(query: ExternalSessionCatalogPageQuery): string {
-  return JSON.stringify({
-    cwd: query.cwd ?? null,
-    includeArchived: query.includeArchived ?? false,
-    text: query.text ?? null,
-  });
+function rolloutCandidateIsAfter(
+  candidate: RolloutCandidate,
+  keyset: Extract<CodexCatalogKeyset, { kind: 'filesystem' }>,
+): boolean {
+  return (
+    candidate.mtimeMs < keyset.mtimeMs ||
+    (candidate.mtimeMs === keyset.mtimeMs && candidate.catalogKey > keyset.pathKey)
+  );
 }
 
-function decodeSnapshotCatalogCursor(
+function candidateKeyset(
+  candidate: RolloutCandidate,
+): Extract<CodexCatalogKeyset, { kind: 'filesystem' }> {
+  return { kind: 'filesystem', mtimeMs: candidate.mtimeMs, pathKey: candidate.catalogKey };
+}
+
+function catalogKeysetQueryHash(query: ExternalSessionCatalogPageQuery): string {
+  return createHash('sha256')
+    .update(
+      JSON.stringify({
+        cwd: query.cwd ?? null,
+        includeArchived: query.includeArchived ?? false,
+        text: query.text ?? null,
+      }),
+    )
+    .digest('base64url')
+    .slice(0, 22);
+}
+
+function encodeCatalogKeyset(
+  query: ExternalSessionCatalogPageQuery,
+  keyset: CodexCatalogKeyset,
+): string {
+  const queryHash = catalogKeysetQueryHash(query);
+  if (keyset.kind === 'database') {
+    return `d:${queryHash}:${encodeCursorNumber(keyset.sortTimestamp)}:${Buffer.from(keyset.id).toString('base64url')}`;
+  }
+  return `f:${queryHash}:${encodeCursorNumber(keyset.mtimeMs)}:${Buffer.from(keyset.pathKey).toString('base64url')}`;
+}
+
+function decodeCatalogKeyset(
   cursor: string | undefined,
-): { token: string; offset: number } | undefined {
-  if (cursor === undefined || !cursor.startsWith('f:')) return undefined;
-  const match = /^f:([A-Za-z0-9_-]{16}):(\d{1,10})$/.exec(cursor);
-  if (!match) throw new Error('Invalid Codex catalog cursor');
-  const offset = Number(match[2]);
-  if (!Number.isSafeInteger(offset)) throw new Error('Invalid Codex catalog cursor');
-  return { token: match[1]!, offset };
+  query: ExternalSessionCatalogPageQuery,
+): CodexCatalogKeyset | undefined {
+  if (cursor === undefined) return undefined;
+  const parts = cursor.split(':');
+  if (parts.length !== 4 || parts[1] !== catalogKeysetQueryHash(query)) {
+    throw new Error('Invalid Codex catalog cursor');
+  }
+  const number = decodeCursorNumber(parts[2]!);
+  if (parts[0] === 'd') {
+    const encodedId = parts[3]!;
+    const id = Buffer.from(encodedId, 'base64url').toString('utf8');
+    if (!isSafeCodexSessionId(id) || Buffer.from(id).toString('base64url') !== encodedId) {
+      throw new Error('Invalid Codex catalog cursor');
+    }
+    return { kind: 'database', sortTimestamp: number, id };
+  }
+  if (parts[0] === 'f') {
+    const encodedPathKey = parts[3]!;
+    const pathKey = Buffer.from(encodedPathKey, 'base64url').toString('utf8');
+    if (
+      Buffer.byteLength(pathKey, 'utf8') > 320 ||
+      Buffer.from(pathKey).toString('base64url') !== encodedPathKey ||
+      !/^[as]\/[^\u0000-\u001f\u007f]+$/.test(pathKey)
+    ) {
+      throw new Error('Invalid Codex catalog cursor');
+    }
+    return { kind: 'filesystem', mtimeMs: number, pathKey };
+  }
+  throw new Error('Invalid Codex catalog cursor');
+}
+
+function encodeCursorNumber(value: number): string {
+  const buffer = Buffer.allocUnsafe(8);
+  buffer.writeDoubleBE(value);
+  return buffer.toString('base64url');
+}
+
+function decodeCursorNumber(value: string): number {
+  const buffer = Buffer.from(value, 'base64url');
+  if (buffer.length !== 8 || buffer.toString('base64url') !== value) {
+    throw new Error('Invalid Codex catalog cursor');
+  }
+  const number = buffer.readDoubleBE();
+  if (!Number.isFinite(number)) throw new Error('Invalid Codex catalog cursor');
+  return number;
 }
 
 async function readUtf8Prefix(path: string, maxBytes: number): Promise<string> {

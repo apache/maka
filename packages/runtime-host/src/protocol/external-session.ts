@@ -47,7 +47,7 @@ export const EXTERNAL_SESSION_NAME_MAX_BYTES = 320;
 export const EXTERNAL_SESSION_SOURCE_SESSION_ID_MAX_BYTES = 512;
 export const EXTERNAL_SESSION_SOURCE_MAX_ITEMS = 16;
 export const EXTERNAL_SESSION_IMPORTED_SESSION_IDS_MAX_ITEMS = 8;
-const EXTERNAL_SESSION_CURSOR_MAX_BYTES = 32;
+const EXTERNAL_SESSION_CURSOR_MAX_BYTES = 512;
 
 const QUERY_ERRORS = [
   'host_not_ready',
@@ -57,7 +57,7 @@ const QUERY_ERRORS = [
   'persistence_failed',
   'internal_failure',
 ] as const;
-const CATALOG_QUERY_ERRORS = [...QUERY_ERRORS, 'cursor_expired'] as const;
+const CATALOG_QUERY_ERRORS = QUERY_ERRORS;
 const IMPORT_ERRORS = [
   ...QUERY_ERRORS,
   'not_found',

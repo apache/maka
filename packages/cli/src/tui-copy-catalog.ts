@@ -1343,7 +1343,6 @@ export const TUI_COPY_RESOURCES = {
   'session-actions': {
     en: {
       externalCatalogFailed: 'Could not read external sessions.',
-      externalCatalogExpired: 'The session list expired and was reloaded.',
       externalImport: 'Import external session…',
       externalImportDescription: 'from the connected Runtime Host',
       externalSourceTitle: 'Choose external source',
@@ -1352,6 +1351,8 @@ export const TUI_COPY_RESOURCES = {
       externalAllWorkspaces: 'Show all workspaces',
       externalCurrentWorkspace: 'Show current workspace',
       externalEmpty: 'No external sessions found.',
+      externalUnavailable:
+        'The external sessions on this page are not currently available to import.',
       externalImportedCount: 'imported {count} times',
       externalImportFailed: 'Could not import the external session.',
       externalImportModelUnavailable:
@@ -1372,7 +1373,6 @@ export const TUI_COPY_RESOURCES = {
     },
     'zh-CN': {
       externalCatalogFailed: '无法读取外部会话目录。',
-      externalCatalogExpired: '会话列表已过期，已重新加载。',
       externalImport: '导入外部会话…',
       externalImportDescription: '来自当前连接的 Runtime Host',
       externalSourceTitle: '选择外部来源',
@@ -1381,6 +1381,7 @@ export const TUI_COPY_RESOURCES = {
       externalAllWorkspaces: '显示所有工作区',
       externalCurrentWorkspace: '仅显示当前工作区',
       externalEmpty: '没有找到外部会话。',
+      externalUnavailable: '当前页的外部会话暂时不可导入。',
       externalImportedCount: '已导入 {count} 次',
       externalImportFailed: '无法导入外部会话。',
       externalImportModelUnavailable: '没有可用的模型连接。请先配置并启用一个连接再导入。',
@@ -1397,7 +1398,6 @@ export const TUI_COPY_RESOURCES = {
     },
     'zh-TW': {
       externalCatalogFailed: '無法讀取外部工作階段目錄。',
-      externalCatalogExpired: '工作階段列表已過期，已重新載入。',
       externalImport: '匯入外部工作階段…',
       externalImportDescription: '來自目前連線的 Runtime Host',
       externalSourceTitle: '選擇外部來源',
@@ -1406,6 +1406,7 @@ export const TUI_COPY_RESOURCES = {
       externalAllWorkspaces: '顯示所有工作區',
       externalCurrentWorkspace: '僅顯示目前工作區',
       externalEmpty: '找不到外部工作階段。',
+      externalUnavailable: '目前頁的外部工作階段暫時無法匯入。',
       externalImportedCount: '已匯入 {count} 次',
       externalImportFailed: '無法匯入外部工作階段。',
       externalImportModelUnavailable: '沒有可用的模型連線。請先設定並啟用一個連線再匯入。',

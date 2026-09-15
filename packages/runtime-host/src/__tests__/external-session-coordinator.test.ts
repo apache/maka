@@ -31,7 +31,6 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import {
   ExternalSessionAdapterRegistry,
-  ExternalSessionCursorExpiredError,
   ExternalSessionLimitError,
   type ExternalSessionAdapter,
 } from '@maka/core/external-session';
@@ -45,10 +44,7 @@ import {
   EXTERNAL_SESSION_RESULT_MAX_BYTES,
 } from '../protocol/index.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
-import {
-  boundedCatalogPage,
-  HostExternalSessionCoordinator,
-} from '../server/external-session-coordinator.js';
+import { HostExternalSessionCoordinator } from '../server/external-session-coordinator.js';
 import {
   NoUsableImportModelError,
   SessionOperationFailure,
@@ -92,8 +88,8 @@ test('discovers detected adapters and pages bounded source summaries', async () 
   assert.equal(second.result.nextCursor, null);
 });
 
-test('keeps a Codex filesystem catalog snapshot stable while an unseen rollout changes', async () => {
-  const codexHome = await mkdtemp(join(tmpdir(), 'maka-codex-catalog-snapshot-'));
+test('Codex filesystem keyset paging never repeats a row moved ahead of the cursor', async () => {
+  const codexHome = await mkdtemp(join(tmpdir(), 'maka-codex-catalog-keyset-'));
   try {
     const directory = join(codexHome, 'sessions', '2026', '09', '15');
     await mkdir(directory, { recursive: true });
@@ -134,17 +130,19 @@ test('keeps a Codex filesystem catalog snapshot stable while an unseen rollout c
     );
     assert.ok(second.ok);
     const ids = [...first.result.sessions, ...second.result.sessions].map(({ id }) => id);
-    assert.equal(new Set(ids).size, 20);
+    assert.equal(new Set(ids).size, ids.length);
     assert.deepEqual(
       ids,
-      Array.from({ length: 20 }, (_, index) => `snapshot-${String(19 - index).padStart(2, '0')}`),
+      Array.from({ length: 20 }, (_, index) => 19 - index)
+        .filter((index) => index !== 1)
+        .map((index) => `snapshot-${String(index).padStart(2, '0')}`),
     );
   } finally {
     await rm(codexHome, { recursive: true, force: true });
   }
 });
 
-test('keeps a Codex state database catalog snapshot stable while an unseen thread changes', async () => {
+test('Codex state keyset paging never repeats a row moved ahead of the cursor', async () => {
   const codexHome = await mkdtemp(join(tmpdir(), 'maka-codex-state-catalog-snapshot-'));
   try {
     const directory = join(codexHome, 'sessions', '2026', '09', '15');
@@ -205,10 +203,12 @@ test('keeps a Codex state database catalog snapshot stable while an unseen threa
       );
       assert.ok(second.ok);
       const ids = [...first.result.sessions, ...second.result.sessions].map(({ id }) => id);
-      assert.equal(new Set(ids).size, 20);
+      assert.equal(new Set(ids).size, ids.length);
       assert.deepEqual(
         ids,
-        Array.from({ length: 20 }, (_, index) => `snapshot-${String(19 - index).padStart(2, '0')}`),
+        Array.from({ length: 20 }, (_, index) => 19 - index)
+          .filter((index) => index !== 1)
+          .map((index) => `snapshot-${String(index).padStart(2, '0')}`),
       );
     } finally {
       database.close();
@@ -251,22 +251,25 @@ test('advances the catalog cursor by source rows when an adapter row is not wire
   );
 });
 
-test('reports an expired source catalog cursor explicitly', async () => {
+test('rejects malformed numeric catalog cursors before calling an offset adapter', async () => {
+  let calls = 0;
   const adapter = adapterFixture();
-  adapter.listSessionPage = async () => {
-    throw new ExternalSessionCursorExpiredError();
+  adapter.listSessions = async () => {
+    calls += 1;
+    return [];
   };
   const fixture = coordinatorFixture([adapter]);
-  assert.deepEqual(
-    await fixture.coordinator.handlers['external-session.catalog.query'](
-      { adapterId: 'codex', cursor: 'expired' },
+
+  for (const cursor of ['NaN', '-1', '1.5']) {
+    const outcome = await fixture.coordinator.handlers['external-session.catalog.query'](
+      { adapterId: 'codex', cursor },
       context,
-    ),
-    {
-      ok: false,
-      error: { code: 'cursor_expired', message: 'External Session catalog expired' },
-    },
-  );
+    );
+    assert.equal(outcome.ok, false);
+    if (outcome.ok) assert.fail('Expected malformed cursor rejection');
+    assert.equal(outcome.error.code, 'invalid_request');
+  }
+  assert.equal(calls, 0);
 });
 
 test('resolves a Project filter before calling the Host adapter', async () => {
@@ -404,40 +407,6 @@ test('reports an unresolved import independently from durable import history', a
 
   releaseRead();
   assert.equal((await importing).ok, true);
-});
-
-test('a row too large to share a page still advances the cursor', () => {
-  // A row cannot reach the page budget through the request path — the per-field
-  // wire bounds cap it far below — so this drives the assembly directly. What it
-  // pins is the cursor: a page that carries one over-budget row must resume
-  // after it, not after the row the budget refused before it (which would step
-  // over every row in between) and not at the same offset (which would never
-  // move).
-  const oversized = (id: string, nextSourceCursor: number) => ({
-    session: {
-      id,
-      name: id,
-      hostCwd: `/${'x'.repeat(80 * 1024)}`,
-      importState: { importedCount: 0, importedSessionIds: [], isImporting: false },
-    },
-    nextSourceCursor,
-  });
-
-  const first = boundedCatalogPage([oversized('a', 1), oversized('b', 2), oversized('c', 3)], true);
-  assert.deepEqual(
-    first.sessions.map((session) => session.id),
-    ['a'],
-  );
-  assert.equal(first.nextSourceCursor, 1);
-
-  // Several such rows in a row: each page carries exactly one and moves on, so
-  // the walk still reaches every row.
-  const second = boundedCatalogPage([oversized('b', 2), oversized('c', 3)], true);
-  assert.deepEqual(
-    second.sessions.map((session) => session.id),
-    ['b'],
-  );
-  assert.equal(second.nextSourceCursor, 2);
 });
 
 test('the largest row the wire bounds allow still shares a page', async () => {

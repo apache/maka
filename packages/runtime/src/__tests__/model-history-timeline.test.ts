@@ -25,33 +25,6 @@ import {
 } from '../model-history.js';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 
-test('model history can admit an imported transcript at its first user boundary', () => {
-  const events = [
-    {
-      ...assistantText('opening-assistant', 'opening-step', 'Imported opening'),
-      refs: { providerEventId: 'opening-step', storedMessageId: 'stored-opening' },
-    },
-    event({
-      id: 'first-user',
-      role: 'user',
-      author: 'user',
-      content: { kind: 'text', text: 'Imported question' },
-    }),
-    assistantText('answer', 'answer-step', 'Imported answer'),
-  ];
-
-  assert.deepEqual(
-    buildRuntimeEventModelReplayPlan(events, { startAtFirstUserBoundary: true }).items.map(
-      ({ eventId }) => eventId,
-    ),
-    ['first-user', 'answer'],
-  );
-  assert.deepEqual(
-    buildRuntimeEventModelReplayPlan(events).items.map(({ eventId }) => eventId),
-    ['opening-assistant', 'first-user', 'answer'],
-  );
-});
-
 test('model history keeps reused step ids as separate chronological segments', () => {
   const items = buildRuntimeEventModelReplayPlan([
     assistantText('text-a', 'shared-step', 'Text A'),

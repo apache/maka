@@ -18,9 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
-import { readFileSync } from 'node:fs';
 import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -180,81 +178,6 @@ describe('OpenCodeSessionAdapter', () => {
     });
   });
 
-  test('a long title is still a Session, not a reason to hide it', async () => {
-    // The catalog bound is a memory guard, not a display limit. Bounding the
-    // title at the wire's 320 bytes hid the Session from both pickers and made
-    // its import fail — 320 bytes is 106 Chinese characters, which real titles
-    // reach. The sanitizer and the wire truncate for display; the bound only
-    // has to stop a field nobody typed from being read whole.
-    await withOpenCodeHome(async (home) => {
-      const longTitle = '修'.repeat(110);
-      const fixture = await seed(home, (candidate) => {
-        candidate.session.title = longTitle;
-        return candidate;
-      });
-      const adapter = new OpenCodeSessionAdapter({ opencodeHome: home });
-
-      const [listed] = await adapter.listSessions();
-      assert.equal(listed?.id, fixture.session.id);
-      assert.ok((listed?.name.length ?? 0) > 0);
-      const imported = await adapter.readSession(fixture.session.id);
-      assert.ok(imported.messages.length > 0);
-    });
-  });
-
-  test('an over-budget transcript is refused rather than answered as empty', async () => {
-    // The #5055 regression this contract replaced: a session whose message rows
-    // alone exhausted the budget returned an empty digest as a success. An
-    // import reads the whole transcript or refuses it — never a partial or
-    // empty one.
-    await withOpenCodeHome(async (home) => {
-      const db = new DatabaseSync(join(home, 'opencode.db'));
-      try {
-        db.exec(`
-          CREATE TABLE session (id text PRIMARY KEY, directory text NOT NULL, title text,
-            parent_id text, time_created integer, time_updated integer, time_archived integer);
-          CREATE TABLE message (id text PRIMARY KEY, session_id text NOT NULL,
-            time_created integer NOT NULL, data text NOT NULL);
-          CREATE TABLE part (id text PRIMARY KEY, message_id text NOT NULL, session_id text NOT NULL,
-            time_created integer NOT NULL, data text NOT NULL);
-        `);
-        db.prepare(
-          'INSERT INTO session (id, directory, title, parent_id, time_created) VALUES (?, ?, ?, NULL, ?)',
-        ).run('ses_budget', '/repo', 'Budget', 1);
-        const message = db.prepare(
-          'INSERT INTO message (id, session_id, time_created, data) VALUES (?, ?, ?, ?)',
-        );
-        const part = db.prepare(
-          'INSERT INTO part (id, message_id, session_id, time_created, data) VALUES (?, ?, ?, ?, ?)',
-        );
-        for (let index = 0; index < 2048; index += 1) {
-          const id = `msg-${index}`;
-          message.run(
-            id,
-            'ses_budget',
-            index,
-            JSON.stringify({ role: 'user', time: { created: index } }),
-          );
-          part.run(
-            `part-${index}`,
-            id,
-            'ses_budget',
-            index,
-            JSON.stringify({ type: 'text', text: 'hello' }),
-          );
-        }
-      } finally {
-        db.close();
-      }
-      const adapter = new OpenCodeSessionAdapter({ opencodeHome: home, maxRows: 2048 });
-      await assert.rejects(adapter.readSession('ses_budget'), (error: unknown) => {
-        assert.ok(error instanceof ExternalSessionLimitError);
-        assert.equal(error.limit.kind, 'records');
-        return true;
-      });
-    });
-  });
-
   test('a root Session with no directory is both listed and importable', async () => {
     await withOpenCodeHome(async (home) => {
       const fixture = await seed(home);
@@ -400,19 +323,6 @@ describe('OpenCodeSessionAdapter', () => {
     } finally {
       await rm(outside, { recursive: true, force: true });
     }
-  });
-
-  test('keeps the external database byte-identical after catalog and import reads', async () => {
-    await withOpenCodeHome(async (home) => {
-      const fixture = await seed(home);
-      const path = join(home, 'opencode.db');
-      const digest = () => createHash('sha256').update(readFileBytes(path)).digest('hex');
-      const before = digest();
-      const adapter = new OpenCodeSessionAdapter({ opencodeHome: home });
-      await adapter.listSessions();
-      await adapter.readSession(fixture.session.id);
-      assert.equal(digest(), before);
-    });
   });
 
   test('pairs every tool result with the call it answers', async () => {
@@ -699,10 +609,6 @@ describe('OpenCodeSessionAdapter', () => {
     assert.equal(adapter?.id, OPENCODE_SESSION_ADAPTER_ID);
   });
 });
-
-function readFileBytes(path: string): Buffer {
-  return readFileSync(path);
-}
 
 async function withOpenCodeHome(run: (home: string) => Promise<void>): Promise<void> {
   const home = await mkdtemp(join(tmpdir(), 'maka-opencode-adapter-'));

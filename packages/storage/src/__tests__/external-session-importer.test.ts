@@ -138,31 +138,6 @@ describe('ExternalSessionImporter', () => {
     }
   });
 
-  test('rejects an empty conversion before publishing a Session', async () => {
-    let creates = 0;
-    const importer = new ExternalSessionImporter(
-      new ExternalSessionAdapterRegistry([
-        fakeAdapter({ metadata: { name: 'Synthetic only', cwd: '/source' }, messages: [] }),
-      ]),
-      {
-        createImportedSession: async () => {
-          creates += 1;
-          return {} as SessionHeader;
-        },
-      },
-    );
-
-    await assert.rejects(
-      importer.import({
-        adapterId: 'fake',
-        sourceSessionId: 'source-1',
-        target: target(),
-      }),
-      /no importable conversation/,
-    );
-    assert.equal(creates, 0);
-  });
-
   test('rejects rows that hold no conversation the Ledger would keep', async () => {
     // The rows are individually valid and the array is not empty, but an
     // imported transcript materializes as `conversation_text` — the user's

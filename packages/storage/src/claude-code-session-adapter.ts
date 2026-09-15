@@ -77,11 +77,9 @@ const CLAUDE_TRANSCRIPT_MAX_RECORDS = 1_000_000;
  * hidden by a partial edge is the price: another visible title, or the Session
  * id, stands in for it.
  *
- * The byte window is the whole budget. A separate record count was tried and
- * removed: inside a byte window it can only ever fire on a transcript that is
- * entirely inside the window, which is a transcript that must read exactly as
- * a full read read it — truncating that turns a live session's `updatedAt`
- * stale and renames it in the picker.
+ * The byte window is the whole budget. A record-count limit inside that window
+ * could only reject a transcript already fully covered by the byte limit,
+ * leaving a live session's `updatedAt` stale and changing its picker name.
  */
 const CLAUDE_CATALOG_SUMMARY_HEAD_BYTES = 256 * 1024;
 const CLAUDE_CATALOG_SUMMARY_TAIL_BYTES = 256 * 1024;
@@ -533,7 +531,7 @@ function parseClaudeTranscriptLine(bytes: Buffer): TranscriptRecord | undefined 
       : undefined;
   } catch {
     // Interrupted writes leave a torn tail, while old transcripts can contain
-    // corrupt interior lines. Both were historically skipped so one bad line
+    // corrupt interior lines. Both are skipped so one bad line
     // does not erase an otherwise readable conversation.
     return undefined;
   }
@@ -565,7 +563,7 @@ async function readTranscriptSummary(path: string): Promise<TranscriptSummary | 
       // must not hide a real source Session either. File metadata is enough
       // for a stable selectable row; import reports any record limit later.
       if (info.size < CLAUDE_CATALOG_SUMMARY_HEAD_BYTES) return undefined;
-      return { cwd: '', title: '', updatedAt: info.mtimeMs, isSidechain: false };
+      return { cwd: scan.cwd, title: '', updatedAt: info.mtimeMs, isSidechain: false };
     }
     return {
       cwd: scan.cwd,
@@ -617,7 +615,65 @@ async function readSummaryHead(
   const completeEnd =
     bytesRead === size || endsOnBoundary ? bytesRead : buffer.lastIndexOf(0x0a, bytesRead - 1) + 1;
   const records = observeSummaryLines(transcriptLines(buffer.subarray(0, completeEnd)), scan);
+  if (!scan.cwd) scan.cwd = topLevelJsonStringField(buffer.subarray(0, bytesRead), 'cwd') ?? '';
   return { records, end: bytesRead, endsOnBoundary };
+}
+
+function topLevelJsonStringField(buffer: Buffer, field: string): string | undefined {
+  const text = buffer.toString('utf8');
+  let depth = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    if (char === '{' || char === '[') {
+      depth += 1;
+      continue;
+    }
+    if (char === '}' || char === ']') {
+      depth -= 1;
+      continue;
+    }
+    if (char !== '"') continue;
+    const end = jsonStringEnd(text, index);
+    if (end === undefined) return undefined;
+    if (depth === 1) {
+      let colon = end + 1;
+      while (/\s/u.test(text[colon] ?? '')) colon += 1;
+      if (text[colon] === ':') {
+        const key = parseJsonString(text, index, end);
+        if (key === field) {
+          let valueStart = colon + 1;
+          while (/\s/u.test(text[valueStart] ?? '')) valueStart += 1;
+          if (text[valueStart] !== '"') return undefined;
+          const valueEnd = jsonStringEnd(text, valueStart);
+          if (valueEnd === undefined) return undefined;
+          const value = parseJsonString(text, valueStart, valueEnd);
+          return value || undefined;
+        }
+      }
+    }
+    index = end;
+  }
+  return undefined;
+}
+
+function parseJsonString(text: string, start: number, end: number): string | undefined {
+  try {
+    const value = JSON.parse(text.slice(start, end + 1)) as unknown;
+    return typeof value === 'string' ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function jsonStringEnd(text: string, start: number): number | undefined {
+  let escaped = false;
+  for (let index = start + 1; index < text.length; index += 1) {
+    const char = text[index];
+    if (escaped) escaped = false;
+    else if (char === '\\') escaped = true;
+    else if (char === '"') return index;
+  }
+  return undefined;
 }
 
 /**
@@ -745,10 +801,6 @@ function claudeUserAuthoredText(record: TranscriptRecord): string | undefined {
   if (record.isMeta === true || record.isCompactSummary === true) return undefined;
   const text = claudeMessageText(record);
   return text === undefined || isSyntheticClaudeUserText(text) ? undefined : text;
-}
-
-function claudeAssistantText(record: TranscriptRecord): string | undefined {
-  return claudeMessageText(record);
 }
 
 function claudeMessageText(record: TranscriptRecord): string | undefined {
@@ -1006,7 +1058,7 @@ class ClaudeTranscriptConverter {
         });
       }
       const text = fragments
-        .map((fragment) => claudeAssistantText(fragment))
+        .map((fragment) => claudeMessageText(fragment))
         .filter((part): part is string => part !== undefined && part.length > 0)
         .join('\n\n');
       if (text) {
@@ -1041,19 +1093,8 @@ class ClaudeTranscriptConverter {
       return;
     }
 
-    // The compaction boundary, keyed on the record that states it.
-    //
-    // It used to be keyed on `isCompactSummary`, which belongs to the summary
-    // *user* record — and that record is consumed by the `user` branch above
-    // and never reaches here, so the note was never emitted. The import then
-    // carried the pre-boundary history flat with nothing saying a compaction
-    // had happened, while `claudeUserAuthoredText` dropped the summary itself
-    // for being `isCompactSummary`: both halves of the event lost at once.
-    //
-    // Pre-boundary records stay. They are the conversation that actually
-    // happened — 24,695 of them across the 5 compacted transcripts here — and
-    // the boundary marks where the model's context restarted, which is the
-    // part a reader cannot reconstruct from the messages themselves.
+    // Preserve pre-boundary records and emit the boundary from the record that
+    // states it, so readers can see where the model context restarted.
     if (record.subtype === 'compact_boundary') {
       if (!this.#turn) {
         this.#pendingCompactBoundaryTs = ts;

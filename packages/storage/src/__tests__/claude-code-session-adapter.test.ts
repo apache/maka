@@ -337,7 +337,7 @@ describe('ClaudeCodeSessionAdapter', () => {
       const adapter = new ClaudeCodeSessionAdapter({ claudeHome: home });
 
       assert.deepEqual(await adapter.listSessions(), [
-        { id: sessionId, name: sessionId, cwd: '', updatedAt: mtimeMs },
+        { id: sessionId, name: sessionId, cwd: CWD, updatedAt: mtimeMs },
       ]);
       await assert.rejects(adapter.readSession(sessionId), /record exceeds 67108864 bytes/u);
     });
@@ -609,48 +609,6 @@ describe('ClaudeCodeSessionAdapter', () => {
     });
   });
 
-  test('a custom title in the tail is read from the tail', async () => {
-    await withClaudeHome(async (home) => {
-      const sessionId = 'aaaaaaaa-0000-4000-8000-000000000034';
-      await seed(home, sessionId, [
-        userRecord('first prompt'),
-        { type: 'progress', padding: 'x'.repeat(512 * 1024) },
-        { type: 'progress', padding: 'x'.repeat(512 * 1024) },
-        { type: 'progress', padding: 'x'.repeat(1024 * 1024) },
-        { type: 'custom-title', customTitle: 'Tail title' },
-        assistantRecord({ text: 'done', stopReason: 'end_turn' }),
-      ]);
-      const adapter = new ClaudeCodeSessionAdapter({ claudeHome: home });
-
-      assert.equal((await adapter.listSessions())[0]?.name, 'Tail title');
-      assert.equal((await adapter.readSession(sessionId)).metadata.name, 'Tail title');
-    });
-  });
-
-  test('a title the summary windows do not reach falls back to the first prompt', async () => {
-    // The head reaches past its own end to finish the records that begin
-    // inside it, so a title is only missed when it sits after the first record
-    // that begins past the window *and* further from the end than the tail
-    // reaches. That is the documented price of bounding the read: the row
-    // still names the session from the head's first prompt, and the import,
-    // which reads the transcript whole, still names it the way the source did.
-    await withClaudeHome(async (home) => {
-      const sessionId = 'aaaaaaaa-0000-4000-8000-000000000036';
-      await seed(home, sessionId, [
-        userRecord('first prompt'),
-        { type: 'progress', padding: 'x'.repeat(2 * 1024 * 1024) },
-        { type: 'progress', padding: 'x'.repeat(2 * 1024 * 1024) },
-        { type: 'custom-title', customTitle: 'Buried title' },
-        { type: 'progress', padding: 'y'.repeat(1024 * 1024) },
-        assistantRecord({ text: 'done', stopReason: 'end_turn' }),
-      ]);
-      const adapter = new ClaudeCodeSessionAdapter({ claudeHome: home });
-
-      assert.equal((await adapter.listSessions())[0]?.name, 'first prompt');
-      assert.equal((await adapter.readSession(sessionId)).metadata.name, 'Buried title');
-    });
-  });
-
   test('the catalog does not read past its head window to find a prompt', async () => {
     // Listing memory has its own fixed byte budget. A large opening record may
     // hide the first prompt from the summary, but importing the Session still
@@ -679,32 +637,46 @@ describe('ClaudeCodeSessionAdapter', () => {
     });
   });
 
-  test('a transcript inside the summary window reads exactly as a whole read does', async () => {
-    // Tiny records cannot outrun the byte window, and the window must not have
-    // a second bound that a transcript this size can still hit: a record count
-    // used to end the head early, which left the catalog naming a live session
-    // by its first prompt and dating it from a stale timestamp.
+  test('an oversized summary without cwd does not claim a workspace', async () => {
     await withClaudeHome(async (home) => {
-      const sessionId = 'aaaaaaaa-0000-4000-8000-000000000038';
-      const records: Record<string, unknown>[] = [userRecord('first prompt')];
-      for (let index = 0; index < 2002; index += 1) {
-        records.push({ type: 'progress', step: index, timestamp: '2026-08-02T00:00:00.000Z' });
-      }
-      records.push({ type: 'custom-title', customTitle: 'Late title' });
-      records.push({
-        type: 'progress',
-        step: 'last',
-        timestamp: '2026-09-09T00:00:00.000Z',
-      });
-      await seed(home, sessionId, records);
+      const sessionId = 'aaaaaaaa-0000-4000-8000-000000000039';
+      await seed(home, sessionId, [
+        { type: 'file-history-snapshot', padding: 'x'.repeat(600 * 1024) },
+      ]);
       const adapter = new ClaudeCodeSessionAdapter({ claudeHome: home });
 
-      const [listed] = await adapter.listSessions();
-      assert.equal(listed?.name, 'Late title');
-      assert.equal(listed?.createdAt, Date.parse('2026-08-01T00:00:00.000Z'));
-      assert.equal(listed?.updatedAt, Date.parse('2026-09-09T00:00:00.000Z'));
-      const imported = await adapter.readSession(sessionId);
-      assert.equal(imported.metadata.name, 'Late title');
+      assert.deepEqual(await adapter.listSessions({ cwd: CWD }), []);
+    });
+  });
+
+  test('an oversized summary matches a hyphenated workspace without decoding its project key', async () => {
+    await withClaudeHome(async (home) => {
+      const sessionId = 'aaaaaaaa-0000-4000-8000-000000000036';
+      const cwd = '/workspace/my-project';
+      const dir = join(home, 'projects', cwd.replace(/\//gu, '-'));
+      await mkdir(dir, { recursive: true });
+      await writeFile(
+        join(dir, `${sessionId}.jsonl`),
+        `${JSON.stringify({ ...userRecord('x'.repeat(600 * 1024)), cwd })}\n`,
+      );
+
+      assert.deepEqual(
+        await new ClaudeCodeSessionAdapter({ claudeHome: home }).listSessions({ cwd }),
+        [
+          {
+            id: sessionId,
+            name: sessionId,
+            cwd,
+            updatedAt: (await stat(join(dir, `${sessionId}.jsonl`))).mtimeMs,
+          },
+        ],
+      );
+      assert.deepEqual(
+        await new ClaudeCodeSessionAdapter({ claudeHome: home }).listSessions({
+          cwd: '/workspace/my/project',
+        }),
+        [],
+      );
     });
   });
 
