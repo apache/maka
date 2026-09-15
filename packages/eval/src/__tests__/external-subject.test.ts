@@ -122,7 +122,7 @@ test('a checkpoint the proxy never settled is a lower bound however complete it 
     admittedRequests: 1,
     usageRequests: 1,
     removedWebTools: 0,
-    models: [],
+    models: ['kimi-k3'],
     toolNames: [],
   };
   try {
@@ -151,7 +151,18 @@ test('a checkpoint the proxy never settled is a lower bound however complete it 
     );
     assert.equal(settled?.artifact.usageComplete, true);
     assert.equal(settled?.artifact.tokenBasis, 'complete');
-    assert.ok((settled?.costUsd ?? 0) > 0);
+    assert.equal(settled?.costUsd, 0.000384);
+
+    await writeSignedCheckpoint(join(trialPath, 'agent/codex.provider-usage.json'), {
+      ...checkpoint,
+      settled: true,
+      models: ['kimi-k3', 'unknown-model'],
+    });
+    assert.equal(
+      (await recoverExternalMetering({ trialPath, meteringSecret: METERING_SECRET }, 'codex'))
+        ?.costUsd,
+      null,
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }

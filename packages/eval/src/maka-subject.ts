@@ -27,8 +27,7 @@ import {
   MAKA_SUBJECT_STDERR_PATH,
   MAKA_SUBJECT_STDOUT_PATH,
 } from './maka-artifacts.js';
-import { deepSeekCostUsd } from './provider-metering.js';
-import type { NormalizedUsage } from './result.js';
+import { modelCostUsd } from './provider-metering.js';
 import type { SubjectAdapter, SubjectExecutionContext } from './runner.js';
 
 export function createMakaSubjectAdapter(): SubjectAdapter {
@@ -83,7 +82,7 @@ export function createMakaSubjectAdapter(): SubjectAdapter {
         const settled = projection?.kind === 'settled' ? projection : undefined;
         return {
           usage: settled?.usage ?? null,
-          costUsd: settled ? estimateDeepSeekCost(settled.usage, config.model) : null,
+          costUsd: settled ? modelCostUsd(settled.usage, config.model) : null,
           durationMs: Date.now() - startedAt,
           status: 'failed' as const,
           failureReason: 'Maka subject exceeded the framework timeout',
@@ -131,7 +130,7 @@ export function createMakaSubjectAdapter(): SubjectAdapter {
         // billed at the runtime's rates and the others at this package's --
         // a difference in the reported figure that no agent behaviour caused.
         // It is kept as evidence below rather than used as the authority.
-        costUsd: estimateDeepSeekCost(projection.usage, config.model),
+        costUsd: modelCostUsd(projection.usage, config.model),
         durationMs: Date.now() - startedAt,
         status,
         failureReason,
@@ -327,9 +326,4 @@ function positiveInteger(value: unknown, where: string): number {
 function positive(value: unknown, where: string): number {
   if (!Number.isSafeInteger(value) || (value as number) < 1) throw new Error(`${where} is invalid`);
   return value as number;
-}
-
-function estimateDeepSeekCost(usage: NormalizedUsage, model: string): number | null {
-  if (model !== 'deepseek-v4-flash') return null;
-  return deepSeekCostUsd(usage);
 }

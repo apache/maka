@@ -158,7 +158,7 @@ test('provider failures remain infrastructure failures until inference admission
     const child = join(root, 'child.mjs');
     await writeFile(
       child,
-      "if(process.env.OPENAI_API_KEY||process.env.ANTHROPIC_API_KEY||process.env.DEEPSEEK_API_KEY!=='maka-eval-local'||process.env.MAKA_EVAL_RESULT_TOKEN)process.exit(9);await fetch(`${process.env.DEEPSEEK_BASE_URL}/responses`,{method:'POST',body:'{}'});console.error('stderr-sentinel-must-not-persist');console.log('stdout-sentinel-must-not-persist');console.log(JSON.stringify({type:'error'}));process.exit(1);\n",
+      "if(process.env.OPENAI_API_KEY||process.env.ANTHROPIC_API_KEY||process.env.DEEPSEEK_API_KEY!=='maka-eval-local'||process.env.MAKA_EVAL_RESULT_TOKEN)process.exit(9);await fetch(`${process.env.DEEPSEEK_BASE_URL}/responses`,{method:'POST',body:'{\"model\":\"deepseek-v4-flash\"}'});console.error('stderr-sentinel-must-not-persist');console.log('stdout-sentinel-must-not-persist');console.log(JSON.stringify({type:'error'}));process.exit(1);\n",
     );
     try {
       const wrapper = new URL('../harbor-external-subject.js', import.meta.url);

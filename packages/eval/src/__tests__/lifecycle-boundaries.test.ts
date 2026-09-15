@@ -504,6 +504,21 @@ test('Maka framework termination is authoritative before stdout decoding', async
     { kind: 'subject-reported-cost', costUsd: reported },
   );
 
+  const kimi = await executeMaka(
+    'exited',
+    (executionId) =>
+      JSON.stringify({
+        executionId,
+        kind: 'settled',
+        status: 'completed',
+        usage: usage(),
+        costUsd: reported,
+      }),
+    undefined,
+    'kimi-k3',
+  );
+  assert.equal(kimi.costUsd, 0.0001299);
+
   const external = await createExternalSubjectAdapter().execute({
     cell: cell('external', { command: '/opt/competitor', args: [], result: 'exit-code' }),
     context: {
@@ -1276,9 +1291,10 @@ async function executeMaka(
   termination: 'exited' | 'framework_timeout',
   stdout: (executionId: string) => string,
   diagnostic?: Awaited<ReturnType<SubjectExecutionContext['execute']>>['diagnostic'],
+  model = 'deepseek-v4-flash',
 ) {
   return createMakaSubjectAdapter().execute({
-    cell: cell('maka', makaConfig()),
+    cell: cell('maka', { ...makaConfig(), model }),
     context: {
       cwd: '/app',
       taskInput: 'solve',

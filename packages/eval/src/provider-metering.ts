@@ -69,21 +69,25 @@ export function deriveMetering(counts: ProviderMeteringCounts): DerivedMetering 
     counts.settled &&
     counts.admittedRequests > 0 &&
     counts.usageRequests === counts.admittedRequests;
+  const models = [...new Set(counts.models)];
   return {
     settledRequests: counts.requests - counts.inFlightRequests,
     missingUsageRequests: counts.admittedRequests - counts.usageRequests,
     usageComplete,
-    costUsd: counts.usage && usageComplete ? deepSeekCostUsd(counts.usage) : null,
+    costUsd:
+      counts.usage && usageComplete && models.length === 1
+        ? modelCostUsd(counts.usage, models[0]!)
+        : null,
     tokenBasis: usageComplete ? 'complete' : 'lower-bound',
   };
 }
 
 // Published DeepSeek V4 Flash prices, in USD per million tokens. Eval bills
-// every arm from this table rather than from each arm's own transcription of
-// it, so a difference in reported cost can only come from a difference in what
-// the agent spent. Pi is additionally handed the table for its own display; the
-// other frameworks are given no cost block at all, which is why their figures
-// are not consulted here.
+// from its model table rather than from each subject's own transcription, so a
+// difference in reported cost can only come from a difference in what the agent
+// spent. Pi is additionally handed this entry for its own display; the other
+// frameworks are given no cost block, which is why their figures are not
+// consulted here.
 //
 // Rates as published 2026-08-17, normalized at the off-peak band: DeepSeek
 // bills peak hours (01:00–04:00 and 06:00–10:00 UTC) at exactly double these,
@@ -102,16 +106,47 @@ export const DEEPSEEK_V4_FLASH_COST = {
   cacheWrite: 0.22,
 } as const;
 
+// International Kimi API prices published 2026-09-15. Kimi's automatic cache
+// has hit and miss rates but no separate write rate, so a reported cache write
+// remains an input miss just as it does for DeepSeek.
+const KIMI_K3_COST = {
+  input: 3,
+  output: 15,
+  cacheRead: 0.3,
+  cacheWrite: 3,
+} as const;
+
+const MODEL_COSTS: Readonly<Record<string, ModelCost>> = {
+  'deepseek-v4-flash': DEEPSEEK_V4_FLASH_COST,
+  'kimi-k3': KIMI_K3_COST,
+};
+
 // `inputTokens` is normalized to include both cached kinds, so each kind is
 // subtracted out and charged at its own rate. Leaving cache writes subtracted
 // but unpriced billed them at zero.
 export function deepSeekCostUsd(usage: ProviderUsage): number {
+  return costUsd(usage, DEEPSEEK_V4_FLASH_COST);
+}
+
+export function modelCostUsd(usage: ProviderUsage, model: string): number | null {
+  const cost = MODEL_COSTS[model];
+  return cost ? costUsd(usage, cost) : null;
+}
+
+interface ModelCost {
+  readonly input: number;
+  readonly output: number;
+  readonly cacheRead: number;
+  readonly cacheWrite: number;
+}
+
+function costUsd(usage: ProviderUsage, cost: ModelCost): number {
   const uncached = Math.max(0, usage.inputTokens - usage.cacheReadTokens - usage.cacheWriteTokens);
   return (
-    (uncached * DEEPSEEK_V4_FLASH_COST.input +
-      usage.cacheReadTokens * DEEPSEEK_V4_FLASH_COST.cacheRead +
-      usage.cacheWriteTokens * DEEPSEEK_V4_FLASH_COST.cacheWrite +
-      usage.outputTokens * DEEPSEEK_V4_FLASH_COST.output) /
+    (uncached * cost.input +
+      usage.cacheReadTokens * cost.cacheRead +
+      usage.cacheWriteTokens * cost.cacheWrite +
+      usage.outputTokens * cost.output) /
     1_000_000
   );
 }
