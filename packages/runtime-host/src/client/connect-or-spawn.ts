@@ -36,6 +36,7 @@ import {
   connectResolvedRuntimeHost,
   type ConnectRuntimeHostResult,
   type RuntimeHostConnection,
+  type RuntimeHostConnectionFailure,
 } from './connection.js';
 import {
   launchDetachedRuntimeHostCandidate,
@@ -158,6 +159,7 @@ export interface RuntimeHostElectionDiagnostic {
   readonly elapsedMs: number;
   readonly candidateLaunches: number;
   readonly sawEndpointConnected: boolean;
+  readonly lastConnectionFailure?: RuntimeHostConnectionFailure;
   readonly observations: {
     readonly totalResults: number;
     readonly notRegistered: number;
@@ -341,6 +343,7 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
   const candidateLaunches = new Set<ReturnType<CandidateLauncher>>();
   let sawEndpointConnected = false;
   let lastRegistration: HostRegistration | undefined;
+  let lastConnectionFailure: RuntimeHostConnectionFailure | undefined;
   let latestCandidate: ObservedCandidateAttempt | undefined;
   const observations: MutableElectionObservations = {
     totalResults: 0,
@@ -371,6 +374,9 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
         electionDeadline: deadline,
       });
       const observed = recordElectionResult(result, observations);
+      if (result.kind === 'unavailable' && result.connectionFailure) {
+        lastConnectionFailure = result.connectionFailure;
+      }
       if (observed.registration) lastRegistration = observed.registration;
       if (observed.endpointConnected) sawEndpointConnected = true;
       if (result.kind === 'election_deadline_elapsed') {
@@ -566,6 +572,7 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
         sawEndpointConnected,
         observations,
         lastRegistration,
+        lastConnectionFailure,
         latestCandidate,
       }),
     };
@@ -639,6 +646,7 @@ function createElectionDiagnostic(input: {
   readonly sawEndpointConnected: boolean;
   readonly observations: MutableElectionObservations;
   readonly lastRegistration: HostRegistration | undefined;
+  readonly lastConnectionFailure: RuntimeHostConnectionFailure | undefined;
   readonly latestCandidate: ObservedCandidateAttempt | undefined;
 }): RuntimeHostElectionDiagnostic {
   const candidate = input.latestCandidate;
@@ -648,6 +656,7 @@ function createElectionDiagnostic(input: {
     candidateLaunches: input.candidateLaunches,
     sawEndpointConnected: input.sawEndpointConnected,
     observations: { ...input.observations },
+    ...(input.lastConnectionFailure ? { lastConnectionFailure: input.lastConnectionFailure } : {}),
     ...(input.lastRegistration
       ? {
           lastRegistration: {
