@@ -134,7 +134,21 @@ export function safeSendToRenderer(channel: string, ...args: unknown[]): void {
   const recipients = new Set(auxiliaryRenderers);
   if (mainWindow && !mainWindow.isDestroyed()) recipients.add(mainWindow.webContents);
   for (const contents of recipients) {
-    if (!contents.isDestroyed()) contents.send(channel, ...args);
+    const frame = liveMainFrame(contents);
+    if (frame) frame.send(channel, ...args);
+  }
+}
+
+function liveMainFrame(contents: Electron.WebContents): Electron.WebFrameMain | undefined {
+  if (contents.isDestroyed()) return undefined;
+  try {
+    const frame = contents.mainFrame;
+    return frame.isDestroyed() ? undefined : frame;
+  } catch {
+    // WebContents can outlive its Renderer generation. Electron may dispose
+    // the main frame between process loss/navigation and the replacement
+    // document, so broadcasts wait for the next live generation.
+    return undefined;
   }
 }
 

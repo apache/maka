@@ -419,13 +419,35 @@ test('application broadcasts reach registered auxiliaries once and stop after re
     onRendererProcessGone: () => undefined,
   });
   const messages: string[] = [];
-  const renderer = Object.assign(new EventEmitter(), {
+  const destroyedFrame = {
+    isDestroyed: () => true,
+    send: (channel: string) => { messages.push(channel); },
+  } as unknown as Electron.WebFrameMain;
+  const liveFrame = {
     isDestroyed: () => false,
     send: (channel: string) => { messages.push(channel); },
+  } as unknown as Electron.WebFrameMain;
+  let mainFrame: Electron.WebFrameMain = destroyedFrame;
+  let mainFrameUnavailable = false;
+  const renderer = Object.assign(new EventEmitter(), {
+    isDestroyed: () => false,
   }) as unknown as Electron.WebContents;
+  Object.defineProperty(renderer, 'mainFrame', {
+    get: () => {
+      if (mainFrameUnavailable) throw new Error('Renderer frame is being replaced');
+      return mainFrame;
+    },
+  });
   const release = controller.registerAuxiliaryRenderer(renderer);
   assert.equal(controller.ownsRenderer(renderer), true);
-  controller.send('settings:changed');
+  assert.doesNotThrow(() => controller.send('settings:changed'));
+  assert.deepEqual(messages, []);
+  mainFrameUnavailable = true;
+  assert.doesNotThrow(() => controller.send('settings:changed'));
+  assert.deepEqual(messages, []);
+  mainFrameUnavailable = false;
+  mainFrame = liveFrame;
+  assert.doesNotThrow(() => controller.send('settings:changed'));
   assert.deepEqual(messages, ['settings:changed']);
   release();
   controller.send('settings:changed');
