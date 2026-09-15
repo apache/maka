@@ -25,7 +25,11 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
-import { resolveStorageRoot } from '@maka/storage/root-authority';
+import {
+  prepareStorageRootControlDirectory,
+  resolveStorageRoot,
+  tryAcquireInteractiveRootOwner,
+} from '@maka/storage/root-authority';
 import {
   readCandidateStartupDiagnostic,
   resolveCandidateStartupDiagnosticPath,
@@ -36,6 +40,79 @@ const CANDIDATE_ENTRYPOINT = fileURLToPath(
 );
 const ROOT_ID = 'a'.repeat(64);
 const STARTUP_ATTEMPT_ID = '00000000-0000-4000-8000-000000000001';
+
+test('execution imports happen after local admission and are skipped by losing candidates', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-candidate-import-'));
+  const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+  const { controlDirectory } = await prepareStorageRootControlDirectory(capability);
+  const executionModule = new URL('../server/execution-composition.js', import.meta.url).href;
+  // Replace the expensive module with an import that checks the externally
+  // observable listener before failing. An eager import fails before the
+  // candidate's startup error handling or owner election is installed.
+  const probe = `
+    import assert from 'node:assert/strict';
+    import { readFile } from 'node:fs/promises';
+    import { connect } from 'node:net';
+    const registration = JSON.parse(await readFile(${JSON.stringify(join(controlDirectory, 'registration.json'))}, 'utf8'));
+    assert.equal(registration.state, 'recovering');
+    await new Promise((resolve, reject) => {
+      const socket = connect(registration.endpoint);
+      socket.once('error', reject);
+      socket.once('connect', () => { socket.destroy(); resolve(); });
+    });
+    console.log('listener reachable before execution import');
+    throw new Error('injected execution import failure');
+    export const createExecutionRuntimeHostComposition = undefined;
+  `;
+  const bootstrap = `
+    import { registerHooks } from 'node:module';
+    registerHooks({ load(url, context, nextLoad) {
+      return url === ${JSON.stringify(executionModule)}
+        ? { format: 'module', shortCircuit: true, source: ${JSON.stringify(probe)} }
+        : nextLoad(url, context);
+    } });
+    process.argv.splice(1, 0, ${JSON.stringify(CANDIDATE_ENTRYPOINT)});
+    await import(${JSON.stringify(new URL('../execution-candidate-main.js', import.meta.url).href)});
+  `;
+  const run = () =>
+    spawnSync(
+      process.execPath,
+      [
+        '--input-type=module',
+        '-e',
+        bootstrap,
+        '--',
+        '--root',
+        root,
+        '--expected-root-id',
+        capability.rootId,
+        '--startup-attempt-id',
+        randomUUID(),
+      ],
+      { encoding: 'utf8', timeout: 20_000, windowsHide: true },
+    );
+  try {
+    const winner = run();
+    assert.equal(winner.status, 70, winner.stderr);
+    assert.match(winner.stdout, /listener reachable before execution import/u);
+    assert.match(winner.stderr, /\[runtime-host\] startup failed:/u);
+    assert.match(winner.stderr, /injected execution import failure/u);
+
+    const owner = await tryAcquireInteractiveRootOwner(capability);
+    assert.ok(owner);
+    try {
+      const loser = run();
+      assert.equal(loser.status, 2, loser.stderr);
+      assert.equal(loser.stderr, '');
+      assert.equal(loser.stdout, '');
+    } finally {
+      await owner.close();
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(controlDirectory, { recursive: true, force: true });
+  }
+});
 
 test('classifies invalid candidate arguments as an internal startup failure', () => {
   const result = spawnSync(

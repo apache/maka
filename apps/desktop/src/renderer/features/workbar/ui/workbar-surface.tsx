@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { useWorkbarServices } from '../services-context.js';
 import { lazy, Suspense, useState, type ReactNode } from 'react';
 import { Composer, useUiLocale, type ChatModelChoice } from '@maka/ui';
 import {
@@ -78,7 +79,7 @@ const BrowserPanel = lazy(() =>
   import('../tools/browser/browser-panel').then((module) => ({ default: module.BrowserPanel })),
 );
 const SessionInspectorPanel = lazy(() =>
-  import('../tools/inspector/session-inspector-panel').then((module) => ({
+  import('../../../application/contracts/session-inspector/session-inspector-panel.js').then((module) => ({
     default: module.SessionInspectorPanel,
   })),
 );
@@ -419,6 +420,7 @@ export function WorkbarSurface(props: {
   workBoardStartTaskEnabled?: boolean;
   confirmBypass: () => Promise<boolean>;
 }) {
+  const { inspector } = useWorkbarServices();
   const locale = useUiLocale();
   const copy = getDesktopConversationCopy(locale).workbar;
   const [artifactCount, setArtifactCount] = useState({ sessionId: props.sessionId, count: 0 });
@@ -559,6 +561,8 @@ export function WorkbarSurface(props: {
           content = (
             <Suspense fallback={<WorkbarPanelLoading label={copy.inspector} />}>
               <SessionInspectorPanel
+                inspector={inspector}
+                copy={getDesktopConversationCopy(locale).inspector}
                 key={props.sessionId}
                 sessionId={props.sessionId!}
                 active={!props.hidden && active}

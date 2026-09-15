@@ -19,16 +19,18 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type {
-  PlanEvent,
-  PlanExecution,
-  PlanExecutionStep,
-  PlanMutationResult,
-  PlanSessionState,
-  PlanStore,
+import {
+  emptyPlanSessionState,
+  type PlanEvent,
+  type PlanExecution,
+  type PlanExecutionStep,
+  type PlanMutationResult,
+  type PlanSessionState,
+  type PlanStore,
 } from '@maka/core/plan';
 import { createDefaultRuntimePolicy } from '@maka/core/runtime-policy';
 import type { SessionTodoToolStore } from '@maka/runtime/session-todo-tools';
+import { z } from 'zod';
 import type { MakaTool, MakaToolContext } from '@maka/runtime/tool-runtime';
 import { createInteractiveRunComposer } from '../server/interactive-run-composer.js';
 import type { HostMemoryCoordinator } from '../server/memory-coordinator.js';
@@ -122,8 +124,54 @@ test('scoped Tool resolution receives the complete stable Host binding', () => {
   );
 });
 
+test('Full access composes Bash without a boundary declaration and without the widening tool', () => {
+  const bashKeys = (permissionMode: 'bypass' | 'ask' | undefined) => {
+    const composer = createFixtureComposer({
+      builtinTools: unusedManagedShellBuiltinTools(),
+      ...(permissionMode
+        ? {
+            plan: {
+              store: {} as PlanStore,
+              state: emptyPlanSessionState('session'),
+              mode: 'agent' as const,
+              permissionMode,
+            },
+          }
+        : {}),
+    });
+    const tools = composer.resolveTools?.() ?? [];
+    const bash = tools.find(({ name }) => name === 'Bash');
+    assert.ok(bash);
+    return {
+      keys: Object.keys(z.toJSONSchema(bash.parameters as z.ZodTypeAny).properties ?? {}),
+      widening: tools.some(({ name }) => name === 'request_sandbox_boundary'),
+      enforced: bash.description.includes('Enforced by the current session sandbox boundary.'),
+    };
+  };
+  assert.deepEqual(bashKeys('bypass'), {
+    keys: ['command', 'timeout_ms', 'run_in_background', 'pty'],
+    widening: false,
+    enforced: false,
+  });
+  for (const mode of ['ask', undefined] as const) {
+    assert.deepEqual(bashKeys(mode), {
+      keys: [
+        'command',
+        'timeout_ms',
+        'run_in_background',
+        'pty',
+        'boundary_intent',
+        'required_boundary',
+      ],
+      widening: true,
+      enforced: true,
+    });
+  }
+});
+
 test('an explicit tool profile remains an exact ceiling over scoped Tool additions', () => {
   const composer = createFixtureComposer({
+    builtinTools: unusedManagedShellBuiltinTools(),
     toolProfile: 'headless-coding-v1',
     resolveAdditionalTools: () => [tool('Read'), tool('plugin_only')],
   });
@@ -415,6 +463,17 @@ function toolContext(): MakaToolContext {
     cwd: '/workspace',
     abortSignal: new AbortController().signal,
     emitOutput: () => {},
+  };
+}
+
+function unusedManagedShellBuiltinTools(): Parameters<
+  typeof createInteractiveRunComposer
+>[0]['builtinTools'] {
+  const unused = () => Promise.reject(new Error('not used'));
+  return {
+    shellRuns: { runForegroundBash: unused, runBackgroundBash: unused },
+    backgroundTasks: { stopBackgroundTask: unused },
+    ptyControls: { writeStdin: unused },
   };
 }
 

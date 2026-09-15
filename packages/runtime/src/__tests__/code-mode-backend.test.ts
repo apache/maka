@@ -601,7 +601,7 @@ test('keeps direct-only tools out of the cell snapshot', async () => {
     (event): event is Extract<SessionEvent, { type: 'tool_result' }> =>
       event.type === 'tool_result' && event.toolUseId === 'exec-1',
   );
-  assert.match(JSON.stringify(execResult?.content), /unknown_tool/);
+  assert.match(JSON.stringify(execResult?.content), /execution_error/);
 });
 
 test('keeps provider-native tools out of the cell snapshot', async () => {
@@ -638,7 +638,7 @@ test('keeps provider-native tools out of the cell snapshot', async () => {
     (event): event is Extract<SessionEvent, { type: 'tool_result' }> =>
       event.type === 'tool_result' && event.toolUseId === 'exec-1',
   );
-  assert.match(JSON.stringify(execResult?.content), /unknown_tool/);
+  assert.match(JSON.stringify(execResult?.content), /execution_error/);
 });
 
 test('validates nested arguments before ToolRuntime implementation dispatch', async () => {

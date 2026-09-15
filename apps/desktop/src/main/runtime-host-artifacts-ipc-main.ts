@@ -35,6 +35,7 @@ import {
 } from "./ipc-reconnect-policy.js";
 import type { createMainWindowController } from "./main-window.js";
 import type { DesktopRuntimeHostClient } from "./runtime-host-client.js";
+import type { ManagedArtifactPreview } from './managed-artifact-preview.js';
 
 interface RuntimeHostArtifactsIpcDeps {
   uiLocale(): UiLocale;
@@ -43,6 +44,7 @@ interface RuntimeHostArtifactsIpcDeps {
   readonly mainWindowController: ReturnType<typeof createMainWindowController>;
   readonly showItemInFolder: (path: string) => void;
   readonly openPath?: (path: string) => Promise<string>;
+  readonly preview?: { service: ManagedArtifactPreview; scope: string; openExternal: (url: string) => Promise<void> };
   readonly presentationRoot?: string;
 }
 
@@ -79,8 +81,11 @@ export function registerRuntimeHostArtifactsIpc(
   );
   deps.ipcMain.handle(
     "artifacts:delete",
-    (_event, sessionId: string, artifactId: string) =>
-      deps.client.deleteArtifact(sessionId, artifactId),
+    async (_event, sessionId: string, artifactId: string) => {
+      const result = await deps.client.deleteArtifact(sessionId, artifactId);
+      await deps.preview?.service.revoke(deps.preview.scope, sessionId, artifactId);
+      return result;
+    },
   );
   registerRuntimeHostAttachmentPreviewIpc(deps);
   const materializePresentationArtifact = async (
@@ -105,6 +110,16 @@ export function registerRuntimeHostArtifactsIpc(
         return { ok: false as const, reason: "missing" as const };
       }
       try {
+        if (artifact.kind === 'html' && deps.preview) {
+          const endpoint = await deps.preview.service.prepare(deps.preview.scope, deps.client, sessionId, artifactId);
+          try {
+            await deps.preview.openExternal(endpoint.url);
+          } catch (error) {
+            await deps.preview.service.releaseUrl(endpoint.url);
+            throw error;
+          }
+          return { ok: true as const, opened: artifact.name, ...endpoint };
+        }
         const path = await materializePresentationArtifact(sessionId, artifactId, artifact);
         if (artifact.kind === 'html' && deps.openPath) {
           const error = await deps.openPath(path);

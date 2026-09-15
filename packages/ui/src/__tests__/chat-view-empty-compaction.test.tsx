@@ -89,7 +89,7 @@ test('shows one waiting indicator before a named live Turn reaches the transcrip
   for (const messages of [[], [{ type: 'user' as const, id: 'old-user', turnId: 'old-turn', text: 'Earlier request', ts: 1 }]]) {
     const markup = renderChat(liveTurn, { messages, transientMessages: [pending], activeTurn: { turnId: liveTurn.turnId! } });
     assert.equal((markup.match(/class="maka-turn-processing"/g) ?? []).length, 1);
-    assert.match(markup, /Waiting for model output/);
+    assert.match(markup, /Pondering/);
     assert.match(markup, /Please help/);
     assert.doesNotMatch(markup, /data-transcript-turn-id="pending-turn"/);
   }
@@ -126,7 +126,7 @@ test('renders the empty hero when an empty session has no live compaction row', 
   assert.doesNotMatch(markup, /Compacting context/);
 });
 
-test('the pending Turn clock ticks from send time and hands over without a duplicate status', async (t) => {
+test('the pending Turn waits without a clock until the Turn start time reaches the client', async (t) => {
   const now = 1_700_000_000_000;
   t.mock.timers.enable({ apis: ['Date', 'setInterval'], now });
   const original = {
@@ -164,14 +164,16 @@ test('the pending Turn clock ticks from send time and hands over without a dupli
   };
   await render({});
   assert.equal(container.querySelectorAll('.maka-turn-processing').length, 1);
-  assert.match(container.querySelector('.maka-turn-elapsed')?.textContent ?? '', /0s/);
+  // No Turn start yet, so no clock.
+  assert.equal(container.querySelector('.maka-turn-elapsed'), null);
   await act(() => t.mock.timers.tick(2_000));
-  assert.match(container.querySelector('.maka-turn-elapsed')?.textContent ?? '', /2s/);
+  assert.equal(container.querySelector('.maka-turn-elapsed'), null);
   await render({
     transientMessages: [],
     messages: [{ type: 'user', id: 'durable-user', turnId: liveTurn.turnId, text: pending.text, ts: pending.ts }],
   });
   assert.equal(container.querySelectorAll('.maka-turn-processing').length, 1);
+  // The Turn's own start drives the clock.
   assert.match(container.querySelector('.maka-turn-elapsed')?.textContent ?? '', /2s/);
   await render({ liveTurns: undefined, activeTurn: undefined, transientMessages: [] });
   assert.equal(container.querySelectorAll('.maka-turn-processing').length, 0);

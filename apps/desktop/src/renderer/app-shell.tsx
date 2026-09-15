@@ -927,7 +927,6 @@ function AppShellContent({
     setSearchModalOpen,
     searchScrollTarget,
     setSearchScrollTarget,
-    consumeSearchScrollTarget,
     closeSearchModal,
     searchModalDeps,
     searchModalOnNavigate,
@@ -2285,7 +2284,7 @@ function AppShellContent({
         currentSessionId={activeIdRef}
         rangeController={transcriptRangeRef}
         messages={messages}
-        searchTarget={searchScrollTarget?.handled ? null : searchScrollTarget}
+        searchTarget={searchScrollTarget}
         landmarkSessionId={ownerActiveId ?? null}
         clearSearchTarget={() => setSearchScrollTarget(null)}
         sessionUi={sessionUiController}
@@ -2680,7 +2679,6 @@ function AppShellContent({
                           }
                     : undefined
                 }
-                onScrollTargetHandled={consumeSearchScrollTarget}
                 restoreTargetTurn={Conversation.transcriptReadingPosition.restoreTarget(
                   activeTranscriptReadingAnchor,
                   activeUnavailableTranscriptRestore,

@@ -19,6 +19,7 @@
 
 import { useState } from 'react';
 import { ToastProvider, LocaleProvider, AstryxLocaleProvider, ChatSurfaceLayout } from '@maka/ui';
+import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { StoredMessage, SessionSummary } from '@maka/core/session';
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { expect, fn, userEvent, within, waitFor } from 'storybook/test';
@@ -32,7 +33,7 @@ const targetId = desktopSessionKey({ hostId: 'story-host', sessionId: 'payments'
 const writes = { answer: fn(), model: fn(), upload: fn(), open: fn(), question: fn(), form: fn() };
 const choices = ['model-a', 'model-b'].map((model, index) => ({
   connectionId: 'connection-test', connectionSlug: 'test', connectionName: 'Test', providerType: 'openai' as const,
-  providerLabel: 'OpenAI', model, label: model, isDefault: index === 0, thinkingLevels: [],
+  providerLabel: 'OpenAI', model, label: model, contextWindow: 100_000, isDefault: index === 0, thinkingLevels: ['low', 'high'] as ThinkingLevel[],
 }));
 function makeServices(failFirst: boolean, withHistory: boolean, coloredHistory: boolean, selectTarget = false, question = false, progress = false): WorkHubServices {
   let failures = failFirst ? 1 : 0;
@@ -75,6 +76,13 @@ function makeServices(failFirst: boolean, withHistory: boolean, coloredHistory: 
   const publishExecution = () => updateExecution?.({ type: 'host_execution', available: true, rootTurn: pendingForm ? { sessionId, turnId: pendingForm.turnId, runId: 'selection-run', status: 'waiting_for_user' } : questionPending ? { sessionId, turnId: 'question-turn', runId: 'question-run', status: 'waiting_for_user' } : null });
   const publish = () => { publishExecution(); updateTranscript?.({ messages, hasOlder: false, hasNewer: false, ready: true }); };
   return {
+    inspector: {
+      context: async () => ({ ok: true, data: { status: 'available', completedAt: 1, modelId: session.model, providerId: 'openai', inputTokens: 1000, contextWindow: 100_000 } }),
+      trace: async () => ({ ok: false, error: { code: 'unavailable', message: 'No trace in this fixture' } }),
+      summary: async () => ({ ok: false, error: { code: 'unavailable', message: 'No usage summary in this fixture' } }),
+      subscribeSessionEvents: () => () => {},
+      subscribeUsageChanges: () => () => {},
+    },
     retractQueueEntry: async () => {}, promoteQueueEntry: async () => {},
     updateQueueEntry: async () => {}, reorderQueueEntries: async () => {},
     enqueueMessage: async () => 'admitted',
@@ -129,7 +137,7 @@ function makeServices(failFirst: boolean, withHistory: boolean, coloredHistory: 
       publish(); return { kind: 'admitted', turnId: input.turnId };
     },
     configureModel: async (id, input) => {
-      writes.model(id, input); session = { ...session, revision: session.revision + 1, model: input.modelTarget.model }; updateSessions?.();
+      writes.model(id, input); session = { ...session, revision: session.revision + 1, model: input.modelTarget.model, thinkingLevel: input.thinkingLevel ?? undefined }; updateSessions?.();
       return { kind: 'committed', session: { ...session, workspace: { target: { kind: 'host_path', path: '/projects/maka' }, hostCwd: '/projects/maka' }, createdAt: 0, activityAt: 0, labelsTruncated: false, llmConnectionId: 'connection-test', collaborationMode: 'agent', orchestrationMode: 'default' } };
     },
     observe: (_id, _event, _error, _phase, execution) => { updateExecution = execution; publishExecution(); return () => { updateExecution = undefined; }; },
@@ -183,16 +191,22 @@ export const StandardComposer: Story = {
     Object.values(writes).forEach((spy) => spy.mockClear());
     const canvas = within(canvasElement); const page = within(canvasElement.ownerDocument.body);
     await waitFor(() => expect(canvas.getByRole('button', { name: /切换当前任务模型/ })).toBeEnabled());
+    await waitFor(() => expect(canvas.getByRole('button', { name: '打开用量追踪' }).textContent).toContain('1%'));
     const trigger = canvas.getByRole('button', { name: /切换当前任务模型/ });
     const layout = () => Array.from(canvasElement.querySelectorAll('.maka-composer-editor, .maka-composer button')).map((element) => {
       const { x, y, width, height } = element.getBoundingClientRect();
       return { x, y, width, height };
     });
     const before = layout();
+    const anchor = trigger.getBoundingClientRect();
     await userEvent.click(trigger);
     const wheel = canvas.getByRole('listbox', { name: /切换当前任务模型/ });
     await waitFor(() => expect(wheel).toHaveFocus());
     expect(layout()).toEqual(before);
+    expect(trigger).not.toBeVisible();
+    const expanded = wheel.getBoundingClientRect();
+    const center = Math.max(expanded.height / 2, Math.min(innerHeight - expanded.height / 2, (anchor.top + anchor.bottom) / 2));
+    expect(Math.abs((expanded.top + expanded.bottom) / 2 - center)).toBeLessThanOrEqual(1);
     await expect(within(wheel).getByRole('option', { name: /model-a/, selected: true })).toBeInTheDocument();
     await userEvent.keyboard('{End}');
     await waitFor(() => expect(writes.model).toHaveBeenCalledWith(sessionId, expect.objectContaining({ expectedRevision: 1, modelTarget: expect.objectContaining({ model: 'model-b' }) })));
@@ -212,11 +226,6 @@ export const StandardComposer: Story = {
     expect(layout()).toEqual(before);
     await userEvent.click(trigger);
     await waitFor(() => expect(canvas.getByRole('listbox')).toHaveFocus());
-    await userEvent.click(trigger);
-    await waitFor(() => expect(canvas.queryByRole('listbox')).not.toBeInTheDocument());
-    await waitFor(() => expect(trigger).toHaveFocus());
-    await userEvent.click(trigger);
-    await waitFor(() => expect(canvas.getByRole('listbox')).toHaveFocus());
     await userEvent.tab();
     await waitFor(() => expect(canvas.queryByRole('listbox')).not.toBeInTheDocument());
     expect(canvasElement.ownerDocument.activeElement).not.toBe(canvasElement.ownerDocument.body);
@@ -226,6 +235,29 @@ export const StandardComposer: Story = {
     await userEvent.click(editor); await userEvent.type(editor, 'Review requirements'); await userEvent.keyboard('{Enter}');
     await waitFor(() => expect(writes.answer).toHaveBeenCalledWith(sessionId, expect.objectContaining({ text: 'Review requirements', attachments: [expect.objectContaining({ name: 'requirements.txt' })] })));
     await waitFor(() => expect(canvasElement.querySelectorAll('.maka-composer-attachment-token')).toHaveLength(0));
+  },
+};
+// Real path: WorkHub composer → thinking level → choose an override or restore the default.
+export const ThinkingLevelPicker: Story = {
+  render: () => <Surface />,
+  play: async ({ canvasElement }) => {
+    Object.values(writes).forEach((spy) => spy.mockClear());
+    const canvas = within(canvasElement); const page = within(canvasElement.ownerDocument.body);
+    await waitFor(() => expect(canvas.getByRole('button', { name: '思考级别: 默认' })).toBeEnabled());
+    const usage = canvas.getByRole('button', { name: '打开用量追踪' });
+    await waitFor(() => expect(usage.textContent).toContain('1%'));
+    await userEvent.click(usage);
+    await userEvent.click(await canvas.findByRole('button', { name: '返回对话' }));
+    await userEvent.click(canvas.getByRole('button', { name: '思考级别: 默认' }));
+    await userEvent.click(page.getByRole('menuitemradio', { name: /^高$/ }));
+    await waitFor(() => expect(canvas.getByRole('button', { name: '思考级别: 高' })).toBeEnabled());
+    await expect(writes.model).toHaveBeenCalledWith(sessionId, expect.objectContaining({ thinkingLevel: 'high' }));
+    await userEvent.click(canvas.getByRole('button', { name: '思考级别: 高' }));
+    await userEvent.click(page.getByRole('menuitemradio', { name: /^默认$/ }));
+    await waitFor(() => expect(canvas.getByRole('button', { name: '思考级别: 默认' })).toBeEnabled());
+    await expect(writes.model).toHaveBeenLastCalledWith(sessionId, expect.objectContaining({ expectedRevision: 2, thinkingLevel: null }));
+    await userEvent.click(canvas.getByRole('button', { name: '思考级别: 默认' }));
+    await expect(page.getByRole('menuitemradio', { name: /^默认$/ })).toHaveAttribute('aria-checked', 'true');
   },
 };
 // Real path: a floating WorkHub progress card → edit its composer → open the model picker.
@@ -241,11 +273,12 @@ export const ProgressModelPicker: Story = {
     await userEvent.click(trigger);
     const wheel = await canvas.findByRole('listbox');
     await waitFor(() => expect(wheel).toHaveFocus());
-    const surface = wheel.closest('.maka-model-wheel-popup')!;
+    const surface = wheel.closest('.maka-model-wheel-expanded')!;
     const pixels = new OffscreenCanvas(1, 1).getContext('2d')!;
     pixels.fillStyle = getComputedStyle(surface).backgroundColor;
     pixels.fillRect(0, 0, 1, 1);
-    expect(pixels.getImageData(0, 0, 1, 1).data[3]).toBe(255);
+    expect(pixels.getImageData(0, 0, 1, 1).data[3]).toBeGreaterThanOrEqual(230);
+    expect(pixels.getImageData(0, 0, 1, 1).data[3]).toBeLessThan(255);
     expect(editor).toHaveTextContent('Keep this draft readable while choosing a model.');
   },
 };
@@ -275,6 +308,7 @@ export const ColoredWorkHistory: Story = {
   render: () => <Surface history colors />,
   play: async ({ canvasElement }) => {
     await waitFor(() => expect(canvasElement.querySelectorAll('[data-turn-accent="true"]')).toHaveLength(3));
+    await waitFor(() => expect(canvasElement.querySelectorAll('.maka-user-message .workhub-message-rail')).toHaveLength(3));
     const turns = canvasElement.querySelectorAll<HTMLElement>('[data-turn-accent="true"]');
     const stripeColor = (turn: HTMLElement) => getComputedStyle(turn.querySelector('.maka-user-message .workhub-message-rail')!, '::before').backgroundColor;
     expect(stripeColor(turns[0]!)).toBe(stripeColor(turns[2]!));
@@ -402,39 +436,39 @@ export const FilterWorkConversations: Story = {
   render: () => <Surface history colors />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await waitFor(() => expect(canvasElement.querySelectorAll('.maka-transcript-turn')).toHaveLength(4));
+    await waitFor(() => expect(canvasElement.querySelectorAll('.maka-turn[data-turn-id]')).toHaveLength(4));
     writes.open.mockClear();
     await userEvent.click(canvasElement.querySelector('.maka-user-message .workhub-message-rail') as HTMLElement);
-    await waitFor(() => expect(canvasElement.querySelectorAll('.maka-transcript-turn')).toHaveLength(2));
+    await waitFor(() => expect(canvasElement.querySelectorAll('.maka-turn[data-turn-id]')).toHaveLength(2));
     expect(canvas.queryByText('请检查发布检查清单。')).toBeNull();
     expect(canvas.queryByText('先讨论一下整体计划。')).toBeNull();
     expect(canvas.getByText('继续补充异常场景。')).toBeInTheDocument();
     expect(writes.open).not.toHaveBeenCalled();
     await userEvent.click(canvas.getByRole('button', { name: '显示全部对话' }));
-    await waitFor(() => expect(canvasElement.querySelectorAll('.maka-transcript-turn')).toHaveLength(4));
+    await waitFor(() => expect(canvasElement.querySelectorAll('.maka-turn[data-turn-id]')).toHaveLength(4));
     const rail = canvasElement.querySelectorAll('.workhub-navigation-item')[1] as HTMLElement;
     await userEvent.click(rail);
     await waitFor(() => expect(canvasElement.querySelector('[data-search-highlight="true"]')).toHaveTextContent('请检查发布检查清单。'));
-    expect(canvasElement.querySelectorAll('.maka-transcript-turn')).toHaveLength(4);
+    expect(canvasElement.querySelectorAll('.maka-turn[data-turn-id]')).toHaveLength(4);
     expect(writes.open).not.toHaveBeenCalled();
     await userEvent.click(rail);
-    await waitFor(() => expect(canvasElement.querySelectorAll('.maka-transcript-turn')).toHaveLength(1));
+    await waitFor(() => expect(canvasElement.querySelectorAll('.maka-turn[data-turn-id]')).toHaveLength(1));
     expect(canvas.getByText('请检查发布检查清单。')).toBeInTheDocument();
     expect(writes.open).not.toHaveBeenCalled();
     await userEvent.click(canvas.getByRole('button', { name: '显示全部对话' }));
     const answerRail = canvasElement.querySelector('.maka-assistant-answer .workhub-message-rail') as HTMLElement;
     answerRail.focus();
     await userEvent.keyboard('{Enter}');
-    await waitFor(() => expect(canvasElement.querySelectorAll('.maka-transcript-turn')).toHaveLength(2));
+    await waitFor(() => expect(canvasElement.querySelectorAll('.maka-turn[data-turn-id]')).toHaveLength(2));
     await userEvent.click(canvas.getByRole('button', { name: '显示全部对话' }));
     await userEvent.click(rail);
     await waitFor(() => expect(canvasElement.querySelector('[data-search-highlight="true"]')).toHaveTextContent('请检查发布检查清单。'));
-    expect(canvasElement.querySelectorAll('.maka-transcript-turn')).toHaveLength(4);
+    expect(canvasElement.querySelectorAll('.maka-turn[data-turn-id]')).toHaveLength(4);
     (rail.querySelector('button') as HTMLButtonElement).focus();
     await userEvent.keyboard('{Enter}');
-    await waitFor(() => expect(canvasElement.querySelectorAll('.maka-transcript-turn')).toHaveLength(1));
+    await waitFor(() => expect(canvasElement.querySelectorAll('.maka-turn[data-turn-id]')).toHaveLength(1));
     await userEvent.keyboard('{Enter}');
-    await waitFor(() => expect(canvasElement.querySelectorAll('.maka-transcript-turn')).toHaveLength(4));
+    await waitFor(() => expect(canvasElement.querySelectorAll('.maka-turn[data-turn-id]')).toHaveLength(4));
     expect(writes.open).not.toHaveBeenCalled();
   },
 };
@@ -476,7 +510,7 @@ export const FilterWorkConversationsNarrow: Story = { ...FilterWorkConversations
 export const WorkFilterHoverAndToggle: Story = {
   render: () => <Surface history colors />,
   play: async ({ canvasElement }) => {
-    await waitFor(() => expect(canvasElement.querySelectorAll('.maka-transcript-turn')).toHaveLength(4));
+    await waitFor(() => expect(canvasElement.querySelectorAll('.maka-turn[data-turn-id]')).toHaveLength(4));
     writes.open.mockClear();
     const transcriptElement = canvasElement.querySelector('[data-turn-source-count]');
     const stripe = () => canvasElement.querySelector('.maka-user-message .workhub-message-rail') as HTMLElement;
@@ -496,18 +530,18 @@ export const WorkFilterHoverAndToggle: Story = {
     await userEvent.unhover(stripe());
     await waitFor(() => expect(color()).toBe(original));
     await userEvent.click(stripe());
-    await waitFor(() => expect(canvasElement.querySelectorAll('.maka-transcript-turn')).toHaveLength(2));
+    await waitFor(() => expect(canvasElement.querySelectorAll('.maka-turn[data-turn-id]')).toHaveLength(2));
     await userEvent.click(canvasElement.querySelector('.maka-assistant-answer .workhub-message-rail') as HTMLElement);
-    await waitFor(() => expect(canvasElement.querySelectorAll('.maka-transcript-turn')).toHaveLength(4));
+    await waitFor(() => expect(canvasElement.querySelectorAll('.maka-turn[data-turn-id]')).toHaveLength(4));
     await userEvent.click(stripe());
-    await waitFor(() => expect(canvasElement.querySelectorAll('.maka-transcript-turn')).toHaveLength(2));
+    await waitFor(() => expect(canvasElement.querySelectorAll('.maka-turn[data-turn-id]')).toHaveLength(2));
     await userEvent.click(canvasElement.querySelector('.workhub-navigation-item') as HTMLElement);
-    await waitFor(() => expect(canvasElement.querySelectorAll('.maka-transcript-turn')).toHaveLength(4));
+    await waitFor(() => expect(canvasElement.querySelectorAll('.maka-turn[data-turn-id]')).toHaveLength(4));
     await userEvent.click(canvasElement.querySelector('.workhub-navigation-item') as HTMLElement);
     await userEvent.click(canvasElement.querySelector('.workhub-navigation-item') as HTMLElement);
-    await waitFor(() => expect(canvasElement.querySelectorAll('.maka-transcript-turn')).toHaveLength(2));
+    await waitFor(() => expect(canvasElement.querySelectorAll('.maka-turn[data-turn-id]')).toHaveLength(2));
     await userEvent.click(canvasElement.querySelector('.workhub-navigation-item') as HTMLElement);
-    await waitFor(() => expect(canvasElement.querySelectorAll('.maka-transcript-turn')).toHaveLength(4));
+    await waitFor(() => expect(canvasElement.querySelectorAll('.maka-turn[data-turn-id]')).toHaveLength(4));
     expect(writes.open).not.toHaveBeenCalled();
     expect(canvasElement.querySelector('[data-turn-source-count]')).toBe(transcriptElement);
   },

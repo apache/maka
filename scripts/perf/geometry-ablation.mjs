@@ -139,7 +139,9 @@ if (process.versions.electron) {
         // expanded reading state, otherwise the 45-tool scene has no overflow.
         const summaries = page.locator('.maka-processing-sequence:not([open]) > summary');
         const expandedProcess = (await summaries.count()) > 0;
-        for (const summary of await summaries.all()) await summary.click();
+        // Expand every collapsed process disclosure. Re-resolve each time: a
+        // click flips the element to [open], so an index-based list goes stale.
+        while ((await summaries.count()) > 0) await summaries.first().click();
         await page.evaluate(() => document.fonts.ready);
         await expect(page.locator('.maka-markdown-pending')).toHaveCount(0);
         if (expandedProcess) {
