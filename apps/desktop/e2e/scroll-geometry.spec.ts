@@ -17,12 +17,12 @@
  * under the License.
  */
 
-// Real native scrollbar input: stable held geometry, preserved reading anchor,
-// and history progress after release. Fixed-range cold scrolling runs in CI too.
+// Host history delivered through preload must preserve the reader throughout
+// native input, including the first layout of previously unseen rows.
 import { test, expect } from '@playwright/test';
 import { withE2eWindow } from './fixtures';
 
-test('native thumb keeps its geometry and releases history without moving the reader', async () => {
+test('native thumb preserves a cold reader while admitting Host history', async () => {
   test.setTimeout(180_000);
   await withE2eWindow(
     {
@@ -74,7 +74,9 @@ test('native thumb keeps its geometry and releases history without moving the re
             done: false,
             pointerDown: 0,
             pointerUp: 0,
+            originVisits: 0,
             readingId: undefined as string | undefined,
+            sample: undefined as number | undefined,
             frames: [] as Array<{
               h: number;
               t: number;
@@ -83,9 +85,13 @@ test('native thumb keeps its geometry and releases history without moving the re
               held: boolean;
               ms: number;
               anchorTop?: number;
+              sample?: number;
             }>,
           };
           (window as any).__windowGeometry = state;
+          root.addEventListener('scroll', () => {
+            if (state.held && root.scrollTop === 0) state.originVisits++;
+          }, { capture: true });
           root.addEventListener('pointerdown', () => {
             state.pointerDown++;
             state.held = true;
@@ -103,8 +109,9 @@ test('native thumb keeps its geometry and releases history without moving the re
               range: turns.map((t) => t.dataset.transcriptTurnId).join(','),
               held: state.held,
               ms: performance.now(),
+              sample: state.sample,
               anchorTop: state.readingId
-                ? root.querySelector(`[data-turn-id="${state.readingId}"]`)?.getBoundingClientRect()
+                ? root.querySelector(`.maka-turn[data-turn-id="${state.readingId}"]`)?.getBoundingClientRect()
                     .top
                 : undefined,
             });
@@ -132,8 +139,32 @@ test('native thumb keeps its geometry and releases history without moving the re
           buttons: 1,
           clickCount: 1,
         });
-        for (let step = 1; step <= 40; step++) {
-          const y = startY + ((start.top + 8 - startY) * step) / 40;
+        const visible = (sample?: number, anchorId?: string) => page.evaluate(({ sample, anchorId }) => {
+          const root = document.querySelector('[data-chat-scroll-container]')!;
+          const view = root.getBoundingClientRect();
+          const turn = anchorId
+            ? root.querySelector<HTMLElement>(`.maka-turn[data-turn-id="${anchorId}"]`)
+            : [...root.querySelectorAll<HTMLElement>('.maka-turn[data-turn-id]')].find((el) => {
+            const box = el.getBoundingClientRect();
+            return box.height > 0 && box.width > 0 && box.bottom > view.top && box.top < view.bottom;
+          });
+          if (sample !== undefined) {
+            (window as any).__windowGeometry.sample = sample;
+            (window as any).__windowGeometry.readingId = turn?.dataset.turnId;
+          }
+          return {
+            id: turn?.dataset.turnId, top: turn?.getBoundingClientRect().top,
+            scrollHeight: root.scrollHeight, scrollTop: root.scrollTop,
+          };
+        }, { sample, anchorId });
+        const stationary: Array<{ before: Awaited<ReturnType<typeof visible>>; after: Awaited<ReturnType<typeof visible>> }> = [];
+        const positions = [10, 6, 10, 4];
+        for (let step = 1; step <= positions.length; step++) {
+          await page.evaluate(() => { (window as any).__windowGeometry.sample = undefined; });
+          const progress = positions[step - 1];
+          // Cross the real origin, where native anchoring is unavailable,
+          // before reversing the same held thumb.
+          const y = startY + ((start.top + 1 - startY) * progress) / 10;
           await cdp.send('Input.dispatchMouseEvent', {
             type: 'mouseMoved',
             x: start.x,
@@ -141,22 +172,45 @@ test('native thumb keeps its geometry and releases history without moving the re
             button: 'left',
             buttons: 1,
           });
-          await page.waitForTimeout(25);
+          await page.waitForTimeout(50);
+          const before = await visible(step);
+          await page.waitForTimeout(300);
+          const after = await visible(undefined, before.id);
+          stationary.push({ before, after });
         }
         await page.waitForTimeout(400);
+        await test.info().attach('held-reader-samples', {
+          body: JSON.stringify(stationary), contentType: 'application/json',
+        });
+        for (const [index, { before, after }] of stationary.entries()) {
+          expect(before.id, 'the held viewport must contain a rendered Turn').toBeTruthy();
+          expect(after.id, 'a stationary pointer must not replace the reader').toBe(before.id);
+          expect(Math.abs(after.top! - before.top!), 'the held reader must stay in place').toBeLessThanOrEqual(1);
+          if (index > 0) {
+            const previous = Number(stationary[index - 1].after.id!.split('-').at(-1));
+            const current = Number(before.id!.split('-').at(-1));
+            if (positions[index] > positions[index - 1]) expect(current, 'upward input must not move toward newer Turns').toBeLessThanOrEqual(previous);
+            else expect(current, 'reversing input must move toward newer Turns').toBeGreaterThanOrEqual(previous);
+          }
+        }
         const reading = await page.evaluate(() => {
+          (window as any).__windowGeometry.sample = undefined;
           const root = document.querySelector('[data-chat-scroll-container]')!;
-          const top = root.getBoundingClientRect().top;
-          const turn = [...root.querySelectorAll<HTMLElement>('[data-turn-id]')].find(
-            (el) => el.getBoundingClientRect().bottom > top,
-          )!;
+          const viewport = root.getBoundingClientRect();
+          const turn = [...root.querySelectorAll<HTMLElement>('.maka-turn[data-turn-id]')].find(
+            (el) => {
+              const box = el.getBoundingClientRect();
+              return box.height > 0 && box.width > 0 && box.bottom > viewport.top && box.top < viewport.bottom;
+            },
+          );
+          if (!turn) throw new Error('Native drag left no rendered reading Turn');
           (window as any).__windowGeometry.readingId = turn.dataset.turnId;
           return { id: turn.dataset.turnId!, top: turn.getBoundingClientRect().top };
         });
         await cdp.send('Input.dispatchMouseEvent', {
           type: 'mouseReleased',
           x: start.x,
-          y: start.top + 8,
+          y: startY + (start.top + 1 - startY) * 0.4,
           button: 'left',
           buttons: 0,
           clickCount: 1,
@@ -183,37 +237,32 @@ test('native thumb keeps its geometry and releases history without moving the re
           state.done = true;
           return state;
         });
+        expect(result.originVisits, 'the held thumb must exercise the scroll origin').toBeGreaterThan(0);
         const held = result.frames.filter((f: any) => f.held);
         await test.info().attach('scroll-geometry-frames', {
           body: JSON.stringify(result),
           contentType: 'application/json',
         });
-        const heightDrift =
-          Math.max(...held.map((f: any) => f.h)) - Math.min(...held.map((f: any) => f.h));
         const ranges = new Set(held.map((f: any) => f.range));
+        for (const [index, { before }] of stationary.entries()) {
+          const frames = held.filter((f: any) => f.sample === index + 1);
+          expect(frames.length, 'every stationary hold must be observed across frames').toBeGreaterThan(1);
+          for (const frame of frames) {
+            expect(frame.anchorTop, 'the held reader must remain mounted').toBeDefined();
+            expect(Math.abs(frame.anchorTop - before.top!), 'every stationary frame retains the reading line').toBeLessThanOrEqual(1);
+          }
+        }
         expect(result.pointerDown).toBe(1);
         expect(result.pointerUp).toBe(1);
-        expect(heightDrift, 'height must remain constant while held').toBeLessThanOrEqual(1);
-        expect(ranges.size, 'resident membership must remain constant while held').toBe(1);
-        expect(
-          Math.max(0, ...held.slice(1).map((f: any, i: number) => f.t - held[i].t)),
-          'upward native drag must not reverse',
-        ).toBeLessThanOrEqual(1);
+        // Prepending Host pages changes both height and scrollTop. Neither is
+        // a reader-displacement metric; measure the rendered Turn on release.
+        expect(ranges.size, 'the hold must exercise actual Host history publication').toBeGreaterThan(1);
         const released = result.frames.filter((f: any) => !f.held && f.anchorTop !== undefined);
         expect(
           Math.max(...released.map((f: any) => Math.abs(f.anchorTop - reading.top))),
           'reading anchor must survive every release frame',
         ).toBeLessThanOrEqual(1);
-        await expect
-          .poll(() =>
-            page
-              .locator('.maka-transcript-turn')
-              .evaluateAll((els) =>
-                els.map((el) => (el as HTMLElement).dataset.transcriptTurnId).join(','),
-              ),
-          )
-          .not.toBe(held[0].range);
-        const anchor = page.locator('[data-turn-id="' + reading.id + '"]');
+        const anchor = page.locator('.maka-turn[data-turn-id="' + reading.id + '"]');
         await expect(anchor).toHaveCount(1);
         await expect
           .poll(async () => Math.abs((await anchor.boundingBox())!.y - reading.top))

@@ -89,6 +89,7 @@ test('a completed resident bookmark does not reload after streaming settlement e
     store: {
       sessionId: 'session-1',
       range: () => ({ sessionId: 'session-1' }),
+      pendingNavigation: () => undefined,
       sequenceForTurn: (turnId: string) => fixture.replica.snapshot().durable
         .find(({ message }) => message.turnId === turnId)?.sequence ?? null,
       newestDurableUserSequence: () => 2,
@@ -142,6 +143,7 @@ test('reopening a bookmark at the current Turn retains content persisted later i
         store: {
           sessionId: 'session-1',
           range: () => ({ sessionId: 'session-1' }),
+          pendingNavigation: () => undefined,
           sequenceForTurn: (turnId) => fixture.replica.snapshot().durable
             .find(({ message }) => message.turnId === turnId)?.sequence ?? null,
           newestDurableUserSequence: () => 2,
@@ -181,6 +183,7 @@ test('repeated message notifications share one pending restore and cancellation 
       store: {
         sessionId: 'session-1',
         range: () => ({ sessionId: 'session-1' }),
+        pendingNavigation: () => undefined,
         sequenceForTurn: () => null,
         newestDurableUserSequence: () => 2,
         snapshot: () => ({ messages: ['old restored range'] }),
@@ -222,6 +225,7 @@ test('switching away and back creates a fresh restore while clearing search does
       store: {
         sessionId: 'session-1',
         range: () => ({ sessionId: 'session-1' }),
+        pendingNavigation: () => undefined,
         sequenceForTurn: () => null,
         newestDurableUserSequence: () => 2,
         snapshot: () => ({ messages: [] as string[] }),
@@ -266,6 +270,7 @@ test('effect teardown followed by setup lets only the replacement restore settle
       store: {
         sessionId: 'session-1',
         range: () => ({ sessionId: 'session-1' }),
+        pendingNavigation: () => undefined,
         sequenceForTurn: () => null,
         newestDurableUserSequence: () => 2,
         snapshot: () => ({ messages: ['replacement range'] }),

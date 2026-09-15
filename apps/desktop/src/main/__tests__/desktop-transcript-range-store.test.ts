@@ -1329,7 +1329,11 @@ test('a fill is issued once per window and again as soon as the window moves', a
     sessionId: 'session-1', generation: 'generation-1', hostEpoch: 'host-1',
     readThroughMessageId: null,
     async acknowledgeTail() {},
-    async loadBefore() { reads += 1; },
+    async loadBefore(_anchor, maxBytes) {
+      assert.equal(maxBytes, DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES,
+        'a background projection keeps its existing scan budget');
+      reads += 1;
+    },
     async loadAfter() {}, async loadAround() {}, async loadLatest() {}, async close() {},
   }));
   for (const batch of encodeDesktopTranscriptSnapshot({
@@ -1355,11 +1359,12 @@ test('reports each tail the window reaches once, and none while it is parked', a
   const identity = { sessionId: 'session-1', generation: 'generation-1', hostEpoch: 'host-1' };
   const store = transcriptStore();
   const acknowledged: number[] = [];
+  const readBudgets: number[] = [];
   // The visible reader path: only a controller that acknowledges reports a tail.
   const controller = createRecoveringDesktopTranscriptRangeController(store, async () => ({
     ...identity, readThroughMessageId: null,
     async acknowledgeTail(through) { acknowledged.push(through); },
-    async loadBefore() {}, async loadAfter() {}, async loadAround() {},
+    async loadBefore(_anchor, maxBytes) { readBudgets.push(maxBytes); }, async loadAfter() {}, async loadAround() {},
     async loadLatest() {}, async close() {},
   }), { onError() {} });
   const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
@@ -1371,6 +1376,10 @@ test('reports each tail the window reaches once, and none while it is parked', a
   })) store.accept(batch);
   await settle();
   assert.deepEqual(acknowledged, [1]);
+  await controller.loadBefore();
+  assert.equal(readBudgets.length, 1);
+  assert.ok(readBudgets[0]! > 0 && readBudgets[0]! < DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES,
+    'the visible reader uses an interactive page budget rather than the IPC ceiling');
 
   for (const batch of encodeDesktopTranscriptChange(identity, {
     coversFrom: 1, durableThrough: 2,

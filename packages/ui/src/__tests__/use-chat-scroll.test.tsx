@@ -36,6 +36,7 @@ const originalGlobals = {
   document: globalThis.document,
   Element: globalThis.Element,
   HTMLElement: globalThis.HTMLElement,
+  IntersectionObserver: globalThis.IntersectionObserver,
   getComputedStyle: globalThis.getComputedStyle,
   MutationObserver: globalThis.MutationObserver,
   Node: globalThis.Node,
@@ -396,7 +397,7 @@ test('an older request at offset zero does not move the reader', async () => {
   assert.equal(transcript.scrollTop, 0, 'publication owns anchoring; input must not nudge the reader');
 });
 
-test('idle range admission commits the React DOM before a subsequent input can begin', async () => {
+test('range publication commits React synchronously through native input', async () => {
   const navigation = createTranscriptViewportNavigation();
   const { document, window } = parseHTML('<main id="mount"></main><section id="scroller"></section>');
   const { frames } = installScrollTestEnvironment(document, window);
@@ -419,7 +420,7 @@ test('idle range admission commits the React DOM before a subsequent input can b
     navigation.commitRange('admission', () => publish('new'));
     await Promise.resolve();
     assert.equal(document.querySelector('#mount')!.textContent, 'new',
-      'an admitted update must not remain in React scheduling after its idle check');
+      'an admitted update must not remain in React scheduling after publication');
   });
   await act(async () => {
     navigation.commitRange('admission', () => publish('held'));
@@ -429,8 +430,8 @@ test('idle range admission commits the React DOM before a subsequent input can b
     });
     transcript.scroller.dispatchEvent(down);
     await Promise.resolve();
-    assert.equal(document.querySelector('#mount')!.textContent, 'new',
-      'input that starts before admission must hold the queued update');
+    assert.equal(document.querySelector('#mount')!.textContent, 'held',
+      'an arriving range publishes while the browser owns the reading anchor');
   });
   await act(() => document.dispatchEvent(new window.Event('pointerup')));
   await act(() => {
@@ -438,6 +439,33 @@ test('idle range admission commits the React DOM before a subsequent input can b
     for (const callback of pending) callback(0);
   });
   assert.equal(document.querySelector('#mount')!.textContent, 'held');
+  await act(async () => {
+    const down = new window.Event('pointerdown');
+    Object.defineProperties(down, {
+      button: { value: 0 }, pointerType: { value: 'mouse' }, pointerId: { value: 3 },
+    });
+    transcript.scroller.dispatchEvent(down);
+    navigation.commitRange('admission', () => publish('navigation'));
+    await Promise.resolve();
+    authority.releasePin();
+    assert.equal(document.querySelector('#mount')!.textContent, 'navigation');
+    document.dispatchEvent(new window.Event('pointerup'));
+  });
+  assert.equal(document.querySelector('#mount')!.textContent, 'navigation',
+    'ending physical input publishes navigation even when its gesture was superseded');
+  await act(async () => {
+    const down = new window.Event('pointerdown');
+    Object.defineProperties(down, {
+      button: { value: 0 }, pointerType: { value: 'mouse' }, pointerId: { value: 2 },
+    });
+    transcript.scroller.dispatchEvent(down);
+    navigation.commitRange('admission', () => publish('latest'));
+    await Promise.resolve();
+    assert.equal(document.querySelector('#mount')!.textContent, 'latest');
+    authority.pinToTail();
+  });
+  assert.equal(document.querySelector('#mount')!.textContent, 'latest',
+    'explicit tail navigation must not strand a deferred range');
 });
 
 test('a source publication survives viewport unmount without another source update', async () => {
@@ -461,9 +489,10 @@ test('a source publication survives viewport unmount without another source upda
   mountedRoot = createRoot(document.querySelector('#mount')!);
   await act(() => mountedRoot?.render(<TranscriptScrollAuthorityProvider><Harness /></TranscriptScrollAuthorityProvider>));
   await act(() => wheel(transcript.scroller, -100));
-  await act(() => navigation.commitRange('session', () => publish('latest')));
-  assert.equal(document.querySelector('#mount')!.textContent, 'old');
-  await act(() => show(false));
+  await act(() => {
+    navigation.commitRange('session', () => publish('latest'));
+    show(false);
+  });
   assert.equal(document.querySelector('#mount')!.textContent, 'latest');
   await act(() => show(true));
   assert.equal(document.querySelector('#mount')!.textContent, 'latest');
@@ -508,7 +537,7 @@ for (const hasOlder of [false, true]) {
         });
       }
     }));
-    assert.equal(publications, 0, 'input holds publication, including an accepted history request');
+    assert.equal(publications, 1, 'input must not starve an accepted history request');
     await frame(); await frame();
     assert.equal(requests, hasOlder ? 1 : 0);
     assert.equal(publications, 1);
@@ -522,7 +551,8 @@ for (const hasOlder of [false, true]) {
   });
 }
 
-test('a held fill publishes before trimming or chaining from the new geometry', async () => {
+for (const settlesBeforePublication of [false, true]) {
+test(`a fill publishes before eviction when input settles ${settlesBeforePublication ? 'before' : 'after'} publication`, async () => {
   const navigation = createTranscriptViewportNavigation();
   const { document, window } = parseHTML('<main id="mount"></main><section id="scroller"></section>');
   const { frames } = installScrollTestEnvironment(document, window);
@@ -550,6 +580,9 @@ test('a held fill publishes before trimming or chaining from the new geometry', 
               [...transcript.scroller.children].forEach((turn, index) => {
                 (turn as HTMLElement).dataset.turnId = `turn-${index - 2}`;
               });
+              // Linkedom has no layout or native scroll anchoring. Model the
+              // browser retaining turn-0; real geometry is checked in Chromium.
+              transcript.scroller.scrollTop += 800;
             });
             resolve(true);
           };
@@ -577,15 +610,24 @@ test('a held fill publishes before trimming or chaining from the new geometry', 
     transcript.scroller.dispatchEvent(new window.Event('scroll'));
   });
   assert.equal(requests, 1);
+  if (settlesBeforePublication) {
+    await act(() => document.dispatchEvent(new window.Event('pointerup')));
+    await frame(); await frame();
+    assert.equal(authority.isInputActive(), false);
+    assert.deepEqual(retained, [], 'an unfinished read cannot be trimmed using the old window');
+  }
   await act(() => finishRead());
-  assert.equal(publications, 0);
-  assert.deepEqual(retained, [], 'published IDs cannot trim source while its new page is held');
-  assert.equal(requests, 1, 'a held response must not chain reads using stale geometry');
-  await act(() => document.dispatchEvent(new window.Event('pointerup')));
+  assert.equal(publications, 1);
+  if (!settlesBeforePublication) {
+    assert.deepEqual(retained, [], 'active input still prevents eviction');
+    assert.equal(requests, 1, 'the fill does not eagerly chain while input is active');
+    await act(() => document.dispatchEvent(new window.Event('pointerup')));
+  }
   await frame(); await frame();
   assert.equal(publications, 1);
   assert.equal(retained.at(-1), 'turn--2', 'the new published band includes the older page');
 });
+}
 
 test('a transcript change re-reads the band while the reader stays at the tail', async () => {
   const { document, window } = parseHTML(
@@ -638,6 +680,9 @@ test('the retained window is the band around the reader, and an unmounted bookma
   const transcript = createTranscript(document, window, {
     clientHeight: 600, turnHeight: 600, turnCount: 20,
   });
+  // Start at the existing reading position. A pending bookmark need not visit
+  // the tail as a side effect of attaching the scroll authority.
+  transcript.scroller.scrollTop = 11_400;
 
   const retained: Array<{ firstTurnId: string; lastTurnId: string }> = [];
   function Harness({
@@ -837,7 +882,6 @@ test('a session switch restores a Turn anchor after async fill and preserves tai
   };
 
   const anchors = new Map<string, string>();
-  const handledTargets: number[] = [];
   const viewportNavigation = createTranscriptViewportNavigation();
   const unavailableRestores = new Map<string, string>();
   let authority: TranscriptScrollAuthority | undefined;
@@ -857,7 +901,6 @@ test('a session switch restores a Turn anchor after async fill and preserves tai
       messages: [{ id: `message-${messageRevision}` }] as StoredMessage[],
       target,
       restoreTarget,
-      onTargetHandled: (nonce) => handledTargets.push(nonce),
       viewportNavigation,
       onReadingAnchorChange: (turnId) => {
         unavailableRestores.delete(sessionId);
@@ -956,10 +999,10 @@ test('a session switch restores a Turn anchor after async fill and preserves tai
   await renderSession('session-b');
   await flushFrames();
   assert.equal(anchors.get('session-b'), 'turn-b-1');
-  assert.deepEqual(handledTargets, [1]);
+  scroller.scrollTop = 100;
   await renderSession('session-b');
   await flushFrames();
-  assert.deepEqual(handledTargets, [1]);
+  assert.equal(scroller.scrollTop, 100, 'a completed navigation must not repeat on render');
 
   target = undefined;
   // With no resident Turn to re-anchor to, abandoning the restore falls back
@@ -1023,7 +1066,6 @@ test('a target lands on the render that mounts its Turn, whatever moved the rang
   // The Renderer owns the window now: a jump to an unloaded Turn changes the
   // resident range without touching the message list the shell passes down.
   const messages = [{ id: 'message-1' }] as StoredMessage[];
-  const handledTargets: number[] = [];
   let highlighted: string | null = null;
   function Harness() {
     const scrollRef = useRef<HTMLElement | null>(transcript.scroller);
@@ -1032,7 +1074,6 @@ test('a target lands on the render that mounts its Turn, whatever moved the rang
       sessionId: 'session-jump',
       messages,
       target: { turnId: 'turn-5', nonce: 7 },
-      onTargetHandled: (nonce) => handledTargets.push(nonce),
       behavior: 'auto',
     });
     highlighted = result.highlightedTurnId;
@@ -1053,12 +1094,10 @@ test('a target lands on the render that mounts its Turn, whatever moved the rang
   await render();
   await flushFrames();
   assert.equal(highlighted, null, 'a Turn that is not mounted cannot be revealed yet');
-  assert.deepEqual(handledTargets, []);
 
   transcript.setTurnCount(8);
   await render();
   await flushFrames();
   assert.equal(highlighted, 'turn-5');
-  assert.deepEqual(handledTargets, [7]);
   assert.equal(transcript.scrollTop, 3_000, 'the reveal puts the Turn at the top edge');
 });

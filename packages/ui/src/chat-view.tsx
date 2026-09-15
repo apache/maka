@@ -44,7 +44,7 @@ import { isDeepResearchSession } from '@maka/core/deep-research';
 import { Button, ButtonGroup, ChatMessageList, EmptyState, HStack, Spinner, Text } from '@astryxdesign/core';
 import { useChatLayoutContext } from '@astryxdesign/core/Chat';
 import { useLayer } from '@astryxdesign/core/Layer';
-import { materializeChat } from './materialize.js';
+import { finalAssistantReplyText, materializeChat } from './materialize.js';
 import { selectTailTransientMessages } from './transient-placement.js';
 import { useTranscriptProjection } from './use-transcript-projection.js';
 import type { LiveTurnProjection } from './live-turn-projection.js';
@@ -259,7 +259,6 @@ export function ChatView(props: {
    * chat view only scrolls/highlights the already-rendered turn.
    */
   scrollTargetTurn?: { turnId: string; nonce: number; preserveFocus?: boolean };
-  onScrollTargetHandled?(nonce: number): void;
   /** Runtime-only reading position restored without search focus or highlight. */
   restoreTargetTurn?: { turnId: string; unavailable?: boolean };
   viewportNavigation?: TranscriptViewportNavigation;
@@ -439,7 +438,7 @@ export function ChatView(props: {
       .map((turn) => ({
         turnId: turn.turnId,
         label: turn.user?.text ?? '',
-        reply: turn.assistant?.text ?? '',
+        reply: finalAssistantReplyText(turn),
       }));
     const previous = promptRailTurnsRef.current;
     if (
@@ -516,17 +515,11 @@ export function ChatView(props: {
   }
   const scrollRef = chatLayout.scrollContainerRef;
   const scrollAuthority = useTranscriptScrollAuthority();
-  // A rail click aims itself: it puts the prompt at the top of the scrollport
-  // and holds it there while the loaded range settles. Asking the shell to load
-  // an unloaded prompt also publishes a scroll target, and that reveal centres
-  // the turn with the app's scroll motion — a second answer to "where should
-  // this turn sit", and an animated one, which walks the prompt back off the
-  // top for a second after the rail has landed it. The reveal keeps its other
-  // job of recording the reading position; it just has to agree with the rail
-  // about the edge.
+  // The rail uses the same semantic navigation as search, but asks the shared
+  // reveal to place the prompt at the top without animation.
   const railClaimRef = useRef<RailAlignmentClaim | undefined>(undefined);
-  const navigatePromptRailFallback = useCallback((turn: PromptAnchorRailTurn) => {
-    if (!turnIdsRef.current.has(turn.turnId) && turn.sequence !== undefined) {
+  const navigatePromptRail = useCallback((turn: PromptAnchorRailTurn) => {
+    if (turn.sequence !== undefined) {
       railClaimRef.current = { turnId: turn.turnId };
       loadTranscriptTurnRef.current?.({ turnId: turn.turnId, sequence: turn.sequence });
     }
@@ -565,7 +558,6 @@ export function ChatView(props: {
     messages: props.messages,
     target: scrollTargetTurn,
     restoreTarget: props.restoreTargetTurn,
-    onTargetHandled: props.onScrollTargetHandled,
     viewportNavigation: props.viewportNavigation,
     onReadingAnchorChange: props.onReadingAnchorChange,
     behavior: props.scrollBehavior,
@@ -753,7 +745,7 @@ export function ChatView(props: {
           turns={promptRailTurns}
           onHighlightTurn={props.onPromptRailHighlight ? (turn) => props.onPromptRailHighlight?.(turn?.turnId) : undefined}
           scrollRef={scrollRef}
-          onNavigateFallback={navigatePromptRailFallback}
+          onNavigateTurn={navigatePromptRail}
           onNavigateStart={scrollAuthority.releasePin}
         />
         <ChatMessageList
@@ -776,11 +768,12 @@ export function ChatView(props: {
                 const decoration = props.turnDecorations?.get(turn.turnId);
                 return (
                   <div
-                    key={turn.turnId}
+                    key={`${props.activeSession?.id}:${turn.turnId}`}
                     className="maka-transcript-turn"
                     data-transcript-turn-id={turn.turnId}
                     data-turn-accent={decoration?.accentColor ? 'true' : undefined}
-                    style={decoration?.accentColor ? { '--maka-turn-accent': decoration.accentColor } as CSSProperties : undefined}
+                    style={decoration?.accentColor
+                      ? { '--maka-turn-accent': decoration.accentColor } as CSSProperties : undefined}
                   >
                     <TurnView
                       turn={turn}
