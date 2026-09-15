@@ -35,7 +35,7 @@
 
 import { WebSocket } from 'undici';
 import { BaseBotAdapter, botReadinessFromSettings } from './base-adapter.js';
-import type { BotStatus } from './types.js';
+import type { BotStatus, BotStatusReason } from './types.js';
 
 export const RECONNECT_DELAY_MIN_MS = 1_000;
 export const RECONNECT_DELAY_MAX_MS = 30_000;
@@ -61,11 +61,11 @@ export abstract class WsBridgeBase extends BaseBotAdapter {
   protected reconnectTimer: NodeJS.Timeout | null = null;
 
   /** Reason-string prefix for close diagnostics; DingTalk overrides to 'stream'. */
-  protected readonly closeReasonPrefix: string = 'gateway';
+  protected readonly closeReasonPrefix: 'gateway' | 'stream' = 'gateway';
 
   protected abstract openConnection(): Promise<void>;
-  /** Return a reason string (e.g. 'no-token') to abort start(), or null to proceed. */
-  protected abstract checkCredentials(): string | null;
+  /** Return a reason string (e.g. 'token_missing') to abort start(), or null to proceed. */
+  protected abstract checkCredentials(): BotStatusReason | null;
   protected abstract decideClose(code: number, explicitlyStopped: boolean): WsCloseDecision;
   protected abstract handleWsMessage(data: string): void;
 
@@ -125,7 +125,7 @@ export abstract class WsBridgeBase extends BaseBotAdapter {
     try {
       ws = this.createWebSocket(url);
     } catch (error) {
-      this.reason = error instanceof Error ? error.message : String(error);
+      this.recordFailure(error);
       this.readiness = 'configured';
       this.emitStatusChange();
       this.scheduleReconnect();
@@ -167,9 +167,9 @@ export abstract class WsBridgeBase extends BaseBotAdapter {
     this.running = false;
     const decision = this.decideClose(code, this.explicitlyStopped);
     if (decision.kind === 'stopped') return;
+    this.recordFailure(reason, `${this.closeReasonPrefix}-closed-${code}`);
     if (decision.kind === 'fatal') {
       this.readiness = 'configured';
-      this.reason = `${this.closeReasonPrefix}-closed-${code}`;
       this.resetSession();
       this.emitStatusChange();
       return;
@@ -178,7 +178,6 @@ export abstract class WsBridgeBase extends BaseBotAdapter {
       this.resetSession();
     }
     this.readiness = 'degraded';
-    this.reason = reason || `${this.closeReasonPrefix}-closed-${code}`;
     this.emitStatusChange();
     this.scheduleReconnect();
   }

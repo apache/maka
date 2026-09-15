@@ -1455,7 +1455,6 @@ function graphMessages(includeTerminal = true): StoredMessage[] {
       turnId: 'turn-2',
       ts: 5,
       status: 'completed',
-      partialOutputRetained: false,
     });
   }
   return messages;
@@ -1482,7 +1481,6 @@ function sandboxBoundaryMessages(
       turnId: 'turn-2',
       ts: 10,
       status: 'completed',
-      partialOutputRetained: true,
     },
   ];
 }
@@ -1502,7 +1500,6 @@ function multipleSandboxFailureMessages(): StoredMessage[] {
       turnId: 'turn-2',
       ts: 11,
       status: 'completed',
-      partialOutputRetained: true,
     },
   ];
 }
@@ -1517,7 +1514,6 @@ function abortedGraphMessages(): StoredMessage[] {
       ts: 5,
       status: 'aborted',
       abortSource: 'user_interrupt',
-      partialOutputRetained: true,
     },
   ];
 }
@@ -1532,7 +1528,6 @@ function failedGraphMessages(errorClass: string): StoredMessage[] {
       ts: 5,
       status: 'failed',
       errorClass,
-      partialOutputRetained: true,
     },
   ];
 }
@@ -1546,7 +1541,6 @@ function failedThenCompletedGraphMessages(): StoredMessage[] {
       turnId: 'turn-2',
       ts: 6,
       status: 'completed',
-      partialOutputRetained: true,
     },
   ];
 }
@@ -1583,7 +1577,6 @@ function multiWakeGraphMessages(includeFinalTerminal: boolean): StoredMessage[] 
       turnId: 'turn-3',
       ts: 8,
       status: 'completed',
-      partialOutputRetained: false,
     });
   }
   return messages;

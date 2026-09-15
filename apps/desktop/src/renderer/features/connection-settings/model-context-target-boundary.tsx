@@ -18,7 +18,7 @@
  */
 
 import { useState, type ReactNode } from 'react';
-import { modelProfilesWithContextTarget } from '@maka/core/model-thinking';
+import { modelOverridesWithContextTarget } from '@maka/core/model-thinking';
 import { useToast, useUiLocale } from '@maka/ui';
 import type { ConnectionSettingsHost } from './ports.js';
 import { providerPanelActionErrorMessage } from './provider-panel-shared.js';
@@ -60,8 +60,8 @@ export function ModelContextTargetBoundary(props: {
       );
       if (!current) throw new Error(copy.shared.actionFallback);
       await connections.update(identity, {
-        relayModelProfiles: modelProfilesWithContextTarget(
-          current.relayModelProfiles,
+        modelOverrides: modelOverridesWithContextTarget(
+          current.modelOverrides,
           modelId,
           target,
         ),

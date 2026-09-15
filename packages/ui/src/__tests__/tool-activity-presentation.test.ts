@@ -180,7 +180,9 @@ describe('tool activity presentation', () => {
     );
     assert.match(markup, /连续操作 11 个控件/);
     assert.match(markup, /「计算器」窗口/);
-    assert.match(markup, />7\/11</);
+    // Group summaries expose the target; per-call progress is visible on an
+    // individual row, not in the group's unmounted collapsed body.
+    assert.match(renderToStaticMarkup(createElement(ToolTrow, { items: [sequence] })), />7\/11</);
     assert.equal(
       computerRunningLabel([observed, sequence], 'zh-CN'),
       '正在操作「计算器」窗口 · 连续操作第 7/11 步',
@@ -553,4 +555,15 @@ describe('collapsed tool row target', () => {
     assert.doesNotMatch(markup, /live-secret-token/);
     assert.match(markup, /redacted/i);
   });
+});
+
+it('uses WorkHub status once in the collapsed row and retains arguments in details', () => {
+  for (const args of [{ args: { status: '正在打开扩展', request: { operation: 'observe' } } }, { argsPreview: { status: '正在打开扩展' } }]) {
+    const item: ToolActivityItem = { toolUseId: 'workhub-control', toolName: 'mcp__desktop_workhub__control', status: 'running', args: undefined, ...args };
+    const row = renderToStaticMarkup(createElement(ToolTrow, { items: [item] }));
+    assert.match(row, /正在打开扩展/);
+    assert.doesNotMatch(row, /status:|request:/);
+    const detail = renderToStaticMarkup(createElement(ToolCallDetail, { item }));
+    assert.match(detail, /status/);
+  }
 });

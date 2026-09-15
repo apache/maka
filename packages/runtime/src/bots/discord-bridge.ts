@@ -218,8 +218,8 @@ function sleep(ms: number): Promise<void> {
 export class DiscordBotBridge extends GatewayBridgeBase implements SendCapable {
   protected resumeGatewayUrl: string | null = null;
 
-  protected override checkCredentials(): string | null {
-    return this.settings.token.trim() ? null : 'no-token';
+  protected override checkCredentials(): 'token_missing' | null {
+    return this.settings.token.trim() ? null : 'token_missing';
   }
 
   protected override decideClose(code: number, explicitlyStopped: boolean): WsCloseDecision {
@@ -245,7 +245,7 @@ export class DiscordBotBridge extends GatewayBridgeBase implements SendCapable {
       const json = await response.json().catch(() => null);
       if (!response.ok || !json || typeof json.url !== 'string') {
         const message = (json as { message?: unknown } | null)?.message;
-        this.reason = typeof message === 'string' ? message : `gateway-bot-${response.status}`;
+        this.recordFailure(message, `gateway-bot-${response.status}`);
         this.readiness = 'configured';
         this.emitStatusChange();
         // Usually a transient outage — openConnection schedules the retry.
@@ -254,7 +254,7 @@ export class DiscordBotBridge extends GatewayBridgeBase implements SendCapable {
       const gatewayUrl = this.resumeGatewayUrl ?? json.url;
       return `${gatewayUrl}/?v=${DISCORD_GATEWAY_VERSION}&encoding=json`;
     } catch (error) {
-      this.reason = error instanceof Error ? error.message : String(error);
+      this.recordFailure(error);
       this.readiness = 'configured';
       this.emitStatusChange();
       return null;
@@ -330,7 +330,10 @@ export class DiscordBotBridge extends GatewayBridgeBase implements SendCapable {
       }
       if (classification.kind !== 'ok') {
         this.readiness = this.readiness === 'operational' ? 'degraded' : 'credentials_valid';
-        this.reason = classification.kind === 'retry' ? 'rate-limited' : classification.description;
+        this.recordFailure(
+          classification.kind === 'retry' ? 'rate-limited' : classification.description,
+          classification.kind === 'retry' ? 'rate-limited' : 'send-failed',
+        );
         this.emitStatusChange();
         return null;
       }

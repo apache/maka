@@ -21,12 +21,40 @@ import {
   decodeModelCallAttempt,
   MODEL_CALL_ATTEMPT_EVENT_TYPE,
   type ModelCallAttempt,
+  type ModelCallCoverage,
 } from '@maka/core/model-call-attempt';
+import {
+  resolveUsageRange,
+  type ModelCallUsageBuckets,
+  type ModelCallUsageLogs,
+  type ModelCallUsageSummary,
+} from '@maka/core/model-call-usage-projection';
+import { usageBucketKey } from '@maka/core/usage-stats/bucket-key';
+import type {
+  UsageBucket,
+  UsageGroupBy,
+  UsageLogRow,
+  UsageQuery,
+} from '@maka/core/usage-stats/types';
 import type { DatabaseSync } from 'node:sqlite';
+import {
+  bucketGrouping,
+  CACHE_READ_TOKENS,
+  count,
+  countableFilter,
+  COVERAGE_SUMS,
+  PRICED_COST,
+  REQUEST_SUMS,
+  TOKEN_SUMS,
+  unreadableFilter,
+  type SqlFilter,
+} from './model-call-usage-sql.js';
 import {
   acquireOperationalStateDatabase,
   type OperationalStateDatabaseLease,
 } from './operational-state-store.js';
+import { MODEL_CALL_COLUMNS } from './sqlite-usage-schema.js';
+import type { ModelCallLedgerResult } from './usage-stores.js';
 
 /**
  * Materialization of the canonical model-call accounting ledger (#1679).
@@ -41,6 +69,21 @@ import {
  * — a failed upsert, a crash between the two — and that is recoverable: the
  * authority still holds every record, so re-projecting the run restores it.
  *
+ * That recovery covers live Sessions only. Deleting a Session drops its
+ * `core_agent_runs` rows and cascades both their events and this projection's
+ * checkpoints, while these rows are deliberately left standing — spend does not
+ * disappear from all-time totals because a conversation was deleted. For those
+ * rows the projection is the last copy, so nothing may rebuild this table by
+ * clearing it and replaying the stream. See
+ * `ConversationOperationalStateStore.purge`.
+ *
+ * A row holds one column per field a cost answer reads, and nothing else.
+ * Request shape and provider diagnostics are answered from the AgentRun stream;
+ * copied here they would make a row grow with the conversation rather than with
+ * spend. Because they are columns, a Usage total is a `SUM` this table computes
+ * — the reads below return answers, not records, so asking for an all-time
+ * total no longer means handing every call a workspace ever made to the caller.
+ *
  * Recovery compares the AgentRun stream's durable sequence with this
  * projection's applied-through checkpoint. There is no second "dirty" fact to
  * race with the authority: any committed event beyond the checkpoint remains
@@ -54,22 +97,25 @@ import {
  */
 export interface ModelCallLedgerReader {
   /**
-   * Attempts settled within `range`, deduped by `attemptId` with the last write
-   * winning, alongside the number of stored rows that could not be decoded.
+   * Usage answers over the rows a query addresses, alongside the number of rows
+   * in that window whose pricing was lost before this table held columns.
    *
-   * Unreadable rows are reported rather than dropped: they are real calls whose
-   * cost is now unknown, and a total that silently omits them overstates what
-   * the ledger knows. One corrupt row must not fail the query (#1638).
+   * Those are real calls whose cost is now unknown: they are reported rather
+   * than dropped, because a total that silently omits them overstates what the
+   * ledger knows. One of them cannot fail the query (#1638).
    */
-  read(
-    range: { readonly from: number; readonly to: number },
-    sessionId?: string,
-  ): ModelCallLedgerPage;
-}
-
-export interface ModelCallLedgerPage {
-  readonly attempts: readonly ModelCallAttempt[];
-  readonly unreadableRecords: number;
+  summary(query: UsageQuery, now: number): ModelCallLedgerResult<ModelCallUsageSummary>;
+  buckets(
+    query: UsageQuery,
+    groupBy: UsageGroupBy,
+    now: number,
+  ): ModelCallLedgerResult<ModelCallUsageBuckets>;
+  logs(
+    query: UsageQuery,
+    now: number,
+    offset: number,
+    limit: number,
+  ): ModelCallLedgerResult<ModelCallUsageLogs>;
 }
 
 export interface CatchUpModelCallProjectionInput {
@@ -163,34 +209,136 @@ class SqliteModelCallLedger implements ModelCallLedger {
     );
   }
 
-  read(
-    range: { readonly from: number; readonly to: number },
-    sessionId?: string,
-  ): ModelCallLedgerPage {
-    if (this.#state !== 'open') throw new ModelCallLedgerClosedError();
-    const rows = this.#lease.database
+  summary(query: UsageQuery, now: number): ModelCallLedgerResult<ModelCallUsageSummary> {
+    const db = this.#open();
+    const range = resolveUsageRange(query.range, now);
+    const filter = countableFilter(query, range);
+    const row = db
       .prepare(
-        sessionId
-          ? `SELECT record_json FROM usage_model_call_attempts
-             WHERE session_id = ? AND completed_at >= ? AND completed_at <= ?
-             ORDER BY completed_at ASC, attempt_id ASC`
-          : `SELECT record_json FROM usage_model_call_attempts
-             WHERE completed_at >= ? AND completed_at <= ?
-             ORDER BY completed_at ASC, attempt_id ASC`,
+        `SELECT ${REQUEST_SUMS}, ${TOKEN_SUMS}, ${COVERAGE_SUMS}
+         FROM usage_model_call_attempts WHERE ${filter.sql}`,
       )
-      .all(...(sessionId ? [sessionId, range.from, range.to] : [range.from, range.to])) as Array<{
-      record_json: string;
-    }>;
-    const attempts: ModelCallAttempt[] = [];
-    let unreadableRecords = 0;
-    for (const row of rows) {
-      try {
-        attempts.push(decodeModelCallAttempt(JSON.parse(row.record_json)));
-      } catch {
-        unreadableRecords += 1;
-      }
-    }
-    return { attempts, unreadableRecords };
+      .get(...filter.parameters) as Record<string, unknown> | undefined;
+    return {
+      projection: {
+        range,
+        totalRequests: count(row?.totalRequests),
+        totalCostUsd: count(row?.totalCostUsd),
+        totalDurationMs: count(row?.totalDurationMs),
+        totalTokens: readTokens(row),
+        cacheHitRequests: count(row?.cacheHitRequests),
+        cacheCreateRequests: count(row?.cacheCreateRequests),
+        errorRequests: count(row?.errorRequests),
+        coverage: readCoverage(row),
+      },
+      unreadableRecords: this.#unreadable(query, range),
+    };
+  }
+
+  buckets(
+    query: UsageQuery,
+    groupBy: UsageGroupBy,
+    now: number,
+  ): ModelCallLedgerResult<ModelCallUsageBuckets> {
+    const db = this.#open();
+    const range = resolveUsageRange(query.range, now);
+    const filter = countableFilter(query, range);
+    const rows = db
+      .prepare(
+        `SELECT MIN(provider_id) AS providerId, MIN(model_id) AS modelId,
+                MIN(completed_at) AS ts, COUNT(*) AS requests,
+                SUM(${PRICED_COST}) AS costUsd, SUM(latency_ms) AS latency,
+                SUM(status = 'failed') AS errors, ${TOKEN_SUMS}
+         FROM usage_model_call_attempts WHERE ${filter.sql}
+         GROUP BY ${bucketGrouping(groupBy)}`,
+      )
+      .all(...filter.parameters) as Array<Record<string, unknown>>;
+    const buckets = rows
+      .map((row) => {
+        const requests = count(row.requests);
+        const tokens = readTokens(row);
+        const key = usageBucketKey(
+          {
+            providerId: String(row.providerId ?? ''),
+            modelId: String(row.modelId ?? ''),
+            ts: count(row.ts),
+          },
+          groupBy,
+        );
+        return {
+          key,
+          label: key,
+          requests,
+          inputTokens: tokens.input,
+          outputTokens: tokens.output,
+          cacheMissTokens: tokens.cacheMiss,
+          cacheReadTokens: tokens.cacheRead,
+          cacheWriteTokens: tokens.cacheWrite,
+          reasoningTokens: tokens.reasoning,
+          totalTokens: tokens.total,
+          costUsd: count(row.costUsd),
+          avgLatencyMs: requests === 0 ? 0 : count(row.latency) / requests,
+          errorRate: requests === 0 ? 0 : count(row.errors) / requests,
+        } satisfies UsageBucket;
+      })
+      .sort((left, right) => right.requests - left.requests);
+    return {
+      projection: { buckets, coverage: this.#coverage(filter) },
+      unreadableRecords: this.#unreadable(query, range),
+    };
+  }
+
+  logs(
+    query: UsageQuery,
+    now: number,
+    offset: number,
+    limit: number,
+  ): ModelCallLedgerResult<ModelCallUsageLogs> {
+    const db = this.#open();
+    const range = resolveUsageRange(query.range, now);
+    const filter = countableFilter(query, range);
+    const rows = db
+      .prepare(
+        `SELECT attempt_id, completed_at, call_kind, logical_call_id, connection_slug,
+                provider_id, model_id, cost_basis, cost_usd, latency_ms, status, error_class,
+                session_id, turn_id,
+                COALESCE(input_tokens, 0) AS input,
+                COALESCE(output_tokens, 0) AS output,
+                COALESCE(cache_miss_input_tokens, 0) AS cacheMiss,
+                ${CACHE_READ_TOKENS} AS cacheRead,
+                COALESCE(cache_write_input_tokens, 0) AS cacheWrite,
+                COALESCE(reasoning_tokens, 0) AS reasoning
+         FROM usage_model_call_attempts WHERE ${filter.sql}
+         ORDER BY completed_at DESC, attempt_id DESC
+         LIMIT ? OFFSET ?`,
+      )
+      .all(...filter.parameters, limit, offset) as Array<Record<string, unknown>>;
+    const coverage = this.#coverage(filter);
+    return {
+      projection: { rows: rows.map(toUsageLogRow), total: coverage.attempts, coverage },
+      unreadableRecords: this.#unreadable(query, range),
+    };
+  }
+
+  #open(): DatabaseSync {
+    if (this.#state !== 'open') throw new ModelCallLedgerClosedError();
+    return this.#lease.database;
+  }
+
+  #coverage(filter: SqlFilter): ModelCallCoverage {
+    const row = this.#lease.database
+      .prepare(`SELECT ${COVERAGE_SUMS} FROM usage_model_call_attempts WHERE ${filter.sql}`)
+      .get(...filter.parameters) as Record<string, unknown> | undefined;
+    return readCoverage(row);
+  }
+
+  #unreadable(query: UsageQuery, range: { from: number; to: number }): number {
+    const filter = unreadableFilter(query, range);
+    return count(
+      this.#lease.database
+        .prepare(`SELECT COUNT(*) AS unreadable FROM usage_model_call_attempts WHERE ${filter.sql}`)
+        .get(...filter.parameters)?.unreadable,
+    );
   }
 
   async flush(): Promise<void> {
@@ -210,24 +358,117 @@ class SqliteModelCallLedger implements ModelCallLedger {
   }
 }
 
+function readTokens(row: Record<string, unknown> | undefined): {
+  input: number;
+  output: number;
+  cacheMiss: number;
+  cacheRead: number;
+  cacheWrite: number;
+  reasoning: number;
+  total: number;
+} {
+  return {
+    input: count(row?.input),
+    output: count(row?.output),
+    cacheMiss: count(row?.cacheMiss),
+    cacheRead: count(row?.cacheRead),
+    cacheWrite: count(row?.cacheWrite),
+    reasoning: count(row?.reasoning),
+    total: count(row?.total),
+  };
+}
+
+function readCoverage(row: Record<string, unknown> | undefined): ModelCallCoverage {
+  return {
+    attempts: count(row?.attempts),
+    pricedAttempts: count(row?.pricedAttempts),
+    unpricedAttempts: count(row?.unpricedAttempts),
+    usageReportedAttempts: count(row?.usageReportedAttempts),
+    usagePartialAttempts: count(row?.usagePartialAttempts),
+    usageMissingAttempts: count(row?.usageMissingAttempts),
+  };
+}
+
+function toUsageLogRow(row: Record<string, unknown>): UsageLogRow {
+  const costBasis = row.cost_basis as UsageLogRow['costBasis'];
+  return {
+    id: String(row.attempt_id),
+    ts: count(row.completed_at),
+    callKind: row.call_kind as UsageLogRow['callKind'],
+    callId: String(row.logical_call_id),
+    ...(row.connection_slug === null ? {} : { connectionSlug: String(row.connection_slug) }),
+    providerId: String(row.provider_id),
+    modelId: String(row.model_id),
+    inputTokens: count(row.input),
+    outputTokens: count(row.output),
+    cacheMissTokens: count(row.cacheMiss),
+    cacheReadTokens: count(row.cacheRead),
+    cacheWriteTokens: count(row.cacheWrite),
+    reasoningTokens: count(row.reasoning),
+    totalTokens: count(row.input) + count(row.output),
+    // A row keeps its basis, not just its number. Collapsing an unpriced call
+    // to 0 here would reproduce, per row, exactly the ambiguity the coverage
+    // breakdown removes from the totals.
+    ...(costBasis === 'priced' ? { costUsd: count(row.cost_usd) } : {}),
+    costBasis,
+    latencyMs: count(row.latency_ms),
+    status: row.status === 'completed' ? 'success' : row.status === 'failed' ? 'error' : 'aborted',
+    ...(row.error_class === null ? {} : { errorClass: String(row.error_class) }),
+    sessionId: String(row.session_id),
+    turnId: String(row.turn_id),
+  };
+}
+
 function positiveInteger(value: number | undefined, fallback: number, label: string): number {
   const resolved = value ?? fallback;
   if (!Number.isSafeInteger(resolved) || resolved <= 0) throw new Error(`Invalid ${label}`);
   return resolved;
 }
 
+const MODEL_CALL_UPSERT = `
+  INSERT INTO usage_model_call_attempts(${MODEL_CALL_COLUMNS.join(', ')})
+  VALUES (${MODEL_CALL_COLUMNS.map(() => '?').join(', ')})
+  ON CONFLICT(attempt_id) DO UPDATE SET
+    ${MODEL_CALL_COLUMNS.filter((column) => column !== 'attempt_id')
+      .map((column) => `${column} = excluded.${column}`)
+      .join(', ')}
+`;
+
+/**
+ * The attempt's pricing fields, in column order.
+ *
+ * Keyed by column so the binding list cannot drift from the table: a column
+ * added to `MODEL_CALL_COLUMNS` without a value here is a compile error.
+ */
+function bindModelCallAttempt(attempt: ModelCallAttempt): (string | number | null)[] {
+  const values: Record<(typeof MODEL_CALL_COLUMNS)[number], string | number | null> = {
+    attempt_id: attempt.attemptId,
+    completed_at: attempt.completedAt,
+    session_id: attempt.sessionId,
+    logical_call_id: attempt.logicalCallId,
+    turn_id: attempt.turnId,
+    call_kind: attempt.callKind,
+    connection_slug: attempt.connectionSlug ?? null,
+    provider_id: attempt.providerId,
+    model_id: attempt.modelId,
+    latency_ms: attempt.latencyMs,
+    status: attempt.status,
+    error_class: attempt.errorClass ?? null,
+    usage_basis: attempt.usageBasis,
+    input_tokens: attempt.inputTokens ?? null,
+    output_tokens: attempt.outputTokens ?? null,
+    cache_read_input_tokens: attempt.cacheReadInputTokens ?? null,
+    cache_miss_input_tokens: attempt.cacheMissInputTokens ?? null,
+    cache_write_input_tokens: attempt.cacheWriteInputTokens ?? null,
+    reasoning_tokens: attempt.reasoningTokens ?? null,
+    cost_basis: attempt.costBasis,
+    cost_usd: attempt.costUsd ?? null,
+  };
+  return MODEL_CALL_COLUMNS.map((column) => values[column]);
+}
+
 function writeModelCallAttempt(db: DatabaseSync, attempt: ModelCallAttempt): void {
-  db.prepare(`
-      INSERT INTO usage_model_call_attempts(attempt_id, completed_at, record_json, session_id)
-      VALUES (?, ?, ?, ?)
-      ON CONFLICT(attempt_id) DO UPDATE SET
-        completed_at = excluded.completed_at,
-        record_json = excluded.record_json,
-        session_id = excluded.session_id
-      WHERE completed_at IS NOT excluded.completed_at
-         OR record_json IS NOT excluded.record_json
-         OR session_id IS NOT excluded.session_id
-    `).run(attempt.attemptId, attempt.completedAt, JSON.stringify(attempt), attempt.sessionId);
+  db.prepare(MODEL_CALL_UPSERT).run(...bindModelCallAttempt(attempt));
 }
 
 interface LaggingRunRow {

@@ -271,9 +271,7 @@ function signalDetailZh(detail: HealthSignalDetail | undefined): string | undefi
         ...(detail.errorClass ? [`错误类型=${localizedRuntimeErrorClass(detail.errorClass, 'zh-CN')}`] : []),
       ].join(' · ');
     case 'capability_reason':
-      // Interim: capability-snapshot still emits zh-CN prose; code it as a
-      // CapabilityReasonCode to drop this sniff.
-      return /[\u3400-\u9fff]/u.test(detail.reason) ? detail.reason : '状态详情请见对应设置页。';
+      return '状态详情请见对应设置页。';
     case 'last_test_error_class':
       return connectionTestErrorMessages['zh-CN'][detail.errorClass];
     case 'last_test_message':

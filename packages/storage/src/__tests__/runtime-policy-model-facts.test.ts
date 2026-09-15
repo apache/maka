@@ -22,328 +22,235 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import type { ConnectionCatalogEntry } from '@maka/core/runtime-policy';
+import type { ModelOverride } from '@maka/core/model-thinking';
 import { RuntimePolicyCoordinator } from '../runtime-policy/coordinator.js';
 
-test('runtime policy catalog overlays enabled custom model facts without changing the raw catalog', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'maka-runtime-facts-'));
-  try {
-    const coordinator = new RuntimePolicyCoordinator((operation) => operation(root));
-    const created = await coordinator.createConnection({
-      expectedCatalogRevision: 0,
-      connection: {
-        slug: 'custom-openai',
-        name: 'Custom OpenAI',
-        providerType: 'ollama',
-        enabled: true,
-        enabledModelIds: ['custom-model'],
-      },
+test('one connection declaration survives discovery, disabling, clearing fields and restart', async () => {
+  await withCatalog(async (root, owner) => {
+    const first = await create(owner, 'first');
+    const second = await create(owner, 'second');
+    const saved = await update(owner, first, {
+      contextWindow: 64000,
+      compactionThreshold: 48000,
+      vision: true,
     });
-    assert.equal(created.kind, 'committed');
-    assert.equal(Object.isFrozen(created), true);
-    if (created.kind === 'committed') assert.equal(Object.isFrozen(created.snapshot), true);
-    await writeModelFacts(root, { 'ollama:custom-model': { contextWindow: 64_000 } });
-    const snapshot = await coordinator.getCatalogSnapshot();
-    const model = snapshot.connections[0]?.models.find(
-      (candidate) => candidate.id === 'custom-model',
-    );
-    assert.equal(model?.contextWindow, 64_000);
-    const prepared = await coordinator.beginConnectionTest(
-      snapshot.connections[0]!.connectionId,
-      null,
-    );
-    assert.equal(prepared.kind, 'ready');
-    if (prepared.kind === 'ready') {
-      const tested = await coordinator.completeConnectionTest(prepared.ticket, {
-        status: 'verified',
-        checkedAt: '2026-08-01T00:00:00.000Z',
-      });
-      assert.equal(tested.kind, 'committed');
-    }
-    assert.equal(
-      (await coordinator.getCatalogSnapshot()).connections[0]?.lastTest?.status,
-      'verified',
-    );
-    const restarted = new RuntimePolicyCoordinator((operation) => operation(root));
-    const persisted = await restarted.getCatalogSnapshot();
-    assert.equal(
-      persisted.connections[0]?.models.find((candidate) => candidate.id === 'custom-model')
-        ?.contextWindow,
-      64_000,
-    );
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test('legacy connection verification survives unrelated model facts overrides', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'maka-runtime-facts-legacy-verification-'));
-  try {
-    const coordinator = new RuntimePolicyCoordinator((operation) => operation(root));
-    const connectionId = await createTestConnection(coordinator);
-    const prepared = await coordinator.beginConnectionTest(connectionId, null);
-    assert.equal(prepared.kind, 'ready');
-    if (prepared.kind === 'ready') {
+    assert.equal(saved.kind, 'committed');
+    const resolved = await owner.resolveExecutionConnection({
+      kind: 'catalog_slug',
+      connectionSlug: first.slug,
+    });
+    assert.equal(resolved.kind, 'ready');
+    if (resolved.kind !== 'ready') return;
+    assert.equal(resolved.connection.models.find((m) => m.id === 'manual')?.contextWindow, 64000);
+    const other = await owner.resolveExecutionConnection({
+      kind: 'catalog_slug',
+      connectionSlug: second.slug,
+    });
+    assert.equal(other.kind, 'ready');
+    if (other.kind === 'ready')
       assert.equal(
-        (
-          await coordinator.completeConnectionTest(
-            prepared.ticket,
-            verifiedAt('2026-08-01T00:00:00.000Z'),
-          )
-        ).kind,
-        'committed',
+        other.connection.models.find((m) => m.id === 'manual')?.contextWindow,
+        undefined,
       );
-    }
 
-    const catalogPath = join(root, 'connection-catalog.json');
-    const catalog = JSON.parse(await readFile(catalogPath, 'utf8')) as {
-      connections: Array<Record<string, unknown>>;
-    };
-    delete catalog.connections[0]!.lastTestModelFactsFingerprint;
-    await writeFile(catalogPath, `${JSON.stringify(catalog)}\n`, 'utf8');
-
-    await writeModelFacts(root, { 'openai:unrelated-model': { contextWindow: 64_000 } });
-    assert.equal(
-      (await coordinator.getCatalogSnapshot()).connections[0]?.lastTest?.status,
-      'verified',
-    );
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test('display-only model facts preserve verification and in-flight tests', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'maka-runtime-facts-display-only-'));
-  try {
-    const coordinator = new RuntimePolicyCoordinator((operation) => operation(root));
-    const connectionId = await createTestConnection(coordinator);
-    const initial = await coordinator.beginConnectionTest(connectionId, null);
-    assert.equal(initial.kind, 'ready');
-    if (initial.kind !== 'ready') return;
+    const fetched = await owner.beginModelFetch(first.connectionId);
+    assert.equal(fetched.kind, 'ready');
+    if (fetched.kind !== 'ready') return;
     assert.equal(
       (
-        await coordinator.completeConnectionTest(
-          initial.ticket,
-          verifiedAt('2026-08-01T00:00:00.000Z'),
-        )
+        await owner.completeModelFetch(fetched.ticket, {
+          models: [{ id: 'remote' }],
+          source: 'fetched',
+          fetchedAt: 1,
+        })
       ).kind,
       'committed',
     );
-
-    const inFlight = await coordinator.beginConnectionTest(connectionId, null);
-    assert.equal(inFlight.kind, 'ready');
-    await writeModelFacts(root, { 'ollama:custom-model': { displayName: 'Friendly name' } });
+    const fresh = (await owner.getCatalogSnapshot()).connections.find(
+      (c) => c.connectionId === first.connectionId,
+    )!;
+    assert.equal((await update(owner, fresh, {}, [])).kind, 'committed');
+    const restarted = new RuntimePolicyCoordinator((operation) => operation(root));
+    const snapshot = await restarted.getCatalogSnapshot();
+    const persisted = snapshot.connections.find((c) => c.connectionId === first.connectionId)!;
+    assert.deepEqual(persisted.modelOverrides, { manual: {} });
+    assert.deepEqual(persisted.enabledModelIds, []);
+    assert.deepEqual(persisted.models, [{ id: 'remote' }]);
     assert.equal(
-      (await coordinator.getCatalogSnapshot()).connections[0]?.lastTest?.status,
-      'verified',
+      snapshot.connections.find((c) => c.connectionId === second.connectionId)?.modelOverrides,
+      undefined,
     );
-    if (inFlight.kind === 'ready') {
-      assert.equal(
-        (
-          await coordinator.completeConnectionTest(
-            inFlight.ticket,
-            verifiedAt('2026-08-01T00:01:00.000Z'),
-          )
-        ).kind,
-        'committed',
-      );
-    }
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
+    assert.equal((await update(owner, fresh, { vision: false })).kind, 'connection_stale');
+    assert.deepEqual(
+      (await restarted.getCatalogSnapshot()).connections.find(
+        (c) => c.connectionId === first.connectionId,
+      )?.modelOverrides,
+      { manual: {} },
+    );
+  });
 });
 
-test('model fetch keeps an enabled facts-backed model outside provider inventory', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'maka-runtime-facts-refresh-'));
-  try {
-    const coordinator = new RuntimePolicyCoordinator((operation) => operation(root));
-    const connectionId = await createTestConnection(coordinator);
-    await writeModelFacts(root, {
-      'ollama:custom-model': { contextWindow: 64_000 },
-      'ollama:unselected-model': { contextWindow: 128_000 },
-    });
-    const beforeRefresh = await coordinator.getCatalogSnapshot();
-    const defaulted = await coordinator.setDefaultTarget({
-      expectedCatalogRevision: beforeRefresh.revision,
-      target: { connectionId, modelId: 'custom-model' },
-    });
-    assert.equal(defaulted.kind, 'committed');
-
-    const fetch = await coordinator.beginModelFetch(connectionId);
-    assert.equal(fetch.kind, 'ready');
-    if (fetch.kind !== 'ready') return;
-    const refreshed = await coordinator.completeModelFetch(fetch.ticket, {
-      models: [{ id: 'live-model' }],
-      source: 'fetched',
-      fetchedAt: 1,
-    });
-    assert.equal(refreshed.kind, 'committed');
-    if (refreshed.kind !== 'committed') return;
-
-    const raw = await (
-      coordinator as unknown as {
-        catalog: {
-          read(root: string): Promise<{
-            connections: readonly { models: readonly unknown[] }[];
-          }>;
-        };
-      }
-    ).catalog.read(root);
-    assert.deepEqual(raw.connections[0]?.models, [{ id: 'live-model' }]);
-    const projected = refreshed.snapshot.connections[0];
-    assert.deepEqual(projected?.enabledModelIds, ['custom-model']);
-    assert.deepEqual(refreshed.snapshot.defaultTarget, {
-      connectionId,
-      modelId: 'custom-model',
-    });
-    assert.equal(
-      projected?.models.find((model) => model.id === 'custom-model')?.contextWindow,
-      64_000,
-    );
-    assert.equal(
-      projected?.models.some((model) => model.id === 'unselected-model'),
-      false,
-    );
-
-    const execution = await coordinator.resolveExecutionConnection({
-      kind: 'catalog_slug',
-      connectionSlug: 'custom-openai',
-    });
-    assert.equal(execution.kind, 'ready');
-    if (execution.kind === 'ready') {
-      assert.equal(
-        execution.connection.models?.some((model) => model.id === 'custom-model'),
-        true,
-      );
-    }
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test('model fetch keeps enabled facts-backed models when provider inventory fills the bound', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'maka-runtime-facts-refresh-bound-'));
-  try {
-    const coordinator = new RuntimePolicyCoordinator((operation) => operation(root));
-    const connectionId = await createTestConnection(coordinator);
-    await writeModelFacts(root, { 'ollama:custom-model': { contextWindow: 64_000 } });
-    const fetch = await coordinator.beginModelFetch(connectionId);
-    assert.equal(fetch.kind, 'ready');
-    if (fetch.kind !== 'ready') return;
-    const refreshed = await coordinator.completeModelFetch(fetch.ticket, {
-      models: Array.from({ length: 2_048 }, (_, index) => ({ id: `live-model-${index}` })),
-      source: 'fetched',
-      fetchedAt: 1,
-    });
-    assert.equal(refreshed.kind, 'committed');
-    if (refreshed.kind !== 'committed') return;
-    const projected = refreshed.snapshot.connections[0];
-    assert.equal(projected?.models.length, 2_048);
-    assert.equal(projected?.models.at(-1)?.id, 'custom-model');
-    assert.equal(projected?.models.at(-1)?.contextWindow, 64_000);
-    assert.equal(
-      projected?.models.some((model) => model.id === 'live-model-2047'),
-      false,
-    );
-
-    const execution = await coordinator.resolveExecutionConnection({
-      kind: 'catalog_slug',
-      connectionSlug: 'custom-openai',
-    });
-    assert.equal(execution.kind, 'ready');
-    if (execution.kind === 'ready') {
-      const model = execution.connection.models?.find((entry) => entry.id === 'custom-model');
-      assert.equal(model?.contextWindow, 64_000);
-    }
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test('protocol model facts edits clear verification, supersede tickets, and warn on malformed input', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'maka-runtime-facts-external-edit-'));
-  const emitWarning = process.emitWarning;
-  const warnings: string[] = [];
-  process.emitWarning = ((warning: string | Error) => {
-    warnings.push(String(warning));
-  }) as typeof process.emitWarning;
-  try {
-    const coordinator = new RuntimePolicyCoordinator((operation) => operation(root));
-    const connectionId = await createTestConnection(coordinator);
-    await writeModelFacts(root, { 'ollama:custom-model': { contextWindow: 64_000 } });
-    const verified = await coordinator.beginConnectionTest(connectionId, null);
-    assert.equal(verified.kind, 'ready');
-    if (verified.kind === 'ready') {
-      assert.equal(
-        (
-          await coordinator.completeConnectionTest(
-            verified.ticket,
-            verifiedAt('2026-08-01T00:00:00.000Z'),
-          )
-        ).kind,
-        'committed',
-      );
-    }
-    const ticket = await coordinator.beginConnectionTest(connectionId, null);
-    assert.equal(ticket.kind, 'ready');
+test('schema one converts both old declarations once and ignores the old file after atomic save', async () => {
+  await withCatalog(async (root, owner) => {
+    const connection = await create(owner, 'legacy');
+    const path = join(root, 'connection-catalog.json');
+    const document = JSON.parse(await readFile(path, 'utf8'));
+    document.schemaVersion = 1;
+    document.connections[0].relayModelProfiles = {
+      manual: { contextWindow: 32000, vision: false },
+    };
+    await writeFile(path, JSON.stringify(document));
     await writeFile(
       join(root, 'model-facts.json'),
       JSON.stringify({
         schemaVersion: 1,
-        overrides: { 'ollama:custom-model': { apiProtocol: 'openai-responses' } },
+        overrides: { 'ollama:manual': { contextWindow: 64000, capabilities: { vision: true } } },
       }),
-      'utf8',
     );
-    if (ticket.kind === 'ready') {
-      assert.deepEqual(
-        await coordinator.completeConnectionTest(
-          ticket.ticket,
-          verifiedAt('2026-08-01T00:01:00.000Z'),
-        ),
-        { kind: 'superseded', changed: ['connection'] },
-      );
-    }
-    assert.equal((await coordinator.getCatalogSnapshot()).connections[0]?.lastTest, undefined);
-
-    await writeFile(join(root, 'model-facts.json'), '{not-json}', 'utf8');
-    const snapshot = await coordinator.getCatalogSnapshot();
+    const migrated = (await owner.getCatalogSnapshot()).connections[0]!;
+    assert.deepEqual(migrated.modelOverrides, {
+      manual: {
+        contextWindow: 64000,
+        compactionThreshold: 64000,
+        vision: false,
+      },
+    });
     assert.equal(
-      snapshot.connections[0]?.models.find((model) => model.id === 'custom-model')?.contextWindow,
-      undefined,
+      (await update(owner, migrated, { ...migrated.modelOverrides?.manual, contextWindow: 128000 }))
+        .kind,
+      'committed',
     );
-    assert.equal(
-      warnings.some((warning) => warning.includes('model-facts.json')),
-      true,
-    );
-  } finally {
-    process.emitWarning = emitWarning;
-    await rm(root, { recursive: true, force: true });
-  }
+    assert.equal(JSON.parse(await readFile(path, 'utf8')).schemaVersion, 2);
+    await writeFile(join(root, 'model-facts.json'), '{broken legacy input');
+    const restarted = new RuntimePolicyCoordinator((operation) => operation(root));
+    assert.deepEqual((await restarted.getCatalogSnapshot()).connections[0]?.modelOverrides, {
+      manual: { contextWindow: 128000, compactionThreshold: 64000, vision: false },
+    });
+    assert.equal(connection.connectionId, migrated.connectionId);
+  });
 });
 
-async function createTestConnection(coordinator: RuntimePolicyCoordinator): Promise<string> {
-  const created = await coordinator.createConnection({
-    expectedCatalogRevision: 0,
+test('independent limits survive restart and conflicting saves leave the document untouched', async () => {
+  await withCatalog(async (root, owner) => {
+    let connection = await create(owner, 'limits');
+    const fetched = await owner.beginModelFetch(connection.connectionId);
+    assert.equal(fetched.kind, 'ready');
+    if (fetched.kind !== 'ready') throw new Error('fetch unavailable');
+    await owner.completeModelFetch(fetched.ticket, {
+      models: [{ id: 'manual', contextWindow: 64000, inputLimit: 32000 }],
+      source: 'fetched',
+      fetchedAt: 1,
+    });
+    for (const override of [
+      { contextWindow: 200000, inputLimit: 160000 },
+      { contextWindow: 200000 },
+      { inputLimit: 48000 },
+      {},
+    ]) {
+      connection = (await owner.getCatalogSnapshot()).connections[0]!;
+      assert.equal((await update(owner, connection, override)).kind, 'committed');
+      owner = new RuntimePolicyCoordinator((operation) => operation(root));
+      connection = (await owner.getCatalogSnapshot()).connections[0]!;
+      assert.deepEqual(connection.modelOverrides?.manual, override);
+      const resolved = await owner.resolveExecutionConnection({
+        kind: 'catalog_slug',
+        connectionSlug: 'limits',
+      });
+      assert.equal(resolved.kind, 'ready');
+      if (resolved.kind !== 'ready') throw new Error('execution unavailable');
+      const model = resolved.connection.models.find((model) => model.id === 'manual')!;
+      assert.equal(model.contextWindow, override.contextWindow ?? 64000);
+      assert.equal(model.inputLimit, override.inputLimit ?? 32000);
+    }
+    const path = join(root, 'connection-catalog.json');
+    const before = await readFile(path, 'utf8');
+    await assert.rejects(
+      update(owner, connection, { contextWindow: 16000 }),
+      /input limit exceeds/i,
+    );
+    assert.equal(await readFile(path, 'utf8'), before);
+  });
+});
+
+test('only execution-affecting declarations invalidate connection test tickets', async () => {
+  await withCatalog(async (_root, owner) => {
+    let connection = await create(owner, 'tested');
+    const displayTest = await owner.beginConnectionTest(connection.connectionId, 'manual');
+    assert.equal(displayTest.kind, 'ready');
+    assert.equal((await update(owner, connection, { displayName: 'Friendly' })).kind, 'committed');
+    if (displayTest.kind === 'ready')
+      assert.equal(
+        (
+          await owner.completeConnectionTest(displayTest.ticket, {
+            status: 'verified',
+            checkedAt: '2026-09-12T00:00:00.000Z',
+          })
+        ).kind,
+        'committed',
+      );
+    connection = (await owner.getCatalogSnapshot()).connections[0]!;
+    const protocolTest = await owner.beginConnectionTest(connection.connectionId, 'manual');
+    assert.equal(protocolTest.kind, 'ready');
+    assert.equal(
+      (await update(owner, connection, { apiProtocol: 'openai-responses' })).kind,
+      'committed',
+    );
+    if (protocolTest.kind === 'ready')
+      assert.equal(
+        (
+          await owner.completeConnectionTest(protocolTest.ticket, {
+            status: 'verified',
+            checkedAt: '2026-09-12T00:01:00.000Z',
+          })
+        ).kind,
+        'superseded',
+      );
+    assert.equal((await owner.getCatalogSnapshot()).connections[0]?.lastTest, undefined);
+  });
+});
+
+async function create(
+  owner: RuntimePolicyCoordinator,
+  slug: string,
+): Promise<ConnectionCatalogEntry> {
+  const result = await owner.createConnection({
+    expectedCatalogRevision: (await owner.getCatalogSnapshot()).revision,
     connection: {
-      slug: 'custom-openai',
-      name: 'Custom OpenAI',
+      slug,
+      name: slug,
       providerType: 'ollama',
       enabled: true,
-      enabledModelIds: ['custom-model'],
+      enabledModelIds: ['manual'],
     },
   });
-  assert.equal(created.kind, 'committed');
-  if (created.kind !== 'committed') throw new Error('Expected connection creation to commit');
-  return created.snapshot.connections[0]!.connectionId;
+  assert.equal(result.kind, 'committed');
+  if (result.kind !== 'committed') throw new Error('creation failed');
+  return result.snapshot.connections.find((c) => c.slug === slug)!;
 }
 
-function verifiedAt(checkedAt: string) {
-  return { status: 'verified' as const, checkedAt };
+function update(
+  owner: RuntimePolicyCoordinator,
+  connection: ConnectionCatalogEntry,
+  override: ModelOverride,
+  enabledModelIds: readonly string[] = connection.enabledModelIds,
+) {
+  return owner.updateConnection({
+    expected: { connectionId: connection.connectionId, revision: connection.revision },
+    changes: {
+      name: connection.name,
+      enabled: connection.enabled,
+      enabledModelIds,
+      modelOverrides: { manual: override },
+    },
+  });
 }
 
-async function writeModelFacts(root: string, overrides: Record<string, unknown>): Promise<void> {
-  await writeFile(
-    join(root, 'model-facts.json'),
-    JSON.stringify({ schemaVersion: 1, overrides }),
-    'utf8',
-  );
+async function withCatalog(run: (root: string, owner: RuntimePolicyCoordinator) => Promise<void>) {
+  const root = await mkdtemp(join(tmpdir(), 'maka-model-overrides-'));
+  try {
+    await run(root, new RuntimePolicyCoordinator((operation) => operation(root)));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 }

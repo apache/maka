@@ -17,6 +17,13 @@
  * under the License.
  */
 
+import { assertMaximalJsonPages } from './fixtures/json-pages.js';
+import {
+  SKILL_CATALOG_PAGE_MAX_BYTES,
+  SKILL_CATALOG_PAGE_MAX_ITEMS,
+  type SkillCatalogInvocableQueryResult,
+} from '../protocol/index.js';
+
 import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
@@ -1398,4 +1405,74 @@ function governanceItem(
 
 function sha256(content: string | Uint8Array): SkillCatalogRevision {
   return `sha256:${createHash('sha256').update(content).digest('hex')}`;
+}
+
+for (const view of ['governance', 'invocable'] as const) {
+  test(`${view} Skill pages preserve every entry when metadata reaches the byte budget`, async () => {
+    const fixture = await createFixture();
+    const ids = Array.from({ length: 80 }, (_, index) => `skill-${String(index).padStart(3, '0')}`);
+    const description = '文🙂'.repeat(120);
+    await Promise.all(
+      ids.map((id) =>
+        createSkill(join(fixture.project, '.maka', 'skills'), id, skillBody(id, description)),
+      ),
+    );
+    const repository = fixture.repository();
+    type Page = Extract<
+      Awaited<ReturnType<typeof repository.query>> | SkillCatalogInvocableQueryResult,
+      { kind: 'page' }
+    >;
+    const pages: Page[] = [];
+    let cursor: string | null = null;
+    let revision: SkillCatalogRevision | undefined;
+    do {
+      const continuation:
+        | { kind: 'start' }
+        | { kind: 'continue'; revision: SkillCatalogRevision; cursor: string } =
+        revision === undefined
+          ? { kind: 'start' as const }
+          : { kind: 'continue' as const, revision, cursor: cursor! };
+      const page: Awaited<ReturnType<typeof repository.query>> | SkillCatalogInvocableQueryResult =
+        view === 'invocable'
+          ? await repository.queryInvocable(
+              continuation,
+              { projectRoot: fixture.project },
+              { toolNames: new Set(['Read']) },
+            )
+          : await repository.query({ ...continuation, view });
+      assert.ok(page.kind === 'page');
+      assert.ok(page.items.length > 0);
+      pages.push(page);
+      assert.ok(pages.length <= ids.length);
+      revision = page.revision;
+      cursor = page.nextCursor;
+    } while (cursor !== null);
+    const items = pages.flatMap((page) => [...page.items]);
+    assert.deepEqual(
+      items.map((item) => item.id),
+      ids,
+    );
+    assert.ok(items.every((item) => item.description === description));
+    assert.ok(pages.length > 1);
+    assert.ok(pages[0]!.items.length < SKILL_CATALOG_PAGE_MAX_ITEMS);
+    assertMaximalJsonPages(pages, items, {
+      maxBytes: SKILL_CATALOG_PAGE_MAX_BYTES,
+      maxItems: SKILL_CATALOG_PAGE_MAX_ITEMS,
+      items: (page) => page.items,
+      candidate: (page, items, end) => ({
+        ...page,
+        items,
+        nextCursor:
+          end === ids.length
+            ? null
+            : Buffer.from(
+                JSON.stringify(
+                  view === 'invocable'
+                    ? { v: 1, kind: 'invocable', offset: end }
+                    : { v: 1, view, offset: end },
+                ),
+              ).toString('base64url'),
+      }),
+    });
+  });
 }

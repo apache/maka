@@ -35,8 +35,7 @@ import type { SessionHealthNoticeView } from './use-shell-chat-model';
 import type { WorkspaceReadinessRecovery } from './workspace-readiness-recovery';
 import type { TaskReadinessNotice } from './task-readiness-notice';
 import { getShellCopy } from './locales/shell-copy';
-import { getDesktopConversationCopy } from './locales/conversation-copy';
-import { selectLiveTurn } from './use-app-shell-session-ui-reads';
+import { selectLiveTurns } from './features/conversation/index.js';
 import { useExternalStoreSelector } from './use-external-store-selector';
 import { useDeepResearchRun } from './use-deep-research-run';
 import { ChatRecoveryNotice, SessionHealthRecoveryNotice } from './chat-recovery-notice';
@@ -54,15 +53,18 @@ const selectShellRunRecord = (state: AppShellSessionUiState, sessionId: string |
  * is conditionally mounted - the always-mounted Composer lives in a separate
  * region and is not affected by this surface mounting or unmounting.
  */
+
 interface ChatMessageSurfaceProps extends Omit<
   ComponentProps<typeof ChatView>,
   | 'deepResearchRun'
   | 'emptyOverride'
   | 'initialLiveContentSnapshot'
-  | 'liveTurn'
+  | 'liveTurns'
   | 'shellRunUpdates'
   | 'goalIndicator'
-> {
+  | 'onPrefetchHistory'
+  | 'onRetainWindow'
+>, Required<Pick<ComponentProps<typeof ChatView>, 'onPrefetchHistory' | 'onRetainWindow'>> {
   /**
    * #1985: the live projection and the shell-run records are the only session
    * UI state that changes per streamed token, and this surface is their only
@@ -89,11 +91,6 @@ interface ChatMessageSurfaceProps extends Omit<
   connections: LlmConnection[];
   onRefreshConnections: () => Promise<void> | void;
   onSkip: () => Promise<void> | void;
-  hasOlderHistory: boolean;
-  hasNewerHistory: boolean;
-  historyLoadPending: boolean;
-  onLoadEarlierHistory: (anchorTurnId?: string) => Promise<void> | void;
-  onReturnToLatestHistory: () => Promise<void> | void;
 }
 
 function captureLiveContent(liveTurn: LiveTurnProjection | undefined) {
@@ -126,16 +123,10 @@ export function ChatMessageSurface({
   connections,
   onRefreshConnections,
   onSkip,
-  hasOlderHistory,
-  hasNewerHistory,
-  historyLoadPending,
-  onLoadEarlierHistory,
-  onReturnToLatestHistory,
   ...chatViewRest
 }: ChatMessageSurfaceProps) {
   const locale = useUiLocale();
   const copy = getShellCopy(locale).app;
-  const transcriptCopy = getDesktopConversationCopy(locale).actions;
   // Configuration notices share the Settings label; identity recovery supplies
   // its own label because it opens the composer's connection-and-model picker.
   const goToModelsLabel = copy.goToModels;
@@ -159,8 +150,9 @@ export function ChatMessageSurface({
     activeSession?.id,
     isDeepResearchSession(activeSession?.labels),
   );
-  const liveTurn = useExternalStoreSelector(sessionUiController, selectLiveTurn, activeSessionId);
-  const seededLiveTurn = liveContentSeedRevision > 0 ? liveTurn : undefined;
+  const liveTurns = useExternalStoreSelector(sessionUiController, selectLiveTurns, activeSessionId);
+  const liveTurn = liveTurns?.find((turn) => turn.turnId === chatViewRest.activeTurn?.turnId) ?? liveTurns?.at(-1);
+  const seededLiveTurns = liveContentSeedRevision > 0 ? liveTurns : undefined;
   const [activation, setActivation] = useState(() => ({
     sessionId: activeSessionId,
     seedRevision: liveContentSeedRevision,
@@ -178,9 +170,7 @@ export function ChatMessageSurface({
   } else if (
     activation.initialLiveContent
     && (
-      !seededLiveTurn
-      || seededLiveTurn.terminal
-      || seededLiveTurn.turnId !== activation.initialLiveContent.turnId
+      !seededLiveTurns?.some((turn) => turn.turnId === activation.initialLiveContent?.turnId && !turn.terminal)
     )
   ) {
     setActivation({
@@ -238,8 +228,9 @@ export function ChatMessageSurface({
         {(goalProjection) => (
           <ChatView
             {...chatViewRest}
-            liveTurn={seededLiveTurn}
-            // Every branch above reseeds `sessionId` to `activeSessionId`, and a
+            viewportNavigation={sessionUiController.transcriptViewportNavigation}
+            liveTurns={seededLiveTurns}
+              // Every branch above reseeds `sessionId` to `activeSessionId`, and a
             // render-phase setState re-runs this body before anything commits, so
             // the activation reaching the DOM is always this session's.
             initialLiveContentSnapshot={activation.initialLiveContent}
@@ -247,14 +238,6 @@ export function ChatMessageSurface({
             deepResearchRun={deepResearchRun}
             emptyOverride={emptyOverride}
             goalIndicator={goalProjection.goalIndicator}
-            hasOlderHistory={hasOlderHistory}
-            onLoadEarlierHistory={onLoadEarlierHistory}
-            returnToLatest={hasNewerHistory ? {
-              title: transcriptCopy.partialHistoryTitle,
-              label: transcriptCopy.returnLatest,
-              isPending: historyLoadPending,
-              onClick: onReturnToLatestHistory,
-            } : undefined}
           />
         )}
       </ChatViewGoalProjectionConsumer>

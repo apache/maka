@@ -226,14 +226,19 @@ function buildReadArtifactTool(deps: BuildDeepResearchToolsDeps): MakaTool<
       }
       const offset = input.offset_chars ?? 0;
       const maxChars = input.max_chars ?? DEEP_RESEARCH_ARTIFACT_READ_DEFAULT_CHARS;
-      const characters = Array.from(read.text);
-      const end = Math.min(characters.length, offset + maxChars);
-      const chunk = safeResearchArtifactContent(characters.slice(offset, end).join(''));
+      const selected: string[] = [];
+      let total = 0;
+      for (const character of read.text) {
+        if (total >= offset && total < offset + maxChars) selected.push(character);
+        total += 1;
+      }
+      const end = Math.min(total, offset + maxChars);
+      const chunk = safeResearchArtifactContent(selected.join(''));
       return [
-        `<deep-research-artifact id="${ref.artifactId}" role="${ref.role}" offset="${offset}" end="${end}" total="${characters.length}">`,
+        `<deep-research-artifact id="${ref.artifactId}" role="${ref.role}" offset="${offset}" end="${end}" total="${total}">`,
         `Name: ${normalizeInlineText(ref.name)}`,
         ...(ref.locator ? [`Locator: ${normalizeInlineText(ref.locator)}`] : []),
-        `Truncated: ${end < characters.length}`,
+        `Truncated: ${end < total}`,
         '',
         chunk,
         '</deep-research-artifact>',

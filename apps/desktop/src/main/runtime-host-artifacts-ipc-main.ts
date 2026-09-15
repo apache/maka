@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 import { randomUUID } from "node:crypto";
 import { open, mkdir, rename, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -34,12 +35,16 @@ import {
 } from "./ipc-reconnect-policy.js";
 import type { createMainWindowController } from "./main-window.js";
 import type { DesktopRuntimeHostClient } from "./runtime-host-client.js";
+import type { ManagedArtifactPreview } from './managed-artifact-preview.js';
 
 interface RuntimeHostArtifactsIpcDeps {
+  uiLocale(): UiLocale;
   readonly ipcMain: ReconnectableReadIpcMain;
   readonly client: DesktopRuntimeHostClient;
   readonly mainWindowController: ReturnType<typeof createMainWindowController>;
   readonly showItemInFolder: (path: string) => void;
+  readonly openPath?: (path: string) => Promise<string>;
+  readonly preview?: { service: ManagedArtifactPreview; scope: string; openExternal: (url: string) => Promise<void> };
   readonly presentationRoot?: string;
 }
 
@@ -76,10 +81,27 @@ export function registerRuntimeHostArtifactsIpc(
   );
   deps.ipcMain.handle(
     "artifacts:delete",
-    (_event, sessionId: string, artifactId: string) =>
-      deps.client.deleteArtifact(sessionId, artifactId),
+    async (_event, sessionId: string, artifactId: string) => {
+      const result = await deps.client.deleteArtifact(sessionId, artifactId);
+      await deps.preview?.service.revoke(deps.preview.scope, sessionId, artifactId);
+      return result;
+    },
   );
   registerRuntimeHostAttachmentPreviewIpc(deps);
+  const materializePresentationArtifact = async (
+    sessionId: string,
+    artifactId: string,
+    artifact: Awaited<ReturnType<DesktopRuntimeHostClient['getArtifact']>>,
+  ): Promise<string> => {
+    if (!artifact) throw new Error('Artifact is missing');
+    const path = join(
+      presentationRoot,
+      sessionId,
+      `${artifactId}-${sanitizeArtifactName(artifact.name)}`,
+    );
+    await materializeArtifact(deps.client, sessionId, artifactId, path, artifact.sizeBytes);
+    return path;
+  };
   deps.ipcMain.handle(
     "app:openArtifactPath",
     async (_event, sessionId: string, artifactId: string) => {
@@ -88,12 +110,38 @@ export function registerRuntimeHostArtifactsIpc(
         return { ok: false as const, reason: "missing" as const };
       }
       try {
-        const path = join(
-          presentationRoot,
-          sessionId,
-          `${artifactId}-${sanitizeArtifactName(artifact.name)}`,
-        );
-        await materializeArtifact(deps.client, sessionId, artifactId, path, artifact.sizeBytes);
+        if (artifact.kind === 'html' && deps.preview) {
+          const endpoint = await deps.preview.service.prepare(deps.preview.scope, deps.client, sessionId, artifactId);
+          try {
+            await deps.preview.openExternal(endpoint.url);
+          } catch (error) {
+            await deps.preview.service.releaseUrl(endpoint.url);
+            throw error;
+          }
+          return { ok: true as const, opened: artifact.name, ...endpoint };
+        }
+        const path = await materializePresentationArtifact(sessionId, artifactId, artifact);
+        if (artifact.kind === 'html' && deps.openPath) {
+          const error = await deps.openPath(path);
+          if (error) return { ok: false as const, reason: "open-failed" as const };
+        } else {
+          deps.showItemInFolder(path);
+        }
+        return { ok: true as const, opened: artifact.name };
+      } catch {
+        return { ok: false as const, reason: "open-failed" as const };
+      }
+    },
+  );
+  deps.ipcMain.handle(
+    "app:showArtifactInFolder",
+    async (_event, sessionId: string, artifactId: string) => {
+      const artifact = await deps.client.getArtifact(sessionId, artifactId);
+      if (!artifact) {
+        return { ok: false as const, reason: "missing" as const };
+      }
+      try {
+        const path = await materializePresentationArtifact(sessionId, artifactId, artifact);
         deps.showItemInFolder(path);
         return { ok: true as const, opened: artifact.name };
       } catch {
@@ -111,7 +159,7 @@ export function registerRuntimeHostArtifactsIpc(
       const artifact = await deps.client.getArtifact(sessionId, artifactId);
       if (!artifact) return { ok: false, reason: "not_found" };
       const result = await deps.mainWindowController.showSaveDialog({
-        title: `另存为 ${artifact.name}`,
+        title: ARTIFACT_DIALOG_COPY[deps.uiLocale()].saveAs(artifact.name),
         defaultPath: artifact.name,
       });
       if (result.canceled || !result.filePath) {
@@ -126,8 +174,9 @@ export function registerRuntimeHostArtifactsIpc(
           artifact.sizeBytes,
         );
         return { ok: true, saved: artifact.name };
-      } catch {
-        return { ok: false, reason: "write_failed" };
+      } catch (error) {
+        if (error instanceof ArtifactMaterializationError) return { ok: false, reason: error.reason };
+        return { ok: false, reason: "target_write_failed" };
       }
     },
   );
@@ -196,11 +245,14 @@ async function materializeArtifact(
   );
   const handle = await open(stagingPath, "wx");
   let offset = 0;
+  let writingStaging = false;
+  let streamCompleted = false;
   try {
     const totalBytes = await client.streamArtifact(
       sessionId,
       artifactId,
       async (chunk) => {
+        writingStaging = true;
         let written = 0;
         while (written < chunk.byteLength) {
           const result = await handle.write(
@@ -213,18 +265,45 @@ async function materializeArtifact(
           written += result.bytesWritten;
         }
         offset += written;
+        writingStaging = false;
       },
     );
+    streamCompleted = true;
     if (totalBytes !== expectedBytes || offset !== expectedBytes) {
-      throw new Error("Artifact size changed during export");
+      throw new ArtifactMaterializationError("size_mismatch");
     }
     await handle.sync();
     await handle.close();
-    await rm(targetPath, { force: true });
-    await rename(stagingPath, targetPath);
+    try {
+      await rename(stagingPath, targetPath);
+    } catch (error) {
+      throw new ArtifactMaterializationError("replace_failed", error);
+    }
   } catch (error) {
     await handle.close().catch(() => undefined);
     await rm(stagingPath, { force: true }).catch(() => undefined);
+    if (!(error instanceof ArtifactMaterializationError)) {
+      throw new ArtifactMaterializationError(
+        writingStaging || streamCompleted ? "target_write_failed" : "source_failed",
+        error,
+      );
+    }
     throw error;
   }
 }
+
+class ArtifactMaterializationError extends Error {
+  constructor(
+    readonly reason: "source_failed" | "size_mismatch" | "target_write_failed" | "replace_failed",
+    cause?: unknown,
+  ) {
+    super(`Artifact materialization failed: ${reason}`, { cause });
+    this.name = "ArtifactMaterializationError";
+  }
+}
+
+const ARTIFACT_DIALOG_COPY = {
+  'zh-CN': { saveAs: (name: string) => `另存为 ${name}` },
+  'zh-TW': { saveAs: (name: string) => `另存為 ${name}` },
+  en: { saveAs: (name: string) => `Save ${name} as` },
+} satisfies UiCatalog<{ saveAs(name: string): string }>;

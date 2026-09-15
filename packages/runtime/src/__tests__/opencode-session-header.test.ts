@@ -21,13 +21,16 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { OPENCODE_SESSION_HEADER, withOpenCodeSessionHeader } from '../opencode-session-header.js';
 
-describe('OpenCode Go session header', () => {
-  test('adds a trimmed stable session identity only for OpenCode Go', () => {
+describe('OpenCode session header', () => {
+  test('adds a trimmed stable session identity for OpenCode Go and Free', () => {
     assert.deepEqual(withOpenCodeSessionHeader('opencode-go', '  session-a  '), {
       [OPENCODE_SESSION_HEADER]: 'session-a',
     });
     assert.equal(withOpenCodeSessionHeader('opencode', 'session-a'), undefined);
     assert.equal(withOpenCodeSessionHeader('openai', 'session-a'), undefined);
+    assert.deepEqual(withOpenCodeSessionHeader('opencode-free', '  session-a  '), {
+      [OPENCODE_SESSION_HEADER]: 'session-a',
+    });
   });
 
   test('preserves an explicitly configured header case-insensitively', () => {
@@ -40,10 +43,16 @@ describe('OpenCode Go session header', () => {
       withOpenCodeSessionHeader('opencode-go', 'automatic-session', explicitHeaders),
       explicitHeaders,
     );
+    assert.equal(
+      withOpenCodeSessionHeader('opencode-free', 'automatic-session', explicitHeaders),
+      explicitHeaders,
+    );
   });
 
   test('does not add an empty session identity', () => {
     const headers = { 'X-Maka-Test': 'preserved' };
     assert.equal(withOpenCodeSessionHeader('opencode-go', '   ', headers), headers);
+    assert.equal(withOpenCodeSessionHeader('opencode-free', '   ', headers), headers);
+    assert.equal(withOpenCodeSessionHeader('opencode-free', undefined, headers), headers);
   });
 });

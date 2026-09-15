@@ -30,7 +30,7 @@ import {
   type ConnectionSettingsServices,
   type ModelContextTargetControl,
 } from '../../renderer/features/connection-settings/index.js';
-import { modelProfilesWithContextTarget } from '@maka/core/model-thinking';
+import { modelOverridesWithContextTarget } from '@maka/core/model-thinking';
 import type { DesktopConnectionSnapshot } from '../../shared/desktop-connection-snapshot.js';
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
 
@@ -38,30 +38,32 @@ afterEach(cleanupFakeDom);
 
 test('sets one model context target without dropping its other declarations', () => {
   assert.deepEqual(
-    modelProfilesWithContextTarget(
+    modelOverridesWithContextTarget(
       {
-        current: { vision: true, contextWindow: 1_000_000 },
+        current: { vision: true, contextWindow: 1_000_000, compactionThreshold: 512_000 },
         other: { contextWindow: 128_000 },
       },
       'current',
       256_000,
     ),
     {
-      current: { vision: true, contextWindow: 256_000 },
+      current: { vision: true, contextWindow: 1_000_000, compactionThreshold: 256_000 },
       other: { contextWindow: 128_000 },
     },
   );
 });
 
-test('auto removes only the context target and clears an empty table', () => {
+test('auto removes only the context target and preserves manually added model records', () => {
   assert.deepEqual(
-    modelProfilesWithContextTarget({ current: { vision: false, contextWindow: 256_000 } }, 'current', undefined),
-    { current: { vision: false } },
+    modelOverridesWithContextTarget({ current: { vision: false, contextWindow: 1_000_000, compactionThreshold: 256_000 } }, 'current', undefined),
+    { current: { vision: false, contextWindow: 1_000_000 } },
   );
-  assert.equal(
-    modelProfilesWithContextTarget({ current: { contextWindow: 256_000 } }, 'current', undefined),
-    null,
+  assert.deepEqual(
+    modelOverridesWithContextTarget({ current: { compactionThreshold: 256_000 } }, 'current', undefined),
+    { current: {} },
   );
+  assert.deepEqual(modelOverridesWithContextTarget({ custom: {} }, 'custom', undefined), { custom: {} });
+  assert.equal(modelOverridesWithContextTarget(undefined, 'current', undefined), null);
 });
 
 test('saves against the selected Host and connection even when the visible route changes', async () => {
@@ -79,7 +81,7 @@ test('saves against the selected Host and connection even when the visible route
     createdAt: 1,
     updatedAt: 1,
     catalogEntries: [],
-    relayModelProfiles: { 'qwen3.8-max': { vision: false }, other: { contextWindow: 128_000 } },
+    modelOverrides: { 'qwen3.8-max': { vision: false, contextWindow: 1_000_000 }, other: { contextWindow: 128_000 } },
   };
   const writes: Array<{ identity: unknown; patch: UpdateConnectionInput }> = [];
   const requestedHosts: unknown[] = [];
@@ -128,18 +130,18 @@ test('saves against the selected Host and connection even when the visible route
   assert.deepEqual(writes, [{
     identity,
     patch: {
-      relayModelProfiles: {
-        'qwen3.8-max': { vision: false, contextWindow: 256_000 },
+      modelOverrides: {
+        'qwen3.8-max': { vision: false, contextWindow: 1_000_000, compactionThreshold: 256_000 },
         other: { contextWindow: 128_000 },
       },
     },
   }]);
   assert.equal(control.pending, false);
-  const saved = { ...current, relayModelProfiles: writes[0]!.patch.relayModelProfiles ?? undefined };
+  const saved = { ...current, modelOverrides: writes[0]!.patch.modelOverrides ?? undefined };
   assert.equal(resolveDeclaredContextWindow(saved, 'qwen3.8-max'), 256_000);
   const automatic = {
     ...saved,
-    relayModelProfiles: modelProfilesWithContextTarget(saved.relayModelProfiles, 'qwen3.8-max', undefined) ?? undefined,
+    modelOverrides: modelOverridesWithContextTarget(saved.modelOverrides, 'qwen3.8-max', undefined) ?? undefined,
   };
   assert.equal(resolveDeclaredContextWindow(automatic, 'qwen3.8-max'), undefined);
 });

@@ -83,6 +83,43 @@ function sessionInput(cwd: string, projectId: string) {
   };
 }
 
+test('a regular file is rejected as a project location', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-project-file-'));
+  try {
+    const outsideFile = join(base, 'README.md');
+    await writeFile(outsideFile, 'not a project\n');
+    await assert.rejects(
+      () => resolveProjectLocation({ path: outsideFile }),
+      (error) =>
+        error instanceof TypeError &&
+        String(error.message).includes('Project path is not a directory'),
+    );
+
+    const repository = join(base, 'repository');
+    await mkdir(repository);
+    await execFileAsync('git', ['init', '--quiet'], { cwd: repository });
+    const insideFile = join(repository, 'README.md');
+    await writeFile(insideFile, 'not a project\n');
+    await assert.rejects(
+      () => resolveProjectLocation({ path: insideFile }),
+      (error) =>
+        error instanceof TypeError &&
+        String(error.message).includes('Project path is not a directory'),
+    );
+
+    const catalog = createProjectCatalog(join(base, 'storage'));
+    await assert.rejects(
+      () => catalog.register(insideFile),
+      (error) =>
+        error instanceof TypeError &&
+        String(error.message).includes('Project path is not a directory'),
+    );
+    assert.deepEqual(await catalog.list(), []);
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
 test('a plain folder resolves without requiring the Git executable', async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-project-folder-no-git-'));
   try {

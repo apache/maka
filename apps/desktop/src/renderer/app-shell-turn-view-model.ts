@@ -22,7 +22,6 @@ import type { UiLocale } from '@maka/core/ui-locale';
 import {
   deriveTurnLineageMap,
   finalAssistantReplyText,
-  formatTurnDuration,
   isSandboxDeniedTool,
   type TurnFooterActionMeta,
   type TurnLineageBadge,
@@ -66,14 +65,7 @@ function isSandboxOnlyToolFailure(turn: TurnViewModel): boolean {
   const erroredTools = turn.tools.filter((tool) => tool.status === 'errored');
   if (erroredTools.length === 0 || !erroredTools.every(isSandboxDeniedTool)) return false;
 
-  const errorClass = turn.errorClass?.toLowerCase();
-  return (
-    errorClass === undefined
-    || errorClass === 'unknown'
-    || errorClass === 'tool_failed'
-    || errorClass === 'sandbox_denial'
-    || errorClass === 'sandbox_denied'
-  );
+  return [undefined, 'unknown', 'tool_failed', 'sandbox_denial', 'sandbox_denied'].includes(turn.errorClass?.toLowerCase());
 }
 
 /**
@@ -196,14 +188,6 @@ function deriveTurnPresentationEntry(input: {
   uiLocale: UiLocale;
 }): TurnPresentationEntry {
   const { turn, lineageEntry, pendingForTurn, uiLocale } = input;
-  const metaParts: string[] = [];
-  if (turn.modelId) metaParts.push(turn.modelId);
-  // Below a second there is nothing to report: a turn's duration counts whole
-  // seconds, so a 300ms turn would read「0s」— a number that says less than no
-  // number at all.
-  if (turn.durationMs && turn.durationMs >= 1_000) metaParts.push(formatTurnDuration(turn.durationMs));
-  if (turn.tokens?.costUsd && turn.tokens.costUsd > 0) metaParts.push(`$${turn.tokens.costUsd.toFixed(4)}`);
-  const metaSummary = metaParts.length > 0 ? metaParts.join(' · ') : undefined;
   const footerActions = deriveTurnFooterActions({
     status: turn.status,
     locale: uiLocale,
@@ -214,20 +198,18 @@ function deriveTurnPresentationEntry(input: {
       ? { alreadyRegenerated: true }
       : {}),
     ...(pendingForTurn.size > 0 ? { pendingActions: pendingForTurn } : {}),
-    ...(metaSummary ? { metaSummary } : {}),
   });
 
   const entry: TurnPresentationEntry = { footerActions };
 
-  if (turn.status === 'failed' && !isSandboxOnlyToolFailure(turn)) {
+  if (turn.status === 'failed' && (turn.failureMessage || !isSandboxOnlyToolFailure(turn))) {
     entry.failedReasonLabel = describeTurnErrorClass(turn.errorClass, uiLocale);
     entry.failedSeverity = deriveFailedTurnSeverity(turn.errorClass);
-    const executionState = describeFailedTurnExecutionState({
-      partialOutputRetained: turn.partialOutputRetained,
+    entry.failedExecutionStateLabel = describeFailedTurnExecutionState({
+      retry: turn.retry,
       toolActivityCount: turn.tools.length,
       erroredToolCount: turn.tools.filter((tool) => tool.status === 'errored').length,
     }, uiLocale);
-    if (executionState) entry.failedExecutionStateLabel = executionState;
   }
 
   const lineageBadges = deriveTurnLineageBadges({

@@ -27,13 +27,14 @@ import {
   type RuntimeEventFunctionResponseContent,
 } from '@maka/core/runtime-event';
 import {
+  buildImmutableRuntimePrefix,
   continuationStartEventMatchesClaim,
   invocationMatchesClaimTarget,
 } from '@maka/core/runtime-boundary';
 import type {
   ContinuationClaimV1,
   ImmutableRuntimePrefixV1,
-  RuntimeBoundaryCursorV1,
+  RuntimeBoundaryCursor,
   RuntimeBoundaryDigest,
 } from '@maka/core/runtime-boundary';
 import type { RuntimeEventInvocationOpenedContent } from '@maka/core/runtime-event';
@@ -51,6 +52,11 @@ import {
 } from './model-history.js';
 import { resolveRuntimeRecovery, type RuntimeRecoveryResolution } from './recovery-resolver.js';
 import { classifyRuntimeEventTerminalFact } from './runtime-event-read-model.js';
+import {
+  assertHandoffClaimSource,
+  runtimeHandoffPause,
+  type RuntimeHandoffPause,
+} from '@maka/core/runtime-handoff';
 
 export type ToolOperationStatus =
   | 'succeeded'
@@ -285,6 +291,7 @@ export interface ContinuationIdentity {
 }
 
 export interface SafeBoundaryContinuationFacts {
+  handoffPause?: RuntimeHandoffPause;
   ledgerReadable: boolean;
   terminalRepairSucceeded: boolean;
   sourceCwd: string;
@@ -308,6 +315,9 @@ export interface SafeBoundaryContinuationFacts {
 }
 
 export interface RuntimeContinuation {
+  /** Present only for a sealed physical handoff, never a manual resume. */
+  handoffRootRunId?: string;
+  handoffRemainingSteps?: number | null;
   sessionId: string;
   invocationId: string;
   runId: string;
@@ -323,7 +333,7 @@ export interface RuntimeContinuation {
   /** Full user-anchored provider history, including continuation ancestors. */
   runtimeContext: RuntimeEvent[];
   /** Composite immutable ledger boundary used to build runtimeContext. */
-  boundary?: RuntimeBoundaryCursorV1;
+  boundary?: RuntimeBoundaryCursor;
   /** Identity of the exact provider-facing replay projection. */
   providerReplayDigest?: RuntimeBoundaryDigest;
   providerProjectionVersion?: typeof PROVIDER_REPLAY_PROJECTION_VERSION;
@@ -337,6 +347,44 @@ export interface RuntimeContinuationSafetySnapshot {
   workspaceCheckpoint?: {
     ref: string;
     runtimeEventHighWater: number;
+  };
+}
+
+/** Keep logical ownership while independently checking the execution's current configuration. */
+export function preserveHandoffOpening(
+  continuation: RuntimeContinuation,
+  computed: RuntimeEventInvocationOpenedContent,
+  source: RuntimeEventInvocationOpenedContent | undefined,
+): RuntimeEventInvocationOpenedContent {
+  if (continuation.handoffRootRunId === undefined) return computed;
+  if (
+    source?.kind !== 'invocation_opened' ||
+    !continuation.claimId ||
+    !continuation.boundary ||
+    !isDeepStrictEqual(source.configuration, computed.configuration) ||
+    continuation.handoffRootRunId !==
+      (source.source.kind === 'handoff' ? source.source.rootRunId : continuation.sourceRunId)
+  ) {
+    throw new RuntimeContinuationRevalidationError(
+      'source_identity_changed',
+      'Handoff execution cannot preserve its source configuration and logical authority',
+    );
+  }
+  const { lineage: _computedLineage, ...opening } = computed;
+  return {
+    ...opening,
+    root: source.root,
+    ...(source.lineage ? { lineage: source.lineage } : {}),
+    source: {
+      kind: 'handoff',
+      rootRunId: continuation.handoffRootRunId,
+      sourceInvocationId: continuation.sourceInvocationId,
+      sourceRunId: continuation.sourceRunId,
+      sourceTurnId: continuation.sourceTurnId,
+      sourceRuntimeEventHighWater: continuation.sourceRuntimeEventHighWater,
+      claimId: continuation.claimId,
+      boundaryDigest: continuation.boundary.manifestDigest,
+    },
   };
 }
 
@@ -361,6 +409,7 @@ export interface SafeBoundaryContinuationPlan {
 }
 
 export interface RuntimeContinuationPlannerInput {
+  purpose?: 'handoff';
   sessionId: string;
   sourceRunId: string;
   admissionRoute: ContinuationReplayAdmissionRoute;
@@ -395,6 +444,25 @@ export class RuntimeContinuationPlanner {
   constructor(private readonly deps: RuntimeContinuationPlannerDeps) {}
 
   async plan(input: RuntimeContinuationPlannerInput): Promise<SafeBoundaryContinuationPlan> {
+    return this.planBoundary(input);
+  }
+
+  /** A candidate is never execution authority and never escapes as a continuation. */
+  async previewHandoff(
+    input: RuntimeContinuationPlannerInput,
+    seal: RuntimeEvent,
+  ): Promise<SafeBoundaryContinuationPlan> {
+    const { continuation: _continuation, ...assessment } = await this.planBoundary(
+      { ...input, purpose: 'handoff' },
+      seal,
+    );
+    return assessment;
+  }
+
+  private async planBoundary(
+    input: RuntimeContinuationPlannerInput,
+    preview?: RuntimeEvent,
+  ): Promise<SafeBoundaryContinuationPlan> {
     let sourceInvocation: RuntimeInvocationRecord;
     try {
       sourceInvocation = await this.deps.readSourceInvocation(input.sessionId, input.sourceRunId);
@@ -419,8 +487,30 @@ export class RuntimeContinuationPlanner {
         'RuntimeEvent ledger could not be read reliably',
       );
     }
+    if (preview) {
+      const source = prefixes.at(-1)!;
+      if (!runtimeHandoffPause(preview) || source.events.some(isTerminalRuntimeEvent)) {
+        return parkedPlan(
+          'runtime_identity_mismatch',
+          'Handoff preview requires an unsealed live source',
+        );
+      }
+      prefixes[prefixes.length - 1] = buildImmutableRuntimePrefix(
+        source.identity,
+        [...source.events, preview].map((event, index) => ({ eventSeq: index + 1, event })),
+      );
+    }
     const sourcePrefix = prefixes.at(-1)!;
     const events = [...sourcePrefix.events];
+    const pause = events.at(-1) && runtimeHandoffPause(events.at(-1)!);
+    if ((input.purpose === 'handoff') !== Boolean(pause)) {
+      return parkedPlan(
+        'runtime_identity_mismatch',
+        pause
+          ? 'This source is reserved for its sealed handoff successor'
+          : 'A physical handoff requires a durable pause seal',
+      );
+    }
     if (
       sourcePrefix.identity.sessionId !== input.sessionId ||
       sourcePrefix.identity.runId !== input.sourceRunId
@@ -503,10 +593,17 @@ export class RuntimeContinuationPlanner {
       // the same value at every mint site so the opening fact can be joined
       // either way while the two names are still being retired.
       continuationIdentity: (() => {
+        if (pause)
+          return {
+            invocationId: pause.successorInvocationId,
+            runId: pause.successorRunId,
+            turnId: sourcePrefix.identity.turnId,
+          };
         const invocationId = this.deps.newId();
         return { invocationId, runId: invocationId, turnId: this.deps.newId() };
       })(),
-      continuationClaimId: this.deps.newId(),
+      continuationClaimId: pause?.claimId ?? this.deps.newId(),
+      ...(pause ? { handoffPause: pause } : {}),
       continuationReplayPlan: replay.plan,
       ...(input.expectedRuntimeEventHighWater !== undefined
         ? { expectedRuntimeEventHighWater: input.expectedRuntimeEventHighWater }
@@ -643,7 +740,7 @@ export class RuntimeContinuationPlanner {
     let depth = 1;
     while (true) {
       const opened = childInvocation.opening.source;
-      const current = opened.kind === 'continuation' ? opened : undefined;
+      const current = opened.kind !== 'fresh' ? opened : undefined;
       const start = childPrefix.events[0]?.actions?.continuationStart;
       // A migrated opening keeps the lineage edge but names no claim, so only
       // an edge that names one can be authenticated against a durable claim.
@@ -776,6 +873,14 @@ export class RuntimeContinuationPlanner {
         throw new RuntimeLineageError(
           'runtime_lineage_claim_mismatch',
           `durable continuation claim does not authenticate ${edge.childRunId}`,
+        );
+      }
+      try {
+        assertHandoffClaimSource(state.claim, segments[childIndex - 1]!);
+      } catch {
+        throw new RuntimeLineageError(
+          'runtime_lineage_claim_mismatch',
+          `handoff source does not authenticate ${edge.childRunId}`,
         );
       }
       if (edge.providerProjectionVersion !== PROVIDER_REPLAY_PROJECTION_VERSION) {
@@ -1012,7 +1117,13 @@ export function buildSafeBoundaryContinuationPlan(
     if (
       facts.continuationIdentity.invocationId === source.invocationId ||
       facts.continuationIdentity.runId === source.runId ||
-      facts.continuationIdentity.turnId === source.turnId
+      (facts.handoffPause
+        ? facts.continuationIdentity.turnId !== source.turnId ||
+          facts.continuationIdentity.runId !== facts.handoffPause.successorRunId ||
+          facts.continuationIdentity.invocationId !== facts.handoffPause.successorInvocationId ||
+          facts.continuationClaimId !== facts.handoffPause.claimId ||
+          !isDeepStrictEqual(events.at(-1)?.actions?.handoffPause, facts.handoffPause)
+        : facts.continuationIdentity.turnId === source.turnId)
     ) {
       phaseOneDiagnostics.push({
         code: 'continuation_identity_reused',
@@ -1179,6 +1290,12 @@ export function buildSafeBoundaryContinuationPlan(
           ? { sourceRuntimeContext: legacyReplayPlan!.replayRuntimeEvents }
           : {}),
       runtimeContext: [...modelRuntimeContext],
+      ...(facts.handoffPause
+        ? {
+            handoffRootRunId: facts.handoffPause.rootRunId,
+            handoffRemainingSteps: facts.handoffPause.remainingSteps,
+          }
+        : {}),
       ...(facts.continuationClaimId ? { claimId: facts.continuationClaimId } : {}),
       ...(compositeReplay
         ? {

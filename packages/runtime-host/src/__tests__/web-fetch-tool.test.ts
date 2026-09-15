@@ -18,6 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
 import { test } from 'node:test';
 import { createDefaultRuntimePolicy } from '@maka/core/runtime-policy';
 import type { MakaToolContext } from '@maka/runtime/tool-runtime';
@@ -26,7 +27,67 @@ import type {
   ResolveHostOutboundExecutionResult,
   RuntimePolicyOperationCoordinator,
 } from '@maka/storage/runtime-policy-stores';
-import { createHostWebFetchTool } from '../server/web-fetch-tool.js';
+import { createHostWebFetchService, createHostWebFetchTool } from '../server/web-fetch-tool.js';
+
+test('health probes reject metadata before creating a transport', async () => {
+  const service = createHostWebFetchService({
+    policy: resolver({
+      kind: 'ready',
+      networkProxy: createDefaultRuntimePolicy().networkProxy,
+      secretMaterial: {},
+    }),
+    createFetchTransport: () => {
+      throw new Error('must not create transport');
+    },
+  });
+  for (const url of [
+    'http://169.254.169.254/latest/meta-data/',
+    'http://metadata.google.internal/',
+  ]) {
+    await assert.rejects(
+      service.probe({ url, sessionId: 'session-1', abortSignal: new AbortController().signal }),
+      /metadata/,
+    );
+  }
+});
+
+test('real health probe falls back to GET and bounds stalled responses', async () => {
+  const methods: string[] = [];
+  const server = createServer((req, res) => {
+    methods.push(req.method!);
+    if (req.url === '/stalled') return;
+    res.writeHead(req.method === 'HEAD' ? 405 : 200);
+    res.end('ready');
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  assert.ok(address && typeof address !== 'string');
+  const service = createHostWebFetchService({
+    policy: resolver({
+      kind: 'ready',
+      networkProxy: createDefaultRuntimePolicy().networkProxy,
+      secretMaterial: {},
+    }),
+    probeTimeoutMs: 100,
+  });
+  const input = { sessionId: 'session-1', abortSignal: new AbortController().signal };
+  try {
+    assert.equal(
+      (await service.probe({ ...input, url: `http://127.0.0.1:${address.port}/ready` })).status,
+      200,
+    );
+    assert.deepEqual(methods, ['HEAD', 'GET']);
+    await assert.rejects(
+      service.probe({ ...input, url: `http://127.0.0.1:${address.port}/stalled` }),
+      /timed out/,
+    );
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+  }
+});
 
 test('Host WebFetch uses the resolved proxy snapshot and closes its transport', async () => {
   const networkProxy = {

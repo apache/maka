@@ -21,6 +21,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { isMcpStdioConfig, type McpServerStatus } from '@maka/core/mcp';
 import { MCP_CATALOG } from '../../renderer/mcp-catalog.js';
+import { AtomicFileWriteCommitUnknownError } from '@maka/storage/mcp-config-store';
 import { getMcpCopy } from '../../renderer/locales/mcp-copy.js';
 import {
   createEmptyMcpDraft,
@@ -28,9 +29,30 @@ import {
   mcpDraftProtocolPreference,
   mcpDraftFromConfig,
   presentMcpNegotiatedProtocol,
+  mcpWriteFailureMessage,
 } from '../../renderer/mcp-page-model.js';
 
 const copy = getMcpCopy('en');
+
+test('MCP write errors retain actionable localized meaning across Electron serialization', () => {
+  const durabilityError = new AtomicFileWriteCommitUnknownError({ cause: new Error('EIO') });
+  const outOfSync = 'MCP write durability is uncertain and runtime state is out of sync; reload before retrying';
+  for (const locale of ['en', 'zh-CN', 'zh-TW'] as const) {
+    const localized = getMcpCopy(locale);
+    for (const [message, expected] of [
+      [durabilityError.message, localized.errors.writeDurabilityUnknown],
+      [outOfSync, localized.errors.writeOutOfSync],
+    ]) {
+      assert.equal(mcpWriteFailureMessage(message, localized), expected);
+      assert.equal(
+        mcpWriteFailureMessage(new Error(`Error invoking remote method 'mcp:remove': Error: ${message}`), localized),
+        expected,
+      );
+    }
+    assert.equal(mcpWriteFailureMessage(new Error('unrelated private details'), localized), undefined);
+    assert.equal(mcpWriteFailureMessage(undefined, localized), undefined);
+  }
+});
 
 test('a newly-authored remote MCP persists an explicit auto preference', () => {
   const config = mcpConfigFromDraft(
@@ -106,14 +128,14 @@ test('legacy SSE projects legacy without erasing an explicit remote pin', () => 
   );
 });
 
-test('a newly-authored stdio MCP persists the one-child legacy default', () => {
+test('a newly-authored stdio MCP persists an explicit auto preference', () => {
   const saved = mcpConfigFromDraft(
     { ...createEmptyMcpDraft(), id: 'local', commandLine: ' node ' },
     copy,
   );
 
   assert.equal(isMcpStdioConfig(saved), true);
-  assert.equal(isMcpStdioConfig(saved) && saved.protocol, 'legacy');
+  assert.equal(isMcpStdioConfig(saved) && saved.protocol, 'auto');
 });
 
 test('stdio editing presents omitted legacy and round-trips explicit modern preferences', () => {
@@ -132,7 +154,7 @@ test('stdio editing presents omitted legacy and round-trips explicit modern pref
 
 test('kind changes preserve an explicit protocol choice and derive only unselected defaults', () => {
   const empty = createEmptyMcpDraft();
-  assert.equal(mcpDraftProtocolPreference(empty), 'legacy');
+  assert.equal(mcpDraftProtocolPreference(empty), 'auto');
   assert.equal(mcpDraftProtocolPreference({ ...empty, kind: 'remote' }), 'auto');
 
   const pinned = { ...empty, kind: 'remote' as const, protocol: '2026-07-28' as const };

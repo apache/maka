@@ -65,7 +65,10 @@ export interface RuntimeHostSessionSubscriptionOwnerDeps {
 interface SubscriptionAttempt {
   readonly handle: DesktopRuntimeHostSession;
   readonly pendingFrames: SubscriptionFrame[];
-  readonly failed: Promise<Error>;
+  preparationFailure?: {
+    readonly promise: Promise<Error>;
+    readonly resolve: (error: Error) => void;
+  };
   pendingFrameBytes: number;
   replica?: DesktopTranscriptReplica;
   phase: 'preparing' | 'active' | 'retiring';
@@ -86,6 +89,8 @@ export class RuntimeHostSessionSubscriptionOwner {
   #refreshTask?: Promise<void>;
   #started = false;
   #closed = false;
+  #ptyInterests: readonly string[] = [];
+  #ptyUpdate: Promise<void> = Promise.resolve();
 
   constructor(deps: RuntimeHostSessionSubscriptionOwnerDeps) {
     this.#deps = deps;
@@ -103,6 +108,17 @@ export class RuntimeHostSessionSubscriptionOwner {
       await task;
       if (task === this.#readyTask) return;
     }
+  }
+
+  setPtyInterests(refs: readonly string[]): Promise<void> {
+    if (refs.length === this.#ptyInterests.length && refs.every((ref, index) => ref === this.#ptyInterests[index])) return this.#ptyUpdate;
+    this.#ptyInterests = [...refs];
+    const update = this.#ptyUpdate.catch(() => undefined).then(async () => {
+      await this.waitUntilReady();
+      if (!this.#closed) await this.#attempt?.handle.setPtyInterests?.(this.#ptyInterests);
+    });
+    this.#ptyUpdate = update;
+    return update;
   }
 
   refresh(): Promise<void> {
@@ -156,6 +172,7 @@ export class RuntimeHostSessionSubscriptionOwner {
       await previous.handle.close().catch(() => undefined);
       await this.#drainPendingFrames(attempt);
       attempt.phase = 'active';
+      attempt.preparationFailure = undefined;
     } catch (error) {
       const failure = asError(error);
       if (attempt && this.#attempt === attempt) {
@@ -237,6 +254,7 @@ export class RuntimeHostSessionSubscriptionOwner {
         this.#attempt = attempt;
         await this.#drainPendingFrames(attempt);
         attempt.phase = "active";
+        attempt.preparationFailure = undefined;
       } catch (error) {
         if (this.#candidate === attempt) this.#candidate = undefined;
         if (this.#attempt === attempt) this.#attempt = undefined;
@@ -269,20 +287,16 @@ export class RuntimeHostSessionSubscriptionOwner {
       throw ownerClosed();
     }
 
-    let fail!: (error: Error) => void;
-    const failed = new Promise<Error>((resolve) => {
-      fail = resolve;
-    });
     const attempt: SubscriptionAttempt = {
       handle,
       pendingFrames: [],
-      failed,
+      preparationFailure: createPreparationFailure(),
       pendingFrameBytes: 0,
       phase: "preparing",
       fail(error) {
         if (attempt.failure) return;
         attempt.failure = error;
-        fail(error);
+        attempt.preparationFailure?.resolve(error);
       },
     };
     if (this.#candidate) {
@@ -290,6 +304,10 @@ export class RuntimeHostSessionSubscriptionOwner {
       throw new Error('Runtime Host Session replacement is already preparing');
     }
     this.#candidate = attempt;
+    handle.subscribePtyData?.((frame) => {
+      if (this.#closed || attempt.failure || (this.#candidate !== attempt && this.#attempt !== attempt)) return;
+      void Promise.resolve(this.#deps.acceptFrame(frame)).catch(() => undefined);
+    });
     void this.#pump(attempt);
 
     const replicaPreparation = DesktopTranscriptReplica.prepare(
@@ -297,12 +315,13 @@ export class RuntimeHostSessionSubscriptionOwner {
       this.#deps.transcriptReplicaOptions,
     );
     try {
+      if (this.#ptyInterests.length > 0) await handle.setPtyInterests?.(this.#ptyInterests);
       const loaded = await Promise.race([
         replicaPreparation.then(
           (replica) => ({ kind: "replica" as const, replica }),
           (error: unknown) => ({ kind: "failure" as const, error: asError(error) }),
         ),
-        failed.then((error) => ({ kind: "failure" as const, error })),
+        attempt.preparationFailure!.promise.then((error) => ({ kind: "failure" as const, error })),
       ]);
       if (loaded.kind === "failure") throw loaded.error;
       attempt.replica = loaded.replica;
@@ -335,7 +354,7 @@ export class RuntimeHostSessionSubscriptionOwner {
         (activate) => ({ kind: 'ready' as const, activate }),
         (error: unknown) => ({ kind: 'failure' as const, error: asError(error) }),
       ),
-      attempt.failed.then((error) => ({ kind: 'failure' as const, error })),
+      attempt.preparationFailure!.promise.then((error) => ({ kind: 'failure' as const, error })),
     ]);
     if (result.kind === 'failure') throw result.error;
     return result.activate;
@@ -401,6 +420,14 @@ export class RuntimeHostSessionSubscriptionOwner {
   #assertOpen(): void {
     if (this.#closed) throw ownerClosed();
   }
+}
+
+function createPreparationFailure(): NonNullable<SubscriptionAttempt['preparationFailure']> {
+  // Keep both roots together so activation can release the completed race results.
+  // In particular, the attempt's fail method must not capture this resolver.
+  let resolve!: (error: Error) => void;
+  const promise = new Promise<Error>((settle) => { resolve = settle; });
+  return { promise, resolve };
 }
 
 function subscriptionClosedError(

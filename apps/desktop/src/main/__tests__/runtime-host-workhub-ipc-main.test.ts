@@ -19,144 +19,31 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { RuntimeHostOperationError } from '@maka/runtime-host/client';
+import type { IpcHandler } from '../ipc-reconnect-policy.js';
 import { registerRuntimeHostWorkHubIpc } from '../runtime-host-workhub-ipc-main.js';
 
-test('projects WorkHub coordination resolution through its dedicated IPC domain', async () => {
-  const handlers = new Map<string, (...args: unknown[]) => unknown>();
-  let resolveCalls = 0;
-  const records: unknown[] = [];
-  const actions: unknown[] = [];
-  const changes: unknown[] = [];
-  const createdSessionId = 'runtime-created-session';
+test('returns a structured WorkHub attachment rejection across IPC', async () => {
+  const handlers = new Map<string, IpcHandler>();
   registerRuntimeHostWorkHubIpc(
+    {} as Parameters<typeof registerRuntimeHostWorkHubIpc>[0],
     {
-      resolveWorkHubCoordinationSession: async () => {
-        resolveCalls += 1;
-        return { sessionId: 'maka_workhub_coordination' };
-      },
-      recordWorkHubCoordination: async (input: {
-        turnId: string;
-        userText: string;
-        assistantText: string;
-      }) => {
-        records.push(input);
-        return { turnId: input.turnId };
-      },
-      listWorkHubCoordinationCandidates: async () => ({
-        candidateSetId: `sha256:${'a'.repeat(64)}`,
-        candidates: [],
-      }),
-      actWorkHubCoordination: async (input: unknown) => {
-        actions.push(input);
-        return {
-          disposition: 'create_new',
-          targetSessionId: createdSessionId,
-          targetTurnId: 'created-turn',
-        };
-      },
-    } as never,
-    {
-      handle: (channel: string, handler: (...args: unknown[]) => unknown) => {
+      handle(channel, handler) {
         handlers.set(channel, handler);
       },
-    } as never,
+    },
     {
-      resolveCreateProject: async () => ({
-        kind: 'host_path',
-        path: '/tmp/workhub-project',
-      }),
-      emitSessionsChanged: (reason, sessionId) => changes.push({ reason, sessionId }),
+      attachmentIngest: {
+        approvals: {} as never,
+        stat: async () => ({ size: 0 }),
+      },
     },
   );
 
-  const handler = handlers.get('workhub:resolveCoordinationSession');
-  assert.ok(handler);
-  assert.deepEqual(await handler({}), { sessionId: 'maka_workhub_coordination' });
-  assert.equal(resolveCalls, 1);
-  assert.deepEqual(
-    await handlers.get('workhub:record')?.({}, {
-      turnId: 'record',
-      userText: 'Request',
-      assistantText: 'Summary',
-    }),
-    { turnId: 'record' },
+  const prepareAttachments = handlers.get('workhub:prepareAttachments');
+  assert.ok(prepareAttachments);
+  const result = await prepareAttachments(
+    { sender: { id: 7 } } as Parameters<IpcHandler>[0],
+    Array.from({ length: 9 }, () => ({})),
   );
-  assert.deepEqual(records, [{
-    turnId: 'record',
-    userText: 'Request',
-    assistantText: 'Summary',
-  }]);
-  assert.deepEqual(await handlers.get('workhub:candidates')?.({}), {
-    candidateSetId: `sha256:${'a'.repeat(64)}`,
-    candidates: [],
-  });
-  assert.deepEqual(
-    await handlers.get('workhub:act')?.({}, {
-      actionId: 'create-action',
-      userText: 'Start accessibility review',
-      proposal: { disposition: 'create_new', title: 'Accessibility review' },
-      create: {
-        sessionId: 'renderer-invented',
-        workspace: { kind: 'host_path', path: '/renderer-path' },
-      },
-    }),
-    {
-      ok: true,
-      result: {
-        disposition: 'create_new',
-        targetSessionId: createdSessionId,
-        targetTurnId: 'created-turn',
-      },
-    },
-  );
-  assert.deepEqual(actions, [{
-    actionId: 'create-action',
-    userText: 'Start accessibility review',
-    proposal: { disposition: 'create_new', title: 'Accessibility review' },
-    create: {
-      workspace: { kind: 'host_path', path: '/tmp/workhub-project' },
-    },
-  }]);
-  assert.deepEqual(changes, [{ reason: 'created', sessionId: createdSessionId }]);
-});
-
-test('serializes typed WorkHub action failures across Electron IPC', async () => {
-  const handlers = new Map<string, (...args: unknown[]) => unknown>();
-  registerRuntimeHostWorkHubIpc(
-    {
-      actWorkHubCoordination: async () => {
-        throw new RuntimeHostOperationError(
-          'workhub.coordination.act',
-          'operation_conflict',
-          'WorkHub action is permanently abandoned',
-        );
-      },
-    } as never,
-    {
-      handle: (channel: string, handler: (...args: unknown[]) => unknown) => {
-        handlers.set(channel, handler);
-      },
-    } as never,
-    {
-      resolveCreateProject: async () => ({ kind: 'host_path', path: '/workspace' }),
-      emitSessionsChanged: () => undefined,
-    },
-  );
-
-  assert.deepEqual(
-    await handlers.get('workhub:act')?.({}, {
-      actionId: 'abandoned-action',
-      userText: 'Continue payment work',
-      candidateSetId: `sha256:${'a'.repeat(64)}`,
-      proposal: { disposition: 'delegate_existing', candidateRef: 'candidate' },
-    }),
-    {
-      ok: false,
-      error: {
-        code: 'operation_conflict',
-        message: 'WorkHub action is permanently abandoned',
-      },
-    },
-  );
+  assert.deepEqual(result, { ok: false, code: 'count_limit' });
 });

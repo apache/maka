@@ -23,7 +23,7 @@ import {
   normalizeUpdateCatalogConnectionInput,
   type UpdateCatalogConnectionInput,
 } from '@maka/core/runtime-policy';
-import type { RelayModelProfiles } from '@maka/core/model-thinking';
+import type { ModelOverrides } from '@maka/core/model-thinking';
 import type { RuntimeHostConnection } from '@maka/runtime-host/client';
 import {
   parseContextTarget,
@@ -31,8 +31,8 @@ import {
 } from '../model-context-target.js';
 
 function fixture(resultKind = 'committed') {
-  let profiles: RelayModelProfiles | undefined = {
-    model: { vision: false, thinkingLevels: ['high'] },
+  let profiles: ModelOverrides | undefined = {
+    model: { vision: false, thinkingLevels: ['high'], contextWindow: 1_000_000 },
     other: { contextWindow: 128_000 },
   };
   const writes: UpdateCatalogConnectionInput[] = [];
@@ -58,28 +58,32 @@ function fixture(resultKind = 'committed') {
               enabled: true,
               enabledModelIdCount: 2,
               modelCount: 0,
-              catalogEntryCount: 1,
+              catalogEntryCount: 2,
             },
             ...['model', 'other'].map((modelId, itemIndex) => ({
               kind: 'enabled_model_id',
               connectionIndex: 0,
               itemIndex,
               modelId,
-              relayProfile: profiles?.[modelId],
             })),
-            {
+            ...['model', 'other'].map((modelId, itemIndex) => ({
               kind: 'catalog_entry',
               connectionIndex: 0,
-              itemIndex: 0,
-              entry: { id: 'model', canUseAsChatDefault: true, contextWindow: 1_000_000 },
-            },
+              itemIndex,
+              entry: {
+                id: modelId,
+                canUseAsChatDefault: true,
+                contextWindow: profiles?.[modelId]?.contextWindow,
+              },
+              modelOverride: profiles?.[modelId],
+            })),
           ],
         };
       }
       assert.equal(operation, 'connection.catalog.update');
       const update = normalizeUpdateCatalogConnectionInput(input);
       writes.push(update);
-      if (resultKind === 'committed') profiles = update.changes.relayModelProfiles ?? undefined;
+      if (resultKind === 'committed') profiles = update.changes.modelOverrides ?? undefined;
       return { kind: resultKind };
     },
   } as unknown as RuntimeHostConnection;
@@ -117,15 +121,20 @@ test('updates the exact Host connection and preserves endpoint, model list and d
       enabled: true,
       enabledModelIds: ['model', 'other'],
       baseUrl: 'https://relay.example/v1',
-      relayModelProfiles: {
-        model: { vision: false, thinkingLevels: ['high'], contextWindow: 256_000 },
+      modelOverrides: {
+        model: {
+          vision: false,
+          thinkingLevels: ['high'],
+          contextWindow: 1_000_000,
+          compactionThreshold: 256_000,
+        },
         other: { contextWindow: 128_000 },
       },
     },
   });
   await updateRuntimeHostModelContextTarget(connection, { ...identity, target: undefined });
-  assert.deepEqual(writes[1]?.changes.relayModelProfiles, {
-    model: { vision: false, thinkingLevels: ['high'] },
+  assert.deepEqual(writes[1]?.changes.modelOverrides, {
+    model: { vision: false, thinkingLevels: ['high'], contextWindow: 1_000_000 },
     other: { contextWindow: 128_000 },
   });
 });

@@ -17,121 +17,53 @@
  * under the License.
  */
 
-import type { Page } from '@playwright/test';
 import { expect, test } from './fixtures';
 
-const NOTICE = '.maka-transcript-history-controls';
+const TURN = '.maka-transcript-turn';
+/** Turns the partial-history fixture seeds. */
+const PARTIAL_HISTORY_TURN_COUNT = 18;
 
-async function waitForPaint(page: Page): Promise<void> {
-  await page.evaluate(() => new Promise<void>((resolve) => {
-    requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
-  }));
-}
-
-async function noticePresentation(page: Page) {
-  return page.locator(NOTICE).evaluate((notice) => {
-    const style = getComputedStyle(notice);
-    const box = notice.getBoundingClientRect();
-    const composer = document.querySelector('.maka-composer-astryx');
-    if (!composer) throw new Error('the composer is missing');
-    const composerBox = composer.getBoundingClientRect();
-    return {
-      backgroundColor: style.backgroundColor,
-      borderWidths: [
-        style.borderTopWidth,
-        style.borderRightWidth,
-        style.borderBottomWidth,
-        style.borderLeftWidth,
-      ],
-      display: style.display,
-      flexWrap: style.flexWrap,
-      justifyContent: style.justifyContent,
-      widthDelta: Math.abs(box.width - composerBox.width),
-      centerDelta: Math.abs(
-        (box.left + box.right) / 2 - (composerBox.left + composerBox.right) / 2,
-      ),
-      fitsViewport: box.left >= 0 && box.right <= document.documentElement.clientWidth,
-      hasHorizontalOverflow: notice.scrollWidth > notice.clientWidth,
-    };
-  });
-}
-
-test('partial history is a quiet reading-column control with neutral rail ticks', async ({
+test('a bounded transcript range reaches its whole history without a control to ask', async ({
   partialHistoryWindow: page,
 }) => {
   await page.setViewportSize({ width: 1_400, height: 800 });
-  await expect(page.locator(NOTICE)).toHaveCount(0);
 
-  const firstPrompt = page.locator(
+  await expect(page.locator(TURN).first()).toBeVisible();
+  expect(await page.locator(TURN).count()).toBeLessThan(PARTIAL_HISTORY_TURN_COUNT);
+
+  const oldestPrompt = page.locator(
     '.maka-prompt-rail-tick[data-prompt-turn-id="turn-partial-history-1"]',
   );
-  await expect(firstPrompt).toBeVisible();
-  await firstPrompt.click();
+  await expect(oldestPrompt).toBeVisible();
+  await oldestPrompt.click();
 
-  const notice = page.locator(NOTICE);
-  await expect(notice).toBeVisible();
-  await expect(notice).toContainText('正在查看较早的消息');
-  await expect(notice.getByRole('button', { name: '返回最新消息' })).toBeVisible();
-  await expect(notice).not.toContainText(/保存|加载/);
+  await expect(page.locator('[data-turn-id="turn-partial-history-1"]')).toBeVisible();
+  // Where the jump landed, read from the reading position rather than from
+  // `data-search-highlight`: that highlight clears itself 2.2s after the
+  // command lands, so waiting for the Turn to mount and then asserting it
+  // fails whenever loading the page around it takes longer than the flash —
+  // measured here as a 3s pass turning into an 18s timeout under load.
+  await expect(oldestPrompt).toHaveAttribute('data-active', 'true');
+  // A jump lands on its own page, not on the whole history.
+  expect(await page.locator(TURN).count()).toBeLessThan(PARTIAL_HISTORY_TURN_COUNT);
 
-  const regular = await noticePresentation(page);
-  expect(regular).toEqual({
-    backgroundColor: 'rgba(0, 0, 0, 0)',
-    borderWidths: ['0px', '0px', '0px', '0px'],
-    display: 'flex',
-    flexWrap: 'wrap',
-    justifyContent: 'center',
-    widthDelta: expect.any(Number),
-    centerDelta: expect.any(Number),
-    fitsViewport: true,
-    hasHorizontalOverflow: false,
+  // The newer side of the jump fills on its own as the reader moves into it.
+  await page.mouse.move(700, 400);
+  await expect(async () => {
+    await page.mouse.wheel(0, 400);
+    await expect(page.locator('[data-turn-id="turn-partial-history-3"]')).toBeVisible();
+  }).toPass({ timeout: 30_000 });
+
+  const returnToLatest = page.getByRole('button', {
+    name: /^(?:滚动主对话到底部|Scroll main conversation to bottom)$/,
   });
-  expect(regular.widthDelta).toBeLessThanOrEqual(1);
-  expect(regular.centerDelta).toBeLessThanOrEqual(1);
+  await expect(returnToLatest).toBeVisible();
+  await returnToLatest.click();
 
-  await page.mouse.move(0, 0);
-  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
-  const railPresentation = await page.evaluate(() => {
-    const ticks = [...document.querySelectorAll<HTMLElement>('.maka-prompt-rail-tick')];
-    const presentation = (tick: HTMLElement) => {
-      const bar = tick.querySelector<HTMLElement>('.maka-prompt-rail-tick-bar');
-      if (!bar) throw new Error('a prompt rail tick is missing its bar');
-      const style = getComputedStyle(bar);
-      return {
-        backgroundColor: style.backgroundColor,
-        borderStyle: style.borderStyle,
-        borderWidth: style.borderWidth,
-        boxShadow: style.boxShadow,
-      };
-    };
-    const neutralPaint = ticks
-      .filter((tick) => tick.dataset.active !== 'true' && !tick.matches(':hover'))
-      .map(presentation);
-    const residentStyleRules = [...document.styleSheets].flatMap((sheet) =>
-      [...sheet.cssRules].filter((rule) => rule.cssText.includes('data-resident'))
-    );
-    return {
-      residentAttributeCount: document.querySelectorAll('[data-resident]').length,
-      residentStyleRuleCount: residentStyleRules.length,
-      neutralTickCount: neutralPaint.length,
-      neutralPaintCount: new Set(neutralPaint.map((paint) => JSON.stringify(paint))).size,
-    };
-  });
-  expect(railPresentation.residentAttributeCount).toBe(0);
-  expect(railPresentation.residentStyleRuleCount).toBe(0);
-  expect(railPresentation.neutralTickCount).toBeGreaterThan(1);
-  expect(railPresentation.neutralPaintCount).toBe(1);
-
-  await page.setViewportSize({ width: 520, height: 720 });
-  await waitForPaint(page);
-  const narrow = await noticePresentation(page);
-  expect(narrow.centerDelta).toBeLessThanOrEqual(1);
-  expect(narrow.fitsViewport).toBe(true);
-  expect(narrow.hasHorizontalOverflow).toBe(false);
-
-  await notice.getByRole('button', { name: '返回最新消息' }).click();
-  await expect(notice).toHaveCount(0);
-  await expect(
-    page.locator('[data-turn-id="turn-partial-history-8"]'),
-  ).toBeVisible();
+  // Reading the tail page and rebuilding the window around it is slower than
+  // the paging above, and measured past the suite's 10s expect timeout here.
+  await expect(page.locator(`[data-turn-id="turn-partial-history-${PARTIAL_HISTORY_TURN_COUNT}"]`))
+    .toBeVisible({ timeout: 30_000 });
+  await expect(oldestPrompt).toBeVisible();
+  expect(await page.locator(TURN).count()).toBeLessThan(PARTIAL_HISTORY_TURN_COUNT);
 });

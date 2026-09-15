@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
-import { act, createElement, createRef } from 'react';
+import { act, createElement, createRef, type ComponentProps } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { parseHTML } from 'linkedom';
 import { AstryxLocaleProvider, type ComposerHandle, LocaleProvider, ToastProvider } from '@maka/ui';
@@ -59,12 +59,15 @@ afterEach(async () => {
  * plus a `render(activeId, newTaskDraftKey)` that re-renders with new props —
  * the two inputs the draft handoff is keyed on.
  */
-async function mountRegion(): Promise<{
+async function mountRegion(
+  LiveContextUsageProbe?: ComponentProps<typeof ChatComposerRegion>['LiveContextUsageProbe'],
+): Promise<{
   composer: { current: ComposerHandle | null };
   render(
     activeId: string | undefined,
     newTaskDraftKey: string,
     newTaskSendPending?: boolean,
+    contextUsageSessionId?: string,
   ): Promise<void>;
 }> {
   const { document, window } = parseHTML('<div id="root"></div>');
@@ -102,6 +105,7 @@ async function mountRegion(): Promise<{
     activeId: string | undefined,
     newTaskDraftKey: string,
     newTaskSendPending = false,
+    contextUsageSessionId = activeId,
   ) => {
     await act(async () => {
       root.render(
@@ -122,6 +126,8 @@ async function mountRegion(): Promise<{
                     onboardingComposerHidden: false,
                     activeInteraction: undefined,
                     activeId,
+                    contextUsageSessionId,
+                    LiveContextUsageProbe,
                     newTaskDraftKey,
                     newTaskSendPending,
                     stopPendingBySession: {},
@@ -144,6 +150,17 @@ async function mountRegion(): Promise<{
 
   return { composer, render };
 }
+
+test('probes the Host session rather than the pending local draft identity', async () => {
+  const observed: Array<string | undefined> = [];
+  const { render } = await mountRegion(({ sessionId, children }) => {
+    observed.push(sessionId);
+    return children(undefined);
+  });
+  await render('local-draft', 'new-task:local:project-1', true, 'host-session');
+  assert.equal(observed.at(-1), 'host-session');
+  assert.ok(!observed.includes('local-draft'));
+});
 
 test('hands off only the unresolved new-task draft while a Session is open', async () => {
   const { composer, render } = await mountRegion();

@@ -170,6 +170,24 @@ export const PROVIDER_CONTRACT_OVERRIDE_BINDINGS: readonly ProviderContractOverr
       }),
   },
   {
+    keys: [
+      'moonshot-global:exact-model-id',
+      'moonshot-global:tool-loop',
+      'moonshot-global:reasoning-replay',
+    ],
+    title: 'Moonshot Global preserves Kimi model ids and reasoning across a Responses tool loop',
+    run: () =>
+      runOpenAIResponsesWire({
+        providerType: 'moonshot-global',
+        slug: 'moonshot-global',
+        name: 'Moonshot Global',
+        basePath: '/v1',
+        modelId: 'kimi-k3',
+        apiKey: 'moonshot-global-test-key',
+        statelessReasoning: true,
+      }),
+  },
+  {
     keys: ['alibaba-token-plan-cn:reasoning-replay', 'alibaba-token-plan:reasoning-replay'],
     title: 'Alibaba Token Plan replays plaintext summary items on its Responses wire',
     run: runAlibabaTokenPlanResponsesWire,
@@ -348,12 +366,20 @@ async function runGitHubCopilotDiscovery(): Promise<void> {
     assert.equal(request.headers['x-github-api-version'], '2026-06-01');
     respondJson(response, 200, {
       data: [
-        copilotModel('gpt-5.4', ['/responses']),
+        {
+          ...copilotModel('gpt-5.4', ['/responses']),
+          // Current GitHub clients also accept models with no policy gate.
+          policy: undefined,
+        },
         copilotModel('claude-sonnet-4.6', ['/v1/messages']),
         copilotModel('gemini-3.1-pro-preview', ['/chat/completions']),
         {
           ...copilotModel('disabled-by-policy', ['/chat/completions']),
           policy: { state: 'disabled' },
+        },
+        {
+          ...copilotModel('policy-not-accepted', ['/chat/completions']),
+          policy: { state: 'unconfigured' },
         },
         {
           ...copilotModel('hidden-from-picker', ['/chat/completions']),

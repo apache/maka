@@ -238,7 +238,6 @@ test('ToolRuntime validates without rewriting arguments at permission and implem
     header: header(),
     connection: connection(),
     modelId: 'mock-model',
-    appendMessage: async () => {},
     newId: nextId(),
     now: () => 1,
     getPermissionPauseTarget: () => null,

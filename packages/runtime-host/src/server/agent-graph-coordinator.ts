@@ -211,12 +211,6 @@ export function projectAgentGraphClientSnapshot(
   return projectSnapshot(snapshot);
 }
 
-export function projectAgentGraphOperatorInspection(
-  inspection: RuntimeAgentGraphOperatorInspection,
-): AgentGraphOperatorInspection {
-  return projectInspection(inspection);
-}
-
 function projectSnapshot(snapshot: RuntimeAgentGraphClientSnapshot): AgentGraphClientSnapshot {
   const operators = snapshot.operators.slice(0, AGENT_GRAPH_MAX_OPERATORS).map(projectOperator);
   const visibleOperatorIds = new Set(operators.map((operator) => operator.operatorId));

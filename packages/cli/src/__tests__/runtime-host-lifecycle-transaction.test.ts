@@ -21,9 +21,11 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { PassThrough } from 'node:stream';
 import test from 'node:test';
 import {
   beginRuntimeHostManagedDeploymentTransition,
+  RUNTIME_HOST_OPERATOR_RETIREMENT_CANCELLATION_ENV,
   claimRuntimeHostManagedDeployment,
   readRuntimeHostManagedDeploymentAuthorityRecord,
   resolveRuntimeHostManagedDeploymentConfigPath,
@@ -56,6 +58,68 @@ import {
 
 const INTEGRITY = `sha512-${Buffer.alloc(64, 7).toString('base64')}`;
 const UPDATED_INTEGRITY = `sha512-${Buffer.alloc(64, 8).toString('base64')}`;
+
+test('operator cancellation covers non-RPC retirement and cannot leak into recovery', async (t) => {
+  const originalEnv = process.env[RUNTIME_HOST_OPERATOR_RETIREMENT_CANCELLATION_ENV];
+  t.after(() => {
+    if (originalEnv === undefined)
+      delete process.env[RUNTIME_HOST_OPERATOR_RETIREMENT_CANCELLATION_ENV];
+    else process.env[RUNTIME_HOST_OPERATOR_RETIREMENT_CANCELLATION_ENV] = originalEnv;
+  });
+  for (const busy of [false, true]) {
+    const stateRoot = await mkdtemp(join(tmpdir(), 'maka-retirement-cancel-'));
+    t.after(() => rm(stateRoot, { recursive: true, force: true }));
+    const capability = await resolveStorageRoot({ path: stateRoot, kind: 'interactive' });
+    let owner = busy ? await tryAcquireStateRootOwner(capability) : null;
+    t.after(async () => {
+      await owner?.close();
+    });
+    const input = new PassThrough();
+    const stdinMock = t.mock.getter(
+      process,
+      'stdin',
+      () => input as unknown as typeof process.stdin,
+    );
+    process.env[RUNTIME_HOST_OPERATOR_RETIREMENT_CANCELLATION_ENV] = '1';
+    let cancelled = false;
+    let retired = false;
+    const request = {
+      rootPath: capability.canonicalPath,
+      rootId: capability.rootId,
+      expectedOwner: { hostEpoch: 'host-a', pid: 42 },
+      allowInterruptActiveTasks: true,
+      connectExisting: (async () => ({
+        kind: 'incompatible',
+        registration: { hostEpoch: 'host-a', pid: 42 },
+      })) as unknown as typeof connectExistingRuntimeHost,
+      supervisor: {
+        status: async () => {
+          assert.equal(process.env[RUNTIME_HOST_OPERATOR_RETIREMENT_CANCELLATION_ENV], undefined);
+          if (!cancelled) {
+            cancelled = true;
+            input.end();
+            await new Promise<void>((resolve) => setImmediate(resolve));
+          }
+          return { active: true, pid: 42 };
+        },
+        retire: async () => {
+          retired = true;
+          await owner?.close();
+          owner = null;
+        },
+      },
+    };
+    await assert.rejects(retireRuntimeHostLifecycleOwner(request), /retirement was cancelled/u);
+    assert.equal(retired, false);
+    // The original channel is now consumed. Recovery is allowed to complete
+    // even though its parent's pipe remains at EOF.
+    const recovery = await retireRuntimeHostLifecycleOwner(request);
+    assert.equal(recovery.kind, 'retired');
+    if (recovery.kind === 'retired') await recovery.owner.close();
+    assert.equal(retired, true);
+    stdinMock.mock.restore();
+  }
+});
 
 test('control projection repair leaves the running Host supervisor untouched', async () => {
   const current = config('/workspace', 'a'.repeat(64), 1, 'launch_agent');
@@ -401,7 +465,7 @@ test('replacement reactivates a proven previous authority after a pre-commit fai
   }
 });
 
-test('failed on-demand candidate activation restores the known-good package authority', async (t) => {
+test('failed on-demand candidate activation retains the successor authority', async (t) => {
   const stateRoot = await mkdtemp(join(tmpdir(), 'maka-lifecycle-on-demand-update-'));
   const capability = await resolveStorageRoot({ path: stateRoot, kind: 'interactive' });
   const authorityDirectory = dirname(
@@ -444,14 +508,14 @@ test('failed on-demand candidate activation restores the known-good package auth
         },
       },
     }),
-    { code: 'transition_failed' },
+    { code: 'recovery_failed' },
   );
 
-  const restored = await readRuntimeHostManagedDeploymentAuthorityRecord(capability);
-  assert.equal(restored?.state, 'active');
-  assert.equal(restored?.configRevision, 3);
-  assert.deepEqual(restored?.launch, current.launch);
-  assert.deepEqual(operatorProjection.launch, current.launch);
+  const retained = await readRuntimeHostManagedDeploymentAuthorityRecord(capability);
+  assert.equal(retained?.state, 'active');
+  assert.equal(retained?.configRevision, 2);
+  assert.deepEqual(retained?.launch, desired.launch);
+  assert.deepEqual(operatorProjection.launch, desired.launch);
 });
 
 test('revalidates product invariants after Host retirement and restores the prior lifecycle', async (t) => {
@@ -888,3 +952,82 @@ function config(
       : { trigger: 'activation' },
   };
 }
+
+test('on-demand source retirement fences identity, preserves active work, and acquires the released root', async (t) => {
+  const stateRoot = await mkdtemp(join(tmpdir(), 'maka-source-retirement-'));
+  t.after(() => rm(stateRoot, { recursive: true, force: true }));
+  const capability = await resolveStorageRoot({ path: stateRoot, kind: 'interactive' });
+  let owner = await tryAcquireStateRootOwner(capability);
+  assert.ok(owner);
+  t.after(async () => owner?.close());
+  let epoch = 'host-b';
+  let calls = 0;
+  let refuse = true;
+  const input = {
+    rootPath: capability.canonicalPath,
+    rootId: capability.rootId,
+    expectedOwner: { hostEpoch: 'host-a', pid: 42 },
+    connectExisting: (async () => ({
+      kind: 'incompatible',
+      registration: {
+        rootId: capability.rootId,
+        hostEpoch: epoch,
+        pid: 42,
+        lifecycleMode: 'ephemeral',
+      },
+    })) as unknown as typeof connectExistingRuntimeHost,
+    prepareSourceRetirement: async () => {
+      calls += 1;
+      if (refuse) return 'active_work' as const;
+      await owner?.close();
+      owner = undefined;
+      return 'prepared' as const;
+    },
+  };
+  await assert.rejects(retireRuntimeHostLifecycleOwner(input), { code: 'owner_changed' });
+  assert.equal(calls, 0);
+  epoch = 'host-a';
+  assert.deepEqual(await retireRuntimeHostLifecycleOwner(input), { kind: 'active_tasks' });
+  assert.equal(await tryAcquireStateRootOwner(capability), undefined);
+  refuse = false;
+  const result = await retireRuntimeHostLifecycleOwner(input);
+  assert.equal(result.kind, 'retired');
+  if (result.kind === 'retired') await result.owner.close();
+  await assert.rejects(retireRuntimeHostLifecycleOwner(input), { code: 'owner_changed' });
+  assert.equal(calls, 2);
+});
+
+test('failed on-demand update activation retains the committed package without reactivating old code', async (t) => {
+  const stateRoot = await mkdtemp(join(tmpdir(), 'maka-update-retained-'));
+  const capability = await resolveStorageRoot({ path: stateRoot, kind: 'interactive' });
+  t.after(() => rm(stateRoot, { recursive: true, force: true }));
+  t.after(() =>
+    rm(dirname(resolveRuntimeHostManagedDeploymentConfigPath(capability.rootId)), {
+      recursive: true,
+      force: true,
+    }),
+  );
+  const current = config(capability.canonicalPath, capability.rootId, 1, 'on_demand');
+  const desired = config(capability.canonicalPath, capability.rootId, 2, 'on_demand');
+  await claimRuntimeHostManagedDeployment(capability, current);
+  await assert.rejects(
+    replaceRuntimeHostLifecycle({
+      operation: 'update',
+      current,
+      desired,
+      activateDesired: async () => {
+        throw new Error('Successor opened storage but readiness failed');
+      },
+      activatePrevious: async () => assert.fail('must not reactivate old package'),
+      deps: {
+        convergeOperator: async () => undefined,
+        verifyOperator: async () => undefined,
+        resolveProvider: () => {
+          throw new Error('on-demand has no supervisor');
+        },
+      },
+    }),
+    { code: 'recovery_failed' },
+  );
+  assert.deepEqual(await readRuntimeHostManagedDeploymentAuthorityRecord(capability), desired);
+});

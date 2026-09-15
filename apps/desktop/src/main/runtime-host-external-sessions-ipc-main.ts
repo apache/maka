@@ -22,6 +22,7 @@ import { RuntimeHostOperationError } from '@maka/runtime-host/client';
 import type {
   ExternalSessionCatalogQueryInput,
   ExternalSessionCatalogQueryResult,
+  ExternalSessionImportResult,
   ExternalSessionSourceQueryResult,
   SessionCatalogProjection,
 } from '@maka/runtime-host/protocol';
@@ -29,7 +30,10 @@ import {
   decodeExternalSessionCatalogQueryInput,
   decodeExternalSessionImportInput,
 } from '@maka/runtime-host/protocol';
-import type { ExternalSessionImportIpcResult } from '../preload/external-session-import-result.js';
+import type {
+  ExternalSessionImportFailureReason,
+  ExternalSessionImportIpcResult,
+} from '../preload/external-session-import-result.js';
 import type { DesktopHostExternalSessionCatalogItem } from '../preload/external-session-catalog.js';
 import {
   handleReconnectableRead,
@@ -45,7 +49,7 @@ type ExternalSessionClient = {
   importExternalSession(input: {
     readonly adapterId: string;
     readonly sourceSessionId: string;
-  }): Promise<SessionCatalogProjection>;
+  }): Promise<ExternalSessionImportResult<SessionCatalogProjection>>;
 };
 
 export interface RuntimeHostExternalSessionsIpcDeps {
@@ -74,9 +78,17 @@ export function registerRuntimeHostExternalSessionsIpc(
   });
   ipcMain.handle('external-sessions:import', async (_event, input: unknown) => {
     try {
-      const session = await deps.client.importExternalSession(
+      const result = await deps.client.importExternalSession(
         decodeExternalSessionImportInput(input),
       );
+      if (result.kind === 'source_limit_exceeded') {
+        return {
+          ok: false,
+          reason: 'source_limit_exceeded',
+          limit: result.limit,
+        } satisfies ExternalSessionImportIpcResult;
+      }
+      const session = result.session;
       deps.emitSessionsChanged('created', session.id);
       return {
         ok: true,
@@ -85,22 +97,44 @@ export function registerRuntimeHostExternalSessionsIpc(
     } catch (error) {
       if (
         error instanceof RuntimeHostOperationError &&
-        error.operation === 'external-session.import' &&
-        error.code === 'commit_outcome_unknown'
+        error.operation === 'external-session.import'
       ) {
-        // "Unknown" means the task may well be in the catalog, so tell the
-        // shell to read it again. Without this, the only trace of a maybe-
-        // committed import is the banner on the page, and the page is gone the
-        // moment the user leaves Settings -- which is exactly when they come
-        // back and import the same conversation a second time. No id: the
-        // whole point is that we do not know which task, if any, landed.
-        deps.emitSessionsChanged('created');
-        return {
-          ok: false,
-          reason: 'commit_outcome_unknown',
-        } satisfies ExternalSessionImportIpcResult;
+        if (error.code === 'commit_outcome_unknown') {
+          // "Unknown" means the task may well be in the catalog, so tell the
+          // shell to read it again. Without this, the only trace of a maybe-
+          // committed import is the banner on the page, and the page is gone the
+          // moment the user leaves Settings -- which is exactly when they come
+          // back and import the same conversation a second time. No id: the
+          // whole point is that we do not know which task, if any, landed.
+          deps.emitSessionsChanged('created');
+          return {
+            ok: false,
+            reason: 'commit_outcome_unknown',
+          } satisfies ExternalSessionImportIpcResult;
+        }
+        const reason = classifyImportFailure(error);
+        if (reason !== undefined) {
+          return { ok: false, reason } satisfies ExternalSessionImportIpcResult;
+        }
       }
       throw error;
     }
   });
+}
+
+/**
+ * Turn the intact Host operation error into a typed reason the renderer can
+ * render distinctly. Done here, in Desktop Main, because Electron IPC drops the
+ * `code` before the renderer sees the error. The coordinator publishes dedicated
+ * stable codes for these cases, so this maps by code alone — no message text and
+ * no reuse of an overloaded code such as `invalid_request`.
+ */
+function classifyImportFailure(
+  error: RuntimeHostOperationError,
+):
+  | Exclude<ExternalSessionImportFailureReason, 'commit_outcome_unknown' | 'source_limit_exceeded'>
+  | undefined {
+  if (error.code === 'model_unavailable') return 'no_model';
+  if (error.code === 'source_unreadable') return 'source_unreadable';
+  return undefined;
 }

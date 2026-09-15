@@ -33,7 +33,7 @@
  * that exists without a real Selection.
  */
 
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { expect, userEvent, waitFor, within } from 'storybook/test';
 import { slashCommandsForSurface } from '@maka/core/slash-command-catalog';
@@ -78,6 +78,8 @@ const invocableSkills = [
 let publishSessionUpdate: (() => void) | undefined;
 /** Projection loads served so far, so a story can wait for one to land. */
 let projectionLoads = 0;
+let holdNextProjection = false;
+let releaseHeldProjection: (() => void) | undefined;
 
 /**
  * The bridge `useComposerMentions` reads. A fresh array per call on purpose:
@@ -86,6 +88,13 @@ let projectionLoads = 0;
  */
 const loadProjection = async () => {
   projectionLoads += 1;
+  if (holdNextProjection) {
+    holdNextProjection = false;
+    await new Promise<void>((resolve) => {
+      releaseHeldProjection = resolve;
+    });
+    releaseHeldProjection = undefined;
+  }
   return invocableSkills.map((skill) => ({ ...skill }));
 };
 
@@ -157,6 +166,35 @@ function SlashMenuHarness({
       >
         <SlashMenuComposer hasSession={hasSession} streaming={streaming} />
       </ComposerMentionsProvider>
+    </div>
+  );
+}
+
+function ContextSwitchHarness(): React.ReactElement {
+  const [hasSession, setHasSession] = useState(true);
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', height: 520, padding: 24 }}>
+      <button
+        type="button"
+        onClick={() => {
+          holdNextProjection = true;
+          setHasSession(false);
+        }}
+      >
+        Switch to new task
+      </button>
+      <div style={{ display: 'flex', flex: 1, alignItems: 'flex-end' }}>
+        <ComposerMentionsProvider
+          skillCatalogRevision={0}
+          sessionId={hasSession ? SESSION_ID : undefined}
+          projectPath="/workspace/maka-agent"
+          newTaskTarget={hasSession
+            ? undefined
+            : { profileId: 'profile-local', hostId: 'host-local', projectId: 'project-maka' }}
+        >
+          <SlashMenuComposer hasSession={hasSession} streaming={false} />
+        </ComposerMentionsProvider>
+      </div>
     </div>
   );
 }
@@ -262,6 +300,44 @@ export const PickingACommandWritesItsInvocation: Story = {
     await waitFor(() =>
       expect(overlay().queryByRole('listbox', { name: MENU_LABEL })).not.toBeInTheDocument(),
     );
+  },
+};
+
+// Real path: select a Skill with `/`, reopen the picker, then delete the chip
+// and select it again. The live selection and token deletion need Chromium.
+export const SelectedSkillsLeaveThePickerUntilRemoved: Story = {
+  play: async ({ canvasElement }) => {
+    const composer = editor(canvasElement);
+    const menu = await openMenu(canvasElement);
+    await userEvent.click(within(menu).getByRole('option', { name: /Project Only/ }));
+    const chips = () => composer.querySelectorAll('[data-astryx-token-value="/skill:project-only"]');
+    await waitFor(() => expect(chips()).toHaveLength(1));
+
+    await userEvent.keyboard(' /');
+    const remaining = await overlay().findByRole('listbox', { name: MENU_LABEL });
+    await expect(within(remaining).queryByRole('option', { name: /Project Only/ })).toBeNull();
+    await expect(within(remaining).getByRole('option', { name: /Workspace Only/ })).toBeVisible();
+
+    // An explicit query must not offer the already-staged Skill either.
+    await userEvent.keyboard('skill:project-only');
+    await waitFor(() => expect(overlay().queryByRole('option', { name: /Project Only/ })).toBeNull());
+    await userEvent.keyboard('{Escape}');
+    await userEvent.clear(composer);
+    await waitFor(() => expect(chips()).toHaveLength(0));
+
+    // With the previous chip removed, the query itself is not a selection.
+    await userEvent.keyboard('/skill:project-only');
+    const restored = await overlay().findByRole('option', { name: /Project Only/ });
+    await userEvent.click(restored);
+    await waitFor(() => expect(chips()).toHaveLength(1));
+
+    // Reopen through the other entry point; it shares the same filtered list.
+    await userEvent.click(overlay().getByRole('button', { name: '添加上下文' }));
+    const contextMenu = overlay().getByRole('menu', { name: '添加上下文' });
+    await userEvent.click(within(contextMenu).getByRole('menuitem', { name: /选择技能/ }));
+    const reopened = await overlay().findByRole('listbox', { name: MENU_LABEL });
+    await expect(within(reopened).queryByRole('option', { name: /Project Only/ })).toBeNull();
+    await expect(within(reopened).getByRole('option', { name: /Workspace Only/ })).toBeVisible();
   },
 };
 
@@ -376,5 +452,45 @@ export const SurvivesASameContentProjectionRefresh: Story = {
     await expect(removals).toEqual({ menu: 0, skillsGroup: 0 });
     await expect(menu.isConnected).toBe(true);
     await expect(skillsGroup.isConnected).toBe(true);
+  },
+};
+
+// Real path: leaving an existing Session for a new-task composer. The previous
+// Session's populated Skill projection must stop being actionable in the same
+// render; the new surface stays busy until its own projection resolves.
+export const ContextSwitchStartsWithALoadingCatalog: Story = {
+  render: () => <ContextSwitchHarness />,
+  play: async ({ canvasElement }) => {
+    const page = overlay();
+    await waitFor(() => expect(projectionLoads).toBeGreaterThan(0));
+    await userEvent.click(within(canvasElement).getByRole('button', {
+      name: 'Switch to new task',
+    }));
+    await userEvent.click(page.getByRole('button', { name: '添加上下文' }));
+    const menu = page.getByRole('menu', { name: '添加上下文' });
+    const skillsRow = within(menu).getByRole('menuitem', { name: /选择技能/ });
+
+    await waitFor(() => expect(skillsRow).toHaveAttribute('aria-busy', 'true'));
+    await expect(skillsRow).not.toHaveAttribute('aria-disabled', 'true');
+    await userEvent.click(skillsRow);
+    await waitFor(() => expect(menu).toBeVisible(), { timeout: 5_000 });
+    await expect(editor(canvasElement)).toHaveTextContent('');
+    await expect(page.queryByRole('listbox', { name: /技能/ })).not.toBeInTheDocument();
+
+    releaseHeldProjection?.();
+    await waitFor(() => {
+      const settledRow = within(
+        page.getByRole('menu', { name: '添加上下文' }),
+      ).getByRole('menuitem', { name: /选择技能/ });
+      expect(settledRow).not.toHaveAttribute('aria-busy');
+    });
+    const settledRow = within(
+      page.getByRole('menu', { name: '添加上下文' }),
+    ).getByRole('menuitem', { name: /选择技能/ });
+    await userEvent.click(settledRow);
+    await waitFor(
+      () => expect(page.getByRole('listbox', { name: /技能/ })).toBeVisible(),
+      { timeout: 5_000 },
+    );
   },
 };

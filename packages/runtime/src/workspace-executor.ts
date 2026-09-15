@@ -18,8 +18,8 @@
  */
 
 import { promises as fs } from 'node:fs';
-import { exec, execFile } from 'node:child_process';
-import { glob as nodeGlob } from 'node:fs/promises';
+import { exec } from 'node:child_process';
+import { globFiles } from './glob-search.js';
 import { isAbsolute, resolve } from 'node:path';
 import {
   isPathInside,
@@ -35,19 +35,22 @@ import {
 } from './file-stable-write.js';
 import { promisify } from 'node:util';
 import type { ToolExecutionFacts } from '@maka/core/permission';
+import {
+  currentRipgrepEnvironment,
+  RipgrepUnavailableError,
+  ripgrepMissingOnPathMessage,
+} from './ripgrep-guidance.js';
 import { runProcessWithBoundedTail, runShellWithBoundedTail } from './shell-exec.js';
 import type { ChildFdInput } from './child-fd-input.js';
 import type { ShellPlan } from './shell-detect.js';
 import { isSupportedImagePath, readWorkspaceImage } from './image-file.js';
 import type { ImageMimeType } from './image-file.js';
+import { readTextLineWindow } from './text-line-window.js';
+import { searchFiles, type GrepResult } from './grep-search.js';
+import { defaultRipgrepCandidates, resolveRipgrepExecutable } from './ripgrep-executable.js';
 
 const execAsync = promisify(exec);
-const execFileAsync = promisify(execFile);
 
-export type WorkspaceIsolationKind = ToolExecutionFacts['isolation'];
-export type WorkspaceWriteBackMode = ToolExecutionFacts['writeBack'];
-export type WorkspaceNetworkMode = ToolExecutionFacts['network'];
-export type WorkspaceSecretMode = ToolExecutionFacts['secrets'];
 export type WorkspaceExecutorFacts = ToolExecutionFacts;
 
 export const LOCAL_WORKSPACE_EXECUTOR_FACTS: WorkspaceExecutorFacts = {
@@ -215,9 +218,7 @@ export interface WorkspaceGrepInput {
   abortSignal?: AbortSignal;
 }
 
-export interface WorkspaceGrepResult {
-  matches: string[];
-}
+export type WorkspaceGrepResult = GrepResult;
 
 export interface WorkspaceExecutorFactsProvider {
   readonly facts: WorkspaceExecutorFacts;
@@ -296,8 +297,17 @@ export interface WorkspaceExecutor
     Partial<WorkspaceApplyPatchExecutor>,
     Partial<WorkspaceReadModifyWriteExecutor> {}
 
+/** @internal Test seams for deterministic executable-discovery coverage. */
+export interface LocalWorkspaceExecutorInput {
+  platform?: NodeJS.Platform;
+  hostEnv?: NodeJS.ProcessEnv;
+  rgCandidates?: readonly string[];
+}
+
 export class LocalWorkspaceExecutor implements WorkspaceExecutor {
   readonly facts = LOCAL_WORKSPACE_EXECUTOR_FACTS;
+
+  constructor(private readonly input: LocalWorkspaceExecutorInput = {}) {}
 
   async exec(input: WorkspaceExecInput): Promise<WorkspaceExecResult> {
     const options = {
@@ -328,11 +338,7 @@ export class LocalWorkspaceExecutor implements WorkspaceExecutor {
       return await readWorkspaceImage(input.path);
     }
     const content = await fs.readFile(input.path, 'utf8');
-    if (input.offset === undefined && input.limit === undefined) return { content };
-    const lines = content.split('\n');
-    const start = input.offset ?? 0;
-    const end = input.limit ? start + input.limit : lines.length;
-    return { content: lines.slice(start, end).join('\n') };
+    return { content: readTextLineWindow(content, input.offset, input.limit) };
   }
 
   async writeFile(input: WorkspaceWriteFileInput): Promise<WorkspaceWriteFileResult> {
@@ -440,32 +446,37 @@ export class LocalWorkspaceExecutor implements WorkspaceExecutor {
   }
 
   async globFiles(input: WorkspaceGlobInput): Promise<WorkspaceGlobResult> {
-    const files: string[] = [];
-    const limit = input.limit ?? 200;
-    for await (const file of nodeGlob(input.pattern, { cwd: input.cwd })) {
-      files.push(typeof file === 'string' ? file : (file as { name: string }).name);
-      if (files.length >= limit) break;
-    }
-    return { files };
+    return globFiles(input);
   }
 
   async grepFiles(input: WorkspaceGrepInput): Promise<WorkspaceGrepResult> {
-    const args = ['-n', '--no-heading', `--max-count=${input.maxCountPerFile}`];
-    if (input.glob) args.push('--glob', input.glob);
-    args.push('--', input.pattern, input.path);
+    const executable = await resolveRipgrepExecutable(
+      this.input.rgCandidates ??
+        defaultRipgrepCandidates(
+          this.input.hostEnv ?? process.env,
+          this.input.platform ?? process.platform,
+        ),
+    );
     try {
-      const { stdout } = await execFileAsync('rg', args, {
-        cwd: input.cwd,
-        maxBuffer: 5 * 1024 * 1024,
-        timeout: input.timeoutMs,
-        ...(input.abortSignal ? { signal: input.abortSignal } : {}),
-      });
-      return { matches: stdout.split('\n').filter(Boolean).slice(0, input.limit) };
+      return await searchFiles({ ...input, executable: executable ?? 'rg' });
     } catch (error: any) {
-      if (error?.code === 1) return { matches: [] };
+      // Node reports a missing spawn cwd exactly like a missing executable
+      // (both `spawn rg ENOENT`), so only blame ripgrep once the cwd exists.
+      if (error?.code === 'ENOENT' && (await isDirectory(input.cwd)))
+        throw new RipgrepUnavailableError(
+          ripgrepMissingOnPathMessage(currentRipgrepEnvironment()),
+          { cause: error },
+        );
       throw error;
     }
   }
+}
+
+async function isDirectory(path: string): Promise<boolean> {
+  return await fs.stat(path).then(
+    (stat) => stat.isDirectory(),
+    () => false,
+  );
 }
 
 export function createLocalWorkspaceExecutor(): WorkspaceExecutor {

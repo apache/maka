@@ -334,7 +334,7 @@ export class McpManagementOverlay implements Component {
     if (this.phase.kind !== 'protocol') return;
     const protocol = matchesKey(data, '1')
       ? 'legacy'
-      : matchesKey(data, '2')
+      : matchesKey(data, '2') || matchesKey(data, 'enter')
         ? 'auto'
         : matchesKey(data, '3')
           ? '2026-07-28'
@@ -484,7 +484,7 @@ export class McpManagementOverlay implements Component {
       return [ansi.bold(editor.transportTitle), '', '1  stdio', '2  Streamable HTTP'];
     }
     if (this.phase.kind === 'protocol') {
-      return [ansi.bold(editor.protocolTitle), '', '1  legacy', '2  auto', '3  2026-07-28'];
+      return [ansi.bold(editor.protocolTitle), '', '1  legacy', '2  auto (Enter)', '3  2026-07-28'];
     }
     if (this.phase.kind === 'confirm_add') {
       return confirmAddDocument(this.phase.draft, this.input.locale);

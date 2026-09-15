@@ -21,6 +21,7 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { access, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
+import { createServer as createHttpServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
@@ -29,6 +30,7 @@ import { bumpedAutoupdateVersion } from './desktop-update-contract.mjs';
 import { validateWindowsUpgradeBaseline } from './prepare-windows-upgrade-baseline.mjs';
 import {
   diffTreeManifests,
+  findRendererTarget,
   directoryTreeManifest,
   rendererLayoutMatchesViewport,
   rendererViewportMatchesNativeClient,
@@ -491,6 +493,50 @@ describe('waitForDevToolsPort', () => {
     child.exitCode = 1;
     child.emit('exit');
     await assert.rejects(() => wait, /exited before announcing/);
+  });
+});
+
+describe('findRendererTarget', () => {
+  it('waits past startup, blank and dialog targets for the packaged main entry', async () => {
+    const startupTargets = [
+      {
+        type: 'page',
+        url: 'data:text/html,<title>Maka</title>',
+        webSocketDebuggerUrl: 'ws://startup',
+      },
+      { type: 'page', url: 'about:blank', webSocketDebuggerUrl: 'ws://blank' },
+      {
+        type: 'page',
+        url: 'https://example.test/dist-renderer/index.html',
+        webSocketDebuggerUrl: 'ws://web',
+      },
+    ];
+    const main = {
+      type: 'page',
+      url: 'file:///C:/Program%20Files/Maka/resources/app.asar/dist-renderer/index.html',
+      webSocketDebuggerUrl: 'ws://main',
+    };
+    let requests = 0;
+    const server = createHttpServer((_request, response) => {
+      response.setHeader('Content-Type', 'application/json');
+      response.end(JSON.stringify(++requests === 1 ? startupTargets : [...startupTargets, main]));
+    });
+    await new Promise((resolvePromise) => server.listen(0, '127.0.0.1', resolvePromise));
+    try {
+      assert.deepEqual(
+        await findRendererTarget(
+          server.address().port,
+          { exitCode: null },
+          {
+            timeoutMs: 2_000,
+          },
+        ),
+        main,
+      );
+    } finally {
+      server.closeAllConnections();
+      await new Promise((resolvePromise) => server.close(resolvePromise));
+    }
   });
 });
 

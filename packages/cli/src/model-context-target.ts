@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { modelProfilesWithContextTarget } from '@maka/core/model-thinking';
+import { modelOverridesWithContextTarget } from '@maka/core/model-thinking';
 import {
   readRuntimeHostConnectionCatalog,
   type RuntimeHostConnection,
@@ -66,8 +66,8 @@ export async function updateRuntimeHostModelContextTarget(
       enabled: selected.enabled,
       enabledModelIds: selected.enabledModelIds,
       ...(selected.baseUrl === undefined ? {} : { baseUrl: selected.baseUrl }),
-      relayModelProfiles: modelProfilesWithContextTarget(
-        selected.relayModelProfiles,
+      modelOverrides: modelOverridesWithContextTarget(
+        selected.modelOverrides,
         input.model,
         input.target,
       ),

@@ -762,7 +762,7 @@ export function createDesktopRuntimeHostSshTerminal(input: {
               complete = frame;
               onComplete?.(frame);
               if (setupTerminal) completePresentation(setupTerminal);
-            } else setupFailure = new Error(frame.error.message);
+            } else setupFailure = new Error(frame.kind === 'error' ? frame.error.message : 'SSH setup returned a local environment binding');
           },
           onError: (error) => {
             setupFailure = error;

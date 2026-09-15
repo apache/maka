@@ -54,22 +54,30 @@ export async function captureMakaRuntimeArtifacts(input: {
     await mkdir(stagingRoot, { recursive: true, mode: 0o700 });
     const sourcePath = join(stateRoot, 'runtime.sqlite');
     const destinationPath = join(stagingRoot, 'runtime.sqlite');
-    const source = new DatabaseSync(sourcePath, { readOnly: true });
     try {
-      await backup(source, destinationPath);
-    } finally {
-      source.close();
-    }
-    const snapshot = new DatabaseSync(destinationPath);
-    try {
-      snapshot.exec('PRAGMA wal_checkpoint(TRUNCATE)');
-      snapshot.exec('PRAGMA journal_mode=DELETE');
-    } finally {
-      snapshot.close();
+      await stat(sourcePath);
+      const source = new DatabaseSync(sourcePath, { readOnly: true });
+      try {
+        await backup(source, destinationPath);
+      } finally {
+        source.close();
+      }
+      const snapshot = new DatabaseSync(destinationPath);
+      try {
+        snapshot.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+        snapshot.exec('PRAGMA journal_mode=DELETE');
+      } finally {
+        snapshot.close();
+      }
+      await chmod(destinationPath, 0o600);
+    } catch (error) {
+      await rm(destinationPath, { force: true });
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        await writeMakaArtifactCollectionError(stagingRoot, error);
+      }
     }
     await rm(`${destinationPath}-wal`, { force: true });
     await rm(`${destinationPath}-shm`, { force: true });
-    await chmod(destinationPath, 0o600);
 
     for (const name of ['runtime-host-candidate.log', 'runtime-policy.json']) {
       const source = join(stateRoot, name);
@@ -85,9 +93,12 @@ export async function captureMakaRuntimeArtifacts(input: {
     }
 
     const files = await Promise.all(
-      ['runtime.sqlite', 'runtime-host-candidate.log', 'runtime-policy.json'].map((name) =>
-        describeFile(join(stagingRoot, name), name),
-      ),
+      [
+        'runtime.sqlite',
+        'runtime-host-candidate.log',
+        'runtime-policy.json',
+        'collection-error.json',
+      ].map((name) => describeFile(join(stagingRoot, name), name)),
     );
     const manifest: MakaRuntimeArtifactManifest = {
       schemaVersion: 'maka.eval.runtime_artifacts.v1',

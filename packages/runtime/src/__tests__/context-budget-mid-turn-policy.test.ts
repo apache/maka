@@ -69,16 +69,11 @@ describe('mid-turn history compact policy', () => {
 describe('tool-result prune policy', () => {
   test('uses bounded runtime defaults', () => {
     const policy = buildDefaultContextBudgetPolicy();
-    assert.deepEqual(policy?.activeToolResultPrune, {
+    assert.deepEqual(policy?.toolResultPrune, {
       enabled: true,
-      maxCurrentResultEstimatedTokens: 2_048,
-      minSupersededResultEstimatedTokens: 256,
-      minStepNumber: 1,
     });
-    assert.deepEqual(policy?.staleToolResultPrune, {
+    assert.deepEqual(policy?.toolResultPrune, {
       enabled: true,
-      maxResultEstimatedTokens: 2_048,
-      minRecentTurnsFull: 2,
     });
   });
 });
@@ -120,13 +115,13 @@ describe('declared relay context window', () => {
       createdAt: 1,
       updatedAt: 1,
       models: [{ id: 'reasoner-32k', contextWindow: 8_192 }],
-      relayModelProfiles: { 'reasoner-32k': { contextWindow: 131_072 } },
+      modelOverrides: { 'reasoner-32k': { compactionThreshold: 131_072 } },
     };
     assert.equal(resolveDeclaredContextWindow(relay, 'reasoner-32k'), 131_072);
     assert.deepEqual(buildDefaultContextBudgetPolicy().historyCompact?.midTurn, { enabled: true });
     // Clearing the declaration does not turn the fetched row into a Maka
     // window; it is provider metadata and remains display-only.
-    const undeclared: LlmConnection = { ...relay, relayModelProfiles: undefined };
+    const undeclared: LlmConnection = { ...relay, modelOverrides: undefined };
     assert.equal(resolveDeclaredContextWindow(undeclared, 'reasoner-32k'), undefined);
   });
 
@@ -139,18 +134,18 @@ describe('declared relay context window', () => {
     // catalog codec refuses to persist on another provider.
     const other: LlmConnection = {
       slug: 'other',
-      name: 'Other',
+      name: 'unknown',
       providerType: 'openai',
       defaultModel: 'reasoner-32k',
       enabled: true,
       createdAt: 1,
       updatedAt: 1,
       models: [{ id: 'reasoner-32k', contextWindow: 8_192 }],
-      relayModelProfiles: { 'reasoner-32k': { contextWindow: 131_072 } },
+      modelOverrides: { 'reasoner-32k': { compactionThreshold: 131_072 } },
     };
     assert.equal(resolveDeclaredContextWindow(other, 'reasoner-32k'), 131_072);
     // Absent stays absent: an undeclared model still has no Maka threshold.
-    const undeclared: LlmConnection = { ...other, relayModelProfiles: undefined };
+    const undeclared: LlmConnection = { ...other, modelOverrides: undefined };
     assert.equal(resolveDeclaredContextWindow(undeclared, 'reasoner-32k'), undefined);
   });
 });

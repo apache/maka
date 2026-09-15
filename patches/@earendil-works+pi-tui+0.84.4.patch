@@ -1,0 +1,45 @@
+diff --git a/node_modules/@earendil-works/pi-tui/dist/components/editor.js b/node_modules/@earendil-works/pi-tui/dist/components/editor.js
+index 4786b46..25ed0a9 100644
+--- a/node_modules/@earendil-works/pi-tui/dist/components/editor.js
++++ b/node_modules/@earendil-works/pi-tui/dist/components/editor.js
+@@ -2,7 +2,6 @@ import { getKeybindings } from "../keybindings.js";
+ import { decodePrintableKey, matchesKey } from "../keys.js";
+ import { KillRing } from "../kill-ring.js";
+ import { CURSOR_MARKER } from "../tui.js";
+-import { UndoStack } from "../undo-stack.js";
+ import { cjkBreakRegex, getGraphemeSegmenter, getWordSegmenter, isWhitespaceChar, sliceByColumn, visibleWidth, } from "../utils.js";
+ import { findWordBackward, findWordForward } from "../word-navigation.js";
+ import { SelectList } from "./select-list.js";
+@@ -243,7 +242,7 @@ export class Editor {
+     // to.
+     snappedFromCursorCol = null;
+     // Undo support
+-    undoStack = new UndoStack();
++    undoStack = [];
+     onSubmit;
+     onChange;
+     disableSubmit = false;
+@@ -1073,7 +1072,7 @@ export class Editor {
+         this.pasteCounter = 0;
+         this.exitHistoryBrowsing();
+         this.scrollOffset = 0;
+-        this.undoStack.clear();
++        this.undoStack.length = 0;
+         this.lastAction = null;
+         if (this.onChange)
+             this.onChange("");
+@@ -1700,7 +1699,13 @@ export class Editor {
+         }
+     }
+     pushUndoSnapshot() {
+-        this.undoStack.push({ state: this.state, pastes: this.pastes, pasteCounter: this.pasteCounter });
++        // Detach mutable containers, but share immutable line and paste strings.
++        // structuredClone copies every large paste again for each typed word.
++        this.undoStack.push({
++            state: { ...this.state, lines: [...this.state.lines] },
++            pastes: new Map(this.pastes),
++            pasteCounter: this.pasteCounter,
++        });
+     }
+     undo() {
+         this.exitHistoryBrowsing();
