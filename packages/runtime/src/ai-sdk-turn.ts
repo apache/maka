@@ -28,7 +28,6 @@ import type {
   CompleteEvent,
   ErrorEvent,
   ProviderRetryEvent,
-  ProviderRetryReason,
   SessionEvent,
   TextCompleteEvent,
   TextDeltaEvent,
@@ -68,9 +67,9 @@ import type {
   ModelStepOutcome,
   ModelToolSet,
   NormalizedUsage,
-  ModelFailureKind,
   ToolCallPart,
 } from './model-protocol.js';
+import { providerRetryReason } from './provider-error-classification.js';
 import Ajv, { type AnySchema, type ErrorObject, type ValidateFunction } from 'ajv';
 import Ajv2019 from 'ajv/dist/2019.js';
 import Ajv2020 from 'ajv/dist/2020.js';
@@ -583,21 +582,6 @@ function providerRetryDelayMs(failedAttempt: number, retryAfterMs?: number): num
     PROVIDER_RETRY_MAX_DELAY_MS,
   );
   return Math.ceil(base + Math.random() * PROVIDER_RETRY_JITTER_FACTOR * base);
-}
-
-function providerRetryReason(kind: ModelFailureKind): ProviderRetryReason {
-  switch (kind) {
-    case 'stream_truncated':
-    case 'network':
-    case 'provider_unavailable':
-    case 'rate_limit':
-    case 'timeout':
-      return kind;
-    case 'provider_capacity':
-      return 'provider_capacity';
-    default:
-      return 'unknown';
-  }
 }
 
 /**
@@ -2086,8 +2070,6 @@ export class AiSdkTurn {
                 retry = { decision: 'declined', because: 'budget' };
               } else if (providerAttempt >= MAX_PROVIDER_ATTEMPTS_PER_STEP) {
                 retry = { decision: 'exhausted', attempts: providerAttempt };
-              } else if (failure.kind === 'context_overflow') {
-                retry = { decision: 'declined', because: 'policy' };
               } else if (!failure.retryable) {
                 retry = { decision: 'declined', because: 'policy' };
               }
@@ -2102,7 +2084,7 @@ export class AiSdkTurn {
                 const delayMs = providerRetryDelayMs(providerAttempt, failure.retryAfterMs);
                 const nextAttempt = providerAttempt + 1;
                 const maxAttempts = MAX_PROVIDER_ATTEMPTS_PER_STEP;
-                const reason = providerRetryReason(failure.kind);
+                const reason = providerRetryReason(failure.kind) ?? 'unknown';
                 queue.push({
                   type: 'provider_retry',
                   id: this.deps.newId(),
