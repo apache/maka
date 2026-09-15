@@ -167,7 +167,10 @@ export {
   type RuntimeHostCandidateLaunchBarrier,
 } from './candidate-launch-barrier.js';
 export { runHostedExecution, type RunHostedExecutionInput } from './hosted-execution.js';
-export { type ClientCapabilityProvider } from './client-capability.js';
+export {
+  type ClientCapabilityProvider,
+  type ClientCapabilityRegistrationOptions,
+} from './client-capability.js';
 export {
   readRuntimeHostAgentGraphEpochs,
   type AgentGraphEpochDirectory,

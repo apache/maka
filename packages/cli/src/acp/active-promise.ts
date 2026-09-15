@@ -17,29 +17,25 @@
  * under the License.
  */
 
-import type { ClientCapabilitySessionGrantKey } from '@maka/core/client-capability-grant';
-
-export {
-  HostClientCapabilityCoordinator,
-  type ClientCapabilitySnapshot,
-} from '../server/client-capability-coordinator.js';
-export { RuntimePolicyActivationGate } from '../server/runtime-policy-activation-gate.js';
-
-export function clientCapabilityCoordinatorTestAdmission() {
-  return {
-    interactions: {
-      requestClientCapabilityApproval: async () => {
-        throw new Error('Unexpected Client Capability approval request');
+/** Races cooperative work against cancellation while observing the losing task. */
+export function whileActive<T>(
+  task: Promise<T>,
+  signal: AbortSignal,
+): Promise<{ active: true; value: T } | { active: false }> {
+  return new Promise((resolve, reject) => {
+    const cancelled = () => resolve({ active: false });
+    if (signal.aborted) cancelled();
+    else signal.addEventListener('abort', cancelled, { once: true });
+    task.then(
+      (value) => {
+        signal.removeEventListener('abort', cancelled);
+        resolve(signal.aborted ? { active: false } : { active: true, value });
       },
-    },
-    grants: {
-      readClientCapabilitySessionGrant: async (key: ClientCapabilitySessionGrantKey) => ({
-        version: 1 as const,
-        ...key,
-        grantedAt: 0,
-      }),
-    },
-  };
+      (error: unknown) => {
+        signal.removeEventListener('abort', cancelled);
+        if (signal.aborted) resolve({ active: false });
+        else reject(error);
+      },
+    );
+  });
 }
-
-export { withClientCapabilityFormHost } from './client-capability-form-host.js';

@@ -105,12 +105,15 @@ test('Side Chat follow-ups survive queue actions, Host handoffs and reconnect', 
       return created[0]!.id;
     }, originalSessionIds);
     const queued = companion.locator('.maka-composer-queue');
-    for (const text of ['first follow-up', 'second follow-up', 'retract this follow-up']) {
+    const queueFollowUp = async (text: string): Promise<void> => {
       await sideComposer.fill(text);
       // The queue is optimistic; its appearance does not settle send admission.
       await awaitSendReady(companion);
       await sideComposer.press('Enter');
       await expect(queued).toContainText(text);
+    };
+    for (const text of ['first follow-up', 'second follow-up', 'retract this follow-up']) {
+      await queueFollowUp(text);
     }
     await expect(queued.locator('.maka-composer-queue-text')).toHaveText([
       'first follow-up', 'second follow-up', 'retract this follow-up',
@@ -121,6 +124,9 @@ test('Side Chat follow-ups survive queue actions, Host handoffs and reconnect', 
     await edit.press('Enter');
     await expect(queued.locator('.maka-composer-queue-text').first()).toHaveText('edited first follow-up');
     const grips = queued.locator('[draggable="true"]');
+    // The Host projection can update before the edit request's pending UI
+    // state settles. A draggable grip is the user-visible readiness boundary.
+    await expect(grips).toHaveCount(3);
     await grips.nth(1).dragTo(grips.nth(0));
     await expect(queued.locator('.maka-composer-queue-text')).toHaveText([
       'second follow-up', 'edited first follow-up', 'retract this follow-up',
@@ -155,10 +161,7 @@ test('Side Chat follow-ups survive queue actions, Host handoffs and reconnect', 
     await sideComposer.press('Enter');
     await expect(companion.getByRole('button', { name: '停止', exact: true })).toBeVisible();
     for (const text of ['successor one', 'successor two']) {
-      await sideComposer.fill(text);
-      await awaitSendReady(companion);
-      await sideComposer.press('Enter');
-      await expect(queued).toContainText(text);
+      await queueFollowUp(text);
     }
     await page.screenshot({ path: testInfo.outputPath('side-chat-queue.png'), fullPage: true });
     await sideComposer.fill('release the held response');
@@ -176,10 +179,7 @@ test('Side Chat follow-ups survive queue actions, Host handoffs and reconnect', 
     await sideComposer.press('Enter');
     await expect(companion.getByRole('button', { name: '停止', exact: true })).toBeVisible();
     for (const text of ['reconnected successor one', 'reconnected successor two']) {
-      await sideComposer.fill(text);
-      await awaitSendReady(companion);
-      await sideComposer.press('Enter');
-      await expect(queued).toContainText(text);
+      await queueFollowUp(text);
     }
     await armConnectionGap(app);
     // Capture the actual Desktop client before closing its transport.
