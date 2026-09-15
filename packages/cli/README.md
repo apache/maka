@@ -82,10 +82,9 @@ creates its own managed copy from the exact package invoked by `npx`.
 
 ## Container
 
-For a glibc-based CLI image, persistent configuration, and the maintainer publication
-workflow, see the [container guide](https://github.com/apache/maka/blob/main/packages/cli/container/README.md).
-The guide distinguishes local builds from published images; GHCR availability requires
-a successful maintainer publication.
+To build and run a local glibc-based CLI image from an exact published npm version
+with persistent configuration, see the
+[container guide](https://github.com/apache/maka/blob/main/packages/cli/container/README.md).
 
 ## First run
 

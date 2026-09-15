@@ -24,6 +24,9 @@ Debian Bookworm with Node.js 24 and glibc. It is a developer convenience build,
 not an Apache Software Foundation release. Apache Maka is undergoing incubation;
 see [DISCLAIMER-WIP](../../../DISCLAIMER-WIP).
 
+The Dockerfile installs the selected version from the public npm registry; it
+does not build the checked-out source. This guide covers local builds only.
+
 ## Build and run locally
 
 From the repository root, resolve the current npm Nightly once and build it:
@@ -32,14 +35,21 @@ From the repository root, resolve the current npm Nightly once and build it:
 MAKA_VERSION=$(npm view maka-agent@nightly version --registry=https://registry.npmjs.org/)
 docker build --build-arg "MAKA_VERSION=$MAKA_VERSION" \
   --tag maka-cli:local packages/cli/container
-node scripts/smoke-cli-container.mjs maka-cli:local "$MAKA_VERSION"
+docker run --rm maka-cli:local --version
+docker run --rm maka-cli:local --help
 ```
 
 The version argument is required. Floating tags such as `latest` and `nightly`
 are rejected by the Dockerfile so a build cannot silently select the early alpha
-on npm's `latest` channel. This installs the published CLI; it does not build the
-current source checkout. The base image and Debian packages still follow their
-upstream updates, so an exact CLI version is not a reproducible image digest.
+on npm's `latest` channel. The downloaded tarball, including its bundled private
+packages, is checked against the public registry's SHA-512 integrity before
+installation. This verifies package bytes, not the publisher's provenance identity.
+Installation runs as the non-root `node` user and keeps a lockfile in `/opt/maka`.
+Native dependencies need install scripts, so they are enabled after verification.
+
+The Node base image is pinned by its multi-platform digest. Debian packages and
+transitive npm dependency resolution can still change between builds, so an exact
+CLI version is not a reproducible image digest.
 
 Start the interactive TUI against a project, keeping configuration across runs:
 
@@ -68,25 +78,3 @@ Python, Git, SSH and ripgrep are included; arbitrary MCP servers, browsers, Dock
 and systemd are not. Host files are visible only through mounts, and `localhost`
 refers to the container. The image is intended for TUI/CLI runs, not for installing
 a persistent Runtime Host system service inside Docker.
-
-## Maintainer publication
-
-The **CLI container** workflow is manually dispatched with an exact public npm
-version. By default it only builds and tests. Native Linux amd64 and arm64 runners
-both run the smoke verifier; it checks version, command loading, glibc, non-root
-execution, required executables, volume persistence and actual TUI/PTY startup.
-
-To publish, configure the `container-publication` environment with the repository's
-required reviewers and enable GHCR package creation for the repository. Dispatch
-from `apache/maka`'s `main` with `publish` enabled. The publication job imports the
-**tested image archives**, without rebuilding, and publishes:
-
-- `ghcr.io/apache/maka-cli:<version>-amd64`
-- `ghcr.io/apache/maka-cli:<version>-arm64`
-- `ghcr.io/apache/maka-cli:<version>` (multi-platform manifest)
-
-These names describe the workflow's output; availability begins only after a
-maintainer successfully publishes it and makes the GHCR package public. No
-`latest` tag is published. For a published version, replace `maka-cli:local` in the
-run command with its exact GHCR tag; use the resulting image digest to pin bytes.
-Image updates use the same process with a newly selected npm version.

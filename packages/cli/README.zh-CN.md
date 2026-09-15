@@ -76,9 +76,8 @@ npm 上有两条 dist-tag，且二者不可互换：
 
 ## 容器
 
-基于 glibc 的 CLI 镜像、本地构建、配置持久化和维护者发布流程见
+从精确的已发布 npm 版本构建和运行本地 glibc CLI 镜像，并持久化配置，见
 [容器指南](https://github.com/apache/maka/blob/main/packages/cli/container/README.md)。
-GHCR 镜像需要维护者实际完成发布后才可拉取；指南也提供本地构建方式。
 
 ## 第一次运行
 
