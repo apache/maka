@@ -67,7 +67,10 @@ import {
 } from '../operator/managed-deployment.js';
 import { abortable, waitForRuntimeHostReady } from './wait-for-ready.js';
 
-const DEFAULT_ELECTION_DEADLINE_MS = 45_000;
+// Candidate readiness includes the Windows named-pipe ACL helper, whose
+// fail-closed ceiling is 60s. Leave enough room for election and connection
+// bookkeeping after that helper returns.
+const DEFAULT_ELECTION_DEADLINE_MS = 75_000;
 const DEFAULT_BACKOFF_MIN_MS = 20;
 const DEFAULT_BACKOFF_MAX_MS = 250;
 const MIN_CANDIDATE_INTERVAL_MS = 250;
