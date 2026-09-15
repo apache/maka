@@ -75,6 +75,7 @@ function wheelOptions(groups: readonly ModelMenuGroup[], locale: Parameters<type
 export function ThinkingLevelSelector(props: {
   levels: readonly ThinkingLevel[];
   current?: ThinkingLevel;
+  onOpenChange?(open: boolean): void;
   onChange?(level: ThinkingLevel | undefined): void | Promise<void>;
   disabled?: boolean;
   /** Why the control is locked (mid-turn etc.); replaces the action tooltip so the reason is discoverable, matching the model switcher beside it. */
@@ -100,6 +101,7 @@ export function ThinkingLevelSelector(props: {
       placement="above"
       hasChevron={false}
       className="maka-composer-quiet-menu maka-thinking-level-menu"
+      onOpenChange={props.onOpenChange}
       button={{
         label: currentLabel,
         variant: 'ghost',
