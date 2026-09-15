@@ -68,7 +68,6 @@ import {
   isMalformedHistoryCompactSummaryReason,
   type MalformedHistoryCompactSummaryReason,
 } from './history-compact-error.js';
-import { createHash } from 'node:crypto';
 import type { ModelMessage, NormalizedUsage } from './model-protocol.js';
 import type {
   RequestProjection,
@@ -81,7 +80,7 @@ import {
   serializedToolResultProjection,
   type ToolResultArchiveTransitionServices,
 } from './tool-result-archive-transition.js';
-import { estimateTokens } from './context-budget-helpers.js';
+import { estimateTokens, sha256 } from './context-budget-helpers.js';
 import {
   reduceEffectiveModelProjections,
   type LoadedModelProjectionTransitions,
@@ -1320,10 +1319,6 @@ function projectAcceptedMidTurnCompactionMessages(
     ...acceptedProjection.projectedMessages,
     ...incomingMessages.slice(acceptedProjection.sourceSignatures.length),
   ];
-}
-
-function sha256(text: string): string {
-  return createHash('sha256').update(text).digest('hex');
 }
 
 function modelMessageSignature(message: ModelMessage): string {

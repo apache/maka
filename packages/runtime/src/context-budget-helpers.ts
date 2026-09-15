@@ -54,6 +54,10 @@ export function sha256(text: string): string {
   return createHash('sha256').update(text).digest('hex');
 }
 
+export function nonEmpty(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0;
+}
+
 export function finitePositive(value: number | undefined): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) && value > 0
     ? Math.floor(value)
