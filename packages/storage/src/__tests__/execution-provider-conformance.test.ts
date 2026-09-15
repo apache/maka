@@ -301,6 +301,123 @@ for (const backend of ['Local', 'Memory'] as const) {
       assert.equal(results[0]!.read(), 'caller-owned projection');
     });
   });
+  test(backend + ': transcript serves a running Turn up to the watermark', async () => {
+    await withProvider(make(), async ({ runtimeEventStore: s }) => {
+      const sessionId = 'watermark-session';
+      const turn = (name: string) => ({
+        sessionId,
+        runId: `${name}-run`,
+        turnId: `${name}-turn`,
+        invocationId: `${name}-invocation`,
+      });
+      const settled = turn('settled');
+      const running = turn('running');
+      const opened = (run: typeof settled) =>
+        buildInvocationOpenedEvent({
+          id: `${run.invocationId}-opened`,
+          run,
+          openedAt: 1,
+          opening: invocationOpening(),
+        });
+      const text = (run: typeof settled, id: string, role: 'user' | 'model'): RuntimeEvent => ({
+        ...run,
+        id,
+        ts: 2,
+        partial: false,
+        role,
+        author: role === 'user' ? 'user' : 'agent',
+        content: { kind: 'text', text: id },
+      });
+      const ending = (run: typeof settled): RuntimeEvent => ({
+        ...run,
+        id: `${run.invocationId}-ended`,
+        ts: 3,
+        partial: false,
+        role: 'system',
+        author: 'system',
+        actions: { endInvocation: true },
+        status: 'completed',
+      });
+      const commits: string[] = [];
+      const unsubscribe = s.subscribeRuntimeEventCommits((id) => commits.push(id));
+      const highWaters: Array<number | null> = [await s.readTranscriptHighWater(sessionId)];
+      for (const event of [
+        opened(settled),
+        text(settled, 'settled-prompt', 'user'),
+        ending(settled),
+        opened(running),
+        text(running, 'running-prompt', 'user'),
+        text(running, 'running-answer', 'model'),
+      ]) {
+        await s.appendRuntimeEvent(sessionId, event.runId, event);
+        highWaters.push(await s.readTranscriptHighWater(sessionId));
+      }
+      assert.deepEqual(highWaters, [null, 1, 2, 3, 4, 5, 6]);
+      assert.deepEqual(commits, Array(6).fill(sessionId));
+      await assert.rejects(
+        s.appendRuntimeEvent(sessionId, settled.runId, text(settled, 'late', 'model')),
+      );
+      assert.equal(commits.length, 6);
+
+      const read = async (direction: 'older' | 'newer', position: number, throughOrdinal: number) =>
+        (
+          await s.readTranscriptInvocations(
+            sessionId,
+            {
+              direction,
+              position,
+              throughOrdinal,
+              limit: 8,
+              maxEvents: 16,
+              maxBytes: 64 * 1024,
+              maxRecordBytes: 16 * 1024,
+            },
+            (header, entries) => ({
+              invocationId: header.invocation.invocationId,
+              first: header.firstOrdinal,
+              last: header.lastOrdinal,
+              ordinals: [...entries].map((entry) => entry.ordinal),
+            }),
+          )
+        ).sort((a, b) => a.first - b.first);
+      const both = [
+        { invocationId: settled.invocationId, first: 1, last: 3, ordinals: [1, 2, 3] },
+        { invocationId: running.invocationId, first: 4, last: 6, ordinals: [4, 5, 6] },
+      ];
+      assert.deepEqual(await read('older', 6, 6), both);
+      assert.deepEqual(await read('newer', 1, 6), both);
+      assert.deepEqual(await read('newer', 5, 6), [both[1]]);
+      assert.deepEqual(await read('older', 6, 5), [
+        both[0],
+        { invocationId: running.invocationId, first: 4, last: 5, ordinals: [4, 5] },
+      ]);
+      assert.deepEqual(await read('newer', 1, 2), [
+        { invocationId: settled.invocationId, first: 1, last: 2, ordinals: [1, 2] },
+      ]);
+      assert.deepEqual(
+        (await s.readTranscriptLandmarks(sessionId, 6, 8)).map((landmark) => ({
+          invocationId: landmark.invocation.invocationId,
+          first: landmark.firstOrdinal,
+          prompt: landmark.prompt?.event.id,
+        })),
+        [
+          { invocationId: settled.invocationId, first: 1, prompt: 'settled-prompt' },
+          { invocationId: running.invocationId, first: 4, prompt: 'running-prompt' },
+        ],
+      );
+
+      await s.importConversationCopyRuntimeEvents(sessionId, [
+        {
+          runId: 'copied-run',
+          events: [opened(turn('copied')), text(turn('copied'), 'copied-prompt', 'user')],
+        },
+      ]);
+      assert.equal(commits.length, 7);
+      unsubscribe();
+      await s.appendRuntimeEvent(sessionId, running.runId, ending(running));
+      assert.equal(commits.length, 7);
+    });
+  });
   test(backend + ': steering reorder preserves unselected and followup queue slots', async () => {
     await withProvider(make(), async ({ sessionStore: s }, root) => {
       const session = await s.create(sessionInput(root));

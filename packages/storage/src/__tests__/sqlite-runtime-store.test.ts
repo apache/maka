@@ -34,6 +34,10 @@ import {
   RuntimeTranscriptQuery,
 } from '../runtime-transcript-query.js';
 import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
+import {
+  acquireOperationalStateDatabase,
+  resolveOperationalStateDatabasePath,
+} from '../operational-state-store.js';
 import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
 import {
   buildImmutableRuntimePrefix,
@@ -354,6 +358,65 @@ describe('SqliteRuntimeStore', () => {
       }
     });
   });
+  it('publishes RuntimeEvent commits once, after a committed transaction', async () => {
+    await withStore(async (store) => {
+      const commits: string[] = [];
+      store.subscribeRuntimeEventCommits((sessionId) => commits.push(sessionId));
+      const first = textEvent('batch-1');
+      const second = textEvent('batch-2');
+      await assert.rejects(
+        store.importRuntimeEventsBatch({
+          sessionId: first.sessionId,
+          runId: first.runId,
+          events: [first, { ...first, ts: 99 }],
+        }),
+      );
+      assert.deepEqual(await store.readSessionRuntimeEventEntries('session-1'), []);
+      assert.deepEqual(commits, []);
+      await store.importRuntimeEventsBatch({
+        sessionId: first.sessionId,
+        runId: first.runId,
+        events: [first, second],
+      });
+      assert.deepEqual(commits, ['session-1']);
+    });
+  });
+
+  it('publishes leased RuntimeEvent commits when the outermost transaction settles', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-sqlite-runtime-lease-'));
+    const outer = acquireOperationalStateDatabase(root);
+    const store = createSqliteRuntimeStore(resolveOperationalStateDatabasePath(root), {
+      databaseLease: acquireOperationalStateDatabase(root),
+    });
+    try {
+      const commits: string[] = [];
+      store.subscribeRuntimeEventCommits((sessionId) => commits.push(sessionId));
+      const appends: Promise<void>[] = [];
+      assert.throws(() =>
+        outer.transaction('write', () => {
+          appends.push(store.appendRuntimeEvent('session-1', 'run-1', textEvent('lost')));
+          throw new Error('roll back');
+        }),
+      );
+      await Promise.all(appends);
+      assert.deepEqual(commits, []);
+      assert.deepEqual(await store.readSessionRuntimeEventEntries('session-1'), []);
+
+      outer.transaction('write', () => {
+        for (const id of ['kept-1', 'kept-2']) {
+          appends.push(store.appendRuntimeEvent('session-1', 'run-1', textEvent(id)));
+        }
+        assert.deepEqual(commits, []);
+      });
+      assert.deepEqual(commits, ['session-1']);
+      await Promise.all(appends);
+    } finally {
+      store.close();
+      outer.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('makes a raw canonical-equivalent terminal durability retry idempotent', async () => {
     await withStore(async (store) => {
       const terminal: RuntimeEvent = {
@@ -2640,6 +2703,10 @@ async function appendSettledTurn(store: Store, index: number): Promise<void> {
     status: 'completed',
     actions: { endInvocation: true },
   });
+}
+
+function textEvent(id: string): RuntimeEvent {
+  return functionCallEvent({ id, content: { kind: 'text', text: id } });
 }
 
 function functionCallEvent(overrides: Partial<RuntimeEvent> = {}): RuntimeEvent {
