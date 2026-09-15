@@ -50,11 +50,40 @@ export function prepareMarkdownMath(
   // keeps the JavaScript lexer on the changing tail; it does not make the
   // full-string identity check itself incremental.
   const extendsPrevious = source.startsWith(cache.source);
+  if (!extendsPrevious) {
+    pendingLabelScans.delete(cache);
+  } else {
+    const pending = pendingLabelScans.get(cache);
+    if (pending !== undefined) {
+      // The unfinished label is the only unsettled business: resume its scan
+      // over the appended bytes instead of re-walking from its opener.
+      const continued = scanLabel(source, pending);
+      if (continued.kind === 'pending') {
+        pendingLabelScans.set(cache, continued.state);
+        cache.text += source.slice(cache.source.length);
+        cache.source = source;
+        return cache.text;
+      }
+      pendingLabelScans.delete(cache);
+    }
+  }
   const sourceStart = extendsPrevious ? cache.safeSourceEnd : 0;
   const textStart = extendsPrevious ? cache.safeTextEnd : 0;
   const protectedTail = protectMarkdownMath(
     source.slice(sourceStart),
     sourceStart === 0 || source[sourceStart - 1] === '\n',
+    true,
+    false,
+    false,
+    (state) => {
+      // The scan ran on the sliced tail, so its positions are relative to
+      // sourceStart; the continuation resumes on the full source and needs
+      // absolute positions.
+      state.index += sourceStart;
+      if (state.runStart !== null) state.runStart += sourceStart;
+      state.codeSearchFrom += sourceStart;
+      pendingLabelScans.set(cache, state);
+    },
   );
   const text = `${extendsPrevious ? cache.text.slice(0, textStart) : ''}${protectedTail.text}`;
 
@@ -96,6 +125,7 @@ function protectMarkdownMath(
   allowDisplayMath = true,
   protectEscapedBrackets = false,
   isFinalSegment = false,
+  onLabelPending?: (state: LabelScanState) => void,
 ): {
   text: string;
   safeSourceEnd: number;
@@ -187,7 +217,7 @@ function protectMarkdownMath(
 
     const link = readMarkdownLink(source, index);
     if (link?.kind === 'pending') {
-      text += source.slice(index, link.end);
+      if (link.labelState !== undefined) onLabelPending?.(link.labelState);      text += source.slice(index, link.end);
       index = link.end;
       atLineStart = false;
       if (isFinalSegment) {
@@ -425,8 +455,13 @@ type MarkdownLinkScan =
       refLabelStart?: number;
       refLabelEnd?: number;
     }
-  | { kind: 'pending'; end: number }
+  | { kind: 'pending'; end: number; labelState?: LabelScanState }
   | undefined;
+
+// Resume state for an unfinished first-label scan, keyed by the owning cache.
+// Only the top-level scan stores here: nested scans re-derive on the next
+// full pass, and any closure funnels through a full reprocess anyway.
+const pendingLabelScans = new WeakMap<MarkdownMathCache, LabelScanState>();
 
 /**
  * Recognize a bounded Markdown label starting at `index` so its contents can
@@ -450,9 +485,12 @@ function readMarkdownLink(source: string, index: number): MarkdownLinkScan {
     return undefined;
   }
 
-  const labelEnd = findLabelEnd(source, openerEnd);
-  if (labelEnd === 'pending') return { kind: 'pending', end: source.length };
-  if (typeof labelEnd !== 'number') return { kind: 'pending', end: labelEnd.end };
+  const firstScan = scanLabel(source, initialLabelScanState(openerEnd));
+  if (firstScan.kind === 'pending') {
+    return { kind: 'pending', end: source.length, labelState: firstScan.state };
+  }
+  if (firstScan.kind === 'invalid') return { kind: 'pending', end: firstScan.end };
+  const labelEnd = firstScan.end;
 
   const match = (end: number) => ({
     kind: 'match' as const,
@@ -493,6 +531,119 @@ function isEscaped(source: string, pos: number): boolean {
 }
 
 /**
+ * Resumable scan for the `]` closing a link label, skipping escapes, code
+ * spans, and nested labels. Absolute positions stay valid across streaming
+ * appends, so an unfinished scan can continue over new bytes instead of
+ * re-walking from the opener on every update.
+ */
+type LabelScanState = {
+  index: number;
+  depth: number;
+  escapeNext: boolean;
+  checkBlank: boolean;
+  runStart: number | null;
+  codeDelimLen: number;
+  codeSearchFrom: number;
+};
+
+function initialLabelScanState(from: number): LabelScanState {
+  return {
+    index: from,
+    depth: 0,
+    escapeNext: false,
+    checkBlank: false,
+    runStart: null,
+    codeDelimLen: 0,
+    codeSearchFrom: 0,
+  };
+}
+
+type LabelScanResult =
+  | { kind: 'pending'; state: LabelScanState }
+  | { kind: 'closed'; end: number }
+  | { kind: 'invalid'; end: number };
+
+function scanLabel(source: string, st: LabelScanState): LabelScanResult {
+  const pending = (): LabelScanResult => ({ kind: 'pending', state: st });
+  while (st.index < source.length) {
+    if (st.escapeNext) {
+      // A trailing backslash left this pending; the pair only exists once the
+      // escaped character has arrived. Skip both together, exactly as a fresh
+      // scan would.
+      if (st.index + 1 >= source.length) return pending();
+      st.escapeNext = false;
+      st.index += 2;
+      continue;
+    }
+    if (st.checkBlank) {
+      st.checkBlank = false;
+      // The newline at st.index was already seen; only a second newline
+      // makes it a blank line. Otherwise consume it as an ordinary char and
+      // process the new character normally below.
+      if (st.index + 1 >= source.length) {
+        st.checkBlank = true;
+        return pending();
+      }
+      if (source[st.index + 1] === '\n') return { kind: 'invalid', end: st.index };
+      st.index++;
+    }
+    if (st.runStart !== null || source[st.index] === '`') {
+      if (st.runStart === null) st.runStart = st.index;
+      while (source[st.index] === '`') st.index++;
+      if (st.index >= source.length) return pending();
+      st.codeDelimLen = st.index - st.runStart;
+      st.runStart = null;
+      st.codeSearchFrom = st.index;
+    }
+    if (st.codeDelimLen > 0) {
+      const close = source.indexOf('`'.repeat(st.codeDelimLen), st.codeSearchFrom);
+      if (close < 0) {
+        st.codeSearchFrom = Math.max(st.codeSearchFrom, source.length - (st.codeDelimLen - 1));
+        return pending();
+      }
+      st.index = close + st.codeDelimLen;
+      st.codeDelimLen = 0;
+      st.codeSearchFrom = 0;
+      continue;
+    }
+    const ch = source[st.index] ?? '';
+    if (ch === '\n') {
+      if (st.index + 1 >= source.length) {
+        st.checkBlank = true;
+        return pending();
+      }
+      if (source[st.index + 1] === '\n') return { kind: 'invalid', end: st.index };
+      st.index++;
+      continue;
+    }
+    if (ch === '\\') {
+      if (st.index + 1 >= source.length) {
+        st.escapeNext = true;
+        return pending();
+      }
+      st.index += 2;
+      continue;
+    }
+    if (ch === '[') {
+      st.depth++;
+      if (st.depth > MAX_LINK_LABEL_DEPTH) {
+        return { kind: 'invalid', end: findInvalidLinkBoundary(source, st.index) };
+      }
+      st.index++;
+      continue;
+    }
+    if (ch === ']') {
+      if (st.depth === 0) return { kind: 'closed', end: st.index };
+      st.depth--;
+      st.index++;
+      continue;
+    }
+    st.index++;
+  }
+  return pending();
+}
+
+/**
  * Find the `]` closing a link label opened before `from`, skipping escapes,
  * code spans, and nested labels. Blank lines and excessive nesting can never
  * form a label here; running out of input means more text may still complete
@@ -503,41 +654,10 @@ function findLabelEnd(
   source: string,
   from: number,
 ): number | 'pending' | { kind: 'invalid'; end: number } {
-  let depth = 0;
-  let i = from;
-  while (i < source.length) {
-    const ch = source[i] ?? '';
-    if (ch === '\n' && source[i + 1] === '\n') return { kind: 'invalid', end: i };
-    if (ch === '\\') {
-      if (i + 1 >= source.length) return 'pending';
-      i += 2;
-      continue;
-    }
-    if (ch === '`') {
-      let runEnd = i + 1;
-      while (source[runEnd] === '`') runEnd++;
-      const close = source.indexOf(source.slice(i, runEnd), runEnd);
-      if (close < 0) return 'pending';
-      i = close + (runEnd - i);
-      continue;
-    }
-    if (ch === '[') {
-      depth++;
-      if (depth > MAX_LINK_LABEL_DEPTH) {
-        return { kind: 'invalid', end: findInvalidLinkBoundary(source, i) };
-      }
-      i++;
-      continue;
-    }
-    if (ch === ']') {
-      if (depth === 0) return i;
-      depth--;
-      i++;
-      continue;
-    }
-    i++;
-  }
-  return 'pending';
+  const result = scanLabel(source, initialLabelScanState(from));
+  if (result.kind === 'pending') return 'pending';
+  if (result.kind === 'invalid') return result;
+  return result.end;
 }
 
 /**
