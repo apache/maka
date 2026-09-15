@@ -49,9 +49,10 @@ use windows::Win32::{
         Accessibility::{HWINEVENTHOOK, SetWinEventHook, UnhookWinEvent},
         WindowsAndMessaging::{
             DispatchMessageW, EVENT_OBJECT_DESTROY, EVENT_OBJECT_FOCUS, EVENT_OBJECT_NAMECHANGE,
-            EVENT_OBJECT_SELECTION, EVENT_OBJECT_SELECTIONWITHIN, EVENT_OBJECT_VALUECHANGE,
-            EVENT_SYSTEM_FOREGROUND, GA_ROOT, GetAncestor, MSG, PM_REMOVE, PeekMessageW,
-            TranslateMessage, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS,
+            EVENT_OBJECT_REORDER, EVENT_OBJECT_SELECTION, EVENT_OBJECT_SELECTIONWITHIN,
+            EVENT_OBJECT_TEXTSELECTIONCHANGED, EVENT_OBJECT_VALUECHANGE, EVENT_SYSTEM_FOREGROUND,
+            GA_ROOT, GetAncestor, MSG, PM_REMOVE, PeekMessageW, TranslateMessage,
+            WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS,
         },
     },
 };
@@ -59,6 +60,11 @@ use windows::Win32::{
 static EPOCHS: EventEpochs = EventEpochs::new();
 static DIRTY_KIND: AtomicU32 = AtomicU32::new(EVENT_SYSTEM_FOREGROUND);
 const MAX_SNAPSHOT_BYTES: u64 = 128 * 1024;
+// IAccessible2 AccessibleEventID: document content/load and text insert/remove/update.
+const IA2_DOCUMENT_CONTENT_CHANGED: u32 = 0x104;
+const IA2_DOCUMENT_LOAD_COMPLETE: u32 = 0x105;
+const IA2_TEXT_INSERTED: u32 = 0x11e;
+const IA2_TEXT_UPDATED: u32 = 0x120;
 
 unsafe extern "system" fn on_event(
     _hook: HWINEVENTHOOK,
@@ -96,6 +102,13 @@ impl Hooks {
             (EVENT_OBJECT_DESTROY, EVENT_OBJECT_DESTROY),
             (EVENT_OBJECT_FOCUS, EVENT_OBJECT_SELECTIONWITHIN),
             (EVENT_OBJECT_NAMECHANGE, EVENT_OBJECT_VALUECHANGE),
+            (EVENT_OBJECT_REORDER, EVENT_OBJECT_REORDER),
+            (
+                EVENT_OBJECT_TEXTSELECTIONCHANGED,
+                EVENT_OBJECT_TEXTSELECTIONCHANGED,
+            ),
+            (IA2_DOCUMENT_CONTENT_CHANGED, IA2_DOCUMENT_LOAD_COMPLETE),
+            (IA2_TEXT_INSERTED, IA2_TEXT_UPDATED),
         ] {
             let hook = unsafe {
                 SetWinEventHook(

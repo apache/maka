@@ -47,7 +47,9 @@ Centralized macOS permission prompts are not reused or simulated on Windows.
 1. `record --no-prompt --parent-pid <pid>` validates its actual launching parent,
    acquires exclusive ownership, and reads explicit recording consent.
 2. Out-of-context WinEvent hooks coalesce foreground, focus, selection, name,
-   and value notifications. The recorder attempts a snapshot at most once
+   value, tree-reorder and IAccessible2 document/text notifications. These
+   notifications invalidate observations; they contain no captured text.
+   The recorder attempts a snapshot at most once
    every three seconds, with a fifteen-second heartbeat and failure backoff.
 3. A short-lived `snapshot` worker binds to one exact HWND and PID and reads
    UI Automation on a dedicated MTA thread. It checks foreground identity,
@@ -63,8 +65,10 @@ the event text budget is 28 KiB. Traversal has a 700 ms cooperative budget.
 The supervisor kills workers after two seconds, and each worker independently
 watches its parent, consent, and deadline so blocked COM calls cannot keep an
 orphan alive indefinitely. UIA connection and transaction timeouts are 250 ms.
-Fresh element-scoped caches batch only identity and visibility properties at
-each validation boundary; names and values are never prefetched before admission.
+Fresh element-scoped caches batch identity and visibility properties at
+each validation boundary, plus type/framework where consumed together. The
+frequent sensitive-read visibility checks retain their narrower request;
+names and values are never prefetched before admission.
 Invalidating an in-flight capture preserves its unsettled generation for a fresh
 attempt through the existing three-second rate gate and fifteen-second failure
 backoff. A completed observation is settled, so unrelated idle destruction does
@@ -103,23 +107,51 @@ must be admitted; URLs persisted to history contain no credentials, path,
 query, or fragment. A URL-less Document can be treated as native only for an
 explicit Win32, WinForm, or WPF provider outside browser/web context. Bounded
 TextPattern reads are limited to childless native Documents; parent text ranges
-can include sensitive descendants.
+can include sensitive descendants. WPF `TextBox` controls may contain
+ScrollViewer template children while owning a scalar ValuePattern. That value
+is read only after the complete native window passes validation, with fresh
+control/ancestry checks and a second whole-tree check afterward. This does not
+authorize aggregate text from arbitrary parent controls.
+
+For known browsers, the reader selects the outermost Document on the focused
+element's verified ancestry to the exact foreground UIA window. Its bounded
+body traversal excludes browser chrome, including GPU-owned panes. Every
+visited visible element must still report the selected PID. Sensitive reads
+recheck the window root and document ancestry; final validation also checks
+focus, observed tree structure and each document's original URL.
+
+Chromium accessibility can initialize asynchronously after ordinary UIA queries.
+If no focused Document exists yet, the reader can query nonsensitive properties
+of a single visible, same-PID `Chrome_RenderWidgetHostHWND` under the selected
+window. It captures no names, values or source URLs during that preparation;
+a later worker must independently admit the populated document. No browser
+flags or accessibility/security settings are changed. Ambiguous content hosts
+remain unsupported.
+
+A Chromium iframe may expose a URL-less Document wrapper around one real
+Document. Only an absent ValuePattern, one visible same-PID Chrome Document
+child and the child's own valid remote URL permit that structural wrapper.
+It contributes no text or inherited source authority. The child undergoes the
+normal domain checks, and final validation pins the observed wrapper/child
+relationship. Empty or malformed URL patterns are not wrappers.
 
 Expected omissions include browser providers without document URLs, unknown
 native frameworks, custom/internal browser URLs, cross-process descendants,
-elevated applications, rapidly changing trees, and trees that exceed the
+elevated applications, browser-toolbar focus without a focused Document,
+rapidly changing trees, and trees that exceed the
 complete provenance-check budget. Native document support does not prove that
 all versions of Notepad, Word, or terminal applications are covered. UIA failure,
 privacy suppression, and stale targets can produce no event. Do not weaken
 source checks just to increase event counts.
 
-The September 15 Edge 151.0.4129.93 canary did not pass useful-body acceptance.
-The first visible descendant belonged to Edge's separate GPU process; a separate
-synthetic-only diagnostic also found no valid source URL on its Document nodes.
-The native helper correctly remains closed to these unverified sources, so
-browser/password/iframe negative cases are inconclusive, not passing coverage.
-Supporting this provider requires explicit cross-process and document-origin
-authority, not an address-bar fallback or a broader PID allowlist.
+The September 15 Edge `151.0.4129.93` canary passed useful-body acceptance after
+focused-document traversal and asynchronous initialization were implemented.
+Earlier whole-window traversal rejected a GPU-owned pane before reaching the
+document, and a first diagnostic query saw only empty initial URLs. A retained
+native client subsequently exposed the actual document URL after 900 ms.
+This is measured support for this Edge configuration, not proof of all
+Chromium, Firefox, Electron or WebView2 providers. No cross-process allowlist
+or address-bar fallback was added.
 
 ## Ownership and shutdown
 
@@ -168,7 +200,8 @@ as skipped elsewhere.
 
 Live acceptance uses isolated interactive Windows test desktops and synthetic
 content. The opt-in [WinForms matrix](../../scripts/computer-history-windows-interactive.md)
-and [Edge matrix](../../scripts/computer-history-windows-browser.md) retain
+and [Edge matrix](../../scripts/computer-history-windows-browser.md), plus the
+[WPF matrix](../../scripts/computer-history-windows-wpf.md), retain
 evidence and never access personal history homes.
 
 On September 15, 2026, Windows 11 x64 / Node 24.18.1 / MSVC execution passed:
@@ -180,6 +213,21 @@ On September 15, 2026, Windows 11 x64 / Node 24.18.1 / MSVC execution passed:
   The strengthened 96.7-second matrix required the recorder itself to report
   failure first, then recovered body in 5.45 seconds and fresh zero-failure
   status from the same recorder in 7.40 seconds after release.
+- All eleven Edge cases, including real body/origin, navigation, matched
+  password/title suppression and recovery, blocked top-level/iframe domains,
+  real fresh-profile InPrivate, text-off/on and cold recorder startup.
+  Run `eazkDX` observed the unchanged cold page in 3.51 seconds and an in-place
+  edit in 3.58 seconds with the same source UUID. Before document/text event
+  subscriptions, the edit waited 15.58 seconds for the idle heartbeat.
+  A later iframe baseline timeout led to fresh metadata-read batching;
+  final `xj9Teh` passed the stronger DOM iframe-focus/blocked-parent sequence
+  and recorder sealing checks in 44.01 seconds. The cold body/edit times were
+  3.53/3.61 seconds. Detailed failed and successful samples remain in the
+  Edge matrix documentation.
+- All five WPF cases, including TextBox and RichTextBox body edits, an unfocused
+  PasswordBox sibling, text-off/on and app block/unblock. After metadata-read
+  batching, WPF `4frkEO` passed all five cases again in 32.86 seconds and the
+  full WinForms `6WiP4E` recorder regression passed in 91.14 seconds.
 - Accepted JSONL through production evidence projection, summary coordination,
   the existing model connection, Markdown readback and restart without another
   model call, using isolated storage and a single Coproxy Astra request.
@@ -190,6 +238,10 @@ Electron acceptance remain unverified. Browser provenance must pass a useful
 allowed-body baseline before any negative case can count as verified; an empty
 result by itself proves neither useful coverage nor privacy protection.
 Do not equate this controlled acceptance with production readiness.
+Newly staged executables also showed approximately 24 seconds of first-launch
+delay before native entry, separately measured by the harness's initial
+`status` call. The cause is not established; it is not UIA traversal latency
+and remains a first-run/packaging acceptance gap.
 
 ## Platform references
 

@@ -245,7 +245,7 @@ mod native {
     };
     use windows::{
         Win32::{
-            Foundation::{CloseHandle, HANDLE, HWND, WAIT_TIMEOUT},
+            Foundation::{CloseHandle, HANDLE, HWND, LPARAM, WAIT_TIMEOUT},
             System::{
                 Com::{
                     CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx,
@@ -262,19 +262,51 @@ mod native {
                     CUIAutomation8, IUIAutomation2, IUIAutomationCacheRequest,
                     IUIAutomationElement, IUIAutomationTextPattern, IUIAutomationTreeWalker,
                     IUIAutomationValuePattern, TreeScope_Element, UIA_CONTROLTYPE_ID,
-                    UIA_DocumentControlTypeId, UIA_E_NOTSUPPORTED, UIA_E_TIMEOUT,
-                    UIA_EditControlTypeId, UIA_IsOffscreenPropertyId, UIA_IsPasswordPropertyId,
+                    UIA_ControlTypePropertyId, UIA_DocumentControlTypeId, UIA_E_NOTSUPPORTED,
+                    UIA_E_TIMEOUT, UIA_EditControlTypeId, UIA_FrameworkIdPropertyId,
+                    UIA_IsOffscreenPropertyId, UIA_IsPasswordPropertyId,
                     UIA_NativeWindowHandlePropertyId, UIA_ProcessIdPropertyId, UIA_TextPatternId,
                     UIA_ValuePatternId,
                 },
-                WindowsAndMessaging::GetWindowThreadProcessId,
+                WindowsAndMessaging::{
+                    EnumChildWindows, GA_ROOT, GetAncestor, GetClassNameW,
+                    GetWindowThreadProcessId, IsWindowVisible,
+                },
             },
         },
-        core::{BSTR, Interface, PWSTR},
+        core::{BOOL, BSTR, Interface, PWSTR},
     };
 
     const TIME_LIMIT: Duration = Duration::from_millis(700);
     const PROVIDER_TIMEOUT_MS: u32 = 250;
+
+    struct ContentWindows {
+        pid: u32,
+        visited: usize,
+        handles: Vec<HWND>,
+    }
+
+    unsafe extern "system" fn find_content(hwnd: HWND, data: LPARAM) -> BOOL {
+        let state = unsafe { &mut *(data.0 as *mut ContentWindows) };
+        state.visited += 1;
+        if state.visited > 256 {
+            return BOOL(0);
+        }
+        let mut pid = 0;
+        unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
+        if pid == state.pid && unsafe { IsWindowVisible(hwnd) }.as_bool() {
+            let mut class = [0u16; 64];
+            let length = unsafe { GetClassNameW(hwnd, &mut class) } as usize;
+            if class[..length]
+                .iter()
+                .copied()
+                .eq("Chrome_RenderWidgetHostHWND".encode_utf16())
+            {
+                state.handles.push(hwnd);
+            }
+        }
+        BOOL(1)
+    }
 
     struct Apartment;
 
@@ -359,6 +391,13 @@ mod native {
         next_sibling: Option<IUIAutomationElement>,
         visible: bool,
         identity: Option<(UIA_CONTROLTYPE_ID, String)>,
+        wrapper: bool,
+    }
+
+    struct BrowserScope {
+        document: IUIAutomationElement,
+        ancestors: Vec<IUIAutomationElement>,
+        focused: IUIAutomationElement,
     }
 
     struct Capture<'a> {
@@ -367,6 +406,7 @@ mod native {
         root: IUIAutomationElement,
         identity_cache: IUIAutomationCacheRequest,
         visibility_cache: IUIAutomationCacheRequest,
+        state_cache: IUIAutomationCacheRequest,
         walker: IUIAutomationTreeWalker,
         policy: &'a Policy,
         documents: Vec<Document>,
@@ -377,6 +417,8 @@ mod native {
         nodes: usize,
         text: String,
         text_limit: usize,
+        browser_scope: Option<BrowserScope>,
+        native_edits: Vec<(IUIAutomationElement, Vec<IUIAutomationElement>)>,
     }
 
     impl Capture<'_> {
@@ -391,10 +433,7 @@ mod native {
         }
 
         fn read<T>(&self, read: impl FnOnce() -> windows::core::Result<T>) -> Option<T> {
-            self.root_current()?;
-            let result = self.target.read(read);
-            self.root_current()?;
-            result
+            self.target.read(read)
         }
 
         // An offscreen subtree contributes nothing. A visible password control
@@ -417,16 +456,85 @@ mod native {
             Some(true)
         }
 
+        fn state(
+            &self,
+            element: &IUIAutomationElement,
+        ) -> Option<(bool, UIA_CONTROLTYPE_ID, String)> {
+            // Batch only metadata needed together at this boundary. Offscreen
+            // nodes do not require framework/type support to be omitted.
+            let state = self.read(|| unsafe {
+                let current = element.BuildUpdatedCache(&self.state_cache)?;
+                if current.CachedIsOffscreen()?.as_bool() {
+                    return Ok(None);
+                }
+                Ok(Some((
+                    current.CachedIsPassword()?.as_bool(),
+                    current.CachedProcessId()?,
+                    current.CachedControlType()?,
+                    current.CachedFrameworkId()?,
+                )))
+            })?;
+            let Some((password, pid, kind, framework)) = state else {
+                return Some((false, UIA_CONTROLTYPE_ID(0), String::new()));
+            };
+            if password || pid as u32 != self.target.pid {
+                return None;
+            }
+            Some((true, kind, bounded_string(&framework, 128)?))
+        }
+
         fn sensitive<T>(
             &self,
             element: &IUIAutomationElement,
             read: impl FnOnce() -> windows::core::Result<T>,
         ) -> Option<T> {
+            self.root_current()?;
+            self.scope_current()?;
             if !self.visible(element)? {
                 return None;
             }
             let value = self.read(read)?;
+            self.scope_current()?;
+            self.root_current()?;
             self.visible(element)?.then_some(value)
+        }
+
+        fn scope_current(&self) -> Option<()> {
+            let Some(scope) = &self.browser_scope else {
+                return Some(());
+            };
+            self.same_ancestry(&scope.document, &scope.ancestors)
+        }
+
+        fn native_edit_current(
+            &self,
+            element: &IUIAutomationElement,
+            ancestors: &[IUIAutomationElement],
+        ) -> Option<()> {
+            self.same_ancestry(element, ancestors)?;
+            let (visible, kind, framework) = self.state(element)?;
+            if !visible
+                || kind != UIA_EditControlTypeId
+                || framework != "WPF"
+                || self.read(|| unsafe { element.CurrentClassName() })? != "TextBox"
+            {
+                return None;
+            }
+            Some(())
+        }
+
+        fn collect_native_edits(&mut self) -> Option<()> {
+            for (element, ancestors) in &self.native_edits {
+                if self.text.len() >= self.text_limit {
+                    break;
+                }
+                self.native_edit_current(element, ancestors)?;
+                let pattern = self.value_pattern(element)??;
+                let value = self.sensitive(element, || unsafe { pattern.CurrentValue() })?;
+                self.native_edit_current(element, ancestors)?;
+                append_text(&mut self.text, &text_prefix(&value), self.text_limit);
+            }
+            Some(())
         }
 
         fn value_pattern(
@@ -461,14 +569,10 @@ mod native {
             element: &IUIAutomationElement,
             web_context: bool,
         ) -> Option<DocumentSource> {
-            if !self.visible(element)?
-                || self.read(|| unsafe { element.CurrentControlType() })?
-                    != UIA_DocumentControlTypeId
-            {
+            let (visible, kind, framework) = self.state(element)?;
+            if !visible || kind != UIA_DocumentControlTypeId {
                 return None;
             }
-            let framework = self.read(|| unsafe { element.CurrentFrameworkId() })?;
-            let framework = bounded_string(&framework, 128)?;
             let value = match self.value_pattern(element)? {
                 Some(pattern) => {
                     let value = self.sensitive(element, || unsafe { pattern.CurrentValue() })?;
@@ -477,6 +581,34 @@ mod native {
                 None => None,
             };
             resolve_source(value.as_deref(), &framework, self.browser, web_context)
+        }
+
+        fn document_wrapper(&self, element: &IUIAutomationElement) -> Option<bool> {
+            let (visible, kind, framework) = self.state(element)?;
+            if !self.browser
+                || !visible
+                || kind != UIA_DocumentControlTypeId
+                || framework != "Chrome"
+                || self.value_pattern(element)?.is_some()
+            {
+                return Some(false);
+            }
+            // Chromium exposes a URL-less iframe container around one actual
+            // Document. Its exact child owns the source and is visited normally;
+            // the wrapper contributes no text or inherited source authority.
+            let child = self.neighbor(element, true)??;
+            let (visible, kind, framework) = self.state(&child)?;
+            if self.neighbor(&child, false)?.is_some()
+                || !visible
+                || kind != UIA_DocumentControlTypeId
+                || framework != "Chrome"
+            {
+                return Some(false);
+            }
+            let pattern = self.value_pattern(&child)??;
+            let value = self.sensitive(&child, || unsafe { pattern.CurrentValue() })?;
+            let source = document_source(&bounded_string(&value, MAX_URL_BYTES)?)?;
+            Some(matches!(source, DocumentSource::Remote(_)))
         }
 
         // The generated methods convert successful null neighbors into an error.
@@ -545,7 +677,8 @@ mod native {
 
         fn final_tree_check(&self) -> Option<()> {
             for node in &self.observed {
-                if self.visible(&node.element)? != node.visible {
+                let (visible, kind, framework) = self.state(&node.element)?;
+                if visible != node.visible {
                     return None;
                 }
                 if let Some(parent) = &node.parent {
@@ -556,13 +689,14 @@ mod native {
                     self.same_element(sibling.as_ref(), node.next_sibling.as_ref())?;
                 }
                 if node.visible {
-                    let kind = self.read(|| unsafe { node.element.CurrentControlType() })?;
-                    let framework = self.read(|| unsafe { node.element.CurrentFrameworkId() })?;
-                    if node.identity.as_ref() != Some(&(kind, bounded_string(&framework, 128)?)) {
+                    if node.identity.as_ref() != Some(&(kind, framework)) {
                         return None;
                     }
                     let child = self.neighbor(&node.element, true)?;
                     self.same_element(child.as_ref(), node.first_child.as_ref())?;
+                    if node.wrapper && !self.document_wrapper(&node.element)? {
+                        return None;
+                    }
                 }
             }
             for document in &self.documents {
@@ -622,6 +756,91 @@ mod native {
             Some(value)
         }
 
+        fn browser_document(&self) -> Option<BrowserScope> {
+            let focused = self.read(|| unsafe { self.automation.GetFocusedElement() })?;
+            let mut current = focused.clone();
+            let mut chain: Vec<IUIAutomationElement> = Vec::new();
+            let mut document: Option<usize> = None;
+            // Browser chrome can be deeper than the document text tree. This
+            // walk reads only the focused element's bounded ownership chain.
+            for _ in 0..32 {
+                let (visible, kind, _) = self.state(&current)?;
+                if !visible {
+                    return None;
+                }
+                if self
+                    .read(|| unsafe { self.automation.CompareElements(&current, &self.root) })?
+                    .as_bool()
+                {
+                    let Some(index) = document else {
+                        self.prime_browser_document();
+                        return None;
+                    };
+                    let element = chain[index].clone();
+                    let ancestors = std::iter::once(self.root.clone())
+                        .chain(chain[index + 1..].iter().rev().cloned())
+                        .collect::<Vec<_>>();
+                    self.same_ancestry(&element, &ancestors)?;
+                    // The outermost Document is the admission boundary; an
+                    // embedded frame must never hide its parent page's origin.
+                    return Some(BrowserScope {
+                        document: element,
+                        ancestors,
+                        focused,
+                    });
+                }
+                if kind == UIA_DocumentControlTypeId {
+                    document = Some(chain.len());
+                }
+                chain.push(current.clone());
+                current = self.read(|| unsafe { self.walker.GetParentElement(&current) })?;
+            }
+            None
+        }
+
+        fn prime_browser_document(&self) {
+            let mut state = ContentWindows {
+                pid: self.target.pid,
+                visited: 0,
+                handles: Vec::new(),
+            };
+            unsafe {
+                let _ = EnumChildWindows(
+                    Some(HWND(self.target.hwnd as *mut _)),
+                    Some(find_content),
+                    LPARAM(&mut state as *mut ContentWindows as isize),
+                );
+            }
+            if state.visited > 256 || state.handles.len() != 1 {
+                return;
+            }
+            let hwnd = state.handles[0];
+            let mut pid = 0;
+            unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
+            if pid != self.target.pid
+                || unsafe { GetAncestor(hwnd, GA_ROOT) }.0 as usize != self.target.hwnd
+            {
+                return;
+            }
+            let Some(root) =
+                self.read(|| unsafe { self.automation.ElementFromHandle(state.handles[0]) })
+            else {
+                return;
+            };
+            // Ordinary property reads initialize Chromium's asynchronous AX
+            // tree. They collect no names or values; a later worker must prove
+            // focused document ancestry and policy before reading any body.
+            if self.visible(&root) != Some(true) {
+                return;
+            }
+            let _ = self.read(|| unsafe { root.CurrentControlType() });
+            if let Some(Some(child)) = self.neighbor(&root, true)
+                && self.visible(&child) == Some(true)
+            {
+                let _ = self.read(|| unsafe { child.CurrentControlType() });
+            }
+        }
+
         fn walk(
             &mut self,
             element: &IUIAutomationElement,
@@ -633,7 +852,7 @@ mod native {
                 return None;
             }
             self.nodes += 1;
-            let visible = self.visible(element)?;
+            let (visible, kind, framework) = self.state(element)?;
             let observed = self.observed.len();
             self.observed.push(Observed {
                 element: element.clone(),
@@ -642,6 +861,7 @@ mod native {
                 next_sibling: None,
                 visible,
                 identity: None,
+                wrapper: false,
             });
             if !visible {
                 if !ancestors.is_empty() {
@@ -649,13 +869,14 @@ mod native {
                 }
                 return Some(());
             }
-            let kind = self.read(|| unsafe { element.CurrentControlType() })?;
-            let framework = self.read(|| unsafe { element.CurrentFrameworkId() })?;
-            let framework = bounded_string(&framework, 128)?;
             self.observed[observed].identity = Some((kind, framework.clone()));
             let web_context = web_context || web_framework(&framework);
             self.web_seen |= web_context;
-            let is_document = kind == UIA_DocumentControlTypeId;
+            let wrapper = kind == UIA_DocumentControlTypeId
+                && !sources.is_empty()
+                && self.document_wrapper(element)?;
+            self.observed[observed].wrapper = wrapper;
+            let is_document = kind == UIA_DocumentControlTypeId && !wrapper;
             if is_document {
                 let source = self.source(element, web_context)?;
                 if let Some(domain) = source.domain() {
@@ -677,7 +898,20 @@ mod native {
                 });
             let first = self.neighbor(element, true)?;
             self.observed[observed].first_child = first.clone();
+            if first.is_some()
+                && kind == UIA_EditControlTypeId
+                && framework == "WPF"
+                && !web_context
+                && self.policy.capture_text
+                && self.read(|| unsafe { element.CurrentClassName() })? == "TextBox"
+            {
+                // WPF TextBox owns its scalar value despite having ScrollViewer
+                // template children. Defer it until the whole window passes
+                // provenance/password checks; never aggregate a parent text range.
+                self.native_edits.push((element.clone(), ancestors.clone()));
+            }
             let permitted_leaf = first.is_none()
+                && !wrapper
                 && (!web_context || !sources.is_empty())
                 && self.policy.capture_text
                 && self.text.len() < self.text_limit;
@@ -853,7 +1087,7 @@ mod native {
             let root =
                 target.read(|| unsafe { automation.ElementFromHandle(HWND(hwnd as *mut _)) })?;
             let walker = target.read(|| unsafe { automation.RawViewWalker() })?;
-            let (identity_cache, visibility_cache) = target.read(|| unsafe {
+            let (identity_cache, visibility_cache, state_cache) = target.read(|| unsafe {
                 let identity = automation.CreateCacheRequest()?;
                 identity.SetTreeScope(TreeScope_Element)?;
                 identity.AddProperty(UIA_NativeWindowHandlePropertyId)?;
@@ -863,7 +1097,10 @@ mod native {
                 visibility.AddProperty(UIA_IsPasswordPropertyId)?;
                 visibility.AddProperty(UIA_IsOffscreenPropertyId)?;
                 visibility.AddProperty(UIA_ProcessIdPropertyId)?;
-                Ok((identity, visibility))
+                let state = visibility.Clone()?;
+                state.AddProperty(UIA_ControlTypePropertyId)?;
+                state.AddProperty(UIA_FrameworkIdPropertyId)?;
+                Ok((identity, visibility, state))
             })?;
             let browser = browser_app(&app_name);
             let mut capture = Capture {
@@ -872,6 +1109,7 @@ mod native {
                 root: root.clone(),
                 identity_cache,
                 visibility_cache,
+                state_cache,
                 walker,
                 policy: &policy,
                 documents: Vec::new(),
@@ -882,6 +1120,8 @@ mod native {
                 nodes: 0,
                 text: String::new(),
                 text_limit: MAX_BYTES,
+                browser_scope: None,
+                native_edits: Vec::new(),
             };
             let title = capture.sensitive(&root, || unsafe { root.CurrentName() })?;
             let title = bounded_string(&title, MAX_TITLE_BYTES)?;
@@ -890,7 +1130,15 @@ mod native {
             }
             capture.text_limit = MAX_BYTES
                 .saturating_sub(title.len() + app_id.len() + app_name.len() + source_id.len());
-            capture.walk(&root, &mut Vec::new(), &mut Vec::new(), browser)?;
+            if browser {
+                let scope = capture.browser_document()?;
+                let document = scope.document.clone();
+                capture.browser_scope = Some(scope);
+                capture.scope_current()?;
+                capture.walk(&document, &mut Vec::new(), &mut Vec::new(), true)?;
+            } else {
+                capture.walk(&root, &mut Vec::new(), &mut Vec::new(), false)?;
+            }
             if (capture.browser || capture.web_seen)
                 && !capture
                     .documents
@@ -900,6 +1148,15 @@ mod native {
                 return None;
             }
             capture.final_tree_check()?;
+            if !capture.native_edits.is_empty() {
+                capture.collect_native_edits()?;
+                capture.final_tree_check()?;
+            }
+            if let Some(scope) = &capture.browser_scope {
+                capture.scope_current()?;
+                let current = capture.read(|| unsafe { capture.automation.GetFocusedElement() })?;
+                capture.same_element(Some(&current), Some(&scope.focused))?;
+            }
             let final_title = capture.sensitive(&root, || unsafe { root.CurrentName() })?;
             if bounded_string(&final_title, MAX_TITLE_BYTES)? != title {
                 return None;

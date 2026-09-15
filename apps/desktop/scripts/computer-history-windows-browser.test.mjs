@@ -24,7 +24,7 @@ import { closeSync, openSync, writeSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
-import { isAbsolute, join } from 'node:path';
+import { dirname, isAbsolute, join } from 'node:path';
 import test from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
@@ -176,6 +176,14 @@ test('real Edge snapshots preserve useful bodies and reject denied synthetic con
   await mkdir(home);
   await writeFile(join(home, 'maka-settings.json'), '{"enabled":true}\n', { flag: 'wx' });
   await writeFile(join(home, 'control.json'), '{"state":"running","revision":"browser-canary"}\n', { flag: 'wx' });
+  const launchStarted = performance.now();
+  const status = await run(helper, ['status'], {
+    env: { ...process.env, OPEN_COMPUTER_HISTORY_HOME: home },
+    windowsHide: true, encoding: 'utf8', timeout: 30_000, maxBuffer: 256 * 1024,
+  });
+  assert.equal(status.stderr, '');
+  assert.equal(JSON.parse(status.stdout).recorderActive, false);
+  evidence('helper.launch', { durationMs: performance.now() - launchStarted, ...status });
 
   async function policy({ blocked = [], captureText = true } = {}) {
     const value = {
@@ -387,6 +395,10 @@ test('real Edge snapshots preserve useful bodies and reject denied synthetic con
     assert.equal(value.url, `http://${host}:${port}/`);
   }
 
+  async function admitted(page, target) {
+    return until(() => snapshot(page, target), `accessible ${page.name} document`, 6_000);
+  }
+
   async function scenario(name, action) {
     await t.test(name, async () => {
       evidence('case.started', { name });
@@ -402,14 +414,17 @@ test('real Edge snapshots preserve useful bodies and reject denied synthetic con
 
   await startBrowser(allowed);
   await scenario('allowed document exposes useful body without forcing accessibility', async () => {
-    const value = await snapshot(allowed, await navigate(allowed));
+    const target = await navigate(allowed);
+    // Native accessibility initialization is asynchronous. Re-query the same
+    // window without navigation, injected flags or a separate warm-up client.
+    const value = await until(() => snapshot(allowed, target), 'cold browser body', 12_000);
     useful(value, allowed);
     usefulBaseline = true;
   });
   await scenario('same-origin navigation updates text and strips URL path/query/fragment', async () => {
     const secret = `QUERY_${token}`;
     const url = `${plainUrl(navigated)}?secret=${secret}#FRAGMENT_${token}`;
-    const value = await snapshot(navigated, await navigate(navigated, url));
+    const value = await admitted(navigated, await navigate(navigated, url));
     useful(value, navigated);
     const serialized = JSON.stringify(value);
     for (const excluded of [allowed.body, secret, `FRAGMENT_${token}`, navigated.path]) {
@@ -424,7 +439,7 @@ test('real Edge snapshots preserve useful bodies and reject denied synthetic con
     await scenario(item.name, async () => {
       await policy();
       const target = await navigate(item.page, plainUrl(item.page, item.host));
-      const baseline = await snapshot(item.page, target);
+      const baseline = await admitted(item.page, target);
       useful(baseline, item.page, item.host);
       if (item.page === frame) {
         assert.ok(baseline.text.includes(embedded.body), 'allowed iframe body was not captured');
@@ -436,7 +451,26 @@ test('real Edge snapshots preserve useful bodies and reject denied synthetic con
       assert.equal(await snapshot(item.page, deniedTarget), null, 'denied context must not return even a title');
       assert.ok(usefulBaseline, 'null is inconclusive: allowed baseline did not expose usable browser content');
       await policy();
-      useful(await snapshot(allowed, await navigate(allowed)), allowed);
+      if (item.page === frame) {
+        assert.equal(await evaluate(`(() => {
+          const frame = document.querySelector('iframe');
+          frame.contentWindow.focus();
+          return document.activeElement === frame;
+        })()`), true);
+        const focused = await admitted(frame, deniedTarget);
+        useful(focused, frame);
+        assert.ok(focused.text.includes(embedded.body), 'focused iframe body must remain useful');
+        assert.deepEqual([...focused.domains].sort(), ['127.0.0.1', 'localhost']);
+        await policy({ blocked: ['127.0.0.1'] });
+        assert.equal(await snapshot(frame, deniedTarget), null, 'iframe focus must not bypass its blocked parent');
+        assert.equal(await evaluate("document.activeElement === document.querySelector('iframe')"), true);
+        await policy();
+        const recovered = await admitted(frame, deniedTarget);
+        useful(recovered, frame);
+        assert.ok(recovered.text.includes(embedded.body), 'focused iframe must recover after parent unblock');
+        evidence('case.focused-frame-parent', { name: item.name });
+      }
+      useful(await admitted(allowed, await navigate(allowed)), allowed);
     });
   }
   await scenario('visible password rejects the entire snapshot', async () => {
@@ -468,7 +502,8 @@ test('real Edge snapshots preserve useful bodies and reject denied synthetic con
       })()`), true, 'password transition must retain the same document and input');
       assert.equal((await window(password)).windowID, target.windowID);
       evidence('fixture.transition', { page: password.name, ...phase });
-      const value = await snapshot(password, target);
+      const value = phase.name === 'denied'
+        ? await snapshot(password, target) : await admitted(password, target);
       if (phase.type === 'password') {
         assert.equal(value, null, 'password context must not return even a title');
         assert.ok(usefulBaseline, 'password suppression requires a useful normal-browser baseline');
@@ -504,7 +539,8 @@ test('real Edge snapshots preserve useful bodies and reject denied synthetic con
       })()`), true, 'title transition must retain the same document and body element');
       assert.equal((await window(page)).windowID, target.windowID);
       evidence('fixture.transition', { page: privateTitle.name, ...phase });
-      const value = await snapshot(page, target);
+      const value = phase.name === 'denied'
+        ? await snapshot(page, target) : await admitted(page, target);
       if (phase.name === 'denied') {
         assert.equal(value, null, 'private-title context must not return even a title');
         assert.ok(usefulBaseline, 'private-title suppression requires a useful normal-browser baseline');
@@ -515,7 +551,7 @@ test('real Edge snapshots preserve useful bodies and reject denied synthetic con
   });
   await scenario('text capture off preserves only admitted browser metadata', async () => {
     await policy({ captureText: false });
-    const value = await snapshot(allowed, await navigate(allowed));
+    const value = await admitted(allowed, await navigate(allowed));
     assert.ok(value, 'admitted metadata should remain available');
     assert.equal(value.text, null);
     assert.equal(value.url, `http://127.0.0.1:${port}/`);
@@ -524,7 +560,7 @@ test('real Edge snapshots preserve useful bodies and reject denied synthetic con
   });
   await scenario('restoring text capture recovers useful body', async () => {
     await policy();
-    useful(await snapshot(allowed, await navigate(allowed)), allowed);
+    useful(await admitted(allowed, await navigate(allowed)), allowed);
   });
   await stopBrowser();
 
@@ -538,5 +574,111 @@ test('real Edge snapshots preserve useful bodies and reject denied synthetic con
   });
   await scenario('snapshot-only canary never starts a recorder or creates segments', async () => {
     assert.deepEqual((await readdir(home)).sort(), ['config.json', 'control.json', 'maka-settings.json']);
+  });
+  await stopBrowser();
+
+  await scenario('cold unchanged page reaches the recorder and same-window edits refresh', async () => {
+    await policy();
+    const recorded = definePage('recorded');
+    await startBrowser(recorded);
+    const target = await navigate(recorded);
+    const recorder = spawn(helper, ['record', '--no-prompt', '--parent-pid', String(process.pid)], {
+      env: { ...process.env, OPEN_COMPUTER_HISTORY_HOME: home },
+      windowsHide: true, detached: true, stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let stderr = '';
+    let stdout = '';
+    recorder.stdout.on('data', (chunk) => { stdout += chunk; });
+    recorder.stderr.on('data', (chunk) => { stderr += chunk; });
+    recorder.stdin.on('error', (error) => evidence('recorder.stdin-error', { message: error.message }));
+    const exited = new Promise((resolve, reject) => {
+      recorder.once('error', reject);
+      recorder.once('close', (code, signal) => resolve({ code, signal }));
+    });
+    let result;
+    exited.then((value) => { result = value; }, () => {});
+    const captureStarted = performance.now();
+    async function events(sealed = false) {
+      const paths = await readdir(join(home, 'segments'), { recursive: true }).catch((error) => {
+        if (error.code === 'ENOENT' && !sealed) return [];
+        throw error;
+      });
+      const values = [];
+      for (const path of paths.filter((path) => path.endsWith('.jsonl'))) {
+        const text = await readFile(join(home, 'segments', path), 'utf8');
+        if (sealed) assert.ok(text.endsWith('\n'), 'sealed JSONL must not have a partial tail');
+        const records = [];
+        for (const line of text.split('\n').slice(0, -1)) {
+          if (line) records.push(JSON.parse(line));
+        }
+        if (sealed) {
+          const metadata = JSON.parse(await readFile(
+            join(home, 'segments', dirname(path), 'metadata.json'), 'utf8',
+          ));
+          assert.equal(metadata.eventCount, records.length);
+          assert.equal(metadata.endReason, 'finished');
+          assert.ok(Number.isFinite(Date.parse(metadata.endedAt)));
+        }
+        for (const event of records) {
+          assert.equal(event.app.bundleIdentifier, 'win32.msedge');
+          assert.equal(event.app.processIdentifier, target.processIdentifier);
+          assert.equal(event.window.windowID, target.windowID);
+          assert.equal(event.window.url, 'http://127.0.0.1');
+          assert.deepEqual(event.contentDomains, ['127.0.0.1']);
+          assert.equal(event.contentState, 'available');
+          assert.equal(event.ax?.mode, 'fullTree');
+          assert.match(event.sourceId, /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i);
+          assert.ok(Number.isSafeInteger(event.id) && event.id > 0);
+          assert.ok(Number.isFinite(Date.parse(event.timestamp)));
+          for (const marker of deniedMarkers) assert.ok(!JSON.stringify(event).includes(marker));
+        }
+        values.push(...records);
+      }
+      return values;
+    }
+    try {
+      const initial = await until(async () => {
+        assert.equal(result, undefined, `recorder exited: ${stderr}`);
+        return (await events()).find((value) => value.ax.text.includes(recorded.body));
+      }, 'recorder cold body', 25_000);
+      evidence('recorder.cold-body', { durationMs: performance.now() - captureStarted, event: initial });
+      const changed = `RECORDED_EDIT_${token}`;
+      const editStarted = performance.now();
+      await evaluate(`document.querySelector('#body').textContent=${JSON.stringify(changed)}`);
+      const fresh = await until(async () => {
+        assert.equal(result, undefined, `recorder exited: ${stderr}`);
+        return (await events()).find((value) => value.ax.text.includes(changed));
+      }, 'recorder same-window edit', 9_000);
+      assert.equal(fresh.sourceId, initial.sourceId);
+      assert.ok(!fresh.ax.text.includes(recorded.body), 'updated body must not retain replaced text');
+      assert.ok(Date.parse(fresh.timestamp) > Date.parse(initial.timestamp));
+      assert.equal((await window(recorded)).windowID, target.windowID);
+      evidence('recorder.edited-body', { durationMs: performance.now() - editStarted, event: fresh });
+    } finally {
+      recorder.stdin.end();
+      try {
+        await until(() => result, 'recorder graceful exit', 5_000);
+      } catch {
+        recorder.kill();
+        await until(() => result, 'terminated recorder exit', 1_000);
+        throw new Error('Recorder needed forced termination');
+      }
+      assert.deepEqual(result, { code: 0, signal: null });
+      assert.equal(stdout, '');
+      assert.equal(stderr, '');
+      evidence('recorder.closed', { ...result, stdout, stderr });
+    }
+    assert.ok((await events(true)).length >= 2, 'sealed store must retain both observed bodies');
+    const runtime = JSON.parse(await readFile(join(home, 'runtime.json'), 'utf8'));
+    assert.equal(runtime.state, 'stopped');
+    assert.equal(runtime.captureFailures, 0);
+    assert.ok(Number.isFinite(Date.parse(runtime.endedAt)));
+    const closed = await run(helper, ['status'], {
+      env: { ...process.env, OPEN_COMPUTER_HISTORY_HOME: home },
+      windowsHide: true, encoding: 'utf8', timeout: 5_000,
+    });
+    assert.equal(closed.stderr, '');
+    assert.equal(JSON.parse(closed.stdout).recorderActive, false);
+    evidence('recorder.sealed', { runtime, status: JSON.parse(closed.stdout) });
   });
 });

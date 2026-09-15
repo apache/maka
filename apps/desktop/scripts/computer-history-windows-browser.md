@@ -20,9 +20,10 @@
 # Windows Edge History Canary
 
 This opt-in suite invokes the staged `open-history.exe snapshot` worker directly
-from Node 24 in an unlocked Windows interactive session. Run it sequentially,
-not alongside other desktop-driving tests. It does not test recorder events,
-summary generation, or the frontend.
+from Node 24 in an unlocked Windows interactive session, then tests a real
+recorder against a third, untouched browser profile. Run it sequentially,
+not alongside other desktop-driving tests. It does not test summary generation
+or the frontend.
 
 ```powershell
 $env:MAKA_HISTORY_WINDOWS_BROWSER_TEST = '1'
@@ -58,8 +59,9 @@ reads within the same 20-second deadline. Other read errors fail immediately.
 | Text collection restored | Useful body again |
 | Real fresh-profile `--inprivate` instance | Entire snapshot is `null` |
 | Snapshot-only operation | No recorder runtime or segment files |
+| Cold recorder and in-place DOM edit | Useful body without prior snapshot warm-up; updated body with the same source UUID; sealed segments and released ownership after EOF |
 
-The ten cases require useful text before and after regular suppression.
+The eleven cases require useful text before and after regular suppression.
 A failed positive baseline makes suppression
 coverage inconclusive and fails those cases. A provider error, worker timeout
 or forced termination is never counted as successful suppression. Case failures
@@ -69,6 +71,10 @@ body and origin) to be readable with that domain allowed. A cross-process
 iframe that native cannot safely capture therefore fails coverage rather than
 appearing to prove that the blocklist works. Domain cases navigate back to the
 allowed page for recovery.
+The iframe case also focuses the embedded document, requires both parent and
+child bodies/domains to remain readable, then blocks only the parent domain
+without navigating. Complete suppression and subsequent useful-body recovery
+must hold while the iframe retains focus.
 
 The password case never navigates between its three phases. It retains the
 same document, DOM input and HWND; verifies a synthetic plaintext input value;
@@ -88,6 +94,16 @@ The real InPrivate page uses the neutral title `isolated-session`; its own
 document title contains no private-browsing marker. The separate private-title
 case deliberately adds and removes such a marker.
 
+The first allowed snapshot permits bounded retries of the same unchanged
+document while Chromium initializes accessibility. Neither a separate AX
+client nor navigation warms that document. The recorder case starts a third
+fresh profile, never calls `snapshot` on it, and requires a useful persisted
+body within 25 seconds. It then modifies the same DOM body, requiring a fresh
+event within nine seconds, exact PID/HWND/domain, a nonempty source UUID equal
+to the initial event, and no replaced text. Closing stdin must end the recorder
+normally, seal complete JSONL with matching metadata, publish stopped runtime
+and release its admission lock.
+
 ## Isolation
 
 - Every browser launch uses a newly created, random `--user-data-dir`; it never
@@ -99,8 +115,9 @@ case deliberately adds and removes such a marker.
 - Consent applies only to a new test home. Application and URL defaults deny
   observation. Only `win32.msedge`, `localhost` and `127.0.0.1` are allowlisted;
   blocked-domain cases explicitly deny `localhost`.
-- No `record` command runs. Every snapshot targets the exact directly spawned
-  Edge PID and HWND after checking its executable, Node parent, profile
+- The first ten cases run only snapshots; the last case starts an explicitly
+  consented recorder against the same isolated home. Every snapshot targets
+  the exact directly spawned Edge PID and HWND after checking its executable, Node parent, profile
   command-line argument, synthetic title and current foreground identity.
 - Foreground loss aborts that snapshot attempt. No global focus policy,
   permissions, registry, network proxy or security setting is changed.
@@ -125,54 +142,73 @@ Some Edge/provider versions may not expose a web Document's own URL or may
 exceed native traversal budgets. Those are reported as failed useful-body
 coverage, not worked around by address-bar origin guesses or relaxed privacy
 checks. A passing snapshot suite does not establish standard-user permission
-support if it was run from an elevated Windows session.
+support if it was run from an elevated Windows session. The initial helper
+`status` launch is timed separately, before creating any browser profile,
+so executable startup does not consume an individual UIA worker deadline.
 
-## Measured Failure Boundaries
+## Measured Results
 
-On September 15, 2026, Windows 11 tests with Edge `151.0.4129.93` did not
-establish useful browser capture. All nine semantic cases failed; only the
-snapshot-only/no-segment-file case passed. Password, private-title, InPrivate,
-blocked-domain and iframe protection were not validated: a `null` snapshot
-without a working useful-body baseline is inconclusive.
+On September 15, 2026, Windows 11 build 26200, Edge `151.0.4129.93` and Node
+24.18.1 passed all eleven cases in run `eazkDX`. The total was 65.40 seconds,
+including 24.12 seconds for a newly staged executable's first `status` launch.
+The unchanged cold page reached the recorder in 3.51 seconds, and the edited
+body in 3.58 seconds with the same source UUID. All three isolated browser
+processes and the recorder exited normally. The strengthened WinForms
+regression also passed after the browser changes.
 
-A separate, synthetic-only diagnostic established the following boundaries:
+The stronger recorder-sealing run `6vofWh` passed ten cases but the allowed
+iframe baseline hit the 700 ms worker budget (739.90 ms including launch).
+This remains a recorded failure, not a successful denial. Combining fresh
+nonsensitive type/framework and node-state reads reduced provider round trips
+without changing deadlines or source checks. The separate lightweight
+visibility request remains in sensitive-read fences. Run `nM5Evc` then passed
+all eleven cases in 42.22 seconds; its iframe baseline took 655.45 ms versus
+722.67 ms in `eazkDX`. These samples establish improvement, not a worst-case
+latency guarantee for arbitrary pages.
 
-- The first visible child of the test window was a Win32 `Pane` (control type
-  `50033`) owned by another PID. In run `QpHdiT`, it was PID `10996`, parent
-  browser PID `6244`. Its executable was the same `msedge.exe`, its command
-  line contained `--type=gpu-process` and the run's isolated profile, and it was
-  created about 153 ms after the browser. It was not identified as a renderer
-  or an unrelated popup. Native stopped at this PID mismatch after two nodes,
-  before observing any Document.
-- The diagnostic's MTA `.NET System.Windows.Automation` raw-tree traversal
-  completed with 270 nodes and no truncation. It found six visible Chrome
-  Documents: five did not support ValuePattern; one supported it but returned
-  an empty value. No valid Document URL was exposed through that inspection.
-  This is evidence about that diagnostic interface, not proof about every
-  Edge provider or native `CUIAutomation8` call.
-- The 270-node diagnostic exceeds native's 256-node limit. Diagnostic traversal
-  is not equivalent to native traversal, and native rejected this run earlier
-  at the foreign PID, so node-budget rejection was not demonstrated.
+The final `xj9Teh` run passed all eleven cases in 44.01 seconds, including
+the added DOM iframe-focus/blocked-parent/recovery sequence and strict
+recorder sealing assertions. Its cold body arrived in 3.53 seconds and its
+same-window edit in 3.61 seconds. DOM focus is fixture ground truth; the
+harness does not independently inspect the UIA focused-element object.
 
-Capture remains fail-closed. No cross-process capture authority or address-bar
-URL fallback was added. Process lineage alone does not establish Document
-origin, and removing the PID check would not resolve the missing URL evidence.
-No forced-accessibility flag was used.
+The initial launch delay occurs before native entry; its cause has not been
+established or bypassed. Later helper launches are substantially shorter.
+The reported recorder times exclude that separate first-executable launch.
 
-The historical InPrivate run also used a page named `inprivate`, which could
-itself trigger title suppression. Run `L9XMw9` reran the neutral-title correction
-on Windows in 17.7 seconds. All nine semantic cases still failed and the
-snapshot-only case passed; InPrivate remained inconclusive because normal
-browsing did not expose useful content. Neither run proves InPrivate protection.
+Before adding document/text event subscriptions, run `GclUxV` captured a cold
+body in 3.40 seconds but needed 15.58 seconds to observe the unchanged-window
+edit. The final recorder uses existing WinEvent scheduling for IAccessible2
+document/text events as well as reorder and text-selection notifications.
+They invalidate a capture without carrying body data or rotating window
+identity.
 
-Run `QB16Fs` reran the subsequent same-input and matched-title matrix on Windows
-in 17.6 seconds. Both transition cases stopped at their same-document plaintext
-baseline; neither reached its denied/recovery phases. The nine semantic cases
-failed, the snapshot-only case passed, and both owned browser processes closed
-normally. The stronger controls therefore preserve the same coverage gap.
+## Earlier Failures And Root Causes
 
-Raw synthetic evidence is retained outside version control under
-`docs/local/windows-history-browser-QpHdiT/`. Temporary UIA diagnostics are not
-called by this harness; native stderr must be empty again. The diagnostic
-scripts and captured artifacts are investigation records, not production
-capture paths.
+Earlier whole-window runs (`QpHdiT`, `L9XMw9`, `QB16Fs`) failed all nine useful
+semantic cases; only the no-recorder-files check passed. Those negative cases
+remain inconclusive historical evidence, not privacy acceptance.
+
+- An immediate browser child was an `Intermediate D3D Window` owned by Edge's
+  GPU process. Whole-window traversal correctly rejected that foreign PID.
+  Selecting the focused document now excludes this chrome subtree without
+  admitting foreign content.
+- A first diagnostic saw 270 nodes and six URL-less/empty Documents. Retained
+  native `CUIAutomation8` queries in `ovgJjt` exposed the actual document URL
+  after 900 ms. First-query emptiness was not universal URL unavailability.
+- Chromium's iframe wrapper and actual child both use UIA Document. The
+  wrapper has no ValuePattern; its actual child owns the URL. The reader
+  recognizes only this validated structural wrapper and checks the child's
+  domain normally. An empty or malformed present ValuePattern is rejected.
+- A UIA intermediate host could retain an already-destroyed native HWND after
+  navigation. Native HWND association is used only for nonsensitive cold
+  initialization, not document authority. Live focused UIA ancestry and
+  source revalidation govern body admission.
+
+No PID allowlist, address-bar URL fallback, forced accessibility flag or
+parent TextPattern aggregation was added. The same 256-node/depth-14 body and
+700 ms cooperative budgets remain. The tests establish this Edge configuration
+only; ordinary-user, browser-toolbar focus, other providers and private-mode
+signals beyond the tested title heuristic remain separate coverage limits.
+Temporary UIA diagnostics are not called by the harness. Raw synthetic
+evidence is retained outside version control in the local lab notes.
