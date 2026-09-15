@@ -80,6 +80,71 @@ for (const backend of ['Local', 'Memory'] as const) {
       ? localExecutionPersistenceProvider
       : createMemoryExecutionPersistenceProvider();
   test(
+    backend + ': plugin executor routes survive configuration and catalog projection',
+    async () => {
+      await withProvider(make(), async ({ sessionStore: s }, root) => {
+        const created = await s.create({
+          ...sessionInput(root),
+          executorId: 'codex',
+          llmConnectionSlug: 'executor:codex',
+          model: 'codex',
+        });
+        assert.equal(created.backend, 'plugin-executor');
+        assert.equal(created.executorId, 'codex');
+        assert.equal(created.llmConnectionId, undefined);
+        const assertRoute = async (kind: 'ai-sdk' | 'plugin-executor', executorId?: string) => {
+          const header = await s.readHeader(created.id);
+          const summary = (await s.list()).find((entry) => entry.id === created.id)!;
+          const page = await s.listCatalogPage(undefined, undefined, 10);
+          assert.equal(page.kind, 'page');
+          if (page.kind !== 'page') throw new Error('Expected a catalog page');
+          const catalog = page.records.find((entry) => entry.header.id === created.id)!.header;
+          for (const value of [header, summary, catalog]) {
+            assert.equal(value.backend, kind);
+            assert.equal(value.executorId, executorId);
+          }
+        };
+        await assertRoute('plugin-executor', 'codex');
+        const original = await s.readHeaderRecordSnapshot(created.id);
+        const changed = await s.updateSessionConfiguration(created.id, {
+          expectedVersion: original.revision,
+          configuration: {
+            ...sessionConfiguration(original.header),
+            backend: 'ai-sdk',
+            executorId: undefined,
+            llmConnectionId: 'test-connection',
+            llmConnectionSlug: 'test',
+            model: 'test-model',
+          },
+          lifecycle: { kind: 'preserve' },
+        });
+        await assertRoute('ai-sdk');
+        const restored = await s.updateSessionConfiguration(created.id, {
+          expectedVersion: changed.revision,
+          configuration: sessionConfiguration(original.header),
+          lifecycle: { kind: 'preserve' },
+        });
+        assert.equal(restored.header.llmConnectionId, undefined);
+        await assertRoute('plugin-executor', 'codex');
+        const beforeInvalid = await s.readHeaderRecordSnapshot(created.id);
+        for (const invalid of [
+          { backend: 'plugin-executor' as const, executorId: undefined },
+          { backend: 'plugin-executor' as const, executorId: '../invalid' },
+          { backend: 'ai-sdk' as const, executorId: 'codex' },
+        ]) {
+          await assert.rejects(
+            s.updateSessionConfiguration(created.id, {
+              expectedVersion: restored.revision,
+              configuration: { ...sessionConfiguration(restored.header), ...invalid },
+              lifecycle: { kind: 'preserve' },
+            }),
+          );
+          assert.deepEqual(await s.readHeaderRecordSnapshot(created.id), beforeInvalid);
+        }
+      });
+    },
+  );
+  test(
     backend + ': bounded prefix proofs match immutable history and reject exceeded budgets',
     async () => {
       await withProvider(make(), async ({ runtimeEventStore: s }) => {
@@ -1976,7 +2041,8 @@ function sessionConfiguration(
 ): UpdateSessionConfigurationRequest['configuration'] {
   return {
     backend: header.backend,
-    llmConnectionId: header.llmConnectionId!,
+    ...(header.executorId === undefined ? {} : { executorId: header.executorId }),
+    llmConnectionId: header.llmConnectionId,
     llmConnectionSlug: header.llmConnectionSlug!,
     connectionLocked: header.connectionLocked ?? false,
     model: header.model,

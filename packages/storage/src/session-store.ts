@@ -108,7 +108,6 @@ import {
   OPERATIONAL_STATE_DATABASE_NAME,
 } from './operational-state-store.js';
 import { DEFAULT_SESSION_NAME, normalizeUserSessionName } from '@maka/core/session-name';
-import { isExecutorId } from '@maka/core/executor-id';
 import {
   decodeCanonicalMessage,
   deriveTurnRecords,
