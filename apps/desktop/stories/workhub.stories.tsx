@@ -235,7 +235,20 @@ export const ProgressModelPicker: Story = {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvasElement.querySelector('.workHubLive')).toHaveAttribute('data-progress', 'true'));
     const editor = canvasElement.querySelector('[contenteditable="true"]') as HTMLElement;
+    const assertCompactLineBox = () => {
+      expect(editor.closest('.workHubLive')).toHaveAttribute('data-conversation-expanded', 'false');
+      const style = getComputedStyle(editor);
+      expect(style.paddingTop).toBe('6px');
+      expect(style.paddingBottom).toBe('6px');
+      // Compact WorkHub has larger padding and initially requests maxRows=1.
+      // Even then, its scrolling editor must leave a full line for the caret.
+      expect(editor.clientHeight).toBeGreaterThanOrEqual(
+        Number.parseFloat(style.lineHeight) + Number.parseFloat(style.paddingTop) + Number.parseFloat(style.paddingBottom),
+      );
+    };
+    await waitFor(assertCompactLineBox);
     await userEvent.click(editor);
+    assertCompactLineBox();
     await userEvent.type(editor, 'Keep this draft readable while choosing a model.');
     const trigger = await canvas.findByRole('button', { name: /切换当前任务模型/ });
     await userEvent.click(trigger);
@@ -248,6 +261,14 @@ export const ProgressModelPicker: Story = {
     expect(pixels.getImageData(0, 0, 1, 1).data[3]).toBeGreaterThanOrEqual(230);
     expect(pixels.getImageData(0, 0, 1, 1).data[3]).toBeLessThan(255);
     expect(editor).toHaveTextContent('Keep this draft readable while choosing a model.');
+    await userEvent.keyboard('{Escape}');
+    await userEvent.clear(editor);
+    await waitFor(() => expect(editor.textContent).toBe(''));
+    assertCompactLineBox();
+    // Restore this story's named final state: a draft with the model wheel open.
+    await userEvent.type(editor, 'Keep this draft readable while choosing a model.');
+    await userEvent.click(trigger);
+    await waitFor(() => expect(canvas.getByRole('listbox')).toHaveFocus());
   },
 };
 export const ComposerRetainsFailedAttachment: Story = {
