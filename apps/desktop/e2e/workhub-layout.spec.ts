@@ -139,6 +139,7 @@ test('WorkHub uses its coordination model and shared attachment composer', async
     const session = await window.maka.workHub.getSession(id);
     return window.maka.workHub.configureModel(id, {
       expectedRevision: session.revision,
+      thinkingLevel: session.thinkingLevel ?? null,
       modelTarget: { kind: 'explicit', connectionId: session.llmConnectionId!, connectionSlug: session.llmConnectionSlug, model: session.model },
     });
   }, sessionId);

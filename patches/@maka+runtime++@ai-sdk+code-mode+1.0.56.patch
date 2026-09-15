@@ -12,7 +12,7 @@ index b317e9d..5beb1c2 100644
    timeoutMs?: number;
    /** @defaultValue `64 * 1024 * 1024` */
 diff --git a/node_modules/@maka/runtime/node_modules/@ai-sdk/code-mode/src/run-code-mode.ts b/node_modules/@maka/runtime/node_modules/@ai-sdk/code-mode/src/run-code-mode.ts
-index 95435bd..30a3ac9 100644
+index 95435bd..d69b159 100644
 --- a/node_modules/@maka/runtime/node_modules/@ai-sdk/code-mode/src/run-code-mode.ts
 +++ b/node_modules/@maka/runtime/node_modules/@ai-sdk/code-mode/src/run-code-mode.ts
 @@ -159,6 +159,7 @@
@@ -49,7 +49,23 @@ index 95435bd..30a3ac9 100644
  }
  
  function createHostFunctions({
-@@ -363,6 +363,7 @@
+@@ -236,15 +236,6 @@
+         toolName,
+       });
+   }
+-  group.missing = async (toolName: unknown, toolInput: unknown) =>
+-    await invokeCodeModeTool({
+-      codeModeErrors,
+-      input,
+-      outerToolCallId,
+-      policy,
+-      toolInput,
+-      toolName: String(toolName),
+-    });
+   return { __codeMode: group } as HostFunctions;
+ }
+ 
+@@ -363,6 +354,7 @@
  ): RunLimits {
    return {
      timeoutMs: policy.timeoutMs,
@@ -57,6 +73,28 @@ index 95435bd..30a3ac9 100644
      memoryLimitBytes: policy.memoryLimitBytes,
      maxStackSizeBytes: policy.maxStackSizeBytes,
      maxResultBytes: expandedSerializationLimit(policy.maxResultBytes),
+@@ -545,10 +537,7 @@
+       interruptId: `${toolCallId}:interrupt`,
+       toolName,
+       toolCallId,
+-      input:
+-        interruption.hostFunctionName === '__codeMode.missing'
+-          ? interruption.arguments[1]
+-          : interruption.arguments[0],
++      input: interruption.arguments[0],
+       payload: assertInterruptPayload(interruption.payload),
+     };
+   });
+@@ -568,9 +557,6 @@
+   interruption: RunInterruption,
+   toolNames: string[],
+ ): string {
+-  if (interruption.hostFunctionName === '__codeMode.missing') {
+-    return String(interruption.arguments[0]);
+-  }
+   const match = /^__codeMode\.tool(\d+)$/u.exec(interruption.hostFunctionName);
+   const toolName = match === null ? undefined : toolNames[Number(match[1])];
+   if (toolName === undefined) {
 diff --git a/node_modules/@maka/runtime/node_modules/@ai-sdk/code-mode/dist/index.d.ts b/node_modules/@maka/runtime/node_modules/@ai-sdk/code-mode/dist/index.d.ts
 index 9cafdbb..3c924f1 100644
 --- a/node_modules/@maka/runtime/node_modules/@ai-sdk/code-mode/dist/index.d.ts
@@ -71,7 +109,7 @@ index 9cafdbb..3c924f1 100644
      timeoutMs?: number;
      /** @defaultValue `64 * 1024 * 1024` */
 diff --git a/node_modules/@maka/runtime/node_modules/@ai-sdk/code-mode/dist/run-code-mode.js b/node_modules/@maka/runtime/node_modules/@ai-sdk/code-mode/dist/run-code-mode.js
-index 257b976..f4b2717 100644
+index 257b976..67d8409 100644
 --- a/node_modules/@maka/runtime/node_modules/@ai-sdk/code-mode/dist/run-code-mode.js
 +++ b/node_modules/@maka/runtime/node_modules/@ai-sdk/code-mode/dist/run-code-mode.js
 @@ -117,6 +117,7 @@
@@ -101,7 +139,22 @@ index 257b976..f4b2717 100644
  }
  function createHostFunctions({
    codeModeErrors,
-@@ -260,6 +259,7 @@
+@@ -164,14 +163,6 @@
+       toolName
+     });
+   }
+-  group.missing = async (toolName, toolInput) => await invokeCodeModeTool({
+-    codeModeErrors,
+-    input,
+-    outerToolCallId,
+-    policy,
+-    toolInput,
+-    toolName: String(toolName)
+-  });
+   return { __codeMode: group };
+ }
+ async function invokeCodeModeTool({
+@@ -260,6 +251,7 @@
  function toRunLimits(policy, source, userSource) {
    return {
      timeoutMs: policy.timeoutMs,
@@ -109,3 +162,22 @@ index 257b976..f4b2717 100644
      memoryLimitBytes: policy.memoryLimitBytes,
      maxStackSizeBytes: policy.maxStackSizeBytes,
      maxResultBytes: expandedSerializationLimit(policy.maxResultBytes),
+@@ -402,7 +394,7 @@
+       interruptId: `${toolCallId}:interrupt`,
+       toolName,
+       toolCallId,
+-      input: interruption.hostFunctionName === "__codeMode.missing" ? interruption.arguments[1] : interruption.arguments[0],
++      input: interruption.arguments[0],
+       payload: assertInterruptPayload(interruption.payload)
+     };
+   });
+@@ -417,9 +409,6 @@
+   return Number(match[1]);
+ }
+ function toolNameForInterruption(interruption, toolNames) {
+-  if (interruption.hostFunctionName === "__codeMode.missing") {
+-    return String(interruption.arguments[0]);
+-  }
+   const match = /^__codeMode\.tool(\d+)$/u.exec(interruption.hostFunctionName);
+   const toolName = match === null ? void 0 : toolNames[Number(match[1])];
+   if (toolName === void 0) {

@@ -30,7 +30,7 @@ import {
   UserQuestionPrompt,
 } from '@maka/ui';
 import type { ComposerHandle } from '@maka/ui';
-export { selectLatestRequestUsage, type LatestRequestUsageAnchor } from './application/contracts/session-inspector/latest-request-usage.js';
+export { selectLatestRequestUsage } from './application/contracts/session-inspector/latest-request-usage.js';
 import { useComposerMentionsContext } from './composer-mentions.js';
 import {
   readNewTaskReloadDraft,

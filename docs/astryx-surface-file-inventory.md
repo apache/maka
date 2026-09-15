@@ -34,6 +34,7 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/app-shell.tsx` | shell-chrome-or-panel | AppShell | aligned — uses Astryx (AppShell) | aligned |
 | `apps/desktop/src/renderer/app.tsx` | other | Theme | aligned — uses Astryx (Theme) | aligned |
 | `apps/desktop/src/renderer/application/contracts/feature-services.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
+| `apps/desktop/src/renderer/application/contracts/session-inspector/session-inspector-panel.tsx` | shell-chrome-or-panel | Banner, Button, EmptyState, Heading, Section, Text, VStack | aligned — uses Astryx (Banner, Button, EmptyState, Heading, Section, Text, VStack) | aligned |
 | `apps/desktop/src/renderer/application/contracts/settings-presentation/runtime-host-settings-target.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/application/contracts/settings-presentation/settings-route-header.tsx` | other | HStack, Heading, IconButton, Text, Toolbar, VStack | aligned — uses Astryx (HStack, Heading, IconButton, Text, Toolbar, VStack) | aligned |
 | `apps/desktop/src/renderer/application/contracts/settings-presentation/settings-section.tsx` | other | Divider, HStack, Heading, Item, Text, VStack | aligned — uses Astryx (Divider, HStack, Heading, Item, Text, VStack) | aligned |
@@ -102,7 +103,6 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/features/workbar/tools/artifacts/artifact-preview.tsx` | shell-chrome-or-panel | Banner, Button, CodeBlock, Spinner | aligned — uses Astryx (Banner, Button, CodeBlock, Spinner) | aligned |
 | `apps/desktop/src/renderer/features/workbar/tools/browser/browser-panel.tsx` | shell-chrome-or-panel | EmptyState, IconButton, TextInput, Toolbar, Tooltip | aligned — uses Astryx (EmptyState, IconButton, TextInput, Toolbar, Tooltip) | aligned |
 | `apps/desktop/src/renderer/features/workbar/tools/inspector/live-context-usage-probe.tsx` | shell-chrome-or-panel | none | aligned — no raw controls; no Astryx JSX usage | aligned |
-| `apps/desktop/src/renderer/features/workbar/tools/inspector/session-inspector-panel.tsx` | shell-chrome-or-panel | Banner, Button, EmptyState, Heading, Section, Text, VStack | aligned — uses Astryx (Banner, Button, EmptyState, Heading, Section, Text, VStack) | aligned |
 | `apps/desktop/src/renderer/features/workbar/tools/review/session-review-panel.tsx` | shell-chrome-or-panel | Banner, Button, Collapsible, CollapsibleGroup, EmptyState, HStack, Section, Skeleton, Text, VStack | aligned — uses Astryx (Banner, Button, Collapsible, CollapsibleGroup, EmptyState, HStack, Section, Skeleton) | aligned |
 | `apps/desktop/src/renderer/features/workbar/tools/side-chat/quote-companion-panel.tsx` | shell-chrome-or-panel | Banner | aligned — uses Astryx (Banner) | aligned |
 | `apps/desktop/src/renderer/features/workbar/tools/terminal/session-terminal-panel.tsx` | shell-chrome-or-panel | Banner, EmptyState | aligned — uses Astryx (Banner, EmptyState) | aligned |

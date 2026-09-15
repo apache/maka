@@ -717,7 +717,7 @@ export class HostSessionCatalogCoordinator {
         expectedRevision: input.expectedRevision,
         patch: {
           modelTarget: input.modelTarget,
-          ...(input.thinkingLevel === undefined ? {} : { thinkingLevel: input.thinkingLevel }),
+          thinkingLevel: input.thinkingLevel,
         },
       },
       'workhub',

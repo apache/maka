@@ -629,6 +629,7 @@ test('WorkHub model authority preserves its execution policy and uses versioned 
   });
   const input = {
     expectedRevision: fixture.revision(),
+    thinkingLevel: null,
     modelTarget: {
       kind: 'explicit' as const,
       connectionId: 'connection-1',
