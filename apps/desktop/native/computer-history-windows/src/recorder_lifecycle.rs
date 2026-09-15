@@ -19,7 +19,7 @@
 
 use crate::control::Result;
 use std::{
-    sync::atomic::{AtomicU64, Ordering},
+    sync::atomic::{AtomicU64, AtomicUsize, Ordering},
     time::{Duration, Instant},
 };
 
@@ -32,6 +32,7 @@ pub struct Epochs {
 pub struct EventEpochs {
     window: AtomicU64,
     content: AtomicU64,
+    tracked_window: AtomicUsize,
 }
 
 impl EventEpochs {
@@ -39,6 +40,23 @@ impl EventEpochs {
         Self {
             window: AtomicU64::new(0),
             content: AtomicU64::new(0),
+            tracked_window: AtomicUsize::new(0),
+        }
+    }
+
+    /// Retain the capture HWND before preparation; a destroy callback cannot
+    /// reliably recover the old window's ancestry after its handle is reused.
+    pub fn track_window(&self, hwnd: usize) {
+        self.tracked_window.store(hwnd, Ordering::SeqCst);
+    }
+
+    pub fn window_destroyed(&self, hwnd: usize) {
+        if hwnd != 0 && hwnd == self.tracked_window.load(Ordering::SeqCst) {
+            self.window_changed();
+        } else {
+            // An already-destroyed child may have no queryable parent. Preserve
+            // capture invalidation without inventing a new foreground source.
+            self.content_changed();
         }
     }
 
@@ -104,6 +122,39 @@ impl CaptureFence {
     }
 }
 
+#[derive(Default)]
+pub struct CaptureSchedule {
+    last_attempt: Option<Instant>,
+    unsettled: Option<Epochs>,
+}
+
+impl CaptureSchedule {
+    pub fn due(&self, now: Instant, dirty: bool, epochs: Epochs, failures: u32) -> bool {
+        let Some(last_attempt) = self.last_attempt else {
+            return dirty;
+        };
+        let elapsed = now.duration_since(last_attempt);
+        let backoff = Duration::from_secs(if failures > 2 { 15 } else { 3 });
+        elapsed >= backoff
+            && (dirty
+                || self.unsettled.is_some_and(|attempt| attempt != epochs)
+                || elapsed >= Duration::from_secs(15))
+    }
+
+    pub fn started(&mut self, now: Instant, epochs: Epochs) {
+        self.last_attempt = Some(now);
+        self.unsettled = Some(epochs);
+    }
+
+    /// Completion settles only the captured generation. Admission may have
+    /// invalidated it; retain that work for a rate-limited fresh attempt.
+    pub fn completed(&mut self, epochs: Epochs) {
+        if self.unsettled == Some(epochs) {
+            self.unsettled = None;
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 pub enum CaptureOutcome {
     Failed,
@@ -152,6 +203,197 @@ mod tests {
             foreground: Some((10, 20)),
             epochs: epochs.current(),
         }
+    }
+
+    #[test]
+    fn cancelled_capture_retries_without_another_dirty_event() {
+        let now = Instant::now();
+        let mut schedule = CaptureSchedule::default();
+        let epochs = EventEpochs::new();
+        epochs.track_window(10);
+        let fence = CaptureFence {
+            target: (10, 20),
+            epochs: epochs.current(),
+        };
+        assert!(schedule.due(now, true, epochs.current(), 0));
+        schedule.started(now, epochs.current());
+        epochs.window_destroyed(99);
+        assert!(!fence.allows(live(&epochs)));
+        assert_eq!(epochs.current().window, fence.epochs.window);
+        assert!(!schedule.due(
+            now + Duration::from_millis(2999),
+            false,
+            epochs.current(),
+            0
+        ));
+        assert!(schedule.due(now + Duration::from_secs(3), false, epochs.current(), 0));
+        // Includes a completed worker invalidated during result/write admission.
+        schedule.completed(epochs.current());
+        assert!(schedule.due(now + Duration::from_secs(3), false, epochs.current(), 0));
+
+        let fresh = CaptureFence {
+            epochs: epochs.current(),
+            ..fence
+        };
+        assert!(fresh.allows(live(&epochs)));
+        schedule.started(now + Duration::from_secs(3), epochs.current());
+        schedule.completed(epochs.current());
+        assert!(!schedule.due(now + Duration::from_secs(6), false, epochs.current(), 0));
+        assert!(schedule.due(now + Duration::from_secs(18), false, epochs.current(), 0));
+    }
+
+    #[test]
+    fn cancellation_keeps_the_rate_limit_and_failure_backoff() {
+        let now = Instant::now();
+        let mut schedule = CaptureSchedule::default();
+        let epochs = EventEpochs::new();
+        schedule.started(now, epochs.current());
+        epochs.content_changed();
+        for dirty in [false, true] {
+            assert!(!schedule.due(
+                now + Duration::from_millis(2999),
+                dirty,
+                epochs.current(),
+                2
+            ));
+            assert!(schedule.due(now + Duration::from_secs(3), dirty, epochs.current(), 2));
+            assert!(!schedule.due(
+                now + Duration::from_millis(14999),
+                dirty,
+                epochs.current(),
+                3
+            ));
+            assert!(schedule.due(now + Duration::from_secs(15), dirty, epochs.current(), 3));
+        }
+        // Repeated cancellation must not reset the sampling clock.
+        epochs.content_changed();
+        assert!(schedule.due(now + Duration::from_secs(3), false, epochs.current(), 0));
+    }
+
+    #[test]
+    fn idle_destruction_does_not_schedule_work_or_bypass_fresh_admission() {
+        let now = Instant::now();
+        let mut schedule = CaptureSchedule::default();
+        let epochs = EventEpochs::new();
+        epochs.track_window(10);
+        assert!(!schedule.due(now, false, epochs.current(), 0));
+        schedule.started(now, epochs.current());
+        schedule.completed(epochs.current());
+        epochs.window_destroyed(99);
+        assert!(!schedule.due(now + Duration::from_secs(3), false, epochs.current(), 0));
+        assert!(schedule.due(now + Duration::from_secs(15), false, epochs.current(), 0));
+        schedule.started(now + Duration::from_secs(15), epochs.current());
+        epochs.content_changed();
+        let fence = CaptureFence {
+            target: (10, 20),
+            epochs: epochs.current(),
+        };
+        assert!(schedule.due(now + Duration::from_secs(18), false, epochs.current(), 0));
+        for state in [
+            LiveState {
+                parent_alive: false,
+                ..live(&epochs)
+            },
+            LiveState {
+                stopping: true,
+                ..live(&epochs)
+            },
+            LiveState {
+                desktop_available: false,
+                ..live(&epochs)
+            },
+            LiveState {
+                queue_drained: false,
+                ..live(&epochs)
+            },
+        ] {
+            assert!(!fence.allows(state));
+        }
+        assert!(
+            !fence
+                .after_preparation(|| Ok(false), || live(&epochs))
+                .unwrap()
+        );
+        epochs.window_destroyed(10);
+        assert!(!fence.allows(live(&epochs)));
+    }
+
+    #[test]
+    fn non_target_window_destruction_invalidates_capture_not_source_identity() {
+        // A child or an already-gone foreign HWND must not split this source.
+        // Keep conservative content invalidation when ancestry is unavailable.
+        for destroyed in [11, 99, 0] {
+            let epochs = EventEpochs::new();
+            epochs.track_window(10);
+            let fence = CaptureFence {
+                target: (10, 20),
+                epochs: epochs.current(),
+            };
+            assert!(
+                !fence
+                    .after_preparation(
+                        || {
+                            epochs.window_destroyed(destroyed);
+                            Ok(true)
+                        },
+                        || live(&epochs),
+                    )
+                    .unwrap()
+            );
+            assert_eq!(epochs.current().window, fence.epochs.window);
+            let fresh = CaptureFence {
+                epochs: epochs.current(),
+                ..fence
+            };
+            assert!(fresh.allows(live(&epochs)));
+        }
+    }
+
+    #[test]
+    fn tracked_window_destruction_rejects_same_hwnd_and_pid_reuse() {
+        let epochs = EventEpochs::new();
+        epochs.track_window(10);
+        let fence = CaptureFence {
+            target: (10, 20),
+            epochs: epochs.current(),
+        };
+        assert!(
+            !fence
+                .after_preparation(
+                    || {
+                        epochs.window_destroyed(10);
+                        // The replacement may reuse both numbers. Tracking it
+                        // again must not erase the queued destruction evidence.
+                        epochs.track_window(10);
+                        Ok(true)
+                    },
+                    || live(&epochs),
+                )
+                .unwrap()
+        );
+        assert_ne!(epochs.current().window, fence.epochs.window);
+        let fresh = CaptureFence {
+            epochs: epochs.current(),
+            ..fence
+        };
+        assert!(fresh.allows(live(&epochs)));
+    }
+
+    #[test]
+    fn old_source_destruction_does_not_rotate_the_new_source() {
+        let epochs = EventEpochs::new();
+        epochs.track_window(9);
+        epochs.window_changed();
+        epochs.track_window(10);
+        let fence = CaptureFence {
+            target: (10, 20),
+            epochs: epochs.current(),
+        };
+        epochs.window_destroyed(9);
+        assert_eq!(epochs.current().window, fence.epochs.window);
+        assert!(!fence.allows(live(&epochs)));
+        epochs.window_destroyed(10);
+        assert_ne!(epochs.current().window, fence.epochs.window);
     }
 
     #[test]

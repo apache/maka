@@ -476,11 +476,19 @@ the Host's existing auxiliary-model execution and accounting.
 
 ## Verification boundaries
 
-Packaged/notarized helper verification and live Windows UIA acceptance remain
-separate gaps. Windows collection now has a native implementation and build,
-packaging, lifecycle, and synthetic persistence tests; cross-compilation is
-not proof of interactive Windows coverage. No live activity capture or paid
-model run is implied by fixture tests.
+Packaged/notarized helper verification remains a separate gap. On September 15,
+2026, the actual Windows 11 x64 helper passed kernel ownership/shutdown tests
+and a real interactive WinForms matrix with isolated synthetic history homes.
+That matrix covers body capture, multiple windows, multilingual text, privacy
+state changes, pause/resume and an unresponsive provider with recovery. Accepted
+JSONL also traversed production evidence/summary coordination and the existing
+Coproxy Astra model route to a canonical Markdown file, with readback and restart
+checks. This was not full Electron acceptance. The lab account had High integrity;
+ordinary-user and locked-session coverage need separate validation. The Edge 151
+canary failed useful-body acceptance: its tree crossed into another process and
+Document nodes did not provide valid source URLs. Browser sources remain
+fail-closed; negative privacy cases cannot be claimed as passing without that
+positive baseline. See the Windows helper README and opt-in scripts for details.
 Deterministic tests cover native persistence, main-process lifecycle, retention,
 corrupt-data recovery, cancellation, bounded projections, and renderer service
 and draft ownership. Synthetic visual fixtures exercise the production page;

@@ -62,7 +62,14 @@ Snapshots are bounded to 256 nodes, depth 14, and 32 KiB before persistence;
 the event text budget is 28 KiB. Traversal has a 700 ms cooperative budget.
 The supervisor kills workers after two seconds, and each worker independently
 watches its parent, consent, and deadline so blocked COM calls cannot keep an
-orphan alive indefinitely. Provider timeouts are also configured.
+orphan alive indefinitely. UIA connection and transaction timeouts are 250 ms.
+Fresh element-scoped caches batch only identity and visibility properties at
+each validation boundary; names and values are never prefetched before admission.
+Invalidating an in-flight capture preserves its unsettled generation for a fresh
+attempt through the existing three-second rate gate and fifteen-second failure
+backoff. A completed observation is settled, so unrelated idle destruction does
+not itself schedule new work. Only destruction of the retained source HWND
+rotates window identity; other destruction still invalidates pending content.
 Health is published on state/failure changes and at least every five seconds.
 Repeated provider/transport failures and stale running heartbeats surface through
 the existing status error field; admitted privacy suppression is not a provider
@@ -106,12 +113,23 @@ all versions of Notepad, Word, or terminal applications are covered. UIA failure
 privacy suppression, and stale targets can produce no event. Do not weaken
 source checks just to increase event counts.
 
+The September 15 Edge 151.0.4129.93 canary did not pass useful-body acceptance.
+The first visible descendant belonged to Edge's separate GPU process; a separate
+synthetic-only diagnostic also found no valid source URL on its Document nodes.
+The native helper correctly remains closed to these unverified sources, so
+browser/password/iframe negative cases are inconclusive, not passing coverage.
+Supporting this provider requires explicit cross-process and document-origin
+authority, not an address-bar fallback or a broader PID allowlist.
+
 ## Ownership and shutdown
 
 The recorder retains its parent's process handle and validates creation time
 to reject PID reuse. Electron requests graceful shutdown by closing piped stdin;
 parent death also closes that pipe. Paused recording removes event hooks and
 cancels pending workers. Explicit disablement is checked again at native startup.
+On Windows main spawns the recorder detached from libuv's kill-on-close job,
+while retaining its ChildProcess and piped stdin. This gives the native parent
+watchdog time to seal the store after main exits; it is not an unowned daemon.
 
 Storage admission is a first-instance named pipe:
 `\\.\pipe\maka-history-<volume-serial-hex>-<file-index-hex>`.
@@ -148,14 +166,30 @@ recording settings. Pure policy, source parsing, and store tests can also run
 on macOS or Linux; kernel and process tests require Windows and must be reported
 as skipped elsewhere.
 
-Live acceptance must use an isolated, interactive Windows test desktop with
-synthetic windows. Cover foreground switching, multiple HWNDs in one process,
-text on/off, password fields, private browser windows, admitted/blocked document
-domains, pause/resume, parent exit, an unresponsive provider, and history
-deletion. Verify the resulting JSONL through main's evidence and summary path.
-As of September 15, 2026, live Windows UIA acceptance and coverage measurements
-have not been completed. Do not equate cross-compilation or synthetic tests with
-production readiness.
+Live acceptance uses isolated interactive Windows test desktops and synthetic
+content. The opt-in [WinForms matrix](../../scripts/computer-history-windows-interactive.md)
+and [Edge matrix](../../scripts/computer-history-windows-browser.md) retain
+evidence and never access personal history homes.
+
+On September 15, 2026, Windows 11 x64 / Node 24.18.1 / MSVC execution passed:
+
+- All 54 native kernel/store tests and all ten Node/native ownership and shutdown tests.
+- Real WinForms body capture, same-title HWND switching, long multilingual text,
+  password-state changes, private-title suppression, pause/resume, text-off and
+  application exclusion, plus a blocked UI thread followed by capture recovery.
+  The strengthened 96.7-second matrix required the recorder itself to report
+  failure first, then recovered body in 5.45 seconds and fresh zero-failure
+  status from the same recorder in 7.40 seconds after release.
+- Accepted JSONL through production evidence projection, summary coordination,
+  the existing model connection, Markdown readback and restart without another
+  model call, using isolated storage and a single Coproxy Astra request.
+
+The VM account had High integrity even under a Limited scheduled task because
+UAC was disabled in the image. Ordinary-user, locked-session and packaged
+Electron acceptance remain unverified. Browser provenance must pass a useful
+allowed-body baseline before any negative case can count as verified; an empty
+result by itself proves neither useful coverage nor privacy protection.
+Do not equate this controlled acceptance with production readiness.
 
 ## Platform references
 

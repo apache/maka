@@ -108,7 +108,7 @@ test('home and every ancestor must be real directories before binding', async ()
 
 test('bind errors fail closed without retry and clean up before rejection', async () => {
   for (const synchronous of [false, true]) {
-    for (const code of ['EADDRINUSE', 'EACCES', 'EMFILE']) {
+    for (const code of ['EADDRINUSE', 'EBUSY', 'EACCES', 'EMFILE']) {
       const server = new FakeServer();
       const error = Object.assign(new Error(code), { code });
       if (synchronous) server.listenError = error;

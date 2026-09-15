@@ -26,7 +26,8 @@ use std::{
 use windows::{
     Win32::{
         Foundation::{
-            CloseHandle, ERROR_ACCESS_DENIED, FILETIME, GetLastError, HANDLE, WAIT_TIMEOUT,
+            CloseHandle, ERROR_ACCESS_DENIED, ERROR_PIPE_BUSY, FILETIME, GetLastError, HANDLE,
+            WAIT_TIMEOUT,
         },
         Storage::FileSystem::{
             BY_HANDLE_FILE_INFORMATION, CreateFileW, FILE_ATTRIBUTE_DIRECTORY,
@@ -201,7 +202,9 @@ pub(super) fn acquire(home: &Path) -> Result<OwnedHandle> {
             None,
         );
         if handle.is_invalid() {
-            if GetLastError() == ERROR_ACCESS_DENIED {
+            // Windows can report either FIRST_PIPE_INSTANCE denial or the
+            // existing pipe's one-instance limit. Both mean admission is held.
+            if matches!(GetLastError(), ERROR_ACCESS_DENIED | ERROR_PIPE_BUSY) {
                 return Err("recorder_occupied".into());
             }
             return Err(windows::core::Error::from_thread().into());

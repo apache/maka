@@ -212,6 +212,9 @@ const pausedParentSource = String.raw`
   ], {
     env: { ...process.env, OPEN_COMPUTER_HISTORY_HOME: process.argv[2] },
     windowsHide: true,
+    // libuv otherwise force-kills this child when Node's Job handle closes.
+    // Leave that Job to exercise Parent::alive and the final store flush.
+    detached: true,
     stdio: [3, 'inherit', 'inherit'],
   });
   child.on('spawn', () => process.send({ pid: child.pid }));
@@ -322,7 +325,9 @@ async function waitForPaused(home, process, nativePid) {
     return true;
   }, 'native paused readiness');
   assert.equal(await status(home), true);
-  await assert.rejects(acquireWindowsHistoryOwnership(home), { code: 'EADDRINUSE' });
+  // The native owner's one-instance limit maps to EBUSY in libuv; a Node
+  // owner permits more instances and FIRST_PIPE_INSTANCE maps to EADDRINUSE.
+  await assert.rejects(acquireWindowsHistoryOwnership(home), { code: 'EBUSY' });
 }
 
 async function assertStoppedAndEmpty(home) {

@@ -24,7 +24,8 @@ use crate::{
     control::{Control, Result, State},
     model::{Policy, Snapshot},
     recorder_lifecycle::{
-        CaptureFence, CaptureHealth, CaptureOutcome, EventEpochs, LiveState, drain_events,
+        CaptureFence, CaptureHealth, CaptureOutcome, CaptureSchedule, EventEpochs, LiveState,
+        drain_events,
     },
     store::Store,
 };
@@ -64,16 +65,17 @@ unsafe extern "system" fn on_event(
     event: u32,
     hwnd: HWND,
     object: i32,
-    _child: i32,
+    child: i32,
     _thread: u32,
     _time: u32,
 ) {
     if event == EVENT_SYSTEM_FOREGROUND {
         EPOCHS.window_changed();
         DIRTY_KIND.store(event, Ordering::Relaxed);
-    } else if event == EVENT_OBJECT_DESTROY && object == 0 {
-        // HWND reuse, including an away/back transition during a blocking read.
-        EPOCHS.window_changed();
+    } else if event == EVENT_OBJECT_DESTROY && object == 0 && child == 0 {
+        // OBJID_WINDOW / CHILDID_SELF. Use the retained source HWND, not a
+        // live ancestry lookup on a destroyed (possibly reused) handle.
+        EPOCHS.window_destroyed(hwnd.0 as usize);
     } else if let Some((current, _)) = foreground()
         && unsafe { GetAncestor(hwnd, GA_ROOT) }.0 as usize == current
     {
@@ -290,8 +292,7 @@ pub(super) fn record(home: &Path, parent: ownership::Parent) -> Result<()> {
     let mut pending: Option<Pending> = None;
     let mut source: Option<((usize, u32), u64, String)> = None;
     let mut last_retained = None;
-    let mut last_attempt = Instant::now() - Duration::from_secs(3);
-    let mut last_heartbeat = Instant::now();
+    let mut schedule = CaptureSchedule::default();
     let mut last_flush = Instant::now();
     let mut health = CaptureHealth::default();
     let outcome = (|| -> Result<()> {
@@ -354,6 +355,9 @@ pub(super) fn record(home: &Path, parent: ownership::Parent) -> Result<()> {
                 } else {
                     false
                 };
+                if failed {
+                    schedule.completed(EPOCHS.current());
+                }
                 pending = None;
                 last_retained = None;
                 health.observe(if failed {
@@ -389,6 +393,7 @@ pub(super) fn record(home: &Path, parent: ownership::Parent) -> Result<()> {
                         {
                             health.observe(CaptureOutcome::Failed);
                             last_retained = None;
+                            schedule.completed(EPOCHS.current());
                             pending = None;
                             publish_health(home, &mut health, state)?;
                             continue;
@@ -416,6 +421,7 @@ pub(super) fn record(home: &Path, parent: ownership::Parent) -> Result<()> {
                         last_retained = None;
                     }
                 }
+                schedule.completed(EPOCHS.current());
                 pending = None;
             }
             publish_health(home, &mut health, state)?;
@@ -436,13 +442,12 @@ pub(super) fn record(home: &Path, parent: ownership::Parent) -> Result<()> {
             let target = foreground();
             let epochs = EPOCHS.current();
             let dirty = DIRTY_KIND.load(Ordering::Relaxed);
-            let backoff = if health.failures > 2 { 15 } else { 3 };
             if pending.is_none()
-                && last_attempt.elapsed() >= Duration::from_secs(backoff)
+                && schedule.due(Instant::now(), dirty != 0, epochs, health.failures)
                 && queue_drained
-                && (dirty != 0 || last_heartbeat.elapsed() >= Duration::from_secs(15))
                 && let Some(target) = target
             {
+                EPOCHS.track_window(target.0);
                 let new_source = source
                     .as_ref()
                     .is_none_or(|(old, version, _)| *old != target || *version != epochs.window);
@@ -467,8 +472,7 @@ pub(super) fn record(home: &Path, parent: ownership::Parent) -> Result<()> {
                 )?;
                 if pending.is_some() {
                     DIRTY_KIND.store(0, Ordering::Relaxed);
-                    last_attempt = Instant::now();
-                    last_heartbeat = Instant::now();
+                    schedule.started(Instant::now(), epochs);
                 } else {
                     health.observe(CaptureOutcome::Suppressed);
                     publish_health(home, &mut health, state)?;

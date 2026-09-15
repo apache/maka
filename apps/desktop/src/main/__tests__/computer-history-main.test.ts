@@ -76,6 +76,8 @@ test('Windows uses shared settings and summaries, parent-owned admission and pip
   assert.equal((await service.status()).state, 'running');
   assert.equal(collector.recordArgs.length, 1);
   assert.equal(collector.spawnOptions.at(-1)?.windowsHide, true);
+  const recordOptions = collector.spawnOptions[collector.helperArgs.findIndex((args) => args[0] === 'record')];
+  assert.equal(recordOptions?.detached, true, 'native watchdog must survive the Node kill-on-close job');
   assert.ok(collector.recordArgs[0]!.includes(String(process.pid)));
   await seedClosedInterval(segment);
   await service.summarize();

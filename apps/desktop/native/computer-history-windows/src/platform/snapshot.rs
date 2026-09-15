@@ -259,19 +259,22 @@ mod native {
             },
             UI::{
                 Accessibility::{
-                    CUIAutomation8, IUIAutomation2, IUIAutomationElement, IUIAutomationTextPattern,
-                    IUIAutomationTreeWalker, IUIAutomationValuePattern, UIA_CONTROLTYPE_ID,
-                    UIA_DocumentControlTypeId, UIA_E_NOTSUPPORTED, UIA_EditControlTypeId,
-                    UIA_TextPatternId, UIA_ValuePatternId,
+                    CUIAutomation8, IUIAutomation2, IUIAutomationCacheRequest,
+                    IUIAutomationElement, IUIAutomationTextPattern, IUIAutomationTreeWalker,
+                    IUIAutomationValuePattern, TreeScope_Element, UIA_CONTROLTYPE_ID,
+                    UIA_DocumentControlTypeId, UIA_E_NOTSUPPORTED, UIA_E_TIMEOUT,
+                    UIA_EditControlTypeId, UIA_IsOffscreenPropertyId, UIA_IsPasswordPropertyId,
+                    UIA_NativeWindowHandlePropertyId, UIA_ProcessIdPropertyId, UIA_TextPatternId,
+                    UIA_ValuePatternId,
                 },
-                WindowsAndMessaging::{GetWindowThreadProcessId, IsWindow},
+                WindowsAndMessaging::GetWindowThreadProcessId,
             },
         },
-        core::{BSTR, IUnknown, Interface, PWSTR},
+        core::{BSTR, Interface, PWSTR},
     };
 
     const TIME_LIMIT: Duration = Duration::from_millis(700);
-    const PROVIDER_TIMEOUT_MS: u32 = 100;
+    const PROVIDER_TIMEOUT_MS: u32 = 250;
 
     struct Apartment;
 
@@ -316,10 +319,8 @@ mod native {
             unsafe {
                 let hwnd = HWND(self.hwnd as *mut _);
                 let mut pid = 0;
-                if !IsWindow(Some(hwnd)).as_bool()
-                    || GetWindowThreadProcessId(hwnd, Some(&mut pid)) == 0
+                if GetWindowThreadProcessId(hwnd, Some(&mut pid)) == 0
                     || pid != self.pid
-                    || GetProcessId(self.process.0) != self.pid
                     || WaitForSingleObject(self.process.0, 0) != WAIT_TIMEOUT
                 {
                     return None;
@@ -335,7 +336,11 @@ mod native {
             if let Err(error) = &result
                 && error.code().0 as u32 != UIA_E_NOTSUPPORTED
             {
-                self.failures.provider_failed.set(true);
+                if error.code().0 as u32 == UIA_E_TIMEOUT {
+                    self.failures.timed_out.set(true);
+                } else {
+                    self.failures.provider_failed.set(true);
+                }
             }
             result.ok()
         }
@@ -360,6 +365,8 @@ mod native {
         target: &'a Target,
         automation: IUIAutomation2,
         root: IUIAutomationElement,
+        identity_cache: IUIAutomationCacheRequest,
+        visibility_cache: IUIAutomationCacheRequest,
         walker: IUIAutomationTreeWalker,
         policy: &'a Policy,
         documents: Vec<Document>,
@@ -374,12 +381,12 @@ mod native {
 
     impl Capture<'_> {
         fn root_current(&self) -> Option<()> {
-            let hwnd = self
-                .target
-                .read(|| unsafe { self.root.CurrentNativeWindowHandle() })?;
-            let pid = self
-                .target
-                .read(|| unsafe { self.root.CurrentProcessId() })?;
+            // Refresh only nonsensitive identity at each fence. Never reuse a
+            // prior cache or prefetch names/values before privacy admission.
+            let (hwnd, pid) = self.target.read(|| unsafe {
+                let root = self.root.BuildUpdatedCache(&self.identity_cache)?;
+                Ok((root.CachedNativeWindowHandle()?, root.CachedProcessId()?))
+            })?;
             (hwnd.0 as usize == self.target.hwnd && pid as u32 == self.target.pid).then_some(())
         }
 
@@ -393,18 +400,18 @@ mod native {
         // An offscreen subtree contributes nothing. A visible password control
         // suppresses the whole snapshot, including its window title.
         fn visible(&self, element: &IUIAutomationElement) -> Option<bool> {
-            let password = self
-                .read(|| unsafe { element.CurrentIsPassword() })?
-                .as_bool();
-            let offscreen = self
-                .read(|| unsafe { element.CurrentIsOffscreen() })?
-                .as_bool();
+            let (password, offscreen, pid) = self.read(|| unsafe {
+                let current = element.BuildUpdatedCache(&self.visibility_cache)?;
+                Ok((
+                    current.CachedIsPassword()?.as_bool(),
+                    current.CachedIsOffscreen()?.as_bool(),
+                    current.CachedProcessId()?,
+                ))
+            })?;
             if offscreen {
                 return Some(false);
             }
-            if password
-                || self.read(|| unsafe { element.CurrentProcessId() })? as u32 != self.target.pid
-            {
+            if password || pid as u32 != self.target.pid {
                 return None;
             }
             Some(true)
@@ -431,9 +438,10 @@ mod native {
             }
             self.read(|| unsafe {
                 let mut pointer = std::ptr::null_mut();
-                let status = (Interface::vtable(element).GetCurrentPattern)(
+                let status = (Interface::vtable(element).GetCurrentPatternAs)(
                     element.as_raw(),
                     UIA_ValuePatternId,
+                    &IUIAutomationValuePattern::IID,
                     &mut pointer,
                 );
                 if status.0 as u32 == UIA_E_NOTSUPPORTED {
@@ -443,7 +451,7 @@ mod native {
                 if pointer.is_null() {
                     Ok(None)
                 } else {
-                    IUnknown::from_raw(pointer).cast().map(Some)
+                    Ok(Some(IUIAutomationValuePattern::from_raw(pointer)))
                 }
             })
         }
@@ -685,15 +693,16 @@ mod native {
                 } else {
                     let name = self.sensitive(element, || unsafe { element.CurrentName() })?;
                     append_text(&mut self.text, &text_prefix(&name), self.text_limit);
-                    if kind == UIA_EditControlTypeId {
+                    if kind == UIA_EditControlTypeId && self.text.len() < self.text_limit {
                         // Only regular leaf edits use ValuePattern. Never ask a
                         // container, link or Document for a subtree text value.
                         self.leaf_current(element, ancestors, sources)?;
-                        let pattern = self.value_pattern(element)??;
-                        let value =
-                            self.sensitive(element, || unsafe { pattern.CurrentValue() })?;
-                        if value != name {
-                            append_text(&mut self.text, &text_prefix(&value), self.text_limit);
+                        if let Some(pattern) = self.value_pattern(element)? {
+                            let value =
+                                self.sensitive(element, || unsafe { pattern.CurrentValue() })?;
+                            if value != name {
+                                append_text(&mut self.text, &text_prefix(&value), self.text_limit);
+                            }
                         }
                     }
                 }
@@ -816,6 +825,9 @@ mod native {
             deadline,
             failures: CaptureFailures::default(),
         };
+        if unsafe { GetProcessId(target.process.0) } != pid {
+            return Ok(None);
+        }
         let Some((app_id, app_name)) = identity(&target) else {
             return target.failures.finish(None);
         };
@@ -841,11 +853,25 @@ mod native {
             let root =
                 target.read(|| unsafe { automation.ElementFromHandle(HWND(hwnd as *mut _)) })?;
             let walker = target.read(|| unsafe { automation.RawViewWalker() })?;
+            let (identity_cache, visibility_cache) = target.read(|| unsafe {
+                let identity = automation.CreateCacheRequest()?;
+                identity.SetTreeScope(TreeScope_Element)?;
+                identity.AddProperty(UIA_NativeWindowHandlePropertyId)?;
+                identity.AddProperty(UIA_ProcessIdPropertyId)?;
+                let visibility = automation.CreateCacheRequest()?;
+                visibility.SetTreeScope(TreeScope_Element)?;
+                visibility.AddProperty(UIA_IsPasswordPropertyId)?;
+                visibility.AddProperty(UIA_IsOffscreenPropertyId)?;
+                visibility.AddProperty(UIA_ProcessIdPropertyId)?;
+                Ok((identity, visibility))
+            })?;
             let browser = browser_app(&app_name);
             let mut capture = Capture {
                 target: &target,
                 automation,
                 root: root.clone(),
+                identity_cache,
+                visibility_cache,
                 walker,
                 policy: &policy,
                 documents: Vec::new(),
@@ -857,7 +883,6 @@ mod native {
                 text: String::new(),
                 text_limit: MAX_BYTES,
             };
-            capture.root_current()?;
             let title = capture.sensitive(&root, || unsafe { root.CurrentName() })?;
             let title = bounded_string(&title, MAX_TITLE_BYTES)?;
             if private_title(&title) {

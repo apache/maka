@@ -351,6 +351,9 @@ export class ComputerHistoryService {
       env: this.#environment(),
       shell: false,
       windowsHide: true,
+      // Avoid libuv's kill-on-parent-exit Job so the native watchdog can seal
+      // storage. Keep the process and stdin owned; do not unref the recorder.
+      detached: this.#platform === 'win32',
       stdio: [this.#platform === 'win32' ? 'pipe' : 'ignore', 'ignore', 'pipe'],
     });
     this.#recorder = recorder;
