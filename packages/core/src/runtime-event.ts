@@ -70,6 +70,7 @@ import {
   type OrchestrationMode,
 } from './orchestration.js';
 import { isToolMode, type ToolMode } from './tool-mode.js';
+import { isExecutorId } from './executor-id.js';
 import {
   isRuntimeSystemNoteKind,
   type PersistedBackendKind,
@@ -267,12 +268,21 @@ export interface RuntimeEventErrorContent {
 export type RuntimeInvocationRoute =
   | {
       provenance: 'runtime';
-      backendKind: PersistedBackendKind;
+      backendKind: Exclude<PersistedBackendKind, 'plugin-executor'>;
       llmConnectionId: string;
       llmConnectionSlug: string;
       modelId: string;
       /** Frozen provider endpoint and credential ownership; absent on non-provider runs. */
       providerStateIdentity?: `sha256:${string}`;
+    }
+  | {
+      provenance: 'runtime';
+      backendKind: 'plugin-executor';
+      executorId: string;
+      llmConnectionSlug: string;
+      modelId: string;
+      /** Frozen plugin package, entry point, and activation generation. */
+      providerStateIdentity: `sha256:${string}`;
     }
   | {
       provenance: 'unknown';
@@ -760,11 +770,24 @@ const INVOCATION_OPENED_CONTENT_SHAPE = defineObjectShape<RuntimeEventInvocation
   ['kind', 'protocol', 'route', 'configuration', 'root', 'source'],
   ['lineage'],
 );
-const INVOCATION_ROUTE_RUNTIME_SHAPE = defineObjectShape<
-  Extract<RuntimeInvocationRoute, { provenance: 'runtime' }>
+const INVOCATION_ROUTE_RUNTIME_MODEL_SHAPE = defineObjectShape<
+  Extract<RuntimeInvocationRoute, { provenance: 'runtime'; llmConnectionId: string }>
 >()(
   ['provenance', 'backendKind', 'llmConnectionId', 'llmConnectionSlug', 'modelId'],
   ['providerStateIdentity'],
+);
+const INVOCATION_ROUTE_RUNTIME_EXECUTOR_SHAPE = defineObjectShape<
+  Extract<RuntimeInvocationRoute, { provenance: 'runtime'; backendKind: 'plugin-executor' }>
+>()(
+  [
+    'provenance',
+    'backendKind',
+    'executorId',
+    'llmConnectionSlug',
+    'modelId',
+    'providerStateIdentity',
+  ],
+  [],
 );
 const INVOCATION_ROUTE_UNKNOWN_SHAPE = defineObjectShape<
   Extract<RuntimeInvocationRoute, { provenance: 'unknown' }>
@@ -1157,8 +1180,15 @@ function isRuntimeInvocationRoute(value: unknown): value is RuntimeInvocationRou
     return false;
   }
   if (value.provenance === 'runtime') {
+    if (value.backendKind === 'plugin-executor') {
+      return (
+        hasExactShape(value, INVOCATION_ROUTE_RUNTIME_EXECUTOR_SHAPE) &&
+        isExecutorId(value.executorId) &&
+        isSha256Digest(value.providerStateIdentity)
+      );
+    }
     return (
-      hasExactShape(value, INVOCATION_ROUTE_RUNTIME_SHAPE) &&
+      hasExactShape(value, INVOCATION_ROUTE_RUNTIME_MODEL_SHAPE) &&
       isNonEmptyString(value.llmConnectionId) &&
       (value.providerStateIdentity === undefined || isSha256Digest(value.providerStateIdentity))
     );
@@ -1167,7 +1197,7 @@ function isRuntimeInvocationRoute(value: unknown): value is RuntimeInvocationRou
 }
 
 function isPersistedBackendKind(value: unknown): value is PersistedBackendKind {
-  return value === 'ai-sdk' || value === 'fake';
+  return value === 'ai-sdk' || value === 'plugin-executor' || value === 'fake';
 }
 
 function isRuntimeInvocationConfiguration(value: unknown): value is RuntimeInvocationConfiguration {

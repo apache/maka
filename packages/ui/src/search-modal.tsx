@@ -34,6 +34,7 @@ import { useUiLocale } from './locale-context.js';
 interface SearchModalDeps {
   searchThread(
     request: SearchRequest,
+    requestId?: string,
   ): Promise<
     SearchResult[] | {
       ok: false;
@@ -41,6 +42,7 @@ interface SearchModalDeps {
       message: string;
     }
   >;
+  cancelThread?(requestId: string): Promise<void>;
 }
 
 interface SearchItemAuxiliaryData {
@@ -51,6 +53,7 @@ type SearchItem = SearchableItem<SearchItemAuxiliaryData>;
 
 interface ThreadSearchSourceInput {
   searchThread?: SearchModalDeps['searchThread'];
+  cancelThread?: SearchModalDeps['cancelThread'];
   canNavigate: boolean;
   resultsLabel: string;
   onQueryChange(query: string): void;
@@ -62,13 +65,19 @@ export function createThreadSearchSource(
   input: ThreadSearchSourceInput,
 ): SearchSource<SearchItem> {
   let generation = 0;
+  let cancelPending: (() => void) | undefined;
+  const cancel = () => {
+    generation += 1;
+    const pending = cancelPending;
+    cancelPending = undefined;
+    pending?.();
+  };
   return {
     bootstrap: () => [],
-    cancel: () => {
-      generation += 1;
-    },
+    cancel,
     search: async (query) => {
-      const requestGeneration = ++generation;
+      cancel();
+      const requestGeneration = generation;
       const trimmed = query.trim();
       input.onQueryChange(trimmed);
       if (!trimmed || !input.searchThread) {
@@ -76,13 +85,23 @@ export function createThreadSearchSource(
         input.onItemsChange([]);
         return [];
       }
+      const requestId = crypto.randomUUID();
+      const cancelled = new Promise<undefined>((resolve) => {
+        cancelPending = () => {
+          // React's palette transition must finish even if the Host is slow
+          // or disconnected. Ignoring its eventual result alone leaves it busy.
+          resolve(undefined);
+          void input.cancelThread?.(requestId).catch((error) => {
+            console.error('[search] cancellation failed', error);
+          });
+        };
+      });
       try {
-        const response = await input.searchThread({
-          source: 'thread',
-          query: trimmed,
-          limit: 10,
-        });
-        if (generation !== requestGeneration) return [];
+        const response = await Promise.race([
+          input.searchThread({ source: 'thread', query: trimmed, limit: 10 }, requestId),
+          cancelled,
+        ]);
+        if (generation !== requestGeneration || response === undefined) return [];
         if (!Array.isArray(response)) {
           console.error('[search] thread search failed', response);
           input.onErrorChange({ reason: response.reason });
@@ -110,6 +129,8 @@ export function createThreadSearchSource(
         input.onErrorChange({ reason: 'provider_error' });
         input.onItemsChange([]);
         return [];
+      } finally {
+        if (generation === requestGeneration) cancelPending = undefined;
       }
     },
   };
@@ -170,6 +191,7 @@ export function SearchModal(props: {
     () =>
       createThreadSearchSource({
         searchThread: props.deps?.searchThread,
+        cancelThread: props.deps?.cancelThread,
         canNavigate: Boolean(props.onNavigateToSession),
         resultsLabel: copy.resultsLabel,
         onQueryChange: setActiveQuery,
@@ -182,6 +204,11 @@ export function SearchModal(props: {
       }),
     [copy.resultsLabel, props.deps, props.onNavigateToSession],
   );
+
+  useEffect(() => {
+    if (!props.isOpen) searchSource.cancel?.();
+    return () => searchSource.cancel?.();
+  }, [props.isOpen, searchSource]);
 
   const emptySearchText = error
     ? searchErrorText(error.reason, copy)

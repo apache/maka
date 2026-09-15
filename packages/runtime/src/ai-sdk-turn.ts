@@ -28,7 +28,6 @@ import type {
   CompleteEvent,
   ErrorEvent,
   ProviderRetryEvent,
-  ProviderRetryReason,
   SessionEvent,
   TextCompleteEvent,
   TextDeltaEvent,
@@ -68,9 +67,9 @@ import type {
   ModelStepOutcome,
   ModelToolSet,
   NormalizedUsage,
-  ModelFailureKind,
   ToolCallPart,
 } from './model-protocol.js';
+import { providerRetryReason } from './provider-error-classification.js';
 import Ajv, { type AnySchema, type ErrorObject, type ValidateFunction } from 'ajv';
 import Ajv2019 from 'ajv/dist/2019.js';
 import Ajv2020 from 'ajv/dist/2020.js';
@@ -585,25 +584,6 @@ function providerRetryDelayMs(failedAttempt: number, retryAfterMs?: number): num
   return Math.ceil(base + Math.random() * PROVIDER_RETRY_JITTER_FACTOR * base);
 }
 
-function providerRetryReason(kind: ModelFailureKind): ProviderRetryReason {
-  switch (kind) {
-    case 'stream_truncated':
-    case 'network':
-    case 'provider_unavailable':
-    case 'rate_limit':
-    case 'timeout':
-      return kind;
-    case 'provider_capacity':
-      return 'provider_capacity';
-    default:
-      return 'unknown';
-  }
-}
-
-function isIncompleteProviderFinishReason(reason: ModelFinishReason | undefined): boolean {
-  return reason === undefined || reason === 'other' || reason === 'unknown';
-}
-
 /**
  * The mutable state of ONE `send()`.
  *
@@ -967,7 +947,7 @@ export class AiSdkTurn {
     };
     let tokenUsage: NormalizedAiSdkUsage | undefined;
     let tokenUsageCostUsd: number | undefined;
-    // Per-send sum of every COMPLETED step's usage, merged at each finish-step
+    // Per-send sum of every completed step's usage, merged at settlement
     // boundary. When the send aborts (mid-turn exhaust, user stop, stream
     // error) the SDK's cumulative `usage` promise may not resolve, but this sum is
     // real provider-reported evidence for the steps that did finish — IF every
@@ -1268,7 +1248,9 @@ export class AiSdkTurn {
             idleTimeoutMs: this.deps.backend.streamIdleTimeoutMs,
             ...this.deps.backend.streamWatchdogTimer,
             onTimeout: (timeout) => {
-              const error = new Error(formatStreamWatchdogError(timeout));
+              const error = Object.assign(new Error(formatStreamWatchdogError(timeout)), {
+                code: 'MODEL_STREAM_TIMEOUT',
+              });
               watchdogTimeoutState.current = { phase: timeout.phase, error };
               providerRequestAbortController.abort(error);
             },
@@ -1364,10 +1346,12 @@ export class AiSdkTurn {
           // folded through the same reducer before it becomes messages. Without
           // this, a result archived at step N is rebuilt in full at step N+1 and
           // the ledger's account of what the model sees stops being true.
-          const foldedReplayEvents = await this.deps.compaction.foldEffectiveModelHistory(
-            replayEvents,
-            pruned.projectionSnapshot,
-          );
+          const foldedReplayEvents = projectionCheckpoint
+            ? await this.deps.compaction.foldEffectiveModelHistory(
+                replayEvents,
+                pruned.projectionSnapshot,
+              )
+            : pruned.events;
           const replayPlan = buildRuntimeEventModelReplayPlan(foldedReplayEvents, {
             toolActivityTurnIds: collectToolActivityTurnIds([
               ...(input.runtimeContext ?? []),
@@ -1621,188 +1605,6 @@ export class AiSdkTurn {
                 // trailer and consume the one authoritative outcome below.
                 break;
               }
-              const incompleteFinish =
-                (event.kind === 'finish' || event.kind === 'step-finish') &&
-                isIncompleteProviderFinishReason(event.finishReason);
-              if ((event.kind === 'finish' || event.kind === 'step-finish') && !incompleteFinish) {
-                attemptSawReplayBarrier = true;
-              }
-              if (event.kind === 'step-finish') {
-                // AI SDK can synthesize `finish-step(other)` when the provider
-                // stream reaches EOF without a terminal frame. That is not a
-                // completed model step and must not consume the step budget or
-                // checkpoint imaginary usage before the safe retry below.
-                if (!incompleteFinish) {
-                  // Step boundary: AI SDK 7 delimits steps with `finish-step`
-                  // (and `step-finish` for legacy replay fixtures); the adapter
-                  // reduces both to this event. A duplicate boundary is harmless:
-                  // the second flush no-ops (accumulators already cleared) and one
-                  // extra id rotation just discards an unused id.
-                  runtimeSteps += 1;
-                  const stepUsage = event.usage;
-                  providerStepUsage = stepUsage;
-                  if (!stepUsage) sawUnusableStepUsage = true;
-                  // Silent eviction / rewrite check (#4559): this step only
-                  // appended (no fold, no prune, no image omission) yet the
-                  // provider counted no more input tokens than for the previous
-                  // request. Not-greater, not strictly-fewer: a provider that
-                  // truncates to a fixed window (Ollama's `num_ctx`) reports the
-                  // same total on every later request while Maka keeps
-                  // appending, so a plateau is the signal, and an equal count
-                  // after an append is already impossible without provider-side
-                  // eviction or rewriting. Input against input: the previous
-                  // reply's reasoning may not be resent, so input + output is
-                  // not the floor of the next input on every wire.
-                  const completedRequestIndex = runtimeSteps - 1;
-                  // A finalization step resolves an empty tool set, so its
-                  // request legitimately drops several thousand schema tokens
-                  // with no fold, prune or image omission. Maka shaped that
-                  // request; the provider did not drop anything.
-                  const toolSchemaShrank =
-                    lastStepActiveToolCount !== undefined &&
-                    activeToolsForRequest.length < lastStepActiveToolCount;
-                  // Across the send boundary the comparison is the same one,
-                  // against the last request a provider accepted before this
-                  // send. A provider that truncates to a fixed window reports
-                  // the same input on every later request while the user keeps
-                  // adding turns, and a send of one or two steps never sees
-                  // that from the inside: the live evidence plateaus at 3,716
-                  // input tokens across eight turns with nothing reported
-                  // (#4623). The first request of a send therefore compares
-                  // against the persisted anchor, which is route-validated
-                  // where it is read; a fold before that request would explain
-                  // a smaller input by itself, so it disables the comparison.
-                  const acrossSends = completedRequestIndex === 0;
-                  const priorInput = acrossSends
-                    ? midTurnState?.compactionAppliedThisSend === true
-                      ? undefined
-                      : midTurnState?.priorAcceptedInputTokens
-                    : lastStepInputTokens;
-                  if (
-                    !this.deps.session.contextProviderDroppingReported &&
-                    !toolSchemaShrank &&
-                    midTurnState &&
-                    priorInput !== undefined &&
-                    midTurnState.replacedStepNumber !== completedRequestIndex &&
-                    pruneAppliedAtStep !== completedRequestIndex &&
-                    midTurnState.omittedImageToolResults.size === 0 &&
-                    stepUsage !== undefined &&
-                    Number.isFinite(stepUsage.inputTokens) &&
-                    stepUsage.inputTokens > 0 &&
-                    // Across sends the test is equality, not "did not grow".
-                    // Inside a send Maka knows it only appended, so any
-                    // shortfall is the provider's. Across the boundary it does
-                    // not: a manual compaction leaves the pre-compaction anchor
-                    // behind, a turn can carry a smaller tool set, and a user
-                    // can edit or branch history. All three shrink the input
-                    // legitimately, and none of them lands on exactly the same
-                    // count. A provider truncating to a fixed window does, on
-                    // every later request.
-                    (acrossSends
-                      ? stepUsage.inputTokens === priorInput
-                      : stepUsage.inputTokens <= priorInput)
-                  ) {
-                    this.deps.session.contextProviderDroppingReported = true;
-                    await this.recordSystemNote('context_provider_dropping', turnId, {
-                      inputTokens: stepUsage.inputTokens,
-                      priorInputTokens: priorInput,
-                    });
-                  }
-                  // Fail closed: reset on every step boundary so a missing final
-                  // step's usage does not leave a stale value from an earlier step.
-                  // The reply needed more room than the declared window had
-                  // left after this request's own input. Both halves are the
-                  // provider's numbers, read after the fact: the reserve that
-                  // should have kept them apart was measured from a smaller
-                  // previous reply. Say so once per send; the next request
-                  // folds anyway because the baseline now exceeds the window.
-                  if (
-                    !contextWindowOverrunNoteWritten &&
-                    midTurnState?.capacity !== undefined &&
-                    stepUsage !== undefined &&
-                    Number.isFinite(stepUsage.inputTokens) &&
-                    stepUsage.inputTokens > 0 &&
-                    Number.isFinite(stepUsage.outputTokens) &&
-                    stepUsage.outputTokens > 0 &&
-                    stepUsage.inputTokens + stepUsage.outputTokens > midTurnState.capacity
-                  ) {
-                    contextWindowOverrunNoteWritten = true;
-                    await this.recordSystemNote('context_window_overrun', turnId, {
-                      usedTokens: stepUsage.inputTokens + stepUsage.outputTokens,
-                      declaredContextWindow: midTurnState.capacity,
-                    });
-                  }
-                  // Nothing declared, and the provider accepted a request past
-                  // the window this model reports. Every other signal in this
-                  // design stays dark there: no rejection to recover from, no
-                  // plateau to read, and no declaration to arm the proactive
-                  // threshold, so the session degrades quietly and
-                  // indefinitely (#4634). Report the two real numbers and
-                  // leave the decision with the user: a reported window is a
-                  // hint, and Maka still declares nothing on their behalf.
-                  //
-                  // Once per crossing, not once per send. On these providers
-                  // usage keeps growing past the line (305K → 322K observed),
-                  // so the note fires on the transition: the previous accepted
-                  // total was still inside the reported window and this one is
-                  // not. The baseline carries that previous total across
-                  // sessions through the persisted anchor, so a resumed
-                  // session does not repeat a crossing it already reported.
-                  if (
-                    !contextReportedWindowNoteWritten &&
-                    midTurnState !== undefined &&
-                    midTurnState.capacity === undefined &&
-                    stepUsage !== undefined &&
-                    Number.isFinite(stepUsage.inputTokens) &&
-                    stepUsage.inputTokens > 0 &&
-                    Number.isFinite(stepUsage.outputTokens)
-                  ) {
-                    const reported = resolveSelectedModelContextWindow(
-                      this.deps.backend.connection,
-                      this.deps.backend.modelId,
-                    );
-                    const used = stepUsage.inputTokens + Math.max(0, stepUsage.outputTokens);
-                    // `baselineTokens` still describes the request before this
-                    // one: the capacity hook sets it from the previous step, or
-                    // from the persisted anchor on a send's first request.
-                    const previousTotal = midTurnState.baselineTokens;
-                    const crossedNow =
-                      reported !== undefined &&
-                      used > reported &&
-                      (previousTotal === undefined || previousTotal <= reported);
-                    if (reported !== undefined && crossedNow) {
-                      contextReportedWindowNoteWritten = true;
-                      await this.recordSystemNote('context_reported_window_exceeded', turnId, {
-                        usedTokens: used,
-                        reportedContextWindow: reported,
-                      });
-                    }
-                  }
-                  lastStepInputTokens = stepUsage?.inputTokens;
-                  lastStepOutputTokens = stepUsage?.outputTokens;
-                  lastStepActiveToolCount = activeToolsForRequest.length;
-                  // A `finishReason: length` is deliberately not a trigger. The
-                  // reply may have been cut because the provider ran out of
-                  // window room, or because the provider's own output cap is
-                  // lower than the one Maka sends. Those are indistinguishable
-                  // from outside, and an indistinguishable signal must not
-                  // drive an action; the cut reply is visible to the user
-                  // either way (#4559).
-                  if (stepUsage) {
-                    completedStepUsage = mergeNormalizedUsage(completedStepUsage, stepUsage);
-                    this.deps.session.cumulativeUsageCheckpoint = mergeNormalizedUsage(
-                      this.deps.session.cumulativeUsageCheckpoint,
-                      stepUsage,
-                    );
-                    await this.deps.backend.recordUsageCheckpoint?.({
-                      ...this.deps.session.cumulativeUsageCheckpoint,
-                      costUsd: this.deps.providerTelemetry.normalizedUsageCostUsd(
-                        this.deps.session.cumulativeUsageCheckpoint,
-                      ),
-                    });
-                  }
-                }
-              }
               if (event.kind === 'text-start') {
                 if (stepText.length > 0 && event.providerItemBoundary === true) {
                   attemptSawReplayBarrier = true;
@@ -1979,40 +1781,191 @@ export class AiSdkTurn {
                   ),
                 } satisfies ToolResultEvent);
                 providerToolInputs.delete(event.toolCallId);
-              } else if (event.kind === 'step-finish' && !incompleteFinish) {
-                // The step's text/thinking deltas are all in (the stream is
-                // drained in order), so flush this step's AssistantMessage and
-                // rotate to a fresh id for the next step. Tool settlement
-                // below receives this step's pre-rotation id, so durable replay
-                // can regroup calls with this reasoning/text.
-                await flushStep();
-                if (midTurnState) {
-                  // Durability clock: step N's thinking/text completion events
-                  // are enqueued by flushStep just above, so only after this
-                  // boundary can a seq-ack wait for step N mean anything. Wake
-                  // waiters AFTER the increment or they would re-check a stale
-                  // count and sleep.
-                  midTurnState.flushedSteps += 1;
-                  queue.wake();
-                }
               }
             }
             watchdogState.current?.stop();
             // This timeout belongs to the physical request that just settled.
             // Consume it before recovery/flush work: a later persistence error
             // must not be reported as the already-handled watchdog timeout.
-            const settledWatchdogTimeout = consumeWatchdogTimeout();
+            consumeWatchdogTimeout();
             providerOutcome = await result.outcome;
-            const incompleteStreamTerminal = providerOutcome.kind === 'truncated';
-            const attemptFailure =
-              settledWatchdogTimeout?.error ??
-              (providerOutcome.kind === 'completed' ? undefined : providerOutcome.failure);
-
-            if (attemptFailure && !this.aborted) {
-              const failure =
-                settledWatchdogTimeout || providerOutcome.kind === 'completed'
-                  ? this.deps.modelAdapter.normalizeFailure(attemptFailure)
-                  : providerOutcome.failure;
+            if (providerOutcome.kind === 'completed') {
+              runtimeSteps += 1;
+              const stepUsage = providerOutcome.usage;
+              providerStepUsage = stepUsage;
+              if (!stepUsage) sawUnusableStepUsage = true;
+              // Silent eviction / rewrite check (#4559): this step only
+              // appended (no fold, no prune, no image omission) yet the
+              // provider counted no more input tokens than for the previous
+              // request. Not-greater, not strictly-fewer: a provider that
+              // truncates to a fixed window (Ollama's `num_ctx`) reports the
+              // same total on every later request while Maka keeps
+              // appending, so a plateau is the signal, and an equal count
+              // after an append is already impossible without provider-side
+              // eviction or rewriting. Input against input: the previous
+              // reply's reasoning may not be resent, so input + output is
+              // not the floor of the next input on every wire.
+              const completedRequestIndex = runtimeSteps - 1;
+              // A finalization step resolves an empty tool set, so its
+              // request legitimately drops several thousand schema tokens
+              // with no fold, prune or image omission. Maka shaped that
+              // request; the provider did not drop anything.
+              const toolSchemaShrank =
+                lastStepActiveToolCount !== undefined &&
+                activeToolsForRequest.length < lastStepActiveToolCount;
+              // Across the send boundary the comparison is the same one,
+              // against the last request a provider accepted before this
+              // send. A provider that truncates to a fixed window reports
+              // the same input on every later request while the user keeps
+              // adding turns, and a send of one or two steps never sees
+              // that from the inside: the live evidence plateaus at 3,716
+              // input tokens across eight turns with nothing reported
+              // (#4623). The first request of a send therefore compares
+              // against the persisted anchor, which is route-validated
+              // where it is read; a fold before that request would explain
+              // a smaller input by itself, so it disables the comparison.
+              const acrossSends = completedRequestIndex === 0;
+              const priorInput = acrossSends
+                ? midTurnState?.compactionAppliedThisSend === true
+                  ? undefined
+                  : midTurnState?.priorAcceptedInputTokens
+                : lastStepInputTokens;
+              if (
+                !this.deps.session.contextProviderDroppingReported &&
+                !toolSchemaShrank &&
+                midTurnState &&
+                priorInput !== undefined &&
+                midTurnState.replacedStepNumber !== completedRequestIndex &&
+                pruneAppliedAtStep !== completedRequestIndex &&
+                midTurnState.omittedImageToolResults.size === 0 &&
+                stepUsage !== undefined &&
+                Number.isFinite(stepUsage.inputTokens) &&
+                stepUsage.inputTokens > 0 &&
+                // Across sends the test is equality, not "did not grow".
+                // Inside a send Maka knows it only appended, so any
+                // shortfall is the provider's. Across the boundary it does
+                // not: a manual compaction leaves the pre-compaction anchor
+                // behind, a turn can carry a smaller tool set, and a user
+                // can edit or branch history. All three shrink the input
+                // legitimately, and none of them lands on exactly the same
+                // count. A provider truncating to a fixed window does, on
+                // every later request.
+                (acrossSends
+                  ? stepUsage.inputTokens === priorInput
+                  : stepUsage.inputTokens <= priorInput)
+              ) {
+                this.deps.session.contextProviderDroppingReported = true;
+                await this.recordSystemNote('context_provider_dropping', turnId, {
+                  inputTokens: stepUsage.inputTokens,
+                  priorInputTokens: priorInput,
+                });
+              }
+              // Fail closed: reset on every step boundary so a missing final
+              // step's usage does not leave a stale value from an earlier step.
+              // The reply needed more room than the declared window had
+              // left after this request's own input. Both halves are the
+              // provider's numbers, read after the fact: the reserve that
+              // should have kept them apart was measured from a smaller
+              // previous reply. Say so once per send; the next request
+              // folds anyway because the baseline now exceeds the window.
+              if (
+                !contextWindowOverrunNoteWritten &&
+                midTurnState?.capacity !== undefined &&
+                stepUsage !== undefined &&
+                Number.isFinite(stepUsage.inputTokens) &&
+                stepUsage.inputTokens > 0 &&
+                Number.isFinite(stepUsage.outputTokens) &&
+                stepUsage.outputTokens > 0 &&
+                stepUsage.inputTokens + stepUsage.outputTokens > midTurnState.capacity
+              ) {
+                contextWindowOverrunNoteWritten = true;
+                await this.recordSystemNote('context_window_overrun', turnId, {
+                  usedTokens: stepUsage.inputTokens + stepUsage.outputTokens,
+                  declaredContextWindow: midTurnState.capacity,
+                });
+              }
+              // Nothing declared, and the provider accepted a request past
+              // the window this model reports. Every other signal in this
+              // design stays dark there: no rejection to recover from, no
+              // plateau to read, and no declaration to arm the proactive
+              // threshold, so the session degrades quietly and
+              // indefinitely (#4634). Report the two real numbers and
+              // leave the decision with the user: a reported window is a
+              // hint, and Maka still declares nothing on their behalf.
+              //
+              // Once per crossing, not once per send. On these providers
+              // usage keeps growing past the line (305K → 322K observed),
+              // so the note fires on the transition: the previous accepted
+              // total was still inside the reported window and this one is
+              // not. The baseline carries that previous total across
+              // sessions through the persisted anchor, so a resumed
+              // session does not repeat a crossing it already reported.
+              if (
+                !contextReportedWindowNoteWritten &&
+                midTurnState !== undefined &&
+                midTurnState.capacity === undefined &&
+                stepUsage !== undefined &&
+                Number.isFinite(stepUsage.inputTokens) &&
+                stepUsage.inputTokens > 0 &&
+                Number.isFinite(stepUsage.outputTokens)
+              ) {
+                const reported = resolveSelectedModelContextWindow(
+                  this.deps.backend.connection,
+                  this.deps.backend.modelId,
+                );
+                const used = stepUsage.inputTokens + Math.max(0, stepUsage.outputTokens);
+                // `baselineTokens` still describes the request before this
+                // one: the capacity hook sets it from the previous step, or
+                // from the persisted anchor on a send's first request.
+                const previousTotal = midTurnState.baselineTokens;
+                const crossedNow =
+                  reported !== undefined &&
+                  used > reported &&
+                  (previousTotal === undefined || previousTotal <= reported);
+                if (reported !== undefined && crossedNow) {
+                  contextReportedWindowNoteWritten = true;
+                  await this.recordSystemNote('context_reported_window_exceeded', turnId, {
+                    usedTokens: used,
+                    reportedContextWindow: reported,
+                  });
+                }
+              }
+              lastStepInputTokens = stepUsage?.inputTokens;
+              lastStepOutputTokens = stepUsage?.outputTokens;
+              lastStepActiveToolCount = activeToolsForRequest.length;
+              // A `finishReason: length` is deliberately not a trigger. The
+              // reply may have been cut because the provider ran out of
+              // window room, or because the provider's own output cap is
+              // lower than the one Maka sends. Those are indistinguishable
+              // from outside, and an indistinguishable signal must not
+              // drive an action; the cut reply is visible to the user
+              // either way (#4559).
+              if (stepUsage) {
+                completedStepUsage = mergeNormalizedUsage(completedStepUsage, stepUsage);
+                this.deps.session.cumulativeUsageCheckpoint = mergeNormalizedUsage(
+                  this.deps.session.cumulativeUsageCheckpoint,
+                  stepUsage,
+                );
+                await this.deps.backend.recordUsageCheckpoint?.({
+                  ...this.deps.session.cumulativeUsageCheckpoint,
+                  costUsd: this.deps.providerTelemetry.normalizedUsageCostUsd(
+                    this.deps.session.cumulativeUsageCheckpoint,
+                  ),
+                });
+              }
+              await flushStep();
+              if (midTurnState) {
+                // Durability clock: step N's thinking/text completion events
+                // are enqueued by flushStep just above, so only after this
+                // boundary can a seq-ack wait for step N mean anything. Wake
+                // waiters AFTER the increment or they would re-check a stale
+                // count and sleep.
+                midTurnState.flushedSteps += 1;
+                queue.wake();
+              }
+            }
+            if (providerOutcome.kind === 'failed' && !this.aborted) {
+              const failure = providerOutcome.failure;
               // An output-free context rejection did not sample a response.
               // Preserve metering for completed steps across compaction recovery.
               if (
@@ -2026,7 +1979,7 @@ export class AiSdkTurn {
               )
                 sawUnusableStepUsage = true;
               if (this.loopStopRequested) {
-                terminalProviderError = settledWatchdogTimeout?.error ?? failure;
+                terminalProviderError = failure;
                 terminalProviderErrorReason =
                   lastCompletedStepHadToolResult && failure.kind === 'timeout'
                     ? 'model_after_tool_timeout'
@@ -2042,7 +1995,7 @@ export class AiSdkTurn {
                 providerAttempt < MAX_PROVIDER_ATTEMPTS_PER_STEP &&
                 attemptHasNoObservableOutput()
                   ? await this.deps.compaction.recoverFromOverflowError({
-                      error: attemptFailure,
+                      error: failure,
                       midTurnState,
                       turnId,
                       stepNumber: runtimeSteps,
@@ -2117,11 +2070,7 @@ export class AiSdkTurn {
                 retry = { decision: 'declined', because: 'budget' };
               } else if (providerAttempt >= MAX_PROVIDER_ATTEMPTS_PER_STEP) {
                 retry = { decision: 'exhausted', attempts: providerAttempt };
-              } else if (failure.kind === 'context_overflow') {
-                retry = { decision: 'declined', because: 'policy' };
-              } else if (
-                !(failure.retryable || settledWatchdogTimeout || incompleteStreamTerminal)
-              ) {
+              } else if (!failure.retryable) {
                 retry = { decision: 'declined', because: 'policy' };
               }
               if (!retry) {
@@ -2135,7 +2084,7 @@ export class AiSdkTurn {
                 const delayMs = providerRetryDelayMs(providerAttempt, failure.retryAfterMs);
                 const nextAttempt = providerAttempt + 1;
                 const maxAttempts = MAX_PROVIDER_ATTEMPTS_PER_STEP;
-                const reason = providerRetryReason(failure.kind);
+                const reason = providerRetryReason(failure.kind) ?? 'unknown';
                 queue.push({
                   type: 'provider_retry',
                   id: this.deps.newId(),
@@ -2165,7 +2114,7 @@ export class AiSdkTurn {
               // safe fold): surface the real provider error via the terminal
               // handler after settling any authoritative usage — never a
               // fabricated success.
-              terminalProviderError = settledWatchdogTimeout?.error ?? failure;
+              terminalProviderError = failure;
               terminalRetry = { error: terminalProviderError, retry };
               terminalProviderErrorReason =
                 lastCompletedStepHadToolResult && failure.kind === 'timeout'
@@ -2184,10 +2133,7 @@ export class AiSdkTurn {
             throw Object.assign(new Error('aborted'), { name: 'AbortError' });
           }
 
-          // Catch-all: flush any residual step content if the provider closed the
-          // stream without a trailing `finish-step` for the last step.
           const providerStepId = currentStepMessageId;
-          await flushStep();
 
           if (providerOutcome.kind !== 'completed') throw providerOutcome.failure;
           finishReason = providerOutcome.finishReason;
@@ -2523,8 +2469,8 @@ export class AiSdkTurn {
           currentWatchdogTimeout()?.error ?? err,
         );
         // Flush the in-flight step's partial text/thinking before the terminal
-        // abort/error events. Earlier steps already flushed at their
-        // `finish-step`; this keeps their and this step's streamed-out output on
+        // abort/error events. Earlier steps already flushed at settlement;
+        // this keeps their and this step's streamed-out output on
         // BOTH exits — user stop and provider error / watchdog timeout — so the
         // transcript keeps what the user actually saw.
         await flushStep(!this.aborted).catch(() => {});

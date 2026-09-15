@@ -324,8 +324,7 @@ async def _prepare_command(
     output_redirect = "" if capture_stdout else " >/dev/null"
     scope_error = shlex.quote(f"{SCOPE_ERROR_PREFIX} {result_token}\\n")
     inner = (
-        "umask 077; "
-        f"{{ echo $$ > {shlex.quote(scope_path)}; }} 2>/dev/null || "
+        f"( umask 077 && echo $$ > {shlex.quote(scope_path)} ) 2>/dev/null || "
         f"{{ printf {scope_error}; exit 111; }}; "
         f". {shlex.quote(container_path)}; command -p rm -f {shlex.quote(container_path)}; "
         f"exec {subject}{output_redirect}"

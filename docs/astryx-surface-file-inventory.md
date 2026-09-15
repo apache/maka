@@ -6,7 +6,7 @@ Generated against `@astryxdesign/core@0.5.2` (194 component exports).
 
 Wiki bar: Design Conventions · API Use-the-System · Theming · Container Padding.
 
-**Totals:** 277 files — blocker 0, reimplementation 0, polish 2, aligned 275.
+**Totals:** 278 files — blocker 0, reimplementation 0, polish 4, aligned 274.
 
 ## Exclusions (explicit)
 
@@ -73,6 +73,7 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/features/runtime-host-management/ui/runtime-host-peer-mesh-dialog.tsx` | dialog-overlay | Badge, Banner, Button, Dialog, DialogHeader, HStack, Layout, LayoutContent, LayoutFooter, MoreMenu, SegmentedControl, SegmentedControlItem, Selector, Switch, Text, TextArea, TextInput, Tooltip | aligned — uses Astryx (Badge, Banner, Button, Dialog, DialogHeader, HStack, Layout, LayoutContent) | aligned |
 | `apps/desktop/src/renderer/features/runtime-host-management/ui/runtime-host-profile-pairing-actions.tsx` | other | Button, MoreMenu | aligned — uses Astryx (Button, MoreMenu) | aligned |
 | `apps/desktop/src/renderer/features/runtime-host-management/ui/runtime-host-resource-dialog.tsx` | dialog-overlay | Button, Dialog, DialogHeader, Layout, LayoutContent, LayoutFooter, Spinner, Text | aligned — uses Astryx (Button, Dialog, DialogHeader, Layout, LayoutContent, LayoutFooter, Spinner, Text) | aligned |
+| `apps/desktop/src/renderer/features/search/services-context.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/features/session-bundle/export-tree.tsx` | shell-chrome-or-panel | Badge, Button, EmptyState, HStack, VStack | aligned — uses Astryx (Badge, Button, EmptyState, HStack, VStack) | aligned |
 | `apps/desktop/src/renderer/features/session-bundle/services-context.tsx` | shell-chrome-or-panel | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/features/session-bundle/session-bundle-tasks.tsx` | shell-chrome-or-panel | Banner, Button, HStack, SegmentedControl, SegmentedControlItem, VStack | aligned — uses Astryx (Banner, Button, HStack, SegmentedControl, SegmentedControlItem, VStack) | aligned |
@@ -230,7 +231,7 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/styles/shell-layout.css` | styles | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
 | `apps/desktop/src/renderer/styles/sidebar.css` | shell-chrome-or-panel | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
 | `apps/desktop/src/renderer/styles/theme-glass.css` | styles | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
-| `apps/desktop/src/renderer/styles/work-board.css` | styles | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
+| `apps/desktop/src/renderer/styles/work-board.css` | styles | n/a (css) | off-rhythm control height 40px (Design size) | polish |
 | `apps/desktop/src/renderer/styles/workbar/artifacts.css` | shell-chrome-or-panel | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
 | `apps/desktop/src/renderer/styles/workbar/browser.css` | shell-chrome-or-panel | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
 | `apps/desktop/src/renderer/styles/workbar/inspector.css` | shell-chrome-or-panel | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
@@ -239,7 +240,7 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/styles/workbar/side-chat.css` | shell-chrome-or-panel | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
 | `apps/desktop/src/renderer/styles/workbar/terminal.css` | shell-chrome-or-panel | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
 | `apps/desktop/src/renderer/styles/workhub.css` | styles | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
-| `apps/desktop/src/renderer/work-board-panel.tsx` | shell-chrome-or-panel | Banner, Button, EmptyState, Spinner, TextInput | aligned — uses Astryx (Banner, Button, EmptyState, Spinner, TextInput) | aligned |
+| `apps/desktop/src/renderer/work-board-panel.tsx` | shell-chrome-or-panel | Banner, Button, EmptyState, Spinner, TextInput | raw `<textarea` (API Use-the-System) | polish |
 | `packages/ui/src/astryx-chat-reasoning.tsx` | shell-chrome-or-panel | Icon | aligned — uses Astryx (Icon) | aligned |
 | `packages/ui/src/astryx-i18n.tsx` | ui-composition | InternationalizationProvider | aligned — uses Astryx (InternationalizationProvider) | aligned |
 | `packages/ui/src/attachment-image.tsx` | ui-composition | none | aligned — no raw controls; no Astryx JSX usage | aligned |

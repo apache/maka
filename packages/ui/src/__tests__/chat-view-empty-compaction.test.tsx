@@ -89,7 +89,7 @@ test('shows one waiting indicator before a named live Turn reaches the transcrip
   for (const messages of [[], [{ type: 'user' as const, id: 'old-user', turnId: 'old-turn', text: 'Earlier request', ts: 1 }]]) {
     const markup = renderChat(liveTurn, { messages, transientMessages: [pending], activeTurn: { turnId: liveTurn.turnId! } });
     assert.equal((markup.match(/class="maka-turn-processing"/g) ?? []).length, 1);
-    assert.match(markup, /Waiting for model output/);
+    assert.match(markup, /Pondering/);
     assert.match(markup, /Please help/);
     assert.doesNotMatch(markup, /data-transcript-turn-id="pending-turn"/);
   }

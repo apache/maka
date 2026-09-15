@@ -227,7 +227,6 @@
     "src/renderer/use-shell-live-turn.ts",
     "src/renderer/use-shell-memory-pill.ts",
     "src/renderer/use-shell-resume.ts",
-    "src/renderer/use-shell-search.ts",
     "src/renderer/use-stable-actions.ts",
     "src/renderer/use-system-ui-locale.ts",
     "src/renderer/use-task-submission-readiness.ts",
@@ -322,7 +321,7 @@
           "@maka/ui": 1
         },
         "importSpecifiers": 10,
-        "nonTriviaTokens": 3618
+        "nonTriviaTokens": 3616
       },
       "src/renderer/app-shell-chrome-actions.tsx": {
         "importDeclarations": 4,
@@ -698,7 +697,7 @@
         "nonTriviaTokens": 1273
       },
       "src/renderer/app-shell.tsx": {
-        "importDeclarations": 68,
+        "importDeclarations": 67,
         "bridgePaths": {
           "window.maka.attachments": 1,
           "window.maka.attachments.readBytes": 1,
@@ -800,6 +799,7 @@
           "./features/conversation/index.js": 1,
           "./features/goals": 1,
           "./features/module-hub": 1,
+          "./features/search/index.js": 1,
           "./features/session-collaboration": 1,
           "./features/session-navigation": 1,
           "./features/session-settings": 1,
@@ -838,7 +838,6 @@
           "./use-shell-live-turn": 1,
           "./use-shell-memory-pill": 1,
           "./use-shell-resume": 1,
-          "./use-shell-search": 1,
           "./use-stable-actions": 1,
           "./use-system-ui-locale": 1,
           "./use-task-submission-readiness": 1,
@@ -853,8 +852,8 @@
           "@maka/ui": 1,
           "react": 1
         },
-        "importSpecifiers": 104,
-        "nonTriviaTokens": 13384
+        "importSpecifiers": 103,
+        "nonTriviaTokens": 13379
       },
       "src/renderer/use-app-shell-composer-quotes.ts": {
         "importDeclarations": 2,
@@ -4224,21 +4223,6 @@
         "dependencyPaths": {
           "./locales/shell-copy.js": 1,
           "@maka/ui": 1,
-          "react": 1
-        }
-      },
-      "src/renderer/use-shell-search.ts": {
-        "bridgePaths": {
-          "window.maka.search.thread": 1
-        },
-        "environmentCapabilities": {},
-        "hookCalls": {
-          "useState": 2
-        },
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {
           "react": 1
         }
       },
