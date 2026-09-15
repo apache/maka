@@ -74,10 +74,6 @@ type ExternalSessionImportCopy = {
   /** The source conversation could not be read or converted (e.g. too large). */
   importFailedSourceUnreadable: string;
   importFailedSourceLimit: (limit: ExternalSessionLimit) => string;
-  importRecoveredTitle: string;
-  importRecoveredDescription: (name: string) => string;
-  importNotRecordedTitle: string;
-  importNotRecordedDescription: string;
   importOutcomeUnknownTitle: string;
   /**
    * Takes the conversation names because this is the only place that can say
@@ -192,10 +188,6 @@ const COPY = {
       converted_bytes: '转换后内容大小',
       messages: '消息数量',
     }[limit.kind]}最多 ${limit.max.toLocaleString('zh-CN')}${limit.kind.endsWith('_bytes') ? ' 字节' : ' 条'}。请缩小源对话；直接重试不会改变此限制。`,
-    importRecoveredTitle: '已确认导入',
-    importRecoveredDescription: (name) => `「${name}」导入的任务现已可用。`,
-    importNotRecordedTitle: '没有发现新任务',
-    importNotRecordedDescription: '没有记录到新的任务，可以安全重试。',
     importOutcomeUnknownTitle: '需要确认导入结果',
     selectAllAriaLabel: '全选或全不选',
     selectedCount: (selected, listed) => `已选 ${selected} / ${listed}`,
@@ -278,10 +270,6 @@ const COPY = {
       converted_bytes: '轉換後內容大小',
       messages: '訊息數量',
     }[limit.kind]}最多 ${limit.max.toLocaleString('zh-TW')}${limit.kind.endsWith('_bytes') ? ' 位元組' : ' 筆'}。請縮小來源對話；直接重試不會改變此限制。`,
-    importRecoveredTitle: '已確認匯入',
-    importRecoveredDescription: (name) => `「${name}」匯入的任務現已可用。`,
-    importNotRecordedTitle: '沒有發現新任務',
-    importNotRecordedDescription: '沒有記錄到新的任務，可以安全重試。',
     importOutcomeUnknownTitle: '需要確認匯入結果',
     selectAllAriaLabel: '全選或全部取消選取',
     selectedCount: (selected, listed) => `已選 ${selected} / ${listed}`,
@@ -367,11 +355,6 @@ const COPY = {
       converted_bytes: 'converted content size',
       messages: 'message count',
     }[limit.kind]} allows at most ${limit.max.toLocaleString('en')}${limit.kind.endsWith('_bytes') ? ' bytes' : ''}. Reduce the source conversation; retrying it unchanged will not help.`,
-    importRecoveredTitle: 'Import confirmed',
-    importRecoveredDescription: (name) =>
-      `The imported task is available now for “${name}”.`,
-    importNotRecordedTitle: 'No new task found',
-    importNotRecordedDescription: 'No new task was recorded, so it is safe to retry.',
     importOutcomeUnknownTitle: 'Check the import result',
     selectAllAriaLabel: 'Select all or none',
     selectedCount: (selected, listed) => `${selected} / ${listed} selected`,
