@@ -72,6 +72,7 @@ const baseDesktopBuilderConfig = {
   productName: 'Maka',
   artifactName: 'Maka-${version}-mac-${arch}.${ext}',
   asar: true,
+  asarUnpack: ['dist/native/*.node'],
   beforePack: stageReleaseManifests,
   extraMetadata: { runtimeHostSetupPackage, makaUpdateChannel: 'release' },
   directories: {

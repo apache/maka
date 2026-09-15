@@ -47,6 +47,7 @@ import {
   handleDevelopmentLaunchOutcome,
   waitForDevelopmentLaunchVerdict,
 } from './dev-app-runtime.mjs';
+import { buildNotificationSettings } from './build-notification-settings.mjs';
 
 const DESKTOP_DIR = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const REPO_ROOT    = resolve(DESKTOP_DIR, '..', '..');
@@ -78,6 +79,7 @@ function runNodeTool(dir, script, args) {
 // ── build phases ─────────────────────────────────────────────────────────────
 
 const TIMER_START = Date.now();
+buildNotificationSettings();
 
 // A clean or ignore-scripts install has no generated model modules yet, and
 // `tsc --build` bypasses workspace prebuild hooks. Generate from the committed

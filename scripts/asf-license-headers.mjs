@@ -117,6 +117,7 @@ const coveredExtensions = new Map([
   ['.jsonc', 'slash'],
   ['.md', 'html'],
   ['.mjs', 'block'],
+  ['.mm', 'block'],
   ['.mts', 'block'],
   ['.nsh', 'hash'],
   ['.ps1', 'hash'],
