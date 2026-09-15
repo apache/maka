@@ -24,7 +24,7 @@ import { afterEach, test } from 'node:test';
 import { act, StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { parseHTML } from 'linkedom';
-import { LocalizedChatMessage, TurnRunningStatus, TurnView } from '../chat-turn.js';
+import { LocalizedChatMessage, TurnView } from '../chat-turn.js';
 import { LocaleProvider } from '../locale-context.js';
 import type { TurnTimelineItem, TurnViewModel } from '../materialize.js';
 
@@ -457,7 +457,13 @@ test('rotates working phrases on the elapsed clock without announcing each phras
   const now = Date.UTC(2026, 8, 14, 12);
   context.mock.timers.enable({ apis: ['Date', 'setInterval'], now });
   const { container, root } = domRoot();
-  await act(() => root.render(<LocaleProvider locale="en"><TurnRunningStatus startedAt={now} /></LocaleProvider>));
+  const turn: TurnViewModel = {
+    turnId: 'turn-1', status: 'running', tools: [], notes: [], startedAt: now, timeline: [],
+  };
+  const render = (next: TurnViewModel) => act(() => root.render(
+    <LocaleProvider locale="en"><TurnView turn={next} liveStreaming={{ runningStatus: true }} /></LocaleProvider>,
+  ));
+  await render(turn);
   const status = container.querySelector('[role="status"]')!;
   assert.match(status.textContent, /Pondering/);
   assert.equal(status.getAttribute('aria-label'), 'Working…');
@@ -466,9 +472,11 @@ test('rotates working phrases on the elapsed clock without announcing each phras
   assert.match(status.textContent, /20s/);
   assert.equal(status.getAttribute('aria-label'), 'Working…');
   // Concrete activity takes precedence over the playful phrase.
-  await act(() => root.render(<LocaleProvider locale="en"><TurnRunningStatus startedAt={now} activityLabel="Clicking Save" /></LocaleProvider>));
-  assert.match(status.textContent, /Clicking Save/);
-  assert.doesNotMatch(status.textContent, /Tinkering/);
+  await render({ ...turn, tools: [{
+    toolUseId: 'cu-1', toolName: 'maka_computer', activityKind: 'computer', status: 'running', args: { app: 'Safari' },
+  }] });
+  assert.doesNotMatch(status.textContent ?? '', /Pondering|Tinkering/);
+  assert.notEqual(status.getAttribute('aria-label'), 'Working…');
 });
 
 test('keeps elapsed time while system motion preference changes the working phrase', async (context) => {
@@ -482,7 +490,12 @@ test('keeps elapsed time while system motion preference changes the working phra
     addEventListener(_type: string, listener: () => void) { listeners.add(listener); },
     removeEventListener(_type: string, listener: () => void) { listeners.delete(listener); },
   }) });
-  await act(() => root.render(<LocaleProvider locale="en"><TurnRunningStatus startedAt={now} /></LocaleProvider>));
+  const turn: TurnViewModel = {
+    turnId: 'turn-1', status: 'running', tools: [], notes: [], startedAt: now, timeline: [],
+  };
+  await act(() => root.render(
+    <LocaleProvider locale="en"><TurnView turn={turn} liveStreaming={{ runningStatus: true }} /></LocaleProvider>,
+  ));
   await act(() => context.mock.timers.tick(20_000));
   assert.equal(container.querySelector('.maka-turn-status-label')?.textContent, 'Pondering…');
   assert.equal(container.querySelector('.maka-turn-elapsed')?.textContent, '20s');

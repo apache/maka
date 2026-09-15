@@ -1029,7 +1029,7 @@ const WORKING_PHRASE_INTERVAL_MS = 20_000;
  * rare fallback path where streaming beat the user turn into the transcript;
  * the phrase then stands alone.
  */
-export function TurnRunningStatus(props: {
+function TurnRunningStatus(props: {
   startedAt?: number;
   activityLabel?: string;
 }) {
