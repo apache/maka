@@ -69,11 +69,20 @@ interface CodexCatalogEntry extends ExternalSessionSummary {
   rolloutPath: string;
 }
 
-interface CodexCatalogSnapshot {
-  readonly candidates: readonly RolloutCandidate[];
+interface CodexCatalogSnapshotBase {
   readonly queryKey: string;
   lastAccessedAt: number;
 }
+
+type CodexCatalogSnapshot =
+  | (CodexCatalogSnapshotBase & {
+      readonly kind: 'state_database';
+      readonly entries: readonly CodexCatalogEntry[];
+    })
+  | (CodexCatalogSnapshotBase & {
+      readonly kind: 'filesystem';
+      readonly candidates: readonly RolloutCandidate[];
+    });
 
 interface CodexThreadRow {
   id?: unknown;
@@ -146,24 +155,7 @@ export class CodexSessionAdapter implements ExternalSessionAdapter {
     const limit = query.limit ?? Number.MAX_SAFE_INTEGER;
     if (!Number.isSafeInteger(limit) || limit < 0) throw new Error('Invalid Codex catalog page');
     if (limit === 0) return { items: [], hasMore: false };
-
-    const offsetCursor = decodeOffsetCatalogCursor(query.cursor);
-    if (
-      offsetCursor !== undefined ||
-      (query.cursor === undefined && (await codexStateDbsNewestFirst(this.codexHome)).length > 0)
-    ) {
-      const offset = offsetCursor ?? 0;
-      const sessions = await this.listSessions({ ...query, offset, limit });
-      return {
-        items: sessions.map((summary, index) => ({
-          summary,
-          nextCursor: `o:${offset + index + 1}`,
-        })),
-        hasMore: sessions.length === limit,
-      };
-    }
-
-    return this.scanRolloutCatalogPage(query, limit);
+    return this.listCatalogSnapshotPage(query, limit);
   }
 
   async readSession(sessionId: string): Promise<ExternalMakaSession> {
@@ -286,7 +278,7 @@ export class CodexSessionAdapter implements ExternalSessionAdapter {
     return entries;
   }
 
-  private async scanRolloutCatalogPage(
+  private async listCatalogSnapshotPage(
     query: ExternalSessionCatalogPageQuery,
     limit: number,
   ): Promise<ExternalSessionCatalogPage> {
@@ -310,18 +302,38 @@ export class CodexSessionAdapter implements ExternalSessionAdapter {
       if (query.cursor !== undefined) throw new Error('Invalid Codex catalog cursor');
       token = randomBytes(12).toString('base64url');
       offset = 0;
-      snapshot = {
-        candidates: [
-          ...(await walkRolloutFiles(join(this.codexHome, 'sessions'), false)),
-          ...(query.includeArchived
-            ? await walkRolloutFiles(join(this.codexHome, 'archived_sessions'), true)
-            : []),
-        ].sort(compareRolloutCandidates),
-        queryKey,
-        lastAccessedAt: Date.now(),
-      };
+      const stateEntries = await this.readStateCatalogSnapshot(query);
+      snapshot = stateEntries
+        ? {
+            kind: 'state_database',
+            entries: stateEntries,
+            queryKey,
+            lastAccessedAt: Date.now(),
+          }
+        : {
+            kind: 'filesystem',
+            candidates: [
+              ...(await walkRolloutFiles(join(this.codexHome, 'sessions'), false)),
+              ...(query.includeArchived
+                ? await walkRolloutFiles(join(this.codexHome, 'archived_sessions'), true)
+                : []),
+            ].sort(compareRolloutCandidates),
+            queryKey,
+            lastAccessedAt: Date.now(),
+          };
       this.catalogSnapshots.set(token, snapshot);
       this.pruneCatalogSnapshots();
+    }
+
+    if (snapshot.kind === 'state_database') {
+      const end = Math.min(offset + limit, snapshot.entries.length);
+      const items = snapshot.entries.slice(offset, end).map((entry, index) => {
+        const { rolloutPath: _rolloutPath, ...summary } = entry;
+        return { summary, nextCursor: `f:${token}:${offset + index + 1}` };
+      });
+      const hasMore = end < snapshot.entries.length;
+      if (!hasMore) this.catalogSnapshots.delete(token);
+      return { items, hasMore };
     }
 
     const items: ExternalSessionCatalogPage['items'][number][] = [];
@@ -341,6 +353,22 @@ export class CodexSessionAdapter implements ExternalSessionAdapter {
     }
     this.catalogSnapshots.delete(token);
     return { items, hasMore: false };
+  }
+
+  private async readStateCatalogSnapshot(
+    query: ExternalSessionQuery,
+  ): Promise<CodexCatalogEntry[] | undefined> {
+    for (const dbPath of await codexStateDbsNewestFirst(this.codexHome)) {
+      const rows = await readCodexThreadRows(dbPath, query);
+      if (rows === undefined) continue;
+      const entries: CodexCatalogEntry[] = [];
+      for (const row of rows) {
+        const entry = await this.entryFromRow(row);
+        if (entry && matchesQuery(entry, query)) entries.push(entry);
+      }
+      return entries;
+    }
+    return undefined;
   }
 
   private pruneCatalogSnapshots(): void {
@@ -1038,13 +1066,6 @@ function catalogSnapshotQueryKey(query: ExternalSessionCatalogPageQuery): string
     includeArchived: query.includeArchived ?? false,
     text: query.text ?? null,
   });
-}
-
-function decodeOffsetCatalogCursor(cursor: string | undefined): number | undefined {
-  if (cursor === undefined || !cursor.startsWith('o:')) return undefined;
-  const offset = Number(cursor.slice(2));
-  if (!Number.isSafeInteger(offset) || offset < 0) throw new Error('Invalid Codex catalog cursor');
-  return offset;
 }
 
 function decodeSnapshotCatalogCursor(

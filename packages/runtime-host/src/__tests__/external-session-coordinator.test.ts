@@ -144,6 +144,79 @@ test('keeps a Codex filesystem catalog snapshot stable while an unseen rollout c
   }
 });
 
+test('keeps a Codex state database catalog snapshot stable while an unseen thread changes', async () => {
+  const codexHome = await mkdtemp(join(tmpdir(), 'maka-codex-state-catalog-snapshot-'));
+  try {
+    const directory = join(codexHome, 'sessions', '2026', '09', '15');
+    await mkdir(directory, { recursive: true });
+    const { DatabaseSync } = await import('node:sqlite');
+    const database = new DatabaseSync(join(codexHome, 'state_5.sqlite'));
+    try {
+      database.exec(`
+      CREATE TABLE threads (
+        id TEXT PRIMARY KEY,
+        rollout_path TEXT NOT NULL,
+        cwd TEXT,
+        name TEXT,
+        created_at_ms INTEGER,
+        updated_at_ms INTEGER,
+        archived INTEGER,
+        source TEXT
+      )
+    `);
+      const insert = database.prepare(`
+      INSERT INTO threads (
+        id, rollout_path, cwd, name, created_at_ms, updated_at_ms, archived, source
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+      for (let index = 0; index < 20; index += 1) {
+        const id = `snapshot-${String(index).padStart(2, '0')}`;
+        const path = join(directory, `rollout-2026-09-15T00-00-00-${id}.jsonl`);
+        await writeFile(
+          path,
+          `${JSON.stringify({
+            timestamp: '2026-09-15T00:00:00.000Z',
+            type: 'session_meta',
+            payload: { id, cwd: '/workspace/root', source: 'cli' },
+          })}\n`,
+        );
+        insert.run(id, path, '/workspace/root', id, index, index, 0, 'cli');
+      }
+
+      const adapter = createExternalSessionAdapterRegistry({ codex: { codexHome } }).require(
+        'codex',
+      );
+      const fixture = coordinatorFixture([adapter]);
+      const first = await fixture.coordinator.handlers['external-session.catalog.query'](
+        { adapterId: 'codex' },
+        context,
+      );
+      assert.ok(first.ok);
+      assert.deepEqual(
+        first.result.sessions.map(({ id }) => id),
+        Array.from({ length: 16 }, (_, index) => `snapshot-${String(19 - index).padStart(2, '0')}`),
+      );
+
+      database.prepare('UPDATE threads SET updated_at_ms = ? WHERE id = ?').run(100, 'snapshot-01');
+      const second = await fixture.coordinator.handlers['external-session.catalog.query'](
+        { adapterId: 'codex', cursor: first.result.nextCursor ?? undefined },
+        context,
+      );
+      assert.ok(second.ok);
+      const ids = [...first.result.sessions, ...second.result.sessions].map(({ id }) => id);
+      assert.equal(new Set(ids).size, 20);
+      assert.deepEqual(
+        ids,
+        Array.from({ length: 20 }, (_, index) => `snapshot-${String(19 - index).padStart(2, '0')}`),
+      );
+    } finally {
+      database.close();
+    }
+  } finally {
+    await rm(codexHome, { recursive: true, force: true });
+  }
+});
+
 test('advances the catalog cursor by source rows when an adapter row is not wire-safe', async () => {
   const summaries = Array.from({ length: 18 }, (_, index) => ({
     id: index === 5 ? 'invalid\u0000source' : `source-${index}`,
