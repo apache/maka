@@ -72,6 +72,9 @@ export class FramedByteStreamTransport implements RuntimeHostMessageTransport {
   readonly #queue: QueuedFrame[] = [];
   #queuedBytes = 0;
   #buffered = Buffer.alloc(0);
+  #bufferStorage = Buffer.alloc(0);
+  #searchedBytes = 0;
+  #nextNewline: number | undefined;
   #waiter: ReadWaiter | undefined;
   #failure: Error | undefined;
   #readTerminal: RuntimeHostTransportError | undefined;
@@ -156,16 +159,43 @@ export class FramedByteStreamTransport implements RuntimeHostMessageTransport {
       this.#failInboundOverflow();
       return;
     }
-    this.#buffered =
-      this.#buffered.byteLength === 0 ? Buffer.from(chunk) : Buffer.concat([this.#buffered, chunk]);
+    this.#appendIncoming(chunk);
     this.#drainInbound();
+  }
+
+  // Geometric growth copies an incomplete frame a bounded number of times;
+  // scanning resumes at the previous tail instead of revisiting every fragment.
+  #appendIncoming(chunk: Buffer): void {
+    const length = this.#buffered.byteLength + chunk.byteLength;
+    const start = this.#buffered.byteOffset - this.#bufferStorage.byteOffset;
+    if (this.#buffered.byteLength === 0 || start + length > this.#bufferStorage.byteLength) {
+      const capacity = Math.min(
+        MAX_BUFFERED_BYTES,
+        Math.max(length, this.#bufferStorage.byteLength * 2),
+      );
+      const storage = Buffer.allocUnsafe(capacity);
+      this.#buffered.copy(storage);
+      this.#bufferStorage = storage;
+      this.#buffered = storage.subarray(0, this.#buffered.byteLength);
+    }
+    const offset = this.#buffered.byteOffset - this.#bufferStorage.byteOffset;
+    chunk.copy(this.#bufferStorage, offset + this.#buffered.byteLength);
+    this.#buffered = this.#bufferStorage.subarray(offset, offset + length);
+  }
+
+  #findNewline(): number {
+    if (this.#nextNewline !== undefined) return this.#nextNewline;
+    const newline = this.#buffered.indexOf(0x0a, this.#searchedBytes);
+    this.#searchedBytes = this.#buffered.byteLength;
+    if (newline !== -1) this.#nextNewline = newline;
+    return newline;
   }
 
   #drainInbound(): void {
     if (this.#failure) return;
     try {
       while (true) {
-        const newline = this.#buffered.indexOf(0x0a);
+        const newline = this.#findNewline();
         if (newline === -1) {
           if (this.#buffered.byteLength > RUNTIME_HOST_MAX_MESSAGE_BYTES) {
             throw new RuntimeHostProtocolError(
@@ -188,16 +218,22 @@ export class FramedByteStreamTransport implements RuntimeHostMessageTransport {
           encodedBytes === this.#buffered.byteLength
             ? Buffer.alloc(0)
             : this.#buffered.subarray(encodedBytes);
+        this.#searchedBytes = 0;
+        this.#nextNewline = undefined;
+        if (this.#buffered.byteLength === 0) this.#bufferStorage = Buffer.alloc(0);
         const frames = this.#decoder.push(encoded);
         if (frames.length !== 1) {
           throw new Error('Runtime Host decoder did not produce one complete frame');
         }
         this.#deliver(frames[0], encodedBytes);
       }
-      if (this.#ended && !this.#decoderEnded && this.#buffered.indexOf(0x0a) === -1) {
+      if (this.#ended && !this.#decoderEnded && this.#findNewline() === -1) {
         if (this.#buffered.byteLength !== 0) {
           this.#decoder.push(this.#buffered);
           this.#buffered = Buffer.alloc(0);
+          this.#bufferStorage = Buffer.alloc(0);
+          this.#searchedBytes = 0;
+          this.#nextNewline = undefined;
         }
         this.#decoder.end();
         this.#decoderEnded = true;
@@ -224,7 +260,7 @@ export class FramedByteStreamTransport implements RuntimeHostMessageTransport {
   }
 
   #updateReadFlow(): void {
-    const nextNewline = this.#buffered.indexOf(0x0a);
+    const nextNewline = this.#findNewline();
     const nextFrameBytes = nextNewline === -1 ? undefined : nextNewline + 1;
     const blocked =
       this.#queue.length >= MAX_QUEUED_FRAMES ||
