@@ -507,13 +507,19 @@ function readMarkdownLink(source: string, index: number): MarkdownLinkScan {
     return match(tailEnd);
   }
   if (tail === '[') {
-    const refEnd = findLabelEnd(source, labelEnd + 2);
-    if (refEnd === 'pending') return { kind: 'pending', end: source.length };
-    if (typeof refEnd !== 'number') return match(refEnd.end);
+    // The identifier scan resumes the same way the first label does: its
+    // pending state is forwarded so streamed updates continue it instead of
+    // restarting at the reference opener on every update. An invalid
+    // identifier is definitive, so it keeps the old match-and-settle path.
+    const refScan = scanLabel(source, initialLabelScanState(labelEnd + 2));
+    if (refScan.kind === 'pending') {
+      return { kind: 'pending', end: source.length, labelState: refScan.state };
+    }
+    if (refScan.kind === 'invalid') return match(refScan.end);
     return {
-      ...match(refEnd + 1),
+      ...match(refScan.end + 1),
       refLabelStart: labelEnd + 2,
-      refLabelEnd: refEnd,
+      refLabelEnd: refScan.end,
     };
   }
   return match(labelEnd + 1);
@@ -563,6 +569,15 @@ type LabelScanResult =
   | { kind: 'closed'; end: number }
   | { kind: 'invalid'; end: number };
 
+/**
+ * Find the `]` closing a link label opened before `from`, skipping escapes,
+ * code spans, and nested labels. Blank lines and excessive nesting can never
+ * form a label here; running out of input means more text may still complete
+ * it. There is deliberately no length bound: a close found anywhere resolves
+ * and settles, so incomplete input is the only case that rescans per chunk.
+ * Both the first label and reference identifiers scan through here, so a
+ * pending second label resumes the same way the first one does.
+ */
 function scanLabel(source: string, st: LabelScanState): LabelScanResult {
   const pending = (): LabelScanResult => ({ kind: 'pending', state: st });
   while (st.index < source.length) {
@@ -641,23 +656,6 @@ function scanLabel(source: string, st: LabelScanState): LabelScanResult {
     st.index++;
   }
   return pending();
-}
-
-/**
- * Find the `]` closing a link label opened before `from`, skipping escapes,
- * code spans, and nested labels. Blank lines and excessive nesting can never
- * form a label here; running out of input means more text may still complete
- * it. There is deliberately no length bound: a close found anywhere resolves
- * and settles, so incomplete input is the only case that rescans per chunk.
- */
-function findLabelEnd(
-  source: string,
-  from: number,
-): number | 'pending' | { kind: 'invalid'; end: number } {
-  const result = scanLabel(source, initialLabelScanState(from));
-  if (result.kind === 'pending') return 'pending';
-  if (result.kind === 'invalid') return result;
-  return result.end;
 }
 
 /**
