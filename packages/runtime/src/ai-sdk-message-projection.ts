@@ -18,6 +18,7 @@
  */
 
 import type { AttachmentRef, DirectoryReference, QuoteRef, StorageRef } from '@maka/core/events';
+import type { AssistantThinkingPart } from '@maka/core/session';
 import {
   MAX_PROVIDER_IMAGE_REQUEST_BYTES,
   PROVIDER_IMAGE_BUDGET_EXCEEDED_MESSAGE,
@@ -66,6 +67,42 @@ export interface AiSdkMessageProjectionInput {
   supportsVision?: boolean;
   readAttachmentBytes?: AttachmentByteReader;
   maxProviderImageRequestBytes?: number;
+}
+
+function isRedactedThinking(providerOptions: AssistantThinkingPart['providerOptions']): boolean {
+  const anthropic = providerOptions?.anthropic;
+  return (
+    !!anthropic &&
+    typeof anthropic === 'object' &&
+    !Array.isArray(anthropic) &&
+    typeof (anthropic as { redactedData?: unknown }).redactedData === 'string'
+  );
+}
+
+function encryptedResponsesReasoning(
+  providerOptions: AssistantThinkingPart['providerOptions'],
+): { itemId: string; reasoningEncryptedContent: string } | undefined {
+  const openai = providerOptions?.openai;
+  if (!openai || typeof openai !== 'object' || Array.isArray(openai)) return undefined;
+  const { itemId, reasoningEncryptedContent } = openai as {
+    itemId?: unknown;
+    reasoningEncryptedContent?: unknown;
+  };
+  return typeof itemId === 'string' &&
+    itemId.length > 0 &&
+    typeof reasoningEncryptedContent === 'string' &&
+    reasoningEncryptedContent.length > 0
+    ? { itemId, reasoningEncryptedContent }
+    : undefined;
+}
+
+export function hasFinalizedReasoning(part: AssistantThinkingPart): boolean {
+  return (
+    !!part.signature ||
+    isRedactedThinking(part.providerOptions) ||
+    decodePlaintextResponsesReasoningState(part.providerOptions).kind === 'valid' ||
+    encryptedResponsesReasoning(part.providerOptions) !== undefined
+  );
 }
 
 function isImageToolResult(
@@ -231,13 +268,7 @@ export class AiSdkMessageProjection {
             }
           : undefined;
       }
-      const anthropic = item.providerOptions?.anthropic;
-      if (
-        anthropic &&
-        typeof anthropic === 'object' &&
-        !Array.isArray(anthropic) &&
-        typeof (anthropic as { redactedData?: unknown }).redactedData === 'string'
-      ) {
+      if (isRedactedThinking(item.providerOptions)) {
         return replaySupport.signedThinking
           ? {
               part: {
@@ -285,31 +316,17 @@ export class AiSdkMessageProjection {
         return { part: { type: 'reasoning' as const, text: item.text } };
       }
       if (replaySupport.responsesReasoning === 'encrypted-content') {
-        const openai = item.providerOptions?.openai;
-        if (openai && typeof openai === 'object' && !Array.isArray(openai)) {
-          const { itemId, reasoningEncryptedContent } = openai as {
-            itemId?: unknown;
-            reasoningEncryptedContent?: unknown;
-          };
-          if (
-            typeof itemId === 'string' &&
-            itemId.length > 0 &&
-            typeof reasoningEncryptedContent === 'string' &&
-            reasoningEncryptedContent.length > 0
-          ) {
-            return {
-              part: {
-                type: 'reasoning' as const,
-                text: item.text,
-                providerOptions: {
-                  openai: {
-                    itemId,
-                    reasoningEncryptedContent,
-                  },
-                },
+        const encrypted = encryptedResponsesReasoning(item.providerOptions);
+        if (encrypted) {
+          return {
+            part: {
+              type: 'reasoning' as const,
+              text: item.text,
+              providerOptions: {
+                openai: encrypted,
               },
-            };
-          }
+            },
+          };
         }
       }
       if (!replaySupport.unsignedThinking) return undefined;

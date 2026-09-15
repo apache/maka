@@ -35,7 +35,7 @@ import { AstryxLocaleProvider } from '../astryx-i18n.js';
 import { ChatSurfaceLayout } from '../chat-surface-layout.js';
 import { ChatView } from '../chat-view.js';
 import { LocaleProvider } from '../locale-context.js';
-import { PromptAnchorRail } from '../prompt-anchor-rail.js';
+import { PromptAnchorRail, type PromptAnchorRailTurn } from '../prompt-anchor-rail.js';
 import { TranscriptScrollAuthorityProvider } from '../transcript-scroll-authority.js';
 
 const originalGlobals = {
@@ -243,4 +243,38 @@ test('portals unloaded landmarks into the layout host and keeps them actionable'
   assert.match(mount.innerHTML, /data-prompt-turn-id="turn-2"/);
   assert.doesNotMatch(mount.innerHTML, /data-resident|Not currently loaded|aria-disabled="true"/);
   assert.match(mount.innerHTML, /aria-label="Jump to prompt: Prompt 2"/);
+});
+
+test('a retained tick uses updated content, decoration, and navigation callbacks', async () => {
+  const { mount, window } = harness();
+  const root = createRoot(mount);
+  mountedRoot = root;
+  const scrollRef = { current: null };
+  const turns: PromptAnchorRailTurn[] = Array.from({ length: 3 }, (_, index) => ({
+    turnId: `turn-${index}`, label: `Prompt ${index}`, sequence: index,
+  }));
+  const calls: string[] = [];
+  const render = (items: PromptAnchorRailTurn[], navigate: (turn: PromptAnchorRailTurn) => void) =>
+    createElement(LocaleProvider, {
+      locale: 'en', children: createElement(ChatSurfaceLayout, {
+        composer: null, children: createElement(PromptAnchorRail, {
+          turns: items, scrollRef, onNavigateTurn: navigate,
+          onNavigateStart: () => calls.push('release'),
+        }),
+      }),
+    });
+  await act(() => root.render(render(turns, () => calls.push('old'))));
+  const tick = mount.querySelector('[data-prompt-turn-id="turn-1"]')!;
+  const updated = turns.map((turn, index) => index === 1
+    ? { ...turn, label: 'Updated prompt', reply: 'Updated answer', sequence: 42, highlighted: true }
+    : turn);
+  await act(() => root.render(render(updated, (turn) => {
+    assert.equal(turn, updated[1]);
+    calls.push(`new:${turn.sequence}`);
+  })));
+  assert.equal(mount.querySelector('[data-prompt-turn-id="turn-1"]'), tick);
+  assert.equal(tick.getAttribute('aria-label'), 'Jump to prompt: Updated prompt');
+  assert.equal(tick.getAttribute('data-highlighted'), 'true');
+  await act(() => { tick.dispatchEvent(new window.Event('click', { bubbles: true })); });
+  assert.deepEqual(calls, ['release', 'new:42']);
 });

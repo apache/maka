@@ -26,7 +26,10 @@ import { List, ListItem } from '@astryxdesign/core/List';
 import { SegmentedControl, SegmentedControlItem } from '@astryxdesign/core/SegmentedControl';
 import { TextInput } from '@astryxdesign/core/TextInput';
 import { HStack, VStack } from '@astryxdesign/core/Stack';
-import { normalizeExternalSessionQueryText } from '@maka/core/external-session';
+import {
+  normalizeExternalSessionQueryText,
+  type ExternalSessionLimit,
+} from '@maka/core/external-session';
 import { uiLocaleToIntlLocale } from '@maka/core/ui-locale';
 import type {
   DesktopRuntimeHostRef,
@@ -209,6 +212,7 @@ type ImportBatchOutcome = {
    * once for the whole run.
    */
   noModel: boolean;
+  sourceLimits: readonly { name: string; limit: ExternalSessionLimit }[];
 };
 
 const EMPTY_IMPORT_BATCH_OUTCOME: ImportBatchOutcome = {
@@ -217,6 +221,7 @@ const EMPTY_IMPORT_BATCH_OUTCOME: ImportBatchOutcome = {
   failed: [],
   unknown: [],
   noModel: false,
+  sourceLimits: [],
 };
 
 function recordImportBatchResult(
@@ -734,6 +739,8 @@ export function ImportTasksSettingsPage(props: {
             setImportError(copy.importFailedNoModel);
           } else if (outcome.reason === 'source_unreadable') {
             setImportError(copy.importFailedSourceUnreadable);
+          } else if (outcome.reason === 'source_limit_exceeded') {
+            setImportError(copy.importFailedSourceLimit(outcome.limit));
           } else {
             const _exhaustive: never = outcome.reason;
             return _exhaustive;
@@ -753,6 +760,9 @@ export function ImportTasksSettingsPage(props: {
       adapterId,
       catalog.sessions.length,
       copy.importFailedFallback,
+      copy.importFailedNoModel,
+      copy.importFailedSourceUnreadable,
+      copy.importFailedSourceLimit,
       locale,
       mountedRef,
       props,
@@ -854,6 +864,11 @@ export function ImportTasksSettingsPage(props: {
               // A missing model blocks every row identically; the summary raises
               // its actionable banner once for the whole run.
               outcome = { ...outcome, noModel: true };
+            } else if (result.reason === 'source_limit_exceeded') {
+              outcome = {
+                ...outcome,
+                sourceLimits: [...outcome.sourceLimits, { name: session.name, limit: result.limit }],
+              };
             } else if (result.reason !== 'source_unreadable') {
               const _exhaustive: never = result.reason;
               return _exhaustive;
@@ -1074,6 +1089,9 @@ export function ImportTasksSettingsPage(props: {
                     // The one globally-actionable failure: name the fix that
                     // unblocks every row at once.
                     importRun.summary.noModel ? copy.importFailedNoModel : null,
+                    ...importRun.summary.sourceLimits.map(({ name, limit }) =>
+                      `${name}: ${copy.importFailedSourceLimit(limit)}`,
+                    ),
                   ]
                     .filter(Boolean)
                     .join(' ') || undefined

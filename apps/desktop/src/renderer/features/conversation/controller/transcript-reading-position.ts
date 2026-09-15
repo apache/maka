@@ -28,6 +28,7 @@ interface TranscriptRangeStore<Message> {
     readonly hostEpoch?: string;
   };
   sequenceForTurn(turnId: string, edge?: 'first' | 'last'): number | null;
+  pendingNavigation(): number | undefined;
   newestDurableUserSequence(): number | null;
   snapshot(): { readonly messages: readonly Message[] };
 }
@@ -282,9 +283,10 @@ export function restoreSessionTranscriptRange<Message>(options: {
     const residentSequence = currentTranscriptRange(controller, sessionId)
       ? controller.store.sequenceForTurn(target.turnId)
       : null;
-    // A resident target needs no page: the scroller reveals it from the window
-    // the Renderer already holds.
-    admitted = residentSequence !== null || target.sequence === undefined
+    // A resident target needs no page unless an older replacement is still
+    // pending. In that case this navigation must supersede the old read too.
+    admitted = (residentSequence !== null && controller.store.pendingNavigation() === undefined)
+      || target.sequence === undefined
       ? Promise.resolve()
       : controller.loadAround(target.sequence);
   } catch (error) {

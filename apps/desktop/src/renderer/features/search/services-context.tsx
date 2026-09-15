@@ -17,28 +17,17 @@
  * under the License.
  */
 
-import { createDefaultRuntimePolicy } from '@maka/core/runtime-policy';
+import type { SearchError, SearchRequest, SearchResult } from '@maka/core/search';
+import { createServicesContext } from '../../application/contracts/feature-services.js';
 
-export function makaEvalRuntimePolicyDocument(proxyUrl?: string) {
-  const policy = createDefaultRuntimePolicy();
-  const proxy = proxyUrl ? new URL(proxyUrl) : undefined;
-  return {
-    schemaVersion: 2 as const,
-    revision: 0,
-    policy: {
-      ...policy,
-      ...(proxy
-        ? {
-            networkProxy: {
-              ...policy.networkProxy,
-              enabled: true,
-              protocol: 'http' as const,
-              host: proxy.hostname,
-              port: Number(proxy.port || 80),
-            },
-          }
-        : {}),
-      privacy: { incognitoActive: true },
-    },
-  };
+export interface SearchServices {
+  searchThread(request: SearchRequest, requestId?: string): Promise<SearchResult[] | SearchError>;
+  cancelThread(requestId: string): Promise<void>;
+}
+
+const { Provider, useServices } = createServicesContext<SearchServices>('SearchServicesProvider');
+
+export const SearchServicesProvider = Provider;
+export function useSearchServices(): SearchServices {
+  return useServices();
 }

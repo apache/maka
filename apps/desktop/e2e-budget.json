@@ -73,13 +73,9 @@
       "tests": 1,
       "electron": "One traversal exercises real Host transcript paging through preload/IPC, bounded retained ranges, reader displacement when pages install, and a return-to-tail Host read. Fixture motion runs in the TranscriptRenderCost story."
     },
-    "scroll-geometry.spec.ts": {
-      "tests": 1,
-      "electron": "a real Host history batch arrives during a held native scrollbar drag; release must publish that range while preserving the reading Turn and allow return to latest"
-    },
     "workhub-layout.spec.ts": {
-      "tests": 2,
-      "electron": "WorkHub model configuration and attachment sending cross the Host boundary; the compact native window grows to contain the model overlay without moving composer controls on screen, and pointer dragging scrolls the no-drag wheel instead of moving the frameless window; native floating preserves macOS Dock visibility; a held-open Host Turn verifies immediate prompt visibility, durable transcript handoff and persistence after renderer reload"
+      "tests": 3,
+      "electron": "WorkHub model configuration and attachment sending cross the Host boundary; the Project New task action must dismiss the native dock owned by a separate WebContentsView; the compact native window grows only with the inline composer wheel and keeps its bottom anchor; opening context details expands the native window, while the thinking menu stays within the compact bounds, and pointer dragging scrolls the no-drag wheel instead of moving the frameless window; native floating preserves macOS Dock visibility; a held-open Host Turn verifies immediate prompt visibility, durable transcript handoff and persistence after renderer reload"
     },
     "workhub-reconstruction.spec.ts": {
       "tests": 1,

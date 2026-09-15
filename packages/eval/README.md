@@ -46,7 +46,16 @@ The built-in Harbor and Pier executors use one relay Agent. The framework prepar
 
 Maka subjects ask the Runtime Host client to run one owned execution in a dedicated Host root. Session, Turn, Goal and continuation semantics remain inside Runtime Host. External subjects declare a command and arguments, and may add non-secret environment values, target-to-source bindings for declared credentials, and an explicit result contract. Omitted credential bindings use declared names unchanged. The generic `exit-code` contract discards unstructured stdout and records null usage and cost. The structured `protocol-v1` contract is restricted to the bundled external wrapper so the shared relay can separate a bounded result frame from Harbor/Pier's merged process output; cohort-specific wrappers do not gain Runtime authority.
 
+The bundled `harbor-maka-subject.js` asks Host to persist privacy mode and the environment's `HTTPS_PROXY` configuration before execution services start. Host stores proxy passwords in its credential vault. Connection discovery and execution use that same State Root, including after a Host restart; Eval does not write or rename policy files.
+
+For an explicit provider, add `providerType` and `apiKeyEnvironment` to the Maka subject config. The latter must name a credential in the subject's `credentials` list. For example, `"providerType": "moonshot-global", "apiKeyEnvironment": "MOONSHOT_API_KEY"` uses the existing `connectionSlug`, `baseUrl`, and `model` fields to onboard and verify the connection through Host. Keep `shimPath` pointed at the bundled shim; a provider-specific bootstrap script is unnecessary. Existing configurations without these two fields continue to use Host's environment-seeded connections.
+
 The result kernel contains only score, normalized usage, attributable cost, duration, status, and artifacts. Specs carry every semantic setting; environment variables are reserved for credentials and machine-local paths.
+
+The mock-backed multi-VM coordinator and deterministic fault simulator are documented in
+[Fleet scheduling](FLEET.md). They expose a separate library API; `maka eval run` retains its
+existing local scheduling and file format. Remote VM transport and real fleet execution adapters
+are not connected yet.
 
 ## Experiment spec format
 
@@ -184,9 +193,10 @@ A subject that exhausts the framework timeout is reported as `subject_failed` wi
 Maka benchmark subjects freeze a versioned Session profile. `headless-coding-v1` is persisted in
 the Session header, so later turns and backend rebuilds retain the same contract. It fixes the
 system prompt, disables product identity/personalization/skills/workspace-memory prompt fragments,
-admits only `Bash`, `Read`, `Write`, `Edit`, `Glob`, `Grep`, and `apply_patch` as tool candidates,
-and exposes a foreground-only Bash schema without `run_in_background` or `pty`. Provider-specific
-routing remains authoritative: DeepSeek Responses exposes `apply_patch` instead of `Write` and
+and admits only `Bash`, `StopBackgroundTask`, `WriteStdin`, `Read`, `Write`, `Edit`, `Glob`,
+`Grep`, and `apply_patch` as tool candidates. Bash is the product tool unchanged; because the
+subject runs with Full access, it carries no sandbox boundary declaration and the widening tool
+is absent, as in any Full access root session. Provider-specific routing remains authoritative: DeepSeek Responses exposes `apply_patch` instead of `Write` and
 `Edit`, and `Read` also accepts Session-scoped Maka tool-result paths. A real
 `hosted.execution.start` regression test pins SHA-256 hashes for the first main provider request's
 developer prompt and complete tool schema.

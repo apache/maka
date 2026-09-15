@@ -58,7 +58,9 @@ test('production layout: document mount and older history', async () => {
         ).observe({ type: 'longtask', buffered: true });
       });
       const ready = async (turn: number) => {
-        await expect(page.locator(`[data-turn-id="turn-prompt-rail-${turn}"]`)).toHaveCount(1);
+        await expect(
+          page.locator(`.maka-turn[data-turn-id="turn-prompt-rail-${turn}"]`),
+        ).toHaveCount(1);
         await page.evaluate(() => document.fonts.ready);
         await expect(page.locator('.maka-markdown-pending')).toHaveCount(0);
         await page.evaluate(

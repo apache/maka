@@ -25,7 +25,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { AstryxLocaleProvider, LocaleProvider, ToastProvider } from '@maka/ui';
 import type { DesktopRuntimeHostRef } from '../../preload/bridge-contract.js';
 import type { DesktopExternalSessionCatalogItem } from '../../preload/external-session-catalog.js';
-import type { ExternalSessionImportFailureReason } from '../../preload/external-session-import-result.js';
+import type { ExternalSessionImportIpcResult } from '../../preload/external-session-import-result.js';
 import {
   SessionBundleServicesProvider,
   SessionBundleTasks,
@@ -158,6 +158,31 @@ describe('ImportTasksSettingsPage durable import state', () => {
 
     await act(async () => harness.root.unmount());
   });
+
+  for (const [locale, label, expected] of [
+    ['en', 'Import', /single record size allows at most 67,108,864 bytes/],
+    ['zh-CN', '导入', /单条记录大小最多 67,108,864 字节/],
+    ['zh-TW', '匯入', /單筆記錄大小最多 67,108,864 位元組/],
+  ] as const) {
+    it(`shows the exact source limit without generic retry advice in ${locale}`, async () => {
+      const harness = await renderPage({
+        locale,
+        catalog: catalog(externalSession()),
+        importResult: {
+          ok: false,
+          reason: 'source_limit_exceeded',
+          limit: { kind: 'record_bytes', max: 67_108_864 },
+        },
+      });
+      const button = buttonWithText(harness.container, label);
+      assert.ok(button);
+      await act(async () => button.click());
+      assert.match(harness.container.textContent, expected);
+      assert.doesNotMatch(harness.container.textContent, /Check the source and try again|请检查来源后重试|請檢查來源後重試|Check the import result/);
+      assert.equal(harness.listCalls(), 1);
+      await act(async () => harness.root.unmount());
+    });
+  }
 
   it('uses catalog in-flight state after remount to disable the source row', async () => {
     const harness = await renderPage({
@@ -1253,8 +1278,8 @@ async function renderPage(options: {
   adapterIds?: string[];
   bySource?: Record<string, Array<CatalogResult | Error | Promise<CatalogResult>>>;
   importResult?:
-    | { ok: false; reason: ExternalSessionImportFailureReason }
-    | Promise<{ ok: false; reason: ExternalSessionImportFailureReason }>;
+    | Extract<ExternalSessionImportIpcResult, { ok: false }>
+    | Promise<Extract<ExternalSessionImportIpcResult, { ok: false }>>;
   /**
    * Per-source answers for a batch: `ok` lands, `unknown` is the Host not
    * answering, `throw` is a rejection. Keyed by source session id, because a
@@ -1263,7 +1288,7 @@ async function renderPage(options: {
   importBySource?: Record<string, 'ok' | 'unknown' | 'throw' | 'no_model' | 'source_unreadable'>;
   onOpenImported?: (sessionId: string) => void;
   offersBundleSource?: boolean;
-  locale?: 'en' | 'zh-CN';
+  locale?: 'en' | 'zh-CN' | 'zh-TW';
 }): Promise<{
   container: HTMLElement;
   root: Root;
@@ -1575,6 +1600,28 @@ describe('ImportTasksSettingsPage batch import', () => {
     assert.doesNotMatch(text, /could not be imported/);
     // It surfaces through the unconfirmed banner, which owns the retry.
     assert.match(text, /unconfirmed|Unconfirmed|outcome/i);
+  });
+
+  it('keeps source limit details in the batch summary after the catalog refresh', async () => {
+    const harness = await renderPage({
+      catalog: catalog(externalSession({ name: 'Oversized conversation' })),
+      importResult: {
+        ok: false,
+        reason: 'source_limit_exceeded',
+        limit: { kind: 'records', max: 1_000_000 },
+      },
+    });
+    await tick(masterBox(harness.container), true);
+    const run = buttonWithText(harness.container, 'Import selected');
+    assert.ok(run);
+    await act(async () => run.click());
+    assert.equal(harness.listCalls(), 2);
+    const text = harness.container.textContent ?? '';
+    assert.match(text, /No conversation was imported/);
+    assert.match(text, /1 more could not be imported/);
+    assert.match(text, /Oversized conversation: .*record count allows at most 1,000,000/);
+    assert.doesNotMatch(text, /Check the import result|Check the source and try again/);
+    await act(async () => harness.root.unmount());
   });
 
   it('counts code-classified batch failures as failed, not unconfirmed, and raises the model banner', async () => {

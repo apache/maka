@@ -21,10 +21,10 @@
 
 .maka-model-wheel-anchor { display: inline-flex; min-width: 0; max-width: 100%; }
 .maka-model-wheel-anchor > button { min-width: 0; max-width: 100%; }
-.maka-model-wheel-anchor[data-open='true'] > button { width: 100%; }
-.maka-model-wheel-popup { border-radius: var(--radius-container); background: var(--background-elevated); box-shadow: var(--shadow-med); }
+.maka-model-wheel-anchor[data-open='true'] > button { visibility: hidden; }
+.maka-model-wheel-expanded { border-radius: 10px; background: color-mix(in oklch, var(--background-elevated) 94%, transparent); backdrop-filter: blur(12px); }
 .maka-model-wheel { position: relative; width: min(264px, 55vw); max-width: 100%; }
-.maka-model-wheel::before { content: ''; position: absolute; inset: 44px 0; border-radius: 10px; background: color-mix(in oklch, var(--foreground) 6%, transparent); pointer-events: none; }
+.maka-model-wheel::before { content: ''; position: absolute; inset: 50% 0 auto; height: 44px; translate: 0 -50%; border-radius: 10px; background: color-mix(in oklch, var(--foreground) 6%, transparent); pointer-events: none; }
 .maka-model-wheel-viewport { position: relative; box-sizing: border-box; overflow-y: auto; overscroll-behavior: contain; scroll-snap-type: y mandatory; scrollbar-width: none; mask-image: linear-gradient(transparent, black 32%, black 68%, transparent); outline: none; }
 .maka-model-wheel-viewport:focus-visible { outline: var(--focus-ring-width) solid var(--focus-ring); outline-offset: calc(-1 * var(--focus-ring-width)); }
 .maka-model-wheel-viewport[data-dragging='true'] { scroll-snap-type: none; cursor: grabbing; }
@@ -269,14 +269,34 @@
   color: var(--muted-foreground);
   font: var(--maka-text-body);
   list-style: none;
-  cursor: pointer;
 }
 .maka-processing-summary::-webkit-details-marker { display: none; }
 .maka-processing-summary:hover { color: var(--foreground); }
 .maka-processing-summary:focus-visible { outline: var(--focus-ring-width) solid var(--focus-ring); outline-offset: calc(-1 * var(--focus-ring-width)); }
-.maka-processing-summary > svg { flex-shrink: 0; }
+.maka-processing-summary > svg { flex-shrink: 0; transition: transform var(--duration-fast) var(--ease-standard); }
+.maka-processing-summary .maka-turn-processing { margin: 0; }
+.maka-processing-summary[aria-disabled='true']:hover { color: var(--muted-foreground); }
 .maka-processing-sequence[open] > .maka-processing-summary > svg { transform: rotate(90deg); }
 .maka-processing-content { display: flex; min-width: 0; flex-direction: column; gap: 8px; padding-block: 12px 4px; }
+/* An empty disclosure is only its summary row. */
+.maka-processing-content:empty { display: none; }
+/* Match Astryx ChatToolCalls' grid disclosure motion. The native details
+   content remains rendered through exit, without a second open state or timer.
+   Unsupported browsers retain the native immediate disclosure. */
+@supports selector(::details-content) {
+  .maka-processing-sequence::details-content {
+    display: grid;
+    grid-template-rows: 0fr;
+    transition: grid-template-rows var(--duration-medium) var(--ease-standard),
+      content-visibility var(--duration-medium) allow-discrete;
+  }
+  .maka-processing-sequence[open]::details-content { grid-template-rows: 1fr; }
+  .maka-processing-clip { min-height: 0; overflow: hidden; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .maka-processing-summary > svg { transition: none; }
+  .maka-processing-sequence::details-content { transition: none; }
+}
 .maka-deep-thinking { min-width: 0; }
 /* Reasoning uses the same safe Markdown pipeline as answers, then lowers its
    visual weight inside the disclosure. Body layout stays with the upstream

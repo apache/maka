@@ -70,7 +70,6 @@ import {
 } from './history-compact-error.js';
 import { createHash } from 'node:crypto';
 import type { ModelMessage, NormalizedUsage } from './model-protocol.js';
-import type { ModelAdapter } from './model-adapter.js';
 import type {
   RequestProjection,
   RequestProjectionContext,
@@ -157,7 +156,6 @@ export interface AiSdkCompactionDeps {
   targetConnectionId: string | undefined;
   targetProviderStateIdentity: `sha256:${string}` | undefined;
   now: () => number;
-  modelAdapter: ModelAdapter;
   /**
    * A ready tracker for a compaction call that has none of its own. The backend
    * hands over the built tracker rather than the capture, attempt, and id sinks
@@ -190,7 +188,6 @@ export class AiSdkCompaction {
   private readonly targetConnectionId: string | undefined;
   private readonly targetProviderStateIdentity: `sha256:${string}` | undefined;
   private readonly now: () => number;
-  private readonly modelAdapter: ModelAdapter;
   private readonly createProviderRequestTracker: (input: {
     turnId: string;
     callKind: ModelCallKind;
@@ -222,7 +219,6 @@ export class AiSdkCompaction {
     this.targetConnectionId = deps.targetConnectionId;
     this.targetProviderStateIdentity = deps.targetProviderStateIdentity;
     this.now = deps.now;
-    this.modelAdapter = deps.modelAdapter;
     this.createProviderRequestTracker = deps.createProviderRequestTracker;
     this.materializeRuntimeReplayPlan = deps.materializeRuntimeReplayPlan;
     this.canReplayProviderNative = deps.canReplayProviderNative;
@@ -492,7 +488,9 @@ export class AiSdkCompaction {
         const route = invocation.opening.route;
         return {
           runId: invocation.runId,
-          ...(route.provenance === 'runtime' ? { connectionId: route.llmConnectionId } : {}),
+          ...(route.provenance === 'runtime' && route.backendKind !== 'plugin-executor'
+            ? { connectionId: route.llmConnectionId }
+            : {}),
           modelId: route.modelId,
         };
       })
@@ -833,7 +831,7 @@ export class AiSdkCompaction {
    * the next request neither describes (tool results, user text, images
    * appended since) is judged by the provider when the request goes out. This
    * hook never terminates the turn: every failure fails open with a diagnostic
-   * and the request is sent; a rejection is recovered by one reactive fold
+   * and the request is sent; a rejection is recovered by a reactive fold
    * (#4559).
    */
   public buildMidTurnCapacityCompactProjection(
@@ -911,10 +909,9 @@ export class AiSdkCompaction {
         state.capacity !== undefined &&
         state.baselineTokens !== undefined &&
         state.baselineTokens + state.replyReserveTokens >= state.capacity;
-      if (!overWindow || state.compactionAttemptedThisSend) {
+      if (!overWindow) {
         return keepProjection();
       }
-      state.compactionAttemptedThisSend = true;
       const activeToolsForStep = options.resolveDispatch(options.activeTools).activeTools;
       // Fold a safe completed prefix of the durable turn ledger into a
       // replacement projection (validate → persist), shared with the reactive
@@ -937,13 +934,12 @@ export class AiSdkCompaction {
       }
       // The fold replaced the request; the baseline described the old one.
       // The next accepted request is the first measurement of the new shape.
-      state.compactionAppliedThisSend = true;
       state.baselineTokens = undefined;
       acceptedProjection = {
         sourceSignatures: incomingMessages.map(modelMessageSignature),
         projectedMessages: outcome.replacementMessages,
       };
-      state.replacedStepNumber = options.stepNumber;
+      state.stepShaping.add('fold');
       onDiagnosticPatch(
         buildActiveRequestCompactionDiagnosticPatch({
           checkpoint: outcome.checkpoint,
@@ -962,10 +958,10 @@ export class AiSdkCompaction {
    * messages — the compaction core shared by the proactive projection stage
    * (issue #882 PR 1) and the reactive overflow recovery (PR 2). It waits for
    * the seq-ack durability boundary, reads the ledger, plans the fold, then
-   * validates (materializable ∧ smaller than the reference request ∧
-   * replay-admissible) and persists BEFORE returning the replacement, so a
-   * recovery re-projection never re-injects a covered raw span. It only shapes:
-   * the pass/terminate verdict and the diagnostic emission are the caller's.
+   * validates (materializable ∧ replay-admissible) and persists BEFORE
+   * returning the replacement, so a recovery re-projection never re-injects a
+   * covered raw span. It only shapes: the pass/terminate verdict and the
+   * diagnostic emission are the caller's.
    */
   public async compactActiveRequestHistory(input: {
     turnId: string;
@@ -1121,7 +1117,8 @@ export class AiSdkCompaction {
       // next step evaluates the same condition and dispatches the same doomed
       // summarizer call: a provider that answers slowly and fails (kimi's HTTP
       // 200 with an error body) produced 15 such calls over 47 minutes before
-      // one main request (#4634). One attempt per send, then fail open (#4559).
+      // one main request (#4634). The latch covers the whole Turn and only
+      // fail-opens; a successful fold spends no part of it (#4559).
       state.summarizerFailure = diagnosticReason;
       return {
         decision: 'fail',
@@ -1183,7 +1180,6 @@ export class AiSdkCompaction {
         // Memory extraction is fail-open and must never perturb Compaction.
       }
     }
-    state.previousCheckpoint = plan.checkpoint;
     state.projectionCheckpoint = plan.checkpoint;
     return {
       decision: 'compacted',
@@ -1197,18 +1193,18 @@ export class AiSdkCompaction {
   /**
    * Reactive overflow recovery (issue #882 PR 2): the second line of defense.
    * When a provider rejects a request with a context-length error, fold the
-   * durable turn ledger once and resend once — a single compact-and-retry
-   * latch (pi's `_overflowRecoveryAttempted`). Returns the compacted messages
-   * to resend, or undefined when recovery is impossible or already spent, in
-   * which case the caller surfaces the real provider error rather than a
-   * fabricated success or a locally synthesized verdict (the provider — not the
-   * runtime — rejected the request). Non-context-length
-   * errors and turns without the mid-turn seam never reach compaction, so the
-   * default (no seam) behavior is already better than the old fake end_turn.
+   * durable turn ledger and resend — once per step: a step that a fold or an
+   * image omission has already reshaped gets no second recovery, so the
+   * resend's own rejection is terminal, while a step the provider has since
+   * accepted earns a fresh attempt. Returns the compacted messages to resend,
+   * or undefined when recovery is impossible or already spent, in which case
+   * the caller surfaces the real provider error rather than a fabricated
+   * success or a locally synthesized verdict (the provider — not the runtime —
+   * rejected the request). Non-context-length errors and turns without the
+   * mid-turn seam never reach compaction, so the default (no seam) behavior is
+   * already better than the old fake end_turn.
    */
   public async recoverFromOverflowError(input: {
-    error: unknown;
-    retryAlreadyUsed: boolean;
     midTurnState: MidTurnCapacityCompactState | undefined;
     turnId: string;
     stepNumber: number;
@@ -1222,26 +1218,26 @@ export class AiSdkCompaction {
     abortSignal?: AbortSignal;
   }): Promise<{ messages: ModelMessage[] } | undefined> {
     const state = input.midTurnState;
-    if (input.retryAlreadyUsed || !state) return undefined;
-    if (this.modelAdapter.classifyError(input.error) !== 'context_overflow') return undefined;
+    if (!state || state.stepShaping.has('fold') || state.stepShaping.has('omit_images')) {
+      return undefined;
+    }
 
     const eligibleImages = collectHistoricalImageToolResults(state.priorContentEvents);
     const imageOmission = omitHistoricalImageToolResults(input.currentMessages, eligibleImages);
     if (imageOmission.omittedParts > 0) {
-      state.omittedImageToolResults = new Map(
-        [...imageOmission.omittedToolCallIds].flatMap((toolCallId) => {
-          const image = eligibleImages.get(toolCallId);
-          return image ? [[toolCallId, image] as const] : [];
-        }),
-      );
+      state.stepShaping.add('omit_images');
+      for (const toolCallId of imageOmission.omittedToolCallIds) {
+        const image = eligibleImages.get(toolCallId);
+        // Earlier steps' omissions stay omitted: every later request is
+        // projected through this map, so losing an entry would put its image
+        // back into the very history the provider just rejected.
+        if (image) state.omittedImageToolResults.set(toolCallId, image);
+      }
       state.baselineTokens = undefined;
       return { messages: imageOmission.messages };
     }
 
     const phase = state.compactionPhase(input.stepNumber);
-    // Entering the module spends the send's one attempt whether or not a fold
-    // comes out of it; only a selected projection sets `applied`.
-    state.compactionAttemptedThisSend = true;
     const outcome = await this.compactActiveRequestHistory({
       turnId: input.turnId,
       phase,
@@ -1287,7 +1283,7 @@ export class AiSdkCompaction {
       }),
     );
     // The fold replaced the request; the baseline described the rejected one.
-    state.compactionAppliedThisSend = true;
+    state.stepShaping.add('fold');
     state.baselineTokens = undefined;
     return { messages: outcome.replacementMessages };
   }
@@ -1376,16 +1372,21 @@ export class MidTurnCapacityCompactState {
    * be accepted but leave the reply no room (#4559).
    */
   replyReserveTokens = 0;
-  /** Latest durable checkpoint (loaded or written) for roll-forward summaries. */
-  previousCheckpoint: HistoryCompactCheckpoint | undefined;
+  /** Pre-turn checkpoint the turn starts from, before any fold of its own. */
+  seedCheckpoint: HistoryCompactCheckpoint | undefined;
   /** Checkpoint accepted during this send; pins every later durable projection. */
   projectionCheckpoint: HistoryCompactCheckpoint | undefined;
+  /** Latest durable checkpoint (loaded or written) for roll-forward summaries. */
+  get previousCheckpoint(): HistoryCompactCheckpoint | undefined {
+    return this.projectionCheckpoint ?? this.seedCheckpoint;
+  }
   /**
-   * Step whose request the capacity hook replaced. Semantic/active-full
-   * compaction yields on that exact step so one step never runs two
-   * summarizers or double-projects.
+   * What has reshaped the request since the last one a provider accepted. The
+   * turn clears it at that acceptance, every shaper records itself here, and
+   * every consumer reads it here — an empty set is the only proof that the next
+   * request is a pure append of its predecessor.
    */
-  replacedStepNumber: number | undefined;
+  readonly stepShaping = new Set<'fold' | 'prune' | 'omit_images' | 'tools'>();
   /**
    * finish-step boundaries the event pump has flushed into the session-event
    * queue. The capacity hook's durability wait needs it: only after the pump
@@ -1397,22 +1398,6 @@ export class MidTurnCapacityCompactState {
   omittedImageToolResults = new Map<string, HistoricalImageToolResult>();
   /** Malformed summaries spend one bounded repair budget for this whole Turn. */
   summarizerFailure: string | undefined;
-  /**
-   * The compaction module has been entered in this send.
-   *
-   * One attempt per send, whatever its outcome: the summarizer's own failure
-   * circuit already latches for the rest of the send, so a second entry would
-   * dispatch nothing new. This is the budget, and only the budget (#4559).
-   */
-  compactionAttemptedThisSend = false;
-  /**
-   * A folded projection was actually selected in this send.
-   *
-   * Distinct from the attempt: a fold that fails open leaves the request
-   * carrying its full raw history, so nothing may be concluded from a later
-   * rejection about what remains in it.
-   */
-  compactionAppliedThisSend = false;
   /**
    * Input tokens of the last request a provider accepted before this send.
    *
@@ -1497,6 +1482,7 @@ function persistedRequestAnchor(
     const route = invocations.find((candidate) => candidate.runId === event?.runId)?.opening.route;
     if (
       route?.provenance !== 'runtime' ||
+      route.backendKind === 'plugin-executor' ||
       route.modelId !== modelId ||
       route.llmConnectionId !== connectionId
     ) {

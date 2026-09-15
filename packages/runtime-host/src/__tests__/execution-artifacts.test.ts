@@ -302,7 +302,7 @@ for (const scenario of ['text', 'large raw MCP image', 'executor-sized Bash'] as
             sessionId: 'session',
             maxBytes: input.originalBytes,
           }),
-          { ok: true, serializedResult },
+          { ok: false, reason: 'read_failed' },
         );
     } finally {
       db.close();
@@ -499,7 +499,7 @@ test('Hosted execution publishes contained Tool Artifacts and durable result arc
         maxBytes: archiveInput.originalBytes,
         artifactId: archived.artifactId,
       }),
-      { ok: true, serializedResult },
+      { ok: false, reason: 'read_failed' },
     );
     await store.close();
     restoreArtifactV1Shape(join(base, 'root'));
@@ -517,7 +517,7 @@ test('Hosted execution publishes contained Tool Artifacts and durable result arc
           maxBytes: archiveInput.originalBytes,
           artifactId: archived.artifactId,
         }),
-        { ok: true, serializedResult },
+        { ok: false, reason: 'read_failed' },
       );
     } finally {
       upgraded.close();

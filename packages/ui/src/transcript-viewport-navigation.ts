@@ -17,11 +17,13 @@
  * under the License.
  */
 
+import type { TranscriptScrollAuthority } from './transcript-scroll-authority.js';
+
 /** Bridge the active surface's scroll authority to conversation commands and publication.
  * Publication outlives a viewport: only the source owner can invalidate its data. */
 export function createTranscriptViewportNavigation() {
   const listeners = new Set<(sessionId: string) => void>();
-  let viewport: { sessionId: string; commitIfIdle: (commit: () => void) => boolean } | undefined;
+  let viewport: { sessionId: string; commitRange: (commit: () => void) => void } | undefined;
   let pending: { sessionId: string; commit: () => void } | undefined;
   const drain = (): void => {
     const update = pending;
@@ -30,17 +32,16 @@ export function createTranscriptViewportNavigation() {
       pending = undefined;
       update.commit();
     };
-    if (viewport?.sessionId === update.sessionId) viewport.commitIfIdle(commit);
+    if (viewport?.sessionId === update.sessionId) viewport.commitRange(commit);
     else commit();
   };
   return {
-    attachCommitScheduler(sessionId: string, authority: {
-      commitIfIdle(commit: () => void): boolean;
-      subscribeToIdle(listener: () => void): () => void;
-    }): () => void {
-      const attached = { sessionId, commitIfIdle: authority.commitIfIdle };
+    attachCommitScheduler(sessionId: string, authority: Pick<TranscriptScrollAuthority, 'commitRange' | 'subscribeToReaderScroll'>): () => void {
+      const attached = { sessionId, commitRange: authority.commitRange };
       viewport = attached;
-      const unsubscribe = authority.subscribeToIdle(drain);
+      const unsubscribe = authority.subscribeToReaderScroll((phase) => {
+        if (phase === 'settled') drain();
+      });
       queueMicrotask(drain);
       return () => {
         unsubscribe();
