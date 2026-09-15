@@ -55,25 +55,15 @@ export const OPENCODE_SESSION_ADAPTER_ID = 'opencode';
  *
  * Rows are `message` rows plus `part` rows, counted the way the preflight
  * counts them, and bytes are the id, foreign-key and `data` columns it sums.
- * Both bounds are needed because they bound different things: bytes bound what
- * the conversion holds, and rows bound how many source objects it builds. The
- * byte bound is the one that binds first on real data — at the source's own
- * 877 bytes per row, 64 MiB is reached at about 76,600 rows, well short of the
- * row bound.
- *
- * Measured with `node scripts/opencode-transcript-benchmark.mjs`, which
- * replicates a real transcript to a chosen size in a temporary database:
- *
- *   76,608 rows / 64.54 MiB   317 ms   216 MiB peak resident growth
- *   250,272 rows / 210.98 MiB 1,104 ms 641 MiB peak resident growth
- *
- * The second line is the row bound with the byte bound lifted. It is not a
- * reachable import — 250,000 rows within 64 MiB means under 268 bytes a row,
- * and then the bytes, not the rows, set the cost — so the two bounds together
- * hold one import to roughly the first line's 200 MiB of transient memory.
+ * These bounds protect the source side of the import: bytes cap encoded SQLite
+ * payload and rows cap the number of decoded source objects. They are not a
+ * process-RSS promise; JSON parsing depends on payload shape. The converter has
+ * its own `OPENCODE_TRANSCRIPT_MAX_CONVERTED_BYTES` limit for retained Maka
+ * messages, so source and output memory are never conflated.
  */
 export const OPENCODE_TRANSCRIPT_MAX_RAW_BYTES = 64 * 1024 * 1024;
 export const OPENCODE_TRANSCRIPT_MAX_ROWS = 250_000;
+export const OPENCODE_TRANSCRIPT_MAX_CONVERTED_BYTES = 256 * 1024 * 1024;
 
 const EXTERNAL_SNAPSHOT_ABORT_SOURCE = 'external_session_snapshot';
 
@@ -101,6 +91,8 @@ export interface OpenCodeSessionAdapterOptions {
   maxRawBytes?: number;
   /** Maximum message + part rows loaded for one import. */
   maxRows?: number;
+  /** Maximum serialized bytes retained across converted Maka messages. */
+  maxConvertedBytes?: number;
 }
 
 interface SessionRow {
@@ -129,13 +121,16 @@ export class OpenCodeSessionAdapter implements ExternalSessionAdapter {
   readonly #home: string;
   readonly #maxRawBytes: number;
   readonly #maxRows: number;
+  readonly #maxConvertedBytes: number;
 
   constructor(options: OpenCodeSessionAdapterOptions = {}) {
     this.#home = options.opencodeHome ?? join(homedir(), '.local', 'share', 'opencode');
     this.#maxRawBytes = options.maxRawBytes ?? OPENCODE_TRANSCRIPT_MAX_RAW_BYTES;
     this.#maxRows = options.maxRows ?? OPENCODE_TRANSCRIPT_MAX_ROWS;
+    this.#maxConvertedBytes = options.maxConvertedBytes ?? OPENCODE_TRANSCRIPT_MAX_CONVERTED_BYTES;
     assertPositiveSafeInteger(this.#maxRawBytes, 'OpenCode transcript byte limit');
     assertPositiveSafeInteger(this.#maxRows, 'OpenCode transcript row limit');
+    assertPositiveSafeInteger(this.#maxConvertedBytes, 'OpenCode converted message byte limit');
   }
 
   async detect(): Promise<boolean> {
@@ -169,7 +164,7 @@ export class OpenCodeSessionAdapter implements ExternalSessionAdapter {
         return {
           sourceSessionId: sessionId,
           metadata: { name: row.title || sessionId, cwd: row.directory },
-          messages: convertTranscript(sessionId, messages, parts),
+          messages: convertTranscript(sessionId, messages, parts, this.#maxConvertedBytes),
         };
       }),
     );
@@ -261,7 +256,7 @@ export class OpenCodeSessionAdapter implements ExternalSessionAdapter {
           ? ['time_archived IS NULL']
           : []),
         `length(CAST(id AS BLOB)) <= ${OPENCODE_CATALOG_ID_MAX_BYTES}`,
-        `length(CAST(directory AS BLOB)) <= ${OPENCODE_CATALOG_CWD_MAX_BYTES}`,
+        `length(CAST(coalesce(directory, '') AS BLOB)) <= ${OPENCODE_CATALOG_CWD_MAX_BYTES}`,
         ...(columns.has('title')
           ? [`length(CAST(coalesce(title, '') AS BLOB)) <= ${OPENCODE_CATALOG_TITLE_MAX_BYTES}`]
           : []),
@@ -294,7 +289,7 @@ export class OpenCodeSessionAdapter implements ExternalSessionAdapter {
       while (summaries.length < requestedLimit) {
         const raw = statement.all(batchSize, rawOffset);
         for (const value of raw) {
-          const row = toCatalogSessionRow(value);
+          const row = toSessionRow(value);
           if (!row) continue;
           const summary = toSummary(row);
           if (!externalSessionMatchesQuery(summary, query)) continue;
@@ -473,6 +468,7 @@ export function convertTranscript(
   sessionId: string,
   messages: readonly MessageRow[],
   parts: readonly PartRow[],
+  maxConvertedBytes = OPENCODE_TRANSCRIPT_MAX_CONVERTED_BYTES,
 ): readonly StoredMessage[] {
   const partsByMessage = new Map<string, Record<string, unknown>[]>();
   for (const part of parts) {
@@ -488,6 +484,19 @@ export function convertTranscript(
   );
 
   const out: StoredMessage[] = [];
+  let convertedBytes = 0;
+  const append = (message: StoredMessage): void => {
+    const encodedBytes = Buffer.byteLength(JSON.stringify(message), 'utf8');
+    if (encodedBytes > maxConvertedBytes - convertedBytes) {
+      throw new ExternalSessionLimitError(
+        'converted_bytes',
+        maxConvertedBytes,
+        `OpenCode transcript converts to more than ${maxConvertedBytes} bytes`,
+      );
+    }
+    convertedBytes += encodedBytes;
+    out.push(message);
+  };
   let sequence = 0;
   const id = (kind: string): string => `opencode:${sessionId}:${kind}:${sequence++}`;
   let turnSequence = 0;
@@ -504,7 +513,7 @@ export function convertTranscript(
   const closeTurn = (): void => {
     if (!turn) return;
     if (turn.errorName !== undefined && !turn.aborted) {
-      out.push({
+      append({
         type: 'turn_state',
         id: id('turn-state'),
         turnId: turn.turnId,
@@ -513,7 +522,7 @@ export function convertTranscript(
         errorClass: 'opencode_error',
       });
     } else if (turn.aborted) {
-      out.push({
+      append({
         type: 'turn_state',
         id: id('turn-state'),
         turnId: turn.turnId,
@@ -523,7 +532,7 @@ export function convertTranscript(
         abortSource: EXTERNAL_SNAPSHOT_ABORT_SOURCE,
       });
     } else if (turn.closed) {
-      out.push({
+      append({
         type: 'turn_state',
         id: id('turn-state'),
         turnId: turn.turnId,
@@ -534,7 +543,7 @@ export function convertTranscript(
       // A turn whose last assistant step asked for tools and never came back:
       // the run stopped between a call and its answer. Recording it as
       // completed would assert a reply the session never produced.
-      out.push({
+      append({
         type: 'turn_state',
         id: id('turn-state'),
         turnId: turn.turnId,
@@ -574,7 +583,7 @@ export function convertTranscript(
         aborted: false,
         closed: false,
       };
-      out.push({ type: 'user', id: id('user'), turnId: turn.turnId, ts, text });
+      append({ type: 'user', id: id('user'), turnId: turn.turnId, ts, text });
       continue;
     }
 
@@ -616,7 +625,7 @@ export function convertTranscript(
       if (kind === 'reasoning') {
         const thinking = stringOf(part.text);
         if (thinking === undefined) continue;
-        out.push({
+        append({
           type: 'assistant',
           id: id('thinking'),
           turnId: turn.turnId,
@@ -632,7 +641,7 @@ export function convertTranscript(
       if (kind === 'text') {
         const text = stringOf(part.text);
         if (text === undefined) continue;
-        out.push({
+        append({
           type: 'assistant',
           id: id('assistant'),
           turnId: turn.turnId,
@@ -652,7 +661,7 @@ export function convertTranscript(
       if (callId === undefined) continue;
       const state = asRecord(part.state);
       const status = stringOf(state?.status);
-      out.push({
+      append({
         type: 'tool_call',
         id: callId,
         turnId: turn.turnId,
@@ -670,7 +679,7 @@ export function convertTranscript(
       // `pending` and `running` are the calls that genuinely had no answer
       // when the session was written, and they get no result.
       if (status === 'completed') {
-        out.push({
+        append({
           type: 'tool_result',
           id: id('tool-result'),
           turnId: turn.turnId,
@@ -682,7 +691,7 @@ export function convertTranscript(
         continue;
       }
       if (status === 'error') {
-        out.push({
+        append({
           type: 'tool_result',
           id: id('tool-result'),
           turnId: turn.turnId,
@@ -725,21 +734,6 @@ function toSessionRow(value: unknown): SessionRow | undefined {
     archived: numberOf(row?.time_archived) !== undefined,
     ...(parentId !== undefined ? { parentId } : {}),
   };
-}
-
-/**
- * A catalog row, or `undefined` when it cannot be proven a root Session.
- *
- * The page's SQL already restricts `parent_id` to NULL or the empty string, so
- * a row that fails here is one those bounds did not anticipate. One unreadable
- * row must not fail the whole listing.
- */
-function toCatalogSessionRow(value: unknown): SessionRow | undefined {
-  try {
-    return toSessionRow(value);
-  } catch {
-    return undefined;
-  }
 }
 
 function toMessageRow(value: unknown): MessageRow | undefined {

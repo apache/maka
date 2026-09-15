@@ -651,12 +651,10 @@ describe('ClaudeCodeSessionAdapter', () => {
     });
   });
 
-  test('a transcript opening on one long housekeeping record keeps its prompt and start time', async () => {
-    // The window lands inside that record, so it is the record after it — the
-    // first the budget's own length would have covered — that carries the
-    // prompt and the timestamp. Stopping at the first record boundary past the
-    // window would leave the row named by its session id and dated from the
-    // tail.
+  test('the catalog does not read past its head window to find a prompt', async () => {
+    // Listing memory has its own fixed byte budget. A large opening record may
+    // hide the first prompt from the summary, but importing the Session still
+    // reads it under the separate transcript limits.
     await withClaudeHome(async (home) => {
       const sessionId = 'aaaaaaaa-0000-4000-8000-000000000037';
       await seed(home, sessionId, [
@@ -672,11 +670,12 @@ describe('ClaudeCodeSessionAdapter', () => {
 
       assert.deepEqual((await adapter.listSessions())[0], {
         id: sessionId,
-        name: 'THE FIRST PROMPT',
+        name: sessionId,
         cwd: CWD,
         createdAt: Date.parse('2026-08-01T00:00:00.000Z'),
         updatedAt: Date.parse('2026-08-01T00:00:00.000Z'),
       });
+      assert.equal((await adapter.readSession(sessionId)).metadata.name, 'THE FIRST PROMPT');
     });
   });
 
