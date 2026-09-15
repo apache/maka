@@ -22,6 +22,102 @@ import XCTest
 @testable import HistoryCore
 
 final class ObservationCaptureTests: XCTestCase {
+    func testVisibleRangeReadsRetainScrolledUTF16TailWithoutFetchingWholeLeafValue() throws {
+        let ax = fixture(web: false)
+        let prefix = String(repeating: "\u{1F600}", count: 5_000)
+        let tail = "VISIBLE_DECISION \u{1F680} e\u{301}"
+        ax.add("body", role: "AXTextArea", parent: "window", value: prefix + tail)
+        ax.visibleRanges["body"] = .range(.init(location: prefix.utf16.count, length: tail.utf16.count))
+        let result = try XCTUnwrap(capture(ax, browser: false))
+        XCTAssertTrue(result.ax?.text.contains("VISIBLE_DECISION") == true)
+        XCTAssertTrue(result.ax?.text.contains("\u{1F680}") == true)
+        XCTAssertTrue(result.ax?.text.contains("e\u{301}") == true)
+        XCTAssertFalse(result.ax?.text.contains("\u{1F600}") == true)
+        XCTAssertTrue(result.ax?.truncated == true)
+        XCTAssertFalse(ax.contentReads.contains { $0.node == "body" && $0.attribute == "AXValue" })
+        XCTAssertEqual(ax.rangeReads.first?.range.location, 10_000)
+        let focused = try XCTUnwrap(capture(ax, browser: false, target: "body"))
+        XCTAssertEqual(focused.element?.value, tail)
+
+        ax.attributes["body"]?["AXValue"] = String(repeating: "\u{1F680}", count: 6_000)
+        ax.visibleRanges["body"] = .range(.init(location: 1, length: 10_000))
+        let clipped = try XCTUnwrap(capture(ax, browser: false, target: "body"))
+        XCTAssertFalse(clipped.element?.value?.contains("\u{FFFD}") == true)
+        XCTAssertLessThanOrEqual(try XCTUnwrap(clipped.element?.value).utf8.count, 8_192)
+        XCTAssertEqual(ax.rangeReads.last?.range.length, 8_192)
+        XCTAssertLessThanOrEqual(try XCTUnwrap(clipped.ax).text.utf8.count, 32_768)
+    }
+
+    func testVisibleRangeFailureOrMutationCannotFallBackOrRetainEarlierText() {
+        for mutation in ["range", "secure", "parent", "document", "children", "failure", "overflow"] {
+            let ax = fixture()
+            ax.roles["field"] = ObservationRole("AXTextArea")
+            ax.visibleRanges["field"] = .range(.init(location: 0, length: 10))
+            if mutation == "failure" { ax.visibleRanges["field"] = .unavailable }
+            if mutation == "overflow" { ax.visibleRanges["field"] = .range(.init(location: Int.max, length: 1)) }
+            ax.onRangeRead = { node in
+                switch mutation {
+                case "range": ax.visibleRanges[node] = .range(.init(location: 1, length: 9))
+                case "secure": ax.roles[node] = ObservationRole("AXSecureTextField")
+                case "parent": ax.parents[node] = "otherWindow"
+                case "document": ax.attributes["document"]?["AXURL"] = "https://blocked.example"
+                case "children": ax.add("denied", role: "AXWebArea", parent: node, url: "https://blocked.example")
+                default: break
+                }
+            }
+            let result = capture(ax, includeTree: false)
+            XCTAssertEqual(result?.contentState, .unavailable, mutation)
+            XCTAssertNil(result?.element)
+            XCTAssertNil(result?.ax)
+            XCTAssertFalse(ax.contentReads.contains { $0.node == "field" && $0.attribute == "AXValue" }, mutation)
+        }
+        XCTAssertNil(ObservationTextRange.bounded(.init(location: -1, length: 1)))
+        XCTAssertNil(ObservationTextRange.decode([0x41, 0xD800, 0x42]))
+        XCTAssertEqual(ObservationTextRange.decode([0xDC00, 0x41, 0xD800]), "A")
+    }
+
+    func testVisibleRangeIsNeverReadFromDeniedSecureContainerOrMetadataOnlyContext() {
+        for condition in ["blocked", "secure", "container", "metadata", "private"] {
+            let ax = fixture()
+            ax.roles["field"] = ObservationRole("AXTextArea")
+            ax.visibleRanges["field"] = .range(.init(location: 0, length: 10))
+            switch condition {
+            case "blocked": ax.attributes["document"]?["AXURL"] = "https://blocked.example"
+            case "secure": ax.roles["field"] = ObservationRole("AXTextArea", subrole: "AXSecureTextField")
+            case "container": ax.add("child", role: "AXGroup", parent: "field")
+            case "private": ax.attributes["window"]?["AXTitle"] = "Neutral [InPrivate]"
+            default: break
+            }
+            _ = capture(ax, text: condition != "metadata")
+            XCTAssertTrue(ax.rangeReads.isEmpty, condition)
+        }
+    }
+
+    func testWindowBurstCoalescingMeasuresActualTraversalAndRetainsLatestBody() throws {
+        let ax = fixture(web: false)
+        for index in 0..<20 { ax.add("body\(index)", role: "AXStaticText", parent: "window", value: "old \(index)") }
+        var traversals = 0
+        ax.onChildren = { if $0 == "window" { traversals += 1 } }
+        for _ in 0..<20 { _ = capture(ax, browser: false) }
+        XCTAssertEqual(traversals, 20)
+        traversals = 0
+        var sampling = ObservationSampling()
+        for index in 0..<20 {
+            ax.attributes["body\(index)"]?["AXValue"] = "FINAL_DECISION_\(index)"
+            sampling.request(now: Double(index) / 100)
+        }
+        let token = try XCTUnwrap(sampling.begin(now: 0.21))
+        let result = try XCTUnwrap(capture(ax, browser: false))
+        sampling.complete(token, settled: result.contentState == .available)
+        XCTAssertEqual(traversals, 1)
+        for index in 0..<20 { XCTAssertTrue(result.ax?.text.contains("FINAL_DECISION_\(index)") == true) }
+        for tick in 1..<3 { XCTAssertNil(sampling.begin(now: Double(tick))) }
+        XCTAssertEqual(traversals, 1)
+        let retry = try XCTUnwrap(sampling.begin(now: 3.22))
+        sampling.complete(retry, settled: false)
+        XCTAssertNotNil(sampling.begin(now: 6.23))
+    }
+
     func testRangedChildrenIllegalArgumentRequiresSuccessfulZeroCountWithinBudget() {
         let element = AXUIElementCreateSystemWide()
         for result in [AXError.illegalArgument, .cannotComplete, .invalidUIElement, .failure] {
@@ -696,6 +792,9 @@ private final class SyntheticAX: ObservationAccessibility {
     var onRead: ((String, String) -> Void)?
     var onChildren: ((String) -> Void)?
     var leafChildren: (() -> [String]?)?
+    var visibleRanges: [String: ObservationVisibleRange] = [:]
+    var rangeReads: [(node: String, range: EventStreamTextRange)] = []
+    var onRangeRead: ((String) -> Void)?
 
     func add(_ node: String, role: String?, parent: String? = nil,
              title: String? = nil, url: String? = nil, value: String? = nil) {
@@ -730,4 +829,13 @@ private final class SyntheticAX: ObservationAccessibility {
     }
     func owns(_ node: String) -> Bool { !foreign.contains(node) }
     func selectedRange(_ node: String) -> EventStreamTextRange? { nil }
+    func visibleRange(_ node: String) -> ObservationVisibleRange { visibleRanges[node] ?? .unsupported }
+    func text(_ node: String, in range: EventStreamTextRange) -> String? {
+        rangeReads.append((node, range))
+        defer { onRangeRead?(node) }
+        guard let value = attributes[node]?["AXValue"] else { return nil }
+        let units = Array(value.utf16)
+        guard range.location <= units.count, range.length <= units.count - range.location else { return nil }
+        return ObservationTextRange.decode(Array(units[range.location..<(range.location + range.length)]))
+    }
 }

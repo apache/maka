@@ -58,6 +58,34 @@ struct NativeAccessibility: ObservationAccessibility {
         guard AXValueGetValue(value as! AXValue, .cfRange, &range), range.location >= 0, range.length >= 0 else { return nil }
         return EventStreamTextRange(location: range.location, length: range.length)
     }
+    func visibleRange(_ node: AXNode) -> ObservationVisibleRange {
+        guard withinBudget else { return .unavailable }
+        var value: CFTypeRef?
+        let result = AXUIElementCopyAttributeValue(node.element, kAXVisibleCharacterRangeAttribute as CFString, &value)
+        guard withinBudget else { return .unavailable }
+        if result == .attributeUnsupported { return .unsupported }
+        guard result == .success, let value, CFGetTypeID(value) == AXValueGetTypeID() else { return .unavailable }
+        var range = CFRange()
+        guard AXValueGetValue(value as! AXValue, .cfRange, &range) else { return .unavailable }
+        let reported = EventStreamTextRange(location: range.location, length: range.length)
+        guard ObservationTextRange.bounded(reported) != nil else { return .unavailable }
+        return .range(reported)
+    }
+    func text(_ node: AXNode, in range: EventStreamTextRange) -> String? {
+        guard withinBudget, ObservationTextRange.bounded(range) == range else { return nil }
+        var range = CFRange(location: range.location, length: range.length)
+        guard let parameter = AXValueCreate(.cfRange, &range) else { return nil }
+        var value: CFTypeRef?
+        guard AXUIElementCopyParameterizedAttributeValue(node.element,
+            kAXStringForRangeParameterizedAttribute as CFString, parameter, &value) == .success,
+            withinBudget, let value, CFGetTypeID(value) == CFStringGetTypeID() else { return nil }
+        let string = value as! CFString
+        let count = CFStringGetLength(string)
+        guard count <= range.length else { return nil }
+        var units = [UniChar](repeating: 0, count: count)
+        CFStringGetCharacters(string, CFRange(location: 0, length: count), &units)
+        return ObservationTextRange.decode(units)
+    }
     private func attributeValue(_ node: AXNode, _ attribute: String) -> CFTypeRef? {
         guard withinBudget else { return nil }
         var value: CFTypeRef?

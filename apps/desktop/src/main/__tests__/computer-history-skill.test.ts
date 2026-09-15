@@ -24,12 +24,18 @@ import { join } from 'node:path';
 import test, { type TestContext } from 'node:test';
 import type { SkillCatalogGovernanceItem, SkillCatalogMutation } from '@maka/runtime-host/protocol';
 import { SkillCatalogRepository } from '../../../../../packages/runtime-host/dist/server/skill-catalog-repository.js';
+import {
+  historyBundledSource,
+  installLegacyHistory,
+  LEGACY_HISTORY_BODY,
+} from '../../../../../packages/runtime-host/dist/__tests__/fixtures/computer-history-bundled.js';
 import type { DesktopRuntimeHostClient } from '../runtime-host-client.js';
 import { ComputerHistorySkillInstaller } from '../computer-history-skill.js';
 
 type SkillClient = Pick<DesktopRuntimeHostClient, 'loadSkillCatalog' | 'mutateSkillCatalog'>;
 const REF = 'workspace:legacy:computer-history';
 const INSTALL = { kind: 'install', sourceType: 'bundled', sourceId: 'computer-history' } as const;
+const UPDATE = { kind: 'update_bundled', ref: REF } as const;
 
 test('no history and collection disabled leaves the catalog untouched', async (t) => {
   const f = await fixture(t);
@@ -52,11 +58,12 @@ test('first enable installs through the local default Host catalog and defaults 
   assert.match(String(f.errors.pop()), /Local Host is unavailable/);
   f.installer.hostChanged('local', f.client);
   await f.installer.refresh();
-  assert.deepEqual(f.mutations, [INSTALL]);
+  assert.deepEqual(f.mutations.filter((mutation) => mutation.kind !== 'update_bundled'), [INSTALL]);
   const skill = await f.installed();
   assert.equal(skill?.enabled, true);
   assert.equal(skill?.runtimeStatus, 'enabled');
   assert.equal(skill?.ref, REF);
+  assert.equal(await f.installer.isEnabled(f.client), true);
   assert.ok(f.reads.every((context) => context.workspace.kind === 'host_path' && context.workspace.path === f.root));
   assert.deepEqual(f.errors, []);
 });
@@ -65,7 +72,7 @@ test('repeated refreshes and a restarted installer preserve a manually disabled 
   const f = await fixture(t);
   f.installer.hostChanged('local', f.client);
   await Promise.all([f.installer.refresh(), f.installer.refresh(), f.installer.refresh()]);
-  assert.equal(f.mutations.length, 1);
+  assert.equal(f.mutations.filter((mutation) => mutation.kind === 'install').length, 1);
   await f.mutate({ kind: 'set_enabled', ref: REF, enabled: false });
   const state = await readFile(join(f.root, '.maka', 'skills-state.json'), 'utf8');
   await f.installer.refresh();
@@ -73,8 +80,9 @@ test('repeated refreshes and a restarted installer preserve a manually disabled 
   restarted.hostChanged('local', f.client);
   await restarted.refresh();
   assert.equal((await f.installed())?.enabled, false);
+  assert.equal(await f.installer.isEnabled(f.client), false);
   assert.equal(await readFile(join(f.root, '.maka', 'skills-state.json'), 'utf8'), state);
-  assert.deepEqual(f.mutations, [INSTALL]);
+  assert.deepEqual(f.mutations.filter((mutation) => mutation.kind !== 'update_bundled'), [INSTALL]);
 });
 
 test('deletion and automatic reinstall retain full-ref disabled preference', async (t) => {
@@ -84,7 +92,7 @@ test('deletion and automatic reinstall retain full-ref disabled preference', asy
   await f.mutate({ kind: 'set_enabled', ref: REF, enabled: false });
   await f.mutate({ kind: 'delete', ref: REF });
   await f.installer.refresh();
-  assert.deepEqual(f.mutations, [INSTALL, INSTALL]);
+  assert.deepEqual(f.mutations.filter((mutation) => mutation.kind !== 'update_bundled'), [INSTALL, INSTALL]);
   assert.equal((await f.installed())?.enabled, false);
 });
 
@@ -98,7 +106,75 @@ test('existing customized skill contents and metadata are never replaced', async
   await f.installer.refresh();
   assert.equal(await readFile(file, 'utf8'), customized);
   assert.equal((await f.installed())?.userModified, true);
+  assert.equal(await f.installer.isEnabled(f.client), true);
   assert.equal(f.mutations.length, 0);
+});
+
+test('trusted legacy history refreshes in place while disabled and pinned preferences survive', async (t) => {
+  const f = await fixture(t);
+  const directory = await installLegacyHistory(f.root);
+  await f.mutate({ kind: 'set_enabled', ref: REF, enabled: false });
+  await f.mutate({ kind: 'set_pinned', ref: REF, pinned: true });
+  const statePath = join(f.root, '.maka', 'skills-state.json');
+  const state = await readFile(statePath, 'utf8');
+  f.installer.hostChanged('local', f.client);
+  await f.installer.refresh();
+  assert.ok(f.mutations.length > 0);
+  assert.ok(f.mutations.every((mutation) => mutation.kind === 'update_bundled' && mutation.ref === REF));
+  assert.equal(await readFile(join(directory, 'SKILL.md'), 'utf8'), historyBundledSource().body);
+  assert.equal(await readFile(statePath, 'utf8'), state);
+  assert.equal((await f.installed())?.enabled, false);
+  assert.equal((await f.installed())?.pinned, true);
+  assert.equal(await f.installer.isEnabled(f.client), false);
+  const count = f.mutations.length;
+  await f.installer.isEnabled(f.client);
+  assert.equal(f.mutations.length, count, 'model authorization reads cannot refresh or install');
+  assert.deepEqual(f.errors, []);
+});
+
+test('current bundled refresh is a Host-owned no-op including lock and preference bytes', async (t) => {
+  const f = await fixture(t);
+  await f.mutate(INSTALL);
+  const lockPath = join(f.root, 'skills', 'computer-history', 'skill.lock.json');
+  const lock = await readFile(lockPath, 'utf8');
+  f.installer.hostChanged('local', f.client);
+  await f.installer.refresh();
+  assert.ok(f.mutations.length > 0);
+  assert.ok(f.mutations.every((mutation) => mutation.kind === 'update_bundled'));
+  assert.equal(await readFile(lockPath, 'utf8'), lock);
+  assert.equal((await f.installed())?.validationStatus, 'ok');
+  assert.deepEqual(f.errors, []);
+});
+
+test('a customization racing automatic refresh survives revision retry', async (t) => {
+  const f = await fixture(t);
+  const directory = await installLegacyHistory(f.root);
+  const customized = `${LEGACY_HISTORY_BODY}\nLatest user edit.\n`;
+  const mutate = f.client.mutateSkillCatalog;
+  f.client.mutateSkillCatalog = async (input) => {
+    await writeFile(join(directory, 'SKILL.md'), customized);
+    return mutate(input);
+  };
+  f.installer.hostChanged('local', f.client);
+  await f.installer.refresh();
+  assert.deepEqual(f.mutations, [UPDATE]);
+  assert.equal(await readFile(join(directory, 'SKILL.md'), 'utf8'), customized);
+  assert.equal((await f.installed())?.userModified, true);
+  assert.deepEqual(f.errors, []);
+});
+
+test('untrusted same-ID workspace copy is never updated or installed over', async (t) => {
+  const f = await fixture(t);
+  const directory = await installLegacyHistory(f.root);
+  const lock = JSON.parse(await readFile(join(directory, 'skill.lock.json'), 'utf8'));
+  lock.sourceName = 'user-supplied';
+  await writeFile(join(directory, 'skill.lock.json'), JSON.stringify(lock));
+  f.installer.hostChanged('local', f.client);
+  await f.installer.refresh();
+  assert.equal(f.mutations.length, 0);
+  assert.equal(await readFile(join(directory, 'SKILL.md'), 'utf8'), LEGACY_HISTORY_BODY);
+  assert.equal(await f.installer.isEnabled(f.client), false);
+  assert.deepEqual(f.errors, []);
 });
 
 test('same-ID shadowed or state-error governance entries are preserved', async (t) => {
@@ -122,17 +198,63 @@ test('same-ID shadowed or state-error governance entries are preserved', async (
   }
 });
 
+test('a same-ID bundled project copy cannot authorize access to the global archive', async (t) => {
+  const f = await fixture(t);
+  await f.mutate(INSTALL);
+  const original = await f.installed();
+  assert.ok(original);
+  const load = f.client.loadSkillCatalog;
+  f.client.loadSkillCatalog = async (context, view) => ({
+    ...await load(context, view),
+    items: [{
+      ...original,
+      ref: 'project:maka:computer-history', scope: 'project', source: 'maka',
+      enabled: true, runtimeStatus: 'enabled', shadowedBy: null,
+    }],
+  });
+  f.installer.hostChanged('local', f.client);
+  await f.installer.refresh();
+  assert.equal(await f.installer.isEnabled(f.client), false);
+  assert.equal(f.mutations.length, 0);
+});
+
+test('refresh selects the exact workspace counterpart even after an unrelated same-ID entry', async (t) => {
+  const f = await fixture(t);
+  const directory = await installLegacyHistory(f.root);
+  const original = await f.installed();
+  assert.ok(original);
+  const load = f.client.loadSkillCatalog;
+  f.client.loadSkillCatalog = async (context, view) => {
+    const result = await load(context, view);
+    return view === 'governance' ? {
+      ...result,
+      items: [{
+        ...original,
+        ref: 'user:agents:computer-history', scope: 'user', source: 'agents',
+        sourceType: 'workspace', shadowedBy: REF,
+      }, ...result.items],
+    } : result;
+  };
+  f.installer.hostChanged('local', f.client);
+  await f.installer.refresh();
+  assert.ok(f.mutations.every((mutation) => mutation.kind === 'update_bundled' && mutation.ref === REF));
+  assert.equal(await readFile(join(directory, 'SKILL.md'), 'utf8'), historyBundledSource().body);
+  assert.deepEqual(f.errors, []);
+});
+
 test('a competing install and manual disable win a revision conflict', async (t) => {
   const f = await fixture(t);
   const mutate = f.client.mutateSkillCatalog;
   f.client.mutateSkillCatalog = async (input) => {
-    await f.mutate(INSTALL);
-    await f.mutate({ kind: 'set_enabled', ref: REF, enabled: false });
+    if (input.mutation.kind === 'install') {
+      await f.mutate(INSTALL);
+      await f.mutate({ kind: 'set_enabled', ref: REF, enabled: false });
+    }
     return mutate(input);
   };
   f.installer.hostChanged('local', f.client);
   await f.installer.refresh();
-  assert.equal(f.mutations.length, 1);
+  assert.equal(f.mutations.filter((mutation) => mutation.kind === 'install').length, 1);
   assert.equal((await f.installed())?.enabled, false);
   assert.deepEqual(f.errors, []);
 });
@@ -184,7 +306,7 @@ test('a replacement local connection retries while a stale read is pending', asy
   blocked.resolve(empty);
   await staleRun;
   assert.equal(staleReads, 1);
-  assert.deepEqual(f.mutations, [INSTALL]);
+  assert.deepEqual(f.mutations.filter((mutation) => mutation.kind !== 'update_bundled'), [INSTALL]);
   assert.deepEqual(f.errors, []);
 });
 

@@ -22,6 +22,7 @@ public struct RecorderRuntimeStatus: Codable, Sendable {
     public let suppressedEventsPath: String?
     public let startedAt: Date?
     public let endedAt: Date?
+    public let lastError: String?
 
     public init(
         state: RecorderState,
@@ -31,7 +32,8 @@ public struct RecorderRuntimeStatus: Codable, Sendable {
         currentSegmentMetadataPath: String?,
         suppressedEventsPath: String?,
         startedAt: Date?,
-        endedAt: Date?
+        endedAt: Date?,
+        lastError: String? = nil
     ) {
         self.state = state
         self.processIdentifier = processIdentifier
@@ -41,6 +43,7 @@ public struct RecorderRuntimeStatus: Codable, Sendable {
         self.suppressedEventsPath = suppressedEventsPath
         self.startedAt = startedAt
         self.endedAt = endedAt
+        self.lastError = lastError
     }
 }
 

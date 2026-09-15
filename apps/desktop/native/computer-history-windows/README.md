@@ -28,7 +28,8 @@ See [the integration contract](../../../../docs/computer-history-integration.md)
 ## Supported environment
 
 - Windows x64, a local interactive user session, and a local NTFS history home.
-- The current foreground window on the input desktop named `Default`.
+- The current foreground window on the input desktop named `Default`, in a
+  WTS-connected and unlocked session. Unknown session state fails closed.
 - Ordinary user privileges. The helper does not request elevation or UIAccess,
   bypass secure desktops, or change browser accessibility settings.
 - History directories and their ancestors must not be symlinks, junctions, or
@@ -78,14 +79,30 @@ Health is published on state/failure changes and at least every five seconds.
 Repeated provider/transport failures and stale running heartbeats surface through
 the existing status error field; admitted privacy suppression is not a provider
 failure. Recovery clears this error without restarting the recorder.
+Pause, lock and disconnect cancel pending work and seal the active segment
+before publishing paused health. A sent session notification also invalidates
+the source generation, retaining a suspension boundary even when reconnect
+occurs between polls. Resume creates a fresh segment without opening repeated
+empty segments during suspension.
 
 App IDs use `win32.<lowercase executable stem>`, for example `win32.notepad`.
-Names currently use the stem; native icons and localized application names are
-not part of this backend change. Source UUIDs distinguish foreground generations;
+Event names use the stem. `applications <id>...` independently resolves metadata
+for up to 32 canonical Windows IDs, returning an ordered JSON array of
+`{ bundleIdentifier, name, iconDataUrl }`. It requires no History environment,
+consent or storage. For a uniquely located running executable on a local drive,
+it reads FileDescription and extracts a 48-by-48 RGBA PNG, bounded to 48 KiB.
+Unknown or ambiguous IDs return their original ID and a null icon. Historical
+apps that are no longer running are not discovered by this helper.
+Source UUIDs distinguish foreground generations;
 they are not durable document IDs across focus changes or process restarts.
 `window.changed`, `ui.changed`, and `selection.changed` describe observed UI
 changes. They must not be interpreted as proof of a keystroke or submission.
 There are no screenshots, audio, low-level keyboard hooks, or typed-text events.
+Native clipping provenance is retained in `ax.truncated`, even when the final
+event projection does not clip again. Optional `selection.selectedText` is
+bounded to 4 KiB, preserves whitespace and includes `truncated` plus a UTF-16
+`start` offset. Selection changes participate in deduplication and event kind;
+text-disabled policy removes both body and selection.
 
 ## Privacy and coverage
 
@@ -112,6 +129,16 @@ ScrollViewer template children while owning a scalar ValuePattern. That value
 is read only after the complete native window passes validation, with fresh
 control/ancestry checks and a second whole-tree check afterward. This does not
 authorize aggregate text from arbitrary parent controls.
+Selection ranges require a fully observed visible source-admitted subtree,
+stable focus/range endpoints, and final tree checks. Multi-range selections,
+hidden/wrapper descendants and offsets beyond 32 Ki UTF-16 units are omitted.
+Explicit unsupported/not-implemented optional selection operations and successful
+null focus/range interfaces omit selection, after fresh tree validation, without
+discarding permitted body text. Provider loss, timeout, and privacy/identity
+failures still reject the capture.
+For standard native leaf Edit controls without a TextPattern,
+bounded `EM_GETSEL` offsets may slice the admitted scalar ValuePattern; no
+clipboard access, cross-process pointer or `WM_GETTEXT` is used.
 
 For known browsers, the reader selects the outermost Document on the focused
 element's verified ancestry to the exact foreground UIA window. Its bounded

@@ -197,7 +197,7 @@ test('Computer History rejects invalid keyword metadata without leaking model co
     assert.deepEqual(await fixture.run(), {
       ok: false,
       error: {
-        code: 'operation_unavailable',
+        code: 'invalid_summary',
         message: 'The analysis model returned an invalid summary',
       },
     });

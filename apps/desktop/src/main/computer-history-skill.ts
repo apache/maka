@@ -22,9 +22,10 @@ import type { DesktopRuntimeHostClient } from './runtime-host-client.js';
 type SkillClient = Pick<DesktopRuntimeHostClient, 'loadSkillCatalog' | 'mutateSkillCatalog'>;
 
 const SKILL_ID = 'computer-history';
+const SKILL_REF = `workspace:legacy:${SKILL_ID}`;
 const MAX_REVISION_ATTEMPTS = 3;
 
-/** Backfills this Desktop's local Host without taking ownership of Skill preferences. */
+/** Keeps this Desktop's bundled Skill current without owning content edits or preferences. */
 export class ComputerHistorySkillInstaller {
   #client?: SkillClient;
   #pending?: { client: SkillClient | undefined; promise: Promise<void>; again: boolean };
@@ -39,6 +40,21 @@ export class ComputerHistorySkillInstaller {
     if (profileId !== 'local') return;
     this.#client = client;
     if (client) void this.refresh();
+  }
+
+  /** Installation is not authorization: honor the current full-ref opt-out on every model read. */
+  async isEnabled(client: SkillClient): Promise<boolean> {
+    if (client !== this.#client) return false;
+    const catalog = await client.loadSkillCatalog(
+      { workspace: { kind: 'host_path', path: this.input.workspaceRoot } },
+      'governance',
+    );
+    return client === this.#client && catalog.items.some((item) =>
+      item.kind === 'skill' && item.id === SKILL_ID && item.ref === SKILL_REF &&
+      item.scope === 'workspace' && item.source === 'legacy' && item.sourceType === 'bundled' &&
+      item.enabled && item.runtimeStatus === 'enabled' && !item.shadowedBy &&
+      (item.validationStatus === 'ok' || item.validationStatus === 'modified'),
+    );
   }
 
   /** Settings and Host-ready callbacks share a flight; a new connection retries independently. */
@@ -79,21 +95,35 @@ export class ComputerHistorySkillInstaller {
       if (client !== this.#client) return;
       const governance = await client.loadSkillCatalog(context, 'governance');
       if (client !== this.#client) return;
-      if (governance.items.some((item) => item.id === SKILL_ID)) return;
+      const installed = governance.items.find((item) =>
+        item.kind === 'skill' && item.ref === SKILL_REF && item.id === SKILL_ID,
+      );
+      if (!installed && governance.items.some((item) => item.id === SKILL_ID)) return;
+      if (installed && (
+        installed.kind !== 'skill' || installed.ref !== SKILL_REF ||
+        installed.scope !== 'workspace' || installed.source !== 'legacy' ||
+        installed.sourceType !== 'bundled' || installed.validationStatus !== 'ok' ||
+        installed.userModified || installed.shadowedBy
+      )) return;
       const bundled = await client.loadSkillCatalog(context, 'bundled');
       if (client !== this.#client) return;
       if (bundled.revision !== governance.revision) continue;
       const skill = bundled.items.find((item) => item.kind === 'bundled' && item.id === SKILL_ID);
       if (!skill || skill.kind !== 'bundled') throw new Error('Bundled Computer History Skill is unavailable');
-      if (skill.installed) return;
+      if (installed && !skill.installed) continue;
+      if (!installed && skill.installed) return;
       const result = await client.mutateSkillCatalog({
         context,
         expectedRevision: bundled.revision,
-        mutation: { kind: 'install', sourceType: 'bundled', sourceId: SKILL_ID },
+        mutation: installed
+          ? { kind: 'update_bundled', ref: SKILL_REF }
+          : { kind: 'install', sourceType: 'bundled', sourceId: SKILL_ID },
       });
       if (result.kind === 'revision_conflict') continue;
+      // An edit made after the catalog read takes ownership away from automatic updates.
+      if (installed && result.kind === 'rejected' && result.reason === 'local_modified') return;
       if (result.kind === 'rejected' && result.reason !== 'already_exists') {
-        throw new Error(`Computer History Skill installation rejected: ${result.reason}`);
+        throw new Error(`Computer History Skill ${installed ? 'update' : 'installation'} rejected: ${result.reason}`);
       }
       // Installation supplies the runtime default. Never set_enabled: an existing
       // full-ref opt-out survives even deletion and later reinstallation.

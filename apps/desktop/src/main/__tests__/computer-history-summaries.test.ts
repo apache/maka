@@ -18,7 +18,8 @@
  */
 
 import assert from 'node:assert/strict';
-import { chmod, mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
+import fs, { chmod, mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test, { type TestContext } from 'node:test';
@@ -28,6 +29,9 @@ import type {
 } from '@maka/core/computer-history';
 import {
   ComputerHistorySummaries,
+  ComputerHistorySummaryProviderError,
+  ComputerHistorySummaryRunError,
+  ComputerHistorySummarySnapshotError,
   serializeComputerHistorySummary,
   summaryEventId,
   type ComputerHistorySummaryEvent,
@@ -436,6 +440,96 @@ test('one opaque source retains intermediate title and domain transitions betwee
   assert.deepEqual(inputs[0]!.evidence.map(({ id }) => id), events.map((item) => summaryEventId(item)));
 });
 
+test('full permitted tails and short intermediate changes survive one shared evidence budget', async (t) => {
+  const home = await fixture(t);
+  const inputs: ComputerHistorySummaryInput[] = [];
+  const summaries = new ComputerHistorySummaries({
+    home, now: () => BASE + TEN_MINUTES,
+    generate: async (input) => { inputs.push(input); return CONTENT; },
+  });
+  const document = 'Visible document.\n' + 'paragraph '.repeat(790) + 'FINAL_DECISION';
+  const utf8 = '\u4e2d\u6587 \ud83d\ude80\n"\\'.repeat(650) + 'MULTILINGUAL_FINAL';
+  const events = [
+    { ...event(BASE + 1_000), content: document, sourceKey: 'reader' },
+    { ...event(BASE + 2_000), content: 'BRIEF_INTERMEDIATE_DECISION', sourceKey: 'reader' },
+    { ...event(BASE + 3_000), content: document, sourceKey: 'reader' },
+    { ...event(BASE + 4_000, 'Multilingual source'), content: utf8 },
+  ];
+  await summaries.run(events, { includeText: true });
+  const evidence = inputs[0]!.evidence;
+  assert.ok(evidence.some(({ text }) => text.includes(document)));
+  assert.ok(evidence.some(({ text }) => text.includes('BRIEF_INTERMEDIATE_DECISION')));
+  assert.ok(evidence.some(({ text }) => text.includes(utf8)));
+  assert.doesNotMatch(JSON.stringify(evidence), /\[truncated\]|\ufffd/);
+  assert.ok(Buffer.byteLength(JSON.stringify(evidence)) <= 224 * 1024);
+  await summaries.clear(-Infinity);
+  await summaries.run([...events].reverse(), { includeText: true });
+  assert.deepEqual(inputs[1], inputs[0]);
+  await summaries.clear(-Infinity);
+  await summaries.run(events);
+  assert.doesNotMatch(JSON.stringify(inputs[2]), /FINAL_DECISION|MULTILINGUAL_FINAL|BRIEF_INTERMEDIATE_DECISION|Observed content/);
+  assert.equal((await summaries.list())[0]!.generation!.includesText, false);
+});
+
+test('bounded content pool preserves endpoints and brief middle evidence under escaped UTF-8 pressure', async (t) => {
+  const home = await fixture(t);
+  const inputs: ComputerHistorySummaryInput[] = [];
+  const summaries = new ComputerHistorySummaries({
+    home, now: () => BASE + TEN_MINUTES,
+    generate: async (input) => { inputs.push(input); return CONTENT; },
+  });
+  const events = Array.from({ length: 600 }, (_, index) => ({
+    ...event(BASE + index * 1_000),
+    sourceKey: 'same-source',
+    content: index === 311 ? 'BRIEF_MIDDLE_OUTCOME' :
+      `START_${index}\n${'\u4e2d\ud83d\ude80\n"\\'.repeat(2_000)}\nTAIL_${index}`,
+  }));
+  await summaries.run(events, { includeText: true });
+  const evidence = inputs[0]!.evidence;
+  assert.ok(evidence.length <= 256);
+  assert.equal(evidence[0]!.id, summaryEventId(events[0]!, { includeText: true }));
+  assert.equal(evidence.at(-1)!.id, summaryEventId(events.at(-1)!, { includeText: true }));
+  assert.ok(evidence.some(({ text }) => text.includes('BRIEF_MIDDLE_OUTCOME')));
+  assert.ok(Buffer.byteLength(JSON.stringify(evidence)) <= 224 * 1024);
+  assert.ok(evidence.every(({ text }) => Buffer.byteLength(text) <= 32 * 1024));
+  assert.doesNotMatch(JSON.stringify(evidence), /\ufffd/);
+  assert.equal((await summaries.list())[0]!.eventCount, 600);
+  await summaries.clear(-Infinity);
+  await summaries.run([...events].reverse(), { includeText: true });
+  assert.deepEqual(inputs[1]!.evidence, evidence);
+});
+
+test('48-hour streaming input keeps rich evidence bounded in every closed window', async (t) => {
+  const home = await fixture(t);
+  const inputs: ComputerHistorySummaryInput[] = [];
+  const summaries = new ComputerHistorySummaries({
+    home, now: () => BASE + 48 * 60 * MINUTE,
+    generate: async (input) => { inputs.push(input); return CONTENT; },
+  });
+  async function* stream() {
+    for (let window = -1; window <= 288; window++) {
+      for (let index = 0; index < 40; index++) {
+        yield {
+          ...event(BASE + window * TEN_MINUTES + index * 1_000, `Window ${window}`),
+          content: index === 20 ? `BRIEF_WINDOW_${window}` :
+            `Window ${window} content ${index}\n${'rich content '.repeat(800)}\nWINDOW_TAIL_${window}`,
+        };
+      }
+    }
+  }
+  await summaries.run(stream(), { includeText: true });
+  assert.equal(inputs.length, 6);
+  assert.deepEqual(inputs.map(({ start }) => start),
+    Array.from({ length: 6 }, (_, index) => new Date(BASE + index * TEN_MINUTES).toISOString()));
+  for (const [index, input] of inputs.entries()) {
+    assert.ok(input.evidence.length <= 256);
+    assert.ok(Buffer.byteLength(JSON.stringify(input.evidence)) <= 224 * 1024);
+    assert.ok(input.evidence.every(({ text }) => Buffer.byteLength(text) <= 32 * 1024));
+    assert.ok(input.evidence.some(({ text }) => text.includes(`BRIEF_WINDOW_${index}`)));
+  }
+  assert.deepEqual((await summaries.list()).map(({ eventCount }) => eventCount), Array(6).fill(40));
+});
+
 test('stream scanning is bounded for large text, accounts for unsampled revisions and closes on cancellation', async (t) => {
   const home = await fixture(t);
   const inputs: ComputerHistorySummaryInput[] = [];
@@ -783,11 +877,11 @@ test('failed, invalid and cancelled leaf refreshes preserve saved leaf and rollu
   events.push(event(BASE + 2 * MINUTE));
   for (const failure of ['failure', 'invalid'] as const) {
     mode = failure;
-    await assert.rejects(summaries.run(events));
+    await assert.rejects(summaries.run(events, { retryFailed: true }));
     assert.deepEqual(await Promise.all(paths.map((path) => readFile(path))), bytes);
   }
   mode = 'held';
-  const running = summaries.run(events);
+  const running = summaries.run(events, { retryFailed: true });
   const signal = await started.promise;
   const cancelling = summaries.cancel();
   assert.equal(signal.aborted, true);
@@ -1349,6 +1443,243 @@ test('generation failure propagates and leaves the window available for retry', 
   assert.equal((await summaries.list()).length, 1);
 });
 
+test('invalid old leaf isolates retries, advances fresh windows and converges prior context after recovery', async (t) => {
+  const home = await fixture(t);
+  let now = BASE + 21 * MINUTE;
+  let invalid = true;
+  const inputs: ComputerHistorySummaryInput[] = [];
+  const summaries = new ComputerHistorySummaries({
+    home, now: () => now,
+    generate: async (input) => {
+      inputs.push(input);
+      if (invalid && input.start === new Date(BASE).toISOString()) {
+        throw Object.assign(new Error('invalid model response'), { code: 'invalid_summary' });
+      }
+      return { ...CONTENT, body: `Recovered summary ${input.start}` };
+    },
+  });
+  const events = [event(BASE + MINUTE), event(BASE + 11 * MINUTE)];
+  await assert.rejects(summaries.run(events), (error) => {
+    assert.ok(error instanceof ComputerHistorySummaryRunError);
+    assert.equal(error.attempted, 2);
+    assert.equal(error.generated, 1);
+    assert.equal(error.providerUnavailable, false);
+    assert.deepEqual(error.failures, [{ id: `10min-${BASE}`, nextRetryAt: now + TEN_MINUTES }]);
+    return true;
+  });
+  assert.deepEqual((await summaries.list()).map(({ id }) => id), [`10min-${BASE + TEN_MINUTES}`]);
+  assert.equal(inputs[1]!.priorContext, undefined);
+  await assert.rejects(summaries.run(events), (error) =>
+    error instanceof ComputerHistorySummaryRunError && error.attempted === 0,
+  );
+  assert.equal(inputs.length, 2);
+  now += TEN_MINUTES;
+  events.push(event(BASE + 21 * MINUTE));
+  await assert.rejects(summaries.run(events), (error) =>
+    error instanceof ComputerHistorySummaryRunError && error.generated === 1 && error.attempted === 2 &&
+    error.nextRetryAt === now + 2 * TEN_MINUTES,
+  );
+  invalid = false;
+  now += 2 * TEN_MINUTES;
+  await summaries.run(events);
+  const leaves = await summaries.list();
+  assert.equal(leaves.length, 3);
+  assert.deepEqual(leaves[1]!.generation!.priorContextIds, [leaves[0]!.id]);
+  assert.deepEqual(leaves[2]!.generation!.priorContextIds, [leaves[0]!.id, leaves[1]!.id]);
+  assert.match(inputs.at(-1)!.priorContext![0]!.text, /Recovered summary/);
+  const count = inputs.length;
+  await summaries.run(events);
+  assert.equal(inputs.length, count);
+  now = BASE + SIX_HOURS;
+  await summaries.run(events);
+  assert.deepEqual((await summaries.get(`6h-${BASE}`))!.sourceIds, leaves.map(({ id }) => id));
+});
+
+test('evidence and privacy revisions reset only applicable retries, manual retry remains bounded', async (t) => {
+  const home = await fixture(t);
+  let invalid = true;
+  const inputs: ComputerHistorySummaryInput[] = [];
+  const summaries = new ComputerHistorySummaries({
+    home, now: () => BASE + TEN_MINUTES,
+    generate: async (input) => {
+      inputs.push(input);
+      return invalid ? { ...CONTENT, body: '' } : CONTENT;
+    },
+  });
+  const events = [{ ...event(BASE + MINUTE), content: 'ONLY_WITH_CONSENT' }];
+  await assert.rejects(summaries.run(events, { includeText: true, scopeKey: 'a' }));
+  await assert.rejects(summaries.run(events, { includeText: true, scopeKey: 'a', retryFailed: true }));
+  assert.equal(inputs.length, 2);
+  await assert.rejects(summaries.run(events, { includeText: false, scopeKey: 'b' }));
+  assert.equal(inputs.length, 3);
+  assert.doesNotMatch(JSON.stringify(inputs[2]), /ONLY_WITH_CONSENT/);
+  events.push({ ...event(BASE + 2 * MINUTE), content: 'LATE_UPDATE' });
+  invalid = false;
+  await summaries.run(events, { includeText: false, scopeKey: 'b' });
+  assert.equal(inputs.length, 4);
+  assert.equal((await summaries.list())[0]!.generation!.scopeKey, 'b');
+});
+
+test('automatic invalid-output retries back off up to six hours without permanently abandoning a window', async (t) => {
+  const home = await fixture(t);
+  let now = BASE + TEN_MINUTES;
+  let invalid = true;
+  const summaries = new ComputerHistorySummaries({
+    home, now: () => now,
+    generate: async () => invalid ? { ...CONTENT, body: '' } : CONTENT,
+  });
+  const events = [event(BASE + MINUTE)];
+  for (const minutes of [10, 20, 40, 80, 160, 320, 360, 360]) {
+    await assert.rejects(summaries.run(events), (error) => {
+      assert.ok(error instanceof ComputerHistorySummaryRunError);
+      assert.equal(error.attempted, 1);
+      assert.equal(error.nextRetryAt, now + minutes * MINUTE);
+      return true;
+    });
+    now += minutes * MINUTE;
+  }
+  invalid = false;
+  await summaries.run(events);
+  assert.ok(await summaries.get(`10min-${BASE}`));
+});
+
+test('poison leaves spend at most six calls per run and cannot starve untouched windows', async (t) => {
+  const home = await fixture(t);
+  let calls = 0;
+  let invalid = true;
+  const summaries = new ComputerHistorySummaries({
+    home, now: () => BASE + 100 * MINUTE,
+    generate: async () => {
+      calls++;
+      if (invalid) throw Object.assign(new SyntaxError('Synthetic invalid JSON'), { code: 'invalid_summary' });
+      return CONTENT;
+    },
+  });
+  const events = Array.from({ length: 10 }, (_, index) => event(BASE + index * TEN_MINUTES));
+  await assert.rejects(summaries.run(events), (error) =>
+    error instanceof ComputerHistorySummaryRunError && error.attempted === 6,
+  );
+  invalid = false;
+  await assert.rejects(summaries.run(events), (error) =>
+    error instanceof ComputerHistorySummaryRunError && error.attempted === 4 && error.generated === 4,
+  );
+  assert.equal(calls, 10);
+  assert.equal((await summaries.list()).length, 4);
+  await summaries.run(events, { retryFailed: true });
+  assert.equal(calls, 16);
+  assert.equal((await summaries.list()).length, 10);
+  await summaries.run(events);
+  const converged = calls;
+  await summaries.run(events);
+  assert.equal(calls, converged);
+});
+
+test('provider-wide failures stop immediately and share cooldown without poisoning individual windows', async (t) => {
+  const home = await fixture(t);
+  let calls = 0;
+  let unavailable = true;
+  const summaries = new ComputerHistorySummaries({
+    home, now: () => BASE + 21 * MINUTE,
+    generate: async () => {
+      calls++;
+      if (unavailable) throw new ComputerHistorySummaryProviderError('service unavailable');
+      return CONTENT;
+    },
+  });
+  const events = [event(BASE + MINUTE), event(BASE + 11 * MINUTE)];
+  await assert.rejects(summaries.run(events), (error) =>
+    error instanceof ComputerHistorySummaryRunError && error.providerUnavailable && error.attempted === 1,
+  );
+  await assert.rejects(summaries.run(events), (error) =>
+    error instanceof ComputerHistorySummaryRunError && error.providerUnavailable && error.attempted === 0,
+  );
+  assert.equal(calls, 1);
+  unavailable = false;
+  await summaries.run(events, { retryFailed: true });
+  assert.equal(calls, 3);
+  assert.equal((await summaries.list()).length, 2);
+});
+
+test('provider cooldown is not shortened by an earlier window-local retry deadline', async (t) => {
+  const home = await fixture(t);
+  let now = BASE + 21 * MINUTE;
+  let unavailable = false;
+  const summaries = new ComputerHistorySummaries({
+    home, now: () => now,
+    generate: async (input) => {
+      if (unavailable) throw new ComputerHistorySummaryProviderError('outage');
+      return input.start === new Date(BASE).toISOString() ? { ...CONTENT, body: '' } : CONTENT;
+    },
+  });
+  await assert.rejects(summaries.run([event(BASE + MINUTE)]));
+  now += 5 * MINUTE;
+  unavailable = true;
+  await assert.rejects(summaries.run([event(BASE + MINUTE), event(BASE + 11 * MINUTE)]), (error) => {
+    assert.ok(error instanceof ComputerHistorySummaryRunError);
+    assert.equal(error.failures.length, 2);
+    assert.equal(error.providerUnavailable, true);
+    assert.equal(error.nextRetryAt, now + TEN_MINUTES);
+    return true;
+  });
+});
+
+test('unknown authorization failures and failed storage never become per-window retries', async (t) => {
+  const home = await fixture(t);
+  const denied = Object.assign(new Error('Summary consent revoked'), { code: 'permission_denied' });
+  let mode: 'denied' | 'storage' | 'ok' = 'denied';
+  let calls = 0;
+  const summaries = new ComputerHistorySummaries({
+    home, now: () => BASE + 21 * MINUTE,
+    generate: async () => {
+      calls++;
+      if (mode === 'denied') throw denied;
+      if (mode === 'storage') await writeFile(join(home, 'summaries'), 'not a directory');
+      return CONTENT;
+    },
+  });
+  const events = [event(BASE + MINUTE), event(BASE + 11 * MINUTE)];
+  await assert.rejects(summaries.run(events), (error) => error === denied);
+  assert.equal(calls, 1);
+  mode = 'storage';
+  await assert.rejects(summaries.run(events), (error) => {
+    assert.ok(error instanceof Error);
+    assert.ok(!(error instanceof ComputerHistorySummaryRunError));
+    return true;
+  });
+  assert.equal(calls, 2);
+  await rm(join(home, 'summaries'));
+  mode = 'ok';
+  await summaries.run(events);
+  assert.equal(calls, 4);
+  assert.equal((await summaries.list()).length, 2);
+});
+
+test('cancel after an isolated failure drains the current model and clears retry state', async (t) => {
+  const home = await fixture(t);
+  const started = deferred<void>();
+  const released = deferred<ComputerHistorySummaryContent>();
+  let calls = 0;
+  const summaries = new ComputerHistorySummaries({
+    home, now: () => BASE + 21 * MINUTE,
+    generate: async () => {
+      calls++;
+      if (calls === 1) return { ...CONTENT, body: '' };
+      if (calls === 2) { started.resolve(); return released.promise; }
+      return CONTENT;
+    },
+  });
+  const events = [event(BASE + MINUTE), event(BASE + 11 * MINUTE)];
+  const running = summaries.run(events);
+  await started.promise;
+  const cancelling = summaries.cancel();
+  released.resolve(CONTENT);
+  await Promise.all([running, cancelling]);
+  assert.deepEqual(await summaries.list(), []);
+  await summaries.run(events);
+  assert.equal(calls, 4);
+  assert.equal((await summaries.list()).length, 2);
+});
+
 test('maximal accepted multilingual content stays within the 6h input budget', async (t) => {
   const home = await fixture(t);
   const inputs: ComputerHistorySummaryInput[] = [];
@@ -1380,6 +1711,223 @@ test('maximal accepted multilingual content stays within the 6h input budget', a
   assert.ok(rollup.evidence.every(({ text }) => text.includes('BODY_START')));
   assert.ok(rollup.evidence.every(({ text }) => Buffer.byteLength(text) <= 32 * 1024));
   assert.equal((await summaries.list()).length, 37);
+});
+
+test('archive scan streams documents, supports early close and rejects duplicate identities and unsafe entries', async (t) => {
+  const home = await fixture(t);
+  const summaries = new ComputerHistorySummaries({
+    home, now: () => BASE + 21 * MINUTE, generate: async () => CONTENT,
+  });
+  await summaries.run([event(BASE + MINUTE), event(BASE + 11 * MINUTE)]);
+  const expected = await summaries.list();
+  const collect = async () => {
+    const result = [];
+    for await (const summary of summaries.scan()) result.push(summary);
+    return result.sort((a, b) => a.id.localeCompare(b.id));
+  };
+  assert.deepEqual(await collect(), expected);
+  const scan = summaries.scan();
+  assert.equal((await scan.next()).done, false);
+  await scan.return(undefined);
+  assert.deepEqual(await collect(), expected);
+
+  const directory = join(home, 'summaries');
+  const duplicate = join(directory, `${expected[0]!.id}.md`);
+  await writeFile(duplicate, serializeComputerHistorySummary({ ...expected[0]!, filename: undefined }));
+  for (let attempt = 0; attempt < 2; attempt++) await assert.rejects(collect(), /Invalid/);
+  await rm(duplicate);
+  const unsafe = join(directory, 'unsafe.md');
+  await symlink(join(directory, expected[0]!.filename!), unsafe);
+  await assert.rejects(collect(), /Invalid/);
+  await rm(unsafe);
+  await mkdir(unsafe);
+  await assert.rejects(collect(), /Invalid/);
+  await rm(unsafe, { recursive: true });
+  await writeFile(unsafe, 'corrupt document');
+  await assert.rejects(collect(), /Invalid/);
+  await rm(unsafe);
+  assert.deepEqual(await collect(), expected);
+});
+
+test('archive scan cannot finish successfully across privacy deletion', async (t) => {
+  const home = await fixture(t);
+  const summaries = new ComputerHistorySummaries({
+    home, now: () => BASE + 21 * MINUTE, generate: async () => CONTENT,
+  });
+  await summaries.run([event(BASE + MINUTE), event(BASE + 11 * MINUTE)]);
+  const scan = summaries.scan();
+  assert.equal((await scan.next()).done, false);
+  await summaries.clear(-Infinity);
+  await assert.rejects(scan.next(), /Invalid/);
+  assert.deepEqual(await summaries.list(), []);
+});
+
+test('read snapshot rejects mixed rollup coverage across two scans and a fresh query converges', async (t) => {
+  const home = await fixture(t);
+  let changed = false;
+  const summaries = new ComputerHistorySummaries({
+    home, now: () => BASE + SIX_HOURS,
+    generate: async (input) => {
+      if (changed && input.level === '6h') {
+        throw Object.assign(new Error('invalid rollup'), { code: 'invalid_summary' });
+      }
+      return { ...CONTENT, body: changed ? 'Revised evidence' : 'Original evidence' };
+    },
+  });
+  const original = event(BASE + MINUTE);
+  await summaries.run([original]);
+  let passes = 0;
+  const search = (between: () => Promise<void>) => summaries.withReadSnapshot(async () => {
+    const covered = new Set<string>();
+    const entries = [];
+    passes++;
+    for await (const summary of summaries.scan()) {
+      if (summary.level !== '6h') continue;
+      entries.push(summary);
+      for (const id of summary.sourceIds) covered.add(id);
+    }
+    await between();
+    for await (const summary of summaries.scan()) {
+      if (summary.level === '10min' && !covered.has(summary.id)) entries.push(summary);
+    }
+    return entries;
+  });
+  await assert.rejects(search(async () => {
+    changed = true;
+    await assert.rejects(
+      summaries.run([original, event(BASE + 2 * MINUTE), event(BASE + 11 * MINUTE)]),
+      ComputerHistorySummaryRunError,
+    );
+  }), ComputerHistorySummarySnapshotError);
+  assert.equal(passes, 1, 'a conflicted query must not retry silently');
+  const recovered = await search(async () => {});
+  assert.deepEqual(recovered.map(({ id }) => id).sort(), [
+    `10min-${BASE}`, `10min-${BASE + TEN_MINUTES}`,
+  ]);
+  assert.ok(recovered.every(({ content }) => content.body === 'Revised evidence'));
+});
+
+for (const operation of ['unlink', 'rename'] as const) {
+  for (const phase of ['before', 'after'] as const) {
+    test(`read snapshot rejects pending publication ${phase} ${operation}`, async (t) => {
+      const home = await fixture(t);
+      const summaries = new ComputerHistorySummaries({
+        home, now: () => BASE + SIX_HOURS, generate: async () => CONTENT,
+      });
+      const original = event(BASE + MINUTE);
+      await summaries.run([original]);
+      const stored = await summaries.list();
+      const target = join(home, 'summaries', stored.find(({ level }) => level === (operation === 'unlink' ? '6h' : '10min'))!.filename!);
+      const entered = deferred<void>();
+      const release = deferred<void>();
+      const readStarted = deferred<void>();
+      const readRelease = deferred<void>();
+      let held = false;
+      const hold = async (path: unknown, perform: () => Promise<void>) => {
+        if (path !== target || held) return perform();
+        held = true;
+        if (phase === 'after') await perform();
+        entered.resolve();
+        await release.promise;
+        if (phase === 'before') await perform();
+      };
+      if (operation === 'unlink') {
+        const unlink = fs.unlink;
+        t.mock.method(fs, 'unlink', (...args: Parameters<typeof unlink>) =>
+          hold(args[0], () => unlink(...args)));
+      } else {
+        const rename = fs.rename;
+        t.mock.method(fs, 'rename', (...args: Parameters<typeof rename>) =>
+          hold(args[1], () => rename(...args)));
+      }
+      syncBuiltinESMExports();
+      const reading = summaries.withReadSnapshot(async () => {
+        const result = await summaries.list();
+        readStarted.resolve();
+        await readRelease.promise;
+        return result;
+      });
+      const rejected = assert.rejects(reading, ComputerHistorySummarySnapshotError);
+      let run: Promise<void> | undefined;
+      try {
+        await readStarted.promise;
+        run = summaries.run([original, event(BASE + 2 * MINUTE)]);
+        await entered.promise;
+        await assert.rejects(summaries.withReadSnapshot(async () =>
+          assert.fail('a read must not start inside a pending filesystem mutation'),
+        ), ComputerHistorySummarySnapshotError);
+        readRelease.resolve();
+        await rejected;
+        release.resolve();
+        await run;
+        const recovered = await summaries.withReadSnapshot(() => summaries.list());
+        assert.equal(recovered.length, 2);
+        assert.ok(recovered.every(({ eventCount }) => eventCount === 2));
+      } finally {
+        release.resolve();
+        readRelease.resolve();
+        await Promise.allSettled([reading, run]);
+        t.mock.restoreAll();
+        syncBuiltinESMExports();
+      }
+    });
+  }
+}
+
+test('read snapshot permits pending model work, rejects maintenance overlap and preserves read failures', async (t) => {
+  const home = await fixture(t);
+  const entered = deferred<void>();
+  const release = deferred<ComputerHistorySummaryContent>();
+  const summaries = new ComputerHistorySummaries({
+    home, now: () => BASE + TEN_MINUTES,
+    generate: async () => {
+      entered.resolve();
+      return release.promise;
+    },
+  });
+  const run = summaries.run([event(BASE + MINUTE)]);
+  await entered.promise;
+  try {
+    assert.deepEqual(await summaries.withReadSnapshot(() => summaries.list()), []);
+    const cancelling = summaries.cancel();
+    await assert.rejects(summaries.withReadSnapshot(async () => []), ComputerHistorySummarySnapshotError);
+    release.resolve(CONTENT);
+    await Promise.all([run, cancelling]);
+    assert.deepEqual(await summaries.withReadSnapshot(() => summaries.list()), []);
+    await assert.rejects(summaries.withReadSnapshot(async () => {
+      await summaries.clear(-Infinity);
+      return [];
+    }), ComputerHistorySummarySnapshotError);
+    const failure = new Error('read denied');
+    await assert.rejects(summaries.withReadSnapshot(async () => {
+      throw failure;
+    }), (error) => error === failure);
+  } finally {
+    release.resolve(CONTENT);
+    await run;
+  }
+});
+
+test('failed publication invalidates a read snapshot and releases the publication fence', async (t) => {
+  const home = await fixture(t);
+  const summaries = new ComputerHistorySummaries({
+    home, now: () => BASE + TEN_MINUTES, generate: async () => CONTENT,
+  });
+  const failure = new Error('publication failed');
+  t.mock.method(fs, 'rename', async () => { throw failure; });
+  syncBuiltinESMExports();
+  try {
+    await assert.rejects(summaries.withReadSnapshot(async () => {
+      await assert.rejects(summaries.run([event(BASE + MINUTE)]), (error) => error === failure);
+      return [];
+    }), ComputerHistorySummarySnapshotError);
+    assert.deepEqual(await summaries.withReadSnapshot(() => summaries.list()), []);
+  } finally {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  }
+  await summaries.run([event(BASE + MINUTE)]);
+  assert.equal((await summaries.withReadSnapshot(() => summaries.list())).length, 1);
 });
 
 test('interval clear rejects corrupt summaries but all-clear deletes them without decoding', async (t) => {

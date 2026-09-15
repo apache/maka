@@ -150,3 +150,49 @@ public struct ObservationCallbacks<Source: Hashable> {
         pending.removeAll()
     }
 }
+
+/// One foreground window needs one full traversal, regardless of how many
+/// controls reported a generic change. This schedules work, never caches text.
+/// Failed/cancelled attempts retain dirty work until a verified capture settles it.
+public struct ObservationSampling {
+    public struct Token {
+        fileprivate let revision: UInt64
+    }
+    private var revision: UInt64 = 0
+    private var dirtySince: TimeInterval?
+    private var lastAttempt: TimeInterval?
+    public init() {}
+
+    public mutating func request(now: TimeInterval) {
+        revision &+= 1
+        if dirtySince == nil { dirtySince = now }
+    }
+
+    public mutating func begin(now: TimeInterval) -> Token? {
+        guard lastAttempt.map({ now - $0 >= 3 }) ?? true else { return nil }
+        if let dirtySince {
+            guard now - dirtySince >= 0.2 else { return nil }
+        }
+        lastAttempt = now
+        return Token(revision: revision)
+    }
+
+    @discardableResult
+    public mutating func complete(_ token: Token, settled: Bool) -> Bool {
+        guard token.revision == revision else { return false }
+        guard settled else { return false }
+        dirtySince = nil
+        return true
+    }
+
+    /// Direct semantic events still take fresh snapshots. They defer the next
+    /// fallback, but cannot settle separately pending notification work.
+    public mutating func observed(now: TimeInterval) {
+        if dirtySince == nil { lastAttempt = now }
+    }
+
+    public mutating func invalidate() {
+        revision &+= 1
+        dirtySince = nil
+    }
+}

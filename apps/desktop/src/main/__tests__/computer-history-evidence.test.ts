@@ -112,6 +112,22 @@ test('rich projection preserves line structure within bounded UTF-8 and rejects 
   }
 });
 
+test('model evidence redacts recognized credentials before content and title clipping', () => {
+  const secret = 'sk-syntheticSecretNeverTransmit123456';
+  const value = 'x '.repeat(14_330) + `api_key=${secret}`;
+  const projected = projectHistorySummaryEvent(JSON.stringify({
+    ...event,
+    window: { title: `Task password=${secret}` },
+    keyboard: { text: `Authorization: Bearer ${secret}` },
+    selection: { selectedText: `token=${secret}` },
+    ax: { mode: 'fullTree', text: value },
+  }), settings)!;
+  assert.doesNotMatch(JSON.stringify(projected), /syntheticSecret|sk-synthetic/u);
+  assert.match(projected.content!, /\[redacted\]/u);
+  assert.match(projected.window!.title!, /\[redacted\]/u);
+  assert.ok(Buffer.byteLength(projected.content!) <= 28 * 1024);
+});
+
 test('derived context scopes use exclusions independent of ordering or collection toggles', () => {
   const scoped = { ...settings, blockedDomains: ['b.example', 'a.example'] };
   assert.equal(summaryScopeKey(scoped), summaryScopeKey({ ...scoped, enabled: false, blockedDomains: ['a.example', 'b.example'] }));

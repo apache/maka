@@ -17,6 +17,7 @@
  * under the License.
  */
 
+mod applications;
 mod ownership;
 mod recorder;
 mod snapshot;
@@ -40,6 +41,16 @@ use windows::Win32::{
 
 pub fn run() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args
+        .first()
+        .is_some_and(|command| command == "applications")
+    {
+        println!(
+            "{}",
+            serde_json::to_string(&applications::lookup(&args[1..])?)?
+        );
+        return Ok(());
+    }
     let home = PathBuf::from(
         std::env::var_os("OPEN_COMPUTER_HISTORY_HOME").ok_or("history_home_required")?,
     );
@@ -169,6 +180,10 @@ pub(super) fn foreground() -> Option<(usize, u32)> {
 }
 
 pub(super) fn interactive_desktop() -> bool {
+    crate::session::available() && input_desktop()
+}
+
+pub(super) fn input_desktop() -> bool {
     unsafe {
         let Ok(desktop) = OpenInputDesktop(DESKTOP_CONTROL_FLAGS(0), false, DESKTOP_READOBJECTS)
         else {
@@ -203,14 +218,17 @@ fn print_status(home: &Path, include_recorder: bool) -> Result<()> {
         let active = ownership::active(home)?;
         let control = Control::load(home)?;
         status["recorderActive"] = json!(active);
-        status["state"] = json!(if control.paused(Utc::now()) {
+        status["state"] = json!(if control.paused(Utc::now()) || (active && !available) {
             "paused"
         } else if active {
             "running"
         } else {
             "stopped"
         });
-        if active && !control.paused(Utc::now()) && crate::health::capture_failed(home, Utc::now())
+        if active
+            && available
+            && !control.paused(Utc::now())
+            && crate::health::capture_failed(home, Utc::now())
         {
             status["captureError"] = json!("windows_capture_failed");
         }

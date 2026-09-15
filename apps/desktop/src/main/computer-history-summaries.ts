@@ -19,7 +19,7 @@
 
 import { createHash, randomUUID } from 'node:crypto';
 import { constants, type BigIntStats } from 'node:fs';
-import { lstat, mkdir, open, readdir, rename, unlink, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, open, opendir, readdir, rename, unlink, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import type {
   ComputerHistorySummaryContent,
@@ -72,6 +72,54 @@ export interface StoredComputerHistorySummary {
 
 type EvidenceRange = readonly [start: number, end: number];
 
+export interface ComputerHistorySummaryFailure {
+  readonly id: string;
+  readonly nextRetryAt: number;
+}
+
+/** Generated windows are saved even when other windows are waiting for retry. */
+export class ComputerHistorySummaryRunError extends Error {
+  readonly attempted: number;
+  readonly generated: number;
+  readonly failures: readonly ComputerHistorySummaryFailure[];
+  readonly nextRetryAt: number;
+  readonly providerUnavailable: boolean;
+
+  constructor(input: {
+    attempted: number;
+    generated: number;
+    failures: readonly ComputerHistorySummaryFailure[];
+    providerUnavailable?: boolean;
+    nextRetryAt?: number;
+  }) {
+    super('Computer History summary generation is waiting for retry');
+    this.name = 'ComputerHistorySummaryRunError';
+    this.attempted = input.attempted;
+    this.generated = input.generated;
+    this.failures = input.failures;
+    this.nextRetryAt = input.nextRetryAt ?? Math.min(...input.failures.map(({ nextRetryAt }) => nextRetryAt));
+    this.providerUnavailable = input.providerUnavailable ?? false;
+  }
+}
+
+/** The caller marks connection-wide failures; malformed output remains a window-local failure. */
+export class ComputerHistorySummaryProviderError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = 'ComputerHistorySummaryProviderError';
+  }
+}
+
+/** A model read overlapped archive publication or maintenance; retry the whole query. */
+export class ComputerHistorySummarySnapshotError extends Error {
+  readonly code = 'history_archive_changed';
+
+  constructor() {
+    super('Computer History changed during the read. Search again.');
+    this.name = 'ComputerHistorySummarySnapshotError';
+  }
+}
+
 const TEN_MINUTES = 10 * 60_000;
 const SIX_HOURS = 6 * 60 * 60_000;
 const RAW_HORIZON = 48 * 60 * 60_000;
@@ -79,18 +127,21 @@ const MAX_PER_RUN = 6;
 const MAX_EVIDENCE = 256;
 const MAX_EVIDENCE_BYTES = 224 * 1024;
 const MAX_ITEM_BYTES = 32 * 1024;
-const GENERATION_VERSION = 4;
+const GENERATION_VERSION = 5;
 const MAX_EVIDENCE_RANGES = 256;
 // The earliest representable timestamp denotes unknown ancestry in pre-v4 generations.
 const EARLIEST_TIME = -8_640_000_000_000_000;
 const SAMPLE_TIME_BINS = 16;
 const SAMPLE_SOURCES = 16;
+// Full-content candidates share one pool. Slot references retain metadata only.
+const MAX_RETAINED_OBSERVATIONS = MAX_EVIDENCE - SAMPLE_TIME_BINS * 3 - SAMPLE_SOURCES - 3;
+const MAX_RETRY_WINDOWS = 512;
 const MAX_FILE_BYTES = 128 * 1024;
 const MAX_APPLICATIONS = 64;
 
 type Evidence = ComputerHistorySummaryInput['evidence'][number];
 type SummaryEvents = Iterable<ComputerHistorySummaryEvent> | AsyncIterable<ComputerHistorySummaryEvent>;
-type RunOptions = { locale?: UiLocale; includeText?: boolean; scopeKey?: string };
+type RunOptions = { locale?: UiLocale; includeText?: boolean; scopeKey?: string; retryFailed?: boolean };
 type Observation = {
   id: string;
   timestamp: string;
@@ -98,6 +149,7 @@ type Observation = {
   signature: string;
   metadata: string;
   content?: string;
+  contentBytes: number;
 };
 type Window = {
   start: number;
@@ -107,13 +159,19 @@ type Window = {
   timeSamples: Map<number, { first: Observation; last: Observation }>;
   sourceSamples: Map<string, Observation>;
   contentSamples: Map<number, Observation>;
+  observations: Map<string, Observation>;
+  observationBytes: number;
+  observationCutoff?: Pick<Observation, 'signature' | 'contentBytes'>;
+  first?: Observation;
+  last?: Observation;
+  richest?: Observation;
 };
 type PendingSummary = Omit<StoredComputerHistorySummary, 'content'> & {
   evidence: readonly Evidence[];
   priorContext?: readonly Evidence[];
 };
 
-/** One main-process owner per home. Scheduling, consent and retry policy belong to the caller. */
+/** One main-process owner per home. The caller owns scheduling and consent; retries are window-local. */
 export class ComputerHistorySummaries {
   readonly #home: string;
   readonly #directory: string;
@@ -123,7 +181,15 @@ export class ComputerHistorySummaries {
   ) => Promise<ComputerHistorySummaryContent>;
   readonly #now: () => number;
   readonly #filenames = new Map<string, string>();
+  readonly #failures = new Map<string, {
+    revision: string;
+    attempts: number;
+    nextRetryAt: number;
+  }>();
+  #providerFailure?: { optionsKey: string; failure: ComputerHistorySummaryFailure };
   #epoch = 0;
+  #archiveRevision = 0;
+  #publishing = false;
   #closed = false;
   #active?: { controller: AbortController; promise: Promise<void> };
   #maintenance?: Promise<void>;
@@ -162,6 +228,35 @@ export class ComputerHistorySummaries {
   async list(): Promise<readonly StoredComputerHistorySummary[]> {
     await this.#maintenance;
     return this.#read();
+  }
+
+  /**
+   * Stream validated documents without retaining their bodies. Consumers must finish
+   * scanning before publishing results: a later file can violate archive uniqueness.
+   */
+  async *scan(): AsyncGenerator<StoredComputerHistorySummary> {
+    await this.#maintenance;
+    yield* this.#scan();
+  }
+
+  /**
+   * Guard a complete read, including all scan passes and final access checks.
+   * No locking or retry: reject if this owner's publication or maintenance overlaps.
+   * Callers must not publish partial results from the callback.
+   */
+  async withReadSnapshot<T>(read: () => Promise<T>): Promise<T> {
+    const revision = this.#archiveRevision;
+    const epoch = this.#epoch;
+    const assertCurrent = () => {
+      if (this.#publishing || this.#maintenance ||
+          revision !== this.#archiveRevision || epoch !== this.#epoch) {
+        throw new ComputerHistorySummarySnapshotError();
+      }
+    };
+    assertCurrent();
+    const result = await read();
+    assertCurrent();
+    return result;
   }
 
   /** Canonical document lookup, independent of visibility and unrelated corrupt summaries. */
@@ -253,6 +348,8 @@ export class ComputerHistorySummaries {
   #interrupt(action: () => Promise<void> = async () => {}): Promise<void> {
     this.#epoch++;
     this.#active?.controller.abort();
+    this.#failures.clear();
+    this.#providerFailure = undefined;
     const previous = this.#maintenance ?? this.#active?.promise ?? Promise.resolve();
     const promise = previous
       .then(action, async (error) => {
@@ -282,10 +379,44 @@ export class ComputerHistorySummaries {
     const current = () => !signal.aborted && epoch === this.#epoch;
     const windows = await rawWindows(events, now, includeText, current);
     if (!current()) return;
-    const stored = new Map((await this.#read()).map((summary) => [summary.id, summary]));
-    for (let count = 0; count < MAX_PER_RUN && current(); count++) {
-      const pending = nextSummary(windows, stored, now, { locale, includeText, scopeKey });
-      if (!pending) return;
+    let stored: Map<string, StoredComputerHistorySummary>;
+    try {
+      stored = new Map((await this.#read()).map((summary) => [summary.id, summary]));
+    } catch (error) {
+      if (!current()) return;
+      throw error;
+    }
+    if (!current()) return;
+    const optionsKey = JSON.stringify([locale, includeText, scopeKey]);
+    if (this.#providerFailure?.optionsKey === optionsKey &&
+        this.#providerFailure.failure.nextRetryAt > now && !options.retryFailed) {
+      throw new ComputerHistorySummaryRunError({
+        attempted: 0, generated: 0, failures: [this.#providerFailure.failure], providerUnavailable: true,
+      });
+    }
+    this.#providerFailure = undefined;
+    for (const [id, failure] of this.#failures) {
+      if (failure.nextRetryAt + RAW_HORIZON < now) this.#failures.delete(id);
+    }
+    let attempted = 0;
+    let generated = 0;
+    const failures = new Map<string, ComputerHistorySummaryFailure>();
+    const failedThisRun = new Set<string>();
+    const eligible = (candidate: PendingSummary) => {
+      if (failedThisRun.has(candidate.id)) return false;
+      const failed = this.#failures.get(candidate.id);
+      if (!failed) return true;
+      if (failed.revision !== JSON.stringify(candidate.generation)) {
+        this.#failures.delete(candidate.id);
+        failures.delete(candidate.id);
+        return true;
+      }
+      failures.set(candidate.id, { id: candidate.id, nextRetryAt: failed.nextRetryAt });
+      return Boolean(options.retryFailed) || failed.nextRetryAt <= now;
+    };
+    while (attempted < MAX_PER_RUN && current()) {
+      const pending = nextSummary(windows, stored, now, { locale, includeText, scopeKey }, eligible);
+      if (!pending) break;
       const input = decodeComputerHistorySummaryInput({
         level: pending.level,
         start: pending.start,
@@ -294,16 +425,43 @@ export class ComputerHistorySummaries {
         ...(locale ? { locale } : {}),
         ...(pending.priorContext ? { priorContext: pending.priorContext } : {}),
       });
-      let generated: unknown;
+      let content: ComputerHistorySummaryContent;
+      attempted++;
+      let validatingOutput = false;
       try {
-        generated = await this.#generate(input, signal);
+        const output = await this.#generate(input, signal);
+        if (!current()) return;
+        validatingOutput = true;
+        content = decodeComputerHistorySummaryContent(output);
       } catch (error) {
-        if (signal.aborted) return;
-        throw error;
+        if (!current()) return;
+        if (error instanceof ComputerHistorySummaryProviderError) {
+          const failure = { id: pending.id, nextRetryAt: now + TEN_MINUTES };
+          this.#providerFailure = { optionsKey, failure };
+          failures.set(pending.id, failure);
+          throw new ComputerHistorySummaryRunError({
+            attempted, generated, failures: [...failures.values()],
+            providerUnavailable: true, nextRetryAt: failure.nextRetryAt,
+          });
+        }
+        if (!validatingOutput &&
+            !(error && typeof error === 'object' && 'code' in error && error.code === 'invalid_summary')) {
+          throw error;
+        }
+        const attempts = Math.min((this.#failures.get(pending.id)?.attempts ?? 0) + 1, 7);
+        const nextRetryAt = now + Math.min(TEN_MINUTES * 2 ** (attempts - 1), SIX_HOURS);
+        this.#failures.set(pending.id, {
+          revision: JSON.stringify(pending.generation), attempts, nextRetryAt,
+        });
+        while (this.#failures.size > MAX_RETRY_WINDOWS) {
+          this.#failures.delete(this.#failures.keys().next().value!);
+        }
+        failures.set(pending.id, { id: pending.id, nextRetryAt });
+        failedThisRun.add(pending.id);
+        continue;
       }
       if (!current()) return;
       const { evidence: _evidence, priorContext: _priorContext, ...provenance } = pending;
-      const content = decodeComputerHistorySummaryContent(generated);
       const existing = stored.get(provenance.id);
       const filename = existing
         ? existing.filename
@@ -322,8 +480,15 @@ export class ComputerHistorySummaries {
         (includeText || !parent.generation?.includesText)
         ? parent.id : undefined;
       await this.#write(summary, current, invalidatedParent);
+      if (!current()) return;
       if (invalidatedParent) stored.delete(invalidatedParent);
       stored.set(summary.id, summary);
+      this.#failures.delete(summary.id);
+      failures.delete(summary.id);
+      generated++;
+    }
+    if (current() && failures.size) {
+      throw new ComputerHistorySummaryRunError({ attempted, generated, failures: [...failures.values()] });
     }
   }
 
@@ -377,37 +542,43 @@ export class ComputerHistorySummaries {
   }
 
   async #read(): Promise<StoredComputerHistorySummary[]> {
-    if (!(await this.#directoryExists())) return [];
-    let entries;
+    const summaries: StoredComputerHistorySummary[] = [];
+    for await (const summary of this.#scan()) summaries.push(summary);
+    return summaries.sort(compareSummaries);
+  }
+
+  async *#scan(): AsyncGenerator<StoredComputerHistorySummary> {
+    if (!(await this.#directoryExists())) return;
+    const epoch = this.#epoch;
+    let directory;
     try {
-      entries = await readdir(this.#directory, { withFileTypes: true });
+      directory = await opendir(this.#directory);
     } catch (error) {
-      if (isMissing(error)) return [];
+      if (isMissing(error)) return;
       throw error;
     }
-    const summaries: StoredComputerHistorySummary[] = [];
-    const ids = new Set<string>();
-    for (const entry of entries) {
+    const filenames = new Map<string, string>();
+    for await (const entry of directory) {
+      if (epoch !== this.#epoch) throw invalidSummary();
       if (entry.isSymbolicLink()) throw invalidSummary();
       if (!entry.name.endsWith('.md')) continue;
       if (!entry.isFile()) throw invalidSummary();
       try {
         const summary = await this.#readFile(entry.name);
-        if (ids.has(summary.id)) {
+        if (filenames.has(summary.id)) {
           this.#filenames.delete(summary.id);
           throw invalidSummary();
         }
-        ids.add(summary.id);
-        summaries.push(summary);
+        if (epoch !== this.#epoch) throw invalidSummary();
+        filenames.set(summary.id, summary.filename ?? `${summary.id}.md`);
+        yield summary;
       } catch (error) {
         if (!isMissing(error)) throw error;
       }
     }
+    if (epoch !== this.#epoch) throw invalidSummary();
     // Only publish lookups after the complete archive passes uniqueness checks.
-    for (const summary of summaries) {
-      this.#filenames.set(summary.id, summary.filename ?? `${summary.id}.md`);
-    }
-    return summaries.sort(compareSummaries);
+    for (const [id, filename] of filenames) this.#filenames.set(id, filename);
   }
 
   async #readFile(
@@ -448,30 +619,38 @@ export class ComputerHistorySummaries {
 
   async #write(summary: StoredComputerHistorySummary, current: () => boolean, parentId?: string): Promise<void> {
     const text = serializeComputerHistorySummary(summary);
-    await this.#directoryExists(true);
-    if (!current()) return;
-    const filename = summary.filename ?? `${summary.id}.md`;
-    const target = join(this.#directory, filename);
-    const temporary = join(this.#directory, `.${summary.id}.${randomUUID()}.tmp`);
+    // Mark pending publication before its first await, including invalidation and cleanup.
+    this.#publishing = true;
+    this.#archiveRevision++;
     try {
-      await writeFile(temporary, text, { flag: 'wx', mode: 0o600 });
+      await this.#directoryExists(true);
       if (!current()) return;
+      const filename = summary.filename ?? `${summary.id}.md`;
+      const target = join(this.#directory, filename);
+      const temporary = join(this.#directory, `.${summary.id}.${randomUUID()}.tmp`);
       try {
-        const info = await lstat(target);
-        if (!info.isFile() || info.isSymbolicLink()) throw invalidSummary();
-        await this.#readFile(filename, undefined, summary.id);
-      } catch (error) {
-        if (!isMissing(error)) throw error;
+        await writeFile(temporary, text, { flag: 'wx', mode: 0o600 });
+        if (!current()) return;
+        try {
+          const info = await lstat(target);
+          if (!info.isFile() || info.isSymbolicLink()) throw invalidSummary();
+          await this.#readFile(filename, undefined, summary.id);
+        } catch (error) {
+          if (!isMissing(error)) throw error;
+        }
+        if (!current()) return;
+        // Invalidate before publishing a child so restart cannot reuse a stale same-ID rollup.
+        if (parentId) await removeIfPresent(join(this.#directory, this.#filenames.get(parentId) ?? `${parentId}.md`));
+        if (!current()) return;
+        await rename(temporary, target);
+        this.#filenames.set(summary.id, filename);
+        if (!current()) await removeIfPresent(target);
+      } finally {
+        await removeIfPresent(temporary);
       }
-      if (!current()) return;
-      // Invalidate before publishing a child so restart cannot reuse a stale same-ID rollup.
-      if (parentId) await removeIfPresent(join(this.#directory, this.#filenames.get(parentId) ?? `${parentId}.md`));
-      if (!current()) return;
-      await rename(temporary, target);
-      this.#filenames.set(summary.id, filename);
-      if (!current()) await removeIfPresent(target);
     } finally {
-      await removeIfPresent(temporary);
+      this.#archiveRevision++;
+      this.#publishing = false;
     }
   }
 }
@@ -525,6 +704,7 @@ async function rawWindows(
       window = {
         start, eventCount: 0, applications: new Set(), revision: 0n,
         timeSamples: new Map(), sourceSamples: new Map(), contentSamples: new Map(),
+        observations: new Map(), observationBytes: 0,
       };
       windows.set(start, window);
     }
@@ -539,20 +719,21 @@ async function rawWindows(
     // An order-independent digest includes even unsampled input without retaining its content.
     window.revision = (window.revision + BigInt(`0x${id.slice(6)}`)) % (1n << 256n);
     const metadataOnly = { ...withoutContent, id, source };
-    const endpoint = content ? { ...metadataOnly, content: clipText(content, 1024) } : metadataOnly;
+    if (!window.first || compareEvidence(observation, window.first) < 0) window.first = observation;
+    if (!window.last || compareEvidence(observation, window.last) > 0) window.last = observation;
+    if (preferObservation(observation, window.richest)) window.richest = observation;
+    retainObservation(window, observation);
     const slot = Math.floor((time - start) / (TEN_MINUTES / SAMPLE_TIME_BINS));
     const endpoints = window.timeSamples.get(slot);
     window.timeSamples.set(slot, {
-      first: !endpoints || compareEvidence(endpoint, endpoints.first) < 0 ? endpoint : endpoints.first,
-      last: !endpoints || compareEvidence(endpoint, endpoints.last) > 0 ? endpoint : endpoints.last,
+      first: !endpoints || compareEvidence(metadataOnly, endpoints.first) < 0 ? metadataOnly : endpoints.first,
+      last: !endpoints || compareEvidence(metadataOnly, endpoints.last) > 0 ? metadataOnly : endpoints.last,
     });
-    const enriched = content ? { ...metadataOnly, content: clipText(content, 7 * 1024) } : metadataOnly;
-    if (content && preferObservation(enriched, window.contentSamples.get(slot))) {
-      window.contentSamples.set(slot, enriched);
+    if (content && preferObservation(metadataOnly, window.contentSamples.get(slot))) {
+      window.contentSamples.set(slot, metadataOnly);
     }
-    const sourceSample = content ? { ...metadataOnly, content: clipText(content, 3 * 1024) } : metadataOnly;
-    if (preferObservation(sourceSample, window.sourceSamples.get(source))) {
-      window.sourceSamples.set(source, sourceSample);
+    if (preferObservation(metadataOnly, window.sourceSamples.get(source))) {
+      window.sourceSamples.set(source, metadataOnly);
       if (window.sourceSamples.size > SAMPLE_SOURCES) {
         window.sourceSamples.delete([...window.sourceSamples.keys()].sort().at(-1)!);
       }
@@ -561,12 +742,43 @@ async function rawWindows(
   return [...windows.values()].sort((a, b) => a.start - b.start);
 }
 
+function observationSize(item: Observation): number {
+  return Buffer.byteLength(item.metadata) + Buffer.byteLength(item.content ?? '');
+}
+
+function compareRetainedObservations(
+  a: Pick<Observation, 'signature' | 'contentBytes'>,
+  b: Pick<Observation, 'signature' | 'contentBytes'>,
+): number {
+  // Short observed changes survive alongside long documents instead of losing to metadata noise.
+  return Number(b.contentBytes > 0) - Number(a.contentBytes > 0) ||
+    a.contentBytes - b.contentBytes || a.signature.localeCompare(b.signature);
+}
+
+function retainObservation(window: Window, item: Observation): void {
+  if (window.observationCutoff && compareRetainedObservations(item, window.observationCutoff) >= 0) return;
+  const previous = window.observations.get(item.signature);
+  if (previous && compareEvidence(previous, item) >= 0) return;
+  window.observations.set(item.signature, item);
+  window.observationBytes += observationSize(item) - (previous ? observationSize(previous) : 0);
+  // Retain a prefix of a fixed ordering. Remembering the cutoff prevents later small
+  // arrivals filling holes differently when the same event stream is read backwards.
+  while (window.observations.size > MAX_RETAINED_OBSERVATIONS || window.observationBytes > MAX_EVIDENCE_BYTES) {
+    const rejected = [...window.observations.values()].sort(compareRetainedObservations).at(-1)!;
+    window.observations.delete(rejected.signature);
+    window.observationBytes -= observationSize(rejected);
+    window.observationCutoff = { signature: rejected.signature, contentBytes: rejected.contentBytes };
+  }
+}
+
 function nextSummary(
   windows: readonly Window[],
   stored: ReadonlyMap<string, StoredComputerHistorySummary>,
   now: number,
   { locale, includeText = false, scopeKey }: RunOptions,
+  eligible: (candidate: PendingSummary) => boolean,
 ): PendingSummary | undefined {
+  const incompleteGroups = new Set<number>();
   for (const window of windows) {
     const existing = stored.get(summaryId('10min', window.start));
     if (!includeText && existing?.generation?.includesText) continue;
@@ -586,9 +798,10 @@ function nextSummary(
       ]),
     };
     if (existing && JSON.stringify(existing.generation) === JSON.stringify(generation)) continue;
-    const evidence = budgetEvidence(selected.map(({ id, metadata, content }) => ({
+    const evidence = budgetEvidence(selected.map(({ id, metadata, content, contentBytes }) => ({
       id,
-      text: content ? `${metadata}\nObserved content (untrusted):\n${content}` : metadata,
+      text: content ? `${metadata}\nObserved content (untrusted):\n${content}` :
+        `${metadata}${contentBytes ? '\n[Observed content omitted from bounded sample]' : ''}`,
     })), MAX_EVIDENCE_BYTES - 256);
     if (evidence.length < window.eventCount) {
       const last = evidence.at(-1)!;
@@ -607,7 +820,8 @@ function nextSummary(
       ...(previous.evidence.length ? { priorContext: previous.evidence } : {}),
     };
     // Fresh activity takes priority over derived rollups, including a repeatedly failing old rollup.
-    return candidate;
+    if (eligible(candidate)) return candidate;
+    incompleteGroups.add(Math.floor(window.start / SIX_HOURS) * SIX_HOURS);
   }
   const pending: PendingSummary[] = [];
   const groups = new Map<number, StoredComputerHistorySummary[]>();
@@ -620,6 +834,7 @@ function nextSummary(
     groups.set(start, children);
   }
   for (const [start, children] of groups) {
+    if (incompleteGroups.has(start)) continue;
     if (!includeText && children.some((child) => child.generation?.includesText)) continue;
     if (children.some((child) => child.generation?.scopeKey !== scopeKey)) continue;
     children.sort(compareSummaries);
@@ -648,7 +863,7 @@ function nextSummary(
       (start < now - RAW_HORIZON && existing.generation?.scopeKey === scopeKey &&
         JSON.stringify(existing.sourceIds) === JSON.stringify(sourceIds))
     )) continue;
-    pending.push({
+    const candidate: PendingSummary = {
       ...range('6h', start),
       applications: [...new Set(children.flatMap((child) => child.applications))]
         .sort()
@@ -661,7 +876,8 @@ function nextSummary(
         id: child.id,
         text: summaryEvidence(child),
       })), MAX_EVIDENCE_BYTES),
-    });
+    };
+    if (eligible(candidate)) pending.push(candidate);
   }
   return pending.sort(
     (a, b) => Date.parse(a.end) - Date.parse(b.end) || compareSummaries(a, b),
@@ -670,7 +886,7 @@ function nextSummary(
 
 function preferObservation(candidate: Observation, previous?: Observation): boolean {
   if (!previous) return true;
-  const contentSize = (candidate.content?.length ?? 0) - (previous.content?.length ?? 0);
+  const contentSize = candidate.contentBytes - previous.contentBytes;
   return contentSize > 0 || (contentSize === 0 && compareEvidence(candidate, previous) > 0);
 }
 
@@ -679,14 +895,22 @@ function sampleObservations(window: Window): Observation[] {
   for (const item of [
     ...[...window.timeSamples.values()].flatMap(({ first, last }) => [first, last]),
     ...window.sourceSamples.values(), ...window.contentSamples.values(),
+    ...window.observations.values(), window.first!, window.last!, window.richest!,
   ]) {
-    if (preferObservation(item, candidates.get(item.id))) candidates.set(item.id, item);
+    const retained = window.observations.get(item.signature);
+    const enriched = !item.content && retained?.content ? { ...item, content: retained.content } : item;
+    const previous = candidates.get(item.id);
+    if (!previous || enriched.content || !previous.content) candidates.set(item.id, enriched);
   }
   const chronological = [...candidates.values()].sort(compareEvidence);
   const selected = new Map<string, Observation>();
   // Collapse repeated metadata/content while keeping both observed time endpoints.
   for (const item of chronological) {
-    if (preferObservation(item, selected.get(item.signature))) selected.set(item.signature, item);
+    const previous = selected.get(item.signature);
+    if (!previous || (item.content && !previous.content) ||
+        (Boolean(item.content) === Boolean(previous.content) && preferObservation(item, previous))) {
+      selected.set(item.signature, item);
+    }
   }
   const result = new Map([...selected.values()].map((item) => [item.id, item]));
   result.set(chronological[0]!.id, chronological[0]!);
@@ -696,6 +920,7 @@ function sampleObservations(window: Window): Observation[] {
 
 /** Share encoded-byte space fairly; short items release their unused share to richer items. */
 function budgetEvidence(items: readonly Evidence[], budget: number): Evidence[] {
+  budget -= 2; // JSON array delimiters are part of the encoded budget.
   const result = new Map<string, Evidence>();
   const bySize = [...items].sort((a, b) => encodedSize(a) - encodedSize(b) || a.id.localeCompare(b.id));
   for (const [index, item] of bySize.entries()) {
@@ -793,7 +1018,11 @@ function projectObservation(event: ComputerHistorySummaryEvent, includeText: boo
   const content = includeText && event.content?.trim() ? event.content : undefined;
   const signature = hash(JSON.stringify([source, context, content]));
   const id = `event-${hash(JSON.stringify([timestamp, signature, metadata]))}`;
-  return { id, timestamp, source, signature, metadata, content };
+  return {
+    id, timestamp, source, signature, metadata,
+    ...(content ? { content: clipText(content, MAX_ITEM_BYTES) } : {}),
+    contentBytes: Buffer.byteLength(content ?? ''),
+  };
 }
 
 function range(level: ComputerHistorySummaryLevel, start: number) {

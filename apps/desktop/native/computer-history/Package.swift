@@ -24,7 +24,7 @@ let package = Package(
         ),
         .testTarget(
             name: "HistoryCoreTests",
-            dependencies: ["HistoryCore"]
+            dependencies: ["HistoryCore", "OpenHistory"]
         ),
     ]
 )

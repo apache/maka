@@ -44,21 +44,33 @@ use std::{
     time::{Duration, Instant},
 };
 use windows::Win32::{
-    Foundation::HWND,
+    Foundation::{HWND, LPARAM, LRESULT, WPARAM},
+    System::{
+        LibraryLoader::GetModuleHandleW,
+        RemoteDesktop::{
+            NOTIFY_FOR_THIS_SESSION, WTSRegisterSessionNotification,
+            WTSUnRegisterSessionNotification,
+        },
+    },
     UI::{
         Accessibility::{HWINEVENTHOOK, SetWinEventHook, UnhookWinEvent},
         WindowsAndMessaging::{
-            DispatchMessageW, EVENT_OBJECT_DESTROY, EVENT_OBJECT_FOCUS, EVENT_OBJECT_NAMECHANGE,
-            EVENT_OBJECT_REORDER, EVENT_OBJECT_SELECTION, EVENT_OBJECT_SELECTIONWITHIN,
+            CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, EVENT_OBJECT_DESTROY,
+            EVENT_OBJECT_FOCUS, EVENT_OBJECT_NAMECHANGE, EVENT_OBJECT_REORDER,
+            EVENT_OBJECT_SELECTION, EVENT_OBJECT_SELECTIONWITHIN,
             EVENT_OBJECT_TEXTSELECTIONCHANGED, EVENT_OBJECT_VALUECHANGE, EVENT_SYSTEM_FOREGROUND,
-            GA_ROOT, GetAncestor, MSG, PM_REMOVE, PeekMessageW, TranslateMessage,
-            WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS,
+            GA_ROOT, GetAncestor, HWND_MESSAGE, MSG, PM_REMOVE, PeekMessageW, RegisterClassW,
+            TranslateMessage, WINDOW_EX_STYLE, WINDOW_STYLE, WINEVENT_OUTOFCONTEXT,
+            WINEVENT_SKIPOWNPROCESS, WM_WTSSESSION_CHANGE, WNDCLASSW, WTS_CONSOLE_DISCONNECT,
+            WTS_REMOTE_DISCONNECT, WTS_SESSION_LOCK, WTS_SESSION_LOGOFF,
         },
     },
 };
+use windows::core::w;
 
 static EPOCHS: EventEpochs = EventEpochs::new();
 static DIRTY_KIND: AtomicU32 = AtomicU32::new(EVENT_SYSTEM_FOREGROUND);
+static SESSION_SUSPENDED: AtomicBool = AtomicBool::new(false);
 const MAX_SNAPSHOT_BYTES: u64 = 128 * 1024;
 // IAccessible2 AccessibleEventID: document content/load and text insert/remove/update.
 const IA2_DOCUMENT_CONTENT_CHANGED: u32 = 0x104;
@@ -93,6 +105,72 @@ unsafe extern "system" fn on_event(
 }
 
 struct Hooks(Vec<HWINEVENTHOOK>);
+
+struct SessionNotifications(HWND);
+
+unsafe extern "system" fn session_message(
+    window: HWND,
+    message: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    if message == WM_WTSSESSION_CHANGE {
+        // Sent messages can run inside PeekMessage without appearing in its MSG.
+        // Invalidate even a disconnect/reconnect that completes between polls.
+        EPOCHS.window_changed();
+        DIRTY_KIND.store(EVENT_SYSTEM_FOREGROUND, Ordering::Relaxed);
+        if matches!(
+            wparam.0 as u32,
+            WTS_CONSOLE_DISCONNECT | WTS_REMOTE_DISCONNECT | WTS_SESSION_LOCK | WTS_SESSION_LOGOFF
+        ) {
+            SESSION_SUSPENDED.store(true, Ordering::SeqCst);
+        }
+    }
+    unsafe { DefWindowProcW(window, message, wparam, lparam) }
+}
+
+impl SessionNotifications {
+    fn new() -> Result<Self> {
+        let window = unsafe {
+            let instance = GetModuleHandleW(None)?.into();
+            let class = WNDCLASSW {
+                lpfnWndProc: Some(session_message),
+                hInstance: instance,
+                lpszClassName: w!("MakaHistorySessionNotifications"),
+                ..Default::default()
+            };
+            if RegisterClassW(&class) == 0 {
+                return Err(windows::core::Error::from_thread().into());
+            }
+            CreateWindowExW(
+                WINDOW_EX_STYLE(0),
+                class.lpszClassName,
+                w!(""),
+                WINDOW_STYLE(0),
+                0,
+                0,
+                0,
+                0,
+                Some(HWND_MESSAGE),
+                None,
+                Some(instance),
+                None,
+            )?
+        };
+        let value = Self(window);
+        unsafe { WTSRegisterSessionNotification(window, NOTIFY_FOR_THIS_SESSION)? };
+        Ok(value)
+    }
+}
+
+impl Drop for SessionNotifications {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = WTSUnRegisterSessionNotification(self.0);
+            let _ = DestroyWindow(self.0);
+        }
+    }
+}
 
 impl Hooks {
     fn install() -> Result<Self> {
@@ -300,6 +378,8 @@ pub(super) fn record(home: &Path, parent: ownership::Parent) -> Result<()> {
         stop.store(true, Ordering::SeqCst);
     });
     let mut store = Store::new(home, Utc::now())?;
+    let _session_notifications = SessionNotifications::new()?;
+    let mut suspended = false;
     let mut segment_started = Instant::now();
     let mut hooks = None;
     let mut pending: Option<Pending> = None;
@@ -308,193 +388,212 @@ pub(super) fn record(home: &Path, parent: ownership::Parent) -> Result<()> {
     let mut schedule = CaptureSchedule::default();
     let mut last_flush = Instant::now();
     let mut health = CaptureHealth::default();
-    let outcome = (|| -> Result<()> {
-        loop {
-            let queue_drained = dispatch_events();
-            if !parent.alive() || stopping.load(Ordering::SeqCst) {
-                break;
-            }
-            require_consent(home)?;
-            let next = Control::load(home)?;
-            if next.state == State::Stopped {
-                break;
-            }
-            let paused = next.paused(Utc::now());
-            let available = interactive_desktop();
-            if !same_control(&control, &next) || paused || !available {
-                pending = None;
-                source = None;
-                last_retained = None;
-                health.observe(CaptureOutcome::Suppressed);
-            }
-            control = next;
-            let state = if paused || !available {
-                "paused"
-            } else {
-                "running"
-            };
-            publish_health(home, &mut health, state)?;
-            if paused || !available {
-                hooks = None;
-                std::thread::sleep(Duration::from_millis(50));
-                continue;
-            }
-            if hooks.is_none() {
-                hooks = Some(Hooks::install()?);
-                DIRTY_KIND.store(EVENT_SYSTEM_FOREGROUND, Ordering::Relaxed);
-            }
-            let target = foreground();
-            let epochs = EPOCHS.current();
-            if source
-                .as_ref()
-                .is_some_and(|(old, version, _)| Some(*old) != target || *version != epochs.window)
-            {
-                source = None;
-                last_retained = None;
-                health.observe(CaptureOutcome::Suppressed);
-            }
-            let stale = pending
-                .as_ref()
-                .is_some_and(|job| Some(job.fence.target) != target || job.fence.epochs != epochs);
-            let timed_out = pending
-                .as_ref()
-                .is_some_and(|job| job.started.elapsed() >= Duration::from_secs(2));
-            if stale || timed_out {
-                // Health publication and control reads may have blocked since
-                // the first pump. Cancellation takes precedence over timeout.
-                let failed = if let Some(job) = pending.as_ref().filter(|_| !stale && queue_drained)
-                {
-                    admit(home, &job.control, job.fence, &parent, &stopping)?
-                } else {
-                    false
-                };
-                if failed {
-                    schedule.completed(EPOCHS.current());
+    let outcome =
+        (|| -> Result<()> {
+            loop {
+                let queue_drained = dispatch_events();
+                if !parent.alive() || stopping.load(Ordering::SeqCst) {
+                    break;
                 }
-                pending = None;
-                last_retained = None;
-                health.observe(if failed {
-                    CaptureOutcome::Failed
-                } else {
-                    CaptureOutcome::Suppressed
-                });
-            }
-            // A full queue budget does not establish the source's current epoch.
-            if queue_drained
-                && let Some(job) = pending.as_mut()
-                && let Some(status) = job.child.try_wait()?
-            {
-                let bytes = job.output.recv_timeout(Duration::from_millis(100));
-                // Even failed workers may have been cancelled by a source/pause
-                // transition while output was being collected.
-                if !admit(home, &job.control, job.fence, &parent, &stopping)? {
-                    store.suppress()?;
+                require_consent(home)?;
+                let next = Control::load(home)?;
+                if next.state == State::Stopped {
+                    break;
+                }
+                let paused = next.paused(Utc::now());
+                let available = interactive_desktop();
+                let suspend =
+                    paused || !available || SESSION_SUSPENDED.swap(false, Ordering::SeqCst);
+                if !same_control(&control, &next) || suspend {
+                    pending = None;
+                    source = None;
                     last_retained = None;
                     health.observe(CaptureOutcome::Suppressed);
-                } else if !status.success() {
-                    health.observe(CaptureOutcome::Failed);
+                }
+                control = next;
+                let state = if suspend { "paused" } else { "running" };
+                if suspend {
+                    hooks = None;
+                    if !suspended {
+                        store.finish(Utc::now())?;
+                        suspended = true;
+                    }
+                    publish_health(home, &mut health, state)?;
+                    std::thread::sleep(Duration::from_millis(50));
+                    continue;
+                }
+                if suspended {
+                    store = Store::new(home, Utc::now())?;
+                    segment_started = Instant::now();
+                    last_flush = Instant::now();
+                    suspended = false;
+                }
+                publish_health(home, &mut health, state)?;
+                if hooks.is_none() {
+                    hooks = Some(Hooks::install()?);
+                    DIRTY_KIND.store(EVENT_SYSTEM_FOREGROUND, Ordering::Relaxed);
+                }
+                let target = foreground();
+                let epochs = EPOCHS.current();
+                if source.as_ref().is_some_and(|(old, version, _)| {
+                    Some(*old) != target || *version != epochs.window
+                }) {
+                    source = None;
                     last_retained = None;
-                } else {
-                    let snapshot = bytes
-                        .ok()
-                        .and_then(|bytes| bytes.ok())
-                        .and_then(|bytes| serde_json::from_slice::<Option<Snapshot>>(&bytes).ok());
-                    if let Some(Some(snapshot)) = snapshot {
-                        if snapshot.window_id != job.fence.target.0 as u64
-                            || snapshot.pid != job.fence.target.1
-                            || snapshot.source_id != job.source
-                        {
-                            health.observe(CaptureOutcome::Failed);
-                            last_retained = None;
-                            schedule.completed(EPOCHS.current());
-                            pending = None;
-                            publish_health(home, &mut health, state)?;
-                            continue;
-                        }
-                        let fingerprint = serde_json::to_string(&snapshot)?;
-                        if last_retained.as_ref() != Some(&fingerprint)
-                            || job.kind == "window.changed"
-                        {
-                            let policy = Policy::load(home)?;
-                            if store.append_if(&snapshot, job.kind, &policy, Utc::now(), || {
-                                admit(home, &job.control, job.fence, &parent, &stopping)
-                            })? {
-                                last_retained = Some(fingerprint);
-                            } else {
-                                last_retained = None;
-                            }
-                        }
-                        health.observe(CaptureOutcome::Observed);
-                    } else if snapshot.is_some() {
+                    health.observe(CaptureOutcome::Suppressed);
+                }
+                let stale = pending.as_ref().is_some_and(|job| {
+                    Some(job.fence.target) != target || job.fence.epochs != epochs
+                });
+                let timed_out = pending
+                    .as_ref()
+                    .is_some_and(|job| job.started.elapsed() >= Duration::from_secs(2));
+                if stale || timed_out {
+                    // Health publication and control reads may have blocked since
+                    // the first pump. Cancellation takes precedence over timeout.
+                    let failed =
+                        if let Some(job) = pending.as_ref().filter(|_| !stale && queue_drained) {
+                            admit(home, &job.control, job.fence, &parent, &stopping)?
+                        } else {
+                            false
+                        };
+                    if failed {
+                        schedule.completed(EPOCHS.current());
+                    }
+                    pending = None;
+                    last_retained = None;
+                    health.observe(if failed {
+                        CaptureOutcome::Failed
+                    } else {
+                        CaptureOutcome::Suppressed
+                    });
+                }
+                // A full queue budget does not establish the source's current epoch.
+                if queue_drained
+                    && let Some(job) = pending.as_mut()
+                    && let Some(status) = job.child.try_wait()?
+                {
+                    let bytes = job.output.recv_timeout(Duration::from_millis(100));
+                    // Even failed workers may have been cancelled by a source/pause
+                    // transition while output was being collected.
+                    if !admit(home, &job.control, job.fence, &parent, &stopping)? {
                         store.suppress()?;
                         last_retained = None;
                         health.observe(CaptureOutcome::Suppressed);
-                    } else {
+                    } else if !status.success() {
                         health.observe(CaptureOutcome::Failed);
                         last_retained = None;
+                    } else {
+                        let snapshot = bytes.ok().and_then(|bytes| bytes.ok()).and_then(|bytes| {
+                            serde_json::from_slice::<Option<Snapshot>>(&bytes).ok()
+                        });
+                        if let Some(Some(snapshot)) = snapshot {
+                            if snapshot.window_id != job.fence.target.0 as u64
+                                || snapshot.pid != job.fence.target.1
+                                || snapshot.source_id != job.source
+                            {
+                                health.observe(CaptureOutcome::Failed);
+                                last_retained = None;
+                                schedule.completed(EPOCHS.current());
+                                pending = None;
+                                publish_health(home, &mut health, state)?;
+                                continue;
+                            }
+                            let fingerprint = serde_json::to_string(&snapshot)?;
+                            if last_retained.as_ref().map(|(fingerprint, _)| fingerprint)
+                                != Some(&fingerprint)
+                                || job.kind == "window.changed"
+                            {
+                                let policy = Policy::load(home)?;
+                                let kind = if job.kind != "window.changed"
+                                    && last_retained.as_ref().is_some_and(|(_, selection)| {
+                                        selection != &snapshot.selection
+                                    }) {
+                                    "selection.changed"
+                                } else {
+                                    job.kind
+                                };
+                                if store.append_if(&snapshot, kind, &policy, Utc::now(), || {
+                                    admit(home, &job.control, job.fence, &parent, &stopping)
+                                })? {
+                                    last_retained = Some((fingerprint, snapshot.selection.clone()));
+                                } else {
+                                    last_retained = None;
+                                }
+                            }
+                            health.observe(CaptureOutcome::Observed);
+                        } else if snapshot.is_some() {
+                            store.suppress()?;
+                            last_retained = None;
+                            health.observe(CaptureOutcome::Suppressed);
+                        } else {
+                            health.observe(CaptureOutcome::Failed);
+                            last_retained = None;
+                        }
+                    }
+                    schedule.completed(EPOCHS.current());
+                    pending = None;
+                }
+                publish_health(home, &mut health, state)?;
+                if segment_started.elapsed() >= Duration::from_secs(600) {
+                    pending = None;
+                    store.finish(Utc::now())?;
+                    store = Store::new(home, Utc::now())?;
+                    segment_started = Instant::now();
+                    last_retained = None;
+                }
+                if last_flush.elapsed() >= Duration::from_secs(5) {
+                    store.flush()?;
+                    last_flush = Instant::now();
+                }
+                // Flush/rotation and job collection may block. Take a fresh target
+                // only after draining, then fence preparation inside Pending::start.
+                let queue_drained = dispatch_events();
+                let target = foreground();
+                let epochs = EPOCHS.current();
+                let dirty = DIRTY_KIND.load(Ordering::Relaxed);
+                if pending.is_none()
+                    && schedule.due(Instant::now(), dirty != 0, epochs, health.failures)
+                    && queue_drained
+                    && let Some(target) = target
+                {
+                    EPOCHS.track_window(target.0);
+                    let new_source = source.as_ref().is_none_or(|(old, version, _)| {
+                        *old != target || *version != epochs.window
+                    });
+                    if new_source {
+                        source = Some((target, epochs.window, uuid::Uuid::new_v4().to_string()));
+                    }
+                    let kind = if new_source {
+                        "window.changed"
+                    } else if dirty == EVENT_OBJECT_TEXTSELECTIONCHANGED
+                        || (EVENT_OBJECT_SELECTION..=EVENT_OBJECT_SELECTIONWITHIN).contains(&dirty)
+                    {
+                        "selection.changed"
+                    } else {
+                        "ui.changed"
+                    };
+                    pending = Pending::start(
+                        home,
+                        CaptureFence { target, epochs },
+                        &source.as_ref().unwrap().2,
+                        &control,
+                        kind,
+                        &parent,
+                        &stopping,
+                    )?;
+                    if pending.is_some() {
+                        DIRTY_KIND.store(0, Ordering::Relaxed);
+                        schedule.started(Instant::now(), epochs);
+                    } else {
+                        health.observe(CaptureOutcome::Suppressed);
+                        publish_health(home, &mut health, state)?;
                     }
                 }
-                schedule.completed(EPOCHS.current());
-                pending = None;
+                std::thread::sleep(Duration::from_millis(50));
             }
-            publish_health(home, &mut health, state)?;
-            if segment_started.elapsed() >= Duration::from_secs(600) {
-                pending = None;
-                store.finish(Utc::now())?;
-                store = Store::new(home, Utc::now())?;
-                segment_started = Instant::now();
-                last_retained = None;
-            }
-            if last_flush.elapsed() >= Duration::from_secs(5) {
-                store.flush()?;
-                last_flush = Instant::now();
-            }
-            // Flush/rotation and job collection may block. Take a fresh target
-            // only after draining, then fence preparation inside Pending::start.
-            let queue_drained = dispatch_events();
-            let target = foreground();
-            let epochs = EPOCHS.current();
-            let dirty = DIRTY_KIND.load(Ordering::Relaxed);
-            if pending.is_none()
-                && schedule.due(Instant::now(), dirty != 0, epochs, health.failures)
-                && queue_drained
-                && let Some(target) = target
-            {
-                EPOCHS.track_window(target.0);
-                let new_source = source
-                    .as_ref()
-                    .is_none_or(|(old, version, _)| *old != target || *version != epochs.window);
-                if new_source {
-                    source = Some((target, epochs.window, uuid::Uuid::new_v4().to_string()));
-                }
-                let kind = if new_source {
-                    "window.changed"
-                } else if (EVENT_OBJECT_SELECTION..=EVENT_OBJECT_SELECTIONWITHIN).contains(&dirty) {
-                    "selection.changed"
-                } else {
-                    "ui.changed"
-                };
-                pending = Pending::start(
-                    home,
-                    CaptureFence { target, epochs },
-                    &source.as_ref().unwrap().2,
-                    &control,
-                    kind,
-                    &parent,
-                    &stopping,
-                )?;
-                if pending.is_some() {
-                    DIRTY_KIND.store(0, Ordering::Relaxed);
-                    schedule.started(Instant::now(), epochs);
-                } else {
-                    health.observe(CaptureOutcome::Suppressed);
-                    publish_health(home, &mut health, state)?;
-                }
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        }
-        Ok(())
-    })();
+            Ok(())
+        })();
     drop(pending);
     drop(hooks);
     store.finish(Utc::now())?;
@@ -505,4 +604,36 @@ pub(super) fn record(home: &Path, parent: ownership::Parent) -> Result<()> {
         }),
     )?;
     outcome
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use windows::Win32::UI::WindowsAndMessaging::{SendMessageW, WTS_SESSION_UNLOCK};
+
+    #[test]
+    fn sent_session_aba_invalidates_source_and_retains_suspension_until_consumed() {
+        let notifications = SessionNotifications::new().unwrap();
+        let before = EPOCHS.current();
+        unsafe {
+            SendMessageW(
+                notifications.0,
+                WM_WTSSESSION_CHANGE,
+                Some(WPARAM(WTS_SESSION_LOCK as usize)),
+                Some(LPARAM(0)),
+            );
+            SendMessageW(
+                notifications.0,
+                WM_WTSSESSION_CHANGE,
+                Some(WPARAM(WTS_SESSION_UNLOCK as usize)),
+                Some(LPARAM(0)),
+            );
+        }
+        let after = EPOCHS.current();
+        assert_eq!(after.window, before.window + 2);
+        assert_eq!(after.content, before.content);
+        assert!(SESSION_SUSPENDED.swap(false, Ordering::SeqCst));
+        assert!(!SESSION_SUSPENDED.load(Ordering::SeqCst));
+        assert_eq!(DIRTY_KIND.load(Ordering::Relaxed), EVENT_SYSTEM_FOREGROUND);
+    }
 }

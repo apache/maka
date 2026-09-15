@@ -129,7 +129,13 @@ func runAdmittedRecorder(arguments: [String], homeURL: URL, parent: RecorderPare
     interruptSource.resume()
     terminateSource.resume()
 
-    try recorder.start()
+    do {
+        try recorder.start()
+    } catch {
+        recorder.stop(reason: "startup_failed")
+        throw error
+    }
+    if let failure = recorder.failure { throw failure }
     print("Recording interaction events to \(store.eventsURL.path)")
     print("Press Control-C to stop.")
 
@@ -143,6 +149,7 @@ func runAdmittedRecorder(arguments: [String], homeURL: URL, parent: RecorderPare
         CFRunLoopRun()
     }
     recorder.stop(reason: "run_loop_ended")
+    if let failure = recorder.failure { throw failure }
 }
 
 func loadPolicy(homeURL: URL) -> ObservationPolicy {
@@ -260,6 +267,7 @@ func printStatus(homeURL: URL) {
         "recorderActive": recorderActive,
         "processIdentifier": runtime?.processIdentifier as Any,
         "currentSegmentEventsPath": runtime?.currentSegmentEventsPath as Any,
+        "lastError": runtime?.lastError as Any,
     ]
     if let data = try? JSONSerialization.data(withJSONObject: status, options: [.prettyPrinted, .sortedKeys]),
        let output = String(data: data, encoding: .utf8)

@@ -164,10 +164,10 @@ test('real Windows recorder accepts only controlled synthetic WinForms evidence'
     }
   }
 
-  async function show(window, text, password = window === 'password', action = 'show') {
+  async function show(window, text, password = window === 'password', action = 'show', extra = {}) {
     healthy();
     const id = ++sequence;
-    const command = { id, action, window, text, ...(window === 'password' ? { password } : {}) };
+    const command = { id, action, window, text, ...(window === 'password' ? { password } : {}), ...extra };
     evidence('fixture.command', command);
     fixture.child.stdin.write(`${JSON.stringify(command)}\n`);
     const reply = await until(() => replies.get(id), `fixture ${window} focus`, 3_000);
@@ -438,6 +438,26 @@ test('real Windows recorder accepts only controlled synthetic WinForms evidence'
       assertion: 'direct-worker-body', durationMs: Math.round(performance.now() - captureStarted), direct,
     });
     const a = await captured(textHome, 'one', marker('BODY_A'));
+    const appId = a.app.bundleIdentifier;
+    const applications = JSON.parse(await invoke(textHome, ['applications', appId, 'win32.maka-history-missing']));
+    assert.equal(applications.length, 2);
+    assert.deepEqual(Object.keys(applications[0]).sort(), ['bundleIdentifier', 'iconDataUrl', 'name']);
+    assert.equal(applications[0].bundleIdentifier, appId);
+    assert.equal(applications[0].name, 'Maka synthetic history fixture');
+    assert.deepEqual(applications[1], {
+      bundleIdentifier: 'win32.maka-history-missing', name: 'win32.maka-history-missing', iconDataUrl: null,
+    });
+    {
+      assert.equal(typeof applications[0].iconDataUrl, 'string', 'synthetic executable icon was not extracted');
+      assert.ok(applications[0].iconDataUrl.startsWith('data:image/png;base64,'));
+      const png = Buffer.from(applications[0].iconDataUrl.split(',')[1], 'base64');
+      assert.ok(png.length <= 48 * 1024);
+      assert.equal(png.readUInt32BE(16), 48);
+      assert.equal(png.readUInt32BE(20), 48);
+      assert.equal(png[24], 8);
+      assert.equal(png[25], 6);
+    }
+    evidence('assertion.pass', { assertion: 'application-metadata', applications });
     let count = (await events(textHome)).length;
     await show('one', marker('BODY_EDIT'), false, 'edit');
     const edited = await captured(textHome, 'one', marker('BODY_EDIT'), count);
@@ -445,6 +465,22 @@ test('real Windows recorder accepts only controlled synthetic WinForms evidence'
     assert.equal(edited.sourceId, a.sourceId, 'pure same-window edit must retain its source identity');
     assert.notEqual(edited.kind, 'window.changed', 'pure edit is a content change');
     evidence('assertion.pass', { assertion: 'same-window-edit-retains-source', a, edited });
+    for (const start of [2, 5]) {
+      count = (await events(textHome)).length;
+      const id = ++sequence;
+      fixture.child.stdin.write(`${JSON.stringify({ id, action: 'select', window: 'one', start, length: 5 })}\n`);
+      const reply = await until(() => replies.get(id), 'fixture selection', 3_000);
+      replies.delete(id);
+      assert.equal(reply.selectionStart, start);
+      assert.equal(reply.selectedText, marker('BODY_EDIT').slice(start, start + 5));
+      const selected = await until(async () => (await events(textHome)).slice(count).find((event) =>
+        event.selection?.selectedText === reply.selectedText && event.selection.start === start),
+      'source-admitted selection event');
+      assert.equal(selected.kind, 'selection.changed');
+      assert.equal(selected.sourceId, edited.sourceId);
+      assert.equal(selected.selection.truncated, false);
+      evidence('assertion.pass', { assertion: 'selection-retains-source-and-position', selected });
+    }
     count = (await events(textHome)).length;
     await show('two', marker('BODY_B'));
     const b = await captured(textHome, 'two', marker('BODY_B'), count);
@@ -465,6 +501,14 @@ test('real Windows recorder accepts only controlled synthetic WinForms evidence'
     assert.ok(longEvent.ax.text.includes('\u4e2d\u6587\u7b14\u8bb0'));
     assert.ok(!longEvent.ax.text.includes('\ufffd'), 'UTF-8 truncation split a character');
     evidence('assertion.pass', { assertion: 'long-multilingual-body-bounded', bytes: Buffer.byteLength(longEvent.ax.text) });
+    count = (await events(textHome)).length;
+    await show('one', marker('AGGREGATE_BUDGET'), false, 'show', { budget: true });
+    const clipped = await captured(textHome, 'one', marker('AGGREGATE_BUDGET'), count);
+    assert.ok(clipped.ax.text.includes('SYNTHETIC_BUDGET_'));
+    assert.equal(clipped.ax.truncated, true, 'upstream aggregate clipping provenance was lost');
+    assert.ok(Buffer.byteLength(clipped.ax.text) <= 28 * 1024);
+    evidence('assertion.pass', { assertion: 'upstream-aggregate-clipping', bytes: Buffer.byteLength(clipped.ax.text) });
+    await show('one', marker('AFTER_BUDGET'), false, 'show', { budget: false });
 
     const denied = [];
     count = (await events(textHome)).length;
@@ -565,12 +609,18 @@ test('real Windows recorder accepts only controlled synthetic WinForms evidence'
     await invoke(textHome, ['pause']);
     const paused = await runtime(textHome, 'paused');
     const pausedCount = (await events(textHome)).length;
+    const pausedSegments = await segments(textHome, true);
+    for (const { metadata } of pausedSegments) {
+      assert.equal(metadata.endReason, 'finished', 'pause must seal every earlier segment');
+      assert.ok(metadata.endedAt);
+    }
     denied.push(marker('PAUSED_DENIED'));
     await show('two', denied.at(-1));
     await until(async () => {
       assert.equal((await events(textHome)).length, pausedCount, 'paused recorder wrote events');
       const value = await json(join(textHome, 'runtime.json'));
       assert.equal(value.state, 'paused');
+      assert.deepEqual(await segments(textHome, true), pausedSegments, 'pause created or rewrote segments');
       return Date.parse(value.updatedAt) > Date.parse(paused.updatedAt);
     }, 'paused heartbeat after synthetic focus/value change', 7_000);
     evidence('assertion.pass', { assertion: 'pause-no-writes', pausedCount });
@@ -578,6 +628,7 @@ test('real Windows recorder accepts only controlled synthetic WinForms evidence'
     await invoke(textHome, ['resume']);
     await runtime(textHome, 'running');
     await captured(textHome, 'one', marker('RESUMED_BODY'), pausedCount);
+    assert.equal((await segments(textHome)).length, pausedSegments.length + 1, 'resume must open one fresh segment');
     const textEvents = await stopRecorder(textHome);
     for (const text of denied) assert.ok(!JSON.stringify(textEvents).includes(text), `denied body persisted: ${text}`);
     assert.ok(!textEvents.some((event) => event.window.windowID === ready.windows.private), 'private metadata persisted');

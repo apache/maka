@@ -58,11 +58,40 @@ using System.Web.Script.Serialization;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Automation.Peers;
+using System.Windows.Automation.Provider;
 using System.Windows.Controls;
 using System.Windows.Documents;
 using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Threading;
+
+internal sealed class UnsupportedSelectionButton : Button
+{
+    internal static int SelectionCalls;
+    protected override AutomationPeer OnCreateAutomationPeer()
+    {
+        return new UnsupportedSelectionPeer(this);
+    }
+}
+
+internal sealed class UnsupportedSelectionPeer : ButtonAutomationPeer, ITextProvider
+{
+    internal UnsupportedSelectionPeer(Button owner) : base(owner) { }
+    public override object GetPattern(PatternInterface pattern)
+    {
+        return pattern == PatternInterface.Text ? this : base.GetPattern(pattern);
+    }
+    public ITextRangeProvider[] GetSelection()
+    {
+        UnsupportedSelectionButton.SelectionCalls++;
+        throw new NotImplementedException("Synthetic optional selection is not implemented.");
+    }
+    public ITextRangeProvider DocumentRange { get { throw new NotImplementedException(); } }
+    public SupportedTextSelection SupportedTextSelection { get { return SupportedTextSelection.None; } }
+    public ITextRangeProvider[] GetVisibleRanges() { throw new NotImplementedException(); }
+    public ITextRangeProvider RangeFromChild(IRawElementProviderSimple child) { throw new NotImplementedException(); }
+    public ITextRangeProvider RangeFromPoint(Point point) { throw new NotImplementedException(); }
+}
 
 internal static class WpfHistoryFixture
 {
@@ -107,6 +136,8 @@ internal static class WpfHistoryFixture
 
     private static string Body()
     {
+        Button button = Editor as Button;
+        if (button != null) return (string)button.Content;
         TextBox plain = Editor as TextBox;
         if (plain != null) return plain.Text.Replace("\r\n", "\n");
         FlowDocument document = ((RichTextBox)Editor).Document;
@@ -115,6 +146,8 @@ internal static class WpfHistoryFixture
 
     private static void SetBody(string text)
     {
+        Button button = Editor as Button;
+        if (button != null) { button.Content = text; return; }
         TextBox plain = Editor as TextBox;
         if (plain != null) plain.Text = text;
         else
@@ -128,13 +161,15 @@ internal static class WpfHistoryFixture
     private static void SelectEditor(string mode)
     {
         if (mode == Mode) return;
-        if (mode != "textbox" && mode != "richtextbox") throw new InvalidOperationException("Unknown editor.");
+        if (mode != "textbox" && mode != "richtextbox" && mode != "button" && mode != "unsupported-selection")
+            throw new InvalidOperationException("Unknown editor.");
         Panel.Children.Clear();
         Password = null;
         Panel.Children.Add(new TextBlock { Text = "Synthetic WPF notes", Margin = new Thickness(0, 0, 0, 12) });
-        Editor = mode == "textbox"
-            ? (Control)new TextBox { AcceptsReturn = true, TextWrapping = TextWrapping.Wrap }
-            : new RichTextBox { Document = new FlowDocument() };
+        if (mode == "textbox") Editor = new TextBox { AcceptsReturn = true, TextWrapping = TextWrapping.Wrap };
+        else if (mode == "richtextbox") Editor = new RichTextBox { Document = new FlowDocument() };
+        else if (mode == "button") Editor = new Button();
+        else Editor = new UnsupportedSelectionButton();
         Editor.Height = 170;
         Editor.FontSize = 18;
         AutomationProperties.SetName(Editor, "Synthetic editor");
@@ -256,6 +291,17 @@ internal static class WpfHistoryFixture
             {
                 if (Lifetime.ElapsedMilliseconds - PendingAt >= 2000)
                     throw new InvalidOperationException("WPF fixture did not reach visible foreground readiness.");
+                return;
+            }
+            if ((string)Pending["action"] == "inspect" && Pending.ContainsKey("selectionProbe"))
+            {
+                Emit(new {
+                    type = "ack", id = Pending["id"], action = Pending["action"],
+                    processIdentifier = Process.GetCurrentProcess().Id, windowID = Hwnd.ToInt64(),
+                    title = Window.Title, mode = Mode, foreground = Foreground(),
+                    selectionCalls = UnsupportedSelectionButton.SelectionCalls
+                });
+                Pending = null;
                 return;
             }
             if ((string)Pending["action"] == "inspect" &&

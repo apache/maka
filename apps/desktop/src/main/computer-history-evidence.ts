@@ -18,6 +18,7 @@
  */
 
 import { createHash } from 'node:crypto';
+import { redactSecrets } from '@maka/core/redaction';
 import type { ComputerHistorySettings } from '@maka/core/computer-history';
 import type { ComputerHistorySummaryEvent } from './computer-history-summaries.js';
 
@@ -75,18 +76,18 @@ export function projectHistorySummaryEvent(
   const ax = record(event.ax);
   const pieces: string[] = [];
   if (contentAllowed) {
-    const selected = text(selection.selectedText, 4 * 1024);
-    const typed = text(keyboard.text, 4 * 1024);
+    const selected = observedText(selection.selectedText, 4 * 1024);
+    const typed = observedText(keyboard.text, 4 * 1024);
     if (typed) pieces.push(`Entered text (not proof of submission):\n${typed}`);
-    if (selected) pieces.push(`Selected text:\n${selected}`);
+    if (selected) pieces.push(`Selected text${selection.truncated === true ? ' (partial)' : ''}:\n${selected}`);
     for (const [label, element] of [['Keyboard target', elements[0]], ['Selection target', elements[1]], ['Mouse target', elements[2]]] as const) {
       const description = ['role', 'title', 'description', 'value', 'placeholder']
-        .flatMap((key) => typeof element[key] === 'string' ? [`${key}: ${text(element[key], 1024)}`] : []);
+        .flatMap((key) => typeof element[key] === 'string' ? [`${key}: ${observedText(element[key], 1024)}`] : []);
       if (description.length) pieces.push(`${label}:\n${description.join('\n')}`);
     }
     // Legacy deltas cannot establish a self-contained permitted document.
     if (ax.mode === 'fullTree' && typeof ax.text === 'string') {
-      pieces.push(`Visible accessibility content${ax.truncated === true ? ' (partial)' : ''}:\n${text(ax.text, MAX_CONTENT_BYTES)}`);
+      pieces.push(`Visible accessibility content${ax.truncated === true ? ' (partial)' : ''}:\n${observedText(ax.text, MAX_CONTENT_BYTES)}`);
     }
   }
   const content = text(pieces.join('\n\n'), MAX_CONTENT_BYTES);
@@ -94,8 +95,8 @@ export function projectHistorySummaryEvent(
     timestamp: new Date(event.timestamp).toISOString(),
     kind,
     sourceKey: createHash('sha256').update(JSON.stringify([bundleIdentifier || name, sourceId ?? title])).digest('hex'),
-    app: { name, bundleIdentifier },
-    window: { title, ...(domain ? { urlDomain: domain } : {}) },
+    app: { name: plain(observedText(app.name, 256), 256), bundleIdentifier },
+    window: { title: plain(observedText(window.title, 1024), 1024), ...(domain ? { urlDomain: domain } : {}) },
     ...(content ? { content } : {}),
   };
 }
@@ -137,6 +138,11 @@ function record(value: unknown): Record<string, unknown> {
 
 function plain(value: unknown, bytes: number): string {
   return text(value, bytes).replace(/[\u0000-\u001f\u007f]/gu, ' ').trim();
+}
+
+function observedText(value: unknown, bytes: number): string {
+  // Redact before clipping: a budget boundary must not split a recognizable secret.
+  return text(typeof value === 'string' ? redactSecrets(value) : value, bytes);
 }
 
 function text(value: unknown, bytes: number): string {

@@ -65,6 +65,7 @@ import { clientCapabilityProviderId } from './client-capability-provider-id.js';
 const DEFAULT_CALL_TIMEOUT_MS = 150_000;
 const DESKTOP_BROWSER_SERVER_ID = 'desktop_browser';
 const DESKTOP_SETTINGS_SERVER_ID = 'desktop_settings';
+const DESKTOP_COMPUTER_HISTORY_SERVER_ID = 'desktop_computer_history';
 const DESKTOP_MCP_OFFER_PREFIX = 'desktop_mcp';
 const DESKTOP_BROWSER_TOOLS = new Set([
   'browser_navigate',
@@ -75,6 +76,12 @@ const DESKTOP_BROWSER_TOOLS = new Set([
   'browser_extract',
 ]);
 const DESKTOP_SETTINGS_TOOLS = new Set(['MakaClientSettingsGet', 'MakaClientSettingsUpdate']);
+const DESKTOP_COMPUTER_HISTORY_TOOLS = new Set([
+  'ComputerHistoryStatus',
+  'ComputerHistorySearch',
+  'ComputerHistoryRead',
+  'ComputerHistoryReadEvents',
+]);
 
 export { ClientCapabilityInvocationError };
 
@@ -1543,6 +1550,34 @@ function managedClientCapabilityGrantTarget(
   const { serverId, name: toolName } = tool.descriptor;
   if (!registration.trustedProvider) {
     throw new Error('Managed Client Capability requires a trusted Desktop provider');
+  }
+  if (
+    tool.offerId === DESKTOP_COMPUTER_HISTORY_SERVER_ID ||
+    serverId === DESKTOP_COMPUTER_HISTORY_SERVER_ID
+  ) {
+    if (
+      tool.offerId !== DESKTOP_COMPUTER_HISTORY_SERVER_ID ||
+      serverId !== DESKTOP_COMPUTER_HISTORY_SERVER_ID ||
+      !DESKTOP_COMPUTER_HISTORY_TOOLS.has(toolName) ||
+      tool.hostPathAccess !== 'none'
+    ) {
+      throw new Error(
+        `Desktop Computer History has no managed admission policy: ${serverId}/${toolName}`,
+      );
+    }
+    if (evidence.kind !== 'none') {
+      throw new Error('Desktop Computer History admission does not accept scope evidence');
+    }
+    // Status exposes availability only, never settings, source titles, or recorded activity.
+    if (toolName === 'ComputerHistoryStatus') return undefined;
+    return Object.freeze({
+      providerId: registration.providerId,
+      contractId,
+      serverId,
+      toolName,
+      capability: 'computer_history',
+      scope: Object.freeze({ kind: 'capability' }),
+    });
   }
   if (
     tool.offerId === DESKTOP_SETTINGS_SERVER_ID &&

@@ -47,11 +47,23 @@ pub struct Snapshot {
     pub title: String,
     pub url: Option<String>,
     pub text: Option<String>,
+    #[serde(default)]
+    pub text_truncated: bool,
+    #[serde(default)]
+    pub selection: Option<Selection>,
     pub source_id: String,
     pub domains: Vec<String>,
     pub secure: bool,
     pub private: bool,
     pub source_known: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Selection {
+    pub selected_text: String,
+    pub truncated: bool,
+    pub start: u32,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -284,10 +296,23 @@ impl Policy {
         {
             let (text, truncated) = bounded(text, MAX_TEXT_BYTES, true);
             if !text.trim().is_empty() {
-                event["ax"] = json!({ "mode": "fullTree", "text": text, "truncated": truncated });
+                event["ax"] = json!({ "mode": "fullTree", "text": text,
+                    "truncated": truncated || snapshot.text_truncated });
                 event["contentState"] = json!("available");
                 event["contentDomains"] = json!(domains);
             }
+        }
+        if self.capture_text
+            && let Some(selection) = &snapshot.selection
+            && !selection.selected_text.is_empty()
+        {
+            let (text, truncated) = bounded(&selection.selected_text, 4096, true);
+            event["selection"] = json!({
+                "selectedText": text, "start": selection.start,
+                "truncated": truncated || selection.truncated,
+            });
+            event["contentState"] = json!("available");
+            event["contentDomains"] = json!(domains);
         }
         Some(event)
     }
@@ -308,7 +333,7 @@ fn application_id(value: &str) -> Option<String> {
     Some(value.to_ascii_lowercase())
 }
 
-fn windows_application_id(value: &str) -> Option<String> {
+pub(crate) fn windows_application_id(value: &str) -> Option<String> {
     let value = application_id(value)?;
     let executable = value.strip_prefix("win32.")?;
     if executable.is_empty() || executable.starts_with('.') || executable.ends_with(".exe") {
@@ -627,6 +652,8 @@ pub(crate) mod tests {
 
     pub(crate) fn snapshot() -> Snapshot {
         Snapshot {
+            text_truncated: false,
+            selection: None,
             app_id: "win32.chrome".into(),
             app_name: "Chrome".into(),
             pid: 42,
@@ -989,6 +1016,80 @@ pub(crate) mod tests {
             assert!(event.get("ax").is_none());
             assert!(event.get("contentDomains").is_none());
         }
+    }
+
+    #[test]
+    fn upstream_clipping_survives_a_projection_that_does_not_clip_again() {
+        let home = Home::new();
+        let policy = home.policy(true);
+        let mut original = snapshot();
+        original.text = Some("retained prefix".repeat(50));
+        original.text_truncated = true;
+        let event = policy.project(&original, "ui.changed", 1, now()).unwrap();
+        assert_eq!(event["ax"]["text"], original.text.unwrap());
+        assert_eq!(event["ax"]["truncated"], true);
+    }
+
+    #[test]
+    fn selection_is_bounded_and_obeys_the_same_content_admission() {
+        let home = Home::new();
+        let policy = home.policy(true);
+        let mut original = snapshot();
+        original.selection = Some(Selection {
+            selected_text: "  selected\ttext\r\n".into(),
+            truncated: true,
+            start: 7,
+        });
+        let event = policy
+            .project(&original, "selection.changed", 1, now())
+            .unwrap();
+        assert_eq!(
+            event["selection"],
+            json!({
+                "selectedText": "  selected\ttext\r\n", "truncated": true, "start": 7,
+            })
+        );
+        assert_eq!(
+            event["contentDomains"],
+            json!(["example.com", "frame.example"])
+        );
+        let metadata = home
+            .policy(false)
+            .project(&original, "selection.changed", 1, now())
+            .unwrap();
+        assert!(metadata.get("selection").is_none());
+        assert_eq!(metadata["contentState"], "metadataOnly");
+        for flag in ["secure", "private", "sourceKnown"] {
+            let mut wire = serde_json::to_value(&original).unwrap();
+            wire[flag] = json!(flag != "sourceKnown");
+            let denied = serde_json::from_value(wire).unwrap();
+            assert!(
+                policy
+                    .project(&denied, "selection.changed", 1, now())
+                    .is_none()
+            );
+        }
+        original.domains = vec!["blocked.example".into()];
+        let mut blocked = config(true);
+        blocked["observation"]["blocklist"] =
+            json!([{"scope": "url", "urlDomain": "blocked.example"}]);
+        home.config(blocked);
+        assert!(
+            Policy::load(&home.0)
+                .unwrap()
+                .project(&original, "selection.changed", 1, now())
+                .is_none()
+        );
+        original.domains = vec!["example.com".into()];
+        original.selection.as_mut().unwrap().selected_text = "\u{4e2d}".repeat(4096);
+        let event = policy
+            .project(&original, "selection.changed", 1, now())
+            .unwrap();
+        assert_eq!(
+            event["selection"]["selectedText"].as_str().unwrap().len(),
+            4095
+        );
+        assert_eq!(event["selection"]["truncated"], true);
     }
 
     #[test]

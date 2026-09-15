@@ -9,6 +9,24 @@ import XCTest
 @testable import HistoryCore
 
 final class PolicyTests: XCTestCase {
+    func testSafariLocalizedMarkersStayBrowserScopedAndOrdinaryTitlesRemainAllowed() {
+        let policy = ObservationPolicy()
+        for bundle in ["com.apple.Safari", "com.apple.SafariTechnologyPreview"] {
+            for title in ["Neutral - Privat nettlesing", "Neutral - NAVIGAZIONE PRIVATA"] {
+                XCTAssertTrue(ObservationPolicy.isPrivateBrowsing(bundleIdentifier: bundle, title: title))
+                XCTAssertEqual(policy.shouldSuppress(bundleIdentifier: bundle, windowTitle: title,
+                    urlDomain: "example.com", role: "AXTextArea", subrole: nil), "private_browsing")
+            }
+            XCTAssertFalse(ObservationPolicy.isPrivateBrowsing(bundleIdentifier: bundle, title: "Neutral research notes"))
+        }
+        for bundle in ["test.editor", "com.apple.Safari.unverified", "com.google.Chrome"] {
+            XCTAssertFalse(ObservationPolicy.isPrivateBrowsing(bundleIdentifier: bundle, title: "Privat nettlesing"))
+        }
+        for bundle in ["com.microsoft.edgemac", "com.microsoft.edgemac.Beta", "com.microsoft.edgemac.Dev"] {
+            XCTAssertTrue(ObservationPolicy.isPrivateBrowsing(bundleIdentifier: bundle, title: "Neutral [InPrivate]"))
+        }
+    }
+
     func testTextCaptureMatchesOfficialDefault() {
         XCTAssertTrue(ObservationPolicy().captureText)
     }

@@ -155,7 +155,7 @@ export class ComputerHistoryApplications {
     const fallback = () => ids.map((bundleIdentifier) => ({
       bundleIdentifier, name: bundleIdentifier, iconDataUrl: null,
     }));
-    if (this.#platform !== 'darwin') return fallback();
+    if (this.#platform !== 'darwin' && this.#platform !== 'win32') return fallback();
     try {
       await access(this.#helperPath, constants.R_OK | constants.X_OK);
     } catch (error) {
@@ -165,7 +165,12 @@ export class ComputerHistoryApplications {
       throw new Error('Computer History application helper is unavailable');
     }
     if (this.#closed) throw new Error('Computer History application lookup is closed');
-    return this.#runHelper(ids);
+    const supported = this.#platform === 'win32'
+      ? ids.filter(isWindowsApplicationId)
+      : ids.filter((id) => !isWindowsApplicationId(id));
+    if (!supported.length) return fallback();
+    const values = new Map((await this.#runHelper(supported)).map((value) => [value.bundleIdentifier, value]));
+    return fallback().map((value) => values.get(value.bundleIdentifier) ?? value);
   }
 
   #runHelper(ids: readonly string[]): Promise<readonly ComputerHistoryApplication[]> {
@@ -173,7 +178,7 @@ export class ComputerHistoryApplications {
       let child: ChildProcess;
       try {
         child = this.#spawn(this.#helperPath, ['applications', ...ids], {
-          shell: false, stdio: ['ignore', 'pipe', 'ignore'],
+          shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'],
         });
       } catch {
         reject(new Error('Computer History application helper failed'));
@@ -226,9 +231,15 @@ export class ComputerHistoryApplications {
   }
 }
 
+function isWindowsApplicationId(id: string): boolean {
+  return /^win32\.[a-z0-9_-][a-z0-9._-]*$/u.test(id) &&
+    !id.endsWith('.') && !id.endsWith('.exe') && !id.includes('..');
+}
+
 function requestedIds(value: unknown): string[] {
   if (!Array.isArray(value) || value.length > MAX_BATCH || Array.from(value).some((id) =>
-    typeof id !== 'string' || id.length > 256 || !ID_PATTERN.test(id),
+    typeof id !== 'string' || id.length > 256 ||
+      (!ID_PATTERN.test(id) && !isWindowsApplicationId(id)),
   )) {
     throw new Error('Invalid Computer History application identifiers');
   }

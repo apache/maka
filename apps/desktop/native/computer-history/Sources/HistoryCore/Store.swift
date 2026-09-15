@@ -8,6 +8,19 @@
 import Foundation
 
 public final class SegmentStore {
+    public enum StoreError: Error {
+        case notWritable
+        case invalidBoundary
+    }
+
+    /// The real file operations are replaceable in tests, including partial
+    /// writes. The store, not a fake backend, owns ordering and failure state.
+    struct IO {
+        var write: (Data, FileHandle) throws -> Void = { try $1.write(contentsOf: $0) }
+        var synchronize: (FileHandle) throws -> Void = { try $0.synchronize() }
+        var metadata: (Data, URL) throws -> Void = { try $0.write(to: $1, options: .atomic) }
+    }
+
     public let homeURL: URL
     public let segmentURL: URL
     public let eventsURL: URL
@@ -20,14 +33,23 @@ public final class SegmentStore {
     private let encoder: JSONEncoder
     private var eventsHandle: FileHandle
     private var suppressedHandle: FileHandle?
+    private let io: IO
+    private var accepting = true
+    private var failure: Error?
+    public private(set) var sealed = false
     private(set) public var eventCount = 0
     private(set) public var suppressedEventCount = 0
 
-    public init(
+    public convenience init(
         homeURL: URL,
         now: Date = Date(),
         persistSuppressedEvents: Bool = false
     ) throws {
+        try self.init(homeURL: homeURL, now: now, persistSuppressedEvents: persistSuppressedEvents, io: IO())
+    }
+
+    init(homeURL: URL, now: Date = Date(), persistSuppressedEvents: Bool = false, io: IO) throws {
+        self.io = io
         self.homeURL = homeURL
         self.sessionID = UUID().uuidString.lowercased()
         self.segmentID = UUID().uuidString.lowercased()
@@ -80,6 +102,7 @@ public final class SegmentStore {
     /// counted instead; suppressed session boundaries retain only their identity.
     @discardableResult
     public func append(_ event: HistoryEvent, policy: ObservationPolicy) throws -> Bool {
+        try requireWritable()
         guard let projected = policy.eventForPersistence(event) else {
             try appendSuppressed(event)
             return false
@@ -92,6 +115,7 @@ public final class SegmentStore {
     /// Counts an event rejected by the producer. Optional debug output contains
     /// only its ID, timestamp and kind, never the rejected payload.
     public func appendSuppressed(_ event: HistoryEvent) throws {
+        try requireWritable()
         if let suppressedHandle {
             try write(event.persistenceIdentity, to: suppressedHandle)
         }
@@ -99,9 +123,47 @@ public final class SegmentStore {
     }
 
     public func finish(reason: String, now: Date = Date()) throws {
-        try writeMetadata(endedAt: now, reason: reason)
-        try eventsHandle.synchronize()
-        try suppressedHandle?.synchronize()
+        if let failure { throw failure }
+        if sealed { return }
+        accepting = false
+        do {
+            try io.synchronize(eventsHandle)
+            if let suppressedHandle { try io.synchronize(suppressedHandle) }
+            try writeMetadata(endedAt: now, reason: reason)
+            sealed = true
+        } catch {
+            failure = error
+            throw error
+        }
+    }
+
+    /// Once sealed, this store cannot receive more events, even if allocating
+    /// its replacement fails. The recorder must stop on a rotation error.
+    public func rotated(now: Date = Date()) throws -> SegmentStore {
+        try rotated(now: now) {
+            try SegmentStore(homeURL: homeURL, now: now, persistSuppressedEvents: suppressedEventsURL != nil)
+        }
+    }
+
+    func rotated(now: Date, create: () throws -> SegmentStore) throws -> SegmentStore {
+        try requireWritable()
+        try finish(reason: "segment_rotated", now: now)
+        return try create()
+    }
+
+    /// A stop boundary is written only to an open, healthy segment. Failure
+    /// never publishes a success-shaped seal over a partial event.
+    public func stop(event: HistoryEvent, policy: ObservationPolicy, reason: String, now: Date = Date()) throws {
+        if let failure { throw failure }
+        if sealed { return }
+        guard event.kind == .sessionEnded else { throw StoreError.invalidBoundary }
+        try append(event.persistenceIdentity, policy: policy)
+        try finish(reason: reason, now: now)
+    }
+
+    private func requireWritable() throws {
+        if let failure { throw failure }
+        guard accepting, !sealed else { throw StoreError.notWritable }
     }
 
     private func writeMetadata(endedAt: Date?, reason: String?) throws {
@@ -115,7 +177,7 @@ public final class SegmentStore {
             suppressedEventCount: suppressedEventCount
         )
         let data = try encoder.encode(metadata)
-        try data.write(to: metadataURL, options: .atomic)
+        try io.metadata(data, metadataURL)
     }
 
     public static func prune(homeURL: URL, olderThan interval: TimeInterval, now: Date = Date()) {
@@ -141,7 +203,13 @@ public final class SegmentStore {
     private func write<T: Encodable>(_ value: T, to handle: FileHandle) throws {
         var data = try encoder.encode(value)
         data.append(0x0A)
-        try handle.write(contentsOf: data)
+        do {
+            try io.write(data, handle)
+        } catch {
+            accepting = false
+            failure = error
+            throw error
+        }
     }
 }
 

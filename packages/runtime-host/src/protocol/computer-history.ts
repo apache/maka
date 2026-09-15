@@ -50,6 +50,7 @@ export const COMPUTER_HISTORY_OPERATION_SPECS = {
     | 'operation_conflict'
     | 'invalid_request'
     | 'model_unavailable'
+    | 'invalid_summary'
     | 'persistence_failed'
     | 'internal_failure'
   >({
@@ -63,6 +64,7 @@ export const COMPUTER_HISTORY_OPERATION_SPECS = {
       'operation_conflict',
       'invalid_request',
       'model_unavailable',
+      'invalid_summary',
       'persistence_failed',
       'internal_failure',
     ],

@@ -195,6 +195,8 @@ import { registerRuntimeHostGitHubCopilotIpc } from "./runtime-host-github-copil
 import { registerRuntimeHostArtifactsIpc } from "./runtime-host-artifacts-ipc-main.js";
 import type { DesktopRuntimeHostClient } from "./runtime-host-client.js";
 import { ComputerHistorySkillInstaller } from "./computer-history-skill.js";
+import { buildComputerHistoryCapabilityGroups } from "./computer-history-tools.js";
+import { ComputerHistorySummaryProviderError } from "./computer-history-summaries.js";
 import type {
   DesktopRuntimeHostCandidateControls,
   DesktopRuntimeHostTargetPolicy,
@@ -555,14 +557,16 @@ const computerHistoryService = new ComputerHistoryService({
     signal.throwIfAborted();
     // Activity belongs to this computer, even while the selected task uses a remote Host.
     const client = runtimeHostManager?.current('local')?.candidate?.client;
-    if (!client) throw new Error('Local analysis Host is unavailable');
+    if (!client) throw new ComputerHistorySummaryProviderError('Local analysis Host is unavailable');
     // Bound acknowledgement time beyond the Host's 180-second model deadline.
-    const result = await client.request(
-      'computer-history.summarize',
-      input,
-      190_000,
-      signal,
-    );
+    let result;
+    try {
+      result = await client.request('computer-history.summarize', input, 190_000, signal);
+    } catch (error) {
+      signal.throwIfAborted();
+      if (error && typeof error === 'object' && 'code' in error && error.code === 'invalid_summary') throw error;
+      throw new ComputerHistorySummaryProviderError('Local analysis model request failed', { cause: error });
+    }
     signal.throwIfAborted();
     return result;
   },
@@ -1200,6 +1204,28 @@ const startLocalRuntimeHostManager = () => startRuntimeHostDesktopManager(
         }
         return [
           workHubControl.group(scope),
+          ...buildComputerHistoryCapabilityGroups(scope, startupLocalStorageRoot.rootId, {
+            service: computerHistoryService,
+            assertAccess: async (signal) => {
+              signal?.throwIfAborted();
+              if (!scope || !runtimeHostManager?.ownsScope(scope)) {
+                throw new Error("Computer History local Host changed");
+              }
+              const client = runtimeHostManager.current("local")?.candidate?.client;
+              if (!client || !(await computerHistorySkillInstaller.isEnabled(client))) {
+                throw new Error("Computer History Skill is disabled or unavailable");
+              }
+              const policy = await client.queryRuntimePolicy();
+              if (policy.policy.privacy.incognitoActive) {
+                throw new Error("Computer History is unavailable in incognito");
+              }
+              signal?.throwIfAborted();
+              if (!runtimeHostManager?.ownsScope(scope) ||
+                  runtimeHostManager.current("local")?.candidate?.client !== client) {
+                throw new Error("Computer History local Host changed");
+              }
+            },
+          }),
           {
             offerId: "desktop_settings",
             label: "Client settings",

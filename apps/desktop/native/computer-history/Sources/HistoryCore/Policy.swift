@@ -163,6 +163,12 @@ public struct ObservationPolicy: Codable, Equatable, Sendable {
         else {
             return false
         }
+        // Safari's localized private-browsing terms. Scope additional markers
+        // to known bundles; window titles remain a conservative heuristic.
+        if ["com.apple.Safari", "com.apple.SafariTechnologyPreview"].contains(bundleIdentifier),
+           ["privat nettlesing", "navigazione privata"].contains(where: title.contains) {
+            return true
+        }
         return [
             "private browsing",
             "incognito",

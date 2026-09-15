@@ -19,7 +19,7 @@
 
 # Windows WPF History Canary
 
-This opt-in five-case suite invokes the real `open-history.exe snapshot` worker
+This opt-in six-case suite invokes the real `open-history.exe snapshot` worker
 against an isolated .NET Framework WPF executable. It does not start a recorder,
 generate summaries, modify personal configuration, or test the frontend.
 Run foreground suites sequentially in an unlocked Windows interactive session.
@@ -40,6 +40,7 @@ helper path. The default is `apps/desktop/resources/bin/open-history.exe`.
 
 | Case | Required evidence |
 | --- | --- |
+| Nonselectable controls | Normal Button without TextPattern and a Button peer returning `E_NOTIMPL` from GetSelection retain body and edits, omit selection, and prove the unsupported method was actually called |
 | TextBox | Body-only marker followed by an in-place multilingual edit; old body absent |
 | RichTextBox / FlowDocument | Independent body-only baseline and edit through the real provider |
 | PasswordBox | Same readable TextBox, body and window; add a visible PasswordBox sibling; complete snapshot suppressed; remove it and recover a new body |
@@ -48,7 +49,8 @@ helper path. The default is `apps/desktop/resources/bin/open-history.exe`.
 
 All cases check the exact fixture PID/HWND, title, supplied snapshot source ID,
 known native source, and empty domain list. Body markers occur only in actual
-editor content, never in titles, AutomationId, or accessible names.
+editor content or visible button content, never in titles, AutomationId, or
+an explicitly supplied accessible name.
 The fixture acknowledges layout, actual foreground/focus, editor instance and
 control readback. Non-mutating inspection before and after each native call
 must agree; it never reacquires focus to conceal a lost foreground window.
@@ -69,7 +71,19 @@ fixture remains usable, so unsupported RichTextBox does not silently erase
 TextBox results. The suite uses no provider fallback or forced accessibility
 activation.
 
+`MAKA_HISTORY_WINDOWS_WPF_SELECTION_TEST_ONLY=1` runs only the nonselectable
+regression for before/after helper comparison. It is not a full-suite result.
+The synthetic unsupported TextPattern is a controlled error injection, not
+a claim that ordinary WPF Buttons implement TextPattern.
+
 ## Clean Windows Result
+
+On 2026-09-15, final run `RAjoyQ` passed all six cases in 35.031 seconds
+without peer diagnostics. The new optional-selection case passed in 2.826
+seconds; the same regression against the pre-fix helper (`6BP3Kz`) failed
+with `uia_provider_unavailable`. The final case requires both absent-pattern
+and explicitly unsupported-selection controls to retain useful body and edits,
+while the synthetic provider counter proves `GetSelection` was invoked.
 
 On 2026-09-15, the main task reported clean Windows run `fOgDqe`: all five
 cases passed in 57.064 seconds, with no peer diagnostics enabled

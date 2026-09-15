@@ -62,6 +62,37 @@ public protocol ObservationAccessibility {
     func children(_ node: Node) -> [Node]?
     func owns(_ node: Node) -> Bool
     func selectedRange(_ node: Node) -> EventStreamTextRange?
+    func visibleRange(_ node: Node) -> ObservationVisibleRange
+    func text(_ node: Node, in range: EventStreamTextRange) -> String?
+}
+
+public enum ObservationVisibleRange: Equatable {
+    case unsupported
+    case unavailable
+    case range(EventStreamTextRange)
+}
+
+/// AX text offsets are UTF-16, not UTF-8 or Swift Character offsets. A bounded
+/// request can cut a surrogate pair at either edge; omit only that incomplete
+/// edge scalar and reject malformed interior UTF-16.
+public enum ObservationTextRange {
+    public static func bounded(_ range: EventStreamTextRange) -> EventStreamTextRange? {
+        guard range.location >= 0, range.length >= 0,
+              range.location <= Int.max - range.length else { return nil }
+        return EventStreamTextRange(location: range.location, length: min(range.length, 8_192))
+    }
+
+    public static func decode(_ units: [UInt16]) -> String? {
+        var units = units[...]
+        if let first = units.first, (0xDC00...0xDFFF).contains(first) { units = units.dropFirst() }
+        if let last = units.last, (0xD800...0xDBFF).contains(last) { units = units.dropLast() }
+        var bytes = Data()
+        for unit in units {
+            bytes.append(UInt8(truncatingIfNeeded: unit))
+            bytes.append(UInt8(truncatingIfNeeded: unit >> 8))
+        }
+        return String(data: bytes, encoding: .utf16LittleEndian)
+    }
 }
 
 public struct ObservationRole: Equatable {
@@ -199,19 +230,25 @@ public struct ObservationCapture<Access: ObservationAccessibility> {
             access.children($0)?.isEmpty == true &&
                 !["AXWebArea", "AXWindow", "AXGroup", "AXScrollArea"].contains(roles[$0]?.name ?? "")
         } ?? false)
-        let element = target.flatMap { contentAllowed ? self.element($0, role: roles[$0], content: content && leaf) : nil }
+        var valid = true
+        var visibleRanges: [Access.Node: EventStreamTextRange] = [:]
+        let element = target.flatMap { contentAllowed ? self.element($0, role: roles[$0], content: content && leaf,
+            visibleRanges: &visibleRanges, valid: &valid) : nil }
         let range = target.flatMap { contentAllowed ? access.selectedRange($0) : nil }
         let selectedText = target.flatMap { content && leaf ? boundedText(access.string($0, "AXSelectedText"), bytes: 8_192) : nil }
         guard now() < deadline else {
             return unavailable(window: window, target: target, appWindow: nil)
         }
-        var valid = true
         var reads: [(node: Access.Node, parent: Access.Node?, role: ObservationRole, leaf: Bool)] = []
         let tree = content && includeTree ? root.map {
             self.tree($0, deadline: min(deadline, now() + 0.2),
                 app: app, allowLocal: !browser,
-                documents: &documents, domains: &domains, reads: &reads, valid: &valid)
+                documents: &documents, domains: &domains, reads: &reads,
+                visibleRanges: &visibleRanges, valid: &valid)
         } : nil
+        for (node, range) in visibleRanges {
+            if now() >= deadline || access.visibleRange(node) != .range(range) { valid = false }
+        }
         // A later sibling can mutate an earlier node after its local reads.
         // Validate every contributing path together after collection.
         for read in reads {
@@ -290,15 +327,50 @@ public struct ObservationCapture<Access: ObservationAccessibility> {
             contentState: .unavailable, contentDomains: nil, sourcePath: [], documentURLs: [])
     }
 
-    private func element(_ node: Access.Node, role: ObservationRole?, content: Bool) -> EventStreamAXElement {
-        EventStreamAXElement(
+    private func element(
+        _ node: Access.Node, role: ObservationRole?, content: Bool,
+        visibleRanges: inout [Access.Node: EventStreamTextRange], valid: inout Bool
+    ) -> EventStreamAXElement {
+        let value = content ? value(node, role: role, visibleRanges: &visibleRanges, valid: &valid).text : nil
+        return EventStreamAXElement(
             role: role?.name, subrole: role?.subrole,
             title: content ? boundedText(access.string(node, "AXTitle"), bytes: 512) : nil,
             description: content ? boundedText(access.string(node, "AXDescription"), bytes: 512) : nil,
-            value: content ? boundedText(access.string(node, "AXValue"), bytes: 8_192) : nil,
+            value: value,
             placeholder: content ? boundedText(access.string(node, "AXPlaceholderValue"), bytes: 512) : nil,
             identifier: content ? boundedText(access.string(node, "AXIdentifier"), bytes: 512) : nil
         )
+    }
+
+    private func value(
+        _ node: Access.Node, role: ObservationRole?,
+        visibleRanges: inout [Access.Node: EventStreamTextRange], valid: inout Bool
+    ) -> (text: String?, clipped: Bool) {
+        if role?.name == "AXTextArea" {
+            switch access.visibleRange(node) {
+            case .unsupported:
+                break
+            case .unavailable:
+                valid = false
+                return (nil, true)
+            case let .range(range):
+                guard let request = ObservationTextRange.bounded(range), access.owns(node),
+                      access.role(node) == role, access.children(node)?.isEmpty == true else {
+                    valid = false
+                    return (nil, true)
+                }
+                if let previous = visibleRanges[node], previous != range { valid = false }
+                visibleRanges[node] = range
+                guard request.length > 0 else { return ("", true) }
+                guard let text = access.text(node, in: request), text.utf16.count <= request.length else {
+                    valid = false
+                    return (nil, true)
+                }
+                return (boundedText(text, bytes: 8_192), true)
+            }
+        }
+        let raw = access.string(node, "AXValue")
+        return (boundedText(raw, bytes: 8_192), (raw?.utf8.count ?? 0) > 8_192)
     }
 
     private func tree(
@@ -306,6 +378,7 @@ public struct ObservationCapture<Access: ObservationAccessibility> {
         documents: inout [Access.Node: Document],
         domains: inout Set<String>,
         reads: inout [(node: Access.Node, parent: Access.Node?, role: ObservationRole, leaf: Bool)],
+        visibleRanges: inout [Access.Node: EventStreamTextRange],
         valid: inout Bool
     ) -> EventStreamAXTree {
         var lines: [String] = []
@@ -339,12 +412,20 @@ public struct ObservationCapture<Access: ObservationAccessibility> {
             reads.append((node, parent, role, !attributes.isEmpty))
             for attribute in attributes {
                 guard now() < deadline else { truncated = true; break }
-                let raw = access.string(node, attribute)
+                let value: String?
                 // Read-only editors expose their body as a leaf value, even
                 // while focus stays on another control. Match the target budget.
                 let limit = attribute == "AXValue" ? 8_192 : 400
-                if (raw?.utf8.count ?? 0) > limit { truncated = true }
-                if let value = boundedText(raw, bytes: limit), !value.isEmpty {
+                if attribute == "AXValue" {
+                    let sample = self.value(node, role: role, visibleRanges: &visibleRanges, valid: &valid)
+                    value = sample.text
+                    truncated = truncated || sample.clipped
+                } else {
+                    let raw = access.string(node, attribute)
+                    if (raw?.utf8.count ?? 0) > limit { truncated = true }
+                    value = boundedText(raw, bytes: limit)
+                }
+                if let value, !value.isEmpty {
                     // JSON escaping keeps document text from impersonating tree structure.
                     let prefix = "[\(lines.count)] " + parts.joined(separator: " ") + " \(attribute)="
                     let remaining = 32_768 - size - prefix.utf8.count - 1

@@ -36,6 +36,8 @@ export type HostOperationErrorCode =
   | 'invalid_request'
   // External-session import: no usable model connection to attach the task to.
   | 'model_unavailable'
+  // Computer History: valid model response transport but malformed per-window content.
+  | 'invalid_summary'
   // External-session import: the source could not be read or converted.
   | 'source_unreadable'
   | 'projection_incomplete'

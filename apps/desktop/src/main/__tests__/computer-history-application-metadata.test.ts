@@ -125,11 +125,11 @@ test('unknown and invalid timeline sources cannot poison valid native lookups', 
   const invalid = [
     '', 'unknown', 'Safari', 'com..app', '.com.app', 'com.app.', 'com._app',
     'com.-app', ' com.example.App', 'com.example.App\n', '/Applications/Safari.app',
-    'com.' + 'a'.repeat(253),
+    'com.' + 'a'.repeat(253), 'win32._app..bad', 'win32._app.', 'win32._app/escape',
   ];
   await h.render(invalid);
   assert.equal(requests.length, 0);
-  const valid = [A, B, 'com.example-2.App', 'com.' + 'a'.repeat(252)].sort();
+  const valid = [A, B, 'com.example-2.App', 'com.' + 'a'.repeat(252), 'win32._fixture_app', 'win32.editor.2026'].sort();
   await h.render([...invalid, ...valid, A]);
   assert.deepEqual(requests, [valid]);
   assert.deepEqual([...h.state().applications.keys()], valid);

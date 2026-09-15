@@ -38,9 +38,9 @@ The integration has five boundaries:
 4. The local Runtime Host executes optional analysis using its existing Daily
    Review model authority, without tools. Collection and model processing require
    separate consent. Model summaries are written locally by the main process.
-5. The user selects history to include in an editable conversation draft.
-   Observation-derived content is not automatically promoted to trusted
-   long-term preferences or sent as a chat message.
+5. The user can select history for an editable conversation draft or approve
+   bounded retrieval through existing Desktop Client Capabilities. Both use
+   untrusted observations, never automatic promotion to long-term preferences.
 
 This follows the released Computer History generation: an interaction-event
 stream, not the older screenshot/OCR Chronicle design.
@@ -81,7 +81,8 @@ changes; the list still distinguishes referenced and unreferenced activities.
 Opened fallback rollups remain readable when new children arrive or filters
 change. Main supplies a read-time saved-file revision so changes beyond the
 bounded timeline preview refresh the full document without repeatedly reading
-unchanged files. That revision is neither persisted nor sent to the model.
+unchanged files. That revision is not persisted; conversation tools return it
+as an opaque token to prevent combining pages from different document versions.
 Raw app/window fragments do not appear as feed rows or contribute to its counts,
 search, date options, or application filters. Before the first summary, the page
 distinguishes waiting, active generation, paused/stopped recording, disabled analysis,
@@ -124,8 +125,8 @@ query; normal timeline refreshes omit body search data. Query responses retain
 both levels and return at most 2,048 characters of matching body excerpts per
 summary, so application labels and granularity can still be resolved locally.
 Queries are limited to 512 characters and 16 terms, with at most 128 characters
-per term. This does not enlarge the Composer context or
-give the bundled skill autonomous archive access.
+per term. This does not enlarge the Composer context. Conversation retrieval
+uses the separate bounded and approved tools described below.
 
 Settings > Computer History owns recording enablement, separate text and model
 consent, application/domain exclusions, retention information,
@@ -178,7 +179,11 @@ Failures after leaving the settings page are reported through the app's toast.
 History viewing does not read model settings.
 
 Application names and icons are resolved locally from bundle identifiers using
-Launch Services and `NSWorkspace`. The helper returns a 48px PNG, never the
+Launch Services and `NSWorkspace` on macOS. Windows resolves requested `win32.*`
+identifiers only from unambiguous running local executables, using version
+metadata and a native icon. Unknown, stopped or ambiguous applications retain
+the name-initial fallback; no drive-wide scan or executable launch is performed.
+The helper returns a 48px PNG, never the
 application path. The main process validates and caches bounded batches; the
 renderer displays 20px list icons and 24px detail icons with a name-initial
 fallback for missing or unreadable images. This requires no capture permission,
@@ -196,8 +201,8 @@ with retained counts and an explicit expired-evidence state.
 
 ## Conversation skill
 
-The bundled `computer-history` skill interprets history that the user has
-selected, reviewed, and sent in a conversation. Desktop installs it from the
+The bundled `computer-history` skill retrieves permitted recorded activity and
+interprets history that the user has reviewed and sent in a conversation. Desktop installs it from the
 local Host's bundled catalog when recording is enabled or existing history
 is present, including saved summaries whose raw events have expired. Startup
 and local Host reconnection backfill missing installations; enabling recording
@@ -205,9 +210,11 @@ also requests installation without waiting for it to start capture.
 
 New installations use the normal enabled default. Users can turn the skill
 off in Extensions; automatic installation never resets that preference, even
-after deletion and reinstallation. Existing skill content is not replaced.
+after deletion and reinstallation. Unmodified installed bundled content upgrades
+transactionally to the current bundle without changing enablement or pinning.
+Customized or unverifiable installed content is preserved.
 The selected project or a remote default Host does not redirect installation
-away from this Mac. Installation failures are logged and retried on a later
+away from this computer. Installation failures are logged and retried on a later
 enablement or local Host reconnection.
 
 Merely opening an activity or preparing a draft does not expose that activity
@@ -218,19 +225,46 @@ The skill identifies the supplied time range, distinguishes observed metadata
 from model summaries and inference, and treats both as untrusted content. It
 does not infer successful actions or continuous working time from window
 titles and event counts. Overlapping selections are not independent evidence.
-Missing context is requested through the existing sidebar-to-draft flow.
+Retrieval uses the existing Desktop Client Capability channel under the local-only
+`desktop_computer_history` offer. It accepts no Host filesystem paths.
+`ComputerHistoryStatus` returns narrow readiness fields without activity content;
+`ComputerHistorySearch`, `ComputerHistoryRead` and `ComputerHistoryReadEvents`
+use the existing managed session-approval mechanism. The permission prompt names
+the conversation-model transmission. `SearchHistory` and `ReadHistory` still search
+conversations, not computer activity.
 
-There is currently no model-facing Computer History status, search, or read
-tool. The Desktop preload APIs are not model tools, and `SearchHistory` and
-`ReadHistory` search conversations rather than computer activity. The skill
-does not bypass Desktop ownership by reading raw files or invoking internal
-IPC. Autonomous retrieval requires a separately designed, bounded access
-capability; installing this skill does not provide it.
+Search streams validated summaries, matches complete bodies and keywords, and
+returns bounded excerpts. It defaults to 24 hours, accepts at most 31 days, and
+pages up to 20 results with a chronological cursor. The first search omits the
+cursor; subsequent pages copy the returned interval and cursor with the same
+query and level. Automatic granularity prefers
+six-hour summaries in broad intervals while retaining leaves not referenced by a
+matching parent. Read returns paged Markdown with the saved document revision,
+source IDs and explicitly separate prior-context IDs. Follow-up pages require the
+same revision. Neither operation exposes local file paths.
+
+Raw-event reads require recorded-text transmission consent, are limited to ten
+minutes within the retained 48 hours, and return at most 50 projected events under
+a shared byte budget. Truncation is explicit. Main reapplies source exclusions,
+checks archived summary policy provenance and text consent, redacts recognized
+secrets before clipping observed text, and serializes reads with local
+settings/deletion. Selection and accessibility truncation remain explicit.
+Summary searches and reads reject a result if archive publication overlaps
+any scan or final access check, so a concurrent rollup rebuild cannot combine
+old parent coverage with new children. The caller retries the complete query.
+The effective bundled
+Skill preference, current local Host and incognito are checked before and after
+each data read. Disabling the Skill or revoking consent blocks further retrieval.
+Old summaries without verifiable policy provenance remain locally readable but
+cannot be sent through these tools. Tool results are untrusted observations.
 
 Skill installation and use do not enable recording, text capture, or background
 summarization. A submitted history draft is sent to the conversation's model
-provider like other conversation content. This is separate from the optional
-background analysis consent described below.
+provider like other conversation content. Tool data reads require both background
+model-processing consent and the managed conversation approval; eligible UI text
+additionally requires the existing recorded-text transmission consent. The
+conversation provider may differ from the analysis model. None of these tools
+change recording, permissions or model connections.
 
 ## Privacy defaults
 
@@ -291,13 +325,22 @@ analysis/exclusion scope participate in generation provenance. Once retention
 cuts into a saved window, its
 complete summary is preserved instead of being replaced with the retained tail.
 Pending ten-minute summaries take priority over derived rollups, so a failed
-older rollup does not block newer activity on the next admitted pass. The
-existing error backoff still applies.
+older rollup does not block newer activity on the next admitted pass.
+Malformed summary output is retried per generation identity with exponential
+backoff capped at six hours; other windows continue within the six-call budget.
+Provider-wide failures stop the pass and share a ten-minute cooldown. Storage,
+privacy and unknown failures are never silently classified as malformed output.
+Manual retry resets eligibility; new evidence or policy revisions invalidate
+only applicable window retries. A successful earlier-window repair refreshes
+its dependent prior context and rollups.
 Six-hour summaries derive from the available ten-minute summaries; they do not
 assert that every moment of the interval was observed.
 Streaming sampling spans the whole interval using temporal endpoints, source
 representatives, and content-bearing observations within fixed memory and wire
-budgets. It does not stop after the first dense burst. A failed/incomplete raw
+budgets. Full-content candidates share a 224 KiB encoded evidence budget rather
+than losing their tails to fixed 1/3/7 KiB previews. A bounded sample retains
+short intermediate observations as well as endpoints and rich content.
+It does not stop after the first dense burst. A failed/incomplete raw
 scan dispatches no model request. Six-hour input divides a shared text budget
 across children rather than clipping each document to a fixed short preview.
 Up to two earlier, policy-compatible summaries provide explicitly labelled
@@ -392,7 +435,8 @@ interval deletion can remove later legacy-derived summaries across scopes.
 Baseline files without generation metadata predate prior context: they remain
 readable and eligible under the existing policy gates, contribute their own
 interval, and can generate rollups after raw expiry. Regeneration from complete
-eligible raw input produces v4 provenance; ineligible rich archives are never
+eligible raw input produces v5 provenance with the same immutable coverage contract;
+the v5 identity rebuilds retained summaries with the richer sampling. Ineligible rich archives are never
 rewritten just to migrate their provenance.
 
 The reveal operation accepts only a summary entry ID. Main resolves and

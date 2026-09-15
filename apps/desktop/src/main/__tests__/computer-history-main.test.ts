@@ -30,6 +30,7 @@ import { fileURLToPath } from 'node:url';
 import { runInNewContext } from 'node:vm';
 import test, { type TestContext } from 'node:test';
 import { build } from 'esbuild';
+import type { ZodType } from 'zod';
 import type {
   ComputerHistorySummaryContent,
   ComputerHistorySummaryInput,
@@ -42,6 +43,7 @@ import {
 import type { MakaBridge } from '../../preload/bridge-contract.js';
 import { ComputerHistoryService, registerComputerHistoryIpc } from '../computer-history-main.js';
 import { ComputerHistorySkillInstaller } from '../computer-history-skill.js';
+import { buildComputerHistoryTools } from '../computer-history-tools.js';
 
 const NOW = Date.parse('2026-08-15T10:35:00.000Z');
 const SUMMARY: ComputerHistorySummaryContent = {
@@ -49,6 +51,184 @@ const SUMMARY: ComputerHistorySummaryContent = {
   description: 'Checked the release items in Notes.',
   body: 'The observed activity concerned the release checklist.',
 };
+
+test('model tools search full Markdown, page without splitting Unicode, and reject stale revisions and deletion', async (t) => {
+  const body = '# Synthetic task\n\n' + '检索🧪'.repeat(3200) + '\nBODY_TAIL_NEEDLE';
+  const { service, home, segment } = await fixture(t, {
+    generateSummary: async () => ({ ...SUMMARY, body, keywords: ['Fixture', 'Release'] }),
+  });
+  await seedClosedInterval(segment, [event('2026-08-15T10:11:00.000Z', 'ui.changed')]);
+  await service.updateSettings({ summariesEnabled: true });
+  await service.summarize();
+  let checks = 0;
+  const tools = buildComputerHistoryTools({ service, assertAccess: async () => { checks++; } });
+  const call = async (name: string, input: unknown) => {
+    const tool = tools.find((entry) => entry.name === name)!;
+    return await tool.impl(await (tool.parameters as ZodType).parseAsync(input), {
+      sessionId: 'history-fixture', turnId: 'turn-1', toolCallId: 'tool-1',
+      cwd: home, abortSignal: new AbortController().signal, emitOutput: () => {},
+    }) as any;
+  };
+  const search = await call('ComputerHistorySearch', { query: 'body_tail_needle', before: null, limit: 1 });
+  assert.equal(search.trust, 'untrusted-observed-ui');
+  assert.equal(search.entries.length, 1);
+  assert.match(search.entries[0].excerpt, /body_tail_needle/);
+  assert.ok(search.nextBefore);
+  const nextInput = { start: search.start, end: search.end, query: 'body_tail_needle', before: search.nextBefore, limit: 1 };
+  const next = await call('ComputerHistorySearch', nextInput);
+  assert.equal(next.entries.length, 1);
+  assert.notEqual(next.entries[0].id, search.entries[0].id);
+  assert.equal(next.nextBefore, undefined);
+  const offsetTimestamp = new Date(Date.parse(search.nextBefore.start) + 8 * 60 * 60_000).toISOString().replace('Z', '+08:00');
+  const equivalent = await call('ComputerHistorySearch', {
+    ...nextInput, before: { ...search.nextBefore, start: offsetTimestamp },
+  });
+  assert.deepEqual(equivalent, next, 'equivalent timestamp offsets cannot duplicate or skip a page');
+  const selected = search.entries[0];
+  let offset = 0;
+  let complete = '';
+  do {
+    const page = await call('ComputerHistoryRead', { id: selected.id, revision: selected.revision, offset });
+    assert.ok(Buffer.byteLength(JSON.stringify(page)) < 64 * 1024);
+    assert.doesNotMatch(page.markdown, /\uFFFD/u);
+    complete += page.markdown;
+    offset = page.nextOffset;
+  } while (offset !== undefined);
+  assert.equal(complete, body);
+  assert.ok(checks >= 8);
+  assert.equal((await call('ComputerHistorySearch', { query: 'nonexistent' })).entries.length, 0);
+  await assert.rejects(call('ComputerHistoryRead', { id: '../settings.json' }));
+  await assert.rejects(call('ComputerHistoryRead', { id: selected.id, offset: 1 }), /document changed/);
+  await assert.rejects(call('ComputerHistorySearch', { start: '2026-01-01T00:00:00Z' }), /could not be read/);
+  const entry = (await service.timeline()).entries.find(({ id }) => id === selected.id)!;
+  const file = join(home, 'summaries', entry.documentName!);
+  const saved = await readFile(file, 'utf8');
+  await writeFile(file, saved.replace('BODY_TAIL_NEEDLE', 'BODY_TAIL_CHANGED'));
+  await assert.rejects(call('ComputerHistoryRead', { id: selected.id, revision: selected.revision }), /document changed/);
+  await service.deleteEntry(selected.id);
+  await assert.rejects(call('ComputerHistoryRead', { id: selected.id }), /could not be read/);
+  const status = await call('ComputerHistoryStatus', {});
+  assert.equal(status.analysisEnabled, true);
+  assert.doesNotMatch(JSON.stringify(status), /Fixture|summaries\/|blockedApplications|BODY_TAIL/);
+});
+
+test('model reads enforce text consent, source changes, opt-outs and revoked authority before returning', async (t) => {
+  const { service, segment } = await fixture(t, { generateSummary: async () => SUMMARY });
+  await writeFile(join(segment, 'events.jsonl'), JSON.stringify({
+    timestamp: '2026-08-15T10:01:00.000Z', kind: 'ui.changed',
+    sourceId: '250ed63d-f651-440c-85c7-9b9fb72b553a',
+    contentState: 'available', contentDomains: [],
+    app: { name: 'Fixture', bundleIdentifier: 'com.maka.fixture' },
+    window: { title: 'Task' },
+    ax: { mode: 'fullTree', text: 'PERMITTED_TASK_BODY' },
+  }) + '\n');
+  await service.updateSettings({ summariesEnabled: true, summaryTextEnabled: true });
+  await service.summarize();
+  const id = (await service.timeline()).entries[0]!.id;
+  const read = { kind: 'read', input: { id, offset: 0 } } as const;
+  const events = {
+    kind: 'events',
+    input: { start: '2026-08-15T10:00:00Z', end: '2026-08-15T10:10:00Z', limit: 20 },
+  } as const;
+  const allow = async () => {};
+  assert.match(JSON.stringify(await service.modelQuery(events, allow)), /PERMITTED_TASK_BODY/);
+  await assert.rejects(service.modelQuery(read, async () => { throw new Error('Skill disabled'); }), /Skill disabled/);
+  let reads = 0;
+  await assert.rejects(service.modelQuery(read, async () => {
+    if (++reads === 2) throw new Error('Incognito activated');
+  }), /Incognito activated/);
+  assert.equal(reads, 2, 'a post-read revocation must suppress the result');
+  const abort = new AbortController();
+  await assert.rejects(service.modelQuery(events, async () => { abort.abort(); }, abort.signal), /abort/i);
+  await service.updateSettings({ summaryTextEnabled: false });
+  await assert.rejects(service.modelQuery(read, allow), /unavailable/);
+  await assert.rejects(service.modelQuery(events, allow), /recorded-text transmission/);
+  await service.updateSettings({ summaryTextEnabled: true, blockedApplications: ['com.maka.fixture'] });
+  await assert.rejects(service.modelQuery(read, allow), /unavailable/);
+  assert.equal((await service.modelQuery(events, allow) as any).events.length, 0);
+  await service.updateSettings({ summariesEnabled: false });
+  await assert.rejects(service.modelQuery(read, allow), /transmission is disabled/);
+});
+
+test('model raw reads expose bounded partial evidence, redact before clipping and reject expired intervals', async (t) => {
+  const { service, segment } = await fixture(t, { generateSummary: async () => SUMMARY });
+  const secret = 'sk-syntheticSecretNeverTransmit123456';
+  await writeFile(join(segment, 'events.jsonl'), Array.from({ length: 8 }, (_, index) => JSON.stringify({
+    timestamp: `2026-08-15T10:0${index}:00.000Z`, kind: 'selection.changed',
+    sourceId: '250ed63d-f651-440c-85c7-9b9fb72b553a',
+    contentState: 'available', contentDomains: [],
+    app: { name: `Task token=${secret}`, bundleIdentifier: 'com.maka.fixture' },
+    window: { title: `Task password=${secret}` },
+    selection: { selectedText: `selection ${index}`, truncated: true },
+    ax: { mode: 'fullTree', text: `api_key=${secret}\n${'内容🧪'.repeat(4000)}`, truncated: true },
+  })).join('\n') + '\n');
+  await service.updateSettings({ summariesEnabled: true, summaryTextEnabled: true });
+  const input = { start: '2026-08-15T10:00:00Z', end: '2026-08-15T10:10:00Z', limit: 50 };
+  const result = await service.modelQuery({ kind: 'events', input }, async () => {}) as any;
+  assert.ok(result.events.length > 1 && result.events.length < 8);
+  assert.equal(result.truncated, true);
+  assert.ok(Buffer.byteLength(JSON.stringify(result)) < 41 * 1024);
+  assert.doesNotMatch(JSON.stringify(result), /syntheticSecret|\uFFFD/u);
+  assert.ok(result.events.every((entry: any) => entry.contentTruncated));
+  assert.match(result.events[0].content, /Selected text \(partial\)/);
+  assert.match(result.events[0].content, /\[redacted\]/);
+  const narrow = await service.modelQuery({
+    kind: 'events', input: { ...input, end: '2026-08-15T10:01:00Z' },
+  }, async () => {}) as any;
+  assert.equal(narrow.events.length, 1);
+  assert.equal(narrow.truncated, false);
+  await assert.rejects(service.modelQuery({
+    kind: 'events', input: { ...input, end: '2026-08-15T10:11:00Z' },
+  }, async () => {}), /interval/);
+  await assert.rejects(service.modelQuery({
+    kind: 'events', input: { ...input, start: '2026-08-12T10:00:00Z', end: '2026-08-12T10:10:00Z' },
+  }, async () => {}), /48 hours/);
+});
+
+test('model search redacts a complete credential before extracting the nearby public match', async (t) => {
+  const { service, segment } = await fixture(t, {
+    generateSummary: async () => ({
+      ...SUMMARY,
+      body: `# Task\n\n${'Context '.repeat(120)}password=${'syntheticPrivateValue'.repeat(5)} PUBLIC_NEEDLE`,
+    }),
+  });
+  await seedClosedInterval(segment);
+  await service.updateSettings({ summariesEnabled: true });
+  await service.summarize();
+  const result = await service.modelQuery({
+    kind: 'search', input: { query: 'PUBLIC_NEEDLE', limit: 10, level: '10min' },
+  }, async () => {}) as any;
+  assert.equal(result.entries.length, 1);
+  assert.match(result.entries[0].excerpt, /public_needle/);
+  assert.doesNotMatch(JSON.stringify(result), /privatevalue/i);
+  assert.match(result.entries[0].excerpt, /\[redacted\]/);
+});
+
+test('automatic model search hides only exact matching rollup children and keeps narrow-level access', async (t) => {
+  const { service, home, segment } = await fixture(t, {
+    now: () => Date.parse('2026-08-15T13:00:00.000Z'),
+    generateSummary: async () => SUMMARY,
+  });
+  await seedClosedInterval(segment, [event('2026-08-15T10:11:00.000Z', 'mouse.click')]);
+  await service.updateSettings({ summariesEnabled: true });
+  await service.summarize();
+  const timeline = await service.timeline();
+  const parent = timeline.entries.find(({ summaryLevel }) => summaryLevel === '6h')!;
+  const children = timeline.entries.filter(({ summaryLevel }) => summaryLevel === '10min');
+  assert.equal(children.length, 2);
+  const path = join(home, 'summaries', parent.documentName!);
+  const [opening, header, ...body] = (await readFile(path, 'utf8')).split('\n');
+  const stored = JSON.parse(header!);
+  await writeFile(path, [opening, JSON.stringify({ ...stored, sourceIds: [children[0]!.id] }), ...body].join('\n'));
+  const query = (level: 'auto' | '6h' | '10min') => service.modelQuery({
+    kind: 'search', input: {
+      start: '2026-08-15T00:00:00Z', end: '2026-08-15T13:00:00Z', query: '', limit: 20, level,
+    },
+  }, async () => {}) as Promise<any>;
+  assert.deepEqual(new Set((await query('auto')).entries.map((entry: any) => entry.id)), new Set([parent.id, children[1]!.id]));
+  assert.deepEqual((await query('6h')).entries.map((entry: any) => entry.id), [parent.id]);
+  assert.deepEqual(new Set((await query('10min')).entries.map((entry: any) => entry.id)), new Set(children.map(({ id }) => id)));
+});
 
 test('Windows uses shared settings and summaries, parent-owned admission and pipe shutdown without TCC', async (t) => {
   const collector = fakeCollector();
@@ -92,6 +272,28 @@ test('Windows uses shared settings and summaries, parent-owned admission and pip
   assert.ok(!collector.calls.includes('permissions'), 'Windows has no macOS permission requests');
   assert.equal(JSON.parse(await readFile(join(home, 'config.json'), 'utf8')).captureText, false);
   assert.equal((await service.status()).state, 'stopped');
+});
+
+test('macOS storage failure remains visible without automatic recorder restart and explicit start retries', async (t) => {
+  const collector = fakeCollector();
+  const { service, home } = await fixture(t, {
+    platform: 'darwin', helperPath: process.execPath, spawn: collector.spawn,
+  });
+  await writeFile(join(home, 'maka-settings.json'), JSON.stringify({
+    enabled: true, captureText: false, summariesEnabled: false, summaryTextEnabled: false,
+    blockedApplications: [], blockedDomains: [],
+  }));
+  collector.lastError = 'storage_failure';
+  for (let index = 0; index < 3; index++) {
+    const status = await service.status();
+    assert.equal(status.state, 'error');
+    assert.match(status.error!, /storage failed/);
+  }
+  assert.equal(collector.recordArgs.length, 0);
+  await service.start();
+  assert.equal(collector.recordArgs.length, 1);
+  collector.lastError = undefined;
+  assert.equal((await service.status()).state, 'running');
 });
 
 test('Windows maintenance admission failure preserves settings and raw history', async (t) => {
@@ -2878,6 +3080,7 @@ function fakeCollector() {
     statusFails: false,
     homeValid: true,
     captureError: undefined as string | undefined,
+    lastError: undefined as string | undefined,
     autoExit: true,
     stopped,
     paused,
@@ -2943,6 +3146,7 @@ function fakeCollector() {
             accessibility: collector.accessibility, inputMonitoring: collector.inputMonitoring,
             permissionModel: 'interactive-session',
             ...(collector.captureError ? { captureError: collector.captureError } : {}),
+            ...(collector.lastError ? { lastError: collector.lastError } : {}),
             state: collector.runtimeState ?? (
               collector.active || collector.foreignActive ? 'running' : 'stopped'
             ),
@@ -2982,5 +3186,60 @@ function event(timestamp: string, kind: string, window = 'Synthetic workflow'): 
     keyboard: {
       text: 'secret text',
     },
+  });
+}
+
+for (const kind of ['search', 'read'] as const) {
+  test(`modelQuery ${kind} rejects publication during final authority and succeeds on a fresh read`, async (t) => {
+    const { ComputerHistorySummarySnapshotError } = await import('../computer-history-summaries.js');
+    let changed = false;
+    let generated = 0;
+    const { service, segment } = await fixture(t, {
+      now: () => Date.parse('2026-08-15T13:00:00.000Z'),
+      generateSummary: async () => {
+        generated++;
+        return { ...SUMMARY, title: changed ? 'Revised activity' : 'Original activity' };
+      },
+    });
+    await seedClosedInterval(segment);
+    await service.updateSettings({ summariesEnabled: true });
+    await service.summarize();
+    const search = { kind: 'search', input: { query: '', level: 'auto', limit: 10 } } as const;
+    const initial = await service.modelQuery(search, async () => {}) as {
+      entries: { id: string; revision: string; title: string }[];
+    };
+    const selected = initial.entries[0]!;
+    const request = kind === 'search'
+      ? search
+      : { kind: 'read', input: { id: selected.id, revision: selected.revision, offset: 0 } } as const;
+    const entered = deferred<void>();
+    const released = deferred<void>();
+    const before = generated;
+    let checks = 0;
+    const reading = service.modelQuery(request, async () => {
+      if (++checks === 2) {
+        entered.resolve();
+        await released.promise;
+      }
+    });
+    const rejected = assert.rejects(reading, ComputerHistorySummarySnapshotError);
+    try {
+      await entered.promise;
+      assert.equal(generated, before, 'modelQuery must not start summary generation');
+      changed = true;
+      await appendFile(join(segment, 'events.jsonl'), event('2026-08-15T10:02:00.000Z', 'ui.changed') + '\n');
+      await service.summarize();
+      assert.ok(generated > before);
+      released.resolve();
+      await rejected;
+      assert.equal(checks, 2, 'a conflicted model read must not retry silently');
+      const recovered = await service.modelQuery(search, async () => {}) as typeof initial;
+      assert.equal(recovered.entries[0]!.id, selected.id);
+      assert.equal(recovered.entries[0]!.title, 'Revised activity');
+      assert.notEqual(recovered.entries[0]!.revision, selected.revision);
+    } finally {
+      released.resolve();
+      await rejected;
+    }
   });
 }

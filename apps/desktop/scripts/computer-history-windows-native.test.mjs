@@ -60,6 +60,25 @@ async function validateHome(home) {
   assert.equal(stderr, '');
 }
 
+test('application metadata never requires or touches history storage', windowsOnly, async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-history-native-applications-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const missing = join(root, 'must-not-be-created');
+  for (const home of [undefined, missing, String.raw`\\maka-history-invalid\no-share`]) {
+    const env = { ...process.env };
+    delete env.OPEN_COMPUTER_HISTORY_HOME;
+    if (home !== undefined) env.OPEN_COMPUTER_HISTORY_HOME = home;
+    const { stdout, stderr } = await run(helper, ['applications', 'win32.maka-history-missing'], {
+      env, windowsHide: true, encoding: 'utf8', timeout: 5_000, maxBuffer: 64 * 1024,
+    });
+    assert.equal(stderr, '');
+    assert.deepEqual(JSON.parse(stdout), [{
+      bundleIdentifier: 'win32.maka-history-missing', name: 'win32.maka-history-missing', iconDataUrl: null,
+    }]);
+    assert.deepEqual(await readdir(root), []);
+  }
+});
+
 test('native home validation is read-only before and during Node ownership', windowsOnly, async (t) => {
   const home = await mkdtemp(join(tmpdir(), 'maka-history-native-validation-'));
   t.after(() => rm(home, { recursive: true, force: true }));

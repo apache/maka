@@ -216,6 +216,7 @@ export interface ConversationCopy {
     title: string;
     browser: (origin: string) => string;
     computerUse: string;
+    computerHistory: string;
     desktopMcp: (serverId: string, toolName: string) => string;
     sessionNotice: string;
     reject: string;
@@ -534,6 +535,7 @@ const CONVERSATION_COPY = {
       title: '允许使用客户端能力？',
       browser: (origin) => `允许 Browser 操作 ${origin}`,
       computerUse: '允许 Computer Use 操作这台 Mac',
+      computerHistory: '允许检索和读取电脑历史，并将请求的已记录活动发送给当前对话模型。此授权不会启用记录或申请系统权限。',
       desktopMcp: (serverId, toolName) => `允许调用 ${serverId} 的 ${toolName} 工具`,
       sessionNotice: '允许后，本任务中相同范围的后续操作将不再询问。',
       reject: '拒绝',
@@ -692,6 +694,7 @@ const CONVERSATION_COPY = {
       title: '允許使用用戶端能力？',
       browser: (origin) => `允許 Browser 操作 ${origin}`,
       computerUse: '允許 Computer Use 操作這台 Mac',
+      computerHistory: '允許檢索和讀取電腦歷史，並將請求的已記錄活動傳送給目前對話模型。此授權不會啟用記錄或申請系統權限。',
       desktopMcp: (serverId, toolName) => `允許呼叫 ${serverId} 的 ${toolName} 工具`,
       sessionNotice: '允許後，本任務中相同範圍的後續操作將不再詢問。',
       reject: '拒絕',
@@ -876,6 +879,7 @@ const CONVERSATION_COPY = {
       title: 'Allow this client capability?',
       browser: (origin) => `Allow Browser to operate ${origin}`,
       computerUse: 'Allow Computer Use to operate this Mac',
+      computerHistory: 'Allow searching and reading Computer History, sending the requested recorded activity to this conversation’s model. This does not enable recording or request OS permissions.',
       desktopMcp: (serverId, toolName) => `Allow ${toolName} from ${serverId}`,
       sessionNotice: 'Matching operations will be allowed for the rest of this task.',
       reject: 'Reject',

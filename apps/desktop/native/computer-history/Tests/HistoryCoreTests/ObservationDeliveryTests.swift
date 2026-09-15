@@ -21,6 +21,42 @@ import XCTest
 @testable import HistoryCore
 
 final class ObservationDeliveryTests: XCTestCase {
+    func testSamplingDoesNotStarveDirtyWorkOrLetCancelledAttemptSettleNewEpoch() throws {
+        var sampling = ObservationSampling()
+        sampling.request(now: 0)
+        let first = try XCTUnwrap(sampling.begin(now: 0.2))
+        sampling.request(now: 0.3)
+        XCTAssertFalse(sampling.complete(first, settled: true))
+        for step in 1..<30 {
+            sampling.request(now: Double(step) / 10)
+            sampling.observed(now: Double(step) / 10)
+        }
+        let next = try XCTUnwrap(sampling.begin(now: 3.21))
+        sampling.invalidate()
+        sampling.request(now: 3.3)
+        XCTAssertFalse(sampling.complete(next, settled: true))
+        let recovery = try XCTUnwrap(sampling.begin(now: 6.22))
+        XCTAssertTrue(sampling.complete(recovery, settled: true))
+        XCTAssertNil(sampling.begin(now: 9))
+        XCTAssertNotNil(sampling.begin(now: 9.23))
+    }
+
+    func testSamplingUnsettledCaptureRetriesWithoutRevivingCancelledSensitiveCallbacks() throws {
+        var sampling = ObservationSampling()
+        var callbacks = ObservationCallbacks<String>()
+        let input = try XCTUnwrap(callbacks.admit("selection"))
+        let cold = try XCTUnwrap(sampling.begin(now: 0))
+        sampling.complete(cold, settled: false)
+        callbacks.invalidate()
+        XCTAssertFalse(callbacks.take(input))
+        let retry = try XCTUnwrap(sampling.begin(now: 3))
+        sampling.complete(retry, settled: true)
+        sampling.request(now: 4)
+        let dirty = try XCTUnwrap(sampling.begin(now: 6))
+        sampling.complete(dirty, settled: false)
+        XCTAssertNotNil(sampling.begin(now: 9))
+    }
+
     func testKernelProcessIdentitySurvivesDirectLaunchAndRejectsExitedProcess() throws {
         XCTAssertNil(ObservationProcessIdentity.read(-1))
         XCTAssertNil(ObservationProcessIdentity.read(0))

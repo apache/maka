@@ -102,6 +102,15 @@ callbacks carry a generation that becomes invalid on pause, resume, source
 transition or stop. Control requests include an optional unique revision so
 pause/resume within one timestamp second cannot revive old work. Older control
 files without the revision remain readable.
+Event writes fail closed: a partial/failed write poisons that segment, and
+subsequent append or seal attempts return the failure. Finalization synchronizes
+both event files before atomically publishing ended metadata, then refuses all
+further appends. Rotation failure stops the recorder instead of writing into
+the sealed old segment. Stop reports `lastError: "storage_failure"` in runtime
+status when possible and the helper exits nonzero. If runtime storage is also
+unwritable, stderr and the nonzero exit remain authoritative; an old runtime
+file is not proof of success. This ordering does not promise power-loss
+durability of the directory entry or automatic recovery of partial segments.
 Desktop summary admission separately reads saved control, honors unexpired
 pauses even with collection disabled, and fails closed on malformed control or
 failed native status checks. A stopped runtime is not proof of a resumed pause.
@@ -195,6 +204,15 @@ Admitted leaf values retain up to 8 KiB, including read-only document bodies
 outside the focused control; other leaf attributes retain up to 400 bytes.
 Attribute clipping sets `truncated` and preserves UTF-8 boundaries. These
 per-attribute limits do not expand the tree's total byte or traversal budgets.
+For admitted leaf `AXTextArea` controls supporting `AXVisibleCharacterRange`,
+the collector requests `AXStringForRange` with at most 8192 UTF-16 code units
+and retains at most 8 KiB of UTF-8. Scrolled document tails can therefore
+contribute without fetching the entire value. Incomplete edge surrogate pairs
+are omitted, malformed interior UTF-16 is rejected, and the visible range is
+rechecked before final source/security validation. Ranged samples set
+`truncated`, since they do not claim the complete document. Only an explicitly
+unsupported visible-range attribute uses the existing value-prefix path;
+failed or changing range reads never fall back to unrestricted values.
 The serialized byte budget includes JSON escaping; an oversized attribute
 retains a valid JSON-encoded prefix instead of dropping its entire leaf.
 With text enabled the producer omits secure nodes and descendants before
@@ -210,6 +228,15 @@ retained metadata deduplication, so an unavailable snapshot does not create
 a new identical window-change event every three seconds. Control focus changes
 also cancel stale input and callbacks without resetting persisted window
 identity; actual source/window changes still produce a window-change event.
+Generic AX notifications coalesce by pending foreground window before full
+traversal, with a first-event 200 ms debounce and at most one scheduled attempt
+per three seconds. Selection retains its exact notification origin, while
+typing, clicks and shortcuts retain their separately validated semantic paths.
+A full snapshot defers the fallback by three seconds; this retains timely
+capture for providers that do not emit usable change notifications. Cancellation never marks
+dirty work as successfully captured, and continuous events cannot postpone the
+first dirty deadline indefinitely. No sensitive snapshot is reused across
+capture attempts.
 Window identity combines AX equality with the kernel PID/start time, validated
 before and after capture. It does not depend on LaunchServices `launchDate`,
 which may be absent for directly launched apps. Reading the owned application's

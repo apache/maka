@@ -244,6 +244,7 @@ export type SkillCatalogMutation =
       readonly sourceId: string;
     }
   | SkillCatalogManagedUpdateMutation
+  | { readonly kind: 'update_bundled'; readonly ref: string }
   | { readonly kind: 'delete'; readonly ref: string }
   | { readonly kind: 'set_enabled'; readonly ref: string; readonly enabled: boolean }
   | { readonly kind: 'set_pinned'; readonly ref: string; readonly pinned: boolean };
@@ -753,6 +754,10 @@ function mutation(value: unknown): SkillCatalogMutation {
       expectedCurrentSha256: null,
       expectedSourceSha256: null,
     };
+  }
+  if (record.kind === 'update_bundled') {
+    const item = requireExactRecord(record, 'update bundled skill mutation', ['kind', 'ref']);
+    return { kind: 'update_bundled', ref: ref(item.ref) };
   }
   if (record.kind === 'delete') {
     const item = requireExactRecord(record, 'delete skill mutation', ['kind', 'ref']);

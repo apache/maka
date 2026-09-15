@@ -94,7 +94,7 @@ pub fn validate_home(home: &Path) -> Result<()> {
 }
 
 #[cfg(windows)]
-fn windows_drive_root(home: &Path) -> Result<std::path::PathBuf> {
+pub(crate) fn windows_drive_root(home: &Path) -> Result<std::path::PathBuf> {
     use std::{
         os::windows::ffi::OsStrExt,
         path::{Component, Prefix},

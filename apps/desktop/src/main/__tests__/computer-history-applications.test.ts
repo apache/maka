@@ -126,7 +126,7 @@ test('in-flight IDs are capped and helper execution is serial with batches of 32
   assert.ok(result.every((applications) => applications.length === 32));
 });
 
-test('unsupported platforms and unavailable helpers return exact-ID generic fallbacks without spawning', async (t) => {
+test('unsupported platforms, foreign-platform IDs and unavailable helpers return exact-ID fallbacks without spawning', async (t) => {
   for (const options of [
     { platform: 'linux' as const },
     { platform: 'win32' as const },
@@ -136,6 +136,33 @@ test('unsupported platforms and unavailable helpers return exact-ID generic fall
     assert.deepEqual(await resolver.applications([A, B]), [metadata(A, null), metadata(B, null)]);
     assert.equal(helper.calls.length, 0);
   }
+});
+
+test('Windows resolves only canonical executable IDs and coalesces native icon requests', async (t) => {
+  const { resolver, helper } = fixture(t, { platform: 'win32' });
+  const id = 'win32.msedge';
+  const pending = resolver.applications([id, A, 'win32.msedge.exe']);
+  const joined = resolver.applications([id]);
+  const call = await helper.next();
+  assert.deepEqual(call.ids, [id]);
+  call.reply([{ ...metadata(id), name: 'Microsoft Edge' }]);
+  const [values, same] = await Promise.all([pending, joined]);
+  assert.deepEqual(values, [
+    { ...metadata(id), name: 'Microsoft Edge' }, metadata(A, null), metadata('win32.msedge.exe', null),
+  ]);
+  assert.deepEqual(same, [values[0]]);
+  assert.deepEqual(await resolver.applications([id]), same);
+  assert.equal(helper.calls.length, 1);
+  const nativeIds = ['win32._fixture_app', 'win32.editor.2026'];
+  const extended = resolver.applications(nativeIds);
+  const native = await helper.next();
+  assert.deepEqual(native.ids, nativeIds);
+  native.reply(nativeIds.map((id) => metadata(id)));
+  assert.deepEqual(await extended, nativeIds.map((id) => metadata(id)));
+  const { resolver: mac, helper: macHelper } = fixture(t);
+  assert.deepEqual(await mac.applications(nativeIds), nativeIds.map((id) => metadata(id, null)));
+  assert.equal(macHelper.calls.length, 0);
+  await assert.rejects(mac.applications(['com._fixture']), /Invalid.*identifiers/);
 });
 
 test('rejects missing, duplicate, unsolicited and path-bearing helper records without caching them', async (t) => {
@@ -260,7 +287,7 @@ function fakeHelper() {
     spawn: ((command: string, args: string[], options: unknown) => {
       assert.equal(command, process.execPath);
       assert.equal(args[0], 'applications');
-      assert.deepEqual(options, { shell: false, stdio: ['ignore', 'pipe', 'ignore'] });
+      assert.deepEqual(options, { shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
       const killed: string[] = [];
       const child = Object.assign(new EventEmitter(), {
         stdout: new PassThrough(),

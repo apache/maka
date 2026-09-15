@@ -105,6 +105,9 @@ function clientCapabilityLabel(
       return copy.browser(request.scope.origin);
     case 'computer_use':
       return copy.computerUse;
+    case 'computer_history':
+      if (request.scope.kind !== 'capability') break;
+      return copy.computerHistory;
     case 'desktop_mcp':
       if (request.scope.kind !== 'mcp_tool') break;
       return copy.desktopMcp(request.scope.serverId, request.scope.toolName);

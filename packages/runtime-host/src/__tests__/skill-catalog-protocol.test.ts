@@ -478,6 +478,7 @@ describe('Runtime Host Skill catalog protocol', () => {
       { kind: 'install', sourceType: 'bundled', sourceId: 'deep-research' },
       { kind: 'install', sourceType: 'managed', sourceId: 'research-brief' },
       { kind: 'install', sourceType: 'managed', sourceId: maximumLengthId },
+      { kind: 'update_bundled', ref: 'workspace:legacy:computer-history' },
       {
         kind: 'update_managed',
         ref: 'workspace:legacy:research-brief',
@@ -529,6 +530,13 @@ describe('Runtime Host Skill catalog protocol', () => {
         expectedSourceSha256: NEXT_REVISION,
       },
       { kind: 'set_pinned', ref: 'user:maka:research-brief', pinned: true, retry: true },
+      { kind: 'update_bundled', ref: 'workspace:legacy:computer-history', force: true },
+      {
+        kind: 'update_bundled',
+        ref: 'workspace:legacy:computer-history',
+        sourceId: 'computer-use',
+      },
+      { kind: 'update_bundled', ref: '' },
     ]) {
       assertInvalidRequest('skill.catalog.mutate', {
         context: CONTEXT,

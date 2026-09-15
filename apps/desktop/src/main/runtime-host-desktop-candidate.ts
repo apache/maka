@@ -788,7 +788,7 @@ export async function createDesktopRuntimeHostCandidate(
         deps.nativeCapabilities,
         {
           hostPathAccess: usesHostWorkspace ? "none" : "cwd",
-          ...(usesHostWorkspace ? { clientCwd: deps.workspaceRoot } : {}),
+          clientCwd: deps.workspaceRoot,
           releaseResourcesOnClose: false,
           targetScope: scope,
           nativeSessionId: (sessionId) =>

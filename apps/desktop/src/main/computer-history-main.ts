@@ -31,7 +31,8 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { constants, createReadStream } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
+import { redactSecrets } from '@maka/core/redaction';
 import type {
   ComputerHistoryApplication,
   ComputerHistoryClearScope,
@@ -46,6 +47,7 @@ import type {
 } from '@maka/core/computer-history';
 import {
   computerHistorySearchExcerpt,
+  computerHistorySearchNormalize,
   computerHistorySearchTerms,
 } from '@maka/core/computer-history';
 import type { UiLocale } from '@maka/core/ui-locale';
@@ -54,11 +56,18 @@ import { acquireWindowsHistoryOwnership } from './computer-history-windows-owner
 import { projectHistorySummaryEvent, summaryScopeKey } from './computer-history-evidence.js';
 import {
   ComputerHistorySummaries,
+  ComputerHistorySummaryRunError,
   summaryEventId,
   serializeComputerHistorySummary,
   type ComputerHistorySummaryEvent,
   type StoredComputerHistorySummary,
 } from './computer-history-summaries.js';
+import {
+  historyQueryInterval,
+  historySummaryMetadata,
+  historyTextPage,
+  type HistoryQuery,
+} from './computer-history-tools.js';
 
 type IpcMainLike = {
   handle(channel: string, listener: (_event: unknown, ...args: unknown[]) => unknown): void;
@@ -93,6 +102,7 @@ type HelperStatus = {
   state: string;
   recorderActive?: boolean;
   captureError?: string;
+  storageFailure?: boolean;
   failed?: boolean;
 };
 
@@ -146,6 +156,7 @@ export class ComputerHistoryService {
   #summaryTimer?: ReturnType<typeof setInterval>;
   #retentionTimer?: ReturnType<typeof setInterval>;
   #nextSummaryAttempt = 0;
+  #retryFailedSummaries = false;
   #summaryEpoch = 0;
   #mutations: Promise<unknown> = Promise.resolve();
   #maintenance = false;
@@ -333,7 +344,7 @@ export class ComputerHistoryService {
         !this.#platformSupported() || this.#recorder) return;
     if (!(await this.#helperAvailable())) return;
     const status = await this.#helperStatus();
-    if (reconcile && (status.failed || await this.#analysisPaused(status) ||
+    if (reconcile && (status.failed || status.storageFailure || await this.#analysisPaused(status) ||
         !(await this.settings()).enabled || this.#maintenance)) return;
     const enabled = (await this.settings()).enabled;
     // Keep consent as the final awaited read, then fence every earlier read
@@ -442,7 +453,7 @@ export class ComputerHistoryService {
     // Reconcile only that saved consent, outside mutations, and never unpause it.
     if (settings.enabled && !this.#maintenance && !this.#storageMaintenance &&
         !this.#disposed && !this.#recorder && epoch === this.#recorderEpoch &&
-        helper && !helper.failed && helper.state !== 'paused' && !recorderActive(helper) &&
+        helper && !helper.failed && !helper.storageFailure && helper.state !== 'paused' && !recorderActive(helper) &&
         helper.accessibility && helper.inputMonitoring && !readError &&
         !this.#initializationError && !this.#collectorConfigError) {
       await this.#start(true, epoch).catch((error: unknown) => {
@@ -452,7 +463,8 @@ export class ComputerHistoryService {
     const inventory = await this.#inventory();
     const ownershipError = !this.#recorder && !this.#storageLockHeld && helper && recorderActive(helper) ? RECORDER_OCCUPIED : undefined;
     const captureError = settings.enabled && this.#recorder ? helper?.captureError : undefined;
-    const error = readError ?? this.#collectorConfigError ?? this.#evidenceError ?? inventory.error ?? ownershipError ?? this.#initializationError ?? this.#retentionError ?? this.#lastError ?? captureError;
+    const storageError = helper?.storageFailure ? 'Computer History storage failed. Check available disk space and retry recording.' : undefined;
+    const error = readError ?? this.#collectorConfigError ?? this.#evidenceError ?? inventory.error ?? ownershipError ?? this.#initializationError ?? this.#retentionError ?? this.#lastError ?? storageError ?? captureError;
     const permissionsReady = Boolean(helper?.accessibility && helper.inputMonitoring);
     const state: ComputerHistoryStatus['state'] = error
       ? 'error'
@@ -506,6 +518,150 @@ export class ComputerHistoryService {
 
   applications(bundleIds: readonly string[]): Promise<readonly ComputerHistoryApplication[]> {
     return this.#applications.applications(bundleIds);
+  }
+
+  /** Model reads share the settings/deletion queue and revalidate authority before returning data. */
+  async modelQuery(
+    request: HistoryQuery,
+    assertAccess: () => Promise<void>,
+    signal?: AbortSignal,
+  ): Promise<unknown> {
+    const read = async () => {
+      const check = async () => {
+        signal?.throwIfAborted();
+        await assertAccess();
+        signal?.throwIfAborted();
+        const settings = await this.settings();
+        if (!settings.summariesEnabled) throw new Error('Computer History model transmission is disabled');
+        return settings;
+      };
+      const settings = await check();
+      const eligible = (summary: StoredComputerHistorySummary) =>
+        summary.generation?.scopeKey === summaryScopeKey(settings) &&
+        (!summary.generation.includesText || settings.summaryTextEnabled);
+      const result = await (async () => {
+        if (request.kind === 'events') {
+          if (!settings.summaryTextEnabled) throw new Error('Computer History recorded-text transmission is disabled');
+          const interval = historyQueryInterval(request.input, this.#now(), ACTIVITY_GAP_MS);
+          if (Date.parse(interval.start) < this.#now() - RAW_HORIZON_MS || Date.parse(interval.end) > this.#now()) {
+            throw new Error('Raw Computer History is limited to the last 48 hours');
+          }
+          const events: Record<string, unknown>[] = [];
+          let bytes = 0;
+          let truncated = false;
+          for await (const event of this.#summaryEvents(settings, interval)) {
+            signal?.throwIfAborted();
+            const content = historyTextPage(redactSecrets(event.content ?? ''), 0, 8 * 1024);
+            const projected = {
+              id: summaryEventId(event, { includeText: true }),
+              timestamp: event.timestamp,
+              kind: event.kind,
+              application: redactSecrets(event.app?.name || event.app?.bundleIdentifier || ''),
+              windowTitle: redactSecrets(event.window?.title ?? ''),
+              domain: event.window?.urlDomain,
+              ...(event.content ? { content: content.text, contentTruncated: content.nextOffset !== undefined } : {}),
+            };
+            const size = Buffer.byteLength(JSON.stringify(projected));
+            if (events.length >= request.input.limit || bytes + size > 40 * 1024) {
+              truncated = true;
+              break;
+            }
+            events.push(projected);
+            bytes += size;
+          }
+          return { ...interval, events, truncated, rawRetentionHours: 48 };
+        }
+        if (!this.#summaries) throw new Error('Computer History summary storage is unavailable');
+        if (request.kind === 'read') {
+          const summary = await this.#summaries.get(request.input.id);
+          if (!summary || !eligible(summary)) throw new Error('Computer History summary is unavailable under current permissions');
+          if ((request.input.revision && request.input.revision !== summary.documentRevision) ||
+              (request.input.offset > 0 && !request.input.revision)) {
+            throw new Error('Computer History document changed. Search again before reading further pages.');
+          }
+          const body = historyTextPage(redactSecrets(summary.content.body), request.input.offset, 24 * 1024);
+          return {
+            ...historySummaryMetadata(summary),
+            markdown: body.text,
+            offset: request.input.offset,
+            ...(body.nextOffset === undefined ? {} : { nextOffset: body.nextOffset }),
+            sourceIds: summary.sourceIds.slice(0, 256),
+            priorContextIds: summary.generation?.priorContextIds ?? [],
+            rawRetentionExpired: Date.parse(summary.end) <= this.#now() - RAW_HORIZON_MS,
+          };
+        }
+        const { input } = request;
+        const interval = historyQueryInterval(input, this.#now(), 31 * 24 * 60 * 60_000);
+        const before = input.before
+          ? { ...input.before, start: new Date(input.before.start).toISOString() }
+          : undefined;
+        const terms = computerHistorySearchTerms(input.query);
+        const covered = new Set<string>();
+        const entries: (ReturnType<typeof historySummaryMetadata> & { excerpt: string })[] = [];
+        const compare = (a: { start: string; id: string }, b: { start: string; id: string }) =>
+          b.start.localeCompare(a.start) || b.id.localeCompare(a.id);
+        const matches = (summary: StoredComputerHistorySummary) => {
+          if (!eligible(summary) || summary.start >= interval.end || summary.end <= interval.start) return false;
+          const text = computerHistorySearchNormalize(redactSecrets([
+            summary.content.title, summary.content.description, ...(summary.content.keywords ?? []),
+            ...summary.applications, summary.content.body,
+          ].join('\n')));
+          return terms.every((term) => text.includes(term));
+        };
+        const add = (summary: StoredComputerHistorySummary) => {
+          if (before && compare(summary, before) <= 0) return;
+          entries.push({
+            ...historySummaryMetadata(summary),
+            excerpt: historyTextPage(computerHistorySearchExcerpt(redactSecrets(summary.content.body), input.query), 0, 1024).text,
+          });
+          entries.sort(compare);
+          if (entries.length > input.limit + 1) entries.pop();
+        };
+        const rollup = input.level === 'auto' && Date.parse(interval.end) - Date.parse(interval.start) >= 6 * 60 * 60_000;
+        for await (const summary of this.#summaries.scan()) {
+          signal?.throwIfAborted();
+          if (!matches(summary)) continue;
+          if (rollup) {
+            if (summary.level === '6h') {
+              for (const id of summary.sourceIds) covered.add(id);
+              add(summary);
+            }
+          } else if (summary.level === (input.level === 'auto' ? '10min' : input.level)) add(summary);
+        }
+        if (rollup) {
+          for await (const summary of this.#summaries.scan()) {
+            signal?.throwIfAborted();
+            if (summary.level !== '10min' || !matches(summary)) continue;
+            if (!covered.has(summary.id)) add(summary);
+          }
+        }
+        const page: typeof entries = [];
+        let bytes = 0;
+        for (const entry of entries.slice(0, input.limit)) {
+          const size = Buffer.byteLength(JSON.stringify(entry));
+          if (bytes + size > 40 * 1024) break;
+          page.push(entry);
+          bytes += size;
+        }
+        const hasMore = entries.length > page.length;
+        const last = page.at(-1);
+        return {
+          ...interval, entries: page,
+          ...(hasMore && last ? { nextBefore: { start: last.start, id: last.id } } : {}),
+        };
+      })();
+      const after = await check();
+      if (JSON.stringify(after) !== JSON.stringify(settings)) {
+        throw new Error('Computer History permissions changed during the read. Retry the request.');
+      }
+      return { trust: 'untrusted-observed-ui', ...result };
+    };
+    return this.#mutate(
+      () => this.#summaries && request.kind !== 'events'
+        ? this.#summaries.withReadSnapshot(read)
+        : read(),
+      false,
+    );
   }
 
   async detail(id: string): Promise<ComputerHistoryDetail | null> {
@@ -763,8 +919,13 @@ export class ComputerHistoryService {
     const epoch = this.#summaryEpoch;
     this.#summaryTask ??= this.#runSummaries(epoch).catch((error: unknown) => {
       if (!this.#disposed && epoch === this.#summaryEpoch) {
-        this.#summaryError = 'Computer History summary generation failed. Check the analysis model and retry.';
-        this.#nextSummaryAttempt = this.#now() + 10 * 60_000;
+        const partial = error instanceof ComputerHistorySummaryRunError && !error.providerUnavailable;
+        this.#summaryError = partial
+          ? 'Some Computer History intervals could not be summarized. Other intervals continue; failed intervals retry automatically.'
+          : 'Computer History summary generation failed. Check the analysis model and retry.';
+        // A failed window must not stop newly closed windows from being admitted.
+        this.#nextSummaryAttempt = partial ? 0
+          : error instanceof ComputerHistorySummaryRunError ? error.nextRetryAt : this.#now() + 10 * 60_000;
       }
       throw error;
     }).finally(() => {
@@ -785,6 +946,7 @@ export class ComputerHistoryService {
       }
       this.#summaryError = undefined;
       this.#nextSummaryAttempt = 0;
+      this.#retryFailedSummaries = true;
       // Admit or join under the queue, but never hold the queue while a model runs.
       return { completion: this.summarize() };
     }, false);
@@ -803,10 +965,13 @@ export class ComputerHistoryService {
     if (await this.#analysisPaused()) return;
     const locale = await this.#resolveLocale();
     if (!current()) return;
+    const retryFailed = this.#retryFailedSummaries;
+    this.#retryFailedSummaries = false;
     await this.#summaries!.run(this.#summaryEvents(settings), {
       locale,
       includeText: settings.summaryTextEnabled,
       scopeKey: summaryScopeKey(settings),
+      retryFailed,
     });
     if (current()) this.#summaryError = undefined;
   }
@@ -988,6 +1153,7 @@ export class ComputerHistoryService {
         accessibility: value.accessibility === true,
         inputMonitoring: value.inputMonitoring === true,
         state: typeof value.state === 'string' ? value.state : 'stopped',
+        ...(this.#platform === 'darwin' && value.lastError === 'storage_failure' ? { storageFailure: true } : {}),
         ...(typeof value.recorderActive === 'boolean' ? { recorderActive: value.recorderActive } : {}),
         ...(this.#platform === 'win32' && value.captureError === 'windows_capture_failed'
           ? { captureError: 'Windows activity capture is repeatedly failing. Check the interactive session and application accessibility.' }
@@ -1077,7 +1243,7 @@ export class ComputerHistoryService {
     let suppressedEventCount = 0;
     let error: string | undefined;
     for (const path of files) {
-      const name = path.slice(path.lastIndexOf('/') + 1);
+      const name = basename(path);
       if (name === 'metadata.json') {
         try {
           const metadata = JSON.parse(await readFile(path, 'utf8')) as Record<string, unknown>;

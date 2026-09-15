@@ -36,6 +36,7 @@ const helper = process.env.MAKA_HISTORY_WINDOWS_HELPER
 const fixtureSource = fileURLToPath(new URL('./computer-history-windows-wpf.fixture.ps1', import.meta.url));
 // Peer initialization may affect later UIA calls; keep diagnostics out of clean acceptance.
 const peerDiagnostics = process.env.MAKA_HISTORY_WINDOWS_WPF_PEER_DIAGNOSTICS === '1';
+const selectionOnly = process.env.MAKA_HISTORY_WINDOWS_WPF_SELECTION_TEST_ONLY === '1';
 
 test('standalone WPF snapshots require useful native bodies and matched privacy controls', {
   skip: process.env.MAKA_HISTORY_WINDOWS_WPF_TEST !== '1' ? 'requires MAKA_HISTORY_WINDOWS_WPF_TEST=1' : false,
@@ -185,6 +186,7 @@ test('standalone WPF snapshots require useful native bodies and matched privacy 
   }
 
   async function scenario(name, action) {
+    if (selectionOnly && !name.startsWith('nonselectable')) return;
     await t.test(name, async () => {
       evidence('case.started', { name });
       try {
@@ -292,6 +294,20 @@ test('standalone WPF snapshots require useful native bodies and matched privacy 
   assert.ok(Number.isSafeInteger(ready.windowID) && ready.windowID > 0);
   t.diagnostic(`Fixture session=${ready.sessionId}, enabled administrator=${ready.administrator}`);
 
+  await scenario('nonselectable controls retain body when optional selection is absent or unsupported', async () => {
+    for (const mode of ['button', 'unsupported-selection']) {
+      const body = `NONSELECTABLE_${token}_${mode}`;
+      const first = await command('show', { mode, text: body });
+      const value = await snapshot(first);
+      useful(value, body);
+      assert.equal(value.selection, null, 'unsupported selection must not manufacture a range');
+      const edited = await command('edit', { text: `UPDATED_${body}` });
+      useful(await snapshot(edited), edited.text);
+      const probe = await command('inspect', { selectionProbe: true });
+      assert.equal(probe.selectionCalls > 0, mode === 'unsupported-selection',
+        'prove the synthetic provider was queried; do not pass by skipping optional selection');
+    }
+  });
   for (const mode of ['textbox', 'richtextbox']) {
     await scenario(`${mode} exposes body-only text and in-place edits`, async () => {
       const body = `BODY_${token}_${mode}`;

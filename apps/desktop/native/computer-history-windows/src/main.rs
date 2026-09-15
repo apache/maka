@@ -24,6 +24,8 @@ mod model;
 mod platform;
 #[cfg(any(windows, test))]
 mod recorder_lifecycle;
+#[cfg(any(windows, test))]
+mod session;
 #[cfg(all(test, not(windows)))]
 #[path = "platform/snapshot.rs"]
 mod snapshot_tests;

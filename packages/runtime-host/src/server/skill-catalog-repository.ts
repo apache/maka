@@ -173,6 +173,7 @@ export interface SkillCatalogRepositoryOptions {
   readonly testHooks?: {
     readonly beforeManagedSourceMutationRead?: () => Promise<void>;
     readonly beforeManagedInstalledArtifactsRead?: () => Promise<void>;
+    readonly beforeBundledInstalledArtifactsRead?: () => Promise<void>;
   };
 }
 
@@ -239,6 +240,7 @@ export class SkillCatalogRepository {
   readonly #transactions: SkillCatalogTransactionWriter;
   readonly #beforeManagedSourceMutationRead: (() => Promise<void>) | undefined;
   readonly #beforeManagedInstalledArtifactsRead: (() => Promise<void>) | undefined;
+  readonly #beforeBundledInstalledArtifactsRead: (() => Promise<void>) | undefined;
 
   constructor(options: SkillCatalogRepositoryOptions) {
     this.#runWithRoot = options.runWithRoot;
@@ -254,6 +256,8 @@ export class SkillCatalogRepository {
     this.#beforeManagedSourceMutationRead = options.testHooks?.beforeManagedSourceMutationRead;
     this.#beforeManagedInstalledArtifactsRead =
       options.testHooks?.beforeManagedInstalledArtifactsRead;
+    this.#beforeBundledInstalledArtifactsRead =
+      options.testHooks?.beforeBundledInstalledArtifactsRead;
   }
 
   async recover(): Promise<void> {
@@ -484,6 +488,8 @@ export class SkillCatalogRepository {
         return this.#install(snapshot, mutation);
       case 'update_managed':
         return this.#updateManaged(snapshot, mutation);
+      case 'update_bundled':
+        return this.#updateBundled(snapshot, mutation.ref);
       case 'delete':
         return this.#delete(snapshot, mutation.ref);
       case 'set_enabled':
@@ -679,6 +685,62 @@ export class SkillCatalogRepository {
       managedArtifacts(fact.skill.id, source.content, source.contentSha256),
     );
     return { ok: true, execution: { changed: true, ref: fact.skill.ref } };
+  }
+
+  async #updateBundled(snapshot: RepositorySnapshot, ref: string): Promise<MutationDecision> {
+    const fact = snapshot.installedFacts.get(ref);
+    if (!fact) return { ok: false, reason: 'not_found' };
+    if (fact.skill.scope !== 'workspace' || fact.skill.source !== 'legacy') {
+      return { ok: false, reason: 'blocked_scope' };
+    }
+    if (fact.governance.validationStatus === 'metadata_error' || !fact.lockContent) {
+      return { ok: false, reason: 'metadata_error' };
+    }
+    if (fact.governance.sourceType !== 'bundled') {
+      return { ok: false, reason: 'source_invalid' };
+    }
+    if (fact.governance.userModified) return { ok: false, reason: 'local_modified' };
+    const source = getBundledSkillSource(fact.skill.id);
+    if (!source) return { ok: false, reason: 'source_missing' };
+    requireProjectableSkillContent(source.body);
+
+    await this.#beforeBundledInstalledArtifactsRead?.();
+    const current = await readManagedArtifacts(fact.skill);
+    if (!current) return { ok: false, reason: 'metadata_error' };
+    let lock: unknown;
+    try {
+      lock = JSON.parse(String(current.artifacts.lock));
+    } catch {
+      return { ok: false, reason: 'metadata_error' };
+    }
+    const governance = validateSkillLock({
+      lock,
+      skillId: source.id,
+      currentContentSha256: current.skillSha256,
+    });
+    if (governance.validationStatus === 'metadata_error' || governance.sourceType !== 'bundled') {
+      return { ok: false, reason: 'metadata_error' };
+    }
+    if (
+      governance.userModified ||
+      current.skillSha256 !== fact.skill.contentSha256 ||
+      current.lockSha256 !== fact.lockSha256 ||
+      current.baselineSha256 !== fact.baselineSha256 ||
+      current.baselineSha256 !== governance.contentSha256?.toLowerCase()
+    ) {
+      return { ok: false, reason: 'local_modified' };
+    }
+    if (current.skillSha256 === source.contentSha256) {
+      return { ok: true, execution: { changed: false, ref } };
+    }
+    // The Host owns replacement and its race/recovery checks. Preferences remain
+    // attached to the same full ref and never enter this artifact transaction.
+    await this.#transactions.replaceManagedSkill(
+      source.id,
+      current.artifacts,
+      bundledArtifacts(source),
+    );
+    return { ok: true, execution: { changed: true, ref } };
   }
 
   async #delete(snapshot: RepositorySnapshot, ref: string): Promise<MutationDecision> {

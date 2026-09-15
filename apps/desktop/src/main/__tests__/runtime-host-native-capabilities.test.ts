@@ -31,6 +31,8 @@ import {
 } from '@maka/runtime-host/protocol';
 import { z } from 'zod';
 import { buildClientSettingsTools } from '../client-settings-tools.js';
+import { buildComputerHistoryCapabilityGroups } from '../computer-history-tools.js';
+import type { ComputerHistoryService } from '../computer-history-main.js';
 import { browserOriginAdmission } from '../browser/browser-origin-admission.js';
 import { buildRiveWorkflowTool } from '../rive-workflow-tool.js';
 import { createDesktopNativeCapabilityProvider } from '../runtime-host-native-capabilities.js';
@@ -116,6 +118,69 @@ test('remote providers do not request Host paths and use a Client-owned cwd', as
     /does not accept a Host path/,
   );
 });
+
+const historyLocalHostId = 'b6b8a4c19aef429580ad5d241e30021a8c9f065b92164be088fc0d7a175947ce';
+for (const [label, hostId] of [
+  ['local root', historyLocalHostId],
+  ['remote root', 'c57e2f0910494de9b5c8cc013b97c6e2d31ad4fe7df94582ace87f30b023df64'],
+  ['missing scope', undefined],
+  ['literal local profile', 'local'],
+] as const) {
+  test(`History publication uses the exact local root: ${label}`, async (t) => {
+    let received: unknown;
+    let permitted = false;
+    const targetScope = hostId === undefined ? undefined : {
+      hostId, targetEpoch: 'a59f5c17-a3a8-450f-b375-14d34a18fa91',
+    };
+    const provider = createDesktopNativeCapabilityProvider({
+      browserTools: [tool('browser_snapshot', z.object({}), async () => 'ok')],
+      resolveBrowserUrl: () => 'https://example.com/',
+      releaseBrowserSession() {},
+      computerUseTools: computerTools(),
+      releaseDesktopInteractionSession() {},
+      additionalGroups: (scope) => buildComputerHistoryCapabilityGroups(scope, historyLocalHostId, {
+        service: {
+          modelQuery: async (request, check) => {
+            assert.equal(permitted, true);
+            await check();
+            received = request;
+            return { trust: 'untrusted-observed-ui', entries: [] };
+          },
+        } as Pick<ComputerHistoryService, 'modelQuery'> as ComputerHistoryService,
+        assertAccess: async () => { assert.equal(permitted, true); },
+      }),
+    }, { clientCwd: '/client/state', targetScope });
+    t.after(() => provider.close());
+    assert.equal(provider.offers().find(({ offerId }) => offerId === 'desktop_browser')!.hostPathAccess, 'cwd');
+    assert.doesNotThrow(() => decodeClientCapabilityReplaceInput({
+      registrationId: 'registration-history', offers: provider.offers(),
+    }));
+    const history = provider.offers().find(({ offerId }) => offerId === 'desktop_computer_history');
+    const frame = capabilityFrame({
+      offerId: 'desktop_computer_history', serverId: 'desktop_computer_history',
+      toolName: 'ComputerHistorySearch', arguments: {}, cwd: undefined,
+    });
+    if (hostId !== historyLocalHostId) {
+      assert.equal(history, undefined);
+      await assert.rejects(() => call(provider, frame), /is not offered/);
+      assert.equal(received, undefined);
+      return;
+    }
+    assert.ok(history);
+    assert.equal(history.hostPathAccess, 'none');
+    assert.deepEqual(history.tools.map(({ name, serverId }) => ({ name, serverId })), [
+      'ComputerHistoryStatus', 'ComputerHistorySearch', 'ComputerHistoryRead', 'ComputerHistoryReadEvents',
+    ].map((name) => ({ name, serverId: 'desktop_computer_history' })));
+    await assert.rejects(() => call(provider, { ...frame, cwd: '/host/path' }), /does not accept a Host path/);
+    const result = await provider.call!(frame, {
+      signal: new AbortController().signal,
+      accept: async (evidence) => { assert.deepEqual(evidence, { kind: 'none' }); permitted = true; },
+      requestInteraction: async () => { throw new Error('Unexpected interaction'); },
+    });
+    assert.deepEqual(received, { kind: 'search', input: { query: '', level: 'auto', limit: 10 } });
+    assert.match(JSON.stringify(result), /untrusted-observed-ui/);
+  });
+}
 
 test('publishes the real Computer Use schema through the Client Capability protocol', () => {
   const computerUseTools = buildComputerUseTools({ backend: computerBackend() });

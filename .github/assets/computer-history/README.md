@@ -19,6 +19,27 @@
 
 # Computer History UI Evidence
 
+## Approved Conversation Retrieval
+
+The `retrieval-permission-*.png` screenshots were captured September 15, 2026
+using the actual `ClientCapabilityPrompt`, production CSS and synthetic requests.
+Both sides use English, light mode, DPR 1, 100% zoom, height 720, the same
+`computer_history` request and capability scope. Widths are 1280 and 320.
+
+Before freezes the component and copy from
+`63281490612318511ea264d493b744d556c14cbb`. That version cannot render the new
+capability, so its labeled harness error boundary displays the actual error.
+This is a compatibility diagnostic, not a historical production error screen.
+After uses the working revision adding authorized retrieval; pending captures
+follow an actual Allow click with the response promise held unresolved.
+Reject receives initial focus; both buttons disable during submission.
+
+Playwright verified no horizontal overflow or clipped text, expected before
+errors, Allow dispatch and disabled pending controls. All six PNGs were inspected.
+No private history, model-request bodies, credentials or live desktop content
+are present. The installed GitHub CLI lacks native attachment support, so these
+files follow this PR's existing feature-branch asset convention.
+
 ## Metadata And Search Follow-Up
 
 Captured on September 14, 2026 from the production Computer History page and

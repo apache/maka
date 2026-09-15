@@ -48,6 +48,10 @@ using System.Threading;
 using System.Web.Script.Serialization;
 using System.Windows.Forms;
 
+[assembly: System.Reflection.AssemblyTitle("Maka synthetic history fixture")]
+[assembly: System.Reflection.AssemblyDescription("Maka synthetic history fixture")]
+[assembly: System.Reflection.AssemblyProduct("Maka synthetic history fixture")]
+
 internal static class HistoryFixture
 {
     [DllImport("user32.dll")]
@@ -65,6 +69,7 @@ internal static class HistoryFixture
     {
         internal Form Form;
         internal TextBox Text;
+        internal List<Label> BudgetLabels = new List<Label>();
     }
 
     private static readonly Dictionary<string, Document> Documents = new Dictionary<string, Document>();
@@ -168,11 +173,30 @@ internal static class HistoryFixture
                     Emit(new { type = "unblocked", id = command["id"], foreground = Foreground() });
                     return;
                 }
-                if (action != "show" && action != "edit")
+                if (action != "show" && action != "edit" && action != "select")
                     throw new InvalidOperationException("Unknown fixture action.");
                 string key = (string)command["window"];
                 Document document = Documents[key];
-                if (action == "edit" && (GetForegroundWindow() != document.Form.Handle ||
+                if (command.ContainsKey("budget"))
+                {
+                    foreach (Label label in document.BudgetLabels) { document.Form.Controls.Remove(label); label.Dispose(); }
+                    document.BudgetLabels.Clear();
+                    if ((bool)command["budget"])
+                    {
+                        document.Form.ClientSize = new Size(460, 540);
+                        for (int row = 0; row < 8; row++)
+                        {
+                            Label label = new Label();
+                            label.Text = "SYNTHETIC_BUDGET_" + row.ToString() + "_" + new string('x', 5000);
+                            label.Location = new Point(16, 220 + row * 36);
+                            label.Size = new Size(425, 30);
+                            document.BudgetLabels.Add(label);
+                            document.Form.Controls.Add(label);
+                        }
+                    }
+                    else document.Form.ClientSize = new Size(460, 230);
+                }
+                if (action != "show" && (GetForegroundWindow() != document.Form.Handle ||
                     !document.Text.Focused || !IsWindowVisible(document.Form.Handle) ||
                     !IsWindowVisible(document.Text.Handle)))
                     throw new InvalidOperationException("Pure edit requires an already focused visible document.");
@@ -181,7 +205,10 @@ internal static class HistoryFixture
                     if (key != "password") throw new InvalidOperationException("Only the password fixture can toggle secrecy.");
                     document.Text.UseSystemPasswordChar = (bool)command["password"];
                 }
-                document.Text.Text = (string)command["text"];
+                if (action == "select")
+                    document.Text.Select(Convert.ToInt32(command["start"]), Convert.ToInt32(command["length"]));
+                else
+                    document.Text.Text = (string)command["text"];
                 if (action == "show")
                 {
                     document.Form.Show();
@@ -206,6 +233,7 @@ internal static class HistoryFixture
                         window = Pending["window"], windowID = document.Form.Handle.ToInt64(),
                         processIdentifier = Process.GetCurrentProcess().Id,
                         title = document.Form.Text, text = document.Text.Text,
+                        selectedText = document.Text.SelectedText, selectionStart = document.Text.SelectionStart,
                         password = document.Text.UseSystemPasswordChar,
                         foreground = Foreground()
                     });
@@ -314,7 +342,32 @@ internal static class HistoryFixture
 }
 '@
 
-Add-Type -TypeDefinition $source -Language CSharp `
-    -ReferencedAssemblies 'System.dll', 'System.Core.dll', 'System.Windows.Forms.dll', 'System.Drawing.dll', 'System.Web.Extensions.dll' `
-    -OutputAssembly $OutputAssembly -OutputType WindowsApplication
+$iconPath = "$OutputAssembly.ico"
+Add-Type -AssemblyName System.Drawing
+$iconFile = [IO.File]::Open($iconPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+try {
+    [Drawing.SystemIcons]::Application.Save($iconFile)
+} finally {
+    $iconFile.Dispose()
+}
+try {
+    $compiler = New-Object System.CodeDom.Compiler.CompilerParameters
+    $compiler.CompilerOptions = "/win32icon:`"$iconPath`" /target:winexe"
+    $compiler.GenerateExecutable = $true
+    $compiler.OutputAssembly = $OutputAssembly
+    $compiler.ReferencedAssemblies.AddRange(@(
+        'System.dll', 'System.Core.dll', 'System.Windows.Forms.dll', 'System.Drawing.dll', 'System.Web.Extensions.dll'
+    ))
+    $provider = New-Object Microsoft.CSharp.CSharpCodeProvider
+    try {
+        $result = $provider.CompileAssemblyFromSource($compiler, $source)
+        if ($result.Errors.HasErrors) {
+            throw (($result.Errors | ForEach-Object { $_.ToString() }) -join "`n")
+        }
+    } finally {
+        $provider.Dispose()
+    }
+} finally {
+    [IO.File]::Delete($iconPath)
+}
 [Console]::Out.WriteLine('synthetic-fixture-built')

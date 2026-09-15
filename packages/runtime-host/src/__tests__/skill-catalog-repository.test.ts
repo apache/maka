@@ -28,6 +28,7 @@ import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { writeFileSync } from 'node:fs';
 import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -57,6 +58,11 @@ import {
   type SkillCatalogTransactionFailpoint,
   type SkillCatalogTransactionOptions,
 } from '../server/skill-catalog-transaction.js';
+import {
+  historyBundledSource,
+  installLegacyHistory,
+  LEGACY_HISTORY_BODY,
+} from './fixtures/computer-history-bundled.js';
 
 const roots = new Set<string>();
 const execFileAsync = promisify(execFile);
@@ -599,7 +605,12 @@ test('bundled Computer History installs and loads selected context without histo
   const loaded = loadSkillInstructionsFromScan([...snapshot.inventory], ref, host);
   assert.equal(loaded.ok, true);
   if (!loaded.ok) return;
-  assert.deepEqual(loaded.skill.declaredTools, []);
+  assert.deepEqual(loaded.skill.declaredTools, [
+    'mcp__desktop_computer_history__ComputerHistoryStatus',
+    'mcp__desktop_computer_history__ComputerHistorySearch',
+    'mcp__desktop_computer_history__ComputerHistoryRead',
+    'mcp__desktop_computer_history__ComputerHistoryReadEvents',
+  ]);
   assert.equal(loaded.skill.truncated, false);
 
   const selectedContext = [
@@ -640,6 +651,169 @@ test('bundled Computer History installs and loads selected context without histo
   });
   assert.equal(blocked.disposition, 'blocked');
   assert.deepEqual(blocked.skillInvocation.failed, [{ request: ref, reason: 'disabled' }]);
+});
+
+test('bundled update replaces a trusted legacy version and preserves full-ref opt-outs', async () => {
+  const fixture = await createFixture();
+  const source = historyBundledSource();
+  const directory = await installLegacyHistory(fixture.root);
+  const ref = `workspace:legacy:${source.id}`;
+  const repository = fixture.repository();
+  await mkdir(join(fixture.root, '.maka'), { recursive: true });
+  const preferences = stateFile(ref, false, true, '2026-09-01T00:00:00.000Z');
+  const statePath = join(fixture.root, '.maka', 'skills-state.json');
+  await writeFile(statePath, preferences);
+  const before = await start(repository, fixture.project, 'governance');
+  assert.equal(governanceItem(before, ref).validationStatus, 'ok');
+  assert.equal(governanceItem(before, ref).userModified, false);
+
+  const updated = await repository.mutate({
+    expectedRevision: before.revision,
+    mutation: { kind: 'update_bundled', ref },
+  });
+  assert.equal(updated.kind, 'committed');
+  if (updated.kind !== 'committed') return;
+  assert.equal(updated.entry?.ref, ref);
+  assert.equal(updated.entry?.enabled, false);
+  assert.equal(updated.entry?.runtimeStatus, 'disabled');
+  assert.equal(updated.entry?.pinned, true);
+  assert.equal(updated.entry?.validationStatus, 'ok');
+  assert.equal(await readFile(join(directory, 'SKILL.md'), 'utf8'), source.body);
+  assert.equal(
+    await readFile(join(directory, '.maka', 'baseline', 'SKILL.md'), 'utf8'),
+    source.body,
+  );
+  assert.equal(await readFile(statePath, 'utf8'), preferences);
+
+  const lock = await readFile(join(directory, 'skill.lock.json'), 'utf8');
+  const repeated = await repository.mutate({
+    expectedRevision: updated.revision,
+    mutation: { kind: 'update_bundled', ref },
+  });
+  assert.equal(repeated.kind, 'unchanged');
+  assert.equal('revision' in repeated && repeated.revision, updated.revision);
+  assert.equal(await readFile(join(directory, 'skill.lock.json'), 'utf8'), lock);
+  assert.equal(await readFile(statePath, 'utf8'), preferences);
+});
+
+test('bundled update preserves customized content and rejects stale revisions', async () => {
+  const fixture = await createFixture();
+  const directory = await installLegacyHistory(fixture.root);
+  const ref = 'workspace:legacy:computer-history';
+  const repository = fixture.repository();
+  const before = await start(repository, fixture.project, 'governance');
+  const customized = `${LEGACY_HISTORY_BODY}\nUser customization.\n`;
+  await writeFile(join(directory, 'SKILL.md'), customized);
+  const stale = await repository.mutate({
+    expectedRevision: before.revision,
+    mutation: { kind: 'update_bundled', ref },
+  });
+  assert.equal(stale.kind, 'revision_conflict');
+  const current = await start(repository, fixture.project, 'governance');
+  const updated = await repository.mutate({
+    expectedRevision: current.revision,
+    mutation: { kind: 'update_bundled', ref },
+  });
+  assert.deepEqual(updated, { kind: 'rejected', reason: 'local_modified' });
+  assert.equal(await readFile(join(directory, 'SKILL.md'), 'utf8'), customized);
+});
+
+test('bundled update rechecks installed content, lock, and baseline after scanning', async () => {
+  for (const artifact of ['SKILL.md', 'skill.lock.json', '.maka/baseline/SKILL.md']) {
+    const fixture = await createFixture();
+    const directory = await installLegacyHistory(fixture.root);
+    const path = join(directory, artifact);
+    const changed = `${await readFile(path, 'utf8')}\n `;
+    const repository = fixture.repository(undefined, {
+      beforeBundledInstalledArtifactsRead: () => writeFile(path, changed),
+    });
+    const before = await start(repository, fixture.project, 'governance');
+    const result = await repository.mutate({
+      expectedRevision: before.revision,
+      mutation: { kind: 'update_bundled', ref: 'workspace:legacy:computer-history' },
+    });
+    assert.deepEqual(result, { kind: 'rejected', reason: 'local_modified' });
+    assert.equal(await readFile(path, 'utf8'), changed);
+  }
+});
+
+test('bundled replacement transaction preserves a competing save after durable intent', async () => {
+  const fixture = await createFixture();
+  const directory = await installLegacyHistory(fixture.root);
+  const path = join(directory, 'SKILL.md');
+  const changed = `${LEGACY_HISTORY_BODY}\nCompeting save.\n`;
+  const repository = fixture.repository({
+    failpoint(point) {
+      if (point === 'after_intent') writeFileSync(path, changed);
+    },
+  });
+  const before = await start(repository, fixture.project, 'governance');
+  await assert.rejects(
+    repository.mutate({
+      expectedRevision: before.revision,
+      mutation: { kind: 'update_bundled', ref: 'workspace:legacy:computer-history' },
+    }),
+    (error: unknown) =>
+      error instanceof SkillCatalogRepositoryError && error.code === 'commit_outcome_unknown',
+  );
+  assert.equal(await readFile(path, 'utf8'), changed);
+});
+
+test('bundled replacement recovers an interrupted freeze without touching preferences', async () => {
+  const fixture = await createFixture();
+  const directory = await installLegacyHistory(fixture.root);
+  const ref = 'workspace:legacy:computer-history';
+  await mkdir(join(fixture.root, '.maka'), { recursive: true });
+  const preferences = stateFile(ref, false, false, '2026-09-01T00:00:00.000Z');
+  const statePath = join(fixture.root, '.maka', 'skills-state.json');
+  await writeFile(statePath, preferences);
+  const repository = fixture.repository({
+    failpoint(point) {
+      if (point === 'after_managed_freeze') throw new Error('simulated process loss');
+    },
+  });
+  const before = await start(repository, fixture.project, 'governance');
+  await assert.rejects(
+    repository.mutate({
+      expectedRevision: before.revision,
+      mutation: { kind: 'update_bundled', ref },
+    }),
+    (error: unknown) =>
+      error instanceof SkillCatalogRepositoryError && error.code === 'commit_outcome_unknown',
+  );
+  const recovered = await start(fixture.repository(), fixture.project, 'governance');
+  assert.equal(governanceItem(recovered, ref).enabled, false);
+  assert.equal(governanceItem(recovered, ref).pinned, false);
+  assert.equal(await readFile(join(directory, 'SKILL.md'), 'utf8'), historyBundledSource().body);
+  assert.equal(await readFile(statePath, 'utf8'), preferences);
+});
+
+test('bundled update rejects same-ID local, untrusted, and non-workspace copies', async () => {
+  for (const kind of ['local', 'untrusted', 'project'] as const) {
+    const fixture = await createFixture();
+    const root = kind === 'project' ? join(fixture.project, '.maka') : fixture.root;
+    const directory = await installLegacyHistory(root);
+    const lockPath = join(directory, 'skill.lock.json');
+    if (kind === 'local') await rm(lockPath);
+    if (kind === 'untrusted') {
+      const lock = JSON.parse(await readFile(lockPath, 'utf8'));
+      lock.sourceName = 'third-party';
+      await writeFile(lockPath, JSON.stringify(lock));
+    }
+    const repository = fixture.repository();
+    const before = await start(repository, fixture.project, 'governance');
+    const ref =
+      kind === 'project' ? 'project:maka:computer-history' : 'workspace:legacy:computer-history';
+    const result = await repository.mutate({
+      expectedRevision: before.revision,
+      mutation: { kind: 'update_bundled', ref },
+    });
+    assert.deepEqual(result, {
+      kind: 'rejected',
+      reason: kind === 'project' ? 'blocked_scope' : 'metadata_error',
+    });
+    assert.equal(await readFile(join(directory, 'SKILL.md'), 'utf8'), LEGACY_HISTORY_BODY);
+  }
 });
 
 test('root-owned rejected and empty placeholders can be deleted and reinstalled', async () => {

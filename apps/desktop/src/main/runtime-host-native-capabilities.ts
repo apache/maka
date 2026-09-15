@@ -65,6 +65,8 @@ export interface DesktopCapabilityGroup {
   readonly label: string;
   readonly description: string;
   readonly tools: readonly (MakaTool | DesktopIdentifiedCapabilityTool)[];
+  /** A fixed client-owned group can narrow, never widen, the provider's Host path access. */
+  readonly hostPathAccess?: 'none';
   /**
    * Marks a dynamically sourced group: tools the decoder rejects are omitted
    * with a diagnostic, the group may be chunked past the single-offer tool
@@ -85,9 +87,10 @@ interface PreparedDesktopCapabilityGroup {
   readonly description: string;
   readonly tools: readonly PreparedDesktopCapabilityTool[];
   readonly dynamic?: boolean;
+  readonly hostPathAccess?: 'none';
 }
 
-type NativeToolBinding = Pick<PreparedDesktopCapabilityTool, "tool">;
+type NativeToolBinding = Pick<PreparedDesktopCapabilityTool, "tool"> & { readonly hostPathAccess?: 'none' };
 
 type DesktopToolModelOutput = Awaited<
   ReturnType<NonNullable<MakaTool["toModelOutput"]>>
@@ -384,7 +387,7 @@ async function invokeNativeTool(
   invocation: AbortController,
   usedSessionIds: Set<string>,
 ): Promise<ClientCapabilityCallResult> {
-  const hostPathAccess = providerOptions.hostPathAccess ?? "cwd";
+  const hostPathAccess = binding.hostPathAccess ?? providerOptions.hostPathAccess ?? "cwd";
   if (hostPathAccess === "none" && frame.cwd !== undefined) {
     throw new Error("Desktop native capability does not accept a Host path");
   }
@@ -486,7 +489,7 @@ function capabilityOffer(
     offerId: group.offerId,
     version: CAPABILITY_VERSION,
     affinity: "session",
-    hostPathAccess,
+    hostPathAccess: group.hostPathAccess ?? hostPathAccess,
     label: group.label,
     description: group.description,
     tools: Object.freeze(
@@ -712,7 +715,7 @@ function indexBindings(
           `Duplicate Desktop native capability tool: ${group.offerId}/${tool.name}`,
         );
       }
-      bindings.set(key, { tool });
+      bindings.set(key, { tool, hostPathAccess: group.hostPathAccess });
     }
   }
   return bindings;

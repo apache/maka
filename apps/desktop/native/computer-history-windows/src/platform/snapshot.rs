@@ -212,7 +212,7 @@ fn web_framework(framework: &str) -> bool {
     )
 }
 
-fn append_text(output: &mut String, value: &str, limit: usize) {
+fn append_text(output: &mut String, value: &str, limit: usize) -> bool {
     let value = value.trim();
     let separator = usize::from(!output.is_empty());
     let remaining = limit.saturating_sub(output.len() + separator);
@@ -226,6 +226,7 @@ fn append_text(output: &mut String, value: &str, limit: usize) {
         }
         output.push_str(&value[..end]);
     }
+    end < value.len()
 }
 
 #[cfg(windows)]
@@ -236,7 +237,7 @@ mod native {
     use super::*;
     use crate::{
         control::Result,
-        model::{Policy, Snapshot},
+        model::{Policy, Selection, Snapshot},
     };
     use std::{
         collections::BTreeSet,
@@ -245,7 +246,9 @@ mod native {
     };
     use windows::{
         Win32::{
-            Foundation::{CloseHandle, HANDLE, HWND, LPARAM, WAIT_TIMEOUT},
+            Foundation::{
+                CloseHandle, E_NOINTERFACE, E_NOTIMPL, HANDLE, HWND, LPARAM, WAIT_TIMEOUT, WPARAM,
+            },
             System::{
                 Com::{
                     CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx,
@@ -260,8 +263,10 @@ mod native {
             UI::{
                 Accessibility::{
                     CUIAutomation8, IUIAutomation2, IUIAutomationCacheRequest,
-                    IUIAutomationElement, IUIAutomationTextPattern, IUIAutomationTreeWalker,
-                    IUIAutomationValuePattern, TreeScope_Element, UIA_CONTROLTYPE_ID,
+                    IUIAutomationElement, IUIAutomationTextPattern, IUIAutomationTextRange,
+                    IUIAutomationTextRangeArray, IUIAutomationTreeWalker,
+                    IUIAutomationValuePattern, TextPatternRangeEndpoint_End,
+                    TextPatternRangeEndpoint_Start, TreeScope_Element, UIA_CONTROLTYPE_ID,
                     UIA_ControlTypePropertyId, UIA_DocumentControlTypeId, UIA_E_NOTSUPPORTED,
                     UIA_E_TIMEOUT, UIA_EditControlTypeId, UIA_FrameworkIdPropertyId,
                     UIA_IsOffscreenPropertyId, UIA_IsPasswordPropertyId,
@@ -270,15 +275,42 @@ mod native {
                 },
                 WindowsAndMessaging::{
                     EnumChildWindows, GA_ROOT, GetAncestor, GetClassNameW,
-                    GetWindowThreadProcessId, IsWindowVisible,
+                    GetWindowThreadProcessId, IsWindowVisible, SMTO_ABORTIFHUNG, SMTO_BLOCK,
+                    SendMessageTimeoutW,
                 },
             },
         },
-        core::{BOOL, BSTR, Interface, PWSTR},
+        core::{BOOL, BSTR, HRESULT, Interface, PWSTR},
     };
 
     const TIME_LIMIT: Duration = Duration::from_millis(700);
     const PROVIDER_TIMEOUT_MS: u32 = 250;
+
+    // Only optional selection operations use this boundary. Metadata, ownership
+    // and privacy reads must retain their ordinary fail-closed behavior.
+    fn optional_selection<T>(result: windows::core::Result<T>) -> windows::core::Result<Option<T>> {
+        match result {
+            Ok(value) => Ok(Some(value)),
+            Err(error)
+                if error.code().0 as u32 == UIA_E_NOTSUPPORTED
+                    || matches!(error.code(), E_NOTIMPL | E_NOINTERFACE) =>
+            {
+                Ok(None)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    fn optional_selection_interface<T: Interface>(
+        read: impl FnOnce(*mut *mut std::ffi::c_void) -> HRESULT,
+    ) -> windows::core::Result<Option<T>> {
+        let mut pointer = std::ptr::null_mut();
+        let supported = optional_selection(read(&mut pointer).ok())?;
+        if supported.is_none() || pointer.is_null() {
+            return Ok(None);
+        }
+        Ok(Some(unsafe { T::from_raw(pointer) }))
+    }
 
     struct ContentWindows {
         pid: u32,
@@ -343,7 +375,7 @@ mod native {
 
         fn current(&self) -> Option<()> {
             if !self.within_deadline()
-                || !super::super::interactive_desktop()
+                || !super::super::input_desktop()
                 || super::super::foreground() != Some((self.hwnd, self.pid))
             {
                 return None;
@@ -386,6 +418,7 @@ mod native {
 
     struct Observed {
         element: IUIAutomationElement,
+        depth: usize,
         parent: Option<IUIAutomationElement>,
         first_child: Option<IUIAutomationElement>,
         next_sibling: Option<IUIAutomationElement>,
@@ -416,6 +449,7 @@ mod native {
         web_seen: bool,
         nodes: usize,
         text: String,
+        text_truncated: bool,
         text_limit: usize,
         browser_scope: Option<BrowserScope>,
         native_edits: Vec<(IUIAutomationElement, Vec<IUIAutomationElement>)>,
@@ -526,13 +560,16 @@ mod native {
         fn collect_native_edits(&mut self) -> Option<()> {
             for (element, ancestors) in &self.native_edits {
                 if self.text.len() >= self.text_limit {
+                    self.text_truncated = true;
                     break;
                 }
                 self.native_edit_current(element, ancestors)?;
                 let pattern = self.value_pattern(element)??;
                 let value = self.sensitive(element, || unsafe { pattern.CurrentValue() })?;
                 self.native_edit_current(element, ancestors)?;
-                append_text(&mut self.text, &text_prefix(&value), self.text_limit);
+                self.text_truncated |= value.len() > MAX_BYTES;
+                self.text_truncated |=
+                    append_text(&mut self.text, &text_prefix(&value), self.text_limit);
             }
             Some(())
         }
@@ -726,7 +763,7 @@ mod native {
             element: &IUIAutomationElement,
             ancestors: &[IUIAutomationElement],
             sources: &[usize],
-        ) -> Option<BSTR> {
+        ) -> Option<(BSTR, bool)> {
             let index = *sources.last()?;
             if self.documents[index].source != DocumentSource::Native {
                 return None;
@@ -751,9 +788,293 @@ mod native {
                 .text_limit
                 .saturating_sub(self.text.len())
                 .min(MAX_BYTES);
-            let value = self.sensitive(element, || unsafe { range.GetText(remaining as i32) })?;
+            let value =
+                self.sensitive(element, || unsafe { range.GetText(remaining as i32 + 1) })?;
             self.leaf_current(element, ancestors, sources)?;
-            Some(value)
+            let truncated = value.len() > remaining;
+            Some((value, truncated))
+        }
+
+        fn selected_text(&self) -> Option<Option<Selection>> {
+            macro_rules! selection_read {
+                ($read:expr) => {
+                    match self.read(|| optional_selection($read))? {
+                        Some(value) => value,
+                        None => {
+                            self.final_tree_check()?;
+                            return Some(None);
+                        }
+                    }
+                };
+                (interface $interface:ty, $read:expr) => {
+                    match self.read(|| optional_selection_interface::<$interface>($read))? {
+                        Some(value) => value,
+                        None => {
+                            self.final_tree_check()?;
+                            return Some(None);
+                        }
+                    }
+                };
+                (sensitive $element:expr, $read:expr) => {
+                    match self.sensitive($element, || optional_selection($read))? {
+                        Some(value) => value,
+                        None => {
+                            self.final_tree_check()?;
+                            return Some(None);
+                        }
+                    }
+                };
+            }
+            if !self.policy.capture_text {
+                return Some(None);
+            }
+            let focused = selection_read!(interface IUIAutomationElement, |pointer| unsafe {
+                (Interface::vtable(&self.automation).base__.GetFocusedElement)(
+                    self.automation.as_raw(), pointer,
+                )
+            });
+            let pattern = self.read(|| {
+                optional_selection_interface::<IUIAutomationTextPattern>(|pointer| unsafe {
+                    (Interface::vtable(&focused).GetCurrentPatternAs)(
+                        focused.as_raw(),
+                        UIA_TextPatternId,
+                        &IUIAutomationTextPattern::IID,
+                        pointer,
+                    )
+                })
+            })?;
+            let Some(pattern) = pattern else {
+                return self.native_edit_selection(&focused);
+            };
+            let ranges = selection_read!(interface IUIAutomationTextRangeArray, |pointer| unsafe {
+                (Interface::vtable(&pattern).GetSelection)(pattern.as_raw(), pointer)
+            });
+            if selection_read!(unsafe { ranges.Length() }) != 1 {
+                return Some(None);
+            }
+            let range = selection_read!(unsafe { ranges.GetElement(0) });
+            if selection_read!(unsafe {
+                range.CompareEndpoints(
+                    TextPatternRangeEndpoint_Start,
+                    &range,
+                    TextPatternRangeEndpoint_End,
+                )
+            }) == 0
+            {
+                return Some(None);
+            }
+            // A range can aggregate descendants. Only a completely observed,
+            // visible subtree may contribute selection text.
+            let mut index = None;
+            for (position, node) in self.observed.iter().enumerate() {
+                if self
+                    .read(|| unsafe { self.automation.CompareElements(&focused, &node.element) })?
+                    .as_bool()
+                {
+                    index = Some(position);
+                    break;
+                }
+            }
+            let Some(index) = index else {
+                return Some(None);
+            };
+            let node = &self.observed[index];
+            if !node.visible || node.wrapper {
+                return Some(None);
+            }
+            let mut ancestors = Vec::new();
+            let mut current = focused.clone();
+            while !self
+                .read(|| unsafe { self.automation.CompareElements(&current, &self.root) })?
+                .as_bool()
+            {
+                if ancestors.len() >= 32 {
+                    return Some(None);
+                }
+                current = self.read(|| unsafe { self.walker.GetParentElement(&current) })?;
+                if !self.visible(&current)? {
+                    return None;
+                }
+                ancestors.push(current.clone());
+            }
+            ancestors.reverse();
+            // The walk records preorder depth; final_tree_check verifies the
+            // recorded links again before any aggregate range is read.
+            let end = self
+                .observed
+                .iter()
+                .enumerate()
+                .skip(index + 1)
+                .find(|(_, descendant)| descendant.depth <= node.depth)
+                .map_or(self.observed.len(), |(position, _)| position);
+            let subtree = &self.observed[index..end];
+            if subtree
+                .iter()
+                .any(|descendant| !descendant.visible || descendant.wrapper)
+            {
+                return Some(None);
+            }
+            self.same_ancestry(&focused, &ancestors)?;
+            let enclosing = selection_read!(unsafe { range.GetEnclosingElement() });
+            if !subtree.iter().any(|candidate| {
+                self.read(|| unsafe {
+                    self.automation
+                        .CompareElements(&enclosing, &candidate.element)
+                })
+                .is_some_and(|equal| equal.as_bool())
+            }) {
+                return Some(None);
+            }
+            self.final_tree_check()?;
+            let value = selection_read!(sensitive & focused, unsafe { range.GetText(4097) });
+            let prefix = selection_read!(interface IUIAutomationTextRange, |pointer| unsafe {
+                (Interface::vtable(&pattern).DocumentRange)(pattern.as_raw(), pointer)
+            });
+            selection_read!(unsafe {
+                prefix.MoveEndpointByRange(
+                    TextPatternRangeEndpoint_End,
+                    &range,
+                    TextPatternRangeEndpoint_Start,
+                )
+            });
+            let enclosing = selection_read!(unsafe { prefix.GetEnclosingElement() });
+            if !subtree.iter().any(|candidate| {
+                self.read(|| unsafe {
+                    self.automation
+                        .CompareElements(&enclosing, &candidate.element)
+                })
+                .is_some_and(|equal| equal.as_bool())
+            }) {
+                return Some(None);
+            }
+            let before = selection_read!(sensitive & focused, unsafe {
+                prefix.GetText(MAX_BYTES as i32 + 1)
+            });
+            if before.len() > MAX_BYTES {
+                return Some(None);
+            }
+            self.same_ancestry(&focused, &ancestors)?;
+            let fresh = selection_read!(interface IUIAutomationTextRangeArray, |pointer| unsafe {
+                (Interface::vtable(&pattern).GetSelection)(pattern.as_raw(), pointer)
+            });
+            if selection_read!(unsafe { fresh.Length() }) != 1 {
+                return None;
+            }
+            let fresh = selection_read!(unsafe { fresh.GetElement(0) });
+            for endpoint in [TextPatternRangeEndpoint_Start, TextPatternRangeEndpoint_End] {
+                if selection_read!(unsafe { range.CompareEndpoints(endpoint, &fresh, endpoint) })
+                    != 0
+                {
+                    return None;
+                }
+            }
+            let final_focus = selection_read!(interface IUIAutomationElement, |pointer| unsafe {
+                (Interface::vtable(&self.automation).base__.GetFocusedElement)(
+                    self.automation.as_raw(), pointer,
+                )
+            });
+            self.same_element(Some(&final_focus), Some(&focused))?;
+            self.final_tree_check()?;
+            let value = String::from_utf16_lossy(&value);
+            let mut end = value.len().min(4096);
+            while !value.is_char_boundary(end) {
+                end -= 1;
+            }
+            let selected_text = value[..end].to_owned();
+            let truncated = end < value.len();
+            Some(Some(Selection {
+                selected_text,
+                truncated,
+                start: before.len() as u32,
+            }))
+        }
+
+        fn native_edit_selection(
+            &self,
+            focused: &IUIAutomationElement,
+        ) -> Option<Option<Selection>> {
+            let (visible, kind, framework) = self.state(focused)?;
+            if !visible
+                || kind != UIA_EditControlTypeId
+                || !matches!(framework.as_str(), "WinForm" | "Win32")
+                || self.web_seen
+            {
+                return Some(None);
+            }
+            let Some(node) = self.observed.iter().find(|node| {
+                self.read(|| unsafe { self.automation.CompareElements(&node.element, focused) })
+                    .is_some_and(|same| same.as_bool())
+            }) else {
+                return Some(None);
+            };
+            if node.first_child.is_some() {
+                return Some(None);
+            }
+            let hwnd = self.read(|| unsafe { focused.CurrentNativeWindowHandle() })?;
+            if hwnd.is_invalid() {
+                return Some(None);
+            }
+            let mut pid = 0;
+            unsafe {
+                GetWindowThreadProcessId(hwnd, Some(&mut pid));
+            }
+            if pid != self.target.pid
+                || unsafe { GetAncestor(hwnd, GA_ROOT) }.0 as usize != self.target.hwnd
+            {
+                return None;
+            }
+            let mut class = [0u16; 128];
+            let length = unsafe { GetClassNameW(hwnd, &mut class) } as usize;
+            let class = String::from_utf16_lossy(&class[..length]);
+            if class != "Edit" && !class.starts_with("WindowsForms10.EDIT.") {
+                return Some(None);
+            }
+            let selection = || {
+                let mut packed = 0usize;
+                let result = unsafe {
+                    SendMessageTimeoutW(
+                        hwnd,
+                        0x00b0,
+                        WPARAM(0),
+                        LPARAM(0),
+                        SMTO_ABORTIFHUNG | SMTO_BLOCK,
+                        100,
+                        Some(&mut packed),
+                    )
+                };
+                if result.0 == 0 || packed as u32 == u32::MAX {
+                    return None;
+                }
+                let start = packed as u16 as usize;
+                let end = ((packed >> 16) as u16) as usize;
+                (start < end && end <= MAX_BYTES).then_some((start, end))
+            };
+            let Some((start, end)) = selection() else {
+                return Some(None);
+            };
+            // Standard edit selection offsets refer only to its own scalar value.
+            // No WM_GETTEXT, cross-process pointers, clipboard, or parent range.
+            self.final_tree_check()?;
+            let Some(pattern) = self.value_pattern(focused)? else {
+                return Some(None);
+            };
+            let value = self.sensitive(focused, || unsafe { pattern.CurrentValue() })?;
+            if selection() != Some((start, end)) {
+                return None;
+            }
+            let current = self.read(|| unsafe { self.automation.GetFocusedElement() })?;
+            self.same_element(Some(&current), Some(focused))?;
+            self.final_tree_check()?;
+            let text = String::from_utf16(value.get(start..end)?).ok()?;
+            let mut end = text.len().min(4096);
+            while !text.is_char_boundary(end) {
+                end -= 1;
+            }
+            Some(Some(Selection {
+                selected_text: text[..end].to_owned(),
+                truncated: end < text.len(),
+                start: start as u32,
+            }))
         }
 
         fn browser_document(&self) -> Option<BrowserScope> {
@@ -856,6 +1177,7 @@ mod native {
             let observed = self.observed.len();
             self.observed.push(Observed {
                 element: element.clone(),
+                depth: ancestors.len(),
                 parent: ancestors.last().cloned(),
                 first_child: None,
                 next_sibling: None,
@@ -915,18 +1237,25 @@ mod native {
                 && (!web_context || !sources.is_empty())
                 && self.policy.capture_text
                 && self.text.len() < self.text_limit;
+            if first.is_none() && self.policy.capture_text && self.text.len() >= self.text_limit {
+                self.text_truncated = true;
+            }
             if permitted_leaf {
                 self.leaf_current(element, ancestors, sources)?;
                 if is_document {
                     if sources.last().is_some_and(|index| {
                         self.documents[*index].source == DocumentSource::Native
                     }) {
-                        let value = self.native_text(element, ancestors, sources)?;
-                        append_text(&mut self.text, &text_prefix(&value), self.text_limit);
+                        let (value, truncated) = self.native_text(element, ancestors, sources)?;
+                        self.text_truncated |= truncated;
+                        self.text_truncated |=
+                            append_text(&mut self.text, &text_prefix(&value), self.text_limit);
                     }
                 } else {
                     let name = self.sensitive(element, || unsafe { element.CurrentName() })?;
-                    append_text(&mut self.text, &text_prefix(&name), self.text_limit);
+                    self.text_truncated |= name.len() > MAX_BYTES;
+                    self.text_truncated |=
+                        append_text(&mut self.text, &text_prefix(&name), self.text_limit);
                     if kind == UIA_EditControlTypeId && self.text.len() < self.text_limit {
                         // Only regular leaf edits use ValuePattern. Never ask a
                         // container, link or Document for a subtree text value.
@@ -935,7 +1264,12 @@ mod native {
                             let value =
                                 self.sensitive(element, || unsafe { pattern.CurrentValue() })?;
                             if value != name {
-                                append_text(&mut self.text, &text_prefix(&value), self.text_limit);
+                                self.text_truncated |= value.len() > MAX_BYTES;
+                                self.text_truncated |= append_text(
+                                    &mut self.text,
+                                    &text_prefix(&value),
+                                    self.text_limit,
+                                );
                             }
                         }
                     }
@@ -1119,6 +1453,7 @@ mod native {
                 web_seen: false,
                 nodes: 0,
                 text: String::new(),
+                text_truncated: false,
                 text_limit: MAX_BYTES,
                 browser_scope: None,
                 native_edits: Vec::new(),
@@ -1152,6 +1487,7 @@ mod native {
                 capture.collect_native_edits()?;
                 capture.final_tree_check()?;
             }
+            let selection = capture.selected_text()?;
             if let Some(scope) = &capture.browser_scope {
                 capture.scope_current()?;
                 let current = capture.read(|| unsafe { capture.automation.GetFocusedElement() })?;
@@ -1167,9 +1503,14 @@ mod native {
                 .and_then(|document| document.source.public_url());
             let metadata_bytes = url.as_ref().map_or(0, String::len)
                 + capture.domains.iter().map(String::len).sum::<usize>();
-            let text_limit = capture.text_limit.checked_sub(metadata_bytes)?;
+            let metadata_bytes = metadata_bytes
+                + selection
+                    .as_ref()
+                    .map_or(0, |value| value.selected_text.len());
+            let text_limit = capture.text_limit.saturating_sub(metadata_bytes);
             let mut text = String::new();
-            append_text(&mut text, &capture.text, text_limit);
+            let text_truncated =
+                append_text(&mut text, &capture.text, text_limit) || capture.text_truncated;
             capture.root_current()?;
             Some(Snapshot {
                 app_id,
@@ -1179,6 +1520,8 @@ mod native {
                 title,
                 url,
                 text: (policy.capture_text && !text.is_empty()).then_some(text),
+                text_truncated,
+                selection,
                 source_id,
                 domains: capture.domains.into_iter().collect(),
                 secure: false,
@@ -1189,15 +1532,49 @@ mod native {
         // A settings change cannot resurrect content captured under an old policy.
         let latest = Policy::load(home)?;
         let snapshot = snapshot.filter(|snapshot| {
-            target.current().is_some()
+            super::super::interactive_desktop()
+                && target.current().is_some()
                 && latest.permits_app(&snapshot.app_id)
                 && snapshot
                     .domains
                     .iter()
                     .all(|domain| latest.permits_domain(domain))
-                && (latest.capture_text || snapshot.text.is_none())
+                && (latest.capture_text
+                    || (snapshot.text.is_none() && snapshot.selection.is_none()))
         });
         target.failures.finish(snapshot)
+    }
+
+    #[cfg(test)]
+    mod selection_tests {
+        use super::*;
+
+        #[test]
+        fn unsupported_optional_selection_preserves_body_but_provider_errors_propagate() {
+            assert_eq!(optional_selection(Ok(7)).unwrap(), Some(7));
+            for code in [HRESULT(UIA_E_NOTSUPPORTED as i32), E_NOTIMPL, E_NOINTERFACE] {
+                assert_eq!(optional_selection::<()>(Err(code.into())).unwrap(), None);
+            }
+            for code in [
+                HRESULT(UIA_E_TIMEOUT as i32),
+                HRESULT(0x80040201_u32 as i32), // UIA_E_ELEMENTNOTAVAILABLE
+                HRESULT(0x80004005_u32 as i32), // E_FAIL
+                HRESULT(0x80004003_u32 as i32), // E_POINTER is not generally absence.
+            ] {
+                assert_eq!(
+                    optional_selection::<()>(Err(code.into()))
+                        .unwrap_err()
+                        .code(),
+                    code
+                );
+            }
+            // A successful null interface is genuine absence, unlike E_POINTER.
+            assert!(
+                optional_selection_interface::<IUIAutomationElement>(|_| HRESULT(0))
+                    .unwrap()
+                    .is_none()
+            );
+        }
     }
 }
 

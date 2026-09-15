@@ -56,9 +56,11 @@ final class HistoryRecorder {
     private struct CallbackSource: Hashable {
         let origin: AXNode
         let window: AXNode
-        let notification: String
     }
     private var callbacks = ObservationCallbacks<CallbackSource>()
+    private var sampling = ObservationSampling()
+    private var pendingWindow: AXNode?
+    private var pendingValueChange = false
     private var registeredNodes: [AXNode] = []
     private static let notifications = [
         kAXFocusedWindowChangedNotification, kAXFocusedUIElementChangedNotification,
@@ -77,6 +79,7 @@ final class HistoryRecorder {
     private var segmentTimer: Timer?
     private var observationTimer: Timer?
     private var lifecycle: RecorderLifecycle
+    private(set) var failure: Error?
 
     init(store: SegmentStore, policy: ObservationPolicy, parent: RecorderParent) {
         self.store = store
@@ -118,9 +121,8 @@ final class HistoryRecorder {
         ) { [weak self] _ in
             self?.rotateSegment()
         }
-        observationTimer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
-            guard let self, self.observationAllowed() else { return }
-            self.appendObservation(self.currentSnapshot())
+        observationTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
+            self?.samplePendingObservation()
         }
     }
 
@@ -136,9 +138,19 @@ final class HistoryRecorder {
         segmentTimer?.invalidate()
         segmentTimer = nil
         discardPendingWork()
-        _ = try? append(kind: .sessionEnded, snapshot: nil)
-        try? store.finish(reason: reason)
-        try? writeRuntimeStatus(state: .stopped, endedAt: Date())
+        do {
+            sequence += 1
+            try store.stop(event: HistoryEvent(id: sequence, timestamp: Date(), kind: .sessionEnded),
+                policy: policy, reason: reason)
+        } catch {
+            failure = failure ?? error
+        }
+        do {
+            try writeRuntimeStatus(state: .stopped, endedAt: Date())
+        } catch {
+            failure = failure ?? error
+        }
+        if failure != nil { fputs("Computer History storage failed; recording stopped.\n", stderr) }
 
         if let workspaceObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(workspaceObserver)
@@ -221,7 +233,16 @@ final class HistoryRecorder {
             }
         }
         guard let window = capture.window(for: origin) else { return }
-        let source = CallbackSource(origin: origin, window: window, notification: notification)
+        if notification != kAXSelectedTextChangedNotification {
+            // Generic UI records describe a current window snapshot, not the
+            // notifying control. Selection/input keep their exact origin path.
+            if pendingWindow != window { pendingValueChange = false }
+            pendingWindow = window
+            pendingValueChange = pendingValueChange || notification == kAXValueChangedNotification
+            sampling.request(now: ProcessInfo.processInfo.systemUptime)
+            return
+        }
+        let source = CallbackSource(origin: origin, window: window)
         guard let token = callbacks.admit(source) else { return }
         let generation = lifecycle.generation
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
@@ -234,19 +255,21 @@ final class HistoryRecorder {
     }
 
     private func processAccessibilityNotification(_ source: CallbackSource) {
-        let snapshot = currentSnapshot(origin: source.origin, expectedWindow: source.window)
-        switch source.notification {
-        case kAXFocusedWindowChangedNotification,
-             kAXTitleChangedNotification:
-            appendObservation(snapshot)
-        case kAXFocusedUIElementChangedNotification:
-            appendObservation(snapshot)
-        case kAXSelectedTextChangedNotification:
-            appendSelection(snapshot)
-        case kAXValueChangedNotification:
-            appendObservation(snapshot, kind: isTerminal(snapshot?.app.bundleIdentifier) ? .terminalValueChanged : .uiChanged)
-        default:
-            appendObservation(snapshot)
+        appendSelection(currentSnapshot(origin: source.origin, expectedWindow: source.window, includeTree: false))
+    }
+
+    private func samplePendingObservation() {
+        guard lifecycle.state == .running, !lifecycle.stopped,
+              let token = sampling.begin(now: ProcessInfo.processInfo.systemUptime) else { return }
+        let generation = lifecycle.generation
+        let snapshot = currentSnapshot(expectedWindow: pendingWindow)
+        let terminal = pendingValueChange && isTerminal(snapshot?.app.bundleIdentifier)
+        appendObservation(snapshot, kind: terminal ? .terminalValueChanged : .uiChanged)
+        guard observationAllowed(generation: generation) else { return }
+        let settled = snapshot?.contentState == .available || snapshot?.contentState == .metadataOnly
+        if sampling.complete(token, settled: settled) {
+            pendingWindow = nil
+            pendingValueChange = false
         }
     }
 
@@ -533,13 +556,23 @@ final class HistoryRecorder {
             event, parentAlive: parent.isAlive(), generation: generation
         )
         else { return false }
-        return try store.append(event, policy: policy)
+        do {
+            return try store.append(event, policy: policy)
+        } catch {
+            failStorage(error)
+            throw error
+        }
     }
 
     private func currentSnapshot(
         at point: CGPoint? = nil, origin: AXNode? = nil,
         expectedWindow: AXNode? = nil, includeTree: Bool = true
     ) -> AccessibilitySnapshot? {
+        defer {
+            if includeTree {
+                sampling.observed(now: ProcessInfo.processInfo.systemUptime)
+            }
+        }
         guard observationAllowed(), let currentProcessIdentifier,
               NSWorkspace.shared.frontmostApplication?.processIdentifier == currentProcessIdentifier else {
             lifecycle.invalidatePendingWork()
@@ -743,6 +776,9 @@ final class HistoryRecorder {
 
     private func discardPendingWork() {
         discardPendingContent()
+        sampling.invalidate()
+        pendingWindow = nil
+        pendingValueChange = false
         delivery.reset()
     }
 
@@ -771,7 +807,8 @@ final class HistoryRecorder {
                     ? nil
                     : store.suppressedEventsURL?.path,
                 startedAt: recorderStartedAt,
-                endedAt: endedAt
+                endedAt: endedAt,
+                lastError: failure == nil ? nil : "storage_failure"
             )
         )
     }
@@ -781,22 +818,20 @@ final class HistoryRecorder {
             return
         }
         flushTextBuffer()
-        let homeURL = store.homeURL
+        guard observationAllowed() else { return }
         do {
-            try store.finish(reason: "segment_rotated")
-            store = try SegmentStore(homeURL: homeURL)
+            store = try store.rotated()
             delivery.reset()
             selectionDelivery.reset()
             try writeRuntimeStatus(state: .running)
         } catch {
-            _ = try? append(
-                kind: .debugError,
-                snapshot: currentSnapshot(),
-                diagnostic: EventStreamDiagnostic(
-                    message: "Segment rotation failed: \(error.localizedDescription)"
-                )
-            )
+            failStorage(error)
         }
     }
 
+    private func failStorage(_ error: Error) {
+        failure = failure ?? error
+        stop(reason: "storage_failure")
+        CFRunLoopStop(CFRunLoopGetMain())
+    }
 }
