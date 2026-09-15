@@ -114,6 +114,7 @@ export interface WorkbarHostModel {
   activeSideChatPanelIds?: ReadonlySet<string>;
   sourceSession?: SessionSummary;
   modelChoices?: readonly ChatModelChoice[];
+  onOpenParentConversation?: () => void;
   onStartWorkBoardTask?: (item: WorkBoardItem) => void;
   resolveWorkBoardStartTask?: (item: WorkBoardItem) => { ok: boolean; message?: string };
   onOpenWorkBoardSession?: (link: WorkBoardLinkedSession) => void;
@@ -199,6 +200,7 @@ export function WorkbarHost({ model: props }: { model: WorkbarHostModel }) {
               onOpenWorkBoardSession={props.onOpenWorkBoardSession}
               workBoardStartTaskEnabled={props.workBoardStartTaskEnabled}
               confirmBypass={() => confirmBypassPermission(toast, locale)}
+              onOpenParentConversation={props.onOpenParentConversation}
             />
           </Suspense>
         </div>

@@ -36,6 +36,8 @@ import {
 import type { SessionSummary } from '@maka/core/session';
 import { generalizedErrorMessageForLocale } from '@maka/core/redaction';
 import { useQuoteCompanion } from './use-quote-companion';
+import { ParentTaskStatusNotice } from './parent-task-status-notice';
+import type { VisibleParentTaskStatus } from '../../model/parent-task-status';
 import { useComposerAttachments } from '@maka/ui/use-composer-attachments';
 import { localizedShellErrorMessage } from '../../../../locales/shell-copy.js';
 import { useComposerMentionsContext } from '../../../../composer-mentions.js';
@@ -84,6 +86,8 @@ export function QuoteCompanionPanel(props: {
   onInitialPromptStarted?: (panelId: string) => void;
   onPromptAccepted?: (panelId: string, prompt: string) => void;
   onActivityStateChange?: (panelId: string, active: boolean) => void;
+  parentTaskStatus?: VisibleParentTaskStatus | null;
+  onOpenParentConversation?: () => void;
 }) {
   const { attachments } = useWorkbarServices();
   const mentions = useComposerMentionsContext();
@@ -258,6 +262,12 @@ export function QuoteCompanionPanel(props: {
 
   return (
     <div className="maka-quote-companion">
+      {props.parentTaskStatus ? (
+        <ParentTaskStatusNotice
+          status={props.parentTaskStatus}
+          onOpenParentConversation={props.onOpenParentConversation}
+        />
+      ) : null}
       <ChatSurfaceLayout
         scrollToBottomLabel={copy.scrollToBottom}
         composer={

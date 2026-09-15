@@ -85,7 +85,7 @@ async function mountController(failFirstRead = false, overrides: Partial<WorkHub
 
   const sessionId = JSON.stringify(['host-1', 'workhub-coordination']);
   function projectExecution(available = true) {
-    onExecution?.({ type: 'host_execution', available,
+    onExecution?.({ type: 'host_execution', pendingInteractionKinds: [], available,
       rootTurn: rootTurn ? { ...rootTurn, sessionId,
         ...(rootTurn.status === 'running' ? { status: 'running' as const } : { status: rootTurn.status, terminalEventId: 'terminal', abortSource: 'user_stop' }) } : null });
   }
