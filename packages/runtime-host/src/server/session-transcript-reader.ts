@@ -138,10 +138,7 @@ export function createSessionTranscriptReader(input: {
         if (!logical) return [];
         runIds = logical.runIds;
       }
-      const pending = createTranscriptProjection(
-        runIds.map((runId) => invocations.get(runId)!),
-        true,
-      );
+      const pending = createTranscriptProjection(runIds.map((runId) => invocations.get(runId)!));
       for (const runId of runIds)
         await scanActiveRuntimeEvents(input.stores, sessionId, runId, pending.push);
       const projected = await pending.finish(input.canonicalPermissionOutcomes);
@@ -626,10 +623,7 @@ interface PendingTranscriptTurn extends RuntimeTranscriptInvocationHeader {
 }
 
 /** Keep only presentation state while the storage snapshot visits complete facts. */
-function createTranscriptProjection(
-  invocations: readonly RuntimeInvocationRecord[],
-  active = false,
-) {
+function createTranscriptProjection(invocations: readonly RuntimeInvocationRecord[]) {
   const canonicalPermissionOutcomes = new Map<string, CanonicalPermissionOutcomeRecord>();
   let messageCount = 0;
   let messageBytes = 0;
@@ -637,7 +631,6 @@ function createTranscriptProjection(
   let sourceBytes = 0;
   const projector = createRuntimeEventStoredMessageProjector({
     invocations,
-    active,
     canonicalPermissionOutcomes,
     projectToolResult: projectTranscriptToolResult,
     onMessage: (message) => {
