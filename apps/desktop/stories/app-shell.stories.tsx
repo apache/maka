@@ -680,6 +680,34 @@ const NPM_TEST_STDOUT_AT_CANCEL = "\n> maka@0.2.0 test\n> npm run build:test && 
 // This is the interrupted counterpart to RunningStatusDuringToolRun, and the only
 // story that reaches the interrupted tool row. It goes through the real
 // ChatView → materializeTurns → ToolTrow path, so the row renders inside the
+// Real path: the prompt has been admitted but its Turn has not reached the
+// transcript yet. The running cue used to read its start from the client's own
+// send stamp here; it now waits for the Turn's recorded start, so there is no
+// clock in this window. This fixture pins that.
+export const PromptSentBeforeTurnLands: Story = {
+  render: () => (
+    <ComposedShell
+      session={{ status: 'running', streaming: true, lastMessageAt: NOW - 3_000 }}
+      chat={{
+        activeTurn: { turnId: 'turn-sent' },
+        messages: [],
+        transientMessages: [{
+          id: 'msg-sent',
+          text: '刚发出的问题：这一轮的耗时是怎么算出来的？',
+          ts: NOW,
+          transientPlacement: 'current_turn',
+          hostTurnId: 'turn-sent',
+        }],
+      }}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    await expect(canvasElement.querySelector('.maka-turn-processing')).not.toBeNull();
+    // No clock before the Turn's own start reaches the client.
+    await expect(canvasElement.querySelector('.maka-turn-elapsed')).toBeNull();
+  },
+};
+
 // production `.maka-turn` frame. The session is `aborted` too, so the sidebar row
 // and composer agree with the transcript instead of still reading as active.
 export const InterruptedToolAfterTurnAbort: Story = {
