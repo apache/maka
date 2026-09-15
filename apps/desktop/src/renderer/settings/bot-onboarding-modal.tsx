@@ -245,4 +245,3 @@ function providerCopy(
   if (provider !== 'feishu' || brand !== 'lark') return copy.providers[provider];
   return copy.lark;
 }
-
