@@ -376,6 +376,20 @@ test('ASF source authority changes select their dedicated gate', () => {
   assert.equal(planTests(['scripts/audit-alignment.mjs'], { graph }).asfSource, false);
 });
 
+test('every script that drives the Electron tier selects it', () => {
+  for (const path of [
+    'apps/desktop/scripts/browser-observe-act-smoke.mjs',
+    'scripts/audit-alignment.mjs',
+    'scripts/ax-tree-audit.mjs',
+    'scripts/fixture-env.mjs',
+    'scripts/run-desktop-e2e-parallel.mjs',
+  ]) {
+    const plan = planTests([path], { graph });
+    assert.equal(plan.e2e, true, path);
+    assert.equal(plan.full, false, path);
+  }
+});
+
 test('shared CLI validation changes select installed-package validation', () => {
   const plan = planTests(['.github/workflows/cli-package-validation.yml'], { graph });
 

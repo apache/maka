@@ -221,6 +221,8 @@ const E2E_DRIVING_SCRIPTS = new Set([
   'apps/desktop/scripts/browser-observe-act-smoke.mjs',
   'scripts/audit-alignment.mjs',
   'scripts/ax-tree-audit.mjs',
+  'scripts/fixture-env.mjs',
+  'scripts/run-desktop-e2e-parallel.mjs',
 ]);
 
 // Scripts / paths that can break the built Storybook catalog. Product stories

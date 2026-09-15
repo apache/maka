@@ -444,7 +444,8 @@ export async function withE2eWindow(
     // host locale. E2e-fixture workspaces use the explicit renderer override.
     if (locale && !e2eFixtureScenario) await seedE2eLocale(userDataDir, locale);
     // xvfb throttles a hidden window's compositor to ~1fps. Geometry fixtures
-    // opt in locally; every fixture is visible on isolated CI X.
+    // opt in locally; on CI Linux every fixture is visible, because the display
+    // there is headless and no one is watching it.
     const visibleWindow = showWindow || isCiLinuxDisplay();
     app = await electron.launch({
       // A visible fixture window is revealed inactively, which needs XWayland
