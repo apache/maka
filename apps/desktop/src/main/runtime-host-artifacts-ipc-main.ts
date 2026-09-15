@@ -115,7 +115,7 @@ export function registerRuntimeHostArtifactsIpc(
           try {
             await deps.preview.openExternal(endpoint.url);
           } catch (error) {
-            await deps.preview.service.revoke(deps.preview.scope, sessionId, artifactId);
+            await deps.preview.service.releaseUrl(endpoint.url);
             throw error;
           }
           return { ok: true as const, opened: artifact.name, ...endpoint };

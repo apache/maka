@@ -25,6 +25,7 @@ import type { DesktopRuntimeHostClient } from './runtime-host-client.js';
 export const PREVIEW_MAX_BYTES = 8 * 1024 * 1024;
 const MAX_PREVIEWS = 16;
 const PREVIEW_TTL_MS = 30 * 60 * 1000;
+const READ_DEADLINE_MS = 30_000;
 
 export interface ArtifactPreviewEndpoint {
   readonly url: string;
@@ -40,6 +41,7 @@ interface Lease {
   artifactId: string;
   server: Server;
   timer?: ReturnType<typeof setTimeout>;
+  url?: string;
 }
 
 /** Desktop-owned, bounded, ephemeral HTML snapshots. No workspace directory is served. */
@@ -49,6 +51,11 @@ export class ManagedArtifactPreview {
   private closed = false;
 
   constructor(private readonly ttlMs = PREVIEW_TTL_MS) {}
+
+  async releaseUrl(url: string): Promise<void> {
+    const lease = [...this.leases].find((entry) => entry.url === url);
+    if (lease) await this.release(lease);
+  }
 
   async prepare(
     scope: string,
@@ -71,7 +78,7 @@ export class ManagedArtifactPreview {
       if (!this.leases.has(lease)) throw new Error('Preview owner is closed');
     };
     try {
-      const artifact = await client.getArtifact(sessionId, artifactId);
+      const artifact = await withDeadline(client.getArtifact(sessionId, artifactId), signal);
       assertActive();
       if (!artifact || artifact.kind !== 'html') throw new Error('An existing HTML Artifact is required');
       if (!Number.isSafeInteger(artifact.sizeBytes) || artifact.sizeBytes < 0 || artifact.sizeBytes > PREVIEW_MAX_BYTES) {
@@ -79,12 +86,12 @@ export class ManagedArtifactPreview {
       }
       const chunks: Buffer[] = [];
       let size = 0;
-      const total = await client.streamArtifact(sessionId, artifactId, async (chunk) => {
+      const total = await withDeadline(client.streamArtifact(sessionId, artifactId, async (chunk) => {
         assertActive();
         size += chunk.byteLength;
         if (size > artifact.sizeBytes || size > PREVIEW_MAX_BYTES) throw new Error('Artifact size mismatch');
         chunks.push(Buffer.from(chunk));
-      });
+      }), signal);
       assertActive();
       if (size !== artifact.sizeBytes || total !== size) throw new Error('Artifact size mismatch');
       const bytes = Buffer.concat(chunks, size);
@@ -122,6 +129,7 @@ export class ManagedArtifactPreview {
       if (!address || typeof address === 'string') throw new Error('Preview listener is unavailable');
       host = `127.0.0.1:${address.port}`;
       const url = `http://${host}${path}`;
+      lease.url = url;
       // A listening socket alone is not readiness evidence. Check the exact authorized route.
       await new Promise<void>((resolve, reject) => {
         const probe = request(url, { method: 'HEAD', signal: AbortSignal.timeout(3_000) }, (response) => {
@@ -167,4 +175,16 @@ export class ManagedArtifactPreview {
     });
     lease.server.removeAllListeners('request');
   }
+}
+
+async function withDeadline<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  const timeout = new Promise<never>((_, reject) => {
+    const timer = setTimeout(() => reject(new Error('Artifact preview read timed out')), READ_DEADLINE_MS);
+    timer.unref();
+  });
+  const cancelled = signal ? new Promise<never>((_, reject) => {
+    if (signal.aborted) reject(signal.reason ?? new Error('The preview request was cancelled'));
+    else signal.addEventListener('abort', () => reject(signal.reason ?? new Error('The preview request was cancelled')), { once: true });
+  }) : undefined;
+  return Promise.race([promise, timeout, ...(cancelled ? [cancelled] : [])]);
 }
