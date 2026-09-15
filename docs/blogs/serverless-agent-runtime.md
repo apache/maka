@@ -21,19 +21,19 @@
 
 # From Stateless Functions to Agent Runtimes: The Serverless Scheduling Unit Is Growing
 
-Serverless is often reduced to a simple idea: run a short-lived, stateless function.
+Serverless is frequently simplified as running short-lived, stateless functions.
 
-That description captures the most familiar product form, but not the underlying systems principle. Serverless is first and foremost a **resource execution contract**: when demand arrives, the platform finds and materializes a computing environment that satisfies the workload's requirements; when the work is done, the caller no longer owns that machine. Whether the platform destroys the environment, freezes it, or returns it to a pool is an implementation choice, not a promise made by the application.
+That description captures the most widespread product form, but misses the foundational systems principle beneath it. Serverless is first and foremost a **resource contract**: when workload demand arrives, the platform materializes a compute environment satisfying specified constraints; when demand ceases, the caller releases the underlying machine. Whether the environment is destroyed, frozen, or recycled into a pool is an implementation choice of the platform, not a contractual commitment made by application code.
 
-Agents make this distinction important again. An agent may invoke tools repeatedly, modify files, start interpreters and browsers, wait for external events, and then continue from where it left off. If every interaction recreates a stateless function, restoring the working environment may cost more than performing the task itself.
+The emergence of autonomous agents makes this distinction critical again. An agent typically performs iterative tool invocations, modifies files, drives interpreter and browser processes, suspends execution while waiting on external events, and subsequently resumes from its exact execution context. If every step requires instantiating an isolated stateless function from scratch, cold-start latency and environment hydration costs rapidly outstrip the actual execution workload.
 
-This raises a new question: **Must the scheduling unit of Serverless be a stateless function?**
+This exposes a fundamental architectural question: **Must the scheduling unit of Serverless remain restricted to stateless functions?**
 
-OpenSandbox, CubeSandbox, and Agent Substrate offer three different answers. They expand the scheduling unit into a complete Sandbox, a resumable microVM, and an Actor that can be reactivated on different Workers, respectively. This article does not attempt to rank the three projects. Instead, it uses them to examine how Agent Runtimes are reshaping Serverless.
+OpenSandbox, CubeSandbox, and Agent Substrate provide distinct engineering answers. They expand the scheduling unit into complete container sandboxes, resumable snapshot-backed microVMs, and addressable Actors dynamically activated across worker fleets. This essay analyzes how these three architectures navigate systems trade-offs and reframe the design boundaries of Serverless for Agent Runtimes.
 
 ## 1. Serverless Materializes Resources on Demand
 
-Set Lambda and functions aside for a moment. A Serverless execution can be modeled as follows:
+Setting aside specific cloud product abstractions, a generalized Serverless execution lifecycle can be modeled as follows:
 
 ```text
 Demand arrives
@@ -45,18 +45,18 @@ Demand arrives
   -> freeze, reuse, or destroy the environment
 ```
 
-The essential property is not that the program runs for only a few milliseconds. It is that **the binding between a logical program and physical resources is temporary**. Callers neither manage the server nor base correctness on the assumption that the next invocation will return to the same Worker. The platform may retain a warm environment, but that environment can only be an optimization; application correctness cannot depend on it.
+The defining characteristic of Serverless is that **the binding between a logical program and physical resources is temporary**. Callers neither manage the host server nor rely on assumptions that subsequent invocations will route to the identical physical worker. The platform may retain warm cached environments, but this serves strictly as a performance acceleration mechanism rather than a correctness invariant.
 
-Every Serverless platform must therefore reconcile the same tension:
+Serverless infrastructure continuously balances an inherent operational tension:
 
 ```text
 Application: resources should already be ready when demand arrives.
 Platform: expensive resources should not remain allocated when there is no demand.
 ```
 
-Cold starts, warm pools, snapshot restoration, resource overcommit, and multi-tenant scheduling are all attempts to balance these goals. The Berkeley view of Serverless likewise treats elastic scaling, pay-per-use pricing, and hidden server management as defining characteristics, rather than reducing Serverless to "short functions."[^serverless-berkeley]
+Cold-start optimization, warm buffer pools, memory snapshot restoration, resource overcommit, and multi-tenant bin-packing all seek an equilibrium across this trade-off. The classic Berkeley analysis of Serverless computing similarly identifies elastic scaling, usage-based billing, and abstracted server management as defining tenets, rather than brief execution durations.[^serverless-berkeley]
 
-Four dimensions provide a useful framework for evaluating whether an Agent Runtime has Serverless properties:
+Evaluating whether an Agent Runtime exhibits Serverless properties centers on four primary dimensions:
 
 | Dimension | Question |
 |---|---|
@@ -65,7 +65,7 @@ Four dimensions provide a useful framework for evaluating whether an Agent Runti
 | State fidelity | Which parts of the rootfs, process state, memory, and network state survive restoration? |
 | Scheduling freedom | Can the next execution run on different capacity, and what locality constraints remain? |
 
-Resource discussions must also distinguish several concepts that are routinely collapsed into a single phrase, "memory usage":
+When analyzing resource consumption, systems engineering requires distinguishing four concepts frequently conflated under generic memory metrics:
 
 ```text
 Resource limit          Maximum permitted usage
@@ -74,25 +74,25 @@ Guest RAM / VA          Address space visible to the guest or mapped by the VMM
 RSS / PSS               Physical pages currently resident in memory
 ```
 
-Configuring `1 GiB` may set a number in only one of these layers. Whether that reservation immediately becomes 1 GiB of physical memory depends on the implementation.
+Configuring `1 GiB` often reflects a numerical quota at only one of these architectural tiers. Whether that declaration translates into immediate physical memory residency depends entirely on hypervisor and runtime implementation mechanics.
 
 ## 2. Stateless Functions Were the First Engineering Solution
 
-The simplest way to let the next invocation run on any machine is not to make the scheduler remember the previous machine. It is to make application correctness independent of that machine:
+To allow subsequent invocations to land on arbitrary nodes, system design decouples execution correctness from specific host identity:
 
 ```text
 output = function(input, external_state)
 ```
 
-Business entities go into databases, files into object storage, invocation coordination into queues and workflows, and secrets and configuration into external services. The execution environment retains only the code, memory, and temporary cache required by the current invocation.
+Business entities persist to databases, files stream to object storage, invocation choreographies delegate to queues and workflows, and credentials reside in external configuration stores. The local execution sandbox retains only the code artifacts, ephemeral memory, and local caches necessary for the active request.
 
-Once state is externalized this way, any compatible Worker can process the next request, and failed executions can be retried elsewhere. **Statelessness is not the goal of Serverless. It was the mechanism that gave the first generation of Serverless systems scheduling freedom.**
+Under this model, any compatible worker can process succeeding requests, and failed executions safely retry across disparate nodes. **Statelessness was an engineering mechanism that provided scheduling freedom to first-generation Serverless architectures, isolating correctness from host topology.**
 
-Nor does "stateless" mean that a warm environment can contain no state whatsoever. Connection pools, global objects, and temporary files may all survive. The actual constraint is:
+Statelessness does not preclude physical persistence within warm environments. Database connection pools, pre-warmed runtime heaps, and local scratch files may persist safely. The core invariant remains:
 
 > The correctness of the next invocation cannot depend on the previous execution environment still existing.
 
-For the rest of this article, it is useful to divide state into three categories:
+To evaluate agent runtime architectures, this essay classifies execution state into three distinct tiers:
 
 ```text
 Authoritative state   State that must survive after an instance disappears
@@ -100,13 +100,13 @@ Execution state       Current CPU, processes, memory, writable rootfs, and netwo
 Acceleration state    Warm Pods, cached template pages, golden snapshots, and similar optimizations
 ```
 
-For an ordinary function, Execution state is usually disposable. For an agent, losing it can be expensive: installed dependencies, an in-progress workspace, interpreter variables, browser pages, and background tool processes may all be part of the next step of work.
+In traditional batch or microservice workloads, execution state can be discarded upon request completion. In agent workflows, however, this tier represents substantial computational investment: dynamically resolved packages, in-progress workspace edits, interpreter runtime variables, browser DOM trees, and background diagnostic processes all form immediate inputs to subsequent reasoning cycles.
 
-Agents expose the limits of stateless functions. The answer may not be to abandon Serverless, but to enlarge its scheduling unit: an environment can remain stateful within its lifetime while still being materialized, paused, and reclaimed on demand.
+Agents expose the boundaries of traditional stateless functions. The architectural progression lies in expanding the scheduling unit: allowing stateful environments to be materialized, suspended, and reclaimed on demand.
 
 ## 3. OpenSandbox: A Leased, Temporary Computer
 
-From the caller's perspective, OpenSandbox does not expose a function invocation. It exposes a remote, temporary computer:
+From the caller perspective, OpenSandbox exposes a remote, temporary computer:
 
 ```python
 sandbox = await Sandbox.create(
@@ -120,9 +120,9 @@ await sandbox.commands.run(...)
 await sandbox.kill()
 ```
 
-The caller submits an image or snapshot, entry command, environment variables, resources, network policy, and TTL, and receives a stable `sandboxId`. It can then execute multiple commands, read and write files, and maintain sessions inside the same Sandbox. The SDK also constructs file, command, health-check, and other services around that same ID during creation.[^opensandbox-api]
+The caller specifies base OCI images or snapshots, entrypoint commands, environment variables, compute specifications, network isolation rules, and a time-to-live (TTL), obtaining a persistent `sandboxId`. The caller can then execute sequential commands, perform file I/O, and sustain interactive terminal sessions within that sandbox. The client SDK coordinates file management, command dispatch, and lifecycle health checks around that unified identifier.[^opensandbox-api]
 
-The logical scheduling unit in OpenSandbox is therefore not a single `commands.run()` call, but an entire Sandbox lifetime:
+The logical scheduling unit in OpenSandbox expands beyond a single `commands.run()` call into an entire Sandbox lifetime:
 
 ```text
 create
@@ -131,32 +131,32 @@ create
   -> kill or TTL expiration
 ```
 
-The Sandbox is explicitly stateful within that lifetime. The caller does not need to know whether a Docker container, Kubernetes Pod, or Kata microVM ultimately hosts it, but it still manages when this temporary computer is created, paused, and destroyed.
+State persists continuously within the sandbox lifetime. The caller remains agnostic to whether a Docker container, Kubernetes Pod, or Kata microVM backs the workload, yet explicitly manages the allocation, suspension, and destruction of this temporary compute instance.
 
-This is the first boundary between OpenSandbox and traditional FaaS. FaaS typically releases the binding when an invocation ends; OpenSandbox can release the current compute only when the broader Sandbox lifetime permits it.
+This marks the primary architectural boundary between OpenSandbox and conventional FaaS: FaaS releases resource bindings upon single invocation completion, whereas OpenSandbox retains capacity bindings across the composite lifecycle of the leased environment.
 
-For the purposes of this article, we can call this abstraction a **Serverless Computer**. This is not an official project category, but an analytical lens: instead of delivering only a function entry point, the platform delivers a complete, programmable computer with a lease.
+This article categorizes this abstraction as a **Serverless Computer**. Rather than an official project category, this serves as an analytical perspective: the platform delivers a complete, programmable computer leased on demand.
 
 ## 4. OpenSandbox: Making a Complete Environment Serverless
 
-OpenSandbox supports Docker and Kubernetes backends. On the Kubernetes path, it separates the logical Sandbox from its current execution instance:
+OpenSandbox supports Docker and Kubernetes infrastructure backends. On Kubernetes, the system decouples the logical sandbox declaration from the physical execution pod:
 
 ```text
 Sandbox ID / CR   Logical identity, template, TTL, and desired state
 Pod / Pod IP      Current execution instance and endpoint
 ```
 
-OpenSandbox externalizes the Sandbox identity, template, TTL, OCI base image, network policy, and optional PVC or object storage. Kubernetes materializes those declarations as a Pod. When a Kata RuntimeClass is configured, Kubernetes, containerd, and Kata remain responsible for microVM creation and its resource overhead.
+The platform externalizes sandbox metadata, OCI configurations, network policies, and persistent storage volumes into custom resources, delegating pod materialization to Kubernetes controllers. When configured with a Kata RuntimeClass, hypervisor provisioning and virtualization overhead remain managed through containerd and Kata.
 
-The current process tree, anonymous memory, Shell session, network namespace, and open connections still belong to the current Pod. OpenSandbox's Kubernetes pause operation commits the container's writable rootfs, releases the Pod, and rebuilds it from the new OCI image on resume. It does not checkpoint processes or memory.[^opensandbox-pause]
+However, ephemeral process trees, anonymous memory allocations, interactive shell sessions, network namespaces, and established sockets remain anchored to the active pod instance. The OpenSandbox Kubernetes pause implementation commits the container writable rootfs into an incremental image and deletes the pod, rebuilding an instance from the committed layer upon resume; this flow omits memory and process tree state preservation.[^opensandbox-pause]
 
-Restoration therefore preserves **committed filesystem state and declarative configuration**, not the complete execution context. If a Pod disappears, the logical CR can reconcile a new instance, but unexternalized local writes, processes, memory, and connections do not return automatically.
+Restoration therefore guarantees **committed filesystem state and declarative configuration**. The logical custom resource reconciles a new pod instance following host termination, but uncommitted volatile memory, running threads, and established network sockets do not survive.
 
-The resource accounting also clarifies a common question: if a Sandbox is configured with 1 GiB, does the service consume 1 GiB? OpenSandbox writes `resourceLimits` to the main sandbox container. If the caller does not separately provide `resourceRequests`, the implementation defaults the main container's `requests` to its `limits`.[^opensandbox-resources]
+Resource ledger mechanics also explain whether configuring `1 GiB` consumes 1 GiB of physical capacity immediately. OpenSandbox writes `resourceLimits` to the primary sandbox container; unless callers specify discrete `resourceRequests`, the implementation defaults container `requests` to equal `limits`.[^opensandbox-resources]
 
-On the Kubernetes path, configuring `memory=1Gi` therefore asks the scheduler to reserve 1 GiB for the main container and sets the same value as its limit. The complete Pod may also include other containers, init-container rules, and RuntimeClass overhead. **This does not mean the process immediately acquires 1 GiB of RSS, but it does consume the corresponding amount in the scheduler's capacity ledger.**
+On Kubernetes, declaring `memory=1Gi` instructs the scheduler to allocate a full 1 GiB reservation while establishing an identical cgroup limit. The complete pod may additionally account for sidecars, init containers, and virtualization overhead. **This does not imply processes instantaneously commit 1 GiB of resident memory (RSS), but it deducts that capacity from scheduler ledgers.**
 
-OpenSandbox uses Pools to reduce cold-start latency by maintaining a set of complete Ready Pods that can be claimed immediately. Pool configuration explicitly defines lower and upper bounds for the warm buffer.[^opensandbox-pool]
+OpenSandbox utilizes warm pools to mitigate cold-start delays by maintaining ready pod instances for instant assignment. Pool specifications configure capacity bounds for these warm buffers.[^opensandbox-pool]
 
 ```text
 Larger warm Pool
@@ -164,13 +164,13 @@ Larger warm Pool
   -> more resident Pods and VMs, and more scheduler reservations
 ```
 
-OpenSandbox has thus brought complete working environments under a Serverless control plane, but its central trade-off remains familiar: either wait for a complete Pod to be created, or pay the idle cost of keeping complete Pods warm.
+OpenSandbox successfully incorporates complete OS runtime environments into a Serverless control plane, but retains classic capacity trade-offs: either absorb cold-start provisioning latency, or maintain persistent reservations for warm idle capacity.
 
-The next question follows naturally: if a complete Pod is an expensive unit to materialize, can the platform reduce the marginal cost of each temporary computer instead of accumulating more warm Pods?
+This invites a deeper architectural query: if complete pods represent heavy provisioning units, can platforms lower the marginal cost per virtual machine rather than pooling idle pods?
 
 ## 5. CubeSandbox: A microVM That Can Restore Its Execution Context
 
-CubeSandbox presents a caller experience similar to OpenSandbox: select a Template, create a Sandbox with a stable `sandboxID`, and then perform multiple code, command, file, PTY, and network operations.
+CubeSandbox presents an application interface parallel to OpenSandbox: select a Template, provision an instance with an invariant `sandboxID`, and execute interactive code blocks, shell commands, file modifications, PTY sessions, and network services:
 
 ```python
 sandbox = Sandbox.create(template="agent-python")
@@ -180,15 +180,15 @@ sandbox.pause()
 sandbox.resume()
 ```
 
-`run_code()` sends requests through a proxy to `envd` inside the VM and reuses the interpreter's global namespace by default.[^cubesandbox-api] Once again, the managed object is not an individual code invocation, but a persistent Sandbox.
+The `run_code()` API routes requests through a proxy to `envd` inside the VM, reusing the interpreter global namespace by default.[^cubesandbox-api] The managed object is a Sandbox retaining persistent context, rather than an isolated code invocation.
 
-CubeSandbox's key distinction is that the caller can do more than destroy the environment: it can pause, resume, snapshot, roll back, and clone it. A successful pause terminates the current live microVM while preserving recoverable VM state. Resume can retain the same logical `sandboxID`, select a node again, and create a new microVM.
+CubeSandbox differentiates itself by granting callers fine-grained lifecycle controls: beyond termination, callers can pause, resume, snapshot, roll back, and clone execution environments. A successful pause terminates the active microVM process on the host while preserving a restorable virtual machine state snapshot; resume reuses the logical `sandboxID` to schedule and instantiate a microVM across candidate nodes.
 
-From the application's perspective, this is still a temporary computer. From the platform's perspective, **the logical Sandbox is no longer identical to the current VMM process**. Once the latest recoverable state has been committed successfully, the current microVM can disappear.
+From the application vantage point, callers manipulate a continuous virtual machine; from the systems plane, **the logical Sandbox separates from the physical VMM process**. Once the latest checkpoint commits to storage, the live microVM process can be safely destroyed.
 
 ## 6. CubeSandbox: Separating Declared Capacity from Physical Residency
 
-CubeSandbox controls the entire path from its API and scheduler to its Shim, VMM, and guest agent. Its central mechanism is not merely that it uses microVMs, but that many Sandboxes share the Template's base state:
+CubeSandbox manages the end-to-end data path across its API, scheduler, Shim, VMM, and guest agent. Its central design allows concurrent Sandboxes to share the base physical state of a Template:
 
 ```text
 Template rootfs       --reflink / CoW--> Sandbox rootfs
@@ -199,11 +199,11 @@ Read-only pages: can remain shared file-cache pages
 Written pages: become anonymous CoW pages private to the current VM
 ```
 
-When restoring snapshot-backed guest memory, CubeSandbox's VMM uses `MAP_NORESERVE | MAP_PRIVATE`. Its code comments also distinguish untouched pages, read-only file-backed pages, and anonymous CoW pages produced after writes.[^cubesandbox-memory]
+When restoring snapshot-backed guest memory, the Cube hypervisor maps regions using `MAP_NORESERVE | MAP_PRIVATE`; the codebase explicitly differentiates untouched virtual pages, shared read-only file pages, and anonymous copy-on-write pages created upon memory mutations.[^cubesandbox-memory]
 
-This explains why a Sandbox declaring `2 GiB` of guest memory does not immediately reserve 2 GiB of physical memory exclusively for itself at startup. Actual residency more closely tracks the guest working set, private dirty pages, and fixed VMM overhead.
+This explains why a sandbox declaring `2 GiB` of guest memory avoids reserving 2 GiB of dedicated physical host memory at initialization. Actual resident set size (RSS) tracks active guest working sets, private dirty pages, and lightweight VMM overhead.
 
-That does not mean the declared 2 GiB disappears from resource accounting. The memory still enters CubeSandbox's scheduling ledger, whose default scheduling capacity uses a 2x memory and 3x CPU overcommit ratio.[^cubesandbox-overcommit] In other words:
+This optimization does not eliminate resource quota tracking. Declared specifications enter the Cube scheduler ledger, which applies an overcommit policy defaulting to 2x memory and 3x CPU ratios.[^cubesandbox-overcommit] In practice:
 
 ```text
 Declared capacity     Determines guest limits and the scheduling allocation unit
@@ -211,11 +211,11 @@ Scheduling capacity   Permits controlled overcommit
 Physical residency    Grows with actual access and CoW writes
 ```
 
-This distinction is essential to understanding the phrase "a 4 MB Sandbox." The project's reported figure of roughly `4-5 MiB` refers to **VMM overhead PSS**, not the total memory footprint of a complete Sandbox. A separate create-only test of 1,000 idle instances, each declaring 2 vCPU and 2 GiB, measured changes in machine-wide `free available` memory and reported an amortized increase of approximately `21.5-25.7 MB` per instance.[^cubesandbox-benchmark] The two figures have different measurement boundaries. They are not interchangeable, and neither should be compared directly with another system's Pod RSS.
+This structural separation clarifies the "4 MB Sandbox" metric cited in project materials. The reported `4-5 MiB` figure measures **VMM overhead PSS**, rather than total end-to-end sandbox memory. A separate benchmark evaluating 1,000 idle instances (configured with 2 vCPU / 2 GiB each) reported an amortized increase of approximately `21.5-25.7 MB` per instance based on system-wide available memory deltas.[^cubesandbox-benchmark] These metrics reflect distinct measurement boundaries and should not be equated directly with Kubernetes Pod RSS.
 
-Pause introduces a second level of resource separation. CubeSandbox saves VM state, memory, and rootfs, then destroys the current microVM, allowing its physical CPU and memory to be reclaimed.[^cubesandbox-pause] By default, however, `paused_resource_release_ratio=0`, so a paused Sandbox retains its full scheduling quota to make resume more predictable. Operators can release some or all of that quota to increase density, but restoration then becomes best effort.[^cubesandbox-paused-quota]
+The Pause primitive introduces secondary resource decoupling. Cube serializes microVM CPU registers, memory deltas, and rootfs layers, terminating the active VM process to release physical host CPU and memory allocations.[^cubesandbox-pause] However, the default configuration enforces `paused_resource_release_ratio=0`, retaining full scheduler quota reservations to guarantee deterministic capacity on resume. Administrators can configure quota release ratios to increase density, shifting resume admissions to a best-effort model.[^cubesandbox-paused-quota]
 
-CubeSandbox's Serverless properties therefore do not come from making resource numbers disappear. They come from three separations:
+CubeSandbox achieves Serverless elasticity through three foundational separations:
 
 ```text
 Declared guest RAM != physical memory fully resident at startup
@@ -223,15 +223,15 @@ Logical Sandbox    != current microVM process
 Startup baseline   != a complete private memory copy for every instance
 ```
 
-The cost remains real. CoW and overcommit do not create physical capacity. If many lightly loaded VMs begin writing across their entire memory allocations at once, the platform still needs real-time capacity filtering, node reservation thresholds, cgroups, and admission control to protect the host.
+These trade-offs remain bound by physical laws. Copy-on-write mechanisms and overcommit ratios do not synthesize physical memory; if large cohorts of light VMs simultaneously mutate their memory footprints, platforms rely on real-time node capacity checks, watermark thresholds, cgroups, and admission controls to protect host stability.
 
-Even if each individual microVM becomes cheap enough, a higher-level question remains: must a long-lived Agent identity always be identical to a Sandbox object?
+Even when individual microVMs achieve extreme density, a higher-level question emerges: must a persistent Agent identity remain tightly coupled to an individual Sandbox container?
 
 ## 7. Agent Substrate: An Actor That Can Sleep
 
-Agent Substrate moves the logical unit up another level. The caller creates a long-lived Actor, not a Sandbox that begins running immediately. Create first writes a logical record with an initial state of `SUSPENDED`; it does not immediately create a dedicated Pod or start a process.[^substrate-create]
+Agent Substrate elevates the logical scheduling unit to a long-lived Actor. The Create operation writes a durable record initialized to `SUSPENDED`, deferring dedicated Pod allocation and process execution.[^substrate-create]
 
-The caller receives a stable Actor identity and address. When a business request arrives and the Actor is not running, the Router triggers Resume, assigns the Actor to a ready Worker, and forwards traffic to it.
+The caller receives a durable Actor identifier and communication endpoint. When an external request arrives while the Actor is inactive, the Router triggers Resume, allocating the Actor to a ready Worker from the pool and routing execution traffic.
 
 ```text
 Long-lived logical Actor
@@ -242,13 +242,13 @@ Long-lived logical Actor
   -> release the Worker
 ```
 
-The Actor does not end when one HTTP request completes, and this is not the traditional FaaS model of one instance per request. The true scheduling unit is an **Actor activation**.
+Individual request completions do not terminate the Actor lifecycle, departing from the classic single-request FaaS pattern. The fundamental scheduling unit becomes an **Actor activation**.
 
-We can call this a **Serverless Actor**. The Actor has a long logical lifetime, while a Worker sandbox is merely the execution vehicle assigned during one active interval. The application identity can persist even though expensive compute is bound only while work is occurring.
+This pattern functions as a **Serverless Actor**: the Actor sustains an enduring logical lifecycle, while the Worker sandbox serves as an ephemeral execution substrate assigned during active intervals. Application identity endures continuously, while underlying compute resources bind solely during active execution.
 
 ## 8. Agent Substrate: Time-Multiplexing Actors onto Workers
 
-Substrate leaves Kubernetes on the relatively slow path of managing the Worker fleet, while removing high-frequency Actor activation from the kube-scheduler's critical path:
+Substrate delegates low-frequency worker lifecycle management to Kubernetes, decoupling high-frequency Actor activations from the kube-scheduler critical path:
 
 ```text
 Kubernetes
@@ -261,20 +261,20 @@ Substrate
   -> terminate the sandbox after checkpointing and release the assignment
 ```
 
-"Multiplexing" must be understood precisely here. The current code explicitly limits each Worker to one active Actor, while WorkerPool materializes complete Pods in advance through a Kubernetes Deployment.[^substrate-worker] Substrate therefore performs **time multiplexing of many suspended Actors over a smaller number of warm Workers**. It does not pack many concurrently active Actors into one Worker.
+Resource multiplexing here follows strict execution constraints. The implementation restricts each Worker to exactly one active Actor; the WorkerPool pre-provisions underlying pods via standard Kubernetes Deployments.[^substrate-worker] Substrate therefore implements **time multiplexing of numerous suspended Actors over a consolidated pool of warm Workers**, avoiding uncoordinated multi-tenant packing inside a single Worker.
 
-It provides two distinct inactive states:
+The architecture provides two inactive states balancing performance against placement flexibility:
 
 | Operation | State location | Restoration characteristics |
 |---|---|---|
 | Pause | Checkpoint remains on the original node | Faster restoration, but constrained by node locality |
 | Suspend | Checkpoint is uploaded as an external snapshot | Can restore on a different Worker or node |
 
-Pause requests a node-local checkpoint and then releases the Worker assignment. Suspend writes the checkpoint to an external location and records it as the Actor's latest successfully committed recoverable state.[^substrate-pause-suspend]
+Pause generates a node-local checkpoint and yields the Worker allocation; Suspend persists the snapshot to external storage, committing it as the authoritative recoverable checkpoint for that Actor.[^substrate-pause-suspend]
 
-Snapshot scope determines how much Execution state survives. `FULL` is designed to preserve processes, memory, rootfs changes, and DurableDir through backend checkpointing; `DATA` preserves only DurableDir and restarts the application during restoration.[^substrate-scope] Here, `FULL` describes the interface contract and the checkpoint/restore capability of a particular backend. It should not be read as an unconditional continuity guarantee for arbitrary external connections.
+Snapshot scoping controls execution state preservation fidelity: the `FULL` scope captures running process trees, memory state, rootfs deltas, and persistent directories (DurableDir) via hypervisor checkpointing; the `DATA` scope retains only the durable data directory, re-initializing the application runtime upon recovery.[^substrate-scope] The `FULL` designation specifies interface contracts and checkpoint capabilities, rather than unconditional continuity across arbitrary external network connections.
 
-Substrate's resource accounting therefore has two layers:
+Substrate manages capacity through a two-tiered accounting model:
 
 ```text
 WorkerPool request
@@ -285,11 +285,11 @@ Actor limit
   -> a suspended Actor does not add another Kubernetes Pod request
 ```
 
-If a system contains ten thousand logical Actors but only one hundred are active concurrently, it can theoretically maintain a Worker fleet sized near active concurrency plus headroom. Storage cost grows with the number of Actors and snapshots, while compute cost primarily tracks the warm Worker baseline and active Actors.
+If a platform registers ten thousand logical Actors with only one hundred concurrently active, the cluster maintains a Worker pool sized to active concurrency plus head-room. Durable storage costs scale with total Actor counts and snapshot volumes, while compute expenditure correlates with the warm Worker baseline and active tasks.
 
-The current implementation still requires participation from the layer above. Repository examples explicitly invoke Suspend to release a Worker; they do not demonstrate a general automatic idle-suspension loop. Losing a Worker may also move an Actor without a successfully committed checkpoint into `CRASHED`, rather than transparently rolling it back to any previous state.[^substrate-idle-failure]
+This architecture requires application-level coordination: reference implementations explicitly trigger Suspend to return Workers, lacking general automated idle-reclamation loops; uncheckpointed active Workers that fail unexpectedly transition the hosted Actor to `CRASHED`, precluding transparent arbitrary rollback.[^substrate-idle-failure]
 
-Substrate is therefore not simply a system with "smaller Pods." It defines a different resource relationship:
+Substrate establishes a distinct resource mapping topology:
 
 ```text
 Actor lifetime       != Worker lifetime
@@ -299,7 +299,7 @@ Request routing      != Kubernetes Pod scheduling
 
 ## Conclusion: Serverless Does Not Mean Stateless Functions
 
-Placing the three systems on the same axis reveals a continuous evolution:
+Mapping these three architectures along a unified systems trajectory highlights continuous evolutionary steps:
 
 ```text
 Stateless FaaS
@@ -315,18 +315,18 @@ Agent Substrate
   actor activation -> ready worker sandbox
 ```
 
-OpenSandbox addresses how to deliver and manage a complete computing environment through one control plane. CubeSandbox addresses how to reduce the materialization and residency cost of a complete microVM. Agent Substrate addresses how a long-lived logical Actor can occupy a Worker only while active.
+OpenSandbox orchestrates and provisions complete operating system environments under a unified control plane; CubeSandbox reduces the physical materialization and memory residency footprint of complete microVMs; Agent Substrate achieves time-multiplexed reuse of warm workers across persistent logical Actors.
 
-None of the three systems is stateless. What they inherit from Serverless is the continued removal of two bindings:
+All three architectures move beyond strict statelessness while preserving the foundational Serverless principle of resource decoupling:
 
-1. The permanent binding between a logical identity and one physical instance.
-2. The binding between long-lived application state and the continuous occupation of expensive compute resources.
+1. Decoupling logical identity from permanent attachment to specific physical instances.
+2. Decoupling enduring application state from continuous occupation of costly compute capacity.
 
-For agents, the question is no longer "How do we force this program into a function?" It is:
+For agent architectures, the core question becomes:
 
 > Can a long-lived, stateful logical program own a computer only while it is doing useful work?
 
-At the next layer up, an agent's authoritative state can be decomposed further into Session, Filesystem, and Agent Memory. A context service can retrieve that state and inject it into different Runtimes at activation time. That is a state model above the compute layer. The point here is more fundamental: as long as logical identity, recoverable state, and physical execution instances are separated cleanly, stateful agents are not inherently at odds with Serverless.
+Moving up the abstraction stack, authoritative agent state further disaggregates into conversation histories, workspace files, and long-term memory, which context services rehydrate into disparate execution sandboxes upon activation. That represents a state model above the compute substrate. At the virtualization layer, however, the architectural path is established: once logical identities, restorable state, and physical execution instances separate cleanly, stateful agents operate in complete harmony with Serverless.
 
 ---
 
