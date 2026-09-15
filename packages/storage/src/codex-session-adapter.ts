@@ -91,7 +91,12 @@ interface CodexThreadQuery {
 type JsonRecord = Record<string, unknown>;
 
 type CodexCatalogKeyset =
-  | { readonly kind: 'database'; readonly sortTimestamp: number; readonly id: string }
+  | {
+      readonly kind: 'database';
+      readonly stateDatabase: string;
+      readonly sortTimestamp: number;
+      readonly id: string;
+    }
   | { readonly kind: 'filesystem'; readonly mtimeMs: number; readonly pathKey: string };
 
 /**
@@ -274,12 +279,21 @@ export class CodexSessionAdapter implements ExternalSessionAdapter {
     limit: number,
   ): Promise<ExternalSessionCatalogPage> {
     const keyset = decodeCatalogKeyset(query.cursor, query);
-    if (keyset?.kind !== 'filesystem') {
+    if (keyset?.kind === 'database') {
+      const stateDatabases = await codexStateDbsNewestFirst(this.codexHome);
+      const dbPath = stateDatabases.find(
+        (candidate) => basename(candidate) === keyset.stateDatabase,
+      );
+      if (!dbPath) throw new Error('Invalid Codex catalog cursor');
+      const page = await this.readStateCatalogKeysetPage(dbPath, query, keyset, limit);
+      if (!page) throw new Error('Invalid Codex catalog cursor');
+      return page;
+    }
+    if (!keyset) {
       for (const dbPath of await codexStateDbsNewestFirst(this.codexHome)) {
         const page = await this.readStateCatalogKeysetPage(dbPath, query, keyset, limit);
         if (page !== undefined) return page;
       }
-      if (keyset) throw new Error('Invalid Codex catalog cursor');
     }
 
     const candidates = await nextRolloutCatalogBatch(
@@ -319,6 +333,7 @@ export class CodexSessionAdapter implements ExternalSessionAdapter {
           summary,
           nextCursor: encodeCatalogKeyset(query, {
             kind: 'database',
+            stateDatabase: basename(dbPath),
             sortTimestamp: codexRowSortTimestamp(row),
             id: entry.id,
           }),
@@ -1124,7 +1139,7 @@ function encodeCatalogKeyset(
 ): string {
   const queryHash = catalogKeysetQueryHash(query);
   if (keyset.kind === 'database') {
-    return `d:${queryHash}:${encodeCursorNumber(keyset.sortTimestamp)}:${Buffer.from(keyset.id).toString('base64url')}`;
+    return `d:${queryHash}:${Buffer.from(keyset.stateDatabase).toString('base64url')}:${encodeCursorNumber(keyset.sortTimestamp)}:${Buffer.from(keyset.id).toString('base64url')}`;
   }
   return `f:${queryHash}:${encodeCursorNumber(keyset.mtimeMs)}:${Buffer.from(keyset.pathKey).toString('base64url')}`;
 }
@@ -1135,19 +1150,30 @@ function decodeCatalogKeyset(
 ): CodexCatalogKeyset | undefined {
   if (cursor === undefined) return undefined;
   const parts = cursor.split(':');
-  if (parts.length !== 4 || parts[1] !== catalogKeysetQueryHash(query)) {
+  if (parts[1] !== catalogKeysetQueryHash(query)) {
     throw new Error('Invalid Codex catalog cursor');
   }
-  const number = decodeCursorNumber(parts[2]!);
   if (parts[0] === 'd') {
-    const encodedId = parts[3]!;
+    if (parts.length !== 5) throw new Error('Invalid Codex catalog cursor');
+    const encodedStateDatabase = parts[2]!;
+    const stateDatabase = Buffer.from(encodedStateDatabase, 'base64url').toString('utf8');
+    if (
+      !/^state_\d+\.sqlite$/.test(stateDatabase) ||
+      Buffer.from(stateDatabase).toString('base64url') !== encodedStateDatabase
+    ) {
+      throw new Error('Invalid Codex catalog cursor');
+    }
+    const sortTimestamp = decodeCursorNumber(parts[3]!);
+    const encodedId = parts[4]!;
     const id = Buffer.from(encodedId, 'base64url').toString('utf8');
     if (!isSafeCodexSessionId(id) || Buffer.from(id).toString('base64url') !== encodedId) {
       throw new Error('Invalid Codex catalog cursor');
     }
-    return { kind: 'database', sortTimestamp: number, id };
+    return { kind: 'database', stateDatabase, sortTimestamp, id };
   }
   if (parts[0] === 'f') {
+    if (parts.length !== 4) throw new Error('Invalid Codex catalog cursor');
+    const mtimeMs = decodeCursorNumber(parts[2]!);
     const encodedPathKey = parts[3]!;
     const pathKey = Buffer.from(encodedPathKey, 'base64url').toString('utf8');
     if (
@@ -1157,7 +1183,7 @@ function decodeCatalogKeyset(
     ) {
       throw new Error('Invalid Codex catalog cursor');
     }
-    return { kind: 'filesystem', mtimeMs: number, pathKey };
+    return { kind: 'filesystem', mtimeMs, pathKey };
   }
   throw new Error('Invalid Codex catalog cursor');
 }
