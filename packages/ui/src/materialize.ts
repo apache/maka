@@ -531,7 +531,7 @@ export function overlayLiveTurn(
           tools: [],
           notes: [],
           timeline: [],
-          startedAt: Date.now(),
+          startedAt: liveTurn.startedAt ?? 0,
         } satisfies TurnViewModel);
   // Only a recorded turn_state is evidence the turn ended; a legacy turn's
   // inferred `completed` is a guess, and such a turn cannot be live anyway.
