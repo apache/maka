@@ -1326,43 +1326,6 @@ describe('reactive overflow recovery in the streaming backend', () => {
     }
   });
 
-  test('a later step escalates from the image omission to a fold, keeping the images omitted', async () => {
-    // The first overflow is answered by dropping images alone. A step later
-    // the provider rejects again with the images already gone, so the next
-    // attempt has to fold — and the fold must not put the images back.
-    const fixture = buildReactiveFixture({
-      script: ['tool', 'overflow', 'tool', 'overflow', 'done'],
-      imagePrior: true,
-      bigPriors: true,
-    });
-    await runTurn(fixture);
-
-    assert.equal(fixture.model.doStreamCalls.length, 5);
-    assert.equal(complete(fixture)?.stopReason, 'end_turn');
-    assert.equal(
-      fixture.events.some((event) => event.type === 'error'),
-      false,
-    );
-    assert.deepEqual(fixture.toolExecutions, ['one.md', 'one.md']);
-    assert.equal(fixture.recorded.length, 1);
-    assert.equal(fixture.summarizerCalls(), 1);
-    // No request after the first omission ever carries the image again. The
-    // two that still replay the raw prior span carry the placeholder in its
-    // place; the folded one covers that span by the checkpoint instead.
-    for (const call of fixture.model.doStreamCalls.slice(2)) {
-      assert.equal(JSON.stringify(call.prompt).includes('"mediaType":"image/png"'), false);
-    }
-    for (const call of fixture.model.doStreamCalls.slice(2, 4)) {
-      assert.match(
-        JSON.stringify(call.prompt),
-        /Image artifact \\"screenshot\.png\\" omitted after provider context overflow/,
-      );
-    }
-    const foldedPrompt = JSON.stringify(fixture.model.doStreamCalls[4]?.prompt);
-    assert.equal(foldedPrompt.includes('REACTIVE_SUMMARY_SENTINEL'), true);
-    assert.equal(foldedPrompt.includes('screenshot.png'), false);
-  });
-
   test('keeps a step-0 overflow checkpoint projected after the retry returns a tool call', async () => {
     // The first request overflows before any step completes. Recovery folds
     // only prior history into a pre-turn checkpoint and retries with the

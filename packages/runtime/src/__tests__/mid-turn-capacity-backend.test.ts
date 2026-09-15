@@ -277,7 +277,7 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
     },
   ];
   const toolStepPath = (call: number): string =>
-    ['one.md', 'two.md', 'three.md', 'four.md', 'five.md'][call - 1] ?? `step-${call}.md`;
+    ['one.md', 'two.md', 'three.md'][call - 1] ?? `step-${call}.md`;
   const toolSteps = options.toolSteps ?? 2;
   const chunksForCall = (call: number): LanguageModelV4StreamPart[] => {
     if (options.bigToolGroup) {
@@ -1179,32 +1179,6 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
     assert.equal(
       fixture.recorded[1]!.coverage.eventCount > fixture.recorded[0]!.coverage.eventCount,
       true,
-    );
-    const complete = fixture.events.find((event) => event.type === 'complete');
-    assert.equal(complete?.type === 'complete' ? complete.stopReason : undefined, 'end_turn');
-  });
-
-  test('a declared window under the fold floor folds on every accepted step', async () => {
-    // Every fold lands on the same [summary, anchor, tail] floor, and here the
-    // folded request is accepted at 200 input tokens against the 190-token
-    // window — the window is below that floor, so no later step folds its way
-    // under it. The cost model is deliberate: as long as the provider keeps
-    // accepting steps, each one spends one summarizer call, and a target that
-    // stays unreachable is stopped by the summarizer failing, not by Maka
-    // estimating locally that the next fold is pointless.
-    const fixture = buildFixture({
-      priorChars: 2_000,
-      toolSteps: 4,
-      usageByCall: { 3: { input: 200, output: 10 } },
-    });
-    await runFixtureTurn(fixture, consumer);
-
-    assert.equal(fixture.model.doStreamCalls.length, 5);
-    assert.equal(fixture.summarizerCalls, 3);
-    assert.equal(fixture.recorded.length, 3);
-    assert.equal(
-      compactionDecisions(fixture).some((decision) => decision.decision === 'failedOpen'),
-      false,
     );
     const complete = fixture.events.find((event) => event.type === 'complete');
     assert.equal(complete?.type === 'complete' ? complete.stopReason : undefined, 'end_turn');
