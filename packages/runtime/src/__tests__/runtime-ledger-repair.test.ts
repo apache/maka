@@ -411,55 +411,6 @@ test('an imported turn that opens on an assistant reply still materializes', asy
   }
 });
 
-test('a native transcript turn with no user row is still not converted', async () => {
-  // The projection is the importer's rule, not a licensing of every orphan
-  // row: on Maka's own transcript a turn with no user row is a reference to a
-  // Turn a durable Root already owns, and converting it would stand a second
-  // synthetic run beside that one.
-  const root = await mkdtemp(join(tmpdir(), 'maka-native-assistant-only-'));
-  const sessions = createSessionStore(root);
-  const runtimeEvents = createSqliteRuntimeStore(join(root, 'runtime.sqlite'));
-
-  try {
-    const ts = Date.now();
-    const session = await sessions.create({
-      cwd: '/repo',
-      llmConnectionSlug: 'anthropic',
-      model: 'claude-opus-5',
-      permissionMode: 'ask',
-    });
-    await sessions.appendMessages(session.id, [
-      {
-        type: 'assistant',
-        id: 'n-orphan',
-        turnId: 'turn-orphan',
-        ts,
-        text: 'no user row precedes this',
-        modelId: 'claude-opus-5',
-      },
-      {
-        type: 'turn_state',
-        id: 'n-orphan-state',
-        turnId: 'turn-orphan',
-        ts: ts + 1,
-        status: 'completed',
-      },
-    ]);
-    const repair = new RuntimeLedgerRepair({
-      runtimeEventStore: runtimeEvents,
-      readMessagesAfter: (sessionId, request) => sessions.readMessagesAfter(sessionId, request),
-    });
-
-    await repair.materializeTranscriptLedger(await sessions.readHeader(session.id));
-
-    assert.deepEqual(await runtimeEvents.listSessionInvocations(session.id), []);
-  } finally {
-    await runtimeEvents.close?.();
-    await sessions.close?.();
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
 test('an imported turn with no terminal state is repaired to failed', async () => {
   // The behaviour the adapter now avoids, pinned so the reason for emitting a
   // cutoff cannot quietly stop being true.

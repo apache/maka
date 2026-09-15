@@ -83,18 +83,10 @@ export class RuntimeLedgerRepair {
 
       for await (const scanned of this.readTurnsInPages(sessionId)) {
         const turnMessages = scanned.messages;
-        // A turn whose only user row was steering is not a turn of its own: the
-        // steering was said into a Turn some durable Root already owns, so
-        // converting it would stand a second, synthetic run beside that one.
-        //
-        // An imported transcript is measured against the projection instead,
-        // which is the one the importer already held it to: an external Agent
-        // can open a conversation on an assistant reply, and that reply is
-        // conversation — dropping it would leave the copy holding a turn the
-        // Ledger never kept.
-        const startsATurn = header.externalOrigin
-          ? turnMessages.some(isConversationTextMessage)
-          : turnMessages.some((message) => message.type === 'user');
+        // The page reader already removed steering projections. What remains
+        // starts a transcript-derived turn when it carries conversation text,
+        // regardless of whether the Session originated inside or outside Maka.
+        const startsATurn = turnMessages.some(isConversationTextMessage);
         if (!startsATurn) continue;
         const [turn] = deriveTurnRecords(turnMessages);
         if (!turn) continue;
