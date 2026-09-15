@@ -22,6 +22,7 @@ import type { Dirent } from 'node:fs';
 import { open, readdir, realpath, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, join, resolve, sep } from 'node:path';
+import type { DatabaseSync, StatementSync } from 'node:sqlite';
 import type { StoredMessage } from '@maka/core/session';
 import {
   ExternalSessionCursorExpiredError,
@@ -72,12 +73,13 @@ interface CodexCatalogEntry extends ExternalSessionSummary {
 interface CodexCatalogSnapshotBase {
   readonly queryKey: string;
   lastAccessedAt: number;
+  expires?: ReturnType<typeof setTimeout>;
 }
 
 type CodexCatalogSnapshot =
   | (CodexCatalogSnapshotBase & {
       readonly kind: 'state_database';
-      readonly entries: readonly CodexCatalogEntry[];
+      readonly reader: CodexThreadSnapshotReader;
     })
   | (CodexCatalogSnapshotBase & {
       readonly kind: 'filesystem';
@@ -98,6 +100,16 @@ interface CodexThreadRow {
   updated_at?: unknown;
   archived?: unknown;
   source?: unknown;
+}
+
+interface CodexThreadSnapshotReader {
+  read(offset: number, limit: number): CodexThreadRow[];
+  close(): void;
+}
+
+interface CodexThreadQuery {
+  readonly sql: string;
+  readonly params: readonly (string | number)[];
 }
 
 type JsonRecord = Record<string, unknown>;
@@ -294,19 +306,17 @@ export class CodexSessionAdapter implements ExternalSessionAdapter {
       const existing = this.catalogSnapshots.get(token);
       if (!existing) throw new ExternalSessionCursorExpiredError();
       if (existing.queryKey !== queryKey) throw new Error('Invalid Codex catalog cursor');
-      existing.lastAccessedAt = Date.now();
-      this.catalogSnapshots.delete(token);
-      this.catalogSnapshots.set(token, existing);
+      this.touchCatalogSnapshot(token, existing);
       snapshot = existing;
     } else {
       if (query.cursor !== undefined) throw new Error('Invalid Codex catalog cursor');
       token = randomBytes(12).toString('base64url');
       offset = 0;
-      const stateEntries = await this.readStateCatalogSnapshot(query);
-      snapshot = stateEntries
+      const stateReader = await openCodexThreadSnapshot(this.codexHome, query);
+      snapshot = stateReader
         ? {
             kind: 'state_database',
-            entries: stateEntries,
+            reader: stateReader,
             queryKey,
             lastAccessedAt: Date.now(),
           }
@@ -321,19 +331,12 @@ export class CodexSessionAdapter implements ExternalSessionAdapter {
             queryKey,
             lastAccessedAt: Date.now(),
           };
-      this.catalogSnapshots.set(token, snapshot);
+      this.touchCatalogSnapshot(token, snapshot);
       this.pruneCatalogSnapshots();
     }
 
     if (snapshot.kind === 'state_database') {
-      const end = Math.min(offset + limit, snapshot.entries.length);
-      const items = snapshot.entries.slice(offset, end).map((entry, index) => {
-        const { rolloutPath: _rolloutPath, ...summary } = entry;
-        return { summary, nextCursor: `f:${token}:${offset + index + 1}` };
-      });
-      const hasMore = end < snapshot.entries.length;
-      if (!hasMore) this.catalogSnapshots.delete(token);
-      return { items, hasMore };
+      return this.readStateCatalogSnapshotPage(snapshot, query, token, offset, limit);
     }
 
     const items: ExternalSessionCatalogPage['items'][number][] = [];
@@ -351,36 +354,72 @@ export class CodexSessionAdapter implements ExternalSessionAdapter {
       items.push({ summary, nextCursor: `f:${token}:${index + 1}` });
       if (items.length === limit) return { items, hasMore: true };
     }
-    this.catalogSnapshots.delete(token);
+    this.deleteCatalogSnapshot(token);
     return { items, hasMore: false };
   }
 
-  private async readStateCatalogSnapshot(
-    query: ExternalSessionQuery,
-  ): Promise<CodexCatalogEntry[] | undefined> {
-    for (const dbPath of await codexStateDbsNewestFirst(this.codexHome)) {
-      const rows = await readCodexThreadRows(dbPath, query);
-      if (rows === undefined) continue;
-      const entries: CodexCatalogEntry[] = [];
-      for (const row of rows) {
-        const entry = await this.entryFromRow(row);
-        if (entry && matchesQuery(entry, query)) entries.push(entry);
+  private async readStateCatalogSnapshotPage(
+    snapshot: Extract<CodexCatalogSnapshot, { kind: 'state_database' }>,
+    query: ExternalSessionCatalogPageQuery,
+    token: string,
+    offset: number,
+    limit: number,
+  ): Promise<ExternalSessionCatalogPage> {
+    const items: ExternalSessionCatalogPage['items'][number][] = [];
+    let rawOffset = offset;
+    const batchSize = Math.max(32, Math.min(256, limit * 2));
+    try {
+      while (true) {
+        const rows = snapshot.reader.read(rawOffset, batchSize);
+        for (const [index, row] of rows.entries()) {
+          const entry = await this.entryFromRow(row);
+          if (!entry || !matchesQuery(entry, query)) continue;
+          if (items.length === limit) return { items, hasMore: true };
+          const { rolloutPath: _rolloutPath, ...summary } = entry;
+          items.push({ summary, nextCursor: `f:${token}:${rawOffset + index + 1}` });
+        }
+        rawOffset += rows.length;
+        if (rows.length < batchSize) {
+          this.deleteCatalogSnapshot(token);
+          return { items, hasMore: false };
+        }
       }
-      return entries;
+    } catch (error) {
+      this.deleteCatalogSnapshot(token);
+      throw error;
     }
-    return undefined;
   }
 
   private pruneCatalogSnapshots(): void {
     const cutoff = Date.now() - CODEX_CATALOG_SNAPSHOT_TTL_MS;
     for (const [token, snapshot] of this.catalogSnapshots) {
-      if (snapshot.lastAccessedAt < cutoff) this.catalogSnapshots.delete(token);
+      if (snapshot.lastAccessedAt < cutoff) this.deleteCatalogSnapshot(token);
     }
     while (this.catalogSnapshots.size > CODEX_CATALOG_SNAPSHOT_MAX_ITEMS) {
       const oldest = this.catalogSnapshots.keys().next().value;
       if (oldest === undefined) break;
-      this.catalogSnapshots.delete(oldest);
+      this.deleteCatalogSnapshot(oldest);
     }
+  }
+
+  private touchCatalogSnapshot(token: string, snapshot: CodexCatalogSnapshot): void {
+    clearTimeout(snapshot.expires);
+    snapshot.lastAccessedAt = Date.now();
+    snapshot.expires = setTimeout(
+      () => this.deleteCatalogSnapshot(token),
+      CODEX_CATALOG_SNAPSHOT_TTL_MS,
+    );
+    snapshot.expires.unref();
+    this.catalogSnapshots.delete(token);
+    this.catalogSnapshots.set(token, snapshot);
+  }
+
+  private deleteCatalogSnapshot(token: string): void {
+    const snapshot = this.catalogSnapshots.get(token);
+    if (!snapshot) return;
+    clearTimeout(snapshot.expires);
+    if (snapshot.kind === 'state_database') snapshot.reader.close();
+    this.catalogSnapshots.delete(token);
   }
 
   private async findRolloutEntry(sessionId: string): Promise<CodexCatalogEntry | undefined> {
@@ -940,56 +979,10 @@ async function readCodexThreadRows(
     const sqlite = await import('node:sqlite');
     const db = new sqlite.DatabaseSync(dbPath, { readOnly: true });
     try {
-      const columns = new Set(
-        (db.prepare('PRAGMA table_info(threads)').all() as { name?: unknown }[])
-          .map((column) => (typeof column.name === 'string' ? column.name : ''))
-          .filter(Boolean),
-      );
-      if (!columns.has('id') || !columns.has('rollout_path')) return undefined;
-      const wanted = [
-        'id',
-        'rollout_path',
-        'cwd',
-        'name',
-        'title',
-        'preview',
-        'first_user_message',
-        'created_at_ms',
-        'created_at',
-        'updated_at_ms',
-        'updated_at',
-        'archived',
-        'source',
-      ].filter((column) => columns.has(column));
-      const where: string[] = [];
-      const params: Array<string | number> = [];
-      if (exactId !== undefined) {
-        where.push('id = ?');
-        params.push(exactId);
-      }
-      if (!query.includeArchived && columns.has('archived')) {
-        where.push('(archived IS NULL OR archived = 0)');
-      }
-      // No cwd clause. `cwd IN (...)` enumerated spelling variants of the
-      // query, but SQLite compares them exactly: a row stored `C:\\Repo\\App`
-      // was discarded before `matchesQuery` could see that `c:/repo/app` names
-      // the same project. A prefilter that cannot express the matcher's own
-      // equivalence is not an optimization, it is a second, weaker rule — so
-      // the shared matcher below is the only authority on which project a row
-      // belongs to. The archived clause stays: that one is an exact boolean
-      // and agrees with the matcher by construction.
-      //
-      const orderColumns = ['updated_at_ms', 'updated_at', 'created_at_ms', 'created_at'].filter(
-        (column) => columns.has(column),
-      );
-      const orderExpression =
-        orderColumns.length > 0 ? `coalesce(${orderColumns.join(', ')}, 0)` : '0';
-      const sql =
-        `SELECT ${wanted.join(', ')} FROM threads` +
-        (where.length > 0 ? ` WHERE ${where.join(' AND ')}` : '') +
-        ` ORDER BY ${orderExpression} DESC, id DESC` +
-        (page ? ' LIMIT ? OFFSET ?' : '');
-      if (page) params.push(page.limit, page.offset);
+      const spec = codexThreadQuery(db, query, exactId);
+      if (!spec) return undefined;
+      const sql = spec.sql + (page ? ' LIMIT ? OFFSET ?' : '');
+      const params = page ? [...spec.params, page.limit, page.offset] : spec.params;
       return db.prepare(sql).all(...params) as CodexThreadRow[];
     } finally {
       db.close();
@@ -997,6 +990,111 @@ async function readCodexThreadRows(
   } catch {
     return undefined;
   }
+}
+
+async function openCodexThreadSnapshot(
+  codexHome: string,
+  query: ExternalSessionQuery,
+): Promise<CodexThreadSnapshotReader | undefined> {
+  for (const dbPath of await codexStateDbsNewestFirst(codexHome)) {
+    let db: DatabaseSync | undefined;
+    try {
+      const sqlite = await import('node:sqlite');
+      db = new sqlite.DatabaseSync(dbPath, { readOnly: true });
+      const journal = db.prepare('PRAGMA journal_mode').get() as { journal_mode?: unknown };
+      if (
+        typeof journal.journal_mode !== 'string' ||
+        journal.journal_mode.toLowerCase() !== 'wal'
+      ) {
+        db.close();
+        continue;
+      }
+      const spec = codexThreadQuery(db, query);
+      if (!spec) {
+        db.close();
+        continue;
+      }
+      db.exec('BEGIN');
+      const statement = db.prepare(`${spec.sql} LIMIT ? OFFSET ?`);
+      return codexThreadSnapshotReader(db, statement, spec.params);
+    } catch {
+      db?.close();
+    }
+  }
+  return undefined;
+}
+
+function codexThreadSnapshotReader(
+  db: DatabaseSync,
+  statement: StatementSync,
+  params: readonly (string | number)[],
+): CodexThreadSnapshotReader {
+  let closed = false;
+  return {
+    read: (offset, limit) => {
+      if (closed) throw new ExternalSessionCursorExpiredError();
+      return statement.all(...params, limit, offset) as CodexThreadRow[];
+    },
+    close: () => {
+      if (closed) return;
+      closed = true;
+      try {
+        db.exec('ROLLBACK');
+      } finally {
+        db.close();
+      }
+    },
+  };
+}
+
+function codexThreadQuery(
+  db: DatabaseSync,
+  query: ExternalSessionQuery,
+  exactId?: string,
+): CodexThreadQuery | undefined {
+  const columns = new Set(
+    (db.prepare('PRAGMA table_info(threads)').all() as { name?: unknown }[])
+      .map((column) => (typeof column.name === 'string' ? column.name : ''))
+      .filter(Boolean),
+  );
+  if (!columns.has('id') || !columns.has('rollout_path')) return undefined;
+  const wanted = [
+    'id',
+    'rollout_path',
+    'cwd',
+    'name',
+    'title',
+    'preview',
+    'first_user_message',
+    'created_at_ms',
+    'created_at',
+    'updated_at_ms',
+    'updated_at',
+    'archived',
+    'source',
+  ].filter((column) => columns.has(column));
+  const where: string[] = [];
+  const params: Array<string | number> = [];
+  if (exactId !== undefined) {
+    where.push('id = ?');
+    params.push(exactId);
+  }
+  if (!query.includeArchived && columns.has('archived')) {
+    where.push('(archived IS NULL OR archived = 0)');
+  }
+  // No cwd clause. SQLite cannot express the matcher's cross-platform path
+  // equivalence, so the shared matcher remains the only workspace authority.
+  const orderColumns = ['updated_at_ms', 'updated_at', 'created_at_ms', 'created_at'].filter(
+    (column) => columns.has(column),
+  );
+  const orderExpression = orderColumns.length > 0 ? `coalesce(${orderColumns.join(', ')}, 0)` : '0';
+  return {
+    sql:
+      `SELECT ${wanted.join(', ')} FROM threads` +
+      (where.length > 0 ? ` WHERE ${where.join(' AND ')}` : '') +
+      ` ORDER BY ${orderExpression} DESC, id DESC`,
+    params,
+  };
 }
 
 async function codexStateDbsNewestFirst(codexHome: string): Promise<string[]> {

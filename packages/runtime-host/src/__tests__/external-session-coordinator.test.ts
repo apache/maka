@@ -153,6 +153,7 @@ test('keeps a Codex state database catalog snapshot stable while an unseen threa
     const database = new DatabaseSync(join(codexHome, 'state_5.sqlite'));
     try {
       database.exec(`
+      PRAGMA journal_mode = WAL;
       CREATE TABLE threads (
         id TEXT PRIMARY KEY,
         rollout_path TEXT NOT NULL,
