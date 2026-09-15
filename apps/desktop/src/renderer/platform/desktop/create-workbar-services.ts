@@ -55,6 +55,16 @@ function isDesktopTerminal(update: ShellRunUpdate): boolean {
 }
 
 /** The only Desktop-to-Workbar adapter. It narrows the preload bridge by tool. */
+export function createDesktopInspectorService(bridge: Pick<MakaBridge, 'inspector' | 'sessions'>) {
+  return {
+    trace: (sessionId: string, cursor?: string) => bridge.inspector.trace(sessionId, cursor),
+    summary: (sessionId: string) => bridge.inspector.summary(sessionId),
+    context: (sessionId: string) => bridge.inspector.context(sessionId),
+    subscribeSessionEvents: (sessionId: string, handler: Parameters<MakaBridge['sessions']['subscribeEvents']>[1]) => bridge.sessions.subscribeEvents(sessionId, handler),
+    subscribeUsageChanges: (sessionId: string, handler: () => void) => bridge.inspector.subscribeUsageChanges(sessionId, handler),
+  };
+}
+
 export function createDesktopWorkbarServices(
   bridge: DesktopWorkbarBridge = window.maka,
   dependencies: DesktopWorkbarServiceDependencies = DEFAULT_DEPENDENCIES,
@@ -143,15 +153,7 @@ export function createDesktopWorkbarServices(
       saveAs: (sessionId, artifactId) =>
         bridge.app.saveArtifactAs(sessionId, artifactId),
     },
-    inspector: {
-      trace: (sessionId, cursor) => bridge.inspector.trace(sessionId, cursor),
-      summary: (sessionId) => bridge.inspector.summary(sessionId),
-      context: (sessionId) => bridge.inspector.context(sessionId),
-      subscribeSessionEvents: (sessionId, handler) =>
-        bridge.sessions.subscribeEvents(sessionId, handler),
-      subscribeUsageChanges: (sessionId, handler) =>
-        bridge.inspector.subscribeUsageChanges(sessionId, handler),
-    },
+    inspector: createDesktopInspectorService(bridge),
     attachments: bridge.attachments,
     ...(bridge.workBoard
       ? {

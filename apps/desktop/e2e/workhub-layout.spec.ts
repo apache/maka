@@ -28,7 +28,7 @@ test('WorkHub uses its coordination model and shared attachment composer', async
     const { connections } = await window.maka.connections.getSnapshot();
     const connection = connections.find((entry) => entry.slug === 'e2e')!;
     const ids = ['claude-sonnet-4-5-20250929', 'claude-haiku-4-5-20251001', 'claude-opus-4-5-20251101'];
-    await window.maka.connections.update({ connectionId: connection.connectionId, slug: connection.slug }, { enabledModelIds: ids, models: ids.map((id) => ({ id })) });
+    await window.maka.connections.update({ connectionId: connection.connectionId, slug: connection.slug }, { enabledModelIds: ids, models: ids.map((id) => ({ id })), defaultModel: ids[2] });
   });
   await page.locator(COMPOSER_INPUT).fill('WorkHub navigation regression');
   await awaitSendReady(page);
@@ -193,6 +193,27 @@ test('WorkHub uses its coordination model and shared attachment composer', async
   await expect(workhub.getByRole('button', { name: /^(隐藏|Hide)$/ })).toHaveCount(0);
   await expect.poll(() => workhub.evaluate(() => innerHeight === Math.ceil(document.querySelector('.workHubComposerSurface')!.getBoundingClientRect().height))).toBe(true);
   await expect.poll(floatingBottom).toBe(anchoredBottom);
+  // Opening context details must expand the native compact window as well as the renderer.
+  await workhub.getByRole('button', { name: /打开用量追踪|Open usage trace/ }).click();
+  await expect(workhub.getByRole('button', { name: /返回对话|Back to conversation/ })).toBeVisible();
+  await expect.poll(() => workhub.evaluate(() => innerHeight)).toBe(expandedHeight);
+  await workhub.getByRole('button', { name: /返回对话|Back to conversation/ }).click();
+  await workhub.getByRole('button', { name: /收起对话|Collapse conversation/ }).click();
+  await expect.poll(() => workhub.evaluate(() => innerHeight === Math.ceil(document.querySelector('.workHubComposerSurface')!.getBoundingClientRect().height))).toBe(true);
+  const thinking = workhub.getByRole('button', { name: /思考级别|Thinking level/ });
+  await expect(thinking).toBeEnabled();
+  await thinking.click();
+  const thinkingMenu = workhub.getByRole('menu');
+  await expect(thinkingMenu).toBeVisible();
+  await workhub.screenshot({ animations: 'disabled', path: testInfo.outputPath('floating-thinking-levels.png') });
+  await expect.poll(() => thinkingMenu.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    return rect.top >= 0 && rect.bottom <= innerHeight;
+  })).toBe(true);
+  await workhub.getByRole('menuitemradio', { name: /^(高|High)$/ }).click();
+  await expect(thinking).toContainText(/高|High/);
+  await expect.poll(() => workhub.evaluate(async (id) => (await window.maka.workHub.getSession(id)).thinkingLevel, sessionId)).toBe('high');
+  await workhub.screenshot({ animations: 'disabled', path: testInfo.outputPath('floating-composer-controls.png') });
   const compactHeight = await workhub.evaluate(() => innerHeight);
   const screenLayout = async () => {
     const origin = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((window) => window.getTitle() === 'WorkHub')!.getContentBounds());

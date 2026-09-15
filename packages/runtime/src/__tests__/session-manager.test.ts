@@ -5891,6 +5891,59 @@ describe('SessionManager permission mode updates', () => {
     assert.strictEqual(plan.continuation?.sourceRunId, 'source-run-newer');
   });
 
+  test('fresh-turn tool policy changes only new runs and preserves Session defaults', async () => {
+    const store = new MemorySessionStore();
+    const runStore = new MemoryAgentRunStore();
+    const backends = new BackendRegistry();
+    const instances = new Map<string, TestBackend>();
+    const gate = makeGate();
+    let mode: ToolMode = 'code_mode';
+    let dynamicSessionId: string | undefined;
+    backends.register('ai-sdk', (ctx) => {
+      const backend = new TestBackend(ctx, gate);
+      instances.set(ctx.sessionId, backend);
+      return backend;
+    });
+    const manager = new SessionManager({
+      store,
+      runStore,
+      runtimeEventStore: runStore,
+      backends,
+      newId: nextId(),
+      now: nextNow(6_450),
+      resolveFreshTurnToolMode: async (header) =>
+        header.id === dynamicSessionId ? mode : undefined,
+    });
+    const dynamic = await manager.createSession({ ...makeInput(), toolMode: 'direct' });
+    const ordinary = await manager.createSession({ ...makeInput(), toolMode: 'code_mode' });
+    dynamicSessionId = dynamic.id;
+    const active = manager
+      .sendMessage(dynamic.id, { turnId: 'dynamic-1', text: 'first' })
+      [Symbol.asyncIterator]();
+    await active.next();
+    mode = 'direct';
+    assert.equal(instances.get(dynamic.id)?.sendInputs[0]?.toolMode, 'code_mode');
+    gate.release();
+    while (!(await active.next()).done) {
+      /* Drain the running turn. */
+    }
+    await drainAll(manager.sendMessage(dynamic.id, { turnId: 'dynamic-2', text: 'second' }));
+    await drainAll(manager.sendMessage(ordinary.id, { turnId: 'ordinary-1', text: 'ordinary' }));
+    assert.deepEqual(
+      instances.get(dynamic.id)?.sendInputs.map((input) => input.toolMode),
+      ['code_mode', 'direct'],
+    );
+    assert.equal(instances.get(ordinary.id)?.sendInputs[0]?.toolMode, 'code_mode');
+    assert.equal((await store.readHeader(dynamic.id)).toolMode, 'direct');
+    assert.equal((await store.readHeader(ordinary.id)).toolMode, 'code_mode');
+    assert.deepEqual(
+      (await runStore.listSessionInvocations(dynamic.id)).map(
+        (run) => run.opening.configuration.toolMode,
+      ),
+      ['code_mode', 'direct'],
+    );
+  });
+
   test('RuntimeKernel drives the backend while preserving the SessionEvent stream', async () => {
     const store = new MemorySessionStore();
     const runStore = new MemoryAgentRunStore();
@@ -6417,6 +6470,7 @@ describe('SessionManager permission mode updates', () => {
       runStore,
       runtimeEventStore: runStore,
       toolBoundaryProtocol: 't1_after_preflight_v1',
+      resolveFreshTurnToolMode: async () => 'direct',
       backends,
       childTools: [testTool('Read')],
       inspectContinuationSafety: async () => ({
@@ -6658,6 +6712,8 @@ describe('SessionManager permission mode updates', () => {
       provenance: 'runtime',
       providerStateIdentity,
     });
+    assert.equal(followUpRun?.opening.configuration.toolMode, 'direct');
+    assert.equal(backend?.sendInputs.at(-1)?.toolMode, 'direct');
   });
 
   test('authenticates the exact target-aware continuation projection that reaches the provider', async () => {
@@ -13890,6 +13946,7 @@ class MemorySessionStore implements SessionStore {
       model: input.model ?? 'fake-model',
       ...(input.thinkingLevel !== undefined ? { thinkingLevel: input.thinkingLevel } : {}),
       permissionMode: input.permissionMode,
+      ...(input.toolMode !== undefined ? { toolMode: input.toolMode } : {}),
       collaborationMode: input.collaborationMode ?? 'agent',
       orchestrationMode: input.orchestrationMode ?? 'default',
       transcriptLedgerVersion: 1,

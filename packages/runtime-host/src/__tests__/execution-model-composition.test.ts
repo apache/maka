@@ -2441,6 +2441,49 @@ test('cold WorkHub recovery waits for Desktop tools across pending-message and a
         kind: 'routing',
         disposition: 'answer_here',
       });
+      if (crashCut === 'pending-message') {
+        // The recovered WorkHub keeps its permanent Session but new turns
+        // must follow the current switch rather than its creation-time default.
+        const currentPolicy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+        const originalMode = (await recoveredStores.sessionStore.readHeader(sessionId)).toolMode;
+        for (const enabled of [true, false]) {
+          const snapshot = await currentPolicy.runtimePolicy.getSnapshot();
+          const changed = await currentPolicy.runtimePolicy.mutate({
+            expectedRevision: snapshot.revision,
+            operation: {
+              kind: 'set_chat_defaults',
+              value: { ...snapshot.policy.chatDefaults, codeModeEnabled: enabled },
+            },
+          });
+          assert.equal(changed.kind, 'committed');
+          const turnId = randomUUID();
+          const started = await composition.handlers['workhub.coordination.answer'](
+            { turnId, text: `Code Mode ${enabled ? 'on' : 'off'}` },
+            context,
+          );
+          assert.ok(started.ok, JSON.stringify(started));
+          const query = await composition.handlers['turn.query']({ sessionId, turnId }, context);
+          assert.ok(query.ok, JSON.stringify(query));
+          const terminal = await waitForTerminal(
+            composition,
+            sessionId,
+            turnId,
+            query.result,
+            context,
+          );
+          assert.equal(terminal.status, 'completed');
+          const run = await readInvocation(recoveredStores, sessionId, terminal.runId!);
+          assert.equal(run.opening.configuration.toolMode, enabled ? 'code_mode' : 'direct');
+          assert.equal(
+            responsesToolNames(provider.requests.at(-1)?.body).includes('exec'),
+            enabled,
+          );
+          assert.equal(
+            (await recoveredStores.sessionStore.readHeader(sessionId)).toolMode,
+            originalMode,
+          );
+        }
+      }
       assert.equal(drained, false);
     } finally {
       await composition?.close();

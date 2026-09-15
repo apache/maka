@@ -35,7 +35,6 @@ import {
   createTraceRefreshCoalescer,
   TRACE_REFRESH_DEBOUNCE_MS,
 } from './session-trace-refresh.js';
-import { useWorkbarServices } from '../../services-context.js';
 
 interface SessionTraceState {
   sessionId?: string;
@@ -82,13 +81,13 @@ export function useSessionTrace(
   // whose comment once outran its code — is renderable in a test without the
   // UI package behind it.
   copy: { loadFailed: string; locale: UiLocale },
+  inspector: WorkbarInspectorService,
 ): SessionTraceSnapshot & {
   canHideEarlier: boolean;
   retry: () => void;
   loadEarlier: () => void;
   hideEarlier: () => void;
 } {
-  const { inspector } = useWorkbarServices();
   const traceRevisionRef = useRef(0);
   const summaryRevisionRef = useRef(0);
   const contextRevisionRef = useRef(0);

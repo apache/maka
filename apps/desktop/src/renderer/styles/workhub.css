@@ -161,6 +161,21 @@
   .workHubLive[data-placement='floating'][data-conversation-expanded='false'] .maka-model-wheel-anchor[data-open='true'] {
     width: min(264px, 55vw); height: var(--maka-model-wheel-height);
   }
+  .workHubLive .maka-thinking-level-menu {
+    background: color-mix(in oklch, var(--background-elevated) 94%, transparent);
+    backdrop-filter: blur(12px);
+  }
+  /* A compact native window cannot paint the thinking menu outside its bounds.
+     Keep the menu in the window and scroll its options without resizing the composer. */
+  .workHubLive[data-placement='floating'][data-conversation-expanded='false'] [popover]:has(> .maka-thinking-level-menu) {
+    position-area: none !important;
+    inset: 4px max(4px, calc(100vw - anchor(right))) auto auto;
+    margin: 0;
+  }
+  .workHubLive[data-placement='floating'][data-conversation-expanded='false'] .maka-thinking-level-menu {
+    max-height: min(300px, calc(100dvh - 8px));
+  }
+  .workHubContextInspector { height: 100%; overflow: auto; padding: var(--space-3); }
   .workHubComposerActions { display: flex; align-items: center; gap: 2px; margin-left: auto; }
   .workHubRevealMark { position: absolute; inset: 32px 0 calc(var(--workhub-composer-height, 96px) + 12px); display: grid; place-items: center; z-index: 3; color: var(--foreground); opacity: 0; pointer-events: none; }
   .workHubRevealMark svg { filter: drop-shadow(0 2px 12px var(--background)); }

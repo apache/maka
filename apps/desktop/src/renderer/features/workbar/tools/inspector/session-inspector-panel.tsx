@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import type { WorkbarInspectorService } from '../../ports.js';
 import { type ReactNode, useMemo, useState } from 'react';
 import { Banner } from '@astryxdesign/core/Banner';
 import { Button } from '@astryxdesign/core/Button';
@@ -63,14 +64,14 @@ import { useSessionTrace } from './use-session-trace.js';
  * like every other empty surface (EmptyState) rather than like a stray
  * paragraph.
  */
-export function SessionInspectorPanel(props: { sessionId: string; active: boolean }) {
+export function SessionInspectorPanel(props: { sessionId: string; active: boolean; inspector: WorkbarInspectorService }) {
   const locale = useUiLocale();
   const copy = getDesktopConversationCopy(locale).inspector;
   const toast = useToast();
   const snapshot = useSessionTrace(props.sessionId, props.active, {
     loadFailed: copy.loadFailed,
     locale,
-  });
+  }, props.inspector);
   const model = useMemo(() => deriveInspectorPanelModel(snapshot.trace), [snapshot.trace]);
   const overview = useMemo(
     () => deriveInspectorOverviewModel(snapshot.context, snapshot.summary),

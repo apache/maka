@@ -21,6 +21,9 @@ import { useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } fro
 import { ChatSurfaceLayout, UserQuestionPrompt, MakaWordmark, useUiLocale, type ComposerHandle } from '@maka/ui';
 import { Button, IconButton } from '@astryxdesign/core';
 import { ChevronDown, PictureInPicture2, Undo2, X } from '@maka/ui/icons';
+import { useLiveContextUsage } from '../../workbar/tools/inspector/use-live-context-usage.js';
+import { SessionInspectorPanel } from '../../workbar/tools/inspector/session-inspector-panel.js';
+import { selectLatestRequestUsage } from '../../../chat-composer-region.js';
 import { WorkHubProgressCard } from './workhub-progress-card.js';
 import { WorkHubComposer } from './workhub-composer.js';
 import { WorkHubConversation } from './workhub-conversation.js';
@@ -74,6 +77,13 @@ function WorkHubContents() {
   const { selectWork } = useContext(WorkHubHighlightContext);
   const controller = useWorkHubController(() => selectWork(undefined));
   const { services, session, transcript, busy } = controller;
+  const modelChoice = controller.choices.find((choice) =>
+    choice.connectionId === session?.llmConnectionId && choice.connectionSlug === session?.llmConnectionSlug && choice.model === session?.model,
+  );
+  const thinkingLevels = modelChoice?.thinkingLevels ?? [];
+  const liveContextUsage = useLiveContextUsage({ inspector: services.inspector, sessionId: controller.sessionId, model: session?.model, providerType: modelChoice?.providerType });
+  const [inspectingContext, setInspectingContext] = useState(false);
+  const thinkingLevel = session?.thinkingLevel && thinkingLevels.includes(session.thinkingLevel) ? session.thinkingLevel : undefined;
   const locale = useUiLocale();
   const t = workHubLiveCopy[locale];
   const shortcutLabel = navigator.platform.toLowerCase().includes('mac') ? '⌘⇧K' : 'Ctrl+Shift+K';
@@ -324,11 +334,28 @@ function WorkHubContents() {
               onStop={controller.stop}
               activeSession={session}
               activeModel={session?.model}
+              activeModelLabel={modelChoice?.label}
+              activeProviderType={modelChoice?.providerType}
               activeModelConnectionId={session?.llmConnectionId}
               activeModelConnectionSlug={session?.llmConnectionSlug}
               modelChoices={controller.choices}
               maxInputRows={progress && !editingProgress ? 1 : showConversation ? undefined : 6}
               onModelChange={controller.changeModel}
+              modelSwitchAvailability={controller.configuringModel ? { available: false, pending: true, reason: 'pending' } : undefined}
+              contextUsage={session ? {
+                usageTokens: liveContextUsage?.usageTokens ?? selectLatestRequestUsage(transcript.messages, transcript, session.model, session),
+                declaredContextWindow: modelChoice?.declaredContextWindow,
+                meteredContextWindow: liveContextUsage?.contextWindow,
+                metadataContextWindow: modelChoice?.contextWindow,
+                onOpen: () => {
+                  setInspectingContext(true);
+                  setConversationExpanded(true);
+                  if (progress) call(services.presentation.expandProgress(presentation.progressRequest));
+                },
+              } : undefined}
+              activeThinkingLevels={thinkingLevels}
+              activeThinkingLevel={thinkingLevel}
+              onThinkingLevelChange={controller.changeThinkingLevel}
               modelSwitchHasHistory={transcript.messages.length > 0}
               footerAccessory={
                 <div className="workHubComposerActions">
@@ -348,7 +375,10 @@ function WorkHubContents() {
         <div className="workhub-body">
         <WorkHubNavigationRail locale={locale} sessions={tasks} delegatedSessionIds={delegatedSessionIds} copy={getWorkHubRailCopy(locale)} />
         <div className="workhub-conversation-shell">
-        <WorkHubConversation
+        {inspectingContext && session ? <div className="workHubContextInspector">
+          <Button variant="ghost" size="sm" label={t.backToConversation} onClick={() => setInspectingContext(false)} />
+          <SessionInspectorPanel sessionId={session.id} active={showConversation} inspector={services.inspector} />
+        </div> : <WorkHubConversation
           promptStates={promptStates}
           workLinks={linksWithFeedback}
           onReadAttachmentBytes={services.readAttachmentBytes}
@@ -374,7 +404,7 @@ function WorkHubContents() {
               <p>{t.hint}</p>
             </div>
           }
-        />
+        />}
         </div></div>
         </div>
       </ChatSurfaceLayout>

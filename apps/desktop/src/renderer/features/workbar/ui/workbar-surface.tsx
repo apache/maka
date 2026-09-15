@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { useWorkbarServices } from '../services-context.js';
 import { lazy, Suspense, useState, type ReactNode } from 'react';
 import { Composer, useUiLocale, type ChatModelChoice } from '@maka/ui';
 import {
@@ -419,6 +420,7 @@ export function WorkbarSurface(props: {
   workBoardStartTaskEnabled?: boolean;
   confirmBypass: () => Promise<boolean>;
 }) {
+  const { inspector } = useWorkbarServices();
   const locale = useUiLocale();
   const copy = getDesktopConversationCopy(locale).workbar;
   const [artifactCount, setArtifactCount] = useState({ sessionId: props.sessionId, count: 0 });
@@ -559,6 +561,7 @@ export function WorkbarSurface(props: {
           content = (
             <Suspense fallback={<WorkbarPanelLoading label={copy.inspector} />}>
               <SessionInspectorPanel
+                inspector={inspector}
                 key={props.sessionId}
                 sessionId={props.sessionId!}
                 active={!props.hidden && active}

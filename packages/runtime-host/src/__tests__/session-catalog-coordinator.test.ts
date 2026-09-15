@@ -650,6 +650,43 @@ test('WorkHub model authority preserves its execution policy and uses versioned 
   assert.equal(corrupt.revision(), 3);
 });
 
+test('WorkHub thinking level persists, clears to default and rejects unsupported levels', async () => {
+  const fixture = createFixture({
+    header: {
+      id: WORKHUB_COORDINATION_SESSION_ID,
+      role: WORKHUB_COORDINATION_SESSION_ROLE,
+      toolProfile: 'workhub-coordination-v2',
+      permissionMode: 'bypass',
+    },
+    connection: {
+      providerType: 'openai-compatible',
+      modelOverrides: { 'model-1': { thinkingLevels: ['low', 'high'] } },
+    },
+  });
+  const modelTarget = {
+    kind: 'explicit' as const,
+    connectionId: 'connection-1',
+    connectionSlug: 'test',
+    model: 'model-1',
+  };
+  const set = (thinkingLevel: 'low' | 'high' | 'xhigh' | null) =>
+    fixture.coordinator.configureWorkHubModel({
+      expectedRevision: fixture.revision(),
+      modelTarget,
+      thinkingLevel,
+    });
+  assert.equal((await set('high')).ok, true);
+  assert.equal(fixture.header().thinkingLevel, 'high');
+  const revision = fixture.revision();
+  assert.equal((await set('xhigh')).ok, false);
+  assert.equal(fixture.revision(), revision);
+  assert.equal(fixture.header().thinkingLevel, 'high');
+  assert.equal((await set(null)).ok, true);
+  assert.equal(fixture.header().thinkingLevel, undefined);
+  assert.equal(fixture.header().permissionMode, 'bypass');
+  assert.equal(fixture.header().toolProfile, 'workhub-coordination-v2');
+});
+
 test('ordinary metadata and configuration reject a corrupt Coordination role on another identity', async () => {
   const corrupt = {
     ...sessionHeader('session-1', ['user-label']),

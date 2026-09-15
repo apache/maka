@@ -19,6 +19,7 @@
 
 import { useState } from 'react';
 import { ToastProvider, LocaleProvider, AstryxLocaleProvider, ChatSurfaceLayout } from '@maka/ui';
+import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { StoredMessage, SessionSummary } from '@maka/core/session';
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { expect, fn, userEvent, within, waitFor } from 'storybook/test';
@@ -32,7 +33,7 @@ const targetId = desktopSessionKey({ hostId: 'story-host', sessionId: 'payments'
 const writes = { answer: fn(), model: fn(), upload: fn(), open: fn(), question: fn(), form: fn() };
 const choices = ['model-a', 'model-b'].map((model, index) => ({
   connectionId: 'connection-test', connectionSlug: 'test', connectionName: 'Test', providerType: 'openai' as const,
-  providerLabel: 'OpenAI', model, label: model, isDefault: index === 0, thinkingLevels: [],
+  providerLabel: 'OpenAI', model, label: model, contextWindow: 100_000, isDefault: index === 0, thinkingLevels: ['low', 'high'] as ThinkingLevel[],
 }));
 function makeServices(failFirst: boolean, withHistory: boolean, coloredHistory: boolean, selectTarget = false, question = false, progress = false): WorkHubServices {
   let failures = failFirst ? 1 : 0;
@@ -75,6 +76,13 @@ function makeServices(failFirst: boolean, withHistory: boolean, coloredHistory: 
   const publishExecution = () => updateExecution?.({ type: 'host_execution', available: true, rootTurn: pendingForm ? { sessionId, turnId: pendingForm.turnId, runId: 'selection-run', status: 'waiting_for_user' } : questionPending ? { sessionId, turnId: 'question-turn', runId: 'question-run', status: 'waiting_for_user' } : null });
   const publish = () => { publishExecution(); updateTranscript?.({ messages, hasOlder: false, hasNewer: false, ready: true }); };
   return {
+    inspector: {
+      context: async () => ({ ok: true, data: { status: 'available', completedAt: 1, modelId: session.model, providerId: 'openai', inputTokens: 1000, contextWindow: 100_000 } }),
+      trace: async () => ({ ok: false, error: { code: 'unavailable', message: 'No trace in this fixture' } }),
+      summary: async () => ({ ok: false, error: { code: 'unavailable', message: 'No usage summary in this fixture' } }),
+      subscribeSessionEvents: () => () => {},
+      subscribeUsageChanges: () => () => {},
+    },
     retractQueueEntry: async () => {}, promoteQueueEntry: async () => {},
     updateQueueEntry: async () => {}, reorderQueueEntries: async () => {},
     enqueueMessage: async () => 'admitted',
@@ -129,7 +137,7 @@ function makeServices(failFirst: boolean, withHistory: boolean, coloredHistory: 
       publish(); return { kind: 'admitted', turnId: input.turnId };
     },
     configureModel: async (id, input) => {
-      writes.model(id, input); session = { ...session, revision: session.revision + 1, model: input.modelTarget.model }; updateSessions?.();
+      writes.model(id, input); session = { ...session, revision: session.revision + 1, model: input.modelTarget.model, thinkingLevel: input.thinkingLevel ?? undefined }; updateSessions?.();
       return { kind: 'committed', session: { ...session, workspace: { target: { kind: 'host_path', path: '/projects/maka' }, hostCwd: '/projects/maka' }, createdAt: 0, activityAt: 0, labelsTruncated: false, llmConnectionId: 'connection-test', collaborationMode: 'agent', orchestrationMode: 'default' } };
     },
     observe: (_id, _event, _error, _phase, execution) => { updateExecution = execution; publishExecution(); return () => { updateExecution = undefined; }; },
@@ -183,6 +191,7 @@ export const StandardComposer: Story = {
     Object.values(writes).forEach((spy) => spy.mockClear());
     const canvas = within(canvasElement); const page = within(canvasElement.ownerDocument.body);
     await waitFor(() => expect(canvas.getByRole('button', { name: /切换当前任务模型/ })).toBeEnabled());
+    await waitFor(() => expect(canvas.getByRole('button', { name: '打开用量追踪' }).textContent).toContain('1%'));
     const trigger = canvas.getByRole('button', { name: /切换当前任务模型/ });
     const layout = () => Array.from(canvasElement.querySelectorAll('.maka-composer-editor, .maka-composer button')).map((element) => {
       const { x, y, width, height } = element.getBoundingClientRect();
@@ -226,6 +235,29 @@ export const StandardComposer: Story = {
     await userEvent.click(editor); await userEvent.type(editor, 'Review requirements'); await userEvent.keyboard('{Enter}');
     await waitFor(() => expect(writes.answer).toHaveBeenCalledWith(sessionId, expect.objectContaining({ text: 'Review requirements', attachments: [expect.objectContaining({ name: 'requirements.txt' })] })));
     await waitFor(() => expect(canvasElement.querySelectorAll('.maka-composer-attachment-token')).toHaveLength(0));
+  },
+};
+// Real path: WorkHub composer → thinking level → choose an override or restore the default.
+export const ThinkingLevelPicker: Story = {
+  render: () => <Surface />,
+  play: async ({ canvasElement }) => {
+    Object.values(writes).forEach((spy) => spy.mockClear());
+    const canvas = within(canvasElement); const page = within(canvasElement.ownerDocument.body);
+    await waitFor(() => expect(canvas.getByRole('button', { name: '思考级别: 默认' })).toBeEnabled());
+    const usage = canvas.getByRole('button', { name: '打开用量追踪' });
+    await waitFor(() => expect(usage.textContent).toContain('1%'));
+    await userEvent.click(usage);
+    await userEvent.click(await canvas.findByRole('button', { name: '返回对话' }));
+    await userEvent.click(canvas.getByRole('button', { name: '思考级别: 默认' }));
+    await userEvent.click(page.getByRole('menuitemradio', { name: /^高$/ }));
+    await waitFor(() => expect(canvas.getByRole('button', { name: '思考级别: 高' })).toBeEnabled());
+    await expect(writes.model).toHaveBeenCalledWith(sessionId, expect.objectContaining({ thinkingLevel: 'high' }));
+    await userEvent.click(canvas.getByRole('button', { name: '思考级别: 高' }));
+    await userEvent.click(page.getByRole('menuitemradio', { name: /^默认$/ }));
+    await waitFor(() => expect(canvas.getByRole('button', { name: '思考级别: 默认' })).toBeEnabled());
+    await expect(writes.model).toHaveBeenLastCalledWith(sessionId, expect.objectContaining({ expectedRevision: 2, thinkingLevel: null }));
+    await userEvent.click(canvas.getByRole('button', { name: '思考级别: 默认' }));
+    await expect(page.getByRole('menuitemradio', { name: /^默认$/ })).toHaveAttribute('aria-checked', 'true');
   },
 };
 // Real path: a floating WorkHub progress card → edit its composer → open the model picker.

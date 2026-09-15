@@ -12,7 +12,7 @@ index b317e9d..5beb1c2 100644
    timeoutMs?: number;
    /** @defaultValue `64 * 1024 * 1024` */
 diff --git a/node_modules/@maka/runtime/node_modules/@ai-sdk/code-mode/src/run-code-mode.ts b/node_modules/@maka/runtime/node_modules/@ai-sdk/code-mode/src/run-code-mode.ts
-index 95435bd..fb7ba60 100644
+index 95435bd..30a3ac9 100644
 --- a/node_modules/@maka/runtime/node_modules/@ai-sdk/code-mode/src/run-code-mode.ts
 +++ b/node_modules/@maka/runtime/node_modules/@ai-sdk/code-mode/src/run-code-mode.ts
 @@ -159,6 +159,7 @@
@@ -31,7 +31,25 @@ index 95435bd..fb7ba60 100644
      memoryLimitBytes: policy.memoryLimitBytes ?? DEFAULT_MEMORY_LIMIT_BYTES,
      maxStackSizeBytes: policy.maxStackSizeBytes ?? DEFAULT_STACK_LIMIT_BYTES,
      maxResultBytes: policy.maxResultBytes ?? DEFAULT_MAX_RESULT_BYTES,
-@@ -363,6 +365,7 @@
+@@ -202,13 +204,11 @@
+ }
+ 
+ function createCodeModeSource(js: string, toolNames: string[]): string {
+-  const bindings = Object.fromEntries(
+-    toolNames.map((toolName, index) => [toolName, `__codeMode.tool${index}`]),
+-  );
+-  const bindingSource = Object.entries(bindings)
+-    .map(([name, reference]) => `${JSON.stringify(name)}:${reference}`)
++  // Expose only the active catalog: unknown names must not look callable.
++  const bindingSource = toolNames
++    .map((name, index) => `[${JSON.stringify(name)}]:(input)=>__codeMode.tool${index}(input)`)
+     .join(',');
+-  return `const __codeModeBindings={${bindingSource}};const tools=new Proxy(Object.create(null),{get(_target,name){const binding=__codeModeBindings[name];return typeof binding==="function"?(input)=>binding(input):(input)=>__codeMode.missing(String(name),input);}});const __codeModeResult=await(async()=>{\n${js}\n})();if(__codeModeResult===undefined)return undefined;return JSON.parse(JSON.stringify(__codeModeResult));`;
++  return `const tools=Object.freeze({__proto__:null,${bindingSource}});const __codeModeResult=await(async()=>{\n${js}\n})();if(__codeModeResult===undefined)return undefined;return JSON.parse(JSON.stringify(__codeModeResult));`;
+ }
+ 
+ function createHostFunctions({
+@@ -363,6 +363,7 @@
  ): RunLimits {
    return {
      timeoutMs: policy.timeoutMs,
@@ -53,7 +71,7 @@ index 9cafdbb..3c924f1 100644
      timeoutMs?: number;
      /** @defaultValue `64 * 1024 * 1024` */
 diff --git a/node_modules/@maka/runtime/node_modules/@ai-sdk/code-mode/dist/run-code-mode.js b/node_modules/@maka/runtime/node_modules/@ai-sdk/code-mode/dist/run-code-mode.js
-index 257b976..8095276 100644
+index 257b976..f4b2717 100644
 --- a/node_modules/@maka/runtime/node_modules/@ai-sdk/code-mode/dist/run-code-mode.js
 +++ b/node_modules/@maka/runtime/node_modules/@ai-sdk/code-mode/dist/run-code-mode.js
 @@ -117,6 +117,7 @@
@@ -64,7 +82,26 @@ index 257b976..8095276 100644
      memoryLimitBytes: policy.memoryLimitBytes ?? DEFAULT_MEMORY_LIMIT_BYTES,
      maxStackSizeBytes: policy.maxStackSizeBytes ?? DEFAULT_STACK_LIMIT_BYTES,
      maxResultBytes: policy.maxResultBytes ?? DEFAULT_MAX_RESULT_BYTES,
-@@ -260,6 +261,7 @@
+@@ -138,13 +139,11 @@
+   }
+ }
+ function createCodeModeSource(js, toolNames) {
+-  const bindings = Object.fromEntries(
+-    toolNames.map((toolName, index) => [toolName, `__codeMode.tool${index}`])
+-  );
+-  const bindingSource = Object.entries(bindings).map(([name, reference]) => `${JSON.stringify(name)}:${reference}`).join(",");
+-  return `const __codeModeBindings={${bindingSource}};const tools=new Proxy(Object.create(null),{get(_target,name){const binding=__codeModeBindings[name];return typeof binding==="function"?(input)=>binding(input):(input)=>__codeMode.missing(String(name),input);}});const __codeModeResult=await(async()=>{
+-${js}
+-})();if(__codeModeResult===undefined)return undefined;return JSON.parse(JSON.stringify(__codeModeResult));`;
++  // Expose only the active catalog: unknown names must not look callable.
++  const bindingSource = toolNames
++    .map((name, index) => `[${JSON.stringify(name)}]:(input)=>__codeMode.tool${index}(input)`)
++    .join(",");
++  return `const tools=Object.freeze({__proto__:null,${bindingSource}});const __codeModeResult=await(async()=>{\n${js}\n})();if(__codeModeResult===undefined)return undefined;return JSON.parse(JSON.stringify(__codeModeResult));`;
+ }
+ function createHostFunctions({
+   codeModeErrors,
+@@ -260,6 +259,7 @@
  function toRunLimits(policy, source, userSource) {
    return {
      timeoutMs: policy.timeoutMs,

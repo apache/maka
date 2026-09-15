@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { AttachmentRef } from '@maka/core/events';
 import { isWorkHubActionResult, type WorkHubActionResult } from '@maka/core/workhub-action-result';
 import { decodeMessageContent } from './turn.js';
@@ -54,23 +55,32 @@ import {
 export interface WorkHubCoordinationConfigureModelInput {
   readonly expectedRevision: number;
   readonly modelTarget: Extract<SessionModelTarget, { readonly kind: 'explicit' }>;
+  readonly thinkingLevel?: ThinkingLevel | null;
 }
 
 export function decodeWorkHubCoordinationConfigureModelInput(
   value: unknown,
 ): WorkHubCoordinationConfigureModelInput {
-  const input = requireExactRecord(value, 'WorkHub model configuration', [
-    'expectedRevision',
-    'modelTarget',
-  ]);
+  const input = requireShapedRecord(
+    value,
+    'WorkHub model configuration',
+    ['expectedRevision', 'modelTarget'],
+    ['thinkingLevel'],
+  );
   const decoded = decodeSessionConfigurationUpdateInput({
     sessionId: WORKHUB_COORDINATION_SESSION_ID,
     expectedRevision: input.expectedRevision,
-    patch: { modelTarget: input.modelTarget },
+    patch: {
+      modelTarget: input.modelTarget,
+      ...(input.thinkingLevel === undefined ? {} : { thinkingLevel: input.thinkingLevel }),
+    },
   });
   return {
     expectedRevision: decoded.expectedRevision,
     modelTarget: decoded.patch.modelTarget!,
+    ...(decoded.patch.thinkingLevel === undefined
+      ? {}
+      : { thinkingLevel: decoded.patch.thinkingLevel }),
   };
 }
 
@@ -255,7 +265,10 @@ export const WORKHUB_COORDINATION_OPERATION_SPECS = {
         {
           sessionId: WORKHUB_COORDINATION_SESSION_ID,
           expectedRevision: input.expectedRevision,
-          patch: { modelTarget: input.modelTarget },
+          patch: {
+            modelTarget: input.modelTarget,
+            ...(input.thinkingLevel === undefined ? {} : { thinkingLevel: input.thinkingLevel }),
+          },
         },
         output,
       ),

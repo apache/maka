@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { useWorkbarServices } from '../../renderer/features/workbar/services-context.js';
 import { strict as assert } from 'node:assert';
 import { afterEach, describe, it } from 'node:test';
 import { act, createElement } from 'react';
@@ -226,7 +227,7 @@ function TraceProbe(props: {
   onSnapshot?: (trace: SessionTrace | undefined) => void;
   onHookSnapshot?: (snapshot: ReturnType<typeof useSessionTrace>) => void;
 }) {
-  const snapshot = useSessionTrace(props.sessionId, props.active, COPY);
+  const snapshot = useSessionTrace(props.sessionId, props.active, COPY, useWorkbarServices().inspector);
   props.onSnapshot?.(snapshot.trace);
   props.onHookSnapshot?.(snapshot);
   return null;
