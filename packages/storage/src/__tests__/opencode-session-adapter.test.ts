@@ -25,7 +25,10 @@ import { join } from 'node:path';
 import { describe, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { decodeCanonicalMessage } from '@maka/core/session';
-import { ExternalSessionLimitError } from '@maka/core/external-session';
+import {
+  ExternalSessionCatalogCursorError,
+  ExternalSessionLimitError,
+} from '@maka/core/external-session';
 import { createExternalSessionAdapterRegistry } from '../external-session-adapters.js';
 import {
   OPENCODE_SESSION_ADAPTER_ID,
@@ -155,14 +158,21 @@ describe('OpenCodeSessionAdapter', () => {
         db.close();
       }
       const adapter = new OpenCodeSessionAdapter({ opencodeHome: home });
-      const first = await adapter.listSessions({ cwd: '/repo', offset: 0, limit: 3 });
-      const second = await adapter.listSessions({ cwd: '/repo', offset: 3, limit: 3 });
-      assert.equal(first.length, 3);
-      assert.equal(second.length, 3);
-      assert.equal(first[0]?.id, 'ses_created_fallback');
-      assert.equal(first[0]?.updatedAt, 10_000);
-      assert.equal(new Set([...first, ...second].map(({ id }) => id)).size, 6);
-      assert.ok(![...first, ...second].some(({ id }) => id === 'ses_archived'));
+      const first = await adapter.listSessionPage({ cwd: '/repo', limit: 3 });
+      const cursor = first.items.at(-1)?.nextCursor;
+      assert.ok(cursor);
+      const second = await adapter.listSessionPage({ cwd: '/repo', cursor, limit: 3 });
+      const summaries = [...first.items, ...second.items].map(({ summary }) => summary);
+      assert.equal(first.items.length, 3);
+      assert.equal(second.items.length, 3);
+      assert.equal(first.items[0]?.summary.id, 'ses_created_fallback');
+      assert.equal(first.items[0]?.summary.updatedAt, 10_000);
+      assert.equal(new Set(summaries.map(({ id }) => id)).size, 6);
+      assert.ok(!summaries.some(({ id }) => id === 'ses_archived'));
+      await assert.rejects(
+        adapter.listSessionPage({ cwd: '/other', cursor, limit: 3 }),
+        (error: unknown) => error instanceof ExternalSessionCatalogCursorError,
+      );
     });
   });
 

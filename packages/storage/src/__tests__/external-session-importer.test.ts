@@ -256,7 +256,7 @@ function fakeAdapter(
   return {
     id: 'fake',
     detect: async () => true,
-    listSessions: async () => [],
+    listSessionPage: async () => ({ items: [], hasMore: false }),
     readSession: async (sourceSessionId) => ({ sourceSessionId, ...session }),
   };
 }

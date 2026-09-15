@@ -38,7 +38,7 @@ export interface ExternalSessionQuery {
    * worse than offering no search at all.
    */
   text?: string;
-  /** Adapter-side page offset. Host-owned callers use this after filtering and sorting. */
+  /** Compatibility offset used inside concrete adapters, outside the Host adapter seam. */
   offset?: number;
   /** Maximum summaries returned. Adapters must apply it before returning to the Host. */
   limit?: number;
@@ -243,10 +243,8 @@ export interface ExternalSessionAdapter {
 
   detect(): Promise<boolean>;
 
-  listSessions(query?: ExternalSessionQuery): Promise<readonly ExternalSessionSummary[]>;
-
-  /** Optional source-owned paging for catalogs with an opaque continuation key. */
-  listSessionPage?(query: ExternalSessionCatalogPageQuery): Promise<ExternalSessionCatalogPage>;
+  /** Source-owned paging; callers never interpret the opaque continuation key. */
+  listSessionPage(query: ExternalSessionCatalogPageQuery): Promise<ExternalSessionCatalogPage>;
 
   readSession(sessionId: string): Promise<ExternalMakaSession>;
 }

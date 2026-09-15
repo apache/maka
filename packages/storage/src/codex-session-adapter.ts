@@ -17,7 +17,6 @@
  * under the License.
  */
 
-import { createHash } from 'node:crypto';
 import type { Dirent } from 'node:fs';
 import { open, readdir, realpath, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -37,6 +36,7 @@ import type {
   ExternalSessionQuery,
   ExternalSessionSummary,
 } from '@maka/core/external-session';
+import { externalSessionCatalogQueryHash } from './offset-external-session-catalog.js';
 
 export const CODEX_SESSION_ADAPTER_ID = 'codex';
 export const CODEX_ROLLOUT_MAX_BYTES = 2 * 1024 * 1024 * 1024;
@@ -1121,24 +1121,11 @@ function candidateKeyset(
   return { kind: 'filesystem', mtimeMs: candidate.mtimeMs, pathKey: candidate.catalogKey };
 }
 
-function catalogKeysetQueryHash(query: ExternalSessionCatalogPageQuery): string {
-  return createHash('sha256')
-    .update(
-      JSON.stringify({
-        cwd: query.cwd ?? null,
-        includeArchived: query.includeArchived ?? false,
-        text: query.text ?? null,
-      }),
-    )
-    .digest('base64url')
-    .slice(0, 22);
-}
-
 function encodeCatalogKeyset(
   query: ExternalSessionCatalogPageQuery,
   keyset: CodexCatalogKeyset,
 ): string {
-  const queryHash = catalogKeysetQueryHash(query);
+  const queryHash = externalSessionCatalogQueryHash(query);
   if (keyset.kind === 'database') {
     return `d:${queryHash}:${Buffer.from(keyset.stateDatabase).toString('base64url')}:${encodeCursorNumber(keyset.sortTimestamp)}:${Buffer.from(keyset.id).toString('base64url')}`;
   }
@@ -1151,7 +1138,7 @@ function decodeCatalogKeyset(
 ): CodexCatalogKeyset | undefined {
   if (cursor === undefined) return undefined;
   const parts = cursor.split(':');
-  if (parts[1] !== catalogKeysetQueryHash(query)) {
+  if (parts[1] !== externalSessionCatalogQueryHash(query)) {
     throw new ExternalSessionCatalogCursorError();
   }
   if (parts[0] === 'd') {

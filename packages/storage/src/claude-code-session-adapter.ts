@@ -41,6 +41,8 @@ import {
 import type {
   ExternalMakaSession,
   ExternalSessionAdapter,
+  ExternalSessionCatalogPage,
+  ExternalSessionCatalogPageQuery,
   ExternalSessionQuery,
   ExternalSessionSummary,
 } from '@maka/core/external-session';
@@ -49,6 +51,7 @@ import {
   TranscriptLineageIndexer,
   type TranscriptRecord,
 } from './claude-code-transcript-lineage.js';
+import { listOffsetExternalSessionCatalogPage } from './offset-external-session-catalog.js';
 
 export const CLAUDE_CODE_SESSION_ADAPTER_ID = 'claude-code';
 
@@ -182,6 +185,12 @@ export class ClaudeCodeSessionAdapter implements ExternalSessionAdapter {
       if (!live.has(path)) this.#summaries.delete(path);
     }
     return summaries;
+  }
+
+  async listSessionPage(
+    query: ExternalSessionCatalogPageQuery,
+  ): Promise<ExternalSessionCatalogPage> {
+    return listOffsetExternalSessionCatalogPage(query, (pageQuery) => this.listSessions(pageQuery));
   }
 
   /**
