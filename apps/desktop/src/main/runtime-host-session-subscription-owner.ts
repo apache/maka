@@ -451,14 +451,13 @@ function subscriptionClosedError(
 
 function isRecoverableSubscriptionFailure(error: unknown): boolean {
   if (error instanceof RuntimeHostOperationError) {
-    return error.operation === "session.transcript.page" && error.code === "not_found";
+    return error.operation === 'session.transcript.page' && error.code === 'not_found';
   }
   if (!(error instanceof RuntimeHostSubscriptionError)) return false;
   return (
-    error.reason === "slow_consumer" ||
-    error.reason === "sequence_gap" ||
-    error.reason === "projection_revision_invalid" ||
-    error.reason === "transcript_release_failed"
+    error.reason === 'slow_consumer' ||
+    error.reason === 'sequence_gap' ||
+    error.reason === 'projection_revision_invalid'
   );
 }
 
