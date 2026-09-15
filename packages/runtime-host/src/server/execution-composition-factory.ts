@@ -29,6 +29,7 @@ import {
 } from './host-composition.js';
 
 export interface ExecutionRuntimeHostCompositionSourceOptions {
+  readonly initialization?: import('../client/connect-or-spawn.js').HostedRuntimeInitialization;
   readonly projectDirectoryRoots?: readonly PublishedProjectDirectoryRoot[];
 }
 
@@ -44,6 +45,7 @@ export async function createExecutionRuntimeHostCompositionSource(
   dependencies: ExecutionRuntimeHostCompositionDependencies = {},
 ): Promise<RuntimeHostCompositionSource> {
   const compositionOptions = {
+    ...(options.initialization ? { initialization: options.initialization } : {}),
     ...(options.projectDirectoryRoots
       ? { projectDirectoryRoots: options.projectDirectoryRoots }
       : {}),

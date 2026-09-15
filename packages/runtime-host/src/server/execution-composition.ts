@@ -284,6 +284,7 @@ const CONTEXT_OFFLOAD_LIMITS: ContextOffloadLimits = Object.freeze({
 });
 
 export interface CreateExecutionRuntimeHostCompositionOptions {
+  readonly initialization?: import('../client/connect-or-spawn.js').HostedRuntimeInitialization;
   readonly bootstrapRuntimePolicy?: boolean;
   readonly skillHomeDirectory?: string;
   readonly projectDirectoryRoots?: readonly PublishedProjectDirectoryRoot[];
@@ -318,6 +319,7 @@ export async function createExecutionRuntimeHostComposition(
         await ensureBootstrapRuntimePolicy({
           workspaceRoot: context.owner.capability.canonicalPath,
           stores,
+          initialization: options.initialization,
           onDeferredError: (error) =>
             console.error(
               `[runtime-host] optional bootstrap target could not be configured: ${generalizedErrorMessage(error)}`,

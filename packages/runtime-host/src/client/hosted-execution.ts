@@ -24,11 +24,16 @@ import {
   type HostedExecutionProjection,
   type HostedExecutionStartInput,
 } from '../protocol/index.js';
-import { connectOwnedRuntimeHost } from './connect-or-spawn.js';
+import { connectOwnedRuntimeHost, type HostedRuntimeInitialization } from './connect-or-spawn.js';
 import type { RuntimeHostConnection } from './connection.js';
-import { configureHostedExecutionTarget } from './hosted-execution-target.js';
+import {
+  configureHostedExecutionTarget,
+  type HostedExecutionTargetInput,
+} from './hosted-execution-target.js';
 
 export interface RunHostedExecutionInput {
+  readonly initialization?: HostedRuntimeInitialization;
+  readonly connection?: HostedExecutionTargetInput['connection'];
   readonly rootPath: string;
   readonly execution: HostedExecutionClientStartInput;
   readonly baseUrl?: string;
@@ -68,6 +73,7 @@ export async function runHostedExecutionWithDependencies(
     return indeterminate(input.execution.executionId, 'Hosted execution was cancelled');
   }
   const initial = await dependencies.connectOwnedRuntimeHost({
+    ...(input.initialization ? { initialization: input.initialization } : {}),
     rootPath: input.rootPath,
     protocol: {
       min: RUNTIME_HOST_PROTOCOL_VERSION,
@@ -100,6 +106,7 @@ export async function runHostedExecutionWithDependencies(
           connectionSlug: target.connectionSlug,
           model: target.model,
           baseUrl: input.baseUrl,
+          ...(input.connection ? { connection: input.connection } : {}),
         },
         input.signal,
       );

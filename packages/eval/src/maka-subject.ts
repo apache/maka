@@ -18,6 +18,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { PROVIDER_REGISTRY } from '@maka/core/llm-connections';
 import { isThinkingLevel } from '@maka/core/model-thinking';
 import { isSessionToolProfile, type SessionToolProfile } from '@maka/core/session';
 import { decodeHostedExecutionProjection } from '@maka/runtime-host/protocol';
@@ -35,7 +36,16 @@ import type { SubjectAdapter, SubjectExecutionContext } from './runner.js';
 export function createMakaSubjectAdapter(): SubjectAdapter {
   return {
     kind: 'maka',
-    validate: (cell) => decodeConfig(cell.subject.config),
+    validate: (cell) => {
+      const config = decodeConfig(cell.subject.config);
+      if (
+        config.apiKeyEnvironment &&
+        !cell.subject.credentials.includes(config.apiKeyEnvironment)
+      ) {
+        throw new Error('Maka apiKeyEnvironment must name a declared subject credential');
+      }
+      return config;
+    },
     async execute({ cell, context }) {
       const config = decodeConfig(cell.subject.config);
       const executionId = randomUUID();
@@ -62,6 +72,14 @@ export function createMakaSubjectAdapter(): SubjectAdapter {
           rootPath: `${config.runtimeHostsPath}/${executionId}`,
           artifactRoot: MAKA_RUNTIME_ARTIFACT_PATH,
           baseUrl: config.baseUrl,
+          ...(config.providerType
+            ? {
+                connection: {
+                  providerType: config.providerType,
+                  apiKeyEnvironment: config.apiKeyEnvironment,
+                },
+              }
+            : {}),
           hostSettlementTimeoutMs: config.hostSettlementTimeoutMs,
           execution: input,
         }),
@@ -260,6 +278,8 @@ function makaArtifacts(
 }
 
 interface MakaConfig {
+  readonly providerType?: NonNullable<RunHostedExecutionInput['connection']>['providerType'];
+  readonly apiKeyEnvironment?: string;
   readonly nodePath: string;
   readonly shimPath: string;
   readonly runtimeHostsPath: string;
@@ -282,6 +302,7 @@ function decodeConfig(value: JsonObject): MakaConfig {
     'baseUrl',
     'connectionSlug',
     'model',
+    ...(Object.hasOwn(value, 'providerType') ? ['providerType', 'apiKeyEnvironment'] : []),
     ...(Object.hasOwn(value, 'thinkingLevel') ? ['thinkingLevel'] : []),
     'permissionMode',
     'collaborationMode',
@@ -290,6 +311,12 @@ function decodeConfig(value: JsonObject): MakaConfig {
     'toolProfile',
   ];
   const config = exact(value, fields);
+  if (
+    config.providerType !== undefined &&
+    !Object.hasOwn(PROVIDER_REGISTRY, String(config.providerType))
+  ) {
+    throw new Error('Maka config.providerType is invalid');
+  }
   if (config.thinkingLevel !== undefined && !isThinkingLevel(config.thinkingLevel)) {
     throw new Error('Maka config.thinkingLevel is invalid');
   }

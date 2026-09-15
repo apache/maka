@@ -25,6 +25,10 @@ import { abortable } from './wait-for-ready.js';
 type TargetConnection = Pick<RuntimeHostConnection, 'request'>;
 
 export interface HostedExecutionTargetInput {
+  readonly connection?: {
+    readonly providerType: import('@maka/core/llm-connections').ProviderType;
+    readonly apiKey: string;
+  };
   readonly connectionSlug: string;
   readonly model: string;
   readonly baseUrl: string;
@@ -42,13 +46,38 @@ export async function configureHostedExecutionTarget(
   signal?: AbortSignal,
 ): Promise<ConfiguredHostedExecutionTarget> {
   const before = await abortable(() => readRuntimeHostConnectionCatalog(connection), signal);
-  const target = before.connections.find((candidate) => candidate.slug === input.connectionSlug);
+  let target = before.connections.find((candidate) => candidate.slug === input.connectionSlug);
+  let changed = false;
+  const onboarding = input.connection;
+  if (!target && onboarding) {
+    const saved = await abortable(
+      () =>
+        connection.request('connection.onboarding.save', {
+          target: {
+            kind: 'create',
+            providerType: onboarding.providerType,
+            slug: input.connectionSlug,
+            name: input.connectionSlug,
+          },
+          apiKey: onboarding.apiKey,
+          baseUrl: input.baseUrl,
+          enabledModelIds: [input.model],
+        }),
+      signal,
+    );
+    if (saved.kind !== 'saved') throw new Error('Runtime Host connection onboarding failed');
+    const catalog = await abortable(() => readRuntimeHostConnectionCatalog(connection), signal);
+    target = catalog.connections.find((candidate) => candidate.slug === input.connectionSlug);
+    changed = true;
+  }
   if (!target) throw new Error('Runtime Host connection is unavailable');
+  if (input.connection && target.providerType !== input.connection.providerType) {
+    throw new Error('Runtime Host connection provider does not match');
+  }
 
   const baseUrl = new URL(input.baseUrl).toString();
   const enabledModelIds = [...new Set([...target.enabledModelIds, input.model])];
   const endpointChanged = canonicalBaseUrl(effectiveBaseUrl(target)) !== baseUrl;
-  let changed = false;
   if (endpointChanged || !target.enabled || !target.enabledModelIds.includes(input.model)) {
     const updated = await abortable(
       () =>

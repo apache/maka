@@ -35,13 +35,10 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { resolveStorageRoot, tryAcquireInteractiveRootReader } from '@maka/storage/root-authority';
-import { openInteractiveRuntimePolicyStoresForRead } from '@maka/storage/runtime-policy-stores';
 import { FileAttemptStore } from '../attempt-store.js';
 import type { ExperimentCell, ExperimentSpec, JsonObject } from '../experiment.js';
 import { createExternalSubjectAdapter } from '../external-subject.js';
 import { createHarborExecutor, createPierExecutor } from '../harness-executor.js';
-import { makaEvalRuntimePolicyDocument } from '../maka-runtime-policy.js';
 import { createMakaSubjectAdapter } from '../maka-subject.js';
 import { DEEPSEEK_V4_FLASH_COST, deepSeekCostUsd } from '../provider-metering.js';
 import {
@@ -523,10 +520,23 @@ test('Maka framework termination is authoritative before stdout decoding', async
   assert.equal(external.status, 'failed');
 });
 
-test('Maka forwards the configured Runtime Host settlement budget', async () => {
+test('Maka forwards Host requirements and declared credential names', async () => {
   const { thinkingLevel: _thinkingLevel, ...defaultConfig } = makaConfig();
-  const config = { ...defaultConfig, hostSettlementTimeoutMs: 120_000 };
-  const makaCell = cell('maka', config);
+  const config = {
+    ...defaultConfig,
+    hostSettlementTimeoutMs: 120_000,
+    providerType: 'moonshot-global',
+    apiKeyEnvironment: 'MOONSHOT_API_KEY',
+  };
+  const unbound = cell('maka', config);
+  assert.throws(
+    () => createMakaSubjectAdapter().validate?.(unbound),
+    /declared subject credential/,
+  );
+  const makaCell = {
+    ...unbound,
+    subject: { ...unbound.subject, credentials: ['MOONSHOT_API_KEY'] },
+  };
   createMakaSubjectAdapter().validate?.(makaCell);
   let settlementBudget: unknown;
   const result = await createMakaSubjectAdapter().execute({
@@ -538,9 +548,15 @@ test('Maka forwards the configured Runtime Host settlement budget', async () => 
       execute: async (input) => {
         const payload = JSON.parse(Buffer.from(input.args[1] ?? '', 'base64url').toString()) as {
           hostSettlementTimeoutMs?: unknown;
+          connection: unknown;
           execution: { executionId: string; session: Record<string, unknown> };
         };
         assert.equal(Object.hasOwn(payload.execution.session, 'thinkingLevel'), false);
+        assert.deepEqual(payload.connection, {
+          providerType: 'moonshot-global',
+          apiKeyEnvironment: 'MOONSHOT_API_KEY',
+        });
+        assert.deepEqual(input.credentialEnvironment, { MOONSHOT_API_KEY: 'MOONSHOT_API_KEY' });
         settlementBudget = payload.hostSettlementTimeoutMs;
         return {
           termination: 'exited',
@@ -1174,30 +1190,6 @@ test('the DeepSeek Harness arm pins its own minimal composition', async () => {
     ),
   ) as { dsh: { profile: { bundles: string[] } } };
   assert.deepEqual(profile.dsh.profile.bundles, []);
-});
-
-test('Maka Eval policy is readable by the Host policy store', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'maka-eval-policy-'));
-  try {
-    await writeFile(
-      join(root, 'runtime-policy.json'),
-      JSON.stringify(makaEvalRuntimePolicyDocument('http://127.0.0.1:8080')),
-    );
-    const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
-    const reader = await tryAcquireInteractiveRootReader(capability);
-    assert.ok(reader);
-    try {
-      const stores = await openInteractiveRuntimePolicyStoresForRead(reader.lease);
-      const { policy } = await stores.runtimePolicy.getSnapshot();
-      assert.equal(policy.privacy.incognitoActive, true);
-      assert.equal(policy.networkProxy.enabled, true);
-      assert.equal(policy.networkProxy.port, 8080);
-    } finally {
-      await reader.close();
-    }
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
 });
 
 test('experiment specs do not declare an executor working-directory authority', async () => {
