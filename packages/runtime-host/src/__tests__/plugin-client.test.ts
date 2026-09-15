@@ -23,6 +23,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, test } from 'node:test';
 import { PLUGIN_CLIENT_BUNDLE_CHUNK_MAX_BYTES } from '../protocol/plugin-platform.js';
+import { Context } from '@maka/runtime/plugin-kernel';
+import { MakaCompositionLoader } from '@maka/runtime/plugin-composition-loader';
+import { PluginClientBridgeService } from '@maka/runtime/plugin-client-bridge-service';
+import { HostPluginPlatformCoordinator } from '../server/plugin-platform-coordinator.js';
 import { HostPluginPlatform } from '../server/plugin-platform.js';
 
 const roots: string[] = [];
@@ -148,5 +152,104 @@ test('desktop-ui rejects a Host-only package instead of running Host code as Cli
     assert.deepEqual((await platform.clientSnapshot()).entries, []);
   } finally {
     await platform.close();
+  }
+});
+
+test('Client Remote is generation-fenced and streams are connection-owned', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-plugin-client-remote-'));
+  roots.push(root);
+  const source = join(root, 'source');
+  await mkdir(source);
+  await writeFile(
+    join(source, 'maka.extension.json'),
+    JSON.stringify({
+      schemaVersion: 1,
+      id: 'bridge',
+      runtime: { entry: 'host.js' },
+      client: { entry: 'client.js' },
+      composition: { patch: 'maka.composition.yml' },
+    }),
+  );
+  await writeFile(
+    join(source, 'host.js'),
+    `export default {packageId:"bridge",host:{apply(ctx){
+      ctx.clientBridge.rpc({name:"bridge.echo",invoke(input){return input;}});
+      ctx.clientBridge.stream({name:"bridge.count",open:async function*(){yield 1;yield 2;}});
+    }}};`,
+  );
+  await writeFile(
+    join(source, 'client.js'),
+    'window.__MakaModuleLoader__.load({id:"bridge",factory:()=>({apply(){}})});',
+  );
+  await writeFile(
+    join(source, 'maka.composition.yml'),
+    JSON.stringify([
+      { type: 'insert', rootId: 'profile', entry: { id: 'bridge-host', packageId: 'bridge' } },
+      { type: 'insert', rootId: 'desktop-ui', entry: { id: 'bridge-ui', packageId: 'bridge' } },
+    ]),
+  );
+
+  const pluginRoot = new Context();
+  const clientBridge = new PluginClientBridgeService(pluginRoot);
+  const platform = new HostPluginPlatform(join(root, 'control'), {
+    composition: new MakaCompositionLoader({ root: pluginRoot }),
+    clientBridge,
+  });
+  const coordinator = new HostPluginPlatformCoordinator(platform);
+  await platform.recover();
+  try {
+    await platform.installPackage(source);
+    const snapshot = await platform.clientSnapshot();
+    const entry = snapshot.entries[0]!;
+    const fence = {
+      authorityEpoch: snapshot.authorityEpoch,
+      revision: snapshot.revision,
+      entryId: entry.entryId,
+      extensionId: entry.extensionId,
+      generation: entry.generation,
+      contentDigest: entry.contentDigest,
+      clientDigest: entry.clientDigest,
+    };
+    const context = {
+      connectionId: 'renderer-a',
+      hostEpoch: 'host',
+      principal: 'owner',
+      acquireResidency: () => ({ release() {} }),
+    };
+    assert.deepEqual(
+      await coordinator.handlers['plugin.client.remote.call'](
+        { ...fence, method: 'bridge.echo', input: { ok: true } },
+        context,
+      ),
+      { ok: true, result: { value: { ok: true } } },
+    );
+    const stale = await coordinator.handlers['plugin.client.remote.call'](
+      { ...fence, revision: `sha256-${'f'.repeat(64)}`, method: 'bridge.echo', input: null },
+      context,
+    );
+    assert.equal(stale.ok ? undefined : stale.error.code, 'operation_conflict');
+
+    const opened = await coordinator.handlers['plugin.client.remote.stream.open'](
+      { ...fence, method: 'bridge.count', input: null },
+      context,
+    );
+    assert.equal(opened.ok, true);
+    if (!opened.ok) return;
+    const denied = await coordinator.handlers['plugin.client.remote.stream.next'](
+      { streamId: opened.result.streamId },
+      { ...context, connectionId: 'renderer-b' },
+    );
+    assert.equal(denied.ok ? undefined : denied.error.code, 'not_found');
+    assert.deepEqual(
+      await coordinator.handlers['plugin.client.remote.stream.next'](
+        { streamId: opened.result.streamId },
+        context,
+      ),
+      { ok: true, result: { done: false, value: 1 } },
+    );
+    coordinator.releaseConnection(context.connectionId);
+  } finally {
+    await platform.close();
+    await pluginRoot.fiber.dispose();
   }
 });

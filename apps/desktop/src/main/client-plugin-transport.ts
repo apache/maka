@@ -19,6 +19,8 @@
 
 import { createHash, randomUUID } from 'node:crypto';
 import type {
+  OperationInput,
+  OperationOutput,
   PluginClientCompositionEntry,
   PluginClientQueryInput,
   PluginClientQueryResult,
@@ -29,11 +31,25 @@ import { handleReconnectableRead, type ReconnectableReadIpcMain } from './ipc-re
 
 export const MAKA_CLIENT_PLUGIN_SCHEME = 'maka-client-plugin';
 
+type ClientPluginOperation =
+  | 'plugin.client.query'
+  | 'plugin.client.remote.call'
+  | 'plugin.client.remote.stream.open'
+  | 'plugin.client.remote.stream.next'
+  | 'plugin.client.remote.stream.close';
+
 export interface ClientPluginQueryClient {
   request(
     operation: 'plugin.client.query',
     input: PluginClientQueryInput,
   ): Promise<PluginClientQueryResult>;
+}
+
+export interface ClientPluginRemoteClient {
+  request<K extends ClientPluginOperation>(
+    operation: K,
+    input: OperationInput<K>,
+  ): Promise<OperationOutput<K>>;
 }
 
 interface BundleRoute {
@@ -137,11 +153,23 @@ export class ClientPluginTransport {
 
 export function registerClientPluginIpc(input: {
   readonly ipcMain: ReconnectableReadIpcMain;
-  readonly client: ClientPluginQueryClient;
+  readonly client: ClientPluginQueryClient & ClientPluginRemoteClient;
   readonly transport: ClientPluginTransport;
 }): void {
   handleReconnectableRead(input.ipcMain, 'client-plugins:snapshot', () =>
     input.transport.snapshot(input.client),
+  );
+  input.ipcMain.handle('client-plugins:remote:call', (_event, request) =>
+    input.client.request('plugin.client.remote.call', request),
+  );
+  input.ipcMain.handle('client-plugins:remote:stream:open', (_event, request) =>
+    input.client.request('plugin.client.remote.stream.open', request),
+  );
+  input.ipcMain.handle('client-plugins:remote:stream:next', (_event, request) =>
+    input.client.request('plugin.client.remote.stream.next', request),
+  );
+  input.ipcMain.handle('client-plugins:remote:stream:close', (_event, request) =>
+    input.client.request('plugin.client.remote.stream.close', request),
   );
 }
 

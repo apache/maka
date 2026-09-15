@@ -19,6 +19,18 @@
 
 import type { ReactNode } from 'react';
 import { useSyncExternalStore } from 'react';
+import type {
+  MakaClientProductEventMap,
+  MakaClientProductEventName,
+  MakaClientProductEventOptions,
+  MakaClientRemoteInput,
+  MakaClientRemoteMethodName,
+  MakaClientRemoteOutput,
+  MakaClientRemoteOptions,
+  MakaClientRemoteStreamInput,
+  MakaClientRemoteStreamItem,
+  MakaClientRemoteStreamName,
+} from '@maka/core/client-plugin-bridge';
 import {
   MakaClientSlotCore,
   MakaClientSlotProvider,
@@ -83,6 +95,25 @@ export interface MakaClientPluginContext {
   readonly extensionId: string;
   readonly generation: number;
   readonly slots: MakaClientPluginSlots;
+  readonly remote: {
+    call<const Name extends MakaClientRemoteMethodName>(
+      name: Name,
+      input: MakaClientRemoteInput<Name>,
+      options?: MakaClientRemoteOptions,
+    ): Promise<MakaClientRemoteOutput<Name>>;
+    stream<const Name extends MakaClientRemoteStreamName>(
+      name: Name,
+      input: MakaClientRemoteStreamInput<Name>,
+      options?: MakaClientRemoteOptions,
+    ): AsyncIterable<MakaClientRemoteStreamItem<Name>>;
+  };
+  readonly events: {
+    on<const Name extends MakaClientProductEventName>(
+      name: Name,
+      options: MakaClientProductEventOptions<Name>,
+      listener: (event: MakaClientProductEventMap[Name]) => void,
+    ): () => void;
+  };
   /** Stage an owned side effect. Setup runs only if the whole snapshot commits. */
   effect(setup: () => void | (() => void | Promise<void>), label?: string): () => void;
   /** Stage Client CSS with lifecycle-owned removal. */
@@ -178,6 +209,38 @@ export interface ClientPluginRuntimeOptions {
   readonly staticModules: Readonly<Record<string, unknown>>;
   readonly loadBundle?: (descriptor: MakaClientPluginDescriptor) => Promise<void>;
   readonly document?: Pick<Document, 'createElement' | 'head'>;
+  readonly remote?: MakaClientRemoteTransport;
+  readonly productEvents?: MakaClientProductEventTransport;
+}
+
+export interface MakaClientRemoteRequest {
+  readonly authorityEpoch: number;
+  readonly revision: string;
+  readonly entryId: string;
+  readonly extensionId: string;
+  readonly generation: number;
+  readonly contentDigest: string;
+  readonly clientDigest: string;
+  readonly method: string;
+  readonly input: unknown;
+  readonly sessionId?: string;
+}
+
+export interface MakaClientRemoteTransport {
+  call(input: MakaClientRemoteRequest): Promise<{ readonly value: unknown }>;
+  open(input: MakaClientRemoteRequest): Promise<{ readonly streamId: string }>;
+  next(input: { readonly streamId: string }): Promise<
+    { readonly done: false; readonly value: unknown } | { readonly done: true }
+  >;
+  close(input: { readonly streamId: string }): Promise<unknown>;
+}
+
+export interface MakaClientProductEventTransport {
+  subscribe<const Name extends MakaClientProductEventName>(
+    name: Name,
+    options: MakaClientProductEventOptions<Name>,
+    listener: (event: MakaClientProductEventMap[Name]) => void,
+  ): () => void;
 }
 
 /** Trusted Renderer module runtime with whole-snapshot stage/swap rollback. */
@@ -186,6 +249,8 @@ export class ClientPluginRuntime {
   readonly #staticModules: Readonly<Record<string, unknown>>;
   readonly #loadBundle: (descriptor: MakaClientPluginDescriptor) => Promise<void>;
   readonly #document: Pick<Document, 'createElement' | 'head'> | undefined;
+  readonly #remote: MakaClientRemoteTransport | undefined;
+  readonly #productEvents: MakaClientProductEventTransport | undefined;
   readonly #factories = new Map<string, MakaClientBundleRegistration['factory']>();
   readonly #modules = new Map<string, Record<string, unknown>>();
   #pending: MakaClientPluginDescriptor | undefined;
@@ -200,6 +265,8 @@ export class ClientPluginRuntime {
     this.#staticModules = options.staticModules;
     this.#document = options.document ?? globalThis.document;
     this.#loadBundle = options.loadBundle ?? ((descriptor) => this.#loadScript(descriptor));
+    this.#remote = options.remote;
+    this.#productEvents = options.productEvents;
   }
 
   readonly loader: MakaClientModuleLoaderTarget = {
@@ -264,7 +331,7 @@ export class ClientPluginRuntime {
       for (const descriptor of uniqueBundles(ordered)) await this.#ensureFactory(descriptor);
       if (this.#closed) throw new Error('Client Plugin Runtime is closed');
       for (const descriptor of ordered) {
-        staged.push(await this.#stage(descriptor, byExtension, slots));
+        staged.push(await this.#stage(descriptor, byExtension, slots, snapshot));
       }
       if (this.#closed) throw new Error('Client Plugin Runtime is closed');
       for (const instance of staged) await commitEffects(instance);
@@ -353,6 +420,7 @@ export class ClientPluginRuntime {
     descriptor: MakaClientPluginDescriptor,
     byExtension: ReadonlyMap<string, MakaClientPluginDescriptor>,
     slots: MakaClientSlotCore,
+    snapshot: MakaClientPluginSnapshot,
   ): Promise<PluginInstance> {
     const exports = this.#materialize(descriptor, byExtension, new Set());
     const apply = exports.apply ?? exports.default;
@@ -365,7 +433,7 @@ export class ClientPluginRuntime {
       slotDisposers: [],
       effects: [],
     };
-    const context = this.#context(instance, slots);
+    const context = this.#context(instance, slots, snapshot);
     const cleanup = await (apply as MakaClientPluginApply)(context, descriptor.config ?? {});
     if (typeof cleanup === 'function') {
       instance.effects.push({ setup: () => cleanup, cancelled: false });
@@ -373,7 +441,11 @@ export class ClientPluginRuntime {
     return instance;
   }
 
-  #context(instance: PluginInstance, slots: MakaClientSlotCore): MakaClientPluginContext {
+  #context(
+    instance: PluginInstance,
+    slots: MakaClientSlotCore,
+    snapshot: MakaClientPluginSnapshot,
+  ): MakaClientPluginContext {
     const register = (options: { readonly name?: string }, component: unknown): (() => void) => {
       if (options?.name === 'root') {
         if (typeof component !== 'function') {
@@ -405,15 +477,47 @@ export class ClientPluginRuntime {
       slots: Object.freeze({
         register,
       }) as MakaClientPluginSlots,
+      remote: Object.freeze({
+        call: async <Name extends MakaClientRemoteMethodName>(
+          name: Name,
+          input: MakaClientRemoteInput<Name>,
+          options?: MakaClientRemoteOptions,
+        ): Promise<MakaClientRemoteOutput<Name>> => {
+          const remote = this.#remote;
+          if (!remote) throw new Error('Client Plugin Remote transport is unavailable');
+          const result = await remote.call(
+            remoteRequest(snapshot, instance.descriptor, name, input, options),
+          );
+          return result.value as MakaClientRemoteOutput<Name>;
+        },
+        stream: <Name extends MakaClientRemoteStreamName>(
+          name: Name,
+          input: MakaClientRemoteStreamInput<Name>,
+          options?: MakaClientRemoteOptions,
+        ): AsyncIterable<MakaClientRemoteStreamItem<Name>> => {
+          const remote = this.#remote;
+          if (!remote) throw new Error('Client Plugin Remote transport is unavailable');
+          const request = remoteRequest(snapshot, instance.descriptor, name, input, options);
+          return remoteStream(remote, request) as AsyncIterable<MakaClientRemoteStreamItem<Name>>;
+        },
+      }),
+      events: Object.freeze({
+        on: <Name extends MakaClientProductEventName>(
+          name: Name,
+          options: MakaClientProductEventOptions<Name>,
+          listener: (event: MakaClientProductEventMap[Name]) => void,
+        ) => {
+          validateProductEventOptions(name, options);
+          if (typeof listener !== 'function') {
+            throw new Error('Client Plugin product event listener must be a function');
+          }
+          const productEvents = this.#productEvents;
+          if (!productEvents) throw new Error('Client Plugin product events are unavailable');
+          return stageEffect(instance, () => productEvents.subscribe(name, options, listener));
+        },
+      }),
       effect: (setup: () => void | (() => void | Promise<void>)) => {
-        if (typeof setup !== 'function') throw new Error('Client Plugin effect must be a function');
-        const effect: StagedEffect = { setup, cancelled: false };
-        instance.effects.push(effect);
-        return () => {
-          effect.cancelled = true;
-          void Promise.resolve().then(() => effect.cleanup?.()).catch(() => undefined);
-          effect.cleanup = undefined;
-        };
+        return stageEffect(instance, setup);
       },
       style: (css: string, label?: string) => {
         if (typeof css !== 'string') throw new Error('Client Plugin CSS must be a string');
@@ -554,6 +658,80 @@ function normalizeModuleId(value: string): string {
 
 function moduleKey(descriptor: MakaClientPluginDescriptor): string {
   return `${descriptor.extensionId}\u0000${descriptor.clientDigest}`;
+}
+
+function remoteRequest(
+  snapshot: MakaClientPluginSnapshot,
+  descriptor: MakaClientPluginDescriptor,
+  method: string,
+  input: unknown,
+  options?: MakaClientRemoteOptions,
+): MakaClientRemoteRequest {
+  return Object.freeze({
+    authorityEpoch: snapshot.authorityEpoch,
+    revision: snapshot.revision,
+    entryId: descriptor.entryId,
+    extensionId: descriptor.extensionId,
+    generation: descriptor.generation,
+    contentDigest: descriptor.contentDigest,
+    clientDigest: descriptor.clientDigest,
+    method,
+    input,
+    ...(options?.sessionId ? { sessionId: options.sessionId } : {}),
+  });
+}
+
+function remoteStream(
+  transport: MakaClientRemoteTransport,
+  request: MakaClientRemoteRequest,
+): AsyncIterable<unknown> {
+  let consumed = false;
+  return Object.freeze({
+    async *[Symbol.asyncIterator]() {
+      if (consumed) throw new Error('Client Plugin Remote stream can only be consumed once');
+      consumed = true;
+      let streamId: string | undefined;
+      try {
+        streamId = (await transport.open(request)).streamId;
+        while (true) {
+          const result = await transport.next({ streamId });
+          if (result.done) return;
+          yield result.value;
+        }
+      } finally {
+        if (streamId) await transport.close({ streamId }).catch(() => undefined);
+      }
+    },
+  });
+}
+
+function validateProductEventOptions<Name extends MakaClientProductEventName>(
+  name: Name,
+  options: MakaClientProductEventOptions<Name>,
+): void {
+  if (name === 'session.changed') {
+    if (options.sessionId !== undefined) {
+      throw new Error('session.changed does not accept a Session id');
+    }
+    return;
+  }
+  if (!options.sessionId) throw new Error(`${name} requires a Session id`);
+}
+
+function stageEffect(
+  instance: PluginInstance,
+  setup: () => void | (() => void | Promise<void>),
+): () => void {
+  if (typeof setup !== 'function') throw new Error('Client Plugin effect must be a function');
+  const effect: StagedEffect = { setup, cancelled: false };
+  instance.effects.push(effect);
+  return () => {
+    effect.cancelled = true;
+    void Promise.resolve()
+      .then(() => effect.cleanup?.())
+      .catch(() => undefined);
+    effect.cleanup = undefined;
+  };
 }
 
 async function commitEffects(instance: PluginInstance): Promise<void> {

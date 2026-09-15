@@ -83,6 +83,7 @@
     "./plan-tools": "./dist/plan-tools.js",
     "./plugin-composition-loader": "./dist/plugin-composition-loader.js",
     "./plugin-command-service": "./dist/plugin-command-service.js",
+    "./plugin-client-bridge-service": "./dist/plugin-client-bridge-service.js",
     "./plugin-data-services": "./dist/plugin-data-services.js",
     "./plugin-executor-backend": "./dist/plugin-executor-backend.js",
     "./plugin-executor-service": "./dist/plugin-executor-service.js",

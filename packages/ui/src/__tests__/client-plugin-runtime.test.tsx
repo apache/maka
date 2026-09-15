@@ -27,9 +27,19 @@ import {
   type MakaClientPluginContext,
   type MakaClientPluginDescriptor,
   type MakaClientPluginSnapshot,
+  type MakaClientRemoteRequest,
   MakaClientRoot,
   MakaClientRootOutlet,
 } from '../client-plugin-runtime.js';
+
+declare module '@maka/core/client-plugin-bridge' {
+  interface MakaClientRemoteMethodMap {
+    readonly 'fixture.echo': import('@maka/core/client-plugin-bridge').MakaClientRemoteMethod<
+      { readonly text: string },
+      { readonly text: string }
+    >;
+  }
+}
 
 function descriptor(extensionId: string, generation: number): MakaClientPluginDescriptor {
   return Object.freeze({
@@ -213,4 +223,62 @@ test('Client Runtime atomically keeps the previous typed Slots when a candidate 
   assert.equal(sidebar?.occupants[0]?.id, 'generation-1');
   assert.match(runtime.inspect().failure?.diagnostic ?? '', /slot candidate failed/u);
   await runtime.close();
+});
+
+test('Client Runtime binds Remote identity and owns product-event subscriptions', async () => {
+  const root = new MakaClientRoot();
+  const calls: MakaClientRemoteRequest[] = [];
+  const subscriptions: string[] = [];
+  let context!: MakaClientPluginContext;
+  let runtime!: ClientPluginRuntime;
+  runtime = new ClientPluginRuntime({
+    root,
+    staticModules: {},
+    remote: {
+      call: async (input) => {
+        calls.push(input);
+        return { value: input.input };
+      },
+      open: async () => ({ streamId: 'unused' }),
+      next: async () => ({ done: true }),
+      close: async () => undefined,
+    },
+    productEvents: {
+      subscribe: (name) => {
+        subscriptions.push(`open:${name}`);
+        return () => subscriptions.push(`close:${name}`);
+      },
+    },
+    loadBundle: async (plugin) => {
+      runtime.registerBundle({
+        id: plugin.extensionId,
+        factory: () => ({
+          apply(ctx: MakaClientPluginContext) {
+            context = ctx;
+            ctx.events.on('session.changed', {}, () => undefined);
+          },
+        }),
+      });
+    },
+  });
+
+  const plugin = descriptor('remote-owner', 7);
+  await runtime.reconcile(snapshot(9, plugin));
+  assert.deepEqual(subscriptions, ['open:session.changed']);
+  assert.deepEqual(await context.remote.call('fixture.echo', { text: 'hello' }), {
+    text: 'hello',
+  });
+  assert.deepEqual(calls[0], {
+    authorityEpoch: 9,
+    revision: `sha256-${String(9).padStart(64, '0')}`,
+    entryId: plugin.entryId,
+    extensionId: plugin.extensionId,
+    generation: plugin.generation,
+    contentDigest: plugin.contentDigest,
+    clientDigest: plugin.clientDigest,
+    method: 'fixture.echo',
+    input: { text: 'hello' },
+  });
+  await runtime.close();
+  assert.deepEqual(subscriptions, ['open:session.changed', 'close:session.changed']);
 });

@@ -46,6 +46,8 @@ export function ClientPluginRoot(props: { readonly children?: ReactNode }) {
   useEffect(() => {
     const runtime = new ClientPluginRuntime({
       root,
+      remote: services.clientPlugins.remote,
+      productEvents: services.clientPlugins.productEvents,
       staticModules: Object.freeze({
         react: ReactModule,
         'react/jsx-runtime': ReactJsxRuntime,

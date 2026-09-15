@@ -1364,6 +1364,14 @@ test('Plugin Platform recovery removes orphaned bundle import roots', async () =
 test('Plugin Platform protocol rejects open and malformed generic composition shapes', () => {
   assert.equal(operationAllowsRemoteOwner('plugin.client.query'), true);
   for (const operation of [
+    'plugin.client.remote.call',
+    'plugin.client.remote.stream.open',
+    'plugin.client.remote.stream.next',
+    'plugin.client.remote.stream.close',
+  ] as const) {
+    assert.equal(operationAllowsRemoteOwner(operation), true);
+  }
+  for (const operation of [
     'plugin.platform.query',
     'plugin.platform.reconcile',
     'plugin.package.install',
@@ -1381,6 +1389,41 @@ test('Plugin Platform protocol rejects open and malformed generic composition sh
       input: { kind: 'snapshot' },
     }).operation,
     'plugin.client.query',
+  );
+  assert.equal(
+    decodeRequestFrame({
+      requestId: 'plugin-client-remote',
+      operation: 'plugin.client.remote.call',
+      input: {
+        authorityEpoch: 1,
+        revision: `sha256-${'a'.repeat(64)}`,
+        entryId: 'fixture-ui',
+        extensionId: 'fixture-package',
+        generation: 2,
+        contentDigest: `sha256-${'b'.repeat(64)}`,
+        clientDigest: `sha256-${'c'.repeat(64)}`,
+        method: 'fixture.echo',
+        input: { value: true },
+      },
+    }).operation,
+    'plugin.client.remote.call',
+  );
+  assert.throws(() =>
+    decodeRequestFrame({
+      requestId: 'plugin-client-remote-invalid',
+      operation: 'plugin.client.remote.call',
+      input: {
+        authorityEpoch: 1,
+        revision: `sha256-${'a'.repeat(64)}`,
+        entryId: 'fixture-ui',
+        extensionId: 'fixture-package',
+        generation: 2,
+        contentDigest: `sha256-${'b'.repeat(64)}`,
+        clientDigest: `sha256-${'c'.repeat(64)}`,
+        method: 'fixture.echo',
+        input: undefined,
+      },
+    }),
   );
   assert.equal(
     decodeRequestFrame({

@@ -38,6 +38,11 @@ import type { PluginToolInspection } from '@maka/runtime/plugin-tool-service';
 import type { PluginSystemPromptInspection } from '@maka/runtime/plugin-system-prompt-service';
 import type { PluginCommandInspection } from '@maka/runtime/plugin-command-service';
 import type { PluginExecutorInspection } from '@maka/runtime/plugin-executor-service';
+import type {
+  PluginClientBridgeService,
+  PluginClientRemoteTarget,
+  PluginClientStreamBinding,
+} from '@maka/runtime/plugin-client-bridge-service';
 import { validateExtensionConfiguration } from './extension-package-manifest.js';
 import { recoverExtensionBundleImports } from './extension-bundle.js';
 import { loadPluginCompositionPatch } from './plugin-composition-patch.js';
@@ -52,6 +57,8 @@ import type {
   PluginClientCompositionEntry,
   PluginClientQueryInput,
   PluginClientQueryResult,
+  PluginClientRemoteCallInput,
+  PluginClientRemoteFence,
   PluginMutationReceipt,
   PluginPackageProjection,
   PluginPlatformConvergence,
@@ -70,7 +77,8 @@ export class HostPluginPlatformError extends Error {
       | 'recovery_failed'
       | 'mutation_failed'
       | 'not_ready'
-      | 'stale_cursor',
+      | 'stale_cursor'
+      | 'client_generation_conflict',
     message: string,
     options?: ErrorOptions,
   ) {
@@ -91,6 +99,7 @@ export interface HostPluginPlatformOptions {
   readonly executors?: {
     inspect(rootId?: MakaPluginRootId): readonly PluginExecutorInspection[];
   };
+  readonly clientBridge?: PluginClientBridgeService;
 }
 
 export interface HostPluginPlatformFailure {
@@ -130,6 +139,7 @@ export class HostPluginPlatform {
   readonly #systemPrompt?: HostPluginPlatformOptions['systemPrompt'];
   readonly #commands?: HostPluginPlatformOptions['commands'];
   readonly #executors?: HostPluginPlatformOptions['executors'];
+  readonly #clientBridge?: PluginClientBridgeService;
 
   #authority: PersistedPluginComposition = emptyCompositionAuthority();
   #desired: MakaCompositionState = emptyCompositionState();
@@ -158,6 +168,7 @@ export class HostPluginPlatform {
     this.#systemPrompt = options.systemPrompt;
     this.#commands = options.commands;
     this.#executors = options.executors;
+    this.#clientBridge = options.clientBridge;
   }
 
   async recover(): Promise<void> {
@@ -634,6 +645,57 @@ export class HostPluginPlatform {
       revision,
       entries: Object.freeze(entries),
       failures,
+    });
+  }
+
+  async invokeClientRemote(
+    input: PluginClientRemoteCallInput,
+    signal?: AbortSignal,
+  ): Promise<unknown> {
+    return await this.read(async () => {
+      const target = await this.#verifyClientRemoteFence(input);
+      if (!this.#clientBridge) {
+        throw new PluginPackageLoaderError('not_found', 'Plugin Client Remote is unavailable');
+      }
+      return await this.#clientBridge.invoke(target, input.method, input.input, signal);
+    });
+  }
+
+  async openClientRemoteStream(
+    input: PluginClientRemoteCallInput,
+    signal?: AbortSignal,
+  ): Promise<PluginClientStreamBinding> {
+    return await this.read(async () => {
+      const target = await this.#verifyClientRemoteFence(input);
+      if (!this.#clientBridge) {
+        throw new PluginPackageLoaderError('not_found', 'Plugin Client Remote is unavailable');
+      }
+      return await this.#clientBridge.open(target, input.method, input.input, signal);
+    });
+  }
+
+  async #verifyClientRemoteFence(
+    fence: PluginClientRemoteFence,
+  ): Promise<PluginClientRemoteTarget> {
+    const snapshot = await this.clientSnapshot();
+    const entry = snapshot.entries.find(({ entryId }) => entryId === fence.entryId);
+    if (
+      snapshot.authorityEpoch !== fence.authorityEpoch ||
+      snapshot.revision !== fence.revision ||
+      !entry ||
+      entry.extensionId !== fence.extensionId ||
+      entry.generation !== fence.generation ||
+      entry.contentDigest !== fence.contentDigest ||
+      entry.clientDigest !== fence.clientDigest
+    ) {
+      throw new HostPluginPlatformError(
+        'client_generation_conflict',
+        `Plugin Client generation is stale: ${fence.extensionId}`,
+      );
+    }
+    return Object.freeze({
+      extensionId: fence.extensionId,
+      ...(fence.sessionId ? { sessionId: fence.sessionId } : {}),
     });
   }
 

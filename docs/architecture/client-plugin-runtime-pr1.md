@@ -22,7 +22,8 @@
 This change makes a trusted Renderer bundle part of the same package, immutable
 generation, and composition authority as a Host plugin. It also provides a
 typed, recursively extensible Slot graph and a compatibility-governed public UI
-SDK. Host-to-Client RPC and product events remain a separate follow-up.
+SDK. The Host Remote and product-event follow-up contract is documented in
+`client-plugin-remote-events-pr3.md`.
 
 ## Unified package
 

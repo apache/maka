@@ -19,7 +19,7 @@
 
 import { JsonArrayPageBudget } from './json-array-page-budget.js';
 
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   MakaPluginRuntimeError,
   type MakaCompositionApplyInput,
@@ -28,9 +28,15 @@ import {
 import type { PluginToolInspection } from '@maka/runtime/plugin-tool-service';
 import type { PluginCommandInspection } from '@maka/runtime/plugin-command-service';
 import type { PluginExecutorInspection } from '@maka/runtime/plugin-executor-service';
+import {
+  PluginClientBridgeError,
+  type PluginClientStreamBinding,
+} from '@maka/runtime/plugin-client-bridge-service';
 import type {
   OperationOutcome,
   PluginClientQueryInput,
+  PluginClientRemoteCallInput,
+  PluginClientRemoteStreamNextInput,
   PluginPackageExportInput,
   PluginPackageInstallInput,
   PluginPackageProjection,
@@ -42,15 +48,32 @@ import type {
 import { PLUGIN_PLATFORM_QUERY_RESULT_MAX_BYTES } from '../protocol/plugin-platform.js';
 import { ExtensionBundleError } from './extension-bundle.js';
 import { ExtensionPackageManifestError } from './extension-package-manifest.js';
-import type { PluginPlatformOperationHandlerMap } from './operation-dispatcher.js';
+import type {
+  ConnectionContext,
+  PluginPlatformOperationHandlerMap,
+} from './operation-dispatcher.js';
 import { PluginCompositionPatchError } from './plugin-composition-patch.js';
 import { PluginPackageLoaderError } from './plugin-package-loader.js';
 import { PluginPackageStoreError } from './plugin-package-store.js';
 import { HostPluginPlatform, HostPluginPlatformError } from './plugin-platform.js';
 
 export class HostPluginPlatformCoordinator {
+  readonly #streams = new Map<
+    string,
+    {
+      readonly connectionId: string;
+      readonly binding: PluginClientStreamBinding;
+      reading: boolean;
+    }
+  >();
+
   readonly handlers: PluginPlatformOperationHandlerMap = {
     'plugin.client.query': (input) => this.#client(input),
+    'plugin.client.remote.call': (input, context) => this.#remoteCall(input, context),
+    'plugin.client.remote.stream.open': (input, context) => this.#remoteStreamOpen(input, context),
+    'plugin.client.remote.stream.next': (input, context) => this.#remoteStreamNext(input, context),
+    'plugin.client.remote.stream.close': (input, context) =>
+      this.#remoteStreamClose(input, context),
     'plugin.platform.query': (input) => this.#query(input),
     'plugin.package.install': (input) => this.#install(input),
     'plugin.package.uninstall': (input) => this.#uninstall(input),
@@ -61,6 +84,95 @@ export class HostPluginPlatformCoordinator {
   };
 
   constructor(readonly platform: HostPluginPlatform) {}
+
+  releaseConnection(connectionId: string): void {
+    for (const [streamId, stream] of this.#streams) {
+      if (stream.connectionId !== connectionId) continue;
+      this.#streams.delete(streamId);
+      void stream.binding.close().catch(() => undefined);
+    }
+  }
+
+  async #remoteCall(
+    input: PluginClientRemoteCallInput,
+    context: ConnectionContext,
+  ): Promise<OperationOutcome<'plugin.client.remote.call'>> {
+    try {
+      return {
+        ok: true,
+        result: { value: await this.platform.invokeClientRemote(input, context.inputClosedSignal) },
+      };
+    } catch (error) {
+      return failure(error);
+    }
+  }
+
+  async #remoteStreamOpen(
+    input: PluginClientRemoteCallInput,
+    context: ConnectionContext,
+  ): Promise<OperationOutcome<'plugin.client.remote.stream.open'>> {
+    try {
+      if (
+        [...this.#streams.values()].filter(
+          ({ connectionId }) => connectionId === context.connectionId,
+        ).length >= 32
+      ) {
+        return failed('operation_conflict', 'Plugin Client Remote stream limit reached');
+      }
+      const binding = await this.platform.openClientRemoteStream(input, context.inputClosedSignal);
+      const streamId = randomUUID();
+      this.#streams.set(streamId, { connectionId: context.connectionId, binding, reading: false });
+      return { ok: true, result: { streamId } };
+    } catch (error) {
+      return failure(error);
+    }
+  }
+
+  async #remoteStreamNext(
+    input: PluginClientRemoteStreamNextInput,
+    context: ConnectionContext,
+  ): Promise<OperationOutcome<'plugin.client.remote.stream.next'>> {
+    const stream = this.#ownedStream(input.streamId, context.connectionId);
+    if (!stream) return failed('not_found', 'Plugin Client Remote stream is unavailable');
+    if (stream.reading) {
+      return failed('operation_conflict', 'Plugin Client Remote stream already has an active pull');
+    }
+    stream.reading = true;
+    try {
+      const result = await stream.binding.next();
+      if (result.done) {
+        this.#streams.delete(input.streamId);
+        return { ok: true, result: { done: true } };
+      }
+      return { ok: true, result: { done: false, value: result.value } };
+    } catch (error) {
+      this.#streams.delete(input.streamId);
+      await stream.binding.close().catch(() => undefined);
+      return failure(error);
+    } finally {
+      stream.reading = false;
+    }
+  }
+
+  async #remoteStreamClose(
+    input: PluginClientRemoteStreamNextInput,
+    context: ConnectionContext,
+  ): Promise<OperationOutcome<'plugin.client.remote.stream.close'>> {
+    const stream = this.#ownedStream(input.streamId, context.connectionId);
+    if (!stream) return failed('not_found', 'Plugin Client Remote stream is unavailable');
+    this.#streams.delete(input.streamId);
+    try {
+      await stream.binding.close();
+      return { ok: true, result: { streamId: input.streamId } };
+    } catch (error) {
+      return failure(error);
+    }
+  }
+
+  #ownedStream(streamId: string, connectionId: string) {
+    const stream = this.#streams.get(streamId);
+    return stream?.connectionId === connectionId ? stream : undefined;
+  }
 
   async #client(input: PluginClientQueryInput): Promise<OperationOutcome<'plugin.client.query'>> {
     try {
@@ -323,6 +435,9 @@ function failure<K extends keyof PluginPlatformOperationHandlerMap>(
   if (error instanceof HostPluginPlatformError) {
     if (error.code === 'not_ready') return failed('host_not_ready', error.message);
     if (error.code === 'stale_cursor') return failed('stale_cursor', error.message);
+    if (error.code === 'client_generation_conflict') {
+      return failed('operation_conflict', error.message);
+    }
     if (error.code === 'closed') return failed('host_draining', error.message);
     if (error.code === 'persistence_failed') return failed('persistence_failed', error.message);
     if (error.code === 'recovery_failed') return failed('persistence_failed', error.message);
@@ -331,6 +446,11 @@ function failure<K extends keyof PluginPlatformOperationHandlerMap>(
     }
     if (error.code === 'mutation_failed' && error.cause) return failure(error.cause);
     return failed('internal_failure', error.message);
+  }
+  if (error instanceof PluginClientBridgeError) {
+    if (error.code === 'not_found') return failed('not_found', error.message);
+    if (error.code === 'invalid_input') return failed('invalid_request', error.message);
+    return failed('operation_conflict', error.message);
   }
   if (error instanceof PluginPackageStoreError) {
     if (error.code === 'not_found') return failed('not_found', error.message);

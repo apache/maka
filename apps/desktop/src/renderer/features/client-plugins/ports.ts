@@ -17,10 +17,16 @@
  * under the License.
  */
 
-import type { MakaClientPluginSnapshot } from '@maka/ui/client-plugin-runtime';
+import type {
+  MakaClientPluginSnapshot,
+  MakaClientProductEventTransport,
+  MakaClientRemoteTransport,
+} from '@maka/ui/client-plugin-runtime';
 
 export interface ClientPluginServices {
   readonly clientPlugins: {
     snapshot(): Promise<MakaClientPluginSnapshot>;
+    readonly remote: MakaClientRemoteTransport;
+    readonly productEvents: MakaClientProductEventTransport;
   };
 }

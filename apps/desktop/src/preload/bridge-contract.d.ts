@@ -766,6 +766,18 @@ export interface DesktopSessionUsageSummary extends UsageSummaryV2 {
 export interface MakaBridge {
   clientPlugins: {
     snapshot(): Promise<MakaClientPluginSnapshot>;
+    remoteCall(
+      input: OperationInput<'plugin.client.remote.call'>,
+    ): Promise<OperationOutput<'plugin.client.remote.call'>>;
+    remoteStreamOpen(
+      input: OperationInput<'plugin.client.remote.stream.open'>,
+    ): Promise<OperationOutput<'plugin.client.remote.stream.open'>>;
+    remoteStreamNext(
+      input: OperationInput<'plugin.client.remote.stream.next'>,
+    ): Promise<OperationOutput<'plugin.client.remote.stream.next'>>;
+    remoteStreamClose(
+      input: OperationInput<'plugin.client.remote.stream.close'>,
+    ): Promise<OperationOutput<'plugin.client.remote.stream.close'>>;
   };
 
   sessionLocal: import('../shared/session-local-contract.js').DesktopSessionLocalBridge;

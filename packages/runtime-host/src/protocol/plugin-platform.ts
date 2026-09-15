@@ -56,10 +56,20 @@ const MUTATE_ERRORS = [
   'operation_conflict',
   'commit_outcome_unknown',
 ] as const;
+const CLIENT_REMOTE_ERRORS = [
+  'host_not_ready',
+  'host_draining',
+  'operation_unavailable',
+  'invalid_request',
+  'not_found',
+  'operation_conflict',
+  'internal_failure',
+] as const;
 const MAX_FRAME_BYTES = 512 * 1024;
 export const PLUGIN_PLATFORM_QUERY_RESULT_MAX_BYTES = 480 * 1024;
 export const PLUGIN_CLIENT_BUNDLE_CHUNK_MAX_BYTES = 192 * 1024;
 export const PLUGIN_CLIENT_BUNDLE_MAX_BYTES = 8 * 1024 * 1024;
+export const PLUGIN_CLIENT_REMOTE_VALUE_MAX_BYTES = 256 * 1024;
 
 export type PluginPlatformPhase =
   | 'new'
@@ -194,6 +204,46 @@ export type PluginClientQueryResult =
       readonly nextOffset: number | null;
     };
 
+export interface PluginClientRemoteFence {
+  readonly authorityEpoch: number;
+  readonly revision: string;
+  readonly entryId: string;
+  readonly extensionId: string;
+  readonly generation: number;
+  readonly contentDigest: string;
+  readonly clientDigest: string;
+  readonly sessionId?: string;
+}
+
+export interface PluginClientRemoteCallInput extends PluginClientRemoteFence {
+  readonly method: string;
+  readonly input: unknown;
+}
+
+export interface PluginClientRemoteCallResult {
+  readonly value: unknown;
+}
+
+export type PluginClientRemoteStreamOpenInput = PluginClientRemoteCallInput;
+
+export interface PluginClientRemoteStreamOpenResult {
+  readonly streamId: string;
+}
+
+export interface PluginClientRemoteStreamNextInput {
+  readonly streamId: string;
+}
+
+export type PluginClientRemoteStreamNextResult =
+  | { readonly done: false; readonly value: unknown }
+  | { readonly done: true };
+
+export type PluginClientRemoteStreamCloseInput = PluginClientRemoteStreamNextInput;
+
+export interface PluginClientRemoteStreamCloseResult {
+  readonly streamId: string;
+}
+
 export interface PluginPackageInstallInput {
   readonly sourcePath: string;
 }
@@ -228,6 +278,50 @@ export const PLUGIN_PLATFORM_OPERATION_SPECS = {
     errors: [...QUERY_ERRORS, 'not_found'],
     decodeInput: decodePluginClientQueryInput,
     decodeOutput: decodePluginClientQueryResult,
+  }),
+  'plugin.client.remote.call': defineOperation<
+    PluginClientRemoteCallInput,
+    PluginClientRemoteCallResult,
+    (typeof CLIENT_REMOTE_ERRORS)[number]
+  >({
+    mode: 'control',
+    availability: 'ready',
+    errors: CLIENT_REMOTE_ERRORS,
+    decodeInput: decodePluginClientRemoteCallInput,
+    decodeOutput: decodePluginClientRemoteCallResult,
+  }),
+  'plugin.client.remote.stream.open': defineOperation<
+    PluginClientRemoteStreamOpenInput,
+    PluginClientRemoteStreamOpenResult,
+    (typeof CLIENT_REMOTE_ERRORS)[number]
+  >({
+    mode: 'control',
+    availability: 'ready',
+    errors: CLIENT_REMOTE_ERRORS,
+    decodeInput: decodePluginClientRemoteCallInput,
+    decodeOutput: decodePluginClientRemoteStreamOpenResult,
+  }),
+  'plugin.client.remote.stream.next': defineOperation<
+    PluginClientRemoteStreamNextInput,
+    PluginClientRemoteStreamNextResult,
+    (typeof CLIENT_REMOTE_ERRORS)[number]
+  >({
+    mode: 'control',
+    availability: 'ready',
+    errors: CLIENT_REMOTE_ERRORS,
+    decodeInput: decodePluginClientRemoteStreamCursorInput,
+    decodeOutput: decodePluginClientRemoteStreamNextResult,
+  }),
+  'plugin.client.remote.stream.close': defineOperation<
+    PluginClientRemoteStreamCloseInput,
+    PluginClientRemoteStreamCloseResult,
+    (typeof CLIENT_REMOTE_ERRORS)[number]
+  >({
+    mode: 'control',
+    availability: 'ready',
+    errors: CLIENT_REMOTE_ERRORS,
+    decodeInput: decodePluginClientRemoteStreamCursorInput,
+    decodeOutput: decodePluginClientRemoteStreamCloseResult,
   }),
   'plugin.platform.query': defineOperation<
     PluginPlatformQueryInput,
@@ -325,6 +419,106 @@ export const PLUGIN_PLATFORM_OPERATION_SPECS = {
     decodeOutput: decodePluginMutationReceipt,
   }),
 } as const;
+
+function decodePluginClientRemoteCallInput(value: unknown): PluginClientRemoteCallInput {
+  const input = requireShapedRecord(
+    value,
+    'Plugin Client Remote call input',
+    [
+      'authorityEpoch',
+      'revision',
+      'entryId',
+      'extensionId',
+      'generation',
+      'contentDigest',
+      'clientDigest',
+      'method',
+      'input',
+    ],
+    ['sessionId'],
+  );
+  const remoteInput = requireJsonValue(input.input, 'Plugin Client Remote input');
+  requireEncodedByteLimit(
+    remoteInput,
+    'Plugin Client Remote input',
+    PLUGIN_CLIENT_REMOTE_VALUE_MAX_BYTES,
+  );
+  const decoded: PluginClientRemoteCallInput = {
+    authorityEpoch: requireCount(input.authorityEpoch, 'Plugin authority epoch'),
+    revision: requireDigest(input.revision, 'Plugin Client composition revision'),
+    entryId: requireId(input.entryId, 'Plugin Client Entry identity'),
+    extensionId: requireId(input.extensionId, 'Plugin package identity'),
+    generation: requireCount(input.generation, 'Plugin Client generation'),
+    contentDigest: requireDigest(input.contentDigest, 'Plugin package content digest'),
+    clientDigest: requireDigest(input.clientDigest, 'Plugin Client bundle digest'),
+    method: requireRemoteMethod(input.method),
+    input: remoteInput,
+    ...(input.sessionId === undefined
+      ? {}
+      : { sessionId: requireId(input.sessionId, 'Plugin Client Remote Session identity') }),
+  };
+  requireEncodedByteLimit(decoded, 'Plugin Client Remote call input', MAX_FRAME_BYTES);
+  return decoded;
+}
+
+function decodePluginClientRemoteCallResult(value: unknown): PluginClientRemoteCallResult {
+  const result = requireExactRecord(value, 'Plugin Client Remote call result', ['value']);
+  const decoded = { value: requireJsonValue(result.value, 'Plugin Client Remote result') };
+  requireEncodedByteLimit(
+    decoded,
+    'Plugin Client Remote call result',
+    PLUGIN_CLIENT_REMOTE_VALUE_MAX_BYTES,
+  );
+  return decoded;
+}
+
+function decodePluginClientRemoteStreamOpenResult(
+  value: unknown,
+): PluginClientRemoteStreamOpenResult {
+  const result = requireExactRecord(value, 'Plugin Client Remote stream open result', ['streamId']);
+  return { streamId: requireId(result.streamId, 'Plugin Client Remote stream identity') };
+}
+
+function decodePluginClientRemoteStreamCursorInput(
+  value: unknown,
+): PluginClientRemoteStreamNextInput {
+  const input = requireExactRecord(value, 'Plugin Client Remote stream input', ['streamId']);
+  return { streamId: requireId(input.streamId, 'Plugin Client Remote stream identity') };
+}
+
+function decodePluginClientRemoteStreamNextResult(
+  value: unknown,
+): PluginClientRemoteStreamNextResult {
+  const result = requireRecord(value, 'Plugin Client Remote stream next result');
+  if (result.done === true) {
+    requireExactRecord(result, 'Plugin Client Remote completed stream result', ['done']);
+    return { done: true };
+  }
+  const item = requireExactRecord(result, 'Plugin Client Remote stream item result', [
+    'done',
+    'value',
+  ]);
+  if (item.done !== false) throw invalidProtocolFrame('Invalid Plugin Client Remote stream state');
+  const decoded = {
+    done: false as const,
+    value: requireJsonValue(item.value, 'Plugin Client Remote stream item'),
+  };
+  requireEncodedByteLimit(
+    decoded,
+    'Plugin Client Remote stream item',
+    PLUGIN_CLIENT_REMOTE_VALUE_MAX_BYTES,
+  );
+  return decoded;
+}
+
+function decodePluginClientRemoteStreamCloseResult(
+  value: unknown,
+): PluginClientRemoteStreamCloseResult {
+  const result = requireExactRecord(value, 'Plugin Client Remote stream close result', [
+    'streamId',
+  ]);
+  return { streamId: requireId(result.streamId, 'Plugin Client Remote stream identity') };
+}
 
 function decodePluginClientQueryInput(value: unknown): PluginClientQueryInput {
   const input = requireRecord(value, 'Plugin Client query input');
@@ -1049,6 +1243,42 @@ function decodeScalarRecord(
     else throw invalidProtocolFrame(`Invalid Plugin Entry ${label} value`);
   }
   return Object.fromEntries(output);
+}
+
+function requireRemoteMethod(value: unknown): string {
+  const method = requireString(value, 'Plugin Client Remote method', 128);
+  if (!/^[a-z][a-z0-9]*(?:[._:/-][a-z0-9]+)*$/u.test(method)) {
+    throw invalidProtocolFrame('Invalid Plugin Client Remote method');
+  }
+  return method;
+}
+
+function requireJsonValue(value: unknown, label: string, depth = 0): unknown {
+  if (depth > 32) throw invalidProtocolFrame(`${label} is too deeply nested`);
+  if (
+    value === null ||
+    typeof value === 'string' ||
+    typeof value === 'boolean' ||
+    (typeof value === 'number' && Number.isFinite(value))
+  ) {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    if (value.length > 16_384) throw invalidProtocolFrame(`${label} has too many items`);
+    return value.map((item) => requireJsonValue(item, label, depth + 1));
+  }
+  if (!value || typeof value !== 'object') throw invalidProtocolFrame(`Invalid ${label}`);
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) {
+    throw invalidProtocolFrame(`Invalid ${label}`);
+  }
+  const record = value as Record<string, unknown>;
+  if (Object.keys(record).length > 16_384) {
+    throw invalidProtocolFrame(`${label} has too many fields`);
+  }
+  return Object.fromEntries(
+    Object.entries(record).map(([key, item]) => [key, requireJsonValue(item, label, depth + 1)]),
+  );
 }
 
 function requireBoolean(value: unknown): boolean {
