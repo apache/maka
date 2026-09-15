@@ -1,6 +1,6 @@
 {
   "name": "@maka/codex-app-server-executor",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "description": "Experimental Maka executor backed by the local Codex app-server",

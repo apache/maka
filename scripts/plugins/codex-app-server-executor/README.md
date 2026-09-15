@@ -27,7 +27,8 @@ install it from a complete Git checkout instead of expecting it in an ASF source
 - `codexPath`: executable name or absolute path; defaults to `codex`. On macOS, that default also
   auto-detects the system/user Codex app bundle and common Homebrew locations before falling back to
   PATH, so a Finder-launched Maka app does not depend on an interactive shell PATH.
-- `model`: optional Codex model override; empty preserves the user's native Codex configuration.
+- `model`: optional global Codex model fallback; a model selected on the Maka Session takes
+  precedence, while an empty value preserves the user's native Codex configuration.
 - `sandbox`: `read-only` (default), `workspace-write`, or `danger-full-access`.
 - `ephemeralThreads`: keeps Codex threads in the shared app-server process only; defaults to `true`.
 - `disposeGraceMs`: graceful process-tree shutdown window; defaults to 3000 ms.
@@ -43,6 +44,9 @@ are intended.
 ## Behavior and current limits
 
 - One App Server process is shared by the plugin instance, with one Codex thread per Maka Session.
+- The Session model and reasoning effort are sent on every turn, so changes take effect immediately
+  even when the Codex thread is reused. An explicit null reasoning effort restores that model's
+  default instead of retaining the previous turn's setting.
 - Text, readable reasoning summaries, command/file/tool activity, cancellation, and terminal status
   are projected into Maka's canonical Session event stream.
 - Attachments are rejected explicitly; they are never silently dropped.

@@ -175,7 +175,7 @@ export class CodexAppServerClient {
         clientInfo: {
           name: 'maka_codex_app_server_executor',
           title: 'Maka Executor for Codex',
-          version: '0.2.0',
+          version: '0.3.0',
         },
         capabilities: { experimentalApi: false, requestAttestation: false },
       });
@@ -194,8 +194,9 @@ export class CodexAppServerClient {
     if (starting) return await starting;
 
     const task = (async () => {
+      const model = request.model ?? this.config.model;
       const response = await this.request('thread/start', {
-        ...(this.config.model ? { model: this.config.model } : {}),
+        ...(model ? { model } : {}),
         cwd: request.cwd,
         approvalPolicy: 'never',
         sandbox: this.config.sandbox,
@@ -250,6 +251,8 @@ export class CodexAppServerClient {
         threadId,
         input: [{ type: 'text', text: requestText(request), text_elements: [] }],
         cwd: request.cwd,
+        model: request.model,
+        effort: request.reasoningEffort,
       });
       active.turnId = requireString(started?.turn?.id, 'turn id');
       if (context.signal.aborted) interrupt();

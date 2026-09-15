@@ -14,8 +14,8 @@
       },
       "model": {
         "type": "string",
-        "title": "Codex model override",
-        "description": "Leave empty to use the local Codex default.",
+        "title": "Codex model fallback",
+        "description": "Used when a Maka Session has no selected model. Leave empty to use the local Codex default.",
         "default": ""
       },
       "sandbox": {

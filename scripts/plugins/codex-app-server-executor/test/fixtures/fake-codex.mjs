@@ -29,6 +29,9 @@ let threadStarts = 0;
 let turnCount = 0;
 let pendingApproval;
 let interrupted;
+let threadModel;
+let turnModel;
+let turnEffort;
 
 function completeTurn(input, approvalDecision = 'none') {
   const turnId = `turn-${turnCount}`;
@@ -61,7 +64,7 @@ function completeTurn(input, approvalDecision = 'none') {
       summaryIndex: 0,
     },
   });
-  const text = `Codex handled: ${input} (threadStarts=${threadStarts}, approval=${approvalDecision})`;
+  const text = `Codex handled: ${input} (threadStarts=${threadStarts}, threadModel=${String(threadModel)}, turnModel=${String(turnModel)}, turnEffort=${String(turnEffort)}, approval=${approvalDecision})`;
   send({
     method: 'item/agentMessage/delta',
     params: {
@@ -100,12 +103,15 @@ for await (const line of lines) {
     send({ id: message.id, result: { userAgent: 'fake-codex' } });
   } else if (message.method === 'thread/start') {
     threadStarts += 1;
+    threadModel = message.params.model;
     send({
       id: message.id,
       result: { thread: { id: 'thread-1', ephemeral: true } },
     });
   } else if (message.method === 'turn/start') {
     turnCount += 1;
+    turnModel = message.params.model;
+    turnEffort = message.params.effort;
     const turnId = `turn-${turnCount}`;
     send({
       id: message.id,

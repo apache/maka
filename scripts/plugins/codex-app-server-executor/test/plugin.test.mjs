@@ -97,7 +97,7 @@ test('client reuses a thread and projects rich events while declining approvals'
     const first = executionContext();
     const firstResult = await client.execute(request('first prompt'), first.context);
     assert.equal(firstResult.status, 'completed');
-    assert.match(firstResult.text, /threadStarts=1, approval=decline/u);
+    assert.match(firstResult.text, /threadStarts=1, .*approval=decline/u);
     assert.deepEqual(
       first.events.map((event) => event.type),
       ['tool_start', 'tool_progress', 'tool_result', 'thinking_delta', 'output_delta'],
@@ -108,7 +108,59 @@ test('client reuses a thread and projects rich events while declining approvals'
     const second = executionContext();
     const secondResult = await client.execute(request('second prompt'), second.context);
     assert.equal(secondResult.status, 'completed');
-    assert.match(secondResult.text, /threadStarts=1, approval=decline/u);
+    assert.match(secondResult.text, /threadStarts=1, .*approval=decline/u);
+  } finally {
+    await client.close();
+  }
+});
+
+test('Session model overrides the plugin fallback and every turn refreshes model and effort', async () => {
+  const client = new CodexAppServerClient(
+    { codexPath: fakeCodex, model: 'plugin-default' },
+    logger,
+  );
+  try {
+    const first = executionContext();
+    const firstResult = await client.execute(
+      request('first selection', { model: 'gpt-6-terra', reasoningEffort: 'low' }),
+      first.context,
+    );
+    assert.equal(firstResult.status, 'completed');
+    assert.match(firstResult.text, /threadStarts=1, threadModel=gpt-6-terra/u);
+    assert.match(firstResult.text, /turnModel=gpt-6-terra, turnEffort=low/u);
+
+    const second = executionContext();
+    const secondResult = await client.execute(
+      request('changed selection', { model: 'gpt-6-sol', reasoningEffort: 'ultra' }),
+      second.context,
+    );
+    assert.equal(secondResult.status, 'completed');
+    assert.match(secondResult.text, /threadStarts=1, threadModel=gpt-6-terra/u);
+    assert.match(secondResult.text, /turnModel=gpt-6-sol, turnEffort=ultra/u);
+
+    const restored = executionContext();
+    const restoredResult = await client.execute(
+      request('restore effort default', { model: 'gpt-6-sol', reasoningEffort: null }),
+      restored.context,
+    );
+    assert.equal(restoredResult.status, 'completed');
+    assert.match(restoredResult.text, /threadStarts=1, threadModel=gpt-6-terra/u);
+    assert.match(restoredResult.text, /turnModel=gpt-6-sol, turnEffort=null/u);
+  } finally {
+    await client.close();
+  }
+});
+
+test('plugin model remains the new-thread fallback when the Session has no model', async () => {
+  const client = new CodexAppServerClient(
+    { codexPath: fakeCodex, model: 'plugin-default' },
+    logger,
+  );
+  try {
+    const execution = executionContext();
+    const result = await client.execute(request('fallback selection'), execution.context);
+    assert.equal(result.status, 'completed');
+    assert.match(result.text, /threadModel=plugin-default/u);
   } finally {
     await client.close();
   }
