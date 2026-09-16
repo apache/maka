@@ -372,6 +372,7 @@
 
 /* Narrow windows place the single workbar below the conversation. */
 @media (max-width: 990px) {
+  .maka-workbar-direction { rotate: 90deg; }
   .maka-window-titlebar {
     --maka-titlebar-workbar-reserve: 0px;
   }

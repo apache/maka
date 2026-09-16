@@ -91,7 +91,13 @@ test('WorkHub uses its coordination model and shared attachment composer', async
   await expect.poll(() => anchors.evaluate((element) => element.scrollLeft)).toBeLessThan(5);
   const expandSidebar = page.getByRole('button', { name: '展开侧边栏', exact: true });
   if (await expandSidebar.isVisible()) await expandSidebar.click();
-  const nativeWorkHubVisible = () => mainWindow.evaluate((window) => window.contentView.children.some((child) => 'webContents' in child && (child as Electron.WebContentsView).webContents.getURL().includes('surface=workhub') && child.getVisible()));
+  const nativeWorkHubVisible = () => mainWindow.evaluate((window) => {
+    const visible = (view: Electron.View): boolean => view.getVisible() && (
+      ('webContents' in view && (view as Electron.WebContentsView).webContents.getURL().includes('surface=workhub')) ||
+      view.children.some(visible)
+    );
+    return visible(window.contentView);
+  });
   const actions = page.getByRole('button', { name: /Drag task 0.*任务操作$/ });
   await page.getByRole('button', { name: 'Drag task 0', exact: true }).hover();
   await actions.click();
@@ -194,13 +200,14 @@ test('WorkHub uses its coordination model and shared attachment composer', async
   await expect(workhub.getByRole('button', { name: /^(隐藏|Hide)$/ })).toHaveCount(0);
   await expect.poll(() => workhub.evaluate(() => innerHeight === Math.ceil(document.querySelector('.workHubComposerSurface')!.getBoundingClientRect().height))).toBe(true);
   await expect.poll(floatingBottom).toBe(anchoredBottom);
-  // Opening context details must expand the native compact window as well as the renderer.
+  // The floating renderer requests Main's Workbar across presentation IPC;
+  // it must neither reparent the conversation nor resize the compact window.
   await workhub.getByRole('button', { name: /打开用量追踪|Open usage trace/ }).click();
-  await expect(workhub.getByRole('button', { name: /收起任务工作栏|Collapse task workbar/ })).toBeVisible();
-  await expect.poll(() => workhub.evaluate(() => innerHeight)).toBe(expandedHeight);
-  await workhub.getByRole('button', { name: /收起任务工作栏|Collapse task workbar/ }).click();
-  await workhub.getByRole('button', { name: /收起对话|Collapse conversation/ }).click();
+  await expect(page.getByRole('button', { name: /收起任务工作栏|Collapse task workbar/ })).toBeVisible();
+  await expect(workhub.locator('.maka-session-workbar')).toHaveCount(0);
   await expect.poll(() => workhub.evaluate(() => innerHeight === Math.ceil(document.querySelector('.workHubComposerSurface')!.getBoundingClientRect().height))).toBe(true);
+  await expect(editor).toHaveText('Keep this draft while folding the conversation.');
+  await page.getByRole('button', { name: /收起任务工作栏|Collapse task workbar/ }).click();
   const thinking = workhub.getByRole('button', { name: /思考级别|Thinking level/ });
   await expect(thinking).toBeEnabled();
   await thinking.click();

@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { WorkHubControlOverlay, WorkHubDock, WorkHubMainNavigation, WorkHubReturnButton } from './features/workhub';
+import { useWorkHubWorkspace, WorkHubControlOverlay, WorkHubDock, WorkHubMainNavigation, WorkHubReturnButton } from './features/workhub';
 import {
   useCallback,
   useEffect,
@@ -1317,17 +1317,18 @@ function AppShellContent({
       }),
     [toastApi],
   );
-  const workbarAvailable =
-    sessionsSelected && !workHubActive && Boolean(activeId);
+  const workHubWorkspace = useWorkHubWorkspace(workHubEnabled, authoritativeSessionIds ?? undefined);
+  const workbarSession = workHubActive ? workHubWorkspace.session : activeHostSession;
+  const workbarAvailable = sessionsSelected && Boolean(workbarSession);
   const workbar = useWorkbarController({
     available: workbarAvailable,
-    layoutSessionId: activeId,
-    activeSession: activeHostSession,
-    projectId: currentProjectId,
-    projectAliases: currentProject?.aliases ?? [],
-    authoritativeSessionIds: authoritativeSessionIds ?? undefined,
+    layoutSessionId: workHubActive ? workHubWorkspace.session?.id : activeId,
+    activeSession: workbarSession,
+    projectId: workHubActive ? workHubWorkspace.session?.projectId : currentProjectId,
+    projectAliases: workHubActive ? [] : currentProject?.aliases ?? [],
+    authoritativeSessionIds: workHubWorkspace.authoritativeSessionIds,
     shellObscured,
-    modelChoices: chatModelChoices,
+    modelChoices: workHubActive ? workHubWorkspace.modelChoices : chatModelChoices,
     toastApi,
     composerRef,
     openNewTaskSurface,
@@ -2421,7 +2422,9 @@ function AppShellContent({
               inert={switchingSession || undefined}
               aria-busy={switchingSession || undefined}>
               <ModuleHub.ModuleHubHost />
-              <WorkHubMainNavigation onOpenWorkHub={openWorkHub} onOpenSession={(sessionId) => { closeSettings(); openSession(sessionId); }} />
+              <WorkHubMainNavigation workbarReady={workHubActive && workbarAvailable}
+                onOpenWorkbar={(tool) => { if (tool === 'inspector') commands.openTool('inspector'); else if (selectors.rightCollapsed) commands.toggleRight(); }}
+                onOpenWorkHub={openWorkHub} onOpenSession={(sessionId) => { closeSettings(); openSession(sessionId); }} />
               <WorkHubDock enabled={workHubEnabled} visible={workHubActive && sessionsSelected && !shellObscured} />
               <ChatSurfaceLayout
                 // ChatView positions this transcript: switching conversations,

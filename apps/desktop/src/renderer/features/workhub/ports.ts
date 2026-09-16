@@ -55,6 +55,7 @@ export interface WorkHubServices {
   subscribeAppearance(handler: (locale: UiLocale) => void): () => void;
   readonly presentation: WorkHubPresentationBridge;
   readonly control: WorkHubControlBridge;
+  bindBrowserSession(sessionId: string | null): void;
   resolve(): Promise<string>;
   getSession(sessionId: string): Promise<SessionSummary & { revision: number }>;
   subscribeHosts(handler: (event: WorkHubCoordinationHostChange) => void): () => void;

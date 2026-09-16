@@ -420,6 +420,10 @@ jobs:
         # smoke loads only its loopback fixture; production stays sandboxed.
         run: xvfb-run -a npm exec --workspace @maka/desktop -- electron --no-sandbox scripts/browser-observe-act-smoke.mjs
 
+      - name: WorkHub native browser presentation smoke
+        if: steps.plan.outputs.e2e == 'true'
+        run: xvfb-run -a -s "-screen 0 1920x1080x24" npm exec --workspace @maka/desktop -- electron --no-sandbox scripts/workhub-browser-presentation-smoke.mjs
+
       - name: Alignment audit
         if: steps.plan.outputs.e2e == 'true'
         run: xvfb-run -a node scripts/audit-alignment.mjs

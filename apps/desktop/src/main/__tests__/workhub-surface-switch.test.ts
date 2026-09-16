@@ -18,11 +18,14 @@
  */
 
 import assert from 'node:assert/strict';
+import { deferred } from '@maka/core/test-only/async-primitives';
+import { desktopSessionKey } from '../../shared/runtime-host-identity.js';
 import { afterEach, test } from 'node:test';
 import { act, createElement, useEffect } from 'react';
 import { useToast, useUiLocale } from '@maka/ui';
 import type { UiLocale } from '@maka/core/ui-locale';
 import {
+  useWorkHubWorkspace,
   WorkHubServicesProvider,
   WorkHubSurfaceSwitch,
   type WorkHubServices,
@@ -101,4 +104,52 @@ test('the WorkHub slot retains its providers and mount across locale updates', a
   }
   assert.equal(unmounts, 1);
   assert.equal(unsubscribes, 1);
+});
+
+test('Main panel metadata ignores a superseded Host read and retains Coordination in its catalog', async () => {
+  const { root } = installReactRenderer();
+  const first = desktopSessionKey({ hostId: 'first', sessionId: 'maka_workhub_coordination' });
+  const second = desktopSessionKey({ hostId: 'second', sessionId: 'maka_workhub_coordination' });
+  const oldRead = deferred<Awaited<ReturnType<WorkHubServices['getSession']>>>();
+  let selected = first;
+  let resolves = 0;
+  let failMetadata = false;
+  let sessionChanged!: () => void;
+  let hostChange!: Parameters<WorkHubServices['subscribeHosts']>[0];
+  let latest!: ReturnType<typeof useWorkHubWorkspace>;
+  const services = {
+    resolve: async () => { resolves++; return selected; },
+    subscribeHosts: (handler: Parameters<WorkHubServices['subscribeHosts']>[0]) => { hostChange = handler; return () => {}; },
+    subscribeAvailability: () => () => {},
+    subscribeSessions: (handler: () => void) => { sessionChanged = handler; return () => {}; },
+    getSession: async (id: string) => {
+      if (failMetadata) throw new Error('Connection interrupted');
+      return id === first ? oldRead.promise : { id, model: 'second-model', revision: 1 };
+    },
+    modelChoices: async () => [],
+  } as unknown as WorkHubServices;
+  const metadata = () => latest;
+  const ids = new Set(['ordinary']);
+  function Probe({ enabled }: { enabled: boolean }) { latest = useWorkHubWorkspace(enabled, ids); return null; }
+  const render = (enabled: boolean) => root.render(createElement(WorkHubServicesProvider, { services, children: createElement(Probe, { enabled }) }));
+  try {
+    await act(async () => render(false));
+    assert.equal(resolves, 0);
+    await act(async () => render(true));
+    assert.equal(metadata().session, undefined);
+    selected = second;
+    await act(async () => hostChange({ hostId: 'second', isDefault: true, readiness: 'ready' }));
+    assert.equal(metadata().session?.id, second);
+    await act(async () => oldRead.resolve({ id: first, model: 'first-model', revision: 1 } as Awaited<ReturnType<WorkHubServices['getSession']>>));
+    assert.equal(metadata().session?.id, second);
+    failMetadata = true;
+    await act(async () => sessionChanged());
+    assert.equal(metadata().session?.id, second);
+    assert.deepEqual([...metadata().authoritativeSessionIds!], ['ordinary', second]);
+    await act(async () => render(false));
+    assert.equal(metadata().session, undefined);
+    assert.deepEqual([...metadata().authoritativeSessionIds!], ['ordinary']);
+  } finally {
+    await act(async () => root.unmount());
+  }
 });

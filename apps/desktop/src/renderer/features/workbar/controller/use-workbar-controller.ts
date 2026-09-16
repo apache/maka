@@ -102,7 +102,6 @@ export interface UseWorkbarControllerInput {
   /** Local selection owns layout even while Host creation is pending. */
   layoutSessionId: string | undefined;
   /** Independent persistent renderers must not overwrite each other’s panel topology. */
-  layoutScope?: string;
   activeSession: SessionSummary | undefined;
   projectId: string | null | undefined;
   projectAliases: readonly string[];
@@ -172,7 +171,7 @@ export function useWorkbarController(
   const terminalCopy = getDesktopConversationCopy(locale).terminalPanel;
   const { browser, sideChat, terminal, workBoard } = useWorkbarServices();
   const activeSessionId = input.activeSession?.id;
-  const layout = useWorkbarLayoutState(input.layoutSessionId, input.authoritativeSessionIds, input.layoutScope);
+  const layout = useWorkbarLayoutState(input.layoutSessionId, input.authoritativeSessionIds);
   const sideConversations = useSideConversationWorkspace();
   const [pendingSideChatClose, setPendingSideChatClose] = useState<
     Array<{ placement: SessionWorkbarPlacement; tab: SessionWorkbarTab }>

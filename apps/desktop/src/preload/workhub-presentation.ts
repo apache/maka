@@ -37,6 +37,7 @@ export const workHubPresentationBridge: WorkHubPresentationBridge = {
   detach: () => ipcRenderer.invoke('workhub-presentation:command', 'detach'),
   dock: () => ipcRenderer.invoke('workhub-presentation:command', 'dock'),
   hide: () => ipcRenderer.invoke('workhub-presentation:command', 'hide'),
+  openWorkbar: (tool) => ipcRenderer.invoke('workhub-presentation:command', 'workbar', tool),
   openSession: (sessionKey) => ipcRenderer.invoke('workhub-presentation:command', 'session', sessionKey),
   subscribe: (handler) => subscribe('workhub-presentation:changed', handler),
   onViewportInset: (handler) => subscribe('workhub-presentation:viewport-inset', handler),

@@ -32,16 +32,9 @@ export function WorkHubDock({ enabled, visible = true }: { enabled: boolean; vis
   const [snapshot, setSnapshot] = useState<WorkHubPresentationSnapshot>();
   const [backdrop, setBackdrop] = useState<string>();
   const [error, setError] = useState<string>();
-  const previous = useRef({ enabled, visible });
   const needsRecovery = snapshot?.placement === 'docked' && snapshot.rendererCrashed;
   const report = (reason: unknown) =>
     setError(reason instanceof Error ? reason.message : String(reason));
-  useEffect(() => {
-    // Enabling WorkHub also activates its dock. Only subsequent navigation
-    // returns a floating conversation, so a fresh shortcut cannot be undone.
-    if (enabled && previous.current.enabled && visible && !previous.current.visible) void presentation.hide().catch(report);
-    previous.current = { enabled, visible };
-  }, [enabled, presentation, visible]);
   useEffect(() => {
     let active = true;
     const update = (next: WorkHubPresentationSnapshot) => {
@@ -71,7 +64,7 @@ export function WorkHubDock({ enabled, visible = true }: { enabled: boolean; vis
         return bounds.width > 0 && bounds.height > 0 && bounds.left < rect.right && bounds.right > rect.left && bounds.top < rect.bottom && bounds.bottom > rect.top;
       });
       const host = {
-        visible: visible && rect.width > 0 && rect.height > 0,
+        visible: enabled && visible && rect.width > 0 && rect.height > 0,
         occluded,
         rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
       };
@@ -98,7 +91,7 @@ export function WorkHubDock({ enabled, visible = true }: { enabled: boolean; vis
         .setHost({ visible: false, rect: { x: 0, y: 0, width: 0, height: 0 } })
         .catch(() => undefined);
     };
-  }, [presentation, visible, snapshot?.placement]);
+  }, [enabled, presentation, visible, snapshot?.placement]);
   return (
     <section ref={element} className="workHubDock" hidden={!visible} aria-label={t.title}>
       {backdrop && snapshot?.placement === 'docked' && <img className="workHubDockBackdrop" src={backdrop} alt="" aria-hidden draggable={false} />}

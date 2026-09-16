@@ -50,6 +50,7 @@
     "smoke:programmatic-window": "npm run build:with-deps && node ../../scripts/desktop-real-window-smoke.mjs --programmatic-only",
     "launch:fixture": "npm run build:with-deps && node ../../scripts/desktop-real-window-smoke.mjs --manual",
     "smoke:browser": "npm run build:workspace-deps && npm run build:main && npm run smoke:browser:run",
+    "smoke:workhub-browser:run": "electron scripts/workhub-browser-presentation-smoke.mjs",
     "smoke:browser:run": "electron scripts/browser-observe-act-smoke.mjs"
   },
   "dependencies": {

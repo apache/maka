@@ -17,14 +17,24 @@
  * under the License.
  */
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useWorkHubServices } from '../services.js';
-export function WorkHubMainNavigation(props: { onOpenWorkHub(): void; onOpenSession(sessionId: string): void }) {
+export function WorkHubMainNavigation(props: { workbarReady: boolean; onOpenWorkbar(tool: 'inspector' | 'workbar'): void; onOpenWorkHub(): void; onOpenSession(sessionId: string): void }) {
+  const [pendingTool, setPendingTool] = useState<'inspector' | 'workbar'>();
   const { presentation } = useWorkHubServices();
   const current = useRef(props); current.current = props;
   useEffect(() => presentation.onOpenMain((navigation) => {
-    if (navigation.kind === 'workhub') current.current.onOpenWorkHub();
+    if (navigation.kind === 'workhub') {
+      current.current.onOpenWorkHub();
+      setPendingTool(navigation.workbar);
+    }
     else current.current.onOpenSession(navigation.sessionKey);
   }), [presentation]);
+  useEffect(() => {
+    if (pendingTool && props.workbarReady) {
+      current.current.onOpenWorkbar(pendingTool);
+      setPendingTool(undefined);
+    }
+  }, [pendingTool, props.workbarReady]);
   return null;
 }

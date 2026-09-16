@@ -153,6 +153,7 @@ export const ALLOWED = {
     // disabled mask.
     useTurnActionRegistry: 1,
     useWorkbarController: 1,
+    useWorkHubWorkspace: 1,
   },
 };
 

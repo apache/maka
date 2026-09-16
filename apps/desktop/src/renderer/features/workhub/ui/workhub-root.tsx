@@ -20,10 +20,9 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { ChatSurfaceLayout, UserQuestionPrompt, MakaWordmark, useUiLocale, type ComposerHandle } from '@maka/ui';
 import { Button, IconButton } from '@astryxdesign/core';
-import { ChevronDown, PictureInPicture2, Undo2, X } from '@maka/ui/icons';
+import { ChevronDown, PanelRightOpen, PictureInPicture2, Undo2, X } from '@maka/ui/icons';
 import { useLiveContextUsage } from '../../../application/contracts/session-inspector/use-live-context-usage.js';
 import { selectLatestRequestUsage } from '../../../application/contracts/session-inspector/latest-request-usage.js';
-import type { SessionWorkspaceComponent } from '../../../application/contracts/session-workspace.js';
 import { WorkHubProgressCard } from './workhub-progress-card.js';
 import { WorkHubComposer } from './workhub-composer.js';
 import { WorkHubConversation } from './workhub-conversation.js';
@@ -69,13 +68,14 @@ function revealWordmark(element: HTMLDivElement | null, content: HTMLDivElement 
   }
 }
 
-export function WorkHubRoot({ workspace: Workspace }: { workspace: SessionWorkspaceComponent }) {
+export function WorkHubRoot() {
   const highlight = useWorkHubHighlightState();
   const controller = useWorkHubController(() => highlight.selectWork(undefined));
   const { services, session, transcript, busy } = controller;
-  const sessionIds = useMemo(() => controller.sessionId
-    ? new Set([...controller.sessions.map((candidate) => candidate.id), controller.sessionId])
-    : undefined, [controller.sessions, controller.sessionId]);
+  useEffect(() => {
+    services.bindBrowserSession(controller.sessionId ?? null);
+    return () => services.bindBrowserSession(null);
+  }, [services, controller.sessionId]);
   const modelChoice = controller.choices.find((choice) =>
     choice.connectionId === session?.llmConnectionId && choice.connectionSlug === session?.llmConnectionSlug && choice.model === session?.model,
   );
@@ -288,13 +288,8 @@ export function WorkHubRoot({ workspace: Workspace }: { workspace: SessionWorksp
         </div>
       </div>}
       <div className="workHubRevealMark" ref={revealMark} aria-hidden="true"><MakaWordmark width={192} /></div>
-      <Workspace className="workHubWorkspace" layoutScope="workhub" session={session} sessionIds={sessionIds} modelChoices={controller.choices} visible={showConversation} composerRef={composer}
-        onShowConversation={() => {
-          setConversationExpanded(true);
-          if (progress) call(services.presentation.expandProgress(presentation.progressRequest));
-        }}
-        onOpenSession={(id) => call(services.presentation.openSession(id))}>
-      {(workbar) => <ChatSurfaceLayout
+      <div className="workHubWorkspace"><div className="mainColumn">
+      <ChatSurfaceLayout
         scrollButton={showConversation ? undefined : null}
         style={!showConversation ? { height: expandedLayoutHeight, flex: 'none', position: 'absolute', bottom: 0, width: '100%' } : undefined}
         onReturnToTail={transcript.hasNewer ? controller.loadLatest : undefined}
@@ -352,7 +347,7 @@ export function WorkHubRoot({ workspace: Workspace }: { workspace: SessionWorksp
                 declaredContextWindow: modelChoice?.declaredContextWindow,
                 meteredContextWindow: liveContextUsage?.contextWindow,
                 metadataContextWindow: modelChoice?.contextWindow,
-                onOpen: workbar.openUsage,
+                onOpen: () => call(services.presentation.openWorkbar('inspector')),
               } : undefined}
               activeThinkingLevels={thinkingLevels}
               activeThinkingLevel={thinkingLevel}
@@ -360,7 +355,7 @@ export function WorkHubRoot({ workspace: Workspace }: { workspace: SessionWorksp
               modelSwitchHasHistory={transcript.messages.length > 0}
               footerAccessory={
                 <div className="workHubComposerActions">
-                  {workbar.toggle}
+                  <IconButton size="sm" variant="ghost" icon={<PanelRightOpen size={16} />} label={t.openWorkbar} onClick={() => call(services.presentation.openWorkbar('workbar'))} />
                   {control?.canUndo && <IconButton type="button" size="sm" variant="ghost" icon={<Undo2 size={16} />} label={t.undo} isDisabled={busy} onClick={() => call(services.control.undo())} />}
                   {!floating && <IconButton type="button" size="sm" variant="ghost" icon={<PictureInPicture2 size={16} />} label={t.float} tooltip={`${t.float} · ${shortcutLabel}`} onClick={() => call(services.presentation.detach())} />}
                 </div>
@@ -406,8 +401,8 @@ export function WorkHubRoot({ workspace: Workspace }: { workspace: SessionWorksp
         />
         </div></div>
         </div>
-      </ChatSurfaceLayout>}
-      </Workspace>
+      </ChatSurfaceLayout>
+      </div></div>
     </section>
     </WorkHubHueProvider>
     </WorkHubHighlightContext.Provider>

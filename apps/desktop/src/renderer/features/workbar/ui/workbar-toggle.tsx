@@ -20,7 +20,7 @@
 import { Icon } from '@astryxdesign/core/Icon';
 import { Tooltip } from '@astryxdesign/core/Tooltip';
 import { IconButton, useUiLocale } from '@maka/ui';
-import { PanelRightClose, PanelRightOpen } from '@maka/ui/icons';
+import { ChevronRight, ChevronLeft } from '@maka/ui/icons';
 import { getShellCopy } from '../../../locales/shell-copy';
 
 /**
@@ -45,7 +45,8 @@ export function WorkbarToggle(props: {
         label={label}
         icon={(
           <Icon
-            icon={props.collapsed ? PanelRightOpen : PanelRightClose}
+            icon={props.collapsed ? ChevronLeft : ChevronRight}
+            className="maka-workbar-direction"
             size="sm"
             color="secondary"
           />

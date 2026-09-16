@@ -20,7 +20,6 @@
 import type { ComponentProps } from 'react';
 import { AppShell as LegacyAppShell } from '../app-shell';
 import { WorkHubRoot, WorkHubSurfaceSwitch } from '../features/workhub';
-import { WorkbarWorkspace } from '../features/workbar';
 export function AppShell(props: ComponentProps<typeof LegacyAppShell>) {
-  return <WorkHubSurfaceSwitch main={<LegacyAppShell {...props} />} workhub={<WorkHubRoot workspace={WorkbarWorkspace} />} />;
+  return <WorkHubSurfaceSwitch main={<LegacyAppShell {...props} />} workhub={<WorkHubRoot />} />;
 }
