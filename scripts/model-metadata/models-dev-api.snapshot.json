@@ -7,7 +7,7 @@
     "etag": "W/\"153362e16f62e2c0b4bbb4d66949e9c5\"",
     "responseSha256": "153362e16f62e2c0b4bbb4d66949e9c5ccc050e0dd7dbd325bbf434f2a8fcbf1"
   },
-  "projectionSha256": "be5b78501eb764e135c9a7c66b609ccb366fb383d5b4f7f532e78974c2ff0e51",
+  "projectionSha256": "4c9179dfd658c5121d5ed3da2d9c279ca05eea6ecb3987b3592f656563071d12",
   "projection": {
     "metadata": {
       "anthropic": {
@@ -25769,6 +25769,858 @@
           }
         }
       },
+      "opper": {
+        "anthropic/claude-fable-5": {
+          "displayName": "Claude Fable 5",
+          "description": "Claude model for creative writing, analysis, and controlled agent workflows",
+          "lifecycle": "active",
+          "contextWindow": 1000000,
+          "maxOutputTokens": 128000,
+          "knowledgeCutoff": "2026-01-31",
+          "structuredOutput": true,
+          "lastUpdated": "2026-06-09",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["low", "medium", "high", "xhigh", "max"]
+          },
+          "modalities": {
+            "input": ["text", "image", "pdf"],
+            "output": ["text"]
+          }
+        },
+        "anthropic/claude-haiku-4-5": {
+          "displayName": "Claude Haiku 4.5 (latest)",
+          "description": "Fast Claude lane for lightweight agents, office tasks, and responsive chat",
+          "lifecycle": "active",
+          "contextWindow": 200000,
+          "maxOutputTokens": 64000,
+          "knowledgeCutoff": "2025-02-28",
+          "structuredOutput": true,
+          "lastUpdated": "2025-10-15",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "modalities": {
+            "input": ["text", "image", "pdf"],
+            "output": ["text"]
+          }
+        },
+        "anthropic/claude-opus-4-5": {
+          "displayName": "Claude Opus 4.5 (latest)",
+          "description": "Flagship Claude model for deep reasoning, coding, and long-horizon agents",
+          "lifecycle": "active",
+          "contextWindow": 200000,
+          "maxOutputTokens": 64000,
+          "knowledgeCutoff": "2025-05",
+          "structuredOutput": true,
+          "lastUpdated": "2025-11-24",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["low", "medium", "high"]
+          },
+          "modalities": {
+            "input": ["text", "image", "pdf"],
+            "output": ["text"]
+          }
+        },
+        "anthropic/claude-opus-4-6": {
+          "displayName": "Claude Opus 4.6",
+          "description": "High-end Claude for difficult coding, planning, and slower expert reasoning",
+          "lifecycle": "active",
+          "contextWindow": 1000000,
+          "maxOutputTokens": 128000,
+          "knowledgeCutoff": "2025-05-31",
+          "structuredOutput": true,
+          "lastUpdated": "2026-03-13",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["low", "medium", "high", "max"]
+          },
+          "modalities": {
+            "input": ["text", "image", "pdf"],
+            "output": ["text"]
+          }
+        },
+        "anthropic/claude-opus-4-7": {
+          "displayName": "Claude Opus 4.7",
+          "description": "Stronger Opus tier for advanced software work and high-stakes reasoning",
+          "lifecycle": "active",
+          "contextWindow": 1000000,
+          "maxOutputTokens": 128000,
+          "knowledgeCutoff": "2026-01-31",
+          "structuredOutput": true,
+          "lastUpdated": "2026-04-16",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["low", "medium", "high", "xhigh", "max"]
+          },
+          "modalities": {
+            "input": ["text", "image", "pdf"],
+            "output": ["text"]
+          }
+        },
+        "anthropic/claude-opus-4-8": {
+          "displayName": "Claude Opus 4.8",
+          "description": "Top Claude Opus tier for the hardest reasoning, coding, and long-horizon agents",
+          "lifecycle": "active",
+          "contextWindow": 1000000,
+          "maxOutputTokens": 128000,
+          "knowledgeCutoff": "2026-01",
+          "structuredOutput": true,
+          "lastUpdated": "2026-05-28",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["low", "medium", "high", "xhigh", "max"]
+          },
+          "modalities": {
+            "input": ["text", "image", "pdf"],
+            "output": ["text"]
+          }
+        },
+        "anthropic/claude-opus-5": {
+          "displayName": "Claude Opus 5",
+          "description": "Strongest Claude Opus model for coding, agents, and professional work",
+          "lifecycle": "active",
+          "contextWindow": 1000000,
+          "maxOutputTokens": 128000,
+          "knowledgeCutoff": "2026-05",
+          "structuredOutput": true,
+          "lastUpdated": "2026-07-24",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["low", "medium", "high", "xhigh", "max"]
+          },
+          "modalities": {
+            "input": ["text", "image", "pdf"],
+            "output": ["text"]
+          }
+        },
+        "anthropic/claude-sonnet-4-5": {
+          "displayName": "Claude Sonnet 4.5 (latest)",
+          "description": "Balanced Claude model for coding, analysis, agent workflows, and cost control",
+          "lifecycle": "active",
+          "contextWindow": 200000,
+          "maxOutputTokens": 64000,
+          "knowledgeCutoff": "2025-07-31",
+          "structuredOutput": true,
+          "lastUpdated": "2025-09-29",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "modalities": {
+            "input": ["text", "image", "pdf"],
+            "output": ["text"]
+          }
+        },
+        "anthropic/claude-sonnet-4-6": {
+          "displayName": "Claude Sonnet 4.6",
+          "description": "Claude workhorse for coding agents, careful analysis, and production cost control",
+          "lifecycle": "active",
+          "contextWindow": 1000000,
+          "maxOutputTokens": 64000,
+          "knowledgeCutoff": "2025-08-31",
+          "structuredOutput": true,
+          "lastUpdated": "2026-03-13",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["low", "medium", "high", "max"]
+          },
+          "modalities": {
+            "input": ["text", "image", "pdf"],
+            "output": ["text"]
+          }
+        },
+        "anthropic/claude-sonnet-5": {
+          "displayName": "Claude Sonnet 5",
+          "description": "Everyday Claude agent model for coding, planning, browsing, and general work",
+          "lifecycle": "active",
+          "contextWindow": 1000000,
+          "maxOutputTokens": 128000,
+          "knowledgeCutoff": "2026-01-31",
+          "structuredOutput": true,
+          "lastUpdated": "2026-06-30",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["low", "medium", "high", "xhigh", "max"]
+          },
+          "modalities": {
+            "input": ["text", "image", "pdf"],
+            "output": ["text"]
+          }
+        },
+        "gemini/gemini-3-flash-preview": {
+          "displayName": "Gemini 3 Flash Preview",
+          "description": "New Gemini flash lane bringing frontier-style multimodal reasoning to cheaper runs",
+          "lifecycle": "active",
+          "contextWindow": 1048576,
+          "maxOutputTokens": 65536,
+          "knowledgeCutoff": "2025-01",
+          "structuredOutput": true,
+          "lastUpdated": "2025-12-17",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["minimal", "low", "medium", "high"]
+          },
+          "modalities": {
+            "input": ["text", "image", "video", "audio", "pdf"],
+            "output": ["text"]
+          }
+        },
+        "gemini/gemini-3.1-pro-preview": {
+          "displayName": "Gemini 3.1 Pro Preview",
+          "description": "Reasoning-first Gemini preview for agentic coding and complex problem solving",
+          "lifecycle": "active",
+          "contextWindow": 1048576,
+          "maxOutputTokens": 65536,
+          "knowledgeCutoff": "2025-01",
+          "structuredOutput": true,
+          "lastUpdated": "2026-02-19",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["low", "medium", "high"]
+          },
+          "modalities": {
+            "input": ["text", "image", "video", "audio", "pdf"],
+            "output": ["text"]
+          }
+        },
+        "gemini/gemini-3.5-flash": {
+          "displayName": "Gemini 3.5 Flash",
+          "description": "Fast Gemini model balancing multimodal reasoning, tool use, and cost",
+          "lifecycle": "active",
+          "contextWindow": 1048576,
+          "maxOutputTokens": 65536,
+          "knowledgeCutoff": "2025-01",
+          "structuredOutput": true,
+          "lastUpdated": "2026-05-19",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["minimal", "low", "medium", "high"]
+          },
+          "modalities": {
+            "input": ["text", "image", "video", "audio", "pdf"],
+            "output": ["text"]
+          }
+        },
+        "gemini/gemini-3.5-flash-lite": {
+          "displayName": "Gemini 3.5 Flash Lite",
+          "description": "Fast Gemini model balancing multimodal reasoning, tool use, and cost",
+          "lifecycle": "active",
+          "contextWindow": 1048576,
+          "maxOutputTokens": 65536,
+          "knowledgeCutoff": "2026-03",
+          "structuredOutput": true,
+          "lastUpdated": "2026-07-21",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["minimal", "low", "medium", "high"]
+          },
+          "modalities": {
+            "input": ["text", "image", "video", "audio", "pdf"],
+            "output": ["text"]
+          }
+        },
+        "meta/muse-spark-1.2": {
+          "displayName": "Muse Spark 1.2",
+          "description": "Muse Spark 1.2 is a coding-focused update to Muse Spark 1.1 with improvements in code generation, complex debugging, codebase understanding, and end-to-end developer workflows.",
+          "lifecycle": "active",
+          "contextWindow": 1048576,
+          "maxOutputTokens": 131072,
+          "structuredOutput": true,
+          "lastUpdated": "2026-08-05",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["minimal", "low", "medium", "high", "xhigh"]
+          },
+          "modalities": {
+            "input": ["text", "image", "video", "pdf", "audio"],
+            "output": ["text"]
+          }
+        },
+        "minimax/m3": {
+          "displayName": "MiniMax-M3",
+          "description": "MiniMax multimodal model for long-context coding, perception, and agent planning",
+          "lifecycle": "active",
+          "contextWindow": 1048576,
+          "maxOutputTokens": 512000,
+          "lastUpdated": "2026-06-01",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "modalities": {
+            "input": ["text", "image", "video"],
+            "output": ["text"]
+          }
+        },
+        "mistral/devstral-2512": {
+          "displayName": "Devstral 2",
+          "description": "Mistral's coding-agent model for repository work, terminal tasks, and software fixes",
+          "lifecycle": "active",
+          "contextWindow": 262144,
+          "maxOutputTokens": 262144,
+          "knowledgeCutoff": "2025-12",
+          "lastUpdated": "2025-12-09",
+          "capabilities": {
+            "vision": false,
+            "reasoning": false,
+            "functionCalling": true
+          },
+          "modalities": {
+            "input": ["text"],
+            "output": ["text"]
+          }
+        },
+        "mistral/mistral-large-2512": {
+          "displayName": "Mistral Large 3",
+          "description": "Mistral's largest general model for enterprise agents, coding, and multilingual reasoning",
+          "lifecycle": "active",
+          "contextWindow": 262144,
+          "maxOutputTokens": 262144,
+          "knowledgeCutoff": "2024-11",
+          "lastUpdated": "2025-12-02",
+          "capabilities": {
+            "vision": true,
+            "reasoning": false,
+            "functionCalling": true
+          },
+          "modalities": {
+            "input": ["text", "image"],
+            "output": ["text"]
+          }
+        },
+        "mistral/mistral-small-2603": {
+          "displayName": "Mistral Small 4",
+          "description": "Fast Mistral production model for chat, extraction, and cost-sensitive agents",
+          "lifecycle": "active",
+          "contextWindow": 256000,
+          "maxOutputTokens": 256000,
+          "knowledgeCutoff": "2025-06",
+          "lastUpdated": "2026-03-16",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["none", "high"]
+          },
+          "modalities": {
+            "input": ["text", "image"],
+            "output": ["text"]
+          }
+        },
+        "moonshot/kimi-k3": {
+          "displayName": "Kimi K3",
+          "description": "Multimodal Kimi model with 1M context and toggleable max-effort thinking for long-horizon agent work",
+          "lifecycle": "active",
+          "contextWindow": 1048576,
+          "maxOutputTokens": 131072,
+          "structuredOutput": true,
+          "lastUpdated": "2026-07-16",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["low", "high", "max"]
+          },
+          "modalities": {
+            "input": ["text", "image", "video"],
+            "output": ["text"]
+          }
+        },
+        "openai/gpt-5.3-chat-latest": {
+          "displayName": "GPT-5.3 Chat (latest)",
+          "description": "Chat-tuned GPT model for conversational assistance, writing, and tool workflows",
+          "lifecycle": "active",
+          "contextWindow": 128000,
+          "maxOutputTokens": 16384,
+          "knowledgeCutoff": "2025-08-31",
+          "structuredOutput": true,
+          "lastUpdated": "2026-03-03",
+          "capabilities": {
+            "vision": true,
+            "reasoning": false,
+            "functionCalling": true
+          },
+          "modalities": {
+            "input": ["text", "image"],
+            "output": ["text"]
+          }
+        },
+        "openai/gpt-5.3-codex": {
+          "displayName": "GPT-5.3 Codex",
+          "description": "Coding-optimized GPT model for repository edits, reviews, and agentic software work",
+          "lifecycle": "active",
+          "contextWindow": 400000,
+          "inputLimit": 272000,
+          "maxOutputTokens": 128000,
+          "knowledgeCutoff": "2025-08-31",
+          "structuredOutput": true,
+          "lastUpdated": "2026-02-05",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["none", "low", "medium", "high", "xhigh"]
+          },
+          "modalities": {
+            "input": ["text", "image", "pdf"],
+            "output": ["text"]
+          }
+        },
+        "openai/gpt-5.4": {
+          "displayName": "GPT-5.4",
+          "description": "Agent-ready GPT for coding and computer-use workflows at a lower cost",
+          "lifecycle": "active",
+          "contextWindow": 1050000,
+          "inputLimit": 922000,
+          "maxOutputTokens": 128000,
+          "knowledgeCutoff": "2025-08-31",
+          "structuredOutput": true,
+          "lastUpdated": "2026-03-05",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["none", "low", "medium", "high", "xhigh"]
+          },
+          "modalities": {
+            "input": ["text", "image", "pdf"],
+            "output": ["text"]
+          }
+        },
+        "openai/gpt-5.4-mini": {
+          "displayName": "GPT-5.4 mini",
+          "description": "Strong small GPT for coding subagents, quick tool use, and high-volume work",
+          "lifecycle": "active",
+          "contextWindow": 400000,
+          "inputLimit": 272000,
+          "maxOutputTokens": 128000,
+          "knowledgeCutoff": "2025-08-31",
+          "structuredOutput": true,
+          "lastUpdated": "2026-03-17",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["none", "low", "medium", "high", "xhigh"]
+          },
+          "modalities": {
+            "input": ["text", "image"],
+            "output": ["text"]
+          }
+        },
+        "openai/gpt-5.4-nano": {
+          "displayName": "GPT-5.4 nano",
+          "description": "Cheapest GPT-5.4 lane for simple routing, extraction, and bulk automation",
+          "lifecycle": "active",
+          "contextWindow": 400000,
+          "inputLimit": 272000,
+          "maxOutputTokens": 128000,
+          "knowledgeCutoff": "2025-08-31",
+          "structuredOutput": true,
+          "lastUpdated": "2026-03-17",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["none", "low", "medium", "high", "xhigh"]
+          },
+          "modalities": {
+            "input": ["text", "image"],
+            "output": ["text"]
+          }
+        },
+        "openai/gpt-5.4-pro": {
+          "displayName": "GPT-5.4 Pro",
+          "description": "More exact GPT-5.4 tier for demanding professional reasoning and agent tasks",
+          "lifecycle": "active",
+          "contextWindow": 1050000,
+          "inputLimit": 922000,
+          "maxOutputTokens": 128000,
+          "knowledgeCutoff": "2025-08-31",
+          "structuredOutput": false,
+          "lastUpdated": "2026-03-05",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["medium", "high", "xhigh"]
+          },
+          "modalities": {
+            "input": ["text", "image"],
+            "output": ["text"]
+          }
+        },
+        "openai/gpt-5.5": {
+          "displayName": "GPT-5.5",
+          "description": "Default frontier GPT for coding, computer use, research, and knowledge work",
+          "lifecycle": "active",
+          "contextWindow": 1050000,
+          "inputLimit": 922000,
+          "maxOutputTokens": 128000,
+          "knowledgeCutoff": "2025-12-01",
+          "structuredOutput": true,
+          "lastUpdated": "2026-04-23",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["none", "low", "medium", "high", "xhigh"]
+          },
+          "modalities": {
+            "input": ["text", "image", "pdf"],
+            "output": ["text"]
+          }
+        },
+        "openai/gpt-5.5-pro": {
+          "displayName": "GPT-5.5 Pro",
+          "description": "Highest-accuracy GPT-5.5 tier for slower, precision-heavy reasoning and coding",
+          "lifecycle": "active",
+          "contextWindow": 1050000,
+          "inputLimit": 922000,
+          "maxOutputTokens": 128000,
+          "knowledgeCutoff": "2025-12-01",
+          "structuredOutput": true,
+          "lastUpdated": "2026-04-23",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["medium", "high", "xhigh"]
+          },
+          "modalities": {
+            "input": ["text", "image", "pdf"],
+            "output": ["text"]
+          }
+        },
+        "openai/gpt-5.6-luna": {
+          "displayName": "GPT-5.6 Luna",
+          "description": "Cost-efficient GPT-5.6 model for fast, high-volume workloads",
+          "lifecycle": "active",
+          "contextWindow": 1050000,
+          "inputLimit": 922000,
+          "maxOutputTokens": 128000,
+          "knowledgeCutoff": "2026-02-16",
+          "structuredOutput": true,
+          "lastUpdated": "2026-07-09",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["none", "low", "medium", "high", "xhigh", "max"]
+          },
+          "modalities": {
+            "input": ["text", "image", "pdf"],
+            "output": ["text"]
+          }
+        },
+        "openai/gpt-5.6-sol": {
+          "displayName": "GPT-5.6 Sol",
+          "description": "Frontier GPT-5.6 model for complex professional work, coding, and agentic workflows",
+          "lifecycle": "active",
+          "contextWindow": 1050000,
+          "inputLimit": 922000,
+          "maxOutputTokens": 128000,
+          "knowledgeCutoff": "2026-02-16",
+          "structuredOutput": true,
+          "lastUpdated": "2026-07-09",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["none", "low", "medium", "high", "xhigh", "max"]
+          },
+          "modalities": {
+            "input": ["text", "image", "pdf"],
+            "output": ["text"]
+          }
+        },
+        "openai/gpt-5.6-terra": {
+          "displayName": "GPT-5.6 Terra",
+          "description": "Balanced GPT-5.6 model for capable, cost-efficient everyday work",
+          "lifecycle": "active",
+          "contextWindow": 1050000,
+          "inputLimit": 922000,
+          "maxOutputTokens": 128000,
+          "knowledgeCutoff": "2026-02-16",
+          "structuredOutput": true,
+          "lastUpdated": "2026-07-09",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["none", "low", "medium", "high", "xhigh", "max"]
+          },
+          "modalities": {
+            "input": ["text", "image", "pdf"],
+            "output": ["text"]
+          }
+        },
+        "perplexity/sonar": {
+          "displayName": "Sonar",
+          "description": "Fast web-grounded Sonar for current answers, citations, and lightweight retrieval",
+          "lifecycle": "active",
+          "contextWindow": 128000,
+          "maxOutputTokens": 4096,
+          "knowledgeCutoff": "2025-09-01",
+          "lastUpdated": "2025-09-01",
+          "capabilities": {
+            "vision": false,
+            "reasoning": false,
+            "functionCalling": false
+          },
+          "modalities": {
+            "input": ["text"],
+            "output": ["text"]
+          }
+        },
+        "perplexity/sonar-pro": {
+          "displayName": "Sonar Pro",
+          "description": "Deeper Sonar search model with broader retrieval and stronger synthesis",
+          "lifecycle": "active",
+          "contextWindow": 200000,
+          "maxOutputTokens": 8192,
+          "knowledgeCutoff": "2025-09-01",
+          "lastUpdated": "2025-09-01",
+          "capabilities": {
+            "vision": true,
+            "reasoning": false,
+            "functionCalling": false
+          },
+          "modalities": {
+            "input": ["text", "image"],
+            "output": ["text"]
+          }
+        },
+        "perplexity/sonar-reasoning-pro": {
+          "displayName": "Sonar Reasoning Pro",
+          "description": "Web-grounded Sonar for multi-step research questions that need cited reasoning",
+          "lifecycle": "active",
+          "contextWindow": 128000,
+          "maxOutputTokens": 4096,
+          "knowledgeCutoff": "2025-09-01",
+          "lastUpdated": "2025-09-01",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": false
+          },
+          "thinkingOptions": {
+            "efforts": ["minimal", "low", "medium", "high"]
+          },
+          "modalities": {
+            "input": ["text", "image"],
+            "output": ["text"]
+          }
+        },
+        "vertexai/gemini-3.7-flash": {
+          "displayName": "Gemini 3.7 Flash",
+          "description": "High-efficiency Gemini model for agentic workflows, coding, and multimodal reasoning",
+          "lifecycle": "active",
+          "contextWindow": 1048576,
+          "maxOutputTokens": 65536,
+          "knowledgeCutoff": "2026-03",
+          "structuredOutput": true,
+          "lastUpdated": "2026-08-13",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["low", "medium", "high"]
+          },
+          "modalities": {
+            "input": ["text", "image", "video", "audio", "pdf"],
+            "output": ["text"]
+          }
+        },
+        "vertexai/gemini-3.7-flash-eu": {
+          "displayName": "Gemini 3.7 Flash (EU)",
+          "description": "High-efficiency Gemini model for agentic workflows, coding, and multimodal reasoning",
+          "lifecycle": "active",
+          "contextWindow": 1048576,
+          "maxOutputTokens": 65536,
+          "knowledgeCutoff": "2026-03",
+          "structuredOutput": true,
+          "lastUpdated": "2026-08-13",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["low", "medium", "high"]
+          },
+          "modalities": {
+            "input": ["text", "image", "video", "audio", "pdf"],
+            "output": ["text"]
+          }
+        },
+        "xai/grok-4.3": {
+          "displayName": "Grok 4.3",
+          "description": "xAI's default Grok for chat, coding, agentic tools, and lower hallucination risk",
+          "lifecycle": "active",
+          "contextWindow": 1000000,
+          "maxOutputTokens": 30000,
+          "structuredOutput": true,
+          "lastUpdated": "2026-04-17",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["none", "low", "medium", "high"]
+          },
+          "modalities": {
+            "input": ["text", "image", "pdf"],
+            "output": ["text"]
+          }
+        },
+        "xai/grok-4.5": {
+          "displayName": "Grok 4.5",
+          "description": "xAI's Grok model for chat, coding, agentic tools, and lower hallucination risk",
+          "lifecycle": "active",
+          "contextWindow": 500000,
+          "maxOutputTokens": 500000,
+          "structuredOutput": true,
+          "lastUpdated": "2026-07-08",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["low", "medium", "high"]
+          },
+          "modalities": {
+            "input": ["text", "image"],
+            "output": ["text"]
+          }
+        },
+        "xai/grok-4.6": {
+          "displayName": "Grok 4.6",
+          "description": "xAI's frontier model for long-running agents, coding, knowledge work, and visual projects",
+          "lifecycle": "active",
+          "contextWindow": 500000,
+          "maxOutputTokens": 500000,
+          "knowledgeCutoff": "2026-02-01",
+          "structuredOutput": true,
+          "lastUpdated": "2026-08-12",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["low", "medium", "high", "xhigh"]
+          },
+          "modalities": {
+            "input": ["text", "image"],
+            "output": ["text"]
+          }
+        },
+        "xai/grok-build-0.1": {
+          "displayName": "Grok Build 0.1",
+          "description": "Fast Grok coding model tuned for agentic engineering and iterative edits",
+          "lifecycle": "active",
+          "contextWindow": 256000,
+          "maxOutputTokens": 256000,
+          "structuredOutput": true,
+          "lastUpdated": "2026-04-16",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "modalities": {
+            "input": ["text", "image", "pdf"],
+            "output": ["text"]
+          }
+        }
+      },
       "siliconflow": {
         "baidu/ERNIE-4.5-300B-A47B": {
           "displayName": "baidu/ERNIE-4.5-300B-A47B",
@@ -44358,6 +45210,172 @@
         "cacheReadUsdPer1M": 0.24
       },
       {
+        "modelKey": "opper:anthropic/claude-fable-5",
+        "inputUsdPer1M": 10,
+        "outputUsdPer1M": 50,
+        "cacheReadUsdPer1M": 1,
+        "cacheWriteUsdPer1M": 12.5
+      },
+      {
+        "modelKey": "opper:anthropic/claude-haiku-4-5",
+        "inputUsdPer1M": 1,
+        "outputUsdPer1M": 5,
+        "cacheReadUsdPer1M": 0.1,
+        "cacheWriteUsdPer1M": 1.25
+      },
+      {
+        "modelKey": "opper:anthropic/claude-opus-4-5",
+        "inputUsdPer1M": 5,
+        "outputUsdPer1M": 25,
+        "cacheReadUsdPer1M": 0.5,
+        "cacheWriteUsdPer1M": 6.25
+      },
+      {
+        "modelKey": "opper:anthropic/claude-opus-4-6",
+        "inputUsdPer1M": 5,
+        "outputUsdPer1M": 25,
+        "cacheReadUsdPer1M": 0.5,
+        "cacheWriteUsdPer1M": 6.25
+      },
+      {
+        "modelKey": "opper:anthropic/claude-opus-4-7",
+        "inputUsdPer1M": 5,
+        "outputUsdPer1M": 25,
+        "cacheReadUsdPer1M": 0.5,
+        "cacheWriteUsdPer1M": 6.25
+      },
+      {
+        "modelKey": "opper:anthropic/claude-opus-4-8",
+        "inputUsdPer1M": 5,
+        "outputUsdPer1M": 25,
+        "cacheReadUsdPer1M": 0.5,
+        "cacheWriteUsdPer1M": 6.25
+      },
+      {
+        "modelKey": "opper:anthropic/claude-opus-5",
+        "inputUsdPer1M": 5,
+        "outputUsdPer1M": 25,
+        "cacheReadUsdPer1M": 0.5,
+        "cacheWriteUsdPer1M": 6.25
+      },
+      {
+        "modelKey": "opper:anthropic/claude-sonnet-4-5",
+        "inputUsdPer1M": 3,
+        "outputUsdPer1M": 15,
+        "cacheReadUsdPer1M": 0.3,
+        "cacheWriteUsdPer1M": 3.75
+      },
+      {
+        "modelKey": "opper:anthropic/claude-sonnet-4-6",
+        "inputUsdPer1M": 3,
+        "outputUsdPer1M": 15,
+        "cacheReadUsdPer1M": 0.3,
+        "cacheWriteUsdPer1M": 3.75
+      },
+      {
+        "modelKey": "opper:anthropic/claude-sonnet-5",
+        "inputUsdPer1M": 2,
+        "outputUsdPer1M": 10,
+        "cacheReadUsdPer1M": 0.2,
+        "cacheWriteUsdPer1M": 2.5
+      },
+      {
+        "modelKey": "opper:gemini/gemini-3-flash-preview",
+        "inputUsdPer1M": 0.5,
+        "outputUsdPer1M": 3,
+        "cacheReadUsdPer1M": 0.05
+      },
+      {
+        "modelKey": "opper:gemini/gemini-3.5-flash",
+        "inputUsdPer1M": 1.5,
+        "outputUsdPer1M": 9,
+        "cacheReadUsdPer1M": 0.15
+      },
+      {
+        "modelKey": "opper:gemini/gemini-3.5-flash-lite",
+        "inputUsdPer1M": 0.3,
+        "outputUsdPer1M": 2.5,
+        "cacheReadUsdPer1M": 0.03
+      },
+      {
+        "modelKey": "opper:meta/muse-spark-1.2",
+        "inputUsdPer1M": 1.25,
+        "outputUsdPer1M": 4.25,
+        "cacheReadUsdPer1M": 0.15
+      },
+      {
+        "modelKey": "opper:mistral/devstral-2512",
+        "inputUsdPer1M": 0.4,
+        "outputUsdPer1M": 2
+      },
+      {
+        "modelKey": "opper:mistral/mistral-large-2512",
+        "inputUsdPer1M": 0.5,
+        "outputUsdPer1M": 1.5
+      },
+      {
+        "modelKey": "opper:mistral/mistral-small-2603",
+        "inputUsdPer1M": 0.15,
+        "outputUsdPer1M": 0.6
+      },
+      {
+        "modelKey": "opper:moonshot/kimi-k3",
+        "inputUsdPer1M": 3,
+        "outputUsdPer1M": 15,
+        "cacheReadUsdPer1M": 0.3
+      },
+      {
+        "modelKey": "opper:openai/gpt-5.3-chat-latest",
+        "inputUsdPer1M": 1.75,
+        "outputUsdPer1M": 14,
+        "cacheReadUsdPer1M": 0.175
+      },
+      {
+        "modelKey": "opper:openai/gpt-5.3-codex",
+        "inputUsdPer1M": 1.75,
+        "outputUsdPer1M": 14,
+        "cacheReadUsdPer1M": 0.175
+      },
+      {
+        "modelKey": "opper:openai/gpt-5.4-mini",
+        "inputUsdPer1M": 0.75,
+        "outputUsdPer1M": 4.5,
+        "cacheReadUsdPer1M": 0.075
+      },
+      {
+        "modelKey": "opper:openai/gpt-5.4-nano",
+        "inputUsdPer1M": 0.2,
+        "outputUsdPer1M": 1.25,
+        "cacheReadUsdPer1M": 0.02
+      },
+      {
+        "modelKey": "opper:perplexity/sonar",
+        "inputUsdPer1M": 1,
+        "outputUsdPer1M": 1
+      },
+      {
+        "modelKey": "opper:perplexity/sonar-pro",
+        "inputUsdPer1M": 3,
+        "outputUsdPer1M": 15
+      },
+      {
+        "modelKey": "opper:perplexity/sonar-reasoning-pro",
+        "inputUsdPer1M": 2,
+        "outputUsdPer1M": 8
+      },
+      {
+        "modelKey": "opper:vertexai/gemini-3.7-flash",
+        "inputUsdPer1M": 0.75,
+        "outputUsdPer1M": 3.75,
+        "cacheReadUsdPer1M": 0.075
+      },
+      {
+        "modelKey": "opper:vertexai/gemini-3.7-flash-eu",
+        "inputUsdPer1M": 0.75,
+        "outputUsdPer1M": 3.75,
+        "cacheReadUsdPer1M": 0.075
+      },
+      {
         "modelKey": "siliconflow:baidu/ERNIE-4.5-300B-A47B",
         "inputUsdPer1M": 0.28,
         "outputUsdPer1M": 1.1
@@ -47401,6 +48419,12 @@
         "api": "https://openrouter.ai/api/v1",
         "doc": "https://openrouter.ai/models"
       },
+      "opper": {
+        "id": "opper",
+        "name": "Opper",
+        "api": "https://api.opper.ai/v3/compat",
+        "doc": "https://opper.ai/models"
+      },
       "siliconflow": {
         "id": "siliconflow",
         "name": "SiliconFlow",
@@ -47740,6 +48764,7 @@
         }
       },
       "openrouter": {},
+      "opper": {},
       "siliconflow": {},
       "stepfun": {},
       "stepfun-ai": {},

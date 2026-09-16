@@ -26,6 +26,11 @@ import { recordLlmCall } from '../telemetry/record-llm-call.js';
 import { recordToolInvocation } from '../telemetry/record-tool-invocation.js';
 import type { PersistedLlmCallRecord, PersistedToolInvocationRecord } from '../telemetry/types.js';
 
+test('Opper pricing comes from the models.dev snapshot', () => {
+  const pricing = getBuiltinPricing('opper:anthropic/claude-sonnet-4-6');
+  assert.ok(pricing && pricing.inputUsdPer1M > 0 && pricing.outputUsdPer1M > 0);
+});
+
 test('Moonshot Global pricing comes from the models.dev snapshot', () => {
   const pricing = getBuiltinPricing('moonshot-global:kimi-k3');
   assert.ok(pricing && pricing.inputUsdPer1M > 0 && pricing.outputUsdPer1M > 0);
