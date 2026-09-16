@@ -325,7 +325,7 @@
 )
   .maka-window-titlebar {
   --maka-titlebar-workbar-reserve: calc(
-    var(--maka-session-workbar-width) + 28px
+    var(--maka-session-workbar-width) + var(--agents-content-area-gap)
   );
 }
 

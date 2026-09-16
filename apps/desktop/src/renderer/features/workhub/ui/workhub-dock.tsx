@@ -26,10 +26,12 @@ import { useWorkHubServices } from '../services.js';
 import { workHubLiveCopy } from '../locales/workhub-live-copy.js';
 
 /** The main window owns only this landing space; the live view keeps its React owner. */
-export function WorkHubDock({ enabled, visible = true }: { enabled: boolean; visible?: boolean }) {
+export function WorkHubDock({ enabled, visible = true, workbarCollapsed }: { enabled: boolean; visible?: boolean; workbarCollapsed: boolean }) {
   const { presentation } = useWorkHubServices();
   const t = workHubLiveCopy[useUiLocale()];
   const element = useRef<HTMLElement>(null);
+  const collapsed = useRef(workbarCollapsed);
+  collapsed.current = workbarCollapsed;
   const [snapshot, setSnapshot] = useState<WorkHubPresentationSnapshot>();
   const [backdrop, setBackdrop] = useState<string>();
   const [error, setError] = useState<string>();
@@ -63,6 +65,7 @@ export function WorkHubDock({ enabled, visible = true }: { enabled: boolean; vis
       const host = {
         visible: enabled && visible && rect.width > 0 && rect.height > 0,
         occluded,
+        workbar: { collapsed: collapsed.current, placement: window.matchMedia('(max-width: 990px)').matches ? 'bottom' as const : 'right' as const },
         rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
       };
       const key = JSON.stringify(host);
@@ -90,7 +93,7 @@ export function WorkHubDock({ enabled, visible = true }: { enabled: boolean; vis
     };
   }, [enabled, presentation, visible, snapshot?.placement]);
   return (
-    <section ref={element} className="workHubDock" hidden={!visible} aria-label={t.title}>
+    <section ref={element} className="workHubDock" data-native-edge={snapshot?.placement === 'docked' && !needsRecovery || undefined} hidden={!visible} aria-label={t.title}>
       {backdrop && snapshot?.placement === 'docked' && <img className="workHubDockBackdrop" src={backdrop} alt="" aria-hidden draggable={false} />}
       {(snapshot?.placement === 'floating' || needsRecovery) && (
         <div className="workHubDockPlaceholder">

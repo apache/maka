@@ -1027,3 +1027,23 @@ test('expanding progress before its first paint reveals the conversation without
     h.controller.dispose();
   }
 });
+
+// Main owns panel state; the native conversation paints its overlay without
+// giving up width or inventing a second panel controller.
+test('mirrors panel state to WorkHub and routes edge toggles back to Main', async () => {
+  const h = await harness();
+  const host = { visible: true, rect: { x: 200, y: 40, width: 800, height: 760 }, workbar: { collapsed: true, placement: 'right' } };
+  await h.command(h.main.webContents, 'host', host);
+  const view = h.views[0]!;
+  assert.equal(JSON.stringify((await h.command(view.webContents, 'snapshot') as import('../../shared/workhub-presentation.js').WorkHubPresentationSnapshot).workbar), JSON.stringify(host.workbar));
+  await h.command(h.main.webContents, 'ready');
+  await h.command(view.webContents, 'toggle-workbar');
+  const event = [...h.main.webContents.sent].reverse().find(([channel]) => channel.endsWith('open-main'));
+  assert.equal(JSON.stringify(event?.[1]), JSON.stringify({ kind: 'workhub', panelAction: 'toggle' }));
+  await h.command(h.main.webContents, 'host', { ...host, workbar: { collapsed: false, placement: 'bottom' } });
+  const update = [...view.webContents.sent].reverse().find(([channel]) => channel.endsWith('changed'));
+  assert.ok(update);
+  assert.equal(JSON.stringify((update[1] as import('../../shared/workhub-presentation.js').WorkHubPresentationSnapshot).workbar), JSON.stringify({ collapsed: false, placement: 'bottom' }));
+  await assert.rejects(h.command(view.webContents, 'host', host), /Only the main window/);
+  h.controller.dispose();
+});

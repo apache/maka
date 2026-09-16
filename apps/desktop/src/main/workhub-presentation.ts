@@ -94,7 +94,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
   }
 
   function getSnapshot(): WorkHubPresentationSnapshot {
-    return { placement, floatingVisible: !!floating && !floating.isDestroyed() && floating.isVisible(), shortcutRegistered, rendererCrashed, ...(progressRequest !== undefined ? { progressRequest } : {}) };
+    return { placement, ...(host.workbar ? { workbar: host.workbar } : {}), floatingVisible: !!floating && !floating.isDestroyed() && floating.isVisible(), shortcutRegistered, rendererCrashed, ...(progressRequest !== undefined ? { progressRequest } : {}) };
   }
 
   function send(channel: string, ...args: unknown[]): void {
@@ -538,6 +538,8 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
             if (typeof value.visible !== 'boolean' || (value.occluded !== undefined && typeof value.occluded !== 'boolean') || !value.rect ||
               ![value.rect.x, value.rect.y, value.rect.width, value.rect.height].every((n) => typeof n === 'number' && Number.isFinite(n)) ||
               value.rect.width < 0 || value.rect.height < 0) throw new Error('Invalid WorkHub host');
+            if (value.workbar && (typeof value.workbar.collapsed !== 'boolean' || !['right', 'bottom'].includes(value.workbar.placement))) throw new Error('Invalid WorkHub workbar');
+            const workbarChanged = host.workbar?.collapsed !== value.workbar?.collapsed || host.workbar?.placement !== value.workbar?.placement;
             // Native child views sit above the main renderer's top layer. Keep
             // a still frame behind its menus/dialogs while yielding native input.
             let backdrop: string | undefined;
@@ -561,6 +563,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
             }
             if (!host.visible) requestProgress();
             updateDockedBounds();
+            if (workbarChanged) send('workhub-presentation:changed', getSnapshot());
             return backdrop;
           }
           case 'progress-ready':
@@ -615,8 +618,9 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
           }
           case 'dock': await dock(revision); return;
           case 'hide': hideFloating(); return;
+          case 'toggle-workbar':
           case 'usage':
-            await navigateMain({ kind: 'workhub', showUsage: true }, revision);
+            await navigateMain({ kind: 'workhub', panelAction: command === 'usage' ? 'usage' : 'toggle' }, revision);
             return;
           case 'session':
             if (typeof payload !== 'string' || payload.length > 4096) throw new Error('Invalid session key');

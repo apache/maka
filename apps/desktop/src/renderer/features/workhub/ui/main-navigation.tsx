@@ -19,22 +19,23 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { useWorkHubServices } from '../services.js';
-export function WorkHubMainNavigation(props: { workbarReady: boolean; onOpenUsage(): void; onOpenWorkHub(): void; onOpenSession(sessionId: string): void }) {
-  const [pendingUsage, setPendingUsage] = useState(false);
+export function WorkHubMainNavigation(props: { workbarReady: boolean; onOpenUsage(): void; onToggleWorkbar(): void; onOpenWorkHub(): void; onOpenSession(sessionId: string): void }) {
+  const [pendingAction, setPendingAction] = useState<'usage' | 'toggle'>();
   const { presentation } = useWorkHubServices();
   const current = useRef(props); current.current = props;
   useEffect(() => presentation.onOpenMain((navigation) => {
     if (navigation.kind === 'workhub') {
       current.current.onOpenWorkHub();
-      setPendingUsage(Boolean(navigation.showUsage));
+      setPendingAction(navigation.panelAction);
     }
-    else { setPendingUsage(false); current.current.onOpenSession(navigation.sessionKey); }
+    else { setPendingAction(undefined); current.current.onOpenSession(navigation.sessionKey); }
   }), [presentation]);
   useEffect(() => {
-    if (pendingUsage && props.workbarReady) {
-      current.current.onOpenUsage();
-      setPendingUsage(false);
+    if (pendingAction && props.workbarReady) {
+      if (pendingAction === 'usage') current.current.onOpenUsage();
+      else current.current.onToggleWorkbar();
+      setPendingAction(undefined);
     }
-  }, [pendingUsage, props.workbarReady]);
+  }, [pendingAction, props.workbarReady]);
   return null;
 }

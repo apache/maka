@@ -17,19 +17,15 @@
  * under the License.
  */
 
-import { useUiLocale } from '@maka/ui';
 import { ChevronLeft, ChevronRight } from '@maka/ui/icons';
-import { getShellCopy } from '../../../locales/shell-copy';
 
 /** An edge affordance shared by the collapsed and expanded workspace. */
-export function WorkbarEdgeToggle(props: { collapsed: boolean; onToggle(): void }) {
-  const copy = getShellCopy(useUiLocale()).chrome;
-  const label = props.collapsed ? copy.expandWorkbar : copy.collapseWorkbar;
+export function WorkbarEdgeToggle(props: { collapsed: boolean; label: string; placement?: 'right' | 'bottom'; onToggle(): void }) {
   const Arrow = props.collapsed ? ChevronLeft : ChevronRight;
   return (
-    <button type="button" className="maka-workbar-edge" data-collapsed={props.collapsed || undefined}
-      aria-label={label} aria-expanded={!props.collapsed} onClick={props.onToggle}>
-      <span className="maka-workbar-edge-glass" aria-hidden="true"><Arrow size={12} /></span>
+    <button type="button" className="maka-workbar-edge" data-collapsed={props.collapsed || undefined} data-placement={props.placement}
+      aria-label={props.label} aria-expanded={!props.collapsed} onClick={props.onToggle}>
+      <span className="maka-workbar-edge-glass" aria-hidden="true"><Arrow size={10} strokeWidth={1.25} /></span>
     </button>
   );
 }

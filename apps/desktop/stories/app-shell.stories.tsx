@@ -3587,7 +3587,9 @@ export const WorkbarEdgeRevealAndCollapse: Story = {
     await waitFor(() => expect(Number(getComputedStyle(glass).opacity)).toBe(1));
     expect(frame.getBoundingClientRect().width).toBe(width);
     const conversation = canvasElement.querySelector('.maka-detail-with-artifacts > .mainColumn')!.getBoundingClientRect();
-    expect(edge.getBoundingClientRect().left).toBeGreaterThanOrEqual(conversation.right);
+    expect(edge.getBoundingClientRect().left).toBeGreaterThan(conversation.left);
+    expect(edge.getBoundingClientRect().right).toBeLessThanOrEqual(conversation.right - 12);
+    expect(frame.getBoundingClientRect().left - conversation.right).toBeLessThanOrEqual(8);
     expect(edge.getBoundingClientRect().right).toBeLessThanOrEqual(frame.getBoundingClientRect().left);
     const separator = canvas.getByRole('separator', { name: '调整工作栏宽度' });
     const separatorBox = separator.getBoundingClientRect();
@@ -3606,6 +3608,8 @@ export const WorkbarEdgeRevealAndCollapse: Story = {
     await userEvent.click(edge);
     await waitFor(() => expect(frame).not.toBeVisible());
     expect(panel).not.toBeVisible();
+    const layout = canvasElement.querySelector('.maka-detail-with-artifacts')!;
+    await waitFor(() => expect(Math.abs(layout.getBoundingClientRect().right - layout.querySelector('.mainColumn')!.getBoundingClientRect().right)).toBeLessThan(1));
     const restore = canvas.getByRole('button', { name: '展开任务工作栏' });
     expect(restore).toBe(edge);
     restore.focus();

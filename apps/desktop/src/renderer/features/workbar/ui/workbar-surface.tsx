@@ -64,8 +64,9 @@ import {
   workbarToolDefinition,
   type WorkbarToolDefinition,
 } from '../model/workbar-tool-definitions';
-import { WorkbarEdgeToggle } from './workbar-toggle';
+import { WorkbarEdgeToggle } from '../../../application/contracts/workbar-edge-toggle.js';
 import { WorkBoardPanel } from '../../../work-board-panel.js';
+import { getShellCopy } from '../../../locales/shell-copy.js';
 import { getDesktopConversationCopy } from '../../../locales/conversation-copy.js';
 import type {
   CompanionQuoteTarget,
@@ -439,7 +440,7 @@ export function WorkbarSurface(props: {
 
   return (
     <div className="maka-workbar-workspace-contents">
-      {!props.hidden && props.sessionId && <WorkbarEdgeToggle collapsed={props.rightCollapsed} onToggle={props.onToggleRightPanel} />}
+      {!props.hidden && props.sessionId && <WorkbarEdgeToggle label={getShellCopy(locale).chrome[props.rightCollapsed ? 'expandWorkbar' : 'collapseWorkbar']} collapsed={props.rightCollapsed} onToggle={props.onToggleRightPanel} />}
       {placements.map((placement) => {
         const panel = visiblePanels[placement];
         const activeTab = panel.tabs.find((tab) => tab.id === panel.activeTabId);

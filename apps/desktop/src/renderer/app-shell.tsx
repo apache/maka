@@ -2408,9 +2408,9 @@ function AppShellContent({
               aria-busy={switchingSession || undefined}>
               <ModuleHub.ModuleHubHost />
               <WorkHubMainNavigation workbarReady={workHubActive && workbarAvailable}
-                onOpenUsage={() => commands.toggleTool('inspector')}
+                onOpenUsage={() => commands.toggleTool('inspector')} onToggleWorkbar={commands.toggleRight}
                 onOpenWorkHub={openWorkHub} onOpenSession={(sessionId) => { closeSettings(); openSession(sessionId); }} />
-              <WorkHubDock enabled={workHubEnabled} visible={workHubActive && sessionsSelected && !shellObscured} />
+              <WorkHubDock workbarCollapsed={selectors.rightCollapsed} enabled={workHubEnabled} visible={workHubActive && sessionsSelected && !shellObscured} />
               <ChatSurfaceLayout
                 // ChatView positions this transcript: switching conversations,
                 // following the tail and the moves the reader asks for are one
