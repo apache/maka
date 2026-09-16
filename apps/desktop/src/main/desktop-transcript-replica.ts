@@ -62,6 +62,12 @@ export interface DesktopTranscriptReplicaSnapshot {
   readonly durable: readonly DesktopSequencedTranscriptMessage[];
   readonly overlay: readonly StoredMessage[];
   readonly hasOlder: boolean;
+  /**
+   * Whether the oldest Turn in the tail has all its rows here. The tail is
+   * bounded by bytes, so it can begin inside a Turn — what it holds of that
+   * Turn then says nothing about how much of it exists.
+   */
+  readonly beginsAtTurnBoundary: boolean;
 }
 
 /** One durable page read for a history consumer; never installed here. Rows ascend. */
@@ -113,6 +119,7 @@ export class DesktopTranscriptReplica {
   #durableThrough: number | null;
   #targetThrough: number | null;
   #hasOlder: boolean;
+  #beginsAtTurnBoundary: boolean;
   #resident = true;
   #residentExternallyAccounted = true;
   #closed = false;
@@ -139,6 +146,7 @@ export class DesktopTranscriptReplica {
     this.#durableThrough = handle.transcriptBootstrap.throughSequence;
     this.#targetThrough = this.#durableThrough;
     this.#hasOlder = handle.transcriptBootstrap.durable.nextCursor !== null;
+    this.#beginsAtTurnBoundary = handle.transcriptBootstrap.durable.endsAtTurnBoundary;
   }
 
   static async prepare(
@@ -201,6 +209,7 @@ export class DesktopTranscriptReplica {
       durable: this.#orderedDurable(false),
       overlay: [...this.#overlay.values()],
       hasOlder: this.#hasOlder,
+      beginsAtTurnBoundary: this.#beginsAtTurnBoundary,
     };
   }
 
@@ -531,6 +540,9 @@ export class DesktopTranscriptReplica {
       }
       residentTurns -= 1;
       this.#hasOlder = true;
+      // Eviction groups rows by their owner, which is not where a Turn ends
+      // when another Turn's rows are written between them.
+      this.#beginsAtTurnBoundary = false;
     }
   }
 

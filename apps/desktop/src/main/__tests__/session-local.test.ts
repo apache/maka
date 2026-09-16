@@ -499,6 +499,7 @@ test('cache restoration never includes live overlay and expires independently of
     ],
     overlay: [{ type: 'user', id: 'live-1', turnId: 'turn', ts: 2, text: 'in flight' }],
     hasOlder: false,
+    beginsAtTurnBoundary: true,
   });
   assert.deepEqual(store.transcript('authority', 'session-1')?.snapshot.overlay, []);
   assert.equal(store.transcript('different-authority', 'session-1'), undefined);
@@ -552,6 +553,7 @@ test('durable Host evidence retires delivery independently of cache admission an
           ],
           overlay: [],
           hasOlder: false,
+          beginsAtTurnBoundary: true,
         };
         service.cacheTranscript(target.scope, snapshot);
         if (cacheLoss === 'revision') db.store.enqueue('other-authority', intent('other-message'));

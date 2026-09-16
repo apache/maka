@@ -94,45 +94,65 @@ export async function readSettledMessagesFrom(
     globalThis.clearTimeout(openTimeout);
     const requiredTurnId = options.requiredTurnId;
     /*
-     * The tail is byte-bounded and can begin inside the required Turn, so what
-     * it holds of that Turn says nothing about how much of it exists — a
-     * terminal row in the tail is evidence about execution, not about
-     * coverage. Only the targeted read walks the whole Turn, so the Turn is
-     * claimed complete only when that read comes back with its ending.
+     * The tail is byte-bounded and can begin inside a Turn, so what it holds
+     * of that Turn says nothing about how much of it exists — a terminal row
+     * in the tail is evidence about execution, not about coverage. Only a
+     * targeted read walks a whole Turn.
      */
-    let turnMessages: readonly StoredMessage[] = [];
-    let turnComplete = false;
-    let reading = false;
-    let readAtRevision = -1;
-    const readRequiredTurn = (): void => {
+    const reads = new Map<string, TurnRead>();
+    const readTurn = (turnId: string, done?: (read: TurnRead) => boolean): TurnRead => {
+      let read = reads.get(turnId);
+      if (!read) {
+        read = { messages: [], returned: false, pending: false, revision: -1 };
+        reads.set(turnId, read);
+      }
       // Re-read only for a tail that has moved since the last one: the Turn may
       // have been running then and ended since.
-      if (requiredTurnId === undefined || turnComplete || reading) return;
-      if (readAtRevision === tailRevision) return;
-      reading = true;
-      readAtRevision = tailRevision;
-      void source.transcripts.readTurn(sessionId, requiredTurnId).then((messages) => {
-        if (cancelled) return;
-        turnMessages = messages;
-        turnComplete = transcriptRecordsTerminalTurn(messages, requiredTurnId);
-      }).catch(() => undefined).finally(() => {
-        reading = false;
-        notify();
-        nextChange = changed();
-      });
+      const current = read;
+      if (!current.pending && current.revision !== tailRevision && !done?.(current)) {
+        current.revision = tailRevision;
+        current.pending = true;
+        void source.transcripts.readTurn(sessionId, turnId).then((messages) => {
+          if (cancelled) return;
+          current.messages = messages;
+          current.returned = true;
+        }).catch(() => undefined).finally(() => {
+          current.pending = false;
+          notify();
+          nextChange = changed();
+        });
+      }
+      return current;
     };
     while (true) {
-      readRequiredTurn();
       const snapshot = store.snapshot();
+      // The Turn the tail begins inside, when it begins inside one. Its earlier
+      // rows are missing here, and nothing in the tail says which they are — so
+      // a caller that named no Turn still gets a whole one.
+      const cutTurnId = snapshot.beginsAtTurnBoundary
+        ? undefined
+        : snapshot.messages[0]?.turnId;
+      const required =
+        requiredTurnId === undefined
+          ? undefined
+          : readTurn(requiredTurnId, (read) =>
+              transcriptRecordsTerminalTurn(read.messages, requiredTurnId),
+            );
+      const cut =
+        cutTurnId === undefined || cutTurnId === requiredTurnId
+          ? undefined
+          : readTurn(cutTurnId, (read) => read.returned);
       const tailIds = new Set(snapshot.messages.map((message) => message.id));
-      const messages = turnMessages
+      const messages = [...(cut?.messages ?? []), ...(required?.messages ?? [])]
         .filter((message) => !tailIds.has(message.id))
         .concat(snapshot.messages);
       const requiredMessageId = options.requiredAssistantMessageId;
       const settled =
         snapshot.ready &&
         (requiredMessageId === undefined || store.hasDurableMessage(requiredMessageId)) &&
-        (requiredTurnId === undefined || turnComplete);
+        (required === undefined ||
+          transcriptRecordsTerminalTurn(required.messages, requiredTurnId!)) &&
+        (cut === undefined || cut.returned);
       if (settled || Date.now() >= deadline) return { messages, settled };
       await Promise.race([
         nextChange,
@@ -148,6 +168,15 @@ export async function readSettledMessagesFrom(
     options.signal?.removeEventListener('abort', abort);
     await handle?.close().catch(() => undefined);
   }
+}
+
+/** One Turn's rows as the Host last returned them, and whether a read is in flight. */
+interface TurnRead {
+  messages: readonly StoredMessage[];
+  returned: boolean;
+  pending: boolean;
+  /** The tail this read was started against; a moved tail may hold more. */
+  revision: number;
 }
 
 function transcriptRecordsTerminalTurn(

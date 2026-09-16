@@ -140,6 +140,7 @@ describe('session workspace action identity', () => {
     // A retired source may not replace the displayed Session or publish its reader.
     act(() => workspace.setActiveId(sessionC));
     for (const batch of encodeDesktopTranscriptSnapshot({
+      beginsAtTurnBoundary: true,
       sessionId: 'c', generation: 'publication', hostEpoch: 'host',
       durableThrough: null, durable: [], overlay: c, hasOlder: false,
     })) readerC.store.accept(batch);

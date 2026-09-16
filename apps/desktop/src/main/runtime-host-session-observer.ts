@@ -1362,6 +1362,8 @@ export class RuntimeHostSessionObserver {
       state.transcriptConsumers.get(consumer.consumerId) === consumer &&
       !consumer.resetRequested;
     let first = true;
+    /** Whether the oldest Turn in what has been read so far is whole. */
+    let beginsAtTurnBoundary = true;
     const send = async (durable: readonly DesktopSequencedTranscriptMessage[], ready: boolean) => {
       if (!ready && durable.length === 0) return;
       await this.#sendTranscriptBatches(
@@ -1371,6 +1373,7 @@ export class RuntimeHostSessionObserver {
           durable,
           overlay: ready ? overlay : [],
           hasOlder: historyHasOlder(history),
+          beginsAtTurnBoundary,
           ...(earlierThan === undefined ? {} : { earlierThan }),
           reset: reset && first,
           ready,
@@ -1390,6 +1393,7 @@ export class RuntimeHostSessionObserver {
       if (!isCurrent()) return;
       history.started = true;
       history.cursor = page.nextCursor;
+      beginsAtTurnBoundary = page.endsAtTurnBoundary;
       const rows = page.durable;
       const rowsBytes = rows.reduce(
         (total, entry) => total + encodedTranscriptMessageBytes(entry.message),

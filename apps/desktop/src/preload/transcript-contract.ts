@@ -56,6 +56,12 @@ export interface DesktopTranscriptBatchPayload {
   readonly durableThrough: number | null;
   readonly fragments: readonly DesktopTranscriptFragment[];
   readonly hasOlder?: boolean;
+  /**
+   * Whether the oldest Turn in this answer has all its rows in it. A
+   * byte-bounded answer can begin inside a Turn, and no local rule tells the
+   * consumer that it did.
+   */
+  readonly beginsAtTurnBoundary?: boolean;
   readonly reset: boolean;
   readonly ready: boolean;
 }
@@ -110,6 +116,8 @@ export function assertDesktopTranscriptBatch(value: unknown): DesktopTranscriptB
     (batch.durableThrough !== null && !isSequence(batch.durableThrough)) ||
     !Array.isArray(batch.fragments) ||
     (batch.hasOlder !== undefined && typeof batch.hasOlder !== 'boolean') ||
+    (batch.beginsAtTurnBoundary !== undefined &&
+      typeof batch.beginsAtTurnBoundary !== 'boolean') ||
     typeof batch.reset !== 'boolean' ||
     typeof batch.ready !== 'boolean'
   ) {

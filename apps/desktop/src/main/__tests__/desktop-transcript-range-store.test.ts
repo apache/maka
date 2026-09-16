@@ -134,6 +134,7 @@ test('reads one Host-owned Turn outside the bounded transcript tail', async () =
         open: async (_sessionId, handler, _registerCancellation, mode) => {
           assert.equal(mode, 'tail');
           for (const batch of encodeDesktopTranscriptSnapshot({
+            beginsAtTurnBoundary: true,
             sessionId: 'session-1',
             generation: 'generation-1',
             hostEpoch: 'host-1',
@@ -188,6 +189,7 @@ test('reads the required Turn when the tail begins inside it', async () => {
         },
         open: async (_sessionId, handler) => {
           for (const batch of encodeDesktopTranscriptSnapshot({
+            beginsAtTurnBoundary: true,
             sessionId: 'session-1',
             generation: 'generation-1',
             hostEpoch: 'host-1',
@@ -211,6 +213,92 @@ test('reads the required Turn when the tail begins inside it', async () => {
   assert.deepEqual(result.messages, whole);
 });
 
+/**
+ * Side Chat reseeding asks for the Session, not for a Turn — it has no way to
+ * know which Turn a byte-bounded tail stopped inside. The tail says, so the
+ * caller does not have to remember to ask.
+ */
+test('reads the Turn the tail begins inside when the caller names none', async () => {
+  const sessionKey = JSON.stringify(['host-1', 'session-1']);
+  const whole: StoredMessage[] = [
+    userMessage('the question', 'user-b'),
+    { ...assistantMessage('the intermediate step', 'assistant-b-step'), turnId: 'turn-b', ts: 4 },
+    { ...assistantMessage('the final answer', 'assistant-b'), turnId: 'turn-b', ts: 5 },
+    { type: 'turn_state', id: 'complete-b', turnId: 'turn-b', ts: 6, status: 'completed' },
+  ];
+  const tail = whole.slice(2);
+  const turnReads: string[] = [];
+  let deliverySequence = 0;
+
+  const result = await readSettledMessagesFrom(
+    {
+      transcripts: {
+        async readTurn(_sessionId, turnId) {
+          turnReads.push(turnId);
+          return whole;
+        },
+        open: async (_sessionId, handler) => {
+          for (const batch of encodeDesktopTranscriptSnapshot({
+            beginsAtTurnBoundary: false,
+            sessionId: 'session-1',
+            generation: 'generation-1',
+            hostEpoch: 'host-1',
+            durableThrough: 8,
+            durable: tail.map((message, index) => ({ sequence: index + 7, message })),
+            overlay: [],
+            hasOlder: true,
+          })) handler({ ...batch, deliverySequence: ++deliverySequence });
+          return transcriptHandle(
+            { sessionId: sessionKey, generation: 'generation-1', hostEpoch: 'host-1' },
+            { readThroughMessageId: 'complete-b' },
+          );
+        },
+      },
+    },
+    sessionKey,
+  );
+
+  assert.deepEqual(turnReads, ['turn-b']);
+  assert.deepEqual(result, { messages: whole, settled: true });
+});
+
+test('settles on a tail that begins between two Turns without reading one', async () => {
+  const sessionKey = JSON.stringify(['host-1', 'session-1']);
+  const tail: StoredMessage[] = [
+    userMessage('the question', 'user-b'),
+    { ...assistantMessage('the answer', 'assistant-b'), turnId: 'turn-b', ts: 4 },
+    { type: 'turn_state', id: 'complete-b', turnId: 'turn-b', ts: 5, status: 'completed' },
+  ];
+  let deliverySequence = 0;
+
+  const result = await readSettledMessagesFrom(
+    {
+      transcripts: {
+        async readTurn() { assert.fail('a whole tail needs no Turn read'); },
+        open: async (_sessionId, handler) => {
+          for (const batch of encodeDesktopTranscriptSnapshot({
+            beginsAtTurnBoundary: true,
+            sessionId: 'session-1',
+            generation: 'generation-1',
+            hostEpoch: 'host-1',
+            durableThrough: 8,
+            durable: tail.map((message, index) => ({ sequence: index + 6, message })),
+            overlay: [],
+            hasOlder: true,
+          })) handler({ ...batch, deliverySequence: ++deliverySequence });
+          return transcriptHandle(
+            { sessionId: sessionKey, generation: 'generation-1', hostEpoch: 'host-1' },
+            { readThroughMessageId: 'complete-b' },
+          );
+        },
+      },
+    },
+    sessionKey,
+  );
+
+  assert.deepEqual(result, { messages: tail, settled: true });
+});
+
 for (const failure of ['is empty', 'fails'] as const) {
   test(`does not settle when the targeted Host-owned Turn read ${failure}`, async () => {
     const sessionKey = JSON.stringify(['host-1', 'session-1']);
@@ -229,6 +317,7 @@ for (const failure of ['is empty', 'fails'] as const) {
           },
           open: async (_sessionId, handler) => {
             for (const batch of encodeDesktopTranscriptSnapshot({
+              beginsAtTurnBoundary: true,
               sessionId: 'session-1',
               generation: 'generation-1',
               hostEpoch: 'host-1',
@@ -261,6 +350,7 @@ test('moves a fragmented overlay record to durable storage without duplicating i
   };
   const store = transcriptStore();
   const snapshot = [...encodeDesktopTranscriptSnapshot({
+    beginsAtTurnBoundary: true,
     ...identity,
     durableThrough: null,
     durable: [],
@@ -293,6 +383,7 @@ test('moves a fragmented overlay record to durable storage without duplicating i
 test('drops stale transcript batches after a generation reset', () => {
   const store = transcriptStore();
   const oldBatches = [...encodeDesktopTranscriptSnapshot({
+    beginsAtTurnBoundary: true,
     sessionId: 'session-1',
     generation: 'old',
     hostEpoch: 'host-1',
@@ -303,6 +394,7 @@ test('drops stale transcript batches after a generation reset', () => {
   })];
   const nextMessage = assistantMessage('new');
   const nextBatches = [...encodeDesktopTranscriptSnapshot({
+    beginsAtTurnBoundary: true,
     sessionId: 'session-1',
     generation: 'next',
     hostEpoch: 'host-2',
@@ -338,6 +430,7 @@ test('cached reload snapshots allow the same live transcript generation to resum
   const deliveries: Array<{ generation: string; accepted: boolean }> = [];
   const publish = (generation: string, text: string) => {
     for (const batch of encodeDesktopTranscriptSnapshot({
+      beginsAtTurnBoundary: true,
       ...identity, generation, durableThrough: 1,
       durable: [{ sequence: 1, message: assistantMessage(text) }],
       overlay: [], hasOlder: false,
@@ -381,6 +474,7 @@ test('a replacement live generation retires the previous replica through cached 
   for (const cachedGenerations of [[], ['cached:first', 'cached:second']]) {
     const store = transcriptStore();
     const snapshot = (generation: string) => [...encodeDesktopTranscriptSnapshot({
+      beginsAtTurnBoundary: true,
       sessionId: 'session-1', generation, hostEpoch: 'host-1', durableThrough: 1,
       durable: [{ sequence: 1, message: assistantMessage(generation) }],
       overlay: [], hasOlder: false,
@@ -415,6 +509,7 @@ test('keeps unchanged message references stable across immutable range snapshots
   const secondMessage = assistantMessage('second', 'assistant-2');
   const store = transcriptStore();
   for (const batch of encodeDesktopTranscriptSnapshot({
+    beginsAtTurnBoundary: true,
     ...identity,
     durableThrough: 1,
     durable: [{ sequence: 1, message: firstMessage }],
@@ -444,6 +539,7 @@ test('a reset spanning several batches publishes once, when it is ready', () => 
   const store = transcriptStore();
   const identity = { sessionId: 'session-1', generation: 'generation-1', hostEpoch: 'host-1' };
   for (const batch of encodeDesktopTranscriptSnapshot({
+    beginsAtTurnBoundary: true,
     ...identity, durableThrough: 1, durable: [{ sequence: 1, message: assistantMessage('old') }],
     overlay: [], hasOlder: false,
   })) store.accept(batch);
@@ -483,6 +579,7 @@ test('earlier history installs only below the oldest row it was read for', () =>
   const store = transcriptStore();
   const identity = { sessionId: 'session-1', generation: 'generation-1', hostEpoch: 'host-1' };
   for (const batch of encodeDesktopTranscriptSnapshot({
+    beginsAtTurnBoundary: true,
     ...identity, durableThrough: 6, overlay: [], hasOlder: true,
     durable: [5, 6].map((sequence) => ({ sequence, message: assistantMessage(`${sequence}`, `assistant-${sequence}`) })),
   })) store.accept(batch);
@@ -516,6 +613,7 @@ test('a tail change that does not continue the held rows reopens the transcript'
     opens += 1;
     const durable = opens === 1 ? [row(1)] : [row(1), row(2), row(9)];
     for (const batch of encodeDesktopTranscriptSnapshot({
+      beginsAtTurnBoundary: true,
       ...identity, durableThrough: durable.at(-1)!.sequence, durable, overlay: [], hasOlder: false,
     })) store.accept(batch);
     return transcriptHandle(identity);
@@ -556,6 +654,7 @@ test('loadEarlier shares one in-flight read and reports its failure', async () =
   let reads = 0;
   const controller = createDesktopTranscriptRangeController(store, async () => {
     for (const batch of encodeDesktopTranscriptSnapshot({
+      beginsAtTurnBoundary: true,
       ...identity, durableThrough: 5, overlay: [], hasOlder: true,
       durable: [{ sequence: 5, message: assistantMessage('5', 'assistant-5') }],
     })) store.accept(batch);
@@ -685,6 +784,9 @@ test('keeps an oversized latest Turn visible after bootstrap eviction', async ()
 
   assert.deepEqual(replica.snapshot().durable.map(({ sequence }) => sequence), [latest.identity]);
   assert.equal(replica.snapshot().hasOlder, true);
+  // Eviction drops rows by their owner, which is not where a Turn ends when
+  // another Turn's rows are written between them.
+  assert.equal(replica.snapshot().beginsAtTurnBoundary, false);
 });
 
 test('keeps an oversized latest Turn visible before a trailing session note', async () => {
@@ -1106,6 +1208,7 @@ test('reopens a failed transcript range with a fresh generation', async () => {
     attempts += 1;
     if (attempts === 1) throw new Error('open failed');
     for (const batch of encodeDesktopTranscriptSnapshot({
+      beginsAtTurnBoundary: true,
       ...identity,
       durableThrough: null,
       durable: [],
@@ -1167,6 +1270,7 @@ test('waits for the required durable message on the current transcript generatio
     hostEpoch: 'host-1',
   };
   for (const batch of encodeDesktopTranscriptSnapshot({
+    beginsAtTurnBoundary: true,
     ...identity,
     durableThrough: null,
     durable: [],
@@ -1187,6 +1291,7 @@ test('the transcript does not change while a tail change is still being assemble
   const store = transcriptStore();
   const identity = { sessionId: 'session-1', generation: 'generation-1', hostEpoch: 'host-1' };
   for (const batch of encodeDesktopTranscriptSnapshot({
+    beginsAtTurnBoundary: true,
     ...identity, durableThrough: 1, durable: [{ sequence: 1, message: assistantMessage('first') }],
     overlay: [], hasOlder: false,
   })) store.accept(batch);
@@ -1217,6 +1322,7 @@ test('reports each tail watermark the reader reaches once', async () => {
   const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
 
   for (const batch of encodeDesktopTranscriptSnapshot({
+    beginsAtTurnBoundary: true,
     ...identity, durableThrough: 1, hasOlder: true, overlay: [],
     durable: [{ sequence: 1, message: assistantMessage('first') }],
   })) store.accept(batch);
@@ -1267,6 +1373,7 @@ test('cached fallback remains readable and retries once per observation generati
       hostEpoch: 'host-1',
     };
     for (const batch of encodeDesktopTranscriptSnapshot({
+      beginsAtTurnBoundary: true,
       ...identity, durableThrough: 1,
       durable: [{ sequence: 1, message: assistantMessage(online ? 'live' : 'cached') }],
       overlay: [], hasOlder: true,

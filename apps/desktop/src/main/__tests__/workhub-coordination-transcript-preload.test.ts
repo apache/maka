@@ -285,6 +285,7 @@ test('WorkHub loads earlier history through the preload with a fragmented answer
         consumerId = args[2] as string;
         assert.equal(args[3], 'history');
         for (const batch of encodeDesktopTranscriptSnapshot({
+          beginsAtTurnBoundary: true,
           ...identity, durableThrough: 8, overlay: [], hasOlder: true,
           durable: [{ sequence: 8, message: tail }],
         })) deliver(batch);
@@ -424,6 +425,7 @@ for (const initial of ['failure-before-ready', 'failure-after-ready', 'cached'] 
             hostEpoch: 'epoch-1',
           };
           for (const batch of encodeDesktopTranscriptSnapshot({
+            beginsAtTurnBoundary: true,
             ...identity, durableThrough: 1, overlay: [], hasOlder: false,
             durable: [{ sequence: 1, message: { type: 'user', id: cached ? 'cached-message' : 'live-message', turnId: 'turn-1', ts: 1, text: cached ? 'Cached history' : 'Live history' } }],
           })) onBatch({ ...batch, deliverySequence: 1 });

@@ -41,6 +41,7 @@ export interface TranscriptBatchContent {
   readonly durable: readonly DesktopSequencedTranscriptMessage[];
   readonly overlay: readonly StoredMessage[];
   readonly hasOlder?: boolean;
+  readonly beginsAtTurnBoundary?: boolean;
   readonly earlierThan?: number;
   readonly coversFrom?: number | null;
   readonly reset: boolean;
@@ -55,6 +56,7 @@ export function encodeDesktopTranscriptSnapshot(
     durable: snapshot.durable,
     overlay: snapshot.overlay,
     hasOlder: snapshot.hasOlder,
+    beginsAtTurnBoundary: snapshot.beginsAtTurnBoundary,
     reset: true,
     ready: true,
   });
@@ -103,6 +105,9 @@ export function* encodeDesktopTranscriptBatches(
       durableThrough: content.durableThrough,
       fragments: batchFragments,
       ...(content.hasOlder === undefined || !(last && content.ready) ? {} : { hasOlder: content.hasOlder }),
+      ...(content.beginsAtTurnBoundary === undefined || !(last && content.ready)
+        ? {}
+        : { beginsAtTurnBoundary: content.beginsAtTurnBoundary }),
       reset: content.reset && first,
       ready: last && content.ready,
     };

@@ -246,6 +246,11 @@ export interface DesktopTranscriptRangeState {
   readonly durableThrough: number | null;
   /** Earlier durable history exists that the Renderer has not loaded. */
   readonly hasOlder: boolean;
+  /**
+   * Whether the oldest Turn held has all its rows. An answer is bounded by
+   * bytes, so it can begin inside a Turn, and no local rule says that it did.
+   */
+  readonly beginsAtTurnBoundary: boolean;
   readonly ready: boolean;
 }
 
@@ -258,6 +263,7 @@ interface TranscriptValue {
   readonly rows: ReadonlyMap<number, StoredRecord>;
   readonly order: readonly number[];
   readonly hasOlder: boolean;
+  readonly beginsAtTurnBoundary: boolean;
   readonly through: number | null;
   readonly overlay: ReadonlyMap<string, OverlayRecord>;
   readonly overlayOrder: readonly string[];
@@ -276,6 +282,7 @@ interface TranscriptAssembly {
   readonly coversFrom: number | null | undefined;
   durableThrough: number | null;
   hasOlder: boolean | undefined;
+  beginsAtTurnBoundary: boolean | undefined;
   readonly fragments: Map<string, PendingRecord>;
   readonly rows: Map<number, StoredRecord>;
   readonly overlay: Map<string, OverlayRecord>;
@@ -285,6 +292,7 @@ const EMPTY_VALUE: TranscriptValue = {
   rows: new Map(),
   order: [],
   hasOlder: false,
+  beginsAtTurnBoundary: true,
   through: null,
   overlay: new Map(),
   overlayOrder: [],
@@ -343,6 +351,7 @@ export class DesktopTranscriptRangeStore {
         coversFrom: batch.coversFrom,
         durableThrough: batch.durableThrough,
         hasOlder: undefined,
+        beginsAtTurnBoundary: undefined,
         fragments: new Map(),
         rows: new Map(),
         overlay: new Map(),
@@ -350,6 +359,9 @@ export class DesktopTranscriptRangeStore {
       this.#assembly = assembly;
     }
     if (batch.hasOlder !== undefined) assembly.hasOlder = batch.hasOlder;
+    if (batch.beginsAtTurnBoundary !== undefined) {
+      assembly.beginsAtTurnBoundary = batch.beginsAtTurnBoundary;
+    }
     assembly.durableThrough = batch.durableThrough;
     for (const fragment of batch.fragments) this.#acceptFragment(assembly, fragment);
     if (!batch.ready) return false;
@@ -381,13 +393,20 @@ export class DesktopTranscriptRangeStore {
   #install(answer: TranscriptAssembly): TranscriptValue | undefined {
     const value = this.#value;
     if (answer.kind === 'reset') {
-      return makeValue(answer.rows, answer.hasOlder ?? false, answer.durableThrough, answer.overlay);
+      return makeValue(
+        answer.rows,
+        answer.hasOlder ?? false,
+        answer.beginsAtTurnBoundary ?? true,
+        answer.durableThrough,
+        answer.overlay,
+      );
     }
     if (answer.kind === 'earlier') {
       if (!this.#ready || answer.earlierThan !== value.order[0]) return undefined;
       return makeValue(
         mergeRows(value.rows, answer.rows),
         answer.hasOlder ?? value.hasOlder,
+        answer.beginsAtTurnBoundary ?? value.beginsAtTurnBoundary,
         value.through,
         value.overlay,
       );
@@ -399,6 +418,7 @@ export class DesktopTranscriptRangeStore {
     return makeValue(
       mergeRows(value.rows, answer.rows),
       value.hasOlder,
+      value.beginsAtTurnBoundary,
       answer.durableThrough ?? value.through,
       overlay.size === value.overlay.size ? value.overlay : overlay,
     );
@@ -435,6 +455,7 @@ export class DesktopTranscriptRangeStore {
       hostEpoch: this.#hostEpoch,
       durableThrough: this.#value.through,
       hasOlder: this.#value.hasOlder,
+      beginsAtTurnBoundary: this.#value.beginsAtTurnBoundary,
       ready: this.#ready,
     };
   }
@@ -568,6 +589,7 @@ function mergeRows(
 function makeValue(
   rows: ReadonlyMap<number, StoredRecord>,
   hasOlder: boolean,
+  beginsAtTurnBoundary: boolean,
   through: number | null,
   overlay: ReadonlyMap<string, OverlayRecord>,
 ): TranscriptValue {
@@ -575,6 +597,7 @@ function makeValue(
     rows,
     order: [...rows.keys()].sort((left, right) => left - right),
     hasOlder,
+    beginsAtTurnBoundary,
     through,
     overlay,
     overlayOrder: [...overlay.keys()].sort((left, right) => {

@@ -60,6 +60,7 @@ function handle(overrides: Partial<DesktopTranscriptHandle> = {}): DesktopTransc
 test('a bookmark older than the loaded history is restored by loading earlier history through the store', async () => {
   const store = new DesktopTranscriptRangeStore(SESSION_ID);
   for (const batch of encodeDesktopTranscriptSnapshot({
+    beginsAtTurnBoundary: true,
     ...IDENTITY, durableThrough: 30, durable: [{ sequence: 30, message: answer('c') }], overlay: [], hasOlder: true,
   })) store.accept(batch);
   const earlier = [
@@ -126,6 +127,7 @@ test('sending before transcript open completes cancels the queued bookmark witho
     assert.equal(pins, 1);
     opening.resolve(handle({ loadEarlier: async () => { reads += 1; } }));
     for (const batch of encodeDesktopTranscriptSnapshot({
+      beginsAtTurnBoundary: true,
       ...IDENTITY, durableThrough: 20, durable: [{ sequence: 20, message: answer('b') }], overlay: [], hasOlder: true,
     })) store.accept(batch);
     await settle();
@@ -140,6 +142,7 @@ test('sending before transcript open completes cancels the queued bookmark witho
 test('an overlay-only bookmark stays available without loading earlier history', async () => {
   const store = new DesktopTranscriptRangeStore(SESSION_ID);
   for (const batch of encodeDesktopTranscriptSnapshot({
+    beginsAtTurnBoundary: true,
     ...IDENTITY, durableThrough: null, durable: [], overlay: [answer('b')], hasOlder: true,
   })) store.accept(batch);
   const controller = createDesktopTranscriptRangeController(store, async () => handle(), {
