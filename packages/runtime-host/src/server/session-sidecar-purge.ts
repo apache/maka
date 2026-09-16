@@ -26,19 +26,23 @@ export interface SessionSidecarPurgeAuthority {
   readonly sessionTodo: Pick<InteractiveSessionTodoWriter, 'purgeSessionState'>;
   readonly contextOffload?: Pick<InteractiveContextOffloadWriter, 'retireSession'>;
   readonly purgeOperationalState: (sessionId: string) => Promise<void>;
+  readonly onArtifactsPurged?: (sessionId: string) => void;
 }
 
 export async function purgeSessionSidecars(
   authority: SessionSidecarPurgeAuthority,
   sessionId: string,
 ): Promise<void> {
-  const outcomes = await Promise.allSettled([
+  const [artifactPurge, ...sidecarPurges] = await Promise.allSettled([
     authority.artifacts.purgeSessionArtifacts(sessionId),
     authority.sessionTodo.purgeSessionState(sessionId),
     ...(authority.contextOffload ? [authority.contextOffload.retireSession(sessionId)] : []),
     authority.purgeOperationalState(sessionId),
   ]);
-  const failures = outcomes.flatMap((outcome) =>
+  // Once Artifacts are purged their previews must stop serving, even when a
+  // sibling sidecar fails and the aggregate error is thrown below.
+  if (artifactPurge.status === 'fulfilled') authority.onArtifactsPurged?.(sessionId);
+  const failures = [artifactPurge, ...sidecarPurges].flatMap((outcome) =>
     outcome.status === 'rejected' ? [outcome.reason] : [],
   );
   if (failures.length > 0) {

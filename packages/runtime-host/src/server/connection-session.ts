@@ -366,9 +366,18 @@ export class RuntimeHostConnectionSession {
         : hasRuntimeHostOperationGrant(this.#options.connection.authority, 'session.catalog.query')
           ? true
           : undefined;
+    const artifact: HostChangeSubscriptionMask['artifact'] =
+      this.#options.connection.authority.principalKind === 'session_guest'
+        ? sharedSessionId !== undefined
+          ? { sessionId: sharedSessionId }
+          : undefined
+        : hasRuntimeHostOperationGrant(this.#options.connection.authority, 'artifact.query')
+          ? true
+          : undefined;
     this.#hostChanges = service.attachConnection(
       this.#options.connection.connectionId,
       {
+        artifact,
         configuration: hasRuntimeHostOperationGrant(
           this.#options.connection.authority,
           'runtime.policy.query',
