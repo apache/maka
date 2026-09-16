@@ -174,6 +174,133 @@ describe('ASF source release verification', () => {
     }
   });
 
+  test('limits the external sharp exception to the website build and reviewed licenses', async () => {
+    const name = '@img/sharp-libvips-linux-x64';
+    const cases = [
+      ['website build', () => {}, true],
+      [
+        'workspace consumer',
+        ({ root }) => {
+          root.dependencies = { '@maka/website': '*' };
+        },
+      ],
+      ['production entry', ({ leaf }) => delete leaf.dev],
+      [
+        'bundled entry',
+        ({ leaf }) => {
+          leaf.inBundle = true;
+        },
+      ],
+      [
+        'local payload',
+        ({ leaf }) => {
+          leaf.resolved = 'file:vendor/libvips';
+        },
+      ],
+      [
+        'unreviewed license',
+        ({ leaf }) => {
+          leaf.license = 'GPL-3.0-only';
+        },
+      ],
+      [
+        'website runtime',
+        ({ website }) => {
+          website.dependencies = { astro: '1.0.0' };
+        },
+      ],
+      [
+        'website bundle',
+        ({ website }) => {
+          website.bundledDependencies = ['astro'];
+        },
+      ],
+      [
+        'another dev consumer',
+        ({ root }) => {
+          root.devDependencies = { sharp: '1.0.0' };
+        },
+      ],
+      [
+        'another peer consumer',
+        ({ root }) => {
+          root.peerDependencies = { [name]: '1.0.0' };
+        },
+      ],
+      [
+        'lock-only consumer',
+        ({ lockRoot }) => {
+          lockRoot.optionalDependencies = { sharp: '1.0.0' };
+        },
+      ],
+      [
+        'shipped notice',
+        ({ files }) => {
+          files['apps/desktop/resources/licenses/npm/THIRD_PARTY_NOTICES.txt'] =
+            `Package: ${name}@1.0.0\nSelected license: LGPL-3.0-or-later\n`;
+        },
+      ],
+    ];
+    for (const [scenario, mutate, allowed = false] of cases) {
+      const root = { name: 'maka', version: '0.1.12', license: 'Apache-2.0', private: true };
+      const lockRoot = { ...root };
+      const website = {
+        name: '@maka/website',
+        version: '0.0.0',
+        private: true,
+        devDependencies: { astro: '1.0.0' },
+      };
+      const leaf = {
+        version: '1.0.0',
+        license: 'LGPL-3.0-or-later',
+        dev: true,
+        optional: true,
+        resolved: `https://registry.npmjs.org/${name}/-/sharp-libvips-linux-x64-1.0.0.tgz`,
+      };
+      const files = {};
+      mutate({ root, lockRoot, website, leaf, files });
+      files['package.json'] = JSON.stringify(root);
+      files['website/package.json'] = JSON.stringify(website);
+      files['package-lock.json'] = JSON.stringify({
+        version: root.version,
+        lockfileVersion: 3,
+        packages: {
+          '': lockRoot,
+          website,
+          'node_modules/@maka/website': { link: true, resolved: 'website' },
+          'node_modules/astro': {
+            version: '1.0.0',
+            license: 'MIT',
+            optionalDependencies: { sharp: '1.0.0' },
+          },
+          'node_modules/sharp': {
+            version: '1.0.0',
+            license: 'Apache-2.0',
+            optionalDependencies: { [name]: '1.0.0' },
+          },
+          [`node_modules/${name}`]: leaf,
+        },
+      });
+      const fixture = createFixtureCandidate(files);
+      try {
+        if (allowed) {
+          await assert.doesNotReject(
+            () => verifySourceCandidate({ archivePath: fixture.archivePath }),
+            scenario,
+          );
+        } else {
+          await assert.rejects(
+            () => verifySourceCandidate({ archivePath: fixture.archivePath }),
+            /Category X/,
+            scenario,
+          );
+        }
+      } finally {
+        fixture.cleanup();
+      }
+    }
+  });
+
   test('accepts a classified dependency from a nested package lockfile', async () => {
     const fixture = createFixtureCandidate({
       'tools/source/package.json': `${JSON.stringify({

@@ -164,6 +164,10 @@ jobs:
       - name: Check ASF source headers
         run: npm run check:asf-headers
 
+      # Every tracked input can change the source archive, including docs and images.
+      - name: Verify repository source archive
+        run: node scripts/asf-source-release.mjs create --revision HEAD --version "$(node -p 'require("./package.json").version')"
+
       # Locale hygiene ratchet (node built-ins only, so it runs install-free): a new UI locale must only ever mean a new
       # UiCatalog key, so locale-literal branches, silent locale defaults,
       # and payload sniffing may shrink but never grow.

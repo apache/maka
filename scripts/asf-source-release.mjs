@@ -79,9 +79,11 @@ const packageDependencyFields = [
 ];
 const bundledDependencyFields = ['bundleDependencies', 'bundledDependencies'];
 const textSourceExtensions = new Set([
+  '.astro',
   '.cjs',
   '.css',
   '.csv',
+  '.diff',
   '.html',
   '.js',
   '.json',
@@ -120,6 +122,7 @@ const textSourceBasenames = new Set([
   'LICENSE',
   'NOTICE',
   'network-policy',
+  'pre-commit',
 ]);
 const maxCommandBuffer = 64 * 1024 * 1024;
 const rejectedGpgStatuses = new Set([
@@ -661,6 +664,8 @@ function validateNodePackageInputs(candidateRoot, identity, entries) {
   }
   for (const entry of lockEntries) {
     const lock = readLock(entry);
+    const websiteBuildInputs =
+      entry === rootLockEntry ? websiteOnlyBuildInputs(lock, manifests, rootPrefix) : new Set();
     for (const [lockPath, dependency] of Object.entries(lock.packages)) {
       if (!lockPath) continue;
       if (dependency?.link === true) {
@@ -704,9 +709,79 @@ function validateNodePackageInputs(candidateRoot, identity, entries) {
           `Cannot safely classify ${name}${version ? `@${version}` : ''} in ${entry}`,
         );
       }
+      if (
+        websiteBuildInputs.has(lockPath) &&
+        !noticeLicenses.has(packageKey) &&
+        dependency.dev === true &&
+        dependency.inBundle !== true &&
+        dependency.resolved?.startsWith('https://registry.npmjs.org/@img/sharp-') &&
+        reviewedSharpBuildLicense(name) === license
+      ) {
+        continue;
+      }
       validateReleaseLicense(license, `${name}${version ? `@${version}` : ''} in ${entry}`);
     }
   }
+}
+
+function reviewedSharpBuildLicense(name) {
+  if (/^@img\/sharp-libvips-[a-z0-9-]+$/u.test(name)) return 'LGPL-3.0-or-later';
+  if (/^@img\/sharp-win32-(arm64|ia32|x64)$/u.test(name)) {
+    return 'Apache-2.0 AND LGPL-3.0-or-later';
+  }
+  if (name === '@img/sharp-wasm32') return 'Apache-2.0 AND LGPL-3.0-or-later AND MIT';
+  return undefined;
+}
+
+function websiteOnlyBuildInputs(lock, manifests, rootPrefix) {
+  const packages = Object.entries(lock.packages).filter(([path]) => path.includes('node_modules/'));
+  const packageName = (path) => path.slice(path.lastIndexOf('node_modules/') + 13);
+  const inputs = packages.filter(([path]) => reviewedSharpBuildLicense(packageName(path)));
+  if (inputs.length === 0) return new Set();
+  const consumers = new Set(inputs.map(([path]) => packageName(path)));
+  const sourceManifests = [
+    ...manifests,
+    ...Object.entries(lock.packages)
+      .filter(([path]) => !path.includes('node_modules/'))
+      .map(([path, manifest]) => [`${rootPrefix}${path ? `${path}/` : ''}package.json`, manifest]),
+  ];
+  // Over-approximate across installed versions: any other consumer closes the exception.
+  let previousSize;
+  do {
+    previousSize = consumers.size;
+    for (const [path, dependency] of packages) {
+      if (declaredPackageDependencies(dependency, path).some((name) => consumers.has(name))) {
+        consumers.add(packageName(path));
+      }
+    }
+    for (const [entry, manifest] of sourceManifests) {
+      if (declaredPackageDependencies(manifest, entry).some((name) => consumers.has(name))) {
+        consumers.add(manifest.name);
+      }
+    }
+  } while (consumers.size !== previousSize);
+
+  const websiteEntry = `${rootPrefix}website/package.json`;
+  if (!consumers.has('astro') || manifests.get(websiteEntry)?.private !== true) return new Set();
+  for (const [entry, manifest] of sourceManifests) {
+    const names = declaredPackageDependencies(manifest, entry).filter((name) =>
+      consumers.has(name),
+    );
+    if (names.length === 0) continue;
+    if (
+      entry !== websiteEntry ||
+      names.some((name) => name !== 'astro') ||
+      !manifest.devDependencies?.astro ||
+      packageDependencyFields.some(
+        (field) => field !== 'devDependencies' && manifest[field]?.astro,
+      ) ||
+      bundledDependencyFields.some((field) => manifest[field]?.includes('astro'))
+    ) {
+      return new Set();
+    }
+  }
+  if (!manifests.get(websiteEntry)?.devDependencies?.astro) return new Set();
+  return new Set(inputs.map(([path]) => path));
 }
 
 function declaredPackageDependencies(manifest, entry) {
