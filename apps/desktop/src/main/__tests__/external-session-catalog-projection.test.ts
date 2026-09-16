@@ -36,6 +36,7 @@ test('projects imported Session ids into the same Desktop identity space as Sess
       importedCount: 1,
       importedSessionIds: ['imported-1'],
       isImporting: false,
+      isUncertain: false,
     },
   });
   const summary = projectDesktopSessionSummary(

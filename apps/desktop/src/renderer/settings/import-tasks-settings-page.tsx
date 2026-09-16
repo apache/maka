@@ -308,13 +308,6 @@ export function ImportTasksSettingsPage(props: {
   const [importError, setImportError] = useState<string | null>(null);
   const [catalogPollTick, setCatalogPollTick] = useState(0);
   /**
-   * The Host did not identify whether an unknown import committed, so the page
-   * cannot safely attribute any later catalog row to that request. Keep those
-   * attempts blocked for this page lifetime and direct the user to the task
-   * list; only an operation-specific identity could resolve them automatically.
-   */
-  const [uncertainImports, setUncertainImports] = useState<readonly ImportAttempt[]>([]);
-  /**
    * Rows marked for a batch. Always available: this page exists to pick
    * conversations out of a directory, so there is no mode to enter.
    */
@@ -594,19 +587,14 @@ export function ImportTasksSettingsPage(props: {
     [host],
   );
 
-  const uncertainSourceIds = useMemo(
-    () =>
-      new Set(
-        uncertainImports
-          .filter((attempt) => attempt.adapterId === adapterId)
-          .map((attempt) => attempt.sourceSessionId),
-      ),
-    [adapterId, uncertainImports],
+  const uncertainImports = useMemo(
+    () => catalog.sessions.filter((session) => session.importState.isUncertain),
+    [catalog.sessions],
   );
   const isImportEligible = useCallback(
     (session: DesktopExternalSessionCatalogItem) =>
-      !session.importState.isImporting && !uncertainSourceIds.has(session.id),
-    [uncertainSourceIds],
+      !session.importState.isImporting && !session.importState.isUncertain,
+    [],
   );
 
   const importConversation = useCallback(
@@ -633,15 +621,7 @@ export function ImportTasksSettingsPage(props: {
           // reasons are clean failures with an actionable banner.
           // Exhaustive by design — a new reason is a compile error until handled.
           if (outcome.reason === 'commit_outcome_unknown') {
-            setUncertainImports((current) =>
-              current.some(
-                (entry) =>
-                  entry.adapterId === attempt.adapterId &&
-                  entry.sourceSessionId === attempt.sourceSessionId,
-              )
-                ? current
-                : [...current, attempt],
-            );
+            void loadCatalog(attempt.adapterId);
           } else if (outcome.reason === 'no_model') {
             setImportError(copy.importFailedNoModel);
           } else if (outcome.reason === 'source_unreadable') {
@@ -670,6 +650,7 @@ export function ImportTasksSettingsPage(props: {
       copy.importFailedSourceUnreadable,
       copy.importFailedSourceLimit,
       isImportEligible,
+      loadCatalog,
       locale,
       mountedRef,
       props,
@@ -737,15 +718,6 @@ export function ImportTasksSettingsPage(props: {
             // identify which request created a task, so keep this unconfirmed
             // instead of claiming another client's import or inviting a retry.
             outcome = recordImportBatchResult(outcome, session.id, 'unknown');
-            setUncertainImports((current) =>
-              current.some(
-                (entry) =>
-                  entry.adapterId === attempt.adapterId &&
-                  entry.sourceSessionId === attempt.sourceSessionId,
-              )
-                ? current
-                : [...current, attempt],
-            );
           } else {
             // A definite, code-classified failure (no usable model, or an
             // unreadable/oversized source) — not a maybe-landed task. Count it as
@@ -1001,7 +973,7 @@ export function ImportTasksSettingsPage(props: {
               status="warning"
               title={copy.importOutcomeUnknownTitle}
               description={copy.importOutcomeUnknownDescription(
-                uncertainImports.map((entry) => entry.name),
+                uncertainImports.map((session) => session.name),
               )}
             />
           )}

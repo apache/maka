@@ -84,6 +84,7 @@ test('forwards bounded external Session requests and publishes imported Sessions
             importedCount: 0,
             importedSessionIds: [],
             isImporting: false,
+            isUncertain: false,
           },
         },
       ],
@@ -136,6 +137,53 @@ test('an uncertain commit still asks the shell to re-read the catalog', async ()
   // they come back and import the same conversation again. No id, because not
   // knowing which task landed is what `commit_outcome_unknown` means.
   assert.deepEqual(events, [{ reason: 'created', sessionId: undefined }]);
+});
+
+test('keeps an uncertain import locked in Main across later catalog reads', async () => {
+  const ipc = ipcHarness();
+  registerRuntimeHostExternalSessionsIpc(
+    {
+      client: clientFixture({
+        listExternalSessions: async () => ({
+          sessions: [{
+            id: 'source-1',
+            name: 'Source',
+            hostCwd: '/external',
+            importState: { importedCount: 0, importedSessionIds: [], isImporting: false },
+          }],
+          nextCursor: null,
+        }),
+        importExternalSession: async () => {
+          throw new RuntimeHostOperationError(
+            'external-session.import',
+            'commit_outcome_unknown',
+            'check the Session list before retrying',
+          );
+        },
+      }),
+      emitSessionsChanged() {},
+    },
+    ipc,
+  );
+
+  await ipc.invoke('external-sessions:import', {
+    adapterId: 'codex',
+    sourceSessionId: 'source-1',
+  });
+  assert.deepEqual(await ipc.invoke('external-sessions:list', { adapterId: 'codex' }), {
+    sessions: [{
+      id: 'source-1',
+      name: 'Source',
+      cwd: '/external',
+      importState: {
+        importedCount: 0,
+        importedSessionIds: [],
+        isImporting: false,
+        isUncertain: true,
+      },
+    }],
+    nextCursor: null,
+  });
 });
 
 test('a dispatched interrupted import has the same uncertain outcome as the Host error', async () => {

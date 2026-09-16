@@ -1542,6 +1542,7 @@ const externalConversations: DesktopExternalSessionCatalogItem[] = [
       importedCount: 2,
       importedSessionIds: ['imported-task-newest', 'imported-task-older'],
       isImporting: false,
+      isUncertain: false,
     },
   },
   {
@@ -1549,14 +1550,24 @@ const externalConversations: DesktopExternalSessionCatalogItem[] = [
     name: '把 provider catalog 的分页改成游标',
     cwd: '/Users/storybook-fixture-user/workspace/maka-agent',
     updatedAt: Date.now() - 3 * 60 * 60 * 1000,
-    importState: { importedCount: 1, importedSessionIds: ['imported-task-1'], isImporting: true },
+    importState: {
+      importedCount: 1,
+      importedSessionIds: ['imported-task-1'],
+      isImporting: true,
+      isUncertain: false,
+    },
   },
   {
     id: 'codex-01930a',
     name: 'Reproduce the SQLite lock contention under parallel evals',
     cwd: '/Users/storybook-fixture-user/workspace/maka-agent',
     updatedAt: Date.now() - 2 * 24 * 60 * 60 * 1000,
-    importState: { importedCount: 0, importedSessionIds: [], isImporting: false },
+    importState: {
+      importedCount: 0,
+      importedSessionIds: [],
+      isImporting: false,
+      isUncertain: false,
+    },
   },
   {
     id: 'codex-01929c',
@@ -1564,7 +1575,12 @@ const externalConversations: DesktopExternalSessionCatalogItem[] = [
     cwd: '/Users/storybook-fixture-user/workspace/docs',
     updatedAt: Date.now() - 6 * 24 * 60 * 60 * 1000,
     archived: true,
-    importState: { importedCount: 1, importedSessionIds: ['imported-archived'], isImporting: false },
+    importState: {
+      importedCount: 1,
+      importedSessionIds: ['imported-archived'],
+      isImporting: false,
+      isUncertain: false,
+    },
   },
 ];
 
@@ -3507,7 +3523,7 @@ function importOutcomeRecoveryBridge(): Record<string, unknown> {
                 importState: {
                   importedCount: 1,
                   importedSessionIds: ['outcome-recovered-task'],
-                  isImporting: false,
+                  isImporting: false, isUncertain: false,
                 },
               }
             : source,
