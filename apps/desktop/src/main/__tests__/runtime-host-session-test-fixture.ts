@@ -74,5 +74,6 @@ function emptyPage(sessionId: string, source: 'durable' | 'overlay'): SessionTra
     rawBytes: 0,
     fragments: [],
     nextCursor: null,
+    endsAtTurnBoundary: true,
   };
 }

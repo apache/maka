@@ -682,9 +682,9 @@ test('fences earlier transcript failures across same-source replica recovery', a
         opens += 1;
         const first = opens === 1;
         const events = first ? firstEvents : secondEvents;
-        // One row per page. The recovery reset reads back down to the row the
-        // consumer was last given (cursor '3'); cursor '2' is reached only by a
-        // later load earlier.
+        // One row per page, each its own Turn. The recovery reset reads back down
+        // to the row the consumer was last given (cursor '4'); cursor '3' is
+        // reached only by a later load earlier.
         const host = historyHost([0, 1, 2, 3, 4].map((index) => turnRow(index, `turn-${index}`)), { pageRows: 1 });
         return runtimeHostSessionFixture({
           snapshot: continuitySnapshot(),
@@ -699,7 +699,7 @@ test('fences earlier transcript failures across same-source replica recovery', a
               staleReadStarted = true;
               return staleRead.promise;
             }
-            if (input.cursor !== '2') return host.loadTranscriptPage(input);
+            if (input.cursor !== '3') return host.loadTranscriptPage(input);
             currentReadStarted = true;
             throw currentFailure;
           },
@@ -733,6 +733,8 @@ test('fences earlier transcript failures across same-source replica recovery', a
   };
   await observations.attach(observer);
   const opened = await observations.openTranscript('session-1', consumerId, target, 'history');
+  // One answer deeper, so the recovery reset has more than the bootstrap page to walk back down.
+  await observations.loadEarlierTranscript(consumerId, target.id);
   const staleLoad = observations.loadEarlierTranscript(consumerId, target.id);
   await waitFor(() => staleReadStarted);
 
@@ -816,6 +818,7 @@ test('broadcasts durable admission and transcript changes from the same message'
             rawBytes: 1,
             fragments: [],
             nextCursor: null,
+            endsAtTurnBoundary: true,
           }),
           decodeTranscriptPage: async () => ({
             messages: [{ identity: 0, message }],
@@ -977,6 +980,7 @@ test('moves the read marker only as far as the Renderer window reports reaching'
             rawBytes: 1,
             fragments: [],
             nextCursor: null,
+            endsAtTurnBoundary: true,
           }),
           // One durable row per catch-up target; the bootstrap page carries none.
           decodeTranscriptPage: async (page) => {
@@ -1154,6 +1158,7 @@ test('finishes transcript open on the replacement replica after recovery', async
               rawBytes: 1,
               fragments: [],
               nextCursor: 'older',
+              endsAtTurnBoundary: true,
             },
             overlay: {
               kind: 'page',
@@ -1164,6 +1169,7 @@ test('finishes transcript open on the replacement replica after recovery', async
               rawBytes: 0,
               fragments: [],
               nextCursor: null,
+              endsAtTurnBoundary: true,
             },
           },
           loadTranscriptOverlay: async () => [],
@@ -1250,6 +1256,7 @@ test('coalesces transcript changes into one bounded delta while renderer deliver
             rawBytes: 1,
             fragments: [],
             nextCursor: null,
+            endsAtTurnBoundary: true,
           }),
           decodeTranscriptPage: async (page) => {
             if (page.throughSequence === null) return { messages: [], nextCursor: null };
@@ -1336,6 +1343,8 @@ test('delivers history in whole Turns within the budget and continues exactly on
   const events = new AsyncFrameQueue();
   // Oldest first: a (3 rows), b (1 huge row), c (2 rows), d (1 huge row). The budget is one and a half
   // small rows and pages hold two rows, so Turns cross both the budget and the Host page edges.
+  // Where a page leaves a Turn half-read the answer keeps going, so an answer ends only on a page
+  // the Host marked as stopping at a Turn boundary.
   const huge = 'x'.repeat(4096);
   const rows = [
     turnRow(10, 'turn-a'), turnRow(20, 'turn-a'), turnRow(30, 'turn-a'),
@@ -1379,36 +1388,25 @@ test('delivers history in whole Turns within the budget and continues exactly on
     };
   };
 
-  // The newest Turn alone exceeds the budget and is still delivered whole, and nothing older is.
+  // The first page (60, 70) is over the budget on its own but cuts Turn c in half, so the read
+  // continues to the page below it, which the Host marks as whole.
   const reset = answer();
   assert.equal(reset.taken[0]!.reset, true);
   assert.equal(reset.taken.some((batch) => batch.earlierThan !== undefined), false);
   assert.equal(reset.taken.at(-1)!.durableThrough, 70);
-  assert.deepEqual(reset.sequences, [70]);
+  assert.deepEqual(reset.sequences, [40, 50, 60, 70]);
   assert.equal(reset.hasOlder, true);
 
-  // Turn c crosses the budget, so the read stops after all of c although b shares its Host page.
+  // Turn a spans both remaining pages, so the rest of the history comes back as one answer.
   await observer.loadEarlierTranscript(consumerId, 26);
   const second = answer();
   assert.equal(second.taken.some((batch) => batch.reset), false);
-  assert.equal(second.taken[0]!.earlierThan, 70);
-  assert.deepEqual(second.sequences, [50, 60]);
-  assert.equal(second.hasOlder, true);
-
-  await observer.loadEarlierTranscript(consumerId, 26);
-  const third = answer();
-  assert.equal(third.taken[0]!.earlierThan, 50);
-  assert.deepEqual(third.sequences, [40]);
-  assert.equal(third.hasOlder, true);
-
-  await observer.loadEarlierTranscript(consumerId, 26);
-  const fourth = answer();
-  assert.equal(fourth.taken[0]!.earlierThan, 40);
-  assert.deepEqual(fourth.sequences, [10, 20, 30]);
-  assert.equal(fourth.hasOlder, false);
+  assert.equal(second.taken[0]!.earlierThan, 40);
+  assert.deepEqual(second.sequences, [10, 20, 30]);
+  assert.equal(second.hasOlder, false);
 
   assert.deepEqual(
-    [...fourth.sequences, ...third.sequences, ...second.sequences, ...reset.sequences],
+    [...second.sequences, ...reset.sequences],
     rows.map((row) => row.identity),
   );
   await observer.loadEarlierTranscript(consumerId, 26);
@@ -1466,12 +1464,10 @@ test('keeps the history already delivered across a same-session recovery', async
   };
 
   const delivered = [...answer()];
-  for (let read = 0; read < 2; read += 1) {
-    await observer.loadEarlierTranscript(consumerId, 26);
-    delivered.push(...answer());
-  }
+  await observer.loadEarlierTranscript(consumerId, 26);
+  delivered.push(...answer());
   delivered.sort((left, right) => left - right);
-  assert.deepEqual(delivered, [40, 50, 60, 70], 'the reader is holding four rows before anything fails');
+  assert.deepEqual(delivered, rows.map((row) => row.identity), 'the reader is holding every row before anything fails');
 
   // The Host drops the subscription and the same Session is reopened over the
   // same rows: nothing was added, nothing was removed.
@@ -1589,6 +1585,7 @@ test('does not let one backpressured transcript consumer block another', async (
             rawBytes: 1,
             fragments: [],
             nextCursor: null,
+            endsAtTurnBoundary: true,
           }),
           decodeTranscriptPage: async (page) => {
             if (page.throughSequence === null) return { messages: [], nextCursor: null };
@@ -1694,6 +1691,7 @@ test('keeps a transcript consumer available after a delivery fails', async () =>
             rawBytes: 1,
             fragments: [],
             nextCursor: null,
+            endsAtTurnBoundary: true,
           }),
           decodeTranscriptPage: async (page) => ({
             messages: page.throughSequence === null ? [] : [{
@@ -2205,6 +2203,7 @@ test("recovers when transcript paging loses the active subscription", async () =
               rawBytes: 0,
               fragments: [],
               nextCursor: null,
+              endsAtTurnBoundary: true,
             };
           },
           async close() {
@@ -3414,7 +3413,12 @@ function turnRow(identity: number, turnId: string, text = `row ${identity}`): Tr
 function historyHost(rows: readonly TranscriptRow[], options: { readonly pageRows: number }) {
   const decoded = new Map<SessionTranscriptPage, { messages: TranscriptRow[]; nextCursor: string | null }>();
   const throughSequence = rows.at(-1)?.identity ?? null;
-  const page = (messages: TranscriptRow[], nextCursor: string | null, source: 'durable' | 'overlay' = 'durable') => {
+  const page = (
+    messages: TranscriptRow[],
+    nextCursor: string | null,
+    source: 'durable' | 'overlay' = 'durable',
+    endsAtTurnBoundary = true,
+  ) => {
     const value: SessionTranscriptPage = {
       kind: 'page',
       sessionId: 'session-1',
@@ -3424,6 +3428,7 @@ function historyHost(rows: readonly TranscriptRow[], options: { readonly pageRow
       rawBytes: 1,
       fragments: [],
       nextCursor,
+      endsAtTurnBoundary,
     };
     decoded.set(value, { messages, nextCursor });
     return value;
@@ -3443,7 +3448,11 @@ function historyHost(rows: readonly TranscriptRow[], options: { readonly pageRow
       if (input.direction === 'older') {
         const end = input.cursor === null ? rows.length : Number(input.cursor);
         const start = Math.max(0, end - options.pageRows);
-        return page(rows.slice(start, end), start > 0 ? String(start) : null);
+        // The Host hands over mutually overlapping Turns together, so a page
+        // ends on a boundary only where the row below it starts another Turn.
+        const whole =
+          start === 0 || rows[start - 1]!.message.turnId !== rows[start]!.message.turnId;
+        return page(rows.slice(start, end), start > 0 ? String(start) : null, 'durable', whole);
       }
       const start = input.cursor !== null
         ? Number(input.cursor.slice(1))

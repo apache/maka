@@ -59,6 +59,7 @@ const page = {
     },
   ],
   nextCursor: 'opaque-cursor',
+  endsAtTurnBoundary: false,
 };
 
 test('Session transcript protocol accepts bounded correlated pages and bootstraps', () => {
@@ -81,6 +82,7 @@ test('Session transcript protocol accepts bounded correlated pages and bootstrap
       rawBytes: 0,
       fragments: [],
       nextCursor: null,
+      endsAtTurnBoundary: true,
     },
   };
   assert.deepEqual(decodeSessionTranscriptBootstrap(bootstrap), bootstrap);
@@ -116,6 +118,7 @@ test('a maximum single-fragment continuation remains transport safe', () => {
       },
     ],
     nextCursor: 'c'.repeat(1_024),
+    endsAtTurnBoundary: false,
   };
   assert.deepEqual(decodeSessionTranscriptPage(result), result);
   const encoded = encodeProtocolMessage({
@@ -144,6 +147,7 @@ test('a maximum multi-message page remains transport safe', () => {
       data: Buffer.alloc(fragmentBytes, 0x61).toString('base64'),
     })),
     nextCursor: 'c'.repeat(1_024),
+    endsAtTurnBoundary: false,
   };
   assert.deepEqual(decodeSessionTranscriptPage(result), result);
   assert.ok(

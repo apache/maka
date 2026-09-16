@@ -177,5 +177,6 @@ function emptyTranscriptPage(sessionId: string, source: 'durable' | 'overlay') {
     rawBytes: 0,
     fragments: [],
     nextCursor: null,
+    endsAtTurnBoundary: true,
   };
 }

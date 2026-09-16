@@ -268,7 +268,7 @@ function createDurableLedgerTranscriptReader(input: {
       /** Stops the walk after this many Turns, for a read that may find nothing. */
       maxTurns?: number;
     },
-  ): AsyncGenerator<{ sequence: number; message: StoredMessage }> {
+  ): AsyncGenerator<TranscriptRecord> {
     const throughSequence =
       request.throughSequence === undefined ? await highWater(sessionId) : request.throughSequence;
     if (throughSequence === null) return;
@@ -287,6 +287,7 @@ function createDurableLedgerTranscriptReader(input: {
           )[0];
     let ordinal = ordinalOf(position);
     let walked = 0;
+    let cluster = 0;
     let carried: PendingTranscriptTurn | undefined;
     while (ordinal >= 0 && ordinal <= throughOrdinal) {
       const first = carried ?? (await readTurnAt(ordinal));
@@ -296,8 +297,10 @@ function createDurableLedgerTranscriptReader(input: {
       // A page resumes from one record's sequence and drops everything the other
       // side of it, so what this yields has to be monotone in sequence. Turns
       // whose ordinal ranges overlap — a nested run inside its parent — are
-      // therefore drained together instead of one after the other.
-      const cluster = [first];
+      // therefore drained together instead of one after the other. Each such
+      // group is numbered: nothing of it can arrive once the number changes,
+      // which is what lets a reader cut without splitting a Turn.
+      const overlapping = [first];
       let low = first.firstOrdinal;
       let high = first.lastOrdinal;
       for (;;) {
@@ -307,19 +310,20 @@ function createDurableLedgerTranscriptReader(input: {
           carried = next;
           break;
         }
-        cluster.push(next);
+        overlapping.push(next);
         low = Math.min(low, next.firstOrdinal);
         high = Math.max(high, next.lastOrdinal);
       }
-      walked += cluster.length;
-      const records = (await Promise.all(cluster.map(projectTurn)))
+      walked += overlapping.length;
+      cluster += 1;
+      const records = (await Promise.all(overlapping.map(projectTurn)))
         .flat()
         .filter(
           ({ sequence }) =>
             sequence <= throughSequence && (older ? sequence <= position : sequence >= position),
         )
         .sort((a, b) => (older ? b.sequence - a.sequence : a.sequence - b.sequence));
-      yield* records;
+      for (const record of records) yield { ...record, cluster };
       ordinal = older ? low - 1 : high + 1;
     }
   };
@@ -377,6 +381,17 @@ function createDurableLedgerTranscriptReader(input: {
   };
 }
 
+interface TranscriptRecord {
+  readonly sequence: number;
+  readonly message: StoredMessage;
+  /**
+   * Which group of mutually overlapping Turns this record came from. Records of
+   * one group arrive together, so a cut between two groups cannot land inside a
+   * Turn — including a Turn whose rows a nested one is written between.
+   */
+  readonly cluster: number;
+}
+
 /** An ordered, bounded walk over one Session's transcript records. */
 interface TranscriptRecordSource {
   readHighWater(sessionId: string): Promise<number | null>;
@@ -389,7 +404,7 @@ interface TranscriptRecordSource {
       /** Stops the walk after this many Turns, for a read that may find nothing. */
       maxTurns?: number;
     },
-  ): AsyncGenerator<{ sequence: number; message: StoredMessage }>;
+  ): AsyncGenerator<TranscriptRecord>;
 }
 
 /**
@@ -408,18 +423,30 @@ function pagedTranscriptReads(source: TranscriptRecordSource) {
           ? await source.readHighWater(sessionId)
           : request.throughSequence;
       if (throughSequence === null) {
-        return { throughSequence: null, fragments: [], rawBytes: 0, next: null };
+        return {
+          throughSequence: null,
+          fragments: [],
+          rawBytes: 0,
+          next: null,
+          endsAtTurnBoundary: true,
+        };
       }
       const fragments: SessionTranscriptStorageFragment[] = [];
       let rawBytes = 0;
       let next: SessionTranscriptStoragePage['next'] = null;
       let truncated = false;
+      // Whether the Turns on this page are whole: false only while a group the
+      // page already carries rows of continues past where it stopped.
+      let endsAtTurnBoundary = true;
+      let cluster: number | undefined;
       for await (const record of source.scan(sessionId, { ...request, throughSequence })) {
         if (fragments.length >= request.maxMessages || rawBytes >= request.maxBytes) {
           truncated = true;
+          endsAtTurnBoundary = record.cluster !== cluster;
           next = { position: record.sequence, byteOffset: null };
           break;
         }
+        cluster = record.cluster;
         const data = Buffer.from(JSON.stringify(record.message), 'utf8');
         // A message larger than the remaining budget is served in byte slices,
         // from the edge the traversal is moving away from, so the next page
@@ -445,6 +472,8 @@ function pagedTranscriptReads(source: TranscriptRecordSource) {
         const complete = request.direction === 'older' ? byteOffset === 0 : end === data.byteLength;
         if (!complete) {
           truncated = true;
+          // The record itself is unfinished, so its Turn is too.
+          endsAtTurnBoundary = false;
           next = {
             position: record.sequence,
             byteOffset: request.direction === 'older' ? byteOffset : end,
@@ -453,7 +482,7 @@ function pagedTranscriptReads(source: TranscriptRecordSource) {
         }
       }
       if (!truncated) next = null;
-      return { throughSequence, fragments, rawBytes, next };
+      return { throughSequence, fragments, rawBytes, next, endsAtTurnBoundary };
     },
 
     async readRecords(
@@ -467,7 +496,7 @@ function pagedTranscriptReads(source: TranscriptRecordSource) {
       if (throughSequence === null) {
         return { throughSequence: null, records: [], nextPosition: null };
       }
-      const records: Array<{ sequence: number; message: StoredMessage }> = [];
+      const records: TranscriptRecord[] = [];
       let storedBytes = 0;
       let nextPosition: number | null = null;
       for await (const record of source.scan(sessionId, { ...request, throughSequence })) {

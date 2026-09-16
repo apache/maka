@@ -155,6 +155,7 @@ test('a history page read retires the tail overlay copy without notifying other 
   const durablePage = (): SessionTranscriptPage => ({
     kind: 'page', sessionId: 'session-1', source: 'durable', direction: 'older',
     throughSequence: 2, rawBytes: 1, fragments: [], nextCursor: null,
+    endsAtTurnBoundary: true,
   });
   const bootstrap = durablePage();
   const decoded = new Map<SessionTranscriptPage, {

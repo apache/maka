@@ -68,6 +68,8 @@ export interface DesktopTranscriptReplicaSnapshot {
 export interface DesktopTranscriptHistoryPage {
   readonly durable: readonly DesktopSequencedTranscriptMessage[];
   readonly nextCursor: string | null;
+  /** Whether the Host holds nothing more of the Turns this page carries rows of. */
+  readonly endsAtTurnBoundary: boolean;
 }
 
 /**
@@ -253,6 +255,7 @@ export class DesktopTranscriptReplica {
           message: entry.message,
         })),
         nextCursor: decoded.nextCursor,
+        endsAtTurnBoundary: page.endsAtTurnBoundary,
       };
     });
   }

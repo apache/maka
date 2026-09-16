@@ -181,6 +181,7 @@ test('transcript pages are serialized per connection before their responses are 
           rawBytes: 0,
           fragments: [],
           nextCursor: null,
+          endsAtTurnBoundary: true,
         },
       };
     },
@@ -1798,6 +1799,7 @@ function transcriptBootstrapFor(sessionId: string) {
         },
       ],
       nextCursor: null,
+      endsAtTurnBoundary: true,
     },
     overlay: {
       kind: 'page' as const,
@@ -1808,6 +1810,7 @@ function transcriptBootstrapFor(sessionId: string) {
       rawBytes: 0,
       fragments: [],
       nextCursor: null,
+      endsAtTurnBoundary: true,
     },
   };
 }

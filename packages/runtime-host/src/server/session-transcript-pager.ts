@@ -72,6 +72,8 @@ interface SelectedFragments {
   readonly fragments: readonly SessionTranscriptFragment[];
   readonly rawBytes: number;
   readonly next: { position: number; byteOffset: number | null } | null;
+  /** Durable pages carry the reader's answer; an overlay is one Turn's tail. */
+  readonly endsAtTurnBoundary: boolean;
 }
 
 export async function createSessionTranscriptBootstrap(input: {
@@ -254,6 +256,8 @@ async function readSharedDurablePage(
   let next: { position: number; byteOffset: number | null } | null = null;
   let scanPosition = position;
   let throughSequence = request.throughSequence ?? null;
+  let endsAtTurnBoundary = true;
+  let cluster: number | undefined;
   while (scanPosition !== undefined && next === null) {
     const scanned = await reader.readDurableRecords(sessionId, {
       direction: request.direction,
@@ -288,9 +292,11 @@ async function readSharedDurablePage(
         request.maxBytes - rawBytes,
       );
       if (!selected) {
+        endsAtTurnBoundary = record.cluster !== cluster;
         next = { position: record.sequence, byteOffset: null };
         break;
       }
+      cluster = record.cluster;
       fragments.push({
         sequence: record.sequence,
         byteOffset: selected.byteOffset,
@@ -300,11 +306,18 @@ async function readSharedDurablePage(
       });
       rawBytes += selected.data.byteLength;
       if (!selected.complete) {
+        endsAtTurnBoundary = false;
         next = { position: record.sequence, byteOffset: selected.nextOffset };
         break;
       }
       if (fragments.length === request.maxMessages || rawBytes === request.maxBytes) {
-        const following = scanned.records[recordIndex + 1]?.sequence ?? scanned.nextPosition;
+        const followingRecord = scanned.records[recordIndex + 1];
+        const following = followingRecord?.sequence ?? scanned.nextPosition;
+        // A page that ran out mid-group is only known to be whole once the next
+        // record proves otherwise; an unread continuation could be either.
+        endsAtTurnBoundary = followingRecord
+          ? followingRecord.cluster !== record.cluster
+          : scanned.nextPosition === null;
         next = following === null ? null : { position: following, byteOffset: null };
         break;
       }
@@ -321,6 +334,7 @@ async function readSharedDurablePage(
     fragments,
     rawBytes,
     next,
+    endsAtTurnBoundary,
   };
 }
 
@@ -393,6 +407,7 @@ function storageSelection(
     })),
     rawBytes: storage.rawBytes,
     next: storage.next,
+    endsAtTurnBoundary: storage.endsAtTurnBoundary,
   };
 }
 
@@ -429,6 +444,7 @@ function selectOverlay(
         fragments,
         rawBytes,
         next: { position: index, byteOffset: selected.nextOffset },
+        endsAtTurnBoundary: false,
       };
     }
     index += direction === 'older' ? -1 : 1;
@@ -438,6 +454,7 @@ function selectOverlay(
     fragments,
     rawBytes,
     next: index >= 0 && index < messages.length ? { position: index, byteOffset: null } : null,
+    endsAtTurnBoundary: !(index >= 0 && index < messages.length),
   };
 }
 
@@ -493,6 +510,7 @@ function pageFromSelection(
     throughSequence,
     rawBytes: selected.rawBytes,
     fragments: selected.fragments,
+    endsAtTurnBoundary: selected.endsAtTurnBoundary,
     nextCursor: selected.next
       ? encodeCursor(
           {
@@ -523,6 +541,7 @@ function emptyPage(
     rawBytes: 0,
     fragments: [],
     nextCursor: null,
+    endsAtTurnBoundary: true,
   };
 }
 

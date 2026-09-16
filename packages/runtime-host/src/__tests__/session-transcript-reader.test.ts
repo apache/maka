@@ -882,7 +882,10 @@ test('pages a nested Turn the same way a single sweep reads it', async () => {
       });
       const swept = sweep.fragments.map((fragment) => fragment.sequence);
 
+      assert.equal(sweep.endsAtTurnBoundary, true, direction);
+
       const paged: number[] = [];
+      const boundaries: boolean[] = [];
       let position: number | undefined;
       for (let page = 0; page < 32; page++) {
         const result = await read.readDurablePage(session.id, {
@@ -894,10 +897,18 @@ test('pages a nested Turn the same way a single sweep reads it', async () => {
         });
         if (result.fragments.length === 0) break;
         paged.push(...result.fragments.map((fragment) => fragment.sequence));
+        boundaries.push(result.endsAtTurnBoundary);
         if (result.next?.position === undefined || result.next.position === null) break;
         position = result.next.position;
       }
       assert.deepEqual(paged, swept, direction);
+      // The two Turns overlap, so every row here belongs to one cluster: a reader
+      // that stops on any page but the last one is holding half of a Turn.
+      assert.deepEqual(
+        boundaries,
+        paged.map((_, index) => index === paged.length - 1),
+        direction,
+      );
     }
   } finally {
     await rm(base, { recursive: true, force: true });

@@ -1388,6 +1388,7 @@ function transcriptPage(
     rawBytes: 1,
     fragments: [],
     nextCursor,
+    endsAtTurnBoundary: true,
   };
 }
 

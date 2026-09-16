@@ -146,17 +146,11 @@ interface TranscriptConsumer {
   }>;
 }
 
-/**
- * Where a history consumer's delivered history ends. Host cursors cut pages by
- * bytes, not Turns, so rows read past a Turn boundary wait in `carry` for the
- * next earlier read.
- */
+/** Where a history consumer's delivered history ends. */
 interface TranscriptHistory {
   throughSequence: number | null;
   started: boolean;
   cursor: string | null;
-  carry: DesktopSequencedTranscriptMessage[];
-  carryBytes: number;
   /** The oldest sequence delivered so far; a reset reads down to it again. */
   oldestSequence: number | null;
 }
@@ -318,8 +312,6 @@ export class RuntimeHostSessionObserver {
               throughSequence: null,
               started: false,
               cursor: null,
-              carry: [],
-              carryBytes: 0,
               oldestSequence: null,
             },
           }
@@ -1353,13 +1345,10 @@ export class RuntimeHostSessionObserver {
       const snapshot = replica.snapshot();
       overlay = snapshot.overlay;
       floor = history.oldestSequence;
-      this.#adjustTranscriptDeliveryBytes(consumer, -history.carryBytes);
       Object.assign(history, {
         throughSequence: snapshot.durableThrough,
         started: false,
         cursor: null,
-        carry: [],
-        carryBytes: 0,
         oldestSequence: null,
       });
     } else {
@@ -1390,63 +1379,39 @@ export class RuntimeHostSessionObserver {
       first = false;
     };
     let bytes = 0;
-    let boundary: string | undefined;
-    while (history.throughSequence !== null) {
-      let rows: DesktopSequencedTranscriptMessage[];
-      let rowsBytes: number;
-      if (history.carry.length > 0) {
-        rows = history.carry;
-        rowsBytes = history.carryBytes;
-        history.carry = [];
-        history.carryBytes = 0;
-      } else if (!history.started || history.cursor !== null) {
-        let page: Awaited<ReturnType<DesktopTranscriptReplica['readOlderPage']>>;
-        try {
-          page = await replica.readOlderPage(history.throughSequence, history.cursor);
-        } catch (error) {
-          if (!isCurrent()) return;
-          throw error;
-        }
+    while (history.throughSequence !== null && historyHasOlder(history)) {
+      let page: Awaited<ReturnType<DesktopTranscriptReplica['readOlderPage']>>;
+      try {
+        page = await replica.readOlderPage(history.throughSequence, history.cursor);
+      } catch (error) {
         if (!isCurrent()) return;
-        history.started = true;
-        history.cursor = page.nextCursor;
-        rows = [...page.durable];
-        rowsBytes = rows.reduce((total, entry) => total + encodedTranscriptMessageBytes(entry.message), 0);
-        if (!this.#adjustTranscriptDeliveryBytes(consumer, rowsBytes)) {
-          throw new Error('Desktop transcript delivery capacity was reached');
-        }
-      } else {
-        break;
+        throw error;
       }
-      let cut = 0;
-      for (let index = rows.length - 1; index >= 0; index -= 1) {
-        const key = transcriptTurnKey(rows[index]!);
-        if (boundary !== undefined && key !== boundary) {
-          cut = index + 1;
-          break;
-        }
-        bytes += encodedTranscriptMessageBytes(rows[index]!.message);
-        if (
-          boundary === undefined &&
-          bytes >= budget &&
-          (floor === null || rows[index]!.sequence <= floor)
-        ) {
-          boundary = key;
-        }
-      }
-      history.carry = rows.slice(0, cut);
-      history.carryBytes = history.carry.reduce(
+      if (!isCurrent()) return;
+      history.started = true;
+      history.cursor = page.nextCursor;
+      const rows = page.durable;
+      const rowsBytes = rows.reduce(
         (total, entry) => total + encodedTranscriptMessageBytes(entry.message),
         0,
       );
-      const delivered = rows.slice(cut);
-      if (delivered.length > 0) history.oldestSequence = delivered[0]!.sequence;
-      try {
-        await send(delivered, false);
-      } finally {
-        this.#adjustTranscriptDeliveryBytes(consumer, history.carryBytes - rowsBytes);
+      if (!this.#adjustTranscriptDeliveryBytes(consumer, rowsBytes)) {
+        throw new Error('Desktop transcript delivery capacity was reached');
       }
-      if (!isCurrent() || cut > 0) break;
+      bytes += rowsBytes;
+      if (rows.length > 0) history.oldestSequence = rows[0]!.sequence;
+      try {
+        await send(rows, false);
+      } finally {
+        this.#adjustTranscriptDeliveryBytes(consumer, -rowsBytes);
+      }
+      if (!isCurrent()) return;
+      const reachedFloor =
+        floor === null || (history.oldestSequence !== null && history.oldestSequence <= floor);
+      // The Host cuts its pages by bytes, so where an answer may end is the
+      // Host's to say: a page that leaves a Turn half-read is read past,
+      // however much of the budget has already been spent.
+      if (bytes >= budget && reachedFloor && page.endsAtTurnBoundary) break;
     }
     if (isCurrent()) await send([], true);
   }
@@ -1662,12 +1627,7 @@ function encodedTranscriptMessageBytes(message: StoredMessage): number {
 }
 
 function historyHasOlder(history: TranscriptHistory): boolean {
-  return history.carry.length > 0 || (history.started ? history.cursor !== null : history.throughSequence !== null);
-}
-
-function transcriptTurnKey(entry: DesktopSequencedTranscriptMessage): string {
-  const turnId = 'turnId' in entry.message ? entry.message.turnId : undefined;
-  return typeof turnId === 'string' ? `turn:${turnId}` : `sequence:${entry.sequence}`;
+  return history.started ? history.cursor !== null : history.throughSequence !== null;
 }
 
 function resetDeliveryWorkingSetBytes(residentBytes: number): number {

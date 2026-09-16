@@ -290,6 +290,13 @@ export interface SessionTranscriptStoragePage {
     readonly position: number;
     readonly byteOffset: number | null;
   } | null;
+  /**
+   * Whether every Turn with rows on this page has all of them here. A reader
+   * that stops on a page which says so cannot be holding half a Turn — which a
+   * change of owner between rows does not tell it, because the Host writes a
+   * nested Turn's rows between the rows of the Turn around it.
+   */
+  readonly endsAtTurnBoundary: boolean;
 }
 
 export interface SessionTranscriptRecordScanRequest {
@@ -302,7 +309,17 @@ export interface SessionTranscriptRecordScanRequest {
 
 export interface SessionTranscriptRecordScanPage {
   readonly throughSequence: number | null;
-  readonly records: readonly { readonly sequence: number; readonly message: StoredMessage }[];
+  readonly records: readonly {
+    readonly sequence: number;
+    readonly message: StoredMessage;
+    /**
+     * Which group of mutually overlapping Turns the record came from. Records of
+     * one group arrive together, so a cut between two groups cannot land inside
+     * a Turn — which a change of owner between rows does not tell a reader,
+     * because a nested Turn's rows are written between the rows around them.
+     */
+    readonly cluster: number;
+  }[];
   readonly nextPosition: number | null;
 }
 

@@ -300,6 +300,7 @@ async function oversizedHistoryFixture(options: { live?: boolean } = {}) {
       rawBytes: input.records.reduce((bytes, record) => bytes + Buffer.byteLength(JSON.stringify(record.message)), 0),
       fragments: [],
       nextCursor: input.hasMore ? 'more' : null,
+      endsAtTurnBoundary: true,
     };
     decodedPages.set(result, { messages: input.records, nextCursor: result.nextCursor });
     return result;

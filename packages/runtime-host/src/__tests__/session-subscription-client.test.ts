@@ -1722,6 +1722,7 @@ function transcriptPage(
     rawBytes?: number;
     fragments?: readonly SessionTranscriptFragment[];
     nextCursor?: string | null;
+    endsAtTurnBoundary?: boolean;
   } = {},
 ): SessionTranscriptPage {
   return {
@@ -1733,6 +1734,7 @@ function transcriptPage(
     rawBytes: options.rawBytes ?? 0,
     fragments: options.fragments ?? [],
     nextCursor: options.nextCursor ?? null,
+    endsAtTurnBoundary: options.endsAtTurnBoundary ?? options.nextCursor == null,
   };
 }
 

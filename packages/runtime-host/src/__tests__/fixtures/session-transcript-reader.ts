@@ -27,8 +27,18 @@ export function transcriptReader(
   overlay: readonly StoredMessage[] = [],
   sequenceStride = 1,
 ): SessionTranscriptReader {
-  const durableRecords = () =>
-    durable.map((message, index) => ({ sequence: index * sequenceStride, message }));
+  // The Host groups Turns whose ordinals overlap and hands them over together;
+  // here a run of rows with one turnId is that group.
+  const durableRecords = () => {
+    let cluster = 0;
+    let owner: string | undefined;
+    return durable.map((message, index) => {
+      const turnId = 'turnId' in message ? message.turnId : undefined;
+      if (index === 0 || turnId !== owner) cluster += 1;
+      owner = turnId;
+      return { sequence: index * sequenceStride, message, cluster };
+    });
+  };
   const durableHighWater = () =>
     durable.length === 0 ? null : (durable.length - 1) * sequenceStride + sequenceStride - 1;
   return {
@@ -37,12 +47,19 @@ export function transcriptReader(
       const throughSequence =
         request.throughSequence === undefined ? durableHighWater() : request.throughSequence;
       if (throughSequence === null) {
-        return { throughSequence: null, fragments: [], rawBytes: 0, next: null };
+        return {
+          throughSequence: null,
+          fragments: [],
+          rawBytes: 0,
+          next: null,
+          endsAtTurnBoundary: true,
+        };
       }
       const position = request.position ?? (request.direction === 'older' ? throughSequence : 0);
       const candidates = durableRecords()
-        .map(({ sequence, message }) => ({
+        .map(({ sequence, message, cluster }) => ({
           sequence,
+          cluster,
           data: Buffer.from(JSON.stringify(message), 'utf8'),
         }))
         .filter(
@@ -55,6 +72,7 @@ export function transcriptReader(
             ? right.sequence - left.sequence
             : left.sequence - right.sequence,
         );
+      let endsAtTurnBoundary = true;
       const fragments = [] as Array<{
         sequence: number;
         byteOffset: number;
@@ -65,7 +83,10 @@ export function transcriptReader(
       let rawBytes = 0;
       let next: { position: number; byteOffset: number | null } | null = null;
       for (const candidate of candidates) {
-        if (fragments.length >= request.maxMessages || rawBytes >= request.maxBytes) break;
+        if (fragments.length >= request.maxMessages || rawBytes >= request.maxBytes) {
+          endsAtTurnBoundary = candidate.cluster !== candidates[fragments.length - 1]?.cluster;
+          break;
+        }
         const continued = candidate.sequence === position && request.byteOffset !== undefined;
         const edge = continued
           ? request.byteOffset!
@@ -89,6 +110,7 @@ export function transcriptReader(
         const complete =
           request.direction === 'older' ? byteOffset === 0 : end === candidate.data.byteLength;
         if (!complete) {
+          endsAtTurnBoundary = false;
           next = {
             position: candidate.sequence,
             byteOffset: request.direction === 'older' ? byteOffset : end,
@@ -102,7 +124,7 @@ export function transcriptReader(
           byteOffset: null,
         };
       }
-      return { throughSequence, fragments, rawBytes, next };
+      return { throughSequence, fragments, rawBytes, next, endsAtTurnBoundary };
     },
     readDurableRecords: async (_sessionId, request) => {
       const throughSequence =

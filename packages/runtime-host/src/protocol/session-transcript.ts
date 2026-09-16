@@ -65,6 +65,13 @@ export interface SessionTranscriptPage {
   readonly rawBytes: number;
   readonly fragments: readonly SessionTranscriptFragment[];
   readonly nextCursor: string | null;
+  /**
+   * Whether every Turn with rows on this page has all of them here. A reader
+   * that stops on a page which says so cannot be holding half a Turn — which a
+   * change of owner between rows does not tell it, because the Host writes a
+   * nested Turn's rows between the rows of the Turn around it.
+   */
+  readonly endsAtTurnBoundary: boolean;
 }
 
 export interface SessionTranscriptBootstrap {
@@ -244,7 +251,11 @@ export function decodeSessionTranscriptPage(value: unknown): SessionTranscriptPa
     'rawBytes',
     'fragments',
     'nextCursor',
+    'endsAtTurnBoundary',
   ]);
+  if (typeof result.endsAtTurnBoundary !== 'boolean') {
+    throw invalidProtocolFrame('Invalid Session transcript page Turn boundary');
+  }
   if (result.kind !== 'page') throw invalidProtocolFrame('Invalid Session transcript page kind');
   const source = decodeSource(result.source);
   const direction = decodeDirection(result.direction);
@@ -290,6 +301,7 @@ export function decodeSessionTranscriptPage(value: unknown): SessionTranscriptPa
     rawBytes,
     fragments,
     nextCursor,
+    endsAtTurnBoundary: result.endsAtTurnBoundary,
   };
 }
 

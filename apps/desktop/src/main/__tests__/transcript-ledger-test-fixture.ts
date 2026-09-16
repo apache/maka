@@ -122,7 +122,7 @@ export async function openTranscriptLedger(messages: readonly StoredMessage[]) {
           direction: 'newer', maxMessages: 1_000, maxStoredBytes: 16 * 1024 * 1024,
         });
         assert.equal(result.nextPosition, null, 'the assertion sweep must include every durable row');
-        return result.records;
+        return result.records.map(({ sequence, message }) => ({ sequence, message }));
       },
       async close() {
         await stores!.sessionStore.close?.();
