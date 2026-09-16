@@ -96,3 +96,23 @@ test('preserves a bounded redacted Candidate startup diagnostic in the private c
     await rm(controlDirectory, { recursive: true, force: true });
   }
 });
+
+test('writes a Candidate startup diagnostic after owner cleanup removed its parent', async () => {
+  const rootId = createHash('sha256').update(randomUUID()).digest('hex');
+  const startupAttemptId = randomUUID();
+  const controlDirectory = dirname(resolveCandidateStartupDiagnosticPath(rootId, startupAttemptId));
+  await mkdir(controlDirectory, { recursive: true, mode: 0o700 });
+  await rm(controlDirectory, { recursive: true });
+  try {
+    await writeCandidateStartupDiagnostic({
+      rootId,
+      startupAttemptId,
+      failure: { reason: 'internal_startup_failure' },
+      error: new Error('Composition initialization failed'),
+    });
+    const diagnostic = await readCandidateStartupDiagnostic(rootId, startupAttemptId);
+    assert.equal(diagnostic?.reason, 'internal_startup_failure');
+  } finally {
+    await rm(controlDirectory, { recursive: true, force: true });
+  }
+});

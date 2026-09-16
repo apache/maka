@@ -17,8 +17,12 @@
  * under the License.
  */
 
+import './fixtures/isolated-control-home.js';
 import assert from 'node:assert/strict';
 import { fork, spawnSync, type ChildProcess } from 'node:child_process';
+import { randomBytes, randomUUID } from 'node:crypto';
+import filesystem from 'node:fs/promises';
+import { syncBuiltinESMExports } from 'node:module';
 import {
   chmod,
   cp,
@@ -34,7 +38,7 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { describe, test } from 'node:test';
 import { withArtifactWriterLock } from '../artifact-writer-lock.js';
 import {
@@ -45,6 +49,8 @@ import {
   prepareArtifactWriterBootstrapAuthority,
   prepareStorageRootControlDirectory,
   prepareStorageRootIdentityRepair,
+  reapStaleRootControlDirectories,
+  reapRootControlDirectoryBatches,
   repairStorageRootAfterRemount,
   repairStorageRootIdentity,
   resolveExistingStorageRoot,
@@ -459,7 +465,7 @@ describe('storage root authority', () => {
       const child = fork(
         new URL('./fixtures/root-initialization-race.js', import.meta.url),
         [root, STORAGE_ROOT_MARKER_FILE],
-        { stdio: ['ignore', 'ignore', 'ignore', 'ipc'] },
+        { stdio: ['ignore', 'ignore', 'inherit', 'ipc'] },
       );
       try {
         await waitForChildMessage(
@@ -833,6 +839,651 @@ describe('storage root authority', () => {
     });
   });
 
+  test('removes the disposable control directory when a write owner closes normally', {
+    skip:
+      process.platform === 'win32'
+        ? 'Windows may reject rename while lock handles are open'
+        : false,
+  }, async () => {
+    await withRoots(async ({ root }) => {
+      const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(owner);
+      if (!owner) return;
+      await writeFile(join(owner.controlDirectory, 'startup-diagnostic.json'), '{}\n');
+
+      await owner.close();
+
+      await assert.rejects(lstat(owner.controlDirectory), { code: 'ENOENT' });
+      assert.equal((await lstat(owner.lockPath)).isFile(), true);
+    });
+  });
+
+  test('preserves durable access and plugin state on close and during a later sweep', async () => {
+    await withRoots(async ({ root }) => {
+      const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(owner);
+      if (!owner) return;
+      const accessPath = join(owner.controlDirectory, 'runtime-host-access.json');
+      const compositionPath = join(owner.controlDirectory, 'plugin-composition-v2.json');
+      const packagesPath = join(owner.controlDirectory, 'plugin-packages-v2');
+      const futureStatePath = join(owner.controlDirectory, 'future-state.bin');
+      await writeFile(accessPath, 'access state');
+      await writeFile(compositionPath, 'plugin composition');
+      await writeFile(futureStatePath, 'future state');
+      await mkdir(packagesPath);
+      await writeFile(join(packagesPath, 'package'), 'trusted package');
+
+      await owner.close();
+      await reapStaleRootControlDirectories({ graceMs: 0, maxEntries: 100_000 });
+
+      assert.equal(await readFile(accessPath, 'utf8'), 'access state');
+      assert.equal(await readFile(compositionPath, 'utf8'), 'plugin composition');
+      assert.equal(await readFile(join(packagesPath, 'package'), 'utf8'), 'trusted package');
+      assert.equal(await readFile(futureStatePath, 'utf8'), 'future state');
+      const successor = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(successor);
+      await successor?.close();
+    });
+  });
+
+  test('keeps active readers and Artifact writers out of stale-directory reaping', async () => {
+    await withRoots(async ({ root }) => {
+      const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+      const reader = await tryAcquireInteractiveRootReader(capability);
+      assert.ok(reader);
+      if (!reader) return;
+
+      await reapStaleRootControlDirectories({ graceMs: 0, maxEntries: 100_000 });
+      assert.equal((await lstat(reader.controlDirectory)).isDirectory(), true);
+      await reader.close();
+
+      await withArtifactWriterLock(root, async () => {
+        await reapStaleRootControlDirectories({ graceMs: 0, maxEntries: 100_000 });
+        assert.equal((await lstat(reader.controlDirectory)).isDirectory(), true);
+      });
+
+      if (process.platform !== 'win32') {
+        await reapStaleRootControlDirectories({ graceMs: 0, maxEntries: 100_000 });
+        await assert.rejects(lstat(reader.controlDirectory), { code: 'ENOENT' });
+      }
+    });
+  });
+
+  test('does not reap an active write owner', async () => {
+    await withRoots(async ({ root }) => {
+      const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(owner);
+      if (!owner) return;
+
+      const summary = await reapStaleRootControlDirectories({
+        graceMs: 0,
+        maxEntries: 100_000,
+      });
+
+      assert.ok(summary.busy >= 1);
+      assert.equal((await lstat(owner.controlDirectory)).isDirectory(), true);
+      await owner.close();
+    });
+  });
+
+  test('releases owner locks even when normal control-directory cleanup fails', async () => {
+    await withRoots(async ({ root }) => {
+      const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(owner);
+      if (!owner) return;
+      await mkdir(join(owner.controlDirectory, '.maka-artifact-writer.lock'));
+
+      await owner.close();
+
+      const successor = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(successor);
+      await successor?.close();
+      assert.equal((await lstat(owner.controlDirectory)).isDirectory(), true);
+    });
+  });
+
+  test('reaps an old crash directory in full but preserves a directory inside the grace period', {
+    skip:
+      process.platform === 'win32'
+        ? 'Windows may reject rename while lock handles are open'
+        : false,
+  }, async () => {
+    await withRoots(async ({ base, root }) => {
+      const staleCapability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+      const { controlDirectory: staleDirectory } =
+        await prepareStorageRootControlDirectory(staleCapability);
+      await mkdir(join(staleDirectory, 'bundle-imports-v1'));
+      await writeFile(join(staleDirectory, 'registration.json'), '{}\n');
+      await writeFile(join(staleDirectory, 'bundle-imports-v1', 'cache.json'), '{}\n');
+      const old = new Date(Date.now() - 48 * 60 * 60 * 1_000);
+      await utimes(staleDirectory, old, old);
+
+      const youngRoot = join(base, 'young-root');
+      await mkdir(youngRoot);
+      const youngCapability = await resolveStorageRoot({
+        path: youngRoot,
+        kind: 'interactive',
+      });
+      const { controlDirectory: youngDirectory } =
+        await prepareStorageRootControlDirectory(youngCapability);
+
+      await reapStaleRootControlDirectories({ maxEntries: 100_000, maxDurationMs: 5_000 });
+
+      await assert.rejects(lstat(staleDirectory), { code: 'ENOENT' });
+      assert.equal((await lstat(youngDirectory)).isDirectory(), true);
+    });
+  });
+
+  test('skips invalid names and symlinked root-control candidates', {
+    skip:
+      process.platform === 'win32' ? 'Windows symlink permissions are not guaranteed in CI' : false,
+  }, async () => {
+    const controlRoot = resolveRootControlNamespace();
+    const invalidDirectory = join(controlRoot, `invalid-${randomUUID()}`);
+    const symlinkName = randomBytes(32).toString('hex');
+    const symlinkPath = join(controlRoot, symlinkName);
+    const invalidLockDirectory = join(controlRoot, randomBytes(32).toString('hex'));
+    const foreignDirectory = await mkdtemp(join(tmpdir(), 'maka-root-control-foreign-'));
+    const foreignLock = join(foreignDirectory, 'foreign.lock');
+    await mkdir(controlRoot, { recursive: true, mode: 0o700 });
+    await mkdir(invalidDirectory, { mode: 0o700 });
+    await mkdir(invalidLockDirectory, { mode: 0o700 });
+    await writeFile(join(foreignDirectory, 'preserve.txt'), 'preserve me');
+    await writeFile(foreignLock, 'foreign lock');
+    await symlink(foreignDirectory, symlinkPath, 'dir');
+    await symlink(foreignLock, join(invalidLockDirectory, 'owner.lock'));
+    try {
+      await reapStaleRootControlDirectories({ graceMs: 0, maxEntries: 100_000 });
+      assert.equal((await lstat(invalidDirectory)).isDirectory(), true);
+      assert.equal((await lstat(invalidLockDirectory)).isDirectory(), true);
+      assert.equal(await readFile(foreignLock, 'utf8'), 'foreign lock');
+      assert.equal(await readFile(join(foreignDirectory, 'preserve.txt'), 'utf8'), 'preserve me');
+    } finally {
+      await rm(symlinkPath, { force: true });
+      await rm(invalidDirectory, { recursive: true, force: true });
+      await rm(invalidLockDirectory, { recursive: true, force: true });
+      await rm(foreignDirectory, { recursive: true, force: true });
+    }
+  });
+
+  test('recovers old quarantine claims and respects the entry budget', async () => {
+    const controlRoot = resolveRootControlNamespace();
+    const reapRoot = join(controlRoot, '.reap');
+    const claimDirectory = join(reapRoot, randomUUID());
+    const tombstoneRootId = randomBytes(32).toString('hex');
+    const tombstone = join(claimDirectory, tombstoneRootId);
+    const recreatedDirectory = join(controlRoot, tombstoneRootId);
+    const budgetEntries = Array.from({ length: 3 }, () =>
+      join(controlRoot, `budget-${randomUUID()}`),
+    );
+    await mkdir(tombstone, { recursive: true, mode: 0o700 });
+    await mkdir(recreatedDirectory, { mode: 0o700 });
+    await writeFile(join(tombstone, 'registration.json'), '{}\n');
+    const old = new Date(Date.now() - 48 * 60 * 60 * 1_000);
+    await utimes(claimDirectory, old, old);
+    await Promise.all(budgetEntries.map((path) => mkdir(path, { mode: 0o700 })));
+    try {
+      const bounded = await reapStaleRootControlDirectories({
+        graceMs: Number.MAX_SAFE_INTEGER,
+        maxEntries: 1,
+        maxDurationMs: 5_000,
+      });
+      assert.equal(bounded.scanned, 1);
+      assert.equal(bounded.budgetExhausted, true);
+
+      await reapStaleRootControlDirectories({ maxEntries: 100_000, maxDurationMs: 5_000 });
+      await assert.rejects(lstat(claimDirectory), { code: 'ENOENT' });
+      assert.equal((await lstat(recreatedDirectory)).isDirectory(), true);
+    } finally {
+      await rm(claimDirectory, { recursive: true, force: true });
+      await rm(recreatedDirectory, { recursive: true, force: true });
+      await Promise.all(budgetEntries.map((path) => rm(path, { recursive: true, force: true })));
+    }
+  });
+
+  test('allows only one of two process reapers to claim a stale directory', {
+    skip:
+      process.platform === 'win32'
+        ? 'Windows may reject rename while lock handles are open'
+        : false,
+  }, async () => {
+    const controlRoot = resolveRootControlNamespace();
+    const rootId = randomBytes(32).toString('hex');
+    const controlDirectory = join(controlRoot, rootId);
+    await mkdir(controlDirectory, { recursive: true, mode: 0o700 });
+    await writeFile(join(controlDirectory, 'registration.json'), '{}\n');
+    try {
+      const summaries = await Promise.all([runReaperInChild(), runReaperInChild()]);
+      await assert.rejects(lstat(controlDirectory), { code: 'ENOENT' });
+      assert.equal(
+        summaries.every((summary) => summary.failed === 0),
+        true,
+      );
+    } finally {
+      await rm(controlDirectory, { recursive: true, force: true });
+    }
+  });
+
+  test('public Writer retries when owner close reclaims its prepared lock path', {
+    skip: process.platform === 'win32',
+  }, async (context) => {
+    await withRoots(async ({ root }) => {
+      const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(owner);
+      const { controlDirectory } = await prepareStorageRootControlDirectory(capability);
+      const lockPath = join(controlDirectory, '.maka-artifact-writer.lock');
+      const originalOpen = filesystem.open;
+      let reclaimed = false;
+      let operations = 0;
+      context.mock.method(
+        filesystem,
+        'open',
+        async (...args: Parameters<typeof filesystem.open>) => {
+          if (args[0] === lockPath && !reclaimed) {
+            reclaimed = true;
+            await owner.close();
+            await assert.rejects(lstat(controlDirectory), { code: 'ENOENT' });
+          }
+          return originalOpen(...args);
+        },
+      );
+      syncBuiltinESMExports();
+      try {
+        await withArtifactWriterLock(root, async (canonicalRoot) => {
+          operations += 1;
+          assert.equal(canonicalRoot, capability.canonicalPath);
+        });
+        assert.equal(reclaimed, true);
+        assert.equal(operations, 1);
+      } finally {
+        context.mock.restoreAll();
+        syncBuiltinESMExports();
+        await owner.close();
+      }
+    });
+  });
+
+  test('public Writer never retries an admitted operation with ENOENT', async () => {
+    await withRoots(async ({ root }) => {
+      await resolveStorageRoot({ path: root, kind: 'interactive' });
+      const failure = Object.assign(new Error('operation failed'), { code: 'ENOENT' });
+      let operations = 0;
+      await assert.rejects(
+        withArtifactWriterLock(root, async () => {
+          operations += 1;
+          throw failure;
+        }),
+        (error) => error === failure,
+      );
+      assert.equal(operations, 1);
+    });
+  });
+
+  test('public Writer bounds retries when its control lock keeps disappearing', async (context) => {
+    await withRoots(async ({ root }) => {
+      const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+      const { controlDirectory } = await prepareStorageRootControlDirectory(capability);
+      const lockPath = join(controlDirectory, '.maka-artifact-writer.lock');
+      const originalOpen = filesystem.open;
+      let opens = 0;
+      let operations = 0;
+      context.mock.method(
+        filesystem,
+        'open',
+        async (...args: Parameters<typeof filesystem.open>) => {
+          if (args[0] === lockPath) {
+            opens += 1;
+            throw Object.assign(new Error('reclaimed'), { code: 'ENOENT' });
+          }
+          return originalOpen(...args);
+        },
+      );
+      syncBuiltinESMExports();
+      try {
+        await assert.rejects(
+          withArtifactWriterLock(root, async () => {
+            operations += 1;
+          }),
+        );
+        assert.equal(opens, 3);
+        assert.equal(operations, 0);
+      } finally {
+        context.mock.restoreAll();
+        syncBuiltinESMExports();
+      }
+    });
+  });
+
+  test('a successor process reaps a SIGKILL tombstone without deleting a rebuilt owner', {
+    skip: process.platform === 'win32' || !RUN_PROCESS_LOCK_TESTS,
+  }, async () => {
+    await withRoots(async ({ root }) => {
+      const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+      const { controlDirectory } = await prepareStorageRootControlDirectory(capability);
+      await writeFile(join(controlDirectory, 'registration.json'), 'old');
+      const child = fork(
+        new URL('./fixtures/root-control-reaper.js', import.meta.url),
+        [controlDirectory],
+        {
+          stdio: ['ignore', 'ignore', 'inherit', 'ipc'],
+        },
+      );
+      const exited = waitForExit(child);
+      let owner: Awaited<ReturnType<typeof tryAcquireInteractiveRootOwner>>;
+      try {
+        const tombstone = await new Promise<string>((resolve, reject) => {
+          const timer = setTimeout(() => reject(new Error('reaper did not reach rename')), 5_000);
+          child.once('error', (error) => {
+            clearTimeout(timer);
+            reject(error);
+          });
+          child.once('exit', () => {
+            clearTimeout(timer);
+            reject(new Error('reaper exited before rename'));
+          });
+          child.once('message', (message: unknown) => {
+            clearTimeout(timer);
+            const value = message as { type?: string; destination?: string };
+            if (value?.type !== 'quarantined' || typeof value.destination !== 'string') {
+              reject(new Error('unexpected quarantine notification'));
+              return;
+            }
+            resolve(value.destination);
+          });
+        });
+        assert.equal(await readFile(join(tombstone, 'registration.json'), 'utf8'), 'old');
+        await assert.rejects(lstat(controlDirectory), { code: 'ENOENT' });
+        owner = await tryAcquireInteractiveRootOwner(capability);
+        assert.ok(owner);
+        await writeFile(join(controlDirectory, 'new-payload'), 'new');
+        child.kill('SIGKILL');
+        await exited;
+        assert.equal(child.signalCode, 'SIGKILL');
+        assert.equal((await lstat(tombstone)).isDirectory(), true);
+        const summary = await runReaperInChild();
+        assert.equal(summary.failed, 0);
+        await assert.rejects(lstat(dirname(tombstone)), { code: 'ENOENT' });
+        assert.equal(await readFile(join(controlDirectory, 'new-payload'), 'utf8'), 'new');
+        assert.equal(await tryAcquireInteractiveRootOwner(capability), undefined);
+      } finally {
+        if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+        await exited;
+        await owner?.close();
+      }
+    });
+  });
+
+  test('Windows either quarantines with held lock handles or safely leaves the source directory', {
+    skip: process.platform !== 'win32',
+  }, async () => {
+    const controlRoot = resolveRootControlNamespace();
+    const rootId = randomBytes(32).toString('hex');
+    const controlDirectory = join(controlRoot, rootId);
+    await mkdir(controlDirectory, { recursive: true, mode: 0o700 });
+    try {
+      const summary = await reapStaleRootControlDirectories({
+        graceMs: 0,
+        maxEntries: 100_000,
+      });
+      const remaining = await lstat(controlDirectory).catch(() => undefined);
+      if (remaining) {
+        assert.equal(remaining.isDirectory(), true);
+        assert.ok(summary.busy >= 1);
+      } else {
+        assert.ok(summary.reaped >= 1);
+      }
+    } finally {
+      await rm(controlDirectory, { recursive: true, force: true });
+    }
+  });
+
+  test('rejects a symlinked reap namespace without deleting outside it', async () => {
+    await withRoots(async ({ base }) => {
+      const controlRoot = join(base, 'controls');
+      const external = join(base, 'external');
+      const claim = join(external, randomUUID());
+      await mkdir(controlRoot, { mode: 0o700 });
+      await mkdir(claim, { recursive: true, mode: 0o700 });
+      await writeFile(join(claim, 'keep'), 'external data');
+      await symlink(
+        external,
+        join(controlRoot, '.reap'),
+        process.platform === 'win32' ? 'junction' : 'dir',
+      );
+      await assert.rejects(
+        reapStaleRootControlDirectories({ controlRoot, graceMs: 0 }),
+        (error: unknown) =>
+          error instanceof StorageRootAuthorityError && error.code === 'insecure_control_directory',
+      );
+      assert.equal(await readFile(join(claim, 'keep'), 'utf8'), 'external data');
+    });
+  });
+
+  test('a sweep advances beyond an uncollectable prefix across bounded batches', {
+    skip: process.platform === 'win32',
+  }, async () => {
+    await withRoots(async ({ base }) => {
+      const controlRoot = join(base, 'controls');
+      await mkdir(controlRoot, { mode: 0o700 });
+      for (let index = 0; index < 20; index += 1) {
+        const directory = join(controlRoot, index.toString(16).padStart(64, '0'));
+        await mkdir(directory, { mode: 0o700 });
+        await mkdir(join(directory, 'owner.lock'));
+      }
+      const entries = await readdir(controlRoot);
+      const target = join(controlRoot, entries[entries.length - 1]!);
+      await rm(join(target, 'owner.lock'), { recursive: true });
+      let batches = 0;
+      for await (const batch of reapRootControlDirectoryBatches({
+        controlRoot,
+        graceMs: 0,
+        maxEntries: 4,
+        maxDurationMs: 500,
+      })) {
+        assert.ok(batch.scanned <= 4);
+        batches += 1;
+      }
+      assert.ok(batches > 1);
+      await assert.rejects(lstat(target), { code: 'ENOENT' });
+      assert.equal((await readdir(controlRoot)).filter((name) => name !== '.reap').length, 19);
+    });
+  });
+
+  test('large tombstone deletion yields and resumes without losing its claim lock', async () => {
+    await withRoots(async ({ base }) => {
+      const controlRoot = join(base, 'controls');
+      const claim = join(controlRoot, '.reap', randomUUID());
+      await mkdir(claim, { recursive: true, mode: 0o700 });
+      for (let index = 0; index < 80; index += 1) {
+        await writeFile(join(claim, String(index)), 'payload');
+      }
+      const sweep = reapRootControlDirectoryBatches({
+        controlRoot,
+        graceMs: 0,
+        maxEntries: 8,
+      });
+      try {
+        const first = await sweep.next();
+        assert.equal(first.value?.budgetExhausted, true);
+        const remaining = (await readdir(claim)).length;
+        assert.ok(remaining > 0 && remaining < 81);
+        const competitor = await reapStaleRootControlDirectories({
+          controlRoot,
+          graceMs: 0,
+          maxEntries: 100,
+        });
+        assert.ok(competitor.busy > 0);
+        for await (const batch of sweep) assert.ok(batch.scanned <= 8);
+        await assert.rejects(lstat(claim), { code: 'ENOENT' });
+      } finally {
+        await sweep.return(undefined);
+      }
+    });
+  });
+
+  test('cancelling a sweep releases its claim for a subsequent sweep', async () => {
+    await withRoots(async ({ base }) => {
+      const controlRoot = join(base, 'controls');
+      const claim = join(controlRoot, '.reap', randomUUID());
+      await mkdir(claim, { recursive: true, mode: 0o700 });
+      for (let index = 0; index < 20; index += 1) {
+        await writeFile(join(claim, String(index)), 'payload');
+      }
+      await reapStaleRootControlDirectories({ controlRoot, graceMs: 0, maxEntries: 5 });
+      assert.ok((await readdir(claim)).length > 0);
+      for await (const _batch of reapRootControlDirectoryBatches({
+        controlRoot,
+        graceMs: 0,
+        maxEntries: 5,
+      })) {
+        /* drain the resumed sweep */
+      }
+      await assert.rejects(lstat(claim), { code: 'ENOENT' });
+    });
+  });
+
+  test('rename isolation preserves a new owner created before old-claim deletion', {
+    skip: process.platform === 'win32',
+  }, async (context) => {
+    await withRoots(async ({ root }) => {
+      const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+      const { controlDirectory } = await prepareStorageRootControlDirectory(capability);
+      await writeFile(join(controlDirectory, 'registration.json'), 'old');
+      const originalRename = filesystem.rename;
+      let successor: Awaited<ReturnType<typeof tryAcquireInteractiveRootOwner>>;
+      context.mock.method(
+        filesystem,
+        'rename',
+        async (...args: Parameters<typeof filesystem.rename>) => {
+          await originalRename(...args);
+          if (args[0] === controlDirectory) {
+            successor = await tryAcquireInteractiveRootOwner(capability);
+            assert.ok(successor);
+            await writeFile(join(controlDirectory, 'new-cache'), 'new');
+          }
+        },
+      );
+      syncBuiltinESMExports();
+      try {
+        for await (const _batch of reapRootControlDirectoryBatches({ graceMs: 0 })) {
+        }
+        assert.ok(successor);
+        assert.equal(await readFile(join(controlDirectory, 'new-cache'), 'utf8'), 'new');
+        await assert.rejects(lstat(join(controlDirectory, 'registration.json')), {
+          code: 'ENOENT',
+        });
+      } finally {
+        context.mock.restoreAll();
+        syncBuiltinESMExports();
+        await successor?.close();
+      }
+    });
+  });
+
+  test('revalidates lock identity after claim allocation before rename', {
+    skip: process.platform === 'win32',
+  }, async (context) => {
+    await withRoots(async ({ root }) => {
+      const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+      const { controlDirectory } = await prepareStorageRootControlDirectory(capability);
+      await writeFile(join(controlDirectory, 'registration.json'), 'original');
+      const originalMkdir = filesystem.mkdir;
+      let replaced = false;
+      context.mock.method(
+        filesystem,
+        'mkdir',
+        async (...args: Parameters<typeof filesystem.mkdir>) => {
+          const result = await originalMkdir(...args);
+          if (String(args[0]).includes('.reap/') && !replaced) {
+            replaced = true;
+            await filesystem.unlink(join(controlDirectory, 'owner.lock'));
+            await writeFile(join(controlDirectory, 'owner.lock'), 'replacement');
+          }
+          return result;
+        },
+      );
+      syncBuiltinESMExports();
+      try {
+        for await (const _batch of reapRootControlDirectoryBatches({ graceMs: 0 })) {
+        }
+        assert.equal(replaced, true);
+        assert.equal(
+          await readFile(join(controlDirectory, 'registration.json'), 'utf8'),
+          'original',
+        );
+      } finally {
+        context.mock.restoreAll();
+        syncBuiltinESMExports();
+      }
+    });
+  });
+
+  test('claim deletion unlinks nested symlinks without following their targets', async () => {
+    await withRoots(async ({ base }) => {
+      const controlRoot = join(base, 'controls');
+      const claim = join(controlRoot, '.reap', randomUUID());
+      const outside = join(base, 'outside');
+      await mkdir(claim, { recursive: true, mode: 0o700 });
+      await mkdir(outside);
+      await writeFile(join(outside, 'keep'), 'outside');
+      await symlink(
+        outside,
+        join(claim, 'link'),
+        process.platform === 'win32' ? 'junction' : 'dir',
+      );
+      for await (const _batch of reapRootControlDirectoryBatches({ controlRoot, graceMs: 0 })) {
+      }
+      await assert.rejects(lstat(claim), { code: 'ENOENT' });
+      assert.equal(await readFile(join(outside, 'keep'), 'utf8'), 'outside');
+    });
+  });
+
+  test('100,000 real control directories are scanned in bounded streaming batches', {
+    skip: process.env.MAKA_REAPER_BENCHMARK !== '1',
+    timeout: 180_000,
+  }, async (context) => {
+    await withRoots(async ({ base }) => {
+      const controlRoot = join(base, 'controls');
+      await mkdir(controlRoot, { mode: 0o700 });
+      for (let index = 0; index < 100_000; index += 1) {
+        await mkdir(join(controlRoot, index.toString(16).padStart(64, '0')), { mode: 0o700 });
+      }
+      const start = performance.now();
+      const initialHeap = process.memoryUsage().heapUsed;
+      let peakHeap = initialHeap;
+      let scanned = 0;
+      let batches = 0;
+      let previous = start;
+      const durations: number[] = [];
+      for await (const batch of reapRootControlDirectoryBatches({ controlRoot })) {
+        assert.ok(batch.scanned <= 1_024);
+        scanned += batch.scanned;
+        batches += 1;
+        durations.push(performance.now() - previous);
+        peakHeap = Math.max(peakHeap, process.memoryUsage().heapUsed);
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        previous = performance.now();
+      }
+      assert.equal(scanned, 100_000);
+      assert.ok(batches >= 98);
+      durations.sort((a, b) => a - b);
+      context.diagnostic(
+        JSON.stringify({
+          scanned,
+          batches,
+          elapsedMs: performance.now() - start,
+          batchP95Ms: durations[Math.floor(durations.length * 0.95)],
+          heapGrowthBytes: peakHeap - initialHeap,
+        }),
+      );
+    });
+  });
+
   test('kernel releases a process lock after normal, uncaught, abort, and forced exits', {
     skip: !RUN_PROCESS_LOCK_TESTS,
   }, async () => {
@@ -967,6 +1618,29 @@ function waitForExit(child: ChildProcess): Promise<void> {
 function spawnHolder(root: string, access: 'read' | 'write'): ChildProcess {
   return fork(new URL('./fixtures/root-lock-holder.js', import.meta.url), [root, access], {
     stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+  });
+}
+
+function runReaperInChild(): Promise<{ failed: number }> {
+  const child = fork(new URL('./fixtures/root-control-reaper.js', import.meta.url), [], {
+    stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+  });
+  return new Promise((resolve, reject) => {
+    child.once('error', reject);
+    child.once('message', (message: unknown) => {
+      if (
+        message &&
+        typeof message === 'object' &&
+        typeof (message as { failed?: unknown }).failed === 'number'
+      ) {
+        resolve(message as { failed: number });
+      } else {
+        reject(new Error(`unexpected reaper result: ${JSON.stringify(message)}`));
+      }
+    });
+    child.once('exit', (code, signal) => {
+      if (code !== 0) reject(new Error(`reaper exited early: ${code ?? signal}`));
+    });
   });
 }
 

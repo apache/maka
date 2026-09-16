@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import '../../../storage/dist/__tests__/fixtures/isolated-control-home.js';
 import { deferred, withTimeout } from '@maka/core/test-only/async-primitives';
 import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import { defineInteractiveRuntimeHostComposition } from '../server/host-composition.js';
@@ -94,6 +95,7 @@ import { HostChangeFeed } from '../server/host-change-feed.js';
 import { FramedTransport, RuntimeHostTransportError } from '../transport/framed-transport.js';
 import {
   prepareStorageRootControlDirectory,
+  reapRootControlDirectoryBatches,
   resolveRootControlNamespace,
   resolveStorageRoot,
   STORAGE_ROOT_MARKER_FILE,
@@ -770,9 +772,141 @@ describe('non-serving Runtime Host kernel', () => {
       }
 
       await host.close();
+      if (process.platform !== 'win32') await assertPathMissing(owner.controlDirectory);
       const successor = await tryAcquireInteractiveRootOwner(capability);
       assert.ok(successor);
       await successor.close();
+    });
+  });
+
+  test('returns a ready Candidate without awaiting background control-directory reaping', async () => {
+    await withHostPaths(async (paths) => {
+      const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
+      let markReaperStarted!: () => void;
+      const reaperStarted = new Promise<void>((resolve) => {
+        markReaperStarted = resolve;
+      });
+      let releaseReaper!: () => void;
+      const reaperBlocked = new Promise<void>((resolve) => {
+        releaseReaper = resolve;
+      });
+
+      const candidate = await withTimeout(
+        startInteractiveRuntimeHostCandidate(
+          {
+            rootPath: paths.root,
+            expectedRootId: capability.rootId,
+            idleGraceMs: 10_000,
+          },
+          () => KERNEL_COMPOSITION,
+          {
+            rootControlDirectoryReaper: async () => {
+              markReaperStarted();
+              await reaperBlocked;
+              return {
+                scanned: 0,
+                eligible: 0,
+                reaped: 0,
+                busy: 0,
+                skipped: 0,
+                failed: 0,
+                budgetExhausted: false,
+              };
+            },
+          },
+        ),
+        1_000,
+        'Candidate readiness waited for background control-directory reaping',
+      );
+      assert.equal(candidate.kind, 'winner');
+      if (candidate.kind !== 'winner') return;
+      paths.resources.trackCloseable(candidate.host);
+
+      await withTimeout(reaperStarted, 1_000, 'background control-directory reaper did not start');
+      assert.equal(candidate.host.state, 'ready');
+      releaseReaper();
+      await candidate.host.close();
+    });
+  });
+
+  test('100,000 real control directories do not delay Candidate ready until sweep completion', {
+    skip: process.env.MAKA_REAPER_BENCHMARK !== '1',
+    timeout: 300_000,
+  }, async (context) => {
+    await withHostPaths(async (paths) => {
+      const controlRoot = resolveRootControlNamespace();
+      await mkdir(controlRoot, { recursive: true, mode: 0o700 });
+      // This namespace is isolated by the test preload, including subprocesses.
+      for (let index = 0; index < 100_000; index += 1) {
+        await mkdir(join(controlRoot, index.toString(16).padStart(64, '0')), { mode: 0o700 });
+      }
+      const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
+      let started = false;
+      let scanned = 0;
+      let batches = 0;
+      let sweepMs = 0;
+      let failure: unknown;
+      let finish!: () => void;
+      const finished = new Promise<void>((resolve) => {
+        finish = resolve;
+      });
+      const start = performance.now();
+      const candidate = await startInteractiveRuntimeHostCandidate(
+        {
+          rootPath: paths.root,
+          expectedRootId: capability.rootId,
+          idleGraceMs: 120_000,
+        },
+        () => KERNEL_COMPOSITION,
+        {
+          rootControlDirectoryReaper: async () => {
+            started = true;
+            const sweepStart = performance.now();
+            let last = {
+              scanned: 0,
+              eligible: 0,
+              reaped: 0,
+              busy: 0,
+              skipped: 0,
+              failed: 0,
+              budgetExhausted: false,
+            };
+            try {
+              for await (const summary of reapRootControlDirectoryBatches()) {
+                assert.ok(summary.scanned <= 1_024);
+                assert.equal(summary.failed, 0);
+                scanned += summary.scanned;
+                batches += 1;
+                last = summary;
+                await new Promise<void>((resolve) => setImmediate(resolve));
+              }
+            } catch (error) {
+              failure = error;
+            } finally {
+              sweepMs = performance.now() - sweepStart;
+              finish();
+            }
+            return last;
+          },
+        },
+      );
+      const readyMs = performance.now() - start;
+      assert.equal(candidate.kind, 'winner');
+      if (candidate.kind !== 'winner') return;
+      paths.resources.trackCloseable(candidate.host);
+      try {
+        assert.equal(candidate.host.state, 'ready');
+        assert.equal(started, false, 'ready must precede background sweep execution');
+        assert.equal(scanned, 0);
+        await withTimeout(finished, 120_000, 'real control-directory sweep did not finish');
+        assert.equal(failure, undefined);
+        assert.ok(scanned >= 100_000);
+        assert.ok(batches > 1);
+        assert.equal(candidate.host.state, 'ready');
+        context.diagnostic(JSON.stringify({ readyMs, sweepMs, scanned, batches }));
+      } finally {
+        await candidate.host.close();
+      }
     });
   });
 
