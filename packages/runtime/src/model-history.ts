@@ -295,6 +295,7 @@ export type RuntimeEventReplayFallbackGate =
   | 'runtime_replay_unsupported_semantics';
 
 export type RuntimeEventReplayDiagnosticCode =
+  | 'repaired_prefix_dropped'
   | 'partial_skipped'
   | 'unsupported_role'
   | 'unsupported_content'
@@ -519,16 +520,12 @@ export interface RuntimeEventModelReplayPlan {
 export interface BuildRuntimeEventModelReplayPlanOptions {
   includeSystemEvents?: boolean;
   /**
-   * Admit only the suffix beginning with the first model-visible user event.
+   * Preserve repaired assistant content before the first model-visible user.
    *
-   * Repaired transcripts may durably begin with an assistant message, but an
-   * ordinary provider request still needs a user-headed conversation. This is
-   * a projection rule only: the discarded prefix remains in the RuntimeEvent
-   * ledger and in the Session transcript. The boundary applies only when that
-   * prefix contains assistant conversation backfilled from a StoredMessage;
-   * ordinary RuntimeEvent tool and diagnostic history keeps its own projection.
+   * This is reserved for continuations that passed their separate provider
+   * replay admission. Ordinary projections default to a user-led history.
    */
-  startAtFirstUserBoundary?: boolean;
+  allowRepairedAssistantPrefix?: boolean;
   /**
    * Turn IDs known — from the FULL prior ledger — to contain tool activity.
    *
@@ -542,6 +539,47 @@ export interface BuildRuntimeEventModelReplayPlanOptions {
    * unions them with tool activity found in `events`.
    */
   toolActivityTurnIds?: ReadonlySet<string>;
+}
+
+export interface RuntimeEventProviderHistoryBoundary {
+  events: readonly RuntimeEvent[];
+  diagnostic?: RuntimeEventReplayDiagnostic;
+}
+
+/**
+ * Apply the canonical provider-history boundary before any consumer-specific
+ * RuntimeEvent projection. Repaired content stays durable and UI-visible; only
+ * the provider request view drops an assistant prefix before its first user.
+ */
+export function applyRuntimeEventProviderHistoryBoundary(
+  events: readonly RuntimeEvent[],
+  options: Pick<BuildRuntimeEventModelReplayPlanOptions, 'allowRepairedAssistantPrefix'> = {},
+): RuntimeEventProviderHistoryBoundary {
+  if (options.allowRepairedAssistantPrefix) return { events };
+  const firstUserIndex = events.findIndex(
+    (event) =>
+      !isPartialRuntimeEvent(event) &&
+      event.role === 'user' &&
+      runtimeEventHasModelVisibleContent(event),
+  );
+  const boundaryEnd = firstUserIndex < 0 ? events.length : firstUserIndex;
+  const repairedAssistantIndex = events.findIndex(
+    (event) =>
+      event.refs?.storedMessageId !== undefined &&
+      event.role === 'model' &&
+      (event.content?.kind === 'text' || event.content?.kind === 'thinking'),
+  );
+  if (repairedAssistantIndex < 0 || repairedAssistantIndex >= boundaryEnd) return { events };
+  const repairedAssistant = events[repairedAssistantIndex]!;
+  return {
+    events: firstUserIndex < 0 ? [] : events.slice(firstUserIndex),
+    diagnostic: diagnostic(
+      repairedAssistant,
+      'repaired_prefix_dropped',
+      'repaired assistant prefix dropped before provider replay user boundary',
+      { droppedEventCount: firstUserIndex < 0 ? events.length : firstUserIndex },
+    ),
+  };
 }
 
 /**
@@ -572,32 +610,12 @@ export function buildRuntimeEventModelReplayPlan(
   options: BuildRuntimeEventModelReplayPlanOptions = {},
 ): RuntimeEventModelReplayPlan {
   const includeSystemEvents = options.includeSystemEvents ?? false;
-  const firstUserIndex = options.startAtFirstUserBoundary
-    ? events.findIndex(
-        (event) =>
-          !isPartialRuntimeEvent(event) &&
-          event.role === 'user' &&
-          runtimeEventHasModelVisibleContent(event),
-      )
-    : 0;
-  const boundaryEnd = firstUserIndex < 0 ? events.length : firstUserIndex;
-  const repairedAssistantIndex = options.startAtFirstUserBoundary
-    ? events.findIndex(
-        (event) =>
-          event.refs?.storedMessageId !== undefined &&
-          event.role === 'model' &&
-          (event.content?.kind === 'text' || event.content?.kind === 'thinking'),
-      )
-    : -1;
-  const hasRepairedAssistantPrefix =
-    repairedAssistantIndex !== -1 && repairedAssistantIndex < boundaryEnd;
-  const replayEvents = hasRepairedAssistantPrefix
-    ? firstUserIndex < 0
-      ? []
-      : events.slice(firstUserIndex)
-    : events;
+  const boundary = applyRuntimeEventProviderHistoryBoundary(events, options);
+  const replayEvents = boundary.events;
   const items: RuntimeEventModelReplayItem[] = [];
-  const diagnostics: RuntimeEventReplayDiagnostic[] = [];
+  const diagnostics: RuntimeEventReplayDiagnostic[] = boundary.diagnostic
+    ? [boundary.diagnostic]
+    : [];
   const callsById = new Map<
     string,
     {

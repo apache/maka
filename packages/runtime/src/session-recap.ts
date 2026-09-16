@@ -22,7 +22,11 @@ import type { RuntimeExecutionConnection } from '@maka/core/llm-connections';
 import type { DurableToolResultProjection } from '@maka/core/durable-tool-result-projection';
 import { resolveSelectedModelContextWindow } from './context-budget-policy.js';
 import { stableJsonLength } from './context-budget-helpers.js';
-import { groupEventsByTurn, formatTextWithInlineRefs } from './model-history.js';
+import {
+  applyRuntimeEventProviderHistoryBoundary,
+  groupEventsByTurn,
+  formatTextWithInlineRefs,
+} from './model-history.js';
 import { HistoryCompactSummarizerError } from './history-compact-error.js';
 import { fitHistoryCompactMessages } from './history-compact-input-fit.js';
 import type { ModelMessage } from './model-protocol.js';
@@ -37,22 +41,23 @@ export function buildSessionRecapMessages(input: {
   readonly connection: RuntimeExecutionConnection;
   readonly modelId: string;
 }): ModelMessage[] {
+  const providerEvents = applyRuntimeEventProviderHistoryBoundary(input.events).events;
   const contextWindow = resolveSelectedModelContextWindow(input.connection, input.modelId);
   let maxEstimatedTokens: number | undefined;
   let messages: ModelMessage[];
   if (contextWindow !== undefined) {
     maxEstimatedTokens = Math.max(0, Math.floor(contextWindow * 0.85) - 4_096);
-    messages = recentRecapMessagesWithinBudget(input.events, maxEstimatedTokens);
+    messages = recentRecapMessagesWithinBudget(providerEvents, maxEstimatedTokens);
   } else {
-    messages = projectSessionRecapMessages(input.events);
+    messages = projectSessionRecapMessages(providerEvents);
   }
   if (
     messages.length === 0 &&
-    input.events.length > 0 &&
+    providerEvents.length > 0 &&
     maxEstimatedTokens !== undefined &&
     maxEstimatedTokens > 0
   ) {
-    const latestTurn = groupEventsByTurn(input.events, 4).at(-1)?.events ?? [];
+    const latestTurn = groupEventsByTurn(providerEvents, 4).at(-1)?.events ?? [];
     messages = boundedOversizedTurnMessages(latestTurn, maxEstimatedTokens);
   }
   messages.push({ role: 'user', content: SESSION_RECAP_INSTRUCTION });

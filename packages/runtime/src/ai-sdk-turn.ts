@@ -2803,7 +2803,7 @@ export class AiSdkTurn {
         // an imported or a native legacy Session. Ordinary provider requests
         // admit both at the first valid user head; explicit continuations use
         // their separately admitted boundary.
-        startAtFirstUserBoundary: !input.continuation,
+        allowRepairedAssistantPrefix: input.continuation !== undefined,
       },
     );
     const hasProviderHistoryCompactCheckpoint =
