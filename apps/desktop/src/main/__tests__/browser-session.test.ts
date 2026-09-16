@@ -92,6 +92,7 @@ type HostSpy = {
 function installHost(overrides: Partial<BrowserViewHost> = {}): HostSpy {
   const spy: HostSpy = { resolved: [], released: [], disposed: [], host: null as never };
   const host: BrowserViewHost = {
+    beginAction: () => undefined,
     currentUrl: () => "https://example.com/",
     openOriginLease: () => ({
       approvedOrigin: 'https://example.com',
@@ -256,6 +257,27 @@ describe('BrowserSession', () => {
     await assert.rejects(p, BrowserActionCanceledError);
     assert.equal(bridges[0]?.closed, true);
     assert.deepEqual(spy.released, ['s1']);
+  });
+
+  it('releases background rendering when cancellation interrupts preparation', async () => {
+    const preparing = deferred<void>();
+    const ready = deferred<void>();
+    let released = false;
+    installHost({ beginAction: () => {
+      preparing.resolve();
+      return { ready: ready.promise, release: async () => { released = true; } };
+    } });
+    installBridges([makeFakePage()]);
+    const abort = new AbortController();
+    let ran = false;
+    const action = withBrowserPage('s1', 'click', async () => { ran = true; }, { abort: abort.signal });
+    const canceled = assert.rejects(action, BrowserActionCanceledError);
+    await preparing.promise;
+    abort.abort();
+    await canceled;
+    ready.resolve();
+    assert.equal(ran, false);
+    assert.equal(released, true);
   });
 
   it('releaseBrowserSession disposes the view and closes the connection', async () => {

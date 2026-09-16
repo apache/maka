@@ -18,6 +18,7 @@
  */
 
 import { BrowserWindow, ipcMain } from 'electron';
+import { isWorkHubCoordinationSessionId } from '@maka/core/session';
 import { createBrowserViewHost } from './browser/automation-host.js';
 import { provideBrowserViewHost } from './browser/browser-host.js';
 import { releaseBrowserSession, revokeHiddenBrowserActions } from './browser/session.js';
@@ -69,7 +70,16 @@ export function registerBrowserIpc(deps: BrowserIpcDeps): BrowserIpcController {
     return !!parent?.getVisible() && !!window && !window.isDestroyed() &&
       window.isVisible() && !window.isMinimized();
   };
-  const revokeHiddenActions = (): void => revokeHiddenBrowserActions(isSessionShown);
+  const canRunInBackground = (sessionId: string): boolean => {
+    const owner = ownerForSession(sessionId);
+    if (!owner || !deps.mainWindowController.browserParentForRenderer(owner)) return false;
+    const ref = parseDesktopSessionResourceKey(sessionId);
+    return isWorkHubCoordinationSessionId(ref.sessionId) && deps.isHostActive(ref);
+  };
+  const revokeHiddenActions = (): void => {
+    for (const sessionId of views.sessionIds()) views.get(sessionId)?.refreshRendering();
+    revokeHiddenBrowserActions((sessionId) => isSessionShown(sessionId) || canRunInBackground(sessionId));
+  };
 
   const relinquishSession = (contents: Electron.WebContents): void => {
     const selection = selections.get(contents);
@@ -92,10 +102,14 @@ export function registerBrowserIpc(deps: BrowserIpcDeps): BrowserIpcController {
     const window = BrowserWindow.fromWebContents(contents);
     window?.on('hide', revokeHiddenActions);
     window?.on('minimize', revokeHiddenActions);
+    window?.on('show', revokeHiddenActions);
+    window?.on('restore', revokeHiddenActions);
     contents.on('render-process-gone', () => clearRendererSelection(contents));
     contents.once('destroyed', () => {
       window?.removeListener('hide', revokeHiddenActions);
       window?.removeListener('minimize', revokeHiddenActions);
+      window?.removeListener('show', revokeHiddenActions);
+      window?.removeListener('restore', revokeHiddenActions);
       clearRendererSelection(contents);
       if (!parent) return;
       const owned = views.sessionIds().filter((sessionId) =>
@@ -123,7 +137,7 @@ export function registerBrowserIpc(deps: BrowserIpcDeps): BrowserIpcController {
       ? deps.mainWindowController.browserParentForRenderer(owner)
       : undefined;
   });
-  provideBrowserViewHost(createBrowserViewHost(views, isSessionShown));
+  provideBrowserViewHost(createBrowserViewHost(views, isSessionShown, canRunInBackground));
 
   const requireBrowserTarget = (scope: unknown, target: unknown): string | undefined => {
     const host = requireDesktopTargetScope(scope);

@@ -280,6 +280,8 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     floating.on('resize', fitFloating);
     floating.on('hide', () => deps.onVisibilityChanged?.());
     floating.on('minimize', () => deps.onVisibilityChanged?.());
+    floating.on('show', () => deps.onVisibilityChanged?.());
+    floating.on('restore', () => deps.onVisibilityChanged?.());
     floating.on('close', (event) => {
       if (disposed) return;
       event.preventDefault();
@@ -468,6 +470,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     main.on('show', updateDockedBounds);
     main.on('hide', onVisibilityChanged);
     main.on('minimize', onVisibilityChanged);
+    main.on('restore', onVisibilityChanged);
     const cleanup = () => {
       if (!contents.isDestroyed()) contents.removeListener('did-start-loading', onLoading);
       main.removeListener('close', onClose);
@@ -475,6 +478,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
       main.removeListener('show', updateDockedBounds);
       main.removeListener('hide', onVisibilityChanged);
       main.removeListener('minimize', onVisibilityChanged);
+      main.removeListener('restore', onVisibilityChanged);
       mainListeners.delete(main);
     };
     main.once('closed', cleanup);

@@ -17,9 +17,9 @@
  * under the License.
  */
 
-import { type Session, shell, type View, WebContentsView } from 'electron';
+import { BrowserWindow, type Session, shell, type View, WebContentsView } from 'electron';
 import { CdpBridge, type AutomationEndpoint } from './cdp-bridge.js';
-import type { BrowserOriginLease } from './browser-host.js';
+import type { BrowserActionLease, BrowserOriginLease } from './browser-host.js';
 import { BrowserOriginLeaseTracker } from './browser-origin-lease.js';
 import { browserViewWebPreferences } from './options.js';
 import {
@@ -55,6 +55,8 @@ const VIEWPORT_RESTORE_POLL_MS = 16;
  * persistent WorkHub View that contains its browser child.
  */
 export class BrowserViewController {
+  private backgroundActions = 0;
+  private backgroundViewport = false;
   private readonly view: WebContentsView;
   private destroyed = false;
   /** True while the view holds real on-screen bounds (last setViewport painted it). */
@@ -197,34 +199,61 @@ export class BrowserViewController {
   setViewport(rect: BrowserViewRect | null): void {
     if (this.destroyed) return;
     const bounds = viewportBounds(rect);
-    const show = Boolean(bounds);
-    // Background throttling tracks shown-ness, toggled only on the transition.
-    // A HIDDEN conversation's cached page must throttle so a backgrounded one
-    // can't burn CPU/battery (the visible lease forbids driving it anyway). A
-    // SHOWN view keeps full speed: a native CDP click hit-tests a composited
-    // frame, which the OS drops on a throttled view whenever the app isn't
-    // focused — so "shown but app unfocused" still has to stay un-throttled to
-    // let the approved click land. The selection owner sends setViewport(null)
-    // on every switch away, so this is where a conversation going off screen
-    // restores its throttle.
-    if (show !== this.shownWithBounds && !this.wc.isDestroyed()) {
-      this.wc.setBackgroundThrottling(!show);
-    }
     if (!bounds) {
       this.shownWithBounds = false;
       this.view.setVisible(false);
+      this.refreshRendering();
       return;
     }
     this.shownWithBounds = true;
     this.view.setBounds(bounds);
     this.view.setVisible(true);
+    this.refreshRendering();
+  }
+
+  /** Called only for a background-authorized action, never by renderer IPC. */
+  beginBackgroundAction(): BrowserActionLease {
+    this.backgroundActions += 1;
+    this.refreshRendering();
+    const { width, height } = this.view.getBounds();
+    const ready = Promise.all([
+      this.wc.debugger.sendCommand('Emulation.setFocusEmulationEnabled', { enabled: true }),
+      this.hasLiveViewport() ? Promise.resolve() : this.wc.debugger.sendCommand('Emulation.setDeviceMetricsOverride', {
+        width: width || 1024, height: height || 768, deviceScaleFactor: 0, mobile: false,
+      }).then(() => { this.backgroundViewport = true; this.refreshRendering(); }),
+    ]).then(() => {});
+    return { ready, release: async () => {
+      this.backgroundActions -= 1;
+      this.refreshRendering();
+      if (this.backgroundActions === 0 && !this.destroyed && !this.wc.isDestroyed()) {
+        // Cancellation may already have detached the debugger, which clears
+        // its emulation state together with the abandoned connection.
+        await this.wc.debugger.sendCommand('Emulation.setFocusEmulationEnabled', { enabled: false }).catch(() => {});
+      }
+    } };
+  }
+
+  /** Native visibility stays authoritative; hidden pages run only while leased. */
+  refreshRendering(): void {
+    if (this.destroyed || this.wc.isDestroyed()) return;
+    const visible = this.hasLiveViewport();
+    const background = this.backgroundActions > 0 && !visible;
+    this.wc.setBackgroundThrottling(!visible && !background);
+    // Retain passive hidden metrics between actions so responsive page state
+    // does not oscillate through a zero-size viewport. Native layout wins on show.
+    if (visible && this.backgroundViewport) {
+      this.backgroundViewport = false;
+      void this.wc.debugger.sendCommand('Emulation.clearDeviceMetricsOverride').catch(() => {});
+    }
   }
 
   /** Visible-lease input: the view is on screen with non-empty bounds (see canDrive). */
   hasLiveViewport(): boolean {
     if (this.destroyed || !this.shownWithBounds) return false;
     try {
-      return this.parent.getVisible();
+      const window = BrowserWindow.fromWebContents(this.wc);
+      return this.parent.getVisible() && !!window && !window.isDestroyed() &&
+        window.isVisible() && !window.isMinimized();
     } catch {
       return false;
     }
@@ -272,16 +301,13 @@ export class BrowserViewController {
       }
     }
     if (!this.automation) this.automation = new CdpBridge(this.wc);
-    // Background throttling is governed by setViewport (shown ⇒ un-throttled),
-    // not here: the visible lease only drives a view while its conversation is
-    // on screen, so by the time automation runs the view is already shown and
-    // un-throttled, and a later switch away re-throttles it via setViewport(null).
     return this.automation.start();
   }
 
   async detachAutomation(): Promise<void> {
     await this.automation?.stop();
     this.automation = null;
+    this.backgroundViewport = false;
   }
 
   async dispose(): Promise<void> {

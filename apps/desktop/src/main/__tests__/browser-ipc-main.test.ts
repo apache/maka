@@ -21,6 +21,7 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { registerHooks } from 'node:module';
 import test from 'node:test';
+import { WORKHUB_COORDINATION_SESSION_ID } from '@maka/core/session';
 import { desktopSessionResourceKey, type DesktopTargetScope } from '../../shared/runtime-host-identity.js';
 import type { BrowserViewRect } from '../browser/logic.js';
 import { browserViewHost, provideBrowserViewHost } from '../browser/browser-host.js';
@@ -37,6 +38,8 @@ class FakeController {
   constructor(readonly parent: Electron.View, private readonly url: string) {}
 
   hasParent(parent: Electron.View): boolean { return this.parent === parent; }
+  refreshRendering(): void {}
+  beginBackgroundAction() { return { ready: Promise.resolve(), release: async () => {} }; }
   setViewport(rect: BrowserViewRect | null): void { this.viewports.push(rect); }
   navigate(url: string): Promise<void> { this.navigations.push(url); return Promise.resolve(); }
   goBack(): void {}
@@ -114,6 +117,7 @@ test('browser IPC isolates owned renderer documents and their native parents', a
       [main as unknown as Electron.WebContents, mainParent],
       [workHub as unknown as Electron.WebContents, workHubParent],
     ]);
+    let hostActive = true;
     const scope: DesktopTargetScope = { hostId: 'host', targetEpoch: 'epoch' };
     const mainKey = desktopSessionResourceKey({ ...scope, sessionId: 'main-session' });
     const workHubKey = desktopSessionResourceKey({ ...scope, sessionId: 'workhub-session' });
@@ -148,7 +152,7 @@ test('browser IPC isolates owned renderer documents and their native parents', a
     };
     const browserIpc = registerBrowserIpc({
       mainWindowController: mainWindowController as never,
-      isHostActive: (candidate) => candidate.hostId === scope.hostId && candidate.targetEpoch === scope.targetEpoch,
+      isHostActive: (candidate) => hostActive && candidate.hostId === scope.hostId && candidate.targetEpoch === scope.targetEpoch,
     });
 
     const event = (renderer: FakeRenderer) => ({
@@ -194,8 +198,8 @@ test('browser IPC isolates owned renderer documents and their native parents', a
     assert.deepEqual(mainController.navigations, ['https://main.example/']);
     assert.deepEqual(workHubController.navigations, ['https://workhub.example/']);
 
-    // A persistent WorkHub selection grants no authority while its presentation
-    // is hidden. Hiding also revokes a read already waiting on the page.
+    // An ordinary session remains foreground-only even in an auxiliary renderer.
+    // Hiding also revokes a read already waiting on the page.
     setBridgeFactoryForTest(() => ({
       connect: async () => ({ getCurrentUrl: async () => 'https://workhub.example/' }) as never,
       close: async () => undefined,
@@ -229,6 +233,45 @@ test('browser IPC isolates owned renderer documents and their native parents', a
     floatingWindow.minimized = false;
     assert.equal(await browserViewHost().canDrive(workHubKey, 'navigate'), true);
 
+    // The reserved coordination identity alone gets background access, still
+    // fenced by Host epoch, live selection, and renderer lifetime.
+    const coordinationKey = desktopSessionResourceKey({ ...scope, sessionId: WORKHUB_COORDINATION_SESSION_ID });
+    workHubVisible = false;
+    assert.equal(await browserViewHost().canDrive(coordinationKey, 'observe'), false);
+    emit('browser:active-session', workHub, scope, WORKHUB_COORDINATION_SESSION_ID, 'workhub-document', 2);
+    for (const kind of ['observe', 'navigate', 'mutate'] as const) {
+      assert.equal(await browserViewHost().canDrive(coordinationKey, kind), true);
+      assert.equal(await browserViewHost().canDrive(workHubKey, kind), false);
+    }
+    hostActive = false;
+    assert.equal(await browserViewHost().canDrive(coordinationKey, 'observe'), false);
+    hostActive = true;
+    let finishRead!: () => void;
+    let backgroundStarted!: () => void;
+    const backgroundReady = new Promise<void>((resolve) => { backgroundStarted = resolve; });
+    const backgroundRead = withBrowserPage(coordinationKey, 'snapshot', () => {
+      backgroundStarted();
+      return new Promise<void>((resolve) => { finishRead = resolve; });
+    });
+    await backgroundReady;
+    floatingWindow.visible = false;
+    browserIpc.refreshVisibility();
+    finishRead();
+    await backgroundRead;
+    let retiringStarted!: () => void;
+    const retiringReady = new Promise<void>((resolve) => { retiringStarted = resolve; });
+    const retiringRead = withBrowserPage(coordinationKey, 'snapshot', () => {
+      retiringStarted();
+      return new Promise<never>(() => {});
+    });
+    const retired = assert.rejects(retiringRead, BrowserActionRevokedError);
+    await retiringReady;
+    emit('browser:active-session', workHub, scope, 'workhub-session', 'workhub-document', 3);
+    await retired;
+    assert.equal(await browserViewHost().canDrive(coordinationKey, 'navigate'), false);
+    workHubVisible = true;
+    floatingWindow.visible = true;
+
     // Neither a stale document/generation nor another renderer's selected
     // session can move or navigate the current native view.
     emit('browser:setViewport', main, scope, { sessionId: 'main-session', rect: workHubRect }, 'old-document', 1);
@@ -236,10 +279,10 @@ test('browser IPC isolates owned renderer documents and their native parents', a
     emit('browser:setViewport', main, scope, { sessionId: 'workhub-session', rect: mainRect }, 'main-document', 1);
     await invoke('browser:navigate', main, scope, 'workhub-session', 'https://cross-owner.example/');
     assert.deepEqual(mainController.viewports, [mainRect]);
-    assert.deepEqual(workHubController.viewports, [workHubRect]);
+    assert.deepEqual(workHubController.viewports, [workHubRect, null]);
     assert.deepEqual(workHubController.navigations, ['https://workhub.example/']);
 
-    emit('browser:active-session', workHub, scope, 'main-session', 'workhub-document', 2);
+    emit('browser:active-session', workHub, scope, 'main-session', 'workhub-document', 4);
     await invoke('browser:navigate', workHub, scope, 'main-session', 'https://stolen.example/');
     assert.deepEqual(mainController.navigations, ['https://main.example/']);
     assert.equal(mainController.parent, mainParent);

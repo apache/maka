@@ -66,6 +66,9 @@ const FIXTURE = `<!doctype html>
     <button id="go" type="button">Go</button>
     <div id="out"></div>
     <script>
+      document.getElementById('q').addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') document.getElementById('out').textContent = 'submitted:' + event.target.value;
+      });
       document.getElementById('go').addEventListener('click', () => {
         document.getElementById('out').textContent = 'clicked:' + document.getElementById('q').value;
       });
@@ -306,6 +309,43 @@ async function runSmoke() {
       revoked = err instanceof BrowserActionRevokedError;
     }
     check('continuous lease revokes an in-flight read when the conversation goes off screen', revoked);
+
+    // A privileged coordination page starts cold without a visible native strip.
+    // Its background action holds rendering resources; idle pages still throttle.
+    win.hide();
+    provideBrowserViewHost(createBrowserViewHost(leaseManager, (id) => id === shownSession, (id) => id === 'coordination'));
+    await withBrowserPage('coordination', 'navigate', (page) => page.goto(fixtureUrl, { waitUntil: 'load' }), { takeover: 'navigate' });
+    const backgroundSize = await withBrowserPage('coordination', 'snapshot', (page) => page.evaluate('({width:innerWidth,height:innerHeight})'));
+    check('cold background coordination has a usable viewport', backgroundSize.width > 0 && backgroundSize.height > 0);
+    const backgroundTyped = await withBrowserPage('coordination', 'type', (page) => page.fillText('#q', 'background'), { takeover: 'mutate' });
+    check('background coordination fills and verifies text', backgroundTyped.verified === true && backgroundTyped.actual === 'background');
+    const backgroundClick = await withBrowserPage('coordination', 'click', (page) => page.click('#go'), { takeover: 'mutate' });
+    const backgroundOut = await withBrowserPage('coordination', 'read', (page) => page.evaluate('document.getElementById("out").textContent'));
+    check('background coordination delivers a native click', backgroundClick.click_method === 'cdp' && backgroundOut === 'clicked:background');
+    const awake = await withBrowserPage('coordination', 'wait', (page) => page.evaluate('new Promise(resolve => setTimeout(() => resolve("awake"), 30))'));
+    check('background page timers run during an action', awake === 'awake');
+    check('background page throttles again between actions', leaseManager.get('coordination').isBackgroundThrottled());
+    win.showInactive();
+    leaseManager.get('coordination').setViewport({ x: 0, y: 0, width: 1024, height: 768 });
+    await withBrowserPage('coordination', 'type', (page) => page.fillText('#q', 'foreground'), { takeover: 'mutate' });
+    const foregroundClick = await withBrowserPage('coordination', 'click', (page) => page.click('#go'), { takeover: 'mutate' });
+    const foregroundOut = await waitForPageValue((timeoutMs) => withBrowserPage('coordination', 'read', (page) => page.evaluate('document.getElementById("out").textContent'), { timeoutMs }), 'clicked:foreground');
+    check('showing coordination restores native clicks on the same page', foregroundClick.click_method === 'cdp' && foregroundOut === 'clicked:foreground');
+    const hiddenDuringAction = await withBrowserPage('coordination', 'click', async (page) => {
+      await page.fillText('#q', 'hidden-mid-action');
+      win.hide();
+      win.contentView.setVisible(false);
+      leaseManager.get('coordination').setViewport(null);
+      const click = await page.click('#go');
+      const value = await page.evaluate('document.getElementById("out").textContent');
+      await page.fillText('#q', 'hidden-mid-action');
+      await page.pressKey('Enter');
+      const submitted = await page.evaluate('document.getElementById("out").textContent');
+      return { method: click.click_method, value, submitted };
+    }, { takeover: 'mutate' });
+    check('hiding during a coordination action preserves native click and Enter delivery', hiddenDuringAction.method === 'cdp' && hiddenDuringAction.value === 'clicked:hidden-mid-action' && hiddenDuringAction.submitted === 'submitted:hidden-mid-action', JSON.stringify(hiddenDuringAction));
+
+
   } finally {
     // Teardown mirrors detach: close the client, stop the bridge, drop the view.
     try {
@@ -320,6 +360,7 @@ async function runSmoke() {
     }
     try {
       await releaseBrowserSession('leaseS');
+      await releaseBrowserSession('coordination');
       await leaseManager?.disposeAll();
       provideBrowserViewHost(null);
     } catch {

@@ -28,7 +28,8 @@ import type { BrowserViewManager } from './view-manager.js';
  * identity mapping — ensure the conversation's view and attach the CDP bridge to
  * it. An action always lands in its OWN session's view, but that view may be
  * hidden (the user switched conversations), so canDrive enforces the visible
- * lease: read/navigate/mutate only on the session currently on screen. The
+ * lease for ordinary sessions. WorkHub coordination can hold an explicit
+ * background action lease instead. The
  * endpoint and its secret stay same-process values, never crossing renderer IPC
  * or preload.
  *
@@ -44,6 +45,7 @@ const VIEWPORT_RESTORE_WAIT_MS = 1000;
 export function createBrowserViewHost(
   manager: BrowserViewManager<BrowserViewController>,
   isSessionShown: (sessionId: string) => boolean,
+  canRunInBackground: (sessionId: string) => boolean = () => false,
 ): BrowserViewHost {
   return {
     currentUrl(sessionId) {
@@ -53,6 +55,7 @@ export function createBrowserViewHost(
       return manager.getOrCreate(sessionId).openOriginLease(approvedUrl, kind);
     },
     canDrive(sessionId, kind, opts) {
+      if (canRunInBackground(sessionId)) return true;
       const shown = isSessionShown(sessionId);
       const controller = manager.get(sessionId);
       if (browserActionAllowed(kind, { shown, hasViewport: controller?.hasLiveViewport() ?? false })) {
@@ -75,6 +78,11 @@ export function createBrowserViewHost(
           );
       }
       return false;
+    },
+    beginAction(sessionId) {
+      return canRunInBackground(sessionId)
+        ? manager.getOrCreate(sessionId).beginBackgroundAction()
+        : undefined;
     },
     async resolveEndpoint(sessionId) {
       return manager.getOrCreate(sessionId).attachAutomation();

@@ -21,6 +21,7 @@ import { CDPBridge } from '@jackwener/opencli/browser/cdp';
 import type { IPage } from '@jackwener/opencli/types';
 import {
   type BrowserOriginLease,
+  type BrowserActionLease,
   browserAutomationAvailable,
   browserViewHost,
 } from './browser-host.js';
@@ -168,15 +169,15 @@ function untrackInFlight(sessionId: string, ctrl: AbortController): void {
 
 /**
  * A renderer selection changed: abort any browser action whose session is no
- * longer shown by an owned renderer. The visible lease is
- * continuous, not a one-time preflight — an action that started while visible
- * must not keep reading or driving a page the user can no longer see. Severs the
+ * longer admitted by the Host (visible ordinary Session or background-authorized
+ * WorkHub coordination). The action lease is
+ * continuous, not a one-time preflight. Losing that admission severs the
  * connection like a timeout/abort; the page itself survives for when the user
  * switches back. Called from main's browser:active-session handler.
  */
-export function revokeHiddenBrowserActions(isSessionShown: (sessionId: string) => boolean): void {
+export function revokeHiddenBrowserActions(isSessionAdmitted: (sessionId: string) => boolean): void {
   for (const [sessionId, set] of inFlightBySession) {
-    if (isSessionShown(sessionId)) continue;
+    if (isSessionAdmitted(sessionId)) continue;
     for (const ctrl of set) ctrl.abort();
   }
 }
@@ -308,9 +309,8 @@ export async function withBrowserPage<T>(
 ): Promise<T> {
   if (opts?.abort?.aborted) throw new BrowserActionCanceledError(label);
   const kind: TakeoverMode = opts?.takeover ?? 'observe';
-  // Visible-lease gate (browserActionAllowed): EVERY action — read, navigate, or
-  // mutate — must target the conversation on screen, so the agent can never drive
-  // (or even read) a view the user can't see. Runs BEFORE acquire, so a vetoed
+  // The Host admits visible ordinary Sessions and the background-authorized
+  // WorkHub coordination Session. Runs BEFORE acquire, so a vetoed
   // background action creates no view and opens no connection. For a mutate whose
   // viewport is briefly absent (a permission modal just closed), canDrive waits
   // out the renderer's strip restore so the first approved click/type lands;
@@ -325,6 +325,7 @@ export async function withBrowserPage<T>(
   let timer: ReturnType<typeof setTimeout> | undefined;
   let onAbort: (() => void) | undefined;
   let onRevoke: (() => void) | undefined;
+  let actionLease: BrowserActionLease | undefined;
   // Establish the page-host Origin lease before endpoint acquisition and a
   // possible takeover reload. This closes the Provider-check → first-page-await
   // gap, while still preserving canDrive's rule that a blocked action creates
@@ -374,6 +375,8 @@ export async function withBrowserPage<T>(
     // rejection must not surface as an unhandled error.
     acquiring.catch(() => {});
     conn = await Promise.race([acquiring, interrupted]);
+    actionLease = browserViewHost().beginAction(sessionId);
+    if (actionLease) await Promise.race([actionLease.ready, interrupted]);
     // Resolve a pending takeover by the action's kind: a mutating action hardens
     // the page first (reload), a navigation just clears it (goto re-commits with
     // the script), and a pure observe leaves it pending so a later mutate still
@@ -405,6 +408,7 @@ export async function withBrowserPage<T>(
     clearTimeout(timer);
     if (onAbort) opts?.abort?.removeEventListener('abort', onAbort);
     originLease?.release();
+    await actionLease?.release();
     untrackInFlight(sessionId, revoke);
   }
 }
