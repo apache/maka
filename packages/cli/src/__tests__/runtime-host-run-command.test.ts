@@ -374,6 +374,25 @@ describe('Runtime Host maka run adapter', () => {
     assert.equal(exitCode, 1);
   });
 
+  test('prints the answer when a durable transcript read lands after it', async () => {
+    const stdout: string[] = [];
+    let publishReplacement = () => {};
+    const fixture = runFixture({
+      turnEvents: eventsWithLateTranscriptRead(() => publishReplacement()),
+    });
+    publishReplacement = () =>
+      fixture.publishTranscriptReplacement(
+        'turn-1',
+        [storedToolCall('turn-1', 'tool-2', 'step-1', 1), successfulToolResult('turn-1', 2)],
+        'reconcile',
+      );
+
+    const exitCode = await runFixtureCommand(fixture, ['answer once'], (text) => stdout.push(text));
+
+    assert.equal(exitCode, 0);
+    assert.equal(stdout.join(''), 'Host answer\n');
+  });
+
   test('returns exit code 1 when one retry follows two sandbox failures', async () => {
     const fixture = runFixture({
       turnEvents: multipleSandboxFailureEvents('turn-1'),
@@ -1592,6 +1611,29 @@ async function* eventsFor(turnId: string, text: string, ts = 1): AsyncIterable<S
     text,
   };
   yield { type: 'complete', id: `${turnId}-complete`, turnId, ts: ts + 1, stopReason: 'end_turn' };
+}
+
+async function* eventsWithLateTranscriptRead(publish: () => void): AsyncIterable<SessionEvent> {
+  yield toolStart('turn-1', 'tool-2', 'step-1', 1);
+  yield successfulToolResult('turn-1', 2);
+  yield {
+    type: 'text_complete',
+    id: 'turn-1-text',
+    turnId: 'turn-1',
+    messageId: 'turn-1-message',
+    ts: 3,
+    text: 'Host answer',
+  };
+  // The read this tool result triggered only reaches the transcript as far as
+  // the Host had committed it, which is behind the answer that just streamed.
+  publish();
+  yield {
+    type: 'complete',
+    id: 'turn-1-complete',
+    turnId: 'turn-1',
+    ts: 4,
+    stopReason: 'end_turn',
+  };
 }
 
 async function* eventsAfterTranscriptReplacement(publish: () => void): AsyncIterable<SessionEvent> {
