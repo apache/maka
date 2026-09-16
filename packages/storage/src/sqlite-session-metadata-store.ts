@@ -20,6 +20,8 @@
 import {
   SessionMetadataConflictError,
   SessionMetadataVersionConflictError,
+  type SessionSearchCandidate,
+  type SessionSearchCandidateRequest,
   type VersionedSessionIdentity,
   type SessionConfigurationMetadataUpdate,
 } from './session-store-contract.js';
@@ -198,6 +200,14 @@ const WORKHUB_TARGET_LINKAGE_MAX_SESSIONS = 256;
 function decodeStoredMessage(value: unknown): StoredMessage {
   return decodePersistedStoredMessage(markPersisted<StoredMessage>(value));
 }
+
+/**
+ * Message types that carry user-visible content. Coordination records are
+ * excluded here so a candidate scan never reads them, matching the projection
+ * the recall predicate applies afterwards.
+ */
+const SEARCHABLE_MESSAGE_TYPES = ['user', 'assistant', 'tool_call', 'tool_result'] as const;
+const SEARCHABLE_MESSAGE_TYPE_PLACEHOLDERS = SEARCHABLE_MESSAGE_TYPES.map(() => '?').join(', ');
 
 const require = createRequire(import.meta.url);
 const AGENT_GRAPH_CONTROL_DELETE_TABLES = SQLITE_AGENT_GRAPH_CONTROL_TABLES.filter(
@@ -2654,6 +2664,182 @@ export class SqliteSessionMetadataStore {
 
   async readMessages(sessionId: string): Promise<StoredMessage[]> {
     return this.readMessagesWith(sessionId, decodeStoredMessage);
+  }
+
+  /**
+   * Narrows recall to the messages whose stored record contains one of the
+   * terms literally. The result is a superset of the true matches, never an
+   * answer: the caller re-runs the real predicate on projected, redacted text,
+   * so over-selection here costs a little work and under-selection would lose
+   * results silently.
+   *
+   * Two scans rather than one condition, because the two storage forms need
+   * different reads. An inline record is matched directly; a record above the
+   * chunk threshold keeps only a marker in `record_json` and has to be
+   * reassembled from its chunks first. SQLite concatenates chunk blobs
+   * byte-wise, which restores characters a chunk boundary split in half.
+   *
+   * Returns `undefined` when the candidate set exceeds `limit`, which declines
+   * the fast path rather than truncating it — a truncated candidate set is no
+   * longer a superset.
+   */
+  async listSearchCandidates(
+    request: SessionSearchCandidateRequest,
+  ): Promise<SessionSearchCandidate[] | undefined> {
+    this.assertOpen();
+    if (request.sessionIds.length === 0 || request.terms.length === 0) return [];
+    for (const sessionId of request.sessionIds) assertSafeSessionId(sessionId);
+    if (!Number.isSafeInteger(request.limit) || request.limit < 1) {
+      throw new Error('Invalid Session search candidate limit');
+    }
+
+    const sessions = request.sessionIds.map(() => '?').join(', ');
+    const inlineMatch = request.terms.map(() => 'instr(message.record_json, ?) > 0').join(' OR ');
+    const chunkedMatch = request.terms.map(() => 'instr(chunked.body, ?) > 0').join(' OR ');
+
+    const located = this.readTransaction(() => {
+      // A payload row whose chunks do not reassemble would be dropped by the
+      // match below, which is the one way this scan could return less than a
+      // superset. Storage should never produce it, so decline the fast path
+      // rather than quietly answering with fewer candidates.
+      const unreadable = this.db
+        .prepare(
+          `
+          SELECT count(*) AS total
+          FROM session_message_payloads AS payload
+          WHERE payload.session_id IN (${sessions})
+            AND (SELECT group_concat(CAST(chunk.data AS TEXT), '' ORDER BY chunk.chunk_index)
+                   FROM session_message_chunks AS chunk
+                  WHERE chunk.session_id = payload.session_id
+                    AND chunk.sequence = payload.sequence) IS NULL
+        `,
+        )
+        .get(...request.sessionIds) as { total?: unknown } | undefined;
+      if (typeof unreadable?.total === 'number' && unreadable.total > 0) return undefined;
+
+      const inline = this.db
+        .prepare(
+          `
+          SELECT message.session_id, message.sequence
+          FROM session_messages AS message
+          LEFT JOIN session_message_payloads AS payload
+            ON payload.session_id = message.session_id AND payload.sequence = message.sequence
+          WHERE message.session_id IN (${sessions})
+            AND message.message_type IN (${SEARCHABLE_MESSAGE_TYPE_PLACEHOLDERS})
+            AND payload.sequence IS NULL
+            AND (${inlineMatch})
+          ORDER BY message.session_id, message.sequence
+          LIMIT ?
+        `,
+        )
+        .all(
+          ...request.sessionIds,
+          ...SEARCHABLE_MESSAGE_TYPES,
+          ...request.terms,
+          request.limit + 1,
+        ) as Array<{ session_id?: unknown; sequence?: unknown }>;
+
+      const chunked = this.db
+        .prepare(
+          `
+          WITH chunked AS (
+            SELECT payload.session_id, payload.sequence,
+                   (SELECT group_concat(CAST(chunk.data AS TEXT), '' ORDER BY chunk.chunk_index)
+                      FROM session_message_chunks AS chunk
+                     WHERE chunk.session_id = payload.session_id
+                       AND chunk.sequence = payload.sequence) AS body
+              FROM session_message_payloads AS payload
+             WHERE payload.session_id IN (${sessions})
+          )
+          SELECT message.session_id, message.sequence
+          FROM session_messages AS message
+          JOIN chunked
+            ON chunked.session_id = message.session_id AND chunked.sequence = message.sequence
+          WHERE message.message_type IN (${SEARCHABLE_MESSAGE_TYPE_PLACEHOLDERS})
+            AND chunked.body IS NOT NULL
+            AND (${chunkedMatch})
+          ORDER BY message.session_id, message.sequence
+          LIMIT ?
+        `,
+        )
+        .all(
+          ...request.sessionIds,
+          ...SEARCHABLE_MESSAGE_TYPES,
+          ...request.terms,
+          request.limit + 1,
+        ) as Array<{ session_id?: unknown; sequence?: unknown }>;
+
+      return [...inline, ...chunked];
+    });
+
+    if (!located || located.length > request.limit) return undefined;
+
+    const bySession = new Map<string, number[]>();
+    for (const row of located) {
+      const sessionId = row.session_id;
+      if (typeof sessionId !== 'string') {
+        throw new Error('Session search candidate is missing its Session');
+      }
+      const sequence = requireStoredMessageSequence(row.sequence, sessionId);
+      const sequences = bySession.get(sessionId);
+      if (sequences) sequences.push(sequence);
+      else bySession.set(sessionId, [sequence]);
+    }
+
+    const candidates: SessionSearchCandidate[] = [];
+    for (const [sessionId, sequences] of bySession) {
+      sequences.sort((left, right) => left - right);
+      for (
+        let offset = 0;
+        offset < sequences.length;
+        offset += SQLITE_TRANSCRIPT_MESSAGE_LOOKUP_BATCH_SIZE
+      ) {
+        const batch = sequences.slice(offset, offset + SQLITE_TRANSCRIPT_MESSAGE_LOOKUP_BATCH_SIZE);
+        const rows = this.readTransaction(() => readStoredMessageRows(this.db, sessionId, batch));
+        for (const row of rows) {
+          let message: StoredMessage;
+          try {
+            message = decodeStoredMessage(JSON.parse(row.recordJson) as unknown);
+          } catch (error) {
+            throw new StoredSessionMessageIncompatibleError(sessionId, row.sequence, {
+              cause: error,
+            });
+          }
+          candidates.push({ sessionId, message });
+        }
+      }
+    }
+    return candidates;
+  }
+
+  /**
+   * Corpus size for recall's idf term. Counting only the candidates would make
+   * every candidate contain the term, collapsing idf to zero for a single-term
+   * query, so the denominator has to come from the whole searchable corpus.
+   *
+   * This counts by message type, which slightly over-counts: whether a record
+   * projects to visible text is a JS decision this layer cannot make. The
+   * error is uniform across terms, so it shifts every idf by the same amount
+   * and leaves the ranking it feeds intact.
+   */
+  async countSearchableMessages(sessionIds: readonly string[]): Promise<number> {
+    this.assertOpen();
+    if (sessionIds.length === 0) return 0;
+    for (const sessionId of sessionIds) assertSafeSessionId(sessionId);
+    const sessions = sessionIds.map(() => '?').join(', ');
+    return this.readTransaction(() => {
+      const row = this.db
+        .prepare(
+          `
+          SELECT count(*) AS total
+          FROM session_messages
+          WHERE session_id IN (${sessions})
+            AND message_type IN (${SEARCHABLE_MESSAGE_TYPE_PLACEHOLDERS})
+        `,
+        )
+        .get(...sessionIds, ...SEARCHABLE_MESSAGE_TYPES) as { total?: unknown } | undefined;
+      return typeof row?.total === 'number' ? row.total : 0;
+    });
   }
 
   async readMessagesAfter(

@@ -29,6 +29,7 @@ import type {
   SettleSandboxBoundaryRequest,
 } from '@maka/core/sandbox-boundary';
 import type { CreateSessionInput, SessionListFilter } from '@maka/core/runtime-inputs';
+
 import type {
   SessionHeader,
   SessionHeaderPatch,
@@ -333,6 +334,25 @@ export interface SessionTurnLandmarkSnapshot {
   readonly landmarks: readonly SessionTurnLandmark[];
 }
 
+/**
+ * Storage-side narrowing for recall. A candidate source matches the stored
+ * record literally and may over-select freely, but it must never under-select:
+ * the caller re-runs the real predicate on projected, redacted text and would
+ * otherwise lose matches with no error.
+ */
+export interface SessionSearchCandidateRequest {
+  readonly sessionIds: readonly string[];
+  /** Literal terms. A record containing any of them becomes a candidate. */
+  readonly terms: readonly string[];
+  /** Above this many candidates a store declines rather than truncating. */
+  readonly limit: number;
+}
+
+export interface SessionSearchCandidate {
+  readonly sessionId: string;
+  readonly message: StoredMessage;
+}
+
 export interface SessionStore {
   create(input: CreateSessionInput, initialBoundary?: ExecutionBoundary): Promise<SessionHeader>;
   list(filter?: SessionListFilter): Promise<SessionSummary[]>;
@@ -346,6 +366,18 @@ export interface SessionStore {
   listTurnsSnapshot(sessionId: string): Promise<TurnRecord[]>;
   readHeader(sessionId: string): Promise<SessionHeader>;
   readMessages(sessionId: string): Promise<StoredMessage[]>;
+  /**
+   * Narrow recall to messages whose stored record literally contains a term.
+   * The result is a superset of the true matches, never an answer: callers
+   * re-run the real predicate on projected, redacted text. Resolves to
+   * `undefined` when the store declines the fast path, which sends the caller
+   * back to reading transcripts.
+   */
+  listSearchCandidates?(
+    request: SessionSearchCandidateRequest,
+  ): Promise<SessionSearchCandidate[] | undefined>;
+  /** Corpus size for recall's idf term, counted over searchable message types. */
+  countSearchableMessages?(sessionIds: readonly string[]): Promise<number>;
   readMessagesAfter(
     sessionId: string,
     request: SessionMessageScanRequest,

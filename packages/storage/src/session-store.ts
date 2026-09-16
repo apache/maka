@@ -152,6 +152,14 @@ import type {
 } from './message-admission-store.js';
 import { projectSessionCatalogMessages } from './session-message-projection.js';
 export { projectSessionCatalogMessages };
+export type {
+  SessionSearchCandidate,
+  SessionSearchCandidateRequest,
+} from './session-store-contract.js';
+import type {
+  SessionSearchCandidate,
+  SessionSearchCandidateRequest,
+} from './session-store-contract.js';
 
 export function createSessionStore(workspaceRoot: string): SessionAuthorityStore {
   return new SqliteSessionStore(workspaceRoot);
@@ -690,6 +698,18 @@ class SqliteSessionStore implements SessionAuthorityStore {
 
   async readMessages(sessionId: string): Promise<StoredMessage[]> {
     return this.readMessagesSnapshot(sessionId);
+  }
+
+  async listSearchCandidates(
+    request: SessionSearchCandidateRequest,
+  ): Promise<SessionSearchCandidate[] | undefined> {
+    await this.ensureReady();
+    return this.metadata.listSearchCandidates(request);
+  }
+
+  async countSearchableMessages(sessionIds: readonly string[]): Promise<number> {
+    await this.ensureReady();
+    return this.metadata.countSearchableMessages(sessionIds);
   }
 
   async readMessagesAfter(
