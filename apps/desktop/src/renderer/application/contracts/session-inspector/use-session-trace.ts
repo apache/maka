@@ -26,20 +26,19 @@ import {
 } from '@maka/core/session-trace';
 import type { ContextDiagnosticsResult } from '@maka/runtime-host/protocol';
 import type {
-  WorkbarInspectorService,
-  WorkbarSessionTracePage,
-  WorkbarSessionUsageSummary,
-} from '../../ports.js';
+  SessionInspectorService,
+  SessionTracePage,
+  SessionUsageSummary,
+} from './service.js';
 import {
   createRefreshCoalescer,
   createTraceRefreshCoalescer,
   TRACE_REFRESH_DEBOUNCE_MS,
 } from './session-trace-refresh.js';
-import { useWorkbarServices } from '../../services-context.js';
 
 interface SessionTraceState {
   sessionId?: string;
-  tracePages?: readonly WorkbarSessionTracePage[];
+  tracePages?: readonly SessionTracePage[];
   /**
    * What the context is made of right now, from the Host operation that owns
    * that question (#2323). Read on the same signal as the trace but kept
@@ -47,7 +46,7 @@ interface SessionTraceState {
    * answer it must not blank the causal record beside it.
    */
   context?: ContextDiagnosticsResult;
-  summary?: WorkbarSessionUsageSummary;
+  summary?: SessionUsageSummary;
   loading: boolean;
   summaryLoading?: boolean;
   summaryError?: boolean;
@@ -82,19 +81,19 @@ export function useSessionTrace(
   // whose comment once outran its code — is renderable in a test without the
   // UI package behind it.
   copy: { loadFailed: string; locale: UiLocale },
+  inspector: SessionInspectorService,
 ): SessionTraceSnapshot & {
   canHideEarlier: boolean;
   retry: () => void;
   loadEarlier: () => void;
   hideEarlier: () => void;
 } {
-  const { inspector } = useWorkbarServices();
   const traceRevisionRef = useRef(0);
   const summaryRevisionRef = useRef(0);
   const contextRevisionRef = useRef(0);
   const desiredPageCountRef = useRef<{ sessionId: string; count: number } | undefined>(undefined);
   const traceWindowRef = useRef<
-    { sessionId: string; pages: readonly WorkbarSessionTracePage[] } | undefined
+    { sessionId: string; pages: readonly SessionTracePage[] } | undefined
   >(undefined);
   const [state, setState] = useState<SessionTraceState>(EMPTY_STATE);
 
@@ -375,13 +374,13 @@ export function useSessionTrace(
 }
 
 async function readTracePageWindow(
-  inspector: WorkbarInspectorService,
+  inspector: SessionInspectorService,
   sessionId: string,
   pageCount: number,
   loadFailed: string,
   isCurrent: () => boolean,
-): Promise<WorkbarSessionTracePage[]> {
-  const pages: WorkbarSessionTracePage[] = [];
+): Promise<SessionTracePage[]> {
+  const pages: SessionTracePage[] = [];
   const seen = new Set<string>();
   let requestCursor: string | null = null;
   while (pages.length < pageCount) {
@@ -401,6 +400,6 @@ async function readTracePageWindow(
   return pages;
 }
 
-function mergeSessionTracePages(pages: readonly WorkbarSessionTracePage[]): SessionTrace {
+function mergeSessionTracePages(pages: readonly SessionTracePage[]): SessionTrace {
   return mergeSessionTraces(pages.map((page) => page.trace));
 }

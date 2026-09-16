@@ -32,7 +32,7 @@ import {
 import { PROVIDER_REGISTRY } from '@maka/core/llm-connections';
 import { generateText, isStepCount, tool } from 'ai';
 import { z } from 'zod';
-import { fetchProviderModels } from '../model-fetcher.js';
+import { discoverModels } from './model-discovery-fixture.js';
 import { getAIModel } from '../model-factory.js';
 import {
   closeAllJsonServers,
@@ -180,7 +180,7 @@ async function runGeneratedDiscovery(
         );
       });
       const connection = baseConnection(row, server.url);
-      const models = await fetchProviderModels(connection, credentialCase.apiKey);
+      const models = await discoverModels(connection, credentialCase.apiKey);
       if (handlerErrors.length > 0) throw handlerErrors[0];
       assert.ok(requestCount >= 1, `${where} must request the model list`);
       assert.deepEqual(
@@ -321,7 +321,7 @@ async function assertFallbackDiscoveryMakesNoRequest(row: ProviderContractRow): 
     respondJson(response, 500, { error: 'fallback discovery must not reach the network' });
   });
   const connection = baseConnection(row, server.url);
-  const models = await fetchProviderModels(connection, API_KEY);
+  const models = await discoverModels(connection, API_KEY);
   assert.equal(
     requestCount,
     0,

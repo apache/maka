@@ -32,7 +32,10 @@ import {
   type SeedInvocationInput,
 } from '@maka/runtime/test-only/invocation-fixture';
 import { type RuntimeEvent } from '@maka/core/runtime-event';
-import { WORKHUB_COORDINATION_SESSION_ID } from '@maka/core/session';
+import {
+  WORKHUB_COORDINATION_SESSION_ID,
+  WORKHUB_COORDINATION_SESSION_ROLE,
+} from '@maka/core/session';
 import {
   buildHistoryCompactCheckpoint,
   matchHistoryCompactCheckpointPrefix,
@@ -78,6 +81,7 @@ const GRAPH_SIDE_CONVERSATION_TARGET_ID = 'graph-side-conversation-target';
 const GRAPH_SIDE_CONVERSATION_REMOVAL_TARGET_ID = 'graph-side-conversation-removal-target';
 const ARCHIVED_SIDE_CONVERSATION_TARGET_ID = 'archived-side-conversation-target';
 const ACTIVE_SOURCE_SIDE_CONVERSATION_TARGET_ID = 'active-source-side-conversation-target';
+const WORKHUB_SIDE_CONVERSATION_TARGET_ID = 'workhub-side-conversation-target';
 
 function sectionedSummary(goal: string): string {
   return `## Goal\n${goal}\n\n## Progress\n- done\n\n## Next Steps\n1. continue\n\n## Critical Context\n- (none)`;
@@ -99,6 +103,7 @@ test('two Clients share exact retryable Session branch and revision authority', 
     archivedOwnedSourceSessionId,
     graphChildSessionId,
     continuationSourceSessionId,
+    coordinationSourceRevision,
   } = await seedSource(root, capability);
   let host: ExecutionHostHandle | undefined;
   try {
@@ -113,6 +118,7 @@ test('two Clients share exact retryable Session branch and revision authority', 
       archivedOwnedSourceSessionId,
       graphChildSessionId,
       continuationSourceSessionId,
+      coordinationSourceRevision,
     );
     await stopHost(host);
     host = undefined;
@@ -162,6 +168,7 @@ async function verifyConcurrentRevisionAuthority(
   archivedOwnedSourceSessionId: string,
   graphChildSessionId: string,
   continuationSourceSessionId: string,
+  coordinationSourceRevision: number,
 ): Promise<void> {
   const desktop = await connectClient(root);
   const tui = await connectClient(root);
@@ -195,6 +202,39 @@ async function verifyConcurrentRevisionAuthority(
         sessionId: 'coordination-copy-target',
       }),
       { kind: 'session', session: null },
+    );
+    await assert.rejects(
+      desktop.request('session.branch.create', {
+        sourceSessionId: WORKHUB_COORDINATION_SESSION_ID,
+        targetSessionId: 'coordination-bounded-side-copy-target',
+        sourceTurnId: 'turn-1',
+        expectedSourceRevision: coordinationSourceRevision,
+        intent: 'side_conversation',
+      }),
+      operationError('operation_conflict'),
+    );
+    const workHubSideConversation = await desktop.request('session.branch.create', {
+      sourceSessionId: WORKHUB_COORDINATION_SESSION_ID,
+      targetSessionId: WORKHUB_SIDE_CONVERSATION_TARGET_ID,
+      expectedSourceRevision: coordinationSourceRevision,
+      intent: 'side_conversation',
+    });
+    assert.equal(workHubSideConversation.kind, 'committed');
+    if (workHubSideConversation.kind !== 'committed') {
+      assert.fail('WorkHub Side Conversation must commit from an empty boundary');
+    }
+    const workHubSideConversationSession = requireSessionProjection(
+      workHubSideConversation.session,
+    );
+    assert.equal(workHubSideConversationSession.permissionMode, 'ask');
+    assert.deepEqual(workHubSideConversationSession.labels, ['mode:side_conversation']);
+    assert.equal(workHubSideConversationSession.parentSessionId, WORKHUB_COORDINATION_SESSION_ID);
+    assert.equal(workHubSideConversationSession.branchOfTurnId, undefined);
+    assert.deepEqual(
+      await desktop.request('session.execution_boundary.query', {
+        sessionId: WORKHUB_SIDE_CONVERSATION_TARGET_ID,
+      }),
+      { kind: 'managed', access: 'writable', revision: 0 },
     );
     const continuationSource = await querySession(desktop, continuationSourceSessionId);
     await assert.rejects(
@@ -802,6 +842,7 @@ async function seedSource(
   archivedOwnedSourceSessionId: string;
   graphChildSessionId: string;
   continuationSourceSessionId: string;
+  coordinationSourceRevision: number;
 }> {
   const owner = await tryAcquireInteractiveRootOwner(capability);
   assert.ok(owner);
@@ -819,6 +860,26 @@ async function seedSource(
       model: 'fake-model',
       permissionMode: 'ask',
     });
+    const coordination = await execution.sessionStore.createStableSession({
+      sessionId: WORKHUB_COORDINATION_SESSION_ID,
+      requestFingerprint: `sha256:${'c'.repeat(64)}`,
+      input: {
+        cwd: root,
+        projectId: null,
+        name: 'WorkHub',
+        llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+        llmConnectionSlug: 'fake',
+        model: 'fake-model',
+        permissionMode: 'bypass',
+        role: WORKHUB_COORDINATION_SESSION_ROLE,
+        toolProfile: 'workhub-coordination-v2',
+        labels: ['coordination-control'],
+      },
+    });
+    assert.equal(coordination.kind, 'created');
+    if (coordination.kind !== 'created') {
+      assert.fail('Coordination Session seed must be created');
+    }
     const busy = await execution.sessionStore.create({
       cwd: root,
       name: 'Busy Session',
@@ -1556,6 +1617,7 @@ async function seedSource(
       archivedOwnedSourceSessionId: archivedOwnedSource.id,
       graphChildSessionId: graphChild.header.id,
       continuationSourceSessionId: continuationSource.id,
+      coordinationSourceRevision: coordination.record.revision,
     };
   } finally {
     graph.close();
@@ -1766,6 +1828,27 @@ async function verifyDurableBranch(
     );
     assert.equal(sideConversationHeader.conversationCopy?.intent, 'side_conversation');
     assert.ok(sideConversationHeader.labels.includes('mode:side_conversation'));
+    const workHubSideConversationHeader = await execution.sessionStore.readHeaderSnapshot(
+      WORKHUB_SIDE_CONVERSATION_TARGET_ID,
+    );
+    assert.equal(workHubSideConversationHeader.role, undefined);
+    assert.equal(workHubSideConversationHeader.toolProfile, undefined);
+    assert.equal(workHubSideConversationHeader.permissionMode, 'ask');
+    assert.deepEqual(workHubSideConversationHeader.labels, ['mode:side_conversation']);
+    assert.equal(
+      workHubSideConversationHeader.conversationCopy?.sourceSessionId,
+      WORKHUB_COORDINATION_SESSION_ID,
+    );
+    assert.equal(workHubSideConversationHeader.conversationCopy?.sourceTurnId, undefined);
+    const workHubSideConversationBoundary = await execution.sessionStore.readExecutionBoundary(
+      WORKHUB_SIDE_CONVERSATION_TARGET_ID,
+    );
+    assert.equal(workHubSideConversationBoundary.kind, 'managed');
+    assert.equal(workHubSideConversationBoundary.revision, 0);
+    assert.deepEqual(
+      await readLedgerMessages(execution.runtimeEventStore, WORKHUB_SIDE_CONVERSATION_TARGET_ID),
+      [],
+    );
     const sideConversationMessages = await readLedgerMessages(
       execution.runtimeEventStore,
       graphSideConversationTargetId,

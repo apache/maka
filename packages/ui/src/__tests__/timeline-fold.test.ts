@@ -31,7 +31,7 @@ const answer: TurnTimelineItem = { kind: 'text', messageId: 'a', text: 'Fixed' }
 test('display and copy share reply identity across process, steering and interrupted boundaries', () => {
   const steering: TurnTimelineItem = { kind: 'user', messageId: 'steer', message: { id: 'steer', role: 'user', text: 'Continue', ts: 2 } };
   const partial: TurnTimelineItem = { ...answer, messageId: 'partial', interrupted: true, text: 'Partial' };
-  const cases: Array<[TurnTimelineItem[], TurnTimelineItem | undefined]> = [
+  const cases: Array<[TurnTimelineItem[], Extract<TurnTimelineItem, { kind: 'text' }> | undefined]> = [
     [[commentary, tools], undefined],
     [[commentary, tools, answer, thinking], answer],
     [[answer, steering], undefined],

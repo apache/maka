@@ -81,6 +81,7 @@ import {
   clientCapabilityConnectionIdentity,
   clientCapabilityCoordinatorTestAdmission,
 } from './fixtures/client-capability.js';
+import { workHubDesktopCapabilityOffers } from './fixtures/workhub-capabilities.js';
 import {
   openInteractiveExecutionStoresForWrite,
   type RootTurnAdmission,
@@ -3791,20 +3792,7 @@ test('active WorkHub authority reads the admitted v2 input and refuses other or 
       const registered = await capabilities.handlers['client.capability.replace'](
         {
           registrationId: 'workhub-tools',
-          offers: [
-            {
-              offerId: 'desktop-workhub',
-              version: '0',
-              affinity: 'session',
-              hostPathAccess: 'none',
-              label: 'Desktop WorkHub',
-              tools: ['control', 'tasks'].map((name) => ({
-                serverId: 'desktop_workhub',
-                name,
-                inputSchema: { type: 'object', additionalProperties: false },
-              })),
-            },
-          ],
+          offers: workHubDesktopCapabilityOffers(),
         },
         operationContext(fixture.hostEpoch, fixture.acquireResidency, 'desktop'),
       );

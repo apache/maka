@@ -874,17 +874,26 @@ export function rootTurnAdmissionPayloadsEqual(
       const other = right.sourceMessages[index];
       return (
         other !== undefined &&
-        source.messageId === other.messageId &&
+        rootTurnSourceMessagePayloadsEqual(source, other) &&
         source.placement === other.placement &&
-        source.disposition === other.disposition &&
-        source.submittedContentDigest === other.submittedContentDigest &&
-        (source.submittedPlacement ?? source.placement) ===
-          (other.submittedPlacement ?? other.placement) &&
-        submittedTurnIntentsEqual(source.submittedIntent, other.submittedIntent) &&
-        isDeepStrictEqual(source.skillInvocation, other.skillInvocation) &&
-        messageContentsEqual(source.content, other.content)
+        source.disposition === other.disposition
       );
     })
+  );
+}
+
+/** Whether two durable source records prove the same submitted Message payload. */
+export function rootTurnSourceMessagePayloadsEqual(
+  left: RootTurnSourceMessage,
+  right: RootTurnSourceMessage,
+): boolean {
+  return (
+    left.messageId === right.messageId &&
+    left.submittedContentDigest === right.submittedContentDigest &&
+    (left.submittedPlacement ?? left.placement) === (right.submittedPlacement ?? right.placement) &&
+    submittedTurnIntentsEqual(left.submittedIntent, right.submittedIntent) &&
+    isDeepStrictEqual(left.skillInvocation, right.skillInvocation) &&
+    messageContentsEqual(left.content, right.content)
   );
 }
 

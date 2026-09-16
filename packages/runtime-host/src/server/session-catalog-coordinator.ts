@@ -715,7 +715,10 @@ export class HostSessionCatalogCoordinator {
       {
         sessionId: WORKHUB_COORDINATION_SESSION_ID,
         expectedRevision: input.expectedRevision,
-        patch: { modelTarget: input.modelTarget },
+        patch: {
+          modelTarget: input.modelTarget,
+          thinkingLevel: input.thinkingLevel,
+        },
       },
       'workhub',
     );

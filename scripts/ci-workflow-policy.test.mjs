@@ -1032,6 +1032,21 @@ test('everything that runs before dependency setup imports only node builtins', 
   }
 });
 
+test('every CI run validates the real committed source archive without dependency installation', () => {
+  const workflow = readWorkflow('ci.yml');
+  const step = workflow
+    .split('      - name: Verify repository source archive\n')[1]
+    ?.split('\n      - ', 1)[0];
+  assert.ok(step, 'repository archive gate is missing');
+  assert.doesNotMatch(step, /\bif:/u);
+  assert.match(step, /node scripts\/asf-source-release\.mjs create --revision HEAD --version/u);
+  assert.match(step, /require\("\.\/package\.json"\)\.version/u);
+  assert.ok(
+    workflow.indexOf('name: Verify repository source archive') <
+      workflow.indexOf('uses: actions/setup-node'),
+  );
+});
+
 const WORKFLOW_DIR = new URL('../.github/workflows/', import.meta.url);
 
 /** Plan selections named by any `if:` in `section`, whatever the condition spells. */

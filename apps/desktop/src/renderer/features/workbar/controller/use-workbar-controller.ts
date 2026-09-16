@@ -101,6 +101,8 @@ export interface UseWorkbarControllerInput {
   available: boolean;
   /** Local selection owns layout even while Host creation is pending. */
   layoutSessionId: string | undefined;
+  /** Independent persistent renderers must not overwrite each other’s panel topology. */
+  layoutScope?: string;
   activeSession: SessionSummary | undefined;
   projectId: string | null | undefined;
   projectAliases: readonly string[];
@@ -165,11 +167,12 @@ export function useWorkbarController(
   ).env;
   const workBoardStartTaskEnabled =
     viteEnv?.DEV === true &&
-    viteEnv?.VITE_MAKA_WORK_BOARD_START_TASK === '1';
+    viteEnv?.VITE_MAKA_WORK_BOARD_START_TASK === '1' &&
+    Boolean(input.openNewTaskSurface && input.resolveWorkBoardTarget && input.prepareWorkBoardDraft);
   const terminalCopy = getDesktopConversationCopy(locale).terminalPanel;
   const { browser, sideChat, terminal, workBoard } = useWorkbarServices();
   const activeSessionId = input.activeSession?.id;
-  const layout = useWorkbarLayoutState(input.layoutSessionId, input.authoritativeSessionIds);
+  const layout = useWorkbarLayoutState(input.layoutSessionId, input.authoritativeSessionIds, input.layoutScope);
   const sideConversations = useSideConversationWorkspace();
   const [pendingSideChatClose, setPendingSideChatClose] = useState<
     Array<{ placement: SessionWorkbarPlacement; tab: SessionWorkbarTab }>
@@ -761,6 +764,22 @@ export function useWorkbarController(
   useEffect(() => {
     browser.setActiveSession(activeSessionId ?? null);
   }, [activeSessionId, browser]);
+
+  const liveBrowserSessionIdsRef = useRef(new Set<string>());
+  useEffect(
+    () =>
+      browser.subscribeState(({ sessionId, state }) => {
+        const wasLive = liveBrowserSessionIdsRef.current.has(sessionId);
+        if (!state.hasPage) {
+          liveBrowserSessionIdsRef.current.delete(sessionId);
+          return;
+        }
+        if (wasLive) return;
+        liveBrowserSessionIdsRef.current.add(sessionId);
+        if (sessionId === activeSessionIdRef.current) openTool('browser');
+      }),
+    [browser, openTool],
+  );
 
   useEffect(() => {
     const handleShortcut = (event: KeyboardEvent) => {

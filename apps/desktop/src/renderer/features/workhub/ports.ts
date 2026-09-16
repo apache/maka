@@ -49,6 +49,7 @@ export interface WorkHubTranscript {
   close(): Promise<void>;
 }
 export interface WorkHubServices {
+  readonly inspector: import('../../application/contracts/session-inspector/service.js').SessionInspectorService;
   readonly surface: 'main' | 'workhub';
   readonly initialLocale: UiLocale;
   subscribeAppearance(handler: (locale: UiLocale) => void): () => void;

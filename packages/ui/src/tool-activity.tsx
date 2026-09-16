@@ -373,15 +373,6 @@ export function ToolTrow({
   );
 }
 
-/** Whether a visible, collapsed ChatToolCalls row owns the active spinner. */
-export function toolTrowHasVisibleSpinner(items: readonly ToolActivityItem[]): boolean {
-  return items.some((item, index) =>
-    !isLinkedAgentResult(item.result)
-    && isInFlightToolStatus(toolActivityPresentationStatus(item))
-    && (index === items.length - 1 || isLinkedAgentResult(items[index + 1]?.result)),
-  );
-}
-
 type LinkedAgentRow = {
   key: string;
   name: string;

@@ -417,23 +417,12 @@ function projectToolModePlan(
   plan: ToolAvailabilityPlan,
   toolMode: ToolMode,
   execTool: MakaTool,
-  nested: ReadonlyMap<string, MakaTool>,
 ): ToolAvailabilityPlan {
   if (toolMode === 'direct') return plan;
-  const catalog = requestCompositionToolSchemas([...nested.values()], [...nested.keys()]);
-  const projectedExec = {
-    ...execTool,
-    description: [
-      execTool.description,
-      'This is the only callable tool. Call the following tools from inside exec.',
-      'After tool_search, return its result and use the refreshed catalog in the next exec call.',
-      JSON.stringify(catalog),
-    ].join('\n'),
-  };
   return {
     ...plan,
     providerTools: [
-      projectedExec,
+      execTool,
       ...plan.providerTools.filter((tool) => tool.name === INVALID_TOOL_NAME),
     ],
     activeTools: [execTool.name],
@@ -443,6 +432,18 @@ function projectToolModePlan(
     currentRepairToolNames: () => [execTool.name],
     diagnostics: () => undefined,
   };
+}
+
+function renderCodeModeCatalogPrompt(nested: ReadonlyMap<string, MakaTool>): string {
+  // The aggregate catalog can exceed the evidence codec's bound for one tool
+  // description. Keep exec's schema fixed; requestSystemPrompt and its hash
+  // carry this step's exact, refreshable nested surface instead.
+  const catalog = requestCompositionToolSchemas([...nested.values()], [...nested.keys()]);
+  return [
+    'Code Mode: exec is the only callable tool. Call the following tools from inside exec.',
+    'After tool_search, return its result and use the refreshed catalog in the next exec call.',
+    JSON.stringify(catalog),
+  ].join('\n');
 }
 
 function nestableToolSnapshot(
@@ -1011,10 +1012,6 @@ export class AiSdkTurn {
         contextCompactedNoteWritten = await this.recordSystemNote('context_compacted', turnId);
       }
     };
-    // Request index (0-based) at which the active prune last rewrote the
-    // request. A step Maka pruned is not append-only, so usage may legitimately
-    // shrink.
-    let pruneAppliedAtStep: number | undefined;
     const trace = new RunTrace({
       sessionId: this.deps.backend.sessionId,
       turnId,
@@ -1104,16 +1101,7 @@ export class AiSdkTurn {
       }
       const basePlan = snapshot.runtime.prepare(this.activeTools, requiredOrchestrationTools);
       const nestedTools = nestableToolSnapshot(basePlan.providerTools, basePlan.activeTools);
-      const plan = projectToolModePlan(
-        basePlan,
-        toolMode,
-        codeModeExecTool,
-        toolRuntime.hasSandboxBoundaryDenial()
-          ? new Map(
-              [...nestedTools].filter(([name]) => name !== REQUEST_SANDBOX_BOUNDARY_TOOL_NAME),
-            )
-          : nestedTools,
-      );
+      const plan = projectToolModePlan(basePlan, toolMode, codeModeExecTool);
       const modelTools: ModelToolSet = {};
       for (const tool of plan.providerTools) {
         modelTools[tool.name] = tool.providerTool
@@ -1183,7 +1171,7 @@ export class AiSdkTurn {
       // Roll-forward seed: the latest durable checkpoint (loaded or written at
       // turn start) so a mid-turn summary only re-reads the newly folded span.
       const checkpoint = priorReplay.latestHistoryCompactCheckpoint;
-      midTurnState.previousCheckpoint =
+      midTurnState.seedCheckpoint =
         checkpoint &&
         canContinueHistoryCompactCheckpointForModel(
           checkpoint,
@@ -1292,7 +1280,7 @@ export class AiSdkTurn {
           const turnEvents = await loadDurableTurnEvents();
           const pruned = await this.deps.compaction.pruneToolResults(turnEvents, turnId);
           if (pruned.stats) {
-            if (pruned.stats.prunedToolResults > 0) pruneAppliedAtStep = runtimeSteps;
+            if (pruned.stats.prunedToolResults > 0) midTurnState?.stepShaping.add('prune');
             contextBudgetForTelemetry = addToolResultPruneStats(
               contextBudgetForTelemetry ?? minimalContextBudgetDiagnostic(),
               pruned.stats,
@@ -1474,21 +1462,38 @@ export class AiSdkTurn {
           if (sandboxBoundaryFinalizationStep) {
             toolRuntime.forceSandboxBoundaryFinalization();
           }
-          const requestSystemPrompt = joinPromptFragments([
+          const requestSystemPromptBase = joinPromptFragments([
             systemPrompt,
             finalChildSummaryStep ? CHILD_STEP_BUDGET_FINALIZATION_PROMPT : undefined,
             toolRuntime.hasSandboxBoundaryDenial() ? SANDBOX_BOUNDARY_DENIED_FOR_TURN : undefined,
             sandboxBoundaryFinalizationStep ? SANDBOX_BOUNDARY_FINALIZATION_PROMPT : undefined,
           ]);
-          const resolveDispatch = (
-            active: readonly string[] | undefined,
-          ): DispatchRequestShape => ({
-            systemPromptChars: requestSystemPrompt?.length ?? 0,
-            activeTools:
+          const codeModeCatalogPrompt =
+            toolMode === 'code_mode'
+              ? renderCodeModeCatalogPrompt(
+                  toolRuntime.hasSandboxBoundaryDenial()
+                    ? new Map(
+                        [...nestedTools].filter(
+                          ([name]) => name !== REQUEST_SANDBOX_BOUNDARY_TOOL_NAME,
+                        ),
+                      )
+                    : nestedTools,
+                )
+              : undefined;
+          const resolveDispatch = (active: readonly string[] | undefined): DispatchRequestShape => {
+            const activeTools =
               finalChildSummaryStep || sandboxBoundaryFinalizationStep
                 ? []
-                : boundaryAwareToolNames(active ?? plan.currentRepairToolNames()),
-          });
+                : boundaryAwareToolNames(active ?? plan.currentRepairToolNames());
+            const effectiveSystemPrompt = joinPromptFragments([
+              requestSystemPromptBase,
+              activeTools.includes(codeModeExecTool.name) ? codeModeCatalogPrompt : undefined,
+            ]);
+            return {
+              systemPromptChars: effectiveSystemPrompt?.length ?? 0,
+              activeTools,
+            };
+          };
           const dynamicContextMessages: ModelMessage[] = (resolvedSystemPrompt.contexts ?? []).map(
             ({ text }) => ({ role: 'user', content: text }),
           );
@@ -1507,6 +1512,22 @@ export class AiSdkTurn {
             : undefined;
           const projectedMessages = shaped?.messages ?? contextualRequestMessages;
           const activeToolsForRequest = resolveDispatch(shaped?.activeTools).activeTools;
+          const requestSystemPrompt = joinPromptFragments([
+            requestSystemPromptBase,
+            activeToolsForRequest.includes(codeModeExecTool.name)
+              ? codeModeCatalogPrompt
+              : undefined,
+          ]);
+          // A finalization step resolves an empty tool set, so its request
+          // legitimately drops several thousand schema tokens with no fold,
+          // prune or image omission. Maka shaped that request; the provider did
+          // not drop anything.
+          if (
+            lastStepActiveToolCount !== undefined &&
+            activeToolsForRequest.length < lastStepActiveToolCount
+          ) {
+            midTurnState?.stepShaping.add('tools');
+          }
           const requestCompositionId =
             this.runId && this.deps.backend.recordRequestComposition
               ? await this.deps.backend.recordRequestComposition(this.runId, {
@@ -1806,13 +1827,6 @@ export class AiSdkTurn {
               // reply's reasoning may not be resent, so input + output is
               // not the floor of the next input on every wire.
               const completedRequestIndex = runtimeSteps - 1;
-              // A finalization step resolves an empty tool set, so its
-              // request legitimately drops several thousand schema tokens
-              // with no fold, prune or image omission. Maka shaped that
-              // request; the provider did not drop anything.
-              const toolSchemaShrank =
-                lastStepActiveToolCount !== undefined &&
-                activeToolsForRequest.length < lastStepActiveToolCount;
               // Across the send boundary the comparison is the same one,
               // against the last request a provider accepted before this
               // send. A provider that truncates to a fixed window reports
@@ -1822,22 +1836,16 @@ export class AiSdkTurn {
               // input tokens across eight turns with nothing reported
               // (#4623). The first request of a send therefore compares
               // against the persisted anchor, which is route-validated
-              // where it is read; a fold before that request would explain
-              // a smaller input by itself, so it disables the comparison.
+              // where it is read.
               const acrossSends = completedRequestIndex === 0;
               const priorInput = acrossSends
-                ? midTurnState?.compactionAppliedThisSend === true
-                  ? undefined
-                  : midTurnState?.priorAcceptedInputTokens
+                ? midTurnState?.priorAcceptedInputTokens
                 : lastStepInputTokens;
               if (
                 !this.deps.session.contextProviderDroppingReported &&
-                !toolSchemaShrank &&
                 midTurnState &&
                 priorInput !== undefined &&
-                midTurnState.replacedStepNumber !== completedRequestIndex &&
-                pruneAppliedAtStep !== completedRequestIndex &&
-                midTurnState.omittedImageToolResults.size === 0 &&
+                midTurnState.stepShaping.size === 0 &&
                 stepUsage !== undefined &&
                 Number.isFinite(stepUsage.inputTokens) &&
                 stepUsage.inputTokens > 0 &&
@@ -1860,6 +1868,11 @@ export class AiSdkTurn {
                   priorInputTokens: priorInput,
                 });
               }
+              // Clear here, not at the top of the next step: the continuation
+              // lane archives its prune below, after this point, and archiving
+              // is idempotent — the next step's re-projection reports no prune,
+              // so a clear above it would lose the only record of this one.
+              midTurnState?.stepShaping.clear();
               // Fail closed: reset on every step boundary so a missing final
               // step's usage does not leave a stale value from an earlier step.
               // The reply needed more room than the declared window had
@@ -1992,10 +2005,10 @@ export class AiSdkTurn {
               const stepBudgetRemains = maxSteps === undefined || runtimeSteps < maxSteps;
               const recovered =
                 stepBudgetRemains &&
+                failure.kind === 'context_overflow' &&
                 providerAttempt < MAX_PROVIDER_ATTEMPTS_PER_STEP &&
                 attemptHasNoObservableOutput()
                   ? await this.deps.compaction.recoverFromOverflowError({
-                      error: failure,
                       midTurnState,
                       turnId,
                       stepNumber: runtimeSteps,
@@ -2020,8 +2033,8 @@ export class AiSdkTurn {
                 continue;
               }
               // Window suggestion (#4559): the provider rejected a request and
-              // no recovery is left — the one fold is spent, or there was no
-              // seam. The baseline is a proven-fit total (input + output of an
+              // no recovery is left — this step's fold is spent, or there was
+              // no seam. The baseline is a proven-fit total (input + output of an
               // accepted request), so it is a number the user can declare; the
               // trigger is `>=`, so declaring exactly it folds before this
               // point next time. Once per send, and only when the turn is
@@ -2053,7 +2066,7 @@ export class AiSdkTurn {
               if (
                 !contextOverflowAfterCompactionNoteWritten &&
                 failure.kind === 'context_overflow' &&
-                midTurnState?.compactionAppliedThisSend === true
+                midTurnState?.projectionCheckpoint !== undefined
               ) {
                 contextOverflowAfterCompactionNoteWritten = true;
                 await this.recordSystemNote('context_overflow_after_compaction', turnId);
@@ -2110,10 +2123,10 @@ export class AiSdkTurn {
                 } satisfies ProviderRetryEvent);
                 continue;
               }
-              // Unrecoverable (not context-length, latch spent, no seam, or no
-              // safe fold): surface the real provider error via the terminal
-              // handler after settling any authoritative usage — never a
-              // fabricated success.
+              // Unrecoverable (not context-length, this step's attempt spent,
+              // no seam, or no safe fold): surface the real provider error via
+              // the terminal handler after settling any authoritative usage —
+              // never a fabricated success.
               terminalProviderError = failure;
               terminalRetry = { error: terminalProviderError, retry };
               terminalProviderErrorReason =

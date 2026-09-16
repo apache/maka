@@ -24,9 +24,10 @@ import { afterEach, test } from 'node:test';
 import { act, StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { parseHTML } from 'linkedom';
-import { LocalizedChatMessage, TurnRunningStatus, TurnView } from '../chat-turn.js';
+import { LocalizedChatMessage, TurnView } from '../chat-turn.js';
 import { LocaleProvider } from '../locale-context.js';
 import type { TurnTimelineItem, TurnViewModel } from '../materialize.js';
+import { applyThinkingDelta } from '../thinking-stream.js';
 
 const originalGlobals = {
   document: globalThis.document,
@@ -182,6 +183,23 @@ test('keeps the assistant answer element as a turn settles around it', async () 
   );
 });
 
+test('keeps reasoning expanded when its last neighboring tool is projected away', async () => {
+  const { container, root } = domRoot();
+  const thinking: TurnTimelineItem = {
+    kind: 'thinking', messageId: 'reason-1', text: 'First observation', live: false,
+  };
+  await renderTurn(root, turnWith([thinking, RUNNING_TOOL, ANSWER]));
+  const header = container.querySelector('[data-slot="activity-card-header"]');
+  assert.ok(header);
+  await act(() => { header.dispatchEvent(new window.Event('click', { bubbles: true })); });
+  assert.equal(header.getAttribute('aria-expanded'), 'true');
+  await renderTurn(root, turnWith([thinking, ANSWER]));
+  const after = container.querySelector('[data-slot="activity-card-header"]');
+  assert.ok(after);
+  assert.ok(after.isSameNode(header));
+  assert.equal(after.getAttribute('aria-expanded'), 'true');
+});
+
 test('redacts secrets before rendering a settled collapsed reasoning preview', async () => {
   const { container, root } = domRoot();
   await renderTurn(root, turnWith([
@@ -213,6 +231,27 @@ test('preserves currency in a settled collapsed reasoning preview', async () => 
   const header = container.querySelector('[data-slot="activity-card-header"]');
   assert.ok(header);
   assert.match(header.textContent ?? '', /cost is \$5, not x \+ 1/);
+});
+
+test('expanded truncated reasoning shows the current tail without replaying its marker', async () => {
+  const { container, root } = domRoot();
+  let thinking = applyThinkingDelta('', 'Earlier observations. '.repeat(8) + 'Current observation.', { locale: 'en', maxTotalChars: 128 });
+  const renderThinking = () => renderTurn(root, turnWith([{
+    kind: 'thinking', messageId: 'thinking-1', live: true,
+    text: thinking.text, truncated: thinking.truncated,
+  }]));
+  await renderThinking();
+  const header = container.querySelector('[data-slot="activity-card-header"]');
+  assert.ok(header);
+  await act(() => { header.dispatchEvent(new window.Event('click', { bubbles: true })); });
+  const body = container.querySelector('.maka-chat-reasoning-content');
+  assert.ok(body);
+  assert.match(body.textContent ?? '', /Current observation\./);
+  thinking = applyThinkingDelta(thinking.text, '\nNewest observation.', { locale: 'en', maxTotalChars: 128, redactionState: thinking.redactionState });
+  await renderThinking();
+  assert.equal(container.querySelector('.maka-chat-reasoning-content'), body);
+  assert.match(body.textContent ?? '', /Newest observation\./);
+  assert.match(body.textContent ?? '', /Current observation\./);
 });
 
 test('preserves a model-authored single newline in plain reasoning', async () => {
@@ -457,7 +496,13 @@ test('rotates working phrases on the elapsed clock without announcing each phras
   const now = Date.UTC(2026, 8, 14, 12);
   context.mock.timers.enable({ apis: ['Date', 'setInterval'], now });
   const { container, root } = domRoot();
-  await act(() => root.render(<LocaleProvider locale="en"><TurnRunningStatus startedAt={now} /></LocaleProvider>));
+  const turn: TurnViewModel = {
+    turnId: 'turn-1', status: 'running', tools: [], notes: [], startedAt: now, timeline: [],
+  };
+  const render = (next: TurnViewModel) => act(() => root.render(
+    <LocaleProvider locale="en"><TurnView turn={next} liveStreaming={{ runningStatus: true }} /></LocaleProvider>,
+  ));
+  await render(turn);
   const status = container.querySelector('[role="status"]')!;
   assert.match(status.textContent, /Pondering/);
   assert.equal(status.getAttribute('aria-label'), 'Working…');
@@ -466,9 +511,11 @@ test('rotates working phrases on the elapsed clock without announcing each phras
   assert.match(status.textContent, /20s/);
   assert.equal(status.getAttribute('aria-label'), 'Working…');
   // Concrete activity takes precedence over the playful phrase.
-  await act(() => root.render(<LocaleProvider locale="en"><TurnRunningStatus startedAt={now} activityLabel="Clicking Save" /></LocaleProvider>));
-  assert.match(status.textContent, /Clicking Save/);
-  assert.doesNotMatch(status.textContent, /Tinkering/);
+  await render({ ...turn, tools: [{
+    toolUseId: 'cu-1', toolName: 'maka_computer', activityKind: 'computer', status: 'running', args: { app: 'Safari' },
+  }] });
+  assert.doesNotMatch(status.textContent ?? '', /Pondering|Tinkering/);
+  assert.notEqual(status.getAttribute('aria-label'), 'Working…');
 });
 
 test('keeps elapsed time while system motion preference changes the working phrase', async (context) => {
@@ -482,7 +529,12 @@ test('keeps elapsed time while system motion preference changes the working phra
     addEventListener(_type: string, listener: () => void) { listeners.add(listener); },
     removeEventListener(_type: string, listener: () => void) { listeners.delete(listener); },
   }) });
-  await act(() => root.render(<LocaleProvider locale="en"><TurnRunningStatus startedAt={now} /></LocaleProvider>));
+  const turn: TurnViewModel = {
+    turnId: 'turn-1', status: 'running', tools: [], notes: [], startedAt: now, timeline: [],
+  };
+  await act(() => root.render(
+    <LocaleProvider locale="en"><TurnView turn={turn} liveStreaming={{ runningStatus: true }} /></LocaleProvider>,
+  ));
   await act(() => context.mock.timers.tick(20_000));
   assert.equal(container.querySelector('.maka-turn-status-label')?.textContent, 'Pondering…');
   assert.equal(container.querySelector('.maka-turn-elapsed')?.textContent, '20s');
@@ -734,20 +786,21 @@ test('a newly failed tool reveals the process while turn recovery stays outside'
   const process = container.querySelector('details.maka-processing-sequence');
   const summary = process?.querySelector('summary');
   assert.ok(process && summary);
-  await act(() => { summary.dispatchEvent(new window.Event('click', { bubbles: true, cancelable: true })); });
   assert.equal(process.hasAttribute('open'), true);
   await act(() => root.render(<LocaleProvider locale="en"><TurnView
     turn={{ ...turnWith([PROCESS_TEXT, { kind: 'tools', items: [{ toolUseId: 'tool-1', toolName: 'read', args: {}, status: 'errored' }] }]), status: 'failed' }}
     failedReasonLabel="Read failed"
     safeResumeAction={{ pending: false, onResume() {} }}
   /></LocaleProvider>));
-  assert.equal(process.hasAttribute('open'), true);
-  assert.match(summary.textContent ?? '', /Needs attention/);
+  // A failed tool is an ordinary row: no label, no reveal.
+  assert.doesNotMatch(summary.textContent ?? '', /Needs attention/);
+  assert.equal(summary.textContent, 'Execution process');
+  assert.equal(process.hasAttribute('open'), false);
   assert.doesNotMatch(process.textContent ?? '', /Continue this turn/);
   assert.match(container.textContent ?? '', /Continue this turn/);
   await act(() => { summary.dispatchEvent(new window.Event('click', { bubbles: true, cancelable: true })); });
-  assert.equal(process.hasAttribute('open'), false);
-  assert.match(container.textContent ?? '', /Continue this turn/);
+  assert.equal(process.hasAttribute('open'), true);
+  assert.equal(container.querySelectorAll('.maka-processing-summary').length, 1);
 });
 
 test('uses a generic process label when no duration is recorded, and localizes known duration', async () => {

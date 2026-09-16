@@ -35,7 +35,7 @@ import assert from 'node:assert/strict';
 import type { LlmConnection } from '@maka/core/llm-connections';
 import { generateText, isStepCount, streamText, tool } from 'ai';
 import { z } from 'zod';
-import { fetchProviderModels } from '../model-fetcher.js';
+import { discoverModels } from './model-discovery-fixture.js';
 import { buildProviderOptions, getAIModel } from '../model-factory.js';
 import { buildSubscriptionModelFetch } from '../subscription-model-fetch.js';
 import {
@@ -166,6 +166,24 @@ export const PROVIDER_CONTRACT_OVERRIDE_BINDINGS: readonly ProviderContractOverr
         basePath: '/api/plan/v3',
         modelId: 'ark-code-latest',
         apiKey: 'volcengine-agent-plan-test-key',
+        statelessReasoning: true,
+      }),
+  },
+  {
+    keys: [
+      'moonshot-global:exact-model-id',
+      'moonshot-global:tool-loop',
+      'moonshot-global:reasoning-replay',
+    ],
+    title: 'Moonshot Global preserves Kimi model ids and reasoning across a Responses tool loop',
+    run: () =>
+      runOpenAIResponsesWire({
+        providerType: 'moonshot-global',
+        slug: 'moonshot-global',
+        name: 'Moonshot Global',
+        basePath: '/v1',
+        modelId: 'kimi-k3',
+        apiKey: 'moonshot-global-test-key',
         statelessReasoning: true,
       }),
   },
@@ -331,7 +349,7 @@ async function runCloudflareDiscovery(): Promise<void> {
     updatedAt: 1,
   };
 
-  assert.deepEqual(await fetchProviderModels(connection, 'cloudflare-test-token'), [
+  assert.deepEqual(await discoverModels(connection, 'cloudflare-test-token'), [
     { id: '@cf/meta/llama-text' },
   ]);
 }
@@ -376,7 +394,7 @@ async function runGitHubCopilotDiscovery(): Promise<void> {
     });
   });
 
-  const models = await fetchProviderModels(
+  const models = await discoverModels(
     {
       slug: 'github-copilot',
       name: 'GitHub Copilot',
@@ -522,7 +540,7 @@ async function runGitHubCopilotWire(): Promise<void> {
     createdAt: 1,
     updatedAt: 1,
   };
-  const models = await fetchProviderModels(connection, 'github-account-token');
+  const models = await discoverModels(connection, 'github-account-token');
   connection.models = models;
   const modelFetch = buildSubscriptionModelFetch({
     connection,
@@ -731,7 +749,7 @@ async function runFireworksDiscovery(): Promise<void> {
     updatedAt: 1,
   };
 
-  const models = await fetchProviderModels(connection, 'fireworks-test-key');
+  const models = await discoverModels(connection, 'fireworks-test-key');
   assert.deepEqual(models, [
     {
       id: 'accounts/acme/models/custom-agent',
@@ -863,7 +881,7 @@ async function assertOllamaModelContract(
   };
 
   assert.deepEqual(
-    await fetchProviderModels(connection, ''),
+    await discoverModels(connection, ''),
     discoveredModelIds.map((id) => ({ id })),
   );
 
@@ -991,7 +1009,7 @@ async function runCohereDiscovery(): Promise<void> {
     updatedAt: 1,
   };
 
-  const models = await fetchProviderModels(connection, 'cohere-test-key');
+  const models = await discoverModels(connection, 'cohere-test-key');
   assert.deepEqual(models, [
     { id: modelId, contextWindow: 128_000 },
     { id: 'command-a-reasoning-08-2025', contextWindow: 256_000 },
