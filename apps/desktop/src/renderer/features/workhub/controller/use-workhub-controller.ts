@@ -17,19 +17,24 @@
  * under the License.
  */
 
+import { activeHostTurn, chatTurnActivity, type SessionExecutionProjection } from '../../../application/contracts/session-execution.js';
 import { useEffect, useRef, useState } from 'react';
 import {
-  applyLiveTurnEvent,
+  applyLiveTurnBufferEvent,
+  retainLiveTurn,
+  type LiveTurnBuffer,
+  activeInteractionFor, reduceInteractionQueues, reconcileInteractions, clearInteractions, type InteractionQueues,
   armLiveTurn,
   createTranscriptViewportNavigation,
-  reconcileTerminalLiveTurn,
-  settleLiveTurnStep,
+  reconcileLiveTurnBuffer,
+  settleLiveTurnBufferStep,
   useUiLocale,
   type LiveTurnProjection,
   type TransientUserMessageProjection,
 } from '@maka/ui';
 import type { WorkHubAnswerInput, WorkHubAnswerResult } from '../../../../shared/workhub-conversation.js';
 import type { AttachmentRef, FollowUpMode, MessageQueuePlacement } from '@maka/core/events';
+import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { ChatModelChoice } from '@maka/core/chat-model-choice';
 import { startWorkHubCoordinationLifecycle } from './coordination-lifecycle.js';
 import { useWorkHubServices } from '../services.js';
@@ -49,7 +54,7 @@ interface SendAttempt {
   reconciling?: boolean;
   stop?: 'requested' | 'sending' | 'resend';
 }
-export function useWorkHubController() {
+export function useWorkHubController(onSubmit?: () => void) {
   const services = useWorkHubServices();
   const locale = useUiLocale();
   const localeRef = useRef(locale);
@@ -58,13 +63,26 @@ export function useWorkHubController() {
   const [sessions, setSessions] = useState<Awaited<ReturnType<WorkHubServices['listSessions']>>>(
     [],
   );
+  const [configuringModel, setConfiguringModel] = useState(false);
+  const configuringModelRef = useRef(false);
   const [choices, setChoices] = useState<ChatModelChoice[]>([]);
   const [transcript, setTranscript] = useState(emptyTranscript);
+  // Reconciliation reads the published view, never a source page held by input.
   const transcriptRef = useRef(emptyTranscript);
+  // Renderer completion is a one-shot signal; publication may arrive later.
+  const settledBeforePublication = useRef(new Set<string>());
   const [viewportNavigation] = useState(createTranscriptViewportNavigation);
   const [transientMessages, setTransientMessages] = useState<TransientUserMessageProjection[]>([]);
   const [messageQueue, setMessageQueue] = useState<{ entries: import('@maka/core/events').MessageQueueEntryProjection[]; revision?: number }>({ entries: [] });
-  const [liveTurn, setLiveTurn] = useState<LiveTurnProjection>();
+  const [execution, setExecution] = useState<SessionExecutionProjection>();
+  const [liveTurns, setLiveTurns] = useState<LiveTurnBuffer>();
+  const liveTurn = liveTurns?.find((turn) => turn.turnId === execution?.rootTurn?.turnId) ?? liveTurns?.at(-1);
+  const refreshInteractions = useRef<() => void>(() => {});
+  const interactionRevision = useRef(0);
+  const [interactions, setInteractions] = useState<InteractionQueues>({});
+  const [turnStates, setTurnStates] = useState<Record<string, import('../model/linked-work.js').WorkHubDelegationState>>({});
+  const activeInteraction = activeInteractionFor(interactions, sessionId);
+  const activeQuestion = activeInteraction?.type === 'user_question_request' ? activeInteraction : undefined;
   const [sending, setSending] = useState(false);
   const [stopPending, setStopPending] = useState(false);
   const [error, setError] = useState<string>();
@@ -148,8 +166,8 @@ export function useWorkHubController() {
       attempt.stop = undefined;
       if (current) {
         setStopPending(false);
-        setTransientMessages((messages) => messages.filter((message) => message.hostTurnId !== attempt.input.turnId));
-        setLiveTurn((previous) => previous?.turnId === attempt.input.turnId ? undefined : previous);
+        setTurnStates((states) => ({ ...states, [attempt.input.turnId]: 'failed' }));
+        setLiveTurns((previous) => previous?.filter((turn) => turn.turnId !== attempt.input.turnId || !turn.unconfirmed));
         setError(workHubLiveCopy[localeRef.current].sendNotAdmitted);
       }
       return false;
@@ -159,9 +177,9 @@ export function useWorkHubController() {
     if (current) {
       setError(undefined);
       if (terminal) refreshSessions.current();
-      setLiveTurn((previous) => {
-        if (attempt.admission === 'terminal') return previous?.turnId === result.turnId ? undefined : previous;
-        return previous?.turnId === result.turnId ? previous : reconcileTerminalLiveTurn(armLiveTurn(result.turnId), transcriptRef.current.messages);
+      setLiveTurns((previous) => {
+        if (attempt.admission === 'terminal') return previous;
+        return reconcileLiveTurnBuffer(retainLiveTurn(previous, armLiveTurn(result.turnId)), transcriptRef.current.messages);
       });
     }
     return true;
@@ -210,7 +228,11 @@ export function useWorkHubController() {
       void Promise.all([services.listSessions(), sessionId ? services.getSession(sessionId) : undefined])
         .then(([next, coordination]) => {
           if (!disposed && read === revision) {
-            setSessions(coordination ? [...next, coordination] : next);
+            setSessions((current) => {
+              if (!coordination) return next;
+              const known = current.find((entry) => entry.id === coordination.id);
+              return [...next, known && known.revision > coordination.revision ? known : coordination];
+            });
             for (const turnId of coordination?.runningTurnIds ?? []) reconcileAdmission(sessionId!, turnId);
           }
         })
@@ -231,17 +253,40 @@ export function useWorkHubController() {
   useEffect(() => {
     setChoices([]);
     transcriptRef.current = emptyTranscript;
+    settledBeforePublication.current.clear();
     setTranscript(emptyTranscript);
     setReadError(undefined);
     const attempt = pendingSend.current;
     const pending = attempt && attempt.sessionId === sessionId && attempt.admission !== 'terminal' && attempt.admission !== 'rejected' ? attempt : undefined;
-    setLiveTurn(pending ? armLiveTurn(pending.input.turnId) : undefined);
+    setExecution(undefined);
+    setLiveTurns(pending ? [armLiveTurn(pending.input.turnId)] : undefined);
     setStopPending(Boolean(pending?.stop));
     setTransientMessages(pending ? [{
       id: pending.input.turnId, hostTurnId: pending.input.turnId, text: pending.input.text,
       attachments: pending.input.attachments, ts: Date.now(), transientPlacement: 'current_turn',
     }] : []);
   }, [sessionId]);
+
+  useEffect(() => {
+    if (!sessionId) return;
+    let disposed = false;
+    setInteractions({});
+    setTurnStates({});
+    const unsubscribe = services.subscribeActiveInteractions((event) => {
+      if (event.sessionId !== sessionId || disposed) return;
+      interactionRevision.current++;
+      setInteractions((current) => reconcileInteractions(current, sessionId, event.interactions));
+    });
+    const refresh = () => {
+      const readRevision = ++interactionRevision.current;
+      void services.listActiveInteractions(sessionId).then((requests) => {
+        if (!disposed && interactionRevision.current === readRevision) setInteractions((current) => reconcileInteractions(current, sessionId, requests));
+      }).catch((reason: unknown) => { if (!disposed) report(reason); });
+    };
+    refreshInteractions.current = refresh;
+    refresh();
+    return () => { disposed = true; unsubscribe(); if (refreshInteractions.current === refresh) refreshInteractions.current = () => {}; };
+  }, [services, sessionId]);
 
   useEffect(() => {
     if (!sessionId) return;
@@ -269,6 +314,10 @@ export function useWorkHubController() {
       sessionId,
       (event) => {
         if (disposed) return;
+        interactionRevision.current++;
+        const terminal = event.type === 'complete' || event.type === 'abort' || event.type === 'error';
+        setInteractions((current) => terminal ? clearInteractions(current, sessionId) : reduceInteractionQueues(current, sessionId, event));
+        if (terminal) setTurnStates((current) => Object.fromEntries([...Object.entries(current), [event.turnId, event.type === 'complete' ? 'completed' : event.type === 'abort' ? 'aborted' : 'failed']].slice(-64)));
         if (event.type === 'queue_update') {
           const entries = [...(event.steeringEntries ?? []), ...(event.followupEntries ?? [])];
           setMessageQueue({ entries: entries.filter((entry) => entry.state === 'queued'), revision: event.queueRevision });
@@ -298,9 +347,9 @@ export function useWorkHubController() {
           setTransientMessages((previous) => previous.filter((message) => message.id !== event.messageId));
         }
         reconcileAdmission(sessionId, event.turnId, event.type === 'abort' || event.type === 'error' || event.type === 'complete');
-        setLiveTurn((previous) => {
-          const next = applyLiveTurnEvent(previous, event, localeRef.current);
-          return next ? reconcileTerminalLiveTurn(next, transcriptRef.current.messages) : next;
+        setLiveTurns((previous) => {
+          const next = applyLiveTurnBufferEvent(previous, event, localeRef.current);
+          return next ? reconcileLiveTurnBuffer(next, transcriptRef.current.messages) : next;
         });
       },
       (reason) => {
@@ -312,14 +361,12 @@ export function useWorkHubController() {
         if (disposed) return;
         observationPhase = phase;
         handle?.observationChanged(phase);
-        if (phase === 'ready') void recoverSend();
+        if (phase === 'ready') { refreshInteractions.current(); void recoverSend(); }
       },
+      (projection) => { if (!disposed) setExecution(projection); },
     );
     const opening = services.openTranscript(sessionId, (snapshot) => {
       if (disposed) return;
-      transcriptRef.current = snapshot;
-      setTranscript(snapshot);
-      if (snapshot.ready && observationPhase === 'ready') setReadError(undefined);
       const attempt = pendingSend.current;
       if (attempt?.sessionId === sessionId) {
         const messages = snapshot.messages.filter((message) => message.turnId === attempt.input.turnId);
@@ -329,13 +376,23 @@ export function useWorkHubController() {
       const queued = pendingQueued.current;
       if (queued?.sessionId === sessionId && snapshot.messages.some((message) =>
         message.type === 'user' && message.id === queued.messageId)) queued.observed = true;
-      setTransientMessages((previous) => previous.filter((pending) =>
-        !snapshot.messages.some((message) => message.type === 'user' &&
-          (message.id === pending.id || (pending.id === pending.hostTurnId && message.turnId === pending.hostTurnId))),
-      ));
-      setLiveTurn((previous) =>
-        previous ? reconcileTerminalLiveTurn(previous, [...snapshot.messages]) : previous,
-      );
+      viewportNavigation.commitRange(sessionId, () => {
+        if (disposed) return;
+        transcriptRef.current = snapshot;
+        setTranscript(snapshot);
+        if (snapshot.ready && observationPhase === 'ready') setReadError(undefined);
+        setTransientMessages((previous) => previous.filter((pending) =>
+          !snapshot.messages.some((message) => message.type === 'user' &&
+            (message.id === pending.id || (pending.id === pending.hostTurnId && message.turnId === pending.hostTurnId))),
+        ));
+        const settled = snapshot.messages.filter((message) =>
+          message.type === 'assistant' && settledBeforePublication.current.delete(message.id));
+        setLiveTurns((previous) => {
+          let next = previous;
+          for (const message of settled) if (next) next = settleLiveTurnBufferStep(next, message.id);
+          return next ? reconcileLiveTurnBuffer(next, snapshot.messages) : next;
+        });
+      });
     }, transcriptAbort.signal, readFailed);
     void opening
       .then((opened) => {
@@ -361,7 +418,7 @@ export function useWorkHubController() {
   const attempt = pendingSend.current;
   const pendingTurnId = attempt && attempt.sessionId === sessionId && (attempt.admission === 'pending' || attempt.admission === 'unknown') ? attempt.input.turnId : undefined;
   const runningTurnId =
-    pendingTurnId ?? (liveTurn && !liveTurn.terminal ? liveTurn.turnId : session?.runningTurnIds?.[0]);
+    pendingTurnId ?? activeHostTurn(execution)?.turnId;
   const busy = sending || Boolean(runningTurnId);
   async function send(text: string, attachments: AttachmentRef[], requestedMode?: FollowUpMode) {
     if (!sessionId || !text.trim() || sendingRef.current) return false;
@@ -376,6 +433,7 @@ export function useWorkHubController() {
       return false;
     }
     const queuedTurnId = sameQueued?.turnId ?? runningTurnId;
+    onSubmit?.();
     sendingRef.current = true;
     setSending(true);
     setError(undefined);
@@ -387,6 +445,13 @@ export function useWorkHubController() {
           id: attempt.messageId, hostTurnId: queuedTurnId, text, attachments: [...attachments],
           ts: Date.now(), transientPlacement: attempt.placement, pendingSteering: attempt.placement === 'current_turn',
         }]);
+        viewportNavigation.followLatest(target);
+        // A queued message becomes visible only where the tail is, and its own
+        // retry guard waits on seeing it. Issue the read before admission so an
+        // uncertain enqueue — the case that arms the guard — is covered too.
+        void range.current?.loadLatest().catch((reason: unknown) => {
+          if (currentSessionId.current === target) report(reason);
+        });
         const result = await services.enqueueMessage(target, attempt.messageId, text, attachments, attempt.placement);
         if (result === 'rejected' && pendingQueued.current === attempt) {
           pendingQueued.current = undefined;
@@ -394,9 +459,6 @@ export function useWorkHubController() {
         }
         if (result !== 'admitted' && !attempt.observed) throw new Error(workHubLiveCopy[localeRef.current][result === 'unknown' ? 'sendUnknown' : 'sendNotAdmitted']);
         if (pendingQueued.current === attempt) pendingQueued.current = undefined;
-        if (currentSessionId.current === target) {
-          viewportNavigation.followLatest(target);
-        }
         return true;
       }
       const previous = pendingSend.current;
@@ -406,9 +468,11 @@ export function useWorkHubController() {
         input: { turnId: sameRejected ? previous.input.turnId : crypto.randomUUID(), text, ...(attachments.length ? { attachments: [...attachments] } : {}) },
         admission: 'pending',
       };
+      const pendingRejectedTurnId = previous?.admission === 'rejected' ? previous.input.turnId : undefined;
       pendingSend.current = attempt;
-      setLiveTurn(armLiveTurn(attempt.input.turnId));
-      setTransientMessages((previous) => [...previous.filter((message) => message.hostTurnId !== attempt.input.turnId), {
+      setTurnStates((states) => ({ ...states, [attempt.input.turnId]: 'running' }));
+      setLiveTurns((previous) => retainLiveTurn(previous, armLiveTurn(attempt.input.turnId)));
+      setTransientMessages((previous) => [...previous.filter((message) => message.hostTurnId !== attempt.input.turnId && message.hostTurnId !== pendingRejectedTurnId), {
         id: attempt.input.turnId, hostTurnId: attempt.input.turnId, text, ts: Date.now(),
         attachments: [...attachments], transientPlacement: 'current_turn',
       }]);
@@ -417,7 +481,7 @@ export function useWorkHubController() {
       void range.current?.loadLatest().catch((reason: unknown) => {
         if (currentSessionId.current === target) report(reason);
       });
-      const result = await services.answer(target, attempt.input);
+      const result = await services.answer(attempt.sessionId, attempt.input);
       return acceptAnswer(attempt, result);
     } catch (reason) {
       if (queuedTurnId) {
@@ -432,8 +496,8 @@ export function useWorkHubController() {
           attempt.stop = undefined;
           setStopPending(false);
         }
-        setTransientMessages((previous) => previous.filter((message) => message.hostTurnId !== failedTurnId));
-        setLiveTurn((previous) => previous?.turnId === failedTurnId && previous?.unconfirmed ? undefined : previous);
+        if (failedTurnId && attempt?.admission === 'rejected') setTurnStates((states) => ({ ...states, [failedTurnId]: 'failed' }));
+        setLiveTurns((previous) => previous?.filter((turn) => turn.turnId !== failedTurnId || !turn.unconfirmed));
         report(reason);
       }
       return false;
@@ -463,11 +527,14 @@ export function useWorkHubController() {
     llmConnectionId: string;
     llmConnectionSlug: string;
     model: string;
-  }) {
-    if (!sessionId || !session || busy) return;
+  }, thinkingLevel: ThinkingLevel | null = null) {
+    if (!sessionId || !session || busy || configuringModelRef.current) return;
+    configuringModelRef.current = true;
+    setConfiguringModel(true);
     try {
       const result = await services.configureModel(sessionId, {
         expectedRevision: session.revision,
+        thinkingLevel,
         modelTarget: {
           kind: 'explicit',
           connectionId: input.llmConnectionId,
@@ -475,12 +542,23 @@ export function useWorkHubController() {
           model: input.model,
         },
       });
-      refreshSessions.current();
       if (result.kind === 'revision_conflict')
         throw new Error(workHubLiveCopy[localeRef.current].modelConflict);
+      // Complete the selection only after its authoritative model and revision
+      // are available to the next pick. Older background reads must not undo it.
+      const updated = await services.getSession(sessionId);
+      if (currentSessionId.current !== sessionId) return;
+      setSessions((current) => current.map((entry) =>
+        entry.id === sessionId && entry.revision <= updated.revision ? updated : entry,
+      ));
       setError(undefined);
     } catch (reason) {
+      if (currentSessionId.current !== sessionId) return;
+      refreshSessions.current();
       report(reason);
+    } finally {
+      configuringModelRef.current = false;
+      setConfiguringModel(false);
     }
   }
   async function mutateQueue(action: (target: string) => Promise<void>) {
@@ -496,6 +574,19 @@ export function useWorkHubController() {
     sessions,
     choices,
     transcript,
+    activeForm: activeInteraction?.type === 'form_request' ? activeInteraction : undefined,
+    respondToUserForm: async (response: import('@maka/core/interaction').InteractionFormResponse) => {
+      if (!sessionId) throw new Error('WorkHub Session is unavailable');
+      await services.respondToUserForm(sessionId, response);
+    },
+    activeQuestion,
+    activeInteraction,
+    turnStates,
+    pendingTurnId: pendingSend.current?.sessionId === sessionId ? pendingSend.current?.input.turnId : undefined,
+    respondToUserQuestion: async (response: import('@maka/core/user-question').UserQuestionResponse) => {
+      if (!sessionId) throw new Error('WorkHub Session is unavailable');
+      await services.respondToUserQuestion(sessionId, response);
+    },
     transientMessages,
     messageQueue,
     updateQueuedEntry: (entryId: string, revision: number, text: string) => mutateQueue((target) => services.updateQueueEntry(target, entryId, revision, text)),
@@ -504,6 +595,8 @@ export function useWorkHubController() {
     reorderQueuedEntries: (entryIds: readonly string[]) => mutateQueue((target) => services.reorderQueueEntries(target, entryIds)),
     viewportNavigation,
     liveTurn,
+    liveTurns,
+    activeTurn: chatTurnActivity(execution),
     busy,
     sending,
     stopPending,
@@ -512,6 +605,11 @@ export function useWorkHubController() {
     send,
     stop,
     changeModel,
+    configuringModel,
+    changeThinkingLevel: async (level: ThinkingLevel | undefined) => {
+      if (!session?.llmConnectionId || !session.llmConnectionSlug || !session.model) return;
+      await changeModel({ llmConnectionId: session.llmConnectionId, llmConnectionSlug: session.llmConnectionSlug, model: session.model }, level ?? null);
+    },
     retry: () => {
       const attempt = pendingSend.current;
       if (readError && sessionId) {
@@ -523,14 +621,21 @@ export function useWorkHubController() {
         void send(attempt.input.text, attempt.input.attachments ?? []);
       } else retryResolution.current();
     },
-    loadOlder: () => range.current?.loadOlder(),
+    prefetchHistory: (edge: 'older' | 'newer') =>
+      range.current?.prefetchHistory(edge) ?? Promise.resolve(false),
+    retainWindow: (window: { firstTurnId: string; lastTurnId: string }) =>
+      range.current?.retain(window),
     loadLatest: () => range.current?.loadLatest(),
     report,
     streamingSettled(messageId?: string) {
-      if (!messageId || !transcriptRef.current.messages.some((message) => message.id === messageId && message.type === 'assistant')) return;
-      setLiveTurn((previous) => {
-        const next = previous ? settleLiveTurnStep(previous, messageId) : undefined;
-        return next ? reconcileTerminalLiveTurn(next, transcriptRef.current.messages) : next;
+      if (!messageId || currentSessionId.current !== sessionId) return;
+      if (!transcriptRef.current.messages.some((message) => message.id === messageId && message.type === 'assistant')) {
+        settledBeforePublication.current.add(messageId);
+        return;
+      }
+      setLiveTurns((previous) => {
+        const next = previous ? settleLiveTurnBufferStep(previous, messageId) : undefined;
+        return next ? reconcileLiveTurnBuffer(next, transcriptRef.current.messages) : next;
       });
     },
   };

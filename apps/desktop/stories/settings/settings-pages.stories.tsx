@@ -65,9 +65,14 @@ import type { LocalMemoryBackupInfo, LocalMemoryEntryPreview, LocalMemoryState }
 import { buildHealthSnapshot } from '@maka/core/health';
 import { createDefaultSettings, mergeSettings } from '@maka/core/settings';
 import { DEFAULT_DAILY_REVIEW_CONFIG } from '@maka/core/daily-review';
+import type { PetPackManifestV1 } from '@maka/core/pet';
 import { SettingsSurface } from '../../src/renderer/settings/settings-surface';
 import { ConnectionSettingsServicesProvider } from '../../src/renderer/features/connection-settings';
 import { RuntimeHostManagementServicesProvider } from '../../src/renderer/features/runtime-host-management';
+import {
+  SessionBundleServicesProvider,
+  type SessionBundleServices,
+} from '../../src/renderer/features/session-bundle';
 import { createDesktopConnectionSettingsServices } from '../../src/renderer/platform/desktop/create-connection-settings-services';
 import { createDesktopRuntimeHostManagementServices } from '../../src/renderer/platform/desktop/create-runtime-host-management-services';
 import { createUiLocaleUpdateGate } from '../../src/renderer/settings/ui-locale-update-gate';
@@ -118,6 +123,13 @@ type Story = StoryObj<typeof meta>;
 
 const NOW = Date.now();
 const noop = () => undefined;
+
+// Both halves open a native file dialog, which a story has none of. Cancelled is
+// the outcome that leaves the page exactly as it was.
+const sessionBundleServices: SessionBundleServices = {
+  exportBundle: async () => ({ ok: false, reason: 'canceled' }),
+  importBundle: async () => ({ ok: false, reason: 'canceled' }),
+};
 
 function makeConnection(input: {
   slug: string;
@@ -170,17 +182,23 @@ const connectionsBridge: Omit<ConnectionsBridge, 'oauth'> = {
   async create(next) {
     return makeConnection({ slug: next.slug, name: next.name, providerType: next.providerType });
   },
-  async update(identity, patch) {
+  async update(identity, input) {
+    const patch = { ...input };
     const current = connections.find((c) => c.connectionId === identity.connectionId && c.slug === identity.slug)!;
+      if (patch.modelOverride) {
+        const { modelId, value, enable } = patch.modelOverride;
+        patch.modelOverrides = { ...current.modelOverrides, [modelId]: value };
+        if (enable) patch.enabledModelIds = [...new Set([...(current.enabledModelIds ?? []), modelId])];
+      }
     return {
       ...current,
       ...patch,
-      // Tri-state relayModelProfiles (null clears) never stores null on a
+      // Tri-state modelOverrides (null clears) never stores null on a
       // connection — clear maps to absent.
-      relayModelProfiles:
-        patch.relayModelProfiles === undefined
-          ? current.relayModelProfiles
-          : (patch.relayModelProfiles ?? undefined),
+      modelOverrides:
+        patch.modelOverrides === undefined
+          ? current.modelOverrides
+          : (patch.modelOverrides ?? undefined),
       requestBodyOverlay:
         patch.requestBodyOverlay === undefined
           ? current.requestBodyOverlay
@@ -249,6 +267,8 @@ function makeUsageLog(input: {
   };
 }
 
+const USAGE_PAGINATION_SENTINEL = 'Usage pagination page two sentinel';
+
 const usageLogs: UsageStats['logs'] = [
   makeUsageLog({
     id: '1',
@@ -275,6 +295,23 @@ const usageLogs: UsageStats['logs'] = [
     turnId: undefined,
     costUsd: undefined,
   },
+  ...Array.from({ length: 47 }, (_, index) => {
+    const id = String(index + 6);
+    return makeUsageLog({
+      id,
+      kind: 'model',
+      model: 'gpt-5',
+      sessionName: `Usage pagination fixture ${id}`,
+      minutesAgo: index + 40,
+    });
+  }),
+  makeUsageLog({
+    id: '53',
+    kind: 'model',
+    model: 'gpt-5',
+    sessionName: USAGE_PAGINATION_SENTINEL,
+    minutesAgo: 90,
+  }),
 ];
 
 // Priced provenance so the fixtures' costs read as authoritative
@@ -961,6 +998,60 @@ const makaBridge = {
 
 const withSettingsBridge = withScopedMakaBridge(makaBridge);
 
+let typographyStoryDefaultSlug: string | null = 'zai-live';
+let typographyStorySelectedPetId: string | null = 'storybook.typography-pet';
+
+const typographyStoryPet = {
+  schema: 'maka.pet/v1',
+  id: 'storybook.typography-pet',
+  displayName: 'Typography Pet',
+  description: 'Exercises action-to-badge transitions in the custom pet rows.',
+  spriteSheet: {
+    path: 'assets/typography-pet.png',
+    format: 'png',
+    frameWidth: 32,
+    frameHeight: 32,
+    columns: 1,
+    rows: 1,
+    frameCount: 1,
+  },
+  animations: {
+    idle: { frames: [0], fps: 1, loop: true },
+    working: { frames: [0], fps: 1, loop: true },
+    'needs-input': { frames: [0], fps: 1, loop: true },
+    ready: { frames: [0], fps: 1, loop: true },
+    blocked: { frames: [0], fps: 1, loop: true },
+  },
+} satisfies PetPackManifestV1;
+
+const withConnectionDefaultTypographyBridge = withScopedMakaBridge({
+  ...makaBridge,
+  connections: {
+    ...connectionsBridge,
+    getSnapshot: async () => ({
+      connections,
+      defaultConnection: typographyStoryDefaultSlug,
+      chatModelChoices: buildChatModelChoices(connections),
+    }),
+    setDefault: async (connection: Parameters<ConnectionsBridge['setDefault']>[0]) => {
+      typographyStoryDefaultSlug = connection?.slug ?? null;
+    },
+  },
+} satisfies Record<string, unknown>);
+
+const withPetActionBadgeTypographyBridge = withScopedMakaBridge({
+  ...makaBridge,
+  pets: {
+    ...makaBridge.pets,
+    list: async () => [typographyStoryPet],
+    getSelection: async () => typographyStorySelectedPetId,
+    select: async (petId: string | null) => {
+      typographyStorySelectedPetId = petId;
+      return { ok: true as const, selectedPetId: petId };
+    },
+  },
+} satisfies Record<string, unknown>);
+
 /**
  * What the production App Update provider reads inside `SettingsStory`. Each
  * call goes to `window.maka.app` at call time rather than capturing the shared
@@ -1353,6 +1444,26 @@ function archivedTask(
   };
 }
 
+function exportableTask(
+  id: string,
+  name: string,
+  overrides: Partial<SessionSummary> = {},
+): SessionSummary {
+  return { ...archivedTask(id, name, 1, overrides), isArchived: false };
+}
+
+function storySubagentRuntime(agentName: string): SessionSummary['subagentRuntime'] {
+  return {
+    schemaVersion: 1,
+    definitionVersion: 1,
+    agentId: agentName.toLowerCase(),
+    agentName,
+    profile: agentName.toLowerCase(),
+    toolNames: ['Read'],
+    categoryPolicy: { read: 'allow' },
+  } as SessionSummary['subagentRuntime'];
+}
+
 function storyLinkedTo(parentSessionId: string): Partial<SessionSummary> {
   return {
     subagentParent: {
@@ -1363,6 +1474,28 @@ function storyLinkedTo(parentSessionId: string): Partial<SessionSummary> {
     },
   };
 }
+
+// Live tasks, for the export half. Archived ones are left out of that list on
+// purpose -- a bundle is for carrying work somewhere, not for reviving it -- so
+// the export story needs its own fixture rather than the archived one.
+const exportTaskSessions: SessionSummary[] = [
+  exportableTask('task-compaction', 'Refactor the compaction module'),
+  exportableTask('task-calls', 'Find the call sites', {
+    ...storyLinkedTo('task-compaction'),
+    subagentRuntime: storySubagentRuntime('Explore'),
+  }),
+  // A subagent spawns its own, which is why the parent row counts the subtree
+  // rather than its children.
+  exportableTask('task-usage', 'Scan the usage tables', {
+    ...storyLinkedTo('task-calls'),
+    subagentRuntime: storySubagentRuntime('Explore'),
+  }),
+  exportableTask('task-checkpoint', 'Check the checkpoint read path', {
+    ...storyLinkedTo('task-compaction'),
+    subagentRuntime: storySubagentRuntime('general-purpose'),
+  }),
+  exportableTask('task-hello', 'Say hello'),
+];
 
 const archivedTaskSessions: SessionSummary[] = [
   archivedTask('task-spawn', 'Single agent_spawn with local_read for runtime/src inspection', 6, {
@@ -1547,7 +1680,7 @@ function withUsageStoryBridge(
       ): Promise<UpdateAppSettingsResult> => ({
         settings: mergeSettings(settings, patch),
       }),
-      usageStats: async (): Promise<UsageStats> => stats,
+      usageStats: async (): Promise<UsageStats> => ({ ...stats, logs: [...stats.logs] }),
     },
   } satisfies Record<string, unknown>);
 }
@@ -1740,6 +1873,7 @@ function renderedLinkColors(renderedLink: HTMLElement) {
 }
 
 type SettingsStoryProps = {
+  reopenable?: boolean;
   section: SettingsSection;
   connections?: LlmConnection[];
   defaultSlug?: string | null;
@@ -1769,13 +1903,6 @@ function focusedRowOutline() {
   return { outlineStyle: style.outlineStyle, outlineWidth: style.outlineWidth };
 }
 
-function fieldChrome(element: HTMLElement) {
-  const field = element.parentElement;
-  if (!field) throw new Error('Settings field chrome is missing');
-  const style = getComputedStyle(field);
-  return `${style.borderColor} | ${style.boxShadow}`;
-}
-
 /**
  * The provider has to sit above the body: 已归档任务's story bridge confirms
  * through the same toast surface the shell's row action uses, and a hook cannot
@@ -1794,6 +1921,7 @@ function SettingsStory(props: SettingsStoryProps) {
 }
 
 function SettingsStoryFrame(props: SettingsStoryProps) {
+  const [open, setOpen] = useState(true);
   const archivedTasks = useArchivedTasksStoryBridge(props.archivedTaskSessions ?? []);
   const initialFocusRef = useRef<HTMLButtonElement>(null);
   const [uiLocaleUpdateGate] = useState(createUiLocaleUpdateGate);
@@ -1817,6 +1945,7 @@ function SettingsStoryFrame(props: SettingsStoryProps) {
 
   return (
     <>
+      {props.reopenable && <button onClick={() => setOpen(!open)}>{open ? 'Close settings' : 'Reopen settings'}</button>}
       {/* `100dvh`, not `100%`: `SettingsSurface` is a `Layout height="fill"`,
           which needs a bounded ancestor to hand its content pane a scroll
           box. Under Storybook's fullscreen body a percentage height resolves
@@ -1834,7 +1963,8 @@ function SettingsStoryFrame(props: SettingsStoryProps) {
       >
         <ConnectionSettingsServicesProvider services={connectionSettingsServices}>
           <RuntimeHostManagementServicesProvider services={runtimeHostManagementServices}>
-            <SettingsSurface
+            <SessionBundleServicesProvider services={sessionBundleServices}>
+            {open && <SettingsSurface
               onClose={noop}
               themePref={themePref}
               onThemeChange={setThemePref}
@@ -1855,7 +1985,8 @@ function SettingsStoryFrame(props: SettingsStoryProps) {
               onRemoteHostAdded={noop}
               onSelectedRuntimeHostProfileIdChange={noop}
               snapshotCache={snapshotCache}
-            />
+            />}
+            </SessionBundleServicesProvider>
           </RuntimeHostManagementServicesProvider>
         </ConnectionSettingsServicesProvider>
       </div>
@@ -1892,7 +2023,7 @@ async function openDailyReviewModelSelector(canvasElement: HTMLElement): Promise
   );
   await userEvent.click(selector);
   await waitForStoryCondition(
-    () => selector.getAttribute('aria-expanded') === 'true',
+    () => canvasElement.querySelector('.maka-model-wheel-viewport') !== null,
     'Daily Review model selector did not open',
   );
   return selector;
@@ -1902,6 +2033,31 @@ async function openDailyReviewModelSelector(canvasElement: HTMLElement): Promise
 export const Models: Story = {
   decorators: [withSettingsBridge],
   render: () => <SettingsStory section="models" />,
+};
+// Real path: 设置 → 模型 → 连接详情, comparing the action before selection
+// with the settled state after a connection is the default. Both occupy the
+// same header slot, so changing state must not shrink the label typography.
+export const ModelsDefaultBadgeTypography: Story = {
+  decorators: [withConnectionDefaultTypographyBridge],
+  render: () => {
+    typographyStoryDefaultSlug = 'zai-live';
+    return <SettingsStory section="models" />;
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+
+    await userEvent.click(await canvas.findByText('OpenAI Review'));
+    const setDefaultButton = await canvas.findByRole('button', { name: '设为默认' });
+    const actionFontSize = getComputedStyle(setDefaultButton).fontSize;
+
+    await userEvent.click(setDefaultButton);
+    const detailHeader = await canvas.findByRole('toolbar', { name: 'OpenAI Review' });
+    const defaultLabel = within(detailHeader).getByText('默认');
+    const defaultBadge = defaultLabel.closest<HTMLElement>('.astryx-badge');
+    if (!defaultBadge) throw new Error('Connection default-state badge did not render');
+
+    await expect(getComputedStyle(defaultBadge).fontSize).toBe(actionFontSize);
+  },
 };
 // Real path: sidebar footer 设置 → 子 Agent, with multiple approved model routes.
 export const Subagents: Story = {
@@ -1933,29 +2089,38 @@ export const General: Story = {
   decorators: [withSettingsBridge],
   render: () => <SettingsStory section="general" />,
 };
-// Real path: 设置 → 通用 → 默认模型. The popover remains a DOM descendant
-// of its Item after entering the top layer, so focused search must not ring
-// the whole settings row.
+// Real path: 设置 → 通用 → 默认模型. Focus stays on the floating magnetic wheel;
+// the containing settings row must not add a second focus ring.
 export const GeneralPickerOpenFocusRing: Story = {
   decorators: [withSettingsBridge],
   render: () => <SettingsStory section="general" />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     const trigger = await canvas.findByRole('button', { name: '默认模型' });
+    trigger.scrollIntoView({ block: 'center' });
+    const rows = () => Array.from(canvasElement.querySelectorAll('.astryx-item')).map((element) => {
+      const { x, y, width, height } = element.getBoundingClientRect();
+      return { x, y, width, height };
+    });
+    const before = rows();
     await userEvent.click(trigger);
     await waitFor(() => {
       const active = document.activeElement as HTMLElement | null;
-      expect(document.querySelector('[popover]:popover-open')).not.toBeNull();
-      expect(active?.closest('[popover]:popover-open')).not.toBeNull();
+      expect(active?.matches('.maka-model-wheel-viewport')).toBe(true);
     });
     const active = document.activeElement as HTMLElement;
     const row = active.closest<HTMLElement>('.astryx-item');
     expect(row).not.toBeNull();
     expect(row ? getComputedStyle(row).outlineStyle : null).toBe('none');
+    expect(rows()).toEqual(before);
+    await userEvent.keyboard('{Escape}');
+    await waitFor(() => expect(trigger).toHaveFocus());
+    expect(rows()).toEqual(before);
+    await userEvent.click(trigger);
   },
 };
 
-// Real path: keyboard navigation through 设置 → 通用. The field carries the
+// Real path: keyboard navigation through 设置 → 通用. The model button carries the
 // visible focus treatment; its containing Item does not add a second ring.
 export const GeneralKeyboardFocusRing: Story = {
   decorators: [withSettingsBridge],
@@ -1964,16 +2129,19 @@ export const GeneralKeyboardFocusRing: Story = {
     const canvas = within(canvasElement);
     const tone = await canvas.findByRole('textbox', { name: '助手语气偏好' });
     const trigger = canvas.getByRole('button', { name: '默认模型' });
-    const resting = fieldChrome(trigger);
     tone.focus();
     await tabTo(trigger);
     expect(focusedRowOutline()?.outlineStyle).toBe('none');
-    await waitFor(() => expect(fieldChrome(trigger)).not.toBe(resting));
+    await waitFor(() => {
+      const style = getComputedStyle(trigger);
+      expect(style.outlineStyle).toBe('solid');
+      expect(Number.parseFloat(style.outlineWidth)).toBeGreaterThan(0);
+    });
   },
 };
 
 // Real path: Windows High Contrast keyboard navigation through 设置 → 通用.
-// The field loses its own paint there, so the Item retains the focus ring.
+// The model button's outline survives, and the Item retains its shared fallback.
 export const GeneralForcedColorsFocusRing: Story = {
   decorators: [withSettingsBridge],
   render: () => <SettingsStory section="general" />,
@@ -1981,10 +2149,10 @@ export const GeneralForcedColorsFocusRing: Story = {
     const canvas = within(canvasElement);
     const tone = await canvas.findByRole('textbox', { name: '助手语气偏好' });
     const trigger = canvas.getByRole('button', { name: '默认模型' });
-    const resting = fieldChrome(trigger);
     tone.focus();
     await tabTo(trigger);
-    expect(fieldChrome(trigger)).toBe(resting);
+    expect(getComputedStyle(trigger).outlineStyle).toBe('solid');
+    expect(Number.parseFloat(getComputedStyle(trigger).outlineWidth)).toBeGreaterThan(0);
     expect(focusedRowOutline()?.outlineStyle).toBe('solid');
   },
 };
@@ -2081,6 +2249,50 @@ export const GeneralCachedRevalidation: Story = {
     await expect(mixedBoundary).not.toHaveAttribute('inert');
     await canvas.findByText('正在加载设置');
     await expect(canvas.queryByRole('alert')).not.toBeInTheDocument();
+  },
+};
+
+// Real path: unmount and reopen Settings with its renderer-owned snapshot cache.
+// Observe every DOM commit, not just the final ready screen after refresh.
+export const GeneralReopenKeepsReadyControls: Story = {
+  decorators: [withGeneralHostGenerationRevalidationBridge],
+  render: () => {
+    resetGenerationStoryBridge();
+    return <SettingsStory section="general" reopenable />;
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => {
+      expect(canvas.getByRole('textbox', { name: '助手语气偏好' })).toBeEnabled();
+      expect(canvas.getByRole('button', { name: '默认模型' })).toBeEnabled();
+    });
+    await userEvent.click(canvas.getByRole('button', { name: 'Close settings' }));
+    expect(canvas.queryByRole('textbox', { name: '助手语气偏好' })).not.toBeInTheDocument();
+    let missingControls = false;
+    let loadingAlert = false;
+    const inspect = () => {
+      const surface = canvasElement.querySelector('.settingsSurface');
+      const main = surface?.querySelector('main, [role="main"]');
+      if (!surface || !main) return;
+      missingControls ||= main.querySelector('textarea') === null ||
+        within(main as HTMLElement).queryByRole('button', { name: '默认模型' }) === null;
+      loadingAlert ||= [...surface.querySelectorAll('[role="alert"]')]
+        .some((alert) => alert.textContent?.includes('正在加载设置'));
+    };
+    const observer = new MutationObserver(inspect);
+    observer.observe(canvasElement, { childList: true, subtree: true, characterData: true });
+    try {
+      await userEvent.click(canvas.getByRole('button', { name: 'Reopen settings' }));
+      await waitFor(() => {
+        expect(canvas.getByRole('textbox', { name: '助手语气偏好' })).toBeEnabled();
+        expect(canvas.getByRole('button', { name: '默认模型' })).toBeEnabled();
+      });
+      inspect();
+      expect(missingControls).toBe(false);
+      expect(loadingAlert).toBe(false);
+    } finally {
+      observer.disconnect();
+    }
   },
 };
 // A Runtime Host can be replaced without changing its renderer-facing
@@ -2326,6 +2538,43 @@ export const Appearance: Story = {
     }
   },
 };
+// Real path: 设置 → 外观 → 桌宠. The selected and disabled badges each
+// replace a small action in the same row, so both settled states must retain
+// the action label's type tier.
+export const PetsActionBadgeTypography: Story = {
+  decorators: [withPetActionBadgeTypographyBridge],
+  globals: { locale: 'zh-CN' },
+  render: () => {
+    typographyStorySelectedPetId = typographyStoryPet.id;
+    return <SettingsStory section="appearance" />;
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const selectedLabel = await canvas.findByText('正在使用');
+    const selectedBadge = selectedLabel.closest<HTMLElement>('.astryx-badge');
+    const selectedActions = selectedBadge?.closest<HTMLElement>('.settingsRowEnd');
+    const removeButton = selectedActions
+      ? within(selectedActions).getByRole('button', { name: '删除' })
+      : null;
+    if (!selectedBadge || !removeButton) {
+      throw new Error('Selected-pet action row did not render');
+    }
+    await expect(getComputedStyle(selectedBadge).fontSize).toBe(
+      getComputedStyle(removeButton).fontSize,
+    );
+
+    const disableButton = await canvas.findByRole('button', { name: '关闭宠物' });
+    const disableActionFontSize = getComputedStyle(disableButton).fontSize;
+    await userEvent.click(disableButton);
+    const disabledLabels = await canvas.findAllByText('已关闭');
+    const disabledBadge = disabledLabels
+      .map((label) => label.closest<HTMLElement>('.astryx-badge'))
+      .find((badge): badge is HTMLElement => badge !== null);
+    if (!disabledBadge) throw new Error('Disabled-pet action badge did not render');
+    await expect(getComputedStyle(disabledBadge).fontSize).toBe(disableActionFontSize);
+  },
+};
+
 /** #1362: proxy + auth enabled so the full form-grid stack renders. */
 // Real path: 设置 → 使用统计 → 供应商统计, before any usage has been recorded.
 export const UsageEmpty: Story = {
@@ -2373,6 +2622,8 @@ export const UsageLongTail: Story = {
     if (showDetails) await userEvent.click(showDetails);
 
     const table = await canvas.findByRole('table', { name: usageCopy.tables.requestsAria });
+    expect(table.querySelectorAll('tbody tr')).toHaveLength(50);
+    expect(within(table).queryByText(USAGE_PAGINATION_SENTINEL)).not.toBeInTheDocument();
     const timeCell = table.querySelector<HTMLTableCellElement>('tbody tr td:first-child');
     expect(timeCell).not.toBeNull();
     const timeText = timeCell?.firstElementChild;
@@ -2397,6 +2648,66 @@ export const UsageLongTail: Story = {
       expect(tooltip).toHaveTextContent(longTarget);
     });
     await userEvent.unhover(targetCellText);
+
+    async function goToPageTwo() {
+      const pageTwo = canvas
+        .getAllByRole('button')
+        .find((button) => button.textContent?.trim() === '2');
+      expect(pageTwo).toBeDefined();
+      await userEvent.click(pageTwo!);
+      await waitFor(() => {
+        const secondPageTable = canvas.getByRole('table', {
+          name: usageCopy.tables.requestsAria,
+        });
+        expect(secondPageTable.querySelectorAll('tbody tr')).toHaveLength(3);
+        expect(secondPageTable).toHaveAttribute('aria-rowcount', String(usageLogs.length));
+        expect(secondPageTable.querySelector('tbody tr')).toHaveAttribute('aria-rowindex', '51');
+        expect(within(secondPageTable).getByText(USAGE_PAGINATION_SENTINEL)).toBeInTheDocument();
+      });
+    }
+
+    async function expectFirstPage(reason: string) {
+      await waitFor(() => {
+        const firstPageTable = canvas.getByRole('table', {
+          name: usageCopy.tables.requestsAria,
+        });
+        expect(firstPageTable.querySelectorAll('tbody tr'), reason).toHaveLength(50);
+        expect(within(firstPageTable).getByText(longTarget)).toBeInTheDocument();
+        expect(within(firstPageTable).queryByText(USAGE_PAGINATION_SENTINEL)).not.toBeInTheDocument();
+      });
+    }
+
+    await goToPageTwo();
+    const modelFilter = canvas.getByRole('textbox', { name: usageCopy.filterAria });
+    await userEvent.type(modelFilter, 'zai');
+    await expectFirstPage('model filter should reset pagination');
+
+    await goToPageTwo();
+    const statusFilter = canvas.getByRole('combobox', { name: usageCopy.statusAria });
+    await userEvent.click(canvas.getByRole('button', { name: usageCopy.clearFilters }));
+    await expectFirstPage('clearing filters should reset pagination');
+    expect(modelFilter).toHaveValue('');
+    expect(statusFilter).toHaveTextContent(usageCopy.statuses[0]);
+
+    await goToPageTwo();
+    await userEvent.click(statusFilter);
+    await userEvent.click(
+      await within(document.body).findByRole('option', { name: usageCopy.statuses[1] }),
+    );
+    await expectFirstPage('status filter should reset pagination');
+
+    await userEvent.click(await canvas.findByRole('button', { name: usageCopy.clearFilters }));
+    await goToPageTwo();
+    const nextRange = canvas
+      .getAllByRole('radio')
+      .find((radio) => radio.getAttribute('aria-checked') === 'false');
+    expect(nextRange).toBeDefined();
+    await userEvent.click(nextRange!);
+    await expectFirstPage('changing range should reset pagination');
+
+    await goToPageTwo();
+    await userEvent.click(canvas.getByRole('button', { name: usageCopy.refreshAria }));
+    await expectFirstPage('refreshing should reset pagination');
   },
 };
 // Real path: the same long-content Usage page at the minimum supported window width.
@@ -2544,7 +2855,7 @@ export const DailyReviewNarrow: Story = {
   parameters: { viewport: { defaultViewport: 'mobile2' } },
 };
 
-// Real path with the Astryx model selector expanded.
+// Real path with the shared magnetic model selector expanded.
 // Real path: Settings → Daily Review → Analysis model.
 export const DailyReviewModelSelectorOpen: Story = {
   decorators: [withSettingsBridge],
@@ -3140,6 +3451,25 @@ export const ImportTasks: Story = {
 // over a source that can hold a thousand sessions, so the term is the only way
 // to reach one by name. Typing here proves the box reaches the query rather
 // than filtering the page already on screen.
+/**
+ * Real path: 设置 → 导入/导出任务 → 导出任务.
+ *
+ * A bundle can be rooted at any node, so every row exports; the nesting says
+ * which subtree a row would carry, and the count on a parent is the whole
+ * subtree rather than its children.
+ */
+export const ImportTasksExport: Story = {
+  decorators: [withSettingsBridge],
+  render: () => (
+    <SettingsStory section="import-tasks" archivedTaskSessions={exportTaskSessions} />
+  ),
+  play: async ({ canvasElement }) => {
+    const body = within(canvasElement.ownerDocument.body);
+    await userEvent.click(await body.findByRole('radio', { name: '导出任务' }));
+    await body.findByText('Refactor the compaction module');
+  },
+};
+
 export const ImportTasksSearch: Story = {
   decorators: [withSettingsBridge],
   render: () => <SettingsStory section="import-tasks" />,

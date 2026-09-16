@@ -40,7 +40,10 @@ import {
   WORKHUB_COORDINATION_SESSION_ID,
   WORKHUB_COORDINATION_REPLACEMENT_SCHEMA_VERSION,
 } from '@maka/core/session';
-import { AgentGraphCoordinator } from '@maka/runtime/stream-graph-coordinator';
+import {
+  AgentGraphClientOperationError,
+  AgentGraphCoordinator,
+} from '@maka/runtime/stream-graph-coordinator';
 import { AgentGraphSupervisorWakeCoordinator } from '@maka/runtime/agent-graph-supervisor-wake';
 import {
   BackendRegistry,
@@ -81,13 +84,15 @@ import {
   resolveTurnShellPlan,
   validateShellPreference,
 } from '@maka/runtime/shell-detect';
-import { type MakaTool } from '@maka/runtime/tool-runtime';
+import type { MakaTool } from '@maka/runtime/tool-runtime';
 import { Context } from '@maka/runtime/plugin-kernel';
 import { PluginAgentService } from '@maka/runtime/plugin-agent-service';
 import { PluginAttachmentService } from '@maka/runtime/plugin-attachment-service';
 import { PluginApprovalService } from '@maka/runtime/plugin-approval-service';
 import { PluginFilesystemService } from '@maka/runtime/plugin-fs-service';
 import { PluginLlmService } from '@maka/runtime/plugin-llm-service';
+import { PluginExecutorBackend } from '@maka/runtime/plugin-executor-backend';
+import { PluginExecutorService } from '@maka/runtime/plugin-executor-service';
 import { PluginShellService } from '@maka/runtime/plugin-shell-service';
 import { PluginUserQuestionService } from '@maka/runtime/plugin-user-question-service';
 import { PluginWebService } from '@maka/runtime/plugin-web-service';
@@ -106,9 +111,12 @@ import { PluginLspService } from '@maka/runtime/plugin-lsp-service';
 import { PluginSessionQueryService } from '@maka/runtime/plugin-session-query-service';
 import { PluginShellEnvService } from '@maka/runtime/plugin-shell-env-service';
 import { PluginSkillService } from '@maka/runtime/plugin-skill-service';
-import { type RuntimeHostedRootAuthority } from '@maka/runtime/message-authority';
+import type { RuntimeHostedRootAuthority } from '@maka/runtime/message-authority';
 import { isHostedExecutionTerminal } from './hosted-execution-authority.js';
-import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
+import type {
+  ExecutionPersistenceProvider,
+  ExecutionGraphStore,
+} from '@maka/storage/execution-persistence-provider';
 import { createArtifactAttachmentResourceReader } from '@maka/storage/artifact-stores';
 import { createReadImageSnapshotStore } from '@maka/storage/read-image-snapshot-store';
 import { isSessionNotFoundError } from '@maka/storage/execution-stores';
@@ -156,6 +164,7 @@ import {
 } from './execution-model-authority.js';
 import { HostExecutionInspectCoordinator } from './execution-inspect-coordinator.js';
 import { HostExternalSessionCoordinator } from './external-session-coordinator.js';
+import { HostSessionBundleCoordinator } from './session-bundle-coordinator.js';
 import { HostGoalCoordinator } from './goal-coordinator.js';
 import { HostGoalExecutionCoordinator } from './goal-execution-coordinator.js';
 import { HostHostedExecutionCoordinator } from './hosted-execution-coordinator.js';
@@ -187,6 +196,12 @@ import { MemoryExtractionSessionLane } from './memory-extraction-session-lane.js
 import { type HostMessageRootPort, HostMessageCoordinator } from './message-coordinator.js';
 import { HostNetworkProxyCoordinator } from './network-proxy-coordinator.js';
 import { HostOAuthExecutionAuthority } from './oauth-execution-authority.js';
+import { join } from 'node:path';
+import { toRuntimePolicyProxy } from './runtime-policy-proxy.js';
+import { AcpSetupError } from './acp/connection.js';
+import { installAntigravity } from './acp/antigravity-install.js';
+import { createProxiedFetchTransport } from '@maka/runtime/network/scoped-fetch-transport';
+import { HostExternalAgentSetupCoordinator } from './external-agent-setup-coordinator.js';
 import { HostOAuthCoordinator, type HostOAuthCoordinatorInput } from './oauth-coordinator.js';
 import { HostPlanCoordinator } from './plan-coordinator.js';
 import {
@@ -216,7 +231,10 @@ import {
   createSessionTranscriptReader,
   type SessionTranscriptReader,
 } from './session-transcript-reader.js';
-import { HostSkillCatalogCoordinator } from './skill-catalog-coordinator.js';
+import {
+  HostSkillCatalogCoordinator,
+  SkillCatalogInvocableContextError,
+} from './skill-catalog-coordinator.js';
 import { SkillCatalogRepository } from './skill-catalog-repository.js';
 import { HostSessionTodoCoordinator } from './session-todo-coordinator.js';
 import { HostTurnControlCoordinator } from './turn-control-coordinator.js';
@@ -239,6 +257,7 @@ import {
   shouldResolveHostTavilyWebSearchReadiness,
 } from './web-search-tool.js';
 import { createHostWebFetchService, createHostWebFetchToolFromService } from './web-fetch-tool.js';
+import { buildBackgroundTaskHealthTool } from '@maka/runtime/background-task-health-tool';
 import { createHostExecutionArtifactServices } from './execution-artifacts.js';
 import { openToolResultArchiveEvidenceReader } from '@maka/storage/tool-result-archive-evidence';
 import {
@@ -266,12 +285,14 @@ const CONTEXT_OFFLOAD_LIMITS: ContextOffloadLimits = Object.freeze({
 });
 
 export interface CreateExecutionRuntimeHostCompositionOptions {
+  readonly initialization?: import('../client/connect-or-spawn.js').HostedRuntimeInitialization;
   readonly bootstrapRuntimePolicy?: boolean;
   readonly skillHomeDirectory?: string;
   readonly projectDirectoryRoots?: readonly PublishedProjectDirectoryRoot[];
 }
 
 export interface ExecutionRuntimeHostCompositionDependencies {
+  readonly executionPersistenceProvider?: ExecutionPersistenceProvider;
   readonly primaryBackendFactory?: BackendFactory;
   readonly generateSessionTitle?: HostSessionEffectModel['generateTitle'];
   readonly workHubRoutingModel?: HostWorkHubRoutingModel;
@@ -293,12 +314,14 @@ export async function createExecutionRuntimeHostComposition(
   dependencies: ExecutionRuntimeHostCompositionDependencies = {},
 ): Promise<ExecutionRuntimeHostComposition> {
   const storage = await openStorageWriterComposition(context.owner.lease, {
+    executionProvider: dependencies.executionPersistenceProvider,
     contextOffloadLimits: CONTEXT_OFFLOAD_LIMITS,
     afterRuntimePolicyOpened: async (stores) => {
       if (options.bootstrapRuntimePolicy !== false) {
         await ensureBootstrapRuntimePolicy({
           workspaceRoot: context.owner.capability.canonicalPath,
           stores,
+          initialization: options.initialization,
           onDeferredError: (error) =>
             console.error(
               `[runtime-host] optional bootstrap target could not be configured: ${generalizedErrorMessage(error)}`,
@@ -313,7 +336,7 @@ export async function createExecutionRuntimeHostComposition(
     );
   }
   const stores = storage.execution;
-  let graphControlStore: ReturnType<typeof createAgentGraphControlStore> | undefined;
+  let graphControlStore: ExecutionGraphStore | undefined;
   let graphClient: HostAgentGraphCoordinator | undefined;
   let sessionEffects: HostSessionEffectCoordinator | undefined;
   let memoryExtraction: HostMemoryExtractionCoordinator | undefined;
@@ -324,6 +347,7 @@ export async function createExecutionRuntimeHostComposition(
   let goalExecutions: HostGoalExecutionCoordinator | undefined;
   let pluginPlatform: HostPluginPlatform | undefined;
   let manager: SessionManager | undefined;
+  let invalidatePluginExecutorBackends: () => void = () => undefined;
   let modelMetadataRefresh: ReturnType<typeof startHostModelMetadataRefresh> | undefined;
   let archiveEvidence: Awaited<ReturnType<typeof openToolResultArchiveEvidenceReader>> | undefined;
   try {
@@ -334,6 +358,11 @@ export async function createExecutionRuntimeHostComposition(
     new PluginUserQuestionService(pluginRoot, pluginAgents);
     const pluginFilesystem = new PluginFilesystemService(pluginRoot, pluginAgents);
     const pluginLlm = new PluginLlmService(pluginRoot, pluginAgents);
+    const pluginExecutors = new PluginExecutorService(pluginRoot, {
+      // Retirement aborts its generation before backend disposal begins, so the
+      // terminal event preserves executor-retired instead of looking like Stop.
+      onChanged: () => queueMicrotask(invalidatePluginExecutorBackends),
+    });
     const pluginShellEnv = new PluginShellEnvService(pluginRoot);
     const pluginShell = new PluginShellService(pluginRoot, pluginAgents, pluginShellEnv);
     const pluginWeb = new PluginWebService(pluginRoot, pluginAgents);
@@ -357,6 +386,7 @@ export async function createExecutionRuntimeHostComposition(
       tools: pluginTools,
       systemPrompt: pluginSystemPrompt,
       commands: pluginCommands,
+      executors: pluginExecutors,
     });
     const pluginPlatformCoordinator = new HostPluginPlatformCoordinator(pluginPlatform);
     const openedProjectCatalog = storage.projectCatalog;
@@ -642,6 +672,10 @@ export async function createExecutionRuntimeHostComposition(
     const webFetchService = createHostWebFetchService({
       policy: runtimePolicyStores.operations,
     });
+    const backgroundTaskHealthTool = buildBackgroundTaskHealthTool(
+      runtimeResources!,
+      webFetchService,
+    );
     pluginWeb.bindRuntime({
       search: ({ query, limit, abortSignal }) =>
         webSearchService.search({ query, limit, ...(abortSignal ? { abortSignal } : {}) }),
@@ -664,6 +698,7 @@ export async function createExecutionRuntimeHostComposition(
     const childHostTools = [
       createHostWebSearchToolFromService(webSearchService),
       createHostWebFetchToolFromService(webFetchService),
+      backgroundTaskHealthTool,
       ...runtimePolicy.modelTools,
     ];
     const hostTools = [...childHostTools, ...historyTools];
@@ -672,9 +707,7 @@ export async function createExecutionRuntimeHostComposition(
       hostTools: childHostTools,
       worktreePatchWriteBackAvailable: true,
     });
-    const openedGraphControlStore = createAgentGraphControlStore(
-      context.owner.capability.canonicalPath,
-    );
+    const openedGraphControlStore = stores.graphControlStore;
     graphControlStore = openedGraphControlStore;
     let resolveAvailableToolNames: ((sessionId: string) => Promise<string[]>) | undefined;
     let resolveNewSessionToolNames:
@@ -709,12 +742,40 @@ export async function createExecutionRuntimeHostComposition(
       async (input, connection) => {
         if (input.target.kind === 'session') {
           const sessionId = input.target.sessionId;
-          const header = await stores.sessionStore.readHeaderSnapshot(sessionId);
-          const preview = await requireClientCapabilities(
-            clientCapabilities,
-          ).runWithSessionBindingPreview(sessionId, connection.connectionId, () =>
-            requireToolNameResolver(resolveAvailableToolNames)(sessionId),
-          );
+          let header;
+          try {
+            header = await stores.sessionStore.readHeaderSnapshot(sessionId);
+          } catch (error) {
+            if (isSessionNotFoundError(error)) {
+              throw new SkillCatalogInvocableContextError('not_found', 'Session does not exist');
+            }
+            throw error;
+          }
+          if (header.isArchived) {
+            throw new SkillCatalogInvocableContextError('session_archived', 'Session is archived');
+          }
+          let preview;
+          try {
+            preview = await requireClientCapabilities(
+              clientCapabilities,
+            ).runWithSessionBindingPreview(sessionId, connection.connectionId, () =>
+              requireToolNameResolver(resolveAvailableToolNames)(sessionId),
+            );
+          } catch (error) {
+            if (isSessionNotFoundError(error)) {
+              throw new SkillCatalogInvocableContextError('not_found', 'Session does not exist');
+            }
+            if (
+              error instanceof AgentGraphClientOperationError &&
+              error.code === 'session_archived'
+            ) {
+              throw new SkillCatalogInvocableContextError(
+                'session_archived',
+                'Session is archived',
+              );
+            }
+            throw error;
+          }
           if (!preview.ok) throw new Error(preview.message);
           return {
             projectRoot: header.cwd,
@@ -751,6 +812,7 @@ export async function createExecutionRuntimeHostComposition(
     let memory: HostMemoryCoordinator | undefined;
     let clientCapabilities: HostClientCapabilityCoordinator | undefined;
     let oauth: HostOAuthCoordinator | undefined;
+    let externalAgentSetup: HostExternalAgentSetupCoordinator | undefined;
     let scheduledTasks: HostScheduledTaskCoordinator | undefined;
     let scheduledTaskTool: MakaTool | undefined;
     let goal: HostGoalCoordinator | undefined;
@@ -1009,6 +1071,23 @@ export async function createExecutionRuntimeHostComposition(
         prepare: (backendContext) => prepareHostAiSdkBackend(hostAiSdkBackendInput(backendContext)),
       },
     );
+    backends.register('plugin-executor', {
+      prepare: async (backendContext) => {
+        const executorId = backendContext.header.executorId;
+        if (!executorId) throw new Error('Plugin executor Session is missing its executor id');
+        const binding = pluginExecutors.bind(backendContext.sessionId, executorId);
+        return {
+          providerStateIdentity: binding.providerStateIdentity,
+          build: (factoryContext) =>
+            new PluginExecutorBackend({
+              sessionId: factoryContext.sessionId,
+              cwd: factoryContext.header.cwd,
+              ...(factoryContext.systemPrompt ? { instructions: factoryContext.systemPrompt } : {}),
+              binding,
+            }),
+        };
+      },
+    });
     const runtimeAuthority: RuntimeHostedRootAuthority = {
       bindRun: (identity) => messages.bindRun(identity),
       executeRoot: (input) =>
@@ -1062,6 +1141,7 @@ export async function createExecutionRuntimeHostComposition(
     };
     resolveAvailableToolNames = async (sessionId: string): Promise<string[]> => {
       const header = await stores.sessionStore.readHeaderSnapshot(sessionId);
+      if (header.backend === 'plugin-executor') return [];
       if (header.subagentRuntime) {
         if (!header.subagentParent) {
           throw new Error('Subagent runtime snapshot requires a linked child session');
@@ -1258,6 +1338,14 @@ export async function createExecutionRuntimeHostComposition(
       toolBoundaryProtocol: stores.runtimeEventStore.toolBoundaryProtocol,
       backends,
       subagentCatalog,
+      assertChildExecutorAvailable: (parentSessionId, executorId) => {
+        const identity = pluginExecutors.identity(parentSessionId, executorId);
+        if (identity.scopeId !== 'profile') {
+          throw new Error(
+            `Session-scoped executor cannot be inherited by a child Session: ${executorId}`,
+          );
+        }
+      },
       newId: randomUUID,
       now: Date.now,
       safeBoundaryResumeEnabled: process.env.MAKA_RUNTIME_SAFE_BOUNDARY_RESUME === '1',
@@ -1288,6 +1376,15 @@ export async function createExecutionRuntimeHostComposition(
         },
       }),
       runBackendActivation: (operation) => runtimePolicyActivation.runBackendActivation(operation),
+      resolveFreshTurnToolMode: async (header) => {
+        // WorkHub keeps one permanent Session, so creation-time defaults cannot
+        // track this setting. Snapshot it per turn without rewriting that Session.
+        if (header.id !== WORKHUB_COORDINATION_SESSION_ID) return undefined;
+        return (await runtimePolicyStores.runtimePolicy.getSnapshot()).policy.chatDefaults
+          .codeModeEnabled
+          ? 'code_mode'
+          : 'direct';
+      },
       messageAuthority: runtimeAuthority,
       hostedAgentGraphExecution: {
         readAgentGraphIntentClaim: (graphId, intentId) =>
@@ -1359,6 +1456,7 @@ export async function createExecutionRuntimeHostComposition(
     const registerBackendInvalidation = (): void => {
       observeBackendInvalidation(requireSessionManager(manager).refreshIdleBackends());
     };
+    invalidatePluginExecutorBackends = registerBackendInvalidation;
     const registerConfigurationMutation = (): void => {
       hostChanges.publishConfiguration();
       registerBackendInvalidation();
@@ -1368,6 +1466,35 @@ export async function createExecutionRuntimeHostComposition(
       onModelToolsChanged: registerBackendInvalidation,
       interactions,
       grants: stores.interactionStore,
+    });
+    externalAgentSetup = new HostExternalAgentSetupCoordinator({
+      install: async (input) => {
+        const proxy = await runtimePolicyStores.operations.resolveNetworkProxyExecution({});
+        if (proxy.kind === 'credential_not_configured') throw new AcpSetupError('download_failed');
+        const transport = createProxiedFetchTransport(
+          toRuntimePolicyProxy(proxy.networkProxy, proxy.secretMaterial.networkProxy?.secret),
+        );
+        try {
+          return await installAntigravity({
+            ...input,
+            fetch: transport.fetch,
+            directory: join(
+              context.owner.capability.canonicalPath,
+              'external-agents',
+              'antigravity',
+            ),
+          });
+        } finally {
+          await transport.close();
+        }
+      },
+      readPolicy: () => runtimePolicyStores.runtimePolicy.getSnapshot(),
+      acquireResidency: () => context.acquireResidency('external-agent-setup'),
+      onCleanupFailure: () => {
+        context.retainUntilProcessExit();
+        context.requestDrain();
+      },
+      capabilities: clientCapabilities,
     });
     oauth = new HostOAuthCoordinator({
       runtimePolicy: runtimePolicyStores,
@@ -1613,6 +1740,7 @@ export async function createExecutionRuntimeHostComposition(
         return new Promise((resolve, reject) => {
           void spawn({
             agentProfile: options.agentProfile ?? 'implementation',
+            ...(options.executorId ? { executorId: options.executorId } : {}),
             prompt: options.prompt!,
             ...(options.signal ? { abortSignal: options.signal } : {}),
             onReady: (ready) =>
@@ -1869,12 +1997,16 @@ export async function createExecutionRuntimeHostComposition(
       continuity: continuityCoordinator,
       workspaceResolver,
       requestDrain: context.requestDrain,
+      assertExecutorAvailable: (sessionId, executorId) => {
+        pluginExecutors.identity(sessionId, executorId);
+      },
       ...(context.sessionAccessAuthority
         ? { sessionAccessAuthority: context.sessionAccessAuthority }
         : {}),
     });
     workHubCoordination = new HostWorkHubCoordinationCoordinator({
       routingModel: dependencies.workHubRoutingModel,
+      requestForm: (input) => interactions.requestForm(input),
       configureModel: (input) => sessionCatalog.configureWorkHubModel(input),
       transitionConfiguration: (input) =>
         requireSessionManager(manager).transitionSessionConfiguration(
@@ -2063,14 +2195,18 @@ export async function createExecutionRuntimeHostComposition(
                   sessionId: input.targetSessionId,
                   workspace: input.create.workspace,
                   name: input.create.title,
-                  modelTarget: input.create.defaults?.model
-                    ? {
-                        kind: 'explicit',
-                        connectionId: input.create.defaults.model.llmConnectionId,
-                        connectionSlug: input.create.defaults.model.llmConnectionSlug,
-                        model: input.create.defaults.model.model,
-                      }
-                    : { kind: 'default' },
+                  ...(input.create.defaults?.executorId
+                    ? { executorId: input.create.defaults.executorId }
+                    : {
+                        modelTarget: input.create.defaults?.model
+                          ? {
+                              kind: 'explicit' as const,
+                              connectionId: input.create.defaults.model.llmConnectionId,
+                              connectionSlug: input.create.defaults.model.llmConnectionSlug,
+                              model: input.create.defaults.model.model,
+                            }
+                          : ({ kind: 'default' } as const),
+                      }),
                   ...(input.create.defaults?.permissionMode
                     ? { permissionMode: input.create.defaults.permissionMode }
                     : {}),
@@ -2102,6 +2238,7 @@ export async function createExecutionRuntimeHostComposition(
             (await sessionAdmission.runMany(
               [WORKHUB_COORDINATION_SESSION_ID, input.targetSessionId],
               async (lease) => {
+                await input.validateFreshTarget?.();
                 const rootState = coordinator.readRootState(input.targetSessionId);
                 if (!create && rootState.kind === 'reserved') {
                   throw new WorkHubActionEffectFailure(
@@ -2222,7 +2359,7 @@ export async function createExecutionRuntimeHostComposition(
       root: coordinator,
       runtimePolicy: runtimePolicyStores,
       nativeEffects: clientCapabilities,
-      createSession: (input) => sessionCatalog.createForHost(input),
+      createSession: (input, toolMode) => sessionCatalog.createForHost(input, toolMode),
       changes: {
         publish: (
           revision: number,
@@ -2234,6 +2371,16 @@ export async function createExecutionRuntimeHostComposition(
       requestDrain: context.requestDrain,
     });
     scheduledTaskTool = scheduledTasks.modelTool;
+    // Export and import run inside this process because the authority they
+    // need is already held here: the Storage Root owner lock is an election
+    // that refuses a second exclusive hold, its own process included, so the
+    // Host lends the lease rather than electing again.
+    const sessionBundles = new HostSessionBundleCoordinator({
+      lease: context.owner.lease,
+      fenceSubtree: (sessionId, operation) =>
+        requireSessionManager(manager).runSessionSubtreeQuiescentMutation(sessionId, operation),
+      onImported: (sessionId) => hostChanges.publishSessionCatalog(sessionId),
+    });
     const externalSessions = new HostExternalSessionCoordinator({
       adapters: createExternalSessionAdapterRegistry(),
       admission: sessionAdmission,
@@ -2389,7 +2536,12 @@ export async function createExecutionRuntimeHostComposition(
       }),
       createRuntimeHostDomainModule({
         id: 'session',
-        handlers: [sessionCatalog.handlers, externalSessions.handlers, sessionRevisions.handlers],
+        handlers: [
+          sessionCatalog.handlers,
+          externalSessions.handlers,
+          sessionBundles.handlers,
+          sessionRevisions.handlers,
+        ],
         recovery: {
           state: () => externalSessions.recover(),
           resources: async () => {
@@ -2422,6 +2574,7 @@ export async function createExecutionRuntimeHostComposition(
           skills.handlers,
           usagePricing.handlers,
           oauth.handlers,
+          externalAgentSetup.handlers,
           webSearch.handlers,
           networkProxy.handlers,
           configuration.handlers,
@@ -2433,6 +2586,7 @@ export async function createExecutionRuntimeHostComposition(
           () => connectionEffects.beginDrain(),
           () => skills.beginDrain(),
           () => oauth?.beginDrain(),
+          () => externalAgentSetup?.beginDrain(),
         ],
         close: [
           () => archiveEvidence?.close(),
@@ -2444,12 +2598,16 @@ export async function createExecutionRuntimeHostComposition(
               : requireSessionManager(manager).refreshIdleBackends(),
           () => skills.close(),
           () => oauth?.close(),
+          () => externalAgentSetup?.close(),
           () => {
             unsubscribeTranscriptChanges?.();
             unsubscribeUsageChanges?.();
           },
         ],
-        releaseConnection: [(connectionId) => artifacts.releaseConnection(connectionId)],
+        releaseConnection: [
+          (connectionId) => artifacts.releaseConnection(connectionId),
+          (connectionId) => externalAgentSetup?.releaseConnection(connectionId),
+        ],
       }),
       createRuntimeHostDomainModule({
         id: 'client-capability',

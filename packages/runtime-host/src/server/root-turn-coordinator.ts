@@ -1896,10 +1896,13 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
   }
 
   /** Reads both user authority and the advisory routing decision of the exact live WorkHub Turn. */
-  readActiveWorkHubRoutingRequest(
-    turnId: string,
-  ): Promise<
-    { readonly content: MessageContent; readonly decision?: WorkHubRoutingDecision } | undefined
+  readActiveWorkHubRoutingRequest(turnId: string): Promise<
+    | {
+        readonly content: MessageContent;
+        readonly runId: string;
+        readonly decision?: WorkHubRoutingDecision;
+      }
+    | undefined
   > {
     const sessionId = WORKHUB_COORDINATION_SESSION_ID;
     return this.sessionAdmission.run(sessionId, async () => {
@@ -1917,6 +1920,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
       )
         return undefined;
       return {
+        runId: active.runId,
         content: requireHostedExecutionMessageContent(admission),
         ...(admission.execution.routingDecision
           ? { decision: admission.execution.routingDecision }

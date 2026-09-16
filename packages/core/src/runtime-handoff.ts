@@ -19,7 +19,11 @@
 
 import { defineObjectShape, hasExactShape, isRecord } from './record-schema.js';
 import type { RuntimeEvent } from './runtime-event.js';
-import type { ContinuationClaimV1, ImmutableRuntimePrefixV1 } from './runtime-boundary.js';
+import type {
+  ContinuationClaimV1,
+  ImmutableRuntimePrefixProofV1,
+  ImmutableRuntimePrefixV1,
+} from './runtime-boundary.js';
 import { stableJsonStringify } from './tool-args-identity.js';
 
 /**
@@ -105,16 +109,28 @@ export function runtimeHandoffPause(event: RuntimeEvent): RuntimeHandoffPause | 
 /** Verify against source facts, not the proposed claim's description of them. */
 export function assertHandoffClaimSource(
   claim: ContinuationClaimV1,
-  prefix: ImmutableRuntimePrefixV1,
+  prefix: ImmutableRuntimePrefixV1 | ImmutableRuntimePrefixProofV1,
 ): void {
-  const last = prefix.events.at(-1);
+  const first =
+    prefix.protocol === 'immutable_runtime_prefix_v1' ? prefix.events[0] : prefix.firstEvent;
+  const last =
+    prefix.protocol === 'immutable_runtime_prefix_v1' ? prefix.events.at(-1) : prefix.lastEvent;
   const pause = last && runtimeHandoffPause(last);
   const source = claim.targetOpening.source;
+  const claimedPrefix = claim.boundary.segments.at(-1);
+  if (
+    !claimedPrefix ||
+    claimedPrefix.prefixDigest !== prefix.prefixDigest ||
+    stableJsonStringify(claimedPrefix.identity) !== stableJsonStringify(prefix.identity) ||
+    stableJsonStringify(claimedPrefix.position) !== stableJsonStringify(prefix.position)
+  ) {
+    throw new Error('Handoff claim does not preserve the sealed source prefix');
+  }
   if (source.kind !== 'handoff') {
     if (pause) throw new Error('A handoff pause is reserved for its authorized successor');
     return;
   }
-  const opening = prefix.events[0]?.content;
+  const opening = first?.content;
   if (
     !pause ||
     opening?.kind !== 'invocation_opened' ||

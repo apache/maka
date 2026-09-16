@@ -1059,3 +1059,60 @@ test(
     await assert.rejects(stat(destination));
   }),
 );
+
+test(
+  'exports under authority the caller already holds',
+  withRoot('maka-export-lease', async (root, workspaceRoot) => {
+    const sessionId = await createSession(workspaceRoot, { name: 'Exported' });
+    const destination = join(root, 'bundle.maka-session');
+
+    const { resolveStorageRoot, tryAcquireInteractiveRootOwner } = await import(
+      '@maka/storage/root-authority'
+    );
+    // What a Runtime Host is: it took this authority at startup and holds it
+    // until it exits. The lock is an election taken with `tryLock`, so a second
+    // exclusive hold is refused even inside the process that already has it --
+    // which is why a Host cannot reach the export by calling it, only by
+    // lending what it holds.
+    const capability = await resolveStorageRoot({ path: workspaceRoot, kind: 'interactive' });
+    const owner = await tryAcquireInteractiveRootOwner(capability);
+    assert.ok(owner, 'the probe must hold the authority for this test to mean anything');
+    try {
+      // A workspace that has actually been used: the context store exists and
+      // holds a payload, which is what makes the authority necessary at all.
+      const { openInteractiveContextOffloadStoreForWrite } = await import(
+        '@maka/storage/context-offload-store'
+      );
+      const store = await openInteractiveContextOffloadStoreForWrite(owner.lease, {
+        limits: {
+          ownerMaxBytes: { read_image_snapshot: 4096, tool_result_archive: 4096 },
+          sessionLogicalBytes: 1_000_000,
+          workspacePhysicalBytes: 10_000_000,
+        },
+      });
+      const put = await store.put({
+        sessionId,
+        owner: { kind: 'read_image_snapshot', ownerId: 'shot-1' },
+        bytes: new TextEncoder().encode('PAYLOAD'),
+        mediaType: 'image/png',
+      });
+      assert.equal(put.ok, true);
+      await store.close();
+
+      const refused = await exportSessionBundle({ workspaceRoot, sessionId, destination });
+      assert.equal(refused.ok, false, 'electing the authority cannot work while it is held');
+
+      const exported = await exportSessionBundle({
+        workspaceRoot,
+        sessionId,
+        destination,
+        lease: owner.lease,
+      });
+      if (!exported.ok) assert.fail(`export failed: ${JSON.stringify(exported.reason)}`);
+      assert.deepEqual(exported.export.sessionIds, [sessionId]);
+      assert.ok((await stat(destination)).size > 0);
+    } finally {
+      await owner?.close();
+    }
+  }),
+);

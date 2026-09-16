@@ -93,6 +93,10 @@ describe('Linux filesystem worker smoke', { skip }, () => {
     assert.deepEqual(read, {
       kind: 'read',
       content: 'export const healthSignal = true;\n',
+      offset: 0,
+      returnedLines: 2,
+      totalLines: 2,
+      next: null,
     });
 
     // Capture the identity at T0 (the boundary executor does this in

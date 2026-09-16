@@ -100,7 +100,6 @@ describe('ShellRun UI projection', () => {
 
     const live: LiveTurnProjection = {
       turnId: 'turn-1',
-      phase: 'streamed',
       steps: [{
         stepId: 'tool:bash-1',
         contentOrder: ['tools'],
@@ -113,7 +112,7 @@ describe('ShellRun UI projection', () => {
         }],
       }],
     };
-    const overlaid = projection.project({ locale: 'en', messages, liveTurn: live, shellRunUpdates: [update] });
+    const overlaid = projection.project({ locale: 'en', messages, liveTurns: [live], shellRunUpdates: [update] });
     assert.equal(overlaid[1], unrelatedTurn, 'the live overlay must not disturb an unrelated turn');
     const result = overlaid[0]?.tools[0]?.result;
     assert.equal(result?.kind === 'shell_run' ? result.revision : undefined, 3);
@@ -132,7 +131,6 @@ describe('ShellRun UI projection', () => {
     liveResult.output.screen = 'still running';
     const live: LiveTurnProjection = {
       turnId: 'turn-1',
-      phase: 'streamed',
       steps: [{
         stepId: 'tool:bash-1',
         contentOrder: ['tools'],
@@ -154,7 +152,7 @@ describe('ShellRun UI projection', () => {
     };
 
     const tool = createTranscriptProjection()
-      .project({ locale: 'en', messages, liveTurn: live })[0]?.tools[0];
+      .project({ locale: 'en', messages, liveTurns: [live] })[0]?.tools[0];
     assert.equal(tool?.result?.kind === 'shell_run' ? tool.result.revision : undefined, 2);
     assert.equal(
       tool?.result?.kind === 'shell_run' && tool.result.output?.mode === 'pty'
@@ -168,7 +166,6 @@ describe('ShellRun UI projection', () => {
   test('applies a durable update that arrives before the live Bash result', () => {
     const live: LiveTurnProjection = {
       turnId: 'turn-1',
-      phase: 'streamed',
       steps: [{
         stepId: 'tool:bash-1',
         contentOrder: ['tools'],
@@ -189,7 +186,7 @@ describe('ShellRun UI projection', () => {
     };
 
     const turns = createTranscriptProjection()
-      .project({ locale: 'en', messages: [], liveTurn: live, shellRunUpdates: [update] });
+      .project({ locale: 'en', messages: [], liveTurns: [live], shellRunUpdates: [update] });
     const result = turns[0]?.tools[0]?.result;
     assert.equal(result?.kind, 'shell_run');
     assert.equal(result?.kind === 'shell_run' ? result.output?.mode : undefined, 'pty');

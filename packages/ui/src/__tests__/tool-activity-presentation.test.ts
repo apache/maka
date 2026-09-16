@@ -180,7 +180,9 @@ describe('tool activity presentation', () => {
     );
     assert.match(markup, /连续操作 11 个控件/);
     assert.match(markup, /「计算器」窗口/);
-    assert.match(markup, />7\/11</);
+    // Group summaries expose the target; per-call progress is visible on an
+    // individual row, not in the group's unmounted collapsed body.
+    assert.match(renderToStaticMarkup(createElement(ToolTrow, { items: [sequence] })), />7\/11</);
     assert.equal(
       computerRunningLabel([observed, sequence], 'zh-CN'),
       '正在操作「计算器」窗口 · 连续操作第 7/11 步',

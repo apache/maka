@@ -1,0 +1,8 @@
+{
+  "epoch": 147,
+  "files": [
+    "packages/runtime-host/src/protocol/artifact.ts",
+    "packages/runtime-host/src/protocol/session-transcript.ts"
+  ],
+  "reason": "Replace decoded Buffer allocation used only for byte counts with Buffer.byteLength after the existing Base64 grammar checks. Transcript canonical decode/re-encode validation remains unchanged; artifact padding acceptance, decoded lengths, bounds, errors and all message shapes are identical. No peer can observe the removed temporary buffers."
+}

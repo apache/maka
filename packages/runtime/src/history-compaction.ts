@@ -255,7 +255,12 @@ function acceptedInputBoundary(
   const onRoute = (event: RuntimeEvent | undefined): boolean => {
     if (event?.role !== 'model') return false;
     const opened = invocations.find((candidate) => candidate.runId === event.runId)?.opening.route;
-    if (opened?.provenance !== 'runtime' || opened.modelId !== route.modelId) return false;
+    if (
+      opened?.provenance !== 'runtime' ||
+      opened.backendKind === 'plugin-executor' ||
+      opened.modelId !== route.modelId
+    )
+      return false;
     return opened.llmConnectionId === route.connectionId;
   };
   let index = -1;

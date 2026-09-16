@@ -61,6 +61,7 @@ export const MODELS_DEV_PROVIDERS = {
   'minimax-coding-plan': 'minimax-coding-plan',
   mistral: 'mistral',
   moonshot: 'moonshotai-cn',
+  'moonshot-global': 'moonshotai',
   nvidia: 'nvidia',
   'ollama-cloud': 'ollama-cloud',
   openai: 'openai',

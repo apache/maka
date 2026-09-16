@@ -73,10 +73,10 @@ import {
 } from '@maka/core/runtime-policy';
 import type { ModelCatalogEntry } from '@maka/core/model-catalog';
 export type { ModelCatalogEntry } from '@maka/core/model-catalog';
-import { normalizeRelayModelProfiles, type RelayModelProfile } from '@maka/core/model-thinking';
+import { normalizeModelOverrides, type ModelOverride } from '@maka/core/model-thinking';
 // The client subgraph cannot import core subpaths directly (dependency
 // boundary); the wire types it needs are re-exported through this file.
-export type { RelayModelProfile, RelayModelProfiles } from '@maka/core/model-thinking';
+export type { ModelOverride, ModelOverrides } from '@maka/core/model-thinking';
 import { requireExactRecord, requireShapedRecord, requireRecord } from './codec.js';
 import { invalidProtocolFrame } from './errors.js';
 import { defineOperation } from './operation-spec.js';
@@ -150,7 +150,7 @@ export type ConnectionCatalogHeaderItem = Omit<
   // `lastTestModelFactsFingerprint` is durable invalidation metadata.
   | 'enabledModelIds'
   | 'models'
-  | 'relayModelProfiles'
+  | 'modelOverrides'
   | 'modelsFetchedAt'
   | 'lastTestModelFactsFingerprint'
 > & {
@@ -174,12 +174,6 @@ export type ConnectionCatalogPageItem =
       readonly connectionIndex: number;
       readonly itemIndex: number;
       readonly modelId: string;
-      /**
-       * The model's relay profile, when the connection declares one.
-       * Profiles travel per item instead of in one header table so the
-       * paginator can always split a catalog — a header item is atomic.
-       */
-      readonly relayProfile?: RelayModelProfile;
     }
   | {
       readonly kind: 'model';
@@ -191,7 +185,7 @@ export type ConnectionCatalogPageItem =
        * one reader of that provenance is its own context-budget policy, on the
        * execution connection rather than on this page.
        */
-      readonly model: Omit<ConnectionModel, 'factOverriddenFields'>;
+      readonly model: ConnectionModel;
     }
   | {
       /**
@@ -204,6 +198,8 @@ export type ConnectionCatalogPageItem =
       readonly connectionIndex: number;
       readonly itemIndex: number;
       readonly entry: ModelCatalogEntry;
+      /** Keep profiles per item so the paginator can split large catalogs. */
+      readonly modelOverride?: ModelOverride;
     };
 
 export type ConnectionCatalogQueryResult =
@@ -638,14 +634,10 @@ function catalogCursor(value: unknown): ConnectionCatalogCursor {
   throw invalidProtocolFrame('Invalid connection catalog cursor part');
 }
 
-// A single profile on an enabled_model_id item. The host emits values the
-// canonical store already validated, so this sanitizes (drops the unusable)
-// rather than re-running the strict table decoder — which would demand an
-// enabledModelIds argument the item does not carry.
-function decodeRelayProfile(value: unknown): RelayModelProfile {
-  const sanitized = normalizeRelayModelProfiles({ m: value })?.m;
+function decodeModelOverride(value: unknown): ModelOverride {
+  const sanitized = normalizeModelOverrides({ m: value })?.m;
   if (sanitized === undefined) {
-    throw invalidProtocolFrame('Invalid enabled model id relay profile');
+    throw invalidProtocolFrame('Invalid model relay profile');
   }
   return sanitized;
 }
@@ -653,14 +645,12 @@ function decodeRelayProfile(value: unknown): RelayModelProfile {
 function catalogPageItem(value: unknown): ConnectionCatalogPageItem {
   const item = requireRecord(value, 'connection catalog page item');
   if (item.kind === 'enabled_model_id') {
-    // Exact-on-the-required-four, relayProfile optional: most models declare
-    // nothing, and requireExactRecord would make the key mandatory.
-    const enabled = requireShapedRecord(
-      item,
-      'enabled model id item',
-      ['kind', 'connectionIndex', 'itemIndex', 'modelId'],
-      ['relayProfile'],
-    );
+    const enabled = requireExactRecord(item, 'enabled model id item', [
+      'kind',
+      'connectionIndex',
+      'itemIndex',
+      'modelId',
+    ]);
     return {
       kind: 'enabled_model_id',
       connectionIndex: integer(
@@ -676,9 +666,6 @@ function catalogPageItem(value: unknown): ConnectionCatalogPageItem {
         CONNECTION_CATALOG_MAX_ENABLED_MODEL_IDS - 1,
       ),
       modelId: decodeDomain(() => decodeConnectionModelId(enabled.modelId)),
-      ...(enabled.relayProfile === undefined
-        ? {}
-        : { relayProfile: decodeDomain(() => decodeRelayProfile(enabled.relayProfile)) }),
     };
   }
   if (item.kind === 'model') {
@@ -706,12 +693,12 @@ function catalogPageItem(value: unknown): ConnectionCatalogPageItem {
     };
   }
   if (item.kind === 'catalog_entry') {
-    const entryItem = requireExactRecord(item, 'connection catalog entry item', [
-      'kind',
-      'connectionIndex',
-      'itemIndex',
-      'entry',
-    ]);
+    const entryItem = requireShapedRecord(
+      item,
+      'connection catalog entry item',
+      ['kind', 'connectionIndex', 'itemIndex', 'entry'],
+      ['modelOverride'],
+    );
     return {
       kind: 'catalog_entry',
       connectionIndex: integer(
@@ -727,6 +714,11 @@ function catalogPageItem(value: unknown): ConnectionCatalogPageItem {
         CONNECTION_CATALOG_MAX_ENTRIES_PER_CONNECTION - 1,
       ),
       entry: decodeDomain(() => decodeModelCatalogEntry(entryItem.entry)),
+      ...(entryItem.modelOverride === undefined
+        ? {}
+        : {
+            modelOverride: decodeDomain(() => decodeModelOverride(entryItem.modelOverride)),
+          }),
     };
   }
   if (item.kind !== 'connection')

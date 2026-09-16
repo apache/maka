@@ -285,7 +285,15 @@ class SqliteScheduledTaskStore implements ScheduledTaskStore {
         throw storeError('operation_conflict', 'Cannot update a terminal scheduled task');
       }
       const schedule = normalized.value.schedule ?? task.schedule;
-      const nextFireAt = task.status === 'active' ? computeRequiredNext(schedule, now) : null;
+      const keepsPendingFire =
+        normalized.value.schedule === undefined &&
+        task.nextFireAt !== null &&
+        task.nextFireAt > now;
+      const nextFireAt = keepsPendingFire
+        ? task.nextFireAt
+        : task.status === 'active'
+          ? computeRequiredNext(schedule, now)
+          : null;
       const effect = normalized.value.effect ?? task.effect;
       const intentBody = normalized.value.intentBody ?? task.intent.body;
       const expiresAt = Object.prototype.hasOwnProperty.call(normalized.value, 'expiresAt')

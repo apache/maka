@@ -28,6 +28,7 @@ import {
 } from '@maka/runtime/plugin-runtime';
 import type { PluginToolInspection } from '@maka/runtime/plugin-tool-service';
 import type { PluginCommandInspection } from '@maka/runtime/plugin-command-service';
+import type { PluginExecutorInspection } from '@maka/runtime/plugin-executor-service';
 import {
   requireCount,
   requireEncodedByteLimit,
@@ -88,7 +89,14 @@ export interface PluginPackageProjection {
 }
 
 export interface PluginPlatformQueryInput {
-  readonly view: 'status' | 'packages' | 'entries' | 'tools' | 'commands' | 'failures';
+  readonly view:
+    | 'status'
+    | 'packages'
+    | 'entries'
+    | 'tools'
+    | 'commands'
+    | 'executors'
+    | 'failures';
   readonly rootId?: MakaPluginRootId;
   readonly cursor?: string;
   readonly limit?: number;
@@ -125,6 +133,11 @@ export type PluginPlatformQueryResult =
   | {
       readonly view: 'commands';
       readonly items: readonly PluginCommandInspection[];
+      readonly nextCursor: string | null;
+    }
+  | {
+      readonly view: 'executors';
+      readonly items: readonly PluginExecutorInspection[];
       readonly nextCursor: string | null;
     }
   | {
@@ -268,7 +281,7 @@ function decodePluginPlatformQueryInput(value: unknown): PluginPlatformQueryInpu
     ['rootId', 'cursor', 'limit'],
   );
   if (
-    !['status', 'packages', 'entries', 'tools', 'commands', 'failures'].includes(
+    !['status', 'packages', 'entries', 'tools', 'commands', 'executors', 'failures'].includes(
       input.view as string,
     )
   ) {
@@ -292,9 +305,15 @@ function decodePluginPlatformQueryInput(value: unknown): PluginPlatformQueryInpu
   ) {
     throw invalidProtocolFrame('Plugin Platform status query does not accept paging');
   }
-  if (input.rootId !== undefined && view !== 'entries' && view !== 'tools' && view !== 'commands') {
+  if (
+    input.rootId !== undefined &&
+    view !== 'entries' &&
+    view !== 'tools' &&
+    view !== 'commands' &&
+    view !== 'executors'
+  ) {
     throw invalidProtocolFrame(
-      'Plugin root identity is only valid for Entry, Tool, and Command queries',
+      'Plugin root identity is only valid for Entry, Tool, Command, and Executor queries',
     );
   }
   let rootId: MakaPluginRootId | undefined;
@@ -367,7 +386,9 @@ function decodePluginPlatformQueryResult(value: unknown): PluginPlatformQueryRes
     if (
       !Array.isArray(output.items) ||
       output.items.length > 64 ||
-      !['packages', 'entries', 'tools', 'commands', 'failures'].includes(view as string)
+      !['packages', 'entries', 'tools', 'commands', 'executors', 'failures'].includes(
+        view as string,
+      )
     ) {
       throw invalidProtocolFrame('Invalid Plugin Platform page');
     }
@@ -384,7 +405,9 @@ function decodePluginPlatformQueryResult(value: unknown): PluginPlatformQueryRes
             ? { view, items: output.items.map(decodeToolInspection), nextCursor }
             : view === 'commands'
               ? { view, items: output.items.map(decodeCommandInspection), nextCursor }
-              : { view: 'failures', items: output.items.map(decodePlatformFailure), nextCursor };
+              : view === 'executors'
+                ? { view, items: output.items.map(decodeExecutorInspection), nextCursor }
+                : { view: 'failures', items: output.items.map(decodePlatformFailure), nextCursor };
   }
   requireEncodedByteLimit(
     decoded,
@@ -415,6 +438,40 @@ function decodeCommandInspection(value: unknown): PluginCommandInspection {
     name: requireString(item.name, 'Plugin Command name', 128),
     description: requireString(item.description, 'Plugin Command description', 4096),
     aliases: item.aliases.map((alias) => requireString(alias, 'Plugin Command alias', 128)),
+  };
+}
+
+function decodeExecutorInspection(value: unknown): PluginExecutorInspection {
+  const item = requireExactRecord(value, 'Plugin Executor inspection', [
+    'entryId',
+    'scopeId',
+    'extensionId',
+    'generation',
+    'id',
+    'displayName',
+    'capabilities',
+  ]);
+  const capabilities = requireExactRecord(item.capabilities, 'Plugin Executor capabilities', [
+    'thinking',
+    'toolActivity',
+  ]);
+  if (
+    typeof capabilities.thinking !== 'boolean' ||
+    typeof capabilities.toolActivity !== 'boolean'
+  ) {
+    throw invalidProtocolFrame('Invalid Plugin Executor capabilities');
+  }
+  return {
+    entryId: requireId(item.entryId, 'Plugin Entry identity'),
+    scopeId: requireString(item.scopeId, 'Plugin scope identity', 256),
+    extensionId: requireId(item.extensionId, 'Plugin package identity'),
+    generation: requireCount(item.generation, 'Plugin generation'),
+    id: requireString(item.id, 'Plugin Executor id', 128),
+    displayName: requireString(item.displayName, 'Plugin Executor display name', 256),
+    capabilities: {
+      thinking: capabilities.thinking,
+      toolActivity: capabilities.toolActivity,
+    },
   };
 }
 

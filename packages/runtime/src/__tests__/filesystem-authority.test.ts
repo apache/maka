@@ -106,7 +106,7 @@ describe('file tools follow the execution boundary', () => {
       assert.strictEqual(await readFile(target, 'utf8'), 'hello');
 
       const read = await runTool(toolNamed(tools, 'Read'), { path: target }, cwd, BYPASS);
-      assert.deepStrictEqual(read, { content: 'hello' });
+      assert.partialDeepStrictEqual(read, { content: 'hello', next: null });
 
       const edited = await runTool(
         toolNamed(tools, 'Edit'),
@@ -194,6 +194,10 @@ describe('file tools follow the execution boundary', () => {
         await runTool(toolNamed(tools, 'Read'), { path: 'link.txt' }, cwd, BYPASS),
         {
           content: 'secret',
+          offset: 0,
+          returnedLines: 1,
+          totalLines: 1,
+          next: null,
         },
       );
     } finally {

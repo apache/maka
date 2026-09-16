@@ -22,6 +22,7 @@ import type { WorkHubHost, WorkHubMainNavigation, WorkHubPresentationSnapshot } 
 import { parseDesktopSessionKey } from '../shared/runtime-host-identity.js';
 import { loadMainRenderer, resolveMainRendererEntry } from './main-renderer-loader.js';
 import { installMainWindowPermissionPolicy } from './main-window-permission-policy.js';
+import { focusWindow, showWindowInactive, type WindowRevealMode } from './window-reveal.js';
 
 const COMMAND = 'workhub-presentation:command';
 const SHORTCUT = 'CommandOrControl+Shift+K';
@@ -32,11 +33,15 @@ export interface WorkHubPresentationDeps {
   ensureMainWindow(): Promise<BrowserWindow>;
   /** Applied client settings; showing the window must not wait for storage. */
   isEnabled(): boolean;
+  /** How far this run may go when a WorkHub command reveals a window. */
+  revealMode: WindowRevealMode;
   mainModuleDirectory: string;
   viteDevServerUrl?: string;
   preloadPath: string;
   onError?: (error: unknown) => void;
-  onViewCreated?: (contents: Electron.WebContents) => (() => void) | void;
+  onViewCreated?: (contents: Electron.WebContents, view: WebContentsView) => (() => void) | void;
+  /** Revoke native browser actions when this persistent renderer leaves the screen. */
+  onVisibilityChanged?: () => void;
 }
 
 /** One renderer owns the conversation, draft and model selection for its entire lifetime. */
@@ -63,6 +68,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
   let conversationExpanded = false;
   let compactHeight = 96;
   let expandedHeight = 720;
+  let interactionPending = false;
   let resizeTimer: ReturnType<typeof setTimeout> | undefined;
   let resizeTarget: Electron.Rectangle | undefined;
   let resizeViewportHeight: number | undefined;
@@ -94,11 +100,18 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     for (const wc of contents) if (wc && !wc.isDestroyed()) wc.send(channel, ...args);
   }
 
-  function changed(): void { send('workhub-presentation:changed', getSnapshot()); }
+  function changed(): void {
+    deps.onVisibilityChanged?.();
+    send('workhub-presentation:changed', getSnapshot());
+  }
 
   function focusComposer(): void {
     focusPending = true;
-    if (!view || view.webContents.isDestroyed() || !rendererReady || !parent || parent.isDestroyed() || !parent.isVisible()) return;
+    if (!view || view.webContents.isDestroyed() || !rendererReady || !parent || parent.isDestroyed()) return;
+    // A cold summon stays hidden until the renderer has mounted its composer.
+    // Reuse focusPending so hide/disable can cancel it before ready arrives.
+    if (placement === 'floating' && progressRequest === undefined) focusWindow(parent, deps.revealMode);
+    if (!parent.isVisible()) return;
     if (placement === 'docked' && (!host.visible || host.occluded)) return;
     view.webContents.focus();
     view.webContents.send('workhub-presentation:focus-composer', expandOnFocus);
@@ -122,7 +135,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     rendererCrashed = false;
     view.setVisible(false);
     view.setBackgroundColor('#00000000');
-    const release = deps.onViewCreated?.(view.webContents);
+    const release = deps.onViewCreated?.(view.webContents, view);
     releaseView = typeof release === 'function' ? release : undefined;
     view.webContents.once('destroyed', releaseViewRegistration);
     installMainWindowPermissionPolicy(view.webContents, entry.url);
@@ -265,6 +278,10 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     // a Dock-less accessory application.
     if (process.platform === 'darwin') floating.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true, skipTransformProcessType: true });
     floating.on('resize', fitFloating);
+    floating.on('hide', () => deps.onVisibilityChanged?.());
+    floating.on('minimize', () => deps.onVisibilityChanged?.());
+    floating.on('show', () => deps.onVisibilityChanged?.());
+    floating.on('restore', () => deps.onVisibilityChanged?.());
     floating.on('close', (event) => {
       if (disposed) return;
       event.preventDefault();
@@ -289,6 +306,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     const height = Math.max(0, Math.min(size.height - y, Math.round(host.rect.height * zoom)));
     setViewBounds({ x, y, width, height });
     view.setVisible(host.visible && !host.occluded && width > 0 && height > 0);
+    deps.onVisibilityChanged?.();
     if (host.visible && width > 0 && height > 0 && focusPending) focusComposer();
   }
 
@@ -336,11 +354,33 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     const current = target.getBounds();
     if (bounds.x !== current.x || bounds.y !== current.y || bounds.width !== current.width || bounds.height !== current.height) target.setBounds(bounds);
     fitFloating();
-    if (target.isMinimized()) target.restore();
-    target.show();
-    target.focus();
     focusComposer();
     changed();
+  }
+
+  /** Completes the native transition, regardless of which renderer paint arrived first. */
+  function expandProgress(request: number): void {
+    if (request !== progressRequest || !floating || !deps.isEnabled()) return;
+    conversationExpanded = true;
+    expandOnFocus = true;
+    const current = floating.getBounds();
+    const area = screen.getDisplayMatching(current).workArea;
+    const width = Math.min(conversationBounds?.width ?? 520, area.width);
+    const height = Math.min(expandedHeight, area.height);
+    clearProgressRequest();
+    conversationBounds = undefined;
+    floating.setResizable(true);
+    changed();
+    resizeFloating({
+      width, height,
+      x: Math.max(area.x, Math.min(current.x + Math.round((current.width - width) / 2), area.x + area.width - width)),
+      y: Math.max(area.y, Math.min(current.y + current.height - height, area.y + area.height - height)),
+    }, true);
+    // Expansion may beat progress-ready and unmount its paint callback.
+    showWindowInactive(floating, deps.revealMode);
+    // A send acknowledgement can arrive after the user has switched
+    // apps. Growing the conversation must not steal focus back.
+    if (floating.isFocused()) focusComposer();
   }
 
   function requestProgress(): void {
@@ -348,7 +388,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     const dockVisible = placement === 'docked' && parent === main && main?.isVisible() && !main.isMinimized()
       && host.visible && !host.occluded && view?.getVisible();
     if (!controlTurnId || dismissedTurnId === controlTurnId || progressRequest !== undefined || dockVisible
-      || (placement === 'floating' && floating?.isVisible()) || !deps.isEnabled() || disposed) return;
+      || (placement === 'floating' && (floating?.isVisible() || focusPending)) || !deps.isEnabled() || disposed) return;
     ensureView();
     const target = ensureFloating();
     cancelFloatingAnimation();
@@ -365,6 +405,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     const width = Math.min(360, area.width), height = Math.min(112, area.height);
     target.setBounds({ width, height, x: area.x + Math.round((area.width - width) / 2), y: Math.max(area.y, area.y + area.height - height - 96) });
     fitFloating();
+    if (interactionPending) { expandProgress(progressRequest); return; }
     // The renderer acknowledges its painted card before showInactive, avoiding
     // one frame of the old full conversation in the compact native window.
     changed();
@@ -390,9 +431,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     if (disposed) throw new Error('WorkHub presentation is disposed');
     if (revision !== presentationRevision || (navigation.kind === 'workhub' && !deps.isEnabled())) return;
     attachMainWindow(main);
-    if (main.isMinimized()) main.restore();
-    main.show();
-    main.focus();
+    focusWindow(main, deps.revealMode);
     if (mainReady.has(main.webContents)) main.webContents.send('workhub-presentation:open-main', navigation);
     else pendingNavigation.set(main.webContents, { navigation, revision });
     return main;
@@ -424,15 +463,22 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
       changed();
     };
     const onLoading = () => mainReady.delete(contents);
+    const onVisibilityChanged = () => deps.onVisibilityChanged?.();
     contents.on('did-start-loading', onLoading);
     main.on('close', onClose);
     main.on('resize', updateDockedBounds);
     main.on('show', updateDockedBounds);
+    main.on('hide', onVisibilityChanged);
+    main.on('minimize', onVisibilityChanged);
+    main.on('restore', onVisibilityChanged);
     const cleanup = () => {
       if (!contents.isDestroyed()) contents.removeListener('did-start-loading', onLoading);
       main.removeListener('close', onClose);
       main.removeListener('resize', updateDockedBounds);
       main.removeListener('show', updateDockedBounds);
+      main.removeListener('hide', onVisibilityChanged);
+      main.removeListener('minimize', onVisibilityChanged);
+      main.removeListener('restore', onVisibilityChanged);
       mainListeners.delete(main);
     };
     main.once('closed', cleanup);
@@ -455,7 +501,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
         return { main, isMain };
       };
       authorize();
-      if (command === 'show-conversation' && payload !== undefined) {
+      if (command === 'show-conversation') {
         if (typeof payload !== 'number' || !Number.isSafeInteger(payload)) throw new Error('Invalid progress request');
         if (payload !== progressRequest) return;
       }
@@ -468,7 +514,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
         switch (command) {
           case 'snapshot': return getSnapshot();
           case 'ready':
-            if (!isMain) { rendererReady = true; if (focusPending) focusComposer(); }
+            if (!isMain) { rendererReady = true; if (focusPending) { focusComposer(); changed(); } }
             else {
               mainReady.add(event.sender);
               const pending = pendingNavigation.get(event.sender);
@@ -515,7 +561,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
             if (isMain) throw new Error('Only the WorkHub view can present its progress');
             if (typeof payload !== 'number' || !Number.isSafeInteger(payload)) throw new Error('Invalid progress request');
             if (payload === progressRequest && payload === presentationRevision && deps.isEnabled()) {
-              floating?.showInactive();
+              showWindowInactive(floating ?? null, deps.revealMode);
               view?.webContents.setBackgroundThrottling(true);
               changed();
             }
@@ -532,38 +578,17 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
             if (height !== bounds.height) resizeFloating({ ...bounds, height, y: Math.max(area.y, bounds.y + bounds.height - height) }, true);
             return;
           }
-          case 'show-conversation': {
-            if (payload !== undefined && payload !== progressRequest) return;
-            conversationExpanded = true;
-            expandOnFocus = true;
-            if (progressRequest !== undefined && floating) {
-              const current = floating.getBounds();
-              const area = screen.getDisplayMatching(current).workArea;
-              const width = Math.min(conversationBounds?.width ?? 520, area.width);
-              const height = Math.min(expandedHeight, area.height);
-              clearProgressRequest();
-              conversationBounds = undefined;
-              floating.setResizable(true);
-              changed();
-              resizeFloating({
-                width, height,
-                x: Math.max(area.x, Math.min(current.x + Math.round((current.width - width) / 2), area.x + area.width - width)),
-                y: Math.max(area.y, Math.min(current.y + current.height - height, area.y + area.height - height)),
-              }, true);
-              // A send acknowledgement can arrive after the user has switched
-              // apps. Growing the conversation must not steal focus back.
-              if (floating.isFocused()) focusComposer();
-              return;
-            }
-            detach(true);
-            return;
-          }
+          case 'show-conversation': expandProgress(payload as number); return;
           case 'detach': detach(); return;
           case 'conversation-layout': {
             if (isMain) throw new Error('Only the WorkHub view can size its conversation');
-            const value = payload as { expanded?: unknown; compactHeight?: unknown } | null;
-            if (!value || typeof value.expanded !== 'boolean' || typeof value.compactHeight !== 'number' || !Number.isFinite(value.compactHeight) || value.compactHeight <= 0) throw new Error('Invalid WorkHub conversation layout');
-            if (progressRequest !== undefined) return;
+            const value = payload as { expanded?: unknown; compactHeight?: unknown; interactionPending?: unknown } | null;
+            if (!value || typeof value.expanded !== 'boolean' || typeof value.compactHeight !== 'number' || !Number.isFinite(value.compactHeight) || value.compactHeight <= 0 || (value.interactionPending !== undefined && typeof value.interactionPending !== 'boolean')) throw new Error('Invalid WorkHub conversation layout');
+            interactionPending = value.interactionPending === true;
+            if (progressRequest !== undefined) {
+              if (interactionPending) expandProgress(progressRequest);
+              return;
+            }
             // Desktop's wider composer must not overwrite the remembered floating
             // height and force a second resize on the next shortcut summon.
             if (!floating || placement === 'floating') compactHeight = Math.max(80, Math.ceil(value.compactHeight));
@@ -599,7 +624,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
   async function toggle(positionAtDefault = false): Promise<void> {
     if (disposed) throw new Error('WorkHub presentation is disposed');
     ++presentationRevision;
-    if (progressRequest === undefined && placement === 'floating' && floating?.isVisible()) {
+    if (progressRequest === undefined && placement === 'floating' && (floating?.isVisible() || focusPending)) {
       hideFloating();
     } else detach(positionAtDefault);
   }
@@ -608,13 +633,9 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     const enabled = deps.isEnabled();
     if (disposed) return;
     if (enabled) {
-      // Prepare the reusable native window and renderer while enabling WorkHub,
-      // before a shortcut needs them. Never restart a crashed renderer implicitly.
-      const target = ensureFloating();
-      if (!rendererCrashed) {
-        ensureView();
-        if (!parent) { attach(target); fitFloating(); }
-      }
+      // Enabling only registers the shortcut. The dock, shortcut or control
+      // request creates the renderer on first use; settings alone must not
+      // load a second application in the background.
       if (!shortcutRegistered) shortcutRegistered = globalShortcut.register(SHORTCUT, () => { void toggle(true).catch(reportError); });
     } else {
       if (shortcutRegistered) globalShortcut.unregister(SHORTCUT);
@@ -642,6 +663,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     view = undefined;
     viewBounds = undefined;
     rendererReady = false;
+    focusPending = false;
     // Release this renderer's subscriptions and broadcasts before another view
     // can register. A delayed destroyed event must not release its replacement.
     previous?.webContents.removeListener('destroyed', releaseViewRegistration);

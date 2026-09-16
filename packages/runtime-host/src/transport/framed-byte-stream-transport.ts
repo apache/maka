@@ -184,7 +184,10 @@ export class FramedByteStreamTransport implements RuntimeHostMessageTransport {
           break;
         }
         const encoded = this.#buffered.subarray(0, encodedBytes);
-        this.#buffered = this.#buffered.subarray(encodedBytes);
+        this.#buffered =
+          encodedBytes === this.#buffered.byteLength
+            ? Buffer.alloc(0)
+            : this.#buffered.subarray(encodedBytes);
         const frames = this.#decoder.push(encoded);
         if (frames.length !== 1) {
           throw new Error('Runtime Host decoder did not produce one complete frame');

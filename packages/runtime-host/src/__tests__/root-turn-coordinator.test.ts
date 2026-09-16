@@ -81,6 +81,7 @@ import {
   clientCapabilityConnectionIdentity,
   clientCapabilityCoordinatorTestAdmission,
 } from './fixtures/client-capability.js';
+import { workHubDesktopCapabilityOffers } from './fixtures/workhub-capabilities.js';
 import {
   openInteractiveExecutionStoresForWrite,
   type RootTurnAdmission,
@@ -3791,20 +3792,7 @@ test('active WorkHub authority reads the admitted v2 input and refuses other or 
       const registered = await capabilities.handlers['client.capability.replace'](
         {
           registrationId: 'workhub-tools',
-          offers: [
-            {
-              offerId: 'desktop-workhub',
-              version: '0',
-              affinity: 'session',
-              hostPathAccess: 'none',
-              label: 'Desktop WorkHub',
-              tools: ['control', 'tasks'].map((name) => ({
-                serverId: 'desktop_workhub',
-                name,
-                inputSchema: { type: 'object', additionalProperties: false },
-              })),
-            },
-          ],
+          offers: workHubDesktopCapabilityOffers(),
         },
         operationContext(fixture.hostEpoch, fixture.acquireResidency, 'desktop'),
       );
@@ -3864,7 +3852,11 @@ test('active WorkHub authority reads the admitted v2 input and refuses other or 
       assert.deepEqual(
         await fixture.coordinator.readActiveWorkHubRoutingRequest(turnId),
         toolProfile === 'workhub-coordination-v2'
-          ? { content, decision: { kind: 'routing', disposition: 'answer_here' } }
+          ? {
+              content,
+              runId: started.result.runId,
+              decision: { kind: 'routing', disposition: 'answer_here' },
+            }
           : undefined,
       );
       assert.equal(await fixture.coordinator.readActiveWorkHubRequest('other-turn'), undefined);
@@ -3895,6 +3887,7 @@ test('active WorkHub authority reads the admitted v2 input and refuses other or 
           await fixture.coordinator.readActiveWorkHubRoutingRequest(sent[1]!.turnId),
           {
             content: { text: 'workhub-followup' },
+            runId: sent[1]!.runId,
             decision: { kind: 'routing', disposition: 'answer_here' },
           },
         );

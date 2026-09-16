@@ -36,6 +36,7 @@ import {
   SessionBundleFileError,
   type SessionBundleLimits,
 } from '@maka/storage/session-bundle-contract';
+import type { StorageRootLease } from '@maka/storage/root-authority';
 import { createSessionBundleFileService } from '@maka/storage/session-bundle-file-service';
 import {
   importSessionBundleState,
@@ -48,6 +49,15 @@ export interface ImportSessionBundleInput {
   /** The `.maka-session` file to read. */
   source: string;
   limits?: SessionBundleLimits;
+  /**
+   * Storage Root authority the caller already holds.
+   *
+   * The Runtime Host takes it at startup and holds it for its lifetime, and
+   * the lock is an election that refuses a second hold -- so the Host can only
+   * do this by lending what it has. A caller with no authority of its own, the
+   * CLI included, omits it and the authority is elected as before.
+   */
+  lease?: StorageRootLease<'interactive', 'write'>;
 }
 
 export type ImportSessionBundleFailure =
@@ -97,6 +107,7 @@ export async function importSessionBundle(
     const merged = await importSessionBundleState({
       stateRoot: input.workspaceRoot,
       bundleStateRoot: hydration.stateRoot,
+      ...(input.lease ? { lease: input.lease } : {}),
     });
     return { ok: true, ...merged, manifest };
   } catch (error) {

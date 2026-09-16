@@ -17,8 +17,10 @@
  * under the License.
  */
 
+import { createDesktopInspectorService } from './create-workbar-services.js';
 import { resolveSystemUiLocale, resolveUiLocale } from '@maka/core/ui-locale';
 import { DEFAULT_UI_FONT_SIZE } from '@maka/core/settings';
+import { AttachmentIngestBlockedError } from '@maka/core/attachments';
 import { applyDocumentThemeMode, applyDocumentThemePalette, applyDocumentUiFontSize } from './document-appearance.js';
 import type { MakaBridge } from '../../../preload/bridge-contract.js';
 import {
@@ -50,7 +52,7 @@ async function readDelegatedTurnResult(
     bridge.transcripts.open(
       sessionId,
       (batch) => {
-        if (signal.aborted || !store.accepts(batch)) return;
+        if (signal.aborted) return;
         store.accept(batch);
       },
       (cancel) => {
@@ -99,6 +101,7 @@ async function readDelegatedTurnResult(
 export function createDesktopWorkHubServices(
   bridge: Pick<
     MakaBridge,
+    | 'inspector'
     | 'workHub'
     | 'workHubControl'
     | 'workHubPresentation'
@@ -112,6 +115,7 @@ export function createDesktopWorkHubServices(
 ): WorkHubServices {
   const delegatedResultCache = new Map<string, string>();
   return {
+    inspector: createDesktopInspectorService(bridge),
     surface: new URLSearchParams(window.location.search).get('surface') === 'workhub' ? 'workhub' : 'main',
     initialLocale: resolveSystemUiLocale(navigator.languages),
     subscribeAppearance(handler) {
@@ -220,7 +224,15 @@ export function createDesktopWorkHubServices(
       (await bridge.connections.getSnapshot(sessionId)).chatModelChoices,
     attachments: bridge.attachments,
     readAttachmentBytes: bridge.attachments.readBytes,
-    prepareAttachments: (sessionId, items) => bridge.workHub.prepareAttachments(sessionId, items),
+    prepareAttachments: async (sessionId, items) => {
+      const result = await bridge.workHub.prepareAttachments(sessionId, items);
+      if (!result.ok) throw new AttachmentIngestBlockedError(result.code);
+      return result.attachments;
+    },
+    listActiveInteractions: (sessionId) => bridge.sessions.listActiveInteractions(sessionId),
+    subscribeActiveInteractions: (handler) => bridge.sessions.subscribeActiveInteractions(handler),
+    respondToUserForm: (sessionId, response) => bridge.sessions.respondToUserForm(sessionId, response),
+    respondToUserQuestion: (sessionId, response) => bridge.sessions.respondToUserQuestion(sessionId, response),
     answer: (sessionId, input) => bridge.workHub.answer(sessionId, input),
     enqueueMessage: async (sessionId, messageId, text, attachments, placement) => {
       const result = await bridge.sessions.submitMessage(sessionId, placement, {
@@ -234,8 +246,8 @@ export function createDesktopWorkHubServices(
     updateQueueEntry: (sessionId, entryId, revision, text) => bridge.sessions.updateQueueEntry(sessionId, entryId, revision, text),
     reorderQueueEntries: (sessionId, entryIds) => bridge.sessions.reorderQueueEntries(sessionId, entryIds),
     configureModel: (sessionId, input) => bridge.workHub.configureModel(sessionId, input),
-    observe: (sessionId, handler, onError, onPhase) =>
-      bridge.sessions.subscribeEvents(sessionId, handler, () => onPhase('ready'), onPhase, onError),
+    observe: (sessionId, handler, onError, onPhase, onExecution) =>
+      bridge.sessions.subscribeEvents(sessionId, handler, onPhase, onError, onExecution),
     stop: async (sessionId, turnId) => {
       const result = await bridge.sessions.stop(sessionId, {
         source: 'stop_button',
@@ -246,12 +258,15 @@ export function createDesktopWorkHubServices(
     },
     async openTranscript(sessionId, handler, cancellation, onError) {
       const store = new DesktopTranscriptRangeStore(sessionId);
+      // Every window change commits through the store, a trim included, so
+      // this is the whole of what the surface hears.
+      const unsubscribe = store.subscribe(() => handler(store.snapshot()));
       const controller = createRecoveringDesktopTranscriptRangeController(store, (signal) =>
         bridge.transcripts.open(
           sessionId,
           (batch) => {
-            if (signal.aborted || !store.accepts(batch)) return;
-            if (store.accept(batch) || batch.ready) handler(store.snapshot());
+            if (signal.aborted) return;
+            store.accept(batch);
           },
           (cancel) => {
             if (signal.aborted) cancel();
@@ -260,14 +275,27 @@ export function createDesktopWorkHubServices(
         ),
         { onError },
       );
-      const cancel = () => { void controller.close(); };
+      const cancel = () => { unsubscribe(); void controller.close(); };
       cancellation.addEventListener('abort', cancel, { once: true });
       if (cancellation.aborted) cancel();
       return {
         observationChanged: controller.observationChanged,
-        loadOlder: () => controller.loadBefore(),
+        prefetchHistory: (edge) =>
+          edge === 'older' ? controller.loadBefore() : controller.loadAfter(),
+        retain: ({ firstTurnId, lastTurnId }) => {
+          // A Turn the band named but the window no longer holds yields null,
+          // which leaves that side of the window unbounded rather than empty.
+          controller.store.retain(
+            controller.store.sequenceForTurn(firstTurnId, 'first'),
+            controller.store.sequenceForTurn(lastTurnId, 'last'),
+          );
+        },
         loadLatest: () => controller.loadLatest(),
-        close: () => { cancellation.removeEventListener('abort', cancel); return controller.close(); },
+        close: () => {
+          cancellation.removeEventListener('abort', cancel);
+          unsubscribe();
+          return controller.close();
+        },
       };
     },
   };

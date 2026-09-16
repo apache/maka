@@ -394,6 +394,33 @@ test('rebuilds a Runtime Policy mutation from each fresh CAS projection', async 
   );
 });
 
+test('stops a guarded Runtime Policy retry after its semantic basis changes', async () => {
+  const initial = createDefaultRuntimePolicy();
+  const changed = {
+    ...initial,
+    externalAgents: { antigravity: { executable: '/chosen/by/another/client' } },
+  };
+  const { client, requests } = clientWithResponses([
+    { revision: 1, policy: initial },
+    { kind: 'revision_conflict', expectedRevision: 1, actualRevision: 2 },
+    { revision: 2, policy: changed },
+  ]);
+
+  const result = await client.updateRuntimePolicyIf(
+    (policy) => policy.externalAgents.antigravity.executable === '',
+    () => ({
+      kind: 'set_external_agents',
+      value: { antigravity: { executable: '/managed/agent' } },
+    }),
+  );
+
+  assert.deepEqual(result, { revision: 2, policy: changed });
+  assert.equal(
+    requests.filter(({ operation }) => operation === 'runtime.policy.mutate').length,
+    1,
+  );
+});
+
 test('treats empty configuration patches as read-only lookups', async () => {
   const unlocked = session('session-1', 10, { connectionLocked: false });
   const { client, requests } = clientWithResponses([

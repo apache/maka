@@ -68,6 +68,10 @@ export interface RuntimeHostSessionChannelOpenResult {
 
 export interface RuntimeHostSessionChannelOptions {
   connection: Pick<RuntimeHostConnection, 'openSessionSubscription'>;
+  /** Optional opener pinned to the concrete Host connection used for first attachment. */
+  openInitialSessionSubscription?: RuntimeHostConnection['openSessionSubscription'];
+  /** Cancels initial attachment, including transcript hydration and recovery. */
+  signal?: AbortSignal;
   sessionId: string;
   now: () => number;
   onTurnStarted: (turn: MakaPreparedSessionTurn) => void;
@@ -120,6 +124,8 @@ export class RuntimeHostSessionChannel {
   #activated = false;
   #startedTurnBarrier: string | undefined;
   #closing = false;
+  readonly #closeController = new AbortController();
+  #closeTask: Promise<void> | undefined;
   #failure: Error | undefined;
   #recoveryTask: Promise<void> | undefined;
   #recoveryAttemptsWithoutLiveFrame = 0;
@@ -163,18 +169,32 @@ export class RuntimeHostSessionChannel {
   static async open(
     options: RuntimeHostSessionChannelOptions,
   ): Promise<RuntimeHostSessionChannelOpenResult> {
-    const subscription = await options.connection.openSessionSubscription({
-      sessionId: options.sessionId,
-      transcript: {
-        kind: 'tail',
-        maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
-      },
-    });
+    const openInitial =
+      options.openInitialSessionSubscription ??
+      options.connection.openSessionSubscription.bind(options.connection);
+    const subscription = await runChannelOperation(
+      () =>
+        openInitial({
+          sessionId: options.sessionId,
+          transcript: {
+            kind: 'tail',
+            maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
+          },
+        }),
+      options.signal,
+      (lateSubscription) => lateSubscription.close(),
+    );
     const initialRoot = structuredClone(subscription.snapshot.rootTurn);
     const channel = new RuntimeHostSessionChannel(subscription, [], options, options.connection);
+    const onAbort = () => {
+      void channel.close().catch(() => undefined);
+    };
+    options.signal?.addEventListener('abort', onAbort, { once: true });
+    if (options.signal?.aborted) onAbort();
     void channel.#pump(subscription);
     try {
       const recovered = await channel.#hydrateInitial(subscription);
+      options.signal?.throwIfAborted();
       const root = recovered ? structuredClone(channel.snapshot.rootTurn) : initialRoot;
       return {
         channel,
@@ -185,13 +205,19 @@ export class RuntimeHostSessionChannel {
     } catch (error) {
       await channel.close().catch(() => undefined);
       throw error;
+    } finally {
+      options.signal?.removeEventListener('abort', onAbort);
     }
   }
 
   async #hydrateInitial(subscription: RuntimeHostSessionSubscription): Promise<boolean> {
     let messages: StoredMessage[] | undefined;
     try {
-      messages = await subscription.loadTranscript(decodeStoredMessage);
+      messages = await runChannelOperation(
+        () => subscription.loadTranscript(decodeStoredMessage),
+        this.#closeController.signal,
+      );
+      this.#closeController.signal.throwIfAborted();
     } catch (error) {
       if (!this.#canRecover(error)) throw error;
       this.#failedSubscriptions.add(subscription);
@@ -315,9 +341,14 @@ export class RuntimeHostSessionChannel {
     }
   }
 
-  async close(): Promise<void> {
-    if (this.#closing) return;
+  close(): Promise<void> {
+    this.#closeTask ??= this.#close();
+    return this.#closeTask;
+  }
+
+  async #close(): Promise<void> {
     this.#closing = true;
+    this.#closeController.abort(new Error('Runtime Host Session channel is closed'));
     this.#clearRecoveryStableTimer();
     this.#recoveryAwaitingLiveFrame = undefined;
     this.#pendingStartedTurns.clear();
@@ -406,13 +437,18 @@ export class RuntimeHostSessionChannel {
       if (this.#closing || this.#failure || this.#subscription !== previous) return;
       let replacement: RuntimeHostSessionSubscription;
       try {
-        replacement = await this.#connection.openSessionSubscription({
-          sessionId: this.sessionId,
-          transcript: {
-            kind: 'tail',
-            maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
-          },
-        });
+        replacement = await runChannelOperation(
+          () =>
+            this.#connection.openSessionSubscription({
+              sessionId: this.sessionId,
+              transcript: {
+                kind: 'tail',
+                maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
+              },
+            }),
+          this.#closeController.signal,
+          (lateSubscription) => lateSubscription.close(),
+        );
       } catch (error) {
         if (this.#canRecover(error)) continue;
         throw error;
@@ -427,7 +463,10 @@ export class RuntimeHostSessionChannel {
       this.#pendingFrames.length = 0;
       void this.#pump(replacement);
       try {
-        const messages = await replacement.loadTranscript(decodeStoredMessage);
+        const messages = await runChannelOperation(
+          () => replacement.loadTranscript(decodeStoredMessage),
+          this.#closeController.signal,
+        );
         if (this.#failedSubscriptions.has(replacement)) {
           throw new RuntimeHostSubscriptionError(
             'connection_closed',
@@ -848,6 +887,45 @@ function isGuaranteedOutcome(event: SessionEvent): boolean {
 
 function isTurnTerminalOutcome(event: SessionEvent): boolean {
   return event.type === 'complete' || event.type === 'abort' || event.type === 'error';
+}
+
+function runChannelOperation<T>(
+  operation: () => Promise<T>,
+  signal?: AbortSignal,
+  discard?: (value: T) => Promise<void>,
+): Promise<T> {
+  if (!signal) return operation();
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise<T>((resolve, reject) => {
+    let aborted = false;
+    const onAbort = () => {
+      aborted = true;
+      signal.removeEventListener('abort', onAbort);
+      reject(signal.reason);
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+    let running: Promise<T>;
+    try {
+      running = operation();
+    } catch (error) {
+      signal.removeEventListener('abort', onAbort);
+      reject(error);
+      return;
+    }
+    void running.then(
+      (value) => {
+        signal.removeEventListener('abort', onAbort);
+        // The connection may finish opening after this channel has gone away.
+        // A late subscription still belongs to the operation and must be closed.
+        if (aborted) void discard?.(value).catch(() => undefined);
+        else resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener('abort', onAbort);
+        reject(error);
+      },
+    );
+  });
 }
 
 /**

@@ -190,7 +190,11 @@ test('recovery CTA opens the production Composer model picker', async () => {
     onOpenSettings: assert.fail,
   });
   await act(() => flow.action.dispatchEvent(new flow.window.Event('click', { bubbles: true })));
-  assert.match(flow.document.documentElement.innerHTML, /aria-expanded="true"[^>]*aria-haspopup="menu"/);
+  const wheel = flow.document.querySelector('.maka-model-wheel-viewport[role="listbox"]');
+  assert.ok(wheel, 'the recovery action opens the shared model wheel');
+  const options = wheel.querySelectorAll('[role="option"]');
+  assert.equal(options.length, 1, 'only the available exact account-and-model choice is offered');
+  assert.equal(options[0]?.textContent, `${CHOICE.label}${CHOICE.connectionName}`);
 });
 
 test('unsettled recovery reloads the catalog without opening the picker', async () => {
@@ -203,7 +207,7 @@ test('unsettled recovery reloads the catalog without opening the picker', async 
   });
   await act(() => flow.action.dispatchEvent(new flow.window.Event('click', { bubbles: true })));
   assert.equal(refreshCount, 1);
-  assert.doesNotMatch(flow.document.documentElement.innerHTML, /aria-expanded="true"[^>]*aria-haspopup="menu"/);
+  assert.equal(Boolean(flow.document.querySelector('.maka-model-wheel-viewport')), false);
 });
 
 test('empty recovery opens Models settings through the production route', async () => {
@@ -228,7 +232,7 @@ test('a live-turn lock disables the recovery CTA and keeps the picker closed', a
   });
   assert.equal(flow.action.disabled, true);
   await act(() => flow.action.dispatchEvent(new flow.window.Event('click', { bubbles: true })));
-  assert.doesNotMatch(flow.document.documentElement.innerHTML, /aria-expanded="true"[^>]*aria-haspopup="menu"/);
+  assert.equal(Boolean(flow.document.querySelector('.maka-model-wheel-viewport')), false);
 });
 
 afterEach(async () => {

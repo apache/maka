@@ -20,12 +20,16 @@
 import { strict as assert } from 'node:assert';
 import { afterEach, describe, it } from 'node:test';
 import { parseHTML } from 'linkedom';
-import { act, createElement } from 'react';
+import { act, createElement, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { AstryxLocaleProvider, LocaleProvider } from '@maka/ui';
+import { AstryxLocaleProvider, LocaleProvider, ToastProvider } from '@maka/ui';
 import type { DesktopRuntimeHostRef } from '../../preload/bridge-contract.js';
 import type { DesktopExternalSessionCatalogItem } from '../../preload/external-session-catalog.js';
-import type { ExternalSessionImportFailureReason } from '../../preload/external-session-import-result.js';
+import type { ExternalSessionImportIpcResult } from '../../preload/external-session-import-result.js';
+import {
+  SessionBundleServicesProvider,
+  SessionBundleTasks,
+} from '../../renderer/features/session-bundle/index.js';
 import { ImportTasksSettingsPage } from '../../renderer/settings/import-tasks-settings-page.js';
 import { RuntimeHostSettingsTarget } from '../../renderer/settings/runtime-host-settings-target.js';
 
@@ -154,6 +158,31 @@ describe('ImportTasksSettingsPage durable import state', () => {
 
     await act(async () => harness.root.unmount());
   });
+
+  for (const [locale, label, expected] of [
+    ['en', 'Import', /single record size allows at most 67,108,864 bytes/],
+    ['zh-CN', '导入', /单条记录大小最多 67,108,864 字节/],
+    ['zh-TW', '匯入', /單筆記錄大小最多 67,108,864 位元組/],
+  ] as const) {
+    it(`shows the exact source limit without generic retry advice in ${locale}`, async () => {
+      const harness = await renderPage({
+        locale,
+        catalog: catalog(externalSession()),
+        importResult: {
+          ok: false,
+          reason: 'source_limit_exceeded',
+          limit: { kind: 'record_bytes', max: 67_108_864 },
+        },
+      });
+      const button = buttonWithText(harness.container, label);
+      assert.ok(button);
+      await act(async () => button.click());
+      assert.match(harness.container.textContent, expected);
+      assert.doesNotMatch(harness.container.textContent, /Check the source and try again|请检查来源后重试|請檢查來源後重試|Check the import result/);
+      assert.equal(harness.listCalls(), 1);
+      await act(async () => harness.root.unmount());
+    });
+  }
 
   it('uses catalog in-flight state after remount to disable the source row', async () => {
     const harness = await renderPage({
@@ -1249,8 +1278,8 @@ async function renderPage(options: {
   adapterIds?: string[];
   bySource?: Record<string, Array<CatalogResult | Error | Promise<CatalogResult>>>;
   importResult?:
-    | { ok: false; reason: ExternalSessionImportFailureReason }
-    | Promise<{ ok: false; reason: ExternalSessionImportFailureReason }>;
+    | Extract<ExternalSessionImportIpcResult, { ok: false }>
+    | Promise<Extract<ExternalSessionImportIpcResult, { ok: false }>>;
   /**
    * Per-source answers for a batch: `ok` lands, `unknown` is the Host not
    * answering, `throw` is a rejection. Keyed by source session id, because a
@@ -1258,7 +1287,8 @@ async function renderPage(options: {
    */
   importBySource?: Record<string, 'ok' | 'unknown' | 'throw' | 'no_model' | 'source_unreadable'>;
   onOpenImported?: (sessionId: string) => void;
-  locale?: 'en' | 'zh-CN';
+  offersBundleSource?: boolean;
+  locale?: 'en' | 'zh-CN' | 'zh-TW';
 }): Promise<{
   container: HTMLElement;
   root: Root;
@@ -1353,13 +1383,37 @@ async function renderPage(options: {
     const pageProps = {
       onImported: () => undefined,
       onOpenImported: options.onOpenImported ?? (() => undefined),
+      ...(options.offersBundleSource === undefined
+        ? {}
+        : { offersBundleSource: options.offersBundleSource }),
     };
-    const page = createElement(ImportTasksSettingsPage, pageProps);
+    const bare = createElement(ImportTasksSettingsPage, pageProps);
+    // Composed the way the settings surface composes it. The page's bundle
+    // source renders a panel the feature provides, so a page rendered on its
+    // own is a composition production never has.
+    const page = createElement(SessionBundleTasks, {
+      isLocalTarget: options.offersBundleSource === true,
+      sessions: [],
+      renderSection: ({ children }: { children: ReactNode }) =>
+        createElement('div', null, children),
+      children: bare,
+    });
     const targeted = createElement(RuntimeHostSettingsTarget, {
       host: TEST_RUNTIME_HOST,
       children: page,
     });
-    const localized = createElement(AstryxLocaleProvider, { children: targeted });
+    // The page asks for a confirmation before exporting a subtree, and a
+    // confirmation is a toast. The app has always provided one; the harness did
+    // not, which made every case fail on the provider rather than the case.
+    const withServices = createElement(SessionBundleServicesProvider, {
+      services: {
+        exportBundle: async () => ({ ok: false, reason: 'canceled' }) as const,
+        importBundle: async () => ({ ok: false, reason: 'canceled' }) as const,
+      },
+      children: targeted,
+    });
+    const withToasts = createElement(ToastProvider, { children: withServices });
+    const localized = createElement(AstryxLocaleProvider, { children: withToasts });
     root.render(
       createElement(LocaleProvider, { locale: options.locale ?? 'en', children: localized }),
     );
@@ -1548,6 +1602,28 @@ describe('ImportTasksSettingsPage batch import', () => {
     assert.match(text, /unconfirmed|Unconfirmed|outcome/i);
   });
 
+  it('keeps source limit details in the batch summary after the catalog refresh', async () => {
+    const harness = await renderPage({
+      catalog: catalog(externalSession({ name: 'Oversized conversation' })),
+      importResult: {
+        ok: false,
+        reason: 'source_limit_exceeded',
+        limit: { kind: 'records', max: 1_000_000 },
+      },
+    });
+    await tick(masterBox(harness.container), true);
+    const run = buttonWithText(harness.container, 'Import selected');
+    assert.ok(run);
+    await act(async () => run.click());
+    assert.equal(harness.listCalls(), 2);
+    const text = harness.container.textContent ?? '';
+    assert.match(text, /No conversation was imported/);
+    assert.match(text, /1 more could not be imported/);
+    assert.match(text, /Oversized conversation: .*record count allows at most 1,000,000/);
+    assert.doesNotMatch(text, /Check the import result|Check the source and try again/);
+    await act(async () => harness.root.unmount());
+  });
+
   it('counts code-classified batch failures as failed, not unconfirmed, and raises the model banner', async () => {
     // Before the fix, no_model / source_unreadable were swept into the
     // maybe-landed "unconfirmed" bucket alongside commit_outcome_unknown: no
@@ -1635,5 +1711,33 @@ describe('ImportTasksSettingsPage batch import', () => {
     assert.equal(run.disabled, true);
     await tick(rows(container)[0]!, true);
     assert.equal(buttonWithText(container, 'Import selected')?.disabled, false);
+  });
+});
+
+describe('ImportTasksSettingsPage bundle source', () => {
+  it('does not offer the bundle source where the feature is not mounted', async () => {
+    // An adapter is present so the switch renders at all; the question is
+    // whether the bundle joins it. Beside a Remote target it must not: the
+    // panel needs services this page does not have, and picking the source
+    // there would name a Local action on a Remote-scoped page.
+    const harness = await renderPage({ adapterIds: ['codex'], offersBundleSource: false });
+    assert.match(harness.container.textContent, /Codex/);
+    assert.doesNotMatch(harness.container.textContent, /Maka session file/);
+    await act(async () => harness.root.unmount());
+  });
+
+  it('offers it where the feature is mounted', async () => {
+    const harness = await renderPage({ adapterIds: ['codex'], offersBundleSource: true });
+    assert.match(harness.container.textContent, /Maka session file/);
+    await act(async () => harness.root.unmount());
+  });
+
+  it('says so when neither an agent nor the bundle source is available', async () => {
+    // Beside a Remote target with no agent installed there is nothing to pick,
+    // nothing to filter and nothing to list. Empty controls would be worse than
+    // the sentence that says why.
+    const harness = await renderPage({ adapterIds: [], offersBundleSource: false });
+    assert.match(harness.container.textContent, /No supported Agent detected/);
+    await act(async () => harness.root.unmount());
   });
 });

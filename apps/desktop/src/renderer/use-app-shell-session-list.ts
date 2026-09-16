@@ -18,7 +18,7 @@
  */
 
 import { useCallback, useRef } from 'react';
-import { type LiveTurnProjection, useUiLocale } from '@maka/ui';
+import { useUiLocale } from '@maka/ui';
 import { getDesktopConversationCopy } from './locales/conversation-copy.js';
 import { localizedShellErrorMessage } from './locales/shell-copy.js';
 import {
@@ -28,14 +28,13 @@ import {
   createSessionListRefresher,
   type SessionListRefresher,
 } from './session-read-state.js';
-import { reconcileSettledSessionTransients } from './settled-session-transients.js';
 import {
   selectAuthoritativeSessionIds,
   selectCatalogRevision,
   selectSessions,
   type SessionCatalogController,
 } from './session-catalog-state.js';
-import { sessionIdSetsEqual } from './live-turn-snapshot.js';
+import { sessionIdSetsEqual } from './features/conversation/index.js';
 import { useExternalStoreSelector } from './use-external-store-selector.js';
 import type { DesktopSessionSummary } from '../preload/bridge-contract.js';
 
@@ -49,12 +48,6 @@ export function useAppShellSessionList(
   toastApi: ToastApi,
   options: {
     catalog: SessionCatalogController;
-    activeIdRef: RefBox<string | undefined>;
-    liveTurnBySessionRef: RefBox<Record<string, LiveTurnProjection>>;
-    clearTurnTransientStateIfCurrent: (
-      sessionId: string,
-      expected: LiveTurnProjection | undefined,
-    ) => void;
   },
 ) {
   const uiLocale = useUiLocale();
@@ -81,19 +74,9 @@ export function useAppShellSessionList(
 
   if (!refresherRef.current) {
     refresherRef.current = createSessionListRefresher({
-      captureRequestContext: () => options.liveTurnBySessionRef.current,
       listSessions: () => window.maka.sessions.list(),
       currentSessions: () => sessionsRef.current,
-      commitSessions: (next, observedLiveTurnBySession) => {
-        const normalized = next.map(normalizeSessionSummaryForDisplay);
-        reconcileSettledSessionTransients({
-          activeId: options.activeIdRef.current,
-          sessions: normalized,
-          observedLiveTurnBySession,
-          clearTurnTransientStateIfCurrent: options.clearTurnTransientStateIfCurrent,
-        });
-        commitSessions(normalized);
-      },
+      commitSessions: (next) => commitSessions(next.map(normalizeSessionSummaryForDisplay)),
       onError: (error) => {
         const locale = uiLocaleRef.current;
         const copy = getDesktopConversationCopy(locale).actions;

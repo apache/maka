@@ -32,13 +32,10 @@ import {
   classifyRuntimeEventTerminalFact,
   isHardRuntimeEventReadModelDiagnostic,
   projectRuntimeEventsToStoredMessages,
+  projectTranscriptToolResult,
   type RuntimeEventReadModelDiagnostic,
   type RuntimeEventTerminalFact,
 } from './runtime-event-read-model.js';
-import {
-  buildRuntimeEventModelReplayPlan,
-  type RuntimeEventModelReplayPlan,
-} from './model-history.js';
 
 const CANONICAL_PERMISSION_READ_CONCURRENCY = 8;
 
@@ -55,7 +52,6 @@ export interface RuntimeReadModelSessionView {
   invocations: RuntimeInvocationRecord[];
   diagnostics: RuntimeEventReadModelDiagnostic[];
   terminalFacts: RuntimeEventTerminalFact[];
-  replayPlan: RuntimeEventModelReplayPlan;
 }
 
 export class RuntimeReadModelError extends Error {
@@ -187,6 +183,7 @@ export class RuntimeReadModel {
     const projected = projectRuntimeEventsToStoredMessages(input.events, {
       invocations: input.invocations,
       canonicalPermissionOutcomes: canonicalPermissionRead.outcomes,
+      projectToolResult: projectTranscriptToolResult,
     });
     const diagnostics = [
       ...input.diagnostics,
@@ -210,7 +207,6 @@ export class RuntimeReadModel {
       invocations: input.invocations,
       diagnostics,
       terminalFacts: input.terminalFacts ?? [],
-      replayPlan: buildRuntimeEventModelReplayPlan(input.events),
     };
   }
 

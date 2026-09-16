@@ -41,11 +41,15 @@ export interface WorkHubTranscriptSnapshot {
 }
 export interface WorkHubTranscript {
   observationChanged(phase: 'pending' | 'ready'): void;
-  loadOlder(): Promise<void>;
+  /** Fills the window at an edge the reader approaches; resolves to whether a read was issued. */
+  prefetchHistory(edge: 'older' | 'newer'): Promise<boolean>;
+  /** Trims the window to the Turns the reader's band still covers. */
+  retain(window: { firstTurnId: string; lastTurnId: string }): void;
   loadLatest(): Promise<void>;
   close(): Promise<void>;
 }
 export interface WorkHubServices {
+  readonly inspector: import('../../application/contracts/session-inspector/service.js').SessionInspectorService;
   readonly surface: 'main' | 'workhub';
   readonly initialLocale: UiLocale;
   subscribeAppearance(handler: (locale: UiLocale) => void): () => void;
@@ -64,6 +68,10 @@ export interface WorkHubServices {
   readonly attachments: ComposerAttachmentService;
   readAttachmentBytes(sessionId: string, artifactId: string): Promise<ArtifactBinaryReadResult>;
   prepareAttachments(sessionId: string, items: Array<{ approvalId: string; name: string; mimeType?: string } | { file: File }>): Promise<AttachmentRef[]>;
+  listActiveInteractions(sessionId: string): Promise<import('@maka/core/events').ActiveInteractionRequestEvent[]>;
+  subscribeActiveInteractions(handler: (event: { sessionId: string; interactions: import('@maka/core/events').ActiveInteractionRequestEvent[] }) => void): () => void;
+  respondToUserForm(sessionId: string, response: import('@maka/core/interaction').InteractionFormResponse): Promise<void>;
+  respondToUserQuestion(sessionId: string, response: import('@maka/core/user-question').UserQuestionResponse): Promise<void>;
   answer(sessionId: string, input: WorkHubAnswerInput): Promise<WorkHubAnswerResult>;
   enqueueMessage(sessionId: string, messageId: string, text: string, attachments: AttachmentRef[], placement: MessageQueuePlacement): Promise<'admitted' | 'unknown' | 'rejected'>;
   retractQueueEntry(sessionId: string, entryId: string): Promise<void>;
@@ -79,6 +87,7 @@ export interface WorkHubServices {
     handler: (event: SessionEvent) => void,
     onError: (error: unknown) => void,
     onPhase: (phase: 'pending' | 'ready') => void,
+    onExecution?: (projection: import('../../../shared/session-execution-projection.js').SessionExecutionProjection | undefined) => void,
   ): () => void;
   openTranscript(
     sessionId: string,
