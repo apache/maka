@@ -350,7 +350,8 @@ describe('ShellRunProcessManager', () => {
             cwd,
             command: nodeCommand(`
               const { existsSync } = require('node:fs');
-              process.stdout.write('READY\\n');
+              // No trailing control bytes: seeing READY must mean the entire output arrived.
+              process.stdout.write('READY');
               setInterval(() => {
                 if (existsSync(${JSON.stringify(exitGate)})) process.exit(0);
               }, 10);
