@@ -258,9 +258,15 @@ export class DesktopTranscriptReplica {
   }
 
   /**
-   * Every durable row of one Turn, read forward from its first sequence until
-   * a row of another Turn, plus its overlay. Only the Turn's own rows count
-   * toward `maxBytes`.
+   * Every durable row of one Turn, read forward from its first sequence to the
+   * watermark this replica holds, plus its overlay. Only the Turn's own rows
+   * count toward `maxBytes`.
+   *
+   * The Host writes a nested Turn's rows between the rows of the Turn around
+   * it, so the two share a stretch of the Session's ordinals and a row of
+   * another Turn says nothing about where this one ends. Nothing short of the
+   * watermark is an authoritative end, so the walk goes there: a Turn is
+   * claimed whole only when the traversal that proves it has finished.
    */
   async readTurn(turnId: string, firstSequence: number, maxBytes: number): Promise<StoredMessage[]> {
     this.#assertLive();
@@ -278,20 +284,16 @@ export class DesktopTranscriptReplica {
           anchorSequence: cursor === null && firstSequence > 0 ? firstSequence - 1 : null,
           maxBytes: SESSION_TRANSCRIPT_PAGE_MAX_BYTES,
         });
-        const ended = await this.#withDecodedPage(page, (decoded) => {
+        await this.#withDecodedPage(page, (decoded) => {
           this.#assertLive();
           for (const { message } of decoded.messages) {
-            const owner = messageTurnId(message);
-            if (owner !== undefined && owner !== turnId) return true;
-            if (owner !== turnId) continue;
+            if (messageTurnId(message) !== turnId) continue;
             bytes += encodedMessageBytes(message);
             if (bytes > maxBytes) throw new RangeError('Desktop transcript Turn exceeds its read limit');
             durable.push(message);
           }
           cursor = decoded.nextCursor;
-          return false;
         });
-        if (ended) break;
       } while (cursor !== null);
     }
     const durableIds = new Set(durable.map((message) => message.id));

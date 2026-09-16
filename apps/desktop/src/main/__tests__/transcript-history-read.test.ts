@@ -143,6 +143,89 @@ for (const checkpoint of ['running-b', 'result-b'] as const) {
   });
 }
 
+/**
+ * The Host writes a nested Turn's rows between its parent's, so the two share a
+ * stretch of the Session's ordinals (see `session-transcript-reader.test.ts`,
+ * "pages a nested Turn the same way a single sweep reads it"). A targeted read
+ * of the outer Turn has to read through that stretch, not stop at it.
+ */
+test('reads a Turn through the rows of a nested one', async () => {
+  const outer = (id: string, ts: number): StoredMessage =>
+    ({ type: 'assistant', id, turnId: 'outer', ts, text: `outer ${id}`, modelId: 'fixture-model' });
+  const source: StoredMessage[] = [
+    { type: 'user', id: 'user-outer', turnId: 'outer', ts: 1, text: 'Outer question' },
+    outer('outer-before', 2),
+    { type: 'user', id: 'user-inner', turnId: 'inner', ts: 3, text: 'Inner question' },
+    { type: 'assistant', id: 'inner-answer', turnId: 'inner', ts: 4, text: 'inner answer', modelId: 'fixture-model' },
+    { type: 'turn_state', id: 'completed-inner', turnId: 'inner', ts: 5, status: 'completed' },
+    outer('outer-after', 6),
+    { type: 'turn_state', id: 'completed-outer', turnId: 'outer', ts: 7, status: 'completed' },
+  ];
+  const ledger = await openTranscriptLedger(source);
+  let opened: Awaited<ReturnType<typeof openReplica>> | undefined;
+  try {
+    const throughSequence = await ledger.appendThrough('completed-outer');
+    const records = await ledger.durableRecords();
+    const first = records.find(({ message }) => message.turnId === 'outer')!.sequence;
+    opened = await openReplica(ledger, throughSequence);
+    const read = await opened.replica.readTurn('outer', first, PAGE_BYTES);
+    assert.deepEqual(
+      read.map(({ id }) => id),
+      records.filter(({ message }) => message.turnId === 'outer').map(({ message }) => message.id),
+      'the nested Turn ended the read of the Turn around it',
+    );
+  } finally {
+    opened?.replica.close();
+    await opened?.subscription.close();
+    await ledger.close();
+  }
+});
+
+/**
+ * A Turn's rows become durable when the Turn ends, and they carry the ordinals
+ * they were written at. A nested Turn that ends first publishes a watermark
+ * above rows the Turn around it has not published yet, so a row can appear
+ * BELOW a watermark a reader has already seen.
+ *
+ * So a reader that keeps what it holds and only takes what arrived above its
+ * watermark ends up missing rows. This is why recovery rereads the range it
+ * delivered instead of catching up from the newest sequence it handed over —
+ * residency removes eviction, not the need to reconcile.
+ */
+test('publishes rows below a watermark a reader has already been given', async () => {
+  const source: StoredMessage[] = [
+    { type: 'user', id: 'user-outer', turnId: 'outer', ts: 1, text: 'Outer question' },
+    { type: 'assistant', id: 'outer-before', turnId: 'outer', ts: 2, text: 'outer before', modelId: 'fixture-model' },
+    { type: 'user', id: 'user-inner', turnId: 'inner', ts: 3, text: 'Inner question' },
+    { type: 'assistant', id: 'inner-answer', turnId: 'inner', ts: 4, text: 'inner answer', modelId: 'fixture-model' },
+    { type: 'turn_state', id: 'completed-inner', turnId: 'inner', ts: 5, status: 'completed' },
+    { type: 'assistant', id: 'outer-after', turnId: 'outer', ts: 6, text: 'outer after', modelId: 'fixture-model' },
+    { type: 'turn_state', id: 'completed-outer', turnId: 'outer', ts: 7, status: 'completed' },
+  ];
+  const ledger = await openTranscriptLedger(source);
+  try {
+    const innerThrough = await ledger.appendThrough('completed-inner');
+    assert.ok(innerThrough !== null);
+    const afterInner = await ledger.durableRecords();
+    assert.deepEqual(
+      afterInner.map(({ message }) => message.turnId),
+      afterInner.map(() => 'inner'),
+      'only the Turn that ended is durable yet',
+    );
+
+    await ledger.appendThrough('completed-outer');
+    const afterOuter = await ledger.durableRecords();
+    const below = afterOuter.filter(({ sequence }) => sequence <= innerThrough);
+    assert.deepEqual(
+      below.map(({ message }) => message.id),
+      ['user-outer', 'outer-before', 'user-inner', 'inner-answer', 'completed-inner'],
+      'the Turn around the nested one publishes its opening below the watermark',
+    );
+  } finally {
+    await ledger.close();
+  }
+});
+
 type Ledger = Awaited<ReturnType<typeof openTranscriptLedger>>;
 async function openReplica(
   ledger: Ledger,
