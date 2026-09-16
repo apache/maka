@@ -805,6 +805,17 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
           } else {
             recordOwnedTurn(event.turnId, event.messageId);
           }
+          // Admission proves the transcript carries this message, and the Host
+          // does not echo a message it already wrote. Read it now so a message
+          // steered into the running Turn shows up there and its optimistic
+          // entry retires through the shared durable rule, instead of both
+          // waiting for the Turn to settle.
+          void sideChat.readSettledMessages(forkId)
+            .then(({ messages }) => {
+              if (!mountedRef.current || companionIdRef.current !== forkId) return;
+              mergeDurableMessages(messages);
+            })
+            .catch(() => undefined);
           return;
         }
         if (admission) {
