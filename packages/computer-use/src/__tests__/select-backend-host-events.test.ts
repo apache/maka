@@ -24,7 +24,6 @@ import type { MakaCuBackendOptions } from '../maka-cu-backend.js';
 import { selectComputerUseBackend } from '../select-backend.js';
 
 test('service invalidation producer advances Runtime to reobserve', async () => {
-  if (process.platform !== 'darwin') return;
   let invalidate:
     | ((input: { sessionId: string; reason: 'child_exit'; outcomeUnknown: boolean }) => void)
     | undefined;
@@ -46,6 +45,7 @@ test('service invalidation producer advances Runtime to reobserve', async () => 
     },
   };
   const selected = selectComputerUseBackend({
+    platform: 'darwin',
     binaryPath: '/tmp/fake-executor',
     expectedBinarySha256: '0'.repeat(64),
     createBackend(options) {
@@ -79,7 +79,6 @@ test('service invalidation producer advances Runtime to reobserve', async () => 
 });
 
 test('physical input policy is passed to the selected backend', () => {
-  if (process.platform !== 'darwin') return;
   const physicalInputRecentlyActive = () => true;
   let received: MakaCuBackendOptions['physicalInputRecentlyActive'];
   const backend: CuDispatchBackend = {
@@ -91,6 +90,7 @@ test('physical input policy is passed to the selected backend', () => {
     },
   };
   selectComputerUseBackend({
+    platform: 'darwin',
     binaryPath: '/tmp/fake-executor',
     expectedBinarySha256: '0'.repeat(64),
     physicalInputRecentlyActive,
@@ -100,4 +100,58 @@ test('physical input policy is passed to the selected backend', () => {
     },
   });
   assert.equal(received, physicalInputRecentlyActive);
+});
+
+test('platforms without a binding fail closed instead of no-oping', () => {
+  let made = 0;
+  for (const platform of ['linux', 'win32', 'freebsd'] as const) {
+    const selected = selectComputerUseBackend({
+      platform,
+      binaryPath: '/tmp/fake-executor',
+      expectedBinarySha256: '0'.repeat(64),
+      createBackend: () => {
+        made += 1;
+        return {
+          preflight: async () => ({ accessibility: false, screenRecording: false }),
+        } as never;
+      },
+    });
+    assert.equal(selected.backendId, 'none');
+    assert.equal(selected.backend, undefined);
+    assert.equal(selected.tools.length, 0);
+    assert.equal(selected.unavailableReason, 'unsupported_platform');
+  }
+  assert.equal(made, 0, 'an unsupported platform must never reach backend construction');
+});
+
+test('typed reasons separate a missing executable from a failed backend', () => {
+  const unpinned = selectComputerUseBackend({ platform: 'darwin' });
+  assert.equal(unpinned.backendId, 'none');
+  assert.equal(unpinned.unavailableReason, 'missing_executable');
+
+  const failed = selectComputerUseBackend({
+    platform: 'darwin',
+    binaryPath: '/tmp/fake-executor',
+    expectedBinarySha256: '0'.repeat(64),
+    createBackend() {
+      throw new Error('construct failed');
+    },
+  });
+  assert.equal(failed.backendId, 'none');
+  assert.equal(failed.unavailableReason, 'backend_failed');
+});
+
+test('the platform seam makes Darwin selection assertions run on every CI OS', () => {
+  const selected = selectComputerUseBackend({
+    platform: 'darwin',
+    binaryPath: '/tmp/fake-executor',
+    expectedBinarySha256: '0'.repeat(64),
+    createBackend() {
+      return {
+        preflight: async () => ({ accessibility: true, screenRecording: true }),
+      } as never;
+    },
+  });
+  assert.equal(selected.backendId, 'maka-cu');
+  assert.equal(selected.unavailableReason, undefined);
 });

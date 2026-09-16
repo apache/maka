@@ -20,11 +20,13 @@
 export {
   selectComputerUseBackend,
   CU_BACKEND_IDS,
+  CU_PLATFORM_BACKEND_BINDINGS,
   DEFAULT_CU_BACKEND_ID,
 } from './select-backend.js';
 export type {
   ComputerUseBackendSelection,
   CuBackendId,
+  CuPlatformBackendBinding,
   MakaCuSelection,
   SelectedComputerUseBackend,
 } from './select-backend.js';

@@ -60,8 +60,26 @@ describe('Computer Use host health', () => {
     });
   });
 
-  it('reports a missing backend as unavailable', () => {
-    assert.equal(computerUseServiceHealth('none', undefined).state, 'not_available');
+  it('keeps the three ways to have no backend apart in the projected reason', () => {
+    assert.deepEqual(
+      [
+        computerUseServiceHealth('none', undefined, 'unsupported_platform'),
+        computerUseServiceHealth('none', undefined, 'missing_executable'),
+        computerUseServiceHealth('none', undefined, 'backend_failed'),
+      ],
+      [
+        { state: 'not_available', reason: 'cu_platform_unsupported' },
+        { state: 'not_available', reason: 'cu_executor_undistributable' },
+        { state: 'not_available', reason: 'cu_backend_unavailable' },
+      ],
+    );
+  });
+
+  it('reports a missing backend with no typed reason as undistributable', () => {
+    assert.deepEqual(computerUseServiceHealth('none', undefined), {
+      state: 'not_available',
+      reason: 'cu_executor_undistributable',
+    });
   });
 
   it('constructs a backend only when the local artifact matches the manifest hash', async () => {
@@ -78,17 +96,17 @@ describe('Computer Use host health', () => {
       }));
 
       const validForDevelopment = createComputerUseHost({
+        platform: 'darwin',
         isPackaged: false,
         resourcesPath: directory,
         manifestPath,
         binaryPath,
         physicalInputRecentlyActive: () => false,
       });
-      assert.equal(validForDevelopment.selected.backendId, process.platform === 'darwin'
-        ? 'maka-cu'
-        : 'none');
+      assert.equal(validForDevelopment.selected.backendId, 'maka-cu');
 
       const blockedForDistribution = createComputerUseHost({
+        platform: 'darwin',
         isPackaged: true,
         resourcesPath: directory,
         manifestPath,
@@ -101,15 +119,14 @@ describe('Computer Use host health', () => {
         makaCu: { binarySha256: hash, distributionReady: true },
       }));
       const validForDistribution = createComputerUseHost({
+        platform: 'darwin',
         isPackaged: true,
         resourcesPath: directory,
         manifestPath,
         binaryPath,
         physicalInputRecentlyActive: () => false,
       });
-      assert.equal(validForDistribution.selected.backendId, process.platform === 'darwin'
-        ? 'maka-cu'
-        : 'none');
+      assert.equal(validForDistribution.selected.backendId, 'maka-cu');
 
       await writeFile(manifestPath, JSON.stringify({
         makaCu: {
@@ -118,6 +135,7 @@ describe('Computer Use host health', () => {
         },
       }));
       const invalid = createComputerUseHost({
+        platform: 'darwin',
         isPackaged: false,
         resourcesPath: directory,
         manifestPath,
@@ -129,6 +147,7 @@ describe('Computer Use host health', () => {
       const linkedBinaryPath = join(directory, 'linked-maka-cu');
       await symlink(binaryPath, linkedBinaryPath);
       const linked = createComputerUseHost({
+        platform: 'darwin',
         isPackaged: false,
         resourcesPath: directory,
         manifestPath,
@@ -136,6 +155,51 @@ describe('Computer Use host health', () => {
         physicalInputRecentlyActive: () => false,
       });
       assert.equal(linked.selected.backendId, 'none');
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('fails closed on a platform with no executor binding even when a binary is pinned', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'maka-cu-host-platform-'));
+    try {
+      const binaryPath = join(directory, 'maka-cu');
+      const manifestPath = join(directory, 'bundled-tools.json');
+      const bytes = Buffer.from('#!/bin/sh\nexit 0\n');
+      await writeFile(binaryPath, bytes);
+      await chmod(binaryPath, 0o755);
+      const hash = createHash('sha256').update(bytes).digest('hex');
+      await writeFile(manifestPath, JSON.stringify({
+        makaCu: { binarySha256: hash, distributionReady: true },
+      }));
+
+      for (const platform of ['linux', 'win32', 'freebsd'] as const) {
+        const selected = createComputerUseHost({
+          platform,
+          isPackaged: false,
+          resourcesPath: directory,
+          manifestPath,
+          binaryPath,
+          physicalInputRecentlyActive: () => false,
+        });
+        assert.equal(selected.selected.backendId, 'none');
+        assert.equal(
+          selected.selected.unavailableReason,
+          'unsupported_platform',
+          `${platform} must report a typed unsupported selection`,
+        );
+        // The same projection the Desktop boot feeds the capability snapshot:
+        // an unbound platform must not read as an integrity failure.
+        assert.equal(
+          computerUseServiceHealth(
+            selected.selected.backendId,
+            selected.selected.backend?.executorState?.(),
+            selected.selected.unavailableReason,
+          ).reason,
+          'cu_platform_unsupported',
+          `${platform} must reach the capability surface as a platform fact`,
+        );
+      }
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
