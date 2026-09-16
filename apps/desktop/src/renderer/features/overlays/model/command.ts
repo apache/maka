@@ -17,6 +17,27 @@
  * under the License.
  */
 
-export { SearchServicesProvider } from './services-context.js';
-export { useShellSearch } from './use-shell-search.js';
-export type { SearchServices } from './services-context.js';
+/**
+ * The Command Palette's row contract. The palette renders rows; the shell and
+ * its command builders decide what the rows do, so the type is the only thing
+ * the two share.
+ */
+
+import type { LucideIcon } from '@maka/ui/icons';
+
+export type CommandKind = 'action' | 'session';
+
+export interface Command {
+  id: string;
+  kind: CommandKind;
+  label: string;
+  hint?: string;
+  platformHint?: {
+    apple: string;
+    other: string;
+  };
+  group: string;
+  Icon: LucideIcon;
+  keywords?: string[];
+  run(): void | Promise<void>;
+}

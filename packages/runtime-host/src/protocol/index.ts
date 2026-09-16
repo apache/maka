@@ -101,9 +101,10 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 157 as const;
-// 157: Client Plugin bundles, desktop-ui composition, generation-fenced Host
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 158 as const;
+// 158: Client Plugin bundles, desktop-ui composition, generation-fenced Host
 // Remote calls, and pull streams are projected through strict Host contracts.
+// 157: Session Tool events admit opaque nested Tool and step identities.
 // 156: Client Capability calls preserve opaque tool-call identities.
 // 154: External Session import results distinguish committed Sessions from typed source limits.
 // 153: Sessions may select plugin executors and Plugin Platform queries expose them.

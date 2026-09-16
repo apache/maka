@@ -196,9 +196,9 @@ test('WorkHub uses its coordination model and shared attachment composer', async
   await expect.poll(floatingBottom).toBe(anchoredBottom);
   // Opening context details must expand the native compact window as well as the renderer.
   await workhub.getByRole('button', { name: /打开用量追踪|Open usage trace/ }).click();
-  await expect(workhub.getByRole('button', { name: /返回对话|Back to conversation/ })).toBeVisible();
+  await expect(workhub.getByRole('button', { name: /收起任务工作栏|Collapse task workbar/ })).toBeVisible();
   await expect.poll(() => workhub.evaluate(() => innerHeight)).toBe(expandedHeight);
-  await workhub.getByRole('button', { name: /返回对话|Back to conversation/ }).click();
+  await workhub.getByRole('button', { name: /收起任务工作栏|Collapse task workbar/ }).click();
   await workhub.getByRole('button', { name: /收起对话|Collapse conversation/ }).click();
   await expect.poll(() => workhub.evaluate(() => innerHeight === Math.ceil(document.querySelector('.workHubComposerSurface')!.getBoundingClientRect().height))).toBe(true);
   const thinking = workhub.getByRole('button', { name: /思考级别|Thinking level/ });

@@ -92,6 +92,7 @@ import { connectRuntimeHost, RuntimeHostOperationError } from '../client/index.j
 import { RUNTIME_HOST_PROTOCOL_VERSION } from '../protocol/index.js';
 import { readLedgerMessages } from './fixtures/ledger-transcript.js';
 import { clientCapabilityConnectionIdentity } from './fixtures/client-capability.js';
+import { workHubDesktopCapabilityOffers } from './fixtures/workhub-capabilities.js';
 
 const require = createRequire(import.meta.url);
 const FAKE_CONNECTION_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
@@ -983,20 +984,7 @@ test('default production WorkHub selects and delegates through its durable Host 
       const registered = await composition.handlers['client.capability.replace'](
         {
           registrationId: randomUUID(),
-          offers: [
-            {
-              offerId: 'desktop-workhub',
-              version: '0',
-              affinity: 'session',
-              hostPathAccess: 'none',
-              label: 'Desktop WorkHub',
-              tools: ['control', 'tasks'].map((name) => ({
-                serverId: 'desktop_workhub',
-                name,
-                inputSchema: { type: 'object', additionalProperties: false },
-              })),
-            },
-          ],
+          offers: workHubDesktopCapabilityOffers(),
         },
         context,
       );
@@ -3120,20 +3108,7 @@ async function actWorkHub(
     const registered = await composition.handlers['client.capability.replace'](
       {
         registrationId: randomUUID(),
-        offers: [
-          {
-            offerId: 'desktop-workhub',
-            version: '0',
-            affinity: 'session',
-            hostPathAccess: 'none',
-            label: 'Desktop WorkHub',
-            tools: ['control', 'tasks'].map((name) => ({
-              serverId: 'desktop_workhub',
-              name,
-              inputSchema: { type: 'object', additionalProperties: false },
-            })),
-          },
-        ],
+        offers: workHubDesktopCapabilityOffers(),
       },
       context,
     );
