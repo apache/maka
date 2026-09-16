@@ -616,11 +616,19 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     stagedQuotesSessionId !== null && stagedQuotesSessionId === input.driver.getSessionId()
       ? stagedRewindQuotes
       : [];
-  const clearStagedQuotes = () => {
-    stagedRewindQuotes = [];
-    stagedQuotesSessionId = null;
+  // Every write to the staging pair is a new generation. In-flight submits
+  // capture the generation at dispatch and only restage their quotes when no
+  // write has landed since, so a write that skips this setter would let a
+  // stale failure callback overwrite newer staging (#5109 review).
+  const setStagedQuotes = (
+    quotes: NonNullable<MakaSessionRewindResult['quotes']>,
+    sessionId: string | null,
+  ) => {
+    stagedRewindQuotes = quotes;
+    stagedQuotesSessionId = sessionId;
     stagedGeneration += 1;
   };
+  const clearStagedQuotes = () => setStagedQuotes([], null);
   let startAttachedTurn: ((attached: AttachedTurnContext) => void) | undefined;
   const startPendingAttachedTurn = () => {
     if (busy || turnRunning) return;
@@ -1300,19 +1308,19 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     // restages them for the retry.
     const staged = effectiveStagedQuotes();
     const originSessionId = input.driver.getSessionId();
-    const originGeneration = stagedGeneration;
     if (staged.length > 0) clearStagedQuotes();
-    // A refusal or failure returns the quotes to the draft that dispatched
-    // them. The originating Session and staging generation are captured at
-    // dispatch: a Session switched, a newer rewind, or an explicit clear
-    // landing while the admission was in flight must not inherit context
-    // meant for the original conversation (#5109 review).
+    // The generation is read after the dispatch's own clear: the restore
+    // guard compares against the staging state this submit actually left
+    // behind, so an ordinary failure still passes while a Session switch, a
+    // newer rewind, or an explicit clear landing while the admission was in
+    // flight has since bumped it and must not inherit context meant for the
+    // original conversation (#5109 review).
+    const originGeneration = stagedGeneration;
     const restageForRetry = () => {
       if (!staged.length) return;
       if (input.driver.getSessionId() !== originSessionId) return;
       if (stagedGeneration !== originGeneration) return;
-      stagedRewindQuotes = staged;
-      stagedQuotesSessionId = originSessionId;
+      setStagedQuotes(staged, originSessionId);
     };
     const task = input.driver
       .submitMessage(text, {
@@ -2190,8 +2198,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       // staging (#5109).
       clearStagedQuotes();
       if (result.quotes?.length) {
-        stagedRewindQuotes = result.quotes;
-        stagedQuotesSessionId = input.driver.getSessionId();
+        setStagedQuotes(result.quotes, input.driver.getSessionId());
         state.entries.push({
           kind: 'notice',
           level: 'info',

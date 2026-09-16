@@ -6875,6 +6875,115 @@ Slug openai-work<cursor>
     ]);
   });
 
+  test('restages a failed quote submit back onto the same session', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new HeldSubmitQuotedDriver(
+      [{ turnId: 'turn-1', label: 'first question' }],
+      [storedUserMessage('user-1', 'turn-1', 'first question')],
+    );
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    terminal.input('/rewind');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('first question'));
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('quotes:1'));
+    terminal.input('resend this');
+    terminal.input('\r');
+    await waitFor(() => driver.submittedQuotes.length === 1);
+
+    // The admission fails with the Session unchanged: the quotes return to
+    // the staging for the retry the feature promises (#5109 review).
+    driver.hold(new Error('admission outcome unknown'));
+    await waitFor(() =>
+      plainTerminalOutput(terminal.output()).includes('admission outcome unknown'),
+    );
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('quotes:1'));
+
+    terminal.input('retry then');
+    terminal.input('\r');
+    await waitFor(() => driver.submittedQuotes.length === 2);
+    assert.deepEqual(driver.submittedQuotes[1], [
+      { text: 'a large pasted excerpt', label: 'earlier turn', sourceTurnId: 'turn-0' },
+    ]);
+
+    exitMaka(terminal);
+    await Promise.race([
+      run,
+      delay(CLOSE_BUDGET_MS).then(() => {
+        throw new Error('TUI did not close during test cleanup');
+      }),
+    ]);
+  });
+
+  test('a newer rewind displaces an in-flight quote submit restage', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new PerRewindQuotedDriver(
+      [{ turnId: 'turn-1', label: 'first question' }],
+      [storedUserMessage('user-1', 'turn-1', 'first question')],
+    );
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    terminal.input('/rewind');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('first question'));
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('quotes:1'));
+    terminal.input('resend this');
+    terminal.input('\r');
+    await waitFor(() => driver.submittedQuotes.length === 1);
+
+    // A second rewind lands while the first submit's admission is still in
+    // flight: its own quotes are the new staging (#5109 review). The picker
+    // opens through runControl's async activity acquire, so wait for the
+    // driver call before selecting — scrollback still shows the first
+    // picker's frame, and text alone cannot tell the two openings apart.
+    terminal.input('/rewind');
+    terminal.input('\r');
+    await waitFor(() => driver.pickerOpens === 2);
+    terminal.input('\r');
+    await waitFor(() => driver.rewound.length === 2);
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('quotes:1'));
+
+    // The stale admission fails now: its restage must not overwrite the
+    // newer rewind's staging.
+    driver.hold(new Error('admission outcome unknown'));
+    await waitFor(() =>
+      plainTerminalOutput(terminal.output()).includes('admission outcome unknown'),
+    );
+
+    terminal.input('follow-up');
+    terminal.input('\r');
+    await waitFor(() => driver.submittedQuotes.length === 2);
+    assert.deepEqual(driver.submittedQuotes[1], [
+      { text: 'excerpt from rewind 2', label: 'earlier turn', sourceTurnId: 'turn-0' },
+    ]);
+
+    exitMaka(terminal);
+    await Promise.race([
+      run,
+      delay(CLOSE_BUDGET_MS).then(() => {
+        throw new Error('TUI did not close during test cleanup');
+      }),
+    ]);
+  });
+
   test('lets a quote-only rewind reach the submit path unchanged', async () => {
     const terminal = new FakeTerminal();
     const driver = new HeldSubmitQuotedDriver(
@@ -12221,6 +12330,41 @@ class HeldSubmitQuotedDriver extends QuotedRewindDriver {
     return new Promise((_, reject) => {
       this.hold = () => reject(new Error('admission outcome unknown'));
     });
+  }
+}
+
+/**
+ * Each rewind stages its own distinct quote text, so a test can tell whose
+ * staging a later submit actually carried.
+ */
+class PerRewindQuotedDriver extends HeldSubmitQuotedDriver {
+  #rewindCount = 0;
+  #pickerOpens = 0;
+
+  override async listRewindTargets(): Promise<RewindTarget[]> {
+    this.#pickerOpens += 1;
+    return super.listRewindTargets();
+  }
+
+  override async rewindToTurn(turnId: string): Promise<MakaSessionRewindResult> {
+    const result = await super.rewindToTurn(turnId);
+    this.#rewindCount += 1;
+    return {
+      ...result,
+      quotes: [
+        {
+          text: `excerpt from rewind ${this.#rewindCount}`,
+          label: 'earlier turn',
+          sourceTurnId: 'turn-0',
+        },
+      ],
+    };
+  }
+
+  /** How many times the rewind picker opened; picker renders share labels with
+   * the transcript, so scrollback text alone cannot tell two openings apart. */
+  get pickerOpens(): number {
+    return this.#pickerOpens;
   }
 }
 
