@@ -635,16 +635,13 @@ function validateNonTextInputs(candidateRoot, identity, entries) {
     } catch {
       // Invalid UTF-8 continues to the candidate-owned provenance inventory.
     }
-    const imageFormat = sourceImageFormat(contents);
     const relativePath = entry.slice(`${identity.rootDirectory}/`.length);
     if (
       provenancePatterns.some((pattern) => sourceInventoryPatternMatches(pattern, relativePath))
     ) {
       continue;
     }
-    throw new Error(
-      `Cannot safely classify non-text release input ${entry}${imageFormat ? ` (${imageFormat})` : ''}`,
-    );
+    throw new Error(`Cannot safely classify non-text release input ${entry}`);
   }
 }
 
@@ -682,26 +679,6 @@ function compiledArtifactFormat(contents) {
   }
   if (prefix.equals(Buffer.from('!<arch>\n'))) return 'ar archive';
   if (prefix.equals(Buffer.from('!<thin>\n'))) return 'thin ar archive';
-  return undefined;
-}
-
-function sourceImageFormat(contents) {
-  const prefix = contents.subarray(0, 12);
-  if (prefix.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) return 'PNG';
-  if (prefix.subarray(0, 3).equals(Buffer.from([0xff, 0xd8, 0xff]))) return 'JPEG';
-  if (
-    prefix
-      .subarray(0, 6)
-      .toString('ascii')
-      .match(/^GIF8[79]a$/u)
-  )
-    return 'GIF';
-  if (
-    prefix.subarray(0, 4).toString('ascii') === 'RIFF' &&
-    prefix.subarray(8, 12).toString('ascii') === 'WEBP'
-  ) {
-    return 'WebP';
-  }
   return undefined;
 }
 
