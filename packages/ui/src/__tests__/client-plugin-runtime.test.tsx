@@ -19,6 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { createElement } from 'react';
+import { parseHTML } from 'linkedom';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { test } from 'node:test';
 import {
@@ -339,4 +340,38 @@ test('failed Client Plugin apply aborts streams before the instance is staged', 
   assert.match(runtime.inspect().failure?.diagnostic ?? '', /apply failed/);
   assert.deepEqual(closed, ['failed-apply']);
   await runtime.close();
+});
+
+
+test('effects registered after activation start and dispose exactly once, including CSS and events', async () => {
+  const { document } = parseHTML('<html><head></head><body></body></html>');
+  let ctx!: MakaClientPluginContext;
+  let subscribed = 0;
+  let cleaned = 0;
+  let effects = 0;
+  let runtime!: ClientPluginRuntime;
+  runtime = new ClientPluginRuntime({
+    root: new MakaClientRoot(), staticModules: {}, document,
+    productEvents: { subscribe() { subscribed++; return () => { cleaned++; }; } },
+    loadBundle: async (plugin) => runtime.registerBundle({ id: plugin.extensionId, factory: () => ({
+      apply(context: MakaClientPluginContext) { ctx = context; },
+    }) }),
+  });
+  await runtime.reconcile(snapshot(1, descriptor('effects', 1)));
+  const stop = ctx.events.on('session.changed', {}, () => undefined);
+  const css = ctx.style('body { color: red; }');
+  const effect = ctx.effect(() => { effects++; return () => { effects--; }; });
+  assert.equal(subscribed, 1);
+  assert.equal(document.head.querySelectorAll('style').length, 1);
+  assert.equal(effects, 1);
+  stop(); stop(); css(); effect();
+  await Promise.resolve(); await Promise.resolve();
+  assert.equal(cleaned, 1);
+  assert.equal(effects, 0);
+  assert.equal(document.head.querySelectorAll('style').length, 0);
+  ctx.events.on('session.changed', {}, () => undefined);
+  await runtime.close();
+  assert.equal(cleaned, 2);
+  assert.throws(() => ctx.effect(() => {}), /disposed/);
+  assert.throws(() => ctx.style('body {}'), /disposed/);
 });

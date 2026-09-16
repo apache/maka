@@ -150,6 +150,7 @@ interface StagedEffect {
 }
 
 interface PluginInstance {
+  phase: 'staged' | 'active' | 'disposed';
   readonly descriptor: MakaClientPluginDescriptor;
   readonly roots: StagedRootRegistration[];
   readonly slotDisposers: Array<() => void>;
@@ -432,6 +433,7 @@ export class ClientPluginRuntime {
     }
     const instance: PluginInstance = {
       descriptor,
+      phase: 'staged',
       roots: [],
       slotDisposers: [],
       effects: [],
@@ -532,23 +534,14 @@ export class ClientPluginRuntime {
         if (typeof css !== 'string') throw new Error('Client Plugin CSS must be a string');
         const document = this.#document;
         if (!document) throw new Error('Client Plugin CSS requires a document');
-        const effect: StagedEffect = {
-          cancelled: false,
-          setup: () => {
-            const element = document.createElement('style');
-            element.dataset.makaClientPlugin = instance.descriptor.extensionId;
-            if (label) element.dataset.makaClientPluginStyle = label;
-            element.textContent = css;
-            document.head.append(element);
-            return () => element.remove();
-          },
-        };
-        instance.effects.push(effect);
-        return () => {
-          effect.cancelled = true;
-          void Promise.resolve().then(() => effect.cleanup?.()).catch(() => undefined);
-          effect.cleanup = undefined;
-        };
+        return stageEffect(instance, () => {
+          const element = document.createElement('style');
+          element.dataset.makaClientPlugin = instance.descriptor.extensionId;
+          if (label) element.dataset.makaClientPluginStyle = label;
+          element.textContent = css;
+          document.head.append(element);
+          return () => element.remove();
+        });
       },
     });
   }
@@ -708,27 +701,32 @@ function stageEffect(
   setup: () => void | (() => void | Promise<void>),
 ): () => void {
   if (typeof setup !== 'function') throw new Error('Client Plugin effect must be a function');
+  if (instance.phase === 'disposed') throw new Error('Client Plugin instance is disposed');
   const effect: StagedEffect = { setup, cancelled: false };
   instance.effects.push(effect);
+  if (instance.phase === 'active') startEffect(effect);
   return () => {
     effect.cancelled = true;
-    void Promise.resolve()
-      .then(() => effect.cleanup?.())
-      .catch(() => undefined);
+    const cleanup = effect.cleanup;
     effect.cleanup = undefined;
+    void Promise.resolve().then(cleanup).catch(() => undefined);
   };
 }
 
+function startEffect(effect: StagedEffect): void {
+  if (effect.cancelled) return;
+  const cleanup = effect.setup();
+  if (typeof cleanup === 'function') effect.cleanup = cleanup;
+}
+
 async function commitEffects(instance: PluginInstance): Promise<void> {
-  for (const effect of instance.effects) {
-    if (effect.cancelled) continue;
-    const cleanup = effect.setup();
-    if (typeof cleanup === 'function') effect.cleanup = cleanup;
-  }
+  for (const effect of instance.effects) startEffect(effect);
+  instance.phase = 'active';
 }
 
 async function disposeInstances(instances: readonly PluginInstance[]): Promise<void> {
   for (const instance of [...instances].reverse()) {
+    instance.phase = 'disposed';
     instance.lifetime.abort();
     for (const effect of [...instance.effects].reverse()) {
       const cleanup = effect.cleanup;
