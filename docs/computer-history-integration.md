@@ -732,8 +732,18 @@ WPF physical-input acceptance. The fresh clean-release Rich cold attempt
 failed before body acceptance with one capture failure, two ended empty
 segments and no physical input. Its original bounds were unchanged; the
 uninstrumented result does not identify the failing provider call or establish
-that the earlier traversal-budget cause recurred. Rich/WPF physical input and
-the broader parity gates below remain open.
+that the earlier traversal-budget cause recurred.
+
+A subsequent single traced WPF attempt on the same native generation captured
+and sealed its initial useful body with zero capture failures, but failed the
+first Return receipt. Complete CPU, guest-reader and publication traces show
+one challenge replacement, no guest nonce forwarding, no witness and no
+physical dispatch. The guest read an empty sidecar 26 times, then observed
+its absence. This localizes the acceptance failure to challenge delivery;
+it does not establish a particular SMB/cache cause or a recorder input defect.
+The attempt ended in 39.734 seconds without outer timeout; both ended segments,
+the sole body event, unchanged helper and independent cleanup were verified.
+Rich/WPF physical input and the broader parity gates below remain open.
 
 ### Historical evidence by generation
 
