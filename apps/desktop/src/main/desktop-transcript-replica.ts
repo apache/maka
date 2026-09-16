@@ -266,6 +266,7 @@ export class DesktopTranscriptReplica {
     const durable: StoredMessage[] = [];
     let bytes = 0;
     let cursor: string | null = null;
+    let nextSequence = firstSequence;
     if (throughSequence !== null && firstSequence <= throughSequence) {
       do {
         const page: SessionTranscriptPage = await this.#handle.loadTranscriptPage({
@@ -277,6 +278,15 @@ export class DesktopTranscriptReplica {
         });
         await this.#withDecodedPage(page, (decoded) => {
           this.#assertLive();
+          if (decoded.messages.length === 0 && decoded.nextCursor !== null) {
+            throw correlationError('Desktop transcript Turn read returned an empty continuation');
+          }
+          this.#acceptRange(decoded.messages);
+          const first = decoded.messages[0];
+          if (first && !this.#matchesCoverageStep(first.identity, nextSequence)) {
+            throw correlationError('Desktop transcript Turn read has a sequence gap');
+          }
+          nextSequence = (decoded.messages.at(-1)?.identity ?? nextSequence - 1) + 1;
           for (const { message } of decoded.messages) {
             if (messageTurnId(message) !== turnId) continue;
             bytes += encodedMessageBytes(message);

@@ -22,7 +22,10 @@ import { Buffer } from 'node:buffer';
 import test from 'node:test';
 import { markPersisted } from '@maka/core/persisted-value';
 import { decodeStoredMessage, type StoredMessage } from '@maka/core/session';
-import { SESSION_CONTINUITY_SCHEMA_VERSION } from '@maka/runtime-host/protocol';
+import {
+  SESSION_CONTINUITY_SCHEMA_VERSION,
+  type SessionTranscriptPage,
+} from '@maka/runtime-host/protocol';
 import { ClientSessionSubscription } from '../../../../../packages/runtime-host/dist/client/session-subscription.js';
 import {
   createSessionTranscriptBootstrap,
@@ -177,8 +180,40 @@ test('reads a Turn through the rows of a nested one', async () => {
   }
 });
 
+test('refuses a Turn read whose continuation never advances', async () => {
+  const source = transcriptFixture();
+  const ledger = await openTranscriptLedger(source.first);
+  let opened: Awaited<ReturnType<typeof openReplica>> | undefined;
+  try {
+    const throughSequence = await ledger.appendThrough('completed-a');
+    const records = await ledger.durableRecords();
+    let pages = 0;
+    opened = await openReplica(ledger, throughSequence, (request) => {
+      pages += 1;
+      return {
+        kind: 'page', sessionId: ledger.sessionId, direction: request.direction,
+        throughSequence: request.throughSequence, rawBytes: 0, fragments: [],
+        nextCursor: 'stalled', endsAtTurnBoundary: false,
+      };
+    });
+    await assert.rejects(
+      opened.replica.readTurn('a', extentOf(records), PAGE_BYTES),
+      /empty continuation/,
+    );
+    assert.equal(pages, 1);
+  } finally {
+    opened?.replica.close();
+    await opened?.subscription.close();
+    await ledger.close();
+  }
+});
+
 type Ledger = Awaited<ReturnType<typeof openTranscriptLedger>>;
-async function openReplica(ledger: Ledger, throughSequence: number | null) {
+async function openReplica(
+  ledger: Ledger,
+  throughSequence: number | null,
+  hostPage?: (request: Parameters<ClientSessionSubscription['loadTranscriptPage']>[0]) => SessionTranscriptPage,
+) {
   const { reader, sessionId } = ledger;
   const opened = await createSessionTranscriptBootstrap({
     reader, sessionId, subscriptionId: SUBSCRIPTION_ID, throughSequence,
@@ -200,7 +235,8 @@ async function openReplica(ledger: Ledger, throughSequence: number | null) {
     snapshot: subscription.snapshot, transcript: Promise.resolve([]), events: subscription,
     transcriptBootstrap: opened.bootstrap,
     decodeTranscriptPage: (page, maxBytes, accountBytes) => subscription.decodeTranscriptPage(page, decodeMessage, maxBytes, accountBytes),
-    loadTranscriptPage: (request) => subscription.loadTranscriptPage(request),
+    loadTranscriptPage: (request) =>
+      hostPage ? Promise.resolve(hostPage(request)) : subscription.loadTranscriptPage(request),
     close: () => subscription.close(),
   }));
   return { replica, subscription, state: opened.state };
