@@ -534,7 +534,6 @@ type E2eTestFixtures = {
   renameFocusWindow: { page: Page; app: ElectronApplication };
   parentRemovalWindow: Page;
   railRenderWindow: Page;
-  promptRailWindow: Page;
   partialHistoryWindow: Page;
   largeHistoryWindow: { page: Page; app: ElectronApplication };
   newTaskTargetWindow: Page;
@@ -650,25 +649,6 @@ export const test = base.extend<E2eTestFixtures>({
       },
       use,
     );
-  },
-  // A multi-prompt transcript. Each cost assertion gets an isolated Host and
-  // renderer so observation state cannot bleed between tests. The window is
-  // shown because these cases drive the real compositor through CDP.
-  promptRailWindow: async ({}, use) => {
-    await withE2eWindow({
-      seed: false,
-      // A rendered turn, deliberately not the rail: Playwright treats a
-      // zero-area element as hidden, so gating readiness on a tick would turn
-      // every rail regression into a 20s cold-start timeout instead of the
-      // assertion that names it.
-      readinessSelector: '[data-turn-id]',
-      e2eFixtureScenario: 'chat-prompt-rail',
-      // Every other fixture window names its locale; without one the renderer
-      // takes the host's, so any test that reaches a control by its label
-      // passes on a Chinese desktop and cannot find it on an English CI runner.
-      locale: 'zh-CN',
-      showWindow: true,
-    }, use);
   },
   // A transcript larger than the Desktop history budget, so earlier Turns load
   // only through the load-earlier control.
