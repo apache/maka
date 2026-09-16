@@ -383,7 +383,18 @@ describe('Runtime Host maka run adapter', () => {
     publishReplacement = () =>
       fixture.publishTranscriptReplacement(
         'turn-1',
-        [storedToolCall('turn-1', 'tool-2', 'step-1', 1), successfulToolResult('turn-1', 2)],
+        [
+          {
+            type: 'assistant',
+            id: 'assistant-step-1',
+            turnId: 'turn-1',
+            ts: 1,
+            text: 'Reading the file',
+            modelId: 'gpt-5',
+          },
+          storedToolCall('turn-1', 'tool-2', 'step-1', 1),
+          successfulToolResult('turn-1', 2),
+        ],
         'reconcile',
       );
 
