@@ -122,11 +122,15 @@ describe('Runtime Host external Session surface', () => {
 
     workspace = { kind: 'host_path', path: '/repo' };
     assert.deepEqual(surface.listScopes(), ['current_workspace', 'all']);
-    await surface.listSessions({ adapterId: 'codex', scope: 'current_workspace' });
+    await surface.listSessions({
+      adapterId: 'codex',
+      scope: 'current_workspace',
+      text: 'parser',
+    });
     assert.deepEqual(requests, [
       {
         operation: 'external-session.catalog.query',
-        input: { adapterId: 'codex', workspace },
+        input: { adapterId: 'codex', workspace, text: 'parser' },
       },
     ]);
   });

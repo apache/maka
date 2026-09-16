@@ -3096,99 +3096,141 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
 
   const showExternalSessionPage = async (
     adapterId: string,
-    scope: ExternalSessionCatalogScope,
-    loaded: readonly ExternalSessionCatalogItem[] = [],
-    cursor?: string,
+    initialScope: ExternalSessionCatalogScope,
   ): Promise<void> => {
     if (!input.externalSessions || closed) return;
     const copy = TUI_SESSION_ACTIONS_COPY[locale];
-    let page;
-    try {
-      page = await input.externalSessions.listSessions({
-        adapterId,
-        scope,
-        ...(cursor ? { cursor } : {}),
-      });
-    } catch {
-      state.entries.push({ kind: 'notice', level: 'error', text: copy.externalCatalogFailed });
-      requestRender();
-      return;
-    }
-    if (closed || turnRunning) return;
-    const sessions = [...loaded, ...page.sessions];
-    const selectableSessions = sessions.filter((session) =>
-      isExternalImportEligible(adapterId, session),
-    );
-    const byValue = new Map<string, ExternalSessionCatalogItem>(
-      selectableSessions.map(
-        (session) => [`external:${adapterId}:${session.id}`, session] as const,
-      ),
-    );
-    const items: SelectItem[] = selectableSessions.map((session) => ({
-      value: `external:${adapterId}:${session.id}`,
-      label: session.name,
-      description: [
-        session.hostCwd,
-        session.importState.importedCount > 0
-          ? formatUiMessage(
-              copy.externalImportedCount,
-              { count: session.importState.importedCount },
-              locale,
-            )
-          : undefined,
-      ]
-        .filter(Boolean)
-        .join(' · '),
-    }));
-    if (page.nextCursor) {
-      items.push({ value: 'external:load-more', label: copy.externalLoadMore });
-    }
-    const alternateScope = input.externalSessions
-      .listScopes()
-      .find((candidate) => candidate !== scope);
-    if (alternateScope) {
-      items.push({
-        value: 'external:toggle-workspace',
-        label:
-          alternateScope === 'all' ? copy.externalAllWorkspaces : copy.externalCurrentWorkspace,
-      });
-    }
-    showSelectPicker(
-      formatUiMessage(
-        copy.externalSessionTitle,
-        { source: externalSourceLabel(adapterId) },
+    let scope = initialScope;
+    let query = '';
+    let sessions: readonly ExternalSessionCatalogItem[] = [];
+    let nextCursor: string | null = null;
+    let revision = 0;
+    let overlay: OverlayHandle | undefined;
+    let search: SessionSearchOverlay | undefined;
+    let byValue = new Map<string, ExternalSessionCatalogItem>();
+
+    const closeOverlay = () => overlay?.hide();
+    const toggleScope = (): void => {
+      const alternate = input.externalSessions
+        ?.listScopes()
+        .find((candidate) => candidate !== scope);
+      if (!alternate) return;
+      scope = alternate;
+      void load(false);
+    };
+    const render = (): void => {
+      const selectable = sessions.filter((session) => isExternalImportEligible(adapterId, session));
+      byValue = new Map(
+        selectable.map((session) => [`external:${adapterId}:${session.id}`, session] as const),
+      );
+      const choices: SessionSearchChoice[] = selectable.map((session) => ({
+        item: {
+          value: `external:${adapterId}:${session.id}`,
+          label: session.name,
+          description: [
+            session.hostCwd,
+            session.importState.importedCount > 0
+              ? formatUiMessage(
+                  copy.externalImportedCount,
+                  { count: session.importState.importedCount },
+                  locale,
+                )
+              : undefined,
+          ]
+            .filter(Boolean)
+            .join(' · '),
+        },
+        searchText: '',
+      }));
+      if (nextCursor) {
+        choices.push({
+          item: { value: 'external:load-more', label: copy.externalLoadMore },
+          searchText: '',
+        });
+      }
+      const alternateScope = input.externalSessions
+        ?.listScopes()
+        .find((candidate) => candidate !== scope);
+      if (alternateScope) {
+        choices.push({
+          item: {
+            value: 'external:toggle-workspace',
+            label:
+              alternateScope === 'all' ? copy.externalAllWorkspaces : copy.externalCurrentWorkspace,
+          },
+          searchText: '',
+        });
+      }
+      const scopeLabel =
+        scope === 'all' ? copy.externalAllWorkspaces : copy.externalCurrentWorkspace;
+      const notice =
+        sessions.length > 0 && selectable.length === 0 ? copy.externalUnavailable : undefined;
+      if (search) {
+        search.updateChoices(choices, scopeLabel, notice);
+        search.invalidate();
+        return;
+      }
+      search = new SessionSearchOverlay(tui, {
         locale,
-      ),
-      externalSourceLabel(adapterId),
-      items,
-      (item) => {
-        if (item.value === 'external:load-more' && page.nextCursor) {
-          void showExternalSessionPage(adapterId, scope, sessions, page.nextCursor);
-          return;
-        }
-        if (item.value === 'external:toggle-workspace' && alternateScope) {
-          void showExternalSessionPage(adapterId, alternateScope);
-          return;
-        }
-        const source = byValue.get(item.value);
-        if (!source) return;
-        if (busy || turnRunning) {
-          state.entries.push({ kind: 'notice', level: 'error', text: copy.externalImportFailed });
-          requestRender();
-          return;
-        }
-        void runControl(() => importExternalSession(adapterId, source));
-      },
-      {
-        minPrimaryColumnWidth: 24,
-        maxPrimaryColumnWidth: 52,
-        ...(sessions.length === 0
-          ? { notice: copy.externalEmpty }
-          : selectableSessions.length === 0
-            ? { notice: copy.externalUnavailable }
-            : {}),
-      },
-    );
+        choices,
+        scopeLabel,
+        title: formatUiMessage(
+          copy.externalSessionTitle,
+          { source: externalSourceLabel(adapterId) },
+          locale,
+        ),
+        emptyText: sessions.length === 0 ? copy.externalEmpty : copy.externalUnavailable,
+        notice,
+        onQuery: (text) => {
+          query = text;
+          void load(false);
+        },
+        onSelect: (item) => {
+          if (item.value === 'external:load-more' && nextCursor) {
+            void load(true, nextCursor);
+            return;
+          }
+          if (item.value === 'external:toggle-workspace' && alternateScope) {
+            toggleScope();
+            return;
+          }
+          const source = byValue.get(item.value);
+          if (!source) return;
+          closeOverlay();
+          if (busy || turnRunning) {
+            state.entries.push({ kind: 'notice', level: 'error', text: copy.externalImportFailed });
+            requestRender();
+            return;
+          }
+          void runControl(() => importExternalSession(adapterId, source));
+        },
+        onCancel: closeOverlay,
+        onToggleScope: toggleScope,
+      });
+      overlay = showBottomPicker(search);
+    };
+
+    const load = async (append: boolean, cursor?: string): Promise<void> => {
+      const requestRevision = ++revision;
+      try {
+        const page = await input.externalSessions!.listSessions({
+          adapterId,
+          scope,
+          ...(cursor ? { cursor } : {}),
+          ...(query ? { text: query } : {}),
+        });
+        if (requestRevision !== revision || closed || turnRunning) return;
+        sessions = append ? [...sessions, ...page.sessions] : page.sessions;
+        nextCursor = page.nextCursor;
+        render();
+      } catch {
+        if (requestRevision !== revision) return;
+        state.entries.push({ kind: 'notice', level: 'error', text: copy.externalCatalogFailed });
+        requestRender();
+      }
+    };
+
+    await load(false);
   };
 
   const showExternalSourcePicker = (adapterIds: readonly string[]): void => {

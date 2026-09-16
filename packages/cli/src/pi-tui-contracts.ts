@@ -208,6 +208,7 @@ export interface MakaExternalSessionSurface {
     readonly adapterId: string;
     readonly scope: ExternalSessionCatalogScope;
     readonly cursor?: string;
+    readonly text?: string;
   }): Promise<{
     readonly sessions: readonly ExternalSessionCatalogItem[];
     readonly nextCursor: string | null;

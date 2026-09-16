@@ -139,7 +139,7 @@ export function createRuntimeHostExternalSessionSurface(
     listScopes: () => (getCurrentWorkspace() ? ['current_workspace', 'all'] : ['all']),
     listSources: async () =>
       (await connection.request('external-session.source.query', {})).adapterIds,
-    listSessions: async ({ adapterId, scope, cursor }) => {
+    listSessions: async ({ adapterId, scope, cursor, text }) => {
       const currentWorkspace = getCurrentWorkspace();
       if (scope === 'current_workspace' && !currentWorkspace) {
         throw new Error('The current Session workspace is unavailable');
@@ -148,6 +148,7 @@ export function createRuntimeHostExternalSessionSurface(
         adapterId,
         ...(scope === 'current_workspace' ? { workspace: currentWorkspace } : {}),
         ...(cursor ? { cursor } : {}),
+        ...(text ? { text } : {}),
       });
     },
     importSession: (request) => connection.request('external-session.import', request),

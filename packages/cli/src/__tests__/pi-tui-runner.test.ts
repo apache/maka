@@ -311,6 +311,30 @@ describe('Maka Pi TUI runner', () => {
     assert.equal(selected, 'second');
   });
 
+  test('can delegate session search to the catalog authority', () => {
+    const queries: string[] = [];
+    const picker = new SessionSearchOverlay(new TuiMainScreen(new FakeTerminal()), {
+      locale: 'en',
+      choices: [],
+      scopeLabel: 'All',
+      title: 'Import from Codex',
+      onQuery(query) {
+        queries.push(query);
+      },
+      onSelect() {},
+      onCancel() {},
+      onToggleScope() {},
+    });
+
+    picker.handleInput('P');
+    assert.deepEqual(queries, ['p']);
+    picker.updateChoices(
+      [{ item: { value: 'remote', label: 'Parser work' }, searchText: '' }],
+      'All',
+    );
+    assert.match(plainTerminalOutput(picker.render(100).join('\n')), /Parser work/);
+  });
+
   test('/help uses the resolved locale for headings and command descriptions', async () => {
     const terminal = new FakeTerminal();
     const driver = new SlashCommandDriver();
