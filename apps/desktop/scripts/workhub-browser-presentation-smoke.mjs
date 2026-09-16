@@ -51,7 +51,7 @@ const output = process.env.MAKA_NATIVE_SCREENSHOTS;
 async function run() {
   await app.whenReady();
   const preload = join(temp, 'preload.cjs');
-  writeFileSync(preload, `const {contextBridge,ipcRenderer}=require('electron');contextBridge.exposeInMainWorld('nativeSmoke',{command:(name,value)=>ipcRenderer.invoke('workhub-presentation:command',name,value),send:(channel,...args)=>ipcRenderer.send(channel,...args)});`);
+  writeFileSync(preload, `const {contextBridge,ipcRenderer}=require('electron');contextBridge.exposeInMainWorld('nativeSmoke',{capture:(scope,id)=>ipcRenderer.invoke('browser:capture-page',scope,id),command:(name,value)=>ipcRenderer.invoke('workhub-presentation:command',name,value),send:(channel,...args)=>ipcRenderer.send(channel,...args)});`);
   const server = createServer((req, res) => {
     res.setHeader('Content-Type', 'text/html');
     const page = req.url.startsWith('/page');
@@ -100,9 +100,10 @@ async function run() {
     await controller.navigate(`${url}/page`);
     await viewport(rect);
 
-    const capture = async (label, expected) => {
+    const capture = async (label, expected, menuExpected = false) => {
       let crop;
       let colored = 0;
+      let menuPixels = 0;
       const deadline = Date.now() + 3_000;
       do {
         const bounds = main.getBounds();
@@ -114,15 +115,33 @@ async function run() {
         crop = image.crop({ x: Math.max(0, Math.round((bounds.x - display.bounds.x) * scale)), y: Math.max(0, Math.round((bounds.y - display.bounds.y) * scale)), width: Math.min(Math.round(bounds.width * scale), image.getSize().width), height: Math.min(Math.round(bounds.height * scale), image.getSize().height) });
         const bytes = crop.toBitmap();
         colored = 0;
+        menuPixels = 0;
         for (let i = 0; i < bytes.length; i += 4) if (Math.abs(bytes[i] - 171) < 5 && Math.abs(bytes[i + 1] - 54) < 5 && Math.abs(bytes[i + 2] - 250) < 5) colored++;
-        if ((colored > 10_000) === expected) break;
+        for (let i = 0; i < bytes.length; i += 4) if (Math.abs(bytes[i] - 99) < 5 && Math.abs(bytes[i + 1] - 222) < 5 && Math.abs(bytes[i + 2] - 33) < 5) menuPixels++;
+        if ((colored > 10_000) === expected && (!menuExpected || menuPixels > 5_000)) break;
         await wait(50);
       } while (Date.now() < deadline);
       assert.equal(colored > 10_000, expected, `${label}: screen contains ${colored} browser pixels`);
+      if (menuExpected) assert.ok(menuPixels > 5_000, `${label}: DOM menu must paint above the browser backdrop (${menuPixels} pixels)`);
       if (output) writeFileSync(join(output, `${label}.png`), crop.toPNG());
       console.log(`PASS ${label}: ${colored} visible browser pixels`);
     };
     await capture('docked', true);
+    const backdrop = await main.webContents.executeJavaScript(`nativeSmoke.capture(${JSON.stringify(scope)}, ${JSON.stringify(sessionId)})`);
+    assert.ok(backdrop?.startsWith('data:image/png;base64,'));
+    await main.webContents.executeJavaScript(`(() => {
+      const image = document.createElement('img'); image.id = 'backdrop'; image.src = ${JSON.stringify(backdrop)};
+      Object.assign(image.style, {position:'fixed',left:'500px',top:'80px',width:'430px',height:'560px'}); document.body.append(image);
+      const menu = document.createElement('div'); menu.id = 'menu'; menu.popover = 'auto'; menu.textContent = 'Panel menu';
+      Object.assign(menu.style, {position:'fixed',left:'520px',top:'100px',width:'220px',height:'200px',margin:'0',background:'rgb(33,222,99)'});
+      document.body.append(menu); menu.showPopover();
+      return image.decode();
+    })()`);
+    await viewport(null);
+    await capture('menu-overlay', true, true);
+    await main.webContents.executeJavaScript(`document.querySelector('#menu').remove(); document.querySelector('#backdrop').remove()`);
+    await viewport(rect);
+    await capture('menu-dismissed', true);
     await command(owner, 'conversation-layout', { expanded: true, compactHeight: 96 });
     await command(owner, 'detach');
     const floating = BrowserWindow.fromWebContents(owner);

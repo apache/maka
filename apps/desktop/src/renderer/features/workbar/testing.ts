@@ -91,6 +91,7 @@ export function createFakeWorkbarServices(
     browser: {
       setActiveSession: () => undefined,
       setViewport: () => undefined,
+      capturePage: async () => undefined,
       navigate: async () => undefined,
       back: async () => undefined,
       forward: async () => undefined,

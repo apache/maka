@@ -39,7 +39,7 @@ export interface WorkHubPresentationSnapshot {
 }
 
 export type WorkHubMainNavigation =
-  | { readonly kind: 'workhub'; readonly workbar?: 'inspector' | 'workbar' }
+  | { readonly kind: 'workhub'; readonly showUsage?: true }
   | { readonly kind: 'session'; readonly sessionKey: string };
 
 export interface WorkHubPresentationBridge {
@@ -53,7 +53,7 @@ export interface WorkHubPresentationBridge {
   detach(): Promise<void>;
   dock(): Promise<void>;
   hide(): Promise<void>;
-  openWorkbar(tool: 'inspector' | 'workbar'): Promise<void>;
+  openUsage(): Promise<void>;
   openSession(sessionKey: string): Promise<void>;
   subscribe(handler: (snapshot: WorkHubPresentationSnapshot) => void): () => void;
   /** Visible top edge inside the animation canvas, in CSS pixels. */

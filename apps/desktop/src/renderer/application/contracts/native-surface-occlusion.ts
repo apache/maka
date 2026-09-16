@@ -17,13 +17,11 @@
  * under the License.
  */
 
-// `WorkbarSurface` is deliberately absent: `workbar-host` reaches it through
-// `lazy(() => import('./workbar-surface'))`, and re-exporting it here would
-// pull the surface and its five nested tool panels back into the eager chunk
-// for every importer of this barrel. Stories reach it through `stories`,
-// which nothing shipped imports.
-export { WorkbarHost } from './ui/workbar-host';
-export { WorkbarServicesProvider } from './services-context';
-export { useWorkbarController } from './controller/use-workbar-controller';
-export type { SessionWorkbarTabKind } from './model/workbar-tabs';
-export type { WorkbarServices } from './ports';
+/** Native child views sit above DOM top-layer content, regardless of z-index. */
+export function isNativeSurfaceOccluded(rect: DOMRect, document: Document): boolean {
+  return Array.from(document.querySelectorAll(':popover-open:not(:empty), dialog[open]')).some((overlay) => {
+    if (overlay.matches(':modal')) return true;
+    const bounds = overlay.getBoundingClientRect();
+    return bounds.width > 0 && bounds.height > 0 && bounds.left < rect.right && bounds.right > rect.left && bounds.top < rect.bottom && bounds.bottom > rect.top;
+  });
+}

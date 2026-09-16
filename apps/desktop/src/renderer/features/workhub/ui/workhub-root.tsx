@@ -20,7 +20,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { ChatSurfaceLayout, UserQuestionPrompt, MakaWordmark, useUiLocale, type ComposerHandle } from '@maka/ui';
 import { Button, IconButton } from '@astryxdesign/core';
-import { ChevronDown, PanelRightOpen, PictureInPicture2, Undo2, X } from '@maka/ui/icons';
+import { ChevronDown, PictureInPicture2, Undo2, X } from '@maka/ui/icons';
 import { useLiveContextUsage } from '../../../application/contracts/session-inspector/use-live-context-usage.js';
 import { selectLatestRequestUsage } from '../../../application/contracts/session-inspector/latest-request-usage.js';
 import { WorkHubProgressCard } from './workhub-progress-card.js';
@@ -347,7 +347,7 @@ export function WorkHubRoot() {
                 declaredContextWindow: modelChoice?.declaredContextWindow,
                 meteredContextWindow: liveContextUsage?.contextWindow,
                 metadataContextWindow: modelChoice?.contextWindow,
-                onOpen: () => call(services.presentation.openWorkbar('inspector')),
+                onOpen: () => call(services.presentation.openUsage()),
               } : undefined}
               activeThinkingLevels={thinkingLevels}
               activeThinkingLevel={thinkingLevel}
@@ -355,7 +355,6 @@ export function WorkHubRoot() {
               modelSwitchHasHistory={transcript.messages.length > 0}
               footerAccessory={
                 <div className="workHubComposerActions">
-                  <IconButton size="sm" variant="ghost" icon={<PanelRightOpen size={16} />} label={t.openWorkbar} onClick={() => call(services.presentation.openWorkbar('workbar'))} />
                   {control?.canUndo && <IconButton type="button" size="sm" variant="ghost" icon={<Undo2 size={16} />} label={t.undo} isDisabled={busy} onClick={() => call(services.control.undo())} />}
                   {!floating && <IconButton type="button" size="sm" variant="ghost" icon={<PictureInPicture2 size={16} />} label={t.float} tooltip={`${t.float} · ${shortcutLabel}`} onClick={() => call(services.presentation.detach())} />}
                 </div>

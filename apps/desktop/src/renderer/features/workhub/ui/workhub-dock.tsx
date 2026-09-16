@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { isNativeSurfaceOccluded } from '../../../application/contracts/native-surface-occlusion.js';
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Button } from '@astryxdesign/core';
 import { useUiLocale } from '@maka/ui';
@@ -58,11 +59,7 @@ export function WorkHubDock({ enabled, visible = true }: { enabled: boolean; vis
     const update = () => {
       const rect = node.getBoundingClientRect();
       const docked = snapshot?.placement === 'docked';
-      const occluded = visible && docked && Array.from(document.querySelectorAll(':popover-open:not(:empty), dialog[open]')).some((overlay) => {
-        if (overlay.matches(':modal')) return true;
-        const bounds = overlay.getBoundingClientRect();
-        return bounds.width > 0 && bounds.height > 0 && bounds.left < rect.right && bounds.right > rect.left && bounds.top < rect.bottom && bounds.bottom > rect.top;
-      });
+      const occluded = visible && docked && isNativeSurfaceOccluded(rect, node.ownerDocument);
       const host = {
         visible: enabled && visible && rect.width > 0 && rect.height > 0,
         occluded,

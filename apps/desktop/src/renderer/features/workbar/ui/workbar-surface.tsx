@@ -24,6 +24,7 @@ import {
   ICON_SIZE,
   Activity,
   Check,
+  X,
   Clipboard,
   FileDiff,
   FolderOpen,
@@ -55,14 +56,15 @@ import {
   type SessionWorkbarPanelsState,
   type SessionWorkbarPlacement,
   terminalRefFromWorkbarTab,
+  reduceWorkbarPanels,
   projectWorkbarPanelsForSession,
 } from '../model/workbar-tabs';
 import {
-  WORKBAR_TOOL_DEFINITIONS,
+  workbarToolsForWorkspace,
   workbarToolDefinition,
   type WorkbarToolDefinition,
 } from '../model/workbar-tool-definitions';
-import { WorkbarToggle } from './workbar-toggle';
+import { WorkbarEdgeToggle } from './workbar-toggle';
 import { WorkBoardPanel } from '../../../work-board-panel.js';
 import { getDesktopConversationCopy } from '../../../locales/conversation-copy.js';
 import type {
@@ -214,21 +216,11 @@ function tabIcon(tab: SessionWorkbarTab, running: boolean): ReactNode {
   return <FaceIcon size={ICON_SIZE.control} aria-hidden="true" />;
 }
 
-/**
- * The strip, and the one control that opens and closes faces.
- *
- * `Tab` renders `endContent` inside its own `<button>`, so a per-tab close
- * would nest a button in a button, and `TabList` warns when a `role="tablist"`
- * strip's direct children are not tabs. Opening and closing therefore share the
- * [+] menu: every face is listed, the open ones carry a checkmark, and picking
- * one toggles it. The menu holds no shortcuts — the launcher below lists every
- * face with its own, and that is where a shortcut is learned.
- */
 function WorkbarFaceMenu(props: {
   tabs: readonly SessionWorkbarTab[];
   sideChatAvailable: boolean;
   onOpen: (kind: SessionWorkbarTabKind) => void;
-  onCloseKind: (kind: SessionWorkbarTabKind) => void;
+  tools: readonly WorkbarToolDefinition[];
 }) {
   const copy = getDesktopConversationCopy(useUiLocale()).workbar;
   return (
@@ -241,7 +233,7 @@ function WorkbarFaceMenu(props: {
         icon: <Plus size={ICON_SIZE.control} aria-hidden />,
       }}
     >
-      {WORKBAR_TOOL_DEFINITIONS.map((definition) => {
+      {props.tools.map((definition) => {
         const FaceIcon = FACE_ICON[definition.icon];
         const isOpen = props.tabs.some((tab) => tab.kind === definition.kind);
         return (
@@ -253,11 +245,7 @@ function WorkbarFaceMenu(props: {
             endContent={isOpen ? <Check size={ICON_SIZE.control} aria-hidden /> : undefined}
             isDisabled={definition.kind === 'side-chat' && !props.sideChatAvailable}
             hasCloseOnSelect={false}
-            onClick={() =>
-              isOpen
-                ? props.onCloseKind(definition.kind)
-                : props.onOpen(definition.kind)
-            }
+            onClick={() => props.onOpen(definition.kind)}
           />
         );
       })}
@@ -273,9 +261,9 @@ function WorkbarTabStrip(props: {
   sideChatAvailable: boolean;
   activeSideChatPanelIds?: ReadonlySet<string>;
   onActivate: (tabId: string) => void;
+  onClose: (tab: SessionWorkbarTab) => void;
   onOpenKind: (kind: SessionWorkbarTabKind) => void;
-  onCloseKind: (kind: SessionWorkbarTabKind) => void;
-  onCollapseRightPanel?: () => void;
+  tools: readonly WorkbarToolDefinition[];
 }) {
   const copy = getDesktopConversationCopy(useUiLocale()).workbar;
   return (
@@ -310,7 +298,27 @@ function WorkbarTabStrip(props: {
                   label={tabLabel(tab, props.tabs, copy)}
                   panelId={`maka-workbar-panel-${tab.id}`}
                   icon={tabIcon(tab, running)}
-                  endContent={count !== undefined ? <TabCount count={count} /> : undefined}
+                  aria-keyshortcuts="Delete"
+                  aria-description={copy.closeTabHint}
+                  onKeyDown={(event) => {
+                    if (event.key !== 'Delete') return;
+                    event.preventDefault();
+                    event.stopPropagation();
+                    const button = event.currentTarget;
+                    const toolbar = button.closest('[role="toolbar"]');
+                    props.onClose(tab);
+                    requestAnimationFrame(() => {
+                      if (!button.isConnected) (toolbar?.querySelector('[role="tab"][aria-selected="true"], button') as HTMLElement | null)?.focus();
+                    });
+                  }}
+                  endContent={<>
+                    {count !== undefined && <TabCount count={count} />}
+                    <span className="maka-workbar-tab-close" aria-hidden="true" title={copy.closeTab(tabLabel(tab, props.tabs, copy))}
+                      onPointerDown={(event) => { event.preventDefault(); event.stopPropagation(); }}
+                      onClick={(event) => { event.stopPropagation(); props.onClose(tab); }}>
+                      <X size={12} />
+                    </span>
+                  </>}
                 />
               );
             })}
@@ -321,21 +329,14 @@ function WorkbarTabStrip(props: {
         tabs={props.tabs}
         sideChatAvailable={props.sideChatAvailable}
         onOpen={props.onOpenKind}
-        onCloseKind={props.onCloseKind}
+        tools={props.tools}
       />
-      {props.placement === 'right' && props.onCollapseRightPanel ? (
-        <WorkbarToggle
-          collapsed={false}
-          size="sm"
-          className="maka-workbar-panel-toggle"
-          onToggle={props.onCollapseRightPanel}
-        />
-      ) : null}
     </div>
   );
 }
 
 function WorkbarLauncher(props: {
+  tools: readonly WorkbarToolDefinition[];
   onOpen: (kind: SessionWorkbarTabKind) => void;
   sideChatAvailable: boolean;
 }) {
@@ -351,7 +352,7 @@ function WorkbarLauncher(props: {
           density="compact"
           header={<Heading level={4}>{copy.openTools}</Heading>}
         >
-          {WORKBAR_TOOL_DEFINITIONS.map((definition) => (
+          {props.tools.map((definition) => (
             <ListItem
               key={definition.kind}
               data-maka-assistant-exclude={definition.kind === 'browser' || definition.kind === 'terminal' ? definition.kind : undefined}
@@ -384,20 +385,18 @@ function launcherCopyKey(
 }
 
 export function WorkbarSurface(props: {
+  workspace?: 'session' | 'workhub';
   sessionId?: string;
   projectId?: string | null;
   projectAliases?: readonly string[];
   hidden: boolean;
   onDismissPanel: (placement: SessionWorkbarPlacement) => void;
+  onToggleRightPanel(): void;
   panelsState: SessionWorkbarPanelsState;
   rightCollapsed: boolean;
   bottomOpen: boolean;
   onActivateTab: (placement: SessionWorkbarPlacement, tabId: string) => void;
   onCloseTab: (placement: SessionWorkbarPlacement, tab: SessionWorkbarTab) => void;
-  onCloseTabs: (
-    placement: SessionWorkbarPlacement,
-    tabs: readonly SessionWorkbarTab[],
-  ) => void;
   onOpenLauncher: (placement: SessionWorkbarPlacement) => void;
   onRequestOpenTab: (
     placement: SessionWorkbarPlacement,
@@ -423,18 +422,24 @@ export function WorkbarSurface(props: {
   const { inspector } = useWorkbarServices();
   const locale = useUiLocale();
   const copy = getDesktopConversationCopy(locale).workbar;
+  const tools = workbarToolsForWorkspace(props.workspace);
   const [artifactCount, setArtifactCount] = useState({ sessionId: props.sessionId, count: 0 });
+  const allowedPanels = (['right', 'bottom'] as const).reduce((panels, placement) => {
+    const tabIds = panels[placement].tabs.filter((tab) => !tools.some((tool) => tool.kind === tab.kind)).map((tab) => tab.id);
+    return tabIds.length ? reduceWorkbarPanels(panels, { type: 'close', placement, tabIds }) : panels;
+  }, props.panelsState);
   const visiblePanels = projectWorkbarPanelsForSession(
-    props.panelsState, props.sessionId,
+    allowedPanels, props.sessionId,
     new Set(props.quotes?.map((quote) => `side-chat:${quote.id}`)),
   );
   const placements: SessionWorkbarPlacement[] = ['right', 'bottom'];
   const positionedTabs = placements.flatMap((placement) =>
-    props.panelsState[placement].tabs.map((tab) => ({ placement, tab })),
+    allowedPanels[placement].tabs.map((tab) => ({ placement, tab })),
   );
 
   return (
     <div className="maka-workbar-workspace-contents">
+      {!props.hidden && props.sessionId && <WorkbarEdgeToggle collapsed={props.rightCollapsed} onToggle={props.onToggleRightPanel} />}
       {placements.map((placement) => {
         const panel = visiblePanels[placement];
         const activeTab = panel.tabs.find((tab) => tab.id === panel.activeTabId);
@@ -468,22 +473,14 @@ export function WorkbarSurface(props: {
                 sideChatAvailable={props.sourceSession !== undefined}
                 onActivate={(tabId) => props.onActivateTab(placement, tabId)}
                 onOpenKind={(kind) => props.onRequestOpenTab(placement, kind)}
-                onCloseKind={(kind) =>
-                  props.onCloseTabs(
-                    placement,
-                    panel.tabs.filter((tab) => tab.kind === kind),
-                  )
-                }
+                onClose={(tab) => props.onCloseTab(placement, tab)}
+                tools={tools}
                 placement={placement}
-                onCollapseRightPanel={
-                  placement === 'right'
-                    ? () => props.onDismissPanel('right')
-                    : undefined
-                }
               />
             </div>
             <WorkbarPanel active={showingLauncher} placement={placement}>
               <WorkbarLauncher
+                tools={tools}
                 onOpen={(kind) => props.onRequestOpenTab(placement, kind)}
                 sideChatAvailable={props.sourceSession !== undefined}
               />

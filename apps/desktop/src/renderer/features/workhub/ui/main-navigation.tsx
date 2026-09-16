@@ -19,22 +19,22 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { useWorkHubServices } from '../services.js';
-export function WorkHubMainNavigation(props: { workbarReady: boolean; onOpenWorkbar(tool: 'inspector' | 'workbar'): void; onOpenWorkHub(): void; onOpenSession(sessionId: string): void }) {
-  const [pendingTool, setPendingTool] = useState<'inspector' | 'workbar'>();
+export function WorkHubMainNavigation(props: { workbarReady: boolean; onOpenUsage(): void; onOpenWorkHub(): void; onOpenSession(sessionId: string): void }) {
+  const [pendingUsage, setPendingUsage] = useState(false);
   const { presentation } = useWorkHubServices();
   const current = useRef(props); current.current = props;
   useEffect(() => presentation.onOpenMain((navigation) => {
     if (navigation.kind === 'workhub') {
       current.current.onOpenWorkHub();
-      setPendingTool(navigation.workbar);
+      setPendingUsage(Boolean(navigation.showUsage));
     }
-    else current.current.onOpenSession(navigation.sessionKey);
+    else { setPendingUsage(false); current.current.onOpenSession(navigation.sessionKey); }
   }), [presentation]);
   useEffect(() => {
-    if (pendingTool && props.workbarReady) {
-      current.current.onOpenWorkbar(pendingTool);
-      setPendingTool(undefined);
+    if (pendingUsage && props.workbarReady) {
+      current.current.onOpenUsage();
+      setPendingUsage(false);
     }
-  }, [pendingTool, props.workbarReady]);
+  }, [pendingUsage, props.workbarReady]);
   return null;
 }

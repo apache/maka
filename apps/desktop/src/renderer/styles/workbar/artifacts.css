@@ -372,7 +372,14 @@
 
 /* Narrow windows place the single workbar below the conversation. */
 @media (max-width: 990px) {
-  .maka-workbar-direction { rotate: 90deg; }
+  .maka-detail-with-artifacts:has(.maka-workbar-edge) {
+    grid-template-rows: minmax(0, 1fr) 0 auto 28px auto;
+  }
+  .maka-workbar-edge, .maka-workbar-edge[data-collapsed] {
+    width: calc(100% - 80px); height: 20px; min-height: 0; margin: 0; justify-self: center;
+  }
+  .maka-workbar-edge-glass { width: 88px; height: 14px; border-radius: 14% / 50%; }
+  .maka-workbar-edge-glass svg { rotate: 90deg; }
   .maka-window-titlebar {
     --maka-titlebar-workbar-reserve: 0px;
   }

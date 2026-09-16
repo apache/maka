@@ -75,7 +75,6 @@ import { AgentGraphPanel } from './agent-graph-panel';
 import { ChatComposerRegion, selectLatestRequestUsage } from './chat-composer-region';
 import {
   WorkbarHost,
-  WorkbarTitlebarActions,
   useWorkbarController,
 } from './features/workbar';
 import { AppUpdateProvider } from './features/app-update/index.js';
@@ -213,14 +212,6 @@ type ComposerImportOwner = {
  */
 const SETTLE_FALLBACK_GRACE_MS = 1000;
 const { useSessionCollaborationDialog } = SessionCollaboration;
-/**
- * Module surfaces that own their whole column and render no workspace toolbar.
- * This used to be a `display: none` rule keyed on the detail panel's
- * `data-agents-view`; the toolbar now lives in the window titlebar, which is not
- * a descendant of the detail panel, so the condition belongs here.
- */
-const VIEWS_WITHOUT_WORKSPACE_ACTIONS = new Set(['skills', 'cron', 'daily-review']);
-
 type AppShellProps = {
   /** Pre-mount snapshot prefetched by main.tsx — see prefetchOnboardingSnapshot. */
   initialOnboardingSnapshot?: OnboardingSnapshot | null;
@@ -1321,6 +1312,7 @@ function AppShellContent({
   const workbarSession = workHubActive ? workHubWorkspace.session : activeHostSession;
   const workbarAvailable = sessionsSelected && Boolean(workbarSession);
   const workbar = useWorkbarController({
+    workspace: workHubActive ? 'workhub' : 'session',
     available: workbarAvailable,
     layoutSessionId: workHubActive ? workHubWorkspace.session?.id : activeId,
     activeSession: workbarSession,
@@ -2350,13 +2342,6 @@ function AppShellContent({
                 parentSession={titlebarParentSession}
               />
             )}
-            {!sharedSessionActive && !VIEWS_WITHOUT_WORKSPACE_ACTIONS.has(agentsView) && (
-              <WorkbarTitlebarActions
-                available={workbarAvailable}
-                collapsed={selectors.rightCollapsed}
-                onToggle={commands.toggleRight}
-              />
-            )}
           </>
         )}
       </header>
@@ -2423,7 +2408,7 @@ function AppShellContent({
               aria-busy={switchingSession || undefined}>
               <ModuleHub.ModuleHubHost />
               <WorkHubMainNavigation workbarReady={workHubActive && workbarAvailable}
-                onOpenWorkbar={(tool) => { if (tool === 'inspector') commands.openTool('inspector'); else if (selectors.rightCollapsed) commands.toggleRight(); }}
+                onOpenUsage={() => commands.toggleTool('inspector')}
                 onOpenWorkHub={openWorkHub} onOpenSession={(sessionId) => { closeSettings(); openSession(sessionId); }} />
               <WorkHubDock enabled={workHubEnabled} visible={workHubActive && sessionsSelected && !shellObscured} />
               <ChatSurfaceLayout
@@ -2533,7 +2518,7 @@ function AppShellContent({
                   activeModelLabel={activeModelLabel}
                   activeProviderType={activeConnection?.providerType}
                   latestRequestUsageTokens={selectLatestRequestUsage(messages, activeTranscriptRange, activeModel, activeSessionForModelControls)}
-                  onOpenContextUsage={() => commands.openTool('inspector')}
+                  onOpenContextUsage={() => commands.toggleTool('inspector')}
                   LiveContextUsageProbe={LiveContextUsageProbe}
                   contextUsageSessionId={ownerActiveId}
                   modelChoices={chatModelChoices}

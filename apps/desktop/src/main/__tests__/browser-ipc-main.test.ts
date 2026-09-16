@@ -47,6 +47,7 @@ class FakeController {
   beginBackgroundAction() { return { ready: Promise.resolve(), release: async () => {} }; }
   setViewport(rect: BrowserViewRect | null): void { this.viewports.push(rect); }
   navigate(url: string): Promise<void> { this.navigations.push(url); return Promise.resolve(); }
+  capturePage(): Promise<string> { return Promise.resolve('data:image/png;base64,page'); }
   goBack(): void {}
   goForward(): void {}
   reload(): void {}
@@ -192,6 +193,8 @@ test('browser IPC isolates owned renderer documents and their native parents', a
     const workHubRect = { x: 4, y: 8, width: 220, height: 160 };
     emit('browser:setViewport', main, scope, { sessionId: 'main-session', rect: mainRect }, 'main-document', 1);
     await invoke('browser:navigate', main, scope, 'main-session', 'https://main.example/');
+    assert.equal(await invoke('browser:capture-page', main, scope, 'main-session'), 'data:image/png;base64,page');
+    assert.equal(await invoke('browser:capture-page', workHub, scope, 'main-session'), undefined);
     await invoke('browser:navigate', workHub, scope, 'workhub-session', 'https://workhub.example/');
     emit('browser:setViewport', workHub, scope, { sessionId: 'workhub-session', rect: workHubRect }, 'workhub-document', 1);
 

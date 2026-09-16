@@ -278,6 +278,13 @@ export function registerBrowserIpc(deps: BrowserIpcDeps): BrowserIpcController {
     }
   });
 
+  ipcMain.handle('browser:capture-page', (event, scope: unknown, target: unknown) => {
+    const selected = selectedTarget(event, scope, target);
+    const parent = deps.mainWindowController.browserParentForRenderer(event.sender);
+    const view = selected ? views.get(selected) : undefined;
+    return parent && view?.hasParent(parent) ? view.capturePage() : undefined;
+  });
+
   ipcMain.handle('browser:navigate', async (event, scope: unknown, target: unknown, url: unknown) => {
     const selected = selectedTarget(event, scope, target);
     if (!selected) return;

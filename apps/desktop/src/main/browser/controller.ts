@@ -102,6 +102,11 @@ export class BrowserViewController {
     this.setParent(this.ownerParent);
   }
 
+  async capturePage(): Promise<string | undefined> {
+    if (this.destroyed || !this.shownWithBounds) return undefined;
+    return (await this.wc.capturePage()).toDataURL();
+  }
+
   private get wc() {
     return this.view.webContents;
   }

@@ -129,6 +129,7 @@ export function createDesktopWorkbarServices(
     browser: {
       setActiveSession: (sessionId) => bridge.browser.setActiveSession(sessionId),
       setViewport: (input) => bridge.browser.setViewport(input),
+      capturePage: (sessionId) => bridge.browser.capturePage(sessionId),
       navigate: (sessionId, url) => bridge.browser.navigate(sessionId, url),
       back: (sessionId) => bridge.browser.back(sessionId),
       forward: (sessionId) => bridge.browser.forward(sessionId),

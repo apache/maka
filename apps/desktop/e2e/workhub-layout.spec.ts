@@ -207,7 +207,8 @@ test('WorkHub uses its coordination model and shared attachment composer', async
   await expect(workhub.locator('.maka-session-workbar')).toHaveCount(0);
   await expect.poll(() => workhub.evaluate(() => innerHeight === Math.ceil(document.querySelector('.workHubComposerSurface')!.getBoundingClientRect().height))).toBe(true);
   await expect(editor).toHaveText('Keep this draft while folding the conversation.');
-  await page.getByRole('button', { name: /收起任务工作栏|Collapse task workbar/ }).click();
+  await workhub.getByRole('button', { name: /打开用量追踪|Open usage trace/ }).click();
+  await expect(page.getByRole('button', { name: /展开任务工作栏|Expand task workbar/ })).toBeVisible();
   const thinking = workhub.getByRole('button', { name: /思考级别|Thinking level/ });
   await expect(thinking).toBeEnabled();
   await thinking.click();

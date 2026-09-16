@@ -166,7 +166,7 @@ are not crash-persistent.
 
 WorkHub uses the main window's shared Workbar. Floating moves only the conversation
 and composer; browser, usage and other panels remain in the main workspace. The
-floating composer's panel buttons reveal that workspace without docking or resizing
+floating composer's usage button reveals that workspace without docking or resizing
 the conversation. The browser page retains its coordination owner when Main presents
 it, and returns hidden to that owner's native container when Main closes or switches
 sessions. Browser and conversation WebContentsViews are siblings, never nested.

@@ -3920,6 +3920,9 @@ const makaBridge = {
     setViewport(input: { sessionId: string; rect: BrowserViewRect | null }): void {
       browserSelection.setViewport(input);
     },
+    capturePage(sessionId: string): Promise<string | undefined> {
+      return invokeSessionRuntimeHost('browser:capture-page', sessionId);
+    },
     navigate(sessionId: string, url: string): Promise<void> {
       return invokeSessionRuntimeHost('browser:navigate', sessionId, url);
     },

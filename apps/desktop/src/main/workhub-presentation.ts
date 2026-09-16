@@ -615,9 +615,8 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
           }
           case 'dock': await dock(revision); return;
           case 'hide': hideFloating(); return;
-          case 'workbar':
-            if (payload !== 'inspector' && payload !== 'workbar') throw new Error('Invalid WorkHub panel');
-            await navigateMain({ kind: 'workhub', workbar: payload }, revision);
+          case 'usage':
+            await navigateMain({ kind: 'workhub', showUsage: true }, revision);
             return;
           case 'session':
             if (typeof payload !== 'string' || payload.length > 4096) throw new Error('Invalid session key');

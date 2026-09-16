@@ -103,6 +103,7 @@ export interface WorkbarTerminalService {
 export interface WorkbarBrowserService {
   setActiveSession(sessionId: string | null): void;
   setViewport(input: { sessionId: string; rect: BrowserViewRect | null }): void;
+  capturePage(sessionId: string): Promise<string | undefined>;
   navigate(sessionId: string, url: string): Promise<void>;
   back(sessionId: string): Promise<void>;
   forward(sessionId: string): Promise<void>;
