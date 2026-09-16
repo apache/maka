@@ -915,6 +915,113 @@ test('pages a nested Turn the same way a single sweep reads it', async () => {
   }
 });
 
+test('cuts a byte-sized page back to the last whole Turn on it', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-page-boundary-'));
+  const capability = await resolveStorageRoot({ path: join(base, 'root'), kind: 'interactive' });
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(owner);
+  try {
+    const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+    const session = await stores.sessionStore.create({
+      cwd: capability.canonicalPath,
+      llmConnectionId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+      llmConnectionSlug: 'fake',
+      model: 'fake-model',
+      permissionMode: 'ask',
+    });
+    let counter = 0;
+    // Rows this size are what a real transcript holds, and the point of the
+    // test: a page cut by bytes lands inside one of them far more often than
+    // it lands between two Turns.
+    const body = 'x'.repeat(40 * 1024);
+    for (let index = 0; index < 6; index++) {
+      const runId = `run-${index}`;
+      await seedInvocation(stores.runtimeEventStore, {
+        sessionId: session.id,
+        runId,
+        turnId: `turn-${index}`,
+        openedAt: index,
+      });
+      await stores.runtimeEventStore.appendRuntimeEvent(
+        session.id,
+        runId,
+        runtimeEvent(session.id, {
+          id: `${runId}-event-${counter++}`,
+          invocationId: runId,
+          runId,
+          turnId: `turn-${index}`,
+          ts: counter,
+          role: 'model',
+          author: 'agent',
+          content: { kind: 'text', text: body },
+        }),
+      );
+      await stores.runtimeEventStore.appendRuntimeEvent(
+        session.id,
+        runId,
+        runtimeEvent(session.id, {
+          id: `${runId}-event-${counter++}`,
+          invocationId: runId,
+          runId,
+          turnId: `turn-${index}`,
+          ts: counter,
+          status: 'completed',
+          actions: { endInvocation: true },
+        }),
+      );
+    }
+
+    const read = createSessionTranscriptReader({
+      stores,
+      canonicalPermissionOutcomes: { readPermissionOutcome: async () => undefined },
+    });
+    const throughSequence = await read.readDurableHighWater(session.id);
+
+    for (const direction of ['older', 'newer'] as const) {
+      const paged: number[] = [];
+      let position: number | undefined;
+      let pages = 0;
+      for (; pages < 32; pages++) {
+        const result = await read.readDurablePage(session.id, {
+          direction,
+          throughSequence,
+          ...(position === undefined ? {} : { position }),
+          // Wide enough for more than one Turn and narrow enough to run out
+          // partway through the next one.
+          maxBytes: 100 * 1024,
+          maxMessages: 64,
+        });
+        if (result.fragments.length === 0) break;
+        assert.equal(result.endsAtTurnBoundary, true, `${direction} page ${pages}`);
+        // Nothing arrives in slices: a page that would cut a row gives that
+        // row's Turn back instead.
+        for (const fragment of result.fragments) {
+          assert.equal(fragment.byteOffset, 0, `${direction} page ${pages}`);
+          assert.equal(fragment.data.byteLength, fragment.totalBytes, `${direction} page ${pages}`);
+        }
+        paged.push(...result.fragments.map((fragment) => fragment.sequence));
+        if (result.next?.position === undefined || result.next.position === null) break;
+        position = result.next.position;
+      }
+      assert.ok(pages > 1, `${direction} needs more than one page to be worth cutting`);
+
+      const sweep = await read.readDurablePage(session.id, {
+        direction,
+        throughSequence,
+        maxBytes: 1 << 20,
+        maxMessages: 64,
+      });
+      assert.deepEqual(
+        paged,
+        sweep.fragments.map((fragment) => fragment.sequence),
+        direction,
+      );
+    }
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
 function runtimeEvent(sessionId: string, overrides: Partial<RuntimeEvent>): RuntimeEvent {
   return {
     id: 'event-1',

@@ -439,12 +439,17 @@ function pagedTranscriptReads(source: TranscriptRecordSource) {
       // page already carries rows of continues past where it stopped.
       let endsAtTurnBoundary = true;
       let cluster: number | undefined;
+      /** Where the group the page is inside began, so the page can be cut back to that edge. */
+      let groupStart: { index: number; bytes: number; sequence: number } | undefined;
       for await (const record of source.scan(sessionId, { ...request, throughSequence })) {
         if (fragments.length >= request.maxMessages || rawBytes >= request.maxBytes) {
           truncated = true;
           endsAtTurnBoundary = record.cluster !== cluster;
           next = { position: record.sequence, byteOffset: null };
           break;
+        }
+        if (record.cluster !== cluster) {
+          groupStart = { index: fragments.length, bytes: rawBytes, sequence: record.sequence };
         }
         cluster = record.cluster;
         const data = Buffer.from(JSON.stringify(record.message), 'utf8');
@@ -480,6 +485,18 @@ function pagedTranscriptReads(source: TranscriptRecordSource) {
           };
           break;
         }
+      }
+      if (!endsAtTurnBoundary && groupStart !== undefined && groupStart.index > 0) {
+        // The page stopped inside a group, and a byte-sized page almost never
+        // stops anywhere else: rows are large enough that the cut usually
+        // falls inside one. Where the groups before it end is a place a reader
+        // can end an answer, so give back what the unfinished group
+        // contributed and stop there instead. Only a group that reaches the
+        // start of the page has to be served in slices.
+        rawBytes = groupStart.bytes;
+        fragments.length = groupStart.index;
+        next = { position: groupStart.sequence, byteOffset: null };
+        endsAtTurnBoundary = true;
       }
       if (!truncated) next = null;
       return { throughSequence, fragments, rawBytes, next, endsAtTurnBoundary };
