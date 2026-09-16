@@ -1020,7 +1020,14 @@ function Workbar(props: {
           onActivateTab={(placement, tabId) => setPanels((state) => reduceWorkbarPanels(state, { type: 'activate', placement, tabId }))}
           onCloseTab={(placement, tab) => setPanels((state) => reduceWorkbarPanels(state, { type: 'close', placement, tabIds: [tab.id] }))}
           onOpenLauncher={noop}
-          onRequestOpenTab={noop}
+          onRequestOpenTab={(placement, kind) => {
+            if (kind === 'side-chat' || kind === 'terminal') return;
+            setPanels((state) => ({
+              ...state,
+              [placement]: openStaticSessionWorkbarTab(state[placement], kind),
+              focusedPanel: placement,
+            }));
+          }}
           confirmBypass={async () => true}
           quotes={quotes}
           sourceSession={
@@ -1350,6 +1357,7 @@ export const BrowserLoaded: Story = {
     browserCapture.mockImplementationOnce(() => new Promise<string>((resolve) => { finishCapture = resolve; }));
     await userEvent.click(canvas.getByRole('button', { name: '添加面板' }));
     await waitFor(() => expect(browserCapture).toHaveBeenCalledTimes(2));
+    expect(browserViewport.mock.lastCall?.[0].rect).toBeNull();
     await userEvent.keyboard('{Escape}');
     await waitFor(() => expect(browserViewport.mock.lastCall?.[0].rect).toBeTruthy());
     finishCapture('data:image/png;base64,late');
@@ -1385,9 +1393,16 @@ export const WorkHubTools: Story = {
     const canvas = within(canvasElement);
     expect(canvas.queryByRole('tab', { name: /生成文件|变更/ })).toBeNull();
     await userEvent.click(canvas.getByRole('button', { name: '添加面板' }));
-    const menu = within(await within(document.body).findByRole('menu'));
+    const menuElement = await within(document.body).findByRole('menu');
+    const menu = within(menuElement);
     expect(menu.getAllByRole('menuitem').map((item) => item.textContent)).toEqual(['浏览器', '工作看板', '追踪']);
-    await userEvent.keyboard('{Escape}');
+    await userEvent.click(menu.getByRole('menuitem', { name: '追踪' }));
+    await waitFor(() => expect(menuElement).not.toBeVisible());
+    expect(canvas.getByRole('tab', { name: '追踪' })).toHaveAttribute('aria-selected', 'true');
+    await userEvent.click(canvas.getByRole('button', { name: '添加面板' }));
+    await userEvent.click(within(await within(document.body).findByRole('menu')).getByRole('menuitem', { name: '浏览器' }));
+    await waitFor(() => expect(menuElement).not.toBeVisible());
+    expect(canvas.getByRole('tab', { name: '浏览器' })).toHaveAttribute('aria-selected', 'true');
   },
 };
 

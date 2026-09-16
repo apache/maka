@@ -20,7 +20,9 @@
 /** Native child views sit above DOM top-layer content, regardless of z-index. */
 export function isNativeSurfaceOccluded(rect: DOMRect, document: Document): boolean {
   return Array.from(document.querySelectorAll(':popover-open:not(:empty), dialog[open]')).some((overlay) => {
-    if (overlay.matches(':modal')) return true;
+    // Light-dismiss is document-local. Native siblings must yield even when
+    // they do not overlap, so an outside click reaches the owning document.
+    if (overlay.matches(':modal, [popover="auto"]')) return true;
     const bounds = overlay.getBoundingClientRect();
     return bounds.width > 0 && bounds.height > 0 && bounds.left < rect.right && bounds.right > rect.left && bounds.top < rect.bottom && bounds.bottom > rect.top;
   });

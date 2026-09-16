@@ -76,6 +76,19 @@ test('WorkHub uses its coordination model and shared attachment composer', async
   // would be covered by this WebContentsView and never receive native clicks.
   await workhub.getByRole('button', { name: '展开任务工作栏', exact: true }).click();
   await expect(page.locator('.maka-session-workbar[data-placement="right"]')).toBeVisible();
+  // Chromium light-dismiss cannot see clicks delivered to a sibling native
+  // WebContentsView. Main temporarily owns that input region while its menu is open.
+  await page.getByRole('button', { name: '添加面板', exact: true }).click();
+  await expect(page.getByRole('menu')).toBeVisible();
+  await expect(page.locator('.workHubDockBackdrop')).toBeVisible();
+  await expect.poll(() => mainWindow.evaluate(win => {
+    const container = win.contentView.children.find(view => view.children.some(child =>
+      'webContents' in child && (child as Electron.WebContentsView).webContents.getURL().includes('surface=workhub')));
+    return container?.getVisible();
+  })).toBe(false);
+  await page.locator('.workHubDock').click();
+  await expect(page.getByRole('menu')).toBeHidden();
+  await expect(page.locator('.workHubDockBackdrop')).toHaveCount(0);
   await workhub.getByRole('button', { name: '收起任务工作栏', exact: true }).click();
   await expect(page.locator('.maka-session-workbar[data-placement="right"]')).toBeHidden();
   const anchors = workhub.locator('.workhub-anchors');

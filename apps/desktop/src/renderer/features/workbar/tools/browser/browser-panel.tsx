@@ -152,8 +152,9 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean }) {
           void browser.capturePage(sessionId).catch(() => undefined).then((image) => {
             if (!active || current !== revision) return;
             setBackdrop(image);
-            browser.setViewport({ sessionId, rect: null });
           });
+          // Input must yield now, even while the optional capture is pending.
+          browser.setViewport({ sessionId, rect: null });
         } else setBackdrop(undefined);
         last = '';
       }

@@ -507,10 +507,7 @@ describe('useWorkbarController', () => {
     const coordinationId = desktopSessionKey({ hostId: 'local', sessionId: 'maka_workhub_coordination' });
     const coordination: WorkHubWorkspaceServices = {
       resolve: async () => coordinationId,
-      getSession: async (id) => session(id),
-      modelChoices: async () => [],
       subscribeHosts: () => () => {},
-      subscribeSessions: () => () => {},
       subscribeAvailability: () => () => {},
     };
     const ordinary = input(session('ordinary'));

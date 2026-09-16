@@ -513,7 +513,8 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
       }
       const changesPresentation = command === 'detach' || command === 'show-conversation' || command === 'dock' || command === 'hide' || command === 'session';
       const revision = changesPresentation ? ++presentationRevision : presentationRevision;
-      return enqueue(async () => {
+      let backdrop: Promise<string | undefined> | undefined;
+      const result = await enqueue(async () => {
         const { main, isMain } = authorize();
         // A newer shortcut takes effect immediately, including during a pending dock.
         if (changesPresentation && revision !== presentationRevision) return;
@@ -542,15 +543,13 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
             const workbarChanged = host.workbar?.collapsed !== value.workbar?.collapsed || host.workbar?.placement !== value.workbar?.placement;
             // Native child views sit above the main renderer's top layer. Keep
             // a still frame behind its menus/dialogs while yielding native input.
-            let backdrop: string | undefined;
             if (placement === 'docked' && value.visible && value.occluded && !host.occluded && view && container?.getVisible() &&
               rendererReady && main?.isVisible() && !main.isMinimized()) {
-              try { backdrop = (await view.webContents.capturePage()).toDataURL(); }
-              catch (error) {
-                // Reparenting or hiding can retire the compositor surface before
-                // capture completes. Menus still work without this optional frame.
+              backdrop = view.webContents.capturePage().then((image) => image.toDataURL()).catch((error: unknown) => {
+                // Capture is optional; native input yields without awaiting it.
                 if (!(error instanceof Error && error.message === 'UnknownVizError')) reportError(error);
-              }
+                return undefined;
+              });
             }
             if (disposed) return;
             // Layout cannot reopen a disabled dock.
@@ -564,7 +563,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
             if (!host.visible) requestProgress();
             updateDockedBounds();
             if (workbarChanged) send('workhub-presentation:changed', getSnapshot());
-            return backdrop;
+            return;
           }
           case 'progress-ready':
             if (isMain) throw new Error('Only the WorkHub view can present its progress');
@@ -630,6 +629,8 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
           default: throw new Error('Unknown WorkHub presentation command');
         }
       });
+      // The optional image must not hold up layout restoration or user commands.
+      return backdrop ?? result;
     });
     ipcRegistered = true;
   }

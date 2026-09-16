@@ -245,7 +245,6 @@ function WorkbarFaceMenu(props: {
             icon={<FaceIcon size={ICON_SIZE.control} aria-hidden />}
             endContent={isOpen ? <Check size={ICON_SIZE.control} aria-hidden /> : undefined}
             isDisabled={definition.kind === 'side-chat' && !props.sideChatAvailable}
-            hasCloseOnSelect={false}
             onClick={() => props.onOpen(definition.kind)}
           />
         );

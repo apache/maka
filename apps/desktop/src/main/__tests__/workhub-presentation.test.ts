@@ -692,6 +692,9 @@ test('a pending backdrop capture and older hide cannot delay or undo the shortcu
   view.webContents.capturePage = () => { started.resolve(); return capture.promise; };
   const occlude = h.command(h.main.webContents, 'host', { ...host, occluded: true });
   await started.promise;
+  assert.equal(h.container.visible, false, 'native input yields before the screenshot completes');
+  await h.command(h.main.webContents, 'host', host);
+  assert.equal(h.container.visible, true, 'closing the overlay restores input without waiting for its screenshot');
   const olderHide = h.command(view.webContents, 'hide');
   h.shortcut();
   const floating = h.windows[1]!;

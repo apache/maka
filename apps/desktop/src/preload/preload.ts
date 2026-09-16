@@ -1382,6 +1382,9 @@ async function bridgeResult<T>(operation: () => Promise<T>, code: string): Promi
 const browserDocumentId = crypto.randomUUID();
 ipcRenderer.send('browser:document-ready', browserDocumentId);
 const browserSelection = createBrowserSelectionCoordinator(runtimeHostSessionRef, {
+  capturePage(session) {
+    return ipcRenderer.invoke('browser:capture-page', session.scope, session.sessionId);
+  },
   show(documentId, generation, session) {
     ipcRenderer.send(
       'browser:active-session',
@@ -3921,7 +3924,7 @@ const makaBridge = {
       browserSelection.setViewport(input);
     },
     capturePage(sessionId: string): Promise<string | undefined> {
-      return invokeSessionRuntimeHost('browser:capture-page', sessionId);
+      return browserSelection.capturePage(sessionId);
     },
     navigate(sessionId: string, url: string): Promise<void> {
       return invokeSessionRuntimeHost('browser:navigate', sessionId, url);

@@ -106,29 +106,21 @@ test('the WorkHub slot retains its providers and mount across locale updates', a
   assert.equal(unsubscribes, 1);
 });
 
-test('Main panel metadata ignores a superseded Host read and retains Coordination in its catalog', async () => {
+test('Main panels follow the resolved Host identity and retain Coordination in the catalog', async () => {
   const { root } = installReactRenderer();
   const first = desktopSessionKey({ hostId: 'first', sessionId: 'maka_workhub_coordination' });
   const second = desktopSessionKey({ hostId: 'second', sessionId: 'maka_workhub_coordination' });
-  const oldRead = deferred<Awaited<ReturnType<WorkHubServices['getSession']>>>();
+  const oldResolve = deferred<string>();
   let selected = first;
   let resolves = 0;
-  let failMetadata = false;
-  let sessionChanged!: () => void;
   let hostChange!: Parameters<WorkHubServices['subscribeHosts']>[0];
   let latest!: ReturnType<typeof useWorkHubWorkspace>;
   const services = {
-    resolve: async () => { resolves++; return selected; },
+    resolve: async () => { resolves++; return selected === first ? oldResolve.promise : selected; },
     subscribeHosts: (handler: Parameters<WorkHubServices['subscribeHosts']>[0]) => { hostChange = handler; return () => {}; },
     subscribeAvailability: () => () => {},
-    subscribeSessions: (handler: () => void) => { sessionChanged = handler; return () => {}; },
-    getSession: async (id: string) => {
-      if (failMetadata) throw new Error('Connection interrupted');
-      return id === first ? oldRead.promise : { id, model: 'second-model', revision: 1 };
-    },
-    modelChoices: async () => [],
   } as unknown as WorkHubServices;
-  const metadata = () => latest;
+  const workspace = () => latest;
   const ids = new Set(['ordinary']);
   function Probe({ enabled }: { enabled: boolean }) { latest = useWorkHubWorkspace(enabled, ids); return null; }
   const render = (enabled: boolean) => root.render(createElement(WorkHubServicesProvider, { services, children: createElement(Probe, { enabled }) }));
@@ -136,19 +128,16 @@ test('Main panel metadata ignores a superseded Host read and retains Coordinatio
     await act(async () => render(false));
     assert.equal(resolves, 0);
     await act(async () => render(true));
-    assert.equal(metadata().session, undefined);
+    assert.equal(workspace().sessionId, undefined);
     selected = second;
     await act(async () => hostChange({ hostId: 'second', isDefault: true, readiness: 'ready' }));
-    assert.equal(metadata().session?.id, second);
-    await act(async () => oldRead.resolve({ id: first, model: 'first-model', revision: 1 } as Awaited<ReturnType<WorkHubServices['getSession']>>));
-    assert.equal(metadata().session?.id, second);
-    failMetadata = true;
-    await act(async () => sessionChanged());
-    assert.equal(metadata().session?.id, second);
-    assert.deepEqual([...metadata().authoritativeSessionIds!], ['ordinary', second]);
+    assert.equal(workspace().sessionId, second);
+    await act(async () => oldResolve.resolve(first));
+    assert.equal(workspace().sessionId, second);
+    assert.deepEqual([...workspace().authoritativeSessionIds!], ['ordinary', second]);
     await act(async () => render(false));
-    assert.equal(metadata().session, undefined);
-    assert.deepEqual([...metadata().authoritativeSessionIds!], ['ordinary']);
+    assert.equal(workspace().sessionId, undefined);
+    assert.deepEqual([...workspace().authoritativeSessionIds!], ['ordinary']);
   } finally {
     await act(async () => root.unmount());
   }

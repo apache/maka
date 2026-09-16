@@ -160,15 +160,15 @@ export function useWorkbarController(
 ): WorkbarController {
   const coordination = useWorkHubWorkspace(requested.workHub?.enabled ?? false, requested.authoritativeSessionIds);
   const workspace = requested.workHub?.active ? 'workhub' : 'session';
+  const activeSessionId = requested.workHub?.active ? coordination.sessionId : requested.activeSession?.id;
   const input: UseWorkbarControllerInput = requested.workHub?.active ? {
     ...requested,
-    available: requested.available && Boolean(coordination.session),
-    layoutSessionId: coordination.session?.id,
-    activeSession: coordination.session,
-    projectId: coordination.session?.projectId,
+    available: requested.available && Boolean(activeSessionId),
+    layoutSessionId: activeSessionId,
+    activeSession: undefined,
+    projectId: null,
     projectAliases: [],
     authoritativeSessionIds: coordination.authoritativeSessionIds,
-    modelChoices: coordination.modelChoices,
   } : { ...requested, authoritativeSessionIds: coordination.authoritativeSessionIds };
   const locale = useUiLocale();
   // Enforce development-only: the experimental Start-task path must never be
@@ -185,7 +185,6 @@ export function useWorkbarController(
     Boolean(input.openNewTaskSurface && input.resolveWorkBoardTarget && input.prepareWorkBoardDraft);
   const terminalCopy = getDesktopConversationCopy(locale).terminalPanel;
   const { browser, sideChat, terminal, workBoard } = useWorkbarServices();
-  const activeSessionId = input.activeSession?.id;
   const layout = useWorkbarLayoutState(input.layoutSessionId, input.authoritativeSessionIds);
   const sideConversations = useSideConversationWorkspace();
   const [pendingSideChatClose, setPendingSideChatClose] = useState<
