@@ -36,7 +36,7 @@ function backendContext(overrides: Partial<BackendFactoryContext> = {}): Backend
 }
 
 test('Desktop E2E compaction requires a checkpoint recorder', async () => {
-  const backend = new DesktopE2eBackend(backendContext());
+  const backend = new DesktopE2eBackend(backendContext(), () => undefined);
   await assert.rejects(
     backend.compactHistory({
       turnId: 'turn-1',
@@ -55,6 +55,9 @@ test('Desktop E2E compaction records a deterministic checkpoint', async () => {
         recorded.push({ checkpoint, turnId });
       },
     }),
+    // Plan driving is not part of the compaction contract; this backend never
+    // sends a Plan Turn, so the authority is deliberately absent.
+    () => undefined,
   );
 
   const result = await backend.compactHistory({
