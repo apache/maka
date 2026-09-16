@@ -35,7 +35,8 @@ export interface DesktopTranscriptRangeController {
   readonly store: DesktopTranscriptRangeStore;
   ready(): Promise<void>;
   waitForDurableMessage(messageId: string, timeoutMs: number): Promise<boolean>;
-  loadEarlier(): Promise<void>;
+  /** One budget of earlier history, or everything down to `throughSequence` in one answer. */
+  loadEarlier(throughSequence?: number): Promise<void>;
   reload(): Promise<void>;
   observationChanged(phase: 'pending' | 'ready'): void;
   close(): Promise<void>;
@@ -113,7 +114,8 @@ export function createDesktopTranscriptReconnectRecovery(options: {
 
 export function createDesktopTranscriptRangeController(
   store: DesktopTranscriptRangeStore,
-  open: (signal: AbortSignal) => Promise<DesktopTranscriptHandle>,
+  /** `resumeFrom` is the oldest sequence held, which a reopen must read back down to. */
+  open: (signal: AbortSignal, resumeFrom?: number) => Promise<DesktopTranscriptHandle>,
   options: { onError(error: unknown): void },
 ): DesktopTranscriptRangeController {
   let closed = false;
@@ -157,13 +159,15 @@ export function createDesktopTranscriptRangeController(
     const previous = handle;
     acknowledged = undefined;
     openController.abort();
+    const held = range();
+    const resumeFrom = held?.ready ? held.oldestSequence ?? undefined : undefined;
     const replacement = previous
       .then((value) => value.close())
       .catch(() => undefined)
       .then(() => {
         if (closed) throw new Error('Desktop transcript range is closed');
         openController = new AbortController();
-        return open(openController.signal);
+        return open(openController.signal, resumeFrom);
       });
     handle = replacement;
     await replacement;
@@ -190,6 +194,27 @@ export function createDesktopTranscriptRangeController(
   });
   void handle.then(requireLive).catch(recovery.transcriptFailed);
   let earlier: Promise<void> | undefined;
+  const loadEarlier = (throughSequence?: number): Promise<void> => {
+    if (earlier) {
+      return throughSequence === undefined ? earlier : earlier.then(() => loadEarlier(throughSequence));
+    }
+    const held = range();
+    if (!held?.ready || !held.hasOlder || cached()) return Promise.resolve();
+    if (
+      throughSequence !== undefined &&
+      held.oldestSequence !== null &&
+      held.oldestSequence <= throughSequence
+    ) return Promise.resolve();
+    const reading = handle;
+    const task = current()
+      .then((value) => value.loadEarlier(throughSequence))
+      .catch((error: unknown) => {
+        if (!closed && reading === handle) options.onError(error);
+      })
+      .finally(() => { earlier = undefined; });
+    earlier = task;
+    return task;
+  };
   return {
     store,
     async ready() { await current(); },
@@ -197,20 +222,7 @@ export function createDesktopTranscriptRangeController(
       await current();
       return store.waitForDurableMessage(messageId, timeoutMs);
     },
-    loadEarlier() {
-      if (earlier) return earlier;
-      const held = range();
-      if (!held?.ready || !held.hasOlder || cached()) return Promise.resolve();
-      const reading = handle;
-      const task = current()
-        .then((value) => value.loadEarlier())
-        .catch((error: unknown) => {
-          if (!closed && reading === handle) options.onError(error);
-        })
-        .finally(() => { earlier = undefined; });
-      earlier = task;
-      return task;
-    },
+    loadEarlier,
     reload,
     observationChanged: recovery.observationChanged,
     async close() {
@@ -240,6 +252,7 @@ export interface DesktopTranscriptRangeState {
   readonly generation: string;
   readonly hostEpoch: string;
   readonly durableThrough: number | null;
+  readonly oldestSequence: number | null;
   /** Earlier durable history exists that the Renderer has not loaded. */
   readonly hasOlder: boolean;
   /**
@@ -438,6 +451,7 @@ export class DesktopTranscriptRangeStore {
       generation: this.#generation,
       hostEpoch: this.#hostEpoch,
       durableThrough: this.#value.through,
+      oldestSequence: this.#value.order[0] ?? null,
       hasOlder: this.#value.hasOlder,
       beginsAtTurnBoundary: this.#value.beginsAtTurnBoundary,
       ready: this.#ready,

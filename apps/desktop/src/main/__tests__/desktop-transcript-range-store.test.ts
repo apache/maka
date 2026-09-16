@@ -677,6 +677,52 @@ test('loadEarlier shares one in-flight read and reports its failure', async () =
   }
 });
 
+test('a read down to a sequence waits out a pending read, skips held history, and a reopen resumes from the oldest held row', async () => {
+  const store = transcriptStore();
+  const identity = { sessionId: 'session-1', generation: 'generation-1', hostEpoch: 'host-1' };
+  const gate = deferred<void>();
+  const reads: (number | undefined)[] = [];
+  const resumes: (number | undefined)[] = [];
+  const controller = createDesktopTranscriptRangeController(store, async (_signal, resumeFrom) => {
+    resumes.push(resumeFrom);
+    for (const batch of encodeDesktopTranscriptSnapshot({
+      beginsAtTurnBoundary: true,
+      ...identity, durableThrough: 9, hasOlder: true,
+      durable: [{ sequence: 9, message: assistantMessage('9', 'assistant-9') }],
+    })) store.accept(batch);
+    return transcriptHandle(identity, {
+      async loadEarlier(throughSequence) {
+        reads.push(throughSequence);
+        if (throughSequence === undefined) {
+          await gate.promise;
+          for (const batch of earlierBatches(identity, 9, [7], true)) store.accept(batch);
+        } else {
+          for (const batch of earlierBatches(identity, 7, [3, 5], true)) store.accept(batch);
+        }
+      },
+    });
+  }, { onError: (error) => assert.fail(String(error)) });
+  try {
+    await controller.ready();
+    const pending = controller.loadEarlier();
+    const targeted = controller.loadEarlier(3);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(reads, [undefined]);
+    gate.resolve();
+    await Promise.all([pending, targeted]);
+    assert.deepEqual(reads, [undefined, 3]);
+    assert.equal(store.range().oldestSequence, 3);
+
+    await controller.loadEarlier(5);
+    assert.deepEqual(reads, [undefined, 3], 'a Turn already held is not read again');
+
+    await controller.reload();
+    assert.deepEqual(resumes, [undefined, 3]);
+  } finally {
+    await controller.close();
+  }
+});
+
 test('bounds the default active transcript range by Turn identities', async () => {
   const messages = Array.from({ length: 200 }, (_, sequence) => ({
     identity: sequence,

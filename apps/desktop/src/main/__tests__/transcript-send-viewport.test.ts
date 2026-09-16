@@ -197,6 +197,7 @@ function viewportFixture(options: { returnButton?: boolean } = {}) {
     commands, sessionId: 'session-a', currentSessionId: { current: 'session-a' },
     rangeController: { current: controller }, messages, sessionUi,
     searchTarget: undefined, clearSearchTarget: () => {},
+    landmarkSessionId: null, listTurnLandmarks: async () => ({ landmarks: [] }), setTurnIndex: () => {},
     onRestoreError: (error) => assert.fail(String(error)),
   };
   let authority: TranscriptScrollAuthority | undefined;

@@ -20,9 +20,27 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  mergePromptAnchorRailTurns,
   observeActivePromptRailVisibility,
   selectPromptRailTick,
 } from '../prompt-anchor-rail.js';
+
+test('indexed Turns outside the loaded range precede it, and loaded Turns keep their own entries', () => {
+  const loaded = [
+    { turnId: 'turn-3', label: 'Prompt 3', reply: 'Answer 3' },
+    { turnId: 'turn-4', label: 'Prompt 4', reply: 'Answer 4' },
+  ];
+  const index = [
+    { turnId: 'turn-1', sequence: 8, label: 'Prompt 1' },
+    { turnId: 'turn-3', sequence: 40, label: 'Prompt 3' },
+  ];
+  assert.deepEqual(mergePromptAnchorRailTurns(loaded, index, new Set(['turn-2', 'turn-3', 'turn-4'])), [
+    { turnId: 'turn-1', sequence: 8, label: 'Prompt 1' },
+    ...loaded,
+  ]);
+  assert.equal(mergePromptAnchorRailTurns(loaded, undefined, new Set()), loaded);
+  assert.equal(mergePromptAnchorRailTurns(loaded, index.slice(1), new Set(['turn-3'])), loaded);
+});
 
 const orderedTurnIds = Array.from({ length: 120 }, (_, index) => `turn-${index + 1}`);
 const sampledRailTurnIds = Array.from({ length: 64 }, (_, railIndex) =>

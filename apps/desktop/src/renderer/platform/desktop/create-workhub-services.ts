@@ -204,7 +204,7 @@ export function createDesktopWorkHubServices(
     async openTranscript(sessionId, handler, cancellation, onError) {
       const store = new DesktopTranscriptRangeStore(sessionId);
       const unsubscribe = store.subscribe(() => handler(store.snapshot()));
-      const controller = createDesktopTranscriptRangeController(store, (signal) =>
+      const controller = createDesktopTranscriptRangeController(store, (signal, resumeFrom) =>
         bridge.transcripts.open(
           sessionId,
           (batch) => {
@@ -215,6 +215,8 @@ export function createDesktopWorkHubServices(
             if (signal.aborted) cancel();
             else signal.addEventListener('abort', cancel, { once: true });
           },
+          'history',
+          resumeFrom,
         ),
         { onError },
       );

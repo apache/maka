@@ -38,6 +38,7 @@ import {
 import { DeepResearchEmptyHero, EmptyChatHero } from './chat-empty-hero.js';
 import type { ChatModelChoice } from './chat-model-helpers.js';
 import {
+  mergePromptAnchorRailTurns,
   PromptAnchorRail,
   type PromptAnchorRailTurn,
 } from './prompt-anchor-rail.js';
@@ -265,6 +266,10 @@ export function ChatView(props: {
   hasEarlierHistory?: boolean;
   /** Prepends whole earlier Turns to `messages`. */
   onLoadEarlierHistory?(): void | Promise<void>;
+  /** Turns outside `messages`, from the Session's Turn index, oldest first. */
+  transcriptTurnIndex?: ReadonlyArray<{ turnId: string; sequence: number; label: string }>;
+  /** Loads `messages` back to the start of an indexed Turn. */
+  onLoadTranscriptTurn?(turn: { turnId: string; sequence: number }): void | Promise<void>;
   /** Optional identity decorations shared with a host's work navigation. */
   promptRailDecorations?: ReadonlyMap<string, Pick<PromptAnchorRailTurn, 'accentColor' | 'highlighted'>>;
   onPromptRailHighlight?(turnId: string | undefined): void;
@@ -468,11 +473,15 @@ export function ChatView(props: {
     promptRailTurnsRef.current = next;
     return next;
   }, [turns]);
+  const turnIds = useMemo(() => new Set(turns.map((turn) => turn.turnId)), [turns]);
   const promptRailTurns = useMemo(
-    () => props.promptRailDecorations
-      ? loadedPromptRailTurns.map((turn) => ({ ...turn, ...props.promptRailDecorations?.get(turn.turnId) }))
-      : loadedPromptRailTurns,
-    [loadedPromptRailTurns, props.promptRailDecorations],
+    () => {
+      const merged = mergePromptAnchorRailTurns(loadedPromptRailTurns, props.transcriptTurnIndex, turnIds);
+      return props.promptRailDecorations
+        ? merged.map((turn) => ({ ...turn, ...props.promptRailDecorations?.get(turn.turnId) }))
+        : merged;
+    },
+    [loadedPromptRailTurns, props.transcriptTurnIndex, turnIds, props.promptRailDecorations],
   );
   // Turn identity and order only, so a streaming delta keeps the same array.
   const orderedTurnIdsRef = useRef<readonly string[]>([]);
@@ -517,7 +526,6 @@ export function ChatView(props: {
     (turnId: string) => onSwitchToBypassAndRetryRef.current?.(turnId),
     [],
   );
-  const turnIds = useMemo(() => new Set(turns.map((turn) => turn.turnId)), [turns]);
   const conversationItemPlacement = useMemo(() => placeChatConversationItems(
     (props.conversationItems ?? []).map((item) => ({
       afterTurnId: item.afterTurnId,
@@ -570,9 +578,18 @@ export function ChatView(props: {
     onReadingAnchorChange: props.onReadingAnchorChange,
     behavior: props.scrollBehavior,
   });
+  const onLoadTranscriptTurnRef = useRef(props.onLoadTranscriptTurn);
+  onLoadTranscriptTurnRef.current = props.onLoadTranscriptTurn;
   const navigatePromptRail = useCallback(
-    (turn: PromptAnchorRailTurn) => revealTurnAtStart(turn.turnId),
-    [revealTurnAtStart],
+    (turn: PromptAnchorRailTurn) => {
+      if (turn.sequence === undefined || orderedTurnIdsRef.current.includes(turn.turnId)) {
+        revealTurnAtStart(turn.turnId);
+        return;
+      }
+      holdReader(turn.turnId);
+      void onLoadTranscriptTurnRef.current?.({ turnId: turn.turnId, sequence: turn.sequence });
+    },
+    [revealTurnAtStart, holdReader],
   );
   const interaction = useTurnsHoldingInteraction(scrollRef);
   const keepMountedIndexes = new Set<number>();

@@ -402,7 +402,7 @@ export function useActiveSessionEvents(options: {
         now: Date.now(),
       }),
     }));
-    const openTranscript = (signal: AbortSignal) =>
+    const openTranscript = (signal: AbortSignal, resumeFrom?: number) =>
       window.maka.transcripts.open(
         activeId,
         (batch) => {
@@ -417,6 +417,8 @@ export function useActiveSessionEvents(options: {
           if (signal.aborted) cancel();
           else signal.addEventListener('abort', cancel, { once: true });
         },
+        'history',
+        resumeFrom,
       );
     const controller = desktopTranscript.createDesktopTranscriptRangeController(
       transcript,

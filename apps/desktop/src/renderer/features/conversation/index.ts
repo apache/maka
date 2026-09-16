@@ -30,6 +30,7 @@ export const transcriptReadingPosition = {
 export {
   TranscriptReadingPositionController,
   type TranscriptReadingPositionCommands,
+  type TranscriptTurnIndex,
 } from './controller/transcript-reading-position-controller.js';
 
 export {

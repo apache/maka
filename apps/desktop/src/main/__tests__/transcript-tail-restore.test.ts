@@ -94,29 +94,6 @@ test('a completed loaded bookmark does not load earlier history after later noti
   assert.equal(history.loads, 0, 'a loaded bookmark completes without reading history, and stays completed');
 });
 
-test('a bookmark older than the loaded transcript loads earlier history until its Turn arrives', async () => {
-  let anchor: { turnId: string } | undefined = { turnId: 'turn-a' };
-  const history = restoreHistory([{ turnId: 'turn-c' }], async () => {
-    history.messages = history.loads === 1
-      ? [{ turnId: 'turn-b' }, { turnId: 'turn-c' }]
-      : [{ turnId: 'turn-a' }, { turnId: 'turn-b' }, { turnId: 'turn-c' }];
-  });
-  restoreSessionTranscriptRange({
-    lifecycle: createTranscriptRestoreLifecycle(),
-    sessionId: 'session-1',
-    readingAnchor: { turnId: 'turn-a' },
-    controller: history.controller,
-    isCurrent: () => true,
-    setReadingAnchor: (_sessionId, next) => { anchor = next; },
-    onRestoreUnavailable: () => assert.fail('the bookmark was reachable'),
-    onError: (error) => assert.fail(String(error)),
-  });
-  await settleRestore();
-  await settleRestore();
-  assert.equal(history.loads, 2);
-  assert.deepEqual(anchor, { turnId: 'turn-a' });
-});
-
 test('repeated message notifications share one pending restore and cancellation preserves the newer bookmark', async () => {
   const lifecycle = createTranscriptRestoreLifecycle();
   let finishLoad!: () => void;
@@ -134,6 +111,7 @@ test('repeated message notifications share one pending restore and cancellation 
     readingAnchor: { turnId: 'turn-a' },
     controller: history.controller,
     isCurrent: () => true,
+    lookupTurn: history.lookupTurn,
     setReadingAnchor: (_sessionId: string, next: typeof anchor) => { anchor = next; },
     onRestoreUnavailable: (_sessionId: string, turnId: string) => { unavailable = turnId; },
     onError: (error: unknown) => assert.fail(String(error)),
@@ -165,6 +143,7 @@ test('switching away and back creates a fresh restore while clearing search does
     readingAnchor: { turnId: 'turn-a' },
     controller: history.controller,
     isCurrent: () => true,
+    lookupTurn: history.lookupTurn,
     setReadingAnchor: () => {},
     onError: (error: unknown) => assert.fail(String(error)),
   };
@@ -204,21 +183,19 @@ test('effect teardown followed by setup lets only the replacement restore settle
     readingAnchor: { turnId: 'turn-a' },
     controller: history.controller,
     isCurrent: () => true,
+    lookupTurn: history.lookupTurn,
     setReadingAnchor: (_sessionId: string, next: typeof anchor) => { anchor = next; },
     onRestoreUnavailable: (_sessionId: string, turnId: string) => { unavailable = turnId; },
     onError: (error: unknown) => assert.fail(String(error)),
   };
   restoreSessionTranscriptRange(options);
-  assert.equal(loads.length, 1, 'the first command loads earlier history synchronously');
   lifecycle.deactivate();
   restoreSessionTranscriptRange(options);
-  assert.equal(loads.length, 2, 'StrictMode replay must start a replacement load');
-
-  loads[0]!();
   await settleRestore();
+  assert.equal(loads.length, 1, 'only the StrictMode replacement reads history');
   assert.deepEqual(anchor, { turnId: 'turn-a' });
-  assert.equal(unavailable, undefined, 'the deactivated command cannot settle after replacement');
-  loads[1]!();
+  assert.equal(unavailable, undefined);
+  loads[0]!();
   await settleRestore();
   assert.equal(anchor, undefined);
   assert.equal(unavailable, 'turn-a', 'only the replacement restore settles its unavailable target');
@@ -251,6 +228,7 @@ function restoreHistory(initial: Array<{ turnId: string }>, load: () => Promise<
   const history = {
     loads: 0,
     hasOlder: true,
+    lookupTurn: async () => 0,
     get messages() { return snapshot.messages; },
     set messages(messages: Array<{ turnId: string }>) { snapshot = { messages }; },
     controller: {

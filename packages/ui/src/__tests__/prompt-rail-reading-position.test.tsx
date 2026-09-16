@@ -84,8 +84,8 @@ function turnMessages(): StoredMessage[] {
   ]).flat();
 }
 
-function view(messages: StoredMessage[]): ReactElement {
-  const chat = createElement(ChatView, { messages, activeSession, onNew: () => {}, scrollBehavior: 'auto' });
+function view(messages: StoredMessage[], extra: Partial<Parameters<typeof ChatView>[0]> = {}): ReactElement {
+  const chat = createElement(ChatView, { messages, activeSession, onNew: () => {}, scrollBehavior: 'auto', ...extra });
   const layout = createElement(ChatSurfaceLayout, { composer: null, children: chat });
   return createElement(LocaleProvider, { locale: 'zh-CN', children: layout });
 }
@@ -136,6 +136,23 @@ test('a tick releases the pin and scrolls its Turn to the top by index', async (
   assert.equal(scroller.scrollTop, TURN_HEIGHT * 3);
   await act(() => { scroller.dispatchEvent(new dom.window.Event('scroll')); });
   assert.equal(activeTickTurnId(dom.container), 'turn-3');
+});
+
+test('a tick for an indexed Turn outside the loaded range asks for history down to it', async () => {
+  const { dom } = await mountTranscript();
+  const loaded = turnMessages().filter((message) => message.turnId !== 'turn-0' && message.turnId !== 'turn-1');
+  const requests: { turnId: string; sequence: number }[] = [];
+  const extra = {
+    transcriptTurnIndex: [{ turnId: 'turn-0', sequence: 8, label: '第 0 个问题' }],
+    onLoadTranscriptTurn: (turn: { turnId: string; sequence: number }) => { requests.push(turn); },
+  };
+  await dom.render(view(loaded, extra));
+  const tick = dom.container.querySelector('[data-prompt-turn-id="turn-0"]');
+  assert.ok(tick, 'the indexed Turn has a tick before it is loaded');
+  await act(async () => { tick.dispatchEvent(new dom.window.Event('click', { bubbles: true })); });
+  assert.deepEqual(requests, [{ turnId: 'turn-0', sequence: 8 }]);
+  // Landing it at the top after the prepend is measured in the browser
+  // (`partial-history-notice` E2E); this fake DOM runs no frames.
 });
 
 test('portals landmarks into the layout host and keeps them actionable', async () => {

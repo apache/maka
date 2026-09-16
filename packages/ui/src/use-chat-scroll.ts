@@ -280,11 +280,18 @@ export function useChatScroll(input: {
     holdWatch.current?.();
     holdLanding.current?.();
   }), [authority]);
-  const holdReader = useCallback((): void => {
+  /** `turnId`: land that arriving Turn at the top instead of keeping the reader in place. */
+  const holdReader = useCallback((turnId?: string): void => {
     const root = input.scrollRef.current;
     const handle = input.virtualizerRef.current;
     const turnIds = turnIdsRef.current;
     if (!root || !handle || turnIds.length === 0) return;
+    if (turnId !== undefined) {
+      holdWatch.current?.();
+      authority.releasePin();
+      hold.current = { turnId, gap: 0, firstTurnId: turnIds[0] };
+      return;
+    }
     const capture = (): void => {
       const ids = turnIdsRef.current;
       if (ids.length === 0) return;
@@ -308,7 +315,7 @@ export function useChatScroll(input: {
       root.removeEventListener('scroll', capture);
     };
     root.addEventListener('scroll', capture, { passive: true });
-  }, [input.scrollRef, input.virtualizerRef, measureStartMargin]);
+  }, [authority, input.scrollRef, input.virtualizerRef, measureStartMargin]);
   useLayoutEffect(() => {
     const held = hold.current;
     // Only the prepend this hold was taken for lands it. A Turn arriving at the

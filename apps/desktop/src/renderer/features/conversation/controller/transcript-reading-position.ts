@@ -24,7 +24,7 @@ interface TranscriptRangeController<Message> {
     range(): { readonly sessionId: string; readonly hasOlder: boolean; readonly ready: boolean };
     snapshot(): { readonly messages: readonly Message[] };
   };
-  loadEarlier(): Promise<void>;
+  loadEarlier(throughSequence?: number): Promise<void>;
 }
 
 interface SearchTarget {
@@ -38,6 +38,7 @@ interface TranscriptRestoreCommand {
   readonly fromSearch: boolean;
   completed: boolean;
   loading?: object;
+  loaded?: boolean;
 }
 
 /** A bookmark survives navigation; a command to restore it does not. */
@@ -137,8 +138,9 @@ export function transcriptRestoreTarget(
 }
 
 /**
- * Finds the target Turn in the loaded transcript, loading earlier history
- * until it appears or none is left. Runs again on every transcript change.
+ * Finds the target Turn in the loaded transcript. A Turn outside it is located
+ * through the Host Turn index and read down to in one request; a Turn the index
+ * does not know, or a Session without index access, is unavailable.
  */
 export function restoreSessionTranscriptRange<Message>(options: {
   readonly lifecycle: TranscriptRestoreLifecycle;
@@ -148,6 +150,8 @@ export function restoreSessionTranscriptRange<Message>(options: {
   readonly readingAnchor?: TranscriptReadingAnchor;
   readonly controller?: TranscriptRangeController<Message>;
   readonly isCurrent: (sessionId: string, controller: TranscriptRangeController<Message>) => boolean;
+  /** Where the Turn starts; `undefined` when the index does not know it. */
+  readonly lookupTurn?: (sessionId: string, turnId: string) => Promise<number | undefined>;
   readonly setReadingAnchor: (
     sessionId: string,
     anchor: TranscriptReadingAnchor | undefined,
@@ -167,21 +171,30 @@ export function restoreSessionTranscriptRange<Message>(options: {
     command.completed = true;
     return;
   }
-  if (range.hasOlder) {
+  const { lookupTurn } = options;
+  if (range.hasOlder && !command.loaded && lookupTurn) {
     const loading = {};
     command.loading = loading;
     const current = () => options.lifecycle.isCurrent(command) && options.isCurrent(sessionId, controller);
-    const before = controller.store.snapshot();
-    void controller.loadEarlier().then(
-      () => {
-        if (command.loading === loading) command.loading = undefined;
-        if (current() && controller.store.snapshot() !== before) restoreSessionTranscriptRange(options);
-      },
-      (error: unknown) => {
-        if (command.loading === loading) command.loading = undefined;
-        if (current()) options.onError(error, sessionId);
-      },
-    );
+    const settle = () => {
+      if (command.loading !== loading) return false;
+      command.loading = undefined;
+      return current();
+    };
+    void lookupTurn(sessionId, turnId)
+      .then((sequence) => {
+        if (sequence === undefined || !current()) return;
+        return controller.loadEarlier(sequence);
+      })
+      .then(
+        () => {
+          command.loaded = true;
+          if (settle()) restoreSessionTranscriptRange(options);
+        },
+        (error: unknown) => {
+          if (settle()) options.onError(error, sessionId);
+        },
+      );
     return;
   }
   command.completed = true;

@@ -89,6 +89,24 @@ export interface PromptAnchorRailTurn {
   turnId: string;
   label: string;
   reply?: string;
+  /** Set on a Turn outside the loaded range: where it starts in the Session. */
+  sequence?: number;
+}
+
+/**
+ * The loaded range always reaches the tail, so an indexed Turn it does not
+ * hold is older than every loaded Turn.
+ */
+export function mergePromptAnchorRailTurns<Turn extends PromptAnchorRailTurn>(
+  loadedTurns: readonly Turn[],
+  index: ReadonlyArray<{ turnId: string; sequence: number; label: string }> | undefined,
+  loadedTurnIds: ReadonlySet<string>,
+): ReadonlyArray<Turn | PromptAnchorRailTurn> {
+  if (!index || index.length === 0) return loadedTurns;
+  const older = index
+    .filter((landmark) => !loadedTurnIds.has(landmark.turnId))
+    .map(({ turnId, sequence, label }) => ({ turnId, sequence, label }));
+  return older.length === 0 ? loadedTurns : [...older, ...loadedTurns];
 }
 
 export interface PromptAnchorRailProps {

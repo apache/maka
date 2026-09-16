@@ -57,48 +57,65 @@ function handle(overrides: Partial<DesktopTranscriptHandle> = {}): DesktopTransc
   };
 }
 
-test('a bookmark older than the loaded history is restored by loading earlier history through the store', async () => {
+async function restoreFromEarlierHistory(lookupTurn?: (sessionId: string, turnId: string) => Promise<number | undefined>) {
   const store = new DesktopTranscriptRangeStore(SESSION_ID);
   for (const batch of encodeDesktopTranscriptSnapshot({
     beginsAtTurnBoundary: true,
     ...IDENTITY, durableThrough: 30, durable: [{ sequence: 30, message: answer('c') }], hasOlder: true,
   })) store.accept(batch);
-  const earlier = [
-    { sequence: 20, turnId: 'b', hasOlder: true },
-    { sequence: 10, turnId: 'a', hasOlder: false },
-  ];
-  let reads = 0;
+  const reads: (number | undefined)[] = [];
   const controller = createDesktopTranscriptRangeController(store, async () => handle({
-    async loadEarlier() {
-      const page = earlier[reads++]!;
+    async loadEarlier(throughSequence) {
+      reads.push(throughSequence);
       for (const batch of encodeDesktopTranscriptBatches(IDENTITY, {
-        durableThrough: 30, durable: [{ sequence: page.sequence, message: answer(page.turnId) }],
-        hasOlder: page.hasOlder, earlierThan: store.snapshot().messages.length === 1 ? 30 : 20,
-        reset: false, ready: true,
+        durableThrough: 30,
+        durable: [{ sequence: 10, message: answer('a') }, { sequence: 20, message: answer('b') }],
+        hasOlder: false, earlierThan: 30, reset: false, ready: true,
       })) store.accept(batch);
     },
   }), { onError: (error) => assert.fail(String(error)) });
   let anchor: { turnId: string } | undefined = { turnId: 'a' };
+  const unavailable: string[] = [];
   const lifecycle = createTranscriptRestoreLifecycle();
   const restore = () => restoreSessionTranscriptRange({
     lifecycle, sessionId: SESSION_ID, controller, readingAnchor: { turnId: 'a' },
     isCurrent: () => true,
+    lookupTurn,
     setReadingAnchor: (_sessionId, next) => { anchor = next; },
-    onRestoreUnavailable: () => assert.fail('the bookmark is in earlier history'),
+    onRestoreUnavailable: (_sessionId, turnId) => { unavailable.push(turnId); },
     onError: (error) => assert.fail(String(error)),
   });
   try {
     await controller.ready();
     restore();
     for (let tick = 0; tick < 4; tick += 1) await settle();
-    assert.equal(reads, 2);
-    assert.deepEqual(store.snapshot().messages.map(({ turnId }) => turnId), ['a', 'b', 'c']);
-    assert.deepEqual(anchor, { turnId: 'a' });
     restore();
     await settle();
-    assert.equal(reads, 2, 'a restored bookmark reads nothing more');
+    return { reads, anchor, unavailable, turns: store.snapshot().messages.map(({ turnId }) => turnId) };
   } finally {
     await controller.close();
+  }
+}
+
+test('a bookmark older than the loaded history is read down to in one request located by the Turn index', async () => {
+  const lookups: string[] = [];
+  const result = await restoreFromEarlierHistory(async (_sessionId, turnId) => {
+    lookups.push(turnId);
+    return 10;
+  });
+  assert.deepEqual(lookups, ['a']);
+  assert.deepEqual(result.reads, [10], 'a restored bookmark reads nothing more');
+  assert.deepEqual(result.turns, ['a', 'b', 'c']);
+  assert.deepEqual(result.anchor, { turnId: 'a' });
+  assert.deepEqual(result.unavailable, []);
+});
+
+test('a bookmark the Turn index does not know, or cannot be asked about, is unavailable without reading history', async () => {
+  for (const lookupTurn of [async () => undefined, undefined]) {
+    const result = await restoreFromEarlierHistory(lookupTurn);
+    assert.deepEqual(result.reads, []);
+    assert.equal(result.anchor, undefined);
+    assert.deepEqual(result.unavailable, ['a']);
   }
 });
 
@@ -203,6 +220,9 @@ function controllerFixture() {
     searchTarget: undefined,
     clearSearchTarget: () => {},
     sessionUi: createAppShellSessionUiStateController(),
+    landmarkSessionId: 'session-1',
+    listTurnLandmarks: async () => ({ landmarks: [] }),
+    setTurnIndex: () => {},
     onRestoreError: (error) => assert.fail(String(error)),
   };
   return {

@@ -58,6 +58,11 @@ async function wheelToTop(page: Page): Promise<void> {
   await frames(page, 4);
 }
 
+async function oldestMountedTurn(page: Page): Promise<string | null> {
+  await wheelToTop(page);
+  return page.locator(`${SCROLLER} [data-turn-id]`).first().getAttribute('data-turn-id');
+}
+
 test('a transcript over the history budget loads earlier Turns only on request', async ({
   partialHistoryWindow: page,
 }) => {
@@ -67,22 +72,21 @@ test('a transcript over the history budget loads earlier Turns only on request',
   const ticks = page.locator(TICK);
 
   await expect(page.locator(`[data-turn-id="turn-partial-history-${PARTIAL_HISTORY_TURN_COUNT}"]`)).toBeVisible();
-  const opened = await ticks.count();
-  expect(opened).toBeGreaterThan(0);
-  expect(opened).toBeLessThan(PARTIAL_HISTORY_TURN_COUNT);
+  // The Host Turn index lists the whole Session before its history is loaded.
+  await expect(ticks).toHaveCount(PARTIAL_HISTORY_TURN_COUNT);
 
   // Reaching the top by scrolling loads nothing on its own.
-  await wheelToTop(page);
+  const opened = await oldestMountedTurn(page);
+  expect(opened).not.toBe('turn-partial-history-1');
   await page.waitForTimeout(500);
-  expect(await ticks.count()).toBe(opened);
+  expect(await oldestMountedTurn(page)).toBe(opened);
   await expect(loadEarlier).toHaveCount(1);
 
   let loads = 0;
   while ((await loadEarlier.count()) > 0) {
-    await wheelToTop(page);
-    const before = await ticks.count();
+    const before = await oldestMountedTurn(page);
     await loadEarlier.click();
-    await expect.poll(() => ticks.count(), { timeout: 30_000 }).toBeGreaterThan(before);
+    await expect.poll(() => oldestMountedTurn(page), { timeout: 30_000 }).not.toBe(before);
     await frames(page, 4);
     loads += 1;
     expect(loads).toBeLessThan(PARTIAL_HISTORY_TURN_COUNT);
@@ -100,4 +104,26 @@ test('a transcript over the history budget loads earlier Turns only on request',
   await returnToLatest.click();
   await expect(page.locator(`[data-turn-id="turn-partial-history-${PARTIAL_HISTORY_TURN_COUNT}"]`)).toBeVisible();
   await expect(ticks).toHaveCount(PARTIAL_HISTORY_TURN_COUNT);
+});
+
+test('a tick for a Turn outside the loaded history reads down to it in one request and lands on it', async ({
+  partialHistoryWindow: page,
+}) => {
+  test.setTimeout(90_000);
+  await page.setViewportSize({ width: 1_400, height: 800 });
+  const loadEarlier = page.getByRole('button', { name: '载入更早的记录' });
+  const target = page.locator(`${SCROLLER} [data-turn-id="turn-partial-history-1"]`);
+  await expect(page.locator(`[data-turn-id="turn-partial-history-${PARTIAL_HISTORY_TURN_COUNT}"]`)).toBeVisible();
+  await expect(loadEarlier).toHaveCount(1);
+
+  await page.locator(`${TICK}[data-prompt-turn-id="turn-partial-history-1"]`).click();
+
+  await expect(target).toBeVisible({ timeout: 30_000 });
+  // One read reached the oldest Turn, so nothing earlier is left to offer.
+  await expect(loadEarlier).toHaveCount(0);
+  await expect.poll(async () => {
+    await frames(page, 2);
+    const [row, scroller] = await Promise.all([target.boundingBox(), page.locator(SCROLLER).boundingBox()]);
+    return row && scroller ? Math.abs(row.y - scroller.y) : Number.POSITIVE_INFINITY;
+  }, { timeout: 10_000 }).toBeLessThan(80);
 });

@@ -22,16 +22,28 @@ import type { StoredMessage } from '@maka/core/session';
 import type { AppShellSessionUiStateController } from '../model/session-ui-state.js';
 import {
   createTranscriptRestoreLifecycle,
+  currentTranscriptRange,
   prepareTranscriptForSend,
   restoreSessionTranscriptRange,
 } from './transcript-reading-position.js';
 
 type RangeController = NonNullable<Parameters<typeof restoreSessionTranscriptRange<StoredMessage>>[0]['controller']>;
 
+export interface TranscriptTurnLandmark {
+  readonly turnId: string;
+  readonly sequence: number;
+  readonly label: string;
+}
+
+export interface TranscriptTurnIndex {
+  readonly sessionId: string;
+  readonly turns: readonly TranscriptTurnLandmark[];
+}
+
 export interface TranscriptReadingPositionCommands {
   prepareSend(sessionId: string): boolean;
   captureAnchor(turnId?: string): void;
-  loadEarlier(): Promise<void>;
+  loadEarlier(throughSequence?: number): Promise<void>;
 }
 
 /** The conversation owns restoration lifetime; the shell supplies explicit ports. */
@@ -45,6 +57,13 @@ export function TranscriptReadingPositionController(props: {
   searchTarget: Parameters<typeof restoreSessionTranscriptRange>[0]['searchTarget'];
   clearSearchTarget(): void;
   sessionUi: AppShellSessionUiStateController;
+  /** The Session whose Turn index this viewer may read; `null` for none. */
+  landmarkSessionId: string | null;
+  listTurnLandmarks(
+    sessionId: string,
+    turnId: string | null,
+  ): Promise<{ readonly landmarks: readonly TranscriptTurnLandmark[] }>;
+  setTurnIndex(index: TranscriptTurnIndex | undefined): void;
   onRestoreError(error: unknown, sessionId: string): void;
 }) {
   const [lifecycle] = useState(createTranscriptRestoreLifecycle);
@@ -71,17 +90,33 @@ export function TranscriptReadingPositionController(props: {
       props.sessionUi.setTranscriptRestoreUnavailable(sessionId, undefined);
       props.sessionUi.setTranscriptReadingAnchor(sessionId, turnId ? { turnId } : undefined);
     },
-    async loadEarlier() {
+    async loadEarlier(throughSequence) {
       const controller = props.rangeController.current;
       const { sessionId } = props;
       if (!controller || !sessionId || !isCurrent(sessionId, controller)) return;
-      await controller.loadEarlier();
+      await controller.loadEarlier(throughSequence);
     },
   }));
 
   useEffect(() => () => {
     lifecycle.deactivate();
   }, [props.sessionId, props.profileId, lifecycle]);
+  const landmarkSessionId = props.landmarkSessionId === props.sessionId ? props.landmarkSessionId : null;
+  // New Turns land in the resident tail, so the index is read once per Session
+  // and only once some history lies outside the resident range.
+  const hasOlder = currentTranscriptRange(props.rangeController.current, props.sessionId)?.hasOlder ?? false;
+  useEffect(() => {
+    props.setTurnIndex(undefined);
+    if (!landmarkSessionId || !hasOlder) return;
+    let disposed = false;
+    void props.listTurnLandmarks(landmarkSessionId, null).then(
+      (snapshot) => {
+        if (!disposed) props.setTurnIndex({ sessionId: landmarkSessionId, turns: snapshot.landmarks });
+      },
+      () => undefined,
+    );
+    return () => { disposed = true; };
+  }, [landmarkSessionId, hasOlder]);
   useEffect(() => restoreSessionTranscriptRange({
     lifecycle,
     sessionId: props.sessionId,
@@ -92,6 +127,11 @@ export function TranscriptReadingPositionController(props: {
       : undefined,
     controller: props.rangeController.current,
     isCurrent,
+    lookupTurn: landmarkSessionId
+      ? async (sessionId, turnId) =>
+        (await props.listTurnLandmarks(sessionId, turnId)).landmarks
+          .find((landmark) => landmark.turnId === turnId)?.sequence
+      : undefined,
     setReadingAnchor: props.sessionUi.setTranscriptReadingAnchor,
     onRestoreUnavailable: props.sessionUi.setTranscriptRestoreUnavailable,
     onError: props.onRestoreError,
