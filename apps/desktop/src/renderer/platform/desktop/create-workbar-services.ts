@@ -19,6 +19,7 @@
 
 import type { MakaBridge } from '../../../preload/bridge-contract.js';
 import type { ShellRunUpdate } from '@maka/core/events';
+import { AttachmentIngestBlockedError } from '@maka/core/attachments';
 import { isTerminalShellRunStatus } from '@maka/core/shell-run';
 import { DESKTOP_TERMINAL_LAUNCH_PREFIX } from '../../../shared/runtime-host-identity.js';
 import type { WorkbarServices } from '../../features/workbar';
@@ -94,6 +95,9 @@ export function createDesktopWorkbarServices(
       if (result.reason === 'outcome_unknown') {
         return { kind: 'outcome_unknown' };
       }
+      // Keep the classified refusal so the companion can name the attachment
+      // rule that blocked the send, as the main composer does.
+      if (result.reason === 'attachment_blocked') throw new AttachmentIngestBlockedError(result.code);
       throw new Error('Runtime Host refused the follow-up Message');
     }
     return result.disposition === 'turn_started' && result.turnId
