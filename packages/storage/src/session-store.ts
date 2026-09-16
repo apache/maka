@@ -198,6 +198,7 @@ class SqliteSessionStore implements SessionAuthorityStore {
     input: CreateSessionInput,
     messages: readonly StoredMessage[],
     externalOrigin: SessionExternalOrigin,
+    options: { readonly onCommitStarted?: () => void } = {},
   ): Promise<SessionHeader> {
     await this.ensureReady();
     assertNoConversationCopyMetadata(input);
@@ -212,6 +213,7 @@ class SqliteSessionStore implements SessionAuthorityStore {
       externalOrigin,
       transcriptLedgerVersion: 0,
     };
+    options.onCommitStarted?.();
     const outcome = await this.metadata.importSession(
       header,
       canonicalMessages,

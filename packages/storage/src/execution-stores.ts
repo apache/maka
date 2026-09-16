@@ -514,8 +514,8 @@ async function createExecutionStoresForWrite(
     sessionStore: {
       ready: () => run(() => sessionStore.ready()),
       create: (input, initialBoundary) => run(() => sessionStore.create(input, initialBoundary)),
-      createImportedSession: (input, messages, externalOrigin) =>
-        run(() => sessionStore.createImportedSession(input, messages, externalOrigin)),
+      createImportedSession: (input, messages, externalOrigin, options) =>
+        run(() => sessionStore.createImportedSession(input, messages, externalOrigin, options)),
       lookupExternalSessionImports: (adapterId, sourceSessionIds, recentSessionIdLimit) =>
         run(() =>
           sessionStore.lookupExternalSessionImports(

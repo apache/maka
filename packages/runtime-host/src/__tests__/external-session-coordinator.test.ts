@@ -33,6 +33,7 @@ import {
   ExternalSessionAdapterRegistry,
   ExternalSessionCatalogCursorError,
   ExternalSessionLimitError,
+  ExternalSessionNotFoundError,
   type ExternalSessionAdapter,
   type ExternalSessionCatalogPageQuery,
   type ExternalSessionSummary,
@@ -672,6 +673,39 @@ test('reports conversion errors before persistence and store uncertainty after e
   assert.equal(createAttempts, 0);
   assert.equal(conversionFailure.drainRequests(), 0);
 
+  const canonicalizationFailure = coordinatorFixture([
+    adapterFixture({
+      readSession: async (sourceSessionId) => ({
+        sourceSessionId,
+        metadata: { name: 'Invalid time', cwd: '/external' },
+        messages: [
+          {
+            type: 'user',
+            id: 'message-1',
+            turnId: 'turn-1',
+            ts: -1,
+            text: 'hello',
+          },
+        ],
+      }),
+    }),
+  ]);
+  assert.deepEqual(
+    await canonicalizationFailure.coordinator.handlers['external-session.import'](
+      { adapterId: 'codex', sourceSessionId: 'source-0' },
+      context,
+    ),
+    {
+      ok: false,
+      error: {
+        code: 'source_unreadable',
+        message: 'External Session could not be read or converted',
+      },
+    },
+  );
+  assert.equal(canonicalizationFailure.creates.length, 0);
+  assert.equal(canonicalizationFailure.drainRequests(), 0);
+
   const persistenceFailure = coordinatorFixture([adapterFixture()], {
     createImportedSession: async () => {
       throw new Error('commit acknowledgement lost');
@@ -692,6 +726,28 @@ test('reports conversion errors before persistence and store uncertainty after e
     },
   );
   assert.equal(persistenceFailure.drainRequests(), 1);
+});
+
+test('classifies source absence only through the adapter error authority', async () => {
+  for (const [error, code] of [
+    [new ExternalSessionNotFoundError(), 'not_found'],
+    [new Error('transcript not found'), 'source_unreadable'],
+  ] as const) {
+    const fixture = coordinatorFixture([
+      adapterFixture({
+        readSession: async () => {
+          throw error;
+        },
+      }),
+    ]);
+    const result = await fixture.coordinator.handlers['external-session.import'](
+      { adapterId: 'codex', sourceSessionId: 'source-0' },
+      context,
+    );
+    assert.equal(result.ok, false);
+    if (result.ok) assert.fail('Expected source read failure');
+    assert.equal(result.error.code, code);
+  }
 });
 
 test('carries visible Claude transcript limits through the import response before persistence', async () => {
@@ -979,7 +1035,9 @@ function coordinatorFixture(
     input,
     messages,
     externalOrigin,
+    options,
   ) => {
+    options?.onCommitStarted?.();
     sequence += 1;
     const header = {
       ...sessionHeader(`imported-${sequence}`, input.cwd, input.name ?? 'Imported'),
@@ -996,7 +1054,13 @@ function coordinatorFixture(
     return header;
   };
   const store: HostStore = {
-    createImportedSession: storeOverrides.createImportedSession ?? defaultCreate,
+    createImportedSession: async (input, messages, externalOrigin, options) => {
+      if (!storeOverrides.createImportedSession) {
+        return defaultCreate(input, messages, externalOrigin, options);
+      }
+      options?.onCommitStarted?.();
+      return storeOverrides.createImportedSession(input, messages, externalOrigin, options);
+    },
     lookupExternalSessionImports: async (adapterId, sourceSessionIds, recentSessionIdLimit) => {
       lookupCalls.push({ adapterId, sourceSessionIds, recentSessionIdLimit });
       return (

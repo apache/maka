@@ -38,6 +38,7 @@ import { homedir } from 'node:os';
 import { basename, join, sep } from 'node:path';
 import {
   ExternalSessionLimitError,
+  ExternalSessionNotFoundError,
   externalSessionMatchesQuery,
   sanitizeExternalSessionTitle,
 } from '@maka/core/external-session';
@@ -161,7 +162,7 @@ export class OpenCodeSessionAdapter implements ExternalSessionAdapter {
           )
           .get(sessionId);
         const row = toSessionRow(rawSession);
-        if (!row) throw new Error(`opencode session not found: ${sessionId}`);
+        if (!row) throw new ExternalSessionNotFoundError();
         if (row.parentId !== undefined) {
           throw new Error(`opencode session is a child of another session: ${sessionId}`);
         }
@@ -169,7 +170,10 @@ export class OpenCodeSessionAdapter implements ExternalSessionAdapter {
         const { messages, parts } = readTranscript(db, sessionId);
         return {
           sourceSessionId: sessionId,
-          metadata: { name: row.title || sessionId, cwd: row.directory },
+          metadata: {
+            name: sanitizeExternalSessionTitle(row.title) || sessionId,
+            cwd: row.directory,
+          },
           messages: convertTranscript(sessionId, messages, parts, this.#maxConvertedBytes),
         };
       }),
@@ -362,7 +366,7 @@ function preflightSessionMetadata(db: OpenCodeDatabase, sessionId: string): void
       )
       .get(sessionId),
   );
-  if (!sizes) throw new Error(`opencode session not found: ${sessionId}`);
+  if (!sizes) throw new ExternalSessionNotFoundError();
   for (const [field, max] of [
     ['id_bytes', OPENCODE_CATALOG_ID_MAX_BYTES],
     ['title_bytes', OPENCODE_CATALOG_TITLE_MAX_BYTES],

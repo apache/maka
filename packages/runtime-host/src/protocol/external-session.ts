@@ -18,6 +18,7 @@
  */
 
 import {
+  EXTERNAL_SESSION_CWD_MAX_BYTES,
   EXTERNAL_SESSION_LIMIT_KINDS,
   type ExternalSessionLimit,
 } from '@maka/core/external-session';
@@ -42,7 +43,7 @@ export const EXTERNAL_SESSION_PAGE_MAX_ITEMS = 16;
  *  matcher would accept can always reach it. */
 export const EXTERNAL_SESSION_QUERY_TEXT_MAX_BYTES = 800;
 export const EXTERNAL_SESSION_RESULT_MAX_BYTES = 72 * 1024;
-export const EXTERNAL_SESSION_CWD_MAX_BYTES = 4 * 1024;
+export { EXTERNAL_SESSION_CWD_MAX_BYTES };
 export const EXTERNAL_SESSION_NAME_MAX_BYTES = 320;
 export const EXTERNAL_SESSION_SOURCE_SESSION_ID_MAX_BYTES = 512;
 export const EXTERNAL_SESSION_SOURCE_MAX_ITEMS = 16;

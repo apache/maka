@@ -25,6 +25,8 @@ import type { DatabaseSync } from 'node:sqlite';
 import type { StoredMessage } from '@maka/core/session';
 import {
   ExternalSessionCatalogCursorError,
+  ExternalSessionLimitError,
+  ExternalSessionNotFoundError,
   externalSessionMatchesQuery,
   sanitizeExternalSessionTitle,
 } from '@maka/core/external-session';
@@ -153,10 +155,10 @@ export class CodexSessionAdapter implements ExternalSessionAdapter {
   async readSession(sessionId: string): Promise<ExternalMakaSession> {
     assertSafeCodexSessionId(sessionId);
     const catalogEntry = await this.findCatalogEntry(sessionId);
-    if (!catalogEntry) throw new Error(`Codex Session not found: ${sessionId}`);
+    if (!catalogEntry) throw new ExternalSessionNotFoundError();
 
     const rolloutPath = await this.resolveRolloutPath(catalogEntry.rolloutPath, sessionId);
-    if (!rolloutPath) throw new Error(`Codex rollout is unavailable: ${sessionId}`);
+    if (!rolloutPath) throw new ExternalSessionNotFoundError();
     return convertCodexRollout(rolloutPath, sessionId, catalogEntry.name, catalogEntry.cwd, {
       maxRolloutBytes: this.maxRolloutBytes,
       maxRecordBytes: this.maxRecordBytes,
@@ -653,11 +655,19 @@ class CodexRolloutConverter {
 
   private append(message: StoredMessage): void {
     if (this.messages.length >= this.limits.maxMessages) {
-      throw new Error(`Codex rollout converts to more than ${this.limits.maxMessages} messages`);
+      throw new ExternalSessionLimitError(
+        'messages',
+        this.limits.maxMessages,
+        `Codex rollout converts to more than ${this.limits.maxMessages} messages`,
+      );
     }
     const encodedBytes = Buffer.byteLength(JSON.stringify(message), 'utf8');
     if (encodedBytes > this.limits.maxConvertedBytes - this.convertedBytes) {
-      throw new Error(`Codex rollout converts to more than ${this.limits.maxConvertedBytes} bytes`);
+      throw new ExternalSessionLimitError(
+        'converted_bytes',
+        this.limits.maxConvertedBytes,
+        `Codex rollout converts to more than ${this.limits.maxConvertedBytes} bytes`,
+      );
     }
     this.convertedBytes += encodedBytes;
     this.messages.push(message);
@@ -674,7 +684,11 @@ async function* readCodexRolloutRecords(
     const metadata = await handle.stat();
     if (!metadata.isFile()) throw new Error('Codex rollout is not a regular file');
     if (metadata.size > limits.maxRolloutBytes) {
-      throw new Error(`Codex rollout exceeds ${limits.maxRolloutBytes} bytes`);
+      throw new ExternalSessionLimitError(
+        'transcript_bytes',
+        limits.maxRolloutBytes,
+        `Codex rollout exceeds ${limits.maxRolloutBytes} bytes`,
+      );
     }
 
     const snapshotBytes = metadata.size;
@@ -761,7 +775,11 @@ function parseCodexRolloutLine(
 
 function assertCodexRecordSize(actualBytes: number, maxBytes: number, line: number): void {
   if (actualBytes > maxBytes) {
-    throw new Error(`Codex rollout record at line ${line} exceeds ${maxBytes} bytes`);
+    throw new ExternalSessionLimitError(
+      'record_bytes',
+      maxBytes,
+      `Codex rollout record at line ${line} exceeds ${maxBytes} bytes`,
+    );
   }
 }
 

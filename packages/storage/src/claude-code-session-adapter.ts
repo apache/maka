@@ -36,6 +36,7 @@ import { join, resolve } from 'node:path';
 import { sanitizeExternalSessionTitle } from '@maka/core/external-session';
 import {
   ExternalSessionLimitError,
+  ExternalSessionNotFoundError,
   externalSessionMatchesQuery,
 } from '@maka/core/external-session';
 import type {
@@ -236,7 +237,7 @@ export class ClaudeCodeSessionAdapter implements ExternalSessionAdapter {
     const file = (await this.#transcriptFiles()).find(
       (candidate) => candidate.sessionId === sessionId,
     );
-    if (!file) throw new Error(`Claude Code transcript not found: ${sessionId}`);
+    if (!file) throw new ExternalSessionNotFoundError();
     return convertClaudeTranscript(file.path, sessionId, this.#limits);
   }
 

@@ -31,7 +31,7 @@ import {
   ExternalSessionImporter,
   type ExternalSessionImportTarget,
 } from '../external-session-importer.js';
-import { createSessionStore } from '../session-store.js';
+import { createSessionStore, type SessionAuthorityStore } from '../session-store.js';
 
 describe('ExternalSessionImporter', () => {
   test('forwards the exact external Session origin to imported persistence', async () => {
@@ -136,6 +136,58 @@ describe('ExternalSessionImporter', () => {
       await sessions.close?.();
       await rm(root, { recursive: true, force: true });
     }
+  });
+
+  test('canonicalizes adapter metadata before entering persistence', async () => {
+    let persistedInput: Parameters<SessionAuthorityStore['createImportedSession']>[0] | undefined;
+    const importer = new ExternalSessionImporter(
+      new ExternalSessionAdapterRegistry([
+        fakeAdapter({
+          metadata: {
+            name: '  token sk-live-abcdefghijklmnop\nwork  ',
+            cwd: `/repo\u0000/${'界'.repeat(5_000)}`,
+          },
+          messages: [message()],
+        }),
+      ]),
+      {
+        createImportedSession: async (input) => {
+          persistedInput = input;
+          return {} as SessionHeader;
+        },
+      },
+    );
+
+    await importer.import({ adapterId: 'fake', sourceSessionId: 'source-1', target: target() });
+
+    assert.ok(persistedInput);
+    assert.doesNotMatch(persistedInput.name ?? '', /sk-live-/);
+    assert.doesNotMatch(persistedInput.cwd, /\u0000/);
+    assert.ok(Buffer.byteLength(persistedInput.cwd, 'utf8') <= 4 * 1024);
+  });
+
+  test('rejects invalid message timestamps before entering persistence', async () => {
+    let creates = 0;
+    const importer = new ExternalSessionImporter(
+      new ExternalSessionAdapterRegistry([
+        fakeAdapter({
+          metadata: { name: 'Invalid time', cwd: '/repo' },
+          messages: [{ ...message(), ts: -1 }],
+        }),
+      ]),
+      {
+        createImportedSession: async () => {
+          creates += 1;
+          return {} as SessionHeader;
+        },
+      },
+    );
+
+    await assert.rejects(
+      importer.import({ adapterId: 'fake', sourceSessionId: 'source-1', target: target() }),
+      /invalid message timestamp/,
+    );
+    assert.equal(creates, 0);
   });
 
   test('rejects rows that hold no conversation the Ledger would keep', async () => {

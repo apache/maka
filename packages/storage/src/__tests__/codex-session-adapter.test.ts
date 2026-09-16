@@ -35,6 +35,8 @@ import { describe, mock, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import {
   ExternalSessionCatalogCursorError,
+  ExternalSessionLimitError,
+  ExternalSessionNotFoundError,
   type ExternalSessionQuery,
   type ExternalSessionSummary,
 } from '@maka/core/external-session';
@@ -517,7 +519,7 @@ describe('CodexSessionAdapter', () => {
         (await listSessions(adapter)).map((session) => session.id),
         ['codex-root-fallback'],
       );
-      await assert.rejects(adapter.readSession(subagentId), /not found/);
+      await assert.rejects(adapter.readSession(subagentId), ExternalSessionNotFoundError);
     });
   });
 
@@ -765,7 +767,13 @@ describe('CodexSessionAdapter', () => {
       assert.equal((await adapter.readSession(tornId)).messages.length, 9);
 
       const bounded = new CodexSessionAdapter({ codexHome, maxRolloutBytes: 100 });
-      await assert.rejects(bounded.readSession(tornId), /exceeds 100 bytes/);
+      await assert.rejects(
+        bounded.readSession(tornId),
+        (error: unknown) =>
+          error instanceof ExternalSessionLimitError &&
+          error.limit.kind === 'transcript_bytes' &&
+          error.limit.max === 100,
+      );
     });
   });
 
@@ -895,7 +903,13 @@ describe('CodexSessionAdapter', () => {
       await seedMinimalRollout(codexHome, sessionId, false, '/workspace', 'hello');
       const adapter = new CodexSessionAdapter({ codexHome, maxRecordBytes: 100 });
 
-      await assert.rejects(adapter.readSession(sessionId), /record at line 1 exceeds 100 bytes/);
+      await assert.rejects(
+        adapter.readSession(sessionId),
+        (error: unknown) =>
+          error instanceof ExternalSessionLimitError &&
+          error.limit.kind === 'record_bytes' &&
+          error.limit.max === 100,
+      );
     });
   });
 
@@ -914,11 +928,17 @@ describe('CodexSessionAdapter', () => {
 
       await assert.rejects(
         new CodexSessionAdapter({ codexHome, maxMessages: 1 }).readSession(sessionId),
-        /more than 1 messages/,
+        (error: unknown) =>
+          error instanceof ExternalSessionLimitError &&
+          error.limit.kind === 'messages' &&
+          error.limit.max === 1,
       );
       await assert.rejects(
         new CodexSessionAdapter({ codexHome, maxConvertedBytes: 10 }).readSession(sessionId),
-        /more than 10 bytes/,
+        (error: unknown) =>
+          error instanceof ExternalSessionLimitError &&
+          error.limit.kind === 'converted_bytes' &&
+          error.limit.max === 10,
       );
     });
   });
@@ -981,7 +1001,7 @@ describe('CodexSessionAdapter', () => {
 
         const adapter = new CodexSessionAdapter({ codexHome });
         assert.deepEqual(await listSessions(adapter), []);
-        await assert.rejects(adapter.readSession(id), /not found/);
+        await assert.rejects(adapter.readSession(id), ExternalSessionNotFoundError);
       });
     } finally {
       await rm(outside, { recursive: true, force: true });

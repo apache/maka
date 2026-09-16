@@ -408,6 +408,7 @@ export interface SessionAuthorityStore extends SessionStore, MessageAdmissionSto
     input: CreateSessionInput,
     messages: readonly StoredMessage[],
     externalOrigin: SessionExternalOrigin,
+    options?: { readonly onCommitStarted?: () => void },
   ): Promise<SessionHeader>;
   /** Look up live published imports for a bounded page of source Sessions. */
   lookupExternalSessionImports(

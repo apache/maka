@@ -22,6 +22,7 @@ import { JsonArrayPageBudget } from './json-array-page-budget.js';
 import {
   ExternalSessionCatalogCursorError,
   ExternalSessionLimitError,
+  ExternalSessionNotFoundError,
   type ExternalSessionAdapter,
   type ExternalSessionAdapterRegistry,
   type ExternalSessionSummary,
@@ -59,6 +60,7 @@ type ExternalSessionStore = {
     input: CreateSessionInput,
     messages: readonly StoredMessage[],
     externalOrigin: SessionExternalOrigin,
+    options?: { readonly onCommitStarted?: () => void },
   ): Promise<SessionHeader>;
   lookupExternalSessionImports(
     adapterId: string,
@@ -281,8 +283,11 @@ export class HostExternalSessionCoordinator {
     let commitAttempted = false;
     const importer = new ExternalSessionImporter(this.#adapters, {
       createImportedSession: async (sessionInput, messages, externalOrigin) => {
-        commitAttempted = true;
-        return this.#sessions.createImportedSession(sessionInput, messages, externalOrigin);
+        return this.#sessions.createImportedSession(sessionInput, messages, externalOrigin, {
+          onCommitStarted: () => {
+            commitAttempted = true;
+          },
+        });
       },
     });
     let header: SessionHeader;
@@ -304,8 +309,8 @@ export class HostExternalSessionCoordinator {
           };
         }
         return importFailure(
-          isSourceSessionNotFound(error) ? 'not_found' : 'source_unreadable',
-          isSourceSessionNotFound(error)
+          error instanceof ExternalSessionNotFoundError ? 'not_found' : 'source_unreadable',
+          error instanceof ExternalSessionNotFoundError
             ? 'External Session does not exist'
             : 'External Session could not be read or converted',
         );
@@ -452,10 +457,6 @@ function safeTimestamp(value: number | undefined): number | undefined {
     value <= 8_640_000_000_000_000
     ? value
     : undefined;
-}
-
-function isSourceSessionNotFound(error: unknown): boolean {
-  return error instanceof Error && /Session not found|Session does not exist/i.test(error.message);
 }
 
 function importKey(adapterId: string, sourceSessionId: string): string {

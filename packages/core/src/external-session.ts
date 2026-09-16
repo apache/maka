@@ -26,6 +26,7 @@ export type ExternalAgentId = string;
 
 /** A search term longer than this is truncated to this length before matching. */
 export const EXTERNAL_SESSION_QUERY_TEXT_MAX_CHARS = 200;
+export const EXTERNAL_SESSION_CWD_MAX_BYTES = 4 * 1024;
 
 export interface ExternalSessionQuery {
   cwd?: string;
@@ -87,6 +88,27 @@ export function sanitizeExternalSessionTitle(input: unknown): string {
   return redactSecrets(
     sanitizeUnicodeText(input, { maxCodePoints: EXTERNAL_SESSION_TITLE_MAX_CODE_POINTS }),
   );
+}
+
+/** Canonical bounded path metadata accepted from every external adapter. */
+export function sanitizeExternalSessionCwd(input: unknown): string {
+  if (typeof input !== 'string') return '';
+  const cleaned = input
+    .normalize('NFC')
+    .replace(
+      /[\u0000-\u001F\u007F-\u009F\u061C\u200B-\u200F\u202A-\u202E\u2060-\u206F\uFEFF]/gu,
+      '',
+    );
+  if (Buffer.byteLength(cleaned, 'utf8') <= EXTERNAL_SESSION_CWD_MAX_BYTES) return cleaned;
+  let bounded = '';
+  let bytes = 0;
+  for (const point of cleaned) {
+    const pointBytes = Buffer.byteLength(point, 'utf8');
+    if (bytes + pointBytes > EXTERNAL_SESSION_CWD_MAX_BYTES) break;
+    bounded += point;
+    bytes += pointBytes;
+  }
+  return bounded;
 }
 
 /**
@@ -234,6 +256,14 @@ export class ExternalSessionLimitError extends Error {
     }
     this.name = 'ExternalSessionLimitError';
     this.limit = Object.freeze({ kind, max });
+  }
+}
+
+export class ExternalSessionNotFoundError extends Error {
+  readonly name = 'ExternalSessionNotFoundError';
+
+  constructor() {
+    super('External Session does not exist');
   }
 }
 
