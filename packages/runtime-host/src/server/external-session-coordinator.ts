@@ -137,7 +137,12 @@ export class HostExternalSessionCoordinator {
     const headers = await this.#sessions.listHeaders();
     for (const header of headers) {
       if (header.transcriptLedgerVersion === 0) {
-        await this.#prepareStagedSession(header.id);
+        try {
+          await this.#prepareStagedSession(header.id);
+        } catch {
+          // One staged Session can remain unpublished for a later recovery
+          // attempt without preventing unrelated Sessions or Host startup.
+        }
       }
     }
   }

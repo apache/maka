@@ -1033,6 +1033,33 @@ test('recovers or discards staged imported Sessions after restart', async () => 
   assert.equal(discarded.drainRequests(), 0);
 });
 
+test('isolates a staged Session prepare and discard failure during recovery', async () => {
+  const prepareAttempts: string[] = [];
+  const discardAttempts: string[] = [];
+  let fixture!: ReturnType<typeof coordinatorFixture>;
+  fixture = coordinatorFixture([adapterFixture()], {
+    prepareImportedSessionHistory: async (sessionId) => {
+      prepareAttempts.push(sessionId);
+      if (sessionId === 'imported-1') throw new Error('ledger repair failed');
+      fixture.publishStagingSession(sessionId);
+    },
+    discardImportedSession: async (sessionId) => {
+      discardAttempts.push(sessionId);
+      throw new Error('discard failed');
+    },
+  });
+  await fixture.seedStagingSession();
+  await fixture.seedStagingSession();
+
+  await fixture.coordinator.recover();
+
+  assert.deepEqual(prepareAttempts, ['imported-1', 'imported-2']);
+  assert.deepEqual(discardAttempts, ['imported-1']);
+  assert.equal(fixture.readHeader('imported-1')?.transcriptLedgerVersion, 0);
+  assert.equal(fixture.readHeader('imported-2')?.transcriptLedgerVersion, 1);
+  assert.equal(fixture.drainRequests(), 0);
+});
+
 function coordinatorFixture(
   adapters: readonly ExternalSessionAdapter[],
   storeOverrides: Partial<
@@ -1111,6 +1138,17 @@ function coordinatorFixture(
       return record;
     },
   };
+  const publishStagingSession = async (sessionId: string) => {
+    const record = records.get(sessionId);
+    if (!record) throw new Error(`missing record: ${sessionId}`);
+    const header = { ...record.header, transcriptLedgerVersion: 1 as const };
+    records.set(sessionId, {
+      ...record,
+      header,
+      revision: record.revision + 1,
+      summary: headerToSummary(header),
+    });
+  };
   return {
     coordinator: new HostExternalSessionCoordinator({
       adapters: new ExternalSessionAdapterRegistry(adapters),
@@ -1144,18 +1182,7 @@ function coordinatorFixture(
           orchestrationMode: 'default',
         })),
       prepareImportedSessionHistory:
-        storeOverrides.prepareImportedSessionHistory ??
-        (async (sessionId) => {
-          const record = records.get(sessionId);
-          if (!record) throw new Error(`missing record: ${sessionId}`);
-          const header = { ...record.header, transcriptLedgerVersion: 1 as const };
-          records.set(sessionId, {
-            ...record,
-            header,
-            revision: record.revision + 1,
-            summary: headerToSummary(header),
-          });
-        }),
+        storeOverrides.prepareImportedSessionHistory ?? publishStagingSession,
       discardImportedSession:
         storeOverrides.discardImportedSession ??
         (async (sessionId) => {
@@ -1179,6 +1206,7 @@ function coordinatorFixture(
         [],
         { adapterId: 'codex', sourceSessionId: 'source-0' },
       ),
+    publishStagingSession,
     readHeader: (sessionId: string) => records.get(sessionId)?.header,
     hasRecord: (sessionId: string) => records.has(sessionId),
     drainRequests: () => drains,
