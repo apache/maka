@@ -2200,6 +2200,40 @@ test('does not let an admitted Stop interrupt a replacement Turn', async () => {
   await observer.close();
 });
 
+test('returns the attachment_blocked envelope when an approved source has expired', async () => {
+  const ipc = ipcHarness();
+  registerExecutionIpc(
+    {
+      client: executionClient({
+        getSession: async () => session(),
+        submitMessage: async () => {
+          throw new Error("A blocked send must never reach the Host");
+        },
+      }),
+      observer: unusedObserver(),
+      attachmentApprovals: createAttachmentApprovalRegistry(),
+      emitSessionsChanged() {},
+      stat: async () => {
+        throw new Error("an expired approval must not touch the filesystem");
+      },
+      beforeStop() {},
+      newId: () => "turn-1",
+    },
+    ipc,
+  );
+
+  const result = await ipc.invoke("sessions:send", "session-1", {
+    type: "send",
+    text: "expired attachment",
+    attachmentItems: [{
+      approvalId: "expired",
+      name: "expired.txt",
+      mimeType: "text/plain",
+    }],
+  });
+  assert.deepEqual(result, { ok: false, reason: "attachment_blocked", code: "source_expired" });
+});
+
 type ExecutionClient = RuntimeHostSessionExecutionIpcDeps["client"];
 
 function executionClient(overrides: Partial<ExecutionClient>): ExecutionClient {

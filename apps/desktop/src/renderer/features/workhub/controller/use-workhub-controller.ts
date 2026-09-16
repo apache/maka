@@ -23,6 +23,7 @@ import {
   applyLiveTurnBufferEvent,
   retainLiveTurn,
   type LiveTurnBuffer,
+  activeInteractionFor, reduceInteractionQueues, reconcileInteractions, clearInteractions, type InteractionQueues,
   armLiveTurn,
   createTranscriptViewportNavigation,
   reconcileLiveTurnBuffer,
@@ -33,6 +34,7 @@ import {
 } from '@maka/ui';
 import type { WorkHubAnswerInput, WorkHubAnswerResult } from '../../../../shared/workhub-conversation.js';
 import type { AttachmentRef, FollowUpMode, MessageQueuePlacement } from '@maka/core/events';
+import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { ChatModelChoice } from '@maka/core/chat-model-choice';
 import { startWorkHubCoordinationLifecycle } from './coordination-lifecycle.js';
 import { useWorkHubServices } from '../services.js';
@@ -52,7 +54,7 @@ interface SendAttempt {
   reconciling?: boolean;
   stop?: 'requested' | 'sending' | 'resend';
 }
-export function useWorkHubController() {
+export function useWorkHubController(onSubmit?: () => void) {
   const services = useWorkHubServices();
   const locale = useUiLocale();
   const localeRef = useRef(locale);
@@ -61,6 +63,8 @@ export function useWorkHubController() {
   const [sessions, setSessions] = useState<Awaited<ReturnType<WorkHubServices['listSessions']>>>(
     [],
   );
+  const [configuringModel, setConfiguringModel] = useState(false);
+  const configuringModelRef = useRef(false);
   const [choices, setChoices] = useState<ChatModelChoice[]>([]);
   const [transcript, setTranscript] = useState(emptyTranscript);
   // Reconciliation reads the published view, never a source page held by input.
@@ -73,6 +77,12 @@ export function useWorkHubController() {
   const [execution, setExecution] = useState<SessionExecutionProjection>();
   const [liveTurns, setLiveTurns] = useState<LiveTurnBuffer>();
   const liveTurn = liveTurns?.find((turn) => turn.turnId === execution?.rootTurn?.turnId) ?? liveTurns?.at(-1);
+  const refreshInteractions = useRef<() => void>(() => {});
+  const interactionRevision = useRef(0);
+  const [interactions, setInteractions] = useState<InteractionQueues>({});
+  const [turnStates, setTurnStates] = useState<Record<string, import('../model/linked-work.js').WorkHubDelegationState>>({});
+  const activeInteraction = activeInteractionFor(interactions, sessionId);
+  const activeQuestion = activeInteraction?.type === 'user_question_request' ? activeInteraction : undefined;
   const [sending, setSending] = useState(false);
   const [stopPending, setStopPending] = useState(false);
   const [error, setError] = useState<string>();
@@ -156,7 +166,7 @@ export function useWorkHubController() {
       attempt.stop = undefined;
       if (current) {
         setStopPending(false);
-        setTransientMessages((messages) => messages.filter((message) => message.hostTurnId !== attempt.input.turnId));
+        setTurnStates((states) => ({ ...states, [attempt.input.turnId]: 'failed' }));
         setLiveTurns((previous) => previous?.filter((turn) => turn.turnId !== attempt.input.turnId || !turn.unconfirmed));
         setError(workHubLiveCopy[localeRef.current].sendNotAdmitted);
       }
@@ -259,6 +269,27 @@ export function useWorkHubController() {
 
   useEffect(() => {
     if (!sessionId) return;
+    let disposed = false;
+    setInteractions({});
+    setTurnStates({});
+    const unsubscribe = services.subscribeActiveInteractions((event) => {
+      if (event.sessionId !== sessionId || disposed) return;
+      interactionRevision.current++;
+      setInteractions((current) => reconcileInteractions(current, sessionId, event.interactions));
+    });
+    const refresh = () => {
+      const readRevision = ++interactionRevision.current;
+      void services.listActiveInteractions(sessionId).then((requests) => {
+        if (!disposed && interactionRevision.current === readRevision) setInteractions((current) => reconcileInteractions(current, sessionId, requests));
+      }).catch((reason: unknown) => { if (!disposed) report(reason); });
+    };
+    refreshInteractions.current = refresh;
+    refresh();
+    return () => { disposed = true; unsubscribe(); if (refreshInteractions.current === refresh) refreshInteractions.current = () => {}; };
+  }, [services, sessionId]);
+
+  useEffect(() => {
+    if (!sessionId) return;
     setMessageQueue({ entries: [] });
     let disposed = false;
     let handle: WorkHubTranscript | undefined;
@@ -283,6 +314,10 @@ export function useWorkHubController() {
       sessionId,
       (event) => {
         if (disposed) return;
+        interactionRevision.current++;
+        const terminal = event.type === 'complete' || event.type === 'abort' || event.type === 'error';
+        setInteractions((current) => terminal ? clearInteractions(current, sessionId) : reduceInteractionQueues(current, sessionId, event));
+        if (terminal) setTurnStates((current) => Object.fromEntries([...Object.entries(current), [event.turnId, event.type === 'complete' ? 'completed' : event.type === 'abort' ? 'aborted' : 'failed']].slice(-64)));
         if (event.type === 'queue_update') {
           const entries = [...(event.steeringEntries ?? []), ...(event.followupEntries ?? [])];
           setMessageQueue({ entries: entries.filter((entry) => entry.state === 'queued'), revision: event.queueRevision });
@@ -326,7 +361,7 @@ export function useWorkHubController() {
         if (disposed) return;
         observationPhase = phase;
         handle?.observationChanged(phase);
-        if (phase === 'ready') void recoverSend();
+        if (phase === 'ready') { refreshInteractions.current(); void recoverSend(); }
       },
       (projection) => { if (!disposed) setExecution(projection); },
     );
@@ -398,6 +433,7 @@ export function useWorkHubController() {
       return false;
     }
     const queuedTurnId = sameQueued?.turnId ?? runningTurnId;
+    onSubmit?.();
     sendingRef.current = true;
     setSending(true);
     setError(undefined);
@@ -432,9 +468,11 @@ export function useWorkHubController() {
         input: { turnId: sameRejected ? previous.input.turnId : crypto.randomUUID(), text, ...(attachments.length ? { attachments: [...attachments] } : {}) },
         admission: 'pending',
       };
+      const pendingRejectedTurnId = previous?.admission === 'rejected' ? previous.input.turnId : undefined;
       pendingSend.current = attempt;
+      setTurnStates((states) => ({ ...states, [attempt.input.turnId]: 'running' }));
       setLiveTurns((previous) => retainLiveTurn(previous, armLiveTurn(attempt.input.turnId)));
-      setTransientMessages((previous) => [...previous.filter((message) => message.hostTurnId !== attempt.input.turnId), {
+      setTransientMessages((previous) => [...previous.filter((message) => message.hostTurnId !== attempt.input.turnId && message.hostTurnId !== pendingRejectedTurnId), {
         id: attempt.input.turnId, hostTurnId: attempt.input.turnId, text, ts: Date.now(),
         attachments: [...attachments], transientPlacement: 'current_turn',
       }]);
@@ -443,7 +481,7 @@ export function useWorkHubController() {
       void range.current?.loadLatest().catch((reason: unknown) => {
         if (currentSessionId.current === target) report(reason);
       });
-      const result = await services.answer(target, attempt.input);
+      const result = await services.answer(attempt.sessionId, attempt.input);
       return acceptAnswer(attempt, result);
     } catch (reason) {
       if (queuedTurnId) {
@@ -458,7 +496,7 @@ export function useWorkHubController() {
           attempt.stop = undefined;
           setStopPending(false);
         }
-        setTransientMessages((previous) => previous.filter((message) => message.hostTurnId !== failedTurnId));
+        if (failedTurnId && attempt?.admission === 'rejected') setTurnStates((states) => ({ ...states, [failedTurnId]: 'failed' }));
         setLiveTurns((previous) => previous?.filter((turn) => turn.turnId !== failedTurnId || !turn.unconfirmed));
         report(reason);
       }
@@ -489,11 +527,14 @@ export function useWorkHubController() {
     llmConnectionId: string;
     llmConnectionSlug: string;
     model: string;
-  }) {
-    if (!sessionId || !session || busy) return;
+  }, thinkingLevel: ThinkingLevel | null = null) {
+    if (!sessionId || !session || busy || configuringModelRef.current) return;
+    configuringModelRef.current = true;
+    setConfiguringModel(true);
     try {
       const result = await services.configureModel(sessionId, {
         expectedRevision: session.revision,
+        thinkingLevel,
         modelTarget: {
           kind: 'explicit',
           connectionId: input.llmConnectionId,
@@ -515,6 +556,9 @@ export function useWorkHubController() {
       if (currentSessionId.current !== sessionId) return;
       refreshSessions.current();
       report(reason);
+    } finally {
+      configuringModelRef.current = false;
+      setConfiguringModel(false);
     }
   }
   async function mutateQueue(action: (target: string) => Promise<void>) {
@@ -530,6 +574,19 @@ export function useWorkHubController() {
     sessions,
     choices,
     transcript,
+    activeForm: activeInteraction?.type === 'form_request' ? activeInteraction : undefined,
+    respondToUserForm: async (response: import('@maka/core/interaction').InteractionFormResponse) => {
+      if (!sessionId) throw new Error('WorkHub Session is unavailable');
+      await services.respondToUserForm(sessionId, response);
+    },
+    activeQuestion,
+    activeInteraction,
+    turnStates,
+    pendingTurnId: pendingSend.current?.sessionId === sessionId ? pendingSend.current?.input.turnId : undefined,
+    respondToUserQuestion: async (response: import('@maka/core/user-question').UserQuestionResponse) => {
+      if (!sessionId) throw new Error('WorkHub Session is unavailable');
+      await services.respondToUserQuestion(sessionId, response);
+    },
     transientMessages,
     messageQueue,
     updateQueuedEntry: (entryId: string, revision: number, text: string) => mutateQueue((target) => services.updateQueueEntry(target, entryId, revision, text)),
@@ -548,6 +605,11 @@ export function useWorkHubController() {
     send,
     stop,
     changeModel,
+    configuringModel,
+    changeThinkingLevel: async (level: ThinkingLevel | undefined) => {
+      if (!session?.llmConnectionId || !session.llmConnectionSlug || !session.model) return;
+      await changeModel({ llmConnectionId: session.llmConnectionId, llmConnectionSlug: session.llmConnectionSlug, model: session.model }, level ?? null);
+    },
     retry: () => {
       const attempt = pendingSend.current;
       if (readError && sessionId) {

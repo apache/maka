@@ -1027,7 +1027,10 @@ suites passed 115 tests at the earlier epoch156. A later upstream refresh to
 27add3049 independently adopted157, so this branch now uses158. The forged
 upstream157 peer incorrectly connected before the repair and rejects before
 domain admission afterward; the rebuilt handshake/protocol subset passed20.
-This does not establish newer-main integration.
+The later ordinary merge with that upstream adds external-import and
+plugin-executor contracts absent from pre-merge158. The combined protocol
+therefore uses159 and rejects158 too; rebuilt handshake/History protocol
+checks passed21. Final merged Desktop validation remains separate.
 Native input characters are labelled as observations, not proof of committed
 application text, finalized IME composition or submission. Tests preserve them
 separately from an observed control value and remove both when transmission is

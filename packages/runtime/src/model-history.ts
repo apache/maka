@@ -195,8 +195,30 @@ export function estimateEffectiveToolResultChars(
 export function estimateRuntimeEventChars(event: RuntimeEvent): number {
   let total = 0;
   const content = event.content;
-  if (content?.kind === 'text' || content?.kind === 'thinking') total += content.text.length;
-  else if (content?.kind === 'function_call')
+  if (content?.kind === 'text' || content?.kind === 'thinking') {
+    total += content.text.length;
+    // Structured carriers are part of the event's weight: a quote- or
+    // attachment-only user message must not estimate to zero, or the
+    // history-compact gate drops a model-visible event (#4804).
+    if (content.kind === 'text') {
+      for (const quote of content.quotes ?? []) {
+        total += quote.text.length + (quote.label?.length ?? 0);
+      }
+      for (const attachment of content.attachments ?? []) {
+        // Weight the block the projection actually emits, not the display
+        // fields: name+mimeType is ~25 chars while the formatted attachment
+        // block with its Read guidance runs to hundreds (#4815 review).
+        total += formatAttachmentRefs([attachment]).length;
+      }
+      // Directory references project as one fixed envelope per message; count
+      // what it actually emits, or a directory-only message estimates to zero
+      // and the history-compact gate drops a model-visible event from the
+      // replay successors (#4815 review).
+      if (content.directoryReferences?.length) {
+        total += formatDirectoryReferences(content.directoryReferences).length;
+      }
+    }
+  } else if (content?.kind === 'function_call')
     total += content.name.length + stableJsonLength(content.args);
   else if (content?.kind === 'function_response')
     total += content.name.length + estimateEffectiveToolResultChars(content, event.sessionId);
@@ -293,8 +315,6 @@ export interface RuntimeEventReplayDiagnostic {
   turnId?: string;
   detail?: Record<string, unknown>;
 }
-
-export type RuntimeEventReplaySemanticKind = 'text' | 'thinking' | 'tool_call' | 'tool_result';
 
 export type RuntimeEventModelReplayItem =
   | {
@@ -488,7 +508,6 @@ function replayToolIdentity(invocationId: string, toolCallId: string): string {
 export interface RuntimeEventModelReplayPlan {
   items: RuntimeEventModelReplayItem[];
   textMessages: TextModelMessage[];
-  semanticKinds: RuntimeEventReplaySemanticKind[];
   diagnostics: RuntimeEventReplayDiagnostic[];
   hasProviderNativeSemantics: boolean;
 }
@@ -941,16 +960,11 @@ export function buildRuntimeEventModelReplayPlan(
           }
         : { role: item.role, content: item.content },
     );
-  const semanticKinds = [...new Set(items.map((item) => item.kind))];
   return {
     items,
     textMessages,
-    semanticKinds,
     diagnostics,
-    hasProviderNativeSemantics:
-      semanticKinds.includes('thinking') ||
-      semanticKinds.includes('tool_call') ||
-      semanticKinds.includes('tool_result'),
+    hasProviderNativeSemantics: items.some((item) => item.kind !== 'text'),
   };
 }
 
@@ -1111,7 +1125,7 @@ function formatAttachmentRefs(attachments: readonly AttachmentRef[]): string {
     .map((attachment) => {
       const resourceRef = formatAttachmentResourceRef(attachment.ref);
       const readArgument = resourceRef
-        ? { ref: resourceRef }
+        ? { path: resourceRef }
         : attachment.ref.kind === 'workspace_file'
           ? { path: attachment.ref.relativePath }
           : attachment.ref.kind === 'external_file'
@@ -1124,7 +1138,7 @@ function formatAttachmentRefs(attachments: readonly AttachmentRef[]): string {
               ...(attachment.kind === 'image'
                 ? [`Markdown image source: ${JSON.stringify(resourceRef)}`]
                 : []),
-              'This is a Session resource, not a workspace file. Use the ref above; never use the display name as a path.',
+              'This is a Session resource, not a workspace file. Use the path above; never use the display name as a path.',
             ].join('\n')
           : `Read argument: ${JSON.stringify(readArgument)}`
         : 'The attachment content is unavailable to Read.';

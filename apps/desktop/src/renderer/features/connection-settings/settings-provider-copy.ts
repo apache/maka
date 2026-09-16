@@ -21,7 +21,12 @@ import { generalizedErrorMessageForLocale, redactSecrets } from '@maka/core/reda
 import type { SubscriptionActionCode, SubscriptionActionFailureReason } from '@maka/core/oauth-subscription';
 import { type UiCatalog, type UiLocale, lookupCopy } from '@maka/core/ui-locale';
 
-type SubscriptionResultCode = SubscriptionActionCode | Extract<SubscriptionActionFailureReason, 'experimental_disabled'>;
+type SubscriptionResultCode =
+  | SubscriptionActionCode
+  | Extract<
+      SubscriptionActionFailureReason,
+      'experimental_disabled' | 'login_in_progress' | 'presentation_failed'
+    >;
 
 type WidenCopy<T> = T extends string
   ? string
@@ -264,8 +269,6 @@ const zhCopy = {
     loggedOut: '已退出登录', credentialsCleared: '本地凭据已清除。', logoutFailed: '退出失败', logoutFailedRetry: '退出登录失败，请稍后重试。',
     serviceUnavailable: '登录服务暂时不可用，请检查网络后重试。',
     logoutTitle: (name: string) => `退出 ${name} 登录？`,
-    loginConflict: '上一轮浏览器登录仍在进行或已切换，请再点一次登录，或稍后再试。',
-    browserPresentFailed: '无法打开系统浏览器完成登录，请检查是否拦截了弹窗后重试。',
     resultCodes: {
       copilot_classic_pat_unsupported: 'GitHub Copilot 不支持 classic PAT；请使用兼容 OAuth 登录或具有 Copilot Requests 权限的 fine-grained PAT。',
       copilot_credential_type_unsupported: '当前 GitHub 凭据类型不受支持；请使用兼容 OAuth 登录或 fine-grained PAT。',
@@ -277,6 +280,8 @@ const zhCopy = {
       copilot_subscription_check_failed: '暂时无法验证 GitHub Copilot 订阅状态，请稍后重试。',
       copilot_import_commit_failed: 'GitHub Copilot 登录未能写入 Runtime Host。',
       experimental_disabled: '本机未启用该账号登录方式；可改用导入兼容凭据，或由管理员启用后重试。',
+      login_in_progress: '上一轮登录仍在进行，等它结束后再点登录。',
+      presentation_failed: '无法打开系统浏览器完成登录，请检查是否拦截了弹窗后重试。',
     } satisfies Record<SubscriptionResultCode, string>,
   },
   oauthSection: {
@@ -442,8 +447,6 @@ const zhTwCopy = {
     logoutDescription: '將刪除本機儲存的訂閱憑據，之後需要重新登入才能繼續使用這些 OAuth 模型。', logout: '退出登入', cancel: '取消',
     loggedOut: '已退出登入', credentialsCleared: '本地憑據已清除。', logoutFailed: '退出失敗', logoutFailedRetry: '退出登入失敗，請稍後重試。',
     serviceUnavailable: '登入服務暫時不可用，請檢查網路後重試。',
-    loginConflict: '上一輪瀏覽器登入仍在進行或已切換，請再按一次登入，或稍後再試。',
-    browserPresentFailed: '無法開啟系統瀏覽器完成登入，請檢查是否封鎖了彈出式視窗後再試。',
     resultCodes: {
       copilot_classic_pat_unsupported: 'GitHub Copilot 不支援 classic PAT；請使用相容 OAuth 登入或具有 Copilot Requests 權限的 fine-grained PAT。',
       copilot_credential_type_unsupported: '目前的 GitHub 憑據類型不受支援；請使用相容 OAuth 登入或 fine-grained PAT。',
@@ -455,6 +458,8 @@ const zhTwCopy = {
       copilot_subscription_check_failed: '暫時無法驗證 GitHub Copilot 訂閱狀態，請稍後重試。',
       copilot_import_commit_failed: 'GitHub Copilot 登入未能寫入 Runtime Host。',
       experimental_disabled: '本機未啟用該帳號登入方式；可改用匯入相容憑據，或由管理員啟用後重試。',
+      login_in_progress: '上一輪登入仍在進行，等它結束後再按登入。',
+      presentation_failed: '無法開啟系統瀏覽器完成登入，請檢查是否封鎖了彈出式視窗後再試。',
     },
     logoutTitle: (name: string) => `退出 ${name} 登入？`,
   },
@@ -623,8 +628,6 @@ const enCopy: ProviderSettingsCopy = {
     loggedOut: 'Signed out', credentialsCleared: 'Local credentials cleared.', logoutFailed: 'Sign-out failed', logoutFailedRetry: 'Sign-out failed. Try again later.',
     serviceUnavailable: 'The sign-in service is temporarily unavailable. Check the network and try again.',
     logoutTitle: (name: string) => `Sign out of ${name}?`,
-    loginConflict: 'A previous browser login is still running or was superseded. Try logging in again shortly.',
-    browserPresentFailed: 'Could not open the system browser for login. Check popup blockers and try again.',
     resultCodes: {
       copilot_classic_pat_unsupported: 'GitHub Copilot does not accept classic PATs. Use a compatible OAuth login or a fine-grained PAT with the Copilot Requests permission.',
       copilot_credential_type_unsupported: 'This GitHub credential type is not supported. Use a compatible OAuth login or a fine-grained PAT.',
@@ -636,6 +639,8 @@ const enCopy: ProviderSettingsCopy = {
       copilot_subscription_check_failed: 'Could not verify the GitHub Copilot subscription right now. Try again later.',
       copilot_import_commit_failed: 'The GitHub Copilot login could not be committed to Runtime Host.',
       experimental_disabled: 'This sign-in is not enabled on this install. Import a compatible credential instead, or ask an operator to enable it.',
+      login_in_progress: 'A previous login is still running. Start again after it settles.',
+      presentation_failed: 'Could not open the system browser for login. Check popup blockers and try again.',
     },
   },
   oauthSection: {
@@ -691,11 +696,10 @@ export function subscriptionResultMessage(input: SubscriptionResultInput, fallba
   if (mapped) return mapped;
   const raw = redactSecrets(message ?? '').trim();
   if (!raw) return fallback;
-  // Stable Host messages, matched before the coarse keyword classifier turns
-  // "authorization" into a generic auth failure that does not tell the user what to do.
+  // Prose fallback for Hosts older than the typed reasons; every Desktop-owned
+  // producer now sends a code, so nothing local depends on this wording.
   if (/enrollment is disabled for this provider/i.test(raw)) return copy.resultCodes.experimental_disabled;
-  if (/already in progress|superseded by a new attempt/i.test(raw)) return copy.loginConflict;
-  if (/did not present OAuth|no matching OAuth presentation/i.test(raw)) return copy.browserPresentFailed;
+  if (/already in progress/i.test(raw)) return copy.resultCodes.login_in_progress;
   const classified = generalizedErrorMessageForLocale(new Error(raw), '', locale);
   return classified || fallback;
 }

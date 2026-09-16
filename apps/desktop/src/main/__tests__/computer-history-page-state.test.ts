@@ -1138,6 +1138,15 @@ for (const grain of ['6 hours', '1 day']) {
     if (grain === '1 day') await h.click(h.button(grain));
     assert.equal(h.groupButtons().length, 1);
     const open = h.groupButtons()[0]!;
+    assert.equal(open.tagName, 'BUTTON');
+    assert.equal(open.getAttribute('type'), 'button');
+    const contentId = open.getAttribute('aria-labelledby');
+    assert.ok(contentId);
+    const accessibleContent = h.document.getElementById(contentId);
+    assert.ok(accessibleContent && open.contains(accessibleContent));
+    assert.equal(accessibleContent.textContent, open.textContent,
+      'the group name retains metadata, description and applications, not only the Button label');
+    assert.equal(open.hasAttribute('aria-current'), false);
     const toggle = h.document.querySelector<HTMLButtonElement>('.computer-history-group-header [aria-expanded]');
     assert.ok(toggle);
     assert.notEqual(toggle, open);
@@ -1154,6 +1163,7 @@ for (const grain of ['6 hours', '1 day']) {
 
     await h.click(open);
     h.frames();
+    assert.equal(open.getAttribute('aria-current'), 'true');
     assert.equal(toggle.getAttribute('aria-expanded'), 'false', 'opening content does not expand its group');
     assert.equal(h.rows().length, 0);
     assert.deepEqual(detailIds, [grain === '6 hours' ? ROLLUP_ENTRY.id : CHILD_ENTRY.id]);

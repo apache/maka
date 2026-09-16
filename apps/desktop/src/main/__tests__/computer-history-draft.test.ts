@@ -45,6 +45,8 @@ function harness({ remote = false, session = true, strict = false } = {}) {
       selectLocalTarget: () => localTarget,
       addProject: () => undefined,
       chooseProjectForProfile: async () => undefined,
+      resolveWorkBoardTarget: () => { throw new Error('History must not resolve a Work Board target'); },
+      prepareWorkBoardDraft: () => { throw new Error('History must not prepare a Work Board draft'); },
     },
     selectors: {
       target: remote ? remoteTarget : localTarget,

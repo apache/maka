@@ -82,6 +82,7 @@ export function createActionsDeps() {
       sessionId: undefined,
       navSection: 'sessions' as const,
     }),
+    captureSelection: () => () => true,
     checkTaskSubmissionReadiness: async () => true,
     isNewChatSendSurfaceActive: () => true,
     isShellSurfaceOwnerActive: () => true,

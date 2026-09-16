@@ -548,9 +548,14 @@ function buildDefaultHostTools(
   plan?: InteractiveRunComposerInput['plan'],
   deepResearchTools: readonly MakaTool[] = [],
 ): MakaTool[] {
-  const builtins = builtinOptions ? buildBuiltinTools(builtinOptions) : [];
+  // Full access has no boundary to widen, so neither the Bash declaration nor
+  // the widening tool is offered. An unknown mode is not Full access.
+  const fullAccess = plan?.permissionMode === 'bypass';
+  const builtins = builtinOptions
+    ? buildBuiltinTools({ ...builtinOptions, declareSandboxBoundary: !fullAccess })
+    : [];
   const question = buildAskUserQuestionTool();
-  const sandboxBoundary = buildRequestSandboxBoundaryTool();
+  const sandboxBoundary = fullAccess ? undefined : buildRequestSandboxBoundaryTool();
   const todoTools = buildSessionTodoTools(sessionTodo);
   const activeExecution = plan ? activePlanExecution(plan.state) : undefined;
   const interruptedExecution = plan
@@ -570,7 +575,7 @@ function buildDefaultHostTools(
     ...builtins.map((tool) => tool.name),
     ...hostTools.map((tool) => tool.name),
     question.name,
-    sandboxBoundary.name,
+    ...(sandboxBoundary ? [sandboxBoundary.name] : []),
     'Skill',
     'SkillSearch',
     ...todoTools.map((tool) => tool.name),
@@ -586,7 +591,7 @@ function buildDefaultHostTools(
     ...builtins,
     ...hostTools,
     question,
-    sandboxBoundary,
+    ...(sandboxBoundary ? [sandboxBoundary] : []),
     buildSkillAgentToolFromInventory(inventoryFor, skillHost, { shadowTracker }),
     buildSkillSearchAgentToolFromInventory(inventoryFor, skillHost, { shadowTracker }),
     ...todoTools,

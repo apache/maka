@@ -107,12 +107,17 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 158 as const;
-// 158: Computer History adds bounded summaries, accounting, request-bound cancellation,
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 159 as const;
+// 159: Combines upstream external imports and plugin executors with Computer History.
+// Pre-merge History epoch 158 lacks those contracts and must also be rejected.
+// Computer History adds bounded summaries, accounting, request-bound cancellation,
 // locale, three-item prior context, larger evidence/result limits and normalized keywords.
 // Managed reads, bundled Skill updates and window-local invalid_summary errors are included.
 // Pre-merge History builds used epochs 152-155 and 157; upstream through epoch 157
 // has a different contract. Reject both before domain commands are admitted.
+// 154: External Session import results distinguish committed Sessions from typed source limits.
+// 153: Sessions may select plugin executors and Plugin Platform queries expose them.
+// 152: Assistant completions and transcript rows preserve interrupted responses.
 // 151: WorkHub selects and delegates through a durable Host Form interaction.
 // 150: Message admission accepts an empty-text Message that carries a quote or
 // an attachment (#4804). Peers older than this epoch reject that frame at
@@ -129,6 +134,7 @@ export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 158 as const;
 // 144: Antigravity setup combined with explicit missing/archived Skill query refusals.
 // 143: Session bundle export and import are Host operations. Pre-merge Antigravity
 // builds also advertised 143 without this contract and remain incompatible.
+
 // 142: Invocable Skill queries expose missing and archived Session refusals explicitly.
 // 141: WorkHub root admissions bind model Intent/Recall decisions before actions.
 // 140: Plugin Platform queries expose scoped Command contribution projections.

@@ -52,7 +52,13 @@ import { createDesktopConnectionSettingsServices } from '../src/renderer/platfor
 import { createDesktopModuleHubServices, type DesktopModuleHubBridge } from '../src/renderer/platform/desktop/create-module-hub-services';
 import { createUiLocaleUpdateGate } from '../src/renderer/settings/ui-locale-update-gate';
 import { withScopedMakaBridge } from './maka-bridge';
-import { useSettingsModal } from '../src/renderer/use-settings-modal';
+import {
+  OverlaysRoot,
+  OverlaysServicesProvider,
+  type OverlaysShellProjection,
+} from '../src/renderer/features/overlays';
+import { createFakeOverlaysServices } from '../src/renderer/features/overlays/testing';
+import { safeLocalStorageSet } from '../src/renderer/browser-storage';
 import { OS_PERMISSION_IDS, type PermissionSnapshot } from '@maka/core/capabilities';
 
 const noop = () => undefined;
@@ -536,18 +542,36 @@ const SIDEBAR_SESSIONS: SessionSummary[] = [
   model: 'analysis-model', permissionMode: 'ask',
 }));
 
-function HistorySurface({ scenario, onCreateDraft, withSidebar = false, applications, ...probes }: {
+type HistorySurfaceProps = {
   scenario: Scenario;
   onCreateDraft(text: string): void;
   withSidebar?: boolean;
   applications?: readonly ComputerHistoryApplication[];
-} & HistoryProbes) {
+} & HistoryProbes;
+
+function HistorySurface(props: HistorySurfaceProps) {
+  const [services] = useState(() => createFakeOverlaysServices({
+    settingsSection: { persist: (section) => safeLocalStorageSet('maka-settings-section-v1', section) },
+    focus: { blurActiveElement: () => {
+      if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+    } },
+  }));
+  return <OverlaysServicesProvider services={services}><OverlaysRoot>
+    {(overlays) => <HistorySurfaceContent {...props} overlays={overlays} />}
+  </OverlaysRoot></OverlaysServicesProvider>;
+}
+
+function HistorySurfaceContent({ scenario, onCreateDraft, withSidebar = false, applications, overlays, ...probes }: HistorySurfaceProps & {
+  overlays: OverlaysShellProjection;
+}) {
   const { onSettingsWrite, onPermissionRequest, onDetailRead, onTimelineRead, onSummaryRetry } = probes;
   const services = useMemo(() => createFakeModuleHubServices({ computerHistory: fixtureService(scenario, {
     onSettingsWrite, onPermissionRequest, onDetailRead, onTimelineRead, onSummaryRetry,
   }, applications) }), [scenario, applications, onSettingsWrite, onPermissionRequest, onDetailRead, onTimelineRead, onSummaryRetry]);
   const [collapsed, setCollapsed] = useState(false);
-  const { settingsOpen, settingsRequest, openComputerHistorySettings, closeSettingsModal } = useSettingsModal();
+  const { open: settingsOpen, request: settingsRequest } = overlays.selectors.settings;
+  const openComputerHistorySettings = () => overlays.commands.openSettingsSection('computer-history');
+  const closeSettingsModal = overlays.commands.closeSettings;
   const [localeGate] = useState(createUiLocaleUpdateGate);
   const [connections] = useState(createDesktopConnectionSettingsServices);
   const content = (

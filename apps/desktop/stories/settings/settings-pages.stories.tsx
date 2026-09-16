@@ -2097,7 +2097,7 @@ export const General: Story = {
   decorators: [withSettingsBridge],
   render: () => <SettingsStory section="general" />,
 };
-// Real path: 设置 → 通用 → 默认模型. Focus stays on the inline magnetic wheel;
+// Real path: 设置 → 通用 → 默认模型. Focus stays on the floating magnetic wheel;
 // the containing settings row must not add a second focus ring.
 export const GeneralPickerOpenFocusRing: Story = {
   decorators: [withSettingsBridge],
@@ -2105,6 +2105,12 @@ export const GeneralPickerOpenFocusRing: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     const trigger = await canvas.findByRole('button', { name: '默认模型' });
+    trigger.scrollIntoView({ block: 'center' });
+    const rows = () => Array.from(canvasElement.querySelectorAll('.astryx-item')).map((element) => {
+      const { x, y, width, height } = element.getBoundingClientRect();
+      return { x, y, width, height };
+    });
+    const before = rows();
     await userEvent.click(trigger);
     await waitFor(() => {
       const active = document.activeElement as HTMLElement | null;
@@ -2114,6 +2120,11 @@ export const GeneralPickerOpenFocusRing: Story = {
     const row = active.closest<HTMLElement>('.astryx-item');
     expect(row).not.toBeNull();
     expect(row ? getComputedStyle(row).outlineStyle : null).toBe('none');
+    expect(rows()).toEqual(before);
+    await userEvent.keyboard('{Escape}');
+    await waitFor(() => expect(trigger).toHaveFocus());
+    expect(rows()).toEqual(before);
+    await userEvent.click(trigger);
   },
 };
 

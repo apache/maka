@@ -452,3 +452,24 @@ are unchanged Playwright output, visually inspected and byte-matched to the
 matrix. No private history, credentials, real model calls, native capture or
 OS permission changes were used. Synthetic checks do not establish real
 macOS TCC authorization; live Desktop validation is separate.
+
+## Group Button Integration, September 16
+
+`before-group-button-desktop.png` and `after-group-button-desktop.png` show
+the 6-hour list at1240x820. `before-group-button-narrow.png` and
+`after-group-button-narrow.png` show the day list at390x844. Both pairs use
+the same synthetic fixture, light theme, DPR1, 100% zoom, Asia/Shanghai
+timezone and fixed displayed time2026-09-14T00:40:00Z.
+
+The before variant substitutes only the raw group opener and its associated
+styles; all other components and data are shared. The after variant uses
+the current Astryx Button with scoped multiline layout and complete accessible
+name. Both pairs have identical decoded pixels. Eight complete matched pairs
+and source provenance remain in the ignored
+`docs/local/computer-history-production-qa/group-button-qa/pr-ready/`.
+
+Actual component tests passed27. Browser Enter/Space, keyboard-visible focus,
+current selection, independent disclosure and day-reader checks passed at
+both sizes. No clipping, broken assets, private data, model calls or native
+capture were involved. These screenshots validate the primitive migration;
+separate merged Electron composition QA covers settings and draft navigation.

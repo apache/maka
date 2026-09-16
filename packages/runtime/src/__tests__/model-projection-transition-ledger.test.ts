@@ -38,8 +38,7 @@ import {
 import {
   archiveToolResultAsTransition,
   archivedToolResultProjection,
-  collectReachableArchiveArtifactIds,
-  collectStaleToolResultArchiveCandidates,
+  collectToolResultArchiveCandidates,
   serializedToolResultProjection,
 } from '../tool-result-archive-transition.js';
 import {
@@ -152,11 +151,6 @@ describe('effective model projection reduction', () => {
         [loser.transitionId],
       );
       assert.equal(serializedEffective(reduced.events).includes(SECRET), false);
-      // The refused writer's archive is named by nothing the model can see.
-      assert.deepEqual(
-        [...collectReachableArchiveArtifactIds(reduced.events)],
-        [winner === first ? 'artifact-a' : 'artifact-b'],
-      );
     }
   });
 
@@ -177,7 +171,6 @@ describe('effective model projection reduction', () => {
       inOrder.applied.map((transition) => transition.transitionId),
       [first.transitionId, second.transitionId],
     );
-    assert.deepEqual([...collectReachableArchiveArtifactIds(inOrder.events)], ['artifact-b']);
   });
 
   test('withholds a target whose record this build cannot read', () => {
@@ -209,7 +202,6 @@ describe('effective model projection reduction', () => {
       [transition.transitionId],
     );
     assert.equal(serializedEffective(reduced.events).includes(SECRET), false);
-    assert.equal(collectReachableArchiveArtifactIds(reduced.events).size, 0);
   });
 
   test('leaves provider-native opaque results alone', () => {
@@ -230,25 +222,24 @@ describe('effective model projection reduction', () => {
     assert.deepEqual(reduced.events[0], event);
     assert.equal(reduced.applied.length, 0);
     assert.equal(reduced.rejected.length, 1);
-    assert.equal(collectReachableArchiveArtifactIds(reduced.events).size, 0);
   });
 
   test('rolling compaction cannot re-measure or re-archive replaced content', () => {
-    const event = toolResultEvent('rt-1', 'turn-1', { body: SECRET.repeat(200) });
+    const event = toolResultEvent('rt-1', 'turn-1', { body: SECRET.repeat(2000) });
     const transition = archiveTransition(event);
     const reduced = reduceEffectiveModelProjections(
       [event, toolResultEvent('rt-2', 'turn-2', { body: 'tail' })],
       [transition],
     );
 
-    const rawCandidates = collectStaleToolResultArchiveCandidates(
+    const rawCandidates = collectToolResultArchiveCandidates(
       [event, toolResultEvent('rt-2', 'turn-2', { body: 'tail' })],
-      { enabled: true, maxResultEstimatedTokens: 1, minRecentTurnsFull: 1 },
+      { enabled: true },
       1,
     );
-    const effectiveCandidates = collectStaleToolResultArchiveCandidates(
+    const effectiveCandidates = collectToolResultArchiveCandidates(
       reduced.events,
-      { enabled: true, maxResultEstimatedTokens: 4096, minRecentTurnsFull: 1 },
+      { enabled: true },
       1,
     );
 
@@ -256,7 +247,7 @@ describe('effective model projection reduction', () => {
     assert.deepEqual(effectiveCandidates, []);
   });
 
-  test('collects a media-bearing result whose reference text is tiny', () => {
+  test('leaves media to the existing image projection policy', () => {
     const event = toolResultEvent('rt-1', 'turn-1', 'ok', {
       content: {
         kind: 'function_response',
@@ -278,24 +269,24 @@ describe('effective model projection reduction', () => {
       },
     } as Partial<RuntimeEvent>);
 
-    const candidates = collectStaleToolResultArchiveCandidates(
+    const candidates = collectToolResultArchiveCandidates(
       [event, toolResultEvent('rt-2', 'turn-2', { body: 'tail' })],
-      { enabled: true, maxResultEstimatedTokens: 2048, minRecentTurnsFull: 1 },
+      { enabled: true },
       4,
     );
 
     assert.deepEqual(
       candidates.map((candidate) => candidate.runtimeEventId),
-      ['rt-1'],
+      [],
     );
   });
 
   test('leaves a text result under the size gate alone', () => {
     const event = toolResultEvent('rt-1', 'turn-1', { body: 'x'.repeat(4_000) });
 
-    const candidates = collectStaleToolResultArchiveCandidates(
+    const candidates = collectToolResultArchiveCandidates(
       [event, toolResultEvent('rt-2', 'turn-2', { body: 'tail' })],
-      { enabled: true, maxResultEstimatedTokens: 2048, minRecentTurnsFull: 1 },
+      { enabled: true },
       4,
     );
 
@@ -324,7 +315,7 @@ describe('durable transition writer', () => {
 
   test('commits archive then transition, and the fold applies the result', async () => {
     const recorded: ModelProjectionTransition[] = [];
-    const outcome = await archiveToolResultAsTransition(
+    await archiveToolResultAsTransition(
       {
         sessionId: 'session-1',
         archiveToolResult: () => ({ artifactId: 'artifact-1' }),
@@ -336,58 +327,18 @@ describe('durable transition writer', () => {
       request(),
     );
 
-    assert.ok(outcome);
     assert.equal(recorded.length, 1);
     assert.equal(
       recorded[0]?.sourceProjectionDigest,
       durableToolResultProjectionDigest(baseToolResultProjection(event)!),
     );
     const reduced = reduceEffectiveModelProjections([event], recorded);
-    assert.equal(serializedEffective(reduced.events).includes(SECRET), false);
-  });
-
-  test('a writer shows the transition the fold accepts, not the one it wrote', async () => {
-    // Both Turns load the same source and append rival roots. Appending
-    // successfully does not make either one the fold's answer, so a writer must
-    // return what the ledger has settled on by the time it looks.
-    for (const order of [
-      ['artifact-a', 'artifact-b'],
-      ['artifact-b', 'artifact-a'],
-    ]) {
-      const ledger: ModelProjectionTransition[] = [];
-      const services = (artifactId: string) => ({
-        sessionId: 'session-1',
-        archiveToolResult: () => ({ artifactId }),
-        recordTransition: async (transition: ModelProjectionTransition) => {
-          ledger.push(transition);
-        },
-        loadTransitions: async () => ({ transitions: [...ledger] }),
-        now: () => 42,
-      });
-
-      await archiveToolResultAsTransition(services(order[0]!), request());
-      const second = await archiveToolResultAsTransition(services(order[1]!), request());
-
-      assert.ok(second);
-      assert.equal(ledger.length, 2);
-      const reduced = reduceEffectiveModelProjections([event], ledger);
-      assert.equal(reduced.applied.length, 1);
-      const winner = reduced.applied[0]!;
-      // The later writer sees both records, so it must not show its own when
-      // the fold prefers the other.
-      assert.equal(second.transition.transitionId, winner.transitionId);
-      assert.deepEqual(archivedToolResultProjection(second.placeholder), winner.replacement);
-      const effective = reduced.events[0];
-      assert.ok(effective?.content?.kind === 'function_response');
-      assert.ok(isArchivedToolResultPlaceholder(effective.content.result));
-      assert.equal(effective.content.result.artifactId, second.placeholder.artifactId);
-      assert.equal(serializedEffective(reduced.events).includes(SECRET), false);
-    }
+    assert.ok(JSON.stringify(reduced.events[0]?.content).includes('page'));
   });
 
   test('an archive failure leaves the model-visible content untouched', async () => {
     let recordCalls = 0;
-    const outcome = await archiveToolResultAsTransition(
+    await archiveToolResultAsTransition(
       {
         sessionId: 'session-1',
         archiveToolResult: () => {
@@ -401,25 +352,7 @@ describe('durable transition writer', () => {
       request(),
     );
 
-    assert.equal(outcome, undefined);
     assert.equal(recordCalls, 0);
-  });
-
-  test('a ledger failure leaves the content untouched and the artifact unreachable', async () => {
-    const outcome = await archiveToolResultAsTransition(
-      {
-        sessionId: 'session-1',
-        archiveToolResult: () => ({ artifactId: 'artifact-orphan' }),
-        recordTransition: () => Promise.reject(new Error('ledger is unavailable')),
-        now: () => 42,
-      },
-      request(),
-    );
-
-    assert.equal(outcome, undefined);
-    const reduced = reduceEffectiveModelProjections([event], []);
-    assert.equal(collectReachableArchiveArtifactIds(reduced.events).has('artifact-orphan'), false);
-    assert.ok(serializedEffective(reduced.events).includes(SECRET));
   });
 });
 

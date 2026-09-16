@@ -135,8 +135,20 @@ if (process.versions.electron) {
           `${server.baseUrl}/iframe.html?id=product-shell-official-appshell--${scene}&viewMode=story`,
         );
         await expect(page.locator('.maka-transcript-turn')).toHaveCount(turns);
+        // Completed process content is now collapsed by default. Measure its
+        // expanded reading state, otherwise the 45-tool scene has no overflow.
+        const summaries = page.locator('.maka-processing-sequence:not([open]) > summary');
+        const expandedProcess = (await summaries.count()) > 0;
+        // Expand every collapsed process disclosure. Re-resolve each time: a
+        // click flips the element to [open], so an index-based list goes stale.
+        while ((await summaries.count()) > 0) await summaries.first().click();
         await page.evaluate(() => document.fonts.ready);
         await expect(page.locator('.maka-markdown-pending')).toHaveCount(0);
+        if (expandedProcess) {
+          await page.locator('[data-chat-scroll-container]').evaluate((root) => {
+            root.scrollTo({ top: root.scrollHeight, behavior: 'instant' });
+          });
+        }
         await expect
           .poll(async () => {
             const m = await metrics();

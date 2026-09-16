@@ -263,6 +263,7 @@ test('session retirement forgets a terminal Goal without recreating deleted auth
       ...active,
       goal: { ...active.goal, status: 'cleared' },
       currentExecution: null,
+      pendingContinuation: null,
     };
     assert.equal(
       (
@@ -654,6 +655,105 @@ test('restart replaces a stale current execution with the current durable Goal i
   }
 });
 
+test('new user evidence replaces the pending continuation in one authority commit', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-host-goal-pending-superseded-'));
+  const capability = await resolveStorageRoot({
+    path: join(base, 'root'),
+    kind: 'interactive',
+  });
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(owner);
+  if (!owner) return;
+
+  const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+  const goalStore = await openInteractiveGoalAuthorityForWrite(owner.lease);
+  try {
+    const session = await stores.sessionStore.create({
+      cwd: capability.canonicalPath,
+      llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+      llmConnectionSlug: 'fake',
+      model: 'fake-model',
+      permissionMode: 'ask',
+    });
+    const initial = activeGoalRecord(session.id, {
+      sessionId: session.id,
+      turnId: 'unused_goal_turn',
+      runId: 'unused_goal_run',
+    });
+    const supersededPrompt = 'Resume only the superseded durable successor.';
+    const record: GoalAuthorityRecord = {
+      ...initial,
+      currentExecution: null,
+      pendingContinuation: {
+        checkpoint: { goalId: initial.goal.id, revision: initial.goal.revision },
+        controlLease: initial.controlLease,
+        prompt: supersededPrompt,
+        triggeringTurnId: 'turn-before-restart',
+      },
+    };
+    const committed = await goalStore.commit({
+      sessionId: session.id,
+      expectedAuthorityRevision: null,
+      record,
+    });
+    assert.equal(committed.kind, 'committed');
+
+    const attemptedPrompts: string[] = [];
+    const host = new HostGoalCoordinator({
+      store: goalStore,
+      stores,
+      readSessionMessages: (sessionId) => stores.sessionStore.readMessagesSnapshot(sessionId),
+      executions: {
+        reconcile: async () => assert.fail('A pending continuation has no execution to recover'),
+        subscribe: () => () => undefined,
+      },
+      sessionAdmission: new SessionAdmissionGate(),
+      evaluator: {
+        evaluate: async () => {
+          assert.equal(
+            (await goalStore.read(session.id))?.record.pendingContinuation,
+            null,
+            'superseded continuation must be durable before evaluation starts',
+          );
+          return '{"met":false,"impossible":false,"progress":true,"waiting":false,"reason":"new evidence"}';
+        },
+        close: async () => {},
+      },
+      admitTurn: (_sessionId, prompt) => {
+        attemptedPrompts.push(prompt);
+        return { kind: 'busy', whenIdle: new Promise<void>(() => {}) };
+      },
+      acquireResidency: () => ({ release() {} }),
+      onProjectionChanged: () => {},
+      requestDrain: () => {},
+    });
+    await host.prepareRecovery();
+    await host.recover();
+    await waitFor(() => attemptedPrompts.length === 1);
+    assert.equal(attemptedPrompts[0], supersededPrompt);
+
+    const observed = host.beginObservedTurn(session.id, 'new-user-turn');
+    assert.equal(observed.kind, 'registered');
+    if (observed.kind !== 'registered') return;
+    await observed.settle({ kind: 'completed', turnId: 'new-user-turn' });
+
+    const durable = await goalStore.read(session.id);
+    assert.equal(durable?.authorityRevision, 2);
+    assert.equal(durable?.record.goal.revision, 1);
+    assert.equal(durable?.record.pendingContinuation?.triggeringTurnId, 'new-user-turn');
+    assert.match(durable?.record.pendingContinuation?.prompt ?? '', /new evidence/);
+    assert.doesNotMatch(
+      durable?.record.pendingContinuation?.prompt ?? '',
+      /superseded durable successor/,
+    );
+    await host.close();
+  } finally {
+    await goalStore.close();
+    await owner.close();
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
 function activeGoalRecord(
   sessionId: string,
   execution: NonNullable<GoalAuthorityRecord['currentExecution']>['execution'],
@@ -683,6 +783,7 @@ function activeGoalRecord(
       checkpoint: { goalId, revision: 0 },
       controlLease,
     },
+    pendingContinuation: null,
   };
 }
 

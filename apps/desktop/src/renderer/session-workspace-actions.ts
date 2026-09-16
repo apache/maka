@@ -55,7 +55,8 @@ export interface SessionWorkspaceActions {
   isSessionSelected(sessionId: string | undefined): boolean;
   retiredSessionIds(sessions: readonly { id: string }[]): string[];
   setActiveId(next: string | undefined): void;
-  startNewSession(): void;
+  startNewSession(): number;
+  readSelectionRevision(): number;
   clearOwnedSessionState(sessionId: string): void;
   setMessages: MessageListUpdater;
   commitTranscript(sessionId: string, messages: StoredMessage[], controller?: DesktopTranscriptRangeController): boolean;
@@ -200,12 +201,17 @@ export function createSessionWorkspaceActions(deps: {
     return true;
   }
 
-  function startNewSession(): void {
+  function startNewSession(): number {
     markNewTaskReloadIntent();
     setActiveId(undefined);
     messagesRef.current = [];
     setMessagesState([]);
     setTransientMessagesState([]);
+    return selectionRevisionRef.current;
+  }
+
+  function readSelectionRevision(): number {
+    return selectionRevisionRef.current;
   }
 
   function clearOwnedSessionState(sessionId: string): void {
@@ -237,6 +243,7 @@ export function createSessionWorkspaceActions(deps: {
     },
     setActiveId,
     startNewSession,
+    readSelectionRevision,
     clearOwnedSessionState,
     setMessages,
     commitTranscript,

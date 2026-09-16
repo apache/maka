@@ -21,6 +21,42 @@
 
 The Electron desktop app: `main` (Node/Electron main process) + `preload` (context bridge) + `renderer` (React UI). This file covers the three-layer split and the IPC contract. For build/test commands and the test-layer selection guide, see the top-level `README.md`; for the renderer interior, see `src/renderer/README.md`.
 
+## Managed HTML Artifact previews
+
+Generated Files → the HTML file's menu → **Open in default app** opens a
+Desktop-owned HTTP snapshot in the system browser. The session-bound
+`ArtifactPreview({ artifactId })` tool prepares the same kind of endpoint for
+browser tools without starting a shell server or relaxing the `file://` policy.
+Save As and Show in Folder still export the original, unrestricted file.
+
+Snapshots support self-contained interactive HTML: inline scripts/styles and
+embedded images/fonts. A response CSP sandbox blocks same-origin authority,
+fetch requests, remote subresources, forms, frames and popups. This is not an
+OS network sandbox: an external browser can still navigate away from the
+document. Referenced workspace files are not served. Use Save As for documents
+requiring external resources.
+
+Each snapshot gets its own loopback port and a 256-bit bearer URL. Do not share
+the URL. There is no directory listing, CORS access, persistent disk copy or
+cache. The server checks the exact Host and path, accepts GET/HEAD only, caps
+each snapshot at 8 MiB and reserves at most 16 concurrent snapshots. Listeners
+and memory are released after 30 minutes, on Artifact deletion through the
+Desktop, on host-target retirement, or when the app exits. A remote Host's
+Artifact is streamed to the Desktop through the existing authenticated client;
+the resulting URL belongs to the Desktop machine, not the Host's localhost.
+
+`reachable: true` is evidence that a bounded Desktop HTTP probe succeeded.
+`loaded: false` deliberately does **not** assert browser rendering. An OS
+launch success also does not prove page load; browser observation is required
+before reporting that the page loaded or its interaction worked (#5235).
+
+Focused regression checks (build workspace dependencies first):
+
+```sh
+npm run build:main --workspace apps/desktop
+node --test apps/desktop/dist/main/__tests__/managed-artifact-preview.test.js apps/desktop/dist/main/__tests__/runtime-host-artifacts-ipc-main.test.js
+```
+
 ## macOS development permissions
 
 `npm run dev` and `npm start` use the plain Electron executable on every

@@ -340,21 +340,25 @@ export function ComputerHistoryPage({ onCreateDraft, onOpenSettings: showSetting
                   icon={expanded ? <ChevronDown size={16} aria-hidden /> : <ChevronRight size={16} aria-hidden />}
                   aria-expanded={expanded} aria-controls={`${panelId}-${group.id}`} isDisabled={group.entries.length === 0}
                   onClick={() => setExpandedGroups((previous) => new Map(previous).set(group.id, !expanded))} />
-                <button className="computer-history-group-open" type="button"
+                <Button className="computer-history-group-open" variant="ghost"
+                  label={group.summary?.title ?? (granularity === 'day' ? collectionLabel(group) : copy.overviewPending)}
+                  aria-labelledby={`${panelId}-${group.id}-content`}
                   aria-current={group.summary?.id === selectedId || !group.summary && collection?.kind === group.kind && collection.start === group.start ? 'true' : undefined}
                   onClick={() => chooseGroup(group)}>
-                  <span className="computer-history-group-meta"><span>{label}</span>{group.entries.length ? <span>{group.entries.length} {copy.activities}</span> : null}</span>
-                  {group.summary ? <>
-                    <span className="computer-history-row-title">{group.summary.title}</span>
-                    <span className="computer-history-row-description">{group.summary.description}</span>
-                    {matchHint(group.summary)}
-                    {entryApps(group.summary.applications)}
-                  </> : granularity === 'day' ? <>
-                    <span className="computer-history-row-title">{collectionLabel(group)}</span>
-                    <span className="computer-history-row-description">{group.entries.slice(0, 3).map((entry) => entry.title).join(' · ')}</span>
-                    {entryApps([...new Set(group.entries.flatMap((entry) => entry.applications))])}
-                  </> : <span className="computer-history-pending"><Clock size={13} aria-hidden />{copy.overviewPending}</span>}
-                </button>
+                  <span id={`${panelId}-${group.id}-content`} className="computer-history-group-open-content">
+                    <span className="computer-history-group-meta"><span>{label}</span>{group.entries.length ? <span>{group.entries.length} {copy.activities}</span> : null}</span>
+                    {group.summary ? <>
+                      <span className="computer-history-row-title">{group.summary.title}</span>
+                      <span className="computer-history-row-description">{group.summary.description}</span>
+                      {matchHint(group.summary)}
+                      {entryApps(group.summary.applications)}
+                    </> : granularity === 'day' ? <>
+                      <span className="computer-history-row-title">{collectionLabel(group)}</span>
+                      <span className="computer-history-row-description">{group.entries.slice(0, 3).map((entry) => entry.title).join(' · ')}</span>
+                      {entryApps([...new Set(group.entries.flatMap((entry) => entry.applications))])}
+                    </> : <span className="computer-history-pending"><Clock size={13} aria-hidden />{copy.overviewPending}</span>}
+                  </span>
+                </Button>
               </div>}
               <List id={`${panelId}-${group.id}`} className={`computer-history-list${granularity !== '10min' ? ' computer-history-children' : ''}`} density="spacious">
                 {expanded ? group.entries.map((entry) => entryRow(entry, group)) : null}

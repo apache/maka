@@ -17,6 +17,9 @@
  * under the License.
  */
 
+import type { SessionInspectorService } from '../../application/contracts/session-inspector/service.js';
+export type { SessionInspectorService, SessionTracePage, SessionUsageSummary } from '../../application/contracts/session-inspector/service.js';
+
 import type {
   MessageQueuePlacement,
   QuoteRef,
@@ -35,22 +38,19 @@ import type { PermissionMode } from '@maka/core/permission';
 import type { RegenerateTurnInput } from '@maka/core/runtime-inputs';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { ClientCapabilityResponse } from '@maka/core/client-capability-grant';
+import type { WorkBoardItem, WorkBoardLinkedSession } from '@maka/core/work-board';
 import type {
   SessionChangedEvent,
   SessionSummary,
   StoredMessage,
   TurnRecord,
 } from '@maka/core/session';
-import type { SessionTrace } from '@maka/core/session-trace';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import type { InteractionFormResponse } from '@maka/core/interaction';
-import type { Result } from '@maka/core/result';
 import type {
   ContextCompactResult,
-  ContextDiagnosticsResult,
   TurnMessageExecutionQueryResult,
 } from '@maka/runtime-host/protocol';
-import type { MergedUsageSummary } from '@maka/core/usage-ledger-merge';
 import type {
   ShellRunPtyDataEvent,
   ShellRunPtySnapshot,
@@ -142,31 +142,11 @@ export interface WorkbarArtifactsService {
     sessionId: string,
     artifactId: string,
   ): Promise<WorkbarOpenArtifactResult>;
+  showInFolder(
+    sessionId: string,
+    artifactId: string,
+  ): Promise<WorkbarOpenArtifactResult>;
   saveAs(sessionId: string, artifactId: string): Promise<ArtifactSaveResult>;
-}
-
-export interface WorkbarSessionTracePage {
-  readonly trace: SessionTrace;
-  readonly nextCursor: string | null;
-}
-
-export type WorkbarSessionUsageSummary = MergedUsageSummary;
-
-export interface WorkbarInspectorService {
-  trace(
-    sessionId: string,
-    cursor?: string,
-  ): Promise<Result<WorkbarSessionTracePage>>;
-  summary(sessionId: string): Promise<Result<WorkbarSessionUsageSummary>>;
-  context(sessionId: string): Promise<Result<ContextDiagnosticsResult>>;
-  subscribeSessionEvents(
-    sessionId: string,
-    handler: (event: SessionEvent) => void,
-  ): WorkbarUnsubscribe;
-  subscribeUsageChanges(
-    sessionId: string,
-    handler: () => void,
-  ): WorkbarUnsubscribe;
 }
 
 export interface WorkbarAttachmentsService {
@@ -186,6 +166,16 @@ export interface WorkbarAttachmentsService {
   previewApproval(approvalId: string): Promise<
     | { ok: true; base64: string; mimeType: string }
     | { ok: false; reason: string }
+  >;
+}
+
+export interface WorkbarWorkBoardService {
+  linkSession(
+    id: string,
+    link: WorkBoardLinkedSession,
+  ): Promise<
+    | { readonly ok: true; readonly value: WorkBoardItem }
+    | { readonly ok: false; readonly message: string }
   >;
 }
 
@@ -245,6 +235,7 @@ export interface SideChatSessionPort {
     placement: MessageQueuePlacement,
     text: string,
     admissionId: string,
+    content?: { quotes?: QuoteRef[]; attachmentItems?: WorkbarIngestInput[] },
   ): Promise<SideChatFollowUpResult>;
   queryMessageExecutions(
     sessionId: string,
@@ -296,7 +287,8 @@ export interface WorkbarServices {
   readonly terminal: WorkbarTerminalService;
   readonly browser: WorkbarBrowserService;
   readonly artifacts: WorkbarArtifactsService;
-  readonly inspector: WorkbarInspectorService;
+  readonly inspector: SessionInspectorService;
   readonly attachments: WorkbarAttachmentsService;
+  readonly workBoard?: WorkbarWorkBoardService;
   readonly sideChat: SideChatSessionPort;
 }

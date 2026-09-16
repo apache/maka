@@ -66,8 +66,6 @@ import {
   reconcileInteractions,
 } from '@maka/ui';
 import type { ConnectionEvent } from '@maka/core/connections';
-import { useKeyboardHelp } from './keyboard-help';
-import { useCommandPalette } from './command-palette';
 import { ChatMessageSurface } from './chat-message-surface';
 import { useTaskSubmissionReadiness } from './use-task-submission-readiness';
 import { useAppShellSessionUiReads } from './use-app-shell-session-ui-reads';
@@ -99,6 +97,8 @@ import {
 } from './features/session-navigation';
 import * as TaskEntry from './features/task-entry';
 import type { TaskEntryShellProjection } from './features/task-entry';
+import * as Overlays from './features/overlays/index.js';
+import type { OverlaysShellProjection } from './features/overlays/index.js';
 import { useNewTaskChoice } from './use-new-task-choice';
 import { SessionCollaborationDialog } from './session-collaboration-dialog';
 import * as SessionCollaboration from './features/session-collaboration';
@@ -134,7 +134,6 @@ import { getShellRemainingCopy } from './locales/shell-remaining-copy.js';
 import { getDesktopConversationCopy } from './locales/conversation-copy';
 import { ErrorBoundary } from './error-boundary';
 import { useShellAppearance } from './use-shell-appearance';
-import { useShellSearch } from './use-shell-search';
 import { useSessionSettingIntent } from './features/session-settings';
 import { deriveStaleSessionIds } from './stale-sessions';
 import { pendingSessionView } from './pending-session-view';
@@ -201,7 +200,6 @@ import { useShellChatModel } from './use-shell-chat-model';
 import { useShellLiveTurn } from './use-shell-live-turn';
 import { useShellResume } from './use-shell-resume';
 
-import { useSettingsModal } from './use-settings-modal';
 import { useSystemUiLocale } from './use-system-ui-locale';
 import {
   isSessionWorkspaceUnavailableError,
@@ -254,9 +252,13 @@ export function AppShell({ initialOnboardingSnapshot = null }: AppShellProps = {
               <WorkHubControlOverlay />
               <TaskEntry.TaskEntryRoot>
                 {(taskEntry) => (
-                  <AppShellContent
-                    {...{ initialOnboardingSnapshot, taskEntry, uiLocale, uiLocaleOverride, setUiLocaleOverride, setUiLocalePreference }}
-                  />
+                  <Overlays.OverlaysRoot>
+                    {(overlays) => (
+                      <AppShellContent
+                        {...{ initialOnboardingSnapshot, taskEntry, overlays, uiLocale, uiLocaleOverride, setUiLocaleOverride, setUiLocalePreference }}
+                      />
+                    )}
+                  </Overlays.OverlaysRoot>
                 )}
               </TaskEntry.TaskEntryRoot>
             </AppUpdateProvider>
@@ -281,6 +283,7 @@ const SESSION_RAIL = <SessionListPanel />;
 function AppShellContent({
   initialOnboardingSnapshot = null,
   taskEntry,
+  overlays,
   uiLocale,
   uiLocaleOverride,
   setUiLocaleOverride,
@@ -288,6 +291,7 @@ function AppShellContent({
 }: {
   initialOnboardingSnapshot?: OnboardingSnapshot | null;
   taskEntry: TaskEntryShellProjection;
+  overlays: OverlaysShellProjection;
   uiLocale: UiLocale;
   uiLocaleOverride: UiLocale | null;
   setUiLocaleOverride: Dispatch<SetStateAction<UiLocale | null>>;
@@ -309,6 +313,7 @@ function AppShellContent({
     bootstrapSelectionLease,
     setActiveId,
     startNewSession,
+    readSelectionRevision,
     clearOwnedSessionState,
     captureSelection,
     isSessionSelected,
@@ -344,27 +349,25 @@ function AppShellContent({
   }, []);
 
   const {
-    settingsOpen,
-    settingsRequest,
-    settingsProviderCatalogOpen,
-    settingsConnectionDetailSlug,
-    settingsCreateProviderType,
-    setSettingsOpen,
-    closeSettingsModal,
-    setSettingsProfileId,
+    openHelp,
+    closePalette,
+    openSearch,
+    setSearchScrollTarget,
     openSettings,
     openSettingsSection,
-    openComputerHistorySettings,
     openProjectSettings,
     openProviderCatalog,
     openConnectionDetail,
     openProviderCreate,
-  } = useSettingsModal();
+    setSettingsProfileId,
+  } = overlays.commands;
+  const { searchScrollTarget } = overlays.selectors;
+  const settingsOpen = overlays.selectors.settings.open;
 
   const onboarding = useOnboardingSnapshot(initialOnboardingSnapshot);
   // The owner bridge keeps commands stable while TaskEntryRoot swaps the
   // current feature-owned implementation below the shell.
-  const { selectLocalProject } = taskEntry.commands;
+  const { selectLocalProject, resolveWorkBoardTarget, prepareWorkBoardDraft } = taskEntry.commands;
   const currentNewTaskDraftKey = taskEntry.selectors.draftKey;
   // Staged files and quotes do NOT take the target-scoped key: they belong to
   // the composer the user is looking at, and an in-flight send needs an owner
@@ -606,8 +609,6 @@ function AppShellContent({
   // recent workspace history so the home view is populated before the async
   // `app:info` round-trip completes on mount.
   const persistedComposerDefaults = loadComposerDefaults();
-  const [helpOpen, closeHelp, openHelp] = useKeyboardHelp();
-  const [paletteOpen, openPalette, closePalette] = useCommandPalette();
   const composerRef = useRef<ComposerHandle>(null);
   const {
     captureComposerImportOwner,
@@ -854,8 +855,8 @@ function AppShellContent({
       if (!confirmed) return false;
       // Abandoning the proposal is what leaves Plan: Runtime writes the
       // Session back to `agent` itself as part of it.
-      await window.maka.sessions.abandonPlanProposal(sessionId, latestProposal.proposalId);
-    } else await window.maka.sessions.setCollaborationMode(sessionId, active ? 'plan' : 'agent');
+      await sessionSettingIntent.abandonPlanProposal(sessionId, latestProposal.proposalId);
+    } else await sessionSettingIntent.setCollaborationMode(sessionId, active ? 'plan' : 'agent');
     return true;
   }
 
@@ -915,26 +916,6 @@ function AppShellContent({
     [],
   );
 
-  /* PR-FE-BUG-HUNT-0 (kenji bug-hunt 2026-06-24): SearchModal +
-     CommandPalette callbacks used to be inline arrows in JSX, so
-     their identity churned on every App re-render. SearchModal's
-     debounce effect lists `searchThread` in its dep array; during a
-     turn stream `App` re-renders many times per second and the
-     180ms timeout was torn down + restarted on every render, so it
-     never reached its `setTimeout` fire — search was effectively
-     dead while a stream was active. Same root cause for the palette
-     selection effect that resets keyboard highlight on every deps
-     change. Stable refs + memos keep the timers alive. */
-  const {
-    searchModalOpen,
-    setSearchModalOpen,
-    searchScrollTarget,
-    setSearchScrollTarget,
-    consumeSearchScrollTarget,
-    closeSearchModal,
-    searchModalDeps,
-    searchModalOnNavigate,
-  } = useShellSearch({ openSessionInChatRef });
   /** 技能页 使用: jump to the chat view and seed the composer with a skill
    *  invocation. Same human-in-the-loop rule as maka://compose — we never
    *  auto-send; the user finishes the sentence and presses Enter.
@@ -955,10 +936,10 @@ function AppShellContent({
   );
   const openWorkHub = useCallback(() => {
     if (!workHubEnabledRef.current) return;
-    setSettingsOpen(false);
+    overlays.commands.closeSettings();
     setNavSelection({ section: 'sessions' });
     setWorkHubActive(true);
-  }, [setNavSelection]);
+  }, [overlays.commands, setNavSelection]);
 
   // Transient placeholder while the real SessionSummary loads, so the composer
   // does not flash a value the session never had.
@@ -1231,7 +1212,7 @@ function AppShellContent({
   });
   const openNewTaskSurface = useCallback(() => {
     imageNoticeLifecycle.reset(NEW_TASK_PENDING_KEY);
-    startNewSession();
+    const ownerToken = startNewSession();
     // Only Plan resets: a new task starts out of Plan, in whatever
     // orchestration the last one was set to.
     setNewChatPlanModeActive(false);
@@ -1240,6 +1221,7 @@ function AppShellContent({
     // New-task affordances reset to the empty-state composer; move focus
     // there so the user can start typing immediately.
     window.requestAnimationFrame(() => composerRef.current?.focus());
+    return ownerToken;
   }, [imageNoticeLifecycle, setNavSelection, setSearchScrollTarget, startNewSession]);
 
   const createSession = useCallback(async () => {
@@ -1332,7 +1314,7 @@ function AppShellContent({
     newSessionPermissionMode: newTaskPermissionMode,
   };
 
-  const hasModalOpen = helpOpen || paletteOpen || searchModalOpen || sharedSessionDialog.isOpen;
+  const hasModalOpen = overlays.selectors.anyModalOpen || sharedSessionDialog.isOpen;
   const shellObscured = hasModalOpen || settingsOpen;
   const contextCompactionPresentation = useMemo(
     () =>
@@ -1348,11 +1330,6 @@ function AppShellContent({
       }),
     [toastApi],
   );
-  const reportWorkbarError = useCallback(
-    (title: string, description: string, sessionId: string) =>
-      toastApi.error(title, description, undefined, { sessionId }),
-    [toastApi],
-  );
   const workbarAvailable =
     sessionsSelected && !workHubActive && Boolean(activeId);
   const workbar = useWorkbarController({
@@ -1364,7 +1341,12 @@ function AppShellContent({
     authoritativeSessionIds: authoritativeSessionIds ?? undefined,
     shellObscured,
     modelChoices: chatModelChoices,
-    reportError: reportWorkbarError,
+    toastApi,
+    composerRef,
+    openNewTaskSurface,
+    openSessionInChat,
+    resolveWorkBoardTarget,
+    prepareWorkBoardDraft,
   });
   const { commands, selectors, LiveContextUsageProbe } = workbar;
 
@@ -1448,7 +1430,7 @@ function AppShellContent({
     refreshSessions,
     setActiveId,
     setNavSelection,
-    setSearchModalOpen,
+    openSearchModal: openSearch,
     setSessionListCollapsed: sessionRailLayoutStore.setCollapsed,
     workbar: {
       rightCollapsed: selectors.rightCollapsed,
@@ -1475,6 +1457,7 @@ function AppShellContent({
     },
     activeIdRef,
     captureComposerImportOwner,
+    captureSelection,
     checkTaskSubmissionReadiness: taskSubmissionReadyAtSend,
     isNewChatSendSurfaceActive,
     isShellSurfaceOwnerActive,
@@ -1797,6 +1780,7 @@ function AppShellContent({
     const quotes = pendingQuotes.length ? pendingQuotes : undefined;
     const ok = await send(text, pending, {
       waitForHostAdmission: revisionSend,
+      onSessionResolved: workbar.commands.bindNewTaskSessionResolver(readSelectionRevision()),
       ...directoryOptions,
       ...(quotes ? { quotes } : {}),
       ...(workspaceFileReferences.length
@@ -2072,7 +2056,7 @@ function AppShellContent({
   }
 
   function closeSettings() {
-    closeSettingsModal();
+    overlays.commands.closeSettings();
     // PR110c: re-pull onboarding snapshot when the user closes the
     // Settings modal — they may have just configured a default
     // connection or supplied a credential. Existing connections /
@@ -2126,6 +2110,11 @@ function AppShellContent({
 
   const canStageComposerContext =
     activeId !== undefined || taskEntry.selectors.target !== undefined;
+  // #4804: attachment-only sends are opt-in per host surface, and the Desktop
+  // host now admits them. The pickers share the same edit-mode condition.
+  const contextPickEnabled =
+    canStageComposerContext &&
+    !(revisionDraft && activeId === revisionDraft.draftSessionId);
 
   const activeMessageLoadError = activeId ? messageLoadErrorBySession[activeId] : undefined;
   const activeTranscriptReadingAnchor = activeId
@@ -2155,7 +2144,7 @@ function AppShellContent({
     messages,
     newTaskProfileId: taskEntry.selectors.selectedProfileId,
     settingsOpen,
-    settingsProfileId: settingsRequest.profileId,
+    settingsProfileId: overlays.selectors.settings.request.profileId,
     sessions,
     themePref,
     visibleSessions,
@@ -2244,7 +2233,7 @@ function AppShellContent({
         currentSessionId={activeIdRef}
         rangeController={transcriptRangeRef}
         messages={messages}
-        searchTarget={searchScrollTarget?.handled ? null : searchScrollTarget}
+        searchTarget={searchScrollTarget}
         landmarkSessionId={ownerActiveId ?? null}
         clearSearchTarget={() => setSearchScrollTarget(null)}
         sessionUi={sessionUiController}
@@ -2282,7 +2271,7 @@ function AppShellContent({
             <AppShellTopbarActions
               sidebarCollapsed={sessionListCollapsed}
               onToggleSidebar={() => sessionSideNavHandleRef.current?.getCollapseState()?.toggle()}
-              onOpenSearchModal={() => setSearchModalOpen(true)}
+              onOpenSearchModal={openSearch}
             />
             {/* Only a session has an identity to state. The other views name
                 themselves in the nav column they are selected from, and the
@@ -2399,7 +2388,7 @@ function AppShellContent({
             <div className="mainColumn" data-home-surface={homeSurfaceActive ? 'true' : undefined}
               inert={switchingSession || undefined}
               aria-busy={switchingSession || undefined}>
-              <ModuleHub.ModuleHubHost onOpenSettings={openComputerHistorySettings} isObscured={settingsOpen} />
+              <ModuleHub.ModuleHubHost onOpenSettings={() => openSettingsSection('computer-history')} isObscured={settingsOpen} />
               <WorkHubMainNavigation onOpenWorkHub={openWorkHub} onOpenSession={(sessionId) => { closeSettings(); openSession(sessionId); }} />
               <WorkHubDock enabled={workHubEnabled} visible={workHubActive && sessionsSelected && !shellObscured} />
               <ChatSurfaceLayout
@@ -2486,31 +2475,21 @@ function AppShellContent({
                   revisionNotice={
                     revisionDraft && activeId === revisionDraft.draftSessionId
                       ? {
-                          title: getDesktopConversationCopy(uiLocale).actions.revisionBannerTitle,
-                          detail: getDesktopConversationCopy(uiLocale).actions.revisionBannerDetail,
-                          cancelLabel: getDesktopConversationCopy(uiLocale).actions.revisionCancelLabel,
+                          title: desktopConversationCopy.actions.revisionBannerTitle,
+                          detail: desktopConversationCopy.actions.revisionBannerDetail,
+                          cancelLabel: desktopConversationCopy.actions.revisionCancelLabel,
                           onCancel: () => { void cancelRevisionDraft(); },
                         }
                       : undefined
                   }
                   slashCommands={desktopSlashCommands}
                   pendingAttachments={pendingAttachments}
-                  onRemoveAttachment={removeAttachment}
-                  pendingQuotes={pendingQuotes}
+                  allowAttachmentOnlySend={canStageComposerContext}
+                  onRemoveAttachment={removeAttachment}                  pendingQuotes={pendingQuotes}
                   onRemoveQuote={removeQuote}
                   onPasteAsQuote={canStageComposerContext ? addQuote : undefined}
-                  onPickAttachments={
-                    !canStageComposerContext ||
-                      (revisionDraft && activeId === revisionDraft.draftSessionId)
-                      ? undefined
-                      : pickAttachments
-                  }
-                  onAttachFilePaths={
-                    !canStageComposerContext ||
-                      (revisionDraft && activeId === revisionDraft.draftSessionId)
-                      ? undefined
-                      : attachFilePaths
-                  }
+                  onPickAttachments={contextPickEnabled ? pickAttachments : undefined}
+                  onAttachFilePaths={contextPickEnabled ? attachFilePaths : undefined}
                   modelLabel={activeModelLabel ?? newChatModelLabel}
                   activeSession={activeSessionForView}
                   activeModelConnectionId={activeSessionForModelControls?.llmConnectionId}
@@ -2649,7 +2628,6 @@ function AppShellContent({
                           }
                     : undefined
                 }
-                onScrollTargetHandled={consumeSearchScrollTarget}
                 restoreTargetTurn={Conversation.transcriptReadingPosition.restoreTarget(
                   activeTranscriptReadingAnchor,
                   activeUnavailableTranscriptRestore,
@@ -2754,8 +2732,7 @@ function AppShellContent({
                 ) : null}
               </ChatSurfaceLayout>
             </div>
-            {/* Collapse hides the Workbar surface without unmounting its tools;
-                dynamic resources therefore keep their existing lifecycle. */}
+            {/* Collapse hides the Workbar surface without unmounting its tools. */}
             <WorkbarHost model={workbar.host} />
           </div>
           </MakaUriContext.Provider>
@@ -2778,7 +2755,6 @@ function AppShellContent({
       />
 
       <AppShellOverlays
-        settingsOpen={settingsOpen}
         closeSettings={closeSettings}
         themePref={themePref}
         setThemePref={setThemePref}
@@ -2790,29 +2766,17 @@ function AppShellContent({
         refreshChatDefaults={() => {
           void taskEntry.commands.refresh().catch(() => undefined);
         }}
-        settingsRequest={settingsRequest}
-        settingsProviderCatalogOpen={settingsProviderCatalogOpen}
-        settingsConnectionDetailSlug={settingsConnectionDetailSlug}
-        settingsCreateProviderType={settingsCreateProviderType}
         onOpenComputerHistory={() => {
           closeSettings();
           setNavSelection({ section: 'computer-history' });
         }}
-        onOpenKeyboardHelp={openHelp}
         onOpenSettingsSession={(sessionId) => {
           closeSettings();
           openSessionInChat(sessionId);
         }}
         archivedTasks={archivedTasksBridge}
-        helpOpen={helpOpen}
-        closeHelp={closeHelp}
-        searchModalOpen={searchModalOpen}
-        closeSearchModal={closeSearchModal}
-        searchModalDeps={searchModalDeps}
-        searchModalOnNavigate={searchModalOnNavigate}
-        paletteOpen={paletteOpen}
-        closePalette={closePalette}
         commandOptions={commandOptions}
+        onNavigateToSession={openSessionInChat}
         onExternalSessionImported={(session) => {
           closeSettings();
           openSessionInChat(session.id);

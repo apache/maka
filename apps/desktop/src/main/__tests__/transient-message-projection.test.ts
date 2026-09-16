@@ -205,3 +205,10 @@ test('keeps a Host-bound current Turn when a later IPC result has no Turn identi
     hostTurnId: 'host-turn',
   });
 });
+
+test('keeps a transient message send time when a later update carries a new timestamp', () => {
+  const first = { ...transient, ts: 2 };
+  const later = { ...transient, ts: 9, text: 'edited text' };
+
+  assert.deepEqual(mergeTransientMessageProjection(first, later), { ...later, ts: 2 });
+});

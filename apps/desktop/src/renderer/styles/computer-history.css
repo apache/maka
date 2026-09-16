@@ -95,9 +95,12 @@
 .computer-history-apps svg { flex-shrink: 0; }
 .computer-history-group-header { display: flex; align-items: start; gap: 4px; padding: 16px 0 12px; }
 .computer-history-group-header > button:first-child { flex-shrink: 0; margin-top: 3px; }
-.computer-history-group-open { display: flex; flex: 1; flex-direction: column; gap: 8px; min-width: 0; padding: 6px 8px 10px; border: 0; border-radius: 4px; background: none; color: inherit; font: inherit; text-align: start; cursor: pointer; overflow-wrap: anywhere; }
-.computer-history-group-open:hover,
-.computer-history-group-open[aria-current="true"] { background: var(--surface-base); }
+.computer-history-group-header .computer-history-group-open { display: flex; flex: 1; flex-direction: column; align-items: stretch; justify-content: start; gap: 8px; min-width: 0; height: auto; padding: 6px 8px 10px; border: 0; border-radius: 4px; background: none; color: inherit; font: inherit; text-align: start; white-space: normal; cursor: pointer; overflow-wrap: anywhere; transform: none; transition: none; }
+/* Astryx's label wrapper must not clip or flatten the multi-line group layout. */
+.computer-history-group-open > span:first-child > span,
+.computer-history-group-open-content { display: contents; }
+.computer-history-group-header .computer-history-group-open:hover,
+.computer-history-group-header .computer-history-group-open[aria-current="true"] { background: var(--surface-base); }
 .computer-history-group-open:focus-visible { outline: 2px solid var(--accent-solid); outline-offset: 2px; }
 .computer-history-group-meta { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 4px 12px; width: 100%; font: var(--maka-text-supporting); color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
 .computer-history-group-meta > span + span { white-space: nowrap; }

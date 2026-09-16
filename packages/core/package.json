@@ -7,6 +7,7 @@
   "sideEffects": false,
   "private": true,
   "exports": {
+    "./executor-id": "./dist/executor-id.js",
     "./durable-tool-result-projection": "./dist/durable-tool-result-projection.js",
     "./model-projection-transition": "./dist/model-projection-transition.js",
     "./canonical-runtime-event": "./dist/canonical-runtime-event.js",

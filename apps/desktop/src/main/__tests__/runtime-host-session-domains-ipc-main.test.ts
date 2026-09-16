@@ -1492,7 +1492,6 @@ test('plan control channels rethrow failures outside the expected plan-control s
     (error: unknown) => error === boom,
   );
 });
-
 test('plan control channels return the Host error code across the IPC boundary', async () => {
   const cases = [
     {
@@ -1500,6 +1499,12 @@ test('plan control channels return the Host error code across the IPC boundary',
       args: ['session-1', 'proposal-1'],
       operation: 'plan.control',
       code: 'session_busy',
+    },
+    {
+      channel: 'plan-mode:abandon',
+      args: ['session-1', 'proposal-1'],
+      operation: 'plan.control',
+      code: 'operation_conflict',
     },
     {
       channel: 'plan-mode:approve',
@@ -1545,22 +1550,4 @@ test('plan control channels return the Host error code across the IPC boundary',
     );
     assert.deepEqual(changed, [], `${scenario.channel} must not report a mode change`);
   }
-});
-
-test('the plan proposal exit channel rejects instead of returning an envelope', async () => {
-  const ipc = ipcHarness();
-  const changed: string[] = [];
-  const cause = new RuntimeHostOperationError('plan.control', 'operation_conflict', 'Host refused the plan control');
-  registerDomainsIpc({
-    client: domainClient({
-      getPlanState: async () => emptyPlanSessionState('session-1'),
-      controlPlan: async () => {
-        throw cause;
-      },
-    }),
-    emitModeChanged: (sessionId) => changed.push(sessionId),
-    newId: () => 'fixed-id',
-  }, ipc);
-  await assert.rejects(() => ipc.invoke('plan-mode:abandon', 'session-1', 'proposal-1'), (error) => error === cause);
-  assert.deepEqual(changed, []);
 });

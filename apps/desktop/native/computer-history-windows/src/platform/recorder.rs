@@ -1580,9 +1580,25 @@ mod tests {
     use crate::recorder_lifecycle::Epochs;
     use windows::Win32::UI::WindowsAndMessaging::{SendMessageW, WTS_SESSION_UNLOCK};
 
+    fn completed_child() -> Child {
+        // Process startup is fixture preparation, not a simulated capture.
+        // Reap before starting the lease clock; Pending still owns the handle.
+        let mut child = Command::new("cmd.exe")
+            .args(["/d", "/c", "exit", "0"])
+            .creation_flags(0x08000000)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        assert!(child.wait().unwrap().success());
+        child
+    }
+
     #[test]
     fn pending_item_observation_retains_child_but_never_input_and_rejects_replacement() {
         for rejected in ["pause", "source", "owner", "epoch", "input"] {
+            let child = completed_child();
             let now = Instant::now();
             let state = Arc::new(LeaseState::new(now));
             let revision = LeaseRevision {
@@ -1597,14 +1613,6 @@ mod tests {
                 document_runtime_id: vec![],
                 items: vec![],
             });
-            let child = Command::new("cmd.exe")
-                .args(["/d", "/c", "exit", "0"])
-                .creation_flags(0x08000000)
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()
-                .unwrap();
             let (_, output) = mpsc::sync_channel(8);
             let mut pending = Pending {
                 child,
@@ -1698,6 +1706,7 @@ mod tests {
             "missing-stamp",
             "one-shot",
         ] {
+            let child = completed_child();
             let now = Instant::now();
             let baseline = case == "baseline" || case == "one-shot";
             let birth = if baseline {
@@ -1739,14 +1748,6 @@ mod tests {
                 captured_at: previous,
                 lease: Some((lease.clone(), 1)),
             });
-            let child = Command::new("cmd.exe")
-                .args(["/d", "/c", "exit", "0"])
-                .creation_flags(0x08000000)
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()
-                .unwrap();
             let (_, output) = mpsc::sync_channel(8);
             let mut pending = Pending {
                 child,
@@ -2224,6 +2225,10 @@ mod tests {
                 tests::{Home, snapshot},
             },
         };
+        let child = completed_child();
+        let home = Home::new();
+        let policy = home.policy(true);
+        let mut store = Store::new(&home.0, Utc::now()).unwrap();
         let events = EventEpochs::new();
         let lease = Arc::new(LeaseState::new(Instant::now()));
         let frame = LeaseRevision {
@@ -2292,16 +2297,6 @@ mod tests {
             target: (fresh.window_id as usize, fresh.pid),
             epochs: events.current(),
         };
-        // A harmless local child gives the real Pending disposition/Drop owner
-        // without a UI, provider, guest fixture or personal application.
-        let child = Command::new("cmd.exe")
-            .args(["/d", "/c", "exit", "0"])
-            .creation_flags(0x08000000)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap();
         let (_, output) = mpsc::sync_channel(8);
         let pending = Pending {
             child,
@@ -2338,8 +2333,6 @@ mod tests {
             epochs: events.current(),
             ..cancelled
         };
-        let home = Home::new();
-        let policy = home.policy(true);
         let mut schedule = CaptureSchedule::default();
         assert!(
             retain_completed_input(
@@ -2398,7 +2391,6 @@ mod tests {
         idle.frame_epochs = Some((1, 2));
         idle.frame_changes = lease.observed_changes();
         assert!(idle.lease_current());
-        let mut store = Store::new(&home.0, Utc::now()).unwrap();
         let verifier_started = Instant::now();
         let write = |action: &crate::input_actions::QueuedAction| {
             let mut snapshot = fresh.without_content();

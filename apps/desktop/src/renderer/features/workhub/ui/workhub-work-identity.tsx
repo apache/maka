@@ -17,26 +17,51 @@
  * under the License.
  */
 
-import { createContext, useState, type ReactNode } from 'react';
+import { createContext, useContext, useMemo, useState, type ReactNode } from 'react';
+
+import { allocateWorkHubHues } from '../model/identity-colors.js';
 
 export const WorkHubHighlightContext = createContext<{
   sessionId: string | undefined;
   highlight(sessionId: string | undefined): void;
-}>({ sessionId: undefined, highlight: () => {} });
+  navigationWork?: { sessionId: string; nonce: number };
+  navigateWork(work: { sessionId: string; name: string }): void;
+  selectedWork?: { sessionId: string; name: string };
+  toggleWork(work: { sessionId: string; name: string }): void;
+  selectWork(work: { sessionId: string; name: string } | undefined): void;
+}>({ sessionId: undefined, highlight: () => {}, navigateWork: () => {}, selectWork: () => {}, toggleWork: () => {} });
 
-/** Stable across refreshes and reordering; color supplements the visible work name. */
-export function workHubIdentityHue(sessionId: string): number {
-  let hash = 0;
-  for (const char of sessionId) hash = (Math.imul(hash, 31) + char.charCodeAt(0)) >>> 0;
-  const hues = [250, 165, 65, 315, 205, 25];
-  return hues[hash % hues.length]!;
+/** Work identity hover and conversation filtering are local presentation state. */
+export function useWorkHubHighlightState() {
+  const [sessionId, highlight] = useState<string>();
+  const [navigationWork, setNavigationWork] = useState<{ sessionId: string; nonce: number }>();
+  const [selectedWork, setSelectedWork] = useState<{ sessionId: string; name: string }>();
+  const selectWork = (work: { sessionId: string; name: string } | undefined) => {
+    setNavigationWork(undefined);
+    setSelectedWork(work);
+  };
+  const navigateWork = (work: { sessionId: string; name: string }) => {
+    if (selectedWork?.sessionId === work.sessionId) selectWork(undefined);
+    else if (navigationWork?.sessionId === work.sessionId) selectWork(work);
+    else {
+      setSelectedWork(undefined);
+      setNavigationWork({ sessionId: work.sessionId, nonce: Date.now() });
+    }
+  };
+  return { sessionId, highlight, navigationWork, navigateWork, selectedWork, selectWork, toggleWork: (work: { sessionId: string; name: string }) => selectWork(selectedWork?.sessionId === work.sessionId ? undefined : work) };
 }
 
+const WorkHubHueContext = createContext<ReadonlyMap<string, number> | undefined>(undefined);
 
-/** Work identity hover is local presentation state shared by the three rails. */
-export function WorkHubHighlightProvider({ children }: { children: ReactNode }) {
-  const [sessionId, highlight] = useState<string>();
-  return <WorkHubHighlightContext.Provider value={{ sessionId, highlight }}>
-    {children}
-  </WorkHubHighlightContext.Provider>;
+export function WorkHubHueProvider({ sessionIds, children }: { sessionIds: readonly string[]; children: ReactNode }) {
+  const [allocated, setAllocated] = useState<ReadonlyMap<string, number>>(() => allocateWorkHubHues(sessionIds));
+  const next = allocateWorkHubHues(sessionIds, allocated);
+  if (next !== allocated) setAllocated(next);
+  return <WorkHubHueContext.Provider value={next}>{children}</WorkHubHueContext.Provider>;
+}
+
+export function useWorkHubIdentityHue(sessionIds: readonly string[]) {
+  const hues = useContext(WorkHubHueContext);
+  const palette = useMemo(() => hues ?? allocateWorkHubHues(sessionIds), [hues, sessionIds]);
+  return useMemo(() => (id: string) => palette.get(id) ?? 250, [palette]);
 }

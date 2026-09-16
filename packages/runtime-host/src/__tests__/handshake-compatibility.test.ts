@@ -139,7 +139,7 @@ test('process identity query failure does not consume or prevent the incompatibl
   );
 });
 
-for (const legacyEpoch of [39, 155, 156, 157]) {
+for (const legacyEpoch of [39, 155, 156, 157, 158]) {
   test(`rejects an epoch-${legacyEpoch} Host before any domain command`, async () => {
     let admittedRequest: RequestFrame | undefined;
     await withForgedHandshakePeer(

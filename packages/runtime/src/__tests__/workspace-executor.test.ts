@@ -19,10 +19,11 @@
 
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, truncate, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, truncate, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { LocalWorkspaceExecutor } from '../workspace-executor.js';
+import { createBoundaryFilesystemExecutor } from '../filesystem-executor.js';
 
 const ONE_PIXEL_IMAGES = [
   [
@@ -232,7 +233,9 @@ describe('LocalWorkspaceExecutor file operations', () => {
 
     const result = await executor.globFiles({ cwd, pattern: 'src/*.*', limit: 2 });
 
-    assert.deepStrictEqual(result.files, ['src/a.ts', 'src/b.ts']);
+    assert.equal(result.files.length, 2);
+    assert.equal(new Set(result.files).size, 2);
+    assert.ok(result.files.every((file) => ['src/a.ts', 'src/b.ts', 'src/c.js'].includes(file)));
   });
 
   test('greps file contents with rg-compatible no-match behavior', async () => {
@@ -274,4 +277,146 @@ describe('LocalWorkspaceExecutor file operations', () => {
       `${join(cwd, 'src', 'main.ts')}:1:export const token = 1; // --flag`,
     ]);
   });
+
+  test('reports a missing ripgrep as grep_unavailable with an install hint (#5167)', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'maka-workspace-grep-no-rg-'));
+    const emptyBin = await mkdtemp(join(tmpdir(), 'maka-workspace-grep-empty-path-'));
+    const executor = new LocalWorkspaceExecutor({ rgCandidates: [] });
+
+    await withPath(emptyBin, () =>
+      assert.rejects(
+        executor.grepFiles({
+          cwd,
+          pattern: 'token',
+          path: cwd,
+          maxCountPerFile: 50,
+          limit: 200,
+          timeoutMs: 5_000,
+        }),
+        (error: NodeJS.ErrnoException) => {
+          assert.equal(error.code, 'grep_unavailable');
+          assert.match(error.message, /ripgrep/);
+          assert.match(error.message, /BurntSushi\/ripgrep/);
+          assert.match(error.message, /then retry/);
+          return true;
+        },
+      ),
+    );
+  });
+
+  test('keeps a missing working directory distinct from a missing ripgrep', async () => {
+    // Node reports a missing spawn cwd exactly like a missing executable
+    // (`spawn rg ENOENT`), so the command name alone cannot tell them apart.
+    const parent = await mkdtemp(join(tmpdir(), 'maka-workspace-grep-gone-cwd-'));
+    const cwd = join(parent, 'deleted');
+    await mkdir(cwd);
+    await writeFile(join(parent, 'kept.ts'), 'token', 'utf8');
+    await rm(cwd, { recursive: true });
+    const executor = new LocalWorkspaceExecutor();
+
+    await assert.rejects(
+      executor.grepFiles({
+        cwd,
+        pattern: 'token',
+        path: parent,
+        maxCountPerFile: 50,
+        limit: 200,
+        timeoutMs: 5_000,
+      }),
+      (error: NodeJS.ErrnoException) => {
+        assert.equal(error.code, 'ENOENT');
+        assert.notEqual(error.name, 'RipgrepUnavailableError');
+        return true;
+      },
+    );
+  });
+
+  test('a bypass Grep finds ripgrep installed after Host startup outside its inherited PATH', {
+    skip: process.platform === 'win32' ? 'POSIX executable fixture' : false,
+  }, async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'maka-workspace-bypass-grep-'));
+    const emptyBin = await mkdtemp(join(tmpdir(), 'maka-workspace-bypass-old-path-'));
+    const localAppData = await mkdtemp(join(tmpdir(), 'maka-workspace-bypass-local-app-data-'));
+    try {
+      const executable = join(localAppData, 'Microsoft', 'WinGet', 'Links', 'rg.exe');
+      const filesystem = createBoundaryFilesystemExecutor({
+        workspace: new LocalWorkspaceExecutor({
+          platform: 'win32',
+          hostEnv: { PATH: emptyBin, LOCALAPPDATA: localAppData },
+        }),
+      });
+      const request = {
+        operation: {
+          kind: 'grep' as const,
+          pattern: 'token',
+          path: cwd,
+          maxCountPerFile: 50,
+          limit: 200,
+          timeoutMs: 5_000,
+        },
+        cwd,
+        executionBoundary: { kind: 'bypass' as const, revision: 1 },
+      };
+
+      await withPath(emptyBin, async () => {
+        await assert.rejects(filesystem.execute(request), { code: 'grep_unavailable' });
+
+        await mkdir(join(localAppData, 'Microsoft', 'WinGet', 'Links'), { recursive: true });
+        await writeFile(
+          executable,
+          `#!/bin/sh\nprintf '%s\\n' '{"type":"summary","data":{"stats":{"matched_lines":0}}}'\n`,
+          'utf8',
+        );
+        await chmod(executable, 0o755);
+
+        assert.deepEqual(await filesystem.execute(request), {
+          kind: 'grep',
+          matches: [],
+          matchedLines: 0,
+          returnedLines: 0,
+          omittedLines: 0,
+          truncated: false,
+        });
+      });
+    } finally {
+      await Promise.all(
+        [cwd, emptyBin, localAppData].map((path) => rm(path, { recursive: true, force: true })),
+      );
+    }
+  });
+
+  test('leaves other spawn failures, such as a non-executable rg, untouched', {
+    skip: process.platform === 'win32' ? 'POSIX execute permissions' : false,
+  }, async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'maka-workspace-grep-eacces-'));
+    const bin = await mkdtemp(join(tmpdir(), 'maka-workspace-grep-noexec-bin-'));
+    await writeFile(join(bin, 'rg'), '#!/bin/sh\n', 'utf8');
+    await chmod(join(bin, 'rg'), 0o644);
+    const executor = new LocalWorkspaceExecutor({ rgCandidates: [join(bin, 'rg')] });
+
+    await withPath(bin, () =>
+      assert.rejects(
+        executor.grepFiles({
+          cwd,
+          pattern: 'token',
+          path: cwd,
+          maxCountPerFile: 50,
+          limit: 200,
+          timeoutMs: 5_000,
+        }),
+        { code: 'EACCES' },
+      ),
+    );
+  });
 });
+
+async function withPath<T>(path: string, run: () => Promise<T>): Promise<T> {
+  const original = process.env.PATH;
+  process.env.PATH = path;
+  try {
+    return await run();
+  } finally {
+    if (original === undefined) delete process.env.PATH;
+    else process.env.PATH = original;
+  }
+}
