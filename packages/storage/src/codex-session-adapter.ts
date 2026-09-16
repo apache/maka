@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { createHash } from 'node:crypto';
 import { open, opendir, readdir, realpath, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, join, resolve, sep } from 'node:path';
@@ -103,7 +104,7 @@ type CodexCatalogKeyset =
       readonly sortTimestamp: number;
       readonly id: string;
     }
-  | { readonly kind: 'filesystem'; readonly mtimeMs: number; readonly pathKey: string };
+  | { readonly kind: 'filesystem'; readonly mtimeMs: number; readonly pathIdentity: string };
 
 /**
  * Read-only adapter for Codex rollout JSONL.
@@ -335,7 +336,7 @@ export class CodexSessionAdapter implements ExternalSessionAdapter {
 
 interface RolloutCandidate {
   path: string;
-  catalogKey: string;
+  catalogIdentity: string;
   mtimeMs: number;
   archived: boolean;
 }
@@ -1007,9 +1008,10 @@ async function* iterateRolloutFiles(
       entry.name.endsWith('.jsonl')
     ) {
       try {
+        const catalogKey = `${archived ? 'a' : 's'}/${relativePath}`;
         yield {
           path,
-          catalogKey: `${archived ? 'a' : 's'}/${relativePath}`,
+          catalogIdentity: createHash('sha256').update(catalogKey).digest('base64url'),
           mtimeMs: (await stat(path)).mtimeMs,
           archived,
         };
@@ -1076,10 +1078,10 @@ async function nextRolloutCatalogBatch(
 }
 
 function compareRolloutCandidates(
-  left: Pick<RolloutCandidate, 'mtimeMs' | 'catalogKey'>,
-  right: Pick<RolloutCandidate, 'mtimeMs' | 'catalogKey'>,
+  left: Pick<RolloutCandidate, 'mtimeMs' | 'catalogIdentity'>,
+  right: Pick<RolloutCandidate, 'mtimeMs' | 'catalogIdentity'>,
 ): number {
-  return right.mtimeMs - left.mtimeMs || left.catalogKey.localeCompare(right.catalogKey);
+  return right.mtimeMs - left.mtimeMs || left.catalogIdentity.localeCompare(right.catalogIdentity);
 }
 
 function rolloutCandidateIsAfter(
@@ -1089,7 +1091,7 @@ function rolloutCandidateIsAfter(
   return (
     compareRolloutCandidates(candidate, {
       mtimeMs: keyset.mtimeMs,
-      catalogKey: keyset.pathKey,
+      catalogIdentity: keyset.pathIdentity,
     }) > 0
   );
 }
@@ -1097,7 +1099,11 @@ function rolloutCandidateIsAfter(
 function candidateKeyset(
   candidate: RolloutCandidate,
 ): Extract<CodexCatalogKeyset, { kind: 'filesystem' }> {
-  return { kind: 'filesystem', mtimeMs: candidate.mtimeMs, pathKey: candidate.catalogKey };
+  return {
+    kind: 'filesystem',
+    mtimeMs: candidate.mtimeMs,
+    pathIdentity: candidate.catalogIdentity,
+  };
 }
 
 function encodeCatalogKeyset(
@@ -1108,7 +1114,7 @@ function encodeCatalogKeyset(
   if (keyset.kind === 'database') {
     return `d:${queryHash}:${Buffer.from(keyset.stateDatabase).toString('base64url')}:${encodeCursorNumber(keyset.sortTimestamp)}:${Buffer.from(keyset.id).toString('base64url')}`;
   }
-  return `f:${queryHash}:${encodeCursorNumber(keyset.mtimeMs)}:${Buffer.from(keyset.pathKey).toString('base64url')}`;
+  return `f:${queryHash}:${encodeCursorNumber(keyset.mtimeMs)}:${keyset.pathIdentity}`;
 }
 
 function decodeCatalogKeyset(
@@ -1141,16 +1147,11 @@ function decodeCatalogKeyset(
   if (parts[0] === 'f') {
     if (parts.length !== 4) throw new ExternalSessionCatalogCursorError();
     const mtimeMs = decodeCursorNumber(parts[2]!);
-    const encodedPathKey = parts[3]!;
-    const pathKey = Buffer.from(encodedPathKey, 'base64url').toString('utf8');
-    if (
-      Buffer.byteLength(pathKey, 'utf8') > 320 ||
-      Buffer.from(pathKey).toString('base64url') !== encodedPathKey ||
-      !/^[as]\/[^\u0000-\u001f\u007f]+$/.test(pathKey)
-    ) {
+    const pathIdentity = parts[3]!;
+    if (!/^[A-Za-z0-9_-]{43}$/.test(pathIdentity)) {
       throw new ExternalSessionCatalogCursorError();
     }
-    return { kind: 'filesystem', mtimeMs, pathKey };
+    return { kind: 'filesystem', mtimeMs, pathIdentity };
   }
   throw new ExternalSessionCatalogCursorError();
 }

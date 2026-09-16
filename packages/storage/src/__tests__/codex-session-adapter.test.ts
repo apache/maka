@@ -698,6 +698,45 @@ describe('CodexSessionAdapter', () => {
     });
   });
 
+  test('filesystem cursor stays wire-bounded for deeply nested rollout paths', async () => {
+    await withCodexHome(async (codexHome) => {
+      const nestedDirectory = join(
+        codexHome,
+        'sessions',
+        ...Array.from({ length: 12 }, (_, index) => `${index}-${'nested'.repeat(8)}`),
+      );
+      await mkdir(nestedDirectory, { recursive: true });
+      const nestedId = 'codex-deep-cursor';
+      const nestedPath = join(nestedDirectory, `rollout-${nestedId}.jsonl`);
+      await writeFile(nestedPath, minimalRollout(nestedId, '/workspace/root', 'deep'));
+      const shallowPath = await seedMinimalRollout(
+        codexHome,
+        'codex-shallow-cursor',
+        false,
+        '/workspace/root',
+        'shallow',
+      );
+      const tied = new Date('2026-08-08T00:00:00Z');
+      await utimes(nestedPath, tied, tied);
+      await utimes(shallowPath, tied, tied);
+      const adapter = new CodexSessionAdapter({ codexHome });
+
+      const first = await adapter.listSessionPage({ limit: 1 });
+      assert.equal(first.hasMore, true);
+      assert.ok(Buffer.byteLength(first.items[0]!.nextCursor, 'utf8') <= 512);
+      const second = await adapter.listSessionPage({
+        cursor: first.items[0]!.nextCursor,
+        limit: 1,
+      });
+
+      assert.equal(second.hasMore, false);
+      assert.deepEqual(
+        new Set([...first.items, ...second.items].map(({ summary }) => summary.id)),
+        new Set([nestedId, 'codex-shallow-cursor']),
+      );
+    });
+  });
+
   test('database keyset paging stays on the state generation that issued the cursor', async () => {
     await withCodexHome(async (codexHome) => {
       const oldRows: StateRow[] = [];
