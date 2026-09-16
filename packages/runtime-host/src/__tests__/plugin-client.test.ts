@@ -18,7 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, test } from 'node:test';
@@ -82,6 +82,17 @@ test('Client-only packages use the unified Store, generation, and desktop-ui com
     assert.equal(snapshot.entries[0]?.extensionId, 'weather');
     assert.equal(snapshot.entries[0]?.totalBytes, Buffer.byteLength(bundle));
     installedClientDigest = snapshot.entries[0]!.clientDigest;
+
+    const orphan = join(control, 'plugin-generations-v1', 'orphan');
+    await mkdir(orphan);
+    await platform.reconcile();
+    assert.deepEqual(
+      (await platform.clientSnapshot()).entries.map(
+        ({ generation: _generation, ...entry }) => entry,
+      ),
+      snapshot.entries.map(({ generation: _generation, ...entry }) => entry),
+    );
+    await assert.rejects(() => access(orphan));
 
     const chunks: Buffer[] = [];
     let offset = 0;

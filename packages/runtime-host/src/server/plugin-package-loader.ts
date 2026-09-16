@@ -18,7 +18,7 @@
  */
 
 import { createHash, randomUUID } from 'node:crypto';
-import { cp, mkdir, open, readFile, rm } from 'node:fs/promises';
+import { cp, mkdir, open, readFile, readdir, rm } from 'node:fs/promises';
 import { join, relative } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import {
@@ -142,8 +142,14 @@ export class TrustedPluginPackageLoader {
   }
 
   async collectGarbage(): Promise<void> {
-    this.#owned.clear();
-    await rm(this.#generations, { recursive: true, force: true });
+    const entries = await readdir(this.#generations).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return [];
+      throw error;
+    });
+    for (const name of entries) {
+      const path = join(this.#generations, name);
+      if (!this.#owned.has(path)) await rm(path, { recursive: true, force: true });
+    }
   }
 
   async release(pkg: MakaPluginPackage): Promise<void> {
