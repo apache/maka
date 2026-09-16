@@ -32,6 +32,7 @@ export function WorkbarWorkspace(props: SessionWorkspaceProps) {
     layoutSessionId: props.session?.id,
     layoutScope: props.layoutScope,
     activeSession: props.session,
+    sessions: props.session ? [props.session] : [],
     projectId: props.session?.projectId,
     projectAliases: [],
     authoritativeSessionIds: props.sessionIds,
