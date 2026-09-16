@@ -270,6 +270,16 @@ export function useChatScroll(input: {
   const hold = useRef<{ turnId: string; gap: number; firstTurnId?: string } | undefined>(undefined);
   /** Stops watching for the input that would abandon a hold; set while one is open. */
   const holdWatch = useRef<(() => void) | undefined>(undefined);
+  /** Stops the landing below; set while it is still writing the offset back. */
+  const holdLanding = useRef<(() => void) | undefined>(undefined);
+  // A command names where the reader wants to be, which is not where the hold
+  // was taken. Reader input during the wait only moves the hold, so the command
+  // seam and the input the capture below listens for are not the same signal.
+  useEffect(() => authority.subscribeCommands(() => {
+    hold.current = undefined;
+    holdWatch.current?.();
+    holdLanding.current?.();
+  }), [authority]);
   const holdReader = useCallback((): void => {
     const root = input.scrollRef.current;
     const handle = input.virtualizerRef.current;
@@ -322,9 +332,11 @@ export function useChatScroll(input: {
     };
     land();
     const release = (): void => {
+      holdLanding.current = undefined;
       if (pending !== undefined) cancelAnimationFrame(pending);
       frames = 0;
     };
+    holdLanding.current = release;
     for (const event of READER_INPUT_EVENTS) root.addEventListener(event, release, { passive: true });
     return () => {
       release();

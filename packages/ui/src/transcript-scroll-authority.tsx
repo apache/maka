@@ -77,6 +77,12 @@ export interface TranscriptScrollAuthority {
    * wait for the scroll or resize that will report it.
    */
   measureReadingTurn(): string | undefined;
+  /**
+   * Notified when a command takes the reading position, before the viewport
+   * moves. A correction that is holding the reader somewhere has to hear that
+   * the position it is defending is no longer the one the reader asked for.
+   */
+  subscribeCommands(listener: () => void): () => void;
   subscribe(listener: () => void): () => void;
   getSnapshot(): TranscriptScrollSnapshot;
 }
@@ -108,6 +114,10 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
   let readingTurnId: string | undefined;
   let snapshot: TranscriptScrollSnapshot = { pinned, awayFromTail, readingTurnId };
   const listeners = new Set<() => void>();
+  const commandListeners = new Set<() => void>();
+  const command = (): void => {
+    for (const listener of commandListeners) listener();
+  };
   const distanceToTail = (): number =>
     root ? root.scrollHeight - root.scrollTop - root.clientHeight : 0;
   const readTurn = (): string | undefined =>
@@ -303,6 +313,7 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
       };
     },
     pinToTail() {
+      command();
       gesture = undefined;
       pointer = undefined;
       touchHeld = false;
@@ -311,6 +322,7 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
       publish();
     },
     releasePin() {
+      command();
       gesture = undefined;
       pinned = false;
       awayFromTail = distanceToTail() > BUTTON_THRESHOLD_PX;
@@ -320,6 +332,10 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
       readingTurnId = readTurn();
       publish();
       return readingTurnId;
+    },
+    subscribeCommands(listener) {
+      commandListeners.add(listener);
+      return () => { commandListeners.delete(listener); };
     },
     subscribe(listener) {
       listeners.add(listener);

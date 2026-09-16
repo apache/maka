@@ -121,6 +121,7 @@ function setup(turnIds: string[]) {
   const calls: ScrollCall[] = [];
   const handle = {
     findItemIndex: (offset: number) => Math.max(0, Math.floor(offset / TURN_HEIGHT)),
+    getItemOffset: (index: number) => index * TURN_HEIGHT,
     scrollToIndex: (index: number, options: { align?: string; smooth?: boolean } = {}) => {
       calls.push({ index, ...options });
       scroller.scrollTop = options.align === 'center'
@@ -177,6 +178,7 @@ function mountHook(env: Env) {
     authority?: TranscriptScrollAuthority;
     highlighted: string | null;
     revealTurnAtStart?: (turnId: string) => void;
+    holdReader?: () => void;
     anchors: Map<string, string | undefined>;
   } = { highlighted: null, anchors: new Map() };
   const viewportNavigation = createTranscriptViewportNavigation();
@@ -202,6 +204,7 @@ function mountHook(env: Env) {
     });
     state.highlighted = result.highlightedTurnId;
     state.revealTurnAtStart = result.revealTurnAtStart;
+    state.holdReader = result.holdReader;
     return null;
   }
   mountedRoot = createRoot(env.document.querySelector('#mount')!);
@@ -320,4 +323,25 @@ test('a rail navigation releases the pin and scrolls its Turn to the top by inde
 
   env.resize();
   assert.equal(env.scroller.scrollTop, 3 * TURN_HEIGHT, 'growth does not take a navigated reader back to the tail');
+});
+
+test('returning to the tail during a prepend landing is not undone by it', async () => {
+  const env = setup(turns(4));
+  const hook = mountHook(env);
+  await hook.render({ sessionId: 's' });
+  await act(() => { env.readerScrollTo(TURN_HEIGHT + 100); });
+  assert.equal(hook.state.authority?.getSnapshot().pinned, false);
+
+  await act(() => { hook.state.holdReader?.(); });
+  env.transcript.turnIds = [...turns(2, 'earlier'), ...env.transcript.turnIds];
+  await hook.render({ sessionId: 's' });
+  assert.equal(env.scroller.scrollTop, 3 * TURN_HEIGHT + 100, 'the prepend left the reader on turn-1');
+
+  // The landing repeats for several frames. A reader who asks for the tail in
+  // that window is asking for a position of their own.
+  await act(() => { hook.state.authority?.pinToTail(); });
+  const tail = 6 * TURN_HEIGHT - CLIENT_HEIGHT;
+  assert.equal(env.scroller.scrollTop, tail);
+  await env.flushFrames();
+  assert.equal(env.scroller.scrollTop, tail, 'the landing took the reader back off the tail');
 });
