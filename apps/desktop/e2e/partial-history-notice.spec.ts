@@ -17,6 +17,14 @@
  * under the License.
  */
 
+/**
+ * A Session too large for one read: what the Host hands over is a tail, and
+ * the rest comes only when the reader asks, one bounded page at a time.
+ *
+ * Where the arriving rows leave the reader is renderer-owned and lives in the
+ * `PrependedHistoryKeepsMeasuredHeights` browser story over real layout.
+ */
+
 import type { Page } from '@playwright/test';
 import { expect, test } from './fixtures';
 
@@ -35,17 +43,6 @@ async function frames(page: Page, count = 2): Promise<void> {
   }), count);
 }
 
-/** The first Turn still on screen and its viewport top. */
-async function readingAnchor(page: Page): Promise<{ turnId: string; top: number }> {
-  return page.locator(SCROLLER).evaluate((scroller) => {
-    const rootTop = scroller.getBoundingClientRect().top;
-    const turn = [...scroller.querySelectorAll<HTMLElement>('[data-turn-id]')]
-      .find((candidate) => candidate.getBoundingClientRect().bottom > rootTop);
-    if (!turn?.dataset.turnId) throw new Error('no Turn is on screen');
-    return { turnId: turn.dataset.turnId, top: turn.getBoundingClientRect().top };
-  });
-}
-
 /** Wheel to the top as a reader would; a programmatic scroll does not release the tail pin. */
 async function wheelToTop(page: Page): Promise<void> {
   const scroller = page.locator(SCROLLER);
@@ -61,11 +58,7 @@ async function wheelToTop(page: Page): Promise<void> {
   await frames(page, 4);
 }
 
-async function turnTop(page: Page, turnId: string): Promise<number> {
-  return page.locator(`[data-turn-id="${turnId}"]`).evaluate((turn) => turn.getBoundingClientRect().top);
-}
-
-test('a transcript over the history budget loads earlier Turns only on request, holding the reader', async ({
+test('a transcript over the history budget loads earlier Turns only on request', async ({
   partialHistoryWindow: page,
 }) => {
   test.setTimeout(90_000);
@@ -88,12 +81,9 @@ test('a transcript over the history budget loads earlier Turns only on request, 
   while ((await loadEarlier.count()) > 0) {
     await wheelToTop(page);
     const before = await ticks.count();
-    const anchor = await readingAnchor(page);
     await loadEarlier.click();
     await expect.poll(() => ticks.count(), { timeout: 30_000 }).toBeGreaterThan(before);
     await frames(page, 4);
-    const moved = Math.abs((await turnTop(page, anchor.turnId)) - anchor.top);
-    expect(moved, `load-earlier moved ${anchor.turnId} by ${moved}px`).toBeLessThanOrEqual(1);
     loads += 1;
     expect(loads).toBeLessThan(PARTIAL_HISTORY_TURN_COUNT);
   }
