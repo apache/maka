@@ -1052,7 +1052,7 @@ describe('ImportTasksSettingsPage batch import', () => {
   });
 
   it('select all and batch submission exclude a source the Host is already importing', async () => {
-    const { container, importedIds } = await renderPage({
+    const harness = await renderPage({
       catalog: {
         sessions: [
           externalSession({
@@ -1065,6 +1065,7 @@ describe('ImportTasksSettingsPage batch import', () => {
       },
       importBySource: { available: 'ok' },
     });
+    const { container, importedIds } = harness;
 
     await tick(masterBox(container), true);
     assert.deepEqual(rows(container).map((box) => box.checked), [false, true]);
@@ -1074,6 +1075,8 @@ describe('ImportTasksSettingsPage batch import', () => {
     assert.ok(run);
     await act(async () => run.click());
     assert.deepEqual(importedIds(), ['available']);
+
+    await act(async () => harness.root.unmount());
   });
 
   it('does not carry a selected source id into another adapter', async () => {
