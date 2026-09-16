@@ -147,6 +147,9 @@ export interface MakaSessionDriver {
   /** Reads the current committed Todo projection for the attached Session. */
   queryTodo?(sessionId: string): Promise<{ sessionId: string; items: SessionTodoItem[] }>;
   getSessionResumeAvailability?(session: SessionSummary): Promise<SessionResumeAvailability>;
+  getSessionResumeCandidateAvailability?(
+    session: SessionSummary,
+  ): Promise<SessionResumeAvailability>;
   preparePrompt(
     prompt: string,
     options?: MakaPreparePromptOptions,
