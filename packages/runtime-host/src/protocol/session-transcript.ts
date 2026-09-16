@@ -61,7 +61,6 @@ export interface SessionTranscriptPage {
 }
 
 export interface SessionTranscriptBootstrap {
-  readonly throughSequence: number | null;
   readonly durable: SessionTranscriptPage;
 }
 
@@ -134,22 +133,15 @@ export function decodeSessionTranscriptPageInput(value: unknown): SessionTranscr
 }
 
 export function decodeSessionTranscriptBootstrap(value: unknown): SessionTranscriptBootstrap {
-  const bootstrap = requireExactRecord(value, 'Session transcript bootstrap', [
-    'throughSequence',
-    'durable',
-  ]);
-  const throughSequence =
-    bootstrap.throughSequence === null
-      ? null
-      : requireCount(bootstrap.throughSequence, 'Session transcript watermark');
+  const bootstrap = requireExactRecord(value, 'Session transcript bootstrap', ['durable']);
   const durable = decodeSessionTranscriptPage(bootstrap.durable);
-  if (durable.direction !== 'older' || durable.throughSequence !== throughSequence) {
+  if (durable.direction !== 'older') {
     throw invalidProtocolFrame('Invalid Session transcript bootstrap correlation');
   }
   if (durable.rawBytes > SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES) {
     throw invalidProtocolFrame('Session transcript bootstrap exceeds byte limit');
   }
-  return { throughSequence, durable };
+  return { durable };
 }
 
 export function decodeSessionTranscriptPage(value: unknown): SessionTranscriptPage {

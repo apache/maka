@@ -739,10 +739,7 @@ test('fences transcript range failures across same-source replica recovery', asy
           snapshot: continuitySnapshot(),
           transcript: Promise.resolve([]),
           events,
-          transcriptBootstrap: {
-            throughSequence: 1,
-            durable: bootstrap,
-          },
+          transcriptBootstrap: { durable: bootstrap },
           decodeTranscriptPage: async (page) => ({
             messages: page === bootstrap ? [{ identity: 1, message }] : [],
             nextCursor: page === bootstrap ? 'older' : null,
@@ -1128,7 +1125,6 @@ test('keeps a bounded transcript batch window in flight until the renderer ackno
           transcript: Promise.resolve([message]),
           events,
           transcriptBootstrap: {
-            throughSequence: 0,
             durable: {
               kind: 'page',
               sessionId: 'session-1',
@@ -1221,7 +1217,6 @@ test('finishes transcript open and replays a stale range request after replaceme
           transcript: Promise.resolve([message]),
           events,
           transcriptBootstrap: {
-            throughSequence: 0,
             durable: {
               kind: 'page',
               sessionId: 'session-1',
@@ -1518,10 +1513,7 @@ test('answers a window page read on its own navigation version and drops a stale
           snapshot: continuitySnapshot(),
           transcript: Promise.resolve([]),
           events,
-          transcriptBootstrap: {
-            throughSequence: 2,
-            durable: bootstrap,
-          },
+          transcriptBootstrap: { durable: bootstrap },
           loadTranscriptPage: async (request) => {
             // `loadAround` probes one row older than its anchor to learn
             // whether history precedes it; that probe stays empty here.

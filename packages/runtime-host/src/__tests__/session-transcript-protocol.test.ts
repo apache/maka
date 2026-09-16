@@ -67,10 +67,7 @@ test('Session transcript protocol accepts bounded correlated pages and bootstrap
     HOST_OPERATION_SPECS['session.transcript.page'].assertOutputForInput?.(input, page),
   );
 
-  const bootstrap = {
-    throughSequence: 3,
-    durable: { ...page, direction: 'older' as const },
-  };
+  const bootstrap = { durable: page };
   assert.deepEqual(decodeSessionTranscriptBootstrap(bootstrap), bootstrap);
 });
 
@@ -159,11 +156,7 @@ test('Session transcript protocol rejects malformed and uncorrelated values', ()
     isProtocolError,
   );
   assert.throws(
-    () =>
-      decodeSessionTranscriptBootstrap({
-        throughSequence: 4,
-        durable: page,
-      }),
+    () => decodeSessionTranscriptBootstrap({ durable: { ...page, direction: 'newer' as const } }),
     isProtocolError,
   );
 });

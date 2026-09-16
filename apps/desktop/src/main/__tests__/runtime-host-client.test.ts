@@ -151,10 +151,7 @@ function subscription(
     hostEpoch: 'host-1',
     subscriptionId: `subscription-${sessionId}`,
     activeAssistantStreams: [],
-    transcriptBootstrap: {
-      throughSequence: null,
-      durable: emptyTranscriptPage(sessionId),
-    },
+    transcriptBootstrap: { durable: emptyTranscriptPage(sessionId) },
     snapshot: {
       schemaVersion: SESSION_CONTINUITY_SCHEMA_VERSION,
       session: {

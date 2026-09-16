@@ -213,7 +213,7 @@ child Session / Graph lineage：仍走自己的执行和 lineage 约束
 
 打开 Session subscription 时原子地取得 canonical snapshot、`nextSeq` 和 active stream IDs。open response 先于后续 subscription frames 写出。Live sequence 是连接观察协议；transcript cursor 与持久 event/message ordinal 是分页身份，不能假设它们是同一计数器或都连续加一。
 
-较大的 transcript 通过有界分页读取。Cursor 绑定 subscription、Session、来源、方向与 watermark，并校验完整性；bootstrap、page、单 Turn 投影工作量和 active overlay 分别有界。Client 遇到 sequence gap、HostEpoch 变化、subscription 丢失或 cursor 失效时重新打开并读取 canonical state。PTY 有独立的背压/订阅边界，不应拖垮普通 Session 观察。
+较大的 transcript 通过有界分页读取。Cursor 绑定 subscription、Session、方向与 watermark，并校验完整性；bootstrap、page 和单 Turn 投影工作量分别有界。Client 遇到 sequence gap、HostEpoch 变化、subscription 丢失或 cursor 失效时重新打开并读取 canonical state。PTY 有独立的背压/订阅边界，不应拖垮普通 Session 观察。
 
 对发送侧，连接恢复不等于可以重新执行 command。Query 可按自己的只读契约重试；command 已发送但没收到结果时，保留 outcome unknown，通过该 Domain 的确切请求 ID、admission 或结果记录协调。Desktop 的 durable outbox 保留消息与附件身份，并把崩溃时的 `sending` 恢复为 `unknown`；这不是传输层的通用重放。
 

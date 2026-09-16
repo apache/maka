@@ -505,10 +505,7 @@ test('bounds the default active transcript range by Turn identities', async () =
     snapshot: continuitySnapshot(),
     transcript: Promise.resolve([]),
     events: { async *[Symbol.asyncIterator]() {} },
-    transcriptBootstrap: {
-      throughSequence: messages.length - 1,
-      durable: bootstrapPage,
-    },
+    transcriptBootstrap: { durable: bootstrapPage },
     decodeTranscriptPage: async () => ({ messages, nextCursor: null }),
     async close() {},
   });
@@ -536,10 +533,7 @@ test('bounds the default active transcript range by presentation bytes', async (
     snapshot: continuitySnapshot(),
     transcript: Promise.resolve([]),
     events: { async *[Symbol.asyncIterator]() {} },
-    transcriptBootstrap: {
-      throughSequence: messages.length - 1,
-      durable: bootstrapPage,
-    },
+    transcriptBootstrap: { durable: bootstrapPage },
     decodeTranscriptPage: async () => ({ messages, nextCursor: null }),
     async close() {},
   });
@@ -571,10 +565,7 @@ test('keeps an oversized latest Turn visible after bootstrap eviction', async ()
     snapshot: continuitySnapshot(),
     transcript: Promise.resolve([]),
     events: { async *[Symbol.asyncIterator]() {} },
-    transcriptBootstrap: {
-      throughSequence: latest.identity,
-      durable: bootstrapPage,
-    },
+    transcriptBootstrap: { durable: bootstrapPage },
     decodeTranscriptPage: async () => ({ messages: [older, latest], nextCursor: null }),
     async close() {},
   });
@@ -608,10 +599,7 @@ test('keeps an oversized latest Turn visible before a trailing session note', as
     snapshot: continuitySnapshot(),
     transcript: Promise.resolve([]),
     events: { async *[Symbol.asyncIterator]() {} },
-    transcriptBootstrap: {
-      throughSequence: trailingNote.identity,
-      durable: bootstrapPage,
-    },
+    transcriptBootstrap: { durable: bootstrapPage },
     decodeTranscriptPage: async () => ({ messages: [latest, trailingNote], nextCursor: null }),
     async close() {},
   });
@@ -634,10 +622,7 @@ test('advances a projected transcript across hidden durable records', async () =
     snapshot: continuitySnapshot(),
     transcript: Promise.resolve([]),
     events: { async *[Symbol.asyncIterator]() {} },
-    transcriptBootstrap: {
-      throughSequence: 1,
-      durable: bootstrapPage,
-    },
+    transcriptBootstrap: { durable: bootstrapPage },
     decodeTranscriptPage: async (page) => ({
       messages:
         page === bootstrapPage
@@ -687,10 +672,7 @@ test('keeps an oversized Turn visible when the watermark advances onto it', asyn
     snapshot: continuitySnapshot(),
     transcript: Promise.resolve([]),
     events: { async *[Symbol.asyncIterator]() {} },
-    transcriptBootstrap: {
-      throughSequence: older.identity,
-      durable: bootstrapPage,
-    },
+    transcriptBootstrap: { durable: bootstrapPage },
     decodeTranscriptPage: async (page) => page === bootstrapPage
       ? { messages: [older], nextCursor: null }
       : { messages: [latest], nextCursor: null },
@@ -732,10 +714,7 @@ test('keeps an oversized settled Turn visible before a trailing session note', a
     snapshot: continuitySnapshot(),
     transcript: Promise.resolve([]),
     events: { async *[Symbol.asyncIterator]() {} },
-    transcriptBootstrap: {
-      throughSequence: older.identity,
-      durable: bootstrapPage,
-    },
+    transcriptBootstrap: { durable: bootstrapPage },
     decodeTranscriptPage: async (page) => page === bootstrapPage
       ? { messages: [older], nextCursor: null }
       : { messages: [latest, trailingNote], nextCursor: null },
@@ -783,10 +762,7 @@ for (const direction of ['older', 'newer'] as const) {
       snapshot: continuitySnapshot(),
       transcript: Promise.resolve([]),
       events: { async *[Symbol.asyncIterator]() {} },
-      transcriptBootstrap: {
-        throughSequence: 4,
-        durable: bootstrapPage,
-      },
+      transcriptBootstrap: { durable: bootstrapPage },
       decodeTranscriptPage: async (candidate) => candidate === bootstrapPage
         ? { messages: direction === 'older' ? messages.slice(4) : messages.slice(0, 1), nextCursor: 'older' }
         : { messages: messages.slice(2, 4), nextCursor: null },
@@ -856,10 +832,7 @@ test('does not drive a discarded replica terminal when a contiguous catch-up is 
     snapshot: continuitySnapshot(),
     transcript: Promise.resolve([]),
     events: { async *[Symbol.asyncIterator]() {} },
-    transcriptBootstrap: {
-      throughSequence: 4,
-      durable: bootstrapPage,
-    },
+    transcriptBootstrap: { durable: bootstrapPage },
     decodeTranscriptPage: async (candidate) => candidate === bootstrapPage
       ? { messages, nextCursor: null }
       : { messages: [appended], nextCursor: null },
@@ -928,10 +901,7 @@ test('a window opened between catch-up pages can join the change that follows', 
     snapshot: continuitySnapshot(),
     transcript: Promise.resolve([]),
     events: { async *[Symbol.asyncIterator]() {} },
-    transcriptBootstrap: {
-      throughSequence: 2,
-      durable: bootstrapPage,
-    },
+    transcriptBootstrap: { durable: bootstrapPage },
     decodeTranscriptPage: async (candidate) => candidate === bootstrapPage
       ? { messages: bootstrap, nextCursor: null }
       : candidate === first

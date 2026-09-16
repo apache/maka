@@ -380,10 +380,7 @@ async function oversizedHistoryFixture(options: { live?: boolean } = {}) {
     },
     transcript: Promise.resolve([]),
     events: { async *[Symbol.asyncIterator]() {} },
-    transcriptBootstrap: {
-      throughSequence: through,
-      durable: bootstrapPage,
-    },
+    transcriptBootstrap: { durable: bootstrapPage },
     decodeTranscriptPage: async (candidate) => {
       const decoded = decodedPages.get(candidate);
       assert.ok(decoded, 'the replica must decode the page returned by its Host request');

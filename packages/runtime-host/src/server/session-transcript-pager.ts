@@ -104,7 +104,6 @@ export async function createSessionTranscriptBootstrap(input: {
       selected: durableSelection,
     });
     const bootstrap: SessionTranscriptBootstrap = {
-      throughSequence: input.throughSequence,
       durable: pageFromSelection(
         state,
         'older',

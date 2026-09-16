@@ -45,7 +45,7 @@ async function harness() {
     client: { openSession: async () => runtimeHostSessionFixture({
       snapshot: continuitySnapshot(), transcript: Promise.resolve([]),
       events: { async *[Symbol.asyncIterator]() { await eventsClosed.promise; } },
-      transcriptBootstrap: { throughSequence: THROUGH, durable: bootstrap },
+      transcriptBootstrap: { durable: bootstrap },
       decodeTranscriptPage: async (candidate) => decoded.get(candidate)!,
       loadTranscriptPage: async (request) => {
         const candidate = page();
