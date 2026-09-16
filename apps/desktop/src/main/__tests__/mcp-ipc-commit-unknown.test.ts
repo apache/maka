@@ -18,7 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
-import fs, { mkdtemp, readFile, rm } from 'node:fs/promises';
+import fs, { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -29,11 +29,12 @@ import { McpClientManager } from '@maka/mcp';
 import {
   AtomicFileWriteCommitUnknownError,
   createMcpConfigStore,
+  McpConfigSourceError,
   type McpConfigStore,
 } from '@maka/storage/mcp-config-store';
 import { registerMcpIpcMain, type McpIpcMainDeps } from '../mcp-ipc-main.js';
 import { getMcpCopy } from '../../renderer/locales/mcp-copy.js';
-import { mcpWriteFailureMessage } from '../../renderer/mcp-page-model.js';
+import { mcpConfigFailureMessage } from '../../renderer/mcp-page-model.js';
 
 test('MCP remove reconciles a live manager after the real store publishes then fails directory sync', {
   skip: process.platform === 'win32',
@@ -66,7 +67,7 @@ test('MCP remove reconciles a live manager after the real store publishes then f
     assert.ok(error instanceof AtomicFileWriteCommitUnknownError);
     assert.equal(error.published, true);
     assert.equal(error.cause, fault.error);
-    assert.equal(mcpWriteFailureMessage(error, getMcpCopy('en')), getMcpCopy('en').errors.writeDurabilityUnknown);
+    assert.equal(mcpConfigFailureMessage(error, getMcpCopy('en')), getMcpCopy('en').errors.writeDurabilityUnknown);
     return true;
   });
   assert.deepEqual(await diskConfig(root), { version: MCP_CONFIG_VERSION, mcpServers: {} });
@@ -125,7 +126,7 @@ for (const phase of ['read', 'sync', 'emit'] as const) {
       assert.match(error.message, /out of sync/u);
       assert.equal(error.cause, tracked.error());
       assert.deepEqual(error.errors, [tracked.error(), reconciliationError]);
-      assert.equal(mcpWriteFailureMessage(error, getMcpCopy('en')), getMcpCopy('en').errors.writeOutOfSync);
+      assert.equal(mcpConfigFailureMessage(error, getMcpCopy('en')), getMcpCopy('en').errors.writeOutOfSync);
       return true;
     });
     assert.ok((await diskConfig(root)).mcpServers.fixture);
@@ -272,3 +273,28 @@ function mutationHarness(store: McpConfigStore, overrides: Partial<McpIpcMainDep
     },
   };
 }
+
+test('MCP IPC preserves repair guidance for a corrupt persisted file and does not import over it', async (t) => {
+  const { root, store } = await fixtureStore(t);
+  const path = join(root, 'mcp.json');
+  const source = '{"secret":"must-not-appear"';
+  await writeFile(path, source);
+  const ipc = mutationHarness(store);
+  for (const call of [() => ipc.invoke('mcp:getConfig'), () => ipc.invoke('mcp:importConfig', '{"new":{"command":"unused"}}')]) {
+    await assert.rejects(call(), (error) => {
+      assert.ok(error instanceof McpConfigSourceError);
+      assert.equal(error.path, path);
+      assert.ok(error.message.includes(path));
+      assert.match(error.message, /back up and repair/u);
+      for (const locale of ['en', 'zh-CN', 'zh-TW'] as const) {
+        const copy = getMcpCopy(locale);
+        const ipcError: Error = new Error(`Error invoking remote method 'mcp:getConfig': ${error.name}: ${error.message}`);
+        assert.equal(mcpConfigFailureMessage(ipcError, copy), copy.errors.invalidConfigFile(path));
+      }
+      assert.equal(error.message.includes('must-not-appear'), false);
+      return true;
+    });
+  }
+  assert.deepEqual(ipc.synced, []);
+  assert.equal(await readFile(path, 'utf8'), source);
+});

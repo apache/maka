@@ -26,6 +26,7 @@ import { afterEach, test } from 'node:test';
 import { MCP_CONFIG_VERSION, resolveMcpProtocolPreference } from '@maka/core/mcp';
 import {
   createMcpConfigStore,
+  McpConfigSourceError,
   normalizeMcpConfig,
   normalizeMcpImport,
 } from '../mcp-config-store.js';
@@ -548,7 +549,7 @@ test('normalizes and bounds the remote oauth block', async () => {
     ['read', 'a\tb'],
     ['read"admin'],
     ['read\\admin'],
-    ['readadmin'],
+    ['read\u0001admin'],
     ['café'],
   ]) {
     assert.throws(
@@ -601,3 +602,44 @@ async function tempRoot(): Promise<string> {
   roots.push(root);
   return root;
 }
+
+test('corrupt persisted MCP JSON has a safe actionable error and mutations cannot overwrite it', async () => {
+  const root = await tempRoot();
+  const path = join(root, 'mcp.json');
+  const bytes = Buffer.from('{"secret":"never-include-this"');
+  await writeFile(path, bytes);
+  const store = createMcpConfigStore(root);
+  let transformed = false;
+  for (const operation of [
+    () => store.get(),
+    () =>
+      store.transform((config) => {
+        transformed = true;
+        return config;
+      }),
+    () => store.upsert('new', { command: 'unused' }),
+    () => store.remove('old'),
+  ]) {
+    await assert.rejects(operation(), (error) => {
+      assert.ok(error instanceof McpConfigSourceError);
+      assert.equal(error.reason, 'invalid-json');
+      assert.equal(error.path, path);
+      assert.ok(error.message.includes(path));
+      assert.match(error.message, /not modified.*back up and repair/u);
+      assert.equal(error.message.includes('never-include-this'), false);
+      assert.equal(error.cause, undefined);
+      return true;
+    });
+    assert.deepEqual(await readFile(path), bytes);
+  }
+  assert.equal(transformed, false);
+  assert.throws(
+    () => normalizeMcpImport('{bad'),
+    (error) => {
+      assert.ok(error instanceof McpConfigSourceError);
+      assert.equal(error.reason, 'invalid-json');
+      assert.equal(error.path, undefined);
+      return true;
+    },
+  );
+});
