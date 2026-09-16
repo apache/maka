@@ -71,7 +71,7 @@
     },
     "transcript-scroll-cost.spec.ts": {
       "tests": 1,
-      "electron": "One traversal exercises real Host transcript paging through preload/IPC, bounded retained ranges, reader displacement when pages install, and a return-to-tail Host read. Fixture motion runs in the TranscriptRenderCost story."
+      "electron": "One traversal proves the Host delivered the whole Session in a single read across preload/IPC — nothing left to load earlier — and that walking it with real wheel input and returning to the tail keeps the mounted rows a fraction of it. Per-frame geometry is renderer-owned and lives in the UpwardTraversalHoldsTurnGeometry and PrependedHistoryKeepsMeasuredHeights stories."
     },
     "workhub-layout.spec.ts": {
       "tests": 3,

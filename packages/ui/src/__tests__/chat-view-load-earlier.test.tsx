@@ -171,7 +171,9 @@ test('prepended Turns keep a released reader on their Turn without re-pinning', 
   await act(() => { scroller.dispatchEvent(new dom!.window.Event('scroll')); });
   assert.equal(view.loadButton(), null);
   assert.equal(view.authority.getSnapshot().pinned, false, 'arriving history is not reader input');
-  assert.equal(scroller.scrollTop, 3 * TURN_HEIGHT + 100, 'the offset moved by the prepended Turns');
+  // Where the prepend leaves the reader in pixels is a browser story
+  // (`PrependedHistoryKeepsMeasuredHeights`); this fake DOM has no measurement
+  // cache to get wrong.
   assert.equal(view.anchors.at(-1), 'turn-5');
 });
 

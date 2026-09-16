@@ -2829,6 +2829,7 @@ export const UpwardTraversalHoldsTurnGeometry: Story = {
     const turnsBefore = document.querySelectorAll('.maka-prompt-rail-tick').length;
     const drifts: number[] = [];
     const thumbs: number[] = [];
+    const mounted: number[] = [];
     let steps = 0;
     while (root.scrollTop > 0 && steps < 60) {
       const anchor = anchorInView();
@@ -2836,6 +2837,7 @@ export const UpwardTraversalHoldsTurnGeometry: Story = {
       const travelled = scrollAsReader(root, Math.max(0, scrollBefore - TRAVERSAL_STEP));
       await painted(4);
       thumbs.push(root.scrollTop / (root.scrollHeight - root.clientHeight));
+      mounted.push(document.querySelectorAll('.maka-transcript-turn').length);
 
       // The Turn under the reader comes down the viewport by exactly what the
       // reader asked the scroller to travel. Rows mounting above them are
@@ -2853,6 +2855,11 @@ export const UpwardTraversalHoldsTurnGeometry: Story = {
 
     // Nothing loaded: scrolling reads what is already here.
     expect(document.querySelectorAll('.maka-prompt-rail-tick').length).toBe(turnsBefore);
+
+    // And the window stays a window: the whole transcript is resident, only a
+    // slice of it is in the DOM at any point of the walk.
+    expect(Math.max(...mounted), `mounted Turns per step: ${mounted.join(' ')}`)
+      .toBeLessThanOrEqual(turnsBefore / 2);
 
     // The thumb only ever walks towards the top. Measuring unmounted Turns
     // refines the document's extent as the reader goes, which moves the thumb

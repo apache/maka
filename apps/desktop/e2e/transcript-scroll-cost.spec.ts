@@ -18,8 +18,13 @@
  */
 
 /**
- * What one scroll through the transcript costs, asserted as per-frame geometry
- * rather than timings. Gestures are real wheel input through CDP.
+ * What the Session the Host delivered costs to read: the whole transcript
+ * arrives in one read across preload/IPC, and the reader can walk it with real
+ * wheel input and come back without the window mounting it all.
+ *
+ * Per-frame geometry — reader displacement, the thumb, the document's extent —
+ * is renderer-owned and belongs to the browser stories over real layout
+ * (`UpwardTraversalHoldsTurnGeometry`, `PrependedHistoryKeepsMeasuredHeights`).
  */
 
 import type { CDPSession, Page } from '@playwright/test';
@@ -31,29 +36,6 @@ const WHEEL_TICKS = 300;
 
 /** Generous: a list that mounted everything it loaded would mount all 120 Turns. */
 const MOUNTED_TURNS_MAX = 40;
-
-/**
- * Per-frame backward motion of the thumb ratio allowed while the reader moves
- * one way. Row measurement corrects virtua's size estimates by a few pixels; a
- * range change swings the ratio by tenths.
- */
-const THUMB_RATIO_TOLERANCE = 0.02;
-
-/** Per-frame scrollHeight change allowed with no load-earlier and no streaming. */
-const SCROLL_HEIGHT_DRIFT_MAX = 0.05;
-
-interface Frame {
-  readonly scrollTop: number;
-  readonly scrollHeight: number;
-  readonly clientHeight: number;
-  readonly mounted: number;
-}
-
-declare global {
-  interface Window {
-    __makaScrollFrames?: { frames: Frame[]; stop(): void };
-  }
-}
 
 async function frames(page: Page, count = 2): Promise<void> {
   await page.evaluate((remaining) => new Promise<void>((resolve) => {
@@ -81,58 +63,11 @@ async function wheel(page: Page, cdp: CDPSession, ticks: number, deltaY: number)
   await frames(page, 4);
 }
 
-async function recordFrames(page: Page): Promise<void> {
-  await page.evaluate((selector) => {
-    const scroller = document.querySelector(selector);
-    if (!scroller) throw new Error('the chat scroll container is missing');
-    const state = { frames: [] as Frame[], stop: () => { running = false; } };
-    let running = true;
-    const tick = (): void => {
-      if (!running) return;
-      state.frames.push({
-        scrollTop: scroller.scrollTop,
-        scrollHeight: scroller.scrollHeight,
-        clientHeight: scroller.clientHeight,
-        mounted: scroller.querySelectorAll('[data-turn-id]').length,
-      });
-      requestAnimationFrame(tick);
-    };
-    window.__makaScrollFrames = state;
-    requestAnimationFrame(tick);
-  }, SCROLLER);
+async function offset(page: Page): Promise<number> {
+  return page.locator(SCROLLER).evaluate((scroller) => scroller.scrollTop);
 }
 
-async function stopFrames(page: Page): Promise<Frame[]> {
-  return page.evaluate(() => {
-    const state = window.__makaScrollFrames;
-    if (!state) throw new Error('the frame probe is missing');
-    state.stop();
-    return state.frames;
-  });
-}
-
-function assertOneWay(recorded: readonly Frame[], direction: -1 | 1, label: string): void {
-  expect(recorded.length, label).toBeGreaterThan(WHEEL_TICKS);
-  const first = recorded[0];
-  const last = recorded[recorded.length - 1];
-  expect((last.scrollTop - first.scrollTop) * direction, `${label}: the reader has to travel`)
-    .toBeGreaterThan(first.clientHeight * 10);
-  const moving = recorded.filter((frame) => frame.scrollHeight > frame.clientHeight);
-  for (let index = 1; index < moving.length; index += 1) {
-    const before = moving[index - 1];
-    const after = moving[index];
-    const drift = Math.abs(after.scrollHeight - before.scrollHeight) / before.scrollHeight;
-    expect(drift, `${label}: scrollHeight ${before.scrollHeight} -> ${after.scrollHeight} at frame ${index}`)
-      .toBeLessThanOrEqual(SCROLL_HEIGHT_DRIFT_MAX);
-    const ratio = (frame: Frame): number => frame.scrollTop / (frame.scrollHeight - frame.clientHeight);
-    const backward = (ratio(before) - ratio(after)) * direction;
-    expect(backward, `${label}: thumb ${ratio(before)} -> ${ratio(after)} at frame ${index}`)
-      .toBeLessThanOrEqual(THUMB_RATIO_TOLERANCE);
-    expect(after.mounted, `${label}: mounted Turns at frame ${index}`).toBeLessThanOrEqual(MOUNTED_TURNS_MAX);
-  }
-}
-
-test('a fully loaded transcript scrolls both ways with a stable document and bounded rows', async ({
+test('a fully loaded transcript scrolls both ways with bounded rows', async ({
   promptRailWindow: page,
 }) => {
   test.setTimeout(180_000);
@@ -140,19 +75,22 @@ test('a fully loaded transcript scrolls both ways with a stable document and bou
   const tail = page.locator(`[data-turn-id="turn-prompt-rail-${PROMPT_RAIL_PROMPT_COUNT}"]`);
   await expect(tail).toHaveCount(1);
   await expect(page.locator('.maka-prompt-rail-tick')).toHaveCount(Math.min(PROMPT_RAIL_PROMPT_COUNT, 64));
+  // One read brought the Session over: there is nothing left to ask for.
   await expect(page.getByRole('button', { name: '载入更早的记录' })).toHaveCount(0);
   const cdp = await page.context().newCDPSession(page);
 
   await page.locator(SCROLLER).evaluate((scroller) => { scroller.scrollTop = scroller.scrollHeight; });
   await frames(page, 6);
+  const bottom = await offset(page);
 
-  await recordFrames(page);
   await wheel(page, cdp, WHEEL_TICKS, -120);
-  assertOneWay(await stopFrames(page), -1, 'scrolling up');
+  const top = await offset(page);
+  expect(bottom - top, 'the reader has to travel').toBeGreaterThan(700 * 10);
+  expect(await page.locator('[data-turn-id]').count(), 'mounted Turns at the top')
+    .toBeLessThanOrEqual(MOUNTED_TURNS_MAX);
 
-  await recordFrames(page);
   await wheel(page, cdp, WHEEL_TICKS, 120);
-  assertOneWay(await stopFrames(page), 1, 'scrolling down');
+  expect(await offset(page), 'and back down').toBeGreaterThan(top + 700 * 10);
 
   await wheel(page, cdp, 40, -120);
   const returnLatest = page.getByRole('button', {
