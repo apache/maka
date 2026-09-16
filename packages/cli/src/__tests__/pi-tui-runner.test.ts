@@ -6511,12 +6511,14 @@ Slug openai-work<cursor>
     const terminal = new FakeTerminal();
     const driver = new SlashCommandDriver([]);
     const queries: Array<string | undefined> = [];
+    const requests: Array<{ text?: string; cursor?: string }> = [];
     let resolveStale!: (page: { sessions: ExternalSessionCatalogItem[]; nextCursor: null }) => void;
     const externalSessions = {
       listScopes: () => ['all'] as const,
       listSources: async () => ['codex'],
-      listSessions: async ({ text }: { text?: string }) => {
+      listSessions: async ({ text, cursor }: { text?: string; cursor?: string }) => {
         queries.push(text);
+        requests.push({ ...(text === undefined ? {} : { text }), ...(cursor ? { cursor } : {}) });
         if (text === 'code') {
           return new Promise<{ sessions: ExternalSessionCatalogItem[]; nextCursor: null }>(
             (resolve) => {
@@ -6524,7 +6526,19 @@ Slug openai-work<cursor>
             },
           );
         }
-        return { sessions: [], nextCursor: null };
+        return text === undefined
+          ? {
+              sessions: [
+                {
+                  id: 'old',
+                  name: 'Old empty-query result',
+                  hostCwd: '/repo',
+                  importState: { importedCount: 0, importedSessionIds: [], isImporting: false },
+                },
+              ],
+              nextCursor: 'old-next',
+            }
+          : { sessions: [], nextCursor: null };
       },
       importSession: async () => {
         throw new Error('unused');
@@ -6553,6 +6567,8 @@ Slug openai-work<cursor>
     terminal.input('e');
     assert.deepEqual(queries, [undefined]);
     await waitFor(() => queries.length === 2);
+    assert.equal(requests[1]?.cursor, undefined);
+    assert.doesNotMatch(plainTerminalOutput(terminal.screenOutput()), /Old empty-query result/);
 
     terminal.input('x');
     resolveStale({
@@ -6574,6 +6590,44 @@ Slug openai-work<cursor>
     terminal.input('\x1b');
     exitMaka(terminal);
     await run;
+  });
+
+  test('cancels external catalog search timers during runner shutdown', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new SlashCommandDriver([]);
+    let listCalls = 0;
+    const externalSessions = {
+      listScopes: () => ['all'] as const,
+      listSources: async () => ['codex'],
+      listSessions: async () => {
+        listCalls += 1;
+        return { sessions: [], nextCursor: null };
+      },
+      importSession: async () => {
+        throw new Error('unused');
+      },
+    };
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+      externalSessions,
+    });
+
+    terminal.input('/session');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('Import external session'));
+    terminal.input('\r');
+    await waitFor(() => listCalls === 1);
+    terminal.input('x');
+    exitMaka(terminal);
+    await run;
+    await delay(160);
+    assert.equal(listCalls, 1);
   });
 
   test('reports the durable Session id when import succeeds but opening fails', async () => {

@@ -569,6 +569,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   let connectionIdentityNotice: string | undefined;
   let busy = false;
   let closed = false;
+  const cancelScheduledExternalSearches = new Set<() => void>();
   let currentActivityCompletion: Promise<void> | undefined;
   let permissionResponseInFlightRequestId: string | null = null;
   // Session recap (issue #1055): an in-flight lock shared by manual and
@@ -1147,6 +1148,8 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     attention.reset();
     // Stop asking the terminal for focus reports before handing it back.
     terminal.write(DISABLE_FOCUS_REPORTING);
+    for (const cancel of cancelScheduledExternalSearches) cancel();
+    cancelScheduledExternalSearches.clear();
     tui.stop();
   };
 
@@ -3120,9 +3123,16 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
 
     const dropScheduledSearch = (): boolean => {
       const hadScheduledSearch = cancelScheduledSearch !== undefined;
+      if (cancelScheduledSearch) cancelScheduledExternalSearches.delete(cancelScheduledSearch);
       cancelScheduledSearch?.();
       cancelScheduledSearch = undefined;
       return hadScheduledSearch;
+    };
+    const resetCatalogPage = (): void => {
+      sessions = [];
+      nextCursor = null;
+      byValue = new Map();
+      render();
     };
     const closeOverlay = (): void => {
       pageClosed = true;
@@ -3137,6 +3147,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       if (!alternate) return;
       dropScheduledSearch();
       scope = alternate;
+      resetCatalogPage();
       void load(false);
     };
     const render = (): void => {
@@ -3211,15 +3222,21 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         onQuery: (text) => {
           query = text;
           dropScheduledSearch();
+          resetCatalogPage();
           // Retire an older in-flight response immediately. Waiting until the
           // debounce fires would let it repaint results for the previous query.
           const requestRevision = ++revision;
+          let cancel: (() => void) | undefined;
           const handle = setTimeout(() => {
+            if (cancel) cancelScheduledExternalSearches.delete(cancel);
             cancelScheduledSearch = undefined;
+            if (closed || pageClosed) return;
             void load(false, undefined, requestRevision);
           }, EXTERNAL_SESSION_SEARCH_DEBOUNCE_MS);
           handle.unref();
-          cancelScheduledSearch = () => clearTimeout(handle);
+          cancel = () => clearTimeout(handle);
+          cancelScheduledSearch = cancel;
+          cancelScheduledExternalSearches.add(cancel);
         },
         onSelect: (item) => {
           if (item.value === 'external:load-more' && nextCursor) {
@@ -3314,7 +3331,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         nextCursor = page.nextCursor;
         render();
       } catch {
-        if (requestRevision !== revision) return;
+        if (requestRevision !== revision || pageClosed || closed) return;
         state.entries.push({ kind: 'notice', level: 'error', text: copy.externalCatalogFailed });
         requestRender();
       }

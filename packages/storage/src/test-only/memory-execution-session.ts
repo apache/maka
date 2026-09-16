@@ -510,6 +510,7 @@ export function createMemorySessionStore(
         const ordinary = id !== HUB && header.role === undefined;
         const coordination = id === HUB && header.role === WORKHUB_COORDINATION_SESSION_ROLE;
         if (
+          header.transcriptLedgerVersion === 0 ||
           header.conversationCopy?.state === 'preparing' ||
           (!ordinary && !(roleScope === 'recoverable' && coordination))
         )
@@ -1247,6 +1248,7 @@ function selectCatalog(s: MemoryState, filter: Parameters<SessionAuthorityStore[
     .filter(
       (r) =>
         r.header.role !== WORKHUB_COORDINATION_SESSION_ROLE &&
+        r.header.transcriptLedgerVersion !== 0 &&
         r.header.conversationCopy?.state !== 'preparing' &&
         (filter?.subagentParentSessionId === undefined ||
           r.header.subagentParent?.parentSessionId === filter.subagentParentSessionId),

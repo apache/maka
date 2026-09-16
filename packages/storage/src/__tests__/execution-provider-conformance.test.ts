@@ -667,8 +667,8 @@ for (const backend of ['Local', 'Memory'] as const) {
           sourceSessionId,
         });
       const published = await createImport('shared-source');
-      await createImport('shared-source');
-      await createImport('staged-only');
+      const stagedShared = await createImport('shared-source');
+      const stagedOnly = await createImport('staged-only');
       await s.updateHeader(published.id, { transcriptLedgerVersion: 1 });
 
       assert.deepEqual(
@@ -685,6 +685,17 @@ for (const backend of ['Local', 'Memory'] as const) {
           },
         ],
       );
+
+      const page = await s.listCatalogPage(undefined, undefined, 8);
+      assert.equal(page.kind, 'page');
+      if (page.kind !== 'page') throw new Error('Expected a catalog page');
+      assert.deepEqual(
+        page.records.map((record) => record.header.id),
+        [published.id],
+      );
+      await assert.rejects(s.readCatalogRecord(stagedShared.id), SessionNotFoundError);
+      await assert.rejects(s.readCatalogRecord(stagedOnly.id), SessionNotFoundError);
+      assert.equal((await s.readCatalogRecord(published.id)).header.id, published.id);
     });
   });
   test(

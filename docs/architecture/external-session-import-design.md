@@ -94,7 +94,7 @@ The Ledger preserves a source transcript that starts with assistant content. `bu
 
 ## 6 · Workspace scope
 
-The Runtime Host TUI external-session surface decides scope. With a current workspace target, it offers current workspace and all, defaulting to current; without a target, it offers only all. If the target disappears before a scoped query, the surface rejects that request instead of silently broadening it. TUI runner forwards this choice rather than deriving scope from the Session driver. External-source scope is independent of the Maka task list's Current/All filter. The TUI runner briefly coalesces consecutive search edits before querying the Host. Every edit advances the same request revision immediately, so an older in-flight response cannot repaint the catalog while the newer query waits for its debounce.
+The Runtime Host TUI external-session surface decides scope. With a current workspace target, it offers current workspace and all, defaulting to current; without a target, it offers only all. If the target disappears before a scoped query, the surface rejects that request instead of silently broadening it. TUI runner forwards this choice rather than deriving scope from the Session driver. External-source scope is independent of the Maka task list's Current/All filter. The TUI runner briefly coalesces consecutive search edits before querying the Host. Every edit advances the same request revision immediately and retires the displayed rows and cursor, so an older in-flight response cannot repaint or paginate the catalog while the newer query waits for its debounce.
 
 ## 7 · Adapter-owned paging
 
