@@ -645,7 +645,7 @@ const CONVERSATION_COPY = {
       sending: '正在傳送…', importing: '正在匯入…', sendLabel: '傳送',
       queuedMessagesAriaLabel: (count) => `${count} 條待發送訊息`,
       steeringPending: '調整方向 · 等待整批生效',
-      followupPending: '下一輪 · 每輪一條',
+      followupPending: '下一輪 · 每輪一則訊息',
       queueShortcutsLabel: '傳送快速鍵',
       queueShortcuts: 'Shift+Enter：轉向（Steering）\nEnter：下一輪（Follow-up）',
       promoteQueuedEntry: '調整方向', editQueuedEntry: '編輯', saveQueuedEntry: '儲存', cancelQueuedEntryEdit: '取消編輯', deleteQueuedEntry: '刪除', reorderQueuedEntry: '拖動排序',

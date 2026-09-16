@@ -224,7 +224,7 @@ const zhTwCopy = {
   },
   testHints: {
     wechat_bridge_remote_url: '微信掃碼登入只允許存取本機 wechat-bridge，不能指向遠端 URL。',
-    wechat_bridge_unreachable: '先啟動本機 wechat-bridge，並確認它暴露了 iLink 相容的 /api/weixin/qrcode 或 /qrcode 介面。',
+    wechat_bridge_unreachable: '先啟動本機 wechat-bridge，並確認它提供 iLink 相容的 /api/weixin/qrcode 或 /qrcode 介面。',
   } satisfies Record<WechatBridgeQrHintCode, string>,
   statusReasons: {
     codes: {
@@ -240,9 +240,9 @@ const zhTwCopy = {
     },
     withCode: {
       gatewayBot: (code: string) => `取得 Gateway 失敗（HTTP ${code}）`,
-      gatewayClosed: (code: string) => `Gateway 連線關閉（${code}）；正在重連`,
+      gatewayClosed: (code: string) => `Gateway 連線關閉（${code}）；正在重新連線`,
       connectionsOpen: (code: string) => `Stream 訂閱開啟失敗（HTTP ${code}）`,
-      streamClosed: (code: string) => `Stream 連線關閉（${code}）；正在重連`,
+      streamClosed: (code: string) => `Stream 連線關閉（${code}）；正在重新連線`,
       sendFailed: (code: string) => `傳送失敗（HTTP ${code}）`,
       getAppAccessToken: (code: string) => `取得 access_token 失敗（HTTP ${code}）`,
     },
@@ -295,13 +295,13 @@ const zhTwCopy = {
     wecomSecretPlaceholder: 'AI 應用 Secret', wecomSecretAria: '企業微信 Secret', qqId: 'QQ 應用編號',
     allowedUsersLabel: (count: number, max: number) => `允許的使用者 ID（${count} / ${max}）`, allowedUsersPlaceholder: '每行一個使用者 ID，留空表示不限\n例如：123456789',
     allowedUsersHelp: (atCap: boolean) => atCap
-      ? 'Telegram 使用者 ID 是 64 位整數；填入後只接收列表裡這些 ID 的來信，其它人發的訊息會被靜默忽略（不會回彈任何提示）。 （已達到上限）'
-      : 'Telegram 使用者 ID 是 64 位整數；填入後只接收列表裡這些 ID 的來信，其它人發的訊息會被靜默忽略（不會回彈任何提示）。',
+      ? 'Telegram 使用者 ID 是 64 位元整數；填入後只接收清單裡這些 ID 的來信，其他使用者傳送的訊息會被直接忽略（不會回覆任何提示）（已達到上限）。'
+      : 'Telegram 使用者 ID 是 64 位元整數；填入後只接收清單裡這些 ID 的來信，其他使用者傳送的訊息會被直接忽略（不會回覆任何提示）。',
     invalidUsers: (entries: readonly string[]) => {
       const preview = entries.slice(0, 3).join('、');
       return entries.length > 3
-        ? `下列不是數字 ID，可能是使用者名稱之類的輸入，符合不到任何人：${preview} 等 ${entries.length} 項`
-        : `下列不是數字 ID，可能是使用者名稱之類的輸入，符合不到任何人：${preview}`;
+        ? `以下輸入不是數字 ID，可能是使用者名稱，因此無法對應到任何使用者：${preview} 等 ${entries.length} 項`
+        : `以下輸入不是數字 ID，可能是使用者名稱，因此無法對應到任何使用者：${preview}`;
     },
   },
   onboarding: {
