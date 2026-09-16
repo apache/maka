@@ -343,6 +343,7 @@ function createDurableLedgerTranscriptReader(input: {
         landmarks.push({
           turnId: turn.turnId,
           sequence: turn.firstOrdinal * EVENT_SEQUENCE_STRIDE,
+          lastSequence: turn.lastOrdinal * EVENT_SEQUENCE_STRIDE + EVENT_SEQUENCE_STRIDE - 1,
           label,
         });
       }

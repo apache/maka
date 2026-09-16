@@ -909,7 +909,7 @@ test('does not end a page where a handoff resumes the same Turn', async () => {
     const lookup = (turnId: string) =>
       read.readDurableTurnLandmarks(sessionId, { maxLandmarks: 1, turnId });
     assert.deepEqual((await lookup('turn-first')).landmarks, [
-      { turnId: 'turn-first', sequence: 1 * 8, label: '' },
+      { turnId: 'turn-first', sequence: 1 * 8, lastSequence: 6 * 8 + 7, label: '' },
     ]);
     assert.deepEqual((await lookup('turn-missing')).landmarks, []);
   });

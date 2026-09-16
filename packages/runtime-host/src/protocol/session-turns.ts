@@ -42,6 +42,8 @@ export interface SessionTurnLandmark {
   readonly turnId: string;
   /** No row of the Turn sits before this sequence. */
   readonly sequence: number;
+  /** Nor after this one. */
+  readonly lastSequence: number;
   readonly label: string;
 }
 
@@ -64,6 +66,7 @@ export function projectSessionTurnLandmarkForWire(
   return {
     turnId: requireEntityId(landmark.turnId, 'turnId'),
     sequence: requireCount(landmark.sequence, 'Session turn landmark sequence'),
+    lastSequence: requireCount(landmark.lastSequence, 'Session turn landmark last sequence'),
     label: truncateUtf8(landmark.label, SESSION_TURN_LANDMARK_LABEL_MAX_BYTES),
   };
 }
@@ -316,11 +319,13 @@ export function decodeSessionTurnLandmarksQueryResult(
       const landmark = requireExactRecord(value, 'Session turn landmark', [
         'turnId',
         'sequence',
+        'lastSequence',
         'label',
       ]);
       return {
         turnId: requireEntityId(landmark.turnId, 'turnId'),
         sequence: requireCount(landmark.sequence, 'Session turn landmark sequence'),
+        lastSequence: requireCount(landmark.lastSequence, 'Session turn landmark last sequence'),
         label: requireUtf8String(
           landmark.label,
           'Session turn landmark label',

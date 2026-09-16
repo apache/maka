@@ -201,7 +201,17 @@ export function transcriptReader(
         if (message.type !== 'user' || turnId === undefined || seen.has(turnId)) continue;
         if (request.turnId !== null && turnId !== request.turnId) continue;
         seen.add(turnId);
-        landmarks.push({ turnId, sequence, label: message.displayText ?? message.text });
+        const lastSequence = Math.max(
+          ...durableRecords()
+            .filter((record) => record.message.turnId === turnId)
+            .map((record) => record.sequence),
+        );
+        landmarks.push({
+          turnId,
+          sequence,
+          lastSequence,
+          label: message.displayText ?? message.text,
+        });
       }
       return { throughSequence: watermark, landmarks };
     },
