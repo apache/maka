@@ -31,7 +31,7 @@ import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 import test from 'node:test';
 
-import { changedFilesBetween, formatGitHubOutputs, planTests } from './ci-test-plan.mjs';
+import { changedFilesBetween, planTests } from './ci-test-plan.mjs';
 
 /**
  * Every surface a plan selected, read off the plan itself rather than from a
@@ -201,7 +201,6 @@ test('runtime changes retain the dedicated Runtime Host lane', () => {
   const plan = planTests(['packages/runtime/src/runtime.ts'], { graph });
 
   assert.equal(plan.runtimeHost, true);
-  assert.equal(plan.runtimeSandbox, true);
   assert.deepEqual(plan.standardWorkspaces, ['packages/runtime', 'packages/cli', 'apps/desktop']);
 });
 

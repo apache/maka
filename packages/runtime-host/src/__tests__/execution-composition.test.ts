@@ -81,7 +81,6 @@ import {
 } from '../server/host-residency-registry.js';
 import {
   createExecutionRuntimeHostComposition,
-  runtimeHostFilesystemWorkerRuntime,
   stopOwnedWorkHubRoot,
   stopReplacedWorkHubRoot,
   type ExecutionRuntimeHostComposition,
@@ -158,7 +157,7 @@ test('idle schedules and armed or paused Goals allow production handoff and reco
           llmConnectionId: FAKE_CONNECTION_ID,
           llmConnectionSlug: 'fake',
           model: 'fake-model',
-          permissionMode: 'ask',
+          permissionMode: 'auto_review',
         });
         const armed = await composition.handlers['goal.arm'](
           {
@@ -276,7 +275,7 @@ test('production composition resumes a sealed logical Root after all stores and 
         llmConnectionId: FAKE_CONNECTION_ID,
         llmConnectionSlug: 'fake',
         model: 'fake-model',
-        permissionMode: 'ask',
+        permissionMode: 'auto_review',
       });
       const started = await first.composition.handlers['turn.start'](
         {
@@ -378,11 +377,6 @@ test('production recovery leaves upgrade residue for explicitly started maintena
       database.close();
     }
   });
-});
-
-test('filesystem worker follows the candidate executable runtime', () => {
-  assert.equal(runtimeHostFilesystemWorkerRuntime({ electron: '43.1.1' }), 'electron');
-  assert.equal(runtimeHostFilesystemWorkerRuntime({}), 'node');
 });
 
 test('WorkHub recovers a delivered root Stop from its durable cancelled Turn', async () => {
@@ -602,7 +596,7 @@ test('production composition reaches Ready when the optional context Store canno
         llmConnectionId: FAKE_CONNECTION_ID,
         llmConnectionSlug: 'fake',
         model: 'fake-model',
-        permissionMode: 'ask',
+        permissionMode: 'auto_review',
         name: 'Preparing context copy',
         labels: [],
         parentSessionId: 'source-session',
@@ -657,12 +651,12 @@ test('production composition reaches Ready when the optional context Store canno
 test('production composition closes long-term memory after a later startup failure', async () => {
   await withCompositionRoot(async ({ root, owner }) => {
     const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
-    const session = await stores.sessionStore.create({
+    const _session = await stores.sessionStore.create({
       cwd: root,
       llmConnectionId: FAKE_CONNECTION_ID,
       llmConnectionSlug: 'fake',
       model: 'fake-model',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     const memory = await openInteractiveLongTermMemoryStoreForWrite(owner.lease);
 
@@ -702,14 +696,14 @@ test('production recovery preserves legacy Automation history and closes an orph
       llmConnectionId: FAKE_CONNECTION_ID,
       llmConnectionSlug: 'fake',
       model: 'fake-model',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     const pending = await stores.sessionStore.create({
       cwd: root,
       llmConnectionId: FAKE_CONNECTION_ID,
       llmConnectionSlug: 'fake',
       model: 'fake-model',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     const admitted = await stores.agentRunStore.admitRootTurn({
       sessionId: pending.id,
@@ -938,7 +932,7 @@ test('production composition commits automatic titles through Host-owned Session
         llmConnectionId: FAKE_CONNECTION_ID,
         llmConnectionSlug: 'fake',
         model: 'fake-model',
-        permissionMode: 'ask',
+        permissionMode: 'auto_review',
       });
       const started = await composition.handlers['turn.start'](
         {
@@ -1318,7 +1312,7 @@ test('WorkHub Resume and Stop follow logical lineage across repeated physical ha
         llmConnectionId: connectionId,
         llmConnectionSlug: 'fake',
         model: 'fake-model',
-        permissionMode: 'ask',
+        permissionMode: 'auto_review',
         name: 'Payments',
       });
       targetSessionId = target.id;
@@ -1529,7 +1523,7 @@ test('WorkHub does not record resume while safe-boundary resume is disabled', as
         llmConnectionId: connectionId,
         llmConnectionSlug: 'fake',
         model: 'fake-model',
-        permissionMode: 'ask',
+        permissionMode: 'auto_review',
         name: 'Payments',
       });
       await composition.handlers['workhub.coordination.resolve']({}, context);
@@ -1615,7 +1609,7 @@ test('WorkHub correction replaces its link without stopping a shared manual Turn
         llmConnectionId: connectionId,
         llmConnectionSlug: 'fake',
         model: 'fake-model',
-        permissionMode: 'ask',
+        permissionMode: 'auto_review',
       });
       sourceId = source.id;
       const destination = await manager.createSession({
@@ -1623,7 +1617,7 @@ test('WorkHub correction replaces its link without stopping a shared manual Turn
         llmConnectionId: connectionId,
         llmConnectionSlug: 'fake',
         model: 'fake-model',
-        permissionMode: 'ask',
+        permissionMode: 'auto_review',
       });
       const started = await composition.handlers['turn.start'](
         {
@@ -1841,7 +1835,7 @@ test('production composition orphans ownerless ShellRuns before serving Resource
       llmConnectionId: FAKE_CONNECTION_ID,
       llmConnectionSlug: 'fake',
       model: 'fake-model',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     const shellRuns = await openInteractiveShellRunStoreForWrite(owner.lease);
     await shellRuns.createShellRun(shellRunRecord(session.id, 'starting-shell', 'starting'));
@@ -1888,7 +1882,7 @@ test('production Skill catalog resolves a Graph child durable tool surface', asy
       llmConnectionId: FAKE_CONNECTION_ID,
       llmConnectionSlug: 'fake',
       model: 'fake-model',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     const child = await createClaimedGraphChild({
       root,
@@ -1928,7 +1922,7 @@ test('production Skill catalog reports an archived Session without resolving its
       llmConnectionId: FAKE_CONNECTION_ID,
       llmConnectionSlug: 'fake',
       model: 'fake-model',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     const snapshot = await stores.sessionStore.readHeaderRecordSnapshot(session.id);
     await stores.sessionStore.setSessionsArchivedVersioned(
@@ -1969,7 +1963,7 @@ test('production Skill catalog reports a removed Session as not found', async ()
       llmConnectionId: FAKE_CONNECTION_ID,
       llmConnectionSlug: 'fake',
       model: 'fake-model',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     const snapshot = await stores.sessionStore.readHeaderRecordSnapshot(session.id);
     await stores.sessionStore.removeSessionsVersioned([
@@ -2009,7 +2003,7 @@ test('production Skill catalog preserves an archive race during live tool resolu
       llmConnectionId: FAKE_CONNECTION_ID,
       llmConnectionSlug: 'fake',
       model: 'fake-model',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     const composition = await createExecutionRuntimeHostComposition(compositionContext(owner));
     const originalToolsForSession = AgentGraphCoordinator.prototype.toolsForSession;
@@ -2060,7 +2054,7 @@ test('production Skill catalog preserves a removal race during live tool resolut
       llmConnectionId: FAKE_CONNECTION_ID,
       llmConnectionSlug: 'fake',
       model: 'fake-model',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     const composition = await createExecutionRuntimeHostComposition(compositionContext(owner));
     const originalToolsForSession = AgentGraphCoordinator.prototype.toolsForSession;
@@ -2128,7 +2122,7 @@ test('new Full Access Plan Skill previews use the mutating tool surface', async 
         principal: 'local_os_user' as const,
         acquireResidency: () => ({ release() {} }),
       };
-      const query = (permissionMode: 'ask' | 'bypass') =>
+      const query = (permissionMode: 'auto_review' | 'bypass') =>
         composition.handlers['skill.catalog.invocable.query'](
           {
             kind: 'start',
@@ -2142,7 +2136,7 @@ test('new Full Access Plan Skill previews use the mutating tool surface', async 
           connection,
         );
 
-      const managed = await query('ask');
+      const managed = await query('auto_review');
       assert.equal(managed.ok, true);
       if (!managed.ok || managed.result.kind !== 'page') return;
       assert.equal(
@@ -2384,7 +2378,7 @@ test('production composition validates graph stop before aborting a claimed chil
       llmConnectionId: FAKE_CONNECTION_ID,
       llmConnectionSlug: 'fake',
       model: 'fake-model',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     const completedPrompt = 'execute the canonical claimed graph activation';
     const completed = await createClaimedGraphChild({
@@ -2632,7 +2626,7 @@ test('interaction fail-stop stops graph operators through the kernel and release
         llmConnectionId: FAKE_CONNECTION_ID,
         llmConnectionSlug: 'fake',
         model: 'fake-model',
-        permissionMode: 'ask',
+        permissionMode: 'auto_review',
       });
       await graph.toolsForSession(session.id);
       const turnId = 'interaction-drain-turn';
@@ -2821,7 +2815,7 @@ async function seedLegacyFakeBackendSession(
     cwd: root,
     llmConnectionSlug: 'fake',
     model: 'fake-model',
-    permissionMode: 'ask',
+    permissionMode: 'auto_review',
   });
 
   const legacy = new DatabaseSync(join(root, 'runtime.sqlite'));
@@ -2935,7 +2929,7 @@ async function createClaimedGraphChild(input: {
     llmConnectionId: FAKE_CONNECTION_ID,
     llmConnectionSlug: 'fake',
     model: 'fake-model',
-    permissionMode: 'explore',
+    permissionMode: 'auto_review',
     collaborationMode: 'agent',
     orchestrationMode: 'default',
     subagentParent: {

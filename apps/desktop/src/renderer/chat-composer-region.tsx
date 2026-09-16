@@ -19,8 +19,6 @@
 
 import { useLayoutEffect, useRef, type ComponentProps, type ComponentType, type ReactNode, type RefObject } from 'react';
 import {
-  Banner,
-  Button,
   ClientCapabilityPrompt,
   Composer,
   type ComposerInteraction,
@@ -48,21 +46,6 @@ const newTaskDraftPersistence = {
     writeNewTaskReloadDraft(key, value);
   },
 };
-
-/**
- * #1629: what the composer's slot shows when the active session's boundary
- * could not be read. The composer must stay hidden — without the boundary the
- * surface cannot know what the session may do — but "hidden" on its own reads
- * as a broken window, so the slot says what happened and offers another read.
- */
-interface BoundaryUnreadableNotice {
-  title: string;
-  detail: string;
-  retryLabel: string;
-  retryPendingLabel: string;
-  retryPending: boolean;
-  onRetry(): void;
-}
 
 /**
  * The composer region of the chat surface (issue #1043): the composer
@@ -114,7 +97,6 @@ interface ChatComposerRegionProps
   respondToUserQuestion: ComponentProps<typeof UserQuestionPrompt>['onRespond'];
   respondToUserForm: ComponentProps<typeof FormInteractionPrompt>['onRespond'];
   stop: ComponentProps<typeof UserQuestionPrompt>['onStop'];
-  boundaryUnreadableNotice?: BoundaryUnreadableNotice;
   /**
    * Tokens the provider counted for the session's latest request on the active
    * route, or nothing when that cannot be established. Resolved by the owner,
@@ -169,7 +151,6 @@ export function ChatComposerRegion({
   respondToUserQuestion,
   respondToUserForm,
   stop,
-  boundaryUnreadableNotice,
   latestRequestUsageTokens,
   onOpenContextUsage,
   LiveContextUsageProbe,
@@ -300,29 +281,6 @@ export function ChatComposerRegion({
   return (
     <>
       <div className="maka-composer-interaction-slot">
-        {/* The notice stands in for the composer, so it appears exactly where
-            the composer would have been — and never over a turn-scoped
-            interaction, which already owns the slot and is the more urgent
-            thing to answer. */}
-        {boundaryUnreadableNotice && active && !activeInteraction && (
-          <div className="maka-boundary-unreadable-notice">
-            <Banner
-              status="warning"
-              className="maka-boundary-unreadable-notice-alert"
-              role="status"
-              title={boundaryUnreadableNotice.title}
-              description={boundaryUnreadableNotice.detail}
-              endContent={<Button
-                variant="secondary"
-                size="sm"
-                label={boundaryUnreadableNotice.retryPending
-                  ? boundaryUnreadableNotice.retryPendingLabel
-                  : boundaryUnreadableNotice.retryLabel}
-                isDisabled={boundaryUnreadableNotice.retryPending}
-                onClick={boundaryUnreadableNotice.onRetry}
-              />} />
-          </div>
-        )}
         {activeSandboxBoundary && (
           <SandboxBoundaryPrompt
             request={activeSandboxBoundary}

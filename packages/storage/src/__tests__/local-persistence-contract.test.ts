@@ -74,7 +74,7 @@ test('leased WorkHub contract persists copied attachments and rejects inconsiste
       name: 'Payments',
       llmConnectionSlug: 'test',
       model: 'test',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     const source: AttachmentRef = {
       kind: 'other',
@@ -175,7 +175,7 @@ test('leased WorkHub transaction rolls back target, create claim, admission and 
           name: 'Payments',
           llmConnectionSlug: 'test',
           model: 'test',
-          permissionMode: 'ask',
+          permissionMode: 'auto_review',
         },
       },
     };

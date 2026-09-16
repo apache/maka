@@ -29,7 +29,7 @@ describe('tool_result_preview open-facts', () => {
         agentName: 'X',
         turnId: 't',
         status: 'running',
-        permissionMode: 'ask',
+        permissionMode: 'auto_review',
       }),
     );
     assert.throws(() =>
@@ -39,7 +39,7 @@ describe('tool_result_preview open-facts', () => {
         agentName: 'X',
         turnId: 't',
         status: 'running',
-        permissionMode: 'ask',
+        permissionMode: 'auto_review',
         summary: 'nope',
       }),
     );
@@ -50,7 +50,7 @@ describe('tool_result_preview open-facts', () => {
         agentName: 'X',
         turnId: 't',
         status: 'waiting_for_user',
-        permissionMode: 'ask',
+        permissionMode: 'auto_review',
       }),
     );
     assert.throws(() =>
@@ -66,7 +66,7 @@ describe('tool_result_preview permission modes', () => {
     agentName: 'Explore',
     turnId: 't',
     status: 'running',
-    permissionMode: 'ask',
+    permissionMode: 'auto_review',
   } as const;
 
   it('rejects a retired mode on the live wire', () => {
@@ -77,7 +77,7 @@ describe('tool_result_preview permission modes', () => {
   });
 
   it('accepts every live mode', () => {
-    for (const permissionMode of ['explore', 'ask', 'bypass'] as const) {
+    for (const permissionMode of ['auto_review', 'bypass'] as const) {
       assert.deepEqual(decodeToolResultPreviewContent({ ...preview, permissionMode }), {
         ...preview,
         permissionMode,

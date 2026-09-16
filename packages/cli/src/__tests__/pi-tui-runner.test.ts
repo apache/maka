@@ -21,9 +21,6 @@ import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { describe, test } from 'node:test';
 import { TuiMainScreen, visibleWidth } from '@earendil-works/pi-tui';
@@ -90,7 +87,6 @@ import {
   type MakaPiTuiInput,
 } from '../pi-tui-runner.js';
 import { AUTO_RECAP_IDLE_MS } from '../session-recap.js';
-import { BUSY_SPINNER_FRAMES } from '../tui-attention.js';
 import { EXPANSION_COLLAPSE_CONFIRM_WINDOW_MS } from '../pi-transcript.js';
 import type { TuiMcpAction, TuiMcpManagement } from '../tui-mcp-control.js';
 import {
@@ -345,7 +341,7 @@ describe('Maka Pi TUI runner', () => {
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
     });
 
@@ -376,7 +372,7 @@ describe('Maka Pi TUI runner', () => {
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
     });
 
@@ -400,7 +396,7 @@ describe('Maka Pi TUI runner', () => {
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
     });
 
@@ -424,7 +420,7 @@ describe('Maka Pi TUI runner', () => {
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
     });
 
@@ -448,7 +444,7 @@ describe('Maka Pi TUI runner', () => {
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
     });
 
@@ -481,7 +477,7 @@ describe('Maka Pi TUI runner', () => {
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
       listShellRunUpdates: async () => [],
     });
@@ -520,7 +516,7 @@ describe('Maka Pi TUI runner', () => {
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
       onProcessExit: (exitCode) => processExitCodes.push(exitCode),
     });
@@ -560,7 +556,7 @@ describe('Maka Pi TUI runner', () => {
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
     });
 
@@ -592,7 +588,7 @@ describe('Maka Pi TUI runner', () => {
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
       subscribeShellRunUpdates: (listener) => {
         publishShellRun = listener;
@@ -684,7 +680,7 @@ describe('Maka Pi TUI runner', () => {
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
       taskbarProgress: false,
     });
@@ -713,7 +709,7 @@ describe('Maka Pi TUI runner', () => {
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
     });
 
@@ -844,7 +840,7 @@ describe('Maka Pi TUI runner', () => {
         cwd: '/repo',
         model: 'm',
         connectionSlug: 'c',
-        permissionMode: 'ask',
+        permissionMode: 'auto_review',
         locale,
         terminal,
         hostControl: {
@@ -901,7 +897,7 @@ describe('Maka Pi TUI runner', () => {
           cwd: '/repo',
           model: 'deepseek-v4-flash',
           connectionSlug: 'deepseek',
-          permissionMode: 'ask',
+          permissionMode: 'auto_review',
           terminal,
         }),
         /focus reporting failed/,
@@ -1052,7 +1048,7 @@ describe('Maka Pi TUI runner', () => {
         cwd: '/repo',
         model: 'm',
         connectionSlug: 'c',
-        permissionMode: 'ask',
+        permissionMode: 'auto_review',
         locale,
         terminal,
         onboarding: fakeOnboardingSurface({
@@ -1125,7 +1121,7 @@ describe('Maka Pi TUI runner', () => {
       cwd: '/repo',
       model: 'm',
       connectionSlug: 'c',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
       firstRun: true,
       onboarding: fakeOnboardingSurface({
@@ -1292,7 +1288,7 @@ describe('Maka Pi TUI runner', () => {
         cwd: '/repo',
         model: 'm',
         connectionSlug: 'c',
-        permissionMode: 'ask',
+        permissionMode: 'auto_review',
         terminal,
         firstRun,
         onboarding: {
@@ -2631,7 +2627,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
     });
 
@@ -2678,7 +2674,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
     });
 
@@ -2707,7 +2703,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
     });
 
@@ -2756,7 +2752,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
     });
 
@@ -2805,7 +2801,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
     });
 
@@ -2817,7 +2813,7 @@ Slug openai-work<cursor>
     assertBottomPickerPlacement(
       terminal,
       'Choose an approach',
-      'Maka · Auto · claude-sonnet-4-5 · claude-subscription · /repo',
+      'Maka · Auto review · claude-sonnet-4-5 · claude-subscription · /repo',
     );
     // The preset options and the free-text "Other" row are on screen together —
     // the option list is no longer swapped out for a separate text overlay.
@@ -2863,7 +2859,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
     });
 
@@ -2903,7 +2899,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
     });
 
@@ -2929,7 +2925,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
     });
 
@@ -2976,7 +2972,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal: cancelTerminal,
     });
     cancelTerminal.input('deploy');
@@ -2999,7 +2995,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal: stopTerminal,
     });
     stopTerminal.input('deploy');
@@ -3023,7 +3019,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
     });
 
@@ -3052,7 +3048,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
     });
 
@@ -3093,7 +3089,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
       subscribeShellRunUpdates: (next) => {
         listener = next;
@@ -3154,7 +3150,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
     });
 
@@ -3186,7 +3182,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
       subscribeShellRunUpdates: (next) => {
         listener = next;
@@ -3237,7 +3233,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
     });
 
@@ -3288,7 +3284,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
     });
 
@@ -3341,7 +3337,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
     });
 
@@ -3389,7 +3385,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
     });
 
@@ -3447,7 +3443,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
     });
 
@@ -3491,7 +3487,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'deepseek-v4-flash',
       connectionSlug: 'deepseek',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
       turnActivity: createTestTurnActivity(activities),
     });
@@ -3523,7 +3519,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'deepseek-v4-flash',
       connectionSlug: 'deepseek',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
       turnActivity: createTestTurnActivity(activities),
     });
@@ -3562,7 +3558,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'deepseek-v4-flash',
       connectionSlug: 'deepseek',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
       turnActivity: createTestTurnActivity(activities),
     });
@@ -3592,7 +3588,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'deepseek-v4-flash',
       connectionSlug: 'deepseek',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
     });
 
@@ -3625,7 +3621,9 @@ Slug openai-work<cursor>
       'the head should have scrolled off',
     );
     assert.equal(
-      screen[terminal.rows - 1]?.includes('Maka · Auto · deepseek-v4-flash · deepseek · /repo'),
+      screen[terminal.rows - 1]?.includes(
+        'Maka · Auto review · deepseek-v4-flash · deepseek · /repo',
+      ),
       true,
     );
 
@@ -3648,7 +3646,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'deepseek-v4-flash',
       connectionSlug: 'deepseek',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
     });
 
@@ -3686,7 +3684,7 @@ Slug openai-work<cursor>
     );
     assert.match(
       plainTerminalOutput(terminal.screenOutput()),
-      /Maka · Auto · deepseek-v4-flash · deepseek · \/repo/,
+      /Maka · Auto review · deepseek-v4-flash · deepseek · \/repo/,
     );
 
     // Reopening the same session preserves the reader position.
@@ -3719,7 +3717,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'deepseek-v4-flash',
       connectionSlug: 'deepseek',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
     });
 
@@ -3768,7 +3766,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'deepseek-v4-flash',
       connectionSlug: 'deepseek',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
     });
 
@@ -3812,7 +3810,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'deepseek-v4-flash',
       connectionSlug: 'deepseek',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
       mcp: {
         snapshot: () => ({
@@ -3895,7 +3893,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'deepseek-v4-flash',
       connectionSlug: 'deepseek',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
       mcp,
     });
@@ -4008,7 +4006,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'deepseek-v4-flash',
       connectionSlug: 'deepseek',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
       mcp,
     });
@@ -4038,7 +4036,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'deepseek-v4-flash',
       connectionSlug: 'deepseek',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
     });
 
@@ -4063,7 +4061,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'deepseek-v4-flash',
       connectionSlug: 'deepseek',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
       onProcessExit: (exitCode) => processExitCodes.push(exitCode),
     });
@@ -4089,7 +4087,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'deepseek-v4-flash',
       connectionSlug: 'deepseek',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
     });
 
@@ -4118,7 +4116,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'deepseek-v4-flash',
       connectionSlug: 'deepseek',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
     });
 
@@ -4712,7 +4710,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
     });
 
@@ -4834,7 +4832,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
       onProcessExit: (exitCode) => processExitCodes.push(exitCode),
     });
@@ -4876,13 +4874,13 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
     });
 
     terminal.input('/permissions bypass');
     terminal.input('\r');
-    await waitFor(() => terminal.output().includes('Switch to full access?'));
+    await waitFor(() => terminal.output().includes('Switch to Bypass?'));
     assert.deepEqual(driver.permissionModes, []);
 
     terminal.input('\r');
@@ -4903,7 +4901,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'deepseek-v4-flash',
       connectionSlug: 'deepseek',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
     });
 
@@ -4933,7 +4931,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'deepseek-v4-flash',
       connectionSlug: 'deepseek',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
     });
 
@@ -4963,7 +4961,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'deepseek-v4-flash',
       connectionSlug: 'deepseek',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
     });
 
@@ -4989,7 +4987,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'deepseek-v4-flash',
       connectionSlug: 'deepseek',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
       agentGraphHistory: {
         listEpochs: async () => ({
@@ -5034,7 +5032,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'deepseek-v4-flash',
       connectionSlug: 'deepseek',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
       agentGraphHistory: {
         listEpochs: async () => ({
@@ -5081,7 +5079,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'gpt-5',
       connectionSlug: 'openai',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       modelChoices: [
         {
           connectionId: 'connection-openai',
@@ -5126,7 +5124,7 @@ Slug openai-work<cursor>
       model: 'gpt-5',
       models: ['gpt-5', 'gpt-5-mini'],
       connectionSlug: 'openai',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       locale: 'zh-CN',
       terminal,
     });
@@ -5148,7 +5146,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'gpt-5',
       connectionSlug: 'openai',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       locale: 'zh-CN',
       modelChoices: [
         {
@@ -5181,56 +5179,6 @@ Slug openai-work<cursor>
     thinkingTerminal.input('\x1b');
     exitMaka(thinkingTerminal);
     await thinkingRun;
-  });
-
-  test('resumes a read-only session as Read only, and never marks Auto as current', async () => {
-    // #1611 in the TUI: the resumed boundary is read-only, so the status line
-    // must name it and the picker must not present Auto as "the option you are
-    // already on" — selecting it replaces a read-only boundary with a writable
-    // one, which is a permission change, not a confirmation.
-    const terminal = new FakeTerminal();
-    const driver = new SlashCommandDriver(
-      [fakeSessionSummary('session-2', '/repo')],
-      new Map(),
-      new Map([['session-2', 'explore' as PermissionMode]]),
-    );
-    const run = runMakaPiTui({
-      title: 'Maka',
-      driver,
-      cwd: '/repo',
-      model: 'claude-sonnet-4-5',
-      connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
-      terminal,
-      resumeSessionId: 'session-2',
-    });
-
-    await waitFor(() => driver.sessionIds.length === 1);
-    await waitFor(() =>
-      plainTerminalOutput(terminal.screenOutput()).includes('Maka · Read only ·'),
-    );
-
-    terminal.input('/permissions');
-    terminal.input('\r');
-    await waitFor(() => terminal.output().includes('Permissions'));
-    const picker = plainTerminalOutput(terminal.screenOutput());
-    assert.ok(picker.includes('Read only'), 'picker header names the boundary in force');
-    assert.doesNotMatch(picker, /current ·/);
-
-    // Selecting Auto is applied as the permission change it is.
-    terminal.input('\r');
-    await waitFor(() => driver.permissionModes.length === 1);
-    assert.deepEqual(driver.permissionModes, ['ask']);
-    await waitFor(() => terminal.output().includes('Permissions: Auto'));
-    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('Maka · Auto ·'));
-
-    exitMaka(terminal);
-    await Promise.race([
-      run,
-      delay(CLOSE_BUDGET_MS).then(() => {
-        throw new Error('TUI did not close during test cleanup');
-      }),
-    ]);
   });
 
   test('switches connection and model together from a cross-connection /model', async () => {
@@ -5267,7 +5215,7 @@ Slug openai-work<cursor>
           thinkingLevels: [],
         },
       ],
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
     });
 
@@ -5298,7 +5246,7 @@ Slug openai-work<cursor>
     );
     // The status line now reflects both the new model and the new connection.
     await waitFor(() =>
-      plainTerminalOutput(terminal.output()).includes('Maka · Auto · glm-5.2 · zai · /repo'),
+      plainTerminalOutput(terminal.output()).includes('Maka · Auto review · glm-5.2 · zai · /repo'),
     );
 
     exitMaka(terminal);
@@ -5352,7 +5300,7 @@ Slug openai-work<cursor>
           thinkingLevels: [],
         },
       ],
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
     });
 
@@ -5441,7 +5389,7 @@ Slug openai-work<cursor>
           thinkingLevels: [],
         },
       ],
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
     });
 
@@ -5500,7 +5448,7 @@ Slug openai-work<cursor>
           thinkingLevels: [],
         },
       ],
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
     });
 
@@ -5586,7 +5534,7 @@ Slug openai-work<cursor>
       model: 'shared-model',
       connectionSlug: 'openai',
       modelChoices,
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
     });
 
@@ -5697,7 +5645,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
       subscribeSessionTitleChanges: (listener) => {
         notifyTitleChanged = listener;
@@ -5734,7 +5682,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
       subscribeSessionTitleChanges: (listener) => {
         notifyTitleChanged = listener;
@@ -5787,7 +5735,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
     });
 
@@ -5830,7 +5778,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'model-a',
       connectionSlug: 'conn-a',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
     });
 
@@ -5895,7 +5843,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       locale: 'en',
       terminal,
     });
@@ -5953,7 +5901,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
       externalSessions,
     });
@@ -6020,7 +5968,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
       externalSessions,
     });
@@ -6067,7 +6015,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
       externalSessions: {
         listScopes: () => ['all'] as const,
@@ -6144,7 +6092,7 @@ Slug openai-work<cursor>
         cwd: '/repo',
         model: 'claude-sonnet-4-5',
         connectionSlug: 'claude-subscription',
-        permissionMode: 'ask',
+        permissionMode: 'auto_review',
         locale: 'en',
         terminal,
         externalSessions,
@@ -6190,7 +6138,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
       externalSessions,
     });
@@ -6252,7 +6200,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
       externalSessions,
     });
@@ -6318,7 +6266,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
       externalSessions,
     });
@@ -6368,7 +6316,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       locale: 'en',
       terminal,
       externalSessions,
@@ -6429,7 +6377,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
       externalSessions,
     });
@@ -6486,7 +6434,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
       externalSessions,
     });
@@ -6538,7 +6486,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
       externalSessions,
     });
@@ -6584,7 +6532,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       locale: 'en',
       terminal,
       externalSessions,
@@ -6630,7 +6578,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
       externalSessions,
     });
@@ -6696,7 +6644,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       modelContextWindow: 500_000,
       terminal,
     });
@@ -6739,7 +6687,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       modelContextWindow: 500_000,
       ctxRefreshTicker: { delayMs: 0 },
       terminal,
@@ -6779,7 +6727,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       modelContextWindow: 500_000,
       ctxRefreshTicker: { delayMs: 0 },
       terminal,
@@ -6854,7 +6802,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
       listShellRunUpdates: async (sessionId) => {
         reads.push(sessionId);
@@ -6944,7 +6892,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
       subscribeShellRunUpdates: (next) => {
         listener = next;
@@ -7037,7 +6985,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
     });
 
@@ -7071,7 +7019,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
     });
 
@@ -7121,7 +7069,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
     });
 
@@ -7160,7 +7108,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
       listShellRunUpdates: async () => {
         hydrationAttempts += 1;
@@ -7202,7 +7150,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
       turnActivity: createTestTurnActivity(activities),
     });
@@ -7259,7 +7207,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
     });
 
@@ -7294,7 +7242,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
     });
 
@@ -7333,7 +7281,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
     });
 
@@ -7388,7 +7336,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
     });
 
@@ -7436,7 +7384,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
     });
 
@@ -7482,7 +7430,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
     });
 
@@ -7536,7 +7484,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
     });
 
@@ -7583,7 +7531,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
     });
 
@@ -7660,7 +7608,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
       subscribeShellRunUpdates: (next) => {
         listener = next;
@@ -7829,7 +7777,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
       subscribeShellRunUpdates: (next) => {
         listener = next;
@@ -7970,13 +7918,13 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
     });
 
     await waitFor(() =>
       plainTerminalOutput(terminal.output()).includes(
-        'Maka · Auto · claude-sonnet-4-5 · claude-subscription · /repo',
+        'Maka · Auto review · claude-sonnet-4-5 · claude-subscription · /repo',
       ),
     );
 
@@ -8028,13 +7976,13 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
     });
 
     await waitFor(() =>
       plainTerminalOutput(terminal.output()).includes(
-        'Maka · Auto · claude-sonnet-4-5 · claude-subscription · /repo',
+        'Maka · Auto review · claude-sonnet-4-5 · claude-subscription · /repo',
       ),
     );
 
@@ -8074,13 +8022,13 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
     });
 
     await waitFor(() =>
       plainTerminalOutput(terminal.output()).includes(
-        'Maka · Auto · claude-sonnet-4-5 · claude-subscription · /repo',
+        'Maka · Auto review · claude-sonnet-4-5 · claude-subscription · /repo',
       ),
     );
 
@@ -8117,7 +8065,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
     });
 
@@ -8160,7 +8108,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
     });
 
@@ -8187,7 +8135,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
     });
 
@@ -8225,7 +8173,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
     });
 
@@ -8264,7 +8212,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
     });
 
@@ -8304,7 +8252,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
     });
 
@@ -8344,7 +8292,7 @@ Slug openai-work<cursor>
         cwd: '/repo',
         model: 'claude-sonnet-4-5',
         connectionSlug: 'claude-subscription',
-        permissionMode: 'ask',
+        permissionMode: 'auto_review',
         terminal,
         listSkills: async () => [
           { ref: 'project:alpha', id: 'alpha', name: 'Alpha', description: 'Alpha skill' },
@@ -8392,7 +8340,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
       listSkills: async () => [],
     });
@@ -8427,7 +8375,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
       locale: 'zh-CN',
       listSkills: async () => [],
@@ -8469,7 +8417,7 @@ Slug openai-work<cursor>
         cwd: '/repo',
         model: 'claude-sonnet-4-5',
         connectionSlug: 'claude-subscription',
-        permissionMode: 'ask',
+        permissionMode: 'auto_review',
         terminal,
         listSkills: async () => [],
       });
@@ -8509,7 +8457,7 @@ Slug openai-work<cursor>
         cwd: '/repo',
         model: 'claude-sonnet-4-5',
         connectionSlug: 'claude-subscription',
-        permissionMode: 'ask',
+        permissionMode: 'auto_review',
         terminal,
         listSkills: async () => [],
       });
@@ -8567,7 +8515,7 @@ Slug openai-work<cursor>
         cwd: '/repo',
         model: 'claude-sonnet-4-5',
         connectionSlug: 'claude-subscription',
-        permissionMode: 'ask',
+        permissionMode: 'auto_review',
         terminal,
         recap: {
           generate: async () => {
@@ -8640,7 +8588,7 @@ Slug openai-work<cursor>
         cwd: '/repo',
         model: 'claude-sonnet-4-5',
         connectionSlug: 'claude-subscription',
-        permissionMode: 'ask',
+        permissionMode: 'auto_review',
         terminal,
         recap: {
           generate: async () => {
@@ -8694,7 +8642,7 @@ Slug openai-work<cursor>
         cwd: '/repo',
         model: 'claude-sonnet-4-5',
         connectionSlug: 'claude-subscription',
-        permissionMode: 'ask',
+        permissionMode: 'auto_review',
         terminal,
         recap: {
           generate: async () => {
@@ -8754,7 +8702,7 @@ Slug openai-work<cursor>
         cwd: '/repo',
         model: 'claude-sonnet-4-5',
         connectionSlug: 'claude-subscription',
-        permissionMode: 'ask',
+        permissionMode: 'auto_review',
         terminal,
         recap: {
           generate: async () => {
@@ -9374,7 +9322,7 @@ Slug openai-work<cursor>
         cwd: '/repo',
         model: 'claude-sonnet-4-5',
         connectionSlug: 'claude-subscription',
-        permissionMode: 'ask',
+        permissionMode: 'auto_review',
         terminal,
       });
 
@@ -9498,7 +9446,7 @@ Slug openai-work<cursor>
         cwd: '/repo',
         model: 'claude-sonnet-4-5',
         connectionSlug: 'claude-subscription',
-        permissionMode: 'ask',
+        permissionMode: 'auto_review',
         terminal,
       });
 
@@ -9550,7 +9498,7 @@ Slug openai-work<cursor>
         cwd: '/repo',
         model: 'claude-sonnet-4-5',
         connectionSlug: 'claude-subscription',
-        permissionMode: 'ask',
+        permissionMode: 'auto_review',
         terminal,
       });
       await waitFor(() => plainTerminalOutput(terminal.output()).includes('goal 2/50'));
@@ -9593,7 +9541,7 @@ Slug openai-work<cursor>
         cwd: '/repo',
         model: 'claude-sonnet-4-5',
         connectionSlug: 'claude-subscription',
-        permissionMode: 'ask',
+        permissionMode: 'auto_review',
         terminal,
       });
       await waitFor(() => plainTerminalOutput(terminal.output()).includes('goal 2/50'));
@@ -9651,7 +9599,7 @@ Slug openai-work<cursor>
         cwd: '/repo',
         model: 'claude-sonnet-4-5',
         connectionSlug: 'claude-subscription',
-        permissionMode: 'ask',
+        permissionMode: 'auto_review',
         terminal,
         resumeSessionId: 'session-2',
       });
@@ -9679,7 +9627,7 @@ Slug openai-work<cursor>
         cwd: '/repo',
         model: 'claude-sonnet-4-5',
         connectionSlug: 'claude-subscription',
-        permissionMode: 'ask',
+        permissionMode: 'auto_review',
         terminal,
       });
       await waitFor(() => plainTerminalOutput(terminal.output()).includes('goal 2/50'));
@@ -9727,7 +9675,7 @@ Slug openai-work<cursor>
         cwd: '/repo',
         model: 'claude-sonnet-4-5',
         connectionSlug: 'claude-subscription',
-        permissionMode: 'ask',
+        permissionMode: 'auto_review',
         terminal,
       });
 
@@ -9765,7 +9713,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
     });
 
@@ -9797,7 +9745,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
     });
 
@@ -9835,7 +9783,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
     });
 
@@ -9866,7 +9814,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
     });
 
@@ -9892,7 +9840,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
     });
 
@@ -9917,7 +9865,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       locale: 'zh-CN',
       terminal,
     });
@@ -9955,7 +9903,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
     });
 
@@ -9986,7 +9934,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
     });
 
@@ -10013,7 +9961,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
     });
 
@@ -10037,7 +9985,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
     });
 
@@ -10068,7 +10016,7 @@ Slug openai-work<cursor>
       cwd: '/repo/current-shell',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
       resumeSessionId: 'session-2',
       resumeCwd: '../new-worktree',
@@ -10107,7 +10055,7 @@ Slug openai-work<cursor>
           thinkingLevels: [],
         },
       ],
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
       resumeSessionId: legacy.id,
     });
@@ -10157,7 +10105,7 @@ Slug openai-work<cursor>
           thinkingLevels: [],
         },
       ],
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
       resumeSessionId: deleted.id,
     });
@@ -10222,7 +10170,7 @@ Slug openai-work<cursor>
           thinkingLevels: [],
         },
       ],
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
       onboarding: fakeOnboardingSurface({
         verify: async () => ({ kind: 'ok', models: [{ id: 'gpt-5.5' }] }),
@@ -10297,7 +10245,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
       resumeSessionId: 'session-2',
     });
@@ -10320,7 +10268,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
       listShellRunUpdates: (sessionId) => driver.listShellRunUpdates(sessionId),
     });
@@ -10357,7 +10305,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
       resumeSessionId: 'missing-session',
     });
@@ -10393,7 +10341,7 @@ Slug openai-work<cursor>
       cwd: '/client-only',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
       resumeSessionId: 'remote-session',
       resumeFailure: 'exit',
@@ -10415,7 +10363,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
     });
 
@@ -10455,7 +10403,7 @@ Slug openai-work<cursor>
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
     });
 
@@ -11783,7 +11731,7 @@ class SlashCommandDriver extends FakeSessionDriver {
     return this.orchestrationMode;
   }
   getPermissionMode(): PermissionMode {
-    return this.activeBoundaryDisplayMode ?? 'ask';
+    return this.activeBoundaryDisplayMode ?? 'auto_review';
   }
 }
 
@@ -12733,7 +12681,7 @@ function fakeSessionSummary(
     llmConnectionSlug: 'claude-subscription',
     connectionLocked: false,
     model: 'claude-sonnet-4-5',
-    permissionMode: 'ask',
+    permissionMode: 'auto_review',
   };
 }
 
@@ -12808,7 +12756,7 @@ async function runSignalExitProbe(
       cwd: '/repo',
       model: 'test-model',
       connectionSlug: 'test-connection',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       terminal,
       turnActivity,
       onProcessExit: (exitCode) => beginMakaCliExit(exitCode),
@@ -12909,7 +12857,7 @@ async function runFatalExitProbe(
         cwd: '/repo',
         model: 'test-model',
         connectionSlug: 'test-connection',
-        permissionMode: 'ask',
+        permissionMode: 'auto_review',
         terminal,
         turnActivity,
         onProcessExit: (exitCode, error) => {

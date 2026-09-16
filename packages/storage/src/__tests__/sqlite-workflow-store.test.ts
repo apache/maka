@@ -768,7 +768,7 @@ describe('SQLite workflow stores', () => {
               llmConnectionId: 'connection-default',
               llmConnectionSlug: 'default',
               model: 'test-model',
-              permissionMode: 'ask',
+              permissionMode: 'auto_review',
               collaborationMode: 'agent',
               orchestrationMode: 'default',
             },
@@ -847,7 +847,7 @@ describe('SQLite workflow stores', () => {
               llmConnectionId: 'connection-default',
               llmConnectionSlug: 'default',
               model: 'test-model',
-              permissionMode: 'ask',
+              permissionMode: 'auto_review',
               collaborationMode: 'agent',
               orchestrationMode: 'default',
             },
@@ -879,13 +879,13 @@ describe('SQLite workflow stores', () => {
           decodedTask?.effect.kind === 'agent_run'
             ? decodedTask.effect.execution.permissionMode
             : undefined,
-          'ask',
+          'auto_review',
         );
         assert.equal(
           decodedClaim?.task.effect.kind === 'agent_run'
             ? decodedClaim.task.effect.execution.permissionMode
             : undefined,
-          'ask',
+          'auto_review',
         );
       } finally {
         reopened.close();

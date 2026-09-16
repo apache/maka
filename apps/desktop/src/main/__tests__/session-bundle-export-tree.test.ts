@@ -169,7 +169,7 @@ function task(id: string, name: string): DesktopSessionSummary {
     backend: 'ai-sdk',
     llmConnectionSlug: 'fake',
     model: 'fake-model',
-    permissionMode: 'ask',
+    permissionMode: 'auto_review',
     revision: 1,
   } as unknown as DesktopSessionSummary;
 }

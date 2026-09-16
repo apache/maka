@@ -1730,7 +1730,7 @@ function session(id: string): SessionCatalogProjection {
     llmConnectionSlug: 'test-connection',
     connectionLocked: true,
     model: 'test-model',
-    permissionMode: 'ask',
+    permissionMode: 'auto_review',
     collaborationMode: 'agent',
     orchestrationMode: 'default',
   };

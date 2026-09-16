@@ -81,7 +81,7 @@ test('consumes an active-target admission before the terminal transition can mak
       role: WORKHUB_COORDINATION_SESSION_ROLE,
       llmConnectionSlug: 'test',
       model: 'test',
-      permissionMode: 'explore',
+      permissionMode: 'auto_review',
       toolProfile: 'workhub-coordination-v1',
     },
   });
@@ -93,7 +93,7 @@ test('consumes an active-target admission before the terminal transition can mak
       name: 'Payments',
       llmConnectionSlug: 'test',
       model: 'test',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     },
   });
   const fixture = createFixture(undefined, () => true, store);
@@ -172,7 +172,7 @@ test('idle recovery starts one real preassigned WorkHub root and restores the re
       role: WORKHUB_COORDINATION_SESSION_ROLE,
       llmConnectionSlug: 'test',
       model: 'test',
-      permissionMode: 'explore',
+      permissionMode: 'auto_review',
       toolProfile: 'workhub-coordination-v1',
     },
   });
@@ -184,7 +184,7 @@ test('idle recovery starts one real preassigned WorkHub root and restores the re
       name: 'Payments',
       llmConnectionSlug: 'test',
       model: 'test',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     },
   });
   const fixture = createFixture(undefined, () => true, store);
@@ -284,7 +284,7 @@ test('idle recovery keeps promoted steering ahead of distinct real WorkHub roots
       role: WORKHUB_COORDINATION_SESSION_ROLE,
       llmConnectionSlug: 'test',
       model: 'test',
-      permissionMode: 'explore',
+      permissionMode: 'auto_review',
       toolProfile: 'workhub-coordination-v1',
     },
   });
@@ -296,7 +296,7 @@ test('idle recovery keeps promoted steering ahead of distinct real WorkHub roots
       name: 'Payments',
       llmConnectionSlug: 'test',
       model: 'test',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     },
   });
   const fixture = createFixture(undefined, () => true, store);

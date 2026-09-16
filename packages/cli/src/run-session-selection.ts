@@ -31,7 +31,7 @@ export interface MakaRunSessionSelectionInput {
   explicitModel?: string;
   thinkingSpecified: boolean;
   explicitThinking?: ThinkingLevel;
-  explicitPermissionMode?: Exclude<PermissionMode, 'ask'>;
+  explicitPermissionMode?: Exclude<PermissionMode, 'auto_review'>;
 }
 
 export type MakaRunSessionSelection =

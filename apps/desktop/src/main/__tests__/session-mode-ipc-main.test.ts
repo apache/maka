@@ -51,7 +51,7 @@ function projection(sessionId: string) {
     llmConnectionSlug: 'fake',
     connectionLocked: false,
     model: 'fake-model',
-    permissionMode: 'ask' as const,
+    permissionMode: 'auto_review' as const,
     collaborationMode: 'agent' as const,
     orchestrationMode: 'default' as const,
   };

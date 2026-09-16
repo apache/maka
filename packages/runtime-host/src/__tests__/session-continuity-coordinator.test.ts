@@ -21,7 +21,7 @@ import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { setImmediate as delayImmediate } from 'node:timers/promises';
 import test from 'node:test';
-import type { SessionEvent, ShellRunUpdate } from '@maka/core/events';
+import type { ShellRunUpdate } from '@maka/core/events';
 import type { StoredMessage } from '@maka/core/session';
 import {
   decodeHostFrame,
@@ -2375,7 +2375,7 @@ function previewEvent() {
       agentName: 'Local Read',
       turnId: 'child-turn',
       status: 'running' as const,
-      permissionMode: 'explore' as const,
+      permissionMode: 'auto_review' as const,
     },
   };
 }

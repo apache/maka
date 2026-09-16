@@ -48,7 +48,7 @@ export async function openTranscriptNavigationLedger(messages: readonly StoredMe
     const session = await stores.sessionStore.create({
       cwd: capability.canonicalPath,
       llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
-      llmConnectionSlug: 'fixture', model: 'fixture-model', permissionMode: 'ask',
+      llmConnectionSlug: 'fixture', model: 'fixture-model', permissionMode: 'auto_review',
     });
     const sessionId = session.id;
     const byTurn = new Map<string, Array<{ index: number; message: StoredMessage }>>();

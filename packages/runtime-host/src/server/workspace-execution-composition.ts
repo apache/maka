@@ -17,43 +17,37 @@
  * under the License.
  */
 
-import { createReadOnlyPermissionProfile } from '@maka/core/permission-profile';
 import {
-  createManagedExecutionBoundary,
-  type ExecutionBoundary,
-} from '@maka/core/sandbox-boundary';
-import type {
-  FilesystemWorkerClient,
-  FilesystemWorkerClientOperation,
-} from '@maka/runtime/filesystem-worker';
-
+  createFilesystemExecutor,
+  type FilesystemOperation,
+  type FilesystemResult,
+} from '@maka/runtime/filesystem-executor';
+import { createLocalWorkspaceExecutor } from '@maka/runtime/workspace-executor';
 export interface RuntimeHostWorkspaceExecutionProfile {
   readonly kind: 'attached_checkout_v1';
   readonly cwd: string;
 }
 
 export type RuntimeHostWorkspaceReadOnlyOperation = Extract<
-  FilesystemWorkerClientOperation,
+  FilesystemOperation,
   { kind: 'read' | 'glob' | 'grep' }
 >;
 
 export type RuntimeHostWorkspaceReadOnlyResult = Extract<
-  Awaited<ReturnType<FilesystemWorkerClient['execute']>>,
+  FilesystemResult,
   { kind: 'read' | 'read_image' | 'glob' | 'grep' }
 >;
 
-export interface RuntimeHostWorkspaceFilesystemWorker {
+export interface RuntimeHostWorkspaceFilesystem {
   execute(input: {
     readonly operation: RuntimeHostWorkspaceReadOnlyOperation;
     readonly cwd: string;
-    readonly executionBoundary: ExecutionBoundary;
     readonly abortSignal?: AbortSignal;
   }): Promise<RuntimeHostWorkspaceReadOnlyResult>;
 }
 
 export type RuntimeHostWorkspaceExecutionErrorCode =
   | 'workspace_execution_draining'
-  | 'filesystem_worker_unavailable'
   | 'workspace_operation_denied';
 
 export class RuntimeHostWorkspaceExecutionError extends Error {
@@ -78,7 +72,7 @@ export interface RuntimeHostWorkspaceExecutionComposition {
 }
 
 export interface CreateRuntimeHostWorkspaceExecutionCompositionInput {
-  readonly filesystemWorker?: RuntimeHostWorkspaceFilesystemWorker;
+  readonly filesystem?: RuntimeHostWorkspaceFilesystem;
 }
 
 export function createAttachedWorkspaceExecutionProfile(
@@ -96,6 +90,8 @@ export function createAttachedWorkspaceExecutionProfile(
 export function createRuntimeHostWorkspaceExecutionComposition(
   input: CreateRuntimeHostWorkspaceExecutionCompositionInput,
 ): RuntimeHostWorkspaceExecutionComposition {
+  const filesystem =
+    input.filesystem ?? createFilesystemExecutor({ workspace: createLocalWorkspaceExecutor() });
   let state: RuntimeHostWorkspaceExecutionComposition['state'] = 'ready';
   let activeOperations = 0;
   const drainWaiters = new Set<() => void>();
@@ -140,18 +136,23 @@ export function createRuntimeHostWorkspaceExecutionComposition(
       }
       activeOperations += 1;
       try {
-        if (!input.filesystemWorker) {
-          throw new RuntimeHostWorkspaceExecutionError(
-            'filesystem_worker_unavailable',
-            'Attached workspace filesystem worker is unavailable',
-          );
-        }
-        return await input.filesystemWorker.execute({
+        const result = await filesystem.execute({
           operation,
           cwd: profile.cwd,
-          executionBoundary: createManagedExecutionBoundary(createReadOnlyPermissionProfile(), 0),
           ...(abortSignal ? { abortSignal } : {}),
         });
+        if (
+          result.kind !== 'read' &&
+          result.kind !== 'read_image' &&
+          result.kind !== 'glob' &&
+          result.kind !== 'grep'
+        ) {
+          throw new RuntimeHostWorkspaceExecutionError(
+            'workspace_operation_denied',
+            'Read-only execution returned an unexpected result',
+          );
+        }
+        return result;
       } finally {
         finishOperation();
       }

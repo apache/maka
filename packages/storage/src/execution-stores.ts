@@ -560,8 +560,6 @@ async function createExecutionStoresForWrite(
         ),
       readExecutionBoundary: (sessionId) =>
         run(() => sessionStore.readExecutionBoundary(sessionId)),
-      createSandboxBoundaryRequest: (input) =>
-        run(() => sessionStore.createSandboxBoundaryRequest(input)),
       readSandboxBoundaryRequest: (sessionId, requestId) =>
         run(() => sessionStore.readSandboxBoundaryRequest(sessionId, requestId)),
       listPendingSandboxBoundaryRequests: (sessionId) =>

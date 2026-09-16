@@ -24,7 +24,7 @@ import { afterEach, describe, it } from 'node:test';
 import { act, createElement, StrictMode, useLayoutEffect } from 'react';
 import type { ShellRunUpdate } from '@maka/core/events';
 import type { SessionSummary } from '@maka/core/session';
-import type { WorkBoardActiveItem, WorkBoardItem, WorkBoardLinkedSession } from '@maka/core/work-board';
+import type { WorkBoardActiveItem, WorkBoardLinkedSession } from '@maka/core/work-board';
 import { LocaleProvider, type ToastApi } from '@maka/ui';
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
 import { TerminalCloseIntents } from '../terminal-close-intents.js';
@@ -60,7 +60,7 @@ function session(id: string): SessionSummary {
     llmConnectionSlug: 'test',
     connectionLocked: false,
     model: 'test-model',
-    permissionMode: 'ask',
+    permissionMode: 'auto_review',
   };
 }
 
@@ -265,7 +265,7 @@ function taskEntryHost(): Extract<TaskEntryHost, { state: 'available' }> {
       selectNoProject: false,
     },
     selectedProjectId: 'project-A',
-    chatDefaults: { permissionMode: 'ask', thinkingLevel: 'high' },
+    chatDefaults: { permissionMode: 'auto_review', thinkingLevel: 'high' },
   };
 }
 
@@ -1136,7 +1136,7 @@ describe('useWorkbarController', () => {
   it('links a Session produced on the surface that owns the claim', async () => {
     const { root } = installReactRenderer();
     const links: Array<{ id: string; sessionId: string }> = [];
-    const defaults = createFakeWorkbarServices();
+    const _defaults = createFakeWorkbarServices();
     const services = createFakeWorkbarServices({
       workBoard: {
         linkSession: async (id, link) => {
@@ -1178,7 +1178,7 @@ describe('useWorkbarController', () => {
     // a draft key. The claim must be bound to the surface owner token instead.
     const { root } = installReactRenderer();
     const links: Array<{ id: string; sessionId: string }> = [];
-    const defaults = createFakeWorkbarServices();
+    const _defaults = createFakeWorkbarServices();
     const services = createFakeWorkbarServices({
       workBoard: {
         linkSession: async (id, link) => {
@@ -1269,7 +1269,7 @@ describe('useWorkbarController', () => {
   it('does not link a first send from a different project surface', async () => {
     const { root } = installReactRenderer();
     const links: Array<{ id: string; sessionId: string }> = [];
-    const defaults = createFakeWorkbarServices();
+    const _defaults = createFakeWorkbarServices();
     const services = createFakeWorkbarServices({
       workBoard: {
         linkSession: async (id, link) => {
@@ -1362,7 +1362,7 @@ describe('useWorkbarController', () => {
     let attempts = 0;
     const linkCalls: Array<{ id: string; sessionId: string }> = [];
     const errors: string[] = [];
-    const defaults = createFakeWorkbarServices();
+    const _defaults = createFakeWorkbarServices();
     const services = createFakeWorkbarServices({
       workBoard: {
         linkSession: async (id, link) => {

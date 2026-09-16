@@ -22,7 +22,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
-import type { AgentRunEvent, AgentRunEventType, EmittedAgentRunEvent } from '@maka/core/agent-run';
+import type { AgentRunEventType, EmittedAgentRunEvent } from '@maka/core/agent-run';
 import { buildInvocationOpenedEvent } from '@maka/core/runtime-invocation';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { createSessionStore } from '@maka/storage/session-store';
@@ -41,7 +41,7 @@ describe('versioned execution inspect documents', () => {
         cwd: '/tmp/workspace',
         llmConnectionSlug: 'fake',
         model: 'fake-model',
-        permissionMode: 'ask',
+        permissionMode: 'auto_review',
       });
       await runtimeStore.appendRuntimeEvent(session.id, RUN_ID, openingEvent(session.id));
       await runStore.appendEvent(

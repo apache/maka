@@ -279,7 +279,7 @@ export function usageStatsRecords(now: number): {
               },
               configuration: {
                 cwd: '/tmp/e2e-usage',
-                permissionMode: 'ask',
+                permissionMode: 'auto_review',
                 collaborationMode: 'agent',
                 orchestrationMode: 'default',
                 orchestrationSource: 'session',

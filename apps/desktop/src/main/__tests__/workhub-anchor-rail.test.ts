@@ -190,7 +190,7 @@ test("focus display is derived from the selected Session ID, not delegation prio
 test('a shared coordination turn keeps every Work label without assigning one Work color to the whole turn', () => {
   const markup = renderToStaticMarkup(createElement(LocaleProvider, { locale: 'en', children: null },
     createElement(ChatSurfaceLayout, { composer: null, children: null }, createElement(WorkHubConversation, {
-      activeSession: { id: 'coordination', name: 'WorkHub', status: 'active', labels: [], isFlagged: false, isArchived: false, hasUnread: false, backend: 'ai-sdk', llmConnectionSlug: 'test', connectionLocked: false, model: 'test', permissionMode: 'ask' },
+      activeSession: { id: 'coordination', name: 'WorkHub', status: 'active', labels: [], isFlagged: false, isArchived: false, hasUnread: false, backend: 'ai-sdk', llmConnectionSlug: 'test', connectionLocked: false, model: 'test', permissionMode: 'auto_review' },
       messages: [{ type: 'user', id: 'user', turnId: 'shared', text: 'Do both tasks', ts: 1 }],
       scrollBehavior: 'auto', onNew: () => {}, onOpenWork: () => {},
       workLinks: ['Alpha', 'Beta'].map((name) => ({ id: name, coordinationTurnId: 'shared', targetSessionId: name, targetSessionName: name, workspaceName: 'Workspace' })),

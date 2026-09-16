@@ -70,7 +70,7 @@ function readyHost(input: {
     },
     selectedProjectId: input.selectedProjectId,
     ...(input.defaultProjectId ? { defaultProjectId: input.defaultProjectId } : {}),
-    chatDefaults: { permissionMode: 'ask' },
+    chatDefaults: { permissionMode: 'auto_review' },
   };
 }
 

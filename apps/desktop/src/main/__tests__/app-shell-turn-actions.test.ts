@@ -121,6 +121,6 @@ function session(id: string): SessionSummary {
     llmConnectionSlug: 'test',
     connectionLocked: false,
     model: 'test',
-    permissionMode: 'ask',
+    permissionMode: 'auto_review',
   };
 }

@@ -46,7 +46,7 @@ export function invocationOpening(
     },
     configuration: {
       cwd: '/tmp/cwd',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       collaborationMode: 'agent',
       orchestrationMode: 'default',
       orchestrationSource: 'session',

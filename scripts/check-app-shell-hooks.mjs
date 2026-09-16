@@ -105,7 +105,6 @@ export const ALLOWED = {
     useSystemUiLocale: 1,
   },
   AppShellContent: {
-    useActiveExecutionBoundary: 1,
     useActiveSessionEvents: 1,
     useAppShellBootstrapSubscriptions: 1,
     useAppShellComposerQuotes: 1,

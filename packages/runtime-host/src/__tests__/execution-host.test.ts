@@ -17,30 +17,13 @@
  * under the License.
  */
 
-import { withTimeout } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
-import { fork, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import {
-  appendFile,
-  chmod,
-  mkdir,
-  mkdtemp,
-  readFile,
-  readdir,
-  rm,
-  writeFile,
-} from 'node:fs/promises';
-import { createServer, type Server } from 'node:http';
-import { connect, type Socket } from 'node:net';
-import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
 import { TOOL_BOUNDARY_PROTOCOL_V1 } from '@maka/core/runtime-event';
 import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
-import type { MessageContent } from '@maka/core/events';
-import type { ConnectionCatalogEntry } from '@maka/core/runtime-policy';
 import {
   decodeStoredMessage as decodePersistedStoredMessage,
   type StoredMessage,
@@ -48,73 +31,33 @@ import {
 import { markPersisted } from '@maka/core/persisted-value';
 import type { SessionTodoItem } from '@maka/core/session-todo';
 import type { ScheduledTask } from '@maka/core/scheduled-task';
-import { isTerminalRuntimeEvent } from '@maka/core/runtime-event';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { buildSessionTodoTools } from '@maka/runtime/session-todo-tools';
-import {
-  buildRecoveredTerminalRuntimeEvent,
-  classifyTerminalRuntimeLedger,
-  commitTerminalRunWithRuntimeFact,
-} from '@maka/runtime/terminal-run-commit';
-import {
-  FAKE_ASK_SANDBOX_BOUNDARY_PROMPT,
-  FAKE_ASK_USER_QUESTION_PROMPT,
-  FAKE_WAIT_FOR_STEERING_PROMPT,
-} from '@maka/runtime/test-only/fake-backend';
+import { FAKE_ASK_USER_QUESTION_PROMPT } from '@maka/runtime/test-only/fake-backend';
 import { type MakaTool, type MakaToolContext } from '@maka/runtime/tool-runtime';
-import {
-  openInteractiveExecutionStoresForRead,
-  openInteractiveExecutionStoresForWrite,
-} from '@maka/storage/execution-stores';
+import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-stores';
 import { OPERATIONAL_STATE_DATABASE_NAME } from '@maka/storage/operational-state-store';
 import { openInteractiveRuntimePolicyStoresForWrite } from '@maka/storage/runtime-policy-stores';
-import {
-  resolveRootControlNamespace,
-  resolveStorageRoot,
-  tryAcquireInteractiveRootOwner,
-  tryAcquireInteractiveRootReader,
-  type StorageRootCapability,
-} from '@maka/storage/root-authority';
+import { tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
 import { openInteractiveSessionTodoStoreForWrite } from '@maka/storage/session-todo-authority';
-import {
-  connectRuntimeHost,
-  RuntimeHostOperationError,
-  RuntimeHostSubscriptionError,
-  type RuntimeHostConnection,
-  type RuntimeHostSessionSubscription,
-} from '../client/index.js';
-import {
-  decodeHostFrame,
-  RUNTIME_HOST_PROTOCOL_VERSION,
-  type ConnectionCatalogQueryResult,
-  type InteractionPendingSnapshot,
-  type SubscriptionFrame,
-  type TurnMessageSubmitInput,
-  type TurnSnapshot,
-} from '../protocol/index.js';
+import { type RuntimeHostConnection } from '../client/index.js';
+import { type ConnectionCatalogQueryResult } from '../protocol/index.js';
 import { SessionAdmissionGate } from '../server/session-admission-gate.js';
 import { HostSessionTodoCoordinator } from '../server/session-todo-coordinator.js';
-import { FramedTransport } from '../transport/framed-transport.js';
 
 import {
   CONNECTION_EFFECT_MODEL_IDS,
   type ExecutionFixture,
   PROCESS_TIMEOUT_MS,
   SubscriptionProbe,
-  assertJsonLines,
-  attachment,
   connectClient,
   requireStartedTurn,
   operationError,
   quotedContent,
-  sendStartWithoutReadingResponse,
   startConnectionEffectProvider,
-  userRuntimeContent,
-  waitForDurableMessageConflict,
   waitForPendingInteraction,
   waitForRunningTurn,
   waitForTerminalTurn,
-  waitForTurn,
   withExecutionRoot,
 } from './fixtures/execution-host-suite.js';
 
@@ -183,7 +126,7 @@ test('production Host fails slug-only ScheduledTask Agent runs before binding ex
               llmConnectionId: seededConnection.connectionId,
               llmConnectionSlug: seededConnection.slug,
               model: seededConnection.enabledModelIds[0]!,
-              permissionMode: 'ask',
+              permissionMode: 'auto_review',
               collaborationMode: 'agent',
               orchestrationMode: 'default',
             },
@@ -252,7 +195,7 @@ test('two UDS Clients never rebind an Agent ScheduledTask after Connection slug 
               llmConnectionId: original.connectionId,
               llmConnectionSlug: original.slug,
               model,
-              permissionMode: 'ask',
+              permissionMode: 'auto_review',
               collaborationMode: 'agent',
               orchestrationMode: 'default',
             },
@@ -1148,94 +1091,6 @@ test('a disconnected Client leaves a durable Interaction that another Client can
         answer,
       }),
       winner,
-    );
-    assert.deepEqual(
-      await observer.request('turn.query', { sessionId: fixture.sessionId, turnId }),
-      completed,
-    );
-    await observer.close();
-    await fixture.stopHost(secondHost);
-  });
-});
-
-test('two UDS Clients settle one hosted sandbox boundary and resume its exact Run', async () => {
-  await withExecutionRoot(async (fixture) => {
-    const firstHost = await fixture.startHost();
-    const starter = await connectClient(fixture.root);
-    const first = await connectClient(fixture.root);
-    const second = await connectClient(fixture.root);
-    const subscription = await first.openSessionSubscription({
-      sessionId: fixture.sessionId,
-      transcript: { kind: 'none' },
-    });
-    await subscription.ready();
-    const probe = new SubscriptionProbe(subscription);
-    const turnId = randomUUID();
-    const started = requireStartedTurn(
-      await starter.request('turn.start', {
-        sessionId: fixture.sessionId,
-        turnId,
-        content: { text: FAKE_ASK_SANDBOX_BOUNDARY_PROMPT },
-      }),
-    );
-    await starter.close();
-
-    const pending = await waitForPendingInteraction(subscription, probe, started.runId);
-    assert.equal(pending.sessionId, fixture.sessionId);
-    assert.equal(pending.turnId, turnId);
-    assert.equal(pending.runId, started.runId);
-    assert.equal(pending.status, 'pending');
-    assert.equal(pending.request.kind, 'sandbox_boundary');
-    if (pending.request.kind !== 'sandbox_boundary') return;
-    assert.deepEqual(pending.request.expansion, { network: { enabled: true } });
-
-    const answer = {
-      sessionId: fixture.sessionId,
-      interactionId: pending.interactionId,
-      answer: { kind: 'sandbox_boundary', decision: 'allow' },
-    } as const;
-    const [firstWinner, secondWinner] = await Promise.all([
-      first.request('interaction.answer', answer),
-      second.request('interaction.answer', answer),
-    ]);
-    assert.deepEqual(firstWinner, secondWinner);
-    assert.equal(firstWinner.status, 'answered');
-    assert.equal(firstWinner.outcome.kind, 'sandbox_boundary_decision');
-    if (firstWinner.outcome.kind !== 'sandbox_boundary_decision') return;
-    assert.equal(firstWinner.outcome.decision, 'allow');
-    assert.equal(firstWinner.outcome.status, 'approved');
-    assert.equal(Number.isSafeInteger(firstWinner.outcome.committedAt), true);
-    assert.deepEqual(
-      await first.request('interaction.query', {
-        sessionId: fixture.sessionId,
-        interactionId: pending.interactionId,
-      }),
-      firstWinner,
-    );
-    await probe.waitFor(
-      (frame) =>
-        frame.kind === 'subscription.session_projection' &&
-        frame.snapshot.rootTurn?.runId === started.runId &&
-        frame.snapshot.interactions.pending.length === 0,
-      'continuity did not publish the resumed Turn after the sandbox boundary answer',
-    );
-    const completed = await waitForTerminalTurn(first, fixture.sessionId, turnId);
-    assert.equal(completed.runId, started.runId);
-    assert.equal(completed.status, 'completed');
-
-    await subscription.close();
-    await probe.done;
-    await Promise.allSettled([first.close(), second.close()]);
-    await fixture.stopHost(firstHost);
-
-    const secondHost = await fixture.startHost();
-    const observer = await connectClient(fixture.root);
-    assert.deepEqual(
-      await observer.request('interaction.query', {
-        sessionId: fixture.sessionId,
-        interactionId: pending.interactionId,
-      }),
-      firstWinner,
     );
     assert.deepEqual(
       await observer.request('turn.query', { sessionId: fixture.sessionId, turnId }),

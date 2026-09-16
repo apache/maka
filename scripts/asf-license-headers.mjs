@@ -204,7 +204,6 @@ export const exclusionRules = [
       'Work of third parties kept under its own license, including files Maka adapted from an upstream project and therefore does not wholly own. ASF policy treats the non-Maka portion of a mixed-origin file as third-party work, so Maka may not assert a whole-file ASF header over one; whether a heavily modified file should instead carry a combined header is a PPMC decision, not a mechanical sweep. Their attribution belongs to LICENSE and the NOTICE audit, not to this gate.',
     matches: (path) =>
       isOneOf(
-        'experiments/windows-sandbox/launcher/Cargo.lock',
         'patches/run-2.1.4-source.diff',
         // Adapted from opencode under MIT; attribution pinned by #3325.
         'packages/runtime/src/edit-replace.ts',

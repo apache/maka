@@ -72,7 +72,7 @@ function summary(overrides: Partial<SessionSummary> = {}): SessionSummary {
     llmConnectionSlug: 'local',
     connectionLocked: true,
     model: 'fixture-model',
-    permissionMode: 'explore',
+    permissionMode: 'auto_review',
     ...overrides,
   };
 }

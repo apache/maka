@@ -76,7 +76,7 @@ function subagentResult(
     // expanded tool detail shows the same Open control as the shell.
     childSessionId: partial.childSessionId ?? `session-${partial.agentName}`,
     status: partial.status,
-    permissionMode: partial.permissionMode ?? 'ask',
+    permissionMode: partial.permissionMode ?? 'auto_review',
     summary: partial.summary ?? '',
     artifactIds: partial.artifactIds ?? [],
     startedAt: partial.startedAt ?? NOW - 60_000,
@@ -98,7 +98,7 @@ const MULTI_SUBAGENT_ITEMS: ToolActivityItem[] = [
     result: subagentResult({
       agentName: 'explore · 读布局',
       status: 'running',
-      permissionMode: 'explore',
+      permissionMode: 'auto_review',
       durationMs: 72_000,
       startedAt: NOW - 72_000,
     }),
@@ -160,11 +160,11 @@ const MULTI_SUBAGENT_ITEMS: ToolActivityItem[] = [
     displayName: 'explore · 等用户',
     intent: '等待批准后再读路径',
     status: 'running',
-    args: { agentName: 'explore · 等用户', objective: '等待批准后再读路径', permissionMode: 'explore' },
+    args: { agentName: 'explore · 等用户', objective: '等待批准后再读路径', permissionMode: 'auto_review' },
     result: subagentResult({
       agentName: 'explore · 等用户',
       status: 'waiting_for_user',
-      permissionMode: 'explore',
+      permissionMode: 'auto_review',
       summary: 'Waiting for approval before reading the requested path.',
       durationMs: 4_000,
       startedAt: NOW - 4_000,
@@ -303,7 +303,7 @@ function makeRailSession(
     llmConnectionSlug: 'default',
     connectionLocked: false,
     model: 'fake',
-    permissionMode: 'ask',
+    permissionMode: 'auto_review',
     ...overrides,
   };
 }

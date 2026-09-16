@@ -19,7 +19,7 @@
 
 # `@maka/runtime`
 
-`@maka/runtime` is Maka's pure-Node agent runtime. It owns model/backend execution, session sandbox-boundary control flow, event projection, context handling, recovery, and sandbox-aware workspace execution. Product shells compose it; they do not reimplement its loop.
+`@maka/runtime` is Maka's pure-Node agent runtime. It owns model/backend execution, tool auto-review, event projection, context handling, recovery, and direct workspace execution. Product shells compose it; they do not reimplement its loop.
 
 ## Public seam
 
@@ -36,7 +36,7 @@ The main integration points are:
 - `SessionManager` for session and turn orchestration.
 - `BackendRegistry` and `AgentBackend` for backend selection.
 - `AiSdkBackend` for the shipped backend implementation. `FakeBackend` is test-only: it lives under `test-only/`, is exported as `@maka/runtime/test-only/fake-backend`, and release packaging drops that directory, so no production module may import it. Tests and the Desktop E2E run reach it through the composition's `primaryBackendFactory` seam.
-- Session execution-boundary APIs for managed sandbox expansion and explicit bypass.
+- Bypass executes directly; Auto review checks each tool action with an independent model before dispatch. A refusal or unavailable reviewer returns a tool error without execution.
 - `buildBuiltinTools()` and the workspace executor interfaces for tool composition.
 - `RuntimeKernel`, runtime events, projections, and recovery helpers for execution lifecycle.
 
@@ -62,4 +62,4 @@ not infer HTTP readiness from the process status alone.
 - Expose supported package APIs through a declared `package.json` `exports` subpath rather than importing internal files from another package.
 - Keep provider credentials and Electron IPC outside this package. The product shell resolves credentials and passes only the dependencies required for execution.
 
-For the system-level model and code-reading map, start with the root `ARCHITECTURE.md`. Sandbox-specific contracts live in `src/sandbox/README.md`.
+For the system-level model and code-reading map, start with the root `ARCHITECTURE.md`. Tools run directly on the host; Auto review evaluates actions before dispatch.

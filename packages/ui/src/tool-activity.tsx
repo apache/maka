@@ -548,7 +548,7 @@ function linkedAgentRows(
       key: item.toolUseId,
       name,
       status: result.status,
-      readOnly: result.permissionMode === 'explore',
+      readOnly: result.permissionMode === 'auto_review',
       target: item.intent
         ? formatToolIntent(item.intent)
         : boundedAgentSummary(result.summary),

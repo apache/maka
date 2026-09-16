@@ -31,7 +31,6 @@ import { createWorkspaceRuntimeStore } from '@maka/storage/runtime-event-persist
 import { createSessionStore } from '@maka/storage/session-store';
 import { AgentRun } from '../agent-run.js';
 import { buildStatusPatch } from '../session-projection-helpers.js';
-import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
 import { seedInvocation } from './invocation-fixture.js';
 
 test('rejects an invalid tool mode before a durable AgentRun can be created', async () => {
@@ -42,7 +41,7 @@ test('rejects an invalid tool mode before a durable AgentRun can be created', as
       cwd: '/tmp/cwd',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     const runStore = createSqliteAgentRunStore(root);
     const runtimeEventStore = createWorkspaceRuntimeStore(root);
@@ -82,7 +81,7 @@ test('records changed request surfaces append-only and reuses unchanged epochs',
       cwd: '/tmp/cwd',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     const runStore = createSqliteAgentRunStore(root);
     const runtimeEventStore = createWorkspaceRuntimeStore(root);
@@ -217,7 +216,7 @@ test('does not re-append atomically committed tool facts through the generic eve
       cwd: '/tmp/cwd',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     const runtimeEventStore = createWorkspaceRuntimeStore(root);
     const runId = 'run-atomic-tool';
@@ -288,7 +287,7 @@ test('acks a steering event whose canonical append preceded proof publication fa
       cwd: '/tmp/cwd',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     const runStore = createSqliteAgentRunStore(root);
     const runtimeEventStore = createWorkspaceRuntimeStore(root);
@@ -361,7 +360,7 @@ test('awaits the durable settlement fact before accepting an interaction resume'
       cwd: '/tmp/cwd',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     const runStore = createSqliteAgentRunStore(root);
     const runtimeEventStore = createWorkspaceRuntimeStore(root);
@@ -458,14 +457,6 @@ test('awaits the durable settlement fact before accepting an interaction resume'
     await rm(root, { recursive: true, force: true });
   }
 });
-
-async function waitFor(predicate: () => Promise<boolean>): Promise<void> {
-  await pollFor(predicate, {
-    attempts: 100,
-    pollMs: 5,
-    message: 'Timed out waiting for asynchronous test condition',
-  });
-}
 
 function digest(seed: string): `sha256:${string}` {
   return `sha256:${seed.repeat(64)}`;

@@ -23,14 +23,10 @@ import type { SessionEvent } from '@maka/core/events';
 import type {
   AgentBackend,
   BackendSendInput,
-  HostedSandboxBoundarySettlement,
   HostedUserQuestionAnswer,
   HostedUserQuestionSettlement,
 } from '@maka/core/backend-types';
-import type {
-  SandboxBoundaryResponse,
-  SandboxBoundarySettlement,
-} from '@maka/core/sandbox-boundary';
+import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import {
   RuntimeInteractionInvariantError,
@@ -40,7 +36,7 @@ import {
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 export const FAKE_ASK_USER_QUESTION_PROMPT = '__e2e_ask_user_question__';
 export const FAKE_ASK_USER_QUESTION_DURING_DRAIN_PROMPT = '__e2e_ask_user_question_during_drain__';
-export const FAKE_ASK_SANDBOX_BOUNDARY_PROMPT = '__e2e_ask_sandbox_boundary__';
+
 export const FAKE_WAIT_FOR_STEERING_PROMPT = '__e2e_wait_for_steering__';
 export const FAKE_WAIT_FOR_STEERING_LARGE_RESPONSE_PROMPT =
   '__e2e_wait_for_steering_large_response__';
@@ -57,19 +53,12 @@ type PendingQuestion = {
   resolve(response: UserQuestionResponse | null): void;
 };
 
-type PendingSandboxBoundary = {
-  turnId: string;
-  requestId: string;
-  hosted: boolean;
-  resolve(settlement: SandboxBoundarySettlement | null): void;
-};
-
 export class FakeBackend implements AgentBackend {
   readonly kind: PersistedBackendKind = 'fake';
   readonly sessionId: string;
   private stopped = false;
   private pendingQuestion: PendingQuestion | undefined;
-  private pendingSandboxBoundary: PendingSandboxBoundary | undefined;
+
   private readonly questionAdmissionWaiters: Array<() => void> = [];
   private readonly questionAdmissionCheckpointWaiters: Array<() => void> = [];
   private readonly stopWaiters: Array<() => void> = [];
@@ -88,10 +77,7 @@ export class FakeBackend implements AgentBackend {
       yield* this.sendQuestionScenario(input);
       return;
     }
-    if (input.text === FAKE_ASK_SANDBOX_BOUNDARY_PROMPT) {
-      yield* this.sendSandboxBoundaryScenario(input);
-      return;
-    }
+
     if (input.text.startsWith(FAKE_ERROR_PROMPT_PREFIX)) {
       yield* this.sendErrorScenario(input, input.text.slice(FAKE_ERROR_PROMPT_PREFIX.length));
       return;
@@ -321,10 +307,6 @@ export class FakeBackend implements AgentBackend {
       this.pendingQuestion.resolve(null);
       this.pendingQuestion = undefined;
     }
-    if (this.pendingSandboxBoundary && !this.pendingSandboxBoundary.hosted) {
-      this.pendingSandboxBoundary.resolve(null);
-      this.pendingSandboxBoundary = undefined;
-    }
   }
 
   async respondToSandboxBoundary(_response: SandboxBoundaryResponse): Promise<void> {}
@@ -531,125 +513,6 @@ export class FakeBackend implements AgentBackend {
     return new Promise((resolve) => this.stopWaiters.push(resolve));
   }
 
-  private async *sendSandboxBoundaryScenario(input: BackendSendInput): AsyncIterable<SessionEvent> {
-    await sleep(100);
-    const turnId = input.turnId;
-    if (this.stopped) {
-      yield { type: 'abort', id: randomUUID(), turnId, ts: Date.now(), reason: 'user_stop' };
-      yield { type: 'complete', id: randomUUID(), turnId, ts: Date.now(), stopReason: 'user_stop' };
-      return;
-    }
-    if (!input.hostedInteraction) {
-      throw new RuntimeInteractionInvariantError(
-        'Fake sandbox boundary scenario requires hosted Interaction authority',
-      );
-    }
-
-    const toolUseId = randomUUID();
-    const requestId = randomUUID();
-    const stepId = randomUUID();
-    const expansion = { network: { enabled: true as const } };
-    const justification = 'Connect to the deterministic fake test endpoint.';
-    const startedAt = Date.now();
-    yield {
-      type: 'tool_start',
-      id: randomUUID(),
-      turnId,
-      stepId,
-      ts: startedAt,
-      toolUseId,
-      toolName: 'RequestSandboxBoundary',
-      args: { expansion, justification },
-    };
-
-    let resolveSettlement!: (settlement: SandboxBoundarySettlement | null) => void;
-    const settlementPromise = new Promise<SandboxBoundarySettlement | null>((resolve) => {
-      resolveSettlement = resolve;
-    });
-    this.pendingSandboxBoundary = {
-      turnId,
-      requestId,
-      hosted: true,
-      resolve: resolveSettlement,
-    };
-    const request = {
-      type: 'sandbox_boundary_request',
-      id: randomUUID(),
-      turnId,
-      ts: Date.now(),
-      requestId,
-      toolUseId,
-      expansion,
-      justification,
-    } satisfies Extract<SessionEvent, { type: 'sandbox_boundary_request' }>;
-    try {
-      await input.hostedInteraction.admitSandboxBoundaryRequest({
-        request,
-        settlement: this.createSandboxBoundarySettlement(turnId, requestId),
-      });
-    } catch (error) {
-      this.takePendingSandboxBoundary(turnId, requestId).resolve(null);
-      throw error;
-    }
-    yield request;
-
-    const settlement = await settlementPromise;
-    if (this.pendingSandboxBoundary?.requestId === requestId) {
-      this.pendingSandboxBoundary = undefined;
-    }
-    if (!settlement || this.stopped) {
-      yield { type: 'abort', id: randomUUID(), turnId, ts: Date.now(), reason: 'user_stop' };
-      yield { type: 'complete', id: randomUUID(), turnId, ts: Date.now(), stopReason: 'user_stop' };
-      return;
-    }
-
-    if (settlement.request.status === 'pending') {
-      throw new RuntimeInteractionInvariantError(
-        `Fake sandbox boundary settlement ${requestId} is still pending`,
-      );
-    }
-    const decision = settlement.request.status === 'denied' ? 'deny' : 'allow';
-    yield {
-      type: 'sandbox_boundary_decision_ack',
-      id: randomUUID(),
-      turnId,
-      ts: Date.now(),
-      requestId,
-      toolUseId,
-      decision,
-      status: settlement.request.status,
-      revision: settlement.boundary.revision,
-    };
-    const resultContent = {
-      kind: 'json' as const,
-      value: { decision, status: settlement.request.status },
-    };
-    const resultTs = Date.now();
-    yield {
-      type: 'tool_result',
-      id: randomUUID(),
-      turnId,
-      ts: resultTs,
-      toolUseId,
-      isError: decision === 'deny',
-      content: resultContent,
-    };
-
-    const messageId = randomUUID();
-    const text = `Fake sandbox boundary decision: ${decision}`;
-    yield {
-      type: 'text_delta',
-      id: randomUUID(),
-      turnId,
-      ts: Date.now(),
-      messageId,
-      text,
-    };
-    const completedAt = Date.now();
-    yield { type: 'text_complete', id: randomUUID(), turnId, ts: completedAt, messageId, text };
-    yield { type: 'complete', id: randomUUID(), turnId, ts: Date.now(), stopReason: 'end_turn' };
-  }
-
   private createQuestionSettlement(
     turnId: string,
     requestId: string,
@@ -669,28 +532,6 @@ export class FakeBackend implements AgentBackend {
     });
   }
 
-  private createSandboxBoundarySettlement(
-    turnId: string,
-    requestId: string,
-  ): HostedSandboxBoundarySettlement {
-    return Object.freeze({
-      applyDecision: async (settlement: SandboxBoundarySettlement): Promise<void> => {
-        if (
-          settlement.request.sessionId !== this.sessionId ||
-          settlement.request.requestId !== requestId
-        ) {
-          throw new RuntimeInteractionInvariantError(
-            `Fake sandbox boundary settlement ${requestId} changed identity`,
-          );
-        }
-        this.takePendingSandboxBoundary(turnId, requestId).resolve(settlement);
-      },
-      applyClosure: async (_reason: RuntimeUserQuestionClosureReason): Promise<void> => {
-        this.takePendingSandboxBoundary(turnId, requestId).resolve(null);
-      },
-    });
-  }
-
   private takePendingQuestion(turnId: string, requestId: string): PendingQuestion {
     const pending = this.pendingQuestion;
     if (!pending || pending.turnId !== turnId || pending.requestId !== requestId) {
@@ -699,17 +540,6 @@ export class FakeBackend implements AgentBackend {
       );
     }
     this.pendingQuestion = undefined;
-    return pending;
-  }
-
-  private takePendingSandboxBoundary(turnId: string, requestId: string): PendingSandboxBoundary {
-    const pending = this.pendingSandboxBoundary;
-    if (!pending || pending.turnId !== turnId || pending.requestId !== requestId) {
-      throw new RuntimeInteractionInvariantError(
-        `Fake sandbox boundary settlement did not exact-take ${requestId} from turn ${turnId}`,
-      );
-    }
-    this.pendingSandboxBoundary = undefined;
     return pending;
   }
 

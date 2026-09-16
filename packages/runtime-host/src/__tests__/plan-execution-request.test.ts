@@ -175,7 +175,7 @@ async function openFixture(): Promise<Fixture> {
         cwd: root,
         llmConnectionSlug: 'fake',
         model: 'fake-model',
-        permissionMode: 'explore',
+        permissionMode: 'auto_review',
         collaborationMode: 'plan',
       }),
     close: async () => {

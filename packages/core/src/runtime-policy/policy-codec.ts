@@ -408,7 +408,7 @@ function normalizeChatDefaults(value: unknown): RuntimePolicy['chatDefaults'] {
   const item = exactRecord(
     value,
     'chat defaults',
-    ['permissionMode', 'thinkingLevel', 'codeModeEnabled'],
+    ['permissionMode', 'thinkingLevel', 'codeModeEnabled', 'autoReviewModel'],
     ['permissionMode'],
   );
   if (!(CHAT_DEFAULT_PERMISSION_MODES as readonly unknown[]).includes(item.permissionMode)) {
@@ -420,8 +420,32 @@ function normalizeChatDefaults(value: unknown): RuntimePolicy['chatDefaults'] {
   if (item.codeModeEnabled !== undefined && typeof item.codeModeEnabled !== 'boolean') {
     throw domainError('chat default code mode is invalid');
   }
+  const reviewModel =
+    item.autoReviewModel == null
+      ? item.autoReviewModel
+      : exactRecord(
+          item.autoReviewModel,
+          'auto-review model',
+          ['connectionId', 'model'],
+          ['connectionId', 'model'],
+        );
   return {
     permissionMode: item.permissionMode as RuntimePolicy['chatDefaults']['permissionMode'],
+    ...(reviewModel === undefined
+      ? {}
+      : {
+          autoReviewModel:
+            reviewModel === null
+              ? null
+              : {
+                  connectionId: stringValue(
+                    reviewModel.connectionId,
+                    'auto-review connection ID',
+                    256,
+                  ),
+                  model: stringValue(reviewModel.model, 'auto-review model', 256),
+                },
+        }),
     ...(item.codeModeEnabled === true ? { codeModeEnabled: true } : {}),
     ...(item.thinkingLevel === undefined ? {} : { thinkingLevel: item.thinkingLevel }),
   };

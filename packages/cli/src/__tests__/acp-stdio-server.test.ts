@@ -483,7 +483,7 @@ describe('Maka ACP stdio server', () => {
           external = sessionProjection({
             id: sessionId,
             revision: 3,
-            permissionMode: 'ask',
+            permissionMode: 'auto_review',
           });
           return initial;
         }
@@ -589,7 +589,7 @@ describe('Maka ACP stdio server', () => {
           ({ params }) =>
             params?.update?.configOptions?.find(({ id }) => id === 'permission_mode')?.currentValue,
         ),
-        ['bypass', 'ask'],
+        ['bypass', 'auto_review'],
       );
       assert.equal(
         response(3)?.result?.configOptions?.find(({ id }) => id === 'permission_mode')
@@ -1096,7 +1096,7 @@ function sessionProjection(
     llmConnectionSlug: 'default',
     connectionLocked: false,
     model: 'default',
-    permissionMode: 'ask',
+    permissionMode: 'auto_review',
     collaborationMode: 'agent',
     orchestrationMode: 'default',
     ...overrides,

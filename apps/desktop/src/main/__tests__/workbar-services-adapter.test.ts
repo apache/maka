@@ -261,7 +261,7 @@ describe('createDesktopWorkbarServices', () => {
     await services.sideChat.promoteQueueEntry('fork', 'entry-2');
     await services.sideChat.updateQueueEntry('fork', 'entry-3', 4, 'updated');
     await services.sideChat.reorderQueueEntries('fork', ['entry-3', 'entry-2']);
-    await services.sideChat.setPermissionMode('fork', 'ask');
+    await services.sideChat.setPermissionMode('fork', 'auto_review');
     await services.sideChat.regenerateTurn('fork', {
       sourceTurnId: 'turn-2',
       turnId: 'turn-3',

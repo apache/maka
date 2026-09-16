@@ -65,7 +65,7 @@ function remoteHost(): Extract<TaskEntryHost, { state: 'available' }> {
       selectNoProject: false,
     },
     selectedProjectId: 'project-a',
-    chatDefaults: { permissionMode: 'ask', thinkingLevel: 'high' },
+    chatDefaults: { permissionMode: 'auto_review', thinkingLevel: 'high' },
   };
 }
 

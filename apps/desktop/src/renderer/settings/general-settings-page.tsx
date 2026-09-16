@@ -36,7 +36,6 @@ import type {
 } from '@maka/core/settings';
 import { THINKING_LEVELS, type ThinkingLevel } from '@maka/core/model-thinking';
 import type {
-  IdentifiedLlmConnection,
   ProjectedLlmConnection,
 } from '@maka/core/llm-connections';
 import { buildChatModelChoices } from "@maka/core/chat-model-choice";
@@ -305,6 +304,7 @@ export function GeneralSettingsPage(props: {
           showSettingsPlaceholder={showRuntimeHostSettingsPlaceholder}
           onRefresh={props.onRefreshConnections}
           permissionMode={props.settings.chatDefaults.permissionMode}
+          autoReviewModel={props.settings.chatDefaults.autoReviewModel}
           thinkingLevel={props.settings.chatDefaults.thinkingLevel}
           codeModeEnabled={props.settings.chatDefaults.codeModeEnabled === true}
           onUpdate={props.onUpdate}
@@ -502,6 +502,7 @@ function GeneralDefaultsCard(props: {
   showSettingsPlaceholder: boolean;
   onRefresh(): Promise<void>;
   permissionMode: ChatDefaultPermissionMode;
+  autoReviewModel?: { connectionId: string; model: string } | null;
   thinkingLevel?: ThinkingLevel;
   codeModeEnabled: boolean;
   onUpdate(
@@ -518,7 +519,7 @@ function GeneralDefaultsCard(props: {
   const boundaryCopy = getShellCopy(locale).sessionSettingsActions;
   const toast = useToast();
   const mountedRef = useMountedRef();
-  type SaveKey = "default-model" | "permission-mode" | "thinking-level";
+  type SaveKey = "default-model" | "auto-review-model" | "permission-mode" | "thinking-level";
   const persistGuard = useKeyedActionGuard<SaveKey>();
   const [savingRows, setSavingRows] = useState<Partial<Record<SaveKey, boolean>>>({});
   function setRowSaving(key: SaveKey, saving: boolean) {
@@ -576,6 +577,24 @@ function GeneralDefaultsCard(props: {
     } finally {
       releaseSave();
       if (mountedRef.current) setRowSaving("default-model", false);
+    }
+  }
+
+  const autoReviewChoice = modelChoices.find((choice) => choice.connectionId === props.autoReviewModel?.connectionId && choice.model === props.autoReviewModel.model);
+  async function persistAutoReviewModel(nextValue: string) {
+    if (!props.settingsInteractive || !props.connectionsInteractive) return;
+    const choice = modelChoices.find((entry) => modelChoiceValue(entry.connectionSlug, entry.model) === nextValue);
+    if (nextValue && !choice) return;
+    const releaseSave = persistGuard.begin("auto-review-model");
+    if (!releaseSave) return;
+    setRowSaving("auto-review-model", true);
+    try {
+      await props.onUpdate({ chatDefaults: { autoReviewModel: choice ? { connectionId: choice.connectionId, model: choice.model } : null } });
+    } catch (error) {
+      if (mountedRef.current) toast.error(copy.saveAutoReviewModelFailed, settingsActionErrorMessage(error, locale), undefined, host ? { profileId: host.profileId } : undefined);
+    } finally {
+      releaseSave();
+      if (mountedRef.current) setRowSaving("auto-review-model", false);
     }
   }
 
@@ -709,6 +728,26 @@ function GeneralDefaultsCard(props: {
           description={copy.defaultModelHelp}
           width="8rem"
         />
+      ) : null}
+      {props.settingsAvailable ? (
+        <SettingsRow
+          label={copy.autoReviewModel}
+          description={copy.autoReviewModelHelp}
+          end={
+            <ModelPicker
+              groups={modelGroups}
+              value={autoReviewChoice ? modelChoiceValue(autoReviewChoice.connectionSlug, autoReviewChoice.model) : props.autoReviewModel?.model ?? ""}
+              leadingOption={{ value: "", label: copy.followDefaultModel }}
+              renderProviderMark={(type) => <ProviderBrandMark type={type} />}
+              ariaLabel={copy.autoReviewModel}
+              disabled={savingRows["auto-review-model"] || !props.settingsInteractive || !props.connectionsInteractive}
+              triggerClassName="settingsModelPickerTrigger"
+              onValueChange={persistAutoReviewModel}
+            />
+          }
+        />
+      ) : props.showSettingsPlaceholder ? (
+        <SettingsRowSkeleton label={copy.autoReviewModel} description={copy.autoReviewModelHelp} width="8rem" />
       ) : null}
       {props.settingsAvailable ? (
         <SettingsRow

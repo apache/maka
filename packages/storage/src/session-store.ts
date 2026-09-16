@@ -119,7 +119,6 @@ import type {
 } from '@maka/core/agent-graph-topology';
 
 import type {
-  CreateSandboxBoundaryRequest,
   ExecutionBoundary,
   SandboxBoundaryRequest,
   SandboxBoundarySettlement,
@@ -517,13 +516,6 @@ class SqliteSessionStore implements SessionAuthorityStore {
   async readExecutionBoundary(sessionId: string): Promise<ExecutionBoundary> {
     await this.ensureReady();
     return this.metadata.readExecutionBoundary(sessionId);
-  }
-
-  async createSandboxBoundaryRequest(
-    input: CreateSandboxBoundaryRequest,
-  ): Promise<SandboxBoundaryRequest> {
-    await this.ensureReady();
-    return this.metadata.createSandboxBoundaryRequest(input);
   }
 
   async readSandboxBoundaryRequest(

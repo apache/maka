@@ -207,7 +207,7 @@ describe('scheduled-task catalog', () => {
       llmConnectionId: 'connection-anthropic',
       llmConnectionSlug: 'anthropic',
       model: 'claude-sonnet-4-5-20250929',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       collaborationMode: 'agent',
       orchestrationMode: 'default',
     };
@@ -249,7 +249,7 @@ describe('scheduled-task catalog', () => {
             cwd: '/tmp/project',
             llmConnectionSlug: 'anthropic',
             model: 'claude',
-            permissionMode: 'ask',
+            permissionMode: 'auto_review',
             collaborationMode: 'agent',
             orchestrationMode: 'default',
           },
@@ -301,7 +301,7 @@ describe('decodePersistedScheduledTask', () => {
         llmConnectionId: 'connection-anthropic',
         llmConnectionSlug: 'anthropic',
         model: 'claude',
-        permissionMode: 'ask',
+        permissionMode: 'auto_review',
         collaborationMode: 'agent',
         orchestrationMode: 'default',
       },
@@ -321,12 +321,12 @@ describe('decodePersistedScheduledTask', () => {
 
   it('folds a retired permission mode to its live equivalent', () => {
     const stored = JSON.parse(
-      JSON.stringify(base).replace('"permissionMode":"ask"', '"permissionMode":"execute"'),
+      JSON.stringify(base).replace('"permissionMode":"auto_review"', '"permissionMode":"execute"'),
     ) as ScheduledTask;
     const decoded = decodePersistedScheduledTask(markPersisted<ScheduledTask>(stored));
     assert.equal(
       decoded.effect.kind === 'agent_run' ? decoded.effect.execution.permissionMode : undefined,
-      'ask',
+      'auto_review',
     );
   });
 

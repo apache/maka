@@ -167,7 +167,7 @@ function sessionInput(cwd: string, projectId: string) {
     llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
     llmConnectionSlug: 'fake',
     model: 'fake-model',
-    permissionMode: 'ask' as const,
+    permissionMode: 'auto_review' as const,
   };
 }
 

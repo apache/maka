@@ -47,7 +47,7 @@ function opening(
     },
     configuration: {
       cwd: '/repo',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       collaborationMode: 'agent',
       orchestrationMode: 'default',
       orchestrationSource: 'session',

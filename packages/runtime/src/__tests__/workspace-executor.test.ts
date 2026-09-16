@@ -23,7 +23,7 @@ import { chmod, mkdir, mkdtemp, readFile, rm, truncate, writeFile } from 'node:f
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { LocalWorkspaceExecutor } from '../workspace-executor.js';
-import { createBoundaryFilesystemExecutor } from '../filesystem-executor.js';
+import { createFilesystemExecutor } from '../filesystem-executor.js';
 
 const ONE_PIXEL_IMAGES = [
   [
@@ -339,7 +339,7 @@ describe('LocalWorkspaceExecutor file operations', () => {
     const localAppData = await mkdtemp(join(tmpdir(), 'maka-workspace-bypass-local-app-data-'));
     try {
       const executable = join(localAppData, 'Microsoft', 'WinGet', 'Links', 'rg.exe');
-      const filesystem = createBoundaryFilesystemExecutor({
+      const filesystem = createFilesystemExecutor({
         workspace: new LocalWorkspaceExecutor({
           platform: 'win32',
           hostEnv: { PATH: emptyBin, LOCALAPPDATA: localAppData },

@@ -536,7 +536,7 @@ describe('Runtime Host maka run adapter', () => {
       cwd: '/workspace',
       llmConnectionSlug: 'openai-main',
       model: 'gpt-5',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     await collect(
       fixture.context.runtime.sendMessage(session.id, {
@@ -559,7 +559,7 @@ describe('Runtime Host maka run adapter', () => {
       cwd: '/workspace',
       llmConnectionSlug: 'openai-main',
       model: 'gpt-5',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     await collect(
       fixture.context.runtime.sendMessage(session.id, {
@@ -654,7 +654,7 @@ describe('Runtime Host maka run adapter', () => {
       cwd: '/workspace',
       llmConnectionSlug: 'openai-main',
       model: 'gpt-5',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     await collect(
       fixture.context.runtime.sendMessage(session.id, {
@@ -682,7 +682,7 @@ describe('Runtime Host maka run adapter', () => {
       cwd: '/workspace',
       llmConnectionSlug: 'openai-main',
       model: 'gpt-5',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     await collect(
       context.runtime.sendMessage(session.id, {
@@ -714,7 +714,7 @@ describe('Runtime Host maka run adapter', () => {
       cwd: '/workspace',
       llmConnectionSlug: 'openai-main',
       model: 'gpt-5',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     await collect(
       fixture.context.runtime.sendMessage(session.id, {
@@ -736,7 +736,7 @@ describe('Runtime Host maka run adapter', () => {
       cwd: '/workspace',
       llmConnectionSlug: 'openai-main',
       model: 'gpt-5',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
 
     await collect(
@@ -788,7 +788,7 @@ describe('Runtime Host maka run adapter', () => {
       cwd: '/workspace',
       llmConnectionSlug: 'openai-main',
       model: 'gpt-5',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
 
     await fixture.context.runtime.stopSession(session.id);
@@ -810,7 +810,7 @@ describe('Runtime Host maka run adapter', () => {
       cwd: '/workspace',
       llmConnectionSlug: 'openai-main',
       model: 'gpt-5',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     const sending = collect(
       fixture.context.runtime.sendMessage(session.id, {
@@ -841,7 +841,7 @@ describe('Runtime Host maka run adapter', () => {
       cwd: '/workspace',
       llmConnectionSlug: 'openai-main',
       model: 'gpt-5',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
 
     await assert.rejects(
@@ -868,7 +868,7 @@ describe('Runtime Host maka run adapter', () => {
       cwd: '/workspace',
       llmConnectionSlug: 'openai-main',
       model: 'gpt-5',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
 
     await assert.rejects(
@@ -894,7 +894,7 @@ describe('Runtime Host maka run adapter', () => {
       cwd: '/workspace',
       llmConnectionSlug: 'openai-main',
       model: 'gpt-5',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
 
     const graph = fixture.context.agentGraph;
@@ -921,7 +921,7 @@ describe('Runtime Host maka run adapter', () => {
       cwd: '/workspace',
       llmConnectionSlug: 'openai-main',
       model: 'gpt-5',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     const waiting = fixture.context.agentGraph?.waitForCompletion(session.id);
     assert.ok(waiting);
@@ -966,7 +966,7 @@ describe('Runtime Host maka run adapter', () => {
       cwd: '/workspace',
       llmConnectionSlug: 'openai-main',
       model: 'gpt-5',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
 
     await fixture.context.agentGraph?.waitForCompletion(session.id);
@@ -1243,7 +1243,7 @@ async function observeFixtureOutcome(
     cwd: '/workspace',
     llmConnectionSlug: 'openai-main',
     model: 'gpt-5',
-    permissionMode: 'ask',
+    permissionMode: 'auto_review',
   });
   await collect(
     fixture.context.runtime.sendMessage(session.id, {
@@ -1990,7 +1990,7 @@ function sessionProjection(id: string): SessionCatalogProjection {
     llmConnectionSlug: 'openai-main',
     connectionLocked: true,
     model: 'gpt-5',
-    permissionMode: 'ask',
+    permissionMode: 'auto_review',
     collaborationMode: 'agent',
     orchestrationMode: 'default',
   };
@@ -2010,7 +2010,7 @@ function sessionSummary(id: string): SessionSummary {
     llmConnectionSlug: 'openai-main',
     connectionLocked: true,
     model: 'gpt-5',
-    permissionMode: 'ask',
+    permissionMode: 'auto_review',
     collaborationMode: 'agent',
     orchestrationMode: 'default',
   };

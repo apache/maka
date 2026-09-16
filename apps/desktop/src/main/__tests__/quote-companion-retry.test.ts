@@ -29,7 +29,6 @@ import type { SessionEvent } from '@maka/core/events';
 import type { ChatModelChoice } from '@maka/core/chat-model-choice';
 import type { PermissionMode } from '@maka/core/permission';
 import type {
-  SessionChangedEvent,
   SessionSummary,
   StoredMessage,
   TurnRecord,
@@ -3207,9 +3206,9 @@ test('fails closed when the staged permission write fails on the first send', as
     },
   });
 
-  // Stage a stricter mode before the fork exists (source default is 'ask').
+  // Stage a different mode before the fork exists.
   await act(async () => {
-    assert.equal(await probe.setPermissionMode('explore'), true);
+    assert.equal(await probe.setPermissionMode('bypass'), true);
     await Promise.resolve();
   });
 
@@ -3222,7 +3221,7 @@ test('fails closed when the staged permission write fails on the first send', as
   assert.equal(sendCalls, 0);
   assert.equal(
     probe.container.firstElementChild?.getAttribute('data-permission-mode'),
-    'explore',
+    'bypass',
   );
 });
 
@@ -3382,7 +3381,7 @@ function session(id: string, overrides: Partial<SessionSummary> = {}): SessionSu
     llmConnectionSlug: 'test',
     connectionLocked: false,
     model: 'test-model',
-    permissionMode: 'ask',
+    permissionMode: 'auto_review',
     ...overrides,
   };
 }

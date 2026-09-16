@@ -780,7 +780,7 @@ describe('Host Session retirement coordinator', () => {
       };
       const { header: child } = await harness.store.createSubagent(
         sessionInput('Worktree child', {
-          permissionMode: 'ask',
+          permissionMode: 'auto_review',
           subagentParent: {
             kind: 'subagent',
             parentSessionId: harness.rootId,
@@ -1524,7 +1524,7 @@ function sessionInput(
     llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
     llmConnectionSlug: 'fake',
     model: 'fake-model',
-    permissionMode: 'ask',
+    permissionMode: 'auto_review',
     name,
     labels: [],
     ...overrides,
@@ -1539,7 +1539,7 @@ async function createClosedSubagent(
   const seed = index.toString(16).padStart(64, '0');
   const { header } = await harness.store.createSubagent(
     sessionInput(`Subagent ${index}`, {
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       subagentParent: {
         kind: 'subagent',
         parentSessionId,
@@ -1617,7 +1617,7 @@ async function createClosedGraphOperator(
   };
   const child = await harness.store.createAgentGraphOperator(
     sessionInput('Graph operator', {
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       subagentParent: {
         kind: 'subagent',
         parentSessionId: rootSessionId,

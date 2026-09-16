@@ -30,7 +30,6 @@ import { type ShellRunUpdate, type ToolResultContent } from '@maka/core/events';
 
 import type { ShellPlan } from './shell-detect.js';
 import type { ChildFdInput } from './child-fd-input.js';
-import type { SandboxType } from './sandbox/types.js';
 
 export const DEFAULT_BASH_TIMEOUT_MS = 120_000;
 export const MAX_FOREGROUND_BASH_TIMEOUT_MS = 10 * 60 * 1_000;
@@ -103,8 +102,6 @@ export interface ShellRunBashInput {
   abortSignal?: AbortSignal;
   emitOutput: (stream: 'stdout' | 'stderr', chunk: string) => void;
   shell?: ShellPlan;
-  /** Effective command sandbox selected before process launch. */
-  sandboxType?: SandboxType;
   /** Invoked exactly once after startup failure or terminal process completion. */
   onCompletion?: (outcome: { successful: boolean }) => void;
 }

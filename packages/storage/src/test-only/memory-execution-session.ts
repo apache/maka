@@ -18,8 +18,6 @@
  */
 
 import { createHash } from 'node:crypto';
-import { isCanonicalReadOnlyPermissionProfile as isReadOnlyProfile } from '@maka/core/permission-profile';
-import { tmpdir } from 'node:os';
 import {
   decodeCanonicalMessage,
   deriveTurnRecords,
@@ -38,8 +36,6 @@ import {
 import {
   createGenesisExecutionBoundary,
   decodeExecutionBoundary,
-  assessSandboxBoundaryExpansion,
-  validateSandboxBoundaryExpansion,
   isSandboxBoundaryRestartClosure,
   type ExecutionBoundary,
   type SandboxBoundaryRequest,
@@ -105,18 +101,11 @@ function boundary(s: MemoryState, id: string): ExecutionBoundary {
   requireHeader(s, id);
   return rows<ExecutionBoundary>(s, 'boundaries').get(id)!;
 }
-type ManagedProfile = Extract<ExecutionBoundary, { kind: 'managed' }>['profile'];
-function genesisProfile(mode: 'ask' | 'explore'): ManagedProfile {
-  const initial = createGenesisExecutionBoundary(mode);
-  if (initial.kind !== 'managed') throw new Error('Expected managed genesis boundary');
-  return initial.profile;
-}
 function saveBoundary(s: MemoryState, id: string, value: ExecutionBoundary): void {
-  rows<ExecutionBoundary>(s, 'boundaries').set(id, value);
-  // Only the latest non-Explore managed boundary is needed to restore Auto.
-  // Keep this history through Bypass/Explore instead of granting a new genesis.
-  if (value.kind === 'managed' && !isReadOnlyProfile(value.profile))
-    rows<ManagedProfile>(s, 'autoBoundaryProfiles').set(id, copy(value.profile));
+  rows<ExecutionBoundary>(s, 'boundaries').set(
+    id,
+    value.kind === 'external' ? value : { kind: 'bypass', revision: value.revision },
+  );
 }
 function setBoundaryKind(
   s: MemoryState,
@@ -137,26 +126,10 @@ function setBoundaryKind(
     (kind === 'bypass'
       ? 'bypass'
       : record.header.permissionMode === 'bypass'
-        ? 'ask'
+        ? 'auto_review'
         : record.header.permissionMode);
-  if ((permissionMode === 'bypass') !== (kind === 'bypass'))
-    throw new Error('Execution boundary kind and projected permission mode disagree');
-  const profile =
-    kind === 'managed'
-      ? permissionMode === 'explore'
-        ? genesisProfile('explore')
-        : current.kind === 'managed' && !isReadOnlyProfile(current.profile)
-          ? current.profile
-          : (rows<ManagedProfile>(s, 'autoBoundaryProfiles').get(id) ?? genesisProfile('ask'))
-      : undefined;
-  let next = current;
-  if (current.kind !== kind || (current.kind === 'managed' && !equal(current.profile, profile))) {
-    next =
-      kind === 'bypass'
-        ? { kind, revision: current.revision + 1 }
-        : { kind, profile: profile!, revision: current.revision + 1 };
-    saveBoundary(s, id, next);
-  }
+  const next: ExecutionBoundary = { kind: 'bypass', revision: current.revision };
+  saveBoundary(s, id, next);
   return {
     boundary: next,
     record: update(
@@ -1103,33 +1076,6 @@ export function createMemorySessionStore(
     readExecutionBoundary: async (id) => read((s) => boundary(s, id)),
     setExecutionBoundaryKind: async (id, kind, projection) =>
       write('session.boundary', (s) => setBoundaryKind(s, id, kind, projection).boundary),
-    createSandboxBoundaryRequest: async (input) =>
-      write('session.boundaryRequest', (s) => {
-        assertSafeSessionId(input.requestId);
-        const current = boundary(s, input.sessionId),
-          k = key(input.sessionId, input.requestId),
-          table = rows<SandboxBoundaryRequest>(s, 'boundaryRequests');
-        const old = table.get(k);
-        if (old) {
-          if (
-            !equal(old.expansion, input.expansion) ||
-            old.turnId !== input.turnId ||
-            old.runId !== input.runId
-          )
-            conflict('Boundary request identity conflict');
-          return old;
-        }
-        const validation = validateSandboxBoundaryExpansion(input.expansion);
-        if (!validation.ok) throw new Error('Invalid boundary expansion');
-        const request = {
-          ...copy(input),
-          baseRevision: current.revision,
-          status: 'pending' as const,
-          createdAt: Date.now(),
-        };
-        table.set(k, request);
-        return request;
-      }),
     readSandboxBoundaryRequest: async (id, requestId) =>
       read((s) => rows<SandboxBoundaryRequest>(s, 'boundaryRequests').get(key(id, requestId))),
     listPendingSandboxBoundaryRequests: async (id) =>
@@ -1161,51 +1107,15 @@ export function createMemorySessionStore(
           table = rows<SandboxBoundaryRequest>(s, 'boundaryRequests'),
           request = table.get(k);
         if (!request) conflict('Boundary request missing');
-        let current = boundary(s, input.sessionId),
-          changed = false;
+        const current = boundary(s, input.sessionId);
+        const changed = false;
         if (request!.status !== 'pending') return { request: request!, boundary: current, changed };
-        let settled: SandboxBoundaryRequest;
-        if (input.decision === 'deny')
-          settled = {
-            ...request!,
-            status: 'denied',
-            outcomeReason: input.closureReason ?? 'client_denied',
-            settledAt: Date.now(),
-          };
-        else if (current.kind !== 'managed')
-          settled = {
-            ...request!,
-            status: 'conflict',
-            outcomeReason: 'boundary_kind_changed',
-            settledAt: Date.now(),
-          };
-        else {
-          const assessment = assessSandboxBoundaryExpansion(current.profile, request!.expansion, {
-            root: requireHeader(s, input.sessionId).header.cwd,
-            tmpdir: tmpdir(),
-            slashTmp: '/tmp',
-          });
-          if (assessment.outcome === 'conflict')
-            settled = {
-              ...request!,
-              status: 'conflict',
-              outcomeReason: assessment.reason,
-              settledAt: Date.now(),
-            };
-          else {
-            changed = assessment.outcome === 'apply';
-            if (changed) {
-              current = { ...current, profile: assessment.profile, revision: current.revision + 1 };
-              saveBoundary(s, input.sessionId, current);
-            }
-            settled = {
-              ...request!,
-              status: 'approved',
-              settledAt: Date.now(),
-              appliedRevision: current.revision,
-            };
-          }
-        }
+        const settled: SandboxBoundaryRequest = {
+          ...request!,
+          status: 'denied',
+          outcomeReason: input.closureReason ?? 'sandbox_removed',
+          settledAt: Date.now(),
+        };
         table.set(k, settled);
         return { request: settled, boundary: current, changed };
       }),

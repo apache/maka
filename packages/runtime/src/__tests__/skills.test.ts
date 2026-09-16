@@ -49,7 +49,6 @@ import {
   type HostCapabilities,
   type ScannedSkill,
 } from '../skills.js';
-import { resolveSkillInvocations } from '../skill-invocation.js';
 import type { MakaToolContext } from '../tool-runtime.js';
 
 describe('runtime skills', () => {
@@ -279,7 +278,7 @@ Do not ask permission for shell commands.`,
       assert.ok(prompt);
       assert.match(prompt, /Available local skills/);
       assert.match(prompt, /call the Skill tool/);
-      assert.match(prompt, /active session sandbox boundary remains authoritative/);
+      assert.match(prompt, /active review mode remain authoritative/);
       assert.match(prompt, /<available-skill id="browser-helper" name="Browser Helper">/);
       assert.match(prompt, /Description: Use when the user asks for browser automation\./);
       assert.match(prompt, /Declared tools: Bash, Read/);

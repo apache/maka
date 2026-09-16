@@ -33,7 +33,6 @@ import { SqliteContextOffloadStore } from '../sqlite-context-offload-store.js';
 import {
   createOperationalStateBackup,
   restoreOperationalStateBackup,
-  validateOperationalStateBackup,
 } from '../operational-state-backup.js';
 import { exportSessionBundleState } from '../session-bundle-policy.js';
 import { withOfflineContextSnapshot } from '../context-offload-snapshot.js';
@@ -65,13 +64,13 @@ async function fixture(t: TestContext) {
     cwd: base,
     llmConnectionSlug: 'fake',
     model: 'fake',
-    permissionMode: 'ask',
+    permissionMode: 'auto_review',
   });
   const other = await sessions.create({
     cwd: base,
     llmConnectionSlug: 'fake',
     model: 'fake',
-    permissionMode: 'ask',
+    permissionMode: 'auto_review',
   });
   const writer = await openInteractiveContextOffloadStoreForWrite(owner.lease, { limits });
   const bytes = Buffer.from('snapshot bytes that cannot be recovered from the changed workspace');

@@ -25,7 +25,7 @@ import type { LlmConnection } from '@maka/core/llm-connections';
 
 import type { SessionHeader } from '@maka/core/session';
 
-import { ToolRuntime, type MakaTool } from '../tool-runtime.js';
+import { type MakaTool } from '../tool-runtime.js';
 
 interface InvocationArgs {
   path: string;
@@ -127,7 +127,7 @@ function testHeader(): SessionHeader {
     llmConnectionSlug: 'test',
     connectionLocked: true,
     model: 'test-model',
-    permissionMode: 'ask',
+    permissionMode: 'auto_review',
     schemaVersion: 1,
   };
 }

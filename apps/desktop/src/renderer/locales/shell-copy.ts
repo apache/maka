@@ -80,7 +80,7 @@ const STATIC_COMMAND_KEYWORDS: Record<StaticCommandId, readonly string[]> = {
     'side',
     'chat',
     'btw',
-    'ask',
+    'auto_review',
     'explore',
     '侧边',
     '侧聊',
@@ -486,10 +486,6 @@ type ShellCopy = {
     tryAgainLater: string;
     loading: string;
     goToModels: string;
-    boundaryUnreadableTitle: string;
-    boundaryUnreadableDetail: string;
-    boundaryUnreadableRetry: string;
-    boundaryUnreadableRetrying: string;
     permissionModeStreaming: string;
     permissionModeRunning: string;
     permissionModeWaiting: string;
@@ -1001,9 +997,9 @@ const SHELL_COPY_BY_LOCALE = {
     sessionSettingsActions: {
       bypassConfirmTitle: '切换到完全权限？',
       bypassConfirmDescription:
-        '本地工具将直接读写你的文件并访问网络，不经 Maka 的保护层。仅用于你完全信任、或已在外部隔离环境中运行的任务。',
+        '工具操作将不再经过模型审核，直接在本机执行。',
       bypassConfirmLabel: '开启完全权限',
-      bypassCancelLabel: '保持自动',
+      bypassCancelLabel: '保持自动审核',
       permissionFailedTitle: '切换权限模式失败',
       permissionFallback: '权限模式暂时无法切换，请稍后重试。',
       updateFailures: {
@@ -1093,11 +1089,11 @@ const SHELL_COPY_BY_LOCALE = {
       commands: ZH_STATIC_COMMANDS,
       settingsSections: ZH_SETTINGS_SECTIONS,
       permissionModes: {
-        explore: { label: '权限 · 只读', hint: '读取和搜索直通，写入和网络仍需确认' },
-        ask: { label: '权限 · 自动', hint: '在 Maka 的保护层内运行；需要超出当前权限范围时再询问' },
+
+        auto_review: { label: '权限 · 自动审核', hint: '工具操作经审核模型批准后执行' },
         bypass: {
           label: '权限 · 完全权限',
-          hint: '不经 Maka 的保护层，直接访问你的文件和网络',
+          hint: '跳过自动审核，直接在本机执行工具操作',
         },
       },
       settingsCommand: (section: string) => `设置 · ${section}`,
@@ -1231,10 +1227,6 @@ const SHELL_COPY_BY_LOCALE = {
       tryAgainLater: '请稍后重试。',
       loading: '加载中',
       goToModels: '去模型',
-      boundaryUnreadableTitle: '暂时读不到这个任务的权限',
-      boundaryUnreadableDetail: '在读到之前，这里暂时不能输入。可以重试，或先切换到别的任务。',
-      boundaryUnreadableRetry: '重试',
-      boundaryUnreadableRetrying: '重试中…',
       permissionModeStreaming: '当前任务正在流式输出，等结束后再切换权限模式。',
       permissionModeRunning: '当前任务正在运行，等结束后再切换权限模式。',
       permissionModeWaiting: '当前有工具调用正在等待确认，处理后再切换权限模式。',
@@ -1508,9 +1500,9 @@ const SHELL_COPY_BY_LOCALE = {
     sessionSettingsActions: {
       bypassConfirmTitle: '切換到完全權限？',
       bypassConfirmDescription:
-        '本地工具將直接讀寫你的檔案並存取網路，不經 Maka 的保護層。僅用於你完全信任、或已在外部隔離環境中執行的任務。',
+        '工具操作將不再經過模型審核，直接在本機執行。',
       bypassConfirmLabel: '開啟完全權限',
-      bypassCancelLabel: '保持自動',
+      bypassCancelLabel: '保持自動審核',
       permissionFailedTitle: '切換權限模式失敗',
       permissionFallback: '權限模式暫時無法切換，請稍後重試。',
       updateFailures: {
@@ -1600,11 +1592,11 @@ const SHELL_COPY_BY_LOCALE = {
       commands: ZH_STATIC_COMMANDS,
       settingsSections: ZH_SETTINGS_SECTIONS,
       permissionModes: {
-        explore: { label: '權限 · 只讀', hint: '讀取和搜尋直通，寫入和網路仍需確認' },
-        ask: { label: '權限 · 自動', hint: '在 Maka 的保護層內執行；需要超出目前權限範圍時再詢問' },
+
+        auto_review: { label: '權限 · 自動審核', hint: '工具操作經審核模型批准後執行' },
         bypass: {
           label: '權限 · 完全權限',
-          hint: '不經 Maka 的保護層，直接存取你的檔案和網路',
+          hint: '略過自動審核，直接在本機執行工具操作',
         },
       },
       settingsCommand: (section: string) => `設定 · ${section}`,
@@ -1738,10 +1730,6 @@ const SHELL_COPY_BY_LOCALE = {
       tryAgainLater: '請稍後重試。',
       loading: '載入中',
       goToModels: '去模型',
-      boundaryUnreadableTitle: '暫時讀不到這個任務的權限',
-      boundaryUnreadableDetail: '在讀到之前，這裡暫時不能輸入。可以重試，或先切換到別的任務。',
-      boundaryUnreadableRetry: '重試',
-      boundaryUnreadableRetrying: '重試中…',
       permissionModeStreaming: '目前任務正在流式輸出，等結束後再切換權限模式。',
       permissionModeRunning: '目前任務正在執行，等結束後再切換權限模式。',
       permissionModeWaiting: '目前有工具呼叫正在等待確認，處理後再切換權限模式。',
@@ -2019,11 +2007,11 @@ const SHELL_COPY_BY_LOCALE = {
       },
     },
     sessionSettingsActions: {
-      bypassConfirmTitle: 'Switch to full access?',
+      bypassConfirmTitle: 'Switch to Bypass?',
       bypassConfirmDescription:
-        "Local tools will read and write your files and reach the network directly, outside Maka's protection layer. Use only for tasks you fully trust, or ones already isolated by their environment.",
-      bypassConfirmLabel: 'Turn on full access',
-      bypassCancelLabel: 'Keep Auto',
+        "Tools will run directly on your computer without model review.",
+      bypassConfirmLabel: 'Turn on Bypass',
+      bypassCancelLabel: 'Keep Auto review',
       permissionFailedTitle: 'Could not change permission mode',
       permissionFallback: 'The permission mode could not be changed. Try again later.',
       updateFailures: {
@@ -2113,17 +2101,11 @@ const SHELL_COPY_BY_LOCALE = {
       commands: EN_STATIC_COMMANDS,
       settingsSections: EN_SETTINGS_SECTIONS,
       permissionModes: {
-        explore: {
-          label: 'Permissions · Read only',
-          hint: 'Read and search directly; confirm writes and network access',
-        },
-        ask: {
-          label: 'Permissions · Auto',
-          hint: "Run inside Maka's protection layer; ask before going beyond the current permissions",
-        },
+
+        auto_review: { label: 'Permissions · Auto review', hint: 'A reviewer model evaluates tool actions before execution' },
         bypass: {
-          label: 'Permissions · Full access',
-          hint: "Reach your files and your network directly, outside Maka's protection layer",
+          label: 'Permissions · Bypass',
+          hint: "Run tools directly on your computer without automatic review",
         },
       },
       settingsCommand: (section: string) => `Settings · ${section}`,
@@ -2291,11 +2273,6 @@ const SHELL_COPY_BY_LOCALE = {
       tryAgainLater: 'Try again later.',
       loading: 'Loading',
       goToModels: 'Go to Models',
-      boundaryUnreadableTitle: 'Could not read this task’s permissions',
-      boundaryUnreadableDetail:
-        'Until they can be read, you cannot type here. Try again, or switch to another task.',
-      boundaryUnreadableRetry: 'Try again',
-      boundaryUnreadableRetrying: 'Trying again…',
       permissionModeStreaming:
         'This task is streaming. Wait for it to finish before changing the permission mode.',
       permissionModeRunning: 'This task is running. Wait for it to finish before changing the permission mode.',

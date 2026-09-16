@@ -83,6 +83,13 @@ import {
 } from './oauth-execution-authority.js';
 import { toRuntimePolicyProxy } from './runtime-policy-proxy.js';
 
+import {
+  AUTO_REVIEW_POLICY,
+  autoReviewPrompt,
+  parseAutoReviewDecision,
+  type AutoReviewer,
+} from '@maka/runtime/auto-review';
+
 export interface HostGoalEvaluatorInput {
   readonly runtimePolicy: RuntimePolicyStoresWriter;
   readonly oauthCredentials: HostOAuthExecutionAuthority;
@@ -139,6 +146,48 @@ export interface HostSessionEffectModel {
 }
 
 export type HostSessionEffectModelInput = Omit<HostGoalEvaluatorInput, 'readSessionHeader'>;
+
+export function createHostAutoReviewer(input: AuxiliaryModelCallAuthorityInput): AutoReviewer {
+  const authority = createAuxiliaryModelCallAuthority(input);
+  return async (request) => {
+    const abortSignal = AbortSignal.any([request.abortSignal, AbortSignal.timeout(60_000)]);
+    const [snapshot, catalog] = await readDuringBackendCreation(
+      () =>
+        Promise.all([
+          input.runtimePolicy.runtimePolicy.getSnapshot(),
+          input.runtimePolicy.connectionCatalog.getSnapshot(),
+        ]),
+      abortSignal,
+    );
+    const configured = snapshot.policy.chatDefaults.autoReviewModel;
+    const connectionId = configured?.connectionId ?? catalog.defaultTarget?.connectionId;
+    const model = configured?.model ?? catalog.defaultTarget?.modelId;
+    const connection = catalog.connections.find((item) => item.connectionId === connectionId);
+    if (!connection || !model)
+      throw new Error('Configure an available Auto-review model in Settings');
+    const result = await runHostAuxiliaryModelCall(authority, {
+      transportContextId: request.sessionId,
+      telemetrySessionId: request.sessionId,
+      header: {
+        llmConnectionId: connection.connectionId,
+        llmConnectionSlug: connection.slug,
+        model,
+        thinkingLevel: 'medium',
+      },
+      callKind: 'auto_review',
+      callId: `auto_review_${authority.newId()}`,
+      abortSignal,
+      buildRequest: () => ({
+        system: AUTO_REVIEW_POLICY,
+        prompt: autoReviewPrompt(request),
+        maxOutputTokens: 2048,
+        maxRetries: 0,
+      }),
+    });
+    if (result.finishReason === 'length') throw new Error('Auto-review response was truncated');
+    return parseAutoReviewDecision(result.text);
+  };
+}
 
 export interface HostPluginModel {
   generate(input: {

@@ -519,9 +519,9 @@ const CONVERSATION_COPY = {
     },
     permissions: {
       mode: {
-        explore: { label: '只读', hint: '只读搜索，不写文件、不上网；需要时先问你。' },
-        ask: { label: '自动', hint: '保护层内自动执行，越权先问你。' },
-        bypass: { label: '完全权限', hint: '直接访问文件和网络，仅限可信任务。' },
+
+        auto_review: { label: '自动审核', hint: '由审核模型评估工具操作，通过后在本机执行。' },
+        bypass: { label: '完全权限', hint: '不经模型审核，直接执行工具操作。' },
       },
       modeAriaLabel: (label) => `权限模式：${label}`,
     },
@@ -677,9 +677,9 @@ const CONVERSATION_COPY = {
     },
     permissions: {
       mode: {
-        explore: { label: '只讀', hint: '只讀搜尋，不寫檔案、不上網；需要時先問你。' },
-        ask: { label: '自動', hint: '保護層內自動執行，越權先問你。' },
-        bypass: { label: '完全權限', hint: '直接存取檔案和網路，僅限可信任務。' },
+
+        auto_review: { label: '自動審核', hint: '由審核模型評估工具操作，通過後在本機執行。' },
+        bypass: { label: '完全權限', hint: '不經模型審核，直接執行工具操作。' },
       },
       modeAriaLabel: (label) => `權限模式：${label}`,
     },
@@ -861,9 +861,9 @@ const CONVERSATION_COPY = {
     },
     permissions: {
       mode: {
-        explore: { label: 'Read only', hint: 'Read and search only; asks before write or network.' },
-        ask: { label: 'Auto', hint: "Runs inside Maka's protection; asks before going further." },
-        bypass: { label: 'Full access', hint: 'Direct file and network access. Trust-only tasks.' },
+
+        auto_review: { label: 'Auto review', hint: 'A reviewer model evaluates each tool action before it runs on your computer.' },
+        bypass: { label: 'Bypass', hint: 'Run tools directly without model review.' },
       },
       modeAriaLabel: (label) => `Permission mode: ${label}`,
     },

@@ -19,8 +19,7 @@
 
 // packages/runtime/src/builtin-tools.ts
 // Baseline tool set. ToolRuntime settlement decorates each tool with durable
-// execution facts, while the active session ExecutionBoundary constrains local
-// filesystem, shell, and network effects.
+// execution facts and reviews actions before direct host execution.
 
 import { z } from 'zod';
 import {
@@ -30,23 +29,8 @@ import {
   resolveReadInput,
   type ReadInput,
 } from './read-page.js';
-import {
-  closeSync,
-  constants,
-  fstatSync,
-  futimesSync,
-  lstatSync,
-  openSync,
-  realpathSync,
-  unlinkSync,
-} from 'node:fs';
-import { tmpdir } from 'node:os';
-import { basename, dirname, isAbsolute } from 'node:path';
-import { compilePermissionProfile } from '@maka/core/permission-profile-compiler';
 import { parseAttachmentResourceRef } from '@maka/core/attachments';
-import { type SandboxBoundaryExpansion } from '@maka/core/sandbox-boundary';
 import { isStorageRef, type StorageRef, type ToolResultContent } from '@maka/core/events';
-import { type PermissionProfile } from '@maka/core/permission-profile';
 import { bashToolResultToModelOutput } from './bash-model-output.js';
 import { fileWriteToolResultToModelOutput } from './file-tool-model-output.js';
 import { toolResultOutput } from './tool-result-output.js';
@@ -73,35 +57,13 @@ import {
   type WorkspaceExecResult,
   type WorkspaceExecutor,
 } from './workspace-executor.js';
-import {
-  createBoundaryFilesystemExecutor,
-  type FilesystemExecuteInput,
-} from './filesystem-executor.js';
+import { createFilesystemExecutor, type FilesystemExecuteInput } from './filesystem-executor.js';
 
 // tool-runtime.ts is the single source of truth for the tool shape; this
 // re-export only keeps back-compat for callers that imported from
 // builtin-tools directly.
 import type { MakaTool, MakaToolContext } from './tool-runtime.js';
 export type { MakaTool, MakaToolContext };
-import { profileRequiresSandbox, type SandboxManager } from './sandbox/sandbox-manager.js';
-import { SandboxCommandError } from './sandbox/errors.js';
-import { isLikelySandboxDenial } from './sandbox/detect.js';
-import { linuxExecutableRoots } from './sandbox/linux-sandbox.js';
-import { pinExistingLinuxProfilePath } from './sandbox/linux-profile-path.js';
-import type { SandboxPlatform, SandboxType } from './sandbox/types.js';
-import type { ChildFdInput } from './child-fd-input.js';
-import { normalizeSandboxBoundaryPath } from './sandbox-boundary-path.js';
-import type { FilesystemWorkerClient } from './filesystem-worker/client.js';
-import {
-  BASH_REQUIRED_BOUNDARY_DESCRIPTION,
-  bashBoundaryIntentSchema,
-  preflightDeclaredSandboxBoundary,
-  preprocessBashBoundaryDeclaration,
-  refineBashBoundaryDeclaration,
-  sandboxBoundaryExpansionSchema,
-  selectedBashBoundaryExpansion,
-} from './sandbox-boundary-declaration.js';
-
 // Generous wall-clock cap for the ripgrep-backed Grep tool. A search should be
 // near-instant; this only bounds a pathological hang now that the stream
 // watchdog is paused during tool execution.
@@ -186,18 +148,6 @@ export interface BuildBuiltinToolsOptions {
   shell?: TurnShellPlan;
   /** Host-only environment overlay for a pre-bound Plugin Shell invocation. */
   shellEnvironment?: Readonly<Record<string, string>>;
-  permissionProfile?: PermissionProfile;
-  sandboxManager?: SandboxManager;
-  /**
-   * Whether Bash advertises `boundary_intent` / `required_boundary`. False for
-   * a session whose boundary cannot be widened (Full access); a declaration no
-   * host enforces is noise in the model's tool selection. Defaults to true.
-   */
-  declareSandboxBoundary?: boolean;
-  /** Sandboxed worker used for all local filesystem tools. */
-  filesystemWorker?: Pick<FilesystemWorkerClient, 'execute'>;
-  /** Test/embedding override. Production callers use the current process platform. */
-  sandboxPlatform?: SandboxPlatform;
   snapshotImage?: (input: {
     sessionId: string;
     ownerId: string;
@@ -209,62 +159,25 @@ export interface BuildBuiltinToolsOptions {
 
 export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaTool[] {
   const executor = options.executor ?? createLocalWorkspaceExecutor();
-  const filesystem = createBoundaryFilesystemExecutor({
-    workspace: executor,
-    ...(options.filesystemWorker ? { worker: options.filesystemWorker } : {}),
-    ...(options.permissionProfile ? { permissionProfile: options.permissionProfile } : {}),
-  });
+  const filesystem = createFilesystemExecutor({ workspace: executor });
   const executionFacts = executor.facts;
   const shell = options.shell ?? { plan: defaultShellPlan() };
-  const sandboxPlatform = options.sandboxPlatform ?? process.platform;
   const bashTools = options.shellRuns
     ? [
         buildManagedBashTool(options.shellRuns, {
           executionFacts,
           shell,
-          declareSandboxBoundary: options.declareSandboxBoundary !== false,
-          ...(options.sandboxManager
+          ...(options.shellEnvironment
             ? {
-                transformCommand: ({ command, pty, requiredBoundary, ctx }) => {
-                  const transformed = sandboxCommand(
-                    options.sandboxManager!,
-                    options.permissionProfile,
-                    sandboxPlatform,
-                    command,
-                    pty,
-                    ctx,
-                    requiredBoundary,
-                    'background_command',
-                  );
-                  if (!options.shellEnvironment) return transformed;
-                  return {
-                    ...(transformed ?? { cwd: ctx.cwd }),
-                    env: {
-                      ...process.env,
-                      ...transformed?.env,
-                      ...options.shellEnvironment,
-                    },
-                  };
-                },
+                transformCommand: ({ ctx }) => ({
+                  cwd: ctx.cwd,
+                  env: { ...process.env, ...options.shellEnvironment },
+                }),
               }
-            : options.shellEnvironment
-              ? {
-                  transformCommand: ({ ctx }) => ({
-                    cwd: ctx.cwd,
-                    env: { ...process.env, ...options.shellEnvironment },
-                  }),
-                }
-              : {}),
+            : {}),
         }),
       ]
-    : [
-        buildExecutorBashTool(executor, shell, {
-          ...(options.permissionProfile ? { permissionProfile: options.permissionProfile } : {}),
-          ...(options.sandboxManager ? { sandboxManager: options.sandboxManager } : {}),
-          declareSandboxBoundary: options.declareSandboxBoundary !== false,
-          sandboxPlatform,
-        }),
-      ];
+    : [buildExecutorBashTool(executor, shell)];
   const backgroundTools = [
     ...(options.backgroundTasks ? [buildStopBackgroundTaskTool(options.backgroundTasks)] : []),
     ...(options.ptyControls ? [buildWriteStdinTool(options.ptyControls)] : []),
@@ -608,554 +521,60 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
   return tools;
 }
 
-/** The per-call context every file tool hands to the filesystem authority. */
-function filesystemCall(
-  ctx: MakaToolContext,
-): Pick<FilesystemExecuteInput, 'cwd' | 'executionBoundary' | 'permissionMode' | 'abortSignal'> {
-  return {
-    cwd: ctx.cwd,
-    ...(ctx.executionBoundary ? { executionBoundary: ctx.executionBoundary } : {}),
-    ...(ctx.permissionMode ? { permissionMode: ctx.permissionMode } : {}),
-    ...(ctx.abortSignal ? { abortSignal: ctx.abortSignal } : {}),
-  };
+/** The per-call context for host filesystem operations. */
+function filesystemCall(ctx: MakaToolContext): Pick<FilesystemExecuteInput, 'cwd' | 'abortSignal'> {
+  return { cwd: ctx.cwd, abortSignal: ctx.abortSignal };
 }
 
-interface ExecutorBashSandboxOptions {
-  permissionProfile?: PermissionProfile;
-  sandboxManager?: SandboxManager;
-  sandboxPlatform: SandboxPlatform;
-  declareSandboxBoundary?: boolean;
-}
-
-function buildExecutorBashTool(
-  executor: WorkspaceExecutor,
-  shell: TurnShellPlan,
-  sandboxOptions: ExecutorBashSandboxOptions,
-): MakaTool {
-  const declareSandboxBoundary = sandboxOptions.declareSandboxBoundary !== false;
-  const executorBashFields = {
-    command: z.string().describe('The shell command to execute'),
-    timeout_ms: z.number().int().positive().max(600_000).optional(),
-  };
+function buildExecutorBashTool(executor: WorkspaceExecutor, shell: TurnShellPlan): MakaTool {
   return {
     name: 'Bash',
     activityKind: 'command',
-    description:
-      withTurnShellGuidance('Run a shell command in the session cwd.', shell) +
-      (declareSandboxBoundary ? ' Enforced by the current session sandbox boundary.' : ''),
-    parameters: declareSandboxBoundary
-      ? preprocessBashBoundaryDeclaration(
-          z
-            .object({
-              ...executorBashFields,
-              boundary_intent: bashBoundaryIntentSchema,
-              required_boundary: sandboxBoundaryExpansionSchema
-                .optional()
-                .describe(BASH_REQUIRED_BOUNDARY_DESCRIPTION),
-            })
-            .strict()
-            .superRefine(refineBashBoundaryDeclaration),
-        )
-      : z.object(executorBashFields).strict(),
+    description: withTurnShellGuidance('Run a shell command in the session cwd.', shell),
+    parameters: z
+      .object({
+        command: z.string().describe('The shell command to execute'),
+        timeout_ms: z.number().int().positive().max(600_000).optional(),
+      })
+      .strict(),
     toModelOutput: ({ output }) => bashToolResultToModelOutput(output),
     executionFacts: executor.facts,
-    impl: async (input, ctx) => {
-      const { command, timeout_ms } = input;
+    impl: async ({ command, timeout_ms }, ctx) => {
       throwIfShellSetupFailed(shell);
-      const normalizedRequiredBoundary = await preflightDeclaredSandboxBoundary(
-        selectedBashBoundaryExpansion(input),
-        ctx,
-      );
-      const { cwd, abortSignal, emitOutput } = ctx;
       const timeout = timeout_ms ?? 120_000;
-      if (
-        !sandboxOptions.sandboxManager &&
-        ctx.executionBoundary?.kind === 'managed' &&
-        profileRequiresSandbox(ctx.executionBoundary.profile)
-      ) {
-        throw new SandboxCommandError({
-          domain: 'command',
-          stage: 'capability',
-          reason: 'requires_bypass',
-          recoverable: false,
-          profileName: ctx.executionBoundary.profile.name ?? ctx.executionBoundary.profile.type,
-          message:
-            'Managed Bash execution is unavailable because a command sandbox cannot be enforced.',
-        });
-      }
-      const transformed = sandboxOptions.sandboxManager
-        ? sandboxCommand(
-            sandboxOptions.sandboxManager,
-            sandboxOptions.permissionProfile,
-            sandboxOptions.sandboxPlatform,
-            command,
-            false,
-            ctx,
-            normalizedRequiredBoundary,
-          )
-        : undefined;
-      let successful = false;
-      try {
-        const result = await executor.exec({
-          command,
-          cwd: transformed?.cwd ?? cwd,
-          ...(transformed?.argv ? { argv: transformed.argv } : {}),
-          ...(transformed?.env ? { env: transformed.env } : {}),
-          ...(transformed?.fdInputs ? { fdInputs: transformed.fdInputs } : {}),
-          timeoutMs: timeout,
-          ...(abortSignal ? { abortSignal } : {}),
-          emitOutput,
-          shell: shell.plan,
-        });
-        const executionResult = {
-          ...result,
-          ...(transformed?.sandboxType ? { sandboxType: transformed.sandboxType } : {}),
-          ...(transformed?.profileName ? { profileName: transformed.profileName } : {}),
-          sandboxed:
-            transformed?.sandboxType === 'macos-seatbelt' || transformed?.sandboxType === 'linux',
-        };
-        if (executionResult.timedOut)
-          throw terminalError(`Command timed out after ${timeout}ms`, executionResult, 124);
-        if (executionResult.aborted) throw terminalError('Command aborted', executionResult, 130);
-        if (executionResult.exitCode !== 0) {
-          throw terminalError(
-            `Command failed with exit code ${executionResult.exitCode}`,
-            executionResult,
-            executionResult.exitCode,
-          );
-        }
-        successful = true;
-        return shapeTerminalResult({ cwd, command, result: executionResult });
-      } finally {
-        transformed?.onCompletion?.({ successful });
-      }
+      const result = await executor.exec({
+        command,
+        cwd: ctx.cwd,
+        timeoutMs: timeout,
+        abortSignal: ctx.abortSignal,
+        emitOutput: ctx.emitOutput,
+        shell: shell.plan,
+      });
+      if (result.timedOut) throw terminalError(`Command timed out after ${timeout}ms`, result, 124);
+      if (result.aborted) throw terminalError('Command aborted', result, 130);
+      if (result.exitCode !== 0)
+        throw terminalError(
+          `Command failed with exit code ${result.exitCode}`,
+          result,
+          result.exitCode,
+        );
+      return shapeTerminalResult({ cwd: ctx.cwd, command, result });
     },
   };
 }
 
-function sandboxCommand(
-  manager: SandboxManager,
-  explicitProfile: PermissionProfile | undefined,
-  platform: SandboxPlatform,
-  command: string,
-  pty: boolean,
-  ctx: MakaToolContext,
-  requiredBoundary?: SandboxBoundaryExpansion,
-  domain: 'command' | 'background_command' = 'command',
-):
-  | {
-      argv?: readonly string[];
-      cwd: string;
-      env?: NodeJS.ProcessEnv;
-      fdInputs?: readonly ChildFdInput[];
-      sandboxType?: SandboxType;
-      profileName?: string;
-      onCompletion?: (outcome: { successful: boolean }) => void;
-    }
-  | undefined {
-  const cwd = canonicalExistingPath(ctx.cwd);
-  const boundary = ctx.executionBoundary;
-  if (boundary?.kind === 'bypass' || boundary?.kind === 'external') return undefined;
-  const effective =
-    boundary?.kind === 'managed'
-      ? { profile: boundary.profile, workspaceRoots: [cwd] }
-      : effectivePermissionProfile(explicitProfile, ctx.permissionMode ?? 'ask', cwd);
-  const env = { ...process.env };
-  if (pty) {
-    if (profileRequiresSandbox(effective.profile)) {
-      throw new SandboxCommandError({
-        domain,
-        stage: 'capability',
-        reason: boundary ? 'requires_bypass' : 'pty_sandbox_unavailable',
-        recoverable: false,
-        profileName: effective.profile.name ?? effective.profile.type,
-        message:
-          'PTY Bash is unavailable while the active permission profile requires command sandboxing.',
-      });
-    }
-    return undefined;
-  }
-  // The Windows broker sandboxes the purpose-built filesystem worker (an
-  // AppContainer-compatible executable), but it cannot launch an arbitrary
-  // shell: cmd.exe/pwsh fail DLL initialization (STATUS_DLL_INIT_FAILED,
-  // 0xC0000142) inside a capability-less AppContainer, and the POSIX `/bin/sh`
-  // this path emits is not a launchable Windows executable at all. Bash command
-  // sandboxing is therefore unavailable on win32 in this milestone. Route it
-  // through the shared "command sandbox unavailable" contract rather than
-  // handing the broker an unlaunchable manifest: fail closed when the profile
-  // requires a sandbox, otherwise return undefined so the caller runs the
-  // command through the detected Windows shell (unsandboxed), exactly as an
-  // explicit bypass boundary already does.
-  const commandSandboxUnavailable =
-    platform === 'win32' || !manager.canEnforce({ profile: effective.profile, platform });
-  if (commandSandboxUnavailable) {
-    if (profileRequiresSandbox(effective.profile)) {
-      const selection = manager.selectInitial({
-        profile: effective.profile,
-        platform,
-      });
-      throw new SandboxCommandError({
-        domain,
-        stage: selection.ok ? 'capability' : 'selection',
-        reason: selection.ok ? 'backend_not_available' : selection.reason,
-        backend: selection.sandboxType,
-        recoverable: false,
-        profileName: effective.profile.name ?? effective.profile.type,
-        message: `Command sandbox is required but unavailable on platform ${platform}.`,
-      });
-    }
-    return undefined;
-  }
-
-  let preparedProfile: PreparedLinuxProfilePaths = {
-    paths: [],
-    unavailablePaths: [],
-  };
-  try {
-    preparedProfile = prepareLinuxBashProfilePaths(
-      platform,
-      effective.profile,
-      effective.workspaceRoots,
-      requiredBoundary,
-    );
-  } catch {
-    throw new SandboxCommandError({
-      domain,
-      stage: 'validation',
-      reason: 'sandbox_path_changed',
-      backend: 'linux',
-      recoverable: false,
-      profileName: effective.profile.name ?? effective.profile.type,
-      message: 'An approved sandbox path could not be pinned safely.',
-    });
-  }
-  const onCompletion = preparedProfilePathCompletion(preparedProfile.paths);
-
-  let result: ReturnType<SandboxManager['transform']>;
-  try {
-    result = manager.transform({
-      platform,
-      command: {
-        program: '/bin/sh',
-        args: ['-c', command],
-        cwd,
-        env,
-        profile: effective.profile,
-        pathContext: {
-          workspaceRoots: effective.workspaceRoots,
-          tmpdir: tmpdir(),
-          ...(platform === 'win32' ? {} : { slashTmp: '/tmp' }),
-          ...(platform === 'darwin'
-            ? {
-                executableRoots: macosRuntimeExecutableRoots(process.execPath),
-              }
-            : {}),
-          ...(platform === 'linux'
-            ? {
-                minimalRoots: linuxExecutableRoots({
-                  execPath: process.execPath,
-                  path: env.PATH,
-                }),
-                ...(preparedProfile.paths.length > 0
-                  ? {
-                      pinnedProfilePaths: preparedProfile.paths.map((path) => ({
-                        path: path.path,
-                        access: path.access,
-                        fd: path.childFd,
-                        sourceFd: path.sourceFd,
-                        releaseSource: path.releaseSource,
-                      })),
-                    }
-                  : {}),
-                ...(preparedProfile.unavailablePaths.length > 0
-                  ? {
-                      unavailableProfilePaths: preparedProfile.unavailablePaths,
-                    }
-                  : {}),
-              }
-            : {}),
-        },
-      },
-    });
-  } catch (error) {
-    onCompletion?.({ successful: false });
-    throw error;
-  }
-  if (!result.ok) {
-    onCompletion?.({ successful: false });
-    throw new SandboxCommandError({
-      domain,
-      stage: 'transform',
-      reason: result.reason,
-      backend: result.sandboxType,
-      recoverable: false,
-      profileName: effective.profile.name ?? effective.profile.type,
-      message: result.message ?? `Sandbox transform failed: ${result.reason}`,
-    });
-  }
-  return {
-    argv: result.exec.argv,
-    cwd: result.exec.cwd,
-    ...(result.exec.env ? { env: { ...result.exec.env } } : {}),
-    ...(result.exec.fdInputs ? { fdInputs: result.exec.fdInputs } : {}),
-    sandboxType: result.exec.sandboxType,
-    profileName: result.exec.effectiveProfile.name ?? result.exec.effectiveProfile.type,
-    ...(onCompletion ? { onCompletion } : {}),
-  };
-}
-
-interface PreparedProfilePath {
-  readonly path: string;
-  readonly access: 'read' | 'write';
-  readonly created: boolean;
-  readonly sourceFd: number;
-  readonly releaseSource: () => void;
-  readonly childFd: number;
-  readonly device: bigint;
-  readonly inode: bigint;
-  readonly mtimeNs: bigint;
-  readonly ctimeNs: bigint;
-}
-
-interface PreparedLinuxProfilePaths {
-  readonly paths: readonly PreparedProfilePath[];
-  readonly unavailablePaths: readonly string[];
-}
-
-function prepareLinuxBashProfilePaths(
-  platform: SandboxPlatform,
-  profile: PermissionProfile,
-  workspaceRoots: readonly string[],
-  requiredBoundary?: SandboxBoundaryExpansion,
-): PreparedLinuxProfilePaths {
-  if (
-    platform !== 'linux' ||
-    profile.type !== 'managed' ||
-    profile.fileSystem.kind !== 'restricted'
-  ) {
-    return { paths: [], unavailablePaths: [] };
-  }
-  const activeExactPaths = new Set(
-    (requiredBoundary?.filesystem?.entries ?? []).flatMap((entry) =>
-      entry.scope === 'exact' ? [entry.path] : [],
-    ),
-  );
-  const candidates = new Map<string, { access: 'read' | 'write'; match: 'exact' | 'subtree' }>();
-  for (const entry of profile.fileSystem.entries) {
-    if (entry.access === 'deny') continue;
-    if (entry.kind === 'special') {
-      if (entry.special !== ':workspace_roots') continue;
-      for (const workspaceRoot of workspaceRoots) {
-        const existing = candidates.get(workspaceRoot);
-        candidates.set(
-          workspaceRoot,
-          existing?.access === 'write' ? existing : { access: entry.access, match: 'subtree' },
-        );
-      }
-      continue;
-    }
-    const match = entry.match ?? 'subtree';
-    if (match === 'exact' && !activeExactPaths.has(entry.path)) continue;
-    const existing = candidates.get(entry.path);
-    candidates.set(
-      entry.path,
-      existing?.access === 'write' ? existing : { access: entry.access, match },
-    );
-  }
-  const prepared: PreparedProfilePath[] = [];
-  const unavailablePaths: string[] = [];
-  try {
-    for (const [target, { access, match }] of candidates) {
-      const existing = (() => {
-        try {
-          return lstatSync(target);
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
-          throw error;
-        }
-      })();
-      if (!existing) {
-        if (match !== 'exact' || access !== 'write') {
-          unavailablePaths.push(target);
-          continue;
-        }
-        const fd = openMissingExactWriteTarget(target);
-        let sourceOpen = true;
-        const releaseSource = () => {
-          if (!sourceOpen) return;
-          sourceOpen = false;
-          closeSync(fd);
-        };
-        try {
-          // A deliberately old marker distinguishes a successful no-op from an
-          // intentional empty write, which updates mtime/ctime even at size zero.
-          futimesSync(fd, 1, 1);
-          const metadata = fstatSync(fd, { bigint: true });
-          prepared.push({
-            path: target,
-            access,
-            created: true,
-            sourceFd: fd,
-            releaseSource,
-            childFd: 4 + prepared.length,
-            device: metadata.dev,
-            inode: metadata.ino,
-            mtimeNs: metadata.mtimeNs,
-            ctimeNs: metadata.ctimeNs,
-          });
-        } catch (error) {
-          releaseSource();
-          throw error;
-        }
-        continue;
-      }
-      const pinned = pinExistingLinuxProfilePath({
-        path: target,
-        access,
-        targetType: match === 'exact' ? 'file' : 'directory',
-        childFd: 4 + prepared.length,
-      });
-      if (!pinned) throw new Error(`Approved sandbox path disappeared: ${target}`);
-      prepared.push({ ...pinned, created: false });
-    }
-    return { paths: prepared, unavailablePaths };
-  } catch (error) {
-    completePreparedProfilePaths(prepared);
-    throw error;
-  }
-}
-
-/** @internal Exported for the Linux parent-swap regression test. */
-export function openMissingExactWriteTarget(path: string, afterParentPinned?: () => void): number {
-  const parent = dirname(path);
-  if (realpathSync(parent) !== parent) throw new Error('Exact write target parent changed.');
-
-  const createFlags =
-    constants.O_CREAT | constants.O_EXCL | constants.O_RDWR | (constants.O_NOFOLLOW ?? 0);
-  if (process.platform !== 'linux') return openSync(path, createFlags, 0o666);
-
-  const linuxConstants = constants as typeof constants & { O_PATH?: number };
-  const parentFlags =
-    (linuxConstants.O_PATH ?? constants.O_RDONLY) |
-    (constants.O_DIRECTORY ?? 0) |
-    (constants.O_NOFOLLOW ?? 0);
-  const parentFd = openSync(parent, parentFlags);
-  try {
-    const pinnedParent = `/proc/self/fd/${parentFd}`;
-    afterParentPinned?.();
-    if (realpathSync(pinnedParent) !== parent) {
-      throw new Error('Exact write target parent changed after pinning.');
-    }
-    return openSync(`${pinnedParent}/${basename(path)}`, createFlags, 0o666);
-  } finally {
-    closeSync(parentFd);
-  }
-}
-
-function preparedProfilePathCompletion(
-  paths: readonly PreparedProfilePath[],
-): ((outcome: { successful: boolean }) => void) | undefined {
-  if (paths.length === 0) return undefined;
-  let completed = false;
-  return () => {
-    if (completed) return;
-    completed = true;
-    completePreparedProfilePaths(paths);
-  };
-}
-
-function completePreparedProfilePaths(paths: readonly PreparedProfilePath[]): void {
-  for (const target of paths) {
-    try {
-      target.releaseSource();
-    } catch {
-      // Launch cleanup is best effort; the close-once owner prevents fd-number reuse bugs.
-    }
-    if (!target.created) continue;
-    try {
-      const metadata = lstatSync(target.path, { bigint: true });
-      const untouched = metadata.mtimeNs === target.mtimeNs && metadata.ctimeNs === target.ctimeNs;
-      if (
-        metadata.isFile() &&
-        metadata.dev === target.device &&
-        metadata.ino === target.inode &&
-        metadata.size === 0n &&
-        untouched
-      ) {
-        unlinkSync(target.path);
-      }
-    } catch {
-      // The target was already removed or changed; never delete an unverified replacement.
-    }
-  }
-}
-
-function canonicalExistingPath(path: string): string {
-  try {
-    return realpathSync(path);
-  } catch {
-    return path;
-  }
-}
-
-function macosRuntimeExecutableRoots(execPath: string): readonly string[] {
-  return [
-    ...linuxExecutableRoots({ execPath }),
-    ...(execPath.startsWith('/opt/homebrew/') ? ['/opt/homebrew'] : []),
-    ...(execPath.startsWith('/usr/local/') ? ['/usr/local'] : []),
-  ];
-}
-
-function effectivePermissionProfile(
-  explicitProfile: PermissionProfile | undefined,
-  permissionMode: NonNullable<MakaToolContext['permissionMode']>,
-  cwd: string,
-): { profile: PermissionProfile; workspaceRoots: readonly string[] } {
-  const canonicalCwd = canonicalExistingPath(cwd);
-  if (explicitProfile) return { profile: explicitProfile, workspaceRoots: [canonicalCwd] };
-  const compiled = compilePermissionProfile({
-    mode: permissionMode,
-    cwd: canonicalCwd,
-  });
-  return { profile: compiled.profile, workspaceRoots: compiled.workspaceRoots };
-}
-
 function terminalError(
   message: string,
-  result: Pick<WorkspaceExecResult, 'stdout' | 'stderr' | 'stdoutTruncated' | 'stderrTruncated'> & {
-    sandboxType?: SandboxType;
-    sandboxed?: boolean;
-    profileName?: string;
-  },
+  result: Pick<WorkspaceExecResult, 'stdout' | 'stderr' | 'stdoutTruncated' | 'stderrTruncated'>,
   code: number,
 ): Error {
-  const sandboxDenied = isLikelySandboxDenial({
-    stdout: result.stdout,
-    stderr: result.stderr,
-    sandboxed: result.sandboxed === true,
-  });
-  const error = sandboxDenied
-    ? new SandboxCommandError({
-        domain: 'command',
-        stage: 'operation',
-        reason: 'sandbox_denial',
-        backend: result.sandboxType,
-        recoverable: true,
-        profileName: result.profileName,
-        message,
-      })
-    : new Error(message);
-  Object.assign(error, {
+  return Object.assign(new Error(message), {
     stdout: result.stdout,
     stderr: result.stderr,
     stdoutTruncated: result.stdoutTruncated,
     stderrTruncated: result.stderrTruncated,
     code,
-    ...(result.sandboxType ? { sandboxType: result.sandboxType } : {}),
-    sandboxed: result.sandboxed === true,
-    ...(sandboxDenied ? { reason: 'sandbox_denial', recoverable: true } : {}),
   });
-  return error;
 }
 
 export function classifyRuntimeResourceRef(path: string): 'runtime' | 'file' | 'unsupported' {

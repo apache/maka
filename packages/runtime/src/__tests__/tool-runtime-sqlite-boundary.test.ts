@@ -41,7 +41,7 @@ import {
 import { buildRuntimeEventModelReplayPlan } from '../model-history.js';
 import { buildMcpTools } from '../mcp-tools.js';
 import type { RuntimeEventMapContext } from '../session-event-runtime-mapper.js';
-import { MAX_ACTIVE_SUBAGENT_TOOLS_PER_TURN, ToolRuntime, type MakaTool } from '../tool-runtime.js';
+import { MAX_ACTIVE_SUBAGENT_TOOLS_PER_TURN, type MakaTool } from '../tool-runtime.js';
 
 describe('ToolRuntime with real SQLite boundary', () => {
   it('replays raw MCP model arguments without persisting the execution binding', async () => {
@@ -161,7 +161,7 @@ describe('ToolRuntime with real SQLite boundary', () => {
         header: header(),
         connection: connection(),
         modelId: 'model-1',
-        readExecutionBoundary: async () => createGenesisExecutionBoundary('ask'),
+        readExecutionBoundary: async () => createGenesisExecutionBoundary('auto_review'),
         newId: nextId(),
         now: nextNow(),
         getPermissionPauseTarget: () => null,
@@ -707,7 +707,7 @@ function header(): SessionHeader {
     llmConnectionSlug: 'connection-1',
     connectionLocked: true,
     model: 'model-1',
-    permissionMode: 'ask',
+    permissionMode: 'auto_review',
     schemaVersion: 1,
   };
 }

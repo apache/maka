@@ -52,7 +52,7 @@ async function runFixture(fixture) {
     backend: 'fake',
     llmConnectionSlug: 'fake',
     model: 'fake-model',
-    permissionMode: 'ask',
+    permissionMode: 'bypass',
     name: fixture.name,
     labels: [],
   });

@@ -24,7 +24,6 @@ import type { SessionEvent } from '@maka/core/events';
 import type { SessionHeader, StoredMessage } from '@maka/core/session';
 
 import { buildAskUserQuestionTool } from '../ask-user-question-tool.js';
-import { ToolRuntime } from '../tool-runtime.js';
 
 function header(): SessionHeader {
   return {
@@ -44,7 +43,7 @@ function header(): SessionHeader {
     llmConnectionSlug: 'c',
     connectionLocked: true,
     model: 'm',
-    permissionMode: 'ask',
+    permissionMode: 'auto_review',
     schemaVersion: 1,
   };
 }

@@ -49,7 +49,7 @@ const catalog = (projects: readonly ProjectRecord[]): TaskEntryCatalog => ({
     projects,
     capabilities: { chooseClientDirectory: false, chooseHostDirectory: false, selectNoProject: true },
     selectedProjectId: null,
-    chatDefaults: { permissionMode: 'ask', thinkingLevel: 'off' },
+    chatDefaults: { permissionMode: 'auto_review', thinkingLevel: 'off' },
   }],
 });
 
@@ -89,7 +89,7 @@ describe('Work Board Start task target resolution', () => {
           projects: [shared],
           capabilities: { chooseClientDirectory: false, chooseHostDirectory: false, selectNoProject: true },
           selectedProjectId: null,
-          chatDefaults: { permissionMode: 'ask', thinkingLevel: 'off' },
+          chatDefaults: { permissionMode: 'auto_review', thinkingLevel: 'off' },
         },
         {
           profile: { id: 'profile-2', name: 'Remote', kind: 'remote' },
@@ -99,7 +99,7 @@ describe('Work Board Start task target resolution', () => {
           projects: [{ ...shared, id: 'p2' }],
           capabilities: { chooseClientDirectory: false, chooseHostDirectory: false, selectNoProject: true },
           selectedProjectId: null,
-          chatDefaults: { permissionMode: 'ask', thinkingLevel: 'off' },
+          chatDefaults: { permissionMode: 'auto_review', thinkingLevel: 'off' },
         },
       ],
     };

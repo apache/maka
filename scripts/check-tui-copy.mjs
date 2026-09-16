@@ -104,8 +104,8 @@ export const ALLOWED_VISIBLE_LITERALS = {
     'Compacting context…',
     'Resuming from the latest safe boundary…',
     'Permissions: ${…}',
-    'Keep Auto',
-    'Turn on full access',
+    'Keep Auto review',
+    'Turn on Bypass',
     'Using Swarm Mode for this turn only.',
     'Swarm Mode is on for this session.',
     'Swarm Mode is off for this session.',
@@ -168,7 +168,7 @@ export const ALLOWED_VISIBLE_LITERALS = {
     'expanded',
     'unchanged',
   ],
-  'packages/cli/src/pi-tui-pickers.ts': ['/skill:${…}', '/skill:${…}', 'Auto', 'Full access'],
+  'packages/cli/src/pi-tui-pickers.ts': ['/skill:${…}', '/skill:${…}', 'Auto review', 'Bypass'],
   'packages/cli/src/runtime-host-tui-command.ts': ['Maka', 'Maka — ${…}', 'Maka'],
 };
 

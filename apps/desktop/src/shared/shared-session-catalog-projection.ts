@@ -55,7 +55,7 @@ export function projectDesktopSharedSessionSummary(
     llmConnectionSlug: '',
     connectionLocked: true,
     model: '',
-    permissionMode: 'ask',
+    permissionMode: 'auto_review',
     shared: true,
   };
 }

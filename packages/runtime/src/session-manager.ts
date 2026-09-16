@@ -70,7 +70,6 @@ import type {
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import type { PermissionMode } from '@maka/core/permission';
-import { isCanonicalReadOnlyPermissionProfile } from '@maka/core/permission-profile';
 import { DEFAULT_TOOL_MODE, type ToolMode } from '@maka/core/tool-mode';
 import type {
   CreateSandboxBoundaryRequest,
@@ -92,7 +91,6 @@ import {
   type PlanStore,
 } from '@maka/core/plan';
 import { DEFAULT_SESSION_NAME } from '@maka/core/session-name';
-import { DEEP_RESEARCH_SESSION_LABEL, isDeepResearchSession } from '@maka/core/deep-research';
 import {
   SUBAGENT_SESSION_RUNTIME_SCHEMA_VERSION,
   SUBAGENT_SESSION_SPAWN_SCHEMA_VERSION,
@@ -148,7 +146,6 @@ import type {
   SubagentWorkspaceBinding,
   SubagentWorktreeExecutor,
 } from '@maka/core/subagent-workspace';
-import type { SubagentPreset } from '@maka/core/subagent-settings';
 import type { ResolvedSubagentPreset } from './configured-subagent-catalog.js';
 import { AGENT_GRAPH_OPERATOR_PROVISION_SCHEMA_VERSION } from '@maka/core/agent-graph-topology';
 import {
@@ -1205,12 +1202,7 @@ export class SessionManager {
         current.header,
         input.configuration.collaborationMode,
       );
-      const leavingDeepResearch =
-        isDeepResearchSession(current.header.labels) &&
-        input.configuration.permissionMode !== 'explore';
-      const labels = leavingDeepResearch
-        ? current.header.labels.filter((label) => label !== DEEP_RESEARCH_SESSION_LABEL)
-        : current.header.labels;
+      const labels = current.header.labels;
       return () =>
         store.updateSessionConfiguration(sessionId, {
           expectedVersion: input.expectedRevision,
@@ -1230,7 +1222,7 @@ export class SessionManager {
     const next = permissionModeOnly
       ? await this.commitExecutionBoundaryTransition(
           sessionId,
-          await this.deps.store.readExecutionBoundary(sessionId),
+          (await this.deps.store.readHeader(sessionId)).permissionMode,
           input.configuration.permissionMode,
           prepareCommit,
         )
@@ -1669,33 +1661,34 @@ export class SessionManager {
   ): Promise<SessionSummary> {
     const previous = await this.deps.store.readHeader(sessionId);
     const boundary = await this.deps.store.readExecutionBoundary(sessionId);
-    const leavingDeepResearch = isDeepResearchSession(previous.labels) && mode !== 'explore';
     if (
       previous.permissionMode === mode &&
-      executionBoundaryMatchesPermissionMode(boundary, mode) &&
-      !leavingDeepResearch
+      executionBoundaryMatchesPermissionMode(boundary, mode)
     ) {
       return headerToSummary(previous);
     }
 
-    const labels = leavingDeepResearch
-      ? previous.labels.filter((label) => label !== DEEP_RESEARCH_SESSION_LABEL)
-      : previous.labels;
-    const kind = mode === 'bypass' ? 'bypass' : 'managed';
-    await this.commitExecutionBoundaryTransition(sessionId, boundary, mode, async () => {
-      const current = await this.deps.store.readHeader(sessionId);
-      if (current.status === 'waiting_for_user') {
-        throw new SessionConfigurationTransitionError(
-          'session_busy',
-          'Session has a pending Interaction',
-        );
-      }
-      return () =>
-        this.deps.store.setExecutionBoundaryKind(sessionId, kind, {
-          permissionMode: mode,
-          labels,
-        });
-    });
+    const labels = previous.labels;
+    const kind = 'bypass';
+    await this.commitExecutionBoundaryTransition(
+      sessionId,
+      previous.permissionMode,
+      mode,
+      async () => {
+        const current = await this.deps.store.readHeader(sessionId);
+        if (current.status === 'waiting_for_user') {
+          throw new SessionConfigurationTransitionError(
+            'session_busy',
+            'Session has a pending Interaction',
+          );
+        }
+        return () =>
+          this.deps.store.setExecutionBoundaryKind(sessionId, kind, {
+            permissionMode: mode,
+            labels,
+          });
+      },
+    );
     const next = await this.deps.store.readHeader(sessionId);
     this.runtimeKernel.updateCachedHeader(sessionId, next);
     return headerToSummary(next);
@@ -1713,9 +1706,9 @@ export class SessionManager {
       kind === 'bypass'
         ? 'bypass'
         : header.permissionMode === 'bypass'
-          ? 'ask'
+          ? 'auto_review'
           : header.permissionMode;
-    const narrows = narrowsExecutionAuthority(current, permissionMode);
+    const narrows = narrowsExecutionAuthority(header.permissionMode, permissionMode);
     if (narrows && this.runtimeKernel.hasActiveRuns(sessionId)) {
       throw new SessionConfigurationTransitionError(
         'session_busy',
@@ -1730,7 +1723,7 @@ export class SessionManager {
     }
     const boundary = await this.commitExecutionBoundaryTransition(
       sessionId,
-      current,
+      header.permissionMode,
       permissionMode,
       async () => () =>
         this.deps.store.setExecutionBoundaryKind(sessionId, kind, { permissionMode }),
@@ -1740,13 +1733,13 @@ export class SessionManager {
 
   private async commitExecutionBoundaryTransition<T>(
     sessionId: string,
-    current: ExecutionBoundary,
+    current: PermissionMode,
     nextPermissionMode: PermissionMode,
     prepareCommit: () => Promise<() => Promise<T>>,
   ): Promise<T> {
     const prepareBoundaryCommit = async (): Promise<() => Promise<T>> => {
-      const latest = await this.deps.store.readExecutionBoundary(sessionId);
-      if (latest.revision !== current.revision) {
+      const latest = await this.deps.store.readHeader(sessionId);
+      if (latest.permissionMode !== current) {
         throw new SessionConfigurationTransitionError(
           'operation_conflict',
           'Session execution boundary changed before the transition',
@@ -1791,16 +1784,22 @@ export class SessionManager {
     nextPermissionMode: PermissionMode,
     prepareCommit: () => Promise<() => Promise<T>>,
   ): Promise<T> {
-    const initialBoundary = await this.deps.store.readExecutionBoundary(sessionId);
-    const initiallyNarrows = narrowsExecutionAuthority(initialBoundary, nextPermissionMode);
+    const initialHeader = await this.deps.store.readHeader(sessionId);
+    const initiallyNarrows = narrowsExecutionAuthority(
+      initialHeader.permissionMode,
+      nextPermissionMode,
+    );
     const initialDescendants = initiallyNarrows
       ? await this.listLinkedDescendantSessionIds(sessionId)
       : [];
     const fencedSessionIds = [sessionId, ...initialDescendants];
 
     return this.runSessionQuiescentMutation<T>(fencedSessionIds, async () => {
-      const currentBoundary = await this.deps.store.readExecutionBoundary(sessionId);
-      const narrowsShellAuthority = narrowsExecutionAuthority(currentBoundary, nextPermissionMode);
+      const currentHeader = await this.deps.store.readHeader(sessionId);
+      const narrowsShellAuthority = narrowsExecutionAuthority(
+        currentHeader.permissionMode,
+        nextPermissionMode,
+      );
       const descendantSessionIds = narrowsShellAuthority
         ? await this.listLinkedDescendantSessionIds(sessionId)
         : [];
@@ -2686,8 +2685,7 @@ export class SessionManager {
     const resolvedToolNames = executorId
       ? []
       : await this.resolveChildToolNames(input.source.sessionId, parentHeader, definition);
-    const childPermissionMode =
-      parentHeader.permissionMode === 'bypass' ? 'bypass' : definition.permissionMode;
+    const childPermissionMode = parentHeader.permissionMode;
 
     const initialTurnId = this.deps.newId();
     const initialRunId = this.deps.newId();
@@ -3321,7 +3319,7 @@ export class SessionManager {
                   ? { thinkingLevel: parentHeader.thinkingLevel }
                   : {}),
             }),
-        permissionMode: definition.permissionMode,
+        permissionMode: parentHeader.permissionMode,
         collaborationMode: 'agent',
         orchestrationMode: 'default',
         toolMode: parentHeader.toolMode ?? DEFAULT_TOOL_MODE,
@@ -5116,7 +5114,7 @@ export function headerToSummary(h: SessionHeader): SessionSummary {
     llmConnectionSlug: h.llmConnectionSlug,
     connectionLocked: h.connectionLocked,
     model: h.model,
-    permissionMode: h.permissionMode ?? 'ask',
+    permissionMode: h.permissionMode ?? 'bypass',
     collaborationMode: h.collaborationMode ?? 'agent',
     orchestrationMode: h.orchestrationMode ?? 'default',
   };
@@ -5341,22 +5339,14 @@ function executionBoundaryMatchesPermissionMode(
   boundary: ExecutionBoundary,
   mode: PermissionMode,
 ): boolean {
-  if (mode === 'bypass') return boundary.kind === 'bypass';
-  if (boundary.kind !== 'managed') return false;
-  return mode === 'explore'
-    ? boundary.profile.name === 'read-only'
-    : boundary.profile.name !== 'read-only';
+  return boundary.kind === 'bypass';
 }
 
 function narrowsExecutionAuthority(
-  boundary: ExecutionBoundary,
+  currentMode: PermissionMode,
   nextPermissionMode: PermissionMode,
 ): boolean {
-  if (nextPermissionMode === 'bypass') return false;
-  if (boundary.kind !== 'managed') return true;
-  return (
-    nextPermissionMode === 'explore' && !isCanonicalReadOnlyPermissionProfile(boundary.profile)
-  );
+  return currentMode === 'bypass' && nextPermissionMode === 'auto_review';
 }
 
 function agentRunStatusForSpawnResult(

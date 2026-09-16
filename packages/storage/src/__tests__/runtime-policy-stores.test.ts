@@ -63,6 +63,54 @@ import { removeControlDirectory } from './fixtures/control-directory-hygiene.js'
 const execFileAsync = promisify(execFile);
 
 describe('runtime policy stores', () => {
+  test('migrates legacy Ask defaults and persists a separate reviewer model', async () => {
+    await withInteractiveOwner(async ({ root, stores }) => {
+      const policy = createDefaultRuntimePolicy();
+      assert.equal(policy.chatDefaults.permissionMode, 'bypass');
+      await writeFile(
+        join(root, 'runtime-policy.json'),
+        JSON.stringify({
+          schemaVersion: 4,
+          revision: 6,
+          policy: { ...policy, chatDefaults: { ...policy.chatDefaults, permissionMode: 'ask' } },
+        }),
+      );
+      const migrated = await stores.runtimePolicy.getSnapshot();
+      assert.equal(migrated.policy.chatDefaults.permissionMode, 'auto_review');
+      const autoReviewModel = { connectionId: 'reviewer-connection', model: 'reviewer-model' };
+      assert.equal(
+        (
+          await stores.runtimePolicy.mutate({
+            expectedRevision: 6,
+            operation: {
+              kind: 'set_chat_defaults',
+              value: { ...migrated.policy.chatDefaults, autoReviewModel },
+            },
+          })
+        ).kind,
+        'committed',
+      );
+      const selected = await stores.runtimePolicy.getSnapshot();
+      assert.deepEqual(selected.policy.chatDefaults.autoReviewModel, autoReviewModel);
+      assert.equal(
+        (
+          await stores.runtimePolicy.mutate({
+            expectedRevision: selected.revision,
+            operation: {
+              kind: 'set_chat_defaults',
+              value: { ...selected.policy.chatDefaults, autoReviewModel: null },
+            },
+          })
+        ).kind,
+        'committed',
+      );
+      assert.equal(
+        (await stores.runtimePolicy.getSnapshot()).policy.chatDefaults.autoReviewModel,
+        null,
+      );
+    });
+  });
+
   test('upgrades schema v2 with the automatic Host shell default', async () => {
     await withInteractiveOwner(async ({ root, stores }) => {
       const {
@@ -86,7 +134,7 @@ describe('runtime policy stores', () => {
       const persisted = JSON.parse(await readFile(join(root, 'runtime-policy.json'), 'utf8')) as {
         schemaVersion: number;
       };
-      assert.equal(persisted.schemaVersion, 4);
+      assert.equal(persisted.schemaVersion, 5);
     });
   });
 

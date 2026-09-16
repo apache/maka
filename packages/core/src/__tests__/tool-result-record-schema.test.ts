@@ -161,14 +161,14 @@ describe('retired permission modes in stored subagent results', () => {
 
   test('folds a legacy mode to its live equivalent instead of returning it verbatim', () => {
     const decoded = decodePersistedToolResultContent(markPersisted<ToolResultContent>(stored));
-    assert.equal(decoded.kind === 'subagent' ? decoded.permissionMode : undefined, 'ask');
-    assert.deepEqual(decoded, { ...stored, permissionMode: 'ask' });
+    assert.equal(decoded.kind === 'subagent' ? decoded.permissionMode : undefined, 'auto_review');
+    assert.deepEqual(decoded, { ...stored, permissionMode: 'auto_review' });
   });
 
   test('folds through the stored-message decoder as well', () => {
     assert.deepEqual(toolResultContent(decodePersistedMessage(storedToolResult(stored))), {
       ...stored,
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
   });
 

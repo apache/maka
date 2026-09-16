@@ -452,7 +452,7 @@ describe('subagent tools', () => {
             turnId: 'child-turn',
             runId: 'child-run',
             status: 'completed',
-            permissionMode: 'explore',
+            permissionMode: 'auto_review',
             summary: 'done',
             artifactIds: [],
             internalField: 'must not cross the tool result boundary',
@@ -490,7 +490,7 @@ describe('subagent tools', () => {
       turnId: 'child-turn',
       runId: 'child-run',
       status: 'completed',
-      permissionMode: 'explore',
+      permissionMode: 'auto_review',
       summary: 'done',
       artifactIds: [],
     });
@@ -529,7 +529,7 @@ describe('subagent tools', () => {
             agentName: requireBuiltinAgentDefinitionByProfile(input.agentProfile).name,
             turnId: 'child-turn',
             status: 'completed',
-            permissionMode: 'explore',
+            permissionMode: 'auto_review',
             summary: 'done',
             artifactIds: [],
           };
@@ -584,7 +584,7 @@ describe('subagent tools', () => {
             agentName: requireBuiltinAgentDefinitionByProfile(input.agentProfile).name,
             turnId: 'child-turn',
             status: 'completed',
-            permissionMode: 'explore',
+            permissionMode: 'auto_review',
             summary: 'done',
             artifactIds: [],
           };
@@ -751,7 +751,7 @@ describe('subagent tools', () => {
             turnId: 'child-turn',
             runId: 'child-run',
             status: 'completed',
-            permissionMode: 'ask',
+            permissionMode: 'auto_review',
             summary: 'done',
             artifactIds: [],
           };
@@ -1104,7 +1104,7 @@ function childHeader(cwd: string): SessionHeader {
     llmConnectionSlug: 'anthropic-main',
     connectionLocked: true,
     model: 'mock-model',
-    permissionMode: 'explore',
+    permissionMode: 'auto_review',
     schemaVersion: 1,
   };
 }

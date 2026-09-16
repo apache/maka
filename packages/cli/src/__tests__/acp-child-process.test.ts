@@ -168,7 +168,7 @@ describe('Maka ACP child process', () => {
           assert.deepEqual(
             (first.configOptions ?? []).map((option) => [option.id, option.currentValue]),
             [
-              ['permission_mode', 'ask'],
+              ['permission_mode', 'bypass'],
               ['collaboration_mode', 'agent'],
               ['orchestration_mode', 'default'],
             ],
@@ -181,7 +181,7 @@ describe('Maka ACP child process', () => {
           assert.deepEqual(
             (configured.configOptions ?? []).map((option) => [option.id, option.currentValue]),
             [
-              ['permission_mode', 'ask'],
+              ['permission_mode', 'bypass'],
               ['collaboration_mode', 'plan'],
               ['orchestration_mode', 'default'],
             ],
@@ -249,7 +249,7 @@ describe('Maka ACP child process', () => {
           assert.deepEqual(
             (created.configOptions ?? []).map(({ id, currentValue }) => [id, currentValue]),
             [
-              ['permission_mode', 'ask'],
+              ['permission_mode', 'bypass'],
               ['thinking_level', 'default'],
               ['collaboration_mode', 'agent'],
               ['orchestration_mode', 'default'],
@@ -259,7 +259,7 @@ describe('Maka ACP child process', () => {
           assert.ok(permission?.type === 'select');
           assert.deepEqual(
             permission.options.flatMap((option) => ('value' in option ? [option.value] : [])),
-            ['ask', 'bypass'],
+            ['auto_review', 'bypass'],
           );
           const thinking = created.configOptions?.find(({ id }) => id === 'thinking_level');
           assert.ok(thinking?.type === 'select');

@@ -51,7 +51,7 @@ const summary: SessionSummary = {
   llmConnectionSlug: 'fixture',
   connectionLocked: true,
   model: 'fixture-model',
-  permissionMode: 'ask',
+  permissionMode: 'auto_review',
   collaborationMode: 'agent',
   orchestrationMode: 'default',
 };

@@ -269,14 +269,14 @@ describe('SQLite SessionStore', () => {
         agentName: 'Explore',
         turnId: 'child-turn-1',
         status: 'completed',
-        permissionMode: 'ask',
+        permissionMode: 'auto_review',
         summary: 'done',
         artifactIds: [],
       },
     } as const satisfies StoredMessage;
     let sessionId: string;
     try {
-      const session = await store.create(makeInput({ permissionMode: 'ask' }));
+      const session = await store.create(makeInput({ permissionMode: 'auto_review' }));
       sessionId = session.id;
       await store.appendMessage(session.id, currentMessage);
       await assert.rejects(
@@ -308,13 +308,13 @@ describe('SQLite SessionStore', () => {
 
     const reopened = createSessionStore(root);
     try {
-      assert.equal((await reopened.readHeaderSnapshot(sessionId!)).permissionMode, 'ask');
+      assert.equal((await reopened.readHeaderSnapshot(sessionId!)).permissionMode, 'auto_review');
       const [message] = await reopened.readMessages(sessionId!);
       assert.equal(
         message?.type === 'tool_result' && message.content.kind === 'subagent'
           ? message.content.permissionMode
           : undefined,
-        'ask',
+        'auto_review',
       );
     } finally {
       await reopened.close?.();
@@ -1185,7 +1185,7 @@ function makeInput(overrides: Partial<CreateSessionInput> = {}): CreateSessionIn
     cwd: '/tmp/cwd',
     llmConnectionSlug: 'test-connection',
     model: 'test-model',
-    permissionMode: 'ask',
+    permissionMode: 'auto_review',
     name: 'Session',
     labels: [],
     ...overrides,

@@ -37,24 +37,6 @@ const electronDistributionDirectory = join(
   dirname(require.resolve('electron/package.json')),
   'dist',
 );
-const sandboxManifestPath = join(
-  repoRoot,
-  'experiments',
-  'windows-sandbox',
-  'launcher',
-  'Cargo.toml',
-);
-const sandboxBinaryPath = join(
-  repoRoot,
-  'experiments',
-  'windows-sandbox',
-  'launcher',
-  'target',
-  'release',
-  'maka-windows-sandbox.exe',
-);
-const sandboxResourceDirectory = join(desktopRoot, 'resources', 'windows-sandbox');
-const sandboxResourcePath = join(sandboxResourceDirectory, 'maka-windows-sandbox.exe');
 const requiredElectronLicensePaths = [
   join(electronDistributionDirectory, 'LICENSE'),
   join(electronDistributionDirectory, 'LICENSES.chromium.html'),
@@ -125,10 +107,6 @@ export async function packageWindowsX64({
   await run('npm', ['run', 'build']);
   await run('npm', ['run', 'build:runtime-host-peer']);
   await run('npm', ['run', 'check:runtime-host-peer-notices']);
-  await run('cargo', ['build', '--manifest-path', sandboxManifestPath, '--release', '--locked']);
-  await run('npm', ['run', 'check:windows-cargo-notices']);
-  await makeDirectory(sandboxResourceDirectory, { recursive: true });
-  await copy(sandboxBinaryPath, sandboxResourcePath);
   await run('npm', ['run', 'check:release']);
   await remove(target.releaseDirectory, { recursive: true, force: true });
   await run('npm', ['--workspace', '@maka/desktop', 'run', 'package:windows-x64']);

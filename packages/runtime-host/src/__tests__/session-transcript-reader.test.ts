@@ -62,7 +62,7 @@ for (const coordination of [false, true])
         llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
         llmConnectionSlug: 'fake',
         model: 'fake-model',
-        permissionMode: 'ask' as const,
+        permissionMode: 'auto_review' as const,
       };
       const created = coordination
         ? await stores.sessionStore.createStableSession({
@@ -425,7 +425,7 @@ test('pages the ledger without materializing Turns it takes no rows from', async
       llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     const expected: StoredMessage[] = [];
     for (let turn = 0; turn < 5; turn++) {
@@ -831,7 +831,7 @@ async function withNestedTranscript(
       llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     let ts = 0;
     const append = (runId: string, id: string, overrides: Partial<RuntimeEvent>) =>

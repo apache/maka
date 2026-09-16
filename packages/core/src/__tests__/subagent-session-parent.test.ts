@@ -28,7 +28,6 @@ import {
   isSubagentSessionSpawn,
   linkedSubagentParentSessionId,
   projectLinkedSessionTree,
-  subagentSessionRuntimeSummary,
 } from '../session.js';
 
 const relation: SubagentSessionParent = {
@@ -198,7 +197,7 @@ function summary(id: string, overrides: Partial<SessionSummary> = {}): SessionSu
     llmConnectionSlug: 'fake',
     connectionLocked: false,
     model: 'fake-model',
-    permissionMode: 'ask',
+    permissionMode: 'auto_review',
     collaborationMode: 'agent',
     orchestrationMode: 'default',
     ...overrides,
@@ -221,7 +220,7 @@ describe('legacy child execution snapshots', () => {
     // Written before `permissionCeiling` was dropped. Rejecting it would make
     // the whole child Session unreadable, and nothing reads the value.
     assert.equal(isSubagentSessionRuntime({ ...runtime, permissionCeiling: 'execute' }), true);
-    assert.equal(isSubagentSessionRuntime({ ...runtime, permissionCeiling: 'ask' }), true);
+    assert.equal(isSubagentSessionRuntime({ ...runtime, permissionCeiling: 'auto_review' }), true);
   });
 
   test('accepts a current snapshot without the key', () => {

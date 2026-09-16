@@ -141,7 +141,7 @@ test('production collaboration retains distinct Guest mounts, exact requests and
           llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
           llmConnectionSlug: 'test-provider',
           model: 'test-model',
-          permissionMode: 'explore',
+          permissionMode: 'auto_review',
         });
         sessionIds.push(session.id);
       }

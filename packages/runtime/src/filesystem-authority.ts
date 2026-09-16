@@ -29,8 +29,6 @@
 // and is consumed by both the worker and the local workspace executor; the
 // contract itself is what every backend agrees on.
 
-import { FilesystemWorkerClientError } from './filesystem-worker/client.js';
-
 /**
  * A stable identity for a filesystem target, captured the moment a mutation is
  * authorised. `dev` and `ino` are carried as opaque decimal strings rather
@@ -52,48 +50,3 @@ export interface FilesystemTargetIdentity {
  * file in a known state.
  */
 export type FilesystemMutationOutcome = 'applied' | 'rejected' | 'unknown';
-
-/**
- * Reasons that, when a *mutating* operation fails with them, mean the file's
- * state on disk is genuinely unknown. Each is semantically dispatched: the
- * launch-stage reasons are produced only after the child ran (timeout /
- * worker_crashed / response_overflow observe a real exit; worker_io_incomplete
- * is defined as "ran but the result was lost"), and the protocol-stage reasons
- * are produced while parsing the child's own response. So membership here is a
- * sufficient signal — `dispatched` is not re-checked for them. Only `aborted`
- * straddles the pre-flight and post-dispatch worlds, so it alone is gated on
- * the worker error's `dispatched` flag.
- *
- * Pre-flight failures (validation, transform, the bundle being unavailable, a
- * never-started spawn) are deliberately absent: nothing could have been
- * written there.
- */
-export const UNKNOWN_OUTCOME_REASONS: ReadonlySet<FilesystemWorkerClientError['reason']> = new Set<
-  FilesystemWorkerClientError['reason']
->([
-  'timeout',
-  'worker_io_incomplete',
-  'response_overflow',
-  'worker_crashed',
-  'invalid_response',
-  'response_id_mismatch',
-  'response_kind_mismatch',
-  'outcome_unknown',
-]);
-
-/**
- * Classify the outcome of a failed mutation. Returns `undefined` for errors
- * that are not a worker client failure (the caller lets those propagate) and
- * for worker failures that cannot have touched the disk (reads, pre-flight
- * validation, a never-dispatched spawn, a pre-dispatch abort). Returns
- * `'unknown'` when the worker had the request and may have applied it, so the
- * caller surfaces a ToolOutcomeUnknownError and the model re-reads instead of
- * assuming the call did nothing.
- */
-export function classifyFailedMutationOutcome(
-  error: unknown,
-): FilesystemMutationOutcome | undefined {
-  if (!(error instanceof FilesystemWorkerClientError)) return undefined;
-  if (error.reason === 'aborted') return error.dispatched === true ? 'unknown' : undefined;
-  return UNKNOWN_OUTCOME_REASONS.has(error.reason) ? 'unknown' : undefined;
-}

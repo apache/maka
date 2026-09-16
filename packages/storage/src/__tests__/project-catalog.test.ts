@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, realpath, rm as remove, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm as remove, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join, parse, relative, resolve } from 'node:path';
 import { test } from 'node:test';
@@ -79,7 +79,7 @@ function sessionInput(cwd: string, projectId: string) {
     backend: 'fake' as const,
     llmConnectionSlug: 'fake',
     model: 'fake-model',
-    permissionMode: 'ask' as const,
+    permissionMode: 'auto_review' as const,
   };
 }
 

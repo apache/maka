@@ -80,7 +80,7 @@ function session(o: Partial<SessionSummary> = {}): SessionSummary {
     llmConnectionSlug: 'anthropic-main',
     connectionLocked: false,
     model: 'claude-sonnet-4-5',
-    permissionMode: 'ask',
+    permissionMode: 'auto_review',
     ...o,
   };
 }
@@ -105,7 +105,7 @@ const baseComposer: ComposerProps = {
   activeModel: 'claude-sonnet-4-5',
   activeModelLabel: 'Claude Sonnet 4.5',
   modelChoices,
-  permissionMode: 'ask',
+  permissionMode: 'auto_review',
   onPermissionModeChange: noop,
   onPickAttachments: noop,
   onAttachFilePaths: noop,

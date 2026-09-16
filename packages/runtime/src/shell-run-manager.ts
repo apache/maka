@@ -49,12 +49,7 @@ import { buildPtyShellSpawnPlan, buildShellSpawnPlan, defaultShellPlan } from '.
 import { PipeProcessDriver, type PipeProcessExit } from './pipe-process-driver.js';
 import { PipeTailCollector } from './pipe-tail-collector.js';
 import { PtyProcessDriver, type PtyProcessExit } from './pty-process-driver.js';
-import {
-  PTY_INITIAL_COLS,
-  PTY_INITIAL_ROWS,
-  PtyScreenCollector,
-  type PtySnapshotAtCut,
-} from './pty-screen-collector.js';
+import { PTY_INITIAL_COLS, PTY_INITIAL_ROWS, PtyScreenCollector } from './pty-screen-collector.js';
 import { loadPtyStack, type PtyStack } from './pty-stack.js';
 import {
   DEFAULT_BASH_TIMEOUT_MS,
@@ -952,18 +947,11 @@ export class ShellRunProcessManager
       cwd: input.cwd,
       command: input.command,
       status: 'starting',
+      revision: 1,
       startedAt,
       updatedAt: startedAt,
       ...(timeoutMs !== undefined ? { timeoutMs } : {}),
-      ...(input.sandboxType
-        ? {
-            sandboxExecution: {
-              type: input.sandboxType,
-              enforced: input.sandboxType !== 'none',
-            },
-          }
-        : {}),
-      revision: 1,
+
       output,
     };
     return this.input.store.createShellRun(record);

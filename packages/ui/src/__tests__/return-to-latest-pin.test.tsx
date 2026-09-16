@@ -83,7 +83,7 @@ const activeSession: SessionSummary = {
   llmConnectionSlug: 'anthropic',
   connectionLocked: false,
   model: 'claude-sonnet-4-5',
-  permissionMode: 'ask',
+  permissionMode: 'auto_review',
 };
 
 const TURN_COUNT = 6;

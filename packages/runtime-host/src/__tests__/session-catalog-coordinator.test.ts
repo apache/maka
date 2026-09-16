@@ -83,7 +83,7 @@ const context: ConnectionContext = {
 test('projects only bounded execution boundary presentation facts', async () => {
   const fixture = createFixture({
     stores: {
-      readExecutionBoundary: async () => createGenesisExecutionBoundary('explore'),
+      readExecutionBoundary: async () => createGenesisExecutionBoundary('auto_review'),
     },
   });
 
@@ -94,7 +94,7 @@ test('projects only bounded execution boundary presentation facts', async () => 
 
   assert.deepEqual(outcome, {
     ok: true,
-    result: { kind: 'managed', access: 'read_only', revision: 0 },
+    result: { kind: 'bypass', revision: 0 },
   });
 });
 
@@ -176,7 +176,13 @@ test('read marker clears unread only at the ledger transcript tail', async () =>
           },
           {
             sequence: 0,
-            message: { type: 'user', id: 'message-1', turnId: 'turn-1', ts: 10, text: 'ask' },
+            message: {
+              type: 'user',
+              id: 'message-1',
+              turnId: 'turn-1',
+              ts: 10,
+              text: 'auto_review',
+            },
           },
         ],
         nextPosition: null,
@@ -1115,38 +1121,6 @@ test('creation on a relay connection without declarations still fails closed on 
   assert.equal(createAttempts, 0);
 });
 
-test('creation rejects explore permission without a declared mode', async () => {
-  let createAttempts = 0;
-  const fixture = createFixture({
-    stores: {
-      createStableSession: async () => {
-        createAttempts += 1;
-        assert.fail('Unscoped explore permission must be rejected before persistence');
-      },
-    },
-  });
-
-  const outcome = await fixture.coordinator.handlers['session.create'](
-    {
-      sessionId: fixture.sessionId,
-      workspace: { kind: 'host_path', path: process.cwd() },
-      modelTarget: { kind: 'default' },
-      permissionMode: 'explore',
-    },
-    context,
-  );
-
-  assert.deepEqual(outcome, {
-    ok: false,
-    error: {
-      code: 'invalid_request',
-      message: 'Session creation requires a declared mode for explore permission',
-    },
-  });
-  assert.equal(createAttempts, 0);
-  assert.equal(fixture.drainRequests(), 0);
-});
-
 test('new tasks snapshot the current global Code Mode setting', async () => {
   let enabled = true;
   const runtimePolicy: RuntimePolicy = {
@@ -1156,7 +1130,7 @@ test('new tasks snapshot the current global Code Mode setting', async () => {
         revision: 1,
         policy: {
           ...createDefaultRuntimePolicy(),
-          chatDefaults: { permissionMode: 'ask', codeModeEnabled: enabled },
+          chatDefaults: { permissionMode: 'auto_review', codeModeEnabled: enabled },
         },
       }),
     },
@@ -1237,7 +1211,7 @@ test('creation materializes Deep Research semantics inside the Host transaction'
       name: 'Caller override',
       labels: ['customer-label'],
       modelTarget: { kind: 'default' },
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     },
     context,
   );
@@ -1246,11 +1220,11 @@ test('creation materializes Deep Research semantics inside the Host transaction'
   assert.ok(created);
   assert.equal(created.input.name, DEEP_RESEARCH_SESSION_NAME);
   assert.deepEqual(created.input.labels, ['customer-label', DEEP_RESEARCH_SESSION_LABEL]);
-  assert.equal(created.input.permissionMode, 'explore');
+  assert.equal(created.input.permissionMode, 'auto_review');
   assert.equal(fixture.drainRequests(), 0);
 });
 
-test('bot mode grants explore while keeping the Bot-supplied Session name', async () => {
+test('bot mode uses the configured default while keeping its supplied Session name', async () => {
   let created: Parameters<CatalogStores['createStableSession']>[0] | undefined;
   const fixture = createFixture({
     stores: {
@@ -1280,7 +1254,7 @@ test('bot mode grants explore while keeping the Bot-supplied Session name', asyn
   assert.ok(created);
   assert.equal(created.input.name, '飞书 任务');
   assert.deepEqual(created.input.labels, ['bot', 'feishu', 'mode:bot']);
-  assert.equal(created.input.permissionMode, 'explore');
+  assert.equal(created.input.permissionMode, 'bypass');
   assert.equal(fixture.drainRequests(), 0);
 });
 
@@ -2038,7 +2012,7 @@ function createFixture(
     }),
     probeStableSessionCreate: async () => ({ kind: 'absent' }),
     readCatalogRecord: async () => catalogRecord(header, revision),
-    readExecutionBoundary: async () => createGenesisExecutionBoundary('ask'),
+    readExecutionBoundary: async () => createGenesisExecutionBoundary('auto_review'),
     readHeaderRecordSnapshot: async () => headerSnapshot(header, revision),
     updateHeaderVersioned: async (_sessionId, patch, expectedRevision) => {
       if (expectedRevision !== revision) {
@@ -2259,7 +2233,7 @@ function configurationInput(
         model: 'model-1',
       },
       thinkingLevel: null,
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       collaborationMode: 'agent',
       orchestrationMode: 'graph',
     },
@@ -2285,7 +2259,7 @@ function sessionHeader(sessionId: string, labels: readonly string[]): SessionHea
     llmConnectionSlug: 'test',
     connectionLocked: true,
     model: 'model-1',
-    permissionMode: 'ask',
+    permissionMode: 'auto_review',
     collaborationMode: 'agent',
     orchestrationMode: 'default',
     schemaVersion: 1,

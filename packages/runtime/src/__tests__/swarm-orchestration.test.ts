@@ -25,7 +25,7 @@ import type { SessionEvent } from '@maka/core/events';
 
 import type { SessionHeader, StoredMessage } from '@maka/core/session';
 
-import { ToolRuntime, type MakaTool } from '../tool-runtime.js';
+import { type MakaTool } from '../tool-runtime.js';
 
 function header(): SessionHeader {
   return {
@@ -45,7 +45,7 @@ function header(): SessionHeader {
     llmConnectionSlug: 'c',
     connectionLocked: true,
     model: 'm',
-    permissionMode: 'ask',
+    permissionMode: 'auto_review',
     schemaVersion: 1,
   };
 }

@@ -20,12 +20,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { LanguageModelV4StreamPart, LanguageModelV4Usage } from '@ai-sdk/provider';
-import {
-  createExternalExecutionBoundary,
-  createManagedExecutionBoundary,
-  type SandboxBoundaryRequest,
-} from '@maka/core/sandbox-boundary';
-import { createWorkspaceWritePermissionProfile } from '@maka/core/permission-profile';
 import { type LlmConnection } from '@maka/core/llm-connections';
 import { type SessionEvent } from '@maka/core/events';
 import { type SessionHeader } from '@maka/core/session';
@@ -251,7 +245,7 @@ test('a nested question can be answered and a parked question can be stopped', a
     const events: SessionEvent[] = [];
     for await (const event of instance.send({
       turnId: 'question-code',
-      text: 'ask',
+      text: 'auto_review',
       context: [],
     })) {
       events.push(event);
@@ -375,79 +369,6 @@ test('keeps the default and explicit direct provider surfaces byte-identical', a
   );
 
   assert.equal(captured[0], captured[1]);
-});
-
-test('denies a nested MCP call before invoking its provider', async () => {
-  const boundary = createManagedExecutionBoundary(createWorkspaceWritePermissionProfile(), 0);
-  let pendingRequest: SandboxBoundaryRequest | undefined;
-  let providerCalls = 0;
-  const tools = buildMcpTools({
-    toolSnapshot: () => ({
-      revision: 1,
-      tools: [
-        {
-          descriptor: {
-            serverId: 'catalog',
-            name: 'lookup',
-            inputSchema: { type: 'object' },
-          },
-          binding: 'catalog-lookup' as McpToolBinding,
-        },
-      ],
-    }),
-    callTool: async () => {
-      providerCalls += 1;
-      return { content: [] };
-    },
-  });
-
-  const instance = backend(
-    execThenStopModel('return await tools.mcp__catalog__lookup({ id: "mcp-1" })'),
-    [],
-    undefined,
-    {
-      tools,
-      readExecutionBoundary: async () => boundary,
-      createSandboxBoundaryRequest: async (input) => {
-        pendingRequest = {
-          ...input,
-          status: 'pending',
-          baseRevision: 0,
-          createdAt: 1,
-        };
-        return pendingRequest;
-      },
-      settleSandboxBoundaryRequest: async () => {
-        assert.ok(pendingRequest);
-        return {
-          request: { ...pendingRequest, status: 'denied', settledAt: 2 },
-          boundary,
-          changed: false,
-        };
-      },
-    },
-  );
-  const iterator = instance
-    .send({
-      turnId: 'turn-code',
-      text: 'look it up through MCP',
-      context: [],
-      toolMode: 'code_mode',
-    })
-    [Symbol.asyncIterator]();
-  let request: Extract<SessionEvent, { type: 'sandbox_boundary_request' }> | undefined;
-  while (!request) {
-    const item = await iterator.next();
-    assert.equal(item.done, false, 'nested MCP call completed without requesting network access');
-    if (item.value.type === 'sandbox_boundary_request') request = item.value;
-  }
-  await instance.respondToSandboxBoundary({ requestId: request.requestId, decision: 'deny' });
-  for (;;) {
-    const item = await iterator.next();
-    if (item.done) break;
-  }
-
-  assert.equal(providerCalls, 0);
 });
 
 test('bounds cells outstanding on one backend, across the host drain', async () => {
@@ -903,163 +824,6 @@ test('records artifacts produced by a nested tool', async () => {
   assert.equal(artifacts[0]?.candidates[0]?.sourcePath, '/tmp/maka/out.txt');
 });
 
-test('parks a nested sandbox request and settles the outer exec after denial', async () => {
-  let pendingRequest: SandboxBoundaryRequest | undefined;
-  let sideEffects = 0;
-  const tools: MakaTool[] = [
-    {
-      name: 'network_task',
-      description: 'Request network authority',
-      parameters: z.object({}),
-      categoryHint: 'network_send',
-      impl: async (_input, context) => {
-        assert.ok(context.requestSandboxBoundary);
-        const result = await context.requestSandboxBoundary(
-          { network: { enabled: true } },
-          'Fetch the requested catalog record.',
-        );
-        if (result.request.status !== 'approved') return result;
-        sideEffects += 1;
-        return result;
-      },
-    },
-  ];
-  const instance = backend(
-    execThenStopModel('return await tools.network_task({})'),
-    [],
-    undefined,
-    {
-      tools,
-      createSandboxBoundaryRequest: async (input) => {
-        pendingRequest = {
-          ...input,
-          status: 'pending',
-          baseRevision: 0,
-          createdAt: 1,
-        };
-        return pendingRequest;
-      },
-      settleSandboxBoundaryRequest: async (input) => {
-        assert.ok(pendingRequest);
-        return {
-          request: {
-            ...pendingRequest,
-            status: input.decision === 'allow' ? 'approved' : 'denied',
-            settledAt: 2,
-          },
-          boundary: createExternalExecutionBoundary(),
-          changed: false,
-        };
-      },
-    },
-  );
-  const iterator = instance
-    .send({
-      turnId: 'turn-code',
-      text: 'use the network',
-      context: [],
-      toolMode: 'code_mode',
-    })
-    [Symbol.asyncIterator]();
-  const events: SessionEvent[] = [];
-  let request: Extract<SessionEvent, { type: 'sandbox_boundary_request' }> | undefined;
-  while (!request) {
-    const item = await iterator.next();
-    assert.equal(item.done, false);
-    events.push(item.value);
-    if (item.value.type === 'sandbox_boundary_request') request = item.value;
-  }
-  await instance.respondToSandboxBoundary({ requestId: request.requestId, decision: 'deny' });
-  for (;;) {
-    const item = await iterator.next();
-    if (item.done) break;
-    events.push(item.value);
-  }
-
-  assert.ok(
-    events.some(
-      (event) =>
-        event.type === 'sandbox_boundary_decision_ack' &&
-        event.requestId === request?.requestId &&
-        event.decision === 'deny',
-    ),
-  );
-  assert.ok(events.some((event) => event.type === 'tool_result' && event.toolUseId === 'exec-1'));
-  assert.equal(sideEffects, 0);
-});
-
-test('aborting a parked nested sandbox request releases the outer exec', async () => {
-  let markCreated: (() => void) | undefined;
-  const created = new Promise<void>((resolve) => {
-    markCreated = resolve;
-  });
-  let sideEffects = 0;
-  const tools: MakaTool[] = [
-    {
-      name: 'network_task',
-      description: 'Request network authority',
-      parameters: z.object({}),
-      categoryHint: 'network_send',
-      impl: async (_input, context) => {
-        assert.ok(context.requestSandboxBoundary);
-        const result = await context.requestSandboxBoundary(
-          { network: { enabled: true } },
-          'Fetch the requested catalog record.',
-        );
-        if (result.request.status === 'approved') sideEffects += 1;
-        return result;
-      },
-    },
-  ];
-  const instance = backend(
-    execThenStopModel('return await tools.network_task({})'),
-    [],
-    undefined,
-    {
-      tools,
-      createSandboxBoundaryRequest: async (input) => {
-        markCreated?.();
-        return { ...input, status: 'pending', baseRevision: 0, createdAt: 1 };
-      },
-      settleSandboxBoundaryRequest: async (input) => ({
-        request: {
-          sessionId: 'session-1',
-          requestId: input.requestId,
-          turnId: 'turn-code',
-          expansion: { network: { enabled: true } },
-          justification: 'Fetch the requested catalog record.',
-          status: 'denied',
-          baseRevision: 0,
-          createdAt: 1,
-          settledAt: 2,
-        },
-        boundary: createExternalExecutionBoundary(),
-        changed: false,
-      }),
-    },
-  );
-
-  const eventsPromise = collect(
-    instance.send({
-      turnId: 'turn-code',
-      text: 'use the network',
-      context: [],
-      toolMode: 'code_mode',
-    }),
-  );
-  await created;
-  await instance.stop('user_stop');
-  const events = await Promise.race([
-    eventsPromise,
-    new Promise<never>((_resolve, reject) =>
-      setTimeout(() => reject(new Error('aborted nested boundary did not settle')), 100),
-    ),
-  ]);
-
-  assert.equal(sideEffects, 0);
-  assert.ok(events.some((event) => event.type === 'tool_result' && event.toolUseId === 'exec-1'));
-});
-
 test('aborts an owned nested tool when the outer exec is stopped', async () => {
   let markStarted: (() => void) | undefined;
   const started = new Promise<void>((resolve) => {
@@ -1199,8 +963,6 @@ function backend(
       | 'toolAvailability'
       | 'loadTurnRuntimeEvents'
       | 'readExecutionBoundary'
-      | 'createSandboxBoundaryRequest'
-      | 'settleSandboxBoundaryRequest'
       | 'recordToolArtifacts'
       | 'supportsVision'
       | 'readAttachmentBytes'
@@ -1368,7 +1130,7 @@ function header(): SessionHeader {
     llmConnectionSlug: 'c',
     connectionLocked: true,
     model: 'm',
-    permissionMode: 'ask',
+    permissionMode: 'auto_review',
     schemaVersion: 1,
   };
 }

@@ -63,7 +63,7 @@ function readyHost(input: {
       selectNoProject: input.selectNoProject ?? false,
     },
     selectedProjectId: input.selectedProjectId ?? 'project-a',
-    chatDefaults: { permissionMode: 'ask', thinkingLevel: 'high' },
+    chatDefaults: { permissionMode: 'auto_review', thinkingLevel: 'high' },
     branch: 'main',
   };
 }

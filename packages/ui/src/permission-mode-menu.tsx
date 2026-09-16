@@ -31,7 +31,7 @@ import {
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
 } from '@astryxdesign/core/DropdownMenu';
-import { ICON_SIZE, Eye, ShieldAlert, ShieldCheck } from './icons.js';
+import { ICON_SIZE, ShieldAlert, ShieldCheck } from './icons.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
 import { cn } from './utils.js';
@@ -40,7 +40,6 @@ type PermissionModeAppearance = 'field' | 'icon';
 
 function permissionModeIcon(mode: PermissionMode) {
   if (mode === 'bypass') return <ShieldAlert size={ICON_SIZE.control} aria-hidden="true" />;
-  if (mode === 'explore') return <Eye size={ICON_SIZE.control} aria-hidden="true" />;
   return <ShieldCheck size={ICON_SIZE.control} aria-hidden="true" />;
 }
 
@@ -49,20 +48,7 @@ export interface PermissionModeMeta {
   hint: string;
 }
 
-/**
- * Sessions may run under a read-only (`explore`) boundary, so metadata stays
- * complete for the whole PermissionMode union. User-facing pickers offer only
- * Auto (`ask`) and full access (`bypass`), but any mode can be the state being
- * displayed.
- *
- * This module is the one home for the mode table and shared picker: both the
- * composer and Settings render from it so labels, hints, and markup cannot
- * drift between the two surfaces.
- *
- * The danger of full access is carried by the words and by the destructive
- * confirmation dialog that guards the switch — not by a per-mode colour. An
- * earlier `tone` field here was never read by any renderer.
- */
+/** Shared execution-mode labels and hints for the composer and Settings. */
 export function getPermissionModeMeta(locale: UiLocale): Record<PermissionMode, PermissionModeMeta> {
   return getConversationCopy(locale).permissions.mode;
 }
@@ -78,10 +64,6 @@ export const PERMISSION_MODE_ORDER: readonly ChatDefaultPermissionMode[] = CHAT_
  * - **icon** (quiet composer footer): ghost icon button + radio menu of the
  *   two selectable modes (label only). Hints stay on the trigger tooltip /
  *   aria-description so the open panel stays short and matches the ＋ control.
- *
- * Legacy `execute` sessions collapse to Auto for display. A read-only
- * (`explore`) session has no matching option, so the control shows that state
- * without selecting Auto or full access.
  */
 export function PermissionModeSelect(props: {
   activeMode: PermissionMode;
@@ -96,8 +78,6 @@ export function PermissionModeSelect(props: {
   const locale = useUiLocale();
   const permissionCopy = getConversationCopy(locale).permissions;
   const modeMeta = getPermissionModeMeta(locale);
-  // #1611: `explore` is a real read-only boundary the user is running under,
-  // so it shows its own label and hint instead of borrowing Auto's.
   const displayMode: PermissionMode = props.activeMode;
   const meta = modeMeta[displayMode];
   const selectedValue: ChatDefaultPermissionMode | undefined = PERMISSION_MODE_ORDER.includes(

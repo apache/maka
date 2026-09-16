@@ -23,6 +23,7 @@
  */
 export const MODEL_CALL_KINDS = [
   'main',
+  'auto_review',
   'semantic_compact',
   'history_compact',
   'goal_evaluation',

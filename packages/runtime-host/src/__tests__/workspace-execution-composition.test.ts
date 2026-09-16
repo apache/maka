@@ -28,7 +28,7 @@ import {
 test('executes read-only operations in the attached checkout', async () => {
   const calls: string[] = [];
   const composition = createRuntimeHostWorkspaceExecutionComposition({
-    filesystemWorker: {
+    filesystem: {
       async execute(input) {
         calls.push(`${input.cwd}:${input.operation.kind}`);
         return {
@@ -55,7 +55,7 @@ test('executes read-only operations in the attached checkout', async () => {
 test('rejects malformed profiles and mutating operations before worker dispatch', async () => {
   let workerCalls = 0;
   const composition = createRuntimeHostWorkspaceExecutionComposition({
-    filesystemWorker: {
+    filesystem: {
       async execute() {
         workerCalls += 1;
         return {
@@ -101,7 +101,7 @@ test('drains active attached operations before closing', async () => {
     releaseWorker = resolve;
   });
   const composition = createRuntimeHostWorkspaceExecutionComposition({
-    filesystemWorker: {
+    filesystem: {
       async execute() {
         await workerBlocked;
         return {

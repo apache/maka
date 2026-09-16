@@ -64,7 +64,6 @@ import {
   collapseToSingleLine,
   fitLine,
   formatTokenCount,
-  formatUnknown,
   limitText,
   markdownTheme,
   renderIndented,
@@ -1649,17 +1648,10 @@ function transcriptEntrySignature(entry: MakaPiTranscriptEntry, width: number): 
   }
 }
 
-/**
- * The one CLI label for a permission mode, shared by the status line, the
- * picker header, and the mode-change notice (#1611). `explore` is a real
- * boundary a resumed session can be in, so it must be nameable here; legacy
- * `execute` has no boundary of its own and reads as Auto, as does anything
- * else this metadata ever carries.
- */
+/** Shared execution-mode label for the status line and picker. */
 export function permissionModeLabel(mode: string): string {
-  if (mode === 'bypass') return 'Full access';
-  if (mode === 'explore') return 'Read only';
-  return 'Auto';
+  if (mode === 'bypass') return 'Bypass';
+  return 'Auto review';
 }
 
 export function renderMakaPiStatusLine(metadata: MakaPiTranscriptMetadata, width: number): string {
@@ -1852,8 +1844,7 @@ function fitStatusLine(segments: MakaPiStatusLineSegment[], sep: string, width: 
 }
 
 function compactPermissionModeLabel(mode: string): string {
-  if (mode === 'bypass') return 'Full';
-  if (mode === 'explore') return 'Read';
+  if (mode === 'bypass') return 'Bypass';
   return 'Auto';
 }
 

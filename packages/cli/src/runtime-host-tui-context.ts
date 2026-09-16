@@ -20,10 +20,6 @@
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import type { PermissionMode } from '@maka/core/permission';
-import {
-  createGenesisExecutionBoundary,
-  executionBoundaryDisplayMode,
-} from '@maka/core/sandbox-boundary';
 import { findProjectByIdentity } from '@maka/core/project';
 import type {
   RuntimeHostConnectionCatalogEntry as ConnectionCatalogEntry,
@@ -178,10 +174,7 @@ export async function createRuntimeHostTuiContext(
     // Display state, never a create input. Deriving it through the same
     // boundary mapping every other surface uses keeps a prospective Session and
     // a live one from ever labelling the same permissions differently.
-    const prospectivePermissionMode =
-      executionBoundaryDisplayMode(
-        createGenesisExecutionBoundary(await readHostChatDefaultPermissionMode(connection)),
-      ) ?? 'ask';
+    const prospectivePermissionMode = await readHostChatDefaultPermissionMode(connection);
     const sessionCopyCleanupRoot = join(input.clientDataRoot, 'tui-session-copies');
     const owner = await acquireProcessLifetimeOwner(
       join(sessionCopyCleanupRoot, connection.rootId),

@@ -23,17 +23,14 @@
 // Mode + Tool categories
 // ============================================================================
 
-export const PERMISSION_MODES = ['explore', 'ask', 'bypass'] as const;
+export const PERMISSION_MODES = ['bypass', 'auto_review'] as const;
 export type PermissionMode = (typeof PERMISSION_MODES)[number];
 
-/**
- * A mode that was removed but still appears in records written before the
- * removal. It never had behavior of its own — `execute` compiled to the same
- * profile as `ask`, displayed as `ask`, and produced the same execution
- * boundary — so folding it costs nothing and is not a downgrade.
- */
+/** Retired sandbox modes remain readable in historical records. */
 const RETIRED_PERMISSION_MODES: Readonly<Record<string, PermissionMode>> = {
-  execute: 'ask',
+  execute: 'auto_review',
+  ask: 'auto_review',
+  explore: 'auto_review',
 };
 
 /**

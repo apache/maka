@@ -57,7 +57,7 @@ function session(): SessionSummary {
     llmConnectionSlug: 'anthropic-main',
     connectionLocked: false,
     model: 'claude-sonnet-4-5',
-    permissionMode: 'ask',
+    permissionMode: 'auto_review',
   };
 }
 
@@ -114,7 +114,7 @@ function QueuedComposer() {
     activeModel: 'claude-sonnet-4-5',
     activeModelLabel: 'K3-256k',
     modelChoices,
-    permissionMode: 'ask',
+    permissionMode: 'auto_review',
     onPermissionModeChange: noop,
     onPickAttachments: noop,
     streaming: true,

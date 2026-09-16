@@ -23,12 +23,7 @@ import { describe, test } from 'node:test';
 import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 import type { SessionEvent } from '@maka/core/events';
 import type { BackendSessionEvent } from '@maka/core/backend-types';
-import type { RuntimeEvent } from '@maka/core/runtime-event';
-import {
-  decodeRuntimeEvent,
-  isTerminalRuntimeEvent,
-  isPartialRuntimeEvent,
-} from '@maka/core/runtime-event';
+import { isTerminalRuntimeEvent } from '@maka/core/runtime-event';
 
 import {
   mapCompleteStopReason,
@@ -42,7 +37,6 @@ import {
   projectRuntimeEventsToStoredMessages,
 } from '../runtime-event-read-model.js';
 import { isNonTerminalErrorRuntimeEvent } from '../agent-run.js';
-import { backfillRuntimeEventsFromStoredMessages } from '../runtime-event-backfill.js';
 import { testInvocationOpening } from './invocation-fixture.js';
 
 // ============================================================================
@@ -498,7 +492,7 @@ const PROJECTION_SAMPLES: ProjectionSamples = {
         agentName: 'Local Read',
         turnId: 'child-turn',
         status: 'running',
-        permissionMode: 'explore',
+        permissionMode: 'auto_review',
       },
     },
   },

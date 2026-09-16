@@ -1439,7 +1439,7 @@ function archivedTask(
     llmConnectionSlug: 'zai-live',
     connectionLocked: true,
     model: 'glm-4.7',
-    permissionMode: 'ask',
+    permissionMode: 'auto_review',
     lastMessageAt: NOW - ageDays * 24 * 60 * 60 * 1000,
     ...overrides,
   };

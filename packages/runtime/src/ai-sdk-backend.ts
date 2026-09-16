@@ -25,12 +25,7 @@
  */
 
 import type { SessionEvent } from '@maka/core/events';
-import type {
-  BackendKind,
-  RuntimeSystemNoteKind,
-  SessionHeader,
-  StoredMessage,
-} from '@maka/core/session';
+import type { BackendKind, RuntimeSystemNoteKind, SessionHeader } from '@maka/core/session';
 import type {
   AgentBackend,
   BackendCompactHistoryInput,
@@ -126,8 +121,7 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
   readExecutionBoundary: ToolRuntimeInput['readExecutionBoundary'];
   /** Reads the user's current Session permission selection for each local tool invocation. */
   readPermissionMode: ToolRuntimeInput['readPermissionMode'];
-  createSandboxBoundaryRequest?: ToolRuntimeInput['createSandboxBoundaryRequest'];
-  settleSandboxBoundaryRequest?: ToolRuntimeInput['settleSandboxBoundaryRequest'];
+  autoReview?: ToolRuntimeInput['autoReview'];
 
   // ── Process-singleton deps ─────────────────────────────────────────────
   /** Canonical-named tools available this session. */
@@ -484,7 +478,6 @@ export class AiSdkBackend implements AgentBackend {
    * long after its step still resolves this turn's watchdog, trace, and run.
    */
   private createToolRuntime(identity: {
-    inheritedSandboxBoundaryDenied: boolean;
     turnId: string;
     runId: string | undefined;
     invocationId: string | undefined;
@@ -494,15 +487,13 @@ export class AiSdkBackend implements AgentBackend {
   }): ToolRuntime {
     const input = this.input;
     return new ToolRuntime({
-      inheritedSandboxBoundaryDenied: identity.inheritedSandboxBoundaryDenied,
       sessionId: input.sessionId,
       header: input.header,
       connection: input.connection,
       modelId: input.modelId,
       readExecutionBoundary: input.readExecutionBoundary,
       readPermissionMode: input.readPermissionMode,
-      createSandboxBoundaryRequest: input.createSandboxBoundaryRequest,
-      settleSandboxBoundaryRequest: input.settleSandboxBoundaryRequest,
+      autoReview: input.autoReview,
       newId: this.newId,
       now: this.now,
       getPermissionPauseTarget: () => identity.scope().watchdog,
@@ -559,7 +550,6 @@ export class AiSdkBackend implements AgentBackend {
         providerRetrySleep: this.providerRetrySleep,
         createToolRuntime: (owner) =>
           this.createToolRuntime({
-            inheritedSandboxBoundaryDenied: input.continuation?.sandboxBoundaryDenied === true,
             turnId: owner.turnId,
             runId: owner.runId,
             invocationId: input.invocationId ?? input.runId,

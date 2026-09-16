@@ -78,7 +78,7 @@ function renderLiveTurn(liveTurn: LiveTurnProjection): string {
       llmConnectionSlug: 'conn',
       connectionLocked: false,
       model: 'model',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     },
     messages: [{ type: 'user', id: 'user-1', turnId: liveTurn.turnId, ts: 1, text: 'go' }],
     scrollBehavior: 'smooth',
@@ -92,7 +92,7 @@ describe('single live-turn handoff', () => {
     const session: NonNullable<Parameters<typeof ChatView>[0]['activeSession']> = {
       id: 'session-1', name: 'pending', status: 'running' as const, backend: 'ai-sdk',
       labels: [], isFlagged: false, isArchived: false, hasUnread: false,
-      llmConnectionSlug: 'conn', connectionLocked: false, model: 'model', permissionMode: 'ask' as const,
+      llmConnectionSlug: 'conn', connectionLocked: false, model: 'model', permissionMode: 'auto_review' as const,
     };
     for (const activeSession of [undefined, session]) {
       const markup = renderWithLocale(createElement(ChatView, {
@@ -119,7 +119,7 @@ describe('single live-turn handoff', () => {
       activeSession: {
         id: 'session-1', name: 'pending', lastMessageAt: 1, status: 'active', backend: 'ai-sdk',
         labels: [], isFlagged: false, isArchived: false, hasUnread: false,
-        llmConnectionSlug: 'conn', connectionLocked: false, model: 'model', permissionMode: 'ask',
+        llmConnectionSlug: 'conn', connectionLocked: false, model: 'model', permissionMode: 'auto_review',
       },
       messages: [
         { type: 'user', id: 'old-user', turnId: 'old-turn', ts: 1, text: 'before' },
@@ -144,7 +144,7 @@ describe('single live-turn handoff', () => {
       activeSession: {
         id: 'session-1', name: 'pending', status: 'active', backend: 'ai-sdk',
         labels: [], isFlagged: false, isArchived: false, hasUnread: false,
-        llmConnectionSlug: 'conn', connectionLocked: false, model: 'model', permissionMode: 'ask',
+        llmConnectionSlug: 'conn', connectionLocked: false, model: 'model', permissionMode: 'auto_review',
       },
       messages: [],
       transientMessages: [
@@ -167,7 +167,7 @@ describe('single live-turn handoff', () => {
       activeSession: {
         id: 'session-1', name: 'pending', lastMessageAt: 1, status: 'running', backend: 'ai-sdk',
         labels: [], isFlagged: false, isArchived: false, hasUnread: false,
-        llmConnectionSlug: 'conn', connectionLocked: false, model: 'model', permissionMode: 'ask',
+        llmConnectionSlug: 'conn', connectionLocked: false, model: 'model', permissionMode: 'auto_review',
       },
       messages: [],
       transientMessages: [
@@ -204,7 +204,7 @@ describe('single live-turn handoff', () => {
       activeSession: {
         id: 'session-1', name: 'pending', lastMessageAt: 1, status: 'running', backend: 'ai-sdk',
         labels: [], isFlagged: false, isArchived: false, hasUnread: false,
-        llmConnectionSlug: 'conn', connectionLocked: false, model: 'model', permissionMode: 'ask',
+        llmConnectionSlug: 'conn', connectionLocked: false, model: 'model', permissionMode: 'auto_review',
       },
       messages: [],
       transientMessages: [
@@ -268,7 +268,7 @@ describe('single live-turn handoff', () => {
       activeSession: {
         id: 'session-1', name: 'streaming', lastMessageAt: 1, status: 'active', backend: 'ai-sdk',
         labels: [], isFlagged: false, isArchived: false, hasUnread: false,
-        llmConnectionSlug: 'conn', connectionLocked: false, model: 'model', permissionMode: 'ask',
+        llmConnectionSlug: 'conn', connectionLocked: false, model: 'model', permissionMode: 'auto_review',
       },
       messages: [
         { type: 'user', id: 'user-1', turnId: 'turn-1', ts: 1, text: 'go' },
@@ -297,7 +297,7 @@ describe('single live-turn handoff', () => {
       activeSession: {
         id: 'session-1', name: 'streaming', lastMessageAt: 1, status: 'running', backend: 'ai-sdk',
         labels: [], isFlagged: false, isArchived: false, hasUnread: false,
-        llmConnectionSlug: 'conn', connectionLocked: false, model: 'model', permissionMode: 'ask',
+        llmConnectionSlug: 'conn', connectionLocked: false, model: 'model', permissionMode: 'auto_review',
       },
       messages: [
         { type: 'user', id: 'user-1', turnId: 'turn-1', ts: 1, text: 'go' },

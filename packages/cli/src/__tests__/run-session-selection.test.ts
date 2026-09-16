@@ -126,7 +126,7 @@ describe('maka run session selection', () => {
       ),
       /has no stored cwd/,
     );
-    const auto = session({ id: 'resume-me', permissionMode: 'ask' });
+    const auto = session({ id: 'resume-me', permissionMode: 'auto_review' });
     const resumedAuto = await selectMakaRunSession(
       {
         sessions: [auto],
@@ -167,7 +167,7 @@ describe('maka run session selection', () => {
         sessions: [
           session({ id: 'archived', lastMessageAt: 500, isArchived: true }),
           session({ id: 'blocked', lastMessageAt: 500, status: 'blocked' }),
-          session({ id: 'ask', lastMessageAt: 500, permissionMode: 'ask' }),
+          session({ id: 'auto_review', lastMessageAt: 500, permissionMode: 'auto_review' }),
           session({ id: 'missing-time', lastMessageAt: undefined }),
           session({ id: 'inaccessible', cwd: '/missing', lastMessageAt: 400 }),
           session({ id: 'b', cwd: '/repo-link', lastMessageAt: 300 }),
@@ -186,7 +186,7 @@ describe('maka run session selection', () => {
     );
 
     assert.equal(selected.kind, 'existing');
-    assert.equal(selected.kind === 'existing' ? selected.session.id : undefined, 'ask');
+    assert.equal(selected.kind === 'existing' ? selected.session.id : undefined, 'auto_review');
     assert.equal(selected.cwd, '/repo');
   });
 
@@ -263,7 +263,7 @@ function session(overrides: Partial<SessionSummary> = {}): SessionSummary {
     llmConnectionSlug: 'fixture',
     connectionLocked: false,
     model: 'fixture-model',
-    permissionMode: 'explore',
+    permissionMode: 'auto_review',
     ...overrides,
   };
 }

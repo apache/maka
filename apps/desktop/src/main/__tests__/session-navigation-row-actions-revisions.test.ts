@@ -35,7 +35,7 @@ function summary(id: string, overrides: Partial<SessionSummary> = {}): SessionSu
     llmConnectionSlug: 'test',
     connectionLocked: true,
     model: 'test',
-    permissionMode: 'ask',
+    permissionMode: 'auto_review',
     ...overrides,
   };
 }

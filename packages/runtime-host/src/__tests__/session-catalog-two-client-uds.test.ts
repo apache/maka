@@ -22,7 +22,7 @@ import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import assert from 'node:assert/strict';
 import { fork, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdir, readdir, realpath, mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, realpath, mkdtemp, rm } from 'node:fs/promises';
 import { connect, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -112,7 +112,7 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
         createInput.sessionId,
       );
       assert.equal(created.id, createInput.sessionId);
-      assert.equal(created.permissionMode, 'ask');
+      assert.equal(created.permissionMode, 'bypass');
       assert.equal(created.labelsTruncated, false);
       assert.deepEqual(
         await desktop.request('runtime.resource.query', {
@@ -228,7 +228,7 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
       );
       assert.equal(researchSession.name, DEEP_RESEARCH_SESSION_NAME);
       assert.deepEqual(researchSession.labels, ['customer-label', DEEP_RESEARCH_SESSION_LABEL]);
-      assert.equal(researchSession.permissionMode, 'explore');
+      assert.equal(researchSession.permissionMode, 'bypass');
 
       const policy = await tui.request('runtime.policy.query', {});
       const changedPolicy = await tui.request('runtime.policy.mutate', {
@@ -320,7 +320,7 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
         sessionId: configuredSession.id,
         expectedRevision: configuredSession.revision,
         patch: {
-          permissionMode: 'explore',
+          permissionMode: 'auto_review',
         },
       });
       assert.equal(narrowedConfiguration.kind, 'committed');
@@ -328,7 +328,7 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
         assert.fail('Runtime Resource authority must permit a quiescent permission narrowing');
       }
       const narrowedSession = requireSessionProjection(narrowedConfiguration.session);
-      assert.equal(narrowedSession.permissionMode, 'explore');
+      assert.equal(narrowedSession.permissionMode, 'auto_review');
 
       const firstCwd = join(base, 'workspace-first');
       const secondCwd = join(base, 'workspace-second');
@@ -825,7 +825,7 @@ async function seedAuthority(
       llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     await seedInvocation(execution.runtimeEventStore, {
       sessionId: unread.id,
@@ -882,7 +882,7 @@ async function seedAuthority(
       llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     const oversized = await execution.sessionStore.create({
       cwd: root,
@@ -890,7 +890,7 @@ async function seedAuthority(
       llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     const retirement = await execution.sessionStore.create({
       cwd: root,
@@ -898,7 +898,7 @@ async function seedAuthority(
       llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     const recovery = await execution.sessionStore.create({
       cwd: root,
@@ -906,7 +906,7 @@ async function seedAuthority(
       llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     const artifacts = await openInteractiveArtifactStoreForWrite(owner.lease);
     const todos = await openInteractiveSessionTodoStoreForWrite(owner.lease);

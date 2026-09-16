@@ -290,7 +290,7 @@ function target(overrides: Partial<ExternalSessionImportTarget> = {}): ExternalS
   return {
     llmConnectionSlug: 'fake',
     model: 'maka-model',
-    permissionMode: 'ask',
+    permissionMode: 'auto_review',
     ...overrides,
   };
 }

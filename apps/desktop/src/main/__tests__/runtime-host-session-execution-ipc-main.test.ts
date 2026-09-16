@@ -385,7 +385,7 @@ test("keeps synthetic E2E interactions visible through Host hydration and retire
         respondToSandboxBoundary: async (_sessionId, response) => {
           if (response.requestId !== request.requestId) return { handled: false };
           active = false;
-          return { handled: true, permissionMode: 'ask' };
+          return { handled: true, permissionMode: 'auto_review' };
         },
       },
     },
@@ -405,7 +405,7 @@ test("keeps synthetic E2E interactions visible through Host hydration and retire
     [],
   );
   assert.deepEqual(configurationUpdates, [
-    { sessionId: 'session-1', patch: { permissionMode: 'ask' } },
+    { sessionId: 'session-1', patch: { permissionMode: 'auto_review' } },
   ]);
   await observer.close();
 });
@@ -2431,7 +2431,7 @@ function session(cwd = "/workspace", id = 'session-1'): SessionCatalogProjection
     llmConnectionSlug: "test-connection",
     connectionLocked: true,
     model: "test-model",
-    permissionMode: "ask",
+    permissionMode: "auto_review",
     collaborationMode: "agent",
     orchestrationMode: "default",
   };

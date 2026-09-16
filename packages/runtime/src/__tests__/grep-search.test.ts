@@ -24,7 +24,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { searchFiles, GREP_MAX_MATCH_BYTES } from '../grep-search.js';
 import { LocalWorkspaceExecutor } from '../workspace-executor.js';
-import { FilesystemWorkerResultSchema } from '../filesystem-worker/protocol.js';
+import { FilesystemResultSchema } from '../filesystem-contract.js';
 
 const executor = new LocalWorkspaceExecutor();
 const defaults = { pattern: 'token', maxCountPerFile: 50, limit: 200, timeoutMs: 10_000 };
@@ -48,7 +48,7 @@ test('counts matching lines at per-file and total boundaries, not regex occurren
       assert.equal(result.matches.length, returned);
       assert.equal(result.omittedLines, total - returned);
       assert.equal(result.truncated, returned < total);
-      assert.deepEqual(FilesystemWorkerResultSchema.parse({ kind: 'grep', ...result }), {
+      assert.deepEqual(FilesystemResultSchema.parse({ kind: 'grep', ...result }), {
         kind: 'grep',
         ...result,
       });

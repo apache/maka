@@ -974,7 +974,7 @@ function session(
     llmConnectionSlug: 'test-connection',
     connectionLocked: true,
     model: 'test-model',
-    permissionMode: 'ask',
+    permissionMode: 'auto_review',
     collaborationMode: 'agent',
     orchestrationMode: 'default',
     ...overrides,

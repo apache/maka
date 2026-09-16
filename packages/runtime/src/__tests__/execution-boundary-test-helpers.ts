@@ -102,6 +102,12 @@ export function createTestAiSdkBackend(input: TestAiSdkBackendInput): AiSdkBacke
   // disable pruning rather than exercise it (#4283).
   const transitions: ModelProjectionTransition[] = [];
   const backend = new AiSdkBackend({
+    autoReview: async () => ({
+      decision: 'allow',
+      risk: 'low',
+      authorization: 'unknown',
+      rationale: 'Test reviewer',
+    }),
     readExecutionBoundary: readExternalExecutionBoundary,
     readPermissionMode: async () => input.header.permissionMode,
     loadModelProjectionTransitions: async () => ({
@@ -174,6 +180,12 @@ type TestToolRuntimeInput = Omit<
 export function createTestToolRuntime(input: TestToolRuntimeInput): ToolRuntime {
   const { appendMessage, ...runtimeInput } = input;
   const runtime = new ToolRuntime({
+    autoReview: async () => ({
+      decision: 'allow',
+      risk: 'low',
+      authorization: 'unknown',
+      rationale: 'Test reviewer',
+    }),
     readExecutionBoundary: readExternalExecutionBoundary,
     readPermissionMode: async () => input.header.permissionMode,
     turnId: 'turn-1',

@@ -33,10 +33,7 @@ import {
 import { isActiveShellRunStatus } from '@maka/core/shell-run';
 import type { ToolResultContent } from '@maka/core/events';
 import type { ToolExecutionFacts } from '@maka/core/permission';
-import type { SandboxBoundaryExpansion } from '@maka/core/sandbox-boundary';
 import type { MakaTool, MakaToolContext } from './tool-runtime.js';
-import type { SandboxType } from './sandbox/types.js';
-import { isLikelySandboxDenial } from './sandbox/detect.js';
 import { runShellWithBoundedTail, type BoundedShellResult } from './shell-exec.js';
 import {
   bashToolShellGuidance,
@@ -65,15 +62,6 @@ import {
 } from './shell-run-contract.js';
 import type { ChildFdInput } from './child-fd-input.js';
 import { bashToolResultToModelOutput } from './bash-model-output.js';
-import {
-  BASH_REQUIRED_BOUNDARY_DESCRIPTION,
-  bashBoundaryIntentSchema,
-  preflightDeclaredSandboxBoundary,
-  preprocessBashBoundaryDeclaration,
-  refineBashBoundaryDeclaration,
-  sandboxBoundaryExpansionSchema,
-  selectedBashBoundaryExpansion,
-} from './sandbox-boundary-declaration.js';
 
 export interface ForegroundBashExecuteInput {
   command: string;
@@ -90,8 +78,6 @@ export interface ForegroundBashResult {
   stderrTruncated?: boolean;
   timedOut?: boolean;
   aborted?: boolean;
-  sandboxType?: SandboxType;
-  sandboxed?: boolean;
 }
 
 export interface BuildForegroundBashToolOptions {
@@ -180,13 +166,6 @@ export function buildManagedBashTool(
     /** Opening sentence of the description, before the shared foreground/background/PTY contract. */
     lead?: string;
     /**
-     * Whether this host has a sandbox boundary the model can be asked to declare.
-     * False drops `boundary_intent` and `required_boundary` from the schema
-     * entirely rather than accepting and ignoring them: parameters no host
-     * enforces are pure noise in the model's tool selection.
-     */
-    declareSandboxBoundary?: boolean;
-    /**
      * Foreground timeout when the model does not ask for one, per command —
      * the same hook shape buildForegroundBashTool exposes, so a host that
      * carves out a slow command keeps that carve-out on both paths instead of
@@ -206,25 +185,18 @@ export function buildManagedBashTool(
       result: TerminalToolResult | ShellRunToolResult,
       ctx: MakaToolContext,
     ) => Promise<void> | void;
-    transformCommand?: (input: {
-      command: string;
-      pty: boolean;
-      requiredBoundary?: SandboxBoundaryExpansion;
-      ctx: MakaToolContext;
-    }) =>
+    transformCommand?: (input: { command: string; pty: boolean; ctx: MakaToolContext }) =>
       | {
           argv?: readonly string[];
           cwd: string;
           env?: NodeJS.ProcessEnv;
           fdInputs?: readonly ChildFdInput[];
-          sandboxType?: SandboxType;
           onCompletion?: (outcome: { successful: boolean }) => void;
         }
       | undefined;
   } = {},
 ): MakaTool {
   const shell = options.shell ?? { plan: defaultShellPlan() };
-  const declareSandboxBoundary = options.declareSandboxBoundary !== false;
   const managedBashFields = {
     command: z.string().describe('The shell command to execute'),
     timeout_ms: z.number().int().positive().max(MAX_SHELL_RUN_TIMEOUT_MS).optional(),
@@ -264,36 +236,16 @@ export function buildManagedBashTool(
       withTurnShellGuidance(options.lead ?? 'Run a shell command in the session cwd.', shell) +
       ` Foreground is the default (timeout ${DEFAULT_BASH_TIMEOUT_MS}ms, maximum ${MAX_FOREGROUND_BASH_TIMEOUT_MS}ms).` +
       ` Set run_in_background=true only when the command should continue as a tracked runtime background task; background commands have no default timeout (maximum explicit timeout ${MAX_SHELL_RUN_TIMEOUT_MS}ms).` +
-      ' Set pty=true together with run_in_background=true only for terminal semantics or later input; use the returned ref with Read or WriteStdin.' +
-      (declareSandboxBoundary ? ' Enforced by the current session sandbox boundary.' : ''),
-    parameters: declareSandboxBoundary
-      ? preprocessBashBoundaryDeclaration(
-          z
-            .object({
-              ...managedBashFields,
-              boundary_intent: bashBoundaryIntentSchema,
-              required_boundary: sandboxBoundaryExpansionSchema
-                .optional()
-                .describe(BASH_REQUIRED_BOUNDARY_DESCRIPTION),
-            })
-            .strict()
-            .superRefine(refineManagedBash)
-            .superRefine(refineBashBoundaryDeclaration),
-        )
-      : z.object(managedBashFields).strict().superRefine(refineManagedBash),
+      ' Set pty=true together with run_in_background=true only for terminal semantics or later input; use the returned ref with Read or WriteStdin.',
+    parameters: z.object(managedBashFields).strict().superRefine(refineManagedBash),
     toModelOutput: ({ output }) => bashToolResultToModelOutput(output),
     ...(options.executionFacts ? { executionFacts: options.executionFacts } : {}),
     impl: async (input, ctx) => {
       throwIfShellSetupFailed(shell);
       const { command, timeout_ms, run_in_background, pty } = input;
-      const normalizedRequiredBoundary = await preflightDeclaredSandboxBoundary(
-        selectedBashBoundaryExpansion(input),
-        ctx,
-      );
       const transformed = options.transformCommand?.({
         command,
         pty: pty === true,
-        ...(normalizedRequiredBoundary ? { requiredBoundary: normalizedRequiredBoundary } : {}),
         ctx,
       });
       const onCompletion = onceCompletion(transformed?.onCompletion);
@@ -319,7 +271,6 @@ export function buildManagedBashTool(
           ...(timeoutMs !== undefined ? { timeoutMs } : {}),
           abortSignal: ctx.abortSignal,
           emitOutput: ctx.emitOutput,
-          ...(transformed?.sandboxType ? { sandboxType: transformed.sandboxType } : {}),
           ...(onCompletion ? { onCompletion } : {}),
         });
         if (result.kind === 'terminal' || !isActiveShellRunStatus(result.status)) {
@@ -706,21 +657,6 @@ export function shapeTerminalResult(input: {
       stderrTruncated: Boolean(input.result.stderrTruncated),
       redacted: false,
     },
-    ...(isLikelySandboxDenial({
-      stdout: input.result.stdout,
-      stderr: input.result.stderr,
-      sandboxed: 'sandboxed' in input.result && input.result.sandboxed === true,
-    })
-      ? {
-          sandboxDenial: {
-            likely: true,
-            ...('sandboxType' in input.result &&
-            (input.result.sandboxType === 'macos-seatbelt' || input.result.sandboxType === 'linux')
-              ? { backend: input.result.sandboxType }
-              : {}),
-          },
-        }
-      : {}),
   };
 }
 

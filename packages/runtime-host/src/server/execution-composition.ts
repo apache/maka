@@ -58,14 +58,6 @@ import { buildBuiltinTools } from '@maka/runtime/builtin-tools';
 import { createLocalContinuationSafetyInspector } from '@maka/runtime/continuation-safety';
 import { createConfiguredSubagentCatalog } from '@maka/runtime/configured-subagent-catalog';
 import { buildHostCapabilitiesFromBinding } from '@maka/runtime/skills';
-import {
-  createBuiltinSandboxManager,
-  isBuiltinFilesystemWorkerSandboxAvailable,
-} from '@maka/runtime/sandbox';
-import {
-  createFilesystemWorkerLaunchSpecProvider,
-  FilesystemWorkerClient,
-} from '@maka/runtime/filesystem-worker';
 import { isOAuthEnrollmentProviderEnabled } from '@maka/runtime/oauth-provider-contracts';
 import {
   loadHistoryCompactCheckpointsFromRunLedger,
@@ -88,7 +80,6 @@ import type { MakaTool } from '@maka/runtime/tool-runtime';
 import { Context } from '@maka/runtime/plugin-kernel';
 import { PluginAgentService } from '@maka/runtime/plugin-agent-service';
 import { PluginAttachmentService } from '@maka/runtime/plugin-attachment-service';
-import { PluginApprovalService } from '@maka/runtime/plugin-approval-service';
 import { PluginFilesystemService } from '@maka/runtime/plugin-fs-service';
 import { PluginLlmService } from '@maka/runtime/plugin-llm-service';
 import { PluginExecutorBackend } from '@maka/runtime/plugin-executor-backend';
@@ -147,7 +138,10 @@ import { HostContextCoordinator } from './context-coordinator.js';
 import { HostClientCapabilityCoordinator } from './client-capability-coordinator.js';
 import { HostDeepResearchCoordinator } from './deep-research-coordinator.js';
 import { HostDailyReviewCoordinator } from './daily-review-coordinator.js';
-import { prepareHostAiSdkBackend } from './execution-model-composition.js';
+import {
+  prepareHostAiSdkBackend,
+  readHostSessionPermissionMode,
+} from './execution-model-composition.js';
 import {
   createInteractiveRunComposer,
   createInteractiveRunComposerFactory,
@@ -159,6 +153,7 @@ import {
   createHostDailyReviewModel,
   createHostMemoryExtractionModel,
   createHostPluginModel,
+  createHostAutoReviewer,
   createHostSessionEffectModel,
   type HostWorkHubRoutingModel,
 } from './execution-model-authority.js';
@@ -262,9 +257,7 @@ import { createHostExecutionArtifactServices } from './execution-artifacts.js';
 import { openToolResultArchiveEvidenceReader } from '@maka/storage/tool-result-archive-evidence';
 import {
   createRuntimeHostWorkspaceExecutionComposition,
-  RuntimeHostWorkspaceExecutionError,
   type RuntimeHostWorkspaceExecutionComposition,
-  type RuntimeHostWorkspaceFilesystemWorker,
 } from './workspace-execution-composition.js';
 
 export interface ExecutionRuntimeHostComposition extends RuntimeHostComposition {
@@ -299,12 +292,6 @@ export interface ExecutionRuntimeHostCompositionDependencies {
     HostOAuthCoordinatorInput,
     'startCodexAuthorization' | 'pollCodexAuthorization' | 'exchangeCodexCode'
   >;
-}
-
-export function runtimeHostFilesystemWorkerRuntime(versions: {
-  readonly electron?: string;
-}): 'electron' | 'node' {
-  return versions.electron ? 'electron' : 'node';
 }
 
 export async function createExecutionRuntimeHostComposition(
@@ -354,7 +341,6 @@ export async function createExecutionRuntimeHostComposition(
     const pluginRoot = new Context();
     const pluginAgents = new PluginAgentService(pluginRoot);
     const pluginAttachments = new PluginAttachmentService(pluginRoot, pluginAgents);
-    new PluginApprovalService(pluginRoot, pluginAgents);
     new PluginUserQuestionService(pluginRoot, pluginAgents);
     const pluginFilesystem = new PluginFilesystemService(pluginRoot, pluginAgents);
     const pluginLlm = new PluginLlmService(pluginRoot, pluginAgents);
@@ -466,30 +452,7 @@ export async function createExecutionRuntimeHostComposition(
         void continuity?.enqueueRuntimeResourcePtyData(event);
       },
     });
-    const sandboxManager = createBuiltinSandboxManager();
-    const filesystemWorkerLaunchSpecProvider =
-      sandboxManager && isBuiltinFilesystemWorkerSandboxAvailable()
-        ? createFilesystemWorkerLaunchSpecProvider({
-            runtime: runtimeHostFilesystemWorkerRuntime({
-              electron: process.versions.electron,
-            }),
-            platform: process.platform,
-            resourceLocation: { kind: 'runtime' },
-          })
-        : undefined;
-    const filesystemWorker =
-      sandboxManager && filesystemWorkerLaunchSpecProvider
-        ? new FilesystemWorkerClient({
-            sandboxManager,
-            getLaunchSpec: filesystemWorkerLaunchSpecProvider,
-          })
-        : undefined;
-    const workspaceFilesystemWorker = filesystemWorker
-      ? adaptWorkspaceFilesystemWorker(filesystemWorker)
-      : undefined;
-    workspaceExecution = createRuntimeHostWorkspaceExecutionComposition({
-      ...(workspaceFilesystemWorker ? { filesystemWorker: workspaceFilesystemWorker } : {}),
-    });
+    workspaceExecution = createRuntimeHostWorkspaceExecutionComposition({});
     const sessionTodo = new HostSessionTodoCoordinator(
       sessionTodoStore,
       sessionAdmission,
@@ -554,8 +517,6 @@ export async function createExecutionRuntimeHostComposition(
             },
           }
         : {}),
-      ...(sandboxManager ? { sandboxManager } : {}),
-      ...(filesystemWorker ? { filesystemWorker } : {}),
     };
     const invokeBuiltin = async (
       name: string,
@@ -1004,8 +965,15 @@ export async function createExecutionRuntimeHostComposition(
       lane: memoryExtractionLane,
       acquireResidency: () => context.acquireResidency('memory-extraction'),
     });
+    const autoReview = createHostAutoReviewer({
+      runtimePolicy: runtimePolicyStores,
+      oauthCredentials,
+      usage: openedUsageStores,
+      requestDrain: context.requestDrain,
+    });
     const hostAiSdkBackendInput = <T extends BackendPreparationContext>(backendContext: T) => ({
       context: backendContext,
+      autoReview,
       runtimePolicy: runtimePolicyStores,
       oauthCredentials,
       createRunComposer: createInteractiveRunComposerFactory({
@@ -1083,6 +1051,16 @@ export async function createExecutionRuntimeHostComposition(
     );
     backends.register('plugin-executor', {
       prepare: async (backendContext) => {
+        if (
+          (await readHostSessionPermissionMode(
+            { sessionId: backendContext.sessionId, store: stores.sessionStore },
+            runtimePolicyStores,
+          )) !== 'bypass'
+        ) {
+          throw new Error(
+            'This external executor does not expose actions for Auto review. Select Bypass to use it.',
+          );
+        }
         const executorId = backendContext.header.executorId;
         if (!executorId) throw new Error('Plugin executor Session is missing its executor id');
         const binding = pluginExecutors.bind(backendContext.sessionId, executorId);
@@ -1158,7 +1136,6 @@ export async function createExecutionRuntimeHostComposition(
         }
         const tools = buildToolsForAgentDefinition(childAgentTools.childTools, {
           id: header.subagentRuntime.agentId,
-          permissionMode: header.permissionMode,
           tools: header.subagentRuntime.toolNames,
         });
         if (tools.length !== header.subagentRuntime.toolNames.length) {
@@ -1470,8 +1447,6 @@ export async function createExecutionRuntimeHostComposition(
     clientCapabilities = new HostClientCapabilityCoordinator({
       activation: runtimePolicyActivation,
       onModelToolsChanged: registerBackendInvalidation,
-      interactions,
-      grants: stores.interactionStore,
     });
     externalAgentSetup = new HostExternalAgentSetupCoordinator({
       install: async (input) => {
@@ -2354,7 +2329,7 @@ export async function createExecutionRuntimeHostComposition(
       resolveCreateTarget: async () => {
         const { projectId: _projectId, ...target } =
           await sessionCatalog.resolveDefaultCreateTarget();
-        return { ...target, permissionMode: 'explore' };
+        return target;
       },
       requestDrain: context.requestDrain,
     });
@@ -3043,33 +3018,6 @@ function requireWorkspaceExecution(
 ): RuntimeHostWorkspaceExecutionComposition {
   if (!composition) throw new Error('Runtime Host workspace execution is not composed');
   return composition;
-}
-
-function adaptWorkspaceFilesystemWorker(
-  worker: Pick<FilesystemWorkerClient, 'execute'>,
-): RuntimeHostWorkspaceFilesystemWorker {
-  return {
-    async execute(input) {
-      // Read-only operations never participate in CAS; the adapter says so
-      // explicitly (#3484) instead of relying on an absent optional field.
-      const result = await worker.execute({
-        ...input,
-        expectedIdentity: 'unchecked',
-      });
-      switch (result.kind) {
-        case 'read':
-        case 'read_image':
-        case 'glob':
-        case 'grep':
-          return result;
-        default:
-          throw new RuntimeHostWorkspaceExecutionError(
-            'workspace_operation_denied',
-            `Read-only filesystem worker returned mutating result ${result.kind}`,
-          );
-      }
-    },
-  };
 }
 
 function requireContinuity(

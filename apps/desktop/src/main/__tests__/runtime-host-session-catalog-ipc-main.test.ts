@@ -139,7 +139,7 @@ function projection(overrides: Partial<SessionCatalogProjection> = {}): SessionC
     llmConnectionSlug: 'openai-main',
     connectionLocked: true,
     model: 'gpt-5',
-    permissionMode: 'ask',
+    permissionMode: 'auto_review',
     collaborationMode: 'agent',
     orchestrationMode: 'default',
     ...overrides,

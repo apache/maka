@@ -30,7 +30,6 @@ import type { SessionEvent } from '@maka/core/events';
 import type { SessionHeader, StoredMessage } from '@maka/core/session';
 import type { ModelCallAttempt } from '@maka/core/model-call-attempt';
 
-import { AiSdkBackend } from '../ai-sdk-backend.js';
 import {
   buildComputerUseTools,
   type CuDispatchBackend,
@@ -668,7 +667,7 @@ describe('OpenAI-compatible product loops', () => {
       llmConnectionId: 'test-connection-id',
       llmConnectionSlug: providerConnection.slug,
       modelId: 'k3',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       openedAt: 1,
       completedAt: 5,
     });
@@ -809,7 +808,7 @@ describe('OpenAI-compatible product loops', () => {
       llmConnectionId: 'test-connection-id',
       llmConnectionSlug: providerConnection.slug,
       modelId: 'k3',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       openedAt: firstTurn.anchor.ts,
       completedAt: firstTurn.anchor.ts + 1,
     });
@@ -1572,7 +1571,7 @@ function sourceInvocation(input: {
   llmConnectionId: string;
   llmConnectionSlug: string;
   modelId: string;
-  permissionMode: 'ask' | 'bypass';
+  permissionMode: 'auto_review' | 'bypass';
   openedAt: number;
   completedAt: number;
 }): RuntimeInvocationRecord {

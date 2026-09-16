@@ -46,7 +46,7 @@ describe('legacy Run header decoding', () => {
       automationId: 'automation-1',
     });
     assert.equal(decoded.status, 'waiting_for_user');
-    assert.equal(decoded.permissionMode, 'ask');
+    assert.equal(decoded.permissionMode, 'auto_review');
     assert.equal(decoded.legacyAutomationId, 'automation-1');
     assert.equal(Object.hasOwn(decoded, 'automationId'), false);
   });
@@ -109,7 +109,7 @@ function runHeader(): Record<string, unknown> {
     llmConnectionSlug: 'fake',
     modelId: 'fake-model',
     cwd: '/workspace',
-    permissionMode: 'ask',
+    permissionMode: 'auto_review',
     createdAt: 1,
     updatedAt: 1,
   };

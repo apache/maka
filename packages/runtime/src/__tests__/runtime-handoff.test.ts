@@ -158,7 +158,7 @@ for (const decision of [
       cwd: root,
       llmConnectionSlug: 'fake',
       model: 'fake-model',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       name: 'handoff',
     });
     try {

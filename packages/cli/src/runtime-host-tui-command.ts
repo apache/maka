@@ -190,7 +190,7 @@ async function runFirstRunOnboarding(
       locale,
       model: '',
       connectionSlug: '',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       firstRun: true,
       turnActivity: {
         activities: new SessionActivityRegistry(),

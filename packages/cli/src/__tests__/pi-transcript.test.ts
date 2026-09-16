@@ -377,7 +377,7 @@ describe('Maka Pi TUI transcript', () => {
           },
         },
         // Room for title, mode, model, ctx and a short tail only.
-        'Maka · Auto · deepseek-v4-flash · ctx 20k/500k 4% · project-directory'.length,
+        'Maka · Auto review · deepseek-v4-flash · ctx 20k/500k 4% · project-directory'.length,
       ),
     );
     assert.doesNotMatch(line, /very\/long/);
@@ -441,7 +441,7 @@ describe('Maka Pi TUI transcript', () => {
         75,
       ),
     );
-    assert.match(line, /Full access/);
+    assert.match(line, /Bypass/);
     assert.match(line, /deepseek-v4-flash/);
     assert.match(line, /goal 1\/50/);
     assert.match(line, /ctx 20k\/500k 4%/);
@@ -483,7 +483,7 @@ describe('Maka Pi TUI transcript', () => {
       const line = stripAnsi(renderMakaPiStatusLine(metadata, width));
       assert.ok(visibleWidth(line) <= width);
       assert.match(line, /Maka/);
-      assert.match(line, /Full/);
+      assert.match(line, /Bypass/);
       assert.match(line, /anthropic/);
       assert.match(line, /(?:goal |g)1\/50/);
       assert.match(line, /(?:ctx .*96%|c96%)/);
@@ -5021,7 +5021,7 @@ function meta() {
     cwd: '/tmp/project',
     model: 'deepseek-v4-flash',
     connectionSlug: 'deepseek',
-    permissionMode: 'ask',
+    permissionMode: 'auto_review',
   } as const;
 }
 
@@ -5269,7 +5269,7 @@ function subagentResult(
     agentName: 'Local Read',
     turnId: 'child-turn',
     status: 'completed',
-    permissionMode: 'explore',
+    permissionMode: 'auto_review',
     summary: 'done',
     artifactIds: [],
     ...overrides,

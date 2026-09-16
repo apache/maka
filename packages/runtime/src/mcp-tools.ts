@@ -179,23 +179,6 @@ export function buildMcpToolsWithIdentities(
             }
           : {}),
         impl: async (args: unknown, context) => {
-          // Managed network authority applies equally to Direct and nested CodeMode dispatch.
-          if (
-            options.executionLocation !== 'remote' &&
-            context.executionBoundary?.kind === 'managed' &&
-            context.executionBoundary.profile.network.kind !== 'enabled'
-          ) {
-            if (!context.requestSandboxBoundary) {
-              throw new Error('MCP network access requires sandbox boundary approval');
-            }
-            const settlement = await context.requestSandboxBoundary(
-              { network: { enabled: true } },
-              `Call MCP tool ${descriptor.serverId}/${descriptor.name}.`,
-            );
-            if (settlement.request.status !== 'approved') {
-              throw new Error('MCP network access denied');
-            }
-          }
           return provider.callTool(binding, asArguments(args), {
             signal: context.abortSignal,
             timeoutMs: options.callTimeoutMs,

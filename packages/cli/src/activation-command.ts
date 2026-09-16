@@ -234,11 +234,12 @@ export function parseMakaActivateArgs(argv: readonly string[]): ParseMakaActivat
   // same boundary for as long as both existed. It is not offered in the error
   // message, so nothing new learns to send it.
   const requestedPermissionMode = values.get('permission-mode');
-  const permissionMode = requestedPermissionMode === 'execute' ? 'ask' : requestedPermissionMode;
+  const permissionMode =
+    requestedPermissionMode === 'execute' ? 'auto_review' : requestedPermissionMode;
   if (
     permissionMode !== undefined &&
-    permissionMode !== 'explore' &&
-    permissionMode !== 'ask' &&
+    permissionMode !== 'auto_review' &&
+    permissionMode !== 'auto_review' &&
     permissionMode !== 'bypass'
   ) {
     return { kind: 'error', message: '--permission-mode must be explore, ask, or bypass' };
@@ -408,7 +409,7 @@ export async function runMakaActivationCli(
         'grant_permission',
       );
     }
-  } catch (error) {
+  } catch (_error) {
     return await finishWithoutContext(
       deps,
       request,
@@ -478,7 +479,7 @@ export async function runMakaActivationCli(
         name: `Cloud activation ${request.activationId}`.slice(0, 80),
         llmConnectionSlug: context.target.connection.slug,
         model: context.target.model,
-        permissionMode: options.permissionMode ?? 'explore',
+        permissionMode: options.permissionMode ?? 'auto_review',
       });
     }
     const stop = (): void => {

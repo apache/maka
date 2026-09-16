@@ -91,7 +91,7 @@ function testHeader(): SessionHeader {
     llmConnectionSlug: 'test',
     connectionLocked: true,
     model: 'test-model',
-    permissionMode: 'ask',
+    permissionMode: 'auto_review',
     schemaVersion: 1,
   };
 }

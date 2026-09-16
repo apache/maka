@@ -39,7 +39,6 @@ import type {
   ToolStartEvent,
 } from '@maka/core/events';
 import type {
-  AssistantMessage,
   AssistantThinkingPart,
   RuntimeSystemNoteKind,
   SessionHeader,
@@ -123,11 +122,6 @@ import {
 import { AiSdkCompaction, hasBlockingReplayDiagnostics } from './ai-sdk-compaction.js';
 import { RunTrace } from './run-trace.js';
 import {
-  REQUEST_SANDBOX_BOUNDARY_TOOL_NAME,
-  SANDBOX_BOUNDARY_DENIED_FOR_TURN,
-  SANDBOX_BOUNDARY_FINALIZATION_PROMPT,
-} from './sandbox-boundary-tool.js';
-import {
   buildRuntimeEventModelReplayPlan,
   buildSteeringEnvelope,
   collectToolActivityTurnIds,
@@ -172,11 +166,7 @@ import {
 } from './history-compact-checkpoint.js';
 import { resolveSelectedModelContextWindow } from './context-budget-policy.js';
 import type { AiSdkBackendInput, ResolvedSystemPrompt } from './ai-sdk-backend.js';
-import {
-  INVALID_TOOL_NAME,
-  isProviderSandboxBoundaryAttempt,
-  repairMakaToolCall,
-} from './ai-sdk-tool-repair.js';
+import { INVALID_TOOL_NAME, repairMakaToolCall } from './ai-sdk-tool-repair.js';
 
 export interface AiSdkSessionState {
   contextProviderDroppingReported: boolean;
@@ -661,7 +651,7 @@ export class AiSdkTurn {
   }
 
   async respondToSandboxBoundary(decision: SandboxBoundaryResponse): Promise<boolean> {
-    return await this.toolRuntime.respondToSandboxBoundaryResponse(decision);
+    return false;
   }
 
   respondToUserQuestion(response: UserQuestionResponse): boolean {
@@ -846,6 +836,26 @@ export class AiSdkTurn {
     const turnId = input.turnId;
     const maxSteps = input.maxSteps === null ? undefined : (input.maxSteps ?? this.deps.maxSteps);
     const toolRuntime = this.toolRuntime;
+    const reviewEvents = [
+      ...(input.runtimeContext ?? []),
+      ...(input.headAnchorRuntimeEvent ? [input.headAnchorRuntimeEvent] : []),
+    ];
+    const userRequests = [
+      ...new Map(
+        reviewEvents
+          .filter(
+            (event) =>
+              event.author === 'user' && event.role === 'user' && event.content?.kind === 'text',
+          )
+          .map((event) => [event.id, event.content?.kind === 'text' ? event.content.text : '']),
+      ).values(),
+    ];
+    // Invocation text can originate from another agent; only the ledger establishes user authority.
+    toolRuntime.setAutoReviewContext(
+      this.deps.backend.header.subagentParent ? [] : userRequests,
+      input.text,
+    );
+
     const turnAbortController = this.abortController;
 
     const midTurnState = this.deps.compaction.buildMidTurnCapacityCompactState(input);
@@ -1115,13 +1125,7 @@ export class AiSdkTurn {
     // Tool names the repair path matches a mis-cased call against — follows the
     // current step's snapshot so a tool activated mid-turn is repairable on the
     // step it becomes active, not routed to `invalid`.
-    const boundaryAwareToolNames = (names: readonly string[]): string[] => {
-      if (toolRuntime.shouldFinalizeSandboxBoundary()) return [];
-      return toolRuntime.hasSandboxBoundaryDenial()
-        ? names.filter((name) => name !== REQUEST_SANDBOX_BOUNDARY_TOOL_NAME)
-        : [...names];
-    };
-    const currentRepairToolNames = () => boundaryAwareToolNames(plan.currentRepairToolNames());
+    const currentRepairToolNames = () => plan.currentRepairToolNames();
     let resolvedSystemPrompt: ResolvedSystemPrompt = { sourceRevisions: [] };
     let systemPrompt: string | undefined;
 
@@ -1454,37 +1458,16 @@ export class AiSdkTurn {
             maxSteps > 1 &&
             runtimeSteps === maxSteps - 1 &&
             completedProviderSteps.length > 0;
-          const sandboxBoundaryFinalizationStep =
-            toolRuntime.shouldFinalizeSandboxBoundary() ||
-            (toolRuntime.hasSandboxBoundaryDenial() &&
-              maxSteps !== undefined &&
-              runtimeSteps === maxSteps - 1);
-          if (sandboxBoundaryFinalizationStep) {
-            toolRuntime.forceSandboxBoundaryFinalization();
-          }
           const requestSystemPromptBase = joinPromptFragments([
             systemPrompt,
             finalChildSummaryStep ? CHILD_STEP_BUDGET_FINALIZATION_PROMPT : undefined,
-            toolRuntime.hasSandboxBoundaryDenial() ? SANDBOX_BOUNDARY_DENIED_FOR_TURN : undefined,
-            sandboxBoundaryFinalizationStep ? SANDBOX_BOUNDARY_FINALIZATION_PROMPT : undefined,
           ]);
           const codeModeCatalogPrompt =
-            toolMode === 'code_mode'
-              ? renderCodeModeCatalogPrompt(
-                  toolRuntime.hasSandboxBoundaryDenial()
-                    ? new Map(
-                        [...nestedTools].filter(
-                          ([name]) => name !== REQUEST_SANDBOX_BOUNDARY_TOOL_NAME,
-                        ),
-                      )
-                    : nestedTools,
-                )
-              : undefined;
+            toolMode === 'code_mode' ? renderCodeModeCatalogPrompt(nestedTools) : undefined;
           const resolveDispatch = (active: readonly string[] | undefined): DispatchRequestShape => {
-            const activeTools =
-              finalChildSummaryStep || sandboxBoundaryFinalizationStep
-                ? []
-                : boundaryAwareToolNames(active ?? plan.currentRepairToolNames());
+            const activeTools = finalChildSummaryStep
+              ? []
+              : [...(active ?? plan.currentRepairToolNames())];
             const effectiveSystemPrompt = joinPromptFragments([
               requestSystemPromptBase,
               activeTools.includes(codeModeExecTool.name) ? codeModeCatalogPrompt : undefined,
@@ -2171,24 +2154,10 @@ export class AiSdkTurn {
                     `Provider-executed tool call "${toolCall.toolName}" is outside the main-agent tool loop`,
                   );
                 }
-                const sandboxBoundaryAttempt = isProviderSandboxBoundaryAttempt(toolCall);
-                const deniedBoundaryRequest =
-                  toolRuntime.hasSandboxBoundaryDenial() &&
-                  toolCall.toolName.toLowerCase() === REQUEST_SANDBOX_BOUNDARY_TOOL_NAME;
-                if (deniedBoundaryRequest) {
-                  toolRuntime.forceSandboxBoundaryFinalization();
-                }
-                const blockedToolCall = sandboxBoundaryFinalizationStep || deniedBoundaryRequest;
-                const requestedTool = blockedToolCall
-                  ? undefined
-                  : toolsByName.get(toolCall.toolName);
+                const requestedTool = toolsByName.get(toolCall.toolName);
                 const tool = requestedTool ?? toolsByName.get(INVALID_TOOL_NAME);
                 if (!tool) throw new Error('Runtime invalid-tool fallback is unavailable');
-                const unavailableError = sandboxBoundaryFinalizationStep
-                  ? 'Sandbox boundary finalization does not permit tool execution.'
-                  : deniedBoundaryRequest
-                    ? SANDBOX_BOUNDARY_DENIED_FOR_TURN
-                    : 'returned tool is unavailable';
+                const unavailableError = 'returned tool is unavailable';
                 return await toolRuntime.settleToolCall({
                   tool,
                   turnId,
@@ -2211,7 +2180,6 @@ export class AiSdkTurn {
                       : {
                           tool: toolCall.toolName,
                           error: unavailableError,
-                          ...(sandboxBoundaryAttempt ? { sandboxBoundaryAttempt: true } : {}),
                         },
                   abortSignal: turnAbortController.signal,
                   eventSink: queue,
@@ -2269,15 +2237,6 @@ export class AiSdkTurn {
           });
           lastCompletedStepHadToolResult = returnedToolCalls.length > 0;
           const stepLimitReached = maxSteps !== undefined && runtimeSteps >= maxSteps;
-          if (
-            sandboxBoundaryFinalizationStep ||
-            (stepLimitReached &&
-              (toolRuntime.shouldFinalizeSandboxBoundary() ||
-                toolRuntime.hasSandboxBoundaryDenial()))
-          ) {
-            this.loopStopReason = 'permission_handoff';
-            this.loopStopRequested = true;
-          }
           const mayTakeAnotherStep = !stepLimitReached && !this.loopStopRequested && !this.aborted;
           if (returnedToolCalls.length > 0 && mayTakeAnotherStep) {
             if (
@@ -3022,6 +2981,7 @@ export class AiSdkTurn {
         // The mapped RuntimeEvent inherits this session event's id, so the
         // injected message and its future ledger replay share one identity.
         this.injectedSteeringMessages.push(steeringModelMessage(eventId, providerContent));
+        this.toolRuntime.addAutoReviewUserRequest(lease.content.text);
         input.ackSteering?.([lease.id]);
         undelivered.shift();
         if (this.aborted || abortSignal?.aborted) {

@@ -22,7 +22,7 @@ import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, type TestContext } from 'node:test';
-import { createBoundaryFilesystemExecutor } from '../filesystem-executor.js';
+import { createFilesystemExecutor } from '../filesystem-executor.js';
 import { createLocalWorkspaceExecutor } from '../workspace-executor.js';
 
 test('applies one native update operation through the filesystem authority', async (t) => {
@@ -84,37 +84,6 @@ test('creates nested files exclusively', async (t) => {
   assert.equal(await readFile(join(cwd, 'existing.txt'), 'utf8'), 'keep\n');
 });
 
-test('does not report an invalid backend result as completed', async (t) => {
-  const cwd = await temporaryDirectory(t);
-  await writeFile(join(cwd, 'file.txt'), 'before\n', 'utf8');
-  const filesystem = createBoundaryFilesystemExecutor({
-    workspace: createLocalWorkspaceExecutor(),
-    worker: {
-      execute: async () => ({
-        kind: 'read',
-        content: 'wrong operation',
-        offset: 0,
-        returnedLines: 1,
-        totalLines: 1,
-        next: null,
-      }),
-    },
-  });
-
-  await assert.rejects(
-    filesystem.applyPatch({
-      cwd,
-      operation: {
-        type: 'update_file',
-        path: 'file.txt',
-        diff: '@@\n-before\n+after\n',
-      },
-    }),
-    /backend returned/,
-  );
-  assert.equal(await readFile(join(cwd, 'file.txt'), 'utf8'), 'before\n');
-});
-
 test('reports a rejected diff without changing the file', async (t) => {
   const cwd = await temporaryDirectory(t);
   await writeFile(join(cwd, 'file.txt'), 'before\n', 'utf8');
@@ -153,5 +122,5 @@ async function temporaryDirectory(t: TestContext): Promise<string> {
 }
 
 function localFilesystem() {
-  return createBoundaryFilesystemExecutor({ workspace: createLocalWorkspaceExecutor() });
+  return createFilesystemExecutor({ workspace: createLocalWorkspaceExecutor() });
 }

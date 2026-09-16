@@ -162,7 +162,7 @@ function input(name: string): CreateSessionInput {
     cwd: '/tmp/cwd',
     llmConnectionSlug: 'fake',
     model: 'fake-model',
-    permissionMode: 'ask' as const,
+    permissionMode: 'auto_review' as const,
     name,
     labels: [],
   };

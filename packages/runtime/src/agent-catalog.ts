@@ -19,7 +19,6 @@
 
 import {
   BUILTIN_TOOL_CATEGORY,
-  type PermissionMode,
   type PolicyDecision,
   type ToolCategory,
 } from '@maka/core/permission';
@@ -91,16 +90,12 @@ export interface AgentDefinition {
   name: string;
   description: string;
   contract: AgentProfileContract;
-  permissionMode: PermissionMode;
   tools: readonly string[];
   toolGroups?: readonly AgentToolGroup[];
   systemPrompt: string;
 }
 
-export type AgentRuntimeDefinition = Pick<
-  AgentDefinition,
-  'id' | 'permissionMode' | 'tools' | 'toolGroups'
->;
+export type AgentRuntimeDefinition = Pick<AgentDefinition, 'id' | 'tools' | 'toolGroups'>;
 
 export interface AgentDefinitionListItem {
   id: string;
@@ -109,7 +104,6 @@ export interface AgentDefinitionListItem {
   description: string;
   contract: AgentProfileContract;
   availability: AgentDefinitionAvailability;
-  permissionMode: PermissionMode;
   tools: string[];
 }
 
@@ -148,7 +142,6 @@ export const LOCAL_READ_AGENT_DEFINITION: AgentDefinition = {
     defaultWriteBack: AGENT_WRITE_BACK_SUMMARY,
     supportedWriteBack: [AGENT_WRITE_BACK_SUMMARY],
   },
-  permissionMode: 'explore',
   tools: ['Read', 'Glob', 'Grep'],
   systemPrompt: [
     'You are a foreground local-read child agent.',
@@ -172,7 +165,6 @@ export const WEB_RESEARCH_AGENT_DEFINITION: AgentDefinition = {
     defaultWriteBack: AGENT_WRITE_BACK_SUMMARY,
     supportedWriteBack: [AGENT_WRITE_BACK_SUMMARY],
   },
-  permissionMode: 'ask',
   tools: ['WebSearch'],
   systemPrompt: [
     'You are a foreground web-research child agent.',
@@ -197,7 +189,6 @@ export const IMPLEMENTATION_AGENT_DEFINITION: AgentDefinition = {
     defaultWriteBack: AGENT_WRITE_BACK_PATCH,
     supportedWriteBack: [AGENT_WRITE_BACK_PATCH],
   },
-  permissionMode: 'ask',
   tools: [
     'Read',
     'Glob',
@@ -241,7 +232,6 @@ export function listBuiltinAgentDefinitions(
           worktreeChildExecutorAvailable: options.worktreeChildExecutorAvailable,
         })
       : { status: 'unknown' },
-    permissionMode: definition.permissionMode,
     tools: [...definition.tools],
   }));
 }

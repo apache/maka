@@ -35,7 +35,7 @@ import type { PermissionMode } from '@maka/core/permission';
 import type { ExternalSessionLimit } from '@maka/core/external-session';
 import { CurrentTodoStore, TodoOverlay, renderTodoIndicator } from './pi-tui-todo.js';
 import { isThinkingLevel, type ThinkingLevel } from '@maka/core/model-thinking';
-import { deriveConnectionSlug, type ProviderType } from '@maka/core/llm-connections';
+import { deriveConnectionSlug } from '@maka/core/llm-connections';
 import type { OrchestrationMode } from '@maka/core/orchestration';
 import type {
   SkillInvocationFailureReason,
@@ -3686,7 +3686,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
 
   const setPermissionMode = async (mode: PermissionMode) => {
     await input.driver.setPermissionMode(mode);
-    // Report the boundary that resulted, not the one that was requested.
+    // Report the committed permission mode.
     permissionMode = input.driver.getPermissionMode?.() ?? mode;
     state.entries.push({
       kind: 'notice',
@@ -3696,26 +3696,25 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     requestRender();
   };
 
-  const requestSandboxBoundaryMode = (mode: 'auto' | 'bypass') => {
+  const requestPermissionMode = (mode: 'auto' | 'bypass') => {
     if (mode === 'auto' || permissionMode === 'bypass') {
-      void runControl(() => setPermissionMode(mode === 'auto' ? 'ask' : 'bypass'));
+      void runControl(() => setPermissionMode(mode === 'auto' ? 'auto_review' : 'bypass'));
       return;
     }
     const confirmation = [
       {
         value: 'keep',
-        label: 'Keep Auto',
-        description: 'Stay inside the protected environment',
+        label: 'Keep Auto review',
+        description: 'Review actions before execution',
       },
       {
         value: 'bypass',
-        label: 'Turn on full access',
-        description:
-          'Reach your files and your network directly; use only for trusted or externally isolated tasks',
+        label: 'Turn on Bypass',
+        description: 'Execute tools directly without model review',
       },
     ];
     showSelectPicker(
-      'Switch to full access?',
+      'Switch to Bypass?',
       'keep',
       confirmation,
       (choice) => {
@@ -3952,10 +3951,6 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
 
   const showPermissionModeList = () => {
     const items = permissionModePickerItems(permissionMode);
-    // Where the cursor opens. It is NOT a claim about the current state —
-    // `permissionModePickerItems` marks `current` only on an option that is
-    // genuinely in force, so a read-only session marks neither and choosing
-    // Auto reads as the permission change it is.
     const cursorValue = permissionMode === 'bypass' ? 'bypass' : 'auto';
     showSelectPicker(
       'Permissions',
@@ -3963,7 +3958,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       items,
       (item) => {
         if (item.value === 'auto' || item.value === 'bypass') {
-          requestSandboxBoundaryMode(item.value);
+          requestPermissionMode(item.value);
         }
       },
       {
@@ -4484,7 +4479,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
           requestRender();
           return;
         }
-        requestSandboxBoundaryMode(mode);
+        requestPermissionMode(mode);
       },
     },
     recap: {

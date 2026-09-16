@@ -156,7 +156,7 @@ describe('SqliteRuntimeStore', () => {
             },
             configuration: {
               cwd: '/tmp',
-              permissionMode: 'ask',
+              permissionMode: 'auto_review',
               collaborationMode: 'agent',
               orchestrationMode: 'default',
               orchestrationSource: 'session',
@@ -2486,7 +2486,7 @@ function continuationClaimForBoundary(
       },
       configuration: {
         cwd: '/workspace/repo',
-        permissionMode: 'ask',
+        permissionMode: 'auto_review',
         collaborationMode: 'agent',
         orchestrationMode: 'default',
         orchestrationSource: 'session',
@@ -2664,7 +2664,7 @@ async function appendSettledTurn(store: Store, index: number): Promise<void> {
         },
         configuration: {
           cwd: '/tmp',
-          permissionMode: 'ask',
+          permissionMode: 'auto_review',
           collaborationMode: 'agent',
           orchestrationMode: 'default',
           orchestrationSource: 'session',

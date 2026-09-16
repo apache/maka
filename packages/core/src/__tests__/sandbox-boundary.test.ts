@@ -23,6 +23,7 @@ import {
   applySandboxBoundaryExpansion,
   assessSandboxBoundaryExpansion,
   createGenesisExecutionBoundary,
+  createManagedExecutionBoundary,
   decodeExecutionBoundary,
   executionBoundaryContains,
   executionBoundaryDisplayMode,
@@ -45,7 +46,7 @@ describe('executionBoundaryDisplayMode', () => {
         profile: createReadOnlyPermissionProfile(),
         revision: 0,
       }),
-      'explore',
+      'auto_review',
     );
     assert.strictEqual(
       executionBoundaryDisplayMode({
@@ -53,16 +54,16 @@ describe('executionBoundaryDisplayMode', () => {
         profile: createWorkspaceWritePermissionProfile(),
         revision: 0,
       }),
-      'ask',
+      'auto_review',
     );
     assert.strictEqual(executionBoundaryDisplayMode({ kind: 'bypass', revision: 1 }), 'bypass');
     assert.strictEqual(
       executionBoundaryDisplayMode({ kind: 'managed', access: 'read_only', revision: 2 }),
-      'explore',
+      'auto_review',
     );
     assert.strictEqual(
       executionBoundaryDisplayMode({ kind: 'managed', access: 'writable', revision: 2 }),
-      'ask',
+      'auto_review',
     );
   });
 
@@ -73,7 +74,7 @@ describe('executionBoundaryDisplayMode', () => {
 
     assert.strictEqual(
       executionBoundaryDisplayMode({ kind: 'managed', profile: widened, revision: 1 }),
-      'ask',
+      'auto_review',
     );
   });
 
@@ -90,7 +91,7 @@ describe('executionBoundaryDisplayMode', () => {
         profile: createDangerFullAccessPermissionProfile(),
         revision: 0,
       }),
-      'ask',
+      'auto_review',
     );
   });
 
@@ -389,7 +390,7 @@ describe('SandboxBoundaryExpansion', () => {
 
 describe('ExecutionBoundary', () => {
   test('decodes only a complete full boundary snapshot', () => {
-    const managed = createGenesisExecutionBoundary('ask');
+    const managed = createManagedExecutionBoundary(createWorkspaceWritePermissionProfile(), 0);
     assert.deepStrictEqual(decodeExecutionBoundary(JSON.parse(JSON.stringify(managed))), managed);
     assert.deepStrictEqual(decodeExecutionBoundary({ kind: 'bypass', revision: 3 }), {
       kind: 'bypass',
@@ -407,7 +408,7 @@ describe('ExecutionBoundary', () => {
   });
 
   test('round-trips managed protected-metadata policy', () => {
-    const managed = createGenesisExecutionBoundary('ask');
+    const managed = createManagedExecutionBoundary(createWorkspaceWritePermissionProfile(), 0);
     if (managed.kind !== 'managed') throw new Error('expected managed boundary');
     const boundary = {
       ...managed,
@@ -427,7 +428,7 @@ describe('ExecutionBoundary', () => {
   });
 
   test('rejects a complete boundary snapshot above the shared capacity', () => {
-    const managed = createGenesisExecutionBoundary('ask');
+    const managed = createManagedExecutionBoundary(createWorkspaceWritePermissionProfile(), 0);
     if (managed.kind !== 'managed') throw new Error('expected managed boundary');
     const oversized = {
       ...managed,
@@ -452,8 +453,8 @@ describe('ExecutionBoundary', () => {
   });
 
   test('compares complete boundary authority with one canonical containment contract', () => {
-    const auto = createGenesisExecutionBoundary('ask');
-    const readOnly = createGenesisExecutionBoundary('explore');
+    const auto = createManagedExecutionBoundary(createWorkspaceWritePermissionProfile(), 0);
+    const readOnly = createManagedExecutionBoundary(createReadOnlyPermissionProfile(), 0);
     const bypass = createGenesisExecutionBoundary('bypass');
     const external = { kind: 'external', revision: 0 } as const;
 

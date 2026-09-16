@@ -33,7 +33,7 @@ function fixture() {
   const deps: Parameters<typeof createWorkHubRuntime>[0] = {
     isCurrent: () => current,
     client: () => client,
-    createContext: async () => ({ workspace: { kind: 'project', projectId: 'project' }, defaults: { permissionMode: 'ask' } }),
+    createContext: async () => ({ workspace: { kind: 'project', projectId: 'project' }, defaults: { permissionMode: 'auto_review' } }),
     changed: (...args) => { changes.push(args); },
   };
   const client = {
@@ -54,7 +54,7 @@ test('task delegation binds the tool action to the Host turn and trusted creatio
   assert.deepEqual(f.requests, [{
     turnId: 'turn', actionId: 'tool-call', proposal: { disposition: 'create_new', title: 'Fix login' },
     delegationText: 'Implement and test the login fix', create: { workspace: { kind: 'project', projectId: 'project' } },
-    newWorkDefaults: { permissionMode: 'ask' },
+    newWorkDefaults: { permissionMode: 'auto_review' },
   }]);
   assert.ok('actionId' in result);
   assert.equal(result.actionId, 'tool-call');

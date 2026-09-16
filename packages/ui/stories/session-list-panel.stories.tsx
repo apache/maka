@@ -73,7 +73,7 @@ function makeSession(input: {
     llmConnectionSlug: input.llmConnectionSlug ?? 'zai-live',
     connectionLocked: false,
     model: 'glm-4.7',
-    permissionMode: 'ask',
+    permissionMode: 'auto_review',
     ...(input.projectId !== undefined ? { projectId: input.projectId } : {}),
     ...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
     ...(input.lastMessagePreview !== undefined
@@ -618,7 +618,7 @@ export const ProjectGroups: Story = {
     );
   },
   play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
+    const _canvas = within(canvasElement);
     const page = within(canvasElement.ownerDocument.body);
     const projectRow = canvasElement.querySelector<HTMLElement>(
       '[data-project-id="project:project-maka"]',

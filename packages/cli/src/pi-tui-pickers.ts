@@ -46,13 +46,7 @@ import {
   type UiLocale,
 } from '@maka/core/ui-locale';
 import type { InvocableSkillEntry } from '@maka/runtime/skill-invocation';
-import {
-  providerDefaultsOf,
-  providerMenuLabel,
-  validateSlug,
-  type ModelInfo,
-  type ProviderType,
-} from '@maka/core/llm-connections';
+import { providerDefaultsOf, validateSlug, type ModelInfo } from '@maka/core/llm-connections';
 import { CONNECTION_NAME_MAX_LENGTH } from '@maka/core/runtime-policy';
 import type {
   ModelChoice,
@@ -1096,27 +1090,24 @@ export class ModelSearchOverlay implements Component {
   }
 }
 
-/**
- * #1611: `current` marks an option that is genuinely in force, so choosing it
- * is a no-op. A read-only session is neither of these options, and marking
- * Auto as current there turned "confirm what I already have" into a silent
- * widening of the boundary.
- */
+/** The picker names the execution policy in force. */
 export function permissionModePickerItems(currentMode: PermissionMode): SelectItem[] {
-  const autoIsCurrent = currentMode === 'ask';
+  const autoIsCurrent = currentMode === 'auto_review';
   return [
     {
       value: 'auto',
-      label: 'Auto',
-      description: autoIsCurrent ? 'current · protected' : 'protected',
+      label: 'Auto review',
+      description: autoIsCurrent
+        ? 'current · model review before execution'
+        : 'model review before execution',
     },
     {
       value: 'bypass',
-      label: 'Full access',
+      label: 'Bypass',
       description:
         currentMode === 'bypass'
-          ? 'current · your files and network, unprotected'
-          : 'your files and network, unprotected',
+          ? 'current · direct execution without review'
+          : 'direct execution without review',
     },
   ];
 }

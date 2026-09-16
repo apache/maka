@@ -71,7 +71,7 @@ export function header(input: {
     llmConnectionSlug: input.connection,
     connectionLocked: true,
     model: input.model,
-    permissionMode: 'ask',
+    permissionMode: 'auto_review',
     collaborationMode: 'agent',
     orchestrationMode: 'default',
     schemaVersion: 1,
