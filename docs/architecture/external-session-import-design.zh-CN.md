@@ -152,7 +152,7 @@ Runtime Host TUI 的 external-session surface 是 workspace scope 的唯一决�
 - 没有 workspace target：surface 只提供“全部”，界面不显示无效的 workspace 切换。
 - 如果发起当前 workspace 查询时 target 已失效，surface 明确拒绝，不会省略 workspace 参数后静默查询全部。
 
-TUI runner 只展示 surface 给出的选项并转发用户选择，不再读取 Session driver 自行推导 scope。这个 scope 仍与 Maka Session 列表的 Current/All 标签无关；后者只控制原生 Session 列表的展示范围。
+TUI runner 只展示 surface 给出的选项并转发用户选择，不再读取 Session driver 自行推导 scope。这个 scope 仍与 Maka Session 列表的 Current/All 标签无关；后者只控制原生 Session 列表的展示范围。TUI runner 会在查询 Host 前短暂合并连续的搜索输入；每次输入仍会立即推进同一个 request revision，因此新查询等待 debounce 时，旧的在途响应也不能回写 catalog。
 
 ## 7 · 分页由 adapter 拥有
 

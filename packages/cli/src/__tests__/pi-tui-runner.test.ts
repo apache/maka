@@ -42,6 +42,7 @@ import type { InteractionFormResponse } from '@maka/core/interaction';
 import type { SkillInvocationResult } from '@maka/core/skill-invocation';
 import type {
   AgentGraphClientSnapshot,
+  ExternalSessionCatalogItem,
   TurnMessageSubmitResult,
 } from '@maka/runtime-host/protocol';
 import { SessionActivityRegistry } from '@maka/runtime/goal-turn-lifecycle';
@@ -6502,6 +6503,75 @@ Slug openai-work<cursor>
     assert.deepEqual(cursors, [undefined, 'next']);
     assert.match(plainTerminalOutput(terminal.output()), /first page/);
 
+    exitMaka(terminal);
+    await run;
+  });
+
+  test('coalesces external catalog search while retiring stale responses immediately', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new SlashCommandDriver([]);
+    const queries: Array<string | undefined> = [];
+    let resolveStale!: (page: { sessions: ExternalSessionCatalogItem[]; nextCursor: null }) => void;
+    const externalSessions = {
+      listScopes: () => ['all'] as const,
+      listSources: async () => ['codex'],
+      listSessions: async ({ text }: { text?: string }) => {
+        queries.push(text);
+        if (text === 'code') {
+          return new Promise<{ sessions: ExternalSessionCatalogItem[]; nextCursor: null }>(
+            (resolve) => {
+              resolveStale = resolve;
+            },
+          );
+        }
+        return { sessions: [], nextCursor: null };
+      },
+      importSession: async () => {
+        throw new Error('unused');
+      },
+    };
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+      externalSessions,
+    });
+
+    terminal.input('/session');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('Import external session'));
+    terminal.input('\r');
+    await waitFor(() => queries.length === 1);
+
+    terminal.input('c');
+    terminal.input('o');
+    terminal.input('d');
+    terminal.input('e');
+    assert.deepEqual(queries, [undefined]);
+    await waitFor(() => queries.length === 2);
+
+    terminal.input('x');
+    resolveStale({
+      sessions: [
+        {
+          id: 'stale',
+          name: 'Stale code result',
+          hostCwd: '/repo',
+          importState: { importedCount: 0, importedSessionIds: [], isImporting: false },
+        },
+      ],
+      nextCursor: null,
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.doesNotMatch(plainTerminalOutput(terminal.screenOutput()), /Stale code result/);
+    await waitFor(() => queries.length === 3);
+    assert.deepEqual(queries, [undefined, 'code', 'codex']);
+
+    terminal.input('\x1b');
     exitMaka(terminal);
     await run;
   });
