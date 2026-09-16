@@ -92,7 +92,7 @@ function makeServices(failFirst: boolean, withHistory: boolean | 'usage', colore
     updateQueueEntry: async () => {}, reorderQueueEntries: async () => {},
     enqueueMessage: async () => 'admitted',
     surface: 'workhub', initialLocale: 'zh-CN', subscribeAppearance: () => () => {},
-    presentation: { ready: async () => {}, progressReady: async () => {}, resizeProgress: async () => {}, expandProgress: async () => {}, getSnapshot: async () => ({ placement: progress ? 'floating' : 'docked', floatingVisible: progress, progressRequest: progress ? 1 : undefined, shortcutRegistered: true, rendererCrashed: false }), setHost: async () => {}, setConversationLayout: async () => {}, detach: async () => {}, dock: async () => {}, hide: async () => {}, openUsage: async () => { writes.panel('inspector'); }, toggleWorkbar: async () => { writes.panel('toggle'); }, openSession: async (id) => { writes.open(id); }, subscribe: () => () => {}, onViewportInset: () => () => {}, onFocusComposer: () => () => {}, onOpenMain: () => () => {} },
+    presentation: { ready: async () => {}, progressReady: async () => {}, resizeProgress: async () => {}, expandProgress: async () => {}, getSnapshot: async () => ({ placement: progress ? 'floating' : 'docked', floatingVisible: progress, progressRequest: progress ? 1 : undefined, shortcutRegistered: true, rendererCrashed: false, workbar: { collapsed: true, placement: 'right' } }), setHost: async () => {}, setConversationLayout: async () => {}, detach: async () => {}, dock: async () => {}, hide: async () => {}, openUsage: async () => { writes.panel('inspector'); }, toggleWorkbar: async () => { writes.panel('toggle'); }, openSession: async (id) => { writes.open(id); }, subscribe: () => () => {}, onViewportInset: () => () => {}, onFocusComposer: () => () => {}, onOpenMain: () => () => {} },
     control: { getSnapshot: async () => ({ revision: 0, phase: 'idle', canUndo: false }), subscribe: () => () => {}, stop: async () => {}, undo: async () => {} },
     bindBrowserSession: () => {},
     resolve: async () => sessionId, subscribeHosts: () => () => {}, subscribeAvailability: () => () => {},
@@ -328,10 +328,42 @@ export const ComposerRetainsFailedAttachment: Story = {
   },
 };
 
+// The docked renderer reserves distinct targets for prompt navigation and the
+// Workbar edge. Measure those targets rather than a platform scrollbar width.
+async function expectPromptRailClearance(canvasElement: HTMLElement) {
+  await waitFor(() => {
+    const rail = canvasElement.querySelector<HTMLElement>('.maka-prompt-rail')!;
+    expect(rail).toBeVisible();
+    const box = rail.getBoundingClientRect();
+    const edge = canvasElement.querySelector('.maka-workbar-edge')!.getBoundingClientRect();
+    const scroller = canvasElement.querySelector('[data-chat-scroll-container]')!.getBoundingClientRect();
+    const composer = canvasElement.querySelector('.maka-composer')!.getBoundingClientRect();
+    expect(box.width).toBeGreaterThan(0);
+    expect(box.right).toBeLessThan(edge.left);
+    expect(box.top).toBeGreaterThanOrEqual(scroller.top);
+    expect(box.bottom).toBeLessThanOrEqual(composer.top);
+    const ticks = rail.querySelectorAll<HTMLElement>('[data-prompt-turn-id]');
+    expect(ticks).toHaveLength(4);
+    for (const tick of ticks) {
+      const hit = tick.getBoundingClientRect();
+      expect(tick.contains(document.elementFromPoint(hit.x + hit.width / 2, hit.y + hit.height / 2))).toBe(true);
+    }
+    const body = canvasElement.querySelector('.workhub-body')!;
+    expect(body.scrollWidth - body.clientWidth).toBeLessThanOrEqual(1);
+    // At full desktop width, WorkHub must reach the same shared reading measure
+    // as Sessions; applying transcript gutters twice makes this narrower.
+    if (window.innerWidth >= 1600) {
+      const turn = canvasElement.querySelector('.maka-turn')!;
+      expect(Math.abs(turn.getBoundingClientRect().width - Number.parseFloat(getComputedStyle(turn).getPropertyValue('--maka-reading-measure')))).toBeLessThanOrEqual(1);
+    }
+  });
+}
+
 // Real path: WorkHub with delegated Turns from two ordinary Sessions and asynchronously read execution feedback.
 export const ColoredWorkHistory: Story = {
   render: () => <Surface history colors />,
   play: async ({ canvasElement }) => {
+    await expectPromptRailClearance(canvasElement);
     await waitFor(() => expect(canvasElement.querySelectorAll('[data-turn-accent="true"]')).toHaveLength(3));
     await waitFor(() => expect(canvasElement.querySelectorAll('.maka-user-message .workhub-message-rail')).toHaveLength(3));
     const turns = canvasElement.querySelectorAll<HTMLElement>('[data-turn-accent="true"]');
@@ -460,6 +492,7 @@ export const QuestionStopped: Story = {
 export const FilterWorkConversations: Story = {
   render: () => <Surface history colors />,
   play: async ({ canvasElement }) => {
+    await expectPromptRailClearance(canvasElement);
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvasElement.querySelectorAll('.maka-turn[data-turn-id]')).toHaveLength(4));
     writes.open.mockClear();

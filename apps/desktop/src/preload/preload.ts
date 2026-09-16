@@ -3580,6 +3580,9 @@ const makaBridge = {
     },
   },
   appWindow: {
+    popupMenu(input: import('../shared/native-menu.js').NativeMenuRequest): Promise<string | null> {
+      return ipcRenderer.invoke('window:popupMenu', input);
+    },
     setTitlebarControlsVisible(visible: boolean): Promise<void> {
       return ipcRenderer.invoke('window:setTitlebarControlsVisible', visible);
     },

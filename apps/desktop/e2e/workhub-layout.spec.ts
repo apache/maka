@@ -76,19 +76,27 @@ test('WorkHub uses its coordination model and shared attachment composer', async
   // would be covered by this WebContentsView and never receive native clicks.
   await workhub.getByRole('button', { name: '展开任务工作栏', exact: true }).click();
   await expect(page.locator('.maka-session-workbar[data-placement="right"]')).toBeVisible();
-  // Chromium light-dismiss cannot see clicks delivered to a sibling native
-  // WebContentsView. Main temporarily owns that input region while its menu is open.
-  await page.getByRole('button', { name: '添加面板', exact: true }).click();
-  await expect(page.getByRole('menu')).toBeVisible();
-  await expect(page.locator('.workHubDockBackdrop')).toBeVisible();
-  await expect.poll(() => mainWindow.evaluate(win => {
+  // A real native menu must coexist with the live sibling WebContentsView.
+  // DOM tests cannot detect replacing that view with a frozen screenshot.
+  await app.evaluate(({ Menu }) => {
+    const original = Menu.prototype.popup;
+    Menu.prototype.popup = function (options) {
+      (globalThis as unknown as { workbarMenu: Electron.Menu }).workbarMenu = this;
+      Menu.prototype.popup = original;
+      return original.call(this, options);
+    };
+  });
+  const addPanel = page.getByRole('button', { name: '添加面板', exact: true });
+  await addPanel.click();
+  await expect(addPanel).toHaveAttribute('aria-expanded', 'true');
+  await expect(page.locator('.workHubDockBackdrop')).toHaveCount(0);
+  expect(await mainWindow.evaluate(win => {
     const container = win.contentView.children.find(view => view.children.some(child =>
       'webContents' in child && (child as Electron.WebContentsView).webContents.getURL().includes('surface=workhub')));
     return container?.getVisible();
-  })).toBe(false);
-  await page.locator('.workHubDock').click();
-  await expect(page.getByRole('menu')).toBeHidden();
-  await expect(page.locator('.workHubDockBackdrop')).toHaveCount(0);
+  })).toBe(true);
+  await app.evaluate(() => (globalThis as unknown as { workbarMenu: Electron.Menu }).workbarMenu.closePopup());
+  await expect(addPanel).toHaveAttribute('aria-expanded', 'false');
   await workhub.getByRole('button', { name: '收起任务工作栏', exact: true }).click();
   await expect(page.locator('.maka-session-workbar[data-placement="right"]')).toBeHidden();
   const anchors = workhub.locator('.workhub-anchors');
@@ -410,7 +418,13 @@ test('WorkHub keeps the submitted prompt visible while its agent is still runnin
   await workhub.getByRole('button', { name: /^(Return to Maka|收回 Maka)$/ }).click();
   const dockBounds = await page.locator('.workHubDock').boundingBox();
   await app.evaluate(({ webContents }) => {
-    webContents.getAllWebContents().find((contents) => contents.getURL().includes('surface=workhub'))!.forcefullyCrashRenderer();
+    const contents = webContents.getAllWebContents().find((contents) => contents.getURL().includes('surface=workhub'))!;
+    const rendererPid = contents.getOSProcessId();
+    if (rendererPid <= 0 || webContents.getAllWebContents().some((other) => other !== contents && other.getOSProcessId() === rendererPid)) {
+      throw new Error('Crash fixture requires an isolated WorkHub renderer process');
+    }
+    // Kill the process so this verifies recovery from an actual renderer exit.
+    process.kill(rendererPid, 'SIGKILL');
   });
   await expect.poll(() => workhub.isClosed()).toBe(true);
   await expect.poll(() => page.evaluate(() => window.maka.workHubPresentation.getSnapshot())).toMatchObject({ placement: 'docked', rendererCrashed: true });
@@ -482,7 +496,13 @@ test('WorkHub keeps the submitted prompt visible while its agent is still runnin
   await expect(workhub.locator('[data-transient-message-id]')).toHaveCount(0);
   await expect(prompt).toHaveCount(2);
   await app.evaluate(({ webContents }) => {
-    webContents.getAllWebContents().find((contents) => contents.getURL().includes('surface=workhub'))!.forcefullyCrashRenderer();
+    const contents = webContents.getAllWebContents().find((contents) => contents.getURL().includes('surface=workhub'))!;
+    const rendererPid = contents.getOSProcessId();
+    if (rendererPid <= 0 || webContents.getAllWebContents().some((other) => other !== contents && other.getOSProcessId() === rendererPid)) {
+      throw new Error('Crash fixture requires an isolated WorkHub renderer process');
+    }
+    // Kill the process so this verifies recovery from an actual renderer exit.
+    process.kill(rendererPid, 'SIGKILL');
   });
   await expect.poll(() => workhub.isClosed()).toBe(true);
   await page.evaluate(() => window.maka.workHubPresentation.detach());

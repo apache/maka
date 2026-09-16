@@ -41,6 +41,7 @@ import {
   type SessionWorkbarTab,
   type SessionWorkbarTabKind,
   type SessionUsageSummary,
+  type WorkbarServices,
 } from '../src/renderer/features/workbar/testing';
 
 // Fidelity convention (#1433): every story below names the real app path
@@ -767,6 +768,7 @@ function bridge(options: {
   browserState?: BrowserState;
   browserViewport?: (input: { sessionId: string; rect: unknown }) => void;
   browserCapture?: () => Promise<string | undefined>;
+  popupMenu?: WorkbarServices['popupMenu'];
   /** Make `browser.navigate` reject, so a valid address surfaces the navigation-failed toast. */
   browserNavigateFails?: boolean;
   /** The git-review read result the 变更 panel receives (empty / source error / truncated / edge diffs). */
@@ -782,6 +784,7 @@ function bridge(options: {
 } = {}): Decorator {
   const browserState = options.browserState ?? EMPTY_BROWSER_STATE;
   const services = createFakeWorkbarServices({
+    popupMenu: options.popupMenu ?? (async () => null),
     artifacts: {
       list: async () => artifacts,
       readText: async (_sessionId: string, id: string) => ({ ok: true, text: artifactText[id] ?? '' }),
@@ -1335,35 +1338,26 @@ export const BrowserLoading: Story = {
 
 const browserViewport = fn();
 const browserCapture = fn(async () => 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j1ioAAAAASUVORK5CYII=');
-// Real path: a loaded browser → [+] menu overlaps its native page, then closes.
-// Storybook verifies the production panel's handoff; the native smoke verifies pixels.
+// Real path: a loaded browser → [+] opens a native menu without parking the page.
+// This browser story checks the bridge handoff; Electron verifies native layers.
+let finishNativeMenu: (selected: string | null) => void;
+const nativeMenu = fn<WorkbarServices['popupMenu']>(() => new Promise((resolve) => { finishNativeMenu = resolve; }));
 export const BrowserLoaded: Story = {
-  decorators: [bridge({ browserState: LOADED_BROWSER_STATE, browserViewport, browserCapture })],
+  decorators: [bridge({ browserState: LOADED_BROWSER_STATE, browserViewport, browserCapture, popupMenu: nativeMenu })],
   render: () => <Workbar tab="browser" />,
   play: async ({ canvasElement }) => {
-    browserViewport.mockClear(); browserCapture.mockClear();
+    browserViewport.mockClear(); browserCapture.mockClear(); nativeMenu.mockClear();
     const canvas = within(canvasElement);
     await waitFor(() => expect(browserViewport.mock.lastCall?.[0].rect).toBeTruthy());
-    await userEvent.click(canvas.getByRole('button', { name: '添加面板' }));
-    const menu = await within(document.body).findByRole('menu');
-    await waitFor(() => expect(browserViewport.mock.lastCall?.[0].rect).toBeNull());
-    expect(browserCapture).toHaveBeenCalledOnce();
-    expect(canvasElement.querySelector('.maka-browser-backdrop')).toBeVisible();
-    await userEvent.keyboard('{Escape}');
-    await waitFor(() => expect(menu).not.toBeVisible());
-    await waitFor(() => expect(browserViewport.mock.lastCall?.[0].rect).toBeTruthy());
-    expect(canvasElement.querySelector('.maka-browser-backdrop')).toBeNull();
-    let finishCapture!: (image: string) => void;
-    browserCapture.mockImplementationOnce(() => new Promise<string>((resolve) => { finishCapture = resolve; }));
-    await userEvent.click(canvas.getByRole('button', { name: '添加面板' }));
-    await waitFor(() => expect(browserCapture).toHaveBeenCalledTimes(2));
-    expect(browserViewport.mock.lastCall?.[0].rect).toBeNull();
-    await userEvent.keyboard('{Escape}');
-    await waitFor(() => expect(browserViewport.mock.lastCall?.[0].rect).toBeTruthy());
-    finishCapture('data:image/png;base64,late');
-    await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    const add = canvas.getByRole('button', { name: '添加面板' });
+    await userEvent.click(add);
+    await waitFor(() => expect(add).toHaveAttribute('aria-expanded', 'true'));
+    expect(nativeMenu).toHaveBeenCalledOnce();
+    expect(browserCapture).not.toHaveBeenCalled();
     expect(browserViewport.mock.lastCall?.[0].rect).toBeTruthy();
     expect(canvasElement.querySelector('.maka-browser-backdrop')).toBeNull();
+    finishNativeMenu(null);
+    await waitFor(() => expect(add).toHaveAttribute('aria-expanded', 'false'));
   },
 };
 
@@ -1386,23 +1380,21 @@ export const CloseTabsDirectly: Story = {
 };
 
 // Real path: Main → WorkHub restores old ordinary-session tabs, then opens [+].
+const workHubMenu = fn<WorkbarServices['popupMenu']>(async () => null);
 export const WorkHubTools: Story = {
-  decorators: [bridge()],
+  decorators: [bridge({ popupMenu: workHubMenu })],
   render: () => <Workbar tab="browser" alsoOpen={['files', 'review', 'inspector']} workspace="workhub" />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     expect(canvas.queryByRole('tab', { name: /生成文件|变更/ })).toBeNull();
+    workHubMenu.mockClear();
+    workHubMenu.mockResolvedValueOnce('inspector');
     await userEvent.click(canvas.getByRole('button', { name: '添加面板' }));
-    const menuElement = await within(document.body).findByRole('menu');
-    const menu = within(menuElement);
-    expect(menu.getAllByRole('menuitem').map((item) => item.textContent)).toEqual(['浏览器', '工作看板', '追踪']);
-    await userEvent.click(menu.getByRole('menuitem', { name: '追踪' }));
-    await waitFor(() => expect(menuElement).not.toBeVisible());
-    expect(canvas.getByRole('tab', { name: '追踪' })).toHaveAttribute('aria-selected', 'true');
+    expect(workHubMenu.mock.lastCall?.[0].items.map((item) => item.label)).toEqual(['浏览器', '工作看板', '追踪']);
+    await waitFor(() => expect(canvas.getByRole('tab', { name: '追踪' })).toHaveAttribute('aria-selected', 'true'));
+    workHubMenu.mockResolvedValueOnce('browser');
     await userEvent.click(canvas.getByRole('button', { name: '添加面板' }));
-    await userEvent.click(within(await within(document.body).findByRole('menu')).getByRole('menuitem', { name: '浏览器' }));
-    await waitFor(() => expect(menuElement).not.toBeVisible());
-    expect(canvas.getByRole('tab', { name: '浏览器' })).toHaveAttribute('aria-selected', 'true');
+    await waitFor(() => expect(canvas.getByRole('tab', { name: '浏览器' })).toHaveAttribute('aria-selected', 'true'));
   },
 };
 

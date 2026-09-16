@@ -18,12 +18,11 @@
  */
 
 import { useWorkbarServices } from '../services-context.js';
-import { lazy, Suspense, useState, type ReactNode } from 'react';
+import { lazy, Suspense, useState, useEffect, useRef, type ReactNode } from 'react';
 import { Composer, useUiLocale, type ChatModelChoice } from '@maka/ui';
 import {
   ICON_SIZE,
   Activity,
-  Check,
   X,
   Clipboard,
   FileDiff,
@@ -36,10 +35,7 @@ import {
 } from '@maka/ui/icons';
 import { Badge } from '@astryxdesign/core/Badge';
 import { Card } from '@astryxdesign/core/Card';
-import {
-  DropdownMenu,
-  DropdownMenuItem,
-} from '@astryxdesign/core/DropdownMenu';
+import { Button } from '@astryxdesign/core/Button';
 import { Heading } from '@astryxdesign/core/Heading';
 import { Icon } from '@astryxdesign/core/Icon';
 import { Kbd } from '@astryxdesign/core/Kbd';
@@ -224,32 +220,30 @@ function WorkbarFaceMenu(props: {
   tools: readonly WorkbarToolDefinition[];
 }) {
   const copy = getDesktopConversationCopy(useUiLocale()).workbar;
+  const { popupMenu } = useWorkbarServices();
+  const [open, setOpen] = useState(false);
+  const mounted = useRef(false);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   return (
-    <DropdownMenu
-      button={{
-        variant: 'ghost',
-        size: 'sm',
-        isIconOnly: true,
-        label: copy.openTab,
-        icon: <Plus size={ICON_SIZE.control} aria-hidden />,
+    <Button
+      variant="ghost" size="sm" isIconOnly label={copy.openTab}
+      icon={<Plus size={ICON_SIZE.control} aria-hidden />}
+      aria-haspopup="menu" aria-expanded={open}
+      onClick={(event) => {
+        if (open) return;
+        const bounds = event.currentTarget.getBoundingClientRect();
+        setOpen(true);
+        void popupMenu({ x: bounds.left, y: bounds.bottom, items: props.tools.map((tool) => ({
+          id: tool.kind, label: faceLabel(tool.kind, copy),
+          checked: props.tabs.some((tab) => tab.kind === tool.kind),
+          enabled: tool.kind !== 'side-chat' || props.sideChatAvailable,
+        })) }).then((selected) => {
+          if (!mounted.current) return;
+          const tool = props.tools.find((tool) => tool.kind === selected);
+          if (tool && (tool.kind !== 'side-chat' || props.sideChatAvailable)) props.onOpen(tool.kind);
+        }).catch(console.error).finally(() => { if (mounted.current) setOpen(false); });
       }}
-    >
-      {props.tools.map((definition) => {
-        const FaceIcon = FACE_ICON[definition.icon];
-        const isOpen = props.tabs.some((tab) => tab.kind === definition.kind);
-        return (
-          <DropdownMenuItem
-            key={definition.kind}
-            data-maka-assistant-exclude={definition.kind === 'browser' || definition.kind === 'terminal' ? definition.kind : undefined}
-            label={faceLabel(definition.kind, copy)}
-            icon={<FaceIcon size={ICON_SIZE.control} aria-hidden />}
-            endContent={isOpen ? <Check size={ICON_SIZE.control} aria-hidden /> : undefined}
-            isDisabled={definition.kind === 'side-chat' && !props.sideChatAvailable}
-            onClick={() => props.onOpen(definition.kind)}
-          />
-        );
-      })}
-    </DropdownMenu>
+    />
   );
 }
 
@@ -466,6 +460,7 @@ export function WorkbarSurface(props: {
               aria-label={copy.sectionsAriaLabel}
             >
               <WorkbarTabStrip
+                key={`${props.sessionId}:${props.workspace}`}
                 tabs={panel.tabs}
                 activeTabId={showingLauncher ? null : panel.activeTabId}
                 activeSideChatPanelIds={props.activeSideChatPanelIds}

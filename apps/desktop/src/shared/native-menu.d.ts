@@ -17,11 +17,9 @@
  * under the License.
  */
 
-/** Native child views sit above DOM top-layer content, regardless of z-index. */
-export function isNativeSurfaceOccluded(rect: DOMRect, document: Document): boolean {
-  return Array.from(document.querySelectorAll(':popover-open:not(:empty), dialog[open]')).some((overlay) => {
-    if (overlay.matches(':modal')) return true;
-    const bounds = overlay.getBoundingClientRect();
-    return bounds.width > 0 && bounds.height > 0 && bounds.left < rect.right && bounds.right > rect.left && bounds.top < rect.bottom && bounds.bottom > rect.top;
-  });
+/** A flat, declarative menu. Actions remain in the requesting renderer. */
+export interface NativeMenuRequest {
+  x: number;
+  y: number;
+  items: readonly { id: string; label: string; checked: boolean; enabled: boolean }[];
 }

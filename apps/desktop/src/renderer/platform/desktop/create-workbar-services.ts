@@ -27,6 +27,7 @@ import { expectSessionUpdate } from './create-session-settings-services.js';
 
 export type DesktopWorkbarBridge = Pick<
   MakaBridge,
+  | 'appWindow'
   | 'app'
   | 'artifacts'
   | 'attachments'
@@ -102,6 +103,7 @@ export function createDesktopWorkbarServices(
   };
 
   return {
+    popupMenu: (input) => bridge.appWindow.popupMenu(input),
     review: {
       read: (input) => bridge.gitReview.read(input),
       subscribeSessionEvents: (sessionId, handler) =>

@@ -68,6 +68,7 @@ export function createFakeWorkbarServices(
   overrides: Partial<WorkbarServices> = {},
 ): WorkbarServices {
   return {
+    popupMenu: async () => null,
     review: {
       read: async () => {
         throw new Error('Fake review.read is not configured');

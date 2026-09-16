@@ -284,6 +284,7 @@ export interface SideChatSessionPort {
 }
 
 export interface WorkbarServices {
+  popupMenu(input: import('../../../shared/native-menu.js').NativeMenuRequest): Promise<string | null>;
   readonly review: WorkbarReviewService;
   readonly terminal: WorkbarTerminalService;
   readonly browser: WorkbarBrowserService;
