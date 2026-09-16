@@ -18,9 +18,12 @@
  */
 
 import type { AppSettings, RuntimeHostAppSettings } from '@maka/core/settings';
+import type { ProjectedLlmConnection } from '@maka/core/llm-connections';
 import type {
-  ProjectedLlmConnection,
-} from '@maka/core/llm-connections';
+  CapabilitySnapshotCollection,
+  PermissionSnapshot,
+} from '@maka/core/capabilities';
+import type { HealthSnapshot } from '@maka/core/health';
 import type {
   DesktopRuntimeHostProfileSnapshot,
   DesktopRuntimeHostRef,
@@ -29,6 +32,11 @@ import type {
 export interface RuntimeHostConnectionsSnapshot {
   readonly connections: ProjectedLlmConnection[];
   readonly defaultSlug: string | null;
+}
+
+export interface PermissionCenterSnapshot {
+  readonly permissions: PermissionSnapshot;
+  readonly capabilities: CapabilitySnapshotCollection;
 }
 
 export interface SettingsSnapshotCache {
@@ -46,6 +54,15 @@ export interface SettingsSnapshotCache {
     key: string,
     snapshot: RuntimeHostConnectionsSnapshot,
   ): void;
+
+  readRuntimeHostHealth(key: string): HealthSnapshot | undefined;
+  commitRuntimeHostHealthRead(key: string, snapshot: HealthSnapshot): void;
+
+  readRuntimeHostPermissionCenter(key: string): PermissionCenterSnapshot | undefined;
+  commitRuntimeHostPermissionCenterRead(
+    key: string,
+    snapshot: PermissionCenterSnapshot,
+  ): void;
 }
 
 export function runtimeHostSettingsKey(host: DesktopRuntimeHostRef): string {
@@ -53,7 +70,7 @@ export function runtimeHostSettingsKey(host: DesktopRuntimeHostRef): string {
 }
 
 /**
- * Renderer-memory cache for masked read snapshots. It deliberately has no
+ * Renderer-memory cache for successful Settings reads. It deliberately has no
  * method that accepts a settings mutation response: update responses may
  * reveal the just-submitted secret, while subsequent GETs are masked again.
  */
@@ -62,6 +79,8 @@ export function createSettingsSnapshotCache(): SettingsSnapshotCache {
   let runtimeHostCatalog: DesktopRuntimeHostProfileSnapshot | undefined;
   const runtimeHostSettings = new Map<string, RuntimeHostAppSettings>();
   const runtimeHostConnections = new Map<string, RuntimeHostConnectionsSnapshot>();
+  const runtimeHostHealth = new Map<string, HealthSnapshot>();
+  const runtimeHostPermissionCenter = new Map<string, PermissionCenterSnapshot>();
 
   return {
     readClient: () => client,
@@ -84,6 +103,12 @@ export function createSettingsSnapshotCache(): SettingsSnapshotCache {
       for (const key of runtimeHostConnections.keys()) {
         if (!currentHostKeys.has(key)) runtimeHostConnections.delete(key);
       }
+      for (const key of runtimeHostHealth.keys()) {
+        if (!currentHostKeys.has(key)) runtimeHostHealth.delete(key);
+      }
+      for (const key of runtimeHostPermissionCenter.keys()) {
+        if (!currentHostKeys.has(key)) runtimeHostPermissionCenter.delete(key);
+      }
     },
     readRuntimeHostSettings: (key) => runtimeHostSettings.get(key),
     commitRuntimeHostSettingsRead: (key, snapshot) => {
@@ -92,6 +117,14 @@ export function createSettingsSnapshotCache(): SettingsSnapshotCache {
     readRuntimeHostConnections: (key) => runtimeHostConnections.get(key),
     commitRuntimeHostConnectionsRead: (key, snapshot) => {
       runtimeHostConnections.set(key, snapshot);
+    },
+    readRuntimeHostHealth: (key) => runtimeHostHealth.get(key),
+    commitRuntimeHostHealthRead: (key, snapshot) => {
+      runtimeHostHealth.set(key, snapshot);
+    },
+    readRuntimeHostPermissionCenter: (key) => runtimeHostPermissionCenter.get(key),
+    commitRuntimeHostPermissionCenterRead: (key, snapshot) => {
+      runtimeHostPermissionCenter.set(key, snapshot);
     },
   };
 }

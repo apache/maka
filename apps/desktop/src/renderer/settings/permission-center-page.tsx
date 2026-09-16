@@ -100,13 +100,27 @@ const OS_PERMISSION_ICONS: Record<OsPermissionId, ComponentType<LucideProps>> = 
 
 type PermissionStatusFilter = 'granted' | 'pending' | 'denied' | 'other';
 
-export function PermissionCenterPage() {
+export function PermissionCenterPage(props: {
+  snapshotKey?: string;
+  initialSnapshot?: {
+    readonly permissions: PermissionSnapshot;
+    readonly capabilities: CapabilitySnapshotCollection;
+  };
+  onSnapshot(key: string, snapshot: {
+    readonly permissions: PermissionSnapshot;
+    readonly capabilities: CapabilitySnapshotCollection;
+  }): void;
+}) {
   const host = useRuntimeHostSettingsTarget();
   const locale = useUiLocale();
   const copy = getPermissionCenterCopy(locale);
-  const [permissions, setPermissions] = useState<PermissionSnapshot | null>(null);
-  const [capabilities, setCapabilities] = useState<CapabilitySnapshotCollection | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [permissions, setPermissions] = useState<PermissionSnapshot | null>(
+    () => props.initialSnapshot?.permissions ?? null,
+  );
+  const [capabilities, setCapabilities] = useState<CapabilitySnapshotCollection | null>(
+    () => props.initialSnapshot?.capabilities ?? null,
+  );
+  const [loading, setLoading] = useState(props.initialSnapshot === undefined);
   const [error, setError] = useState<string | null>(null);
   const [refreshTick, setRefreshTick] = useState(0);
   const [pendingPermAction, setPendingPermAction] = useState<string | null>(null);
@@ -125,6 +139,12 @@ export function PermissionCenterPage() {
     ])
       .then(([perm, caps]) => {
         if (cancelled) return;
+        if (props.snapshotKey) {
+          props.onSnapshot(props.snapshotKey, {
+            permissions: perm,
+            capabilities: caps,
+          });
+        }
         setPermissions(perm);
         setCapabilities(caps);
         setLoading(false);
@@ -137,7 +157,7 @@ export function PermissionCenterPage() {
     return () => {
       cancelled = true;
     };
-  }, [host, locale, refreshTick]);
+  }, [host, locale, props.onSnapshot, props.snapshotKey, refreshTick]);
 
   useEffect(() => {
     const refreshAfterSystemSettings = () => {
@@ -203,13 +223,13 @@ export function PermissionCenterPage() {
     }
   }
 
-  if (loading) {
+  if (loading && (!permissions || !capabilities)) {
     return (
       <SettingsSkeletonStack label={copy.loading} />
     );
   }
 
-  if (error || !permissions || !capabilities) {
+  if (!permissions || !capabilities) {
     return (
       <SettingsPage>
         <Banner
@@ -239,6 +259,17 @@ export function PermissionCenterPage() {
 
   return (
     <SettingsPage>
+      {error ? (
+        <Banner
+          status="error"
+          role="alert"
+          title={copy.readFailed}
+          description={error}
+          endContent={(
+            <Button variant="primary" onClick={() => setRefreshTick((tick) => tick + 1)} label={copy.readAgain} />
+          )}
+        />
+      ) : null}
       {/* The page opened with a SectionHeader whose title was the page title
           VERBATIM (权限与能力 twice, ~40px apart) and whose subtitle restated
           the 系统权限 section's own help line below it. Worse, the refresh

@@ -1053,6 +1053,15 @@ function SettingsSurfaceContent(
                             archivedTasks={props.archivedTasks}
                             onTaskImported={props.onTaskImported}
                             onRemoteHostAdded={props.onRemoteHostAdded}
+                            healthSnapshot={selectedRuntimeHostKey
+                              ? snapshotCache.readRuntimeHostHealth(selectedRuntimeHostKey)
+                              : undefined}
+                            permissionCenterSnapshot={selectedRuntimeHostKey
+                              ? snapshotCache.readRuntimeHostPermissionCenter(selectedRuntimeHostKey)
+                              : undefined}
+                            snapshotKey={selectedRuntimeHostKey}
+                            onHealthSnapshot={snapshotCache.commitRuntimeHostHealthRead}
+                            onPermissionCenterSnapshot={snapshotCache.commitRuntimeHostPermissionCenterRead}
                             openProviderCatalog={providerCatalogRequested}
                             initialConnectionSlug={props.initialConnectionSlug}
                             initialCreateProviderType={createProviderRequest}
@@ -1114,6 +1123,11 @@ function SettingsPageBody(props: {
   archivedTasks: ArchivedTasksBridge;
   onTaskImported(session: DesktopSessionSummary): void;
   onRemoteHostAdded(profileId: string): void;
+  snapshotKey?: string;
+  healthSnapshot?: Parameters<typeof HealthCenterPage>[0]['initialSnapshot'];
+  permissionCenterSnapshot?: Parameters<typeof PermissionCenterPage>[0]['initialSnapshot'];
+  onHealthSnapshot: Parameters<typeof HealthCenterPage>[0]['onSnapshot'];
+  onPermissionCenterSnapshot: Parameters<typeof PermissionCenterPage>[0]['onSnapshot'];
   openProviderCatalog?: boolean;
   initialConnectionSlug?: string;
   initialCreateProviderType?: ProviderType;
@@ -1242,9 +1256,21 @@ function SettingsPageBody(props: {
         />
       );
     case 'permissions':
-      return <PermissionCenterPage />;
+      return (
+        <PermissionCenterPage
+          snapshotKey={props.snapshotKey}
+          initialSnapshot={props.permissionCenterSnapshot}
+          onSnapshot={props.onPermissionCenterSnapshot}
+        />
+      );
     case 'health':
-      return <HealthCenterPage />;
+      return (
+        <HealthCenterPage
+          snapshotKey={props.snapshotKey}
+          initialSnapshot={props.healthSnapshot}
+          onSnapshot={props.onHealthSnapshot}
+        />
+      );
     case 'memory':
       // PR-SETTINGS-REVIEW-0 (WAWQAQ msg `886f6406`): the merged
       // memory-review page was too dense; 记忆 is its own page again.

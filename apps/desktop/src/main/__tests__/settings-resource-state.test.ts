@@ -23,6 +23,11 @@ import {
   createDefaultSettings,
   type RuntimeHostAppSettings,
 } from '@maka/core/settings';
+import type {
+  CapabilitySnapshotCollection,
+  PermissionSnapshot,
+} from '@maka/core/capabilities';
+import type { HealthSnapshot } from '@maka/core/health';
 import {
   beginSettingsResourceLoad,
   completeSettingsResourceLoad,
@@ -202,7 +207,7 @@ describe('Settings snapshot cache', () => {
     assert.equal(settingsSnapshotCacheFor(secondBridge).readClient(), undefined);
   });
 
-  it('isolates settings and connections by selected Runtime Host key', () => {
+  it('isolates every Runtime Host snapshot by selected Host key', () => {
     const cache = createSettingsSnapshotCache();
     const localSettings = runtimeHostSettings();
     const remoteSettings = {
@@ -213,15 +218,30 @@ describe('Settings snapshot cache', () => {
       },
     };
     const localConnections = { connections: [], defaultSlug: 'local-default' };
+    const localHealth: HealthSnapshot = {
+      checkedAt: 1,
+      signals: [],
+      summary: { ok: 0, info: 0, warning: 0, error: 0, unknown: 0 },
+    };
+    const localPermissionCenter = {
+      permissions: { checkedAt: 1, platform: 'darwin', permissions: {} } as PermissionSnapshot,
+      capabilities: { checkedAt: 1, capabilities: [] } as CapabilitySnapshotCollection,
+    };
 
     cache.commitRuntimeHostSettingsRead(LOCAL_KEY, localSettings);
     cache.commitRuntimeHostSettingsRead(REMOTE_KEY, remoteSettings);
     cache.commitRuntimeHostConnectionsRead(LOCAL_KEY, localConnections);
+    cache.commitRuntimeHostHealthRead(LOCAL_KEY, localHealth);
+    cache.commitRuntimeHostPermissionCenterRead(LOCAL_KEY, localPermissionCenter);
 
     assert.equal(cache.readRuntimeHostSettings(LOCAL_KEY), localSettings);
     assert.equal(cache.readRuntimeHostSettings(REMOTE_KEY), remoteSettings);
     assert.equal(cache.readRuntimeHostConnections(LOCAL_KEY), localConnections);
     assert.equal(cache.readRuntimeHostConnections(REMOTE_KEY), undefined);
+    assert.equal(cache.readRuntimeHostHealth(LOCAL_KEY), localHealth);
+    assert.equal(cache.readRuntimeHostHealth(REMOTE_KEY), undefined);
+    assert.equal(cache.readRuntimeHostPermissionCenter(LOCAL_KEY), localPermissionCenter);
+    assert.equal(cache.readRuntimeHostPermissionCenter(REMOTE_KEY), undefined);
   });
 
   it('prunes snapshots when a profile reconnects with a new host id', () => {
@@ -230,6 +250,15 @@ describe('Settings snapshot cache', () => {
     cache.commitRuntimeHostConnectionsRead(LOCAL_KEY, {
       connections: [],
       defaultSlug: null,
+    });
+    cache.commitRuntimeHostHealthRead(LOCAL_KEY, {
+      checkedAt: 1,
+      signals: [],
+      summary: { ok: 0, info: 0, warning: 0, error: 0, unknown: 0 },
+    });
+    cache.commitRuntimeHostPermissionCenterRead(LOCAL_KEY, {
+      permissions: { checkedAt: 1, platform: 'darwin', permissions: {} } as PermissionSnapshot,
+      capabilities: { checkedAt: 1, capabilities: [] },
     });
 
     cache.commitRuntimeHostCatalogRead(catalog([
@@ -244,6 +273,8 @@ describe('Settings snapshot cache', () => {
 
     assert.equal(cache.readRuntimeHostSettings(LOCAL_KEY), undefined);
     assert.equal(cache.readRuntimeHostConnections(LOCAL_KEY), undefined);
+    assert.equal(cache.readRuntimeHostHealth(LOCAL_KEY), undefined);
+    assert.equal(cache.readRuntimeHostPermissionCenter(LOCAL_KEY), undefined);
   });
 
   it('stores settings and connection reads independently', () => {

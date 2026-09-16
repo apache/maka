@@ -772,6 +772,15 @@ function seedGeneralSnapshotCache(cache: SettingsSnapshotCache): void {
   });
 }
 
+function seedSettingsPageTransitionSnapshotCache(cache: SettingsSnapshotCache): void {
+  seedGeneralSnapshotCache(cache);
+  cache.commitRuntimeHostHealthRead(STORY_RUNTIME_HOST_KEY, healthSnapshot);
+  cache.commitRuntimeHostPermissionCenterRead(STORY_RUNTIME_HOST_KEY, {
+    permissions: permissionSnapshot,
+    capabilities: capabilitySnapshot,
+  });
+}
+
 function seedCopilotGenerationSnapshotCache(cache: SettingsSnapshotCache): void {
   seedGeneralSnapshotCache(cache);
   cache.commitRuntimeHostConnectionsRead(STORY_RUNTIME_HOST_KEY, {
@@ -1002,6 +1011,35 @@ const makaBridge = {
 } satisfies Record<string, unknown>;
 
 const withSettingsBridge = withScopedMakaBridge(makaBridge);
+
+const SETTINGS_PAGE_TRANSITION_DELAY_MS = 80;
+const waitForSettingsPageTransitionRead = () =>
+  new Promise<void>((resolve) => {
+    globalThis.setTimeout(resolve, SETTINGS_PAGE_TRANSITION_DELAY_MS);
+  });
+const settingsPageTransitionBridge = {
+  ...makaBridge,
+  health: {
+    getSnapshot: async () => {
+      await waitForSettingsPageTransitionRead();
+      return healthSnapshot;
+    },
+  },
+  permissions: {
+    ...makaBridge.permissions,
+    getSnapshot: async () => {
+      await waitForSettingsPageTransitionRead();
+      return permissionSnapshot;
+    },
+  },
+  capabilities: {
+    getSnapshot: async () => {
+      await waitForSettingsPageTransitionRead();
+      return capabilitySnapshot;
+    },
+  },
+} satisfies Record<string, unknown>;
+const withSettingsPageTransitionBridge = withScopedMakaBridge(settingsPageTransitionBridge);
 
 let typographyStoryDefaultSlug: string | null = 'zai-live';
 let typographyStorySelectedPetId: string | null = 'storybook.typography-pet';
@@ -3345,11 +3383,41 @@ export const PermissionCenterDiagnosticsExpanded: Story = {
 // Real path: 设置 → 健康 (also reachable from the topbar health action), with probes
 // reporting.
 export const HealthCenter: Story = {
-  decorators: [withSettingsBridge],
-  render: () => <SettingsStory section="health" />,
+  decorators: [withSettingsPageTransitionBridge],
+  render: () => (
+    <SettingsStory
+      section="about"
+      seedSnapshotCache={seedSettingsPageTransitionSnapshotCache}
+    />
+  ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const errorFilter = await canvas.findByRole('button', { name: /^仅显示错误健康信号/ });
+    // Both Host-scoped snapshots are already known when navigation starts.
+    // A delayed revalidation makes the old full-page loading placeholder
+    // observable instead of depending on IPC timing or a paint screenshot.
+    await canvas.findByRole('heading', { name: '支持' });
+    let insertedSkeletons = 0;
+    const observer = new MutationObserver((records) => {
+      for (const record of records) {
+        for (const node of record.addedNodes) {
+          if (!(node instanceof Element)) continue;
+          if (node.matches('.settingsSkeletonStack')) insertedSkeletons += 1;
+          insertedSkeletons += node.querySelectorAll('.settingsSkeletonStack').length;
+        }
+      }
+    });
+    observer.observe(canvasElement, { childList: true, subtree: true });
+    try {
+      await userEvent.click(canvas.getByRole('button', { name: /^权限与能力$/ }));
+      await canvas.findByRole('button', { name: /^仅显示已授权权限/ });
+      await userEvent.click(canvas.getByRole('button', { name: /^健康$/ }));
+      await canvas.findByRole('button', { name: /^仅显示错误健康信号/ });
+    } finally {
+      observer.disconnect();
+    }
+    expect(insertedSkeletons).toBe(0);
+
+    const errorFilter = canvas.getByRole('button', { name: /^仅显示错误健康信号/ });
     expect(errorFilter).toHaveAttribute('aria-pressed', 'false');
     await userEvent.click(errorFilter);
     await waitFor(() => {
