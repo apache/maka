@@ -185,7 +185,7 @@ Host 同时限制每页项目数和编码后的 JSON 字节数。若下一项使
 
 ## 10 · 暂存、发布与恢复
 
-导入先创建 `transcriptLedgerVersion: 0` 的暂存 Session。Ledger 物化完成后才升级为已发布状态，并出现在任务列表和 catalog 的副本统计中。
+导入在宣布持久化提交开始前，先完成 canonical 输入校验和确定性 catalog 投影。然后创建 `transcriptLedgerVersion: 0` 的暂存 Session。Ledger 物化完成后才升级为已发布状态，并出现在任务列表和 catalog 的副本统计中。
 
 - 物化前失败：删除暂存 Session。
 - Host 重启：`recover()` 继续处理版本 0 的 Session。

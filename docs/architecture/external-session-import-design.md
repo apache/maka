@@ -118,7 +118,7 @@ Storage counts extant published Sessions whose immutable `externalOrigin` matche
 
 ## 10 · Staging, publication, and recovery
 
-Importer validates canonical input before the durable commit attempt. It creates a `transcriptLedgerVersion: 0` staged Session, materializes its Ledger, then publishes it as a usable Session. A pre-materialization failure deletes staging; Host startup `recover()` processes remaining version-0 Sessions. Only published copies count in the catalog. Host coalesces concurrent imports of the same `(adapterId, sourceSessionId)` onto one in-flight Promise. An explicit import after completion creates an independent copy.
+Importer validates canonical input and completes deterministic catalog projection before announcing the durable commit attempt. It creates a `transcriptLedgerVersion: 0` staged Session, materializes its Ledger, then publishes it as a usable Session. A pre-materialization failure deletes staging; Host startup `recover()` processes remaining version-0 Sessions. Only published copies count in the catalog. Host coalesces concurrent imports of the same `(adapterId, sourceSessionId)` onto one in-flight Promise. An explicit import after completion creates an independent copy.
 
 ## 11 · Unknown outcome and client interaction
 

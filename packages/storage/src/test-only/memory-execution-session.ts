@@ -72,10 +72,7 @@ import {
   normalizeProvenSteeringMessageHandoff,
   type PendingMessageAdmission,
 } from '../message-admission-store.js';
-import {
-  projectSessionCatalogMessages,
-  lastMessagePreviewForMessages,
-} from '../session-message-projection.js';
+import { projectSessionCatalogMessages } from '../session-message-projection.js';
 import {
   type MemoryExecutionAuthority,
   copy,
@@ -245,10 +242,14 @@ function catalog(s: MemoryState, id: string): SessionCatalogRecord {
     },
   };
 }
-function project(s: MemoryState, id: string, values: readonly StoredMessage[]): void {
+function project(
+  s: MemoryState,
+  id: string,
+  values: readonly StoredMessage[],
+  projection = projectSessionCatalogMessages(values),
+): void {
   const current = requireHeader(s, id);
-  const projection = projectSessionCatalogMessages(values);
-  const preview = lastMessagePreviewForMessages(values);
+  const preview = projection.lastMessagePreview;
   if (preview !== undefined) rows(s, 'previews').set(id, preview);
   const visible = values.some((m) => m.type === 'user' || m.type === 'assistant');
   if (visible || projection.lastMessageAt !== undefined) {
@@ -261,10 +262,18 @@ function project(s: MemoryState, id: string, values: readonly StoredMessage[]): 
   }
 }
 function append(s: MemoryState, id: string, inputs: readonly StoredMessage[]): void {
+  const canonicalValues = inputs.map((input) => decodeCanonicalMessage(copy(input)));
+  appendCanonical(s, id, canonicalValues);
+}
+function appendCanonical(
+  s: MemoryState,
+  id: string,
+  canonicalValues: readonly StoredMessage[],
+  projection = projectSessionCatalogMessages(canonicalValues),
+): void {
   requireHeader(s, id);
   const list = messages(s).get(id)!;
-  for (const input of inputs) {
-    const message = decodeCanonicalMessage(copy(input));
+  for (const message of canonicalValues) {
     const previous = list.find((m) => m.id === message.id);
     if (previous) {
       if (!equal(previous, message)) conflict('Message identity changed');
@@ -272,7 +281,7 @@ function append(s: MemoryState, id: string, inputs: readonly StoredMessage[]): v
     }
     list.push(message);
   }
-  project(s, id, inputs);
+  project(s, id, canonicalValues, projection);
 }
 function probe(s: MemoryState, id: string, fingerprint: string) {
   assertSafeSessionId(id);
@@ -423,10 +432,11 @@ export function createMemorySessionStore(
         externalOrigin: copy(origin),
         transcriptLedgerVersion: 0 as const,
       };
+      const catalogProjection = projectSessionCatalogMessages(canonicalValues);
       options?.onCommitStarted?.();
       return write('session.import', (s) => {
         insert(s, h);
-        append(s, h.id, canonicalValues);
+        appendCanonical(s, h.id, canonicalValues, catalogProjection);
         return requireHeader(s, h.id).header;
       });
     },

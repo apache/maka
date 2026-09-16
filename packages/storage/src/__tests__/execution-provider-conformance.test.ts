@@ -621,6 +621,44 @@ for (const backend of ['Local', 'Memory'] as const) {
       });
     },
   );
+  test(backend + ': imported message projection finishes before commit starts', async () => {
+    await withProvider(make(), async ({ sessionStore: s }, root) => {
+      let commitStarted = false;
+      const replaceDescriptor = Object.getOwnPropertyDescriptor(String.prototype, 'replace')!;
+      Object.defineProperty(String.prototype, 'replace', {
+        ...replaceDescriptor,
+        value(this: string, ...args: unknown[]) {
+          if (String(this) === 'force projection failure') {
+            throw new Error('forced projection failure');
+          }
+          return Reflect.apply(replaceDescriptor.value as String['replace'], this, args) as string;
+        },
+      });
+      try {
+        await assert.rejects(
+          s.createImportedSession(
+            sessionInput(root),
+            [
+              {
+                type: 'user',
+                id: 'imported-user',
+                turnId: 'imported-turn',
+                ts: 1,
+                text: 'force projection failure',
+              },
+            ],
+            { adapterId: 'fake', sourceSessionId: 'source' },
+            { onCommitStarted: () => (commitStarted = true) },
+          ),
+          /forced projection failure/,
+        );
+        assert.equal(commitStarted, false);
+        assert.deepEqual(await s.listHeaders(), []);
+      } finally {
+        Object.defineProperty(String.prototype, 'replace', replaceDescriptor);
+      }
+    });
+  });
   test(
     backend + ': catalog pagination visits mixed-case tied IDs exactly once in Local order',
     async () => {

@@ -213,12 +213,9 @@ class SqliteSessionStore implements SessionAuthorityStore {
       externalOrigin,
       transcriptLedgerVersion: 0,
     };
+    const catalogProjection = projectSessionCatalogMessages(canonicalMessages);
     options.onCommitStarted?.();
-    const outcome = await this.metadata.importSession(
-      header,
-      canonicalMessages,
-      projectSessionCatalogMessages(canonicalMessages),
-    );
+    const outcome = await this.metadata.importSession(header, canonicalMessages, catalogProjection);
     if (outcome !== 'imported') {
       throw new Error(`Generated Session id already exists: ${header.id}`);
     }
