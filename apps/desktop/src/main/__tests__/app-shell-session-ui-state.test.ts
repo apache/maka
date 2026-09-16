@@ -63,7 +63,7 @@ it('reconciles late predecessor content after its durable answer is already load
     const controller = createAppShellSessionUiStateController();
     const b = { turnId: 'B', steps: [{ stepId: 'bash', tools: [{ toolUseId: 'bash', toolName: 'Bash', args: {}, status: 'running' as const }] }] };
     controller.setLiveTurnBySession(() => ({ session: [b] }));
-    controller.setExecution('session', { type: 'host_execution', available: true,
+    controller.setExecution('session', { type: 'host_execution', pendingInteractionKinds: [], available: true,
       rootTurn: { sessionId: 'session', turnId: 'B', runId: 'run-B', status: 'running' } });
     const messages: StoredMessage[] = [
       { type: 'assistant', id: 'answer-A', turnId: 'A', ts: 1, text: 'Alpha completed full answer', modelId: 'test' },

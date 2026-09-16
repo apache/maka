@@ -49,6 +49,7 @@ import { Tab, TabList } from '@astryxdesign/core/TabList';
 import type { SessionSummary } from '@maka/core/session';
 import type { WorkBoardItem, WorkBoardLinkedSession } from '@maka/core/work-board';
 import { QuoteCompanionPanel } from '../tools/side-chat/quote-companion-panel';
+import { useParentTaskStatus } from '../controller/use-parent-task-status';
 import {
   type SessionWorkbarTab,
   type SessionWorkbarTabKind,
@@ -419,6 +420,7 @@ export function WorkbarSurface(props: {
   onOpenWorkBoardSession?: (link: WorkBoardLinkedSession) => void;
   workBoardStartTaskEnabled?: boolean;
   confirmBypass: () => Promise<boolean>;
+  onOpenParentConversation?: () => void;
 }) {
   const { inspector } = useWorkbarServices();
   const locale = useUiLocale();
@@ -431,6 +433,10 @@ export function WorkbarSurface(props: {
   const placements: SessionWorkbarPlacement[] = ['right', 'bottom'];
   const positionedTabs = placements.flatMap((placement) =>
     props.panelsState[placement].tabs.map((tab) => ({ placement, tab })),
+  );
+  const hasSideChat = positionedTabs.some(({ tab }) => tab.kind === 'side-chat');
+  const parentTaskStatus = useParentTaskStatus(
+    hasSideChat ? props.sourceSession?.id : undefined,
   );
 
   return (
@@ -589,6 +595,8 @@ export function WorkbarSurface(props: {
                 onInitialPromptStarted={props.onInitialPromptStarted}
                 onPromptAccepted={props.onPromptAccepted}
                 onActivityStateChange={props.onActivityStateChange}
+                parentTaskStatus={parentTaskStatus}
+                onOpenParentConversation={props.onOpenParentConversation}
               />
             );
           }

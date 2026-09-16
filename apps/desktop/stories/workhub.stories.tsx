@@ -75,7 +75,7 @@ function makeServices(failFirst: boolean, withHistory: boolean | 'usage', colore
   let updateExecution: Parameters<WorkHubServices['observe']>[4];
   let questionPending = question;
   let pendingForm: import('@maka/core/events').FormRequestEvent | undefined;
-  const publishExecution = () => updateExecution?.({ type: 'host_execution', available: true, rootTurn: pendingForm ? { sessionId, turnId: pendingForm.turnId, runId: 'selection-run', status: 'waiting_for_user' } : questionPending ? { sessionId, turnId: 'question-turn', runId: 'question-run', status: 'waiting_for_user' } : null });
+  const publishExecution = () => updateExecution?.({ type: 'host_execution', available: true, rootTurn: pendingForm ? { sessionId, turnId: pendingForm.turnId, runId: 'selection-run', status: 'waiting_for_user' } : questionPending ? { sessionId, turnId: 'question-turn', runId: 'question-run', status: 'waiting_for_user' } : null, pendingInteractionKinds: pendingForm ? ['form'] : questionPending ? ['question'] : [] });
   const publish = () => { publishExecution(); updateTranscript?.({ messages, hasOlder: false, hasNewer: false, ready: true }); };
   return {
     inspector: {
