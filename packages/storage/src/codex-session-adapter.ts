@@ -17,8 +17,7 @@
  * under the License.
  */
 
-import type { Dirent } from 'node:fs';
-import { open, readdir, realpath, stat } from 'node:fs/promises';
+import { open, opendir, readdir, realpath, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, join, resolve, sep } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
@@ -42,6 +41,7 @@ import { externalSessionCatalogQueryHash } from './offset-external-session-catal
 
 export const CODEX_SESSION_ADAPTER_ID = 'codex';
 export const CODEX_ROLLOUT_MAX_BYTES = 2 * 1024 * 1024 * 1024;
+export const CODEX_CATALOG_MAX_CANDIDATES = 100_000;
 
 const CODEX_ROLLOUT_HEAD_BYTES = 512 * 1024;
 const CODEX_ROLLOUT_READ_BYTES = 64 * 1024;
@@ -64,6 +64,8 @@ export interface CodexSessionAdapterOptions {
   maxConvertedBytes?: number;
   /** Maximum number of converted messages retained in memory. */
   maxMessages?: number;
+  /** Maximum rollout files examined by one filesystem catalog query. */
+  maxCatalogCandidates?: number;
 }
 
 interface CodexCatalogEntry extends ExternalSessionSummary {
@@ -120,6 +122,7 @@ export class CodexSessionAdapter implements ExternalSessionAdapter {
   private readonly maxRecordBytes: number;
   private readonly maxConvertedBytes: number;
   private readonly maxMessages: number;
+  private readonly maxCatalogCandidates: number;
 
   constructor(options: CodexSessionAdapterOptions = {}) {
     this.codexHome = resolve(
@@ -129,10 +132,12 @@ export class CodexSessionAdapter implements ExternalSessionAdapter {
     this.maxRecordBytes = options.maxRecordBytes ?? CODEX_ROLLOUT_MAX_RECORD_BYTES;
     this.maxConvertedBytes = options.maxConvertedBytes ?? CODEX_ROLLOUT_MAX_CONVERTED_BYTES;
     this.maxMessages = options.maxMessages ?? CODEX_ROLLOUT_MAX_MESSAGES;
+    this.maxCatalogCandidates = options.maxCatalogCandidates ?? CODEX_CATALOG_MAX_CANDIDATES;
     assertPositiveSafeInteger(this.maxRolloutBytes, 'Codex rollout byte limit');
     assertPositiveSafeInteger(this.maxRecordBytes, 'Codex rollout record byte limit');
     assertPositiveSafeInteger(this.maxConvertedBytes, 'Codex converted message byte limit');
     assertPositiveSafeInteger(this.maxMessages, 'Codex converted message count limit');
+    assertPositiveSafeInteger(this.maxCatalogCandidates, 'Codex catalog candidate limit');
   }
 
   async detect(): Promise<boolean> {
@@ -231,6 +236,7 @@ export class CodexSessionAdapter implements ExternalSessionAdapter {
       query,
       keyset?.kind === 'filesystem' ? keyset : undefined,
       limit + 1,
+      this.maxCatalogCandidates,
       (candidate, id) => this.resolveRolloutPath(candidate.path, id),
     );
     const items = candidates.slice(0, limit).map(({ candidate, summary }) => ({
@@ -961,18 +967,13 @@ async function* iterateRolloutFiles(
   archived: boolean,
   relativeRoot = '',
 ): AsyncGenerator<RolloutCandidate> {
-  let entries: Dirent<string>[];
+  let directory;
   try {
-    entries = await readdir(root, { withFileTypes: true });
+    directory = await opendir(root);
   } catch {
     return;
   }
-  // Codex nests active rollouts under YYYY/MM/DD and prefixes filenames with
-  // an ISO timestamp. Reverse lexical traversal reaches recent creation paths
-  // first for exact-id lookup; catalog paging separately orders candidates by
-  // file mtime.
-  entries.sort((left, right) => right.name.localeCompare(left.name));
-  for (const entry of entries) {
+  for await (const entry of directory) {
     const path = join(root, entry.name);
     const relativePath = relativeRoot ? `${relativeRoot}/${entry.name}` : entry.name;
     if (entry.isDirectory()) {
@@ -996,39 +997,57 @@ async function* iterateRolloutFiles(
   }
 }
 
-async function walkRolloutFiles(root: string, archived: boolean): Promise<RolloutCandidate[]> {
-  const files: RolloutCandidate[] = [];
-  for await (const candidate of iterateRolloutFiles(root, archived)) files.push(candidate);
-  return files;
-}
-
 async function nextRolloutCatalogBatch(
   codexHome: string,
   query: ExternalSessionCatalogPageQuery,
   keyset: Extract<CodexCatalogKeyset, { kind: 'filesystem' }> | undefined,
   limit: number,
+  maxCandidates: number,
   resolvePath: (candidate: RolloutCandidate, id: string) => Promise<string | undefined>,
 ): Promise<ReadonlyArray<{ candidate: RolloutCandidate; summary: ExternalSessionSummary }>> {
-  const ordered = [
-    ...(await walkRolloutFiles(join(codexHome, 'sessions'), false)),
-    ...(query.includeArchived
-      ? await walkRolloutFiles(join(codexHome, 'archived_sessions'), true)
-      : []),
-  ].sort(compareRolloutCandidates);
   const page: Array<{ candidate: RolloutCandidate; summary: ExternalSessionSummary }> = [];
-  for (const candidate of ordered) {
-    if (keyset && !rolloutCandidateIsAfter(candidate, keyset)) continue;
-    const head = await readUtf8Prefix(candidate.path, CODEX_ROLLOUT_HEAD_BYTES).catch(
-      () => undefined,
-    );
-    if (head === undefined) continue;
-    const entry = catalogEntryFromRolloutHead(head, candidate);
-    if (!entry || !matchesQuery(entry, query)) continue;
-    const rolloutPath = await resolvePath(candidate, entry.id);
-    if (!rolloutPath) continue;
-    const { rolloutPath: _rolloutPath, ...summary } = { ...entry, rolloutPath };
-    page.push({ candidate, summary });
-    if (page.length === limit) break;
+  let candidatesSeen = 0;
+  const roots = [
+    [join(codexHome, 'sessions'), false],
+    ...(query.includeArchived ? [[join(codexHome, 'archived_sessions'), true] as const] : []),
+  ] as const;
+  for (const [root, archived] of roots) {
+    for await (const candidate of iterateRolloutFiles(root, archived)) {
+      candidatesSeen += 1;
+      if (candidatesSeen > maxCandidates) {
+        throw new ExternalSessionLimitError(
+          'records',
+          maxCandidates,
+          `Codex catalog contains more than ${maxCandidates} rollout files`,
+        );
+      }
+      if (keyset && !rolloutCandidateIsAfter(candidate, keyset)) continue;
+      // Once the page is full, a candidate ordered after its current tail
+      // cannot enter the result even if its rollout metadata matches.
+      const tail = page.at(-1);
+      if (
+        tail &&
+        page.length === limit &&
+        compareRolloutCandidates(candidate, tail.candidate) >= 0
+      ) {
+        continue;
+      }
+      const head = await readUtf8Prefix(candidate.path, CODEX_ROLLOUT_HEAD_BYTES).catch(
+        () => undefined,
+      );
+      if (head === undefined) continue;
+      const entry = catalogEntryFromRolloutHead(head, candidate);
+      if (!entry || !matchesQuery(entry, query)) continue;
+      const rolloutPath = await resolvePath(candidate, entry.id);
+      if (!rolloutPath) continue;
+      const { rolloutPath: _rolloutPath, ...summary } = { ...entry, rolloutPath };
+      const insertionIndex = page.findIndex(
+        (current) => compareRolloutCandidates(candidate, current.candidate) < 0,
+      );
+      if (insertionIndex === -1) page.push({ candidate, summary });
+      else page.splice(insertionIndex, 0, { candidate, summary });
+      if (page.length > limit) page.pop();
+    }
   }
   return page;
 }

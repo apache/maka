@@ -594,6 +594,27 @@ describe('CodexSessionAdapter', () => {
     });
   });
 
+  test('filesystem fallback fails with a typed limit instead of scanning an unbounded catalog', async () => {
+    await withCodexHome(async (codexHome) => {
+      for (const id of [
+        'codex-catalog-limit-1',
+        'codex-catalog-limit-2',
+        'codex-catalog-limit-3',
+      ]) {
+        await seedMinimalRollout(codexHome, id, false, '/workspace/root', id);
+      }
+      const adapter = new CodexSessionAdapter({ codexHome, maxCatalogCandidates: 2 });
+
+      await assert.rejects(
+        adapter.listSessionPage({ limit: 1 }),
+        (error: unknown) =>
+          error instanceof ExternalSessionLimitError &&
+          error.limit.kind === 'records' &&
+          error.limit.max === 2,
+      );
+    });
+  });
+
   test('filesystem keyset paging never repeats a row moved ahead of the cursor', async () => {
     await withCodexHome(async (codexHome) => {
       const paths: string[] = [];
