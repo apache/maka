@@ -320,6 +320,19 @@ function isAppIconPath(path) {
   return APP_ICON_FILES.has(path) || path.startsWith('apps/desktop/assets/app-icons/');
 }
 
+// The renderer architecture checker parses apps/desktop/src (plus its stories
+// and e2e drivers) against the ledger; nothing outside apps/desktop can change
+// its verdict, so a runtime-only change must not pay for two full AST passes.
+function isRendererArchitecturePath(path) {
+  if (path === 'apps/desktop/scripts/check-renderer-architecture.mjs') return true;
+  if (path === 'apps/desktop/scripts/check-renderer-architecture.test.mjs') return true;
+  if (path === 'apps/desktop/renderer-architecture.json') return true;
+  return ['src', 'stories', 'e2e'].some(
+    (scanRoot) =>
+      path === `apps/desktop/${scanRoot}` || path.startsWith(`apps/desktop/${scanRoot}/`),
+  );
+}
+
 function isE2eProductPath(path) {
   if (E2E_DRIVING_SCRIPTS.has(path)) return true;
   if (isDocumentation(path)) return false;
@@ -439,6 +452,7 @@ export function planTests(changedFiles, options = {}) {
       e2e: true,
       full: true,
       releaseContract: true,
+      rendererArchitecture: true,
       runtimeSandbox: graph.dirs.includes('packages/cli'),
       // A complete functional suite is still the default release/main gate.
       // Stress multipliers and native child-process lock probes run only when
@@ -545,6 +559,7 @@ export function planTests(changedFiles, options = {}) {
     e2e: files.some((path) => isE2eProductPath(path)),
     full: false,
     releaseContract: cliPackage || files.some((path) => isReleaseContractPath(path)),
+    rendererArchitecture: files.some((path) => isRendererArchitecturePath(path)),
     // packages/cli/src/__tests__/runtime-host-session-driver.test.ts executes real sandboxed
     // shell tools, so the bubblewrap + user-namespace setup is required whenever
     // the cli workspace runs in the dependency closure, not only for direct
@@ -580,6 +595,7 @@ export function formatGitHubOutputs(plan) {
     `runtime_host=${plan.runtimeHost}`,
     `runtime_sandbox=${plan.runtimeSandbox}`,
     `release_contract=${plan.releaseContract}`,
+    `renderer_architecture=${plan.rendererArchitecture}`,
     `state_root_compat=${plan.stateRootCompat}`,
     `storage_stress=${plan.storageStress}`,
     `storybook=${plan.storybook}`,

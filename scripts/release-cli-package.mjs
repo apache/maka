@@ -54,6 +54,7 @@ import {
 const repoRoot = resolve(import.meta.dirname, '..');
 const cliSource = join(repoRoot, 'packages/cli');
 const allowDirty = process.argv.includes('--allow-dirty');
+const reuseBuild = process.argv.includes('--reuse-build');
 const developmentBuild = process.argv.includes('--development');
 const nightlyVersion = process.env.MAKA_CLI_NIGHTLY_VERSION?.trim();
 const preparedTree = process.env.MAKA_CLI_RELEASE_PREPARED_TREE === '1';
@@ -66,7 +67,7 @@ const privateRuntimeHostTarget = developmentBuild
   : `${process.platform}-${process.arch}`;
 const unsupportedArguments = process.argv
   .slice(2)
-  .filter((argument) => !['--allow-dirty', '--development'].includes(argument));
+  .filter((argument) => !['--allow-dirty', '--development', '--reuse-build'].includes(argument));
 if (unsupportedArguments.length > 0) {
   throw new Error(`Unsupported release argument: ${unsupportedArguments.join(', ')}`);
 }
@@ -132,7 +133,12 @@ function main() {
       '[release-cli] WARNING: producing a private development tarball with publishing disabled',
     );
   }
-  buildRuntimeWorkspaces({ clean: true });
+  if (reuseBuild && !allowDirty) {
+    throw new Error('--reuse-build requires --allow-dirty');
+  }
+  // A private tarball from a tree the caller has just built only needs the
+  // incremental pass; a release still cleans so no stale output can ship.
+  buildRuntimeWorkspaces({ clean: !reuseBuild });
   if (!nightlyVersion && !allowDirty) checkProductionAudit();
   runNpm(['run', 'check:cli-third-party-notices']);
   runNpm(['run', 'check:runtime-host-peer-dependencies']);
