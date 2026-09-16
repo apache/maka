@@ -598,6 +598,13 @@ test('pages the ledger without materializing Turns it takes no rows from', async
       read.readDurablePage(session.id, { direction: 'newer', maxBytes: 1024, maxMessages: 1 }),
     );
     assert.equal(JSON.parse(head.fragments[0]!.data.toString()).text, 'prompt 0');
+    const landmarks = await decoding('landmarks', SMALL_TURN_BUDGET, () =>
+      read.readDurableTurnLandmarks(session.id, { maxLandmarks: 3, turnId: null }),
+    );
+    assert.deepEqual(
+      landmarks.landmarks.map((item) => item.label),
+      ['prompt 0', 'prompt 2', 'prompt 4'],
+    );
     const contributions: SessionTurnContribution[] = [];
     let contributionPosition = 0;
     for (;;) {
@@ -898,6 +905,13 @@ test('does not end a page where a handoff resumes the same Turn', async () => {
         direction,
       );
     }
+
+    const lookup = (turnId: string) =>
+      read.readDurableTurnLandmarks(sessionId, { maxLandmarks: 1, turnId });
+    assert.deepEqual((await lookup('turn-first')).landmarks, [
+      { turnId: 'turn-first', sequence: 1 * 8, label: '' },
+    ]);
+    assert.deepEqual((await lookup('turn-missing')).landmarks, []);
   });
 });
 

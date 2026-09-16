@@ -25,6 +25,7 @@ import {
   createRuntimeEventStoredMessageProjector,
   projectTranscriptToolResult,
   isHardRuntimeEventReadModelDiagnostic,
+  projectRuntimeEventUserMessage,
 } from '@maka/runtime/runtime-event-read-model';
 import {
   type CanonicalPermissionOutcomeReader,
@@ -42,6 +43,7 @@ import type {
   RuntimeTranscriptRun,
 } from '@maka/storage/execution-stores';
 import { foldTurnContribution } from '@maka/storage/session-message-projection';
+import type { SessionTurnLandmark } from '../protocol/index.js';
 
 const PERMISSION_OUTCOME_READ_CONCURRENCY = 8;
 /** One event can emit content, a permission, usage, and terminal/notice rows. */
@@ -87,7 +89,19 @@ export function createSessionTranscriptReader(input: {
         position,
         maxContributions,
       ),
+    readDurableTurnLandmarks: async (sessionId, request) =>
+      (await prepared(sessionId)).readTurnLandmarks(sessionId, request),
   };
+}
+
+export interface SessionTurnLandmarkRequest {
+  readonly maxLandmarks: number;
+  readonly turnId: string | null;
+}
+
+export interface SessionTurnLandmarkSnapshot {
+  readonly throughSequence: number | null;
+  readonly landmarks: readonly SessionTurnLandmark[];
 }
 
 /**
@@ -114,6 +128,10 @@ export interface SessionTranscriptReader {
     position: number,
     maxContributions: number,
   ): Promise<SessionTurnContributionPage>;
+  readDurableTurnLandmarks(
+    sessionId: string,
+    request: SessionTurnLandmarkRequest,
+  ): Promise<SessionTurnLandmarkSnapshot>;
 }
 
 /**
@@ -300,6 +318,35 @@ function createDurableLedgerTranscriptReader(input: {
         contributions: [...contributions.values()],
         nextPosition,
       };
+    },
+
+    async readTurnLandmarks(
+      sessionId: string,
+      request: SessionTurnLandmarkRequest,
+    ): Promise<SessionTurnLandmarkSnapshot> {
+      const throughSequence = await highWater(sessionId);
+      if (throughSequence === null) return { throughSequence: null, landmarks: [] };
+      const turns = await store.readTranscriptTurns(
+        sessionId,
+        request.turnId === null
+          ? { throughOrdinal: ordinalOf(throughSequence), limit: request.maxLandmarks }
+          : { turnId: request.turnId },
+      );
+      const landmarks: SessionTurnLandmark[] = [];
+      for (const turn of turns) {
+        const message = turn.prompt
+          ? projectRuntimeEventUserMessage(turn.prompt.event, turn.prompt.event.id)
+          : undefined;
+        const label = (message?.displayText ?? message?.text ?? '').trim();
+        // A sampled tick needs something to show; a looked-up Turn only needs a place.
+        if (!label && request.turnId === null) continue;
+        landmarks.push({
+          turnId: turn.turnId,
+          sequence: turn.firstOrdinal * EVENT_SEQUENCE_STRIDE,
+          label,
+        });
+      }
+      return { throughSequence, landmarks };
     },
   };
 }

@@ -34,6 +34,39 @@ export const SESSION_TURN_QUERY_MAX_CONTRIBUTIONS = 128;
 export const SESSION_TURN_QUERY_RESULT_MAX_BYTES = 192 * 1024;
 export const SESSION_TURN_DIAGNOSTIC_MAX_BYTES = 128;
 export const SESSION_TURN_PROMPT_PREVIEW_MAX_BYTES = 256;
+export const SESSION_TURN_LANDMARK_MAX_ITEMS = 64;
+export const SESSION_TURN_LANDMARK_LABEL_MAX_BYTES = 96;
+export const SESSION_TURN_LANDMARK_RESULT_MAX_BYTES = 64 * 1024;
+
+export interface SessionTurnLandmark {
+  readonly turnId: string;
+  /** No row of the Turn sits before this sequence. */
+  readonly sequence: number;
+  readonly label: string;
+}
+
+export interface SessionTurnLandmarksQueryInput {
+  readonly sessionId: string;
+  readonly maxLandmarks: number;
+  /** Look up this one Turn instead of sampling the Session. */
+  readonly turnId: string | null;
+}
+
+export interface SessionTurnLandmarksQueryResult {
+  readonly sessionId: string;
+  readonly throughSequence: number | null;
+  readonly landmarks: readonly SessionTurnLandmark[];
+}
+
+export function projectSessionTurnLandmarkForWire(
+  landmark: SessionTurnLandmark,
+): SessionTurnLandmark {
+  return {
+    turnId: requireEntityId(landmark.turnId, 'turnId'),
+    sequence: requireCount(landmark.sequence, 'Session turn landmark sequence'),
+    label: truncateUtf8(landmark.label, SESSION_TURN_LANDMARK_LABEL_MAX_BYTES),
+  };
+}
 
 export interface SessionTurnContribution {
   readonly turnId: string;
@@ -193,6 +226,27 @@ const QUERY_ERRORS = [
 ] as const;
 
 export const SESSION_TURNS_OPERATION_SPECS = {
+  'session.turn_landmarks.query': defineOperation<
+    SessionTurnLandmarksQueryInput,
+    SessionTurnLandmarksQueryResult,
+    (typeof QUERY_ERRORS)[number]
+  >({
+    mode: 'query',
+    availability: 'ready',
+    errors: QUERY_ERRORS,
+    decodeInput: decodeSessionTurnLandmarksQueryInput,
+    decodeOutput: decodeSessionTurnLandmarksQueryResult,
+    assertOutputForInput: (input, output) => {
+      if (
+        input.sessionId !== output.sessionId ||
+        output.landmarks.length > input.maxLandmarks ||
+        (input.turnId !== null &&
+          output.landmarks.some((landmark) => landmark.turnId !== input.turnId))
+      ) {
+        throw invalidProtocolFrame('Session turn landmark query identity changed');
+      }
+    },
+  }),
   'session.turns.query': defineOperation<
     SessionTurnsQueryInput,
     SessionTurnsQueryResult,
@@ -213,6 +267,69 @@ export const SESSION_TURNS_OPERATION_SPECS = {
     },
   }),
 } as const;
+
+export function decodeSessionTurnLandmarksQueryInput(
+  value: unknown,
+): SessionTurnLandmarksQueryInput {
+  const input = requireExactRecord(value, 'Session turn landmark query input', [
+    'sessionId',
+    'maxLandmarks',
+    'turnId',
+  ]);
+  const maxLandmarks = requireCount(input.maxLandmarks, 'Session turn landmark limit');
+  if (maxLandmarks < 1 || maxLandmarks > SESSION_TURN_LANDMARK_MAX_ITEMS) {
+    throw invalidProtocolFrame('Invalid Session turn landmark limit');
+  }
+  return {
+    sessionId: requireEntityId(input.sessionId, 'sessionId'),
+    maxLandmarks,
+    turnId: input.turnId === null ? null : requireEntityId(input.turnId, 'turnId'),
+  };
+}
+
+export function decodeSessionTurnLandmarksQueryResult(
+  value: unknown,
+): SessionTurnLandmarksQueryResult {
+  requireEncodedByteLimit(
+    value,
+    'Session turn landmark query result',
+    SESSION_TURN_LANDMARK_RESULT_MAX_BYTES,
+  );
+  const result = requireExactRecord(value, 'Session turn landmark query result', [
+    'sessionId',
+    'throughSequence',
+    'landmarks',
+  ]);
+  if (
+    !Array.isArray(result.landmarks) ||
+    result.landmarks.length > SESSION_TURN_LANDMARK_MAX_ITEMS
+  ) {
+    throw invalidProtocolFrame('Invalid Session turn landmarks');
+  }
+  return {
+    sessionId: requireEntityId(result.sessionId, 'sessionId'),
+    throughSequence:
+      result.throughSequence === null
+        ? null
+        : requireCount(result.throughSequence, 'Session turn landmark watermark'),
+    landmarks: result.landmarks.map((value) => {
+      const landmark = requireExactRecord(value, 'Session turn landmark', [
+        'turnId',
+        'sequence',
+        'label',
+      ]);
+      return {
+        turnId: requireEntityId(landmark.turnId, 'turnId'),
+        sequence: requireCount(landmark.sequence, 'Session turn landmark sequence'),
+        label: requireUtf8String(
+          landmark.label,
+          'Session turn landmark label',
+          SESSION_TURN_LANDMARK_LABEL_MAX_BYTES,
+        ),
+      };
+    }),
+  };
+}
 
 export function decodeSessionTurnsQueryInput(value: unknown): SessionTurnsQueryInput {
   const input = requireExactRecord(value, 'Session turn query input', [

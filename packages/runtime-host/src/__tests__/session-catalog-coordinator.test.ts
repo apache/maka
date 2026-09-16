@@ -2061,6 +2061,7 @@ function createFixture(
       contributions: [],
       nextPosition: null,
     }),
+    readDurableTurnLandmarks: async () => ({ throughSequence: null, landmarks: [] }),
     ...options.turnIndex,
   };
   const runtimePolicy = options.runtimePolicy ?? runtimePolicyFixture(options.connection ?? {});

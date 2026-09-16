@@ -20,6 +20,7 @@
 import type { StoredMessage } from '@maka/core/session';
 import type { SessionTurnContribution } from '@maka/storage/execution-stores';
 import { foldTurnContribution } from '@maka/storage/session-message-projection';
+import type { SessionTurnLandmark } from '../../protocol/index.js';
 import type { SessionTranscriptReader } from '../../server/session-transcript-reader.js';
 
 export function transcriptReader(
@@ -188,6 +189,21 @@ export function transcriptReader(
         contributions: [...folded.values()],
         nextPosition: null,
       };
+    },
+    readDurableTurnLandmarks: async (_sessionId, request) => {
+      const watermark = durableHighWater();
+      if (watermark === null) return { throughSequence: null, landmarks: [] };
+      const seen = new Set<string>();
+      const landmarks: SessionTurnLandmark[] = [];
+      for (const { sequence, message } of durableRecords()) {
+        if (landmarks.length >= request.maxLandmarks) break;
+        const turnId = message.turnId;
+        if (message.type !== 'user' || turnId === undefined || seen.has(turnId)) continue;
+        if (request.turnId !== null && turnId !== request.turnId) continue;
+        seen.add(turnId);
+        landmarks.push({ turnId, sequence, label: message.displayText ?? message.text });
+      }
+      return { throughSequence: watermark, landmarks };
     },
   };
 }

@@ -334,6 +334,7 @@ export const REMOTE_OWNER_OPERATION_GRANTS = Object.freeze([
   'session.revision.abandon',
   'session.revision.create',
   'session.transcript.page',
+  'session.turn_landmarks.query',
   'session.turns.query',
   'session.workspace.relocate',
   'skill.catalog.invocable.query',

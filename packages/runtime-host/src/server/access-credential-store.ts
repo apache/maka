@@ -61,6 +61,11 @@ const PERSISTED_GRANT_MIGRATIONS: ReadonlyMap<string, PersistedGrantMigration> =
   ['session.transcript.query', { kind: 'replace', successors: ['session.transcript.page'] }],
   // Retired with the active transcript overlay; pages alone carry a running Turn.
   ['session.transcript.overlay.release', { kind: 'release' }],
+  // The Turn query kept its name and gained a separate landmark query beside it.
+  [
+    'session.turns.query',
+    { kind: 'replace', successors: ['session.turns.query', 'session.turn_landmarks.query'] },
+  ],
   // Resource inventory is a dedicated facet of the existing Host diagnostics authority.
   [
     'host.diagnostics.query',
@@ -74,8 +79,6 @@ const PERSISTED_GRANT_MIGRATIONS: ReadonlyMap<string, PersistedGrantMigration> =
   // Retired with the second execution-inspection contract; no shipped surface
   // called execution.inspect.resolve.
   ['execution.inspect.resolve', { kind: 'release' }],
-  // Retired with Desktop's windowed transcript; the prompt rail ticks only Turns already read.
-  ['session.turn_landmarks.query', { kind: 'release' }],
   // Direct WorkHub actions and record writes were retired. Their grants do not
   // authorize actFromTurn, which requires the active coordination Turn.
   ['workhub.coordination.act', { kind: 'release' }],
