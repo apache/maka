@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "id": "maka.session-scratchpad",
+  "displayName": "Session Scratchpad",
+  "description": "A durable per-session scratchpad synchronized through Maka Client Remote.",
+  "dependencies": [],
+  "configuration": {
+    "properties": {
+      "maxLength": {
+        "type": "number",
+        "title": "Maximum note length",
+        "description": "Maximum number of characters stored for one Session.",
+        "default": 12000
+      }
+    },
+    "required": []
+  },
+  "runtime": {
+    "entry": "host.mjs"
+  },
+  "client": {
+    "entry": "client.js"
+  },
+  "composition": {
+    "patch": "maka.composition.json",
+    "structuralDependencies": []
+  }
+}

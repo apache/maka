@@ -130,6 +130,10 @@ import {
   type WorkspaceFileReferencePosition,
 } from './inline-reference.js';
 import { ComposerMessageQueue, projectComposerMessageQueue } from './composer-message-queue.js';
+import {
+  MakaClientSessionScope,
+  MakaClientSlotOutlet,
+} from './client-plugin-slots.js';
 
 /** A Skill as the composer offers it: what the `/` menu lists and what a
  * chosen entry writes into the draft. */
@@ -2222,6 +2226,16 @@ export const Composer = forwardRef<
                   icon={mark.icon}
                 />
               ))}
+              <MakaClientSessionScope sessionId={props.activeSession?.id}>
+                <MakaClientSlotOutlet
+                  name="conversation.composer.toolbar"
+                  owner={{
+                    disabled: props.disabled === true,
+                    streaming: props.streaming === true,
+                    hasSession: props.activeSession !== undefined,
+                  }}
+                />
+              </MakaClientSessionScope>
               {props.footerAccessory}
             </div>
           )}

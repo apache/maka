@@ -63,7 +63,14 @@ import type {
 } from '../../preload/bridge-contract.js';
 import type { UiLocalePreference } from '@maka/core/ui-locale';
 import { createDefaultSettings, DEFAULT_APP_ICON } from '@maka/core/settings';
-import { Banner, Selector, useMountedRef, useToast, useUiLocale } from '@maka/ui';
+import {
+  Banner,
+  MakaClientSlotOutlet,
+  Selector,
+  useMountedRef,
+  useToast,
+  useUiLocale,
+} from '@maka/ui';
 import { ProvidersPanel } from './providers-panel';
 import { ExternalAgentsSettingsPage } from '../features/external-agent-settings/index.js';
 import { SubagentSettingsPage } from './subagent-settings-page';
@@ -130,6 +137,10 @@ import { createSettingsRequestAuthority } from './settings-request-authority.js'
 
 const NARROW_SETTINGS_QUERY = '(max-width: 760px)';
 const RUNTIME_HOST_CATALOG_KEY = 'runtime-host-catalog';
+
+function isBuiltInSettingsSection(value: string): value is SettingsSection {
+  return SETTINGS_NAV.some((item) => item.id === value);
+}
 
 type RuntimeHostAvailabilityStatus = 'loading' | 'ready' | 'unavailable' | 'error';
 
@@ -199,7 +210,9 @@ function SettingsSurfaceContent(
   const copy = getSettingsSharedCopy(locale);
   const localizedNav = groupedNav(locale);
   const isNarrowSettings = useMediaQuery(NARROW_SETTINGS_QUERY);
-  const [section, setSection] = useState<SettingsSection>(() => props.request?.section ?? readLastSettingsSection());
+  const [section, setSection] = useState<string>(
+    () => props.request?.section ?? readLastSettingsSection(),
+  );
   const [providerCatalogRequested, setProviderCatalogRequested] = useState(props.openProviderCatalog === true);
   // One-shot landing intent, mirroring providerCatalogRequested above: the
   // request retires once ProvidersPanel consumes it, so remounting the panel
@@ -236,7 +249,7 @@ function SettingsSurfaceContent(
   // away from anything the user opened inside Settings dozens of times a
   // second while a session streams.
   useEffect(() => {
-    props.initialFocusRef.current?.focus();
+    if (isBuiltInSettingsSection(section)) props.initialFocusRef.current?.focus();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- ref identity is stable; re-run only on section change.
   }, [section]);
 
@@ -443,7 +456,9 @@ function SettingsSurfaceContent(
   );
   const connections = selectedConnections?.connections ?? [];
   const defaultSlug = selectedConnections?.defaultSlug ?? null;
-  const sectionScope = settingsSectionScope(section);
+  const sectionScope = isBuiltInSettingsSection(section)
+    ? settingsSectionScope(section)
+    : 'client';
   const showsRuntimeHost = sectionScope !== 'client';
   const requiresRuntimeHost = sectionScope === 'runtime-host';
   useEffect(() => {
@@ -805,7 +820,9 @@ function SettingsSurfaceContent(
   // boundary — so an unrouted section fails loudly at build time instead of
   // silently rendering 通用 copy over a different page's body. The nav
   // highlight below still keys off `section === item.id` independently.
-  const headerCopy = getSettingsNavigationCopy(locale).sections[section];
+  const headerCopy = isBuiltInSettingsSection(section)
+    ? getSettingsNavigationCopy(locale).sections[section]
+    : undefined;
   const runtimeHostOptions = (runtimeHosts?.entries ?? [])
     .filter((entry) => entry.enabled)
     .map((entry) => ({
@@ -900,6 +917,14 @@ function SettingsSurfaceContent(
                   ))}
                 </SideNavSection>
               ))}
+              <MakaClientSlotOutlet
+                name="settings.navigation"
+                owner={{
+                  activePage: section,
+                  compact: isNarrowSettings,
+                  selectPage: setSection,
+                }}
+              />
             </SideNav>
           </LayoutPanel>
         )}
@@ -923,7 +948,7 @@ function SettingsSurfaceContent(
                  one place; its margins must not depend on which page is
                  open. */
               contentWidth={920}
-              header={(
+              header={headerCopy ? (
                 <LayoutHeader padding={6}>
                   <div className="settingsPageHeader">
                     <div className="settingsPageHeaderTitleStack">
@@ -950,7 +975,7 @@ function SettingsSurfaceContent(
                     ) : null}
                   </div>
                 </LayoutHeader>
-              )}
+              ) : undefined}
               content={(
                 <LayoutContent padding={6} isScrollable={false}>
                   <UsageScopeMount
@@ -1011,6 +1036,7 @@ function SettingsSurfaceContent(
                         >
                           <SettingsPageBody
                             section={section}
+                            onClose={props.onClose}
                             // A bundle names a path on THIS machine, so the
                             // feature is offered only while the Local Host is
                             // the target -- never beside a Remote one.
@@ -1069,7 +1095,8 @@ function SettingsSurfaceContent(
 }
 
 function SettingsPageBody(props: {
-  section: SettingsSection;
+  section: string;
+  onClose(): void;
   isLocalRuntimeHost: boolean;
   settings: AppSettings;
   connections: ProjectedLlmConnection[];
@@ -1256,9 +1283,24 @@ function SettingsPageBody(props: {
       );
     default:
       return (
-        <div className="settingsRows">
-          <SettingRow title={navLabel(props.section, locale)} detail={copy.unavailablePage} value={copy.ready} />
-        </div>
+        <MakaClientSlotOutlet
+          name="settings.page"
+          owner={{ page: props.section, close: props.onClose }}
+          options={{
+            entryKey: props.section,
+            fallback: (
+              <div className="settingsRows">
+                <SettingRow
+                  title={isBuiltInSettingsSection(props.section)
+                    ? navLabel(props.section, locale)
+                    : props.section}
+                  detail={copy.unavailablePage}
+                  value={copy.ready}
+                />
+              </div>
+            ),
+          }}
+        />
       );
   }
 }

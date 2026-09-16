@@ -100,6 +100,7 @@ import { MakaCompositionLoader } from '@maka/runtime/plugin-composition-loader';
 import { PluginToolService } from '@maka/runtime/plugin-tool-service';
 import { PluginSystemPromptService } from '@maka/runtime/plugin-system-prompt-service';
 import { PluginCommandService } from '@maka/runtime/plugin-command-service';
+import { PluginClientBridgeService } from '@maka/runtime/plugin-client-bridge-service';
 import {
   PluginAuthorizationService,
   PluginCredentialService,
@@ -368,6 +369,7 @@ export async function createExecutionRuntimeHostComposition(
     const pluginGoals = new PluginGoalService(pluginRoot, pluginAgents);
     const pluginSkills = new PluginSkillService(pluginRoot);
     const pluginCommands = new PluginCommandService(pluginRoot);
+    const pluginClientBridge = new PluginClientBridgeService(pluginRoot);
     new PluginLspService(pluginRoot);
     const pluginSettings = new PluginSettingsService(pluginRoot);
     const pluginStorage = new PluginStorageService(pluginRoot);
@@ -385,6 +387,7 @@ export async function createExecutionRuntimeHostComposition(
       systemPrompt: pluginSystemPrompt,
       commands: pluginCommands,
       executors: pluginExecutors,
+      clientBridge: pluginClientBridge,
     });
     const pluginPlatformCoordinator = new HostPluginPlatformCoordinator(pluginPlatform);
     const openedProjectCatalog = storage.projectCatalog;
@@ -2507,6 +2510,9 @@ export async function createExecutionRuntimeHostComposition(
         recovery: { state: () => pluginPlatform!.recover() },
         drain: [() => pluginPlatform!.beginDrain()],
         close: [() => pluginPlatform!.close()],
+        releaseConnection: [
+          (connectionId) => pluginPlatformCoordinator.releaseConnection(connectionId),
+        ],
       }),
       createRuntimeHostDomainModule({
         id: 'memory',

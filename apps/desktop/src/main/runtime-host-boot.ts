@@ -28,6 +28,7 @@ import {
   nativeTheme,
   powerMonitor,
   powerSaveBlocker,
+  protocol,
   shell,
   Tray,
   type MessageBoxOptions,
@@ -245,6 +246,11 @@ import { registerRuntimeHostOAuthIpc } from "./runtime-host-oauth-ipc-main.js";
 import { RuntimeHostOAuthPresentation } from "./runtime-host-oauth-presentation.js";
 import { registerRuntimeHostPermissionsIpc } from "./runtime-host-permissions-ipc-main.js";
 import { registerRuntimeHostRendererIpc } from "./runtime-host-renderer-ipc-main.js";
+import {
+  ClientPluginTransport,
+  MAKA_CLIENT_PLUGIN_SCHEME,
+  registerClientPluginIpc,
+} from './client-plugin-transport.js';
 import { registerRuntimeHostSearchIpc } from "./runtime-host-search-ipc-main.js";
 import { createRuntimeHostProjectCatalog } from "./runtime-host-project-catalog.js";
 import { createRuntimeHostDefaultRecovery } from "./runtime-host-default-recovery.js";
@@ -287,6 +293,8 @@ await resolveShellEnv();
 const MANAGED_UPDATE_RECONNECT_TIMEOUT_MS = 10_000;
 const buildInfo = resolveBuildInfo(app.isPackaged, app.getAppPath());
 const userDataDir = app.getPath("userData");
+const clientPluginTransport = new ClientPluginTransport();
+protocol.handle(MAKA_CLIENT_PLUGIN_SCHEME, (request) => clientPluginTransport.serve(request.url));
 const runtimeHostPeerConfiguration = await configureDesktopRuntimeHostPeerClient({
   isPackaged: app.isPackaged,
   enableDevelopmentPeer: process.argv.includes('--runtime-host-peer'),
@@ -1674,6 +1682,7 @@ function registerHostClientIpc(
     emitConnectionListChanged: emitTargetConnectionListChanged,
   });
   registerRuntimeHostRendererIpc({ ipcMain: scopedIpc, client });
+  registerClientPluginIpc({ ipcMain: scopedIpc, client, transport: clientPluginTransport });
   registerRuntimeHostArtifactsIpc({
     uiLocale: () => desktopLocale.current(),
     ipcMain: scopedIpc,
@@ -1891,6 +1900,7 @@ function registerHostClientIpc(
   registerOnboardingIpc({ onboardingService, ipcMain: scopedIpc });
   registerTaskSubmissionReadinessIpc(taskSubmissionReadinessService, scopedIpc);
   return async () => {
+    clientPluginTransport.release(client);
     unsubscribeConfigurationChanges();
     await managedArtifactPreview.closeScope(scope.targetEpoch);
     unsubscribeConnectionCatalogChanges();

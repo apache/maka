@@ -1055,4 +1055,3 @@ const COPY = {
 export function getDesktopConversationCopy(locale: UiLocale): DesktopConversationCopy {
   return COPY[locale];
 }
-

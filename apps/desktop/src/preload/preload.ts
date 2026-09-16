@@ -1406,6 +1406,23 @@ const browserSelection = createBrowserSelectionCoordinator(runtimeHostSessionRef
 }, browserDocumentId);
 
 const makaBridge = {
+  clientPlugins: {
+    snapshot() {
+      return invokeActiveRuntimeHost('client-plugins:snapshot');
+    },
+    remoteCall(input) {
+      return invokeActiveRuntimeHost('client-plugins:remote:call', input);
+    },
+    remoteStreamOpen(input) {
+      return invokeActiveRuntimeHost('client-plugins:remote:stream:open', input);
+    },
+    remoteStreamNext(input) {
+      return invokeActiveRuntimeHost('client-plugins:remote:stream:next', input);
+    },
+    remoteStreamClose(input) {
+      return invokeActiveRuntimeHost('client-plugins:remote:stream:close', input);
+    },
+  },
   workHubControl: workHubControlBridge,
   workHubPresentation: workHubPresentationBridge,
   runtimeHost,

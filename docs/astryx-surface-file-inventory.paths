@@ -20,6 +20,8 @@ apps/desktop/src/renderer/custom-pet-companion.tsx
 apps/desktop/src/renderer/error-boundary.tsx
 apps/desktop/src/renderer/features/app-update/services-context.tsx
 apps/desktop/src/renderer/features/app-update/ui/app-update-provider.tsx
+apps/desktop/src/renderer/features/client-plugins/client-plugin-root.tsx
+apps/desktop/src/renderer/features/client-plugins/services-context.tsx
 apps/desktop/src/renderer/features/connection-settings/generic-provider-mark.tsx
 apps/desktop/src/renderer/features/connection-settings/onboarding-step-form.tsx
 apps/desktop/src/renderer/features/connection-settings/provider-add-model-dialog.tsx
@@ -229,6 +231,8 @@ packages/ui/src/chat-turn.tsx
 packages/ui/src/chat-view.tsx
 packages/ui/src/choice-panel.tsx
 packages/ui/src/client-capability-prompt.tsx
+packages/ui/src/client-plugin-runtime.tsx
+packages/ui/src/client-plugin-slots.tsx
 packages/ui/src/components.tsx
 packages/ui/src/composer-message-queue.tsx
 packages/ui/src/composer.tsx
