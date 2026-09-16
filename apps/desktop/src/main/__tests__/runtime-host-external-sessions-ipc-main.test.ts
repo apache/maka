@@ -84,7 +84,6 @@ test('forwards bounded external Session requests and publishes imported Sessions
             importedCount: 0,
             importedSessionIds: [],
             isImporting: false,
-            isUncertain: false,
           },
         },
       ],
@@ -139,7 +138,7 @@ test('an uncertain commit still asks the shell to re-read the catalog', async ()
   assert.deepEqual(events, [{ reason: 'created', sessionId: undefined }]);
 });
 
-test('keeps an uncertain import locked in Main across later catalog reads', async () => {
+test('keeps catalog eligibility owned by the Host after an uncertain import', async () => {
   const ipc = ipcHarness();
   registerRuntimeHostExternalSessionsIpc(
     {
@@ -179,7 +178,6 @@ test('keeps an uncertain import locked in Main across later catalog reads', asyn
         importedCount: 0,
         importedSessionIds: [],
         isImporting: false,
-        isUncertain: true,
       },
     }],
     nextCursor: null,

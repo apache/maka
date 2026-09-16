@@ -1542,7 +1542,6 @@ const externalConversations: DesktopExternalSessionCatalogItem[] = [
       importedCount: 2,
       importedSessionIds: ['imported-task-newest', 'imported-task-older'],
       isImporting: false,
-      isUncertain: false,
     },
   },
   {
@@ -1554,7 +1553,6 @@ const externalConversations: DesktopExternalSessionCatalogItem[] = [
       importedCount: 1,
       importedSessionIds: ['imported-task-1'],
       isImporting: true,
-      isUncertain: false,
     },
   },
   {
@@ -1566,7 +1564,6 @@ const externalConversations: DesktopExternalSessionCatalogItem[] = [
       importedCount: 0,
       importedSessionIds: [],
       isImporting: false,
-      isUncertain: false,
     },
   },
   {
@@ -1579,7 +1576,6 @@ const externalConversations: DesktopExternalSessionCatalogItem[] = [
       importedCount: 1,
       importedSessionIds: ['imported-archived'],
       isImporting: false,
-      isUncertain: false,
     },
   },
 ];
@@ -3523,7 +3519,7 @@ function importOutcomeRecoveryBridge(): Record<string, unknown> {
                 importState: {
                   importedCount: 1,
                   importedSessionIds: ['outcome-recovered-task'],
-                  isImporting: false, isUncertain: false,
+                  isImporting: false,
                 },
               }
             : source,

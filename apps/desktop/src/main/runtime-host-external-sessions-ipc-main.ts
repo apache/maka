@@ -64,10 +64,6 @@ export function registerRuntimeHostExternalSessionsIpc(
   deps: RuntimeHostExternalSessionsIpcDeps,
   ipcMain: ReconnectableReadIpcMain,
 ): void {
-  // This registration is scoped to one (hostId, hostEpoch) candidate. Keep the
-  // fail-closed decision here, beside the operation that can make it, so page
-  // lifetimes and Host selection cannot erase or share it.
-  const uncertainImports = new Set<string>();
   handleReconnectableRead(ipcMain, 'external-sessions:listSources', () =>
     deps.client.listExternalSessionSources(),
   );
@@ -79,10 +75,6 @@ export function registerRuntimeHostExternalSessionsIpc(
       sessions: result.sessions.map(({ hostCwd, ...session }) => ({
         ...session,
         cwd: hostCwd,
-        importState: {
-          ...session.importState,
-          isUncertain: uncertainImports.has(importKey(query.adapterId, session.id)),
-        },
       }) satisfies DesktopHostExternalSessionCatalogItem),
     };
   });
@@ -119,8 +111,10 @@ export function registerRuntimeHostExternalSessionsIpc(
       // The task may be in the catalog, but no uncertain response carries an
       // operation-specific Session id. A malformed response is equally
       // uncertain: input was canonical before this call, so only an explicit
-      // not_dispatched interruption proves that a retry is safe.
-      uncertainImports.add(importKey(request.adapterId, request.sourceSessionId));
+      // not_dispatched interruption proves that this request did not run.
+      // Re-importing is nevertheless a supported operation that creates an
+      // independent task, so this per-request outcome must not become client
+      // eligibility state.
       deps.emitSessionsChanged('created');
       return {
         ok: false,
@@ -128,10 +122,6 @@ export function registerRuntimeHostExternalSessionsIpc(
       } satisfies ExternalSessionImportIpcResult;
     }
   });
-}
-
-function importKey(adapterId: string, sourceSessionId: string): string {
-  return `${adapterId}\0${sourceSessionId}`;
 }
 
 function isDefinitelyUndispatchedImport(error: unknown): boolean {

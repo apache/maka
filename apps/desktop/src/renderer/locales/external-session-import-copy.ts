@@ -199,7 +199,7 @@ const COPY = {
     batchFailed: (count) => `另有 ${count} 个没能导入。`,
     batchNothingImported: '没有对话被导入。',
     importOutcomeUnknownDescription: (names) =>
-      `以下对话的导入结果无法确认：${names.map((name) => `「${name}」`).join('、')}。请先在任务列表中查找，已经出现的不要再次导入。`,
+      `以下对话的导入结果无法确认：${names.map((name) => `「${name}」`).join('、')}。可以先在任务列表中查找，也可以再次导入；再次导入会创建独立任务。`,
   },
   'zh-TW': {
     modeLabel: '匯入或匯出',
@@ -281,7 +281,7 @@ const COPY = {
     batchFailed: (count) => `另有 ${count} 個無法匯入。`,
     batchNothingImported: '沒有匯入任何對話。',
     importOutcomeUnknownDescription: (names) =>
-      `以下對話的匯入結果無法確認：${names.map((name) => `「${name}」`).join('、')}。請先在任務列表中查詢，已經出現的不要再次匯入。`,
+      `以下對話的匯入結果無法確認：${names.map((name) => `「${name}」`).join('、')}。可以先在任務列表中查詢，也可以再次匯入；再次匯入會建立獨立任務。`,
   },
   en: {
     modeLabel: 'Import or export',
@@ -367,7 +367,7 @@ const COPY = {
     batchFailed: (count) => `${count} more could not be imported.`,
     batchNothingImported: 'No conversation was imported.',
     importOutcomeUnknownDescription: (names) =>
-      `Maka could not confirm the outcome of these imports: ${names.map((name) => `“${name}”`).join(', ')}. Look in the task list first, and do not import again anything that is already there.`,
+      `Maka could not confirm the outcome of these imports: ${names.map((name) => `“${name}”`).join(', ')}. Check the task list or import again; importing again creates an independent task.`,
   },
 } satisfies UiCatalog<ExternalSessionImportCopy>;
 

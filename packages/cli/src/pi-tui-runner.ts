@@ -444,6 +444,9 @@ interface TuiSessionActionsCopy {
   readonly externalEmpty: string;
   readonly externalUnavailable: string;
   readonly externalImportedCount: string;
+  readonly externalImportedActionsTitle: string;
+  readonly externalOpenLatestImported: string;
+  readonly externalImportAgain: string;
   readonly externalImportBusy: string;
   readonly externalImportFailed: string;
   readonly externalImportModelUnavailable: string;
@@ -456,6 +459,7 @@ interface TuiSessionActionsCopy {
   readonly externalImportLimitMessages: string;
   readonly externalImportUncertain: string;
   readonly externalOpenFailed: string;
+  readonly externalOpenLatestFailed: string;
   readonly newSessionFailed: string;
 }
 
@@ -560,15 +564,6 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   let orchestrationMode = input.driver.getOrchestrationMode?.() ?? 'default';
   let thinkingLevel: ThinkingLevel | undefined = undefined;
   let sessionListScope: 'current' | 'all' = input.sessionListScope ?? 'current';
-  const uncertainExternalImportKeys = new Set<string>();
-  const externalImportKey = (adapterId: string, sourceSessionId: string): string =>
-    JSON.stringify([adapterId, sourceSessionId]);
-  const isExternalImportEligible = (
-    adapterId: string,
-    source: ExternalSessionCatalogItem,
-  ): boolean =>
-    !source.importState.isImporting &&
-    !uncertainExternalImportKeys.has(externalImportKey(adapterId, source.id));
   let connectionIdentityNotice: string | undefined;
   let busy = false;
   let closed = false;
@@ -3018,20 +3013,35 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     }
   };
 
+  const openImportedExternalSession = async (
+    sessionId: string,
+    failureText: string,
+  ): Promise<void> => {
+    try {
+      await switchSession(sessionId);
+    } catch {
+      state.entries.push({ kind: 'notice', level: 'error', text: failureText });
+      requestRender();
+      return;
+    }
+    try {
+      await discardCurrentSidePair();
+    } catch (error) {
+      reportError(error);
+    }
+  };
+
   const importExternalSession = async (
     adapterId: string,
     source: ExternalSessionCatalogItem,
   ): Promise<void> => {
     if (!input.externalSessions) return;
     const copy = TUI_SESSION_ACTIONS_COPY[locale];
-    const importKey = externalImportKey(adapterId, source.id);
-    if (!isExternalImportEligible(adapterId, source)) {
+    if (source.importState.isImporting) {
       state.entries.push({
         kind: 'notice',
         level: 'error',
-        text: uncertainExternalImportKeys.has(importKey)
-          ? copy.externalImportUncertain
-          : copy.externalUnavailable,
+        text: copy.externalUnavailable,
       });
       requestRender();
       return;
@@ -3080,25 +3090,13 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         state.entries.push({ kind: 'notice', level: 'error', text: copy.externalImportFailed });
         return;
       }
-      uncertainExternalImportKeys.add(importKey);
       state.entries.push({ kind: 'notice', level: 'error', text: copy.externalImportUncertain });
       return;
     }
-    try {
-      await switchSession(importedSessionId);
-    } catch {
-      state.entries.push({
-        kind: 'notice',
-        level: 'error',
-        text: formatUiMessage(copy.externalOpenFailed, { sessionId: importedSessionId }, locale),
-      });
-      return;
-    }
-    try {
-      await discardCurrentSidePair();
-    } catch (error) {
-      reportError(error);
-    }
+    await openImportedExternalSession(
+      importedSessionId,
+      formatUiMessage(copy.externalOpenFailed, { sessionId: importedSessionId }, locale),
+    );
   };
 
   const showExternalSessionPage = async (
@@ -3126,9 +3124,13 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       void load(false);
     };
     const render = (): void => {
-      // SelectList has no disabled-row contract. Keep ineligible rows outside
-      // the selection domain and explain the empty eligible set below.
-      const selectable = sessions.filter((session) => isExternalImportEligible(adapterId, session));
+      // SelectList has no disabled-row contract. A Host-owned in-flight import
+      // disables another import, but it does not disable opening an already
+      // published task.
+      const selectable = sessions.filter(
+        (session) =>
+          !session.importState.isImporting || session.importState.importedSessionIds.length > 0,
+      );
       byValue = new Map(
         selectable.map((session) => [`external:${adapterId}:${session.id}`, session] as const),
       );
@@ -3211,7 +3213,53 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
             requestRender();
             return;
           }
-          void runControl(() => importExternalSession(adapterId, source));
+          const latestImportedSessionId = source.importState.importedSessionIds[0];
+          if (latestImportedSessionId === undefined) {
+            void runControl(() => importExternalSession(adapterId, source));
+            return;
+          }
+          const actionTitle = formatUiMessage(
+            copy.externalImportedActionsTitle,
+            { source: source.name },
+            locale,
+          );
+          const actions: SelectItem[] = [
+            { value: 'open-latest', label: copy.externalOpenLatestImported },
+            ...(!source.importState.isImporting
+              ? [{ value: 'import-again', label: copy.externalImportAgain }]
+              : []),
+          ];
+          showSelectPicker(
+            actionTitle,
+            source.name,
+            actions,
+            (action) => {
+              if (busy || turnRunning) {
+                state.entries.push({
+                  kind: 'notice',
+                  level: 'error',
+                  text: copy.externalImportBusy,
+                });
+                requestRender();
+                return;
+              }
+              if (action.value === 'import-again') {
+                void runControl(() => importExternalSession(adapterId, source));
+                return;
+              }
+              void runControl(() =>
+                openImportedExternalSession(
+                  latestImportedSessionId,
+                  formatUiMessage(
+                    copy.externalOpenLatestFailed,
+                    { sessionId: latestImportedSessionId },
+                    locale,
+                  ),
+                ),
+              );
+            },
+            { minPrimaryColumnWidth: 24, maxPrimaryColumnWidth: 48 },
+          );
         },
         onCancel: closeOverlay,
         onToggleScope: toggleScope,

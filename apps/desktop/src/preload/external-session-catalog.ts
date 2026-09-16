@@ -26,18 +26,10 @@ import {
 /** Main-process projection before Host-local Session ids enter the preload boundary. */
 export type DesktopHostExternalSessionCatalogItem = Omit<
   ExternalSessionCatalogItem,
-  'hostCwd' | 'importState'
+  'hostCwd'
 > & {
   /** Main maps the Host-only path name onto Desktop's existing cwd vocabulary. */
   readonly cwd: string;
-  /**
-   * Desktop Main could not prove whether this source import committed. It owns
-   * this bit for the scoped Host client lifetime so renderer remounts cannot
-   * accidentally make a retry eligible.
-   */
-  readonly importState: ExternalSessionCatalogItem['importState'] & {
-    readonly isUncertain: boolean;
-  };
 };
 
 /** Renderer import state whose Session ids are scoped Desktop Session keys. */

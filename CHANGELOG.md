@@ -28,7 +28,10 @@
 - Added external Session import to the TUI. It lists the Runtime Host's external
   sources (Claude Code, Codex, OpenCode) and imports one Session as a native
   Maka Session through the same Host catalog/import path the Desktop App uses,
-  opening the result without sending a model request.
+  opening the result without sending a model request. Sources with prior imports
+  offer an action to open the most recently imported task or create another
+  independent import. An uncertain result remains visible as a warning while
+  still allowing a user-initiated import again in both Desktop and TUI.
 - Added `/transcript` to browse long TUI sessions without depending on terminal
   scrollback, with line, page, and first/last navigation.
 

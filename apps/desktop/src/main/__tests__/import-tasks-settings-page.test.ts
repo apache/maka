@@ -70,7 +70,7 @@ describe('ImportTasksSettingsPage durable import state', () => {
             importState: {
               importedCount: 2,
               importedSessionIds: ['session-newest', 'session-older'],
-              isImporting: false, isUncertain: false,
+              isImporting: false,
             },
           }),
         ],
@@ -90,11 +90,8 @@ describe('ImportTasksSettingsPage durable import state', () => {
 
   it('scopes catalog reads and import to the selected Runtime Host', async () => {
     const source = externalSession();
-    const uncertain = externalSession({
-      importState: { ...source.importState, isUncertain: true },
-    });
     const harness = await renderPage({
-      catalogs: [catalog(source), catalog(uncertain)],
+      catalogs: [catalog(source), catalog(source)],
       importResult: { ok: false, reason: 'commit_outcome_unknown' },
     });
 
@@ -196,7 +193,6 @@ describe('ImportTasksSettingsPage durable import state', () => {
               importedCount: 1,
               importedSessionIds: ['session-existing'],
               isImporting: true,
-              isUncertain: false,
             },
           }),
         ],
@@ -214,24 +210,6 @@ describe('ImportTasksSettingsPage durable import state', () => {
     await act(async () => harness.root.unmount());
   });
 
-  it('uses Main-owned uncertain state after remount to keep the source locked', async () => {
-    const harness = await renderPage({
-      catalog: catalog(externalSession({
-        importState: {
-          importedCount: 0,
-          importedSessionIds: [],
-          isImporting: false,
-          isUncertain: true,
-        },
-      })),
-    });
-
-    assert.equal(buttonWithText(harness.container, 'Import')?.disabled, true);
-    assert.match(harness.container.textContent, /Check the import result/);
-
-    await act(async () => harness.root.unmount());
-  });
-
   it('renders durable repeat-import state in Chinese', async () => {
     const harness = await renderPage({
       locale: 'zh-CN',
@@ -241,7 +219,6 @@ describe('ImportTasksSettingsPage durable import state', () => {
             importedCount: 3,
             importedSessionIds: ['session-zh'],
             isImporting: false,
-            isUncertain: false,
           },
         }),
       ),
@@ -257,13 +234,13 @@ describe('ImportTasksSettingsPage durable import state', () => {
   it('polls catalog-owned in-flight state until the imported task becomes durable', async (context) => {
     context.mock.timers.enable({ apis: ['setTimeout'] });
     const importing = externalSession({
-      importState: { importedCount: 0, importedSessionIds: [], isImporting: true, isUncertain: false },
+      importState: { importedCount: 0, importedSessionIds: [], isImporting: true },
     });
     const imported = externalSession({
       importState: {
         importedCount: 1,
         importedSessionIds: ['session-landed'],
-        isImporting: false, isUncertain: false,
+        isImporting: false,
       },
     });
     const harness = await renderPage({ catalogs: [catalog(importing), catalog(imported)] });
@@ -288,7 +265,7 @@ describe('ImportTasksSettingsPage durable import state', () => {
     const secondPageImporting = externalSession({
       id: 'source-second',
       name: 'Second page source',
-      importState: { importedCount: 0, importedSessionIds: [], isImporting: true, isUncertain: false },
+      importState: { importedCount: 0, importedSessionIds: [], isImporting: true },
     });
     const secondPageImported = externalSession({
       id: 'source-second',
@@ -296,7 +273,7 @@ describe('ImportTasksSettingsPage durable import state', () => {
       importState: {
         importedCount: 1,
         importedSessionIds: ['second-page-task'],
-        isImporting: false, isUncertain: false,
+        isImporting: false,
       },
     });
     const harness = await renderPage({
@@ -338,7 +315,6 @@ describe('ImportTasksSettingsPage durable import state', () => {
         importedCount: 1,
         importedSessionIds: ['session-recovered'],
         isImporting: false,
-        isUncertain: true,
       },
     });
     const opened: string[] = [];
@@ -519,7 +495,7 @@ describe('ImportTasksSettingsPage source switching', () => {
     const importing = externalSession({
       id: 's-codex',
       name: 'Codex conv',
-      importState: { importedCount: 0, importedSessionIds: [], isImporting: true, isUncertain: false },
+      importState: { importedCount: 0, importedSessionIds: [], isImporting: true },
     });
     const harness = await renderPage({
       adapterIds: ['codex', 'claude-code'],
@@ -757,7 +733,7 @@ describe('ImportTasksSettingsPage source switching', () => {
     const importing = externalSession({
       id: 's-codex',
       name: 'Codex conv',
-      importState: { importedCount: 0, importedSessionIds: [], isImporting: true, isUncertain: false },
+      importState: { importedCount: 0, importedSessionIds: [], isImporting: true },
     });
     const harness = await renderPage({
       adapterIds: ['codex', 'claude-code'],
@@ -807,7 +783,7 @@ function externalSession(
     name: 'Investigate a flaky test',
     cwd: '/workspace/maka-agent',
     updatedAt: Date.now(),
-    importState: { importedCount: 0, importedSessionIds: [], isImporting: false, isUncertain: false },
+    importState: { importedCount: 0, importedSessionIds: [], isImporting: false },
     ...overrides,
   };
 }
@@ -1083,7 +1059,7 @@ describe('ImportTasksSettingsPage batch import', () => {
         sessions: [
           externalSession({
             id: 'running',
-            importState: { importedCount: 0, importedSessionIds: [], isImporting: true, isUncertain: false },
+            importState: { importedCount: 0, importedSessionIds: [], isImporting: true },
           }),
           externalSession({ id: 'available' }),
         ],
@@ -1178,7 +1154,7 @@ describe('ImportTasksSettingsPage batch import', () => {
           externalSession({
             id: 'again',
             name: 'Again',
-            importState: { importedCount: 1, importedSessionIds: ['prior'], isImporting: false, isUncertain: false },
+            importState: { importedCount: 1, importedSessionIds: ['prior'], isImporting: false },
           }),
           externalSession({ id: 'broken', name: 'Broken' }),
         ],
@@ -1211,13 +1187,10 @@ describe('ImportTasksSettingsPage batch import', () => {
 
   it('a Host that does not answer is not counted as a failure', async () => {
     // A catalog read cannot attribute a later task to this unanswered request.
-    // Calling it a failure is what invites the retry that makes a second copy.
+    // Unknown is not a definite failure even though the user may choose a new import.
     const quiet = externalSession({ id: 'quiet' });
     const { container } = await renderPage({
-      catalogs: [
-        { sessions: [quiet], nextCursor: null },
-        { sessions: [{ ...quiet, importState: { ...quiet.importState, isUncertain: true } }], nextCursor: null },
-      ],
+      catalogs: [{ sessions: [quiet], nextCursor: null }],
       importBySource: { quiet: 'unknown' },
     });
 
@@ -1234,29 +1207,19 @@ describe('ImportTasksSettingsPage batch import', () => {
     const text = container.textContent ?? '';
     assert.match(text, /No conversation was imported/);
     assert.doesNotMatch(text, /could not be imported/);
-    // It surfaces through the fail-closed unconfirmed banner.
+    // It surfaces through a per-request warning without changing eligibility.
     assert.match(text, /unconfirmed|Unconfirmed|outcome/i);
+    assert.equal(rows(container)[0]?.disabled, false);
   });
 
-  it('an uncertain source cannot be selected or submitted by a later batch', async () => {
+  it('allows a source to be submitted again after an unknown outcome', async () => {
     const uncertain = externalSession({ id: 'uncertain', name: 'Uncertain' });
-    const available = externalSession({ id: 'available', name: 'Available' });
     const { container, importedIds } = await renderPage({
-      catalogs: [
-        { sessions: [uncertain, available], nextCursor: null },
-        {
-          sessions: [
-            { ...uncertain, importState: { ...uncertain.importState, isUncertain: true } },
-            available,
-          ],
-          nextCursor: null,
-        },
-      ],
-      importBySource: { uncertain: 'unknown', available: 'ok' },
+      catalogs: [{ sessions: [uncertain], nextCursor: null }],
+      importBySource: { uncertain: 'unknown' },
     });
 
-    await tick(rows(container)[0]!, true);
-    const firstRun = buttonWithText(container, 'Import selected');
+    const firstRun = buttonWithText(container, 'Import');
     assert.ok(firstRun);
     await act(async () => {
       firstRun.click();
@@ -1266,26 +1229,17 @@ describe('ImportTasksSettingsPage batch import', () => {
     });
 
     assert.deepEqual(importedIds(), ['uncertain']);
-    assert.equal(rows(container)[0]?.disabled, true, 'the uncertain source stays locked');
-    assert.equal(rows(container)[1]?.disabled, false, 'another source remains eligible');
+    const retry = buttonWithText(container, 'Import');
+    assert.ok(retry);
+    assert.equal(retry.disabled, false);
 
-    await tick(masterBox(container), true);
-    assert.deepEqual(
-      rows(container).map((box) => box.checked),
-      [false, true],
-      'select all excludes the uncertain source',
-    );
-    assert.match(container.textContent ?? '', /1 \/ 1 selected/);
-
-    const secondRun = buttonWithText(container, 'Import selected');
-    assert.ok(secondRun);
     await act(async () => {
-      secondRun.click();
+      retry.click();
       await Promise.resolve();
       await Promise.resolve();
       await Promise.resolve();
     });
-    assert.deepEqual(importedIds(), ['uncertain', 'available']);
+    assert.deepEqual(importedIds(), ['uncertain', 'uncertain']);
   });
 
   it('keeps source limit details in the batch summary after the catalog refresh', async () => {

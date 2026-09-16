@@ -162,7 +162,7 @@ type ImportAttempt = {
  * fail together.
  */
 type ImportRun =
-  | { kind: 'idle'; summary?: ImportBatchOutcome }
+  | { kind: 'idle'; summary?: ImportBatchOutcome; unknownNames?: readonly string[] }
   | { kind: 'single'; attempt: ImportAttempt }
   /** `current` is the one conversion actually in flight; the rest are queued. */
   | { kind: 'batch'; done: number; total: number; current?: string };
@@ -170,7 +170,7 @@ type ImportRun =
 const IDLE_IMPORT_RUN: ImportRun = { kind: 'idle' };
 
 /** What one row of a batch did. */
-type ImportBatchDisposition = 'imported' | 'duplicated' | 'failed' | 'unknown';
+type ImportBatchDisposition = 'imported' | 'duplicated' | 'failed';
 
 /**
  * What a batch import can honestly say afterwards.
@@ -180,15 +180,11 @@ type ImportBatchDisposition = 'imported' | 'duplicated' | 'failed' | 'unknown';
  * a user who marked twelve and reads "imported 12" deserves to know that two of
  * them now exist twice.
  *
- * `unknown` is neither a success nor a failure: the call did not answer, and a
- * catalog delta cannot prove which request created a task. Folding it into
- * failures is what would invite the retry that makes a second copy.
  */
 type ImportBatchOutcome = {
   imported: number;
   duplicated: number;
   failed: readonly string[];
-  unknown: readonly string[];
   /**
    * At least one row failed with `no_model`. Surfaced on the summary (not the
    * transient importError banner, which the post-run catalog refresh clears) so
@@ -203,7 +199,6 @@ const EMPTY_IMPORT_BATCH_OUTCOME: ImportBatchOutcome = {
   imported: 0,
   duplicated: 0,
   failed: [],
-  unknown: [],
   noModel: false,
   sourceLimits: [],
 };
@@ -220,8 +215,6 @@ function recordImportBatchResult(
       return { ...outcome, imported: outcome.imported + 1, duplicated: outcome.duplicated + 1 };
     case 'failed':
       return { ...outcome, failed: [...outcome.failed, sourceSessionId] };
-    case 'unknown':
-      return { ...outcome, unknown: [...outcome.unknown, sourceSessionId] };
   }
 }
 
@@ -587,13 +580,8 @@ export function ImportTasksSettingsPage(props: {
     [host],
   );
 
-  const uncertainImports = useMemo(
-    () => catalog.sessions.filter((session) => session.importState.isUncertain),
-    [catalog.sessions],
-  );
   const isImportEligible = useCallback(
-    (session: DesktopExternalSessionCatalogItem) =>
-      !session.importState.isImporting && !session.importState.isUncertain,
+    (session: DesktopExternalSessionCatalogItem) => !session.importState.isImporting,
     [],
   );
 
@@ -609,6 +597,7 @@ export function ImportTasksSettingsPage(props: {
       };
       setImportRun({ kind: 'single', attempt });
       setImportError(null);
+      let outcomeUnknown = false;
       try {
         const outcome = await requestImport(attempt.adapterId, attempt.sourceSessionId);
         // Navigating away from Settings unmounts this page while the import is
@@ -621,6 +610,7 @@ export function ImportTasksSettingsPage(props: {
           // reasons are clean failures with an actionable banner.
           // Exhaustive by design — a new reason is a compile error until handled.
           if (outcome.reason === 'commit_outcome_unknown') {
+            outcomeUnknown = true;
             void loadCatalog(attempt.adapterId);
           } else if (outcome.reason === 'no_model') {
             setImportError(copy.importFailedNoModel);
@@ -639,7 +629,11 @@ export function ImportTasksSettingsPage(props: {
         if (!mountedRef.current) return;
         setImportError(localizedShellErrorMessage(error, copy.importFailedFallback, locale));
       } finally {
-        if (mountedRef.current) setImportRun(IDLE_IMPORT_RUN);
+        if (mountedRef.current) {
+          setImportRun(
+            outcomeUnknown ? { kind: 'idle', unknownNames: [attempt.name] } : IDLE_IMPORT_RUN,
+          );
+        }
       }
     },
     [
@@ -692,6 +686,7 @@ export function ImportTasksSettingsPage(props: {
     setImportError(null);
     setImportRun({ kind: 'batch', done: 0, total: targets.length, current: targets[0]?.id });
     let outcome = EMPTY_IMPORT_BATCH_OUTCOME;
+    const unknownNames: string[] = [];
     try {
       for (const [index, session] of targets.entries()) {
         if (!mountedRef.current) return;
@@ -714,10 +709,9 @@ export function ImportTasksSettingsPage(props: {
               wasImported ? 'duplicated' : 'imported',
             );
           } else if (result.reason === 'commit_outcome_unknown') {
-            // Not `failed`: the call did not answer. A later catalog delta cannot
-            // identify which request created a task, so keep this unconfirmed
-            // instead of claiming another client's import or inviting a retry.
-            outcome = recordImportBatchResult(outcome, session.id, 'unknown');
+            // Not `failed`: the call did not answer. Keep the warning tied to
+            // this page's request, without turning it into catalog state.
+            unknownNames.push(session.name);
           } else {
             // A definite, code-classified failure (no usable model, or an
             // unreadable/oversized source) — not a maybe-landed task. Count it as
@@ -759,7 +753,11 @@ export function ImportTasksSettingsPage(props: {
         // The summary carries `noModel`, not the transient importError banner,
         // because `loadCatalog` below clears importError on its post-run refresh
         // and would wipe it before the user sees it.
-        setImportRun({ kind: 'idle', summary: outcome });
+        setImportRun({
+          kind: 'idle',
+          summary: outcome,
+          ...(unknownNames.length > 0 ? { unknownNames } : {}),
+        });
         // Cleared because it was answered. Leaving the rows marked after a run
         // invites a second press that would import each of them again.
         setSelection(EMPTY_LISTED_SELECTION);
@@ -968,13 +966,11 @@ export function ImportTasksSettingsPage(props: {
             </div>
           )}
 
-          {uncertainImports.length > 0 && (
+          {importRun.kind === 'idle' && (importRun.unknownNames?.length ?? 0) > 0 && (
             <Banner
               status="warning"
               title={copy.importOutcomeUnknownTitle}
-              description={copy.importOutcomeUnknownDescription(
-                uncertainImports.map((session) => session.name),
-              )}
+              description={copy.importOutcomeUnknownDescription(importRun.unknownNames ?? [])}
             />
           )}
 

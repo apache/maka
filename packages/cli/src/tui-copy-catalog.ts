@@ -1354,6 +1354,9 @@ export const TUI_COPY_RESOURCES = {
       externalUnavailable:
         'The external sessions on this page are not currently available to import.',
       externalImportedCount: 'imported {count} times',
+      externalImportedActionsTitle: 'Choose an action for {source}',
+      externalOpenLatestImported: 'Open latest imported task',
+      externalImportAgain: 'Import again',
       externalImportBusy:
         'Cannot import while a turn or another action is running. Wait for it to finish and try again.',
       externalImportFailed: 'Could not import the external session.',
@@ -1367,9 +1370,11 @@ export const TUI_COPY_RESOURCES = {
       externalImportLimitConvertedBytes: 'converted content size',
       externalImportLimitMessages: 'message count',
       externalImportUncertain:
-        'The import result is uncertain. Check the session list before importing again.',
+        'The import result is uncertain. Check the session list or import again; importing again creates an independent task.',
       externalOpenFailed:
         'Imported as {sessionId}, but Maka could not open it. Use /session to retry.',
+      externalOpenLatestFailed:
+        'Could not open the latest imported task ({sessionId}). Use /session to retry.',
       newSessionFailed:
         'Could not start a new session: a local command could not be stopped. Press Ctrl+C to stop it, then try again.',
     },
@@ -1385,6 +1390,9 @@ export const TUI_COPY_RESOURCES = {
       externalEmpty: '没有找到外部会话。',
       externalUnavailable: '当前页的外部会话暂时不可导入。',
       externalImportedCount: '已导入 {count} 次',
+      externalImportedActionsTitle: '选择「{source}」的操作',
+      externalOpenLatestImported: '打开最近导入的任务',
+      externalImportAgain: '再次导入',
       externalImportBusy: '当前有回合或其他操作正在运行。请等待完成后重试。',
       externalImportFailed: '无法导入外部会话。',
       externalImportModelUnavailable: '没有可用的模型连接。请先配置并启用一个连接再导入。',
@@ -1395,8 +1403,10 @@ export const TUI_COPY_RESOURCES = {
       externalImportLimitRecords: '记录数量',
       externalImportLimitConvertedBytes: '转换后内容大小',
       externalImportLimitMessages: '消息数量',
-      externalImportUncertain: '导入结果不确定。再次导入前请先检查会话列表。',
+      externalImportUncertain:
+        '导入结果不确定。可以检查任务列表，也可以再次导入；再次导入会创建独立任务。',
       externalOpenFailed: '已导入为 {sessionId}，但 Maka 无法打开。请用 /session 重试。',
+      externalOpenLatestFailed: '无法打开最近导入的任务（{sessionId}）。请用 /session 重试。',
       newSessionFailed: '无法开始新会话：无法停止本地命令。请按 Ctrl+C 停止命令后重试。',
     },
     'zh-TW': {
@@ -1411,6 +1421,9 @@ export const TUI_COPY_RESOURCES = {
       externalEmpty: '找不到外部工作階段。',
       externalUnavailable: '目前頁的外部工作階段暫時無法匯入。',
       externalImportedCount: '已匯入 {count} 次',
+      externalImportedActionsTitle: '選擇「{source}」的操作',
+      externalOpenLatestImported: '開啟最近匯入的任務',
+      externalImportAgain: '再次匯入',
       externalImportBusy: '目前有回合或其他操作正在執行。請等待完成後重試。',
       externalImportFailed: '無法匯入外部工作階段。',
       externalImportModelUnavailable: '沒有可用的模型連線。請先設定並啟用一個連線再匯入。',
@@ -1421,8 +1434,10 @@ export const TUI_COPY_RESOURCES = {
       externalImportLimitRecords: '記錄數量',
       externalImportLimitConvertedBytes: '轉換後內容大小',
       externalImportLimitMessages: '訊息數量',
-      externalImportUncertain: '匯入結果不確定。再次匯入前請先檢查工作階段清單。',
+      externalImportUncertain:
+        '匯入結果不確定。可以檢查任務列表，也可以再次匯入；再次匯入會建立獨立任務。',
       externalOpenFailed: '已匯入為 {sessionId}，但 Maka 無法開啟。請用 /session 重試。',
+      externalOpenLatestFailed: '無法開啟最近匯入的任務（{sessionId}）。請用 /session 重試。',
       newSessionFailed: '無法開始新工作階段，請稍後重試。',
     },
   },
