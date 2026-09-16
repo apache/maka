@@ -35,8 +35,6 @@ import { PromptAnchorRailHostContext } from './prompt-anchor-rail.js';
  */
 export type ChatSurfaceLayoutProps = Omit<ComponentProps<typeof ChatLayout>, 'autoScroll'> & {
   scrollToBottomLabel?: string;
-  /** Loads the durable tail after the scroll authority pins to it. */
-  onReturnToTail?(): Promise<void> | void;
 };
 
 /**
@@ -61,7 +59,6 @@ export function ChatSurfaceLayout({
   children,
   density = 'balanced',
   scrollToBottomLabel,
-  onReturnToTail,
   ...props
 }: ChatSurfaceLayoutProps) {
   const [railHost, setRailHost] = useState<HTMLDivElement | null>(null);
@@ -85,7 +82,7 @@ export function ChatSurfaceLayout({
       // Astryx's default button reads `isScrolledUp`, which stops updating the
       // moment its scroll layer is off. Maka's reads Maka's pin instead.
       scrollButton={props.scrollButton === null ? null
-        : <TranscriptScrollButton onActivate={onReturnToTail} />}
+        : <TranscriptScrollButton />}
       density={density}
       className={cn('maka-chat-layout', className)}
       data-chat-scroll-container="true"

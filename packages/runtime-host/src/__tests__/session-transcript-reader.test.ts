@@ -613,13 +613,6 @@ test('pages the ledger without materializing Turns it takes no rows from', async
       ),
       [],
     );
-    const landmarks = await decoding('landmarks', SMALL_TURN_BUDGET, () =>
-      read.readDurableTurnLandmarks(session.id, 3),
-    );
-    assert.deepEqual(
-      landmarks.landmarks.map((item) => item.label),
-      ['prompt 0', 'prompt 2', 'prompt 4'],
-    );
     const contributions: SessionTurnContribution[] = [];
     let contributionPosition = 0;
     for (;;) {

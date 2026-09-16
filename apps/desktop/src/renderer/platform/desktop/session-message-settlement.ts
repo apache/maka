@@ -19,7 +19,6 @@
 
 import type { StoredMessage } from '@maka/core/session';
 import type { MakaBridge } from '../../../preload/bridge-contract.js';
-import { DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES } from '../../../preload/transcript-contract.js';
 import { DesktopTranscriptRangeStore } from './desktop-transcript-range-store.js';
 
 const COMMITTED_ASSISTANT_SETTLE_TIMEOUT_MS = 480;
@@ -31,8 +30,7 @@ export interface RefreshMessagesOptions {
 }
 
 export type TranscriptSettlementSource = {
-  transcripts: Pick<MakaBridge['transcripts'], 'open'>;
-  sessions: Pick<MakaBridge['sessions'], 'listTurns'>;
+  transcripts: Pick<MakaBridge['transcripts'], 'open' | 'readTurn'>;
 };
 
 export async function readSettledMessages(
@@ -85,6 +83,7 @@ export async function readSettledMessagesFrom(
       cancelOpen = close;
       if (cancelled) close();
     },
+    'tail',
   );
   void opening.catch(() => undefined);
   let handle: Awaited<typeof opening> | undefined;
@@ -92,48 +91,31 @@ export async function readSettledMessagesFrom(
     handle = await Promise.race([opening, cancellation]);
     globalThis.clearTimeout(openTimeout);
     const requiredTurnId = options.requiredTurnId;
-    let retainedDurable: ReturnType<DesktopTranscriptRangeStore['durableEntries']> | undefined;
+    // The tail may have left the required Turn behind; read that Turn alone.
+    let turnMessages: readonly StoredMessage[] = [];
     if (
       requiredTurnId !== undefined &&
       !transcriptRecordsTerminalTurn(store.snapshot().messages, requiredTurnId)
     ) {
-      retainedDurable = store.durableEntries();
-      const readHandle = handle;
-      const recoverTurn = async () => {
-        // Main now reads sequence-anchored ranges, not Turn identities. Resolve
-        // the Host's existing Turn index, then extend only this bounded window
-        // until the requested terminal record arrives or settlement times out.
-        const turns = await source.sessions.listTurns(sessionId);
-        const firstSequence = turns.find((turn) => turn.turnId === requiredTurnId)?.firstSequence;
-        if (firstSequence === undefined || cancelled || Date.now() >= deadline) return;
-        await readHandle.loadAround(firstSequence, DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES, store.navigate());
-        let previousSequence: number | null = null;
-        while (!cancelled && Date.now() < deadline) {
-          if (transcriptRecordsTerminalTurn(store.snapshot().messages, requiredTurnId)) return;
-          const range = store.range();
-          if (!range.hasNewer || range.newestSequence === previousSequence) return;
-          previousSequence = range.newestSequence;
-          await readHandle.loadAfter(range.newestSequence, DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES, store.navigation());
-        }
-      };
-      void recoverTurn().catch(() => undefined);
+      void source.transcripts.readTurn(sessionId, requiredTurnId).then((messages) => {
+        if (cancelled) return;
+        turnMessages = messages;
+        notify();
+        nextChange = changed();
+      }).catch(() => undefined);
     }
     while (true) {
       const snapshot = store.snapshot();
+      const tailIds = new Set(snapshot.messages.map((message) => message.id));
+      const messages = turnMessages
+        .filter((message) => !tailIds.has(message.id))
+        .concat(snapshot.messages);
       const requiredMessageId = options.requiredAssistantMessageId;
       const settled =
         snapshot.ready &&
         (requiredMessageId === undefined || store.hasDurableMessage(requiredMessageId)) &&
-        (requiredTurnId === undefined ||
-          transcriptRecordsTerminalTurn(snapshot.messages, requiredTurnId));
-      if (settled || Date.now() >= deadline) {
-        return {
-          messages: retainedDurable
-            ? mergeTranscriptRanges(retainedDurable, store.durableEntries(), snapshot.messages)
-            : [...snapshot.messages],
-          settled,
-        };
-      }
+        (requiredTurnId === undefined || transcriptRecordsTerminalTurn(messages, requiredTurnId));
+      if (settled || Date.now() >= deadline) return { messages, settled };
       await Promise.race([
         nextChange,
         cancellation,
@@ -148,20 +130,6 @@ export async function readSettledMessagesFrom(
     options.signal?.removeEventListener('abort', abort);
     await handle?.close().catch(() => undefined);
   }
-}
-
-function mergeTranscriptRanges(
-  retained: ReturnType<DesktopTranscriptRangeStore['durableEntries']>,
-  current: ReturnType<DesktopTranscriptRangeStore['durableEntries']>,
-  currentMessages: readonly StoredMessage[],
-): StoredMessage[] {
-  const durableBySequence = new Map(retained.map(({ sequence, message }) => [sequence, message]));
-  for (const { sequence, message } of current) durableBySequence.set(sequence, message);
-  const durable = [...durableBySequence]
-    .sort(([left], [right]) => left - right)
-    .map(([, message]) => message);
-  const durableIds = new Set(durable.map((message) => message.id));
-  return durable.concat(currentMessages.filter((message) => !durableIds.has(message.id)));
 }
 
 function transcriptRecordsTerminalTurn(

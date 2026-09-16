@@ -76,7 +76,7 @@ function makeServices(failFirst: boolean, withHistory: boolean | 'usage', colore
   let questionPending = question;
   let pendingForm: import('@maka/core/events').FormRequestEvent | undefined;
   const publishExecution = () => updateExecution?.({ type: 'host_execution', available: true, rootTurn: pendingForm ? { sessionId, turnId: pendingForm.turnId, runId: 'selection-run', status: 'waiting_for_user' } : questionPending ? { sessionId, turnId: 'question-turn', runId: 'question-run', status: 'waiting_for_user' } : null });
-  const publish = () => { publishExecution(); updateTranscript?.({ messages, hasOlder: false, hasNewer: false, ready: true }); };
+  const publish = () => { publishExecution(); updateTranscript?.({ messages, hasOlder: false, ready: true }); };
   return {
     inspector: {
       context: async () => ({ ok: true, data: { status: 'available', completedAt: 1, modelId: session.model, providerId: 'openai', inputTokens: 1000, contextWindow: 100_000 } }),
@@ -148,7 +148,7 @@ function makeServices(failFirst: boolean, withHistory: boolean | 'usage', colore
       return { kind: 'committed', session: { ...session, workspace: { target: { kind: 'host_path', path: '/projects/maka' }, hostCwd: '/projects/maka' }, createdAt: 0, activityAt: 0, labelsTruncated: false, llmConnectionId: 'connection-test', collaborationMode: 'agent', orchestrationMode: 'default' } };
     },
     observe: (_id, _event, _error, _phase, execution) => { updateExecution = execution; publishExecution(); return () => { updateExecution = undefined; }; },
-    openTranscript: async (_id, handler) => { updateTranscript = handler; publish(); return { observationChanged: () => {}, prefetchHistory: async () => false, retain: () => {}, loadLatest: async () => {}, close: async () => { updateTranscript = undefined; } }; },
+    openTranscript: async (_id, handler) => { updateTranscript = handler; publish(); return { observationChanged: () => {}, loadEarlier: async () => {}, close: async () => { updateTranscript = undefined; } }; },
     stop: async () => {
       questionPending = false;
       pendingForm = undefined;
@@ -532,7 +532,7 @@ function PagedWorkConversation() {
     <WorkHubHighlightContext.Provider value={{ sessionId: undefined, highlight: () => {}, navigateWork: () => {}, selectedWork, selectWork, toggleWork: (work) => selectWork((current) => current?.sessionId === work.sessionId ? undefined : work) }}>
       <ChatSurfaceLayout composer={null}><div className="workhub-surface"><WorkHubConversation messages={messages} onOpenWork={() => {}} onNew={() => {}} scrollBehavior="auto"
         activeSession={{ id: sessionId, name: 'WorkHub', isFlagged: false, isArchived: false, labels: [], hasUnread: false, status: 'active', runningTurnIds: [], backend: 'ai-sdk', llmConnectionId: 'connection-test', llmConnectionSlug: 'test', connectionLocked: false, model: 'model-a', permissionMode: 'ask' }}
-        hasOlderHistory={!loaded} onPrefetchHistory={async () => { setLoaded(true); return true; }}
+        hasEarlierHistory={!loaded} onLoadEarlierHistory={() => setLoaded(true)}
         workLinks={['older-turn', 'latest-turn'].map((coordinationTurnId) => ({ id: coordinationTurnId, coordinationTurnId, targetSessionId: targetId, targetSessionName: '支付回调幂等性' }))} />
       </div></ChatSurfaceLayout>
     </WorkHubHighlightContext.Provider>
@@ -544,10 +544,10 @@ export const FilterWorkHistoryPages: Story = {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getByText('继续补充异常场景。')).toBeInTheDocument());
     expect(canvas.queryByText('请检查支付回调幂等性。')).toBeNull();
-    await userEvent.click(canvas.getByRole('button', { name: '更早的历史' }));
+    await userEvent.click(canvas.getByRole('button', { name: '载入更早的记录' }));
     await waitFor(() => expect(canvas.getByText('请检查支付回调幂等性。')).toBeInTheDocument());
     expect(canvas.queryByText('先讨论一下整体计划。')).toBeNull();
-    expect(canvas.queryByRole('button', { name: '更早的历史' })).toBeNull();
+    expect(canvas.queryByRole('button', { name: '载入更早的记录' })).toBeNull();
     await userEvent.click(canvas.getByRole('button', { name: '显示全部对话' }));
     await waitFor(() => expect(canvas.getByText('先讨论一下整体计划。')).toBeInTheDocument());
   },

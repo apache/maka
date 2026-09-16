@@ -73,7 +73,7 @@ import {
   type RuntimeHostTranscriptTarget,
 } from "./runtime-host-session-observer.js";
 import type {
-  DesktopTranscriptRangeRequest,
+  DesktopTranscriptOpenMode,
   DesktopTranscriptTailAcknowledgement,
 } from '../preload/transcript-contract.js';
 import type { DesktopSessionStopResult } from '../preload/bridge-contract.js';
@@ -111,7 +111,6 @@ type RuntimeHostSessionExecutionClient = Pick<
   | "ingestAttachment"
   | "interruptTurn"
   | 'listSessionTurns'
-  | 'listSessionTurnLandmarks'
   | 'queryMessageExecutions'
   | 'queryMessages'
   | "queryTurnResume"
@@ -229,12 +228,10 @@ export interface RuntimeHostSessionObservationIpcDeps {
   observations: Pick<
     RuntimeHostSessionObservationRegistry,
     | 'acknowledgeTranscriptTail'
-    | 'loadTranscriptAround'
-    | 'loadTranscriptBefore'
-    | 'loadTranscriptAfter'
-    | 'loadTranscriptLatest'
+    | 'loadEarlierTranscript'
     | 'observe'
     | 'openTranscript'
+    | 'readTranscriptTurn'
   >;
   resolveSideConversation(sessionId: string): Promise<boolean>;
 }
@@ -261,39 +258,28 @@ export function registerRuntimeHostSessionObservationIpc(
   );
   ipcMain.handle(
     'sessions:transcript:open',
-    async (event, sessionId: unknown, consumerId: unknown) =>
+    async (event, sessionId: unknown, consumerId: unknown, mode: unknown) =>
       observationIpcResult(
         deps.observations.openTranscript(
           requiredId(sessionId, 'Session'),
           requiredId(consumerId, 'Transcript consumer'),
           event.sender as RuntimeHostTranscriptTarget,
+          normalizeTranscriptOpenMode(mode),
         ),
       ),
   );
-  ipcMain.handle('sessions:transcript:load-before', async (event, input: unknown) => {
-    await deps.observations.loadTranscriptBefore(
-      normalizeTranscriptRangeRequest(input),
+  ipcMain.handle('sessions:transcript:load-earlier', async (event, consumerId: unknown) => {
+    await deps.observations.loadEarlierTranscript(
+      requiredId(consumerId, 'Transcript consumer'),
       event.sender.id,
     );
   });
-  ipcMain.handle('sessions:transcript:load-around', async (event, input: unknown) => {
-    await deps.observations.loadTranscriptAround(
-      normalizeTranscriptRangeRequest(input),
-      event.sender.id,
-    );
-  });
-  ipcMain.handle('sessions:transcript:load-after', async (event, input: unknown) => {
-    await deps.observations.loadTranscriptAfter(
-      normalizeTranscriptRangeRequest(input),
-      event.sender.id,
-    );
-  });
-  ipcMain.handle('sessions:transcript:load-latest', async (event, input: unknown) => {
-    await deps.observations.loadTranscriptLatest(
-      normalizeTranscriptRangeRequest(input),
-      event.sender.id,
-    );
-  });
+  handleReconnectableRead(
+    ipcMain,
+    'sessions:transcript:read-turn',
+    (_event, sessionId: unknown, turnId: unknown) =>
+      deps.observations.readTranscriptTurn(requiredId(sessionId, 'Session'), requiredId(turnId, 'Turn')),
+  );
   ipcMain.handle('sessions:transcript:acknowledge-tail', async (event, input: unknown) => {
     await deps.observations.acknowledgeTranscriptTail(
       normalizeTranscriptTailAcknowledgement(input),
@@ -390,12 +376,6 @@ export function registerRuntimeHostSessionExecutionIpc(
 
   handleReconnectableRead(ipcMain, 'sessions:listTurns', async (_event, sessionId: unknown) =>
     deps.client.listSessionTurns(requiredId(sessionId, 'Session')),
-  );
-  handleReconnectableRead(
-    ipcMain,
-    'sessions:listTurnLandmarks',
-    async (_event, sessionId: unknown) =>
-      deps.client.listSessionTurnLandmarks(requiredId(sessionId, 'Session')),
   );
   handleReconnectableRead(
     ipcMain,
@@ -883,35 +863,9 @@ export function registerRuntimeHostSessionExecutionIpc(
   };
 }
 
-function normalizeTranscriptRangeRequest(input: unknown): DesktopTranscriptRangeRequest {
-  if (!input || typeof input !== 'object' || Array.isArray(input)) {
-    throw new Error('Invalid Desktop transcript range request');
-  }
-  const value = input as Record<string, unknown>;
-  const anchorSequence = value.anchorSequence;
-  const maxBytes = value.maxBytes;
-  if (
-    anchorSequence !== null &&
-    (!Number.isSafeInteger(anchorSequence) || (anchorSequence as number) < 0)
-  ) {
-    throw new Error('Invalid Desktop transcript range anchor');
-  }
-  if (!Number.isSafeInteger(maxBytes)) {
-    throw new Error('Invalid Desktop transcript range byte limit');
-  }
-  if (
-    !Number.isSafeInteger(value.navigation) || (value.navigation as number) < 0
-  ) {
-    throw new Error('Invalid Desktop transcript navigation');
-  }
-  return {
-    consumerId: requiredId(value.consumerId, 'Transcript consumer'),
-    sessionId: requiredId(value.sessionId, 'Session'),
-    hostEpoch: requiredId(value.hostEpoch, 'Host epoch'),
-    anchorSequence: anchorSequence as number | null,
-    maxBytes: maxBytes as number,
-    navigation: value.navigation as number,
-  };
+function normalizeTranscriptOpenMode(mode: unknown): DesktopTranscriptOpenMode {
+  if (mode === 'tail' || mode === 'history') return mode;
+  throw new Error('Invalid Desktop transcript open mode');
 }
 
 function normalizeTranscriptTailAcknowledgement(

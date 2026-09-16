@@ -180,8 +180,6 @@ test('transcript pages are serialized per connection before their responses are 
           throughSequence: input.throughSequence,
           rawBytes: 0,
           fragments: [],
-          rangeBoundarySequence: null,
-          protectedTurnSequence: null,
           nextCursor: null,
         },
       };
@@ -1799,8 +1797,6 @@ function transcriptBootstrapFor(sessionId: string) {
           data: contents.toString('base64'),
         },
       ],
-      rangeBoundarySequence: null,
-      protectedTurnSequence: null,
       nextCursor: null,
     },
     overlay: {
@@ -1811,8 +1807,6 @@ function transcriptBootstrapFor(sessionId: string) {
       throughSequence: 0,
       rawBytes: 0,
       fragments: [],
-      rangeBoundarySequence: null,
-      protectedTurnSequence: null,
       nextCursor: null,
     },
   };

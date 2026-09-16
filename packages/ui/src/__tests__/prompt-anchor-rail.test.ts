@@ -20,7 +20,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
-  mergePromptAnchorRailTurns,
   observeActivePromptRailVisibility,
   selectPromptRailTick,
 } from '../prompt-anchor-rail.js';
@@ -115,73 +114,6 @@ test('keeps the active tick visible when the rail viewport resizes', () => {
   cleanup();
   assert.equal(disconnected, true);
 });
-
-test('merges complete-index landmarks with the resident transcript range', () => {
-  const turns = mergePromptAnchorRailTurns(
-    [
-      { turnId: 'turn-1', label: 'Prompt 1', reply: 'Answer 1' },
-      { turnId: 'turn-3', label: 'Prompt 3', reply: 'Answer 3' },
-    ],
-    [
-      { turnId: 'turn-1', sequence: 0, label: 'Prompt 1' },
-      { turnId: 'turn-2', sequence: 2, label: 'Prompt 2' },
-      { turnId: 'turn-3', sequence: 4, label: 'Prompt 3' },
-    ],
-  );
-
-  assert.deepEqual(turns, [
-    {
-      turnId: 'turn-1',
-      label: 'Prompt 1',
-      reply: 'Answer 1',
-      sequence: 0,
-    },
-    {
-      turnId: 'turn-2',
-      label: 'Prompt 2',
-      reply: '',
-      sequence: 2,
-    },
-    {
-      turnId: 'turn-3',
-      label: 'Prompt 3',
-      reply: 'Answer 3',
-      sequence: 4,
-    },
-  ]);
-});
-
-test('preserves every projected turn without a durable landmark index', () => {
-  assert.deepEqual(
-    mergePromptAnchorRailTurns([
-      { turnId: 'overlay-turn', label: 'Streaming prompt', reply: '' },
-    ]),
-    [{
-      turnId: 'overlay-turn',
-      label: 'Streaming prompt',
-      reply: '',
-    }],
-  );
-});
-
-test('updates landmark content when its body enters a later resident range', () => {
-  const index = [
-    { turnId: 'turn-1', sequence: 0, label: 'Prompt 1' },
-    { turnId: 'turn-2', sequence: 2, label: 'Prompt 2' },
-  ];
-  const historical = mergePromptAnchorRailTurns(
-    [{ turnId: 'turn-1', label: 'Prompt 1', reply: 'Answer 1' }],
-    index,
-  );
-  const intermediate = mergePromptAnchorRailTurns(
-    [{ turnId: 'turn-2', label: 'Prompt 2', reply: 'Answer 2' }],
-    index,
-  );
-
-  assert.deepEqual(historical.map((turn) => turn.reply), ['Answer 1', '']);
-  assert.deepEqual(intermediate.map((turn) => turn.reply), ['', 'Answer 2']);
-});
-
 
 function box(top: number, bottom: number): DOMRect {
   return { top, bottom } as DOMRect;

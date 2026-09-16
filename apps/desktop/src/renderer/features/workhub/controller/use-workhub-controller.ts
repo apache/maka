@@ -44,7 +44,6 @@ import type { WorkHubServices, WorkHubTranscript, WorkHubTranscriptSnapshot } fr
 const emptyTranscript: WorkHubTranscriptSnapshot = {
   messages: [],
   hasOlder: false,
-  hasNewer: false,
   ready: false,
 };
 interface SendAttempt {
@@ -376,22 +375,19 @@ export function useWorkHubController(onSubmit?: () => void) {
       const queued = pendingQueued.current;
       if (queued?.sessionId === sessionId && snapshot.messages.some((message) =>
         message.type === 'user' && message.id === queued.messageId)) queued.observed = true;
-      viewportNavigation.commitRange(sessionId, () => {
-        if (disposed) return;
-        transcriptRef.current = snapshot;
-        setTranscript(snapshot);
-        if (snapshot.ready && observationPhase === 'ready') setReadError(undefined);
-        setTransientMessages((previous) => previous.filter((pending) =>
-          !snapshot.messages.some((message) => message.type === 'user' &&
-            (message.id === pending.id || (pending.id === pending.hostTurnId && message.turnId === pending.hostTurnId))),
-        ));
-        const settled = snapshot.messages.filter((message) =>
-          message.type === 'assistant' && settledBeforePublication.current.delete(message.id));
-        setLiveTurns((previous) => {
-          let next = previous;
-          for (const message of settled) if (next) next = settleLiveTurnBufferStep(next, message.id);
-          return next ? reconcileLiveTurnBuffer(next, snapshot.messages) : next;
-        });
+      transcriptRef.current = snapshot;
+      setTranscript(snapshot);
+      if (snapshot.ready && observationPhase === 'ready') setReadError(undefined);
+      setTransientMessages((previous) => previous.filter((pending) =>
+        !snapshot.messages.some((message) => message.type === 'user' &&
+          (message.id === pending.id || (pending.id === pending.hostTurnId && message.turnId === pending.hostTurnId))),
+      ));
+      const settled = snapshot.messages.filter((message) =>
+        message.type === 'assistant' && settledBeforePublication.current.delete(message.id));
+      setLiveTurns((previous) => {
+        let next = previous;
+        for (const message of settled) if (next) next = settleLiveTurnBufferStep(next, message.id);
+        return next ? reconcileLiveTurnBuffer(next, snapshot.messages) : next;
       });
     }, transcriptAbort.signal, readFailed);
     void opening
@@ -446,12 +442,6 @@ export function useWorkHubController(onSubmit?: () => void) {
           ts: Date.now(), transientPlacement: attempt.placement, pendingSteering: attempt.placement === 'current_turn',
         }]);
         viewportNavigation.followLatest(target);
-        // A queued message becomes visible only where the tail is, and its own
-        // retry guard waits on seeing it. Issue the read before admission so an
-        // uncertain enqueue — the case that arms the guard — is covered too.
-        void range.current?.loadLatest().catch((reason: unknown) => {
-          if (currentSessionId.current === target) report(reason);
-        });
         const result = await services.enqueueMessage(target, attempt.messageId, text, attachments, attempt.placement);
         if (result === 'rejected' && pendingQueued.current === attempt) {
           pendingQueued.current = undefined;
@@ -477,10 +467,6 @@ export function useWorkHubController(onSubmit?: () => void) {
         attachments: [...attachments], transientPlacement: 'current_turn',
       }]);
       viewportNavigation.followLatest(target);
-      // Return a historical range to the tail without delaying message admission.
-      void range.current?.loadLatest().catch((reason: unknown) => {
-        if (currentSessionId.current === target) report(reason);
-      });
       const result = await services.answer(attempt.sessionId, attempt.input);
       return acceptAnswer(attempt, result);
     } catch (reason) {
@@ -621,11 +607,7 @@ export function useWorkHubController(onSubmit?: () => void) {
         void send(attempt.input.text, attempt.input.attachments ?? []);
       } else retryResolution.current();
     },
-    prefetchHistory: (edge: 'older' | 'newer') =>
-      range.current?.prefetchHistory(edge) ?? Promise.resolve(false),
-    retainWindow: (window: { firstTurnId: string; lastTurnId: string }) =>
-      range.current?.retain(window),
-    loadLatest: () => range.current?.loadLatest(),
+    loadEarlier: () => range.current?.loadEarlier(),
     report,
     streamingSettled(messageId?: string) {
       if (!messageId || currentSessionId.current !== sessionId) return;

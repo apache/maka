@@ -1700,16 +1700,6 @@ export class DesktopRuntimeHostClient {
       .flatMap((contribution) => projectSessionTurnContribution(contribution) ?? []);
   }
 
-  async listSessionTurnLandmarks(
-    sessionId: string,
-  ): Promise<OperationOutput<'session.turn_landmarks.query'>> {
-    this.#assertOpen();
-    return this.request('session.turn_landmarks.query', {
-      sessionId,
-      maxLandmarks: 64,
-    });
-  }
-
   close(): Promise<void> {
     this.#closeTask ??= this.#close();
     return this.#closeTask;

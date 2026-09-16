@@ -255,7 +255,7 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `packages/ui/src/chat-model-switcher.tsx` | shell-chrome-or-panel | Button, DropdownMenu, DropdownMenuRadioGroup, DropdownMenuRadioItem | aligned — uses Astryx (Button, DropdownMenu, DropdownMenuRadioGroup, DropdownMenuRadioItem) | aligned |
 | `packages/ui/src/chat-surface-layout.tsx` | shell-chrome-or-panel | ChatLayout | aligned — uses Astryx (ChatLayout) | aligned |
 | `packages/ui/src/chat-turn.tsx` | shell-chrome-or-panel | Badge, Banner, Button, ChatMessage, ChatMessageBubble, ChatMessageMetadata, ChatSystemMessage, ChatTokenizedText, HStack, Icon, IconButton, Spinner, Thumbnail, Timestamp, Token, Tooltip | aligned — uses Astryx (Badge, Banner, Button, ChatMessage, ChatMessageBubble, ChatMessageMetadata, ChatSystemMessage, ChatTokenizedText) | aligned |
-| `packages/ui/src/chat-view.tsx` | shell-chrome-or-panel | Button, ButtonGroup, ChatMessageList, EmptyState, Spinner | aligned — uses Astryx (Button, ButtonGroup, ChatMessageList, EmptyState, Spinner) | aligned |
+| `packages/ui/src/chat-view.tsx` | shell-chrome-or-panel | Button, ButtonGroup, ChatMessageList, EmptyState, HStack, Spinner | aligned — uses Astryx (Button, ButtonGroup, ChatMessageList, EmptyState, HStack, Spinner) | aligned |
 | `packages/ui/src/choice-panel.tsx` | shell-chrome-or-panel | Kbd, RadioList, RadioListItem, Text | aligned — uses Astryx (Kbd, RadioList, RadioListItem, Text) | aligned |
 | `packages/ui/src/client-capability-prompt.tsx` | ui-composition | Button | aligned — uses Astryx (Button) | aligned |
 | `packages/ui/src/components.tsx` | ui-composition | none | aligned — no raw controls; no Astryx JSX usage | aligned |

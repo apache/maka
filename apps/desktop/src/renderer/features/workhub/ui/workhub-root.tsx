@@ -297,7 +297,6 @@ export function WorkHubRoot({ workspace: Workspace }: { workspace: SessionWorksp
       {(workbar) => <ChatSurfaceLayout
         scrollButton={showConversation ? undefined : null}
         style={!showConversation ? { height: expandedLayoutHeight, flex: 'none', position: 'absolute', bottom: 0, width: '100%' } : undefined}
-        onReturnToTail={transcript.hasNewer ? controller.loadLatest : undefined}
         composer={
           <div className="workHubComposerSurface" ref={composerSurface} onFocusCapture={editProgress} onPointerUpCapture={editProgress}>
             {(controller.error || control?.error) && (
@@ -348,7 +347,7 @@ export function WorkHubRoot({ workspace: Workspace }: { workspace: SessionWorksp
               onModelChange={controller.changeModel}
               modelSwitchAvailability={controller.configuringModel ? { available: false, pending: true, reason: 'pending' } : undefined}
               contextUsage={session ? {
-                usageTokens: liveContextUsage?.usageTokens ?? selectLatestRequestUsage(transcript.messages, transcript, session.model, session),
+                usageTokens: liveContextUsage?.usageTokens ?? selectLatestRequestUsage(transcript.messages, session.model, session),
                 declaredContextWindow: modelChoice?.declaredContextWindow,
                 meteredContextWindow: liveContextUsage?.contextWindow,
                 metadataContextWindow: modelChoice?.contextWindow,
@@ -385,10 +384,8 @@ export function WorkHubRoot({ workspace: Workspace }: { workspace: SessionWorksp
           scrollBehavior="auto"
           onNew={() => composer.current?.focus()}
           messages={[...transcript.messages]}
-          hasOlderHistory={transcript.hasOlder}
-          hasNewerHistory={transcript.hasNewer}
-          onPrefetchHistory={controller.prefetchHistory}
-          onRetainWindow={controller.retainWindow}
+          hasEarlierHistory={transcript.hasOlder}
+          onLoadEarlierHistory={controller.loadEarlier}
           transientMessages={controller.transientMessages}
           viewportNavigation={controller.viewportNavigation}
           liveTurns={controller.liveTurns}

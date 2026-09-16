@@ -89,28 +89,6 @@ export interface PromptAnchorRailTurn {
   turnId: string;
   label: string;
   reply?: string;
-  sequence?: number;
-}
-
-export function mergePromptAnchorRailTurns(
-  loadedTurns: ReadonlyArray<{ turnId: string; label: string; reply: string }>,
-  index?: ReadonlyArray<{ turnId: string; sequence: number; label: string }>,
-): PromptAnchorRailTurn[] {
-  if (!index || index.length === 0) {
-    return loadedTurns.map((turn) => ({ ...turn }));
-  }
-  const loadedByTurnId = new Map(loadedTurns.map((turn) => [turn.turnId, turn]));
-  return index.map((landmark) => {
-    const loaded = loadedByTurnId.get(landmark.turnId);
-    return {
-      ...(loaded ?? {
-        turnId: landmark.turnId,
-        label: landmark.label,
-        reply: '',
-      }),
-      sequence: landmark.sequence,
-    };
-  });
 }
 
 export interface PromptAnchorRailProps {
@@ -118,16 +96,7 @@ export interface PromptAnchorRailProps {
   onHighlightTurn?: (turn: PromptAnchorRailTurn | undefined) => void;
   turns: readonly PromptAnchorRailTurn[];
   scrollRef: RefObject<HTMLElement | null>;
-  /** Owns indexed navigation, including superseding pending range reads. */
-  onNavigateTurn?: (turn: PromptAnchorRailTurn) => void;
-  /**
-   * Stop following the tail, before a jump scrolls.
-   *
-   * A tick is the reader choosing where to look, which outranks the tail. It
-   * has to be said before the scroll, not after: released afterwards, the
-   * release lands on a viewport the pin has already written back to the bottom.
-   */
-  onNavigateStart?: (() => void) | undefined;
+  onNavigateTurn: (turn: PromptAnchorRailTurn) => void;
 }
 
 /**
@@ -161,8 +130,8 @@ export function selectPromptRailTick(input: {
 /** The scroll layout owns the rail's full-width sticky anchor. */
 export const PromptAnchorRailHostContext = createContext<HTMLElement | null>(null);
 
-/** Right-edge rail: bounded prompt landmarks that scroll to `[data-turn-id]`. */
-export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRef, onNavigateTurn, onNavigateStart, onHighlightTurn }: PromptAnchorRailProps): React.ReactElement | null {
+/** Right-edge rail: bounded prompt landmarks for the loaded Turns. */
+export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRef, onNavigateTurn, onHighlightTurn }: PromptAnchorRailProps): React.ReactElement | null {
   const host = useContext(PromptAnchorRailHostContext);
   const copy = getConversationCopy(useUiLocale()).sessions;
   const authority = useTranscriptScrollAuthority();
@@ -272,28 +241,6 @@ export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRe
     return observeActivePromptRailVisibility(rail);
   }, [orderedTurnIds, host]);
 
-  const jumpTo = useCallback((turn: PromptAnchorRailTurn): void => {
-    const root = scrollRef.current;
-    const el = root?.querySelector(`[data-turn-id="${CSS.escape(turn.turnId)}"]`);
-    // Before the scroll, not after: the tail has to be released while the
-    // transcript is still where the reader left it, or the release lands after
-    // the next growth has already written the view back to the bottom.
-    onNavigateStart?.();
-    if (turn.sequence !== undefined && onNavigateTurn) {
-      onNavigateTurn(turn);
-    } else if (el && 'scrollIntoView' in el) {
-      // Instant, whatever the app's scroll-motion policy says. A jump is a
-      // teleport the reader asked for, not a journey — and an animated one
-      // does not survive this surface: traced against a 30-prompt session, the
-      // smooth scroll was cancelled by concurrent content growth and stalled
-      // two pixels from where it started. Landing reliably beats animating
-      // unreliably.
-      (el as HTMLElement).scrollIntoView({ behavior: 'auto', block: 'start' });
-    } else if (!el) {
-      onNavigateTurn?.(turn);
-    }
-  }, [scrollRef, onNavigateStart, onNavigateTurn]);
-
   const hoverTurn = useCallback((turn: PromptAnchorRailTurn, index: number) => {
     setHoveredIndex(index);
     onHighlightTurn?.(turn);
@@ -334,7 +281,7 @@ export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRe
               index={index}
               isActive={isActive}
               scale={scale}
-              onNavigate={jumpTo}
+              onNavigate={onNavigateTurn}
               onHover={hoverTurn}
               onHighlight={onHighlightTurn}
             />

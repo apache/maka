@@ -33,18 +33,13 @@ import {
   updateSubscriberTranscriptHighWater,
 } from '../../../../../packages/runtime-host/dist/server/session-transcript-pager.js';
 import { DesktopTranscriptRangeStore } from '../../renderer/platform/desktop/desktop-transcript-range-store.js';
-import {
-  encodeDesktopTranscriptChange,
-  encodeDesktopTranscriptPage,
-  encodeDesktopTranscriptSnapshot,
-} from '../desktop-transcript-ipc.js';
+import { encodeDesktopTranscriptChange, encodeDesktopTranscriptSnapshot } from '../desktop-transcript-ipc.js';
 import { DesktopTranscriptReplica, type DesktopTranscriptReplicaChange } from '../desktop-transcript-replica.js';
 import { runtimeHostSessionFixture } from './runtime-host-session-test-fixture.js';
-import { openTranscriptNavigationLedger } from './transcript-navigation-test-fixture.js';
+import { openTranscriptLedger } from './transcript-ledger-test-fixture.js';
 
 const HOST_EPOCH = 'host-1';
 const SUBSCRIPTION_ID = 'overlay-settlement-subscription';
-const PAGE_BYTES = 128 * 1024;
 const BOOTSTRAP_THROUGH = 'running-b';
 const B_STEERING_THROUGH = 'steering-b';
 const B_COMPLETED_THROUGH = 'completed-b';
@@ -77,55 +72,6 @@ for (const coalesced of [false, true]) {
     }
   });
 }
-
-test('a window parked off the tail reads the completed Turn back through its own edge', async () => {
-  const fixture = await openFixture();
-  try {
-    const { replica, renderer } = fixture;
-    // Reading history: the window dropped the newest rows to meet its budget,
-    // so its newer edge is a gap and tail growth is no longer its business.
-    const oldest = renderer.range().oldestSequence;
-    assert.ok(oldest !== null);
-    renderer.retain(oldest, oldest);
-    assert.equal(renderer.range().hasNewer, true);
-    assert.equal(
-      renderer.snapshot().messages.some(({ id }) => id === 'answer-b'), false,
-      'the overlay is a fact about the tail, and this window no longer reaches it',
-    );
-
-    await fixture.advance(B_COMPLETED_THROUGH);
-    await fixture.advance(C_COMPLETED_THROUGH);
-
-    assert.deepEqual(
-      renderer.durableEntries().map(({ sequence }) => sequence), [oldest],
-      'tail growth has nothing to join onto, so the window stays the range it was trimmed to',
-    );
-    assert.equal(renderer.range().hasNewer, true);
-
-    // Paging back: each read is anchored on the edge the last one left, which
-    // is the only thing that makes the rows spliceable.
-    for (let read = 0; read < 8 && renderer.range().hasNewer; read += 1) {
-      const anchor = renderer.range().newestSequence;
-      const page = await replica.loadAfter(anchor, PAGE_BYTES);
-      assert.ok(page);
-      for (const batch of encodeDesktopTranscriptPage({
-        sessionId: replica.sessionId,
-        generation: replica.generation,
-        hostEpoch: replica.hostEpoch,
-      }, page, { direction: 'newer', anchor })) renderer.accept(batch);
-    }
-
-    assert.deepEqual(
-      renderer.snapshot().messages.flatMap((message) =>
-        message.type === 'assistant' && message.turnId === 'b' ? [message.text] : []),
-      ['B partial and completed answer'],
-      'reading forward from the edge brings the completed body back',
-    );
-    assert.equal(replica.snapshot().overlay.length, 0);
-  } finally {
-    await fixture.close();
-  }
-});
 
 test('a completed live answer remains unique after a fresh transcript subscription', async () => {
   const fixture = await openFixture();
@@ -197,7 +143,7 @@ test('catch-up retires the completed overlay in one notification', async () => {
   }
 });
 
-test('a window page read retires the tail overlay copy without notifying other windows', async () => {
+test('a history page read retires the tail overlay copy without notifying other consumers', async () => {
   const older: StoredMessage = {
     type: 'assistant', id: 'answer-older', turnId: 'older', ts: 1,
     text: 'Older answer', modelId: 'fixture-model',
@@ -208,8 +154,7 @@ test('a window page read retires the tail overlay copy without notifying other w
   };
   const durablePage = (): SessionTranscriptPage => ({
     kind: 'page', sessionId: 'session-1', source: 'durable', direction: 'older',
-    throughSequence: 2, rawBytes: 1, fragments: [], rangeBoundarySequence: null,
-    protectedTurnSequence: null, nextCursor: null,
+    throughSequence: 2, rawBytes: 1, fragments: [], nextCursor: null,
   });
   const bootstrap = durablePage();
   const decoded = new Map<SessionTranscriptPage, {
@@ -245,12 +190,11 @@ test('a window page read retires the tail overlay copy without notifying other w
   try {
     assert.deepEqual(replica.snapshot().overlay.map(({ id }) => id), ['answer-older']);
 
-    const page = await replica.loadBefore(2, PAGE_BYTES);
+    const page = await replica.readOlderPage(2, null);
 
-    assert.ok(page);
     assert.deepEqual(page.durable.map(({ message }) => message.id), ['answer-older']);
     assert.deepEqual(replica.snapshot().overlay, [], 'the durable row retires the tail overlay copy');
-    assert.deepEqual(changes, [], 'a window page changes nothing another window holds');
+    assert.deepEqual(changes, [], 'a history page changes nothing another consumer holds');
     assert.deepEqual(replica.snapshot().durable.map(({ sequence }) => sequence), [2]);
   } finally {
     replica.close();
@@ -265,7 +209,7 @@ async function openFixture(beforePage?: (request: SessionTranscriptPageInput) =>
     assistant('b', 'B partial and completed answer'), turnState('b', 'completed'),
     user('c'), turnState('c', 'running'), assistant('c', 'C'.repeat(600 * 1024)), turnState('c', 'completed'),
   ];
-  const ledger = await openTranscriptNavigationLedger(messages);
+  const ledger = await openTranscriptLedger(messages);
   const { reader, sessionId } = ledger;
   const bootstrapThrough = await ledger.appendThrough(BOOTSTRAP_THROUGH);
   assert.ok(bootstrapThrough !== null);
@@ -358,7 +302,7 @@ async function openFixture(beforePage?: (request: SessionTranscriptPageInput) =>
   };
 }
 
-async function openSettledReplica(ledger: Awaited<ReturnType<typeof openTranscriptNavigationLedger>>) {
+async function openSettledReplica(ledger: Awaited<ReturnType<typeof openTranscriptLedger>>) {
   const { sessionId, reader } = ledger;
   const opened = await createSessionTranscriptBootstrap({
     reader, sessionId, subscriptionId: `${SUBSCRIPTION_ID}-reopened`,

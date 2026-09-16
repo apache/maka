@@ -73,8 +73,6 @@ test('reads newly durable messages forward from an announced watermark', async (
     ),
     [2, 3],
   );
-  assert.equal(page.rangeBoundarySequence, 3);
-  assert.equal(page.protectedTurnSequence, 3);
   assert.equal(page.nextCursor, null);
 });
 
@@ -346,7 +344,7 @@ test('keeps a durable continuation when overlay bytes reduce the bootstrap budge
   assert.ok(bootstrap.durable.nextCursor);
 });
 
-test('opens the complete latest Turn when bootstrap starts inside its assistant', async () => {
+test('completes a byte-sliced bootstrap message from its continuation', async () => {
   const prompt = { ...userMessage(0, 'hello'), turnId: 'turn-1' };
   const assistant = {
     ...assistantMessage(1),
@@ -370,8 +368,6 @@ test('opens the complete latest Turn when bootstrap starts inside its assistant'
     projection: 'owner',
   });
 
-  assert.equal(bootstrap.durable.rangeBoundarySequence, 0);
-  assert.equal(bootstrap.durable.protectedTurnSequence, 1);
   assert.ok(bootstrap.durable.nextCursor);
   const subscription = new ClientSessionSubscription(
     {
@@ -409,14 +405,11 @@ test('opens the complete latest Turn when bootstrap starts inside its assistant'
 
   const decoded = await subscription.decodeTranscriptPage(bootstrap.durable, decodeStoredMessage);
 
-  assert.deepEqual(decoded.messages, [
-    { identity: 0, message: prompt },
-    { identity: 1, message: assistant },
-  ]);
-  assert.equal(decoded.nextCursor, null);
+  assert.deepEqual(decoded.messages, [{ identity: 1, message: assistant }]);
+  assert.ok(decoded.nextCursor);
 });
 
-test('keeps sparse adjacent Turns in separate client ranges while paging in either direction', async () => {
+test('pages every sparse durable message in either direction', async () => {
   const durable: StoredMessage[] = [
     ...Array.from({ length: 161 }, (_, index) => ({
       ...assistantMessage(index),
@@ -432,71 +425,17 @@ test('keeps sparse adjacent Turns in separate client ranges while paging in eith
 
   for (const direction of ['older', 'newer'] as const) {
     for (const projection of ['owner', 'shared'] as const) {
-      const ranges = await decodeSparseTranscriptRanges(durable, direction, projection);
-      const expected = direction === 'older' ? [134, 161] : [161, 134];
+      const pages = await decodeSparseTranscriptPages(durable, direction, projection);
+      const identities = pages.flat().map(({ identity }) => identity);
 
-      assert.deepEqual(
-        ranges.map((range) => range.length),
-        expected,
-        `${projection} ${direction}`,
-      );
-      assert.equal(
-        new Set(ranges.flat().map(({ identity }) => identity)).size,
-        durable.length,
-        `${projection} ${direction}`,
-      );
+      assert.ok(pages.length > 1, `${projection} ${direction}`);
+      assert.equal(identities.length, durable.length, `${projection} ${direction}`);
+      assert.equal(new Set(identities).size, durable.length, `${projection} ${direction}`);
     }
   }
 });
 
-test('admits a sparse Turn exactly at the client range message bound', async () => {
-  const durable: StoredMessage[] = [
-    ...Array.from({ length: 256 }, (_, index) => ({
-      ...assistantMessage(index),
-      turnId: 'turn-at-bound',
-      text: 'x'.repeat(1_600),
-    })),
-    ...Array.from({ length: 20 }, (_, index) => ({
-      ...assistantMessage(index + 256),
-      turnId: 'turn-after',
-      text: 'x'.repeat(1_600),
-    })),
-  ];
-
-  for (const projection of ['owner', 'shared'] as const) {
-    const ranges = await decodeSparseTranscriptRanges(durable, 'newer', projection);
-    assert.deepEqual(
-      ranges.map((range) => range.length),
-      [256, 20],
-      projection,
-    );
-  }
-});
-
-test('restarts a partial first row deferred past a sparse range boundary', async () => {
-  const durable: StoredMessage[] = [
-    ...Array.from({ length: 161 }, (_, index) => ({
-      ...assistantMessage(index),
-      turnId: 'turn-older',
-      text: index === 160 ? 'y'.repeat(600 * 1024) : 'x'.repeat(1_600),
-    })),
-    ...Array.from({ length: 134 }, (_, index) => ({
-      ...assistantMessage(index + 161),
-      turnId: 'turn-newer',
-      text: 'x'.repeat(1_600),
-    })),
-  ];
-
-  const ranges = await decodeSparseTranscriptRanges(durable, 'older', 'owner');
-  assert.deepEqual(
-    ranges.map((range) => range.length),
-    [134, 161],
-  );
-  assert.equal(new Set(ranges.flat().map(({ identity }) => identity)).size, durable.length);
-  assert.deepEqual(ranges[1]?.find(({ identity }) => identity === 160 * 8)?.message, durable[160]);
-});
-
-test('pages through a terminal Turn that exceeds the Host range message bound', async () => {
+test('pages through a terminal Turn longer than one page', async () => {
   const durable: StoredMessage[] = Array.from({ length: 286 }, (_, index) => ({
     ...assistantMessage(index),
     turnId: 'turn-1',
@@ -520,8 +459,6 @@ test('pages through a terminal Turn that exceeds the Host range message bound', 
   });
 
   assert.equal(bootstrap.durable.fragments.length, 256);
-  assert.equal(bootstrap.durable.rangeBoundarySequence, null);
-  assert.equal(bootstrap.durable.protectedTurnSequence, null);
   assert.ok(bootstrap.durable.nextCursor);
 
   const subscription = new ClientSessionSubscription(
@@ -593,291 +530,6 @@ test('pages through a terminal Turn that exceeds the Host range message bound', 
   );
 });
 
-test('degrades the range boundary for an oversized running Turn', async () => {
-  const durable: StoredMessage[] = Array.from({ length: 286 }, (_, index) => ({
-    ...assistantMessage(index),
-    turnId: 'turn-1',
-  }));
-  const { bootstrap } = await createSessionTranscriptBootstrap({
-    reader: transcriptReader(durable),
-    sessionId: 'session-1',
-    subscriptionId: 'subscription-1',
-    throughSequence: durable.length - 1,
-    rootTurn: {
-      sessionId: 'session-1',
-      turnId: 'turn-1',
-      runId: 'run-1',
-      status: 'running',
-    },
-    activeAssistantStreams: [],
-    maxBytes: 512 * 1024,
-    projection: 'owner',
-  });
-
-  assert.equal(bootstrap.durable.fragments.length, 256);
-  assert.equal(bootstrap.durable.rangeBoundarySequence, null);
-  assert.equal(bootstrap.durable.protectedTurnSequence, null);
-  assert.ok(bootstrap.durable.nextCursor);
-});
-
-test('degrades the range boundary for a Turn that exceeds the byte bound', async () => {
-  const durable: StoredMessage[] = Array.from({ length: 32 }, (_, index) => ({
-    ...assistantMessage(index),
-    turnId: 'turn-1',
-    text: 'x'.repeat(600 * 1024),
-  }));
-  const { bootstrap } = await createSessionTranscriptBootstrap({
-    reader: transcriptReader(durable),
-    sessionId: 'session-1',
-    subscriptionId: 'subscription-1',
-    throughSequence: durable.length - 1,
-    rootTurn: {
-      sessionId: 'session-1',
-      turnId: 'turn-1',
-      runId: 'run-1',
-      status: 'completed',
-      terminalEventId: 'terminal-1',
-    },
-    activeAssistantStreams: [],
-    maxBytes: 512 * 1024,
-    projection: 'owner',
-  });
-
-  assert.ok(bootstrap.durable.fragments.length <= 256);
-  assert.ok(bootstrap.durable.rawBytes <= 512 * 1024);
-  assert.equal(bootstrap.durable.rangeBoundarySequence, null);
-  assert.equal(bootstrap.durable.protectedTurnSequence, null);
-  assert.ok(bootstrap.durable.nextCursor);
-});
-
-test('admits a latest Turn exactly at the Host range message bound', async () => {
-  const durable: StoredMessage[] = [
-    { ...assistantMessage(0), turnId: 'turn-before' },
-    ...Array.from({ length: 256 }, (_, index) => ({
-      ...assistantMessage(index + 1),
-      turnId: 'turn-latest',
-    })),
-  ];
-
-  for (const projection of ['owner', 'shared'] as const) {
-    const { bootstrap } = await createSessionTranscriptBootstrap({
-      reader: transcriptReader(durable),
-      sessionId: 'session-1',
-      subscriptionId: `subscription-${projection}`,
-      throughSequence: durable.length - 1,
-      rootTurn: {
-        sessionId: 'session-1',
-        turnId: 'turn-before',
-        runId: 'run-1',
-        status: 'running',
-      },
-      activeAssistantStreams: [],
-      maxBytes: 16 * 1024,
-      projection,
-    });
-
-    assert.equal(bootstrap.durable.rangeBoundarySequence, 1);
-    assert.equal(bootstrap.durable.protectedTurnSequence, durable.length - 1);
-  }
-});
-
-test('excludes a partial far-edge Turn when the complete range would exceed its bound', async () => {
-  const durable: StoredMessage[] = [
-    ...Array.from({ length: 3 }, (_, index) => ({
-      ...assistantMessage(index),
-      turnId: 'turn-far-edge',
-    })),
-    ...Array.from({ length: 254 }, (_, index) => assistantMessage(index + 3)),
-  ];
-  const reader = transcriptReader(durable);
-  const { bootstrap, state } = await createSessionTranscriptBootstrap({
-    reader,
-    sessionId: 'session-1',
-    subscriptionId: 'subscription-1',
-    throughSequence: durable.length - 1,
-    rootTurn: null,
-    activeAssistantStreams: [],
-    maxBytes: 512 * 1024,
-    projection: 'owner',
-  });
-
-  assert.deepEqual(
-    bootstrap.durable.fragments.map((fragment) => fragment.kind === 'durable' && fragment.sequence),
-    Array.from({ length: 254 }, (_, index) => 256 - index),
-  );
-  assert.equal(bootstrap.durable.rangeBoundarySequence, 3);
-  assert.equal(bootstrap.durable.protectedTurnSequence, 256);
-  assert.ok(bootstrap.durable.nextCursor);
-
-  const page = await readSessionTranscriptPage({
-    reader,
-    state,
-    request: {
-      subscriptionId: 'subscription-1',
-      source: 'durable',
-      direction: 'older',
-      throughSequence: durable.length - 1,
-      cursor: bootstrap.durable.nextCursor,
-      anchorSequence: null,
-      maxBytes: 512 * 1024,
-    },
-  });
-  assert.deepEqual(
-    page.fragments.map((fragment) => fragment.kind === 'durable' && fragment.sequence),
-    [2, 1, 0],
-  );
-  assert.equal(page.rangeBoundarySequence, 0);
-  assert.equal(page.protectedTurnSequence, 2);
-});
-
-test('admits a forward Turn exactly at the Host range message bound', async () => {
-  for (const projection of ['owner', 'shared'] as const) {
-    const durable: StoredMessage[] = [{ ...assistantMessage(0), turnId: 'turn-before' }];
-    const reader = transcriptReader(durable);
-    const subscriptionId = `subscription-${projection}`;
-    const { state } = await createSessionTranscriptBootstrap({
-      reader,
-      sessionId: 'session-1',
-      subscriptionId,
-      throughSequence: 0,
-      rootTurn: null,
-      activeAssistantStreams: [],
-      maxBytes: 16 * 1024,
-      projection,
-    });
-    durable.push(
-      ...Array.from({ length: 256 }, (_, index) => ({
-        ...assistantMessage(index + 1),
-        turnId: 'turn-page',
-      })),
-      { ...assistantMessage(257), turnId: 'turn-after' },
-    );
-    assert.equal(updateSubscriberTranscriptHighWater(state, durable.length - 1), true);
-
-    const page = await readSessionTranscriptPage({
-      reader,
-      state,
-      request: {
-        subscriptionId,
-        source: 'durable',
-        direction: 'newer',
-        throughSequence: durable.length - 1,
-        cursor: null,
-        anchorSequence: 0,
-        maxBytes: 512 * 1024,
-      },
-    });
-
-    assert.equal(page.rangeBoundarySequence, 256);
-    assert.equal(page.protectedTurnSequence, 256);
-    assert.ok(page.nextCursor);
-  }
-});
-
-test('defers a partial forward edge Turn to the next complete range', async () => {
-  for (const projection of ['owner', 'shared'] as const) {
-    const durable: StoredMessage[] = [{ ...assistantMessage(0), turnId: 'turn-before' }];
-    const reader = transcriptReader(durable);
-    const subscriptionId = `subscription-${projection}`;
-    const { state } = await createSessionTranscriptBootstrap({
-      reader,
-      sessionId: 'session-1',
-      subscriptionId,
-      throughSequence: 0,
-      rootTurn: null,
-      activeAssistantStreams: [],
-      maxBytes: 16 * 1024,
-      projection,
-    });
-    durable.push(
-      ...Array.from({ length: 254 }, (_, index) => assistantMessage(index + 1)),
-      ...Array.from({ length: 3 }, (_, index) => ({
-        ...assistantMessage(index + 255),
-        turnId: 'turn-far-edge',
-      })),
-    );
-    assert.equal(updateSubscriberTranscriptHighWater(state, durable.length - 1), true);
-
-    const first = await readSessionTranscriptPage({
-      reader,
-      state,
-      request: {
-        subscriptionId,
-        source: 'durable',
-        direction: 'newer',
-        throughSequence: durable.length - 1,
-        cursor: null,
-        anchorSequence: 0,
-        maxBytes: 512 * 1024,
-      },
-    });
-    assert.deepEqual(
-      first.fragments.map((fragment) => fragment.kind === 'durable' && fragment.sequence),
-      Array.from({ length: 254 }, (_, index) => index + 1),
-    );
-    assert.equal(first.rangeBoundarySequence, 254);
-    assert.equal(first.protectedTurnSequence, 254);
-    assert.ok(first.nextCursor);
-
-    const second = await readSessionTranscriptPage({
-      reader,
-      state,
-      request: {
-        subscriptionId,
-        source: 'durable',
-        direction: 'newer',
-        throughSequence: durable.length - 1,
-        cursor: first.nextCursor,
-        anchorSequence: null,
-        maxBytes: 512 * 1024,
-      },
-    });
-    assert.deepEqual(
-      second.fragments.map((fragment) => fragment.kind === 'durable' && fragment.sequence),
-      [255, 256, 257],
-    );
-    assert.equal(second.rangeBoundarySequence, 257);
-    assert.equal(second.protectedTurnSequence, 257);
-  }
-});
-
-test('protects the latest Turn when a forward page ends in a session note', async () => {
-  const durable: StoredMessage[] = [{ ...assistantMessage(0), turnId: 'turn-before' }];
-  const reader = transcriptReader(durable);
-  const { state } = await createSessionTranscriptBootstrap({
-    reader,
-    sessionId: 'session-1',
-    subscriptionId: 'subscription-1',
-    throughSequence: 0,
-    rootTurn: null,
-    activeAssistantStreams: [],
-    maxBytes: 16 * 1024,
-    projection: 'owner',
-  });
-  durable.push(
-    { ...assistantMessage(1), turnId: 'turn-latest' },
-    { type: 'system_note', id: 'mode-change-2', ts: 3, kind: 'mode_change' },
-  );
-  assert.equal(updateSubscriberTranscriptHighWater(state, 2), true);
-
-  const page = await readSessionTranscriptPage({
-    reader,
-    state,
-    request: {
-      subscriptionId: 'subscription-1',
-      source: 'durable',
-      direction: 'newer',
-      throughSequence: 2,
-      cursor: null,
-      anchorSequence: 0,
-      maxBytes: 512 * 1024,
-    },
-  });
-
-  assert.equal(page.rangeBoundarySequence, 2);
-  assert.equal(page.protectedTurnSequence, 1);
-});
-
 test('shared paging skips a full hidden storage batch before a visible message', async () => {
   const hidden = Array.from(
     { length: 257 },
@@ -910,7 +562,7 @@ test('shared paging skips a full hidden storage batch before a visible message',
   assert.equal(bootstrap.durable.nextCursor, null);
 });
 
-test('shared range edges cross a hidden storage batch between visible messages', async () => {
+test('shared paging crosses a hidden storage batch between visible messages', async () => {
   const durable: StoredMessage[] = [
     userMessage(0, 'before'),
     ...Array.from(
@@ -939,8 +591,10 @@ test('shared range edges cross a hidden storage batch between visible messages',
     projection: 'shared',
   });
 
-  assert.equal(bootstrap.durable.rangeBoundarySequence, 0);
-  assert.equal(bootstrap.durable.protectedTurnSequence, 258);
+  assert.deepEqual(
+    decodeBootstrap(bootstrap.durable).map(({ id }) => id),
+    ['message-258', 'message-0'],
+  );
 
   const forward = await readSessionTranscriptPage({
     reader,
@@ -955,8 +609,11 @@ test('shared range edges cross a hidden storage batch between visible messages',
       maxBytes: 512 * 1024,
     },
   });
-  assert.equal(forward.rangeBoundarySequence, 258);
-  assert.equal(forward.protectedTurnSequence, 258);
+  assert.deepEqual(
+    decodeBootstrap(forward).map(({ id }) => id),
+    ['message-0', 'message-258'],
+  );
+  assert.equal(forward.nextCursor, null);
 });
 
 test('shrinks the raw bootstrap until it fits its aggregate encoded budget', async () => {
@@ -1067,7 +724,7 @@ function decodeBootstrap(
   );
 }
 
-async function decodeSparseTranscriptRanges(
+async function decodeSparseTranscriptPages(
   durable: readonly StoredMessage[],
   direction: 'older' | 'newer',
   projection: 'owner' | 'shared',
@@ -1113,7 +770,7 @@ async function decodeSparseTranscriptRanges(
   );
   const decodeStoredMessage = (value: unknown): StoredMessage =>
     decodePersistedStoredMessage(markPersisted<StoredMessage>(value));
-  const ranges: Array<readonly { identity: number; message: StoredMessage }[]> = [];
+  const pages: Array<readonly { identity: number; message: StoredMessage }[]> = [];
   let cursor: string | null = null;
   do {
     const page = await readSessionTranscriptPage({
@@ -1130,10 +787,10 @@ async function decodeSparseTranscriptRanges(
       },
     });
     const decoded = await subscription.decodeTranscriptPage(page, decodeStoredMessage);
-    ranges.push(decoded.messages);
+    pages.push(decoded.messages);
     cursor = decoded.nextCursor;
   } while (cursor !== null);
-  return ranges;
+  return pages;
 }
 
 test('shared transcript preserves admitted action identity alongside its physical Turn', () => {

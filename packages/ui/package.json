@@ -33,7 +33,8 @@
     "lucide-react": "^1.38.0",
     "mermaid": "^11.17.2",
     "react": "^19.2.8",
-    "react-dom": "^19.2.8"
+    "react-dom": "^19.2.8",
+    "virtua": "0.48.8"
   },
   "devDependencies": {
     "@types/react": "^19.2.18",

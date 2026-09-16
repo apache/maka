@@ -394,6 +394,7 @@ export async function withE2eWindow(
   {
     seed,
     readinessSelector,
+    readinessTimeoutMs = 20_000,
     e2eFixtureScenario,
     locale,
     platform,
@@ -407,6 +408,8 @@ export async function withE2eWindow(
   }: {
     seed: boolean;
     readinessSelector: string;
+    /** Raise only for a scenario whose seeding is itself heavy enough to delay the first paint. */
+    readinessTimeoutMs?: number;
     e2eFixtureScenario?: string;
     locale?: 'zh-CN' | 'zh-TW' | 'en';
     /** #1312: force app:info's platform so the window boots natively into that platform's `data-os` cascade. */
@@ -485,7 +488,7 @@ export async function withE2eWindow(
     }
     // Centralize the cold-start wait so test bodies are flake-free under retries:0.
     try {
-      await page.waitForSelector(readinessSelector, { timeout: 20_000 });
+      await page.waitForSelector(readinessSelector, { timeout: readinessTimeoutMs });
       if (invocableSkills) {
         await waitForInvocableSkills(page, ['project-only', 'workspace-only']);
       }
@@ -503,7 +506,7 @@ export async function withE2eWindow(
         env: buildFixtureEnv(userDataDir, homeDir, { scenario: e2eFixtureScenario, locale, platform, showWindow: visibleWindow }),
       });
       const restored = await app.firstWindow();
-      await restored.waitForSelector(readinessSelector, { timeout: 20_000 });
+      await restored.waitForSelector(readinessSelector, { timeout: readinessTimeoutMs });
       return restored;
     } });
   } finally {
@@ -532,6 +535,7 @@ type E2eTestFixtures = {
   railRenderWindow: Page;
   promptRailWindow: Page;
   partialHistoryWindow: Page;
+  largeHistoryWindow: { page: Page; app: ElectronApplication };
   newTaskTargetWindow: Page;
   directoryReferenceWindow: { page: Page; folder: string };
   accessibilityNarrativeWindow: Page;
@@ -665,8 +669,8 @@ export const test = base.extend<E2eTestFixtures>({
       showWindow: true,
     }, use);
   },
-  // A transcript larger than the bounded Desktop range. Clicking an unloaded
-  // prompt exercises the real load-around path and its partial-history UI.
+  // A transcript larger than the Desktop history budget, so earlier Turns load
+  // only through the load-earlier control.
   partialHistoryWindow: async ({}, use) => {
     await withE2eWindow({
       seed: false,
@@ -675,6 +679,22 @@ export const test = base.extend<E2eTestFixtures>({
       locale: 'zh-CN',
       showWindow: true,
     }, use);
+  },
+  // Three transcripts past the real 64 MiB history budget, for weighing what
+  // holding the loaded history costs the renderer. Writing them is hundreds of
+  // MiB of durable transcript, which is why the cold-start wait is raised.
+  largeHistoryWindow: async ({}, use) => {
+    await withE2eWindow(
+      {
+        seed: false,
+        readinessSelector: '[data-turn-id]',
+        readinessTimeoutMs: 300_000,
+        e2eFixtureScenario: 'chat-large-history',
+        locale: 'zh-CN',
+        showWindow: true,
+      },
+      async (page, { app }) => use({ page, app }),
+    );
   },
   // A data-backed conversation with settled tool evidence and the workbar open
   // beside it. Shown because the accessibility journey follows real native

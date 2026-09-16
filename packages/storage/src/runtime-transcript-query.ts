@@ -52,13 +52,6 @@ export interface RuntimeTranscriptInvocationHeader {
   readonly lastOrdinal: number;
 }
 
-/** An invocation start, with the prompt event a landmark is labelled by. */
-export interface RuntimeTranscriptLandmark {
-  readonly invocation: RuntimeInvocationRecord;
-  readonly firstOrdinal: number;
-  readonly prompt?: { readonly ordinal: number; readonly event: RuntimeEvent };
-}
-
 export interface RuntimeTranscriptInvocationRequest {
   readonly direction: 'older' | 'newer';
   readonly throughOrdinal: number;
@@ -82,11 +75,6 @@ export interface RuntimeTranscriptQueries {
       events: Iterable<{ readonly ordinal: number; readonly event: RuntimeEvent }>,
     ) => T,
   ): Promise<T[]>;
-  readTranscriptLandmarks(
-    sessionId: string,
-    throughOrdinal: number,
-    limit: number,
-  ): Promise<RuntimeTranscriptLandmark[]>;
 }
 
 export class RuntimeTranscriptOversizedTurnError extends Error {
@@ -216,60 +204,6 @@ export class RuntimeTranscriptQuery {
     );
   }
 
-  landmarks(sessionId: string, throughOrdinal: number, limit: number): RuntimeTranscriptLandmark[] {
-    assertOrdinal(throughOrdinal);
-    if (limit < 1) return [];
-    // Evenly spaced Turn starts, chosen before any payload is read.
-    const rows = this.db
-      .prepare(`
-      WITH settled AS (
-        SELECT e.invocation_id AS invocation_id, o.ordinal AS ordinal ${ledgerOpening}
-          AND ${endingOrdinal('e.invocation_id')} <= :throughOrdinal
-        UNION ALL
-        SELECT legacy.invocation_id, o.ordinal ${migratedOpening}
-          AND ${endingOrdinal('legacy.invocation_id')} <= :throughOrdinal
-      ), candidates AS (
-        SELECT invocation_id, ordinal,
-          ROW_NUMBER() OVER (ORDER BY ordinal) - 1 AS rank, COUNT(*) OVER () AS total
-        FROM settled
-      ), samples(n) AS (
-        SELECT 0 UNION ALL SELECT n + 1 FROM samples WHERE n + 1 < :limit
-      )
-      SELECT DISTINCT invocation_id, ordinal FROM candidates
-      JOIN samples ON rank = CASE WHEN :limit = 1 THEN total - 1
-        ELSE CAST(n * (total - 1) / (:limit - 1) AS INTEGER) END
-      ORDER BY ordinal
-    `)
-      .all({ sessionId, throughOrdinal, limit }) as Array<{
-      invocation_id: string;
-      ordinal: number;
-    }>;
-    return rows.map((row) => {
-      // The prompt is the Turn's first user text event, which is what the read
-      // model projects a user message from. Only that one event is loaded: a
-      // landmark is a label, and projecting whole Turns to build a scrollbar
-      // would read most of the Session.
-      const prompt = this.db
-        .prepare(`
-        SELECT o.ordinal, e.event_id FROM runtime_events e
-        JOIN runtime_session_event_ordinals o ON o.event_id = e.event_id
-        WHERE e.invocation_id = ? AND o.ordinal <= ?
-          AND e.event_kind = 'text' AND json_extract(e.payload_json, '$.role') = 'user'
-        ORDER BY e.event_seq LIMIT 1
-      `)
-        .get(row.invocation_id, throughOrdinal) as
-        | { ordinal: number; event_id: string }
-        | undefined;
-      return {
-        invocation: this.invocation(sessionId, row.invocation_id),
-        firstOrdinal: row.ordinal,
-        ...(prompt
-          ? { prompt: { ordinal: prompt.ordinal, event: this.event(prompt.event_id) } }
-          : {}),
-      };
-    });
-  }
-
   /**
    * The page of settled visible invocations that opened at or before
    * `position`, newest first.
@@ -393,16 +327,6 @@ export class RuntimeTranscriptQuery {
       count += 1;
       yield { ordinal: row.ordinal, event: decodeStoredEvent({ ...row, payload_json: payload }) };
     }
-  }
-
-  private event(id: string): RuntimeEvent {
-    const row = this.db
-      .prepare(
-        'SELECT event_id, session_id, invocation_id, run_id, turn_id, payload_json FROM runtime_events WHERE event_id = ?',
-      )
-      .get(id) as StoredEventRow | undefined;
-    if (!row) throw new Error(`Transcript RuntimeEvent ${id} is missing`);
-    return decodeStoredEvent(row);
   }
 }
 

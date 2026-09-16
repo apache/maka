@@ -37,7 +37,7 @@ const FIXTURE_EPOCH = Date.UTC(2026, 0, 2, 3, 4, 5);
  * projected by the production RuntimeEvent reader. Running Turns live only in
  * the active overlay; their rows acquire sparse durable sequences on ending.
  */
-export async function openTranscriptNavigationLedger(messages: readonly StoredMessage[]) {
+export async function openTranscriptLedger(messages: readonly StoredMessage[]) {
   const base = await mkdtemp(join(tmpdir(), 'maka-transcript-navigation-'));
   const capability = await resolveStorageRoot({ path: join(base, 'root'), kind: 'interactive' });
   const owner = await tryAcquireInteractiveRootOwner(capability);

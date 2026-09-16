@@ -83,8 +83,6 @@ export {
   type SessionTranscriptRecordScanPage,
   type SessionTurnContribution,
   type SessionTurnContributionPage,
-  type SessionTurnLandmark,
-  type SessionTurnLandmarkSnapshot,
   type SessionStore,
   type CoordinationTranscriptReference,
   type CoordinationTranscriptIndexRecord,

@@ -73,7 +73,7 @@ import type {
 } from '@maka/core/runtime-inputs';
 import type { PlanSessionState } from '@maka/core/plan';
 import type { SearchErrorReason, SearchRequest, SearchResult } from '@maka/core/search';
-import type { SessionChangedEvent, SessionSummary, TurnRecord } from '@maka/core/session';
+import type { SessionChangedEvent, SessionSummary, StoredMessage, TurnRecord } from '@maka/core/session';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { E2eFixtureState } from '@maka/core/e2e-fixture';
 import type {
@@ -113,6 +113,7 @@ import type { DeepResearchChangedEvent, DeepResearchClientProgress } from '@maka
 import type {
   DesktopTranscriptBatch,
   DesktopTranscriptHandle,
+  DesktopTranscriptOpenMode,
 } from './transcript-contract.js';
 import type { PetPackManifestV1 } from '@maka/core/pet';
 import type {
@@ -1224,7 +1225,6 @@ export interface MakaBridge {
       }) => void,
     ): () => void;
     listTurns(sessionId: string): Promise<TurnRecord[]>;
-    listTurnLandmarks(sessionId: string): Promise<OperationOutput<'session.turn_landmarks.query'>>;
     compact(sessionId: string): Promise<OperationOutput<'context.compact'>>;
     resumeLatest(sessionId: string): Promise<
       | { disposition: 'started'; runId: string; turnId: string }
@@ -1319,10 +1319,14 @@ export interface MakaBridge {
     abandonSessionCopy(sourceSessionId: string, copyId: string): Promise<void>;
   };
   transcripts: {
+    /** Every message of one Turn, read from the Host rather than from any open transcript. */
+    readTurn(sessionId: string, turnId: string): Promise<StoredMessage[]>;
+    /** Opens the whole transcript unless a consumer asks for the tail alone. */
     open(
       sessionId: string,
       handler: (batch: DesktopTranscriptBatch) => void,
       registerCancellation?: (cancel: () => void) => void,
+      mode?: DesktopTranscriptOpenMode,
     ): Promise<DesktopTranscriptHandle>;
   };
   externalSessions: {

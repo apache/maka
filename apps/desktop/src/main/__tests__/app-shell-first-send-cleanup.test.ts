@@ -632,22 +632,9 @@ describe('composer first-send cleanup', () => {
     assert.equal(resolved, 0);
   });
 
-  it('cancels restoration and accepts a message while latest history catches up in the background', async () => {
-    const latest = deferred<void>();
+  it('cancels restoration and follows latest before accepting a message', async () => {
     const order: string[] = [];
     const activeIdRef = { current: 'existing-session' as string | undefined };
-    const transcript = {
-      store: {
-        sessionId: 'existing-session',
-        range: () => ({ sessionId: 'existing-session', hasNewer: false }),
-        snapshot: () => ({ messages: [] }),
-      },
-      async loadLatest() {
-        order.push('latest');
-        await latest.promise;
-      },
-    } as unknown as DesktopTranscriptRangeController;
-    const transcriptRangeRef = { current: transcript as DesktopTranscriptRangeController | undefined };
     const restoreWindow = installWindow({
       sessions: {
         submitMessage: async () => {
@@ -661,17 +648,14 @@ describe('composer first-send cleanup', () => {
       const sending = createAppShellChatActions({
         ...createActionsDeps(),
         activeIdRef,
-        transcriptRangeRef,
         onFollowLatest: (sessionId) => prepareTranscriptForSend({
-          sessionId, currentSessionId: activeIdRef, controller: transcriptRangeRef,
-          cancel: () => { order.push('cancel-restore'); }, followLatest: () => {},
+          sessionId, currentSessionId: activeIdRef,
+          cancel: () => { order.push('cancel-restore'); },
+          followLatest: () => { order.push('follow-latest'); },
         }),
       }).send('hello');
-      await new Promise((resolve) => setImmediate(resolve));
-      assert.deepEqual(order, ['cancel-restore', 'latest', 'send']);
       assert.equal(await sending, true);
-      latest.resolve();
-      assert.deepEqual(order, ['cancel-restore', 'latest', 'send']);
+      assert.deepEqual(order, ['cancel-restore', 'follow-latest', 'send']);
     } finally {
       restoreWindow();
     }
@@ -746,49 +730,6 @@ describe('composer first-send cleanup', () => {
     }
   });
 
-  for (const initialized of [false, true]) {
-  it(`does not navigate the previous Session controller (${initialized ? 'initialized' : 'opening'}) while sending`, async () => {
-    const submissions: string[] = [];
-    let latestReads = 0;
-    const transcript = {
-      store: {
-        sessionId: 'previous-session',
-        range: () => {
-          if (!initialized) throw new Error('Desktop transcript range is not initialized');
-          return { sessionId: 'previous-session' };
-        },
-      },
-      loadLatest: async () => { latestReads += 1; },
-    } as unknown as DesktopTranscriptRangeController;
-    const restoreWindow = installWindow({
-      sessions: {
-        submitMessage: async (sessionId: string) => {
-          submissions.push(sessionId);
-          return { ok: true, attachments: [], skillInvocation: { loaded: [], failed: [] } };
-        },
-      },
-    });
-    const activeIdRef = { current: 'selected-session' };
-    const transcriptRangeRef = { current: transcript };
-    try {
-      const result = await createAppShellChatActions({
-        ...createActionsDeps(),
-        activeIdRef,
-        transcriptRangeRef,
-        onFollowLatest: (sessionId) => prepareTranscriptForSend({
-          sessionId, currentSessionId: activeIdRef, controller: transcriptRangeRef,
-          cancel: () => {},
-          followLatest: (sessionId) => { assert.equal(sessionId, 'selected-session'); },
-        }),
-      }).send('hello');
-      assert.equal(result, true);
-      assert.deepEqual(submissions, ['selected-session']);
-      assert.equal(latestReads, 0, 'the previous Session must not be navigated');
-    } finally {
-      restoreWindow();
-    }
-  });
-  }
 });
 /**
  * #1433 round 5: the failure feedback for a send is addressed to the surface

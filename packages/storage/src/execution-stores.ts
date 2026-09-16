@@ -151,15 +151,10 @@ export type {
   SessionTranscriptStorageFragment,
   SessionTurnContribution,
   SessionTurnContributionPage,
-  SessionTurnLandmark,
-  SessionTurnLandmarkSnapshot,
 } from './session-store-contract.js';
 
 export type ExecutionSessionWriter = SessionAuthorityStore;
-export type {
-  RuntimeTranscriptInvocationHeader,
-  RuntimeTranscriptLandmark,
-} from './runtime-transcript-query.js';
+export type { RuntimeTranscriptInvocationHeader } from './runtime-transcript-query.js';
 export type ExecutionAgentRunWriter = DurableAgentRunStore;
 export type ExecutionRuntimeEventWriter = DurableRuntimeEventStore &
   RuntimeTranscriptQueries &
@@ -737,8 +732,6 @@ async function createExecutionStoresForWrite(
         run(() => runtimeEventStore.readTranscriptHighWater(sessionId)),
       readTranscriptInvocations: (sessionId, request, project) =>
         run(() => runtimeEventStore.readTranscriptInvocations(sessionId, request, project)),
-      readTranscriptLandmarks: (sessionId, throughOrdinal, limit) =>
-        run(() => runtimeEventStore.readTranscriptLandmarks(sessionId, throughOrdinal, limit)),
       claimContinuation: (input) => run(() => runtimeEventStore.claimContinuation(input)),
       readContinuationClaimByBoundary: (boundaryDigest) =>
         run(() => runtimeEventStore.readContinuationClaimByBoundary(boundaryDigest)),

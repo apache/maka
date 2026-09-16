@@ -32,8 +32,6 @@ import { defineOperation } from './operation-spec.js';
 export const SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES = 16 * 1024;
 export const SESSION_TRANSCRIPT_PAGE_MAX_BYTES = 512 * 1024;
 export const SESSION_TRANSCRIPT_PAGE_MAX_MESSAGES = 256;
-export const SESSION_TRANSCRIPT_RANGE_MAX_BYTES = 16 * 1024 * 1024;
-export const SESSION_TRANSCRIPT_RANGE_MAX_MESSAGES = SESSION_TRANSCRIPT_PAGE_MAX_MESSAGES;
 export const SESSION_TRANSCRIPT_OVERLAY_MAX_MESSAGES = 4_096;
 export const SESSION_TRANSCRIPT_PAGE_RESULT_MAX_BYTES = 744 * 1024;
 export const SESSION_TRANSCRIPT_CURSOR_MAX_BYTES = 1024;
@@ -66,10 +64,6 @@ export interface SessionTranscriptPage {
   readonly throughSequence: number | null;
   readonly rawBytes: number;
   readonly fragments: readonly SessionTranscriptFragment[];
-  /** Host-selected far edge that the client must assemble before publishing this range. */
-  readonly rangeBoundarySequence: number | null;
-  /** Host-selected Turn identity that bounded consumers must retain while trimming this range. */
-  readonly protectedTurnSequence: number | null;
   readonly nextCursor: string | null;
 }
 
@@ -175,10 +169,15 @@ export function decodeSessionTranscriptPageInput(value: unknown): SessionTranscr
   if (cursor !== null && anchorSequence !== null) {
     throw invalidProtocolFrame('Session transcript cursor and anchor are mutually exclusive');
   }
+  const source = decodeSource(input.source);
+  const direction = decodeDirection(input.direction);
+  if (anchorSequence !== null && (source !== 'durable' || direction !== 'newer')) {
+    throw invalidProtocolFrame('Session transcript anchor requires a durable newer read');
+  }
   return {
     subscriptionId: requireId(input.subscriptionId, 'subscriptionId'),
-    source: decodeSource(input.source),
-    direction: decodeDirection(input.direction),
+    source,
+    direction,
     throughSequence:
       input.throughSequence === null
         ? null
@@ -244,8 +243,6 @@ export function decodeSessionTranscriptPage(value: unknown): SessionTranscriptPa
     'throughSequence',
     'rawBytes',
     'fragments',
-    'rangeBoundarySequence',
-    'protectedTurnSequence',
     'nextCursor',
   ]);
   if (result.kind !== 'page') throw invalidProtocolFrame('Invalid Session transcript page kind');
@@ -281,28 +278,6 @@ export function decodeSessionTranscriptPage(value: unknown): SessionTranscriptPa
           'Session transcript cursor',
           SESSION_TRANSCRIPT_CURSOR_MAX_BYTES,
         );
-  const rangeBoundarySequence =
-    result.rangeBoundarySequence === null
-      ? null
-      : requireCount(result.rangeBoundarySequence, 'Session transcript range boundary sequence');
-  const protectedTurnSequence =
-    result.protectedTurnSequence === null
-      ? null
-      : requireCount(result.protectedTurnSequence, 'Session transcript protected Turn sequence');
-  if (
-    (rangeBoundarySequence !== null && source !== 'durable') ||
-    (rangeBoundarySequence !== null &&
-      (throughSequence === null || rangeBoundarySequence > throughSequence))
-  ) {
-    throw invalidProtocolFrame('Invalid Session transcript range boundary');
-  }
-  if (
-    (protectedTurnSequence !== null && source !== 'durable') ||
-    (protectedTurnSequence !== null &&
-      (throughSequence === null || protectedTurnSequence > throughSequence))
-  ) {
-    throw invalidProtocolFrame('Invalid Session transcript protected Turn sequence');
-  }
   if (fragments.length === 0 && (rawBytes !== 0 || nextCursor !== null)) {
     throw invalidProtocolFrame('Invalid empty Session transcript page');
   }
@@ -314,8 +289,6 @@ export function decodeSessionTranscriptPage(value: unknown): SessionTranscriptPa
     throughSequence,
     rawBytes,
     fragments,
-    rangeBoundarySequence,
-    protectedTurnSequence,
     nextCursor,
   };
 }

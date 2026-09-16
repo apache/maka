@@ -418,7 +418,7 @@ export function useActiveSessionEvents(options: {
           else signal.addEventListener('abort', cancel, { once: true });
         },
       );
-    const controller = desktopTranscript.createRecoveringDesktopTranscriptRangeController(
+    const controller = desktopTranscript.createDesktopTranscriptRangeController(
       transcript,
       openTranscript,
       {

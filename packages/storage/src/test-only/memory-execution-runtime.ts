@@ -920,31 +920,6 @@ export function createMemoryRuntimeStore(a: MemoryExecutionAuthority): Execution
         return project(header, read());
       });
     },
-    readTranscriptLandmarks: async (sessionId, throughOrdinal, n) =>
-      a.read((s) => {
-        if (!Number.isSafeInteger(throughOrdinal) || throughOrdinal < 0 || !Number.isSafeInteger(n))
-          throw new RangeError('Invalid landmark bounds');
-        if (n < 1) return [];
-        const all = transcript(s, sessionId, throughOrdinal);
-        const positions = new Set(
-          Array.from({ length: Math.min(n, all.length) }, (_, i) =>
-            n === 1 ? all.length - 1 : Math.floor((i * (all.length - 1)) / (n - 1)),
-          ),
-        );
-        return [...positions]
-          .map((i) => all[i]!)
-          .map((i) => ({
-            invocation: i.invocation,
-            firstOrdinal: i.firstOrdinal,
-            ...(i.events.find((e) => e.event.role === 'user' && e.event.content?.kind === 'text')
-              ? {
-                  prompt: i.events.find(
-                    (e) => e.event.role === 'user' && e.event.content?.kind === 'text',
-                  ),
-                }
-              : {}),
-          }));
-      }),
   };
   return store;
 }

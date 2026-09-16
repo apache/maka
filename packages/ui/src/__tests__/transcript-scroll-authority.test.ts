@@ -22,14 +22,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createTranscriptScrollAuthority } from '../transcript-scroll-authority.js';
-import { createTranscriptViewportNavigation } from '../transcript-viewport-navigation.js';
-
-interface FakeTurn {
-  turnId: string;
-  /** Offset within the scrolled content, which `scrollTop` then shifts. */
-  top: number;
-  height: number;
-}
 
 interface FakeRoot {
   ownerDocument: EventTarget;
@@ -39,15 +31,10 @@ interface FakeRoot {
   clientHeight: number;
   /** The boxes `scrollHeight` is made of, which is what the authority watches. */
   children: readonly unknown[];
-  /** Mounted Turns, laid out relative to `scrollTop`. */
-  turns: FakeTurn[];
-  getBoundingClientRect(): DOMRect;
-  querySelectorAll(selector: string): readonly unknown[];
   addEventListener(type: string, listener: (event: unknown) => void): void;
   removeEventListener(type: string, listener: (event: unknown) => void): void;
   input(deltaY: number, modifiers?: { ctrlKey?: boolean; metaKey?: boolean }): void;
   grabScrollbar(): void;
-  touch(type: 'touchstart' | 'touchend' | 'touchcancel', count: number): void;
   end(): void;
   /** Dispatch the scroll event the browser would, one frame later. */
   emitScroll(): void;
@@ -68,15 +55,6 @@ function fakeRoot(options?: { scrollHeight?: number; clientHeight?: number }): F
     scrollHeight: options?.scrollHeight ?? 3_000,
     clientHeight: options?.clientHeight ?? 600,
     children: [{}],
-    turns: [],
-    getBoundingClientRect: () => ({ top: 0 }) as DOMRect,
-    querySelectorAll: () => root.turns.map((turn) => ({
-      getAttribute: () => turn.turnId,
-      getBoundingClientRect: () => ({
-        top: turn.top - root.scrollTop,
-        bottom: turn.top + turn.height - root.scrollTop,
-      }) as DOMRect,
-    })),
     addEventListener(type, listener) {
       if (!listeners.has(type)) listeners.set(type, new Set());
       listeners.get(type)!.add(listener);
@@ -92,7 +70,6 @@ function fakeRoot(options?: { scrollHeight?: number; clientHeight?: number }): F
       emit('pointerdown', { button: 0, pointerType: 'mouse', pointerId: 1, target: proxy });
     },
     end() { emit('scrollend'); },
-    touch(type, count) { emit(type, { touches: Array.from({ length: count }, () => ({ clientY: 100 })) }); },
     grow(by) {
       root.scrollHeight += by;
     },
@@ -115,20 +92,16 @@ function fakeRoot(options?: { scrollHeight?: number; clientHeight?: number }): F
 }
 
 /**
- * The authority watches the scroller's box and its children's boxes, and keeps
- * that set current with a `MutationObserver`, so the suite owns both. `resize`
+ * The authority watches the scroller's box and its children's boxes. `resize`
  * is every box changing at once, which is the only distinction the authority
  * draws between them: none.
  *
  * End-of-operation frame callbacks are advanced explicitly.
  */
-function withObservers<T>(run: (resize: () => void, frame: () => void, mutate: () => void) => T): T {
+function withObservers<T>(run: (resize: () => void, frame: () => void) => T): T {
   const observers = new Set<() => void>();
-  const mutations = new Set<() => void>();
   const frames: FrameRequestCallback[] = [];
-  const globals = globalThis as { CSS?: unknown; ResizeObserver?: unknown; MutationObserver?: unknown; requestAnimationFrame?: unknown };
-  const originalCss = globals.CSS;
-  globals.CSS = { escape: (value: string) => value };
+  const globals = globalThis as { ResizeObserver?: unknown; MutationObserver?: unknown; requestAnimationFrame?: unknown };
   const originalResize = globals.ResizeObserver;
   const originalMutation = globals.MutationObserver;
   const originalFrame = globals.requestAnimationFrame;
@@ -145,144 +118,86 @@ function withObservers<T>(run: (resize: () => void, frame: () => void, mutate: (
       observers.delete(this.callback);
     }
   };
-  // The set of children only changes when the transcript mounts or unmounts
-  // one, and `resize` already stands for every box in that set changing.
   globals.MutationObserver = class {
-    constructor(private readonly callback: () => void) {}
-    observe(): void {
-      mutations.add(this.callback);
-    }
-    disconnect(): void {
-      mutations.delete(this.callback);
-    }
+    observe(): void {}
+    disconnect(): void {}
   };
   try {
     return run(() => {
       for (const observer of [...observers]) observer();
-    }, () => { for (const callback of frames.splice(0)) callback(0); }, () => {
-      for (const mutation of [...mutations]) mutation();
-    });
+    }, () => { for (const callback of frames.splice(0)) callback(0); });
   } finally {
-    globals.CSS = originalCss;
     globals.ResizeObserver = originalResize;
     globals.MutationObserver = originalMutation;
     globals.requestAnimationFrame = originalFrame;
   }
 }
 
-test('Ctrl and Meta wheel zoom preserve following without requesting history', () => {
+test('native scroll anchoring stays off while attached and is restored on detach', () => {
+  withObservers(() => {
+    const root = fakeRoot();
+    root.style.overflowAnchor = 'auto';
+    const authority = createTranscriptScrollAuthority();
+    const detach = authority.attach(root as unknown as HTMLElement);
+    assert.equal(root.style.overflowAnchor, 'none');
+    root.input(-100);
+    root.scrollTop = 1_000;
+    root.emitScroll();
+    assert.equal(authority.getSnapshot().pinned, false);
+    assert.equal(root.style.overflowAnchor, 'none', 'releasing the pin does not hand anchoring back');
+    detach();
+    assert.equal(root.style.overflowAnchor, 'auto');
+  });
+});
+
+test('Ctrl and Meta wheel zoom preserve following', () => {
   withObservers((resize) => {
     for (const modifiers of [{ ctrlKey: true }, { metaKey: true }]) {
       const root = fakeRoot();
       const authority = createTranscriptScrollAuthority();
       const detach = authority.attach(root as unknown as HTMLElement);
-      let readerReports = 0;
-      authority.subscribeToReaderScroll(() => { readerReports += 1; });
       root.input(-100, modifiers);
       root.grow(200);
       resize();
       assert.equal(authority.getSnapshot().pinned, true);
       assert.equal(root.scrollTop, root.scrollHeight - root.clientHeight);
-      assert.equal(readerReports, 0);
       detach();
     }
   });
 });
 
-test('range publication leaves native input and reading geometry with the browser', () => {
-  withObservers(() => {
-    for (const input of ['wheel', 'touch', 'scrollbar'] as const) {
-      const root = fakeRoot();
-      const authority = createTranscriptScrollAuthority();
-      const detach = authority.attach(root as unknown as HTMLElement);
-      let commits = 0;
-      if (input === 'wheel') root.input(-100);
-      else if (input === 'touch') root.touch('touchstart', 2);
-      else root.grabScrollbar();
-      assert.equal(authority.isInputActive(), true);
-      authority.commitRange(() => commits++);
-      assert.equal(commits, 1);
-      assert.equal(authority.isInputActive(), true, 'publication does not retire native input');
-      if (input === 'scrollbar') {
-        root.ownerDocument.dispatchEvent(new Event('pointerup'));
-        authority.commitRange(() => commits++);
-        assert.equal(commits, 2, 'publication remains available after release');
-      }
-      detach();
-    }
+test('an upward gesture at an unmoving edge keeps following', () => {
+  withObservers((resize, frame) => {
+    const root = fakeRoot({ scrollHeight: 600, clientHeight: 600 });
+    const authority = createTranscriptScrollAuthority();
+    authority.attach(root as unknown as HTMLElement);
+    root.input(-100);
+    frame();
+    frame();
+    assert.equal(authority.getSnapshot().pinned, true);
+    root.grow(400);
+    resize();
+    assert.equal(root.scrollTop, 400);
   });
 });
 
-test('explicit navigation during range publication outranks the old reading anchor', () => {
-  withObservers(() => {
-    for (const command of ['reveal', 'tail'] as const) {
-      const root = fakeRoot();
-      root.turns = [{ turnId: 'old', top: 0, height: 400 }];
-      const anchor = {
-        isConnected: true,
-        dataset: { turnId: 'old' },
-        getBoundingClientRect: () => ({ top: -root.scrollTop, bottom: 400 - root.scrollTop }),
-      };
-      root.querySelectorAll = () => [anchor];
-      Object.assign(root, { querySelector: () => anchor });
-      const authority = createTranscriptScrollAuthority();
-      const detach = authority.attach(root as unknown as HTMLElement);
-      authority.releasePin();
-      root.scrollTop = 0;
-      authority.commitRange(() => {
-        if (command === 'tail') authority.pinToTail();
-        else authority.revealTurn({ scrollIntoView: () => { root.scrollTop = 1_200; } } as unknown as HTMLElement,
-          { block: 'start' });
-      });
-      assert.equal(root.scrollTop, command === 'tail' ? root.scrollHeight - root.clientHeight : 1_200);
-      detach();
-    }
+test('a passive wheel delivered after its threaded scroll reached the top releases the tail', () => {
+  withObservers((resize, frame) => {
+    const root = fakeRoot();
+    const authority = createTranscriptScrollAuthority();
+    authority.attach(root as unknown as HTMLElement);
+    assert.equal(root.scrollTop, 2_400);
+    root.scrollTop = 0;
+    root.emitScroll();
+    root.end();
+    root.input(-4_000);
+    frame();
+    frame();
+    assert.equal(authority.getSnapshot().pinned, false);
+    root.grow(200);
+    resize();
+    assert.equal(root.scrollTop, 0);
   });
-});
-
-test('range publication coalesces within a microtask and uses the viewport anchor owner', async () => {
-  const publication = createTranscriptViewportNavigation();
-  const commits: number[] = [];
-  let scheduled = 0;
-  publication.attachCommitScheduler('session', {
-    subscribeToReaderScroll: () => () => {},
-    commitRange(commit) { scheduled++; commit(); },
-  });
-  publication.commitRange('session', () => commits.push(1));
-  publication.commitRange('session', () => commits.push(2));
-  assert.deepEqual([...commits], []);
-  await Promise.resolve();
-  assert.deepEqual(commits, [2]);
-  assert.equal(scheduled, 1);
-});
-
-test('held publication retains only the latest update and drains on settle or detach', async () => {
-  const publication = createTranscriptViewportNavigation();
-  const commits: number[] = [];
-  let held = true;
-  let settled!: () => void;
-  const detach = publication.attachCommitScheduler('session', {
-    commitRange(commit) { if (!held) commit(); },
-    subscribeToReaderScroll(listener) {
-      settled = () => { listener('settled'); };
-      return () => {};
-    },
-  });
-  publication.commitRange('session', () => commits.push(1));
-  await Promise.resolve();
-  publication.commitRange('session', () => commits.push(2));
-  await Promise.resolve();
-  assert.deepEqual([...commits], []);
-  held = false;
-  settled();
-  await Promise.resolve();
-  assert.deepEqual(commits, [2]);
-  held = true;
-  publication.commitRange('session', () => commits.push(3));
-  await Promise.resolve();
-  detach();
-  await Promise.resolve();
-  assert.deepEqual(commits, [2, 3], 'closing the viewport cannot strand source publication');
 });
 
 test('content that grows under a pinned transcript keeps the tail on screen', () => {
@@ -308,21 +223,51 @@ test('identical shrink/grow geometry follows only when no reader input intervene
       const root = fakeRoot();
       const authority = createTranscriptScrollAuthority();
       authority.attach(root as unknown as HTMLElement);
-      let readerMoves = 0;
-      authority.subscribeToReaderScroll((phase) => {
-        if (phase === 'scroll') readerMoves += 1;
-      });
       if (readerInput) root.input(-100);
       root.grow(-190);
       root.scrollTop = 2_210; // Browser clamps at the intermediate bottom.
       root.grow(22);
       root.emitScroll();
       assert.equal(authority.getSnapshot().pinned, !readerInput);
-      assert.equal(readerMoves, readerInput ? 1 : 0);
       resize();
       assert.equal(root.scrollTop, readerInput ? 2_210 : 2_232);
     });
   }
+});
+
+test('history prepended above a pinned reader moves the offset without releasing the pin', () => {
+  withObservers((resize) => {
+    const root = fakeRoot();
+    const authority = createTranscriptScrollAuthority();
+    authority.attach(root as unknown as HTMLElement);
+    // The virtualizer shifts the offset by the prepended height itself.
+    root.grow(4_000);
+    root.scrollTop += 4_000;
+    root.emitScroll();
+    resize();
+    assert.equal(authority.getSnapshot().pinned, true);
+    assert.equal(root.scrollTop, root.scrollHeight - root.clientHeight);
+  });
+});
+
+test('content landing above a released reader does not re-pin them', () => {
+  withObservers((resize) => {
+    const root = fakeRoot();
+    const authority = createTranscriptScrollAuthority();
+    authority.attach(root as unknown as HTMLElement);
+    authority.releasePin();
+    assert.equal(authority.getSnapshot().pinned, false);
+
+    // Distance to the tail is unchanged — which is exactly the reading that
+    // used to put the pin back and scroll the new turns away.
+    root.grow(4_000);
+    root.scrollTop = 6_400;
+    root.emitScroll();
+    assert.equal(authority.getSnapshot().pinned, false);
+
+    resize();
+    assert.equal(root.scrollTop, 6_400);
+  });
 });
 
 test('scrollend cannot retire a continuing operation or a newer input', () => {
@@ -381,24 +326,6 @@ test('scrollbar defaults can land after pointerup, while an unmoved click retire
   });
 });
 
-test('explicit navigation cancels input provenance before positioning its target', () => {
-  withObservers(() => {
-    const root = fakeRoot();
-    const authority = createTranscriptScrollAuthority();
-    authority.attach(root as unknown as HTMLElement);
-    root.input(-100);
-    root.scrollTop = 1_700;
-    root.emitScroll();
-    authority.releasePin();
-    let reports = 0;
-    authority.subscribeToReaderScroll(() => { reports += 1; });
-    root.scrollTop = 200;
-    root.emitScroll();
-    assert.equal(reports, 0);
-    assert.equal(authority.getSnapshot().pinned, false);
-  });
-});
-
 test('user input releases the tail before content can overwrite the scroll', () => {
   withObservers((resize) => {
     const root = fakeRoot();
@@ -411,9 +338,6 @@ test('user input releases the tail before content can overwrite the scroll', () 
     assert.equal(authority.getSnapshot().pinned, false);
     assert.equal(authority.getSnapshot().awayFromTail, true);
 
-    // Nothing arriving afterwards may move the reader: with the pin released
-    // this authority writes nothing at all, and native anchoring holds the
-    // position the reader chose.
     root.grow(4_000);
     resize();
     assert.equal(root.scrollTop, 1_000);
@@ -440,7 +364,7 @@ test('returning to the tail re-pins, and following resumes', () => {
   });
 });
 
-test('a detached authority writes nothing and reports the tail', () => {
+test('a detached authority writes nothing', () => {
   withObservers((resize) => {
     const root = fakeRoot();
     const authority = createTranscriptScrollAuthority();
@@ -458,9 +382,6 @@ test('a viewport that loses height takes the pinned reader back to the tail', ()
     const root = fakeRoot();
     const authority = createTranscriptScrollAuthority();
     authority.attach(root as unknown as HTMLElement);
-
-    // The transcript did not change at all — the box looking at it did, which
-    // is a window resize, a composer gaining a line, or a dock growing taller.
     root.shrinkViewport(300);
     resize();
     assert.equal(root.scrollTop, 2_700);
@@ -483,30 +404,9 @@ test('a reader who scrolls up while the answer grows is still the reader', () =>
     assert.equal(authority.getSnapshot().pinned, false);
     assert.equal(authority.getSnapshot().awayFromTail, true);
 
-    // And the pin stays off: what arrives next is more of the same answer, and
-    // following it would take the transcript away from where they went.
     root.grow(300);
     resize();
     assert.equal(root.scrollTop, 1_900);
-  });
-});
-
-test('reports both moves even when the reader returns to the last written offset', () => {
-  withObservers(() => {
-    const root = fakeRoot();
-    const authority = createTranscriptScrollAuthority();
-    authority.attach(root as unknown as HTMLElement);
-    let readerMoves = 0;
-    authority.subscribeToReaderScroll((phase) => { if (phase === 'scroll') readerMoves += 1; });
-    root.emitScroll();
-    root.input(-100);
-    root.scrollTop = 900;
-    root.emitScroll();
-    root.input(100);
-    root.scrollTop = 2_400;
-    root.emitScroll();
-    root.end();
-    assert.equal(readerMoves, 2);
   });
 });
 
@@ -515,22 +415,12 @@ test('a slow reader is a reader, however small each step is', () => {
     const root = fakeRoot();
     const authority = createTranscriptScrollAuthority();
     authority.attach(root as unknown as HTMLElement);
-    let readerMoves = 0;
-    authority.subscribeToReaderScroll(() => {
-      readerMoves += 1;
-    });
-
-    // A trackpad crossing the transcript unhurriedly. Judged one event at a
-    // time against the rounding this has to tolerate, every one of these is
-    // noise and the reader never moves at all; they only mean anything added
-    // up. Nothing grows here, so there is nothing else they could be.
     for (let step = 0; step < 90; step += 1) {
       root.input(-2);
       root.scrollTop -= 2;
       root.emitScroll();
     }
     assert.equal(authority.getSnapshot().pinned, false);
-    assert.ok(readerMoves > 0, 'the reader moved 180px and was never heard');
 
     root.grow(500);
     resize();
@@ -538,69 +428,17 @@ test('a slow reader is a reader, however small each step is', () => {
   });
 });
 
-test('content leaving from above the reader is not the reader either', () => {
-  withObservers(() => {
-    const root = fakeRoot();
-    const authority = createTranscriptScrollAuthority();
-    authority.attach(root as unknown as HTMLElement);
-    authority.releasePin();
-    root.scrollTop = 1_500;
-    root.emitScroll();
-    assert.equal(authority.getSnapshot().pinned, false);
-    let readerMoves = 0;
-    authority.subscribeToReaderScroll(() => {
-      readerMoves += 1;
-    });
-
-    // A tool block above them folds away. Anchoring answers a removal the same
-    // way it answers an arrival — by moving the offset exactly as far — so the
-    // reader is still looking at the same content and has asked for nothing.
-    root.grow(-60);
-    root.scrollTop = 1_440;
-    root.emitScroll();
-    assert.equal(readerMoves, 0);
-    assert.equal(authority.getSnapshot().pinned, false);
-  });
-});
-
-test('content landing above a released reader does not re-pin them', () => {
+test('the reading position is the Turn the attached reader names under the offset', () => {
   withObservers((resize) => {
     const root = fakeRoot();
+    let turnIds = ['turn-1', 'turn-2', 'turn-3'];
+    let offset = 0;
     const authority = createTranscriptScrollAuthority();
-    authority.attach(root as unknown as HTMLElement);
-
-    // The reader is at the tail and asks for what is above them: a wheel the
-    // scroller cannot act on, so only the command says so.
-    authority.releasePin();
-    assert.equal(authority.getSnapshot().pinned, false);
-
-    // History lands above them and native anchoring moves the offset to keep
-    // them still. Distance to the tail is unchanged — which is exactly the
-    // reading that used to put the pin back and scroll the new turns away.
-    root.grow(4_000);
-    root.scrollTop = 6_400;
-    root.emitScroll();
-    assert.equal(authority.getSnapshot().pinned, false);
-
-    resize();
-    assert.equal(root.scrollTop, 6_400);
-  });
-});
-
-test('the reading position names the Turn crossing the top of the scrollport', () => {
-  withObservers((resize, _frame, mutate) => {
-    const root = fakeRoot();
-    root.turns = [
-      { turnId: 'turn-1', top: 0, height: 1_000 },
-      { turnId: 'turn-2', top: 1_000, height: 1_000 },
-      { turnId: 'turn-3', top: 2_000, height: 1_000 },
-    ];
-    const authority = createTranscriptScrollAuthority();
-    authority.attach(root as unknown as HTMLElement);
+    authority.attach(root as unknown as HTMLElement, (scrollTop) =>
+      turnIds[Math.min(Math.floor((scrollTop - offset) / 1_000), turnIds.length - 1)]);
     let publications = 0;
     authority.subscribe(() => { publications += 1; });
 
-    // Attached pinned, so the authority wrote the tail under the reader.
     assert.equal(root.scrollTop, 2_400);
     assert.equal(authority.getSnapshot().readingTurnId, 'turn-3');
 
@@ -610,63 +448,28 @@ test('the reading position names the Turn crossing the top of the scrollport', (
     assert.equal(authority.getSnapshot().readingTurnId, 'turn-2');
     assert.ok(publications > 0, 'a new reading position is published');
 
-    // Same Turn still under the top edge: nothing new to say.
     const published = publications;
     root.scrollTop = 1_400;
     root.emitScroll();
-    assert.equal(publications, published);
+    assert.equal(publications, published, 'the same Turn under the top edge says nothing new');
 
-    // A Turn arriving above the reader moves the position without the reader.
-    for (const turn of root.turns) turn.top += 500;
-    root.turns.unshift({ turnId: 'turn-0', top: 0, height: 500 });
-    root.grow(500);
-    root.scrollTop = 1_900;
-    mutate();
+    // A Turn prepended above the reader, with the offset shifted to match.
+    turnIds = ['turn-0', ...turnIds];
+    root.grow(1_000);
+    root.scrollTop = 2_400;
+    root.emitScroll();
     assert.equal(authority.getSnapshot().readingTurnId, 'turn-2');
-    root.scrollTop = 400;
+    offset = 500;
     resize();
-    assert.equal(authority.getSnapshot().readingTurnId, 'turn-0');
+    assert.equal(authority.getSnapshot().readingTurnId, 'turn-1');
   });
 });
 
-test('a transcript without Turns has no reading position', () => {
+test('a transcript without a Turn reader has no reading position', () => {
   withObservers(() => {
     const root = fakeRoot();
     const authority = createTranscriptScrollAuthority();
     authority.attach(root as unknown as HTMLElement);
     assert.equal(authority.getSnapshot().readingTurnId, undefined);
-  });
-});
-
-test('only the reader\'s own movement reaches a reader-scroll listener', () => {
-  withObservers(() => {
-    const root = fakeRoot();
-    const authority = createTranscriptScrollAuthority();
-    let heard = 0;
-    const stop = authority.subscribeToReaderScroll((phase) => {
-      if (phase === 'scroll') heard += 1;
-    });
-    authority.attach(root as unknown as HTMLElement);
-
-    // This authority's own write, echoed back late.
-    root.emitScroll();
-    assert.equal(heard, 0);
-
-    // Content arriving, with anchoring moving the offset to hold the reader.
-    root.grow(500);
-    root.scrollTop = 2_900;
-    root.emitScroll();
-    assert.equal(heard, 0);
-
-    // The reader, at last.
-    root.input(-100);
-    root.scrollTop = 900;
-    root.emitScroll();
-    assert.equal(heard, 1);
-
-    stop();
-    root.scrollTop = 400;
-    root.emitScroll();
-    assert.equal(heard, 1);
   });
 });

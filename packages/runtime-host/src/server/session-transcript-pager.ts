@@ -21,8 +21,6 @@ import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { StoredMessage } from '@maka/core/session';
 import {
   SESSION_TRANSCRIPT_PAGE_MAX_MESSAGES,
-  SESSION_TRANSCRIPT_RANGE_MAX_BYTES,
-  SESSION_TRANSCRIPT_RANGE_MAX_MESSAGES,
   type SessionTranscriptBootstrap,
   type SessionTranscriptFragment,
   type SessionTranscriptPage,
@@ -40,6 +38,8 @@ import { projectSharedSessionTranscriptMessage } from './shared-session-transcri
 
 type SessionTranscriptProjection = 'owner' | 'shared';
 
+const SHARED_PROJECTION_HIDDEN_MAX_BYTES = 16 * 1024 * 1024;
+
 interface TranscriptCursorState {
   readonly version: 1;
   readonly subscriptionId: string;
@@ -49,7 +49,6 @@ interface TranscriptCursorState {
   readonly throughSequence: number | null;
   readonly position: number;
   readonly byteOffset: number | null;
-  readonly rangeBoundarySequence: number | null;
 }
 
 export interface SubscriberTranscriptState {
@@ -112,7 +111,7 @@ export async function createSessionTranscriptBootstrap(input: {
       direction: 'older',
       throughSequence: input.throughSequence,
       maxBytes: durableBudget,
-      maxMessages: SESSION_TRANSCRIPT_RANGE_MAX_MESSAGES,
+      maxMessages: SESSION_TRANSCRIPT_PAGE_MAX_MESSAGES,
     } as const;
     const durableStorage =
       projection === 'shared'
@@ -130,14 +129,6 @@ export async function createSessionTranscriptBootstrap(input: {
       cursorSecret,
       projection,
     };
-    const durableSelection = storageSelection(durableStorage);
-    const rangeEdges = await readRangeEdges({
-      reader: input.reader,
-      state,
-      direction: 'older',
-      throughSequence: input.throughSequence,
-      selected: durableSelection,
-    });
     const bootstrap: SessionTranscriptBootstrap = {
       throughSequence: input.throughSequence,
       overlayMessageCount: overlayMessages.length,
@@ -145,10 +136,8 @@ export async function createSessionTranscriptBootstrap(input: {
         state,
         'durable',
         'older',
-        rangeEdges.selected,
+        storageSelection(durableStorage),
         input.throughSequence,
-        rangeEdges.rangeBoundarySequence,
-        rangeEdges.protectedTurnSequence,
       ),
       overlay: pageFromSelection(state, 'overlay', 'older', selectedOverlay),
     };
@@ -218,7 +207,6 @@ export async function readSessionTranscriptPage(input: {
       position.position,
       position.byteOffset,
       request.maxBytes,
-      continuationMessageLimit(position),
     );
     return pageFromSelection(
       state,
@@ -235,233 +223,25 @@ export async function readSessionTranscriptPage(input: {
     position: position.position,
     ...(position.byteOffset === null ? {} : { byteOffset: position.byteOffset }),
     maxBytes: request.maxBytes,
-    maxMessages: continuationMessageLimit(position),
+    maxMessages: SESSION_TRANSCRIPT_PAGE_MAX_MESSAGES,
   } as const;
   const storage =
     state.projection === 'shared'
-      ? await readSharedDurablePage(
-          input.reader,
-          state.sessionId,
-          durableRequest,
-          position.rangeBoundarySequence,
-        )
+      ? await readSharedDurablePage(input.reader, state.sessionId, durableRequest)
       : await input.reader.readDurablePage(state.sessionId, durableRequest);
-  const selected = selectionThroughRangeBoundary(
-    storageSelection(storage),
-    request.direction,
-    position.rangeBoundarySequence,
-  );
-  const rangeEdges = await readRangeEdges({
-    reader: input.reader,
-    state,
-    direction: request.direction,
-    throughSequence: request.throughSequence,
-    selected,
-  });
   return pageFromSelection(
     state,
     'durable',
     request.direction,
-    rangeEdges.selected,
+    storageSelection(storage),
     request.throughSequence,
-    rangeEdges.rangeBoundarySequence,
-    rangeEdges.protectedTurnSequence,
   );
-}
-
-async function readRangeEdges(input: {
-  reader: SessionTranscriptReader;
-  state: SubscriberTranscriptState;
-  direction: SessionTranscriptPageDirection;
-  throughSequence: number | null;
-  selected: SelectedFragments;
-}): Promise<{
-  readonly selected: SelectedFragments;
-  readonly rangeBoundarySequence: number | null;
-  readonly protectedTurnSequence: number | null;
-}> {
-  if (input.throughSequence === null) {
-    return {
-      selected: input.selected,
-      rangeBoundarySequence: null,
-      protectedTurnSequence: null,
-    };
-  }
-  const selectedSequences = input.selected.fragments.flatMap((fragment) =>
-    fragment.kind === 'durable' ? [fragment.sequence] : [],
-  );
-  if (selectedSequences.length === 0) {
-    return {
-      selected: input.selected,
-      rangeBoundarySequence: null,
-      protectedTurnSequence: null,
-    };
-  }
-  const boundaryCandidate =
-    input.direction === 'older' ? Math.min(...selectedSequences) : Math.max(...selectedSequences);
-  const scanPosition =
-    input.direction === 'older' ? Math.max(...selectedSequences) : Math.min(...selectedSequences);
-  const rangeRecords: Array<{
-    readonly sequence: number;
-    readonly turnId: string | undefined;
-    readonly bytes: number;
-  }> = [];
-  let targetTurnId: string | undefined;
-  let targetStart: number | null = null;
-  let candidateReached = false;
-  let hiddenBytes = 0;
-  let reachedFarEdge = false;
-  let position: number | null = scanPosition;
-  while (position !== null && !reachedFarEdge) {
-    const scanned = await input.reader.readDurableRecords(input.state.sessionId, {
-      direction: input.direction,
-      throughSequence: input.throughSequence,
-      position,
-      maxStoredBytes: SESSION_TRANSCRIPT_RANGE_MAX_BYTES,
-      maxMessages: SESSION_TRANSCRIPT_RANGE_MAX_MESSAGES,
-    });
-    for (const record of scanned.records) {
-      const message =
-        input.state.projection === 'shared'
-          ? projectSharedSessionTranscriptMessage(record.message, input.state.sessionId)
-          : record.message;
-      if (!message) {
-        hiddenBytes += Buffer.byteLength(JSON.stringify(record.message), 'utf8');
-        if (hiddenBytes > SESSION_TRANSCRIPT_RANGE_MAX_BYTES) {
-          throw new RangeError('Session transcript projection scan exceeds its capacity limit');
-        }
-        continue;
-      }
-      const turnId = messageTurnId(message);
-      if (targetStart !== null && turnId !== targetTurnId) {
-        reachedFarEdge = true;
-        break;
-      }
-      rangeRecords.push({
-        sequence: record.sequence,
-        turnId,
-        bytes: Buffer.byteLength(JSON.stringify(message), 'utf8'),
-      });
-      if (!candidateReached && record.sequence === boundaryCandidate) {
-        candidateReached = true;
-        if (turnId === undefined) {
-          reachedFarEdge = true;
-          break;
-        }
-        targetTurnId = turnId;
-        targetStart = rangeRecords.length - 1;
-        while (targetStart > 0 && rangeRecords[targetStart - 1]?.turnId === targetTurnId) {
-          targetStart -= 1;
-        }
-      }
-      if (targetStart !== null) {
-        const targetRecords = rangeRecords.slice(targetStart);
-        const targetBytes = targetRecords.reduce((sum, target) => sum + target.bytes, 0);
-        if (
-          targetRecords.length > SESSION_TRANSCRIPT_RANGE_MAX_MESSAGES ||
-          targetBytes > SESSION_TRANSCRIPT_RANGE_MAX_BYTES
-        ) {
-          if (targetStart === 0) {
-            return {
-              selected: input.selected,
-              rangeBoundarySequence: null,
-              protectedTurnSequence: null,
-            };
-          }
-          reachedFarEdge = true;
-          break;
-        }
-      }
-    }
-    if (reachedFarEdge || scanned.nextPosition === null) {
-      position = scanned.nextPosition;
-      break;
-    }
-    if (scanned.nextPosition === position) {
-      throw new Error('Session transcript projection scan did not advance');
-    }
-    position = scanned.nextPosition;
-  }
-  if (!candidateReached || rangeRecords.length === 0) {
-    throw new Error('Session transcript range did not reach its authoritative Turn');
-  }
-  let retainedEnd = 0;
-  let retainedMessages = 0;
-  let retainedBytes = 0;
-  while (retainedEnd < rangeRecords.length) {
-    const groupStart = retainedEnd;
-    const groupTurnId = rangeRecords[groupStart]!.turnId;
-    let groupEnd = groupStart + 1;
-    if (groupTurnId !== undefined) {
-      while (groupEnd < rangeRecords.length && rangeRecords[groupEnd]?.turnId === groupTurnId) {
-        groupEnd += 1;
-      }
-    }
-    const group = rangeRecords.slice(groupStart, groupEnd);
-    const groupBytes = group.reduce((sum, record) => sum + record.bytes, 0);
-    if (
-      group.length > SESSION_TRANSCRIPT_RANGE_MAX_MESSAGES ||
-      groupBytes > SESSION_TRANSCRIPT_RANGE_MAX_BYTES
-    ) {
-      if (groupStart > 0) break;
-      return {
-        selected: input.selected,
-        rangeBoundarySequence: null,
-        protectedTurnSequence: null,
-      };
-    }
-    if (
-      retainedMessages + group.length > SESSION_TRANSCRIPT_RANGE_MAX_MESSAGES ||
-      retainedBytes + groupBytes > SESSION_TRANSCRIPT_RANGE_MAX_BYTES
-    ) {
-      break;
-    }
-    retainedMessages += group.length;
-    retainedBytes += groupBytes;
-    retainedEnd = groupEnd;
-  }
-  const retainedRecords = rangeRecords.slice(0, retainedEnd);
-  const boundary = retainedRecords.at(-1)?.sequence;
-  if (boundary === undefined) {
-    throw new RangeError('Session transcript Turn range exceeds its capacity limit');
-  }
-  const selected =
-    retainedEnd === rangeRecords.length
-      ? input.selected
-      : (() => {
-          const retainedSequences = new Set(retainedRecords.map((record) => record.sequence));
-          const fragments = input.selected.fragments.filter(
-            (fragment) => fragment.kind === 'durable' && retainedSequences.has(fragment.sequence),
-          );
-          return {
-            fragments,
-            rawBytes: fragments.reduce(
-              (sum, fragment) => sum + Buffer.byteLength(fragment.data, 'base64'),
-              0,
-            ),
-            next: { position: rangeRecords[retainedEnd]!.sequence, byteOffset: null },
-          };
-        })();
-  const turnRecords = retainedRecords.filter((record) => record.turnId !== undefined);
-  const protectedTurnSequence =
-    input.direction === 'older' ? turnRecords[0]?.sequence : turnRecords.at(-1)?.sequence;
-  return {
-    selected,
-    rangeBoundarySequence: boundary,
-    protectedTurnSequence: protectedTurnSequence ?? boundary,
-  };
-}
-
-function messageTurnId(message: StoredMessage): string | undefined {
-  const turnId = 'turnId' in message ? message.turnId : undefined;
-  return typeof turnId === 'string' ? turnId : undefined;
 }
 
 async function readSharedDurablePage(
   reader: SessionTranscriptReader,
   sessionId: string,
   request: Parameters<SessionTranscriptReader['readDurablePage']>[1],
-  rangeBoundarySequence: number | null = null,
 ): ReturnType<SessionTranscriptReader['readDurablePage']> {
   const position =
     request.position ??
@@ -491,7 +271,7 @@ async function readSharedDurablePage(
       const projected = projectSharedSessionTranscriptMessage(record.message, sessionId);
       if (!projected) {
         hiddenBytes += Buffer.byteLength(JSON.stringify(record.message), 'utf8');
-        if (hiddenBytes > SESSION_TRANSCRIPT_RANGE_MAX_BYTES) {
+        if (hiddenBytes > SHARED_PROJECTION_HIDDEN_MAX_BYTES) {
           throw new RangeError('Session transcript projection scan exceeds its capacity limit');
         }
         continue;
@@ -521,11 +301,6 @@ async function readSharedDurablePage(
       rawBytes += selected.data.byteLength;
       if (!selected.complete) {
         next = { position: record.sequence, byteOffset: selected.nextOffset };
-        break;
-      }
-      if (record.sequence === rangeBoundarySequence) {
-        const following = scanned.records[recordIndex + 1]?.sequence ?? scanned.nextPosition;
-        next = following === null ? null : { position: following, byteOffset: null };
         break;
       }
       if (fragments.length === request.maxMessages || rawBytes === request.maxBytes) {
@@ -576,11 +351,7 @@ export class TranscriptPageRequestError extends Error {
 function resolvePosition(
   state: SubscriberTranscriptState,
   request: SessionTranscriptPageInput,
-): {
-  position: number;
-  byteOffset: number | null;
-  rangeBoundarySequence: number | null;
-} | null {
+): { position: number; byteOffset: number | null } | null {
   if (request.cursor !== null) {
     const cursor = decodeCursor(request.cursor, state.cursorSecret);
     if (
@@ -592,42 +363,20 @@ function resolvePosition(
     ) {
       throw new TranscriptPageRequestError('Transcript cursor does not match request');
     }
-    return {
-      position: cursor.position,
-      byteOffset: cursor.byteOffset,
-      rangeBoundarySequence: cursor.rangeBoundarySequence,
-    };
+    return { position: cursor.position, byteOffset: cursor.byteOffset };
   }
   if (request.source === 'overlay') {
     const overlayMessages = state.overlayMessages;
     if (overlayMessages === undefined) return null;
-    const anchor = request.anchorSequence;
-    const position =
-      request.direction === 'older' ? (anchor ?? overlayMessages.length) - 1 : (anchor ?? -1) + 1;
+    const position = request.direction === 'older' ? overlayMessages.length - 1 : 0;
     return position < 0 || position >= overlayMessages.length
       ? null
-      : { position, byteOffset: null, rangeBoundarySequence: null };
+      : { position, byteOffset: null };
   }
   if (request.throughSequence === null) return null;
   const position =
-    request.direction === 'older'
-      ? (request.anchorSequence ?? request.throughSequence + 1) - 1
-      : (request.anchorSequence ?? -1) + 1;
-  return position < 0 || position > request.throughSequence
-    ? null
-    : { position, byteOffset: null, rangeBoundarySequence: null };
-}
-
-function continuationMessageLimit(position: {
-  position: number;
-  rangeBoundarySequence: number | null;
-}): number {
-  return position.rangeBoundarySequence === null
-    ? SESSION_TRANSCRIPT_RANGE_MAX_MESSAGES
-    : Math.min(
-        SESSION_TRANSCRIPT_RANGE_MAX_MESSAGES,
-        Math.abs(position.position - position.rangeBoundarySequence) + 1,
-      );
+    request.direction === 'older' ? request.throughSequence : (request.anchorSequence ?? -1) + 1;
+  return position < 0 || position > request.throughSequence ? null : { position, byteOffset: null };
 }
 
 function storageSelection(
@@ -647,44 +396,12 @@ function storageSelection(
   };
 }
 
-function selectionThroughRangeBoundary(
-  selected: SelectedFragments,
-  direction: SessionTranscriptPageDirection,
-  rangeBoundarySequence: number | null,
-): SelectedFragments {
-  if (rangeBoundarySequence === null) return selected;
-  // RuntimeEvent-backed message sequences are sparse, so a continuation's
-  // message limit cannot infer how many records remain from sequence distance.
-  const firstOmittedIndex = selected.fragments.findIndex(
-    (fragment) =>
-      fragment.kind === 'durable' &&
-      (direction === 'older'
-        ? fragment.sequence < rangeBoundarySequence
-        : fragment.sequence > rangeBoundarySequence),
-  );
-  if (firstOmittedIndex === -1) return selected;
-  const firstOmitted = selected.fragments[firstOmittedIndex]!;
-  if (firstOmitted.kind !== 'durable') {
-    throw new Error('Session transcript durable range contained an overlay fragment');
-  }
-  const fragments = selected.fragments.slice(0, firstOmittedIndex);
-  return {
-    fragments,
-    rawBytes: fragments.reduce(
-      (sum, fragment) => sum + Buffer.from(fragment.data, 'base64').byteLength,
-      0,
-    ),
-    next: { position: firstOmitted.sequence, byteOffset: null },
-  };
-}
-
 function selectOverlay(
   messages: readonly Buffer[],
   direction: SessionTranscriptPageDirection,
   position: number,
   byteOffset: number | null,
   maxBytes: number,
-  maxMessages = SESSION_TRANSCRIPT_PAGE_MAX_MESSAGES,
 ): SelectedFragments {
   const fragments: SessionTranscriptFragment[] = [];
   let rawBytes = 0;
@@ -694,7 +411,7 @@ function selectOverlay(
     index >= 0 &&
     index < messages.length &&
     rawBytes < maxBytes &&
-    fragments.length < maxMessages
+    fragments.length < SESSION_TRANSCRIPT_PAGE_MAX_MESSAGES
   ) {
     const message = messages[index]!;
     const selected = selectBuffer(message, direction, offset, maxBytes - rawBytes);
@@ -767,17 +484,7 @@ function pageFromSelection(
   direction: SessionTranscriptPageDirection,
   selected: SelectedFragments,
   throughSequence: number | null = state.openedThroughSequence,
-  rangeBoundarySequence: number | null = null,
-  protectedTurnSequence: number | null = null,
 ): SessionTranscriptPage {
-  const cursorRangeBoundarySequence =
-    selected.next !== null &&
-    rangeBoundarySequence !== null &&
-    (direction === 'older'
-      ? selected.next.position < rangeBoundarySequence
-      : selected.next.position > rangeBoundarySequence)
-      ? null
-      : rangeBoundarySequence;
   return {
     kind: 'page',
     sessionId: state.sessionId,
@@ -786,8 +493,6 @@ function pageFromSelection(
     throughSequence,
     rawBytes: selected.rawBytes,
     fragments: selected.fragments,
-    rangeBoundarySequence,
-    protectedTurnSequence,
     nextCursor: selected.next
       ? encodeCursor(
           {
@@ -797,7 +502,6 @@ function pageFromSelection(
             source,
             direction,
             throughSequence,
-            rangeBoundarySequence: cursorRangeBoundarySequence,
             ...selected.next,
           },
           state.cursorSecret,
@@ -818,8 +522,6 @@ function emptyPage(
     throughSequence: request.throughSequence,
     rawBytes: 0,
     fragments: [],
-    rangeBoundarySequence: null,
-    protectedTurnSequence: null,
     nextCursor: null,
   };
 }
@@ -863,7 +565,6 @@ function decodeCursor(value: string, secret: Buffer): TranscriptCursorState {
     'throughSequence',
     'position',
     'byteOffset',
-    'rangeBoundarySequence',
   ];
   if (
     Object.keys(cursor).length !== keys.length ||
@@ -879,8 +580,7 @@ function decodeCursor(value: string, secret: Buffer): TranscriptCursorState {
     (cursor.direction !== 'older' && cursor.direction !== 'newer') ||
     (cursor.throughSequence !== null && !isCount(cursor.throughSequence)) ||
     !isCount(cursor.position) ||
-    (cursor.byteOffset !== null && !isCount(cursor.byteOffset)) ||
-    (cursor.rangeBoundarySequence !== null && !isCount(cursor.rangeBoundarySequence))
+    (cursor.byteOffset !== null && !isCount(cursor.byteOffset))
   ) {
     throw new TranscriptPageRequestError('Invalid transcript cursor values');
   }

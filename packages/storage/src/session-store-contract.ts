@@ -322,17 +322,6 @@ export interface SessionTurnContributionPage {
   readonly nextPosition: number | null;
 }
 
-export interface SessionTurnLandmark {
-  readonly turnId: string;
-  readonly sequence: number;
-  readonly label: string;
-}
-
-export interface SessionTurnLandmarkSnapshot {
-  readonly throughSequence: number | null;
-  readonly landmarks: readonly SessionTurnLandmark[];
-}
-
 export interface SessionStore {
   create(input: CreateSessionInput, initialBoundary?: ExecutionBoundary): Promise<SessionHeader>;
   list(filter?: SessionListFilter): Promise<SessionSummary[]>;

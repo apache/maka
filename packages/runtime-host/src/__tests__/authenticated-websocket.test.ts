@@ -1446,7 +1446,7 @@ test('migrates the released transcript query grant when opening an existing acce
   }
 });
 
-test('adds bounded turn landmarks to an existing turn-query grant', async () => {
+test('releases a stored turn-landmark grant and keeps the turn-query grant', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'maka-access-authority-turn-landmarks-'));
   const credential = 'maka_rh_existing_turn_client';
   try {
@@ -1461,7 +1461,7 @@ test('adds bounded turn landmarks to an existing turn-query grant', async () => 
             principalId: 'existing-turn-client',
             principalKind: 'remote_owner',
             status: 'active',
-            operationGrants: ['host.status', 'session.turns.query'],
+            operationGrants: ['host.status', 'session.turns.query', 'session.turn_landmarks.query'],
             canPublishClientCapabilities: false,
             canUseHostPaths: false,
             createdAt: '2026-01-01T00:00:00.000Z',
@@ -1475,7 +1475,6 @@ test('adds bounded turn landmarks to an existing turn-query grant', async () => 
     assert.deepEqual(authority.authenticate(credential)?.operationGrants, [
       'host.status',
       'session.turns.query',
-      'session.turn_landmarks.query',
     ]);
   } finally {
     await rm(directory, { recursive: true, force: true });

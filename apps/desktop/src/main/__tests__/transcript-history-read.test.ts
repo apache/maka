@@ -29,20 +29,20 @@ import {
   readSessionTranscriptPage,
   updateSubscriberTranscriptHighWater,
 } from '../../../../../packages/runtime-host/dist/server/session-transcript-pager.js';
-import { DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES } from '../../preload/transcript-contract.js';
+import { DESKTOP_TRANSCRIPT_TAIL_MAX_BYTES } from '../../preload/transcript-contract.js';
 import { DesktopTranscriptReplica } from '../desktop-transcript-replica.js';
 import { runtimeHostSessionFixture } from './runtime-host-session-test-fixture.js';
-import { openTranscriptNavigationLedger } from './transcript-navigation-test-fixture.js';
+import { openTranscriptLedger } from './transcript-ledger-test-fixture.js';
 
 const PAGE_BYTES = 128 * 1024;
-const HOST_EPOCH = 'transcript-navigation-host';
-const SUBSCRIPTION_ID = 'transcript-navigation-subscription';
+const HOST_EPOCH = 'transcript-history-host';
+const SUBSCRIPTION_ID = 'transcript-history-subscription';
 
 test('keeps both Turns reachable when an oversized ledger Turn is followed by a new durable tail', async () => {
   const source = transcriptFixture();
   assert.ok(source.first.reduce((bytes, message) => bytes + Buffer.byteLength(JSON.stringify(message)), 0)
-    > DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES);
-  const ledger = await openTranscriptNavigationLedger([...source.first, ...source.second]);
+    > DESKTOP_TRANSCRIPT_TAIL_MAX_BYTES);
+  const ledger = await openTranscriptLedger([...source.first, ...source.second]);
   let opened: Awaited<ReturnType<typeof openReplica>> | undefined;
   try {
     const firstThrough = await ledger.appendThrough('completed-a');
@@ -50,9 +50,7 @@ test('keeps both Turns reachable when an oversized ledger Turn is followed by a 
     assertSourcePayloads(first, source.first);
     opened = await openReplica(ledger, firstThrough);
     const { replica, subscription, state } = opened;
-    assertRecords(replica, first);
-    assert.equal(replica.snapshot().hasOlder, false, 'sparse first-row sequence does not imply older history');
-    assert.equal(replica.snapshot().hasNewer, false, 'unused low watermark bits do not imply a newer row');
+    assertTailOf(replica, first);
 
     // RuntimeEvent transcripts publish a Turn durably only after it ends. The
     // running checkpoints below stay in the overlay, then this terminal event
@@ -74,30 +72,27 @@ test('keeps both Turns reachable when an oversized ledger Turn is followed by a 
     await replica.advance(completeThrough);
     assertRecords(replica, second);
 
-    // A window read answers the Renderer without touching Main's tail cache.
-    const older = await replica.loadBefore(second[0]!.sequence, PAGE_BYTES);
-    assert.ok(older);
-    assert.deepEqual(older.durable, first,
-      'older paging returns the complete oversized Turn adjacent to the anchor');
-    assert.equal(older.hasOlder, false);
-    assert.equal(older.hasNewer, undefined, 'an older page establishes only its older edge');
+    // A history read walks older pages through the watermark without touching
+    // Main's tail cache, and returns every row of the oversized Turn.
+    const history: { sequence: number; message: StoredMessage }[] = [];
+    let cursor: string | null = null;
+    do {
+      const page = await replica.readOlderPage(completeThrough, cursor);
+      history.unshift(...page.durable);
+      cursor = page.nextCursor;
+    } while (cursor !== null);
+    assert.deepEqual(history, complete);
     assertRecords(replica, second);
 
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      // An oversized Turn fills a client range on its own, so a reset anchored
-      // on the oldest row ends at that range boundary rather than at the tail.
-      // Reachability is carried by the newer edge and the page behind it.
-      const around = await replica.loadAround(first[0]!.sequence, PAGE_BYTES);
-      assert.ok(around);
-      assert.deepEqual(around.durable, first);
-      assert.equal(around.hasOlder, false);
-      assert.equal(around.hasNewer, true);
-      const newer = await replica.loadAfter(first.at(-1)!.sequence, PAGE_BYTES);
-      assert.ok(newer);
-      assert.deepEqual(newer.durable, second, 'the page past the boundary reaches the current tail');
-      assert.equal(newer.hasNewer, false);
-      assertRecords(replica, second);
+    for (const [turnId, records] of [['a', first], ['b', second]] as const) {
+      assert.deepEqual(
+        await replica.readTurn(turnId, records[0]!.sequence, 16 * 1024 * 1024),
+        records.map(({ message }) => message),
+        'a Turn read stops at the next Turn and keeps the oversized payload whole',
+      );
     }
+    await assert.rejects(replica.readTurn('a', first[0]!.sequence, PAGE_BYTES), RangeError);
+    assertRecords(replica, second);
   } finally {
     opened?.replica.close();
     await opened?.subscription.close();
@@ -106,9 +101,9 @@ test('keeps both Turns reachable when an oversized ledger Turn is followed by a 
 });
 
 for (const checkpoint of ['running-b', 'result-b'] as const) {
-  test(`retains the full oversized durable Turn while the running second Turn reaches ${checkpoint}`, async () => {
+  test(`keeps the running second Turn reachable at ${checkpoint} behind an oversized durable Turn`, async () => {
     const source = transcriptFixture();
-    const ledger = await openTranscriptNavigationLedger([...source.first, ...source.second]);
+    const ledger = await openTranscriptLedger([...source.first, ...source.second]);
     let opened: Awaited<ReturnType<typeof openReplica>> | undefined;
     try {
       const firstThrough = await ledger.appendThrough('completed-a');
@@ -121,7 +116,7 @@ for (const checkpoint of ['running-b', 'result-b'] as const) {
       };
       opened = await openReplica(ledger, firstThrough, rootTurn);
       const { replica } = opened;
-      assertRecords(replica, first);
+      assertTailOf(replica, first);
       const expected = source.second.slice(0, source.second.findIndex(({ id }) => id === checkpoint) + 1)
         .filter((message) => message.type !== 'turn_state').map(({ id }) => id);
       assert.deepEqual(replica.snapshot().overlay.map(({ id }) => id), expected);
@@ -140,7 +135,6 @@ for (const checkpoint of ['running-b', 'result-b'] as const) {
       assert.deepEqual(replica.snapshot().overlay, []);
       const second = (await ledger.durableRecords()).filter(({ message }) => message.turnId === rootTurn.turnId);
       assertRecords(replica, second);
-      assert.equal(replica.snapshot().hasNewer, false);
     } finally {
       opened?.replica.close();
       await opened?.subscription.close();
@@ -149,7 +143,7 @@ for (const checkpoint of ['running-b', 'result-b'] as const) {
   });
 }
 
-type Ledger = Awaited<ReturnType<typeof openTranscriptNavigationLedger>>;
+type Ledger = Awaited<ReturnType<typeof openTranscriptLedger>>;
 async function openReplica(
   ledger: Ledger,
   throughSequence: number | null,
@@ -181,6 +175,14 @@ async function openReplica(
     close: () => subscription.close(),
   }));
   return { replica, subscription, state: opened.state };
+}
+
+/** The bootstrap page is byte-bounded, so the tail cache may start inside the oversized Turn. */
+function assertTailOf(replica: DesktopTranscriptReplica, records: readonly { sequence: number; message: StoredMessage }[]) {
+  const { durable, hasOlder } = replica.snapshot();
+  assert.ok(durable.length > 0);
+  assert.deepEqual(durable, records.slice(records.length - durable.length));
+  assert.equal(hasOlder, durable.length < records.length, 'older history is reported exactly when rows are missing');
 }
 
 function assertRecords(replica: DesktopTranscriptReplica, records: readonly { sequence: number; message: StoredMessage }[]) {
@@ -232,5 +234,5 @@ function transcriptFixture() {
   ];
   // One complete tool payload crosses both page and resident-range budgets.
   // The record count is incidental; the next Turn starts live and ends durably.
-  return { first: turn('a', DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES + PAGE_BYTES), second: turn('b', 256) };
+  return { first: turn('a', DESKTOP_TRANSCRIPT_TAIL_MAX_BYTES + PAGE_BYTES), second: turn('b', 256) };
 }

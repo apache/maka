@@ -24,7 +24,7 @@ import {
   SESSION_CONTINUITY_SCHEMA_VERSION,
   type SessionTranscriptPage,
 } from '@maka/runtime-host/protocol';
-import { DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES } from '../../preload/transcript-contract.js';
+import { DESKTOP_TRANSCRIPT_TAIL_MAX_BYTES } from '../../preload/transcript-contract.js';
 import {
   createTranscriptRestoreLifecycle,
   restoreSessionTranscriptRange,
@@ -32,24 +32,21 @@ import {
 import { DesktopTranscriptReplica } from '../desktop-transcript-replica.js';
 import { runtimeHostSessionFixture } from './runtime-host-session-test-fixture.js';
 
-const PAGE_BYTES = 128 * 1024;
-
 test('a history page reaches an oversized earlier Turn without disturbing the tail', async () => {
   const fixture = await oversizedHistoryFixture();
   try {
     assert.deepEqual(sequences(fixture.replica), [2, 3]);
 
-    const page = await fixture.replica.loadBefore(2, PAGE_BYTES);
+    const page = await fixture.replica.readOlderPage(3, 'more');
 
-    assert.ok(page);
     assert.deepEqual(page.durable.map(({ sequence }) => sequence), [0, 1]);
     assert.equal(page.durable[1]?.message.id, 'assistant-a',
       'the oversized earlier answer reaches the Renderer whole');
-    assert.equal(page.hasOlder, false);
+    assert.equal(page.nextCursor, null);
     assert.deepEqual(
       sequences(fixture.replica),
       [2, 3],
-      'a window read answers the Renderer and leaves the Main tail alone',
+      'a history read answers its consumer and leaves the Main tail alone',
     );
   } finally {
     fixture.replica.close();
@@ -77,118 +74,65 @@ test('tail catch-up evicts only the oldest Turns and always keeps the newest com
   }
 });
 
-test('a completed resident bookmark does not reload after streaming settlement evicts its Turn', async () => {
-  const fixture = await oversizedHistoryFixture({ live: true });
+test('a completed loaded bookmark does not load earlier history after later notifications', async () => {
   const lifecycle = createTranscriptRestoreLifecycle();
-  let loaded = 0;
-  const controller = {
-    loadAround: async (sequence: number) => {
-      loaded += 1;
-      await fixture.replica.loadAround(sequence, PAGE_BYTES);
-    },
-    store: {
-      sessionId: 'session-1',
-      range: () => ({ sessionId: 'session-1' }),
-      pendingNavigation: () => undefined,
-      sequenceForTurn: (turnId: string) => fixture.replica.snapshot().durable
-        .find(({ message }) => message.turnId === turnId)?.sequence ?? null,
-      newestDurableUserSequence: () => 2,
-      snapshot: () => ({ messages: fixture.replica.messages() }),
-    },
-  };
+  const history = restoreHistory([{ turnId: 'turn-a' }]);
   const restore = () => restoreSessionTranscriptRange({
     lifecycle,
     sessionId: 'session-1',
-    readingAnchor: { turnId: 'turn-a', sequence: 0 },
-    controller,
+    readingAnchor: { turnId: 'turn-a' },
+    controller: history.controller,
     isCurrent: () => true,
     setReadingAnchor: () => {},
     onError: (error) => assert.fail(String(error)),
   });
-  try {
-    restore();
-    await settleRestore();
-    assert.equal(loaded, 0, 'an already resident bookmark completes without a range read');
-
-    await fixture.replica.advance(3);
-    restore();
-    await settleRestore();
-    await fixture.replica.advance(4);
-    restore();
-    await settleRestore();
-
-    assert.equal(loaded, 0, 'message notifications cannot revive the completed bookmark command');
-    assert.deepEqual(sequences(fixture.replica), [2, 3, 4]);
-    assert.equal(fixture.replica.messages().at(-1)?.id, 'assistant-b-later');
-  } finally {
-    fixture.replica.close();
-  }
+  restore();
+  await settleRestore();
+  history.messages = [{ turnId: 'turn-b' }];
+  restore();
+  await settleRestore();
+  assert.equal(history.loads, 0, 'a loaded bookmark completes without reading history, and stays completed');
 });
 
-test('reopening a bookmark at the current Turn retains content persisted later in that same Turn', async () => {
-  const fixture = await oversizedHistoryFixture();
-  try {
-    assert.deepEqual(sequences(fixture.replica), [2, 3]);
-    await fixture.replica.advance(4);
-    assert.equal(fixture.replica.durableThrough, 4, 'the Host has persisted the final answer segment');
-
-    // Reopening an observed Session reuses its resident replica. The renderer
-    // starts a fresh restore lifecycle, and the bookmark is already resident.
-    restoreSessionTranscriptRange({
-      lifecycle: createTranscriptRestoreLifecycle(),
-      sessionId: 'session-1',
-      readingAnchor: { turnId: 'turn-b', sequence: 2 },
-      controller: {
-        loadAround: async (sequence) => { await fixture.replica.loadAround(sequence, PAGE_BYTES); },
-        store: {
-          sessionId: 'session-1',
-          range: () => ({ sessionId: 'session-1' }),
-          pendingNavigation: () => undefined,
-          sequenceForTurn: (turnId) => fixture.replica.snapshot().durable
-            .find(({ message }) => message.turnId === turnId)?.sequence ?? null,
-          newestDurableUserSequence: () => 2,
-          snapshot: () => ({ messages: fixture.replica.messages() }),
-        },
-      },
-      isCurrent: () => true,
-      setReadingAnchor: () => {},
-      onError: (error) => assert.fail(String(error)),
-    });
-    await settleRestore();
-
-    assert.equal(
-      fixture.replica.messages().some(({ id }) => id === 'assistant-b-later'),
-      true,
-      'restoring the visible Turn must not silently omit its later persisted answer segment',
-    );
-  } finally {
-    fixture.replica.close();
-  }
+test('a bookmark older than the loaded transcript loads earlier history until its Turn arrives', async () => {
+  let anchor: { turnId: string } | undefined = { turnId: 'turn-a' };
+  const history = restoreHistory([{ turnId: 'turn-c' }], async () => {
+    history.messages = history.loads === 1
+      ? [{ turnId: 'turn-b' }, { turnId: 'turn-c' }]
+      : [{ turnId: 'turn-a' }, { turnId: 'turn-b' }, { turnId: 'turn-c' }];
+  });
+  restoreSessionTranscriptRange({
+    lifecycle: createTranscriptRestoreLifecycle(),
+    sessionId: 'session-1',
+    readingAnchor: { turnId: 'turn-a' },
+    controller: history.controller,
+    isCurrent: () => true,
+    setReadingAnchor: (_sessionId, next) => { anchor = next; },
+    onRestoreUnavailable: () => assert.fail('the bookmark was reachable'),
+    onError: (error) => assert.fail(String(error)),
+  });
+  await settleRestore();
+  await settleRestore();
+  assert.equal(history.loads, 2);
+  assert.deepEqual(anchor, { turnId: 'turn-a' });
 });
 
 test('repeated message notifications share one pending restore and cancellation preserves the newer bookmark', async () => {
   const lifecycle = createTranscriptRestoreLifecycle();
   let finishLoad!: () => void;
   const loading = new Promise<void>((resolve) => { finishLoad = resolve; });
-  let reads = 0;
-  let anchor: { turnId: string; sequence?: number } | undefined = { turnId: 'turn-a', sequence: 0 };
+  let anchor: { turnId: string } | undefined = { turnId: 'turn-a' };
   let unavailable: string | undefined;
+  const history = restoreHistory([], async () => {
+    await loading;
+    history.hasOlder = false;
+    history.messages = [];
+  });
   const options = {
     lifecycle,
     sessionId: 'session-1',
-    readingAnchor: { turnId: 'turn-a', sequence: 0 },
-    controller: {
-      setReadingAnchor: async () => {},
-      loadAround: async () => { reads += 1; await loading; },
-      store: {
-        sessionId: 'session-1',
-        range: () => ({ sessionId: 'session-1' }),
-        pendingNavigation: () => undefined,
-        sequenceForTurn: () => null,
-        newestDurableUserSequence: () => 2,
-        snapshot: () => ({ messages: ['old restored range'] }),
-      },
-    },
+    readingAnchor: { turnId: 'turn-a' },
+    controller: history.controller,
     isCurrent: () => true,
     setReadingAnchor: (_sessionId: string, next: typeof anchor) => { anchor = next; },
     onRestoreUnavailable: (_sessionId: string, turnId: string) => { unavailable = turnId; },
@@ -197,109 +141,88 @@ test('repeated message notifications share one pending restore and cancellation 
   restoreSessionTranscriptRange(options);
   restoreSessionTranscriptRange(options);
   await settleRestore();
-  assert.equal(reads, 1);
+  assert.equal(history.loads, 1);
 
   lifecycle.cancel('session-1');
-  anchor = { turnId: 'turn-b', sequence: 2 };
+  anchor = { turnId: 'turn-b' };
   finishLoad();
   await settleRestore();
   restoreSessionTranscriptRange(options);
   await settleRestore();
 
-  assert.equal(reads, 1, 'cancellation must not recapture the bookmark in the same activation');
-  assert.deepEqual(anchor, { turnId: 'turn-b', sequence: 2 });
+  assert.equal(history.loads, 1, 'cancellation must not recapture the bookmark in the same activation');
+  assert.deepEqual(anchor, { turnId: 'turn-b' });
   assert.equal(unavailable, undefined, 'a cancelled restore cannot declare the newer bookmark unavailable');
 });
 
 test('switching away and back creates a fresh restore while clearing search does not replay a bookmark', async () => {
   const lifecycle = createTranscriptRestoreLifecycle();
-  const reads: number[] = [];
+  const history = restoreHistory([]);
   const options = {
     lifecycle,
     sessionId: 'session-1',
     profileId: 'profile-1',
-    readingAnchor: { turnId: 'turn-a', sequence: 0 },
-    controller: {
-      setReadingAnchor: async () => {},
-      loadAround: async (sequence: number) => { reads.push(sequence); },
-      store: {
-        sessionId: 'session-1',
-        range: () => ({ sessionId: 'session-1' }),
-        pendingNavigation: () => undefined,
-        sequenceForTurn: () => null,
-        newestDurableUserSequence: () => 2,
-        snapshot: () => ({ messages: [] as string[] }),
-      },
-    },
+    readingAnchor: { turnId: 'turn-a' },
+    controller: history.controller,
     isCurrent: () => true,
     setReadingAnchor: () => {},
     onError: (error: unknown) => assert.fail(String(error)),
   };
   restoreSessionTranscriptRange(options);
   await settleRestore();
-  restoreSessionTranscriptRange({ ...options, searchTarget: {
-    sessionId: 'session-1', turnId: 'turn-b', sequence: 2, nonce: 1,
-  } });
+  restoreSessionTranscriptRange({ ...options, searchTarget: { sessionId: 'session-1', turnId: 'turn-b', nonce: 1 } });
   await settleRestore();
   restoreSessionTranscriptRange(options);
   await settleRestore();
-  assert.deepEqual(reads, [0, 2]);
+  assert.equal(history.loads, 2);
 
   restoreSessionTranscriptRange({ ...options, sessionId: 'other-session', controller: undefined });
   restoreSessionTranscriptRange(options);
   await settleRestore();
-  assert.deepEqual(reads, [0, 2, 0], 'a later session activation may restore the saved bookmark again');
+  assert.equal(history.loads, 3, 'a later session activation may restore the saved bookmark again');
 
   restoreSessionTranscriptRange({ ...options, profileId: 'profile-2' });
   await settleRestore();
-  assert.deepEqual(reads, [0, 2, 0, 0], 'changing Hosts also creates a fresh activation');
+  assert.equal(history.loads, 4, 'changing Hosts also creates a fresh activation');
 });
 
 test('effect teardown followed by setup lets only the replacement restore settle its bookmark', async () => {
   const lifecycle = createTranscriptRestoreLifecycle();
   const loads: Array<() => void> = [];
-  let anchor: { turnId: string; sequence?: number } | undefined = { turnId: 'turn-a', sequence: 0 };
+  let anchor: { turnId: string } | undefined = { turnId: 'turn-a' };
   let unavailable: string | undefined;
+  const history = restoreHistory([], () => new Promise<void>((resolve) => {
+    loads.push(() => {
+      history.hasOlder = false;
+      history.messages = [];
+      resolve();
+    });
+  }));
   const options = {
     lifecycle,
     sessionId: 'session-1',
-    readingAnchor: { turnId: 'turn-a', sequence: 0 },
-    controller: {
-      setReadingAnchor: async () => {},
-      loadAround: () => new Promise<void>((resolve) => { loads.push(resolve); }),
-      store: {
-        sessionId: 'session-1',
-        range: () => ({ sessionId: 'session-1' }),
-        pendingNavigation: () => undefined,
-        sequenceForTurn: () => null,
-        newestDurableUserSequence: () => 2,
-        snapshot: () => ({ messages: ['replacement range'] }),
-      },
-    },
+    readingAnchor: { turnId: 'turn-a' },
+    controller: history.controller,
     isCurrent: () => true,
     setReadingAnchor: (_sessionId: string, next: typeof anchor) => { anchor = next; },
     onRestoreUnavailable: (_sessionId: string, turnId: string) => { unavailable = turnId; },
     onError: (error: unknown) => assert.fail(String(error)),
   };
   restoreSessionTranscriptRange(options);
-  assert.equal(loads.length, 1, 'the first command admits its navigation synchronously');
+  assert.equal(loads.length, 1, 'the first command loads earlier history synchronously');
   lifecycle.deactivate();
   restoreSessionTranscriptRange(options);
-  assert.equal(loads.length, 2, 'StrictMode replay must admit a replacement navigation');
+  assert.equal(loads.length, 2, 'StrictMode replay must start a replacement load');
 
   loads[0]!();
   await settleRestore();
-  assert.deepEqual(anchor, { turnId: 'turn-a', sequence: 0 });
+  assert.deepEqual(anchor, { turnId: 'turn-a' });
   assert.equal(unavailable, undefined, 'the deactivated command cannot settle after replacement');
   loads[1]!();
   await settleRestore();
   assert.equal(anchor, undefined);
   assert.equal(unavailable, 'turn-a', 'only the replacement restore settles its unavailable target');
 });
-
-async function settleRestore(): Promise<void> {
-  await new Promise<void>((resolve) => setImmediate(resolve));
-}
 
 test('a live second Turn remains reachable after persistence evicts the oversized first Turn', async () => {
   const fixture = await oversizedHistoryFixture({ live: true });
@@ -316,11 +239,36 @@ test('a live second Turn remains reachable after persistence evicts the oversize
     assert.equal(answer?.type, 'assistant');
     assert.equal(answer?.type === 'assistant' ? answer.text : undefined, 'Second answer, persisted completely.');
     assert.equal(fixture.replica.snapshot().hasOlder, true);
-    assert.equal(fixture.replica.snapshot().hasNewer, false);
   } finally {
     fixture.replica.close();
   }
 });
+
+async function settleRestore(): Promise<void> {
+  await new Promise<void>((resolve) => setImmediate(resolve));
+}
+
+/** A loaded transcript whose earlier history is read by `load`; every read changes the snapshot. */
+function restoreHistory(initial: Array<{ turnId: string }>, load: () => Promise<void> = async () => {}) {
+  let snapshot = { messages: initial };
+  const history = {
+    loads: 0,
+    hasOlder: true,
+    get messages() { return snapshot.messages; },
+    set messages(messages: Array<{ turnId: string }>) { snapshot = { messages }; },
+    controller: {
+      store: {
+        range: () => ({ sessionId: 'session-1', hasOlder: history.hasOlder, ready: true }),
+        snapshot: () => snapshot,
+      },
+      loadEarlier: async () => {
+        history.loads += 1;
+        await load();
+      },
+    },
+  };
+  return history;
+}
 
 function sequences(replica: DesktopTranscriptReplica): number[] {
   return replica.snapshot().durable.map(({ sequence }) => sequence);
@@ -329,12 +277,12 @@ function sequences(replica: DesktopTranscriptReplica): number[] {
 async function oversizedHistoryFixture(options: { live?: boolean } = {}) {
   const records = [
     message('user', 'user-a', 'turn-a', 'First question.'),
-    message('assistant', 'assistant-a', 'turn-a', 'A'.repeat(DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES + 1)),
+    message('assistant', 'assistant-a', 'turn-a', 'A'.repeat(DESKTOP_TRANSCRIPT_TAIL_MAX_BYTES + 1)),
     message('user', 'user-b', 'turn-b', 'Second question.'),
     message('assistant', 'assistant-b', 'turn-b', 'Second answer, persisted completely.'),
     message('assistant', 'assistant-b-later', 'turn-b', 'A later durable answer segment.'),
     message('user', 'user-c', 'turn-c', 'Third question while the reader stays in the second Turn.'),
-    message('assistant', 'assistant-c', 'turn-c', 'C'.repeat(DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES + 1)),
+    message('assistant', 'assistant-c', 'turn-c', 'C'.repeat(DESKTOP_TRANSCRIPT_TAIL_MAX_BYTES + 1)),
   ].map((message, identity) => ({ identity, message }));
   const decodedPages = new Map<SessionTranscriptPage, { messages: typeof records; nextCursor: string | null }>();
   const page = (input: {
@@ -342,7 +290,6 @@ async function oversizedHistoryFixture(options: { live?: boolean } = {}) {
     through: number;
     records: typeof records;
     hasMore: boolean;
-    protectedSequence: number | null;
   }): SessionTranscriptPage => {
     const result: SessionTranscriptPage = {
       kind: 'page',
@@ -352,10 +299,6 @@ async function oversizedHistoryFixture(options: { live?: boolean } = {}) {
       throughSequence: input.through,
       rawBytes: input.records.reduce((bytes, record) => bytes + Buffer.byteLength(JSON.stringify(record.message)), 0),
       fragments: [],
-      rangeBoundarySequence: input.direction === 'older'
-        ? input.records[0]?.identity ?? null
-        : input.records.at(-1)?.identity ?? null,
-      protectedTurnSequence: input.protectedSequence,
       nextCursor: input.hasMore ? 'more' : null,
     };
     decodedPages.set(result, { messages: input.records, nextCursor: result.nextCursor });
@@ -367,9 +310,7 @@ async function oversizedHistoryFixture(options: { live?: boolean } = {}) {
     through,
     records: options.live ? records.slice(0, 2) : records.slice(2, 4),
     hasMore: !options.live,
-    protectedSequence: options.live ? 0 : 2,
   });
-  const requests: Array<{ direction: string; anchorSequence: number | null; throughSequence: number | null }> = [];
   const handle = runtimeHostSessionFixture({
     snapshot: {
       schemaVersion: SESSION_CONTINUITY_SCHEMA_VERSION,
@@ -398,22 +339,17 @@ async function oversizedHistoryFixture(options: { live?: boolean } = {}) {
     },
     loadTranscriptPage: async (request) => {
       const through = request.throughSequence ?? 4;
-      const anchor = request.anchorSequence ?? null;
-      requests.push({ direction: request.direction, anchorSequence: anchor, throughSequence: through });
-      const history = request.direction === 'older' ? anchor === 2 : anchor === null;
-      return page({
-        direction: request.direction,
-        through,
-        records: history ? records.slice(0, 2)
-          : request.direction === 'older' ? records.slice(2, through + 1)
-            : records.slice((anchor ?? -1) + 1, through + 1),
-        hasMore: history ? request.direction === 'newer' : request.direction === 'older',
-        protectedSequence: history ? 0 : through >= 5 ? 5 : 2,
-      });
+      if (request.direction === 'older') {
+        return request.cursor === null
+          ? page({ direction: 'older', through, records: records.slice(2, through + 1), hasMore: true })
+          : page({ direction: 'older', through, records: records.slice(0, 2), hasMore: false });
+      }
+      const anchor = request.anchorSequence ?? -1;
+      return page({ direction: 'newer', through, records: records.slice(anchor + 1, through + 1), hasMore: false });
     },
     async close() {},
   });
-  return { replica: await DesktopTranscriptReplica.prepare(handle), requests };
+  return { replica: await DesktopTranscriptReplica.prepare(handle) };
 }
 
 function message(

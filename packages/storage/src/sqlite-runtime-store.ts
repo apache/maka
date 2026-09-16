@@ -165,7 +165,6 @@ import {
   TERMINAL_RUNTIME_EVENT_SQL,
   type RuntimeTranscriptInvocationHeader,
   type RuntimeTranscriptInvocationRequest,
-  type RuntimeTranscriptLandmark,
 } from './runtime-transcript-query.js';
 
 export { SQLITE_RUNTIME_SCHEMA_VERSION } from './sqlite-runtime-schema.js';
@@ -567,18 +566,6 @@ export class SqliteRuntimeStore
     assertInvocationSearchLimit(request.limit);
     return this.readTransaction(() =>
       this.transcriptQuery().invocations(sessionId, request, project),
-    );
-  }
-
-  async readTranscriptLandmarks(
-    sessionId: string,
-    throughOrdinal: number,
-    limit: number,
-  ): Promise<RuntimeTranscriptLandmark[]> {
-    assertRuntimeStorageSafeId(sessionId, 'Invalid session id');
-    assertInvocationSearchLimit(limit);
-    return this.readTransaction(() =>
-      this.transcriptQuery().landmarks(sessionId, throughOrdinal, limit),
     );
   }
 

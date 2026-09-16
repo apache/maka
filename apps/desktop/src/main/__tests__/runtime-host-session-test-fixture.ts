@@ -73,8 +73,6 @@ function emptyPage(sessionId: string, source: 'durable' | 'overlay'): SessionTra
     throughSequence: null,
     rawBytes: 0,
     fragments: [],
-    rangeBoundarySequence: null,
-    protectedTurnSequence: null,
     nextCursor: null,
   };
 }
