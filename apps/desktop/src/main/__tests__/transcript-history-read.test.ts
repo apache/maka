@@ -83,12 +83,12 @@ test('keeps both Turns reachable when an oversized ledger Turn is followed by a 
 
     for (const [turnId, records] of [['a', first], ['b', second]] as const) {
       assert.deepEqual(
-        await replica.readTurn(turnId, records[0]!.sequence, 16 * 1024 * 1024),
+        await replica.readTurn(turnId, extentOf(records), 16 * 1024 * 1024),
         records.map(({ message }) => message),
         'a Turn read stops at the next Turn and keeps the oversized payload whole',
       );
     }
-    await assert.rejects(replica.readTurn('a', first[0]!.sequence, PAGE_BYTES), RangeError);
+    await assert.rejects(replica.readTurn('a', extentOf(first), PAGE_BYTES), RangeError);
     assertRecords(replica, second);
   } finally {
     opened?.replica.close();
@@ -159,9 +159,12 @@ test('reads a Turn through the rows of a nested one', async () => {
   try {
     const throughSequence = await ledger.appendThrough('completed-outer');
     const records = await ledger.durableRecords();
-    const first = records.find(({ message }) => message.turnId === 'outer')!.sequence;
     opened = await openReplica(ledger, throughSequence);
-    const read = await opened.replica.readTurn('outer', first, PAGE_BYTES);
+    const read = await opened.replica.readTurn(
+      'outer',
+      extentOf(records.filter(({ message }) => message.turnId === 'outer')),
+      PAGE_BYTES,
+    );
     assert.deepEqual(
       read.map(({ id }) => id),
       records.filter(({ message }) => message.turnId === 'outer').map(({ message }) => message.id),
@@ -209,6 +212,10 @@ function assertTailOf(replica: DesktopTranscriptReplica, records: readonly { seq
   assert.ok(durable.length > 0);
   assert.deepEqual(durable, records.slice(records.length - durable.length));
   assert.equal(hasOlder, durable.length < records.length, 'older history is reported exactly when rows are missing');
+}
+
+function extentOf(records: readonly { sequence: number }[]) {
+  return { sequence: records[0]!.sequence, lastSequence: records.at(-1)!.sequence };
 }
 
 function assertRecords(replica: DesktopTranscriptReplica, records: readonly { sequence: number; message: StoredMessage }[]) {

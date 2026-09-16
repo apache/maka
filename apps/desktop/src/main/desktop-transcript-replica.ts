@@ -249,19 +249,20 @@ export class DesktopTranscriptReplica {
   }
 
   /**
-   * Every durable row of one Turn, read forward from its first sequence to the
-   * watermark this replica holds. Only the Turn's own rows count toward
-   * `maxBytes`.
-   *
-   * The Host writes a nested Turn's rows between the rows of the Turn around
-   * it, so the two share a stretch of the Session's ordinals and a row of
-   * another Turn says nothing about where this one ends. Nothing short of the
-   * watermark is an authoritative end, so the walk goes there: a Turn is
-   * claimed whole only when the traversal that proves it has finished.
+   * Every durable row of one Turn this replica's watermark covers, read
+   * forward across the extent the Host's Turn index gives it. Only the Turn's
+   * own rows count toward `maxBytes`: a nested Turn's rows sit inside the
+   * extent of the Turn around it.
    */
-  async readTurn(turnId: string, firstSequence: number, maxBytes: number): Promise<StoredMessage[]> {
+  async readTurn(
+    turnId: string,
+    extent: { readonly sequence: number; readonly lastSequence: number },
+    maxBytes: number,
+  ): Promise<StoredMessage[]> {
     this.#assertLive();
-    const throughSequence = this.#durableThrough;
+    const firstSequence = extent.sequence;
+    const throughSequence =
+      this.#durableThrough === null ? null : Math.min(this.#durableThrough, extent.lastSequence);
     const durable: StoredMessage[] = [];
     let bytes = 0;
     let cursor: string | null = null;

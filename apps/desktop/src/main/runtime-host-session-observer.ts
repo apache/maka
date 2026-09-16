@@ -65,7 +65,15 @@ import {
 } from './desktop-transcript-ipc.js';
 
 type SessionObserverClient = Pick<DesktopRuntimeHostClient, 'openSession'> &
-  Partial<Pick<DesktopRuntimeHostClient, 'listSessionTurns' | 'setSessionReadMarker' | 'queryMessageExecutions'>>;
+  Partial<
+    Pick<
+      DesktopRuntimeHostClient,
+      | 'listSessionTurns'
+      | 'listSessionTurnLandmarks'
+      | 'setSessionReadMarker'
+      | 'queryMessageExecutions'
+    >
+  >;
 
 const TRANSCRIPT_DELIVERY_TIMEOUT_MS = 30_000;
 const TRANSCRIPT_DELIVERY_WINDOW = 4;
@@ -135,7 +143,8 @@ interface TranscriptConsumer {
   deliveryBytes: number;
   deliveryTask?: Promise<void>;
   resetRequested: boolean;
-  earlierRequested: boolean;
+  /** An earlier read to send, reading down to `floor` when it is set. */
+  earlierRequested: false | { readonly floor: number | null };
   readonly history?: TranscriptHistory;
   pendingChange?: PendingTranscriptChange;
   readonly pendingDeliveries: Map<number, {
@@ -353,8 +362,15 @@ export class RuntimeHostSessionObserver {
     }
   }
 
-  /** Delivers the next history budget older than what the consumer holds. */
-  async loadEarlierTranscript(consumerId: string, targetId?: number): Promise<void> {
+  /**
+   * Delivers the next history budget older than what the consumer holds, and
+   * past it down to `throughSequence` when given, in one answer.
+   */
+  async loadEarlierTranscript(
+    consumerId: string,
+    targetId?: number,
+    throughSequence?: number,
+  ): Promise<void> {
     const state = this.#transcriptConsumers.get(consumerId);
     const consumer = state?.transcriptConsumers.get(consumerId);
     if (!state || !consumer?.history) {
@@ -363,7 +379,9 @@ export class RuntimeHostSessionObserver {
     if (targetId !== undefined && consumer.target.id !== targetId) {
       throw new Error('Desktop transcript consumer belongs to another renderer');
     }
-    consumer.earlierRequested = true;
+    const floors = [consumer.earlierRequested ? consumer.earlierRequested.floor : null, throughSequence]
+      .filter((floor): floor is number => typeof floor === 'number');
+    consumer.earlierRequested = { floor: floors.length === 0 ? null : Math.min(...floors) };
     await this.#scheduleTranscriptDelivery(state, consumer);
     // The loop may have been finishing when the request arrived.
     if (consumer.earlierRequested) await this.#scheduleTranscriptDelivery(state, consumer);
@@ -380,10 +398,10 @@ export class RuntimeHostSessionObserver {
       if (!state.replica?.resident) await state.subscriptionOwner.refresh();
       const replica = state.replica;
       if (!replica?.resident) throw new Error('Desktop transcript replica is unavailable');
-      const turns = await this.#client.listSessionTurns?.(sessionId);
-      const firstSequence = turns?.find((turn) => turn.turnId === turnId)?.firstSequence;
-      if (firstSequence === undefined) return replica.messagesForTurn(turnId);
-      return await replica.readTurn(turnId, firstSequence, DESKTOP_TRANSCRIPT_MESSAGE_MAX_BYTES);
+      const landmark = (await this.#client.listSessionTurnLandmarks?.(sessionId, turnId))
+        ?.landmarks[0];
+      if (!landmark) return replica.messagesForTurn(turnId);
+      return await replica.readTurn(turnId, landmark, DESKTOP_TRANSCRIPT_MESSAGE_MAX_BYTES);
     } finally {
       state.pendingTranscriptConsumers -= 1;
       this.#touchReplica(state);
@@ -1274,10 +1292,11 @@ export class RuntimeHostSessionObserver {
             continue;
           }
           if (consumer.earlierRequested) {
+            const { floor } = consumer.earlierRequested;
             consumer.earlierRequested = false;
             const replica = state.replica;
             if (consumer.history && replica?.resident && replica.generation === consumer.generation) {
-              await this.#sendTranscriptHistory(state, consumer, consumer.history, replica, false);
+              await this.#sendTranscriptHistory(state, consumer, consumer.history, replica, false, floor);
             }
             continue;
           }
@@ -1332,11 +1351,11 @@ export class RuntimeHostSessionObserver {
   /**
    * One history answer: a reset reads the newest whole Turns through the tail
    * watermark; an earlier read continues below what was delivered. Each answer
-   * stops at a Turn boundary once it reaches its byte budget.
+   * stops at a Turn boundary once it reaches its byte budget and its floor.
    *
-   * A reset replaces everything the reader holds, so it also reads back down
-   * to the oldest sequence this consumer was already given. Stopping at one
-   * budget would take back history the reader had loaded.
+   * A reset replaces everything the reader holds, so its floor is the oldest
+   * sequence this consumer was already given. Stopping at one budget would
+   * take back history the reader had loaded.
    */
   async #sendTranscriptHistory(
     state: ObservedSessionState,
@@ -1344,10 +1363,9 @@ export class RuntimeHostSessionObserver {
     history: TranscriptHistory,
     replica: DesktopTranscriptReplica,
     reset: boolean,
+    floor: number | null = null,
   ): Promise<void> {
     let earlierThan: number | undefined;
-    /** The oldest sequence already delivered, which a reset has to reach again. */
-    let floor: number | null = null;
     if (reset) {
       const snapshot = replica.snapshot();
       floor = history.oldestSequence;

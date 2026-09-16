@@ -1257,6 +1257,11 @@ export interface MakaBridge {
       }) => void,
     ): () => void;
     listTurns(sessionId: string): Promise<TurnRecord[]>;
+    /** Sampled prompt-rail landmarks, or where the one Turn `turnId` sits. */
+    listTurnLandmarks(
+      sessionId: string,
+      turnId?: string | null,
+    ): Promise<OperationOutput<'session.turn_landmarks.query'>>;
     compact(sessionId: string): Promise<OperationOutput<'context.compact'>>;
     resumeLatest(sessionId: string): Promise<
       | { disposition: 'started'; runId: string; turnId: string }
@@ -1359,6 +1364,8 @@ export interface MakaBridge {
       handler: (batch: DesktopTranscriptBatch) => void,
       registerCancellation?: (cancel: () => void) => void,
       mode?: DesktopTranscriptOpenMode,
+      /** The oldest sequence the reader already holds; the first answer reads back down to it. */
+      resumeFrom?: number,
     ): Promise<DesktopTranscriptHandle>;
   };
   externalSessions: {

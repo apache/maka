@@ -94,7 +94,8 @@ export interface DesktopTranscriptTailAcknowledgement {
 
 export interface DesktopTranscriptHandle extends DesktopTranscriptOpenResult {
   acknowledgeTail(through: number): Promise<void>;
-  loadEarlier(): Promise<void>;
+  /** One budget of earlier history, continuing in the same answer down to `throughSequence`. */
+  loadEarlier(throughSequence?: number): Promise<void>;
   close(): Promise<void>;
 }
 

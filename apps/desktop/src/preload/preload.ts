@@ -2284,6 +2284,9 @@ const makaBridge = {
       ) as TurnRecord[];
       return turns.map((turn) => projectDesktopTurnRecord(session.scope, turn));
     },
+    listTurnLandmarks(sessionId, turnId = null) {
+      return invokeProjectedSessionRuntimeHost('sessions:listTurnLandmarks', sessionId, turnId);
+    },
     regenerateTurn(sessionId: string, input: RegenerateTurnInput): Promise<void> {
       return invokeSessionRuntimeHost('sessions:regenerateTurn', sessionId, input);
     },
@@ -2558,6 +2561,7 @@ const makaBridge = {
       handler: (batch: DesktopTranscriptBatch) => void,
       registerCancellation?: (cancel: () => void) => void,
       mode: DesktopTranscriptOpenMode = 'history',
+      resumeFrom?: number,
     ): Promise<DesktopTranscriptHandle> {
       const consumerId = crypto.randomUUID();
       const channel = `sessions:transcript:${consumerId}`;
@@ -2624,6 +2628,7 @@ const makaBridge = {
             session.sessionId,
             consumerId,
             mode,
+            resumeFrom ?? null,
           ) as Promise<RuntimeHostObservationIpcResult<DesktopTranscriptOpenResult>>,
         };
       });
@@ -2679,8 +2684,13 @@ const makaBridge = {
             through,
           }) as Promise<void>;
         },
-        loadEarlier: () =>
-          ipcRenderer.invoke('sessions:transcript:load-earlier', consumerScope, consumerId) as Promise<void>,
+        loadEarlier: (throughSequence) =>
+          ipcRenderer.invoke(
+            'sessions:transcript:load-earlier',
+            consumerScope,
+            consumerId,
+            throughSequence ?? null,
+          ) as Promise<void>,
         async close() {
           if (closed) return;
           requestClose();

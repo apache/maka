@@ -111,6 +111,7 @@ type RuntimeHostSessionExecutionClient = Pick<
   | "ingestAttachment"
   | "interruptTurn"
   | 'listSessionTurns'
+  | 'listSessionTurnLandmarks'
   | 'queryMessageExecutions'
   | 'queryMessages'
   | "queryTurnResume"
@@ -258,22 +259,27 @@ export function registerRuntimeHostSessionObservationIpc(
   );
   ipcMain.handle(
     'sessions:transcript:open',
-    async (event, sessionId: unknown, consumerId: unknown, mode: unknown) =>
+    async (event, sessionId: unknown, consumerId: unknown, mode: unknown, resumeFrom: unknown) =>
       observationIpcResult(
         deps.observations.openTranscript(
           requiredId(sessionId, 'Session'),
           requiredId(consumerId, 'Transcript consumer'),
           event.sender as RuntimeHostTranscriptTarget,
           normalizeTranscriptOpenMode(mode),
+          optionalSequence(resumeFrom, 'Desktop transcript resume position'),
         ),
       ),
   );
-  ipcMain.handle('sessions:transcript:load-earlier', async (event, consumerId: unknown) => {
-    await deps.observations.loadEarlierTranscript(
-      requiredId(consumerId, 'Transcript consumer'),
-      event.sender.id,
-    );
-  });
+  ipcMain.handle(
+    'sessions:transcript:load-earlier',
+    async (event, consumerId: unknown, throughSequence: unknown) => {
+      await deps.observations.loadEarlierTranscript(
+        requiredId(consumerId, 'Transcript consumer'),
+        event.sender.id,
+        optionalSequence(throughSequence, 'Desktop transcript earlier target'),
+      );
+    },
+  );
   handleReconnectableRead(
     ipcMain,
     'sessions:transcript:read-turn',
@@ -376,6 +382,15 @@ export function registerRuntimeHostSessionExecutionIpc(
 
   handleReconnectableRead(ipcMain, 'sessions:listTurns', async (_event, sessionId: unknown) =>
     deps.client.listSessionTurns(requiredId(sessionId, 'Session')),
+  );
+  handleReconnectableRead(
+    ipcMain,
+    'sessions:listTurnLandmarks',
+    async (_event, sessionId: unknown, turnId: unknown) =>
+      deps.client.listSessionTurnLandmarks(
+        requiredId(sessionId, 'Session'),
+        turnId === null ? null : requiredId(turnId, 'Turn'),
+      ),
   );
   handleReconnectableRead(
     ipcMain,
@@ -866,6 +881,12 @@ export function registerRuntimeHostSessionExecutionIpc(
 function normalizeTranscriptOpenMode(mode: unknown): DesktopTranscriptOpenMode {
   if (mode === 'tail' || mode === 'history') return mode;
   throw new Error('Invalid Desktop transcript open mode');
+}
+
+function optionalSequence(value: unknown, label: string): number | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (Number.isSafeInteger(value) && (value as number) >= 0) return value as number;
+  throw new Error(`Invalid ${label}`);
 }
 
 function normalizeTranscriptTailAcknowledgement(

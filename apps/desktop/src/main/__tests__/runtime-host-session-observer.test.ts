@@ -1406,6 +1406,46 @@ test('delivers history in whole Turns within the budget and continues exactly on
   await observer.close();
 });
 
+test('reads earlier history past its budget down to the requested Turn in one answer', async () => {
+  const events = new AsyncFrameQueue();
+  const rows = ['a', 'b', 'c', 'd', 'e', 'f'].map((turn, index) =>
+    turnRow((index + 1) * 10, `turn-${turn}`),
+  );
+  const smallRowBytes = Buffer.byteLength(JSON.stringify(rows[0]!.message), 'utf8');
+  const host = historyHost(rows, { pageRows: 1 });
+  const observer = new RuntimeHostSessionObserver({
+    client: {
+      openSession: async () =>
+        runtimeHostSessionFixture({
+          snapshot: continuitySnapshot(),
+          transcript: Promise.resolve([]),
+          events,
+          transcriptBootstrap: host.bootstrap,
+          loadTranscriptPage: host.loadTranscriptPage,
+          decodeTranscriptPage: host.decodeTranscriptPage,
+          async close() {
+            events.end();
+          },
+        }),
+    },
+    emitSessionsChanged() {},
+    transcriptHistoryBytes: Math.floor(smallRowBytes * 1.5),
+  });
+  const batches: DesktopTranscriptBatch[] = [];
+  const consumerId = 'consumer-located';
+  await observer.openTranscript('session-1', consumerId, ackingTranscriptTarget(observer, consumerId, 26, batches), 'history');
+  const answer = () => {
+    const taken = batches.splice(0);
+    assert.equal(taken.filter((batch) => batch.ready).length, 1);
+    return taken.flatMap((batch) => durableSequences(batch)).sort((left, right) => left - right);
+  };
+  assert.deepEqual(answer(), [50, 60]);
+
+  await observer.loadEarlierTranscript(consumerId, 26, 20);
+  assert.deepEqual(answer(), [20, 30, 40], 'one budget alone would stop at 30');
+  await observer.close();
+});
+
 /**
  * Recovery rebuilds what the reader was holding from the number of reads they
  * had made, not from the boundary those reads actually reached. A read runs
@@ -1595,6 +1635,7 @@ test('reads every row of one Turn through the Host Turn index', async () => {
     turnRow(50, 'turn-c'),
   ];
   const host = historyHost(rows, { pageRows: 2 });
+  const reads: Array<number | null> = [];
   const observer = new RuntimeHostSessionObserver({
     client: {
       openSession: async () =>
@@ -1603,17 +1644,21 @@ test('reads every row of one Turn through the Host Turn index', async () => {
           transcript: Promise.resolve([]),
           events,
           transcriptBootstrap: host.bootstrap,
-          loadTranscriptPage: host.loadTranscriptPage,
+          loadTranscriptPage: async (input) => {
+            if (input.direction === 'newer') reads.push(input.throughSequence);
+            return host.loadTranscriptPage(input);
+          },
           decodeTranscriptPage: host.decodeTranscriptPage,
           async close() {
             events.end();
           },
         }),
-      listSessionTurns: async () => [
-        { turnId: 'turn-a', firstSequence: 10 },
-        { turnId: 'turn-b', firstSequence: 20 },
-        { turnId: 'turn-c', firstSequence: 50 },
-      ] as never,
+      listSessionTurnLandmarks: async (sessionId, turnId) => ({
+        sessionId,
+        throughSequence: 50,
+        landmarks:
+          turnId === 'turn-b' ? [{ turnId, sequence: 20, lastSequence: 40, label: '' }] : [],
+      }),
     },
     emitSessionsChanged() {},
   });
@@ -1621,6 +1666,11 @@ test('reads every row of one Turn through the Host Turn index', async () => {
   assert.deepEqual(
     (await observer.readTranscriptTurn('session-1', 'turn-b')).map((message) => message.id),
     ['row-20', 'row-30', 'row-40'],
+  );
+  assert.deepEqual(
+    reads.filter((through) => through !== 40),
+    [],
+    'the read stops where the Turn index says the Turn ends',
   );
   await observer.close();
 });

@@ -376,6 +376,7 @@ export class RuntimeHostSessionObservationRegistry {
     consumerId: string,
     target: RuntimeHostTranscriptTarget,
     mode: DesktopTranscriptOpenMode = 'tail',
+    resumeFrom?: number,
   ): Promise<DesktopTranscriptOpenResult> {
     this.#assertOpen();
     if (this.#transcripts.has(consumerId)) {
@@ -395,7 +396,7 @@ export class RuntimeHostSessionObservationRegistry {
       restore: undefined,
       restoreOpened: false,
       lifecycle: 'pending',
-      deliveredFrom: null,
+      deliveredFrom: resumeFrom ?? null,
     };
     this.#transcripts.set(consumerId, registration);
     target.once('destroyed', destroyedListener);
@@ -408,6 +409,7 @@ export class RuntimeHostSessionObservationRegistry {
         consumerId,
         this.#trackDelivered(registration, this.#bindTarget(target)),
         mode,
+        resumeFrom,
       );
       if (this.#source === source && this.#transcripts.get(consumerId) === registration) {
         registration.lifecycle = 'active';
@@ -425,9 +427,13 @@ export class RuntimeHostSessionObservationRegistry {
     return registration.ready.promise;
   }
 
-  async loadEarlierTranscript(consumerId: string, targetId?: number): Promise<void> {
+  async loadEarlierTranscript(
+    consumerId: string,
+    targetId?: number,
+    throughSequence?: number,
+  ): Promise<void> {
     await this.#runTranscriptOperation({ consumerId }, (source) =>
-      source.loadEarlierTranscript(consumerId, targetId),
+      source.loadEarlierTranscript(consumerId, targetId, throughSequence),
     );
   }
 
