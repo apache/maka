@@ -106,6 +106,7 @@ export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 161 as const;
 // and every page says whether it stops between two Turns. The windowed read's
 // range edges are gone, and the Turn landmark query takes a Turn to look up, so
 // a peer older than this epoch asks for what this Host no longer answers.
+// 160: Usage queries add revision-consistent screens and revision-bound activity pages.
 // 159: External Session catalog queries distinguish adapter source limits from
 // persistence failures. Older Clients reject the new closed error code.
 // 158: Session transcripts advance per committed RuntimeEvent; the active overlay is gone.

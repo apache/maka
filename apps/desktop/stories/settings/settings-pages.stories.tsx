@@ -17,6 +17,7 @@
  * under the License.
  */
 
+
 import { useRef, useState } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { expect, fn, userEvent, waitFor, within } from 'storybook/test';
@@ -30,6 +31,9 @@ import type {
   UpdateAppSettingsResult,
   UsageRange,
   UsageStats,
+  UsageScreenQuery,
+  UsageScreenRequest,
+  UsageScreenResult,
 } from '@maka/core/settings';
 import { EMPTY_USAGE_PROVENANCE } from '@maka/core/usage-ledger-merge';
 import type {
@@ -1698,6 +1702,25 @@ function withUsageStoryBridge(
   } satisfies Record<string, unknown>);
 }
 
+function withUsageConsistencyBridge(outcome: 'stale' | 'capacity' | 'page' = 'stale') {
+  const settings = mergeSettings(createDefaultSettings(), {usage: {showDetails: true, activeTab: 'requests'}});
+  return withScopedMakaBridge({...makaBridge, settings: {...makaBridge.settings,
+    get: async () => settings,
+    update: async (patch: Parameters<typeof window.maka.settings.update>[0]): Promise<UpdateAppSettingsResult> => ({settings: mergeSettings(settings, patch)}),
+    usageStats: async (range?: UsageRange | Extract<UsageScreenRequest, {kind: 'activity'}>, _host?: unknown, query?: UsageScreenQuery): Promise<UsageStats | UsageScreenResult> => {
+      if (typeof range === 'object') return outcome === 'page'
+        ? {kind: 'activity', page: {revision: range.revision, queryIdentity: range.queryIdentity,
+          logs: usageLogs.slice(50), nextCursor: null}}
+        : {kind: 'revision_changed'};
+      if (outcome === 'capacity' && query?.search) return {kind: 'screen_response_too_large', section: 'pricing'};
+      return {...usageStats, logs: usageLogs.slice(0, 50), navigation: {activityTotal: usageLogs.length, revision: 'revision-A', queryIdentity: 'query-A', nextCursor: 'next-page',
+        query: query ?? {range: {from: 0, to: Date.now()}, search: '', status: 'all'}}};
+    },
+  }} satisfies Record<string, unknown>);
+}
+const withUsageRevisionBridge = withUsageConsistencyBridge();
+const withUsageCapacityBridge = withUsageConsistencyBridge('capacity');
+
 const withUsageEmptyBridge = withUsageStoryBridge(emptyUsageStats, {
   activeTab: 'providers',
 });
@@ -2589,6 +2612,58 @@ export const PetsActionBadgeTypography: Story = {
 };
 
 /** #1362: proxy + auth enabled so the full form-grid stack renders. */
+// Real path: Settings → Usage → Next page reads a matching-revision continuation.
+export const UsagePagedActivity: Story = {
+  decorators: [withUsageConsistencyBridge('page')],
+  render: () => <SettingsStory section="usage" />,
+  play: async ({canvasElement, globals}) => {
+    const canvas = within(canvasElement);
+    const copy = getUsageSettingsCopy(globals.locale === 'en' ? 'en' : globals.locale === 'zh-TW' ? 'zh-TW' : 'zh-CN');
+    await waitForStoryCondition(() => canvas.queryByRole('table', {name: copy.tables.requestsAria}) !== null || canvas.queryByRole('button', {name: copy.showDetails}) !== null, 'Usage details were not available');
+    const details = canvas.queryByRole('button', {name: copy.showDetails});
+    if (details) await userEvent.click(details);
+    const pageTwo = canvas.getAllByRole('button').find(button => button.textContent?.trim() === '2');
+    await expect(pageTwo).toBeDefined();
+    await userEvent.click(pageTwo!);
+    await expect(await canvas.findByText(USAGE_PAGINATION_SENTINEL)).toBeVisible();
+    await expect(await canvas.findByRole('button', {name: /next page|下一页|下一頁/i})).toBeDisabled();
+  },
+};
+// Real path: Settings → Usage → Next page after a Usage write changes the revision.
+export const UsageRevisionChanged: Story = {
+  decorators: [withUsageRevisionBridge],
+  render: () => <SettingsStory section="usage" />,
+  play: async ({canvasElement, globals}) => {
+    const canvas = within(canvasElement);
+    const copy = getUsageSettingsCopy(globals.locale === 'en' ? 'en' : globals.locale === 'zh-TW' ? 'zh-TW' : 'zh-CN');
+    await waitForStoryCondition(() => canvas.queryByRole('table', {name: copy.tables.requestsAria}) !== null || canvas.queryByRole('button', {name: copy.showDetails}) !== null, 'Usage details were not available');
+    const details = canvas.queryByRole('button', {name: copy.showDetails});
+    if (details) await userEvent.click(details);
+    const more = await canvas.findByRole('button', {name: /next page|下一页|下一頁/i});
+    await userEvent.click(more);
+    await expect(await canvas.findByText(copy.staleTitle)).toBeVisible();
+    await expect(more).toBeDisabled();
+    await expect(await canvas.findByText(copy.staleBody)).toBeVisible();
+  },
+};
+// Real path: Settings → Usage → change the activity search when a complete new screen exceeds capacity.
+export const UsageRetainedCapacityFailure: Story = {
+  decorators: [withUsageCapacityBridge],
+  render: () => <SettingsStory section="usage" />,
+  play: async ({canvasElement, globals}) => {
+    const canvas = within(canvasElement);
+    const copy = getUsageSettingsCopy(globals.locale === 'en' ? 'en' : globals.locale === 'zh-TW' ? 'zh-TW' : 'zh-CN');
+    await waitForStoryCondition(() => canvas.queryByRole('table', {name: copy.tables.requestsAria}) !== null || canvas.queryByRole('button', {name: copy.showDetails}) !== null, 'Usage details were not available');
+    const details = canvas.queryByRole('button', {name: copy.showDetails});
+    if (details) await userEvent.click(details);
+    await canvas.findByRole('button', {name: /next page|下一页|下一頁/i});
+    await userEvent.type(await canvas.findByRole('textbox', {name: copy.filterAria}), 'new-filter');
+    await expect(await canvas.findByText(new RegExp(copy.capacityBody))).toBeVisible();
+    await expect(await canvas.findByText(new RegExp(copy.retainedBody))).toBeVisible();
+    await expect(await canvas.findByRole('button', {name: /next page|下一页|下一頁/i})).toBeDisabled();
+  },
+};
+
 // Real path: 设置 → 使用统计 → 供应商统计, before any usage has been recorded.
 export const UsageEmpty: Story = {
   decorators: [withUsageEmptyBridge],

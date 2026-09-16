@@ -137,6 +137,10 @@ import type {
   UpdateAppSettingsResult,
   UsageRange,
   UsageStats,
+  UsageScreenQuery,
+  UsageScreenRequest,
+  UsageScreenResult,
+  UsageScreenFailure,
   ThemePreference,
 } from '@maka/core/settings';
 import type { BotProvider } from '@maka/core/bot-chat-settings';
@@ -275,6 +279,7 @@ import {
   projectDesktopStoredMessage,
   projectDesktopTurnRecord,
   projectDesktopUsageStats,
+  projectDesktopUsageActivity,
   type DesktopSessionSummary,
   type DesktopSessionSummaryInput,
   type DesktopSessionUpdateResult,
@@ -3403,9 +3408,20 @@ const makaBridge = {
     testBotChannel(provider: BotProvider): Promise<SettingsTestResult> {
       return ipcRenderer.invoke('settings:testBotChannel', provider);
     },
-    async usageStats(range?: UsageRange, host?: DesktopRuntimeHostRef): Promise<UsageStats> {
+    async usageStats(
+      range?: UsageRange | Extract<UsageScreenRequest, {kind: 'activity'}>,
+      host?: DesktopRuntimeHostRef,
+      query?: UsageScreenQuery,
+    ): Promise<UsageStats | UsageScreenResult> {
       const scope = await selectedRuntimeHostScope(host);
-      const stats = await ipcRenderer.invoke('settings:usageStats', scope, range) as UsageStats;
+      if (range && typeof range === 'object') {
+        const result = await ipcRenderer.invoke('usage:activity', scope, range) as UsageScreenResult;
+        return result.kind === 'activity'
+          ? {...result, page: {...result.page, logs: projectDesktopUsageActivity(scope, result.page.logs)}}
+          : result;
+      }
+      const stats = await ipcRenderer.invoke('settings:usageStats', scope, range, query) as UsageStats | Extract<UsageScreenFailure, {kind: 'screen_response_too_large'}>;
+      if ('kind' in stats) return stats;
       return projectDesktopUsageStats(scope, stats);
     },
     bots: {

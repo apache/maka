@@ -217,6 +217,9 @@ class OperationalStateDatabaseOwner {
     mkdirSync(dirname(databasePath), { recursive: true });
     const Database = loadDatabaseSync();
     this.database = new Database(databasePath);
+    this.database.function('usage_screen_lower', { deterministic: true }, (value) =>
+      String(value ?? '').toLowerCase(),
+    );
     try {
       configureSqliteRuntimeLockWait(this.database);
       this.database.exec('PRAGMA foreign_keys = ON');
