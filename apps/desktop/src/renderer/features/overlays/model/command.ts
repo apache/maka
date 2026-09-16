@@ -17,28 +17,27 @@
  * under the License.
  */
 
-import { createDefaultRuntimePolicy } from '@maka/core/runtime-policy';
+/**
+ * The Command Palette's row contract. The palette renders rows; the shell and
+ * its command builders decide what the rows do, so the type is the only thing
+ * the two share.
+ */
 
-export function makaEvalRuntimePolicyDocument(proxyUrl?: string) {
-  const policy = createDefaultRuntimePolicy();
-  const proxy = proxyUrl ? new URL(proxyUrl) : undefined;
-  return {
-    schemaVersion: 2 as const,
-    revision: 0,
-    policy: {
-      ...policy,
-      ...(proxy
-        ? {
-            networkProxy: {
-              ...policy.networkProxy,
-              enabled: true,
-              protocol: 'http' as const,
-              host: proxy.hostname,
-              port: Number(proxy.port || 80),
-            },
-          }
-        : {}),
-      privacy: { incognitoActive: true },
-    },
+import type { LucideIcon } from '@maka/ui/icons';
+
+export type CommandKind = 'action' | 'session';
+
+export interface Command {
+  id: string;
+  kind: CommandKind;
+  label: string;
+  hint?: string;
+  platformHint?: {
+    apple: string;
+    other: string;
   };
+  group: string;
+  Icon: LucideIcon;
+  keywords?: string[];
+  run(): void | Promise<void>;
 }

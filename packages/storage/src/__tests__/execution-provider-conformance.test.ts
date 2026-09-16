@@ -1420,6 +1420,11 @@ for (const backend of ['Local', 'Memory'] as const) {
         const proof = {
           messageId: input.messageId,
           content: input.content,
+          submittedContentDigest: input.submittedContentDigest,
+          submittedPlacement: input.submittedPlacement,
+          skillInvocation: input.skillInvocation,
+          placement: input.placement,
+          disposition: input.disposition,
           admittedAt: input.admittedAt + 100,
         };
         await s.markMessagesHandedOff({

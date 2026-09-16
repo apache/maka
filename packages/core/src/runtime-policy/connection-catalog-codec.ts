@@ -431,16 +431,7 @@ export function decodeCanonicalConnectionCatalogEntry(value: unknown): Connectio
       ? {}
       : { requestBodyOverlay: item.requestBodyOverlay }),
   });
-  if (
-    !Array.isArray(item.models) ||
-    item.models.length > CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION
-  ) {
-    throw domainError('connection models must be a bounded array');
-  }
-  const models = item.models.map(decodeConnectionModel);
-  if (new Set(models.map((model) => model.id)).size !== models.length) {
-    throw domainError('connection model ids must be unique');
-  }
+  const models = decodeConnectionModels(item.models);
   if (
     item.modelSource !== undefined &&
     item.modelSource !== 'fetched' &&
@@ -722,20 +713,22 @@ export function decodeConnectionTestSummary(value: unknown): ConnectionTestSumma
   };
 }
 
+export function decodeConnectionModels(value: unknown): ConnectionModel[] {
+  if (!Array.isArray(value) || value.length > CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION) {
+    throw domainError('connection models must be a bounded array');
+  }
+  const models = value.map(decodeConnectionModel);
+  if (new Set(models.map((model) => model.id)).size !== models.length) {
+    throw domainError('connection model ids must be unique');
+  }
+  return models;
+}
+
 export function normalizeConnectionModelDiscoveryResult(
   value: unknown,
 ): ConnectionModelDiscoveryResult {
   const item = exactRecord(value, 'model discovery result', ['models', 'source', 'fetchedAt']);
-  if (
-    !Array.isArray(item.models) ||
-    item.models.length > CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION
-  ) {
-    throw domainError('model discovery models must be a bounded array');
-  }
-  const models = item.models.map(decodeConnectionModel);
-  if (new Set(models.map((model) => model.id)).size !== models.length) {
-    throw domainError('model discovery model ids must be unique');
-  }
+  const models = decodeConnectionModels(item.models);
   if (item.source !== 'fetched' && item.source !== 'fallback') {
     throw domainError('model discovery source is invalid');
   }

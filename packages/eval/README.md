@@ -46,6 +46,10 @@ The built-in Harbor and Pier executors use one relay Agent. The framework prepar
 
 Maka subjects ask the Runtime Host client to run one owned execution in a dedicated Host root. Session, Turn, Goal and continuation semantics remain inside Runtime Host. External subjects declare a command and arguments, and may add non-secret environment values, target-to-source bindings for declared credentials, and an explicit result contract. Omitted credential bindings use declared names unchanged. The generic `exit-code` contract discards unstructured stdout and records null usage and cost. The structured `protocol-v1` contract is restricted to the bundled external wrapper so the shared relay can separate a bounded result frame from Harbor/Pier's merged process output; cohort-specific wrappers do not gain Runtime authority.
 
+The bundled `harbor-maka-subject.js` asks Host to persist privacy mode and the environment's `HTTPS_PROXY` configuration before execution services start. Host stores proxy passwords in its credential vault. Connection discovery and execution use that same State Root, including after a Host restart; Eval does not write or rename policy files.
+
+For an explicit provider, add `providerType` and `apiKeyEnvironment` to the Maka subject config. The latter must name a credential in the subject's `credentials` list. For example, `"providerType": "moonshot-global", "apiKeyEnvironment": "MOONSHOT_API_KEY"` uses the existing `connectionSlug`, `baseUrl`, and `model` fields to onboard and verify the connection through Host. Keep `shimPath` pointed at the bundled shim; a provider-specific bootstrap script is unnecessary. Existing configurations without these two fields continue to use Host's environment-seeded connections.
+
 The result kernel contains only score, normalized usage, attributable cost, duration, status, and artifacts. Specs carry every semantic setting; environment variables are reserved for credentials and machine-local paths.
 
 The mock-backed multi-VM coordinator and deterministic fault simulator are documented in

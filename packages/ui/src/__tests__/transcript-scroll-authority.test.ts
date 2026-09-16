@@ -126,7 +126,9 @@ function withObservers<T>(run: (resize: () => void, frame: () => void, mutate: (
   const observers = new Set<() => void>();
   const mutations = new Set<() => void>();
   const frames: FrameRequestCallback[] = [];
-  const globals = globalThis as { ResizeObserver?: unknown; MutationObserver?: unknown; requestAnimationFrame?: unknown };
+  const globals = globalThis as { CSS?: unknown; ResizeObserver?: unknown; MutationObserver?: unknown; requestAnimationFrame?: unknown };
+  const originalCss = globals.CSS;
+  globals.CSS = { escape: (value: string) => value };
   const originalResize = globals.ResizeObserver;
   const originalMutation = globals.MutationObserver;
   const originalFrame = globals.requestAnimationFrame;
@@ -161,6 +163,7 @@ function withObservers<T>(run: (resize: () => void, frame: () => void, mutate: (
       for (const mutation of [...mutations]) mutation();
     });
   } finally {
+    globals.CSS = originalCss;
     globals.ResizeObserver = originalResize;
     globals.MutationObserver = originalMutation;
     globals.requestAnimationFrame = originalFrame;
@@ -186,70 +189,100 @@ test('Ctrl and Meta wheel zoom preserve following without requesting history', (
   });
 });
 
-test('touch publication waits for the last contact to end or cancel', () => {
+test('range publication leaves native input and reading geometry with the browser', () => {
   withObservers(() => {
-    for (const end of ['touchend', 'touchcancel'] as const) {
+    for (const input of ['wheel', 'touch', 'scrollbar'] as const) {
       const root = fakeRoot();
       const authority = createTranscriptScrollAuthority();
       const detach = authority.attach(root as unknown as HTMLElement);
-      const publication = createTranscriptViewportNavigation();
-      publication.attachCommitScheduler('session', authority);
       let commits = 0;
-      root.touch('touchstart', 1);
-      root.touch('touchstart', 2);
-      publication.commitRange('session', () => commits++);
-      assert.equal(commits, 0);
-      root.touch(end, 1);
-      assert.equal(commits, 0, 'remaining contact still holds publication');
-      root.touch(end, 0);
-      assert.equal(commits, 1, 'last contact releases publication');
+      if (input === 'wheel') root.input(-100);
+      else if (input === 'touch') root.touch('touchstart', 2);
+      else root.grabScrollbar();
+      assert.equal(authority.isInputActive(), true);
+      authority.commitRange(() => commits++);
+      assert.equal(commits, 1);
+      assert.equal(authority.isInputActive(), true, 'publication does not retire native input');
+      if (input === 'scrollbar') {
+        root.ownerDocument.dispatchEvent(new Event('pointerup'));
+        authority.commitRange(() => commits++);
+        assert.equal(commits, 2, 'publication remains available after release');
+      }
       detach();
     }
   });
 });
 
-test('a held scrollbar coalesces range publication until release, including a stationary hold', () => {
-  withObservers((_resize, frame) => {
-    const root = fakeRoot();
-    const authority = createTranscriptScrollAuthority();
-    authority.attach(root as unknown as HTMLElement);
-    const publication = createTranscriptViewportNavigation();
-    publication.attachCommitScheduler('session', authority);
-    const commits: number[] = [];
-    root.grabScrollbar();
-    root.scrollTop -= 100;
-    root.emitScroll();
-    publication.commitRange('session', () => commits.push(1));
-    publication.commitRange('session', () => commits.push(2));
-    root.end(); frame(); frame();
-    assert.deepEqual(commits, []);
-    root.ownerDocument.dispatchEvent(new Event('pointerup'));
-    frame(); frame();
-    assert.deepEqual(commits, [2]);
+test('explicit navigation during range publication outranks the old reading anchor', () => {
+  withObservers(() => {
+    for (const command of ['reveal', 'tail'] as const) {
+      const root = fakeRoot();
+      root.turns = [{ turnId: 'old', top: 0, height: 400 }];
+      const anchor = {
+        isConnected: true,
+        dataset: { turnId: 'old' },
+        getBoundingClientRect: () => ({ top: -root.scrollTop, bottom: 400 - root.scrollTop }),
+      };
+      root.querySelectorAll = () => [anchor];
+      Object.assign(root, { querySelector: () => anchor });
+      const authority = createTranscriptScrollAuthority();
+      const detach = authority.attach(root as unknown as HTMLElement);
+      authority.releasePin();
+      root.scrollTop = 0;
+      authority.commitRange(() => {
+        if (command === 'tail') authority.pinToTail();
+        else authority.revealTurn({ scrollIntoView: () => { root.scrollTop = 1_200; } } as unknown as HTMLElement,
+          { block: 'start' });
+      });
+      assert.equal(root.scrollTop, command === 'tail' ? root.scrollHeight - root.clientHeight : 1_200);
+      detach();
+    }
   });
 });
 
-test('an edge wheel without scrollend publishes after input settles', () => {
-  withObservers((_resize, frame) => {
-    const root = fakeRoot();
-    const authority = createTranscriptScrollAuthority();
-    const detach = authority.attach(root as unknown as HTMLElement);
-    const publication = createTranscriptViewportNavigation();
-    const detachPublication = publication.attachCommitScheduler('session', authority);
-    root.scrollTop = 0;
-    let commits = 0;
-    const phases: string[] = [];
-    authority.subscribeToReaderScroll((phase) => {
-      phases.push(phase);
-      if (phase === 'input') publication.commitRange('session', () => commits++);
-    });
-    root.input(-100);
-    assert.equal(commits, 0);
-    frame(); frame();
-    assert.equal(commits, 1);
-    assert.deepEqual(phases, ['input', 'settled']);
-    detach(); detachPublication();
+test('range publication coalesces within a microtask and uses the viewport anchor owner', async () => {
+  const publication = createTranscriptViewportNavigation();
+  const commits: number[] = [];
+  let scheduled = 0;
+  publication.attachCommitScheduler('session', {
+    subscribeToReaderScroll: () => () => {},
+    commitRange(commit) { scheduled++; commit(); },
   });
+  publication.commitRange('session', () => commits.push(1));
+  publication.commitRange('session', () => commits.push(2));
+  assert.deepEqual([...commits], []);
+  await Promise.resolve();
+  assert.deepEqual(commits, [2]);
+  assert.equal(scheduled, 1);
+});
+
+test('held publication retains only the latest update and drains on settle or detach', async () => {
+  const publication = createTranscriptViewportNavigation();
+  const commits: number[] = [];
+  let held = true;
+  let settled!: () => void;
+  const detach = publication.attachCommitScheduler('session', {
+    commitRange(commit) { if (!held) commit(); },
+    subscribeToReaderScroll(listener) {
+      settled = () => { listener('settled'); };
+      return () => {};
+    },
+  });
+  publication.commitRange('session', () => commits.push(1));
+  await Promise.resolve();
+  publication.commitRange('session', () => commits.push(2));
+  await Promise.resolve();
+  assert.deepEqual([...commits], []);
+  held = false;
+  settled();
+  await Promise.resolve();
+  assert.deepEqual(commits, [2]);
+  held = true;
+  publication.commitRange('session', () => commits.push(3));
+  await Promise.resolve();
+  detach();
+  await Promise.resolve();
+  assert.deepEqual(commits, [2, 3], 'closing the viewport cannot strand source publication');
 });
 
 test('content that grows under a pinned transcript keeps the tail on screen', () => {
@@ -346,27 +379,6 @@ test('scrollbar defaults can land after pointerup, while an unmoved click retire
     resize();
     assert.equal(root.scrollTop, 2_600);
   });
-});
-
-test('navigation during a held scrollbar still publishes on release or cancellation', async () => {
-  for (const event of ['pointerup', 'pointercancel']) {
-    const state = withObservers(() => {
-      const root = fakeRoot();
-      const authority = createTranscriptScrollAuthority();
-      authority.attach(root as unknown as HTMLElement);
-      const publication = createTranscriptViewportNavigation();
-      publication.attachCommitScheduler('session', authority);
-      const commits: number[] = [];
-      root.grabScrollbar();
-      publication.commitRange('session', () => commits.push(1));
-      authority.releasePin();
-      return { root, commits };
-    });
-    await Promise.resolve();
-    assert.deepEqual(state.commits, [], 'navigation must preserve the physical hold');
-    withObservers(() => state.root.ownerDocument.dispatchEvent(new Event(event)));
-    assert.deepEqual(state.commits, [1], 'release wakes the pending publication without another update');
-  }
 });
 
 test('explicit navigation cancels input provenance before positioning its target', () => {

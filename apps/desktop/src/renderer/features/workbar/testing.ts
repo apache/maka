@@ -22,8 +22,8 @@ import type { WorkbarServices } from './ports.js';
 export { WorkbarServicesProvider } from './services-context.js';
 export type {
   WorkbarServices,
-  WorkbarSessionTracePage,
-  WorkbarSessionUsageSummary,
+  SessionTracePage,
+  SessionUsageSummary,
   WorkbarIngestInput,
 } from './ports.js';
 
@@ -32,17 +32,17 @@ export * from './model/workbar-layout.js';
 export * from './model/workbar-tool-definitions.js';
 export * from './tools/artifacts/artifact-list-keyboard.js';
 export * from './tools/artifacts/artifact-visibility.js';
-export * from './tools/inspector/session-inspector-panel-model.js';
+export * from '../../application/contracts/session-inspector/session-inspector-panel-model.js';
 export {
   compactNumberFormatter,
   InspectorCompositionSection,
   RING_ACTIVE_MIN_SWEEP,
   RING_MIN_SWEEP,
   usageRingArcs,
-} from './tools/inspector/session-inspector-panel.js';
-export * from './tools/inspector/session-inspector-overview-model.js';
-export * from './tools/inspector/session-trace-refresh.js';
-export * from './tools/inspector/live-context-usage.js';
+} from '../../application/contracts/session-inspector/session-inspector-panel.js';
+export * from '../../application/contracts/session-inspector/session-inspector-overview-model.js';
+export * from '../../application/contracts/session-inspector/session-trace-refresh.js';
+export * from '../../application/contracts/session-inspector/live-context-usage.js';
 export * from './tools/side-chat/quote-companion-panel-state.js';
 export * from './tools/side-chat/quote-companion-core.js';
 export * from './tools/side-chat/quote-companion-context-compaction.js';
@@ -53,7 +53,7 @@ export {
 export * from './tools/terminal/session-terminal-hydration.js';
 export * from './tools/terminal/session-terminal-query.js';
 export * from './tools/terminal/session-terminal-frame.js';
-export * from './tools/inspector/use-session-trace.js';
+export * from '../../application/contracts/session-inspector/use-session-trace.js';
 export * from './controller/use-workbar-controller.js';
 export { SideChatCloseConfirmation } from './ui/side-chat-close-confirmation.js';
 

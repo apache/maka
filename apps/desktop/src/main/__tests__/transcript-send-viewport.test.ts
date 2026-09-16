@@ -248,6 +248,7 @@ function viewportFixture(options: { returnButton?: boolean } = {}) {
       sessionId: 'session-a',
       range: () => ({ sessionId: 'session-a' }),
       retain: () => false,
+      pendingNavigation: () => undefined,
       sequenceForTurn: (turnId: string) => {
         const sequence = messages.findIndex((message) => message.turnId === turnId);
         return sequence < 0 ? null : sequence;

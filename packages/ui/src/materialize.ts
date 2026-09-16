@@ -349,8 +349,8 @@ function mergeLiveOverPersisted(
  * One entry on a turn's render timeline — interleaved thinking, answer, tool,
  * and mid-turn user messages in conversational order. This is the
  * rendering source of truth (see `TurnViewModel.timeline`); the aggregate
- * `assistant` / `assistantThinking` fields are legacy aggregates; they do not
- * identify the reply used by rendering, copy or prompt rail previews.
+ * `assistant` field is a legacy aggregate; it does not identify the reply
+ * used by rendering, copy or prompt rail previews.
  *
  * - `thinking`: one reasoning block (a step's thinking; adjacent blocks are
  *   pre-merged with `\n\n`). Rendered as a collapsed "深度思考" disclosure.
@@ -362,7 +362,7 @@ function mergeLiveOverPersisted(
  * - `user`: an instruction inserted after the turn began, displayed where
  *   Runtime acknowledged it.
  *
- * The model stays FLAT: the collapsed "Processing" fold (#1307) is a render
+ * The model stays FLAT: grouping adjacent reasoning/tools for spacing is a render
  * concern applied by `foldTimeline` (timeline-fold.ts) at the component layer,
  * so timeline-rewriting passes (overlayLiveTurn, projectTurnTools, shell-run
  * folding) never have to maintain a nesting invariant.
@@ -424,13 +424,6 @@ export interface TurnViewModel {
   user?: ChatItem;
   tools: ToolActivityItem[];
   assistant?: ChatItem;
-  /**
-   * Anthropic-style reasoning that some providers expose alongside the
-   * assistant's final answer. Rendered in a collapsed `<details>` so the
-   * answer reads cleanly but the thinking is one click away when the
-   * user wants to verify the chain of reasoning.
-   */
-  assistantThinking?: string;
   /**
    * Interleaved thinking / answer / tool / steering sequence in production order — the
    * rendering source of truth for the turn body. Built from the per-step
@@ -822,7 +815,7 @@ export function materializeTurns(
       }
     } else if (message.type === "assistant") {
       // A turn now holds one AssistantMessage per model step. Concatenate their
-      // text (and thinking) in step order so the turn reads as one answer; keep
+      // text in step order for aggregate consumers; keep
       // the first step's id as the stable anchor, and advance ts to the latest
       // step so durationMs measures to the turn's final assistant message.
       const priorText = turn.assistant?.text ?? "";
@@ -839,11 +832,6 @@ export function materializeTurns(
         ts: message.ts,
       };
       turn.modelId = message.modelId;
-      if (message.thinking?.text) {
-        turn.assistantThinking = turn.assistantThinking
-          ? `${turn.assistantThinking}\n\n${message.thinking.text}`
-          : message.thinking.text;
-      }
       // Time-to-answer measured from the earliest message in this turn (usually
       // the user's send) to the turn's final assistant message ts. Tool runs are
       // inside this window, so the same metric captures both LLM latency and tool

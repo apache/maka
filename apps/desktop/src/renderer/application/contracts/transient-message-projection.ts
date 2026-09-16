@@ -49,6 +49,8 @@ export function mergeTransientMessageProjection(
 ): TransientUserMessage {
   update = {
     ...update,
+    // A Message's send time is written once; an update's `ts` must not move it.
+    ts: current.ts,
     ...(update.pendingSteering === undefined && current.pendingSteering !== undefined ? { pendingSteering: current.pendingSteering } : {}),
     ...(!Object.hasOwn(update, 'deliveryStatus') && current.deliveryStatus !== undefined ? { deliveryStatus: current.deliveryStatus } : {}),
     ...(!Object.hasOwn(update, 'deliveryDetail') && current.deliveryDetail !== undefined ? { deliveryDetail: current.deliveryDetail } : {}),

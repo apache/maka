@@ -271,7 +271,7 @@ test('uses normal partial-execution semantics before an unknown tool failure', a
 
   assert.deepEqual(calls, ['allowed']);
   assert.equal(result.ok, false);
-  if (!result.ok) assert.equal(result.error.kind, 'unknown_tool');
+  if (!result.ok) assert.equal(result.error.kind, 'execution_error');
 });
 
 test('does not dispatch tools inherited from Object.prototype', async () => {
@@ -289,7 +289,7 @@ test('does not dispatch tools inherited from Object.prototype', async () => {
 
   try {
     const result = await execute('return await tools.inheritedCodeModeTool({});');
-    assert.equal(result.ok ? undefined : result.error.kind, 'unknown_tool');
+    assert.equal(result.ok ? undefined : result.error.kind, 'execution_error');
     assert.equal(inheritedCalls, 0);
   } finally {
     delete (Object.prototype as Record<string, unknown>).inheritedCodeModeTool;

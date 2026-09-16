@@ -284,6 +284,7 @@ const CONTEXT_OFFLOAD_LIMITS: ContextOffloadLimits = Object.freeze({
 });
 
 export interface CreateExecutionRuntimeHostCompositionOptions {
+  readonly initialization?: import('../client/connect-or-spawn.js').HostedRuntimeInitialization;
   readonly bootstrapRuntimePolicy?: boolean;
   readonly skillHomeDirectory?: string;
   readonly projectDirectoryRoots?: readonly PublishedProjectDirectoryRoot[];
@@ -318,6 +319,7 @@ export async function createExecutionRuntimeHostComposition(
         await ensureBootstrapRuntimePolicy({
           workspaceRoot: context.owner.capability.canonicalPath,
           stores,
+          initialization: options.initialization,
           onDeferredError: (error) =>
             console.error(
               `[runtime-host] optional bootstrap target could not be configured: ${generalizedErrorMessage(error)}`,
@@ -1368,6 +1370,15 @@ export async function createExecutionRuntimeHostComposition(
         },
       }),
       runBackendActivation: (operation) => runtimePolicyActivation.runBackendActivation(operation),
+      resolveFreshTurnToolMode: async (header) => {
+        // WorkHub keeps one permanent Session, so creation-time defaults cannot
+        // track this setting. Snapshot it per turn without rewriting that Session.
+        if (header.id !== WORKHUB_COORDINATION_SESSION_ID) return undefined;
+        return (await runtimePolicyStores.runtimePolicy.getSnapshot()).policy.chatDefaults
+          .codeModeEnabled
+          ? 'code_mode'
+          : 'direct';
+      },
       messageAuthority: runtimeAuthority,
       hostedAgentGraphExecution: {
         readAgentGraphIntentClaim: (graphId, intentId) =>

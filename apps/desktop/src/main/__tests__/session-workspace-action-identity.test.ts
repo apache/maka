@@ -137,8 +137,8 @@ describe('session workspace action identity', () => {
     act(() => workspace.setActiveId(sessionA));
     assert.deepEqual(workspace.retiredSessionIds([{ id: sessionB }]), [sessionA]);
 
-    // The real publication scheduler may hold a ready source while the reader
-    // is interacting. A retired queued source may not replace the displayed
+    // Publication is scheduled outside the current React lifecycle.
+    // A retired queued source may not replace the displayed
     // Session or publish its reader.
     act(() => workspace.setActiveId(sessionC));
     for (const batch of encodeDesktopTranscriptSnapshot({
@@ -148,8 +148,8 @@ describe('session workspace action identity', () => {
     let blocked = true;
     let idle!: () => void;
     const detach = workspace.sessionUiController.transcriptViewportNavigation.attachCommitScheduler(sessionC, {
-      commitIfIdle: (commit) => { if (blocked) return false; commit(); return true; },
-      subscribeToIdle: (listener) => { idle = listener; return () => {}; },
+      subscribeToReaderScroll: () => () => {},
+      commitRange: (commit) => { if (blocked) idle = commit; else commit(); },
     });
     let publications = 0;
     await act(async () => workspace.publishTranscript(
