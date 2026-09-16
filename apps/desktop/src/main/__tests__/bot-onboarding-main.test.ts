@@ -565,6 +565,74 @@ describe('BotOnboardingService', () => {
     assert.equal(last.retryHealth, undefined, 'terminal sessions must not advertise another retry');
   });
 
+  for (const status of ['pending', 'scanned', 'slow_down'] as const) {
+    it(`wakes at QR expiry after a ${status} provider response`, async () => {
+      let polls = 0;
+      const adapter: BotOnboardingProviderAdapter = {
+        async start() { return { ...startResult(), expiresInSeconds: 6 }; },
+        async poll() { polls += 1; return { status }; },
+      };
+      const test = harness(adapter);
+      const started = await test.service.start({ provider: 'dingtalk' });
+      test.advance(5_000);
+      const response = await test.service.poll(started.sessionId);
+      assert.equal(response.state, status === 'scanned' ? 'scanned' : 'waiting');
+      assert.equal(response.nextPollAfterMs, 1_000);
+      test.advance(1_000);
+      assert.equal((await test.service.poll(started.sessionId)).state, 'expired');
+      assert.equal(polls, 1);
+    });
+  }
+
+  for (const expiresInSeconds of [6, 12]) {
+    it(`does not promise a retry when backoff reaches the QR expiry (${expiresInSeconds}s)`, async () => {
+      let polls = 0;
+      const adapter: BotOnboardingProviderAdapter = {
+        async start() { return { ...startResult(), expiresInSeconds }; },
+        async poll() {
+          polls += 1;
+          throw new Error('HTTP 503 provider unavailable');
+        },
+      };
+      const test = harness(adapter);
+      const started = await test.service.start({ provider: 'dingtalk' });
+      test.advance(5_000);
+      const backingOff = await test.service.poll(started.sessionId);
+      assert.equal(backingOff.state, 'waiting');
+      assert.equal(backingOff.retryHealth, undefined);
+      const untilExpiry = expiresInSeconds * 1_000 - 5_000;
+      assert.equal(backingOff.nextPollAfterMs, untilExpiry);
+
+      test.advance(untilExpiry - 1);
+      assert.equal((await test.service.poll(started.sessionId)).state, 'waiting');
+      assert.equal(polls, 1);
+      test.advance(1);
+      const expired = await test.service.poll(started.sessionId);
+      assert.equal(expired.state, 'expired');
+      assert.equal(expired.retryHealth, undefined);
+      assert.equal(polls, 1, 'the expired code must never be polled again');
+    });
+  }
+
+  it('expires when an in-flight transient poll fails after the QR deadline', async () => {
+    const pending = deferred<never>();
+    let polls = 0;
+    const adapter: BotOnboardingProviderAdapter = {
+      async start() { return { ...startResult(), expiresInSeconds: 6 }; },
+      async poll() { polls += 1; return pending.promise; },
+    };
+    const test = harness(adapter);
+    const started = await test.service.start({ provider: 'dingtalk' });
+    test.advance(5_000);
+    const inFlight = test.service.poll(started.sessionId);
+    test.advance(1_001);
+    pending.reject(new Error('fetch failed'));
+    const expired = await inFlight;
+    assert.equal(expired.state, 'expired');
+    assert.equal(expired.retryHealth, undefined);
+    assert.equal(polls, 1);
+  });
+
   it('projects only a finite redacted category and clears retry health after recovery', async () => {
     let attempts = 0;
     const adapter: BotOnboardingProviderAdapter = {
@@ -686,6 +754,7 @@ describe('BotOnboardingService', () => {
     };
     const test = harness(adapter);
     const started = await test.service.start({ provider: 'dingtalk' });
+    assert.equal(started.nextPollAfterMs, 1_000);
     test.advance(1_001);
     const expired = await test.service.poll(started.sessionId);
     assert.equal(expired.state, 'expired');

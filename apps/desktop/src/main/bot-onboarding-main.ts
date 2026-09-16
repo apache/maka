@@ -191,7 +191,7 @@ export class BotOnboardingService {
       session.verificationUrl = result.verificationUrl;
       session.pollIntervalMs = clampPollInterval(result.pollIntervalMs);
       session.expiresAt = this.now() + Math.max(1, result.expiresInSeconds) * 1_000;
-      session.nextPollAt = this.now() + session.pollIntervalMs;
+      this.scheduleNextPoll(session);
       session.state = 'waiting';
       // PR1197 review (P2-13): the QR data URL is large; emit it only on the
       // start snapshot. The modal caches it and every subsequent poll snapshot
@@ -261,16 +261,16 @@ export class BotOnboardingService {
       switch (result.status) {
         case 'pending':
           session.state = 'waiting';
-          session.nextPollAt = this.now() + session.pollIntervalMs;
+          this.scheduleNextPoll(session);
           break;
         case 'scanned':
           session.state = 'scanned';
-          session.nextPollAt = this.now() + session.pollIntervalMs;
+          this.scheduleNextPoll(session);
           break;
         case 'slow_down':
           session.state = 'waiting';
           session.pollIntervalMs = Math.min(session.pollIntervalMs + 5_000, MAX_POLL_INTERVAL_MS);
-          session.nextPollAt = this.now() + session.pollIntervalMs;
+          this.scheduleNextPoll(session);
           break;
         case 'expired':
           session.state = 'expired';
@@ -311,11 +311,15 @@ export class BotOnboardingService {
       // fatal immediately.
       const failureCategory = providerPollSettled ? undefined : classifyTransientPollError(error);
       if (failureCategory) {
+        if (session.expiresAt !== undefined && session.expiresAt <= this.now()) {
+          this.clearRetryHealth(session);
+          session.state = 'expired';
+          return this.snapshot(session);
+        }
         session.pollFailures += 1;
         if (session.pollFailures < MAX_CONSECUTIVE_POLL_FAILURES) {
           session.pollIntervalMs = Math.min(session.pollIntervalMs + 2_000, MAX_POLL_INTERVAL_MS);
-          session.nextPollAt = this.now() + session.pollIntervalMs;
-          session.pollFailureCategory = failureCategory;
+          session.pollFailureCategory = this.scheduleNextPoll(session) ? failureCategory : undefined;
           return this.snapshot(session);
         }
       }
@@ -456,6 +460,13 @@ export class BotOnboardingService {
 
   private assertCurrent(session: BotOnboardingSession): void {
     if (!this.isCurrent(session)) throw new Error('Bot onboarding session is no longer active');
+  }
+
+  /** Return true only when the next provider poll can run before QR expiry. */
+  private scheduleNextPoll(session: BotOnboardingSession): boolean {
+    const retryAt = this.now() + session.pollIntervalMs;
+    session.nextPollAt = Math.min(retryAt, session.expiresAt ?? retryAt);
+    return session.expiresAt === undefined || retryAt < session.expiresAt;
   }
 
   private clearRetryHealth(session: BotOnboardingSession): void {
