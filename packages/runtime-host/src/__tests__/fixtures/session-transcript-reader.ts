@@ -43,7 +43,10 @@ export function transcriptReader(
     durable.length === 0 ? null : (durable.length - 1) * sequenceStride + sequenceStride - 1;
   return {
     readDurableHighWater: async () => durableHighWater(),
-    readDurablePage: async (_sessionId, request) => {
+    // Cuts pages more simply than the ledger reader does — what it shares is
+    // the contract the pager depends on: rows the projection hides take up no
+    // room on the page, and the page resumes past them.
+    readDurablePage: async (_sessionId, request, project) => {
       const throughSequence =
         request.throughSequence === undefined ? durableHighWater() : request.throughSequence;
       if (throughSequence === null) {
@@ -57,11 +60,12 @@ export function transcriptReader(
       }
       const position = request.position ?? (request.direction === 'older' ? throughSequence : 0);
       const candidates = durableRecords()
-        .map(({ sequence, message, cluster }) => ({
-          sequence,
-          cluster,
-          data: Buffer.from(JSON.stringify(message), 'utf8'),
-        }))
+        .flatMap(({ sequence, message, cluster }) => {
+          const projected = project ? project(message) : message;
+          return projected === null
+            ? []
+            : [{ sequence, cluster, data: Buffer.from(JSON.stringify(projected), 'utf8') }];
+        })
         .filter(
           ({ sequence }) =>
             sequence <= throughSequence &&

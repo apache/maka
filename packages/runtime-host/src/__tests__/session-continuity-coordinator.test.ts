@@ -1947,9 +1947,9 @@ test('an in-flight transcript page cannot outlive its Guest observation grant', 
   let blockPage = false;
   const reader: SessionTranscriptReader = {
     ...baseReader,
-    readDurableRecords: async (sessionId, request) => {
+    readDurablePage: async (sessionId, request, project) => {
       if (blockPage) await continued.promise;
-      return baseReader.readDurableRecords(sessionId, request);
+      return baseReader.readDurablePage(sessionId, request, project);
     },
   };
   const grant = {

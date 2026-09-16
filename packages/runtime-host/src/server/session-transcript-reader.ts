@@ -62,6 +62,8 @@ const TRANSCRIPT_SOURCE_MAX_RECORD_BYTES =
 const TRANSCRIPT_SOURCE_MAX_BYTES =
   TRANSCRIPT_SOURCE_MAX_EVENTS * TRANSCRIPT_SOURCE_MAX_RECORD_BYTES;
 const ACTIVE_TRANSCRIPT_SCAN_BATCH_MAX_BYTES = 256 * 1024;
+/** How much a page may scan past to fill itself when a projection hides rows. */
+const PAGE_HIDDEN_SCAN_MAX_BYTES = 16 * 1024 * 1024;
 /** Turns per storage round trip: one, so a page loads no Turn it cannot use. */
 const TRANSCRIPT_TURN_SCAN_LIMIT = 1;
 /**
@@ -149,11 +151,19 @@ export function createSessionTranscriptReader(input: {
   };
 }
 
+/**
+ * Rewrites a row for the audience the page is being read for, or hides it. A
+ * page is cut where the rows it carries end, so what a row becomes has to be
+ * known while the page is being cut, not after.
+ */
+export type TranscriptRowProjection = (message: StoredMessage) => StoredMessage | null;
+
 export interface SessionTranscriptReader {
   readDurableHighWater(sessionId: string): Promise<number | null>;
   readDurablePage(
     sessionId: string,
     request: SessionTranscriptPageRequest,
+    project?: TranscriptRowProjection,
   ): Promise<SessionTranscriptStoragePage>;
   readDurableRecords(
     sessionId: string,
@@ -417,6 +427,7 @@ function pagedTranscriptReads(source: TranscriptRecordSource) {
     async readPage(
       sessionId: string,
       request: SessionTranscriptPageRequest,
+      project?: TranscriptRowProjection,
     ): Promise<SessionTranscriptStoragePage> {
       const throughSequence =
         request.throughSequence === undefined
@@ -441,6 +452,7 @@ function pagedTranscriptReads(source: TranscriptRecordSource) {
       let cluster: number | undefined;
       /** Where the group the page is inside began, so the page can be cut back to that edge. */
       let groupStart: { index: number; bytes: number; sequence: number } | undefined;
+      let hiddenBytes = 0;
       for await (const record of source.scan(sessionId, { ...request, throughSequence })) {
         if (fragments.length >= request.maxMessages || rawBytes >= request.maxBytes) {
           truncated = true;
@@ -448,11 +460,19 @@ function pagedTranscriptReads(source: TranscriptRecordSource) {
           next = { position: record.sequence, byteOffset: null };
           break;
         }
+        const projected = project ? project(record.message) : record.message;
+        if (projected === null) {
+          hiddenBytes += Buffer.byteLength(JSON.stringify(record.message), 'utf8');
+          if (hiddenBytes > PAGE_HIDDEN_SCAN_MAX_BYTES) {
+            throw new RangeError('Session transcript projection scan exceeds its capacity limit');
+          }
+          continue;
+        }
         if (record.cluster !== cluster) {
           groupStart = { index: fragments.length, bytes: rawBytes, sequence: record.sequence };
         }
         cluster = record.cluster;
-        const data = Buffer.from(JSON.stringify(record.message), 'utf8');
+        const data = Buffer.from(JSON.stringify(projected), 'utf8');
         // A message larger than the remaining budget is served in byte slices,
         // from the edge the traversal is moving away from, so the next page
         // resumes inside the same record instead of skipping it.

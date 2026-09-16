@@ -48,6 +48,10 @@ import {
   ACTIVE_TRANSCRIPT_OVERLAY_MAX_BYTES,
   createSessionTranscriptReader,
 } from '../server/session-transcript-reader.js';
+import {
+  createSessionTranscriptBootstrap,
+  readSessionTranscriptPage,
+} from '../server/session-transcript-pager.js';
 
 for (const coordination of [false, true])
   test(`keeps ${coordination ? 'WorkHub' : 'ordinary'} durable history separate from the canonical active overlay`, async () => {
@@ -929,47 +933,7 @@ test('cuts a byte-sized page back to the last whole Turn on it', async () => {
       model: 'fake-model',
       permissionMode: 'ask',
     });
-    let counter = 0;
-    // Rows this size are what a real transcript holds, and the point of the
-    // test: a page cut by bytes lands inside one of them far more often than
-    // it lands between two Turns.
-    const body = 'x'.repeat(40 * 1024);
-    for (let index = 0; index < 6; index++) {
-      const runId = `run-${index}`;
-      await seedInvocation(stores.runtimeEventStore, {
-        sessionId: session.id,
-        runId,
-        turnId: `turn-${index}`,
-        openedAt: index,
-      });
-      await stores.runtimeEventStore.appendRuntimeEvent(
-        session.id,
-        runId,
-        runtimeEvent(session.id, {
-          id: `${runId}-event-${counter++}`,
-          invocationId: runId,
-          runId,
-          turnId: `turn-${index}`,
-          ts: counter,
-          role: 'model',
-          author: 'agent',
-          content: { kind: 'text', text: body },
-        }),
-      );
-      await stores.runtimeEventStore.appendRuntimeEvent(
-        session.id,
-        runId,
-        runtimeEvent(session.id, {
-          id: `${runId}-event-${counter++}`,
-          invocationId: runId,
-          runId,
-          turnId: `turn-${index}`,
-          ts: counter,
-          status: 'completed',
-          actions: { endInvocation: true },
-        }),
-      );
-    }
+    await seedLargeTurns(stores, session.id);
 
     const read = createSessionTranscriptReader({
       stores,
@@ -1021,6 +985,122 @@ test('cuts a byte-sized page back to the last whole Turn on it', async () => {
     await rm(base, { recursive: true, force: true });
   }
 });
+
+test('cuts a guest page where it cuts an owner page', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-shared-page-boundary-'));
+  const capability = await resolveStorageRoot({ path: join(base, 'root'), kind: 'interactive' });
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(owner);
+  try {
+    const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+    const session = await stores.sessionStore.create({
+      cwd: capability.canonicalPath,
+      llmConnectionId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+      llmConnectionSlug: 'fake',
+      model: 'fake-model',
+      permissionMode: 'ask',
+    });
+    await seedLargeTurns(stores, session.id);
+
+    const reader = createSessionTranscriptReader({
+      stores,
+      canonicalPermissionOutcomes: { readPermissionOutcome: async () => undefined },
+    });
+    const throughSequence = await reader.readDurableHighWater(session.id);
+
+    // A guest's rows are rewritten before they are weighed, so their pages are
+    // cut somewhere else than an owner's. Where they may be cut is the same
+    // question, and it has the same answer.
+    for (const projection of ['owner', 'shared'] as const) {
+      const { bootstrap, state } = await createSessionTranscriptBootstrap({
+        reader,
+        sessionId: session.id,
+        subscriptionId: `subscription-${projection}`,
+        throughSequence,
+        rootTurn: null,
+        activeAssistantStreams: [],
+        maxBytes: 100 * 1024,
+        projection,
+      });
+      let page = bootstrap.durable;
+      let pages = 0;
+      for (; pages < 32; pages++) {
+        assert.equal(page.endsAtTurnBoundary, true, `${projection} page ${pages}`);
+        for (const fragment of page.fragments) {
+          assert.equal(fragment.byteOffset, 0, `${projection} page ${pages}`);
+          assert.equal(
+            Buffer.byteLength(fragment.data, 'base64'),
+            fragment.totalBytes,
+            `${projection} page ${pages}`,
+          );
+        }
+        if (page.nextCursor === null) break;
+        page = await readSessionTranscriptPage({
+          reader,
+          state,
+          request: {
+            subscriptionId: `subscription-${projection}`,
+            source: 'durable',
+            direction: 'older',
+            throughSequence,
+            cursor: page.nextCursor,
+            anchorSequence: null,
+            maxBytes: 100 * 1024,
+          },
+        });
+      }
+      assert.ok(pages > 1, `${projection} needs more than one page to be worth cutting`);
+    }
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+/**
+ * Six independent Turns, each carrying one row the size a real transcript
+ * holds. Rows this large are the point: a page cut by bytes lands inside one
+ * of them far more often than it lands between two Turns.
+ */
+async function seedLargeTurns(stores: ExecutionStoresWriter<'interactive'>, sessionId: string) {
+  const body = 'x'.repeat(40 * 1024);
+  let counter = 0;
+  for (let index = 0; index < 6; index++) {
+    const runId = `run-${index}`;
+    await seedInvocation(stores.runtimeEventStore, {
+      sessionId,
+      runId,
+      turnId: `turn-${index}`,
+      openedAt: index,
+    });
+    await stores.runtimeEventStore.appendRuntimeEvent(
+      sessionId,
+      runId,
+      runtimeEvent(sessionId, {
+        id: `${runId}-event-${counter++}`,
+        invocationId: runId,
+        runId,
+        turnId: `turn-${index}`,
+        ts: counter,
+        role: 'model',
+        author: 'agent',
+        content: { kind: 'text', text: body },
+      }),
+    );
+    await stores.runtimeEventStore.appendRuntimeEvent(
+      sessionId,
+      runId,
+      runtimeEvent(sessionId, {
+        id: `${runId}-event-${counter++}`,
+        invocationId: runId,
+        runId,
+        turnId: `turn-${index}`,
+        ts: counter,
+        status: 'completed',
+        actions: { endInvocation: true },
+      }),
+    );
+  }
+}
 
 function runtimeEvent(sessionId: string, overrides: Partial<RuntimeEvent>): RuntimeEvent {
   return {

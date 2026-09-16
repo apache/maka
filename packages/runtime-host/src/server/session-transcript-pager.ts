@@ -33,12 +33,11 @@ import {
   ACTIVE_TRANSCRIPT_OVERLAY_MAX_BYTES,
   ACTIVE_TRANSCRIPT_OVERLAY_MAX_MESSAGES,
   type SessionTranscriptReader,
+  type TranscriptRowProjection,
 } from './session-transcript-reader.js';
 import { projectSharedSessionTranscriptMessage } from './shared-session-transcript.js';
 
 type SessionTranscriptProjection = 'owner' | 'shared';
-
-const SHARED_PROJECTION_HIDDEN_MAX_BYTES = 16 * 1024 * 1024;
 
 interface TranscriptCursorState {
   readonly version: 1;
@@ -115,10 +114,11 @@ export async function createSessionTranscriptBootstrap(input: {
       maxBytes: durableBudget,
       maxMessages: SESSION_TRANSCRIPT_PAGE_MAX_MESSAGES,
     } as const;
-    const durableStorage =
-      projection === 'shared'
-        ? await readSharedDurablePage(input.reader, input.sessionId, durableRequest)
-        : await input.reader.readDurablePage(input.sessionId, durableRequest);
+    const durableStorage = await input.reader.readDurablePage(
+      input.sessionId,
+      durableRequest,
+      projection === 'shared' ? sharedRowProjection(input.sessionId) : undefined,
+    );
     if (durableStorage.throughSequence !== input.throughSequence) {
       throw new Error('Session transcript durable watermark changed during bootstrap');
     }
@@ -227,10 +227,11 @@ export async function readSessionTranscriptPage(input: {
     maxBytes: request.maxBytes,
     maxMessages: SESSION_TRANSCRIPT_PAGE_MAX_MESSAGES,
   } as const;
-  const storage =
-    state.projection === 'shared'
-      ? await readSharedDurablePage(input.reader, state.sessionId, durableRequest)
-      : await input.reader.readDurablePage(state.sessionId, durableRequest);
+  const storage = await input.reader.readDurablePage(
+    state.sessionId,
+    durableRequest,
+    state.projection === 'shared' ? sharedRowProjection(state.sessionId) : undefined,
+  );
   return pageFromSelection(
     state,
     'durable',
@@ -240,102 +241,13 @@ export async function readSessionTranscriptPage(input: {
   );
 }
 
-async function readSharedDurablePage(
-  reader: SessionTranscriptReader,
-  sessionId: string,
-  request: Parameters<SessionTranscriptReader['readDurablePage']>[1],
-): ReturnType<SessionTranscriptReader['readDurablePage']> {
-  const position =
-    request.position ??
-    (request.direction === 'older' ? (request.throughSequence ?? undefined) : 0);
-  const fragments: Awaited<
-    ReturnType<SessionTranscriptReader['readDurablePage']>
-  >['fragments'][number][] = [];
-  let rawBytes = 0;
-  let hiddenBytes = 0;
-  let next: { position: number; byteOffset: number | null } | null = null;
-  let scanPosition = position;
-  let throughSequence = request.throughSequence ?? null;
-  let endsAtTurnBoundary = true;
-  let cluster: number | undefined;
-  while (scanPosition !== undefined && next === null) {
-    const scanned = await reader.readDurableRecords(sessionId, {
-      direction: request.direction,
-      ...(request.throughSequence === undefined
-        ? {}
-        : { throughSequence: request.throughSequence }),
-      position: scanPosition,
-      maxStoredBytes: ACTIVE_TRANSCRIPT_OVERLAY_MAX_BYTES,
-      maxMessages: SESSION_TRANSCRIPT_PAGE_MAX_MESSAGES,
-    });
-    throughSequence = scanned.throughSequence;
-    let recordIndex = 0;
-    for (; recordIndex < scanned.records.length; recordIndex += 1) {
-      const record = scanned.records[recordIndex]!;
-      const projected = projectSharedSessionTranscriptMessage(record.message, sessionId);
-      if (!projected) {
-        hiddenBytes += Buffer.byteLength(JSON.stringify(record.message), 'utf8');
-        if (hiddenBytes > SHARED_PROJECTION_HIDDEN_MAX_BYTES) {
-          throw new RangeError('Session transcript projection scan exceeds its capacity limit');
-        }
-        continue;
-      }
-      const bytes = Buffer.from(JSON.stringify(projected), 'utf8');
-      const continuationOffset =
-        record.sequence === position && request.byteOffset !== undefined
-          ? request.byteOffset
-          : null;
-      const selected = selectBuffer(
-        bytes,
-        request.direction,
-        continuationOffset,
-        request.maxBytes - rawBytes,
-      );
-      if (!selected) {
-        endsAtTurnBoundary = record.cluster !== cluster;
-        next = { position: record.sequence, byteOffset: null };
-        break;
-      }
-      cluster = record.cluster;
-      fragments.push({
-        sequence: record.sequence,
-        byteOffset: selected.byteOffset,
-        totalBytes: bytes.byteLength,
-        payloadDigest: null,
-        data: selected.data,
-      });
-      rawBytes += selected.data.byteLength;
-      if (!selected.complete) {
-        endsAtTurnBoundary = false;
-        next = { position: record.sequence, byteOffset: selected.nextOffset };
-        break;
-      }
-      if (fragments.length === request.maxMessages || rawBytes === request.maxBytes) {
-        const followingRecord = scanned.records[recordIndex + 1];
-        const following = followingRecord?.sequence ?? scanned.nextPosition;
-        // A page that ran out mid-group is only known to be whole once the next
-        // record proves otherwise; an unread continuation could be either.
-        endsAtTurnBoundary = followingRecord
-          ? followingRecord.cluster !== record.cluster
-          : scanned.nextPosition === null;
-        next = following === null ? null : { position: following, byteOffset: null };
-        break;
-      }
-    }
-    if (next !== null) break;
-    if (scanned.nextPosition === null) break;
-    if (scanned.nextPosition === scanPosition) {
-      throw new Error('Session transcript projection scan did not advance');
-    }
-    scanPosition = scanned.nextPosition;
-  }
-  return {
-    throughSequence,
-    fragments,
-    rawBytes,
-    next,
-    endsAtTurnBoundary,
-  };
+/**
+ * How a guest's rows are rewritten. Handed to the reader rather than applied
+ * after it: a page is cut where the rows it carries end, so a row that the
+ * guest never sees must not take up room on their page either.
+ */
+function sharedRowProjection(sessionId: string): TranscriptRowProjection {
+  return (message) => projectSharedSessionTranscriptMessage(message, sessionId);
 }
 
 function projectEncodedSharedMessage(bytes: Buffer, sessionId: string): Buffer[] {
