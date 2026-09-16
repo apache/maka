@@ -1,3 +1,16 @@
+---
+doc_id: architecture.external-session-import-interaction
+title: "External Session import interaction"
+language: en
+source_language: zh-CN
+counterpart: ./external-session-import-interaction.zh-CN.md
+implementation_status: current
+document_status: current
+translation_status: synced
+last_verified: 2026-09-16
+owners:
+  - maka-backend
+---
 <!--
   Licensed to the Apache Software Foundation (ASF) under one
   or more contributor license agreements.  See the NOTICE file
@@ -16,6 +29,8 @@
   specific language governing permissions and limitations
   under the License.
 -->
+
+[中文](./external-session-import-interaction.zh-CN.md)
 
 # External Session import interaction
 
