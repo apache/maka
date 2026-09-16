@@ -18,6 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { useWorkHubWorkspace } from '../../renderer/application/contracts/workhub-workspace/use-workhub-workspace.js';
 import { deferred } from '@maka/core/test-only/async-primitives';
 import { desktopSessionKey } from '../../shared/runtime-host-identity.js';
 import { afterEach, test } from 'node:test';
@@ -25,7 +26,6 @@ import { act, createElement, useEffect } from 'react';
 import { useToast, useUiLocale } from '@maka/ui';
 import type { UiLocale } from '@maka/core/ui-locale';
 import {
-  useWorkHubWorkspace,
   WorkHubServicesProvider,
   WorkHubSurfaceSwitch,
   type WorkHubServices,

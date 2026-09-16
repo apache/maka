@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { useWorkHubWorkspace, WorkHubControlOverlay, WorkHubDock, WorkHubMainNavigation, WorkHubReturnButton } from './features/workhub';
+import { WorkHubControlOverlay, WorkHubDock, WorkHubMainNavigation, WorkHubReturnButton } from './features/workhub';
 import {
   useCallback,
   useEffect,
@@ -73,10 +73,7 @@ import * as Conversation from './features/conversation';
 import { deriveWorkspaceReadinessRecovery } from './workspace-readiness-recovery';
 import { AgentGraphPanel } from './agent-graph-panel';
 import { ChatComposerRegion, selectLatestRequestUsage } from './chat-composer-region';
-import {
-  WorkbarHost,
-  useWorkbarController,
-} from './features/workbar';
+import { WorkbarHost, useWorkbarController } from './features/workbar';
 import { AppUpdateProvider } from './features/app-update/index.js';
 import * as Goals from './features/goals';
 import * as ModuleHub from './features/module-hub';
@@ -1308,19 +1305,16 @@ function AppShellContent({
       }),
     [toastApi],
   );
-  const workHubWorkspace = useWorkHubWorkspace(workHubEnabled, authoritativeSessionIds ?? undefined);
-  const workbarSession = workHubActive ? workHubWorkspace.session : activeHostSession;
-  const workbarAvailable = sessionsSelected && Boolean(workbarSession);
   const workbar = useWorkbarController({
-    workspace: workHubActive ? 'workhub' : 'session',
-    available: workbarAvailable,
-    layoutSessionId: workHubActive ? workHubWorkspace.session?.id : activeId,
-    activeSession: workbarSession,
-    projectId: workHubActive ? workHubWorkspace.session?.projectId : currentProjectId,
-    projectAliases: workHubActive ? [] : currentProject?.aliases ?? [],
-    authoritativeSessionIds: workHubWorkspace.authoritativeSessionIds,
+    workHub: { enabled: workHubEnabled, active: workHubActive },
+    available: sessionsSelected && (workHubActive || Boolean(activeHostSession)),
+    layoutSessionId: activeId,
+    activeSession: activeHostSession,
+    projectId: currentProjectId,
+    projectAliases: currentProject?.aliases ?? [],
+    authoritativeSessionIds: authoritativeSessionIds ?? undefined,
     shellObscured,
-    modelChoices: workHubActive ? workHubWorkspace.modelChoices : chatModelChoices,
+    modelChoices: chatModelChoices,
     toastApi,
     composerRef,
     openNewTaskSurface,
@@ -2407,7 +2401,7 @@ function AppShellContent({
               inert={switchingSession || undefined}
               aria-busy={switchingSession || undefined}>
               <ModuleHub.ModuleHubHost />
-              <WorkHubMainNavigation workbarReady={workHubActive && workbarAvailable}
+              <WorkHubMainNavigation workbarReady={workHubActive && Boolean(workbar.host.activeId)}
                 onOpenUsage={() => commands.toggleTool('inspector')} onToggleWorkbar={commands.toggleRight}
                 onOpenWorkHub={openWorkHub} onOpenSession={(sessionId) => { closeSettings(); openSession(sessionId); }} />
               <WorkHubDock workbarCollapsed={selectors.rightCollapsed} enabled={workHubEnabled} visible={workHubActive && sessionsSelected && !shellObscured} />

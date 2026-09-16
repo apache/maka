@@ -17,19 +17,32 @@
  * under the License.
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import type { ChatModelChoice } from '@maka/core/chat-model-choice';
 import type { SessionSummary } from '@maka/core/session';
-import { useWorkHubServices } from '../services.js';
-import { startWorkHubCoordinationLifecycle } from './coordination-lifecycle.js';
+import { startWorkHubCoordinationLifecycle, type WorkHubCoordinationHostChange } from './coordination-lifecycle.js';
+
+/** Metadata needed by Main's panels, independently of the conversation renderer. */
+export interface WorkHubWorkspaceServices {
+  resolve(): Promise<string>;
+  getSession(id: string): Promise<SessionSummary>;
+  modelChoices(id: string): Promise<ChatModelChoice[]>;
+  subscribeSessions(handler: () => void): () => void;
+  subscribeHosts(handler: (event: WorkHubCoordinationHostChange) => void): () => void;
+  subscribeAvailability(handler: () => void): () => void;
+}
+
+const ServicesContext = createContext<WorkHubWorkspaceServices | null>(null);
+export const WorkHubWorkspaceServicesProvider = ServicesContext.Provider;
 
 /** Main owns the panels; the persistent WorkHub renderer owns the conversation. */
 export function useWorkHubWorkspace(enabled: boolean, sessionIds: ReadonlySet<string> | undefined) {
-  const services = useWorkHubServices();
+  const services = useContext(ServicesContext);
   const [snapshot, setSnapshot] = useState<{ session: SessionSummary; choices: ChatModelChoice[] }>();
   const session = snapshot?.session;
   useEffect(() => {
     if (!enabled) { setSnapshot(undefined); return; }
+    if (!services) throw new Error('WorkHub workspace services are required when enabled');
     let active = true;
     let currentId: string | undefined;
     let revision = 0;

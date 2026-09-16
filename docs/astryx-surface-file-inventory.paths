@@ -9,6 +9,7 @@ apps/desktop/src/renderer/application/contracts/session-inspector/session-inspec
 apps/desktop/src/renderer/application/contracts/settings-presentation/runtime-host-settings-target.tsx
 apps/desktop/src/renderer/application/contracts/settings-presentation/settings-route-header.tsx
 apps/desktop/src/renderer/application/contracts/settings-presentation/settings-section.tsx
+apps/desktop/src/renderer/application/contracts/workbar-edge-toggle.tsx
 apps/desktop/src/renderer/cascade-layers.css
 apps/desktop/src/renderer/chat-composer-region.tsx
 apps/desktop/src/renderer/chat-message-surface.tsx
@@ -84,8 +85,6 @@ apps/desktop/src/renderer/features/workbar/tools/terminal/session-terminal-panel
 apps/desktop/src/renderer/features/workbar/ui/side-chat-close-confirmation.tsx
 apps/desktop/src/renderer/features/workbar/ui/workbar-host.tsx
 apps/desktop/src/renderer/features/workbar/ui/workbar-surface.tsx
-apps/desktop/src/renderer/features/workbar/ui/workbar-toggle.tsx
-apps/desktop/src/renderer/features/workbar/ui/workbar-workspace.tsx
 apps/desktop/src/renderer/features/workhub/ui/control-overlay.tsx
 apps/desktop/src/renderer/features/workhub/ui/cursor.tsx
 apps/desktop/src/renderer/features/workhub/ui/main-navigation.tsx

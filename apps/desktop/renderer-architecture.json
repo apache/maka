@@ -774,8 +774,7 @@
           "useTaskSubmissionReadiness": 1,
           "useToast": 1,
           "useTurnActionRegistry": 1,
-          "useWorkbarController": 1,
-          "useWorkHubWorkspace": 1
+          "useWorkbarController": 1
         },
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,
@@ -862,7 +861,7 @@
           "react": 1
         },
         "importSpecifiers": 100,
-        "nonTriviaTokens": 13322
+        "nonTriviaTokens": 13279
       },
       "src/renderer/use-app-shell-composer-quotes.ts": {
         "importDeclarations": 2,

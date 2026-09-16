@@ -22,12 +22,11 @@ import type { UiLocale } from '@maka/core/ui-locale';
 import type { StoredMessage, SessionSummary } from '@maka/core/session';
 import type { ComposerAttachmentService } from '@maka/ui/use-composer-attachments';
 import type { SessionEvent, AttachmentRef, MessageQueuePlacement } from '@maka/core/events';
-import type { ChatModelChoice } from '@maka/core/chat-model-choice';
 import type { OperationInput, OperationOutput } from '@maka/runtime-host/protocol';
 import type { WorkHubAnswerInput, WorkHubAnswerResult } from '../../../shared/workhub-conversation.js';
 import type { WorkHubControlBridge } from '../../../shared/workhub-control.js';
 import type { WorkHubPresentationBridge } from '../../../shared/workhub-presentation.js';
-import type { WorkHubCoordinationHostChange } from './controller/coordination-lifecycle.js';
+import type { WorkHubWorkspaceServices } from '../../application/contracts/workhub-workspace/use-workhub-workspace.js';
 import type {
   WorkHubDelegationFeedback,
   WorkHubDelegationReference,
@@ -48,7 +47,7 @@ export interface WorkHubTranscript {
   loadLatest(): Promise<void>;
   close(): Promise<void>;
 }
-export interface WorkHubServices {
+export interface WorkHubServices extends WorkHubWorkspaceServices {
   readonly inspector: import('../../application/contracts/session-inspector/service.js').SessionInspectorService;
   readonly surface: 'main' | 'workhub';
   readonly initialLocale: UiLocale;
@@ -56,16 +55,11 @@ export interface WorkHubServices {
   readonly presentation: WorkHubPresentationBridge;
   readonly control: WorkHubControlBridge;
   bindBrowserSession(sessionId: string | null): void;
-  resolve(): Promise<string>;
   getSession(sessionId: string): Promise<SessionSummary & { revision: number }>;
-  subscribeHosts(handler: (event: WorkHubCoordinationHostChange) => void): () => void;
-  subscribeAvailability(handler: () => void): () => void;
   listSessions(): Promise<(SessionSummary & { revision: number })[]>;
-  subscribeSessions(handler: () => void): () => void;
   delegationFeedback(
     references: readonly WorkHubDelegationReference[],
   ): Promise<readonly WorkHubDelegationFeedback[]>;
-  modelChoices(sessionId: string): Promise<ChatModelChoice[]>;
   readonly attachments: ComposerAttachmentService;
   readAttachmentBytes(sessionId: string, artifactId: string): Promise<ArtifactBinaryReadResult>;
   prepareAttachments(sessionId: string, items: Array<{ approvalId: string; name: string; mimeType?: string } | { file: File }>): Promise<AttachmentRef[]>;

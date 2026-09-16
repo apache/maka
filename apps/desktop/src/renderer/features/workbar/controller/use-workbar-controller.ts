@@ -38,6 +38,7 @@ import { getDesktopConversationCopy } from '../../../locales/conversation-copy.j
 import { getShellCopy, localizedShellErrorMessage } from '../../../locales/shell-copy.js';
 import { sideChatTitleFromPrompt } from '../../../side-chat-command.js';
 import { desktopSessionKey, parseDesktopSessionKey } from '../../../../shared/runtime-host-identity.js';
+import { useWorkHubWorkspace } from '../../../application/contracts/workhub-workspace/use-workhub-workspace.js';
 import { useWorkbarServices } from '../services-context.js';
 import type { WorkbarHostModel } from '../ui/workbar-host.js';
 import { SKIP_SIDE_CHAT_CLOSE_CONFIRMATION_KEY } from '../ui/side-chat-close-confirmation.js';
@@ -98,7 +99,7 @@ export interface WorkbarControllerSelectors {
 }
 
 export interface UseWorkbarControllerInput {
-  workspace?: 'session' | 'workhub';
+  workHub?: { enabled: boolean; active: boolean };
   /** Whether the Session workspace (rather than a module page) owns the shell. */
   available: boolean;
   /** Local selection owns layout even while Host creation is pending. */
@@ -155,8 +156,20 @@ function nextOrdinal(
 }
 
 export function useWorkbarController(
-  input: UseWorkbarControllerInput,
+  requested: UseWorkbarControllerInput,
 ): WorkbarController {
+  const coordination = useWorkHubWorkspace(requested.workHub?.enabled ?? false, requested.authoritativeSessionIds);
+  const workspace = requested.workHub?.active ? 'workhub' : 'session';
+  const input: UseWorkbarControllerInput = requested.workHub?.active ? {
+    ...requested,
+    available: requested.available && Boolean(coordination.session),
+    layoutSessionId: coordination.session?.id,
+    activeSession: coordination.session,
+    projectId: coordination.session?.projectId,
+    projectAliases: [],
+    authoritativeSessionIds: coordination.authoritativeSessionIds,
+    modelChoices: coordination.modelChoices,
+  } : { ...requested, authoritativeSessionIds: coordination.authoritativeSessionIds };
   const locale = useUiLocale();
   // Enforce development-only: the experimental Start-task path must never be
   // reachable in a production build even if the flag is set, so the gate
@@ -485,7 +498,7 @@ export function useWorkbarController(
   const openNewSideConversation = useCallback(
     (placement: SessionWorkbarPlacement, initialPrompt?: string) => {
       const sourceSessionId = activeSessionIdRef.current;
-      if (!sourceSessionId || !workbarToolsForWorkspace(input.workspace).some((tool) => tool.kind === 'side-chat')) return;
+      if (!sourceSessionId || !workbarToolsForWorkspace(workspace).some((tool) => tool.kind === 'side-chat')) return;
       const panel = openCompanionPanel(null, {
         sourceSessionId,
         initialPrompt,
@@ -508,13 +521,13 @@ export function useWorkbarController(
       reserveOrdinal,
       revealPlacement,
       sideConversations,
-      input.workspace,
+      workspace,
     ],
   );
 
   const openTool = useCallback<WorkbarControllerCommands['openTool']>(
     (kind, placement, options = {}) => {
-      if (!workbarToolsForWorkspace(input.workspace).some((tool) => tool.kind === kind)) return;
+      if (!workbarToolsForWorkspace(workspace).some((tool) => tool.kind === kind)) return;
       const definition = workbarToolDefinition(kind);
       const targetPlacement = placement ?? definition.defaultPlacement;
       if (definition.singleton) {
@@ -591,7 +604,7 @@ export function useWorkbarController(
   const openSideChatWithQuote = useCallback(
     (quote: QuoteRef) => {
       const sourceSessionId = activeSessionIdRef.current;
-      if (!sourceSessionId || !workbarToolsForWorkspace(input.workspace).some((tool) => tool.kind === 'side-chat')) return;
+      if (!sourceSessionId || !workbarToolsForWorkspace(workspace).some((tool) => tool.kind === 'side-chat')) return;
       const activeSideChat = findPreferredSideChatWorkbarTab(
         panelsStateRef.current,
       );
@@ -625,7 +638,7 @@ export function useWorkbarController(
       reserveOrdinal,
       revealPlacement,
       sideConversations,
-      input.workspace,
+      workspace,
     ],
   );
 
@@ -786,7 +799,7 @@ export function useWorkbarController(
   );
 
   const toggleTool = useCallback((kind: SessionWorkbarTabKind) => {
-    if (!workbarToolsForWorkspace(input.workspace).some((tool) => tool.kind === kind)) return;
+    if (!workbarToolsForWorkspace(workspace).some((tool) => tool.kind === kind)) return;
     const panels = panelsStateRef.current;
     const placements = [panels.focusedPanel, 'right', 'bottom'] as const;
     for (const placement of placements) {
@@ -805,7 +818,7 @@ export function useWorkbarController(
       return;
     }
     openTool(kind);
-  }, [input.workspace, layout.workbarCollapsed, layout.bottomPanelOpen, layout.setWorkbarCollapsed,
+  }, [workspace, layout.workbarCollapsed, layout.bottomPanelOpen, layout.setWorkbarCollapsed,
     layout.setBottomPanelOpen, layout.activateWorkbarTab, revealPlacement, openTool]);
 
   useEffect(() => {
@@ -891,7 +904,7 @@ export function useWorkbarController(
       hiddenSessionIds: hiddenCompanionForkIds,
     },
     host: {
-      workspace: input.workspace,
+      workspace: workspace,
       activeId: input.available ? activeSessionId : undefined,
       projectId: input.projectId,
       projectAliases: input.projectAliases,

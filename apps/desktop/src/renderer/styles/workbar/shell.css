@@ -310,7 +310,7 @@
 
 /* The conversation's renderer paints this overlay. No grid track is reserved:
    native WorkHub cannot be covered by controls painted in Main's DOM. */
-.maka-workbar-edge {
+button.maka-workbar-edge {
   grid-area: main;
   position: absolute;
   top: 50%;
@@ -326,7 +326,8 @@
   cursor: pointer;
   -webkit-app-region: no-drag;
 }
-.maka-detail-with-artifacts:has(.workHubDock[data-native-edge]) .maka-workbar-edge {
+button.maka-workbar-edge:is(:hover, :active, :focus-visible) { background: transparent; }
+.maka-detail-with-artifacts:has(.workHubDock[data-native-edge]:not([hidden])) .maka-workbar-edge {
   visibility: hidden;
   pointer-events: none;
 }
