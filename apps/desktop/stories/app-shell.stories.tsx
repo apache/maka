@@ -1496,6 +1496,43 @@ const scheduledTaskTurn: StoredMessage[] = [
   assistant('msg-assistant-scheduled-task', 'turn-scheduled-task', 5, '今日项目回顾已生成。'),
 ];
 
+// Real path: open a conversation whose runtime recorded context diagnostics.
+// Use stored records so ChatView materializes the current localized copy.
+export const LongSystemNotes: Story = {
+  render: () => <ComposedShell frameHeight="100vh" chat={{
+    scrollBehavior: 'auto',
+    messages: [
+      user('diagnostic-user', 'diagnostic-turn', 2, 'Please continue reviewing the conversation.'),
+      { type: 'system_note', id: 'dropping', turnId: 'diagnostic-turn', ts: NOW - 90_000,
+        kind: 'context_provider_dropping', data: { inputTokens: 98_247, priorInputTokens: 124_832 } },
+      { type: 'system_note', id: 'overrun', turnId: 'diagnostic-turn', ts: NOW - 80_000,
+        kind: 'context_window_overrun', data: { usedTokens: 129_127, declaredContextWindow: 128_000 } },
+      { type: 'system_note', id: 'short', turnId: 'diagnostic-turn', ts: NOW - 70_000,
+        kind: 'step_limit' },
+      { type: 'system_note', id: 'compacted', turnId: 'diagnostic-turn', ts: NOW - 60_000,
+        kind: 'context_compacted' },
+      assistant('diagnostic-answer', 'diagnostic-turn', 0, 'Ready to continue.'),
+    ],
+  }} />,
+  play: async ({ canvasElement }) => {
+    await document.fonts.ready;
+    const notes = canvasElement.querySelectorAll<HTMLElement>('.maka-chat-system-message');
+    expect(notes.length).toBe(4);
+    for (const note of notes) {
+      const bounds = note.getBoundingClientRect();
+      const range = document.createRange();
+      range.selectNodeContents(note);
+      // Check every rendered text fragment, including the prefix and suffix.
+      // scrollWidth alone misses the negative overflow of a centered line.
+      for (const rect of range.getClientRects()) {
+        expect(rect.left).toBeGreaterThanOrEqual(bounds.left - 1);
+        expect(rect.right).toBeLessThanOrEqual(bounds.right + 1);
+      }
+      expect(note.scrollWidth).toBeLessThanOrEqual(note.clientWidth + 1);
+    }
+  },
+};
+
 // Real path: a long session that has accumulated reasoning, several native
 // Astryx tool calls and long prose, a ScheduledTask-triggered turn, with an image
 // staged in the composer and thinking set to medium. Each part is individually
