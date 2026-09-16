@@ -100,12 +100,23 @@ function fakeRoot(options?: { scrollHeight?: number; clientHeight?: number }): F
  */
 function withObservers<T>(run: (resize: () => void, frame: () => void) => T): T {
   const observers = new Set<() => void>();
-  const frames: FrameRequestCallback[] = [];
-  const globals = globalThis as { ResizeObserver?: unknown; MutationObserver?: unknown; requestAnimationFrame?: unknown };
+  const frames = new Map<number, FrameRequestCallback>();
+  let nextFrame = 0;
+  const globals = globalThis as {
+    ResizeObserver?: unknown;
+    MutationObserver?: unknown;
+    requestAnimationFrame?: unknown;
+    cancelAnimationFrame?: unknown;
+  };
   const originalResize = globals.ResizeObserver;
   const originalMutation = globals.MutationObserver;
   const originalFrame = globals.requestAnimationFrame;
-  globals.requestAnimationFrame = (callback: FrameRequestCallback) => frames.push(callback);
+  const originalCancelFrame = globals.cancelAnimationFrame;
+  globals.requestAnimationFrame = (callback: FrameRequestCallback) => {
+    frames.set(++nextFrame, callback);
+    return nextFrame;
+  };
+  globals.cancelAnimationFrame = (id: number) => { frames.delete(id); };
   globals.ResizeObserver = class {
     constructor(private readonly callback: () => void) {}
     // Registered on `observe` rather than on construction: the authority
@@ -125,11 +136,16 @@ function withObservers<T>(run: (resize: () => void, frame: () => void) => T): T 
   try {
     return run(() => {
       for (const observer of [...observers]) observer();
-    }, () => { for (const callback of frames.splice(0)) callback(0); });
+    }, () => {
+      const pending = [...frames.values()];
+      frames.clear();
+      for (const callback of pending) callback(0);
+    });
   } finally {
     globals.ResizeObserver = originalResize;
     globals.MutationObserver = originalMutation;
     globals.requestAnimationFrame = originalFrame;
+    globals.cancelAnimationFrame = originalCancelFrame;
   }
 }
 
@@ -434,8 +450,11 @@ test('the reading position is the Turn the attached reader names under the offse
     let turnIds = ['turn-1', 'turn-2', 'turn-3'];
     let offset = 0;
     const authority = createTranscriptScrollAuthority();
-    authority.attach(root as unknown as HTMLElement, (scrollTop) =>
-      turnIds[Math.min(Math.floor((scrollTop - offset) / 1_000), turnIds.length - 1)]);
+    authority.attach(root as unknown as HTMLElement, {
+      turnAt: (scrollTop) => turnIds[Math.min(Math.floor((scrollTop - offset) / 1_000), turnIds.length - 1)],
+      offsetOf: () => undefined,
+      reveal: () => {},
+    });
     let publications = 0;
     authority.subscribe(() => { publications += 1; });
 
@@ -462,6 +481,125 @@ test('the reading position is the Turn the attached reader names under the offse
     offset = 500;
     resize();
     assert.equal(authority.getSnapshot().readingTurnId, 'turn-1');
+  });
+});
+
+/** Turns 1,000px tall from the top of the content, which `fakeRoot` sizes to match. */
+function turnList(root: FakeRoot, initial: string[]) {
+  const list = {
+    turnIds: initial,
+    reveals: [] as Array<{ turnId: string; align: string; smooth: boolean }>,
+    set(next: string[]) {
+      root.scrollHeight = next.length * 1_000;
+      list.turnIds = next;
+    },
+    layout: {
+      turnAt: (scrollTop: number) =>
+        list.turnIds[Math.min(Math.floor(scrollTop / 1_000), list.turnIds.length - 1)],
+      offsetOf: (turnId: string) => {
+        const index = list.turnIds.indexOf(turnId);
+        return index === -1 ? undefined : index * 1_000;
+      },
+      reveal: (turnId: string, options: { align: string; smooth: boolean }) => {
+        list.reveals.push({ turnId, ...options });
+      },
+    },
+  };
+  root.scrollHeight = initial.length * 1_000;
+  return list;
+}
+
+function frames(frame: () => void, count = 30): void {
+  for (let step = 0; step < count; step += 1) frame();
+}
+
+test('a change to the list other than growth at its tail keeps the reader on their Turn', () => {
+  withObservers((_resize, frame) => {
+    const root = fakeRoot();
+    const list = turnList(root, ['b', 'c', 'd']);
+    const authority = createTranscriptScrollAuthority();
+    authority.attach(root as unknown as HTMLElement, list.layout);
+    root.input(-100);
+    root.scrollTop = 1_250;
+    root.emitScroll();
+    assert.equal(authority.getSnapshot().readingTurnId, 'c');
+
+    list.set(['a', 'b', 'c', 'd']);
+    authority.turnsChanged('prepend');
+    assert.equal(root.scrollTop, 2_250, 'the reader stays 250px into their Turn');
+    assert.equal(authority.getSnapshot().positioning, true);
+    root.scrollTop = 2_000;
+    frame();
+    assert.equal(root.scrollTop, 2_250, 'a settling row that moves the offset is written back');
+
+    list.set(['a', 'c', 'd']);
+    authority.turnsChanged('reset');
+    assert.equal(root.scrollTop, 1_250);
+
+    list.set(['a', 'c', 'd', 'e']);
+    authority.turnsChanged('append');
+    frames(frame);
+    assert.equal(root.scrollTop, 1_250);
+    assert.equal(authority.getSnapshot().positioning, false);
+  });
+});
+
+test('reader input ends the positioning, and neither a pinned reader nor a removed Turn is positioned', () => {
+  withObservers((_resize, frame) => {
+    const root = fakeRoot();
+    const list = turnList(root, ['b', 'c', 'd']);
+    const authority = createTranscriptScrollAuthority();
+    authority.attach(root as unknown as HTMLElement, list.layout);
+    assert.equal(authority.getSnapshot().pinned, true);
+    list.set(['a', 'b', 'c', 'd']);
+    authority.turnsChanged('prepend');
+    assert.equal(authority.getSnapshot().positioning, false, 'the pin already decides where a pinned reader is');
+
+    root.input(-100);
+    root.scrollTop = 1_100;
+    root.emitScroll();
+    list.set(['z', 'a', 'b', 'c', 'd']);
+    authority.turnsChanged('prepend');
+    assert.equal(root.scrollTop, 2_100);
+    root.input(-100);
+    assert.equal(authority.getSnapshot().positioning, false);
+    root.scrollTop = 500;
+    frames(frame);
+    assert.equal(root.scrollTop, 500, 'the reader took the offset back');
+
+    root.emitScroll();
+    list.set(['a', 'b']);
+    authority.turnsChanged('reset');
+    assert.equal(authority.getSnapshot().positioning, false, 'the reader\'s Turn is gone from the list');
+  });
+});
+
+test('a navigation waits for its Turn, and a later command supersedes it before it settles', () => {
+  withObservers((_resize, frame) => {
+    const root = fakeRoot();
+    const list = turnList(root, ['c', 'd']);
+    const authority = createTranscriptScrollAuthority();
+    authority.attach(root as unknown as HTMLElement, list.layout);
+    let settled: string[] = [];
+    authority.navigate({ turnId: 'a', align: 'start', onSettled: () => { settled = [...settled, 'a']; } });
+    assert.equal(authority.getSnapshot().pinned, false);
+    assert.equal(authority.getSnapshot().positioning, true, 'a Turn not yet loaded is still a destination');
+
+    list.set(['a', 'b', 'c', 'd']);
+    authority.turnsChanged('prepend');
+    assert.equal(root.scrollTop, 0);
+    frames(frame);
+    assert.deepEqual(settled, ['a']);
+    assert.equal(authority.getSnapshot().positioning, false);
+
+    authority.navigate({ turnId: 'c', align: 'center', smooth: true, onSettled: () => { settled = [...settled, 'c']; } });
+    assert.deepEqual(list.reveals, [{ turnId: 'c', align: 'center', smooth: true }]);
+    frame();
+    authority.pinToTail();
+    frames(frame);
+    assert.deepEqual(settled, ['a'], 'returning to the tail cancels the reveal it interrupted');
+    assert.equal(root.scrollTop, root.scrollHeight - root.clientHeight);
+    assert.equal(list.reveals.length, 1);
   });
 });
 

@@ -151,12 +151,14 @@ function setup(turnIds: string[]) {
     handle,
     mountRows,
     resize(): void { for (const callback of [...resizeCallbacks]) callback(); },
-    async flushFrames(): Promise<void> {
-      await act(() => {
-        const pending = [...frames.values()];
-        frames.clear();
-        for (const callback of pending) callback(0);
-      });
+    async flushFrames(count = 1): Promise<void> {
+      for (let frame = 0; frame < count; frame += 1) {
+        await act(() => {
+          const pending = [...frames.values()];
+          frames.clear();
+          for (const callback of pending) callback(0);
+        });
+      }
     },
     readerScrollTo(top: number): void {
       const event = new window.Event('wheel', { bubbles: true });
@@ -178,7 +180,7 @@ function mountHook(env: Env) {
     authority?: TranscriptScrollAuthority;
     highlighted: string | null;
     revealTurnAtStart?: (turnId: string) => void;
-    holdReader?: () => void;
+    measurement?: { shift: boolean; generation: number };
     anchors: Map<string, string | undefined>;
   } = { highlighted: null, anchors: new Map() };
   const viewportNavigation = createTranscriptViewportNavigation();
@@ -204,7 +206,7 @@ function mountHook(env: Env) {
     });
     state.highlighted = result.highlightedTurnId;
     state.revealTurnAtStart = result.revealTurnAtStart;
-    state.holdReader = result.holdReader;
+    state.measurement = result.measurement;
     return null;
   }
   mountedRoot = createRoot(env.document.querySelector('#mount')!);
@@ -233,16 +235,34 @@ test('the reading anchor is the Turn the virtualizer maps under the offset', asy
   await act(() => { env.readerScrollTo(2 * TURN_HEIGHT + 10); });
   assert.equal(hook.state.anchors.get('s'), 'turn-2');
 
-  // Earlier Turns prepended, with the offset shifted by their height.
+  // Earlier Turns prepended above the reader, who stays on their Turn.
   env.transcript.turnIds = [...turns(2, 'earlier'), ...env.transcript.turnIds];
-  await act(() => {
-    env.scroller.scrollTop += 2 * TURN_HEIGHT;
-    env.scroller.dispatchEvent(new env.window.Event('scroll'));
-  });
   await hook.render({ sessionId: 's' });
+  assert.equal(env.scroller.scrollTop, 4 * TURN_HEIGHT + 10);
+  await env.flushFrames(30);
   env.resize();
   assert.equal(hook.state.anchors.get('s'), 'turn-2');
   assert.equal(hook.state.authority?.getSnapshot().pinned, false);
+});
+
+test('the measurement cache moves with a prepend and starts over when the list is rearranged', async () => {
+  const env = setup(turns(3));
+  const hook = mountHook(env);
+  await hook.render({ sessionId: 's' });
+  assert.deepEqual(hook.state.measurement, { shift: false, generation: 0 });
+
+  env.transcript.turnIds = [...env.transcript.turnIds, 'turn-3'];
+  await hook.render({ sessionId: 's' });
+  assert.deepEqual(hook.state.measurement, { shift: false, generation: 0 }, 'a Turn at the tail moves nothing');
+
+  env.transcript.turnIds = ['earlier-0', ...env.transcript.turnIds];
+  await hook.render({ sessionId: 's' });
+  assert.deepEqual(hook.state.measurement, { shift: true, generation: 0 });
+
+  // A filter cleared: Turns come back between the ones already there.
+  env.transcript.turnIds = ['earlier-0', 'turn-0', 'filtered', 'turn-1', 'turn-2', 'turn-3'];
+  await hook.render({ sessionId: 's' });
+  assert.deepEqual(hook.state.measurement, { shift: false, generation: 1 });
 });
 
 test('a search target is revealed by index once per nonce, then focused and highlighted', async () => {
@@ -258,11 +278,11 @@ test('a search target is revealed by index once per nonce, then focused and high
   assert.deepEqual(env.calls, [{ index: 5, align: 'center', smooth: true }]);
   assert.equal(hook.state.authority?.getSnapshot().pinned, false);
 
-  // The row mounts a few frames after the scroll starts.
+  // The row mounts while the reveal settles; it is focused once it has.
   await env.flushFrames();
   assert.equal(hook.state.highlighted, null);
   env.mountRows(['turn-4', 'turn-5']);
-  await env.flushFrames();
+  await env.flushFrames(30);
   assert.equal(hook.state.highlighted, 'turn-5');
   assert.deepEqual(env.focused, ['turn-5']);
   assert.equal(hook.state.anchors.get('s'), 'turn-4');
@@ -281,9 +301,9 @@ test('a bookmark restores its Turn at the top edge, and an unavailable one falls
   const env = setup(turns(6, 'a'));
   const hook = mountHook(env);
   await hook.render({ sessionId: 'a', restoreTarget: { turnId: 'a-2' } });
-  assert.deepEqual(env.calls, [{ index: 2, align: 'start', smooth: false }]);
-  env.mountRows(['a-2']);
-  await env.flushFrames();
+  assert.equal(env.scroller.scrollTop, 2 * TURN_HEIGHT);
+  assert.equal(hook.state.anchors.get('a'), undefined, 'a landing reader has not chosen a position yet');
+  await env.flushFrames(30);
   assert.equal(hook.state.anchors.get('a'), 'a-2');
   assert.equal(hook.state.highlighted, null, 'a restore is not a search result');
   assert.equal(hook.state.authority?.getSnapshot().pinned, false);
@@ -293,7 +313,7 @@ test('a bookmark restores its Turn at the top edge, and an unavailable one falls
   await hook.render({ sessionId: 'b', restoreTarget: { turnId: 'b-gone' } });
   assert.equal(hook.state.authority?.getSnapshot().pinned, false, 'a bookmark waits for its Turn');
   await hook.render({ sessionId: 'b', restoreTarget: { turnId: 'b-gone', unavailable: true } });
-  assert.equal(env.calls.length, 1);
+  assert.equal(hook.state.authority?.getSnapshot().positioning, false);
   assert.equal(hook.state.anchors.get('b'), 'b-1', 'the Turn under the offset replaces the lost bookmark');
 });
 
@@ -317,7 +337,6 @@ test('a rail navigation releases the pin and scrolls its Turn to the top by inde
   await hook.render({ sessionId: 's' });
   assert.equal(hook.state.authority?.getSnapshot().pinned, true);
   await act(() => { hook.state.revealTurnAtStart?.('turn-3'); });
-  assert.deepEqual(env.calls, [{ index: 3, align: 'start' }]);
   assert.equal(env.scroller.scrollTop, 3 * TURN_HEIGHT);
   assert.equal(hook.state.authority?.getSnapshot().pinned, false);
 
@@ -332,7 +351,6 @@ test('returning to the tail during a prepend landing is not undone by it', async
   await act(() => { env.readerScrollTo(TURN_HEIGHT + 100); });
   assert.equal(hook.state.authority?.getSnapshot().pinned, false);
 
-  await act(() => { hook.state.holdReader?.(); });
   env.transcript.turnIds = [...turns(2, 'earlier'), ...env.transcript.turnIds];
   await hook.render({ sessionId: 's' });
   assert.equal(env.scroller.scrollTop, 3 * TURN_HEIGHT + 100, 'the prepend left the reader on turn-1');

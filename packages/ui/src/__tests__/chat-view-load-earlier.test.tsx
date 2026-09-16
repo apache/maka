@@ -177,6 +177,25 @@ test('prepended Turns keep a released reader on their Turn without re-pinning', 
   assert.equal(view.anchors.at(-1), 'turn-5');
 });
 
+test('a selection from outside every Turn keeps every Turn it spans mounted', async () => {
+  const view = harness();
+  const scroller = await view.render({ messages: turnMessages(0, 20), hasEarlierHistory: true, onLoadEarlierHistory: () => {} });
+  const mounted = () => [...dom!.container.querySelectorAll('[data-transcript-turn-id]')]
+    .map((row) => row.getAttribute('data-transcript-turn-id'));
+  const rows = mounted();
+  assert.ok(rows.length < 20, 'the fixture mounts only some of the Turns');
+
+  const button = view.loadButton();
+  const last = dom!.container.querySelector(`[data-transcript-turn-id="${rows.at(-1)}"]`);
+  assert.ok(button && last);
+  const selection = { isCollapsed: false, anchorNode: button, focusNode: last };
+  dom!.document.getSelection = () => selection as unknown as Selection;
+  await act(async () => { dom!.document.dispatchEvent(new dom!.window.Event('selectionchange')); });
+  await act(() => { view.readerScrollTo(scroller, 16 * TURN_HEIGHT); });
+  assert.ok(mounted().includes('turn-19'), 'the reader reached the tail');
+  assert.ok(mounted().includes('turn-0'), 'the selection starts above the first Turn, so it keeps that Turn mounted');
+});
+
 test('prepended Turns do not release a pinned transcript', async () => {
   const view = harness();
   await view.render({ messages: turnMessages(4, 8), hasEarlierHistory: true, onLoadEarlierHistory: () => {} });

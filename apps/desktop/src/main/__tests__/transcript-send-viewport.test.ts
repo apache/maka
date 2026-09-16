@@ -182,6 +182,7 @@ function viewportFixture(options: { returnButton?: boolean } = {}) {
   addTurn('latest', 1800, 1200);
   const virtualizer = {
     findItemIndex: (offset: number) => Math.max(0, turns.filter((turn) => turn.start <= offset).length - 1),
+    getItemOffset: (index: number) => turns[index]?.start ?? 0,
     scrollToIndex: (index: number) => { scroller.scrollTop = turns[index]?.start ?? 0; },
   } as unknown as VirtualizerHandle;
   const controller = {

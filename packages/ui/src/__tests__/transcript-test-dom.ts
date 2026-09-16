@@ -71,6 +71,16 @@ export function installTranscriptDom(options: { viewportHeight?: number; boxHeig
         scrollTops.set(this, Math.max(0, Math.min(value, this.scrollHeight - this.clientHeight)));
       },
     },
+    // Content moves up by every ancestor's scroll offset, so a margin measured
+    // from rects and scrollTop does not grow with scrolling.
+    getBoundingClientRect: {
+      configurable: true,
+      value(this: HTMLElement) {
+        let top = 0;
+        for (let parent = this.parentElement; parent; parent = parent.parentElement) top -= parent.scrollTop;
+        return { top, bottom: top, left: 0, right: 0, width: 0, height: 0, x: 0, y: top };
+      },
+    },
     scrollHeight: { configurable: true, get: () => 0 },
     clientHeight: { configurable: true, get: () => 0 },
     // LinkeDOM has no scroll methods, and a scroller that silently ignores them
@@ -81,6 +91,14 @@ export function installTranscriptDom(options: { viewportHeight?: number; boxHeig
         if (options?.top !== undefined) this.scrollTop = options.top;
       },
     },
+  });
+  // LinkeDOM's compareDocumentPosition returns browser bitmasks without naming them.
+  Object.assign(window.Node, {
+    DOCUMENT_POSITION_DISCONNECTED: 1,
+    DOCUMENT_POSITION_PRECEDING: 2,
+    DOCUMENT_POSITION_FOLLOWING: 4,
+    DOCUMENT_POSITION_CONTAINS: 8,
+    DOCUMENT_POSITION_CONTAINED_BY: 16,
   });
   class MeasuringResizeObserver {
     constructor(private readonly callback: ResizeObserverCallback) {}

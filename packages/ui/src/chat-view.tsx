@@ -365,34 +365,6 @@ export function ChatView(props: {
     liveTurns: props.liveTurns,
     shellRunUpdates: props.shellRunUpdates,
   });
-  /**
-   * `virtua` indexes measured heights by position and grows that cache at the
-   * end, so a batch of earlier history arriving at the front leaves every
-   * height one batch away from the Turn it was measured on: the document's
-   * extent goes wrong and rows the reader has already been past push them when
-   * they come back. `shift` grows the cache at the front instead.
-   *
-   * It has to be read on the render that grows the list, so the previous head
-   * is kept in a ref rather than an effect, and the answer is remembered per
-   * projection identity so a repeated render of the same turns does not hand
-   * back a different one. Only growth at the front shifts: a Turn arriving at
-   * the tail must leave every measurement where it is.
-   */
-  const measurementShift = useRef<{
-    turns?: readonly unknown[];
-    head?: string;
-    count: number;
-    shift: boolean;
-  }>({ count: 0, shift: false });
-  if (measurementShift.current.turns !== turns) {
-    const previous = measurementShift.current;
-    measurementShift.current = {
-      turns,
-      head: turns[0]?.turnId,
-      count: turns.length,
-      shift: turns.length > previous.count && turns[0]?.turnId !== previous.head,
-    };
-  }
   // Derived FROM the projected turns, not beside them: the consumer keys its
   // cache on the turn objects above, so a turn the projection kept hands back
   // the same footer/badge objects and the memoized TurnView skips on every
@@ -566,7 +538,7 @@ export function ChatView(props: {
     turns,
   );
   const { startMargin, listRef, measureStartMargin } = useTranscriptStartMargin(scrollRef);
-  const { highlightedTurnId, commandTurnId, revealTurnAtStart, holdReader } = useChatScroll({
+  const { highlightedTurnId, commandTurnId, revealTurnAtStart, measurement } = useChatScroll({
     scrollRef,
     measureStartMargin,
     virtualizerRef,
@@ -582,14 +554,12 @@ export function ChatView(props: {
   onLoadTranscriptTurnRef.current = props.onLoadTranscriptTurn;
   const navigatePromptRail = useCallback(
     (turn: PromptAnchorRailTurn) => {
-      if (turn.sequence === undefined || orderedTurnIdsRef.current.includes(turn.turnId)) {
-        revealTurnAtStart(turn.turnId);
-        return;
+      revealTurnAtStart(turn.turnId);
+      if (turn.sequence !== undefined && !orderedTurnIdsRef.current.includes(turn.turnId)) {
+        void onLoadTranscriptTurnRef.current?.({ turnId: turn.turnId, sequence: turn.sequence });
       }
-      holdReader(turn.turnId);
-      void onLoadTranscriptTurnRef.current?.({ turnId: turn.turnId, sequence: turn.sequence });
     },
-    [revealTurnAtStart, holdReader],
+    [revealTurnAtStart],
   );
   const interaction = useTurnsHoldingInteraction(scrollRef);
   const keepMountedIndexes = new Set<number>();
@@ -598,8 +568,8 @@ export function ChatView(props: {
     if (index !== -1) keepMountedIndexes.add(index);
   }
   // Unmounting a Turn inside a selection would drop that part of it.
-  const selectionIndexes = interaction.selectionTurnIds
-    .map((turnId) => orderedTurnIds.indexOf(turnId))
+  const selectionIndexes = interaction.selectionEnds
+    .map((end) => end === 'before' ? 0 : end === 'after' ? orderedTurnIds.length - 1 : orderedTurnIds.indexOf(end.turnId))
     .filter((index) => index !== -1);
   if (selectionIndexes.length > 0) {
     for (let index = Math.min(...selectionIndexes); index <= Math.max(...selectionIndexes); index += 1) {
@@ -608,7 +578,6 @@ export function ChatView(props: {
   }
   const [loadingEarlierHistory, setLoadingEarlierHistory] = useState(false);
   const loadEarlierHistory = (): void => {
-    holdReader();
     const pending = props.onLoadEarlierHistory?.();
     if (!pending) return;
     setLoadingEarlierHistory(true);
@@ -834,13 +803,14 @@ export function ChatView(props: {
               {loadEarlierHistoryControl}
               <div key={props.activeSession.id} ref={listRef}>
                 <Virtualizer
+                  key={measurement.generation}
                   ref={virtualizerRef}
                   as={TranscriptRows}
                   scrollRef={scrollRef as RefObject<HTMLElement | null>}
                   data={turns}
                   startMargin={startMargin}
                   bufferSize={MEASURE_AHEAD_MARGIN}
-                  shift={measurementShift.current.shift}
+                  shift={measurement.shift}
                   keepMounted={[...keepMountedIndexes]}
                 >
                   {(turn, index) => {
@@ -1023,12 +993,15 @@ function TranscriptRows({ style, ...props }: CustomContainerComponentProps) {
   return <div {...props} style={{ ...style, pointerEvents: undefined }} />;
 }
 
+/** Where a selection end lies: in a Turn, or before or after every Turn. */
+type SelectionEnd = { turnId: string } | 'before' | 'after';
+
 function useTurnsHoldingInteraction(scrollRef: RefObject<HTMLElement | null>): {
   focusTurnId?: string;
-  selectionTurnIds: readonly string[];
+  selectionEnds: readonly SelectionEnd[];
 } {
-  const [held, setHeld] = useState<{ focusTurnId?: string; selectionTurnIds: readonly string[] }>(
-    { selectionTurnIds: [] },
+  const [held, setHeld] = useState<{ focusTurnId?: string; selectionEnds: readonly SelectionEnd[] }>(
+    { selectionEnds: [] },
   );
   useEffect(() => {
     const root = scrollRef.current;
@@ -1039,19 +1012,32 @@ function useTurnsHoldingInteraction(scrollRef: RefObject<HTMLElement | null>): {
       if (!element || !root.contains(element)) return undefined;
       return element.closest<HTMLElement>('[data-transcript-turn-id]')?.dataset.transcriptTurnId;
     };
+    // An end outside every Turn — the load-earlier control, the pending tail —
+    // still bounds the selection: everything between it and the other end is
+    // selected, so it counts as the first or last Turn by document order.
+    const endOf = (node: Node | null): SelectionEnd | undefined => {
+      const turnId = turnOf(node);
+      if (turnId !== undefined) return { turnId };
+      const row = root.querySelector('[data-transcript-turn-id]');
+      if (!node || !row) return undefined;
+      return row.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_PRECEDING ? 'before' : 'after';
+    };
     const update = (): void => {
       const focusTurnId = turnOf(doc.activeElement);
       const selection = doc.getSelection();
-      const selectionTurnIds = selection && !selection.isCollapsed
-        ? [turnOf(selection.anchorNode), turnOf(selection.focusNode)]
-          .filter((turnId): turnId is string => turnId !== undefined)
+      const touchesTranscript = selection !== null && !selection.isCollapsed
+        && (root.contains(selection.anchorNode) || root.contains(selection.focusNode));
+      const selectionEnds = touchesTranscript
+        ? [endOf(selection.anchorNode), endOf(selection.focusNode)]
+          .filter((end): end is SelectionEnd => end !== undefined)
         : [];
+      const key = (end: SelectionEnd): string => typeof end === 'string' ? end : `turn:${end.turnId}`;
       setHeld((previous) =>
         previous.focusTurnId === focusTurnId
-        && previous.selectionTurnIds.length === selectionTurnIds.length
-        && previous.selectionTurnIds.every((turnId, index) => turnId === selectionTurnIds[index])
+        && previous.selectionEnds.length === selectionEnds.length
+        && previous.selectionEnds.every((end, index) => key(end) === key(selectionEnds[index]!))
           ? previous
-          : { focusTurnId, selectionTurnIds });
+          : { focusTurnId, selectionEnds });
     };
     doc.addEventListener('focusin', update);
     doc.addEventListener('focusout', update);
