@@ -734,7 +734,21 @@ segments and no physical input. Its original bounds were unchanged; the
 uninstrumented result does not identify the failing provider call or establish
 that the earlier traversal-budget cause recurred.
 
-A subsequent single traced WPF attempt on the same native generation captured
+A separate instrumentation-only generation passed 232 MSVC tests with two
+ignored, release compilation and 17 native Node tests. Its single no-input,
+no-warmup cold diagnostic failed in 28.092 seconds without outer timeout.
+Two complete numeric streams correlate one worker's local 700 ms expiry during
+final visible-text validation, a 701.480 ms capture, reader EOF and the parent's
+failure classification while authority remained current. The endpoint-comparison
+closure can synthesize `UIA_E_TIMEOUT` at its intermediate deadline checks;
+that category does not establish an external provider timeout. These timings
+include instrumentation and do not establish clean-release performance or
+identify a uniquely faulty provider call. The 65-file export was byte-verified,
+both empty segments were sealed, scoped cleanup passed and all three protected
+helpers remained unchanged. Cold body acceptance remains open; no production
+fix, deadline extension or automatic retry follows from this diagnostic.
+
+A separate single traced WPF attempt on the clean fixture-timing generation captured
 and sealed its initial useful body with zero capture failures, but failed the
 first Return receipt. Complete CPU, guest-reader and publication traces show
 one challenge replacement, no guest nonce forwarding, no witness and no
