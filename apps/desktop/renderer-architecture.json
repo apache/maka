@@ -503,7 +503,7 @@
           "react": 1
         },
         "importSpecifiers": 18,
-        "nonTriviaTokens": 3718
+        "nonTriviaTokens": 3677
       },
       "src/renderer/app-shell-overlays.tsx": {
         "importDeclarations": 5,
@@ -724,6 +724,7 @@
           "window.maka.sessions.compact": 1,
           "window.maka.sessions.getPlanState": 1,
           "window.maka.sessions.listActiveInteractions": 1,
+          "window.maka.sessions.listTurnLandmarks": 1,
           "window.maka.sessions.promoteQueueEntry": 1,
           "window.maka.sessions.reorderQueueEntries": 1,
           "window.maka.sessions.retractQueueEntry": 1,
@@ -768,7 +769,7 @@
           "useShellResume": 1,
           "useShellRunUpdates": 1,
           "useStableActions": 6,
-          "useState": 12,
+          "useState": 13,
           "useSystemUiLocale": 1,
           "useTaskSubmissionReadiness": 1,
           "useToast": 1,
@@ -860,7 +861,7 @@
           "react": 1
         },
         "importSpecifiers": 100,
-        "nonTriviaTokens": 13067
+        "nonTriviaTokens": 13152
       },
       "src/renderer/use-app-shell-composer-quotes.ts": {
         "importDeclarations": 2,

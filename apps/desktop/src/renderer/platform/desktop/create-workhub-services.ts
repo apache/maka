@@ -32,6 +32,7 @@ import {
 import {
   DesktopTranscriptRangeStore,
   createDesktopTranscriptRangeController,
+  openDesktopTranscriptHistory,
 } from './desktop-transcript-range-store.js';
 import {
   MESSAGE_QUEUE_MAX_ENTRIES,
@@ -204,20 +205,9 @@ export function createDesktopWorkHubServices(
     async openTranscript(sessionId, handler, cancellation, onError) {
       const store = new DesktopTranscriptRangeStore(sessionId);
       const unsubscribe = store.subscribe(() => handler(store.snapshot()));
-      const controller = createDesktopTranscriptRangeController(store, (signal, resumeFrom) =>
-        bridge.transcripts.open(
-          sessionId,
-          (batch) => {
-            if (signal.aborted) return;
-            store.accept(batch);
-          },
-          (cancel) => {
-            if (signal.aborted) cancel();
-            else signal.addEventListener('abort', cancel, { once: true });
-          },
-          'history',
-          resumeFrom,
-        ),
+      const controller = createDesktopTranscriptRangeController(
+        store,
+        openDesktopTranscriptHistory(bridge.transcripts.open, sessionId, (batch) => store.accept(batch)),
         { onError },
       );
       const cancel = () => { unsubscribe(); void controller.close(); };

@@ -19,7 +19,9 @@
 
 import { decodeStoredMessage, type StoredMessage } from '@maka/core/session';
 import { markPersisted } from '@maka/core/persisted-value';
+import type { MakaBridge } from '../../../preload/bridge-contract.js';
 import type {
+  DesktopTranscriptBatch,
   DesktopTranscriptBatchPayload,
   DesktopTranscriptFragment,
   DesktopTranscriptHandle,
@@ -110,6 +112,26 @@ export function createDesktopTranscriptReconnectRecovery(options: {
       observationReady = false;
     },
   };
+}
+
+/** The `open` a range controller takes, reading a Session's history through the bridge. */
+export function openDesktopTranscriptHistory(
+  open: MakaBridge['transcripts']['open'],
+  sessionId: string,
+  accept: (batch: DesktopTranscriptBatch) => void,
+): (signal: AbortSignal, resumeFrom?: number) => Promise<DesktopTranscriptHandle> {
+  return (signal, resumeFrom) => open(
+    sessionId,
+    (batch) => {
+      if (!signal.aborted) accept(batch);
+    },
+    (cancel) => {
+      if (signal.aborted) cancel();
+      else signal.addEventListener('abort', cancel, { once: true });
+    },
+    'history',
+    resumeFrom,
+  );
 }
 
 export function createDesktopTranscriptRangeController(
