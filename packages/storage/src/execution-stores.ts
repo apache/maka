@@ -100,6 +100,7 @@ const executionStoresWritersOpeningByLease = new WeakMap<object, Promise<void>>(
 export {
   normalizeRootTurnAdmissionPayload,
   rootTurnAdmissionRecordFits,
+  rootTurnSourceMessagePayloadsEqual,
 } from './agent-run-store.js';
 export { isSessionNotFoundError } from './session-store-contract.js';
 export {

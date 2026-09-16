@@ -21,6 +21,7 @@ import { randomUUID } from 'node:crypto';
 import {
   prepareStorageRootControlDirectory,
   resolveStorageRoot,
+  StorageRootAuthorityError,
 } from '@maka/storage/root-authority';
 import { readStateRootCompositionBinding } from '@maka/storage/state-root-composition';
 import { performance } from 'node:perf_hooks';
@@ -218,7 +219,8 @@ export async function connectOrSpawnRuntimeHost(
 export type ConnectOwnedRuntimeHostResult =
   | { kind: 'connected'; connection: RuntimeHostConnection; host: OwnedCandidateAttempt }
   | Exclude<ConnectOrSpawnRuntimeHostResult, { kind: 'connected' }>
-  | { kind: 'failed'; reason: 'existing_host' };
+  | { kind: 'failed'; reason: 'existing_host' }
+  | { kind: 'failed'; reason: 'startup_failed'; detail: string };
 
 interface ConnectOwnedRuntimeHostDependencies {
   launchCandidate: typeof launchOwnedRuntimeHostCandidate;
@@ -229,13 +231,13 @@ const defaultOwnedDependencies: ConnectOwnedRuntimeHostDependencies = {
 };
 
 export async function connectOwnedRuntimeHost(
-  input: Omit<ConnectOrSpawnRuntimeHostInput, 'candidateEntrypoint'>,
+  input: OwnedRuntimeHostInput,
 ): Promise<ConnectOwnedRuntimeHostResult> {
   return connectOwnedRuntimeHostWithDependencies(input, defaultOwnedDependencies);
 }
 
 export async function connectOwnedRuntimeHostWithDependencies(
-  input: Omit<ConnectOrSpawnRuntimeHostInput, 'candidateEntrypoint'>,
+  input: OwnedRuntimeHostInput,
   dependencies: ConnectOwnedRuntimeHostDependencies,
 ): Promise<ConnectOwnedRuntimeHostResult> {
   let launch: ReturnType<typeof launchOwnedRuntimeHostCandidate> | undefined;
@@ -251,6 +253,12 @@ export async function connectOwnedRuntimeHostWithDependencies(
           launch ??= dependencies.launchCandidate({
             ...candidate,
             idleGraceMs: 0,
+            // Proxy passwords belong in the child environment, never process arguments.
+            env: {
+              MAKA_HOSTED_INITIALIZATION: input.initialization
+                ? JSON.stringify(input.initialization)
+                : '',
+            },
           });
           return launch;
         },
@@ -282,12 +290,32 @@ export async function connectOwnedRuntimeHostWithDependencies(
       return { kind: 'failed', reason: 'existing_host' };
     }
     return { kind: 'connected', connection: ownedConnection, host };
-  } catch {
+  } catch (error) {
     await connection?.close().catch(() => undefined);
     releaseOwnedLaunch(launch);
-    return { kind: 'failed', reason: 'host_unresponsive' };
+    const code =
+      error instanceof StorageRootAuthorityError ? error.code : 'internal_startup_failure';
+    const cause = error instanceof Error ? error.cause : undefined;
+    const causeCode =
+      cause instanceof Error && 'code' in cause && typeof cause.code === 'string'
+        ? cause.code
+        : undefined;
+    return {
+      kind: 'failed',
+      reason: 'startup_failed',
+      detail: `${code}${causeCode && /^[A-Z0-9_]{1,64}$/.test(causeCode) ? ` (${causeCode})` : ''}`,
+    };
   }
 }
+
+export interface HostedRuntimeInitialization {
+  readonly incognito: true;
+  readonly proxyUrl?: string;
+}
+
+type OwnedRuntimeHostInput = Omit<ConnectOrSpawnRuntimeHostInput, 'candidateEntrypoint'> & {
+  readonly initialization?: HostedRuntimeInitialization;
+};
 
 function releaseOwnedLaunch(
   launch: ReturnType<typeof launchOwnedRuntimeHostCandidate> | undefined,

@@ -680,6 +680,32 @@ const NPM_TEST_STDOUT_AT_CANCEL = "\n> maka@0.2.0 test\n> npm run build:test && 
 // This is the interrupted counterpart to RunningStatusDuringToolRun, and the only
 // story that reaches the interrupted tool row. It goes through the real
 // ChatView → materializeTurns → ToolTrow path, so the row renders inside the
+// Real path: the prompt is admitted, its Turn has not reached the transcript
+// yet. The cue carries no clock until the Turn's own start arrives.
+export const PromptSentBeforeTurnLands: Story = {
+  render: () => (
+    <ComposedShell
+      session={{ status: 'running', streaming: true, lastMessageAt: NOW - 3_000 }}
+      chat={{
+        activeTurn: { turnId: 'turn-sent' },
+        messages: [],
+        transientMessages: [{
+          id: 'msg-sent',
+          text: '刚发出的问题：这一轮的耗时是怎么算出来的？',
+          ts: NOW,
+          transientPlacement: 'current_turn',
+          hostTurnId: 'turn-sent',
+        }],
+      }}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    await expect(canvasElement.querySelector('.maka-turn-processing')).not.toBeNull();
+    // No clock before the Turn's own start arrives.
+    await expect(canvasElement.querySelector('.maka-turn-elapsed')).toBeNull();
+  },
+};
+
 // production `.maka-turn` frame. The session is `aborted` too, so the sidebar row
 // and composer agree with the transcript instead of still reading as active.
 export const InterruptedToolAfterTurnAbort: Story = {
@@ -2048,7 +2074,7 @@ function injectNestedScroller(parent: Element): HTMLElement {
 }
 
 /** Answered turns, oldest first. `from` may go negative as history loads. */
-function transcriptTurns(from: number, count: number): StoredMessage[] {
+function transcriptTurns(from: number, count: number, mixed = false): StoredMessage[] {
   return Array.from({ length: count }, (_, offset) => {
     const index = from + offset;
     const turnId = `turn-scroll-${index}`;
@@ -2058,7 +2084,7 @@ function transcriptTurns(from: number, count: number): StoredMessage[] {
         `msg-scroll-${index}-a`,
         turnId,
         499 - index * 2,
-        TAIL_LINES.slice(0, 4).join('\n\n'),
+        mixed ? mixedTurnText(Math.abs(index)) : TAIL_LINES.slice(0, 4).join('\n\n'),
       ),
     ];
   }).flat();
@@ -2083,10 +2109,9 @@ function PartialHistoryHarness() {
         // it: the range moves to the Turn and a scroll target names it.
         onLoadTranscriptTurn: (loaded) => {
           setRange({ from: loaded.sequence, count: 4 });
-          setTarget({ turnId: loaded.turnId, nonce: Date.now() });
+          setTarget((previous) => ({ turnId: loaded.turnId, nonce: (previous?.nonce ?? 0) + 1 }));
         },
         scrollTargetTurn: target,
-        onScrollTargetHandled: () => setTarget(undefined),
         hasOlderHistory: range.from > 1,
         hasNewerHistory: range.from + range.count <= PARTIAL_HISTORY_INDEX.length,
         // A fill extends the window; it never replaces what the reader jumped
@@ -2387,7 +2412,7 @@ function SettledTranscriptHarness({
  * settled before its turns were laid out would be asked for the next page
  * against the geometry of the previous one.
  */
-function HistoryHarness({ turns }: { turns: number }) {
+function HistoryHarness({ turns, bounded = false, olderTurns = HISTORY_BATCH * HISTORY_BATCHES_AVAILABLE, mixed = false }: { turns: number; bounded?: boolean; olderTurns?: number; mixed?: boolean }) {
   const [range, setRange] = useState({ from: 0, count: turns });
   const [viewportNavigation] = useState(createTranscriptViewportNavigation);
   useEffect(() => {
@@ -2396,15 +2421,33 @@ function HistoryHarness({ turns }: { turns: number }) {
   return (
     <ComposedShell
       chat={{
-        messages: transcriptTurns(range.from, range.count),
+        messages: transcriptTurns(range.from, range.count, mixed),
         viewportNavigation,
-        hasOlderHistory: range.from > -HISTORY_BATCH * HISTORY_BATCHES_AVAILABLE,
+        hasOlderHistory: range.from > -olderTurns,
+        hasNewerHistory: bounded && range.from + range.count < turns,
+        onRetainWindow: bounded ? ({ firstTurnId, lastTurnId }) => {
+          // The real scroll hook chooses the retained band. This fixture only
+          // supplies the requested slice, standing in for the transcript store.
+          const from = Number(firstTurnId.replace('turn-scroll-', ''));
+          const last = Number(lastTurnId.replace('turn-scroll-', ''));
+          viewportNavigation.commitRange(activeSession!.id, () => setRange({
+            from, count: last - from + 1,
+          }));
+        } : undefined,
         onPrefetchHistory: async (edge) => {
+          if (bounded && edge === 'newer') {
+            viewportNavigation.commitRange(activeSession!.id, () => setRange((current) => ({
+              ...current,
+              count: Math.min(turns - current.from, current.count + HISTORY_BATCH),
+            })));
+            await painted(2);
+            return true;
+          }
           if (edge !== 'older') return false;
           historyLoads.push(firstResidentTurnId() ?? '(none)');
           viewportNavigation.commitRange(activeSession!.id, () => setRange((current) => ({
-            from: current.from - HISTORY_BATCH,
-            count: current.count + HISTORY_BATCH,
+            from: Math.max(-olderTurns, current.from - HISTORY_BATCH),
+            count: current.count + Math.min(HISTORY_BATCH, current.from + olderTurns),
           })));
           await painted(2);
           return true;
@@ -2582,6 +2625,65 @@ export const TailPrefetchesHistoryUntilTheBandIsFull: Story = {
   },
 };
 
+// Real path: a reader traverses a long session; useChatScroll requests older
+// pages and trims distant Turns. Paging/storage is simulated at ChatView's
+// callbacks; the production scroll policy, publication bridge and frame run.
+export const HistoryWindowTraversal: Story = {
+  render: () => <HistoryHarness turns={40} bounded />,
+};
+
+// Real path: the bounded Desktop transcript mounts and evicts mixed prose and
+// code turns. The fixed-membership geometry scene below does not virtualize.
+export const VirtualHistoryMixedContent: Story = {
+  render: () => <HistoryHarness turns={24} olderTurns={0} bounded mixed />,
+};
+
+// Real path: traverse a long Session, return through already read history,
+// and jump to a loaded Turn whose body is currently outside the viewport.
+export const VirtualHistoryContinuity: Story = {
+  render: () => <HistoryHarness turns={24} olderTurns={4} bounded />,
+  play: async () => {
+    await historySettled();
+    const root = tailScroller();
+    const bodies = () => root.querySelectorAll<HTMLElement>('.maka-turn[data-turn-id]');
+    await waitFor(() => {
+      expect(bodies().length).toBeGreaterThan(0);
+      expect(bodies().length).toBeLessThan(24);
+      expect(bodies().length).toBe(root.querySelectorAll('.maka-transcript-turn').length);
+    });
+
+    const traverse = async (direction: -1 | 1) => {
+      for (let step = 0; step < 160; step++) {
+        scrollAsReader(root, root.scrollTop + direction * root.clientHeight * 2);
+        await painted(3);
+        if (direction < 0 ? root.scrollTop <= 1 : root.scrollHeight - root.clientHeight - root.scrollTop <= 1) return;
+      }
+      throw new Error('History traversal did not reach its edge');
+    };
+    const tailId = bodies().item(bodies().length - 1).dataset.turnId;
+    await traverse(-1);
+    await traverse(1);
+    await painted(8);
+    expect(bodies().item(bodies().length - 1).dataset.turnId, 'returning through history must reach the original tail').toBe(tailId);
+    expect(root.scrollTop, 'the retained history stays inside the eviction band').toBeLessThanOrEqual(root.clientHeight * 6);
+
+    const selected = bodies().item(bodies().length - 1);
+    const selection = document.getSelection()!;
+    const range = document.createRange();
+    range.selectNodeContents(selected);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    const text = selection.toString();
+    expect(text.length).toBeGreaterThan(0);
+    await traverse(-1);
+    await painted(8);
+    expect(selected.isConnected, 'an active selection must survive leaving the viewport').toBe(true);
+    expect(selection.toString()).toBe(text);
+    selection.removeAllRanges();
+    await waitFor(() => expect(selected.isConnected, 'released offscreen content should unmount').toBe(false));
+  },
+};
+
 // #4256: one Turn taller than several viewports, its reasoning / answer / tool
 // blocks each carrying a `data-maka-transcript-boundary` marker so sub-turn
 // content-visibility bounds them. Reasoning stays mounted while folded, so it is
@@ -2638,22 +2740,25 @@ export const Performance45Tools: Story = {
   render: () => <ComposedShell chat={{ messages: oversizedTurnMessages(45) }} />,
 };
 
-// Fixed membership: geometry probes must not mistake history paging for lazy
-// layout. Mixed prose and long 100+ line CodeBlocks exercise all three
-// skipping boundaries (Turn, timeline block, Astryx line chunk).
+function mixedTurnText(i: number): string {
+  const prose = Array.from({ length: 4 + (i % 5) * 3 }, (_, p) =>
+    `第 ${i + 1} 轮，第 ${p + 1} 段。${'固定内容用于检查首次上滚时的文档尺寸，不发生流式输出或历史分页。'.repeat(3)}`,
+  ).join('\n\n');
+  const code = i % 6 === 0
+    ? '\n\n```text\n' + Array.from({ length: 140 }, (_, line) =>
+        `${line + 1}: ${'wrapped-code-content-'.repeat(9)}`,
+      ).join('\n') + '\n```'
+    : '';
+  return prose + code;
+}
+
+// Fixed membership isolates nested Markdown/code layout from history paging
+// and virtual row mounting; VirtualHistoryMixedContent covers those together.
 export const GeometryMixed24Turns: Story = {
   render: () => <ComposedShell chat={{ messages: Array.from({ length: 24 }, (_, i) => {
     const turnId = `geometry-${i}`;
-    const prose = Array.from({ length: 4 + (i % 5) * 3 }, (_, p) =>
-      `第 ${i + 1} 轮，第 ${p + 1} 段。${'固定内容用于检查首次上滚时的文档尺寸，不发生流式输出或历史分页。'.repeat(3)}`,
-    ).join('\n\n');
-    const code = i % 6 === 0
-      ? '\n\n```text\n' + Array.from({ length: 140 }, (_, line) =>
-          `${line + 1}: ${'wrapped-code-content-'.repeat(9)}`,
-        ).join('\n') + '\n```'
-      : '';
     return [user(`geometry-u-${i}`, turnId, 50 - i, `检查第 ${i + 1} 组。`),
-      assistant(`geometry-a-${i}`, turnId, 50 - i, prose + code)];
+      assistant(`geometry-a-${i}`, turnId, 50 - i, mixedTurnText(i))];
   }).flat(), hasOlderHistory: false, hasNewerHistory: false }} />,
 };
 
@@ -2680,6 +2785,13 @@ export const OversizedTurnHoldsAReadingAnchorOnColdScroll: Story = {
       process.querySelector('summary')!.click();
       await waitFor(() => expect(process.open).toBe(true));
       await waitFor(() => expect(document.querySelector('.maka-markdown-pending')).toBeNull());
+      // Start cold scrolling only once the expanding clip exposes its full body.
+      await waitFor(() => {
+        const clip = process.querySelector('.maka-processing-clip')!.getBoundingClientRect();
+        const content = process.querySelector('.maka-processing-content')!.getBoundingClientRect();
+        expect(content.height).toBeGreaterThan(0);
+        expect(Math.abs(clip.height - content.height)).toBeLessThanOrEqual(1);
+      });
       scrollAsReader(root, root.scrollHeight);
       await painted(4);
     }
@@ -3150,10 +3262,9 @@ function PromptRailNavigationHarness() {
         transcriptTurnIndex: promptRailIndex,
         onLoadTranscriptTurn: (loaded) => {
           setFirstIndex(loaded.sequence);
-          setTarget({ turnId: loaded.turnId, nonce: Date.now() });
+          setTarget((previous) => ({ turnId: loaded.turnId, nonce: (previous?.nonce ?? 0) + 1 }));
         },
         scrollTargetTurn: target,
-        onScrollTargetHandled: () => setTarget(undefined),
       }}
     />
   );

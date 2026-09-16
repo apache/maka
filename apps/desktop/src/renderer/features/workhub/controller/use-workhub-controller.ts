@@ -34,6 +34,7 @@ import {
 } from '@maka/ui';
 import type { WorkHubAnswerInput, WorkHubAnswerResult } from '../../../../shared/workhub-conversation.js';
 import type { AttachmentRef, FollowUpMode, MessageQueuePlacement } from '@maka/core/events';
+import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { ChatModelChoice } from '@maka/core/chat-model-choice';
 import { startWorkHubCoordinationLifecycle } from './coordination-lifecycle.js';
 import { useWorkHubServices } from '../services.js';
@@ -62,6 +63,8 @@ export function useWorkHubController(onSubmit?: () => void) {
   const [sessions, setSessions] = useState<Awaited<ReturnType<WorkHubServices['listSessions']>>>(
     [],
   );
+  const [configuringModel, setConfiguringModel] = useState(false);
+  const configuringModelRef = useRef(false);
   const [choices, setChoices] = useState<ChatModelChoice[]>([]);
   const [transcript, setTranscript] = useState(emptyTranscript);
   // Reconciliation reads the published view, never a source page held by input.
@@ -524,11 +527,14 @@ export function useWorkHubController(onSubmit?: () => void) {
     llmConnectionId: string;
     llmConnectionSlug: string;
     model: string;
-  }) {
-    if (!sessionId || !session || busy) return;
+  }, thinkingLevel: ThinkingLevel | null = null) {
+    if (!sessionId || !session || busy || configuringModelRef.current) return;
+    configuringModelRef.current = true;
+    setConfiguringModel(true);
     try {
       const result = await services.configureModel(sessionId, {
         expectedRevision: session.revision,
+        thinkingLevel,
         modelTarget: {
           kind: 'explicit',
           connectionId: input.llmConnectionId,
@@ -550,6 +556,9 @@ export function useWorkHubController(onSubmit?: () => void) {
       if (currentSessionId.current !== sessionId) return;
       refreshSessions.current();
       report(reason);
+    } finally {
+      configuringModelRef.current = false;
+      setConfiguringModel(false);
     }
   }
   async function mutateQueue(action: (target: string) => Promise<void>) {
@@ -596,6 +605,11 @@ export function useWorkHubController(onSubmit?: () => void) {
     send,
     stop,
     changeModel,
+    configuringModel,
+    changeThinkingLevel: async (level: ThinkingLevel | undefined) => {
+      if (!session?.llmConnectionId || !session.llmConnectionSlug || !session.model) return;
+      await changeModel({ llmConnectionId: session.llmConnectionId, llmConnectionSlug: session.llmConnectionSlug, model: session.model }, level ?? null);
+    },
     retry: () => {
       const attempt = pendingSend.current;
       if (readError && sessionId) {

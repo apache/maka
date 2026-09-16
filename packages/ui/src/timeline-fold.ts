@@ -32,7 +32,7 @@ export interface ProcessingFold {
   children: FoldedTimelineChild[];
 }
 
-export type FoldedTimelineEntry = TurnTimelineItem | ProcessingFold;
+export type FoldedTimelineEntry = Extract<TurnTimelineItem, { kind: 'user' | 'text' }> | ProcessingFold;
 
 export function foldTimeline(items: readonly TurnTimelineItem[]): {
   entries: FoldedTimelineEntry[];

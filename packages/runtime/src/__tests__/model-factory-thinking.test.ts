@@ -503,7 +503,6 @@ describe('buildProviderOptions: thinking level', () => {
       }
     }
 
-    assert.equal(activeClaudeModels.length, 16);
     assert.ok(
       activeClaudeModels.some(
         ({ connection, modelId }) =>

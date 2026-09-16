@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { createDesktopInspectorService } from './create-workbar-services.js';
 import { resolveSystemUiLocale, resolveUiLocale } from '@maka/core/ui-locale';
 import { DEFAULT_UI_FONT_SIZE } from '@maka/core/settings';
 import { AttachmentIngestBlockedError } from '@maka/core/attachments';
@@ -100,6 +101,7 @@ async function readDelegatedTurnResult(
 export function createDesktopWorkHubServices(
   bridge: Pick<
     MakaBridge,
+    | 'inspector'
     | 'workHub'
     | 'workHubControl'
     | 'workHubPresentation'
@@ -113,6 +115,7 @@ export function createDesktopWorkHubServices(
 ): WorkHubServices {
   const delegatedResultCache = new Map<string, string>();
   return {
+    inspector: createDesktopInspectorService(bridge),
     surface: new URLSearchParams(window.location.search).get('surface') === 'workhub' ? 'workhub' : 'main',
     initialLocale: resolveSystemUiLocale(navigator.languages),
     subscribeAppearance(handler) {

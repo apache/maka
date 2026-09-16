@@ -984,6 +984,94 @@ describe('useWorkbarController', () => {
     assert.deepEqual(activeSessions, ['a', 'b']);
   });
 
+  it('opens Browser once when the active Session gains a live browser view', async () => {
+    const { root } = installReactRenderer();
+    let publishState:
+      | Parameters<WorkbarServices['browser']['subscribeState']>[0]
+      | undefined;
+    const defaults = createFakeWorkbarServices();
+    const services = createFakeWorkbarServices({
+      browser: {
+        ...defaults.browser,
+        subscribeState: (handler) => {
+          publishState = handler;
+          return () => {
+            publishState = undefined;
+          };
+        },
+      },
+    });
+
+    await act(async () => renderController(root, services, input(session('a'))));
+    assert.equal(controller().host.rightCollapsed, true);
+
+    const liveState = {
+      url: 'https://example.com',
+      title: 'Example',
+      canGoBack: false,
+      canGoForward: false,
+      loading: false,
+      secure: true,
+      hasPage: true,
+    };
+    await act(async () =>
+      publishState?.({
+        sessionId: 'a',
+        state: liveState,
+      }),
+    );
+    assert.equal(controller().host.rightCollapsed, false);
+    assert.equal(controller().host.panelsState.right.activeTabId, 'workbar:browser');
+
+    await act(async () => controller().commands.openTool('files'));
+    const browserTab = controller().host.panelsState.right.tabs.find(
+      (tab) => tab.kind === 'browser',
+    );
+    assert.ok(browserTab);
+    await act(async () => controller().host.onCloseTab('right', browserTab));
+    assert.equal(controller().host.panelsState.right.activeTabId, 'workbar:files');
+    await act(async () =>
+      publishState?.({
+        sessionId: 'a',
+        state: {
+          ...liveState,
+          url: 'https://example.com/redirected',
+          title: 'Redirected',
+          canGoBack: true,
+        },
+      }),
+    );
+    assert.equal(controller().host.panelsState.right.activeTabId, 'workbar:files');
+    assert.equal(
+      controller().host.panelsState.right.tabs.some((tab) => tab.kind === 'browser'),
+      false,
+    );
+
+    await act(async () =>
+      publishState?.({
+        sessionId: 'a',
+        state: {
+          ...liveState,
+          url: '',
+          title: '',
+          secure: false,
+          hasPage: false,
+        },
+      }),
+    );
+    await act(async () =>
+      publishState?.({
+        sessionId: 'a',
+        state: {
+          ...liveState,
+          url: 'https://example.org',
+          title: 'Example again',
+        },
+      }),
+    );
+    assert.equal(controller().host.panelsState.right.activeTabId, 'workbar:browser');
+  });
+
   it('links a Session produced on the surface that owns the claim', async () => {
     const { root } = installReactRenderer();
     const links: Array<{ id: string; sessionId: string }> = [];

@@ -74,6 +74,11 @@ export const PROVIDER_DISPLAY_COPY = {
     'zh-TW': { name: 'Moonshot', description: 'Moonshot 官方 API 連線', badge: 'API' },
     en: { name: 'Moonshot', description: 'Official Moonshot API access.', badge: 'API' },
   },
+  'moonshot-global': {
+    'zh-CN': { name: 'Moonshot 国际版', description: 'Moonshot 国际版官方 API 接入', badge: 'API' },
+    'zh-TW': { name: 'Moonshot 國際版', description: 'Moonshot 國際版官方 API 連線', badge: 'API' },
+    en: { name: 'Moonshot Global', description: 'Official Moonshot international API access.', badge: 'API' },
+  },
   'zai-coding-plan': {
     'zh-CN': { name: 'Z.AI Coding Plan', description: '智谱 · OpenAI 兼容', badge: 'Coding' },
     'zh-TW': { name: 'Z.AI Coding Plan', description: '智譜 · OpenAI 相容', badge: 'Coding' },

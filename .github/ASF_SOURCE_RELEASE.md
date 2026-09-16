@@ -54,6 +54,8 @@ tag and staging directory for the bytes selected by the Release Manager.
 
 ## Build and test an unsigned candidate
 
+Normal PR and main CI create and validate an unsigned archive of the checked-out commit on every run, including documentation and asset changes. This install-free check catches source inventory and dependency-boundary drift before a Release Manager dispatches the full candidate workflow. It does not sign, stage or publish an RC. The reviewed external website build dependency boundary is recorded in [`docs/code-origin-audit.md`](../docs/code-origin-audit.md#website-build-dependency-boundary).
+
 Run **Prepare ASF source candidate** from `main`, supplying the exact version.
 The workflow:
 

@@ -21,128 +21,12 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { act } from 'react';
 import { createRoot } from 'react-dom/client';
-import { parseHTML } from 'linkedom';
+import { installDom, settleEffects } from './mermaid-test-dom.js';
 import { LocaleProvider } from '../locale-context.js';
 import {
   MERMAID_RENDER_CACHE_LIMIT,
   MermaidDiagram,
 } from '../mermaid-diagram.js';
-
-const GLOBAL_KEYS = [
-  'CSS',
-  'CSSStyleSheet',
-  'DOMParser',
-  'Element',
-  'HTMLElement',
-  'IS_REACT_ACT_ENVIRONMENT',
-  'MutationObserver',
-  'Node',
-  'ResizeObserver',
-  'SVGElement',
-  'XMLSerializer',
-  'cancelAnimationFrame',
-  'document',
-  'getComputedStyle',
-  'navigator',
-  'requestAnimationFrame',
-  'window',
-] as const;
-
-function installDom() {
-  const originals = new Map<PropertyKey, PropertyDescriptor | undefined>(
-    GLOBAL_KEYS.map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]),
-  );
-  const { document, window } = parseHTML('<html><body><div id="root"></div></body></html>');
-  Object.defineProperty(window, 'location', {
-    configurable: true,
-    value: new URL('http://localhost/'),
-  });
-
-  class InertResizeObserver {
-    observe(): void {}
-    unobserve(): void {}
-    disconnect(): void {}
-  }
-  class TestXmlSerializer {
-    serializeToString(node: Node): string {
-      return String(node);
-    }
-  }
-  Object.defineProperties(window.SVGElement.prototype, {
-    getBBox: {
-      configurable: true,
-      value() {
-        return { x: 0, y: 0, width: Math.max(1, (this.textContent ?? '').length * 8), height: 16 };
-      },
-    },
-    getComputedTextLength: {
-      configurable: true,
-      value() {
-        return Math.max(1, (this.textContent ?? '').length * 8);
-      },
-    },
-  });
-  const CSSStyleSheet = document.createElement('style').sheet!.constructor;
-  const globals = {
-    CSS: { escape: String, supports: () => false },
-    CSSStyleSheet,
-    DOMParser: window.DOMParser,
-    Element: window.Element,
-    HTMLElement: window.HTMLElement,
-    IS_REACT_ACT_ENVIRONMENT: true,
-    MutationObserver: window.MutationObserver,
-    Node: window.Node,
-    ResizeObserver: InertResizeObserver,
-    SVGElement: window.SVGElement,
-    XMLSerializer: TestXmlSerializer,
-    cancelAnimationFrame: () => {},
-    document,
-    getComputedStyle: () => ({
-      paddingBottom: '0',
-      paddingLeft: '0',
-      paddingRight: '0',
-      paddingTop: '0',
-    }),
-    navigator: window.navigator ?? { userAgent: 'node' },
-    requestAnimationFrame: (callback: FrameRequestCallback) => {
-      queueMicrotask(() => callback(0));
-      return 1;
-    },
-    window,
-  };
-  for (const [key, value] of Object.entries(globals)) {
-    Object.defineProperty(globalThis, key, {
-      configurable: true,
-      value,
-      writable: true,
-    });
-  }
-  Object.assign(window, {
-    CSS: globals.CSS,
-    CSSStyleSheet,
-    cancelAnimationFrame: globals.cancelAnimationFrame,
-    getComputedStyle: globals.getComputedStyle,
-    innerHeight: 800,
-    requestAnimationFrame: globals.requestAnimationFrame,
-  });
-
-  return {
-    document,
-    restore() {
-      for (const key of GLOBAL_KEYS) {
-        const descriptor = originals.get(key);
-        if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-        else Reflect.deleteProperty(globalThis, key);
-      }
-    },
-  };
-}
-
-async function settleEffects(): Promise<void> {
-  for (let index = 0; index < 8; index += 1) {
-    await act(async () => Promise.resolve());
-  }
-}
 
 function diagram(code: string) {
   return (

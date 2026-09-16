@@ -64,7 +64,7 @@ import { foldTimeline, type FoldedTimelineChild, type FoldedTimelineEntry } from
 import { AttachmentKindIcon } from './attachment-kinds.js';
 import { QuoteRefChip } from './quote-ref-chip.js';
 import { Marker, markerVariants } from './primitives/chat.js';
-import { ToolTrow, toolTrowHasVisibleSpinner } from './tool-activity.js';
+import { ToolTrow } from './tool-activity.js';
 import { formatBytes } from './tool-activity/preview-utils.js';
 import { useUiLocale } from './locale-context.js';
 import type { UiLocale } from '@maka/core/ui-locale';
@@ -500,9 +500,6 @@ export const TurnView = memo(function TurnView(props: {
     () => splitTimelineAtUserMessages(foldedTimeline, showAssistantMessage),
     [foldedTimeline, showAssistantMessage],
   );
-  const toolSurfaceOwnsSpinner = turn.timeline.some(
-    (item) => item.kind === 'tools' && toolTrowHasVisibleSpinner(item.items),
-  );
   return (
     <section
       className="maka-turn"
@@ -672,6 +669,9 @@ export const TurnView = memo(function TurnView(props: {
         const activityProcessIndex = ownsTurnChrome
           ? segment.items.findLastIndex((item) => item.kind === 'processing')
           : -1;
+        // Every Turn owns this row, empty or not, so the cue never moves and
+        // settlement does not shift the transcript.
+        const liveWorkOwnsDisclosure = ownsTurnChrome && activityProcessIndex === -1;
         // Disjoint namespaces: a steering id is any string, so a bare
         // sentinel could collide with a real one.
         const assistantKey =
@@ -694,6 +694,18 @@ export const TurnView = memo(function TurnView(props: {
                 and Astryx tool group in the order the model produced them.
                 Intermediate text, reasoning and tools share a disclosure;
                 the final reply and inserted user instructions stay outside. */}
+              {liveWorkOwnsDisclosure && (
+                <ProcessingBlock
+                  key="processing-status"
+                  activityObserved={props.activityObserved}
+                  entries={[]}
+                  running={!!props.liveStreaming || turn.status === 'running'}
+                  durationMs={turn.durationMs}
+                  activity={props.liveStreaming?.runningStatus && !props.liveStreaming.providerRetry
+                    ? { startedAt: turn.startedAt, label: runningToolLabel }
+                    : undefined}
+                />
+              )}
               {segment.items.map((item, index) =>
                 item.kind === 'processing' ? (
                   <ProcessingBlock
@@ -797,12 +809,6 @@ export const TurnView = memo(function TurnView(props: {
                 live={!!props.liveStreaming}
                 activity={props.liveStreaming?.providerRetry ? (
                   <ModelProviderRetryIndicator retry={props.liveStreaming.providerRetry} />
-                ) : props.liveStreaming?.runningStatus && activityProcessIndex === -1 ? (
-                  <TurnRunningStatus
-                    startedAt={turn.startedAt}
-                    showSpinner={!toolSurfaceOwnsSpinner}
-                    activityLabel={runningToolLabel}
-                  />
                 ) : undefined}
                 context={answerContext}
                 onAction={
@@ -840,8 +846,8 @@ type ConversationSegment =
        * What this answer replies to: the steering message that opened it, or
        * the turn itself for the first answer. This is the segment's identity —
        * its React key must not be derived from its contents, because those
-       * change as the turn runs (a Processing fold dissolves once its last
-       * tools group is projected away) and a changing key remounts the whole
+       * change as the turn runs (a tools-only sequence disappears when its
+       * tools are projected away) and a changing key remounts the whole
        * answer, costing the user their scroll position, any disclosure they
        * had open, and any text Selection held inside it.
        *
@@ -994,12 +1000,10 @@ export function TurnFooter(props: {
   );
 }
 
-/** "model · duration · cost" for a settled turn; undefined when there is nothing to say. */
+/** "model · cost" for a settled turn; the elapsed lives in the process row. */
 function turnMetaSummary(turn: TurnViewModel): string | undefined {
   const parts: string[] = [];
   if (turn.modelId) parts.push(turn.modelId);
-  // Duration counts whole seconds, so anything under one would read「0s」.
-  if (turn.durationMs && turn.durationMs >= 1_000) parts.push(formatTurnDuration(turn.durationMs));
   if (turn.tokens?.costUsd && turn.tokens.costUsd > 0) parts.push(`$${turn.tokens.costUsd.toFixed(4)}`);
   return parts.length > 0 ? parts.join(' · ') : undefined;
 }
@@ -1025,9 +1029,8 @@ const WORKING_PHRASE_INTERVAL_MS = 20_000;
  * rare fallback path where streaming beat the user turn into the transcript;
  * the phrase then stands alone.
  */
-export function TurnRunningStatus(props: {
+function TurnRunningStatus(props: {
   startedAt?: number;
-  showSpinner?: boolean;
   activityLabel?: string;
 }) {
   const copy = getConversationCopy(useUiLocale()).messages;
@@ -1046,9 +1049,6 @@ export function TurnRunningStatus(props: {
       aria-label={props.activityLabel ?? copy.processing}
       ref={rootRef}
     >
-      {props.showSpinner !== false && (
-        <Spinner size="md" shade="subtle" aria-hidden="true" />
-      )}
       {/* Name the activity once; the clock must not announce each second. */}
       <span className="maka-turn-indicator-text" aria-hidden="true">
         <span className="maka-turn-status-label">
@@ -1325,7 +1325,7 @@ function TurnTimelineEntry(props: {
   );
 }
 
-function ProcessingBlock(props: {
+export function ProcessingBlock(props: {
   activityObserved?: boolean;
   entries: FoldedTimelineChild[];
   running: boolean;
@@ -1339,21 +1339,13 @@ function ProcessingBlock(props: {
   const copy = getConversationCopy(useUiLocale()).messages;
   // null follows the lifecycle: open while running, collapsed on completion.
   // Settled reader choices survive appended events. Live work stays expanded.
+  // A failed tool is an ordinary row: no label and no reveal of its own.
   const [manualOpen, setManualOpen] = useState<boolean | null>(null);
-  const needsAttention = props.entries.some((entry) => entry.kind === 'tools'
-    && entry.items.some((tool) => tool.status === 'errored' || tool.status === 'interrupted'));
-  // Reveal a new failure even if a prior settled process was collapsed.
-  // They can close it again once settled; its attention label remains visible. Permission
-  // requests and turn recovery banners are owned outside the timeline.
-  useEffect(() => {
-    if (needsAttention) setManualOpen(null);
-  }, [needsAttention]);
-  const open = props.running || (manualOpen ?? needsAttention);
+  const open = props.running || manualOpen === true;
   const seconds = props.durationMs !== undefined && Number.isFinite(props.durationMs)
     ? Math.floor(Math.max(0, props.durationMs) / 1000)
     : undefined;
-  const label = needsAttention ? copy.processNeedsAttention
-    : props.running || seconds === undefined ? copy.processDetails
+  const label = props.running || seconds === undefined ? copy.processDetails
     : copy.processDuration(Math.floor(seconds / 60), seconds % 60);
   return (
     <details
@@ -1372,11 +1364,10 @@ function ProcessingBlock(props: {
           if (!props.running) setManualOpen(!open);
         }}
       >
-        {props.activity && !needsAttention ? (
+        {props.activity ? (
           <TurnRunningStatus
             startedAt={props.activity.startedAt}
             activityLabel={props.activity.label}
-            showSpinner={false}
           />
         ) : <span>{label}</span>}
         {!props.running && <ChevronRight size={ICON_SIZE.meta} aria-hidden="true" />}
@@ -1414,7 +1405,9 @@ function DeepThinking(props: { text: string; live: boolean; settledText?: string
       <Markdown
         text={props.text}
         streaming={props.live}
-        settledText={props.settledText}
+        // A truncated reasoning buffer slides at the head. It is a current
+        // snapshot, not an append-only prefix for the reveal cursor to replay.
+        settledText={props.truncated ? props.text : props.settledText}
         density="compact"
       />
     </ChatReasoning>

@@ -17,27 +17,13 @@
  * under the License.
  */
 
-/**
- * Shared types for the Command Palette. Pulled out of
- * `command-palette.tsx` so non-JSX consumers can import them under the
- * main-process tsconfig that does not compile JSX.
- */
+import { createServicesContext } from '../../application/contracts/feature-services.js';
+import type { OverlaysServices } from './ports.js';
 
-import type { LucideIcon } from '@maka/ui/icons';
+const { Provider, useServices } = createServicesContext<OverlaysServices>('OverlaysServicesProvider');
 
-export type CommandKind = 'action' | 'session';
+export const OverlaysServicesProvider = Provider;
 
-export interface Command {
-  id: string;
-  kind: CommandKind;
-  label: string;
-  hint?: string;
-  platformHint?: {
-    apple: string;
-    other: string;
-  };
-  group: string;
-  Icon: LucideIcon;
-  keywords?: string[];
-  run(): void | Promise<void>;
+export function useOverlaysServices(): OverlaysServices {
+  return useServices();
 }

@@ -154,7 +154,7 @@ async function mountController(failFirstRead = false, overrides: Partial<WorkHub
   };
 }
 
-test('WorkHub model selection settles with its new revision and cannot be undone by a delayed catalog read', async () => {
+test('WorkHub model and thinking selection share versioned saves and reject stale reads', async () => {
   type Session = Awaited<ReturnType<WorkHubServices['getSession']>>;
   const initial = {
     id: JSON.stringify(['host-1', 'workhub-coordination']),
@@ -162,6 +162,7 @@ test('WorkHub model selection settles with its new revision and cannot be undone
     runningTurnIds: [],
   } as unknown as Session;
   let snapshot = initial;
+  let failSave = false;
   let notify!: () => void;
   let nextRead: Promise<Session> | undefined;
   const requests: Array<Parameters<WorkHubServices['configureModel']>[1]> = [];
@@ -174,7 +175,8 @@ test('WorkHub model selection settles with its new revision and cannot be undone
     subscribeSessions: (handler) => { notify = handler; return () => {}; },
     configureModel: async (_id, input) => {
       requests.push(input);
-      snapshot = { ...snapshot, model: input.modelTarget.model, revision: snapshot.revision + 1 };
+      if (failSave) throw new Error('configuration failed');
+      snapshot = { ...snapshot, model: input.modelTarget.model, thinkingLevel: input.thinkingLevel ?? undefined, revision: snapshot.revision + 1 };
       return { kind: 'committed', session: snapshot } as unknown as Awaited<ReturnType<WorkHubServices['configureModel']>>;
     },
   });
@@ -190,6 +192,9 @@ test('WorkHub model selection settles with its new revision and cannot be undone
     void change.then(() => { settled = true; });
   });
   assert.equal(settled, false, 'the wheel must remain pending until the saved session is available');
+  assert.equal(h.controller.configuringModel, true);
+  await act(async () => { await h.controller.changeThinkingLevel('high'); });
+  assert.equal(requests.length, 1, 'model and thinking saves cannot overlap');
   await act(async () => { confirmation.resolve(snapshot); await change; });
   assert.equal(h.controller.session?.model, 'B');
   assert.equal(h.controller.session?.revision, 2);
@@ -200,6 +205,26 @@ test('WorkHub model selection settles with its new revision and cannot be undone
   });
   assert.equal(requests[1]?.expectedRevision, 2, 'the next pick uses the committed revision');
   assert.equal(h.controller.session?.model, 'C');
+  await act(async () => { await h.controller.changeThinkingLevel('high'); });
+  assert.equal(h.controller.session?.thinkingLevel, 'high');
+  assert.equal(requests.at(-1)?.expectedRevision, 3);
+  assert.equal(requests.at(-1)?.modelTarget.model, 'C', 'thinking changes preserve model identity');
+  failSave = true;
+  await act(async () => { await h.controller.changeThinkingLevel('low'); });
+  assert.equal(h.controller.session?.thinkingLevel, 'high', 'failed writes retain the saved level');
+  assert.equal(h.controller.error, 'configuration failed');
+  assert.equal(h.controller.configuringModel, false);
+  failSave = false;
+  await act(async () => { await h.controller.changeThinkingLevel(undefined); });
+  assert.equal(requests.at(-1)?.thinkingLevel, null, 'default explicitly clears the stored override');
+  assert.equal(h.controller.session?.thinkingLevel, undefined);
+  await act(async () => { await h.controller.changeThinkingLevel('high'); });
+  await act(async () => { await h.controller.changeModel({ llmConnectionId: 'connection', llmConnectionSlug: 'provider', model: 'D' }); });
+  assert.equal(h.controller.session?.thinkingLevel, undefined, 'changing models clears the old model level');
+  const count = requests.length;
+  await act(async () => { h.admit('busy-turn'); });
+  await act(async () => { await h.controller.changeThinkingLevel('high'); });
+  assert.equal(requests.length, count, 'running turns cannot change their thinking level');
 });
 
 test('WorkHub stops presenting execution on observation loss while retaining the Stop target', async () => {
@@ -259,8 +284,8 @@ test('WorkHub holds transcript and live handoff together until publication is ad
   let held = true;
   let idle!: () => void;
   const detach = h.controller.viewportNavigation.attachCommitScheduler(h.sessionId, {
-    commitIfIdle(commit) { if (held) return false; commit(); return true; },
-    subscribeToIdle(listener) { idle = listener; return () => {}; },
+    subscribeToReaderScroll: () => () => {},
+    commitRange(commit) { if (held) idle = commit; else commit(); },
   });
   const messages: StoredMessage[] = [
     { type: 'user', id: 'user', turnId, text: 'held prompt', ts: 1 },
