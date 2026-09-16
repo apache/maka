@@ -71,6 +71,7 @@ function fakeRoot(options?: { scrollHeight?: number; clientHeight?: number }): F
     turns: [],
     getBoundingClientRect: () => ({ top: 0 }) as DOMRect,
     querySelectorAll: () => root.turns.map((turn) => ({
+      dataset: { turnId: turn.turnId },
       getAttribute: () => turn.turnId,
       getBoundingClientRect: () => ({
         top: turn.top - root.scrollTop,
@@ -213,18 +214,42 @@ test('range publication leaves native input and reading geometry with the browse
   });
 });
 
+test('range publication preserves a nonzero reading position with or without native anchoring', () => {
+  withObservers(() => {
+    for (const nativeCorrection of [false, true]) {
+      const root = fakeRoot();
+      let rowTop = 0;
+      const anchor = {
+        dataset: { turnId: 'reading' },
+        getBoundingClientRect: () => ({ top: rowTop - root.scrollTop, bottom: rowTop + 400 - root.scrollTop }),
+      };
+      root.querySelectorAll = () => [anchor];
+      const authority = createTranscriptScrollAuthority();
+      const detach = authority.attach(root as unknown as HTMLElement);
+      authority.releasePin();
+      root.scrollTop = 77;
+      authority.commitRange(() => {
+        rowTop += 4936;
+        root.scrollHeight += 4936;
+        if (nativeCorrection) root.scrollTop += 4936;
+      });
+      assert.equal(root.scrollTop, 5013, 'the prepended page must not displace or doubly compensate the reader');
+      assert.equal(anchor.getBoundingClientRect().top, -77);
+      detach();
+    }
+  });
+});
+
 test('explicit navigation during range publication outranks the old reading anchor', () => {
   withObservers(() => {
     for (const command of ['reveal', 'tail'] as const) {
       const root = fakeRoot();
       root.turns = [{ turnId: 'old', top: 0, height: 400 }];
       const anchor = {
-        isConnected: true,
         dataset: { turnId: 'old' },
         getBoundingClientRect: () => ({ top: -root.scrollTop, bottom: 400 - root.scrollTop }),
       };
       root.querySelectorAll = () => [anchor];
-      Object.assign(root, { querySelector: () => anchor });
       const authority = createTranscriptScrollAuthority();
       const detach = authority.attach(root as unknown as HTMLElement);
       authority.releasePin();

@@ -109,6 +109,14 @@ function reachesTranscript(event: Event, root: HTMLElement, direction: 'up' | 'd
   return false;
 }
 
+function firstVisibleTurn(root: HTMLElement): HTMLElement | undefined {
+  const top = root.getBoundingClientRect().top;
+  for (const turn of root.querySelectorAll<HTMLElement>('[data-turn-id]')) {
+    if (turn.getBoundingClientRect().bottom > top) return turn;
+  }
+  return undefined;
+}
+
 export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
   let root: HTMLElement | null = null;
   let pinned = true;
@@ -129,17 +137,19 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
       if (version === revealVersion) writeToTail();
       return;
     }
-    // At the scroll origin Chromium does not establish a native anchor. Keep
-    // the existing first row there; everywhere else native anchoring owns the
-    // correction, including the pressed thumb's input origin.
-    const anchor = target.scrollTop === 0
-      ? target.querySelector<HTMLElement>('[data-turn-id]') : null;
+    // Native anchoring can be absent or suppressed even at a nonzero offset.
+    // Keep the visible Turn across publication and correct only the residual
+    // after the browser has had its opportunity to anchor the new layout.
+    const anchor = firstVisibleTurn(target);
     const anchorId = anchor?.dataset.turnId;
     const anchorTop = anchor?.getBoundingClientRect().top;
     flushSync(commit);
     if (pinned || version !== revealVersion || root !== target || anchorTop === undefined) return;
-    if (anchor?.isConnected && anchor.dataset.turnId === anchorId) {
-      target.scrollTop += anchor.getBoundingClientRect().top - anchorTop;
+    const carried = Array.from(target.querySelectorAll<HTMLElement>('[data-turn-id]'))
+      .find((turn) => turn.dataset.turnId === anchorId);
+    if (carried) {
+      const residual = carried.getBoundingClientRect().top - anchorTop;
+      if (residual !== 0) target.scrollTop += residual;
     }
   };
   let readingTurnId: string | undefined;
@@ -148,16 +158,7 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
   const readerListeners = new Set<(phase: 'input' | 'scroll' | 'settled', direction?: 'up' | 'down') => boolean | void>();
   const distanceToTail = (): number =>
     root ? root.scrollHeight - root.scrollTop - root.clientHeight : 0;
-  const readTurn = (): string | undefined => {
-    if (!root) return undefined;
-    const top = root.getBoundingClientRect().top;
-    for (const turn of root.querySelectorAll<HTMLElement>('[data-turn-id]')) {
-      if (turn.getBoundingClientRect().bottom > top) {
-        return turn.getAttribute('data-turn-id') ?? undefined;
-      }
-    }
-    return undefined;
-  };
+  const readTurn = (): string | undefined => root ? firstVisibleTurn(root)?.dataset.turnId : undefined;
   const publish = (): void => {
     if (root) root.style.overflowAnchor = pinned ? 'none' : 'auto';
     if (snapshot.pinned === pinned && snapshot.awayFromTail === awayFromTail

@@ -2941,19 +2941,26 @@ export const HistoryAtTheTopStillLandsAboveTheReader: Story = {
       expect(settled.scrollTop, JSON.stringify(settled)).toBeGreaterThan(0);
       expect(settled.distance, JSON.stringify(settled)).toBeLessThanOrEqual(4);
     });
-    const before = firstResidentTurnId();
+    for (const offset of [0, 77]) {
+      // Native anchoring is absent at the origin and can be suppressed just
+      // above it during wheel input. Force that second condition deterministically.
+      const suppression = document.createElement('style');
+      if (offset > 0) suppression.textContent = '[data-chat-scroll-container] { overflow-anchor: none !important; }';
+      document.head.append(suppression);
+      try {
+        const before = firstResidentTurnId();
+        scrollAsReader(root, offset);
+        const reading = anchorInView();
+        wheelUp(root);
 
-    // The one position where the browser declines to anchor, and the one the
-    // wheel-to-load path puts the reader in.
-    scrollAsReader(root, 0);
-    const reading = anchorInView();
-    wheelUp(root);
+        await waitFor(() => expect(firstResidentTurnId()).not.toBe(before));
+        suppression.remove();
+        await waitFor(() => expect(document.querySelector('.maka-markdown-pending')).toBeNull());
+        await painted(6);
 
-    await waitFor(() => expect(firstResidentTurnId()).not.toBe(before));
-    await waitFor(() => expect(document.querySelector('.maka-markdown-pending')).toBeNull());
-    await painted(6);
-
-    expect(Math.abs(turnTop(reading.turnId) - reading.top)).toBeLessThanOrEqual(1);
+        expect(Math.abs(turnTop(reading.turnId) - reading.top)).toBeLessThanOrEqual(1);
+      } finally { suppression.remove(); }
+    }
   },
 };
 
