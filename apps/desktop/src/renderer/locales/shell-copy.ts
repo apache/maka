@@ -619,6 +619,97 @@ const ZH_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
   },
 };
 
+const ZH_TW_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
+  'action:new-chat': { label: '新建任務', hint: '開始新的任務', group: '操作' },
+  'action:side-chat': {
+    label: '開啟側邊對話',
+    platformHint: { apple: '⌥⌘S', other: 'Ctrl+Alt+S' },
+    group: '操作',
+  },
+  'action:new-deep-research': {
+    label: '新建深度研究',
+    hint: '唯讀探索',
+    group: '操作',
+  },
+  'action:new-scheduled-task': {
+    label: '新建定時任務',
+    hint: '開啟定時任務表單',
+    group: '操作',
+  },
+  'action:open-settings': {
+    label: '開啟設定',
+    platformHint: { apple: '⌘,', other: 'Ctrl+,' },
+    group: '操作',
+  },
+  'action:keyboard-help': { label: '查看鍵盤快捷鍵', hint: '?', group: '操作' },
+  'theme:light': { label: '主題 · 淺色', group: '主題' },
+  'theme:dark': { label: '主題 · 深色', group: '主題' },
+  'theme:auto': { label: '主題 · 跟隨系統', group: '主題' },
+  'nav:sessions': { label: '側邊欄 · 任務', group: '導覽' },
+  'nav:automations': { label: '側邊欄 · 定時任務', group: '導覽' },
+  'nav:skills': { label: '開啟 · 技能', group: '導覽' },
+  'nav:mcp': { label: '開啟 · MCP', group: '導覽' },
+  'nav:daily-review': { label: '開啟 · 每日回顧', group: '導覽' },
+  'diag:open-workspace': {
+    label: '開啟工作區資料夾',
+    hint: 'Finder',
+    group: '診斷',
+  },
+  'diag:open-project-folder': {
+    label: '開啟專案目錄',
+    hint: 'Finder',
+    group: '診斷',
+  },
+  'diag:open-skills': {
+    label: '開啟 Skills 資料夾',
+    hint: 'Finder',
+    group: '診斷',
+  },
+  'diag:export-conversation': {
+    label: '匯出目前任務為 Markdown',
+    hint: '複製到剪貼簿',
+    group: '診斷',
+  },
+  'diag:save-conversation-file': {
+    label: '儲存目前任務為 .md 檔案',
+    hint: '使用系統儲存對話框',
+    group: '診斷',
+  },
+  'diag:copy-today-daily-review': {
+    label: '複製今日回顧為 Markdown',
+    hint: '複製到剪貼簿',
+    group: '診斷',
+  },
+  'diag:paste-today-daily-review': {
+    label: '將今日回顧貼到 composer',
+    hint: '不經剪貼簿',
+    group: '診斷',
+  },
+  'diag:save-today-daily-review': {
+    label: '儲存今日回顧為 .md 檔案',
+    hint: '使用系統儲存對話框',
+    group: '診斷',
+  },
+  'diag:copy-diagnostics': {
+    label: '複製診斷資訊',
+    platformHint: {
+      apple: '⇧⌘D · 脫敏日誌 · 僅寫入剪貼簿',
+      other: 'Ctrl+Shift+D · 脫敏日誌 · 僅寫入剪貼簿',
+    },
+    group: '診斷',
+  },
+  'diag:test-network-proxy': {
+    label: '測試目前網路代理',
+    hint: '診斷 · 不開啟設定',
+    group: '診斷',
+  },
+  'diag:open-local-memory': {
+    label: '開啟本機 MEMORY.md',
+    hint: '系統編輯器',
+    group: '診斷',
+  },
+};
+
 const EN_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
   'action:new-chat': {
     label: 'New task',
@@ -736,6 +827,26 @@ const ZH_SETTINGS_SECTIONS: Record<SettingsSection, string> = {
   permissions: '权限与能力',
   health: '健康',
   about: '关于',
+};
+
+const ZH_TW_SETTINGS_SECTIONS: Record<SettingsSection, string> = {
+  general: '通用',
+  appearance: '外觀',
+  projects: '工作區',
+  models: '模型',
+  'external-agents': '外部 Agent',
+  subagents: '子 Agent',
+  usage: '使用統計',
+  'archived-tasks': '已歸檔任務',
+  'import-tasks': '匯入/匯出任務',
+  memory: '記憶',
+  'daily-review': '每日回顧',
+  'bot-chat': '遠端存取',
+  search: '網路搜尋',
+  data: '資料',
+  permissions: '權限與能力',
+  health: '健康',
+  about: '關於',
 };
 
 const EN_SETTINGS_SECTIONS: Record<SettingsSection, string> = {
@@ -1597,8 +1708,8 @@ const SHELL_COPY_BY_LOCALE = {
         conversations: '任務',
       },
       staticKeywords: STATIC_COMMAND_KEYWORDS,
-      commands: ZH_STATIC_COMMANDS,
-      settingsSections: ZH_SETTINGS_SECTIONS,
+      commands: ZH_TW_STATIC_COMMANDS,
+      settingsSections: ZH_TW_SETTINGS_SECTIONS,
       permissionModes: {
         explore: { label: '權限 · 只讀', hint: '讀取和搜尋直通，寫入和網路仍需確認' },
         ask: { label: '權限 · 自動', hint: '在 Maka 的保護層內執行；需要超出目前權限範圍時再詢問' },
