@@ -675,6 +675,29 @@ export function createMemoryRuntimeStore(a: MemoryExecutionAuthority): Execution
         )
           rebuildToolProjections(s, sessionId);
       }),
+    // Same contract as the SQLite scan: a Session is offered when the folded
+    // JSON of any of its events contains a folded term.
+    listSessionsWithRuntimeEventText: async (sessionIds, terms) => {
+      const offered: string[] = [];
+      for (const sessionId of sessionIds) {
+        const events = (await store.readSessionRuntimeEventEntries(sessionId)).map((e) => e.event);
+        const folded = events.map((event) => JSON.stringify(event).normalize('NFC').toLowerCase());
+        if (folded.some((json) => terms.some((term) => json.includes(term))))
+          offered.push(sessionId);
+      }
+      return offered;
+    },
+    countRuntimeEventMessages: async (sessionIds) => {
+      let total = 0;
+      for (const sessionId of sessionIds) {
+        for (const { event } of await store.readSessionRuntimeEventEntries(sessionId)) {
+          const kind = event.content?.kind;
+          if (kind === 'text' || kind === 'function_call' || kind === 'function_response')
+            total += 1;
+        }
+      }
+      return total;
+    },
     resequenceSessionEventOrdinals: async (sessionId) =>
       a.write('runtime.resequence', (s) => {
         const entries = ordinals(s).get(sessionId) ?? [];

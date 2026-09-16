@@ -692,6 +692,19 @@ class SqliteSessionStore implements SessionAuthorityStore {
     return this.readMessagesSnapshot(sessionId);
   }
 
+  async listLegacyTranscriptCandidateSessions(
+    sessionIds: readonly string[],
+    terms: readonly string[],
+  ): Promise<string[] | undefined> {
+    await this.ensureReady();
+    return this.metadata.listLegacyTranscriptCandidateSessions(sessionIds, terms);
+  }
+
+  async countLegacyTranscriptMessages(sessionIds: readonly string[]): Promise<number> {
+    await this.ensureReady();
+    return this.metadata.countLegacyTranscriptMessages(sessionIds);
+  }
+
   async readMessagesAfter(
     sessionId: string,
     request: SessionMessageScanRequest,

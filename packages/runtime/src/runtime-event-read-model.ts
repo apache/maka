@@ -191,6 +191,15 @@ export interface RuntimeEventStoredMessageProjector {
  * The durable RuntimeEvent remains untouched and the marker names its retained
  * result, so readers can fetch the full output without repeating the command.
  */
+/**
+ * The marker `projectTranscriptToolResult` writes into a truncated terminal
+ * output, as a whole line. It is projection text with no stored counterpart,
+ * so recall removes it before matching; keep this in step with the marker
+ * `truncateToolOutput` builds and the hint below.
+ */
+export const TRANSCRIPT_TOOL_RESULT_SYNTHETIC_TEXT_PATTERN =
+  /^\.\.\.\d+ (?:lines|bytes) truncated\. Read \{"path":"maka:\/\/runtime\/tool-results\/[^"\n]*"\} for the retained output; follow next to continue\. Otherwise work from the kept output above\.$/gmu;
+
 export function projectTranscriptToolResult(
   event: RuntimeEvent,
   content: ToolResultContent,
