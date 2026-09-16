@@ -682,8 +682,10 @@ test('fences earlier transcript failures across same-source replica recovery', a
         opens += 1;
         const first = opens === 1;
         const events = first ? firstEvents : secondEvents;
-        // The reset reads two one-row pages; the page at cursor '1' is read only by load earlier.
-        const host = historyHost([0, 1, 2].map((index) => turnRow(index, `turn-${index}`)), { pageRows: 1 });
+        // One row per page. The recovery reset reads back down to the row the
+        // consumer was last given (cursor '3'); cursor '2' is reached only by a
+        // later load earlier.
+        const host = historyHost([0, 1, 2, 3, 4].map((index) => turnRow(index, `turn-${index}`)), { pageRows: 1 });
         return runtimeHostSessionFixture({
           snapshot: continuitySnapshot(),
           transcript: Promise.resolve([]),
@@ -692,11 +694,12 @@ test('fences earlier transcript failures across same-source replica recovery', a
           loadTranscriptOverlay: async () => [],
           decodeTranscriptPage: host.decodeTranscriptPage,
           loadTranscriptPage: async (input) => {
-            if (input.cursor !== '1') return host.loadTranscriptPage(input);
             if (first) {
+              if (input.cursor !== '3') return host.loadTranscriptPage(input);
               staleReadStarted = true;
               return staleRead.promise;
             }
+            if (input.cursor !== '2') return host.loadTranscriptPage(input);
             currentReadStarted = true;
             throw currentFailure;
           },
@@ -1410,6 +1413,78 @@ test('delivers history in whole Turns within the budget and continues exactly on
   );
   await observer.loadEarlierTranscript(consumerId, 26);
   assert.equal(batches.length, 0, 'nothing older remains to deliver');
+  await observer.close();
+});
+
+/**
+ * Recovery rebuilds what the reader was holding from the number of reads they
+ * had made, not from the boundary those reads actually reached. A read runs
+ * past its budget to finish a Turn, so the sum of the budgets buys less than
+ * the reads delivered, and the difference is history the renderer had and no
+ * longer has.
+ */
+test('keeps the history already delivered across a same-session recovery', async () => {
+  const huge = 'x'.repeat(4096);
+  const rows = [
+    turnRow(10, 'turn-a'), turnRow(20, 'turn-a'), turnRow(30, 'turn-a'),
+    turnRow(40, 'turn-b', huge),
+    turnRow(50, 'turn-c'), turnRow(60, 'turn-c'),
+    turnRow(70, 'turn-d', huge),
+  ];
+  const smallRowBytes = Buffer.byteLength(JSON.stringify(rows[0]!.message), 'utf8');
+  const host = historyHost(rows, { pageRows: 2 });
+  const queues: AsyncFrameQueue[] = [];
+  const observer = new RuntimeHostSessionObserver({
+    client: {
+      openSession: async () => {
+        const events = new AsyncFrameQueue();
+        queues.push(events);
+        return runtimeHostSessionFixture({
+          snapshot: continuitySnapshot(),
+          transcript: Promise.resolve([]),
+          events,
+          transcriptBootstrap: host.bootstrap,
+          loadTranscriptOverlay: async () => [],
+          loadTranscriptPage: host.loadTranscriptPage,
+          decodeTranscriptPage: host.decodeTranscriptPage,
+          async close() {
+            events.end();
+          },
+        });
+      },
+    },
+    emitSessionsChanged() {},
+    transcriptHistoryBytes: Math.floor(smallRowBytes * 1.5),
+  });
+  const batches: DesktopTranscriptBatch[] = [];
+  const consumerId = 'consumer-recovered-history';
+  await observer.openTranscript('session-1', consumerId, ackingTranscriptTarget(observer, consumerId, 26, batches), 'history');
+  const answer = () => {
+    const taken = batches.splice(0);
+    assert.ok(taken.at(-1)?.ready, 'an answer ends with its ready batch');
+    return taken.flatMap((batch) => durableSequences(batch)).sort((left, right) => left - right);
+  };
+
+  const delivered = [...answer()];
+  for (let read = 0; read < 2; read += 1) {
+    await observer.loadEarlierTranscript(consumerId, 26);
+    delivered.push(...answer());
+  }
+  delivered.sort((left, right) => left - right);
+  assert.deepEqual(delivered, [40, 50, 60, 70], 'the reader is holding four rows before anything fails');
+
+  // The Host drops the subscription and the same Session is reopened over the
+  // same rows: nothing was added, nothing was removed.
+  queues[0]!.push({
+    kind: 'subscription.closed',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-session-1',
+    sequence: 1,
+    reason: 'slow_consumer',
+  });
+  await waitFor(() => batches.some((batch) => batch.reset === true) && batches.at(-1)?.ready === true);
+
+  assert.deepEqual(answer(), delivered, 'recovery handed back less history than the reader had');
   await observer.close();
 });
 

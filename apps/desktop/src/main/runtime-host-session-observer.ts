@@ -152,13 +152,12 @@ interface TranscriptConsumer {
  * next earlier read.
  */
 interface TranscriptHistory {
-  /** A reset reads again as many budgets as the consumer has been delivered. */
-  budgets: number;
   throughSequence: number | null;
   started: boolean;
   cursor: string | null;
   carry: DesktopSequencedTranscriptMessage[];
   carryBytes: number;
+  /** The oldest sequence delivered so far; a reset reads down to it again. */
   oldestSequence: number | null;
 }
 
@@ -316,7 +315,6 @@ export class RuntimeHostSessionObserver {
       ...(mode === 'history'
         ? {
             history: {
-              budgets: 1,
               throughSequence: null,
               started: false,
               cursor: null,
@@ -1332,6 +1330,13 @@ export class RuntimeHostSessionObserver {
    * watermark and ends with the overlay; an earlier read continues below what
    * was delivered. Each answer stops at a Turn boundary once it reaches its
    * byte budget.
+   *
+   * A reset also reads back down to the oldest sequence this consumer was
+   * already given, so a recovery hands back the history the reader had rather
+   * than one budget's worth of it. The reread is not window-era baggage: a
+   * Turn's rows become durable when the Turn ends, so a nested Turn that ends
+   * first publishes a watermark above rows the Turn around it has not
+   * published yet, and rows can arrive below a boundary the reader holds.
    */
   async #sendTranscriptHistory(
     state: ObservedSessionState,
@@ -1342,9 +1347,12 @@ export class RuntimeHostSessionObserver {
   ): Promise<void> {
     let overlay: readonly StoredMessage[] = [];
     let earlierThan: number | undefined;
+    /** The oldest sequence already delivered, which a reset has to reach again. */
+    let floor: number | null = null;
     if (reset) {
       const snapshot = replica.snapshot();
       overlay = snapshot.overlay;
+      floor = history.oldestSequence;
       this.#adjustTranscriptDeliveryBytes(consumer, -history.carryBytes);
       Object.assign(history, {
         throughSequence: snapshot.durableThrough,
@@ -1357,9 +1365,8 @@ export class RuntimeHostSessionObserver {
     } else {
       if (history.oldestSequence === null || !historyHasOlder(history)) return;
       earlierThan = history.oldestSequence;
-      history.budgets += 1;
     }
-    const budget = this.#transcriptHistoryBytes * (reset ? history.budgets : 1);
+    const budget = this.#transcriptHistoryBytes;
     const identity = { sessionId: replica.sessionId, generation: replica.generation, hostEpoch: replica.hostEpoch };
     const isCurrent = () =>
       state.replica === replica &&
@@ -1419,7 +1426,13 @@ export class RuntimeHostSessionObserver {
           break;
         }
         bytes += encodedTranscriptMessageBytes(rows[index]!.message);
-        if (boundary === undefined && bytes >= budget) boundary = key;
+        if (
+          boundary === undefined &&
+          bytes >= budget &&
+          (floor === null || rows[index]!.sequence <= floor)
+        ) {
+          boundary = key;
+        }
       }
       history.carry = rows.slice(0, cut);
       history.carryBytes = history.carry.reduce(
