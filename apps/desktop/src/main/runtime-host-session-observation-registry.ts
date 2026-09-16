@@ -116,6 +116,13 @@ interface TranscriptRegistration {
   restore: ObservationReadiness | undefined;
   restoreOpened: boolean;
   lifecycle: 'pending' | 'active';
+  /**
+   * The oldest sequence this consumer has been given. A consumer dies with
+   * the connection that made it; the reader it feeds does not, so a
+   * replacement has to reopen onto the history the reader is holding rather
+   * than onto a fresh budget.
+   */
+  deliveredFrom: number | null;
 }
 
 interface TranscriptReadiness {
@@ -337,6 +344,34 @@ export class RuntimeHostSessionObservationRegistry {
     await this.#remove(observerId);
   }
 
+  /**
+   * The consumer's target, with the oldest sequence it is handed recorded on
+   * the registration — which outlives the connection the consumer belongs to.
+   * A reset replaces what the consumer holds, so it starts the count again.
+   */
+  #trackDelivered(
+    registration: TranscriptRegistration,
+    target: RuntimeHostTranscriptTarget,
+  ): RuntimeHostTranscriptTarget {
+    return {
+      get id() {
+        return target.id;
+      },
+      send: (channel, payload) => {
+        if (payload.reset) registration.deliveredFrom = null;
+        for (const fragment of payload.fragments) {
+          if (fragment.source !== 'durable' || typeof fragment.identity !== 'number') continue;
+          if (registration.deliveredFrom === null || fragment.identity < registration.deliveredFrom) {
+            registration.deliveredFrom = fragment.identity;
+          }
+        }
+        target.send(channel, payload);
+      },
+      once: (event, listener) => target.once(event, listener),
+      off: (event, listener) => target.off(event, listener),
+    };
+  }
+
   async openTranscript(
     sessionId: string,
     consumerId: string,
@@ -361,6 +396,7 @@ export class RuntimeHostSessionObservationRegistry {
       restore: undefined,
       restoreOpened: false,
       lifecycle: 'pending',
+      deliveredFrom: null,
     };
     this.#transcripts.set(consumerId, registration);
     target.once('destroyed', destroyedListener);
@@ -371,7 +407,7 @@ export class RuntimeHostSessionObservationRegistry {
       const result = await transcriptSource.openTranscript(
         sessionId,
         consumerId,
-        this.#bindTarget(target),
+        this.#trackDelivered(registration, this.#bindTarget(target)),
         mode,
       );
       if (this.#source === source && this.#transcripts.get(consumerId) === registration) {
@@ -546,8 +582,9 @@ export class RuntimeHostSessionObservationRegistry {
       const result = await transcriptSource.openTranscript(
         registration.sessionId,
         consumerId,
-        this.#bindTarget(registration.target),
+        this.#trackDelivered(registration, this.#bindTarget(registration.target)),
         registration.mode,
+        registration.deliveredFrom ?? undefined,
       );
       if (
         this.#source === source &&

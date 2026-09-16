@@ -1484,6 +1484,77 @@ test('keeps the history already delivered across a same-session recovery', async
   await observer.close();
 });
 
+/**
+ * A consumer belongs to the connection that made it, and a replacement makes a
+ * new one. The reader behind it is the same reader, holding the same history,
+ * so what the registration carries across is where that history reaches.
+ */
+test('keeps the history already delivered across a replacement of the Host connection', async () => {
+  const rows = [10, 20, 30, 40].map((identity) => turnRow(identity, `turn-${identity}`));
+  const smallRowBytes = Buffer.byteLength(JSON.stringify(rows[0]!.message), 'utf8');
+  const sources = () =>
+    new RuntimeHostSessionObserver({
+      client: {
+        openSession: async () => {
+          const events = new AsyncFrameQueue();
+          const host = historyHost(rows, { pageRows: 1 });
+          return runtimeHostSessionFixture({
+            snapshot: continuitySnapshot(),
+            transcript: Promise.resolve([]),
+            events,
+            transcriptBootstrap: host.bootstrap,
+            loadTranscriptOverlay: async () => [],
+            loadTranscriptPage: host.loadTranscriptPage,
+            decodeTranscriptPage: host.decodeTranscriptPage,
+            async close() {
+              events.end();
+            },
+          });
+        },
+      },
+      emitSessionsChanged() {},
+      transcriptHistoryBytes: Math.floor(smallRowBytes * 1.5),
+    });
+  const first = sources();
+  const second = sources();
+  const observations = new RuntimeHostSessionObservationRegistry();
+  const batches: DesktopTranscriptBatch[] = [];
+  const consumerId = 'consumer-connection-replacement';
+  const target: RuntimeHostTranscriptTarget = {
+    id: 31,
+    send(_channel, batch) {
+      batches.push(batch);
+      queueMicrotask(() =>
+        observations.acknowledgeTranscript(consumerId, batch.generation, batch.deliverySequence, 31),
+      );
+    },
+    once() {},
+    off() {},
+  };
+  const answer = () => {
+    const taken = batches.splice(0);
+    assert.ok(taken.at(-1)?.ready, 'an answer ends with its ready batch');
+    return taken.flatMap((batch) => durableSequences(batch)).sort((left, right) => left - right);
+  };
+
+  await observations.attach(first);
+  await observations.openTranscript('session-1', consumerId, target, 'history');
+  const delivered = [...answer()];
+  await observations.loadEarlierTranscript(consumerId, target.id);
+  delivered.push(...answer());
+  delivered.sort((left, right) => left - right);
+  assert.ok(delivered.length > 1, 'the reader asked for more than its first budget');
+
+  observations.detach(first);
+  await first.close();
+  await observations.attach(second);
+  await waitFor(() => batches.some((batch) => batch.reset === true) && batches.at(-1)?.ready === true);
+
+  assert.deepEqual(answer(), delivered, 'the replacement handed back less history than the reader had');
+  await observations.close();
+  await second.close();
+});
+
 test('a tail transcript consumer still receives the replica snapshot', async () => {
   const events = new AsyncFrameQueue();
   const rows = [turnRow(10, 'turn-a'), turnRow(20, 'turn-b')];

@@ -251,6 +251,12 @@ export class RuntimeHostSessionObserver {
     consumerId: string,
     target: RuntimeHostTranscriptTarget,
     mode: DesktopTranscriptOpenMode = 'tail',
+    /**
+     * The oldest sequence the reader behind this consumer already holds. A
+     * consumer is new after the connection is replaced; the reader is not, so
+     * the first answer reads back down to here instead of to one budget.
+     */
+    resumeFrom?: number,
   ): Promise<DesktopTranscriptOpenResult> {
     this.#assertOpen();
     if (
@@ -312,7 +318,7 @@ export class RuntimeHostSessionObserver {
               throughSequence: null,
               started: false,
               cursor: null,
-              oldestSequence: null,
+              oldestSequence: resumeFrom ?? null,
             },
           }
         : {}),
