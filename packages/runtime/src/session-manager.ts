@@ -595,8 +595,32 @@ export interface RegenerateTurnSource {
   readonly content: MessageContent;
 }
 
+/** Storage-side narrowing for recall. Declared structurally, like SessionStore. */
+export interface SessionSearchCandidateRequest {
+  readonly sessionIds: readonly string[];
+  /** Literal terms. A record containing any of them becomes a candidate. */
+  readonly terms: readonly string[];
+  /** Above this many candidates the store declines rather than truncating. */
+  readonly limit: number;
+}
+
+export interface SessionSearchCandidate {
+  readonly sessionId: string;
+  readonly message: StoredMessage;
+}
+
 export interface SessionStore {
   create(input: CreateSessionInput, initialBoundary?: ExecutionBoundary): Promise<SessionHeader>;
+  /**
+   * Narrow recall to messages whose stored record literally contains a term.
+   * A superset of the true matches, never an answer. `undefined` declines the
+   * fast path, which sends the caller back to reading transcripts.
+   */
+  listSearchCandidates?(
+    request: SessionSearchCandidateRequest,
+  ): Promise<SessionSearchCandidate[] | undefined>;
+  /** Corpus size for recall's idf term, counted over searchable message types. */
+  countSearchableMessages?(sessionIds: readonly string[]): Promise<number>;
   createSubagent(
     input: CreateSessionInput,
     initialBoundary?: ExecutionBoundary,
@@ -1330,6 +1354,23 @@ export class SessionManager {
 
   async getMessages(sessionId: string): Promise<StoredMessage[]> {
     return (await this.getSessionView(sessionId)).messages;
+  }
+
+  /**
+   * Narrow recall to messages whose stored record literally contains a term.
+   * The result is a superset of the true matches, so callers must re-run the
+   * real predicate; `undefined` means the store declined the fast path and the
+   * caller should fall back to reading transcripts.
+   */
+  async listSearchCandidates(
+    request: SessionSearchCandidateRequest,
+  ): Promise<SessionSearchCandidate[] | undefined> {
+    return this.deps.store.listSearchCandidates?.(request);
+  }
+
+  /** Corpus size for recall's idf term. */
+  async countSearchableMessages(sessionIds: readonly string[]): Promise<number | undefined> {
+    return this.deps.store.countSearchableMessages?.(sessionIds);
   }
 
   async getContextDiagnostics(sessionId: string): Promise<ContextDiagnostics> {

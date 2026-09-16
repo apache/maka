@@ -53,7 +53,8 @@ import {
   type BackendPreparationContext,
 } from '@maka/runtime/session-manager';
 import { buildToolsForAgentDefinition } from '@maka/runtime/agent-catalog';
-import { buildHistoryTools } from '@maka/runtime/history-tools';
+import { buildRecallTools } from '@maka/runtime/recall-tools';
+import { RECALL_CANDIDATE_LIMIT } from '@maka/core/recall';
 import { buildBuiltinTools } from '@maka/runtime/builtin-tools';
 import { createLocalContinuationSafetyInspector } from '@maka/runtime/continuation-safety';
 import { createConfiguredSubagentCatalog } from '@maka/runtime/configured-subagent-catalog';
@@ -269,6 +270,24 @@ import {
 export interface ExecutionRuntimeHostComposition extends RuntimeHostComposition {
   readonly workspaceExecution: RuntimeHostWorkspaceExecutionComposition;
   readonly plugins: HostPluginPlatform;
+}
+
+/**
+ * Which query terms a distilled fact actually matched. The key search ranks by
+ * matched-term count but does not report which ones, and the model reads that
+ * detail to judge how much weight a fact deserves.
+ */
+function matchedFactTerms(
+  record: {
+    readonly item: { readonly content: string };
+    readonly keys: readonly { readonly key: string }[];
+  },
+  terms: readonly string[],
+): string[] {
+  const haystack = [record.item.content, ...record.keys.map((key) => key.key)]
+    .join(' ')
+    .toLowerCase();
+  return terms.filter((term) => haystack.includes(term.toLowerCase()));
 }
 
 const GIBIBYTE = 1024 * 1024 * 1024;
@@ -679,7 +698,7 @@ export async function createExecutionRuntimeHostComposition(
         webSearchService.search({ query, limit, ...(abortSignal ? { abortSignal } : {}) }),
       fetch: (input) => webFetchService.fetch(input),
     });
-    const historyTools = buildHistoryTools({
+    const recallTools = buildRecallTools({
       listSessions: () => requireSessionManager(manager).listSessions(),
       readMessages: async (sessionId, abortSignal) => {
         if (abortSignal?.aborted) return null;
@@ -687,6 +706,42 @@ export async function createExecutionRuntimeHostComposition(
           .getMessages(sessionId)
           .catch(() => null);
         return abortSignal?.aborted ? null : messages;
+      },
+      listCandidates: async ({ terms, sessionIds, abortSignal }) => {
+        if (abortSignal?.aborted) return null;
+        // A storage failure only costs speed here: declining the fast path
+        // sends recall back to reading transcripts, which yields the same
+        // answer. Returning a partial candidate set instead would break the
+        // superset contract and silently drop matches.
+        const candidates = await requireSessionManager(manager)
+          .listSearchCandidates({ terms, sessionIds, limit: RECALL_CANDIDATE_LIMIT })
+          .catch(() => undefined);
+        if (abortSignal?.aborted || !candidates) return null;
+        return candidates;
+      },
+      countSearchableMessages: async ({ sessionIds }) =>
+        (await requireSessionManager(manager)
+          .countSearchableMessages(sessionIds)
+          .catch(() => undefined)) ?? null,
+      searchFacts: async ({ sessionId, terms, limit }) => {
+        const workspaceKey = sessionId
+          ? await stores.sessionStore
+              .readHeaderSnapshot(sessionId)
+              .then((header) => header.workspaceRoot)
+              .catch(() => undefined)
+          : undefined;
+        const records = await longTermMemoryStore.searchByKeys({
+          terms,
+          match: 'prefix',
+          ...(workspaceKey ? { workspaceKey } : {}),
+          limit,
+        });
+        return records.map((record) => ({
+          content: record.item.content,
+          kind: record.item.kind,
+          observedAt: record.item.observedAt,
+          matchedTerms: matchedFactTerms(record, terms),
+        }));
       },
       getPrivacyContext: async () => ({
         incognitoActive: (await runtimePolicyStores.runtimePolicy.getSnapshot()).policy.privacy
@@ -699,7 +754,7 @@ export async function createExecutionRuntimeHostComposition(
       backgroundTaskHealthTool,
       ...runtimePolicy.modelTools,
     ];
-    const hostTools = [...childHostTools, ...historyTools];
+    const hostTools = [...childHostTools, ...recallTools];
     const childAgentTools = createHostChildAgentToolComposition({
       builtinTools,
       hostTools: childHostTools,
