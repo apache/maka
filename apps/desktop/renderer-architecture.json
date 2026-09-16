@@ -2595,9 +2595,9 @@
         "hookCalls": {
           "useEffect": 5,
           "useMountedRef": 1,
-          "useRef": 5,
+          "useRef": 4,
           "useRuntimeHostSettingsTarget": 1,
-          "useState": 18,
+          "useState": 15,
           "useUiLocale": 1
         },
         "lifecycleMethods": {},
