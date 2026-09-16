@@ -339,6 +339,7 @@ export async function createExecutionRuntimeHostComposition(
   let sessionEffects: HostSessionEffectCoordinator | undefined;
   let memoryExtraction: HostMemoryExtractionCoordinator | undefined;
   let unsubscribeTranscriptChanges: (() => void) | undefined;
+  let unsubscribeRuntimeEventCommits: (() => void) | undefined;
   let transcriptReader: SessionTranscriptReader | undefined;
   let unsubscribeUsageChanges: (() => void) | undefined;
   let workspaceExecution: RuntimeHostWorkspaceExecutionComposition | undefined;
@@ -882,6 +883,9 @@ export async function createExecutionRuntimeHostComposition(
     const continuityCoordinator = continuity;
     unsubscribeTranscriptChanges = stores.sessionStore.subscribeTranscriptChanges((sessionId) =>
       continuityCoordinator.enqueueCanonicalRefresh(sessionId),
+    );
+    unsubscribeRuntimeEventCommits = stores.runtimeEventStore.subscribeRuntimeEventCommits(
+      (sessionId) => continuityCoordinator.enqueueTranscriptAdvanced(sessionId),
     );
     unsubscribeUsageChanges = openedUsageStores.subscribeSessionUsageChanges((sessionId) =>
       continuityCoordinator.enqueueSessionDomainChanged(sessionId, 'usage'),
@@ -2595,6 +2599,7 @@ export async function createExecutionRuntimeHostComposition(
           () => externalAgentSetup?.close(),
           () => {
             unsubscribeTranscriptChanges?.();
+            unsubscribeRuntimeEventCommits?.();
             unsubscribeUsageChanges?.();
           },
         ],
@@ -2919,6 +2924,7 @@ export async function createExecutionRuntimeHostComposition(
     }
     try {
       unsubscribeTranscriptChanges?.();
+      unsubscribeRuntimeEventCommits?.();
       unsubscribeUsageChanges?.();
     } catch (closeError) {
       errors.push(closeError);

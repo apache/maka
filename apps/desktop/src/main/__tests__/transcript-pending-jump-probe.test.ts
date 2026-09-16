@@ -45,8 +45,7 @@ async function harness() {
     client: { openSession: async () => runtimeHostSessionFixture({
       snapshot: continuitySnapshot(), transcript: Promise.resolve([]),
       events: { async *[Symbol.asyncIterator]() { await eventsClosed.promise; } },
-      transcriptBootstrap: { throughSequence: THROUGH, overlayMessageCount: 0, durable: bootstrap, overlay: { ...bootstrap, source: 'overlay' } },
-      loadTranscriptOverlay: async () => [],
+      transcriptBootstrap: { durable: bootstrap },
       decodeTranscriptPage: async (candidate) => decoded.get(candidate)!,
       loadTranscriptPage: async (request) => {
         const candidate = page();
@@ -115,7 +114,7 @@ function record(identity: number) {
   return { identity, message };
 }
 function page(): SessionTranscriptPage {
-  return { kind: 'page', sessionId: 'session-1', source: 'durable', direction: 'older', throughSequence: THROUGH,
+  return { kind: 'page', sessionId: 'session-1', direction: 'older', throughSequence: THROUGH,
     rawBytes: 1, fragments: [], rangeBoundarySequence: null, protectedTurnSequence: null, nextCursor: null };
 }
 function continuitySnapshot() {

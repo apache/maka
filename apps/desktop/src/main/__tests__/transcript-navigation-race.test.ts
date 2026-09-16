@@ -44,10 +44,8 @@ for (const kind of ['before', 'around'] as const) {
       snapshot: continuitySnapshot(), transcript: Promise.resolve([]),
       events: { async *[Symbol.asyncIterator]() {} },
       transcriptBootstrap: {
-        throughSequence: 1, overlayMessageCount: 0,
-        durable: bootstrap, overlay: { ...bootstrap, source: 'overlay' },
+        durable: bootstrap,
       },
-      loadTranscriptOverlay: async () => [],
       decodeTranscriptPage: async (candidate) => ({
         messages: candidate === bootstrap ? [latest] : [older],
         nextCursor: candidate === bootstrap ? 'older' : null,
@@ -84,10 +82,8 @@ test('a global cache trim empties the tail without publishing or reading history
     snapshot: continuitySnapshot(), transcript: Promise.resolve([]),
     events: { async *[Symbol.asyncIterator]() {} },
     transcriptBootstrap: {
-      throughSequence: 1, overlayMessageCount: 0,
-      durable: bootstrap, overlay: { ...bootstrap, source: 'overlay' },
+      durable: bootstrap,
     },
-    loadTranscriptOverlay: async () => [],
     decodeTranscriptPage: async (candidate) => ({ messages: [decoded.get(candidate)!], nextCursor: null }),
     loadTranscriptPage: async (request) => {
       assert.ok(request.throughSequence !== null);
@@ -123,10 +119,8 @@ test('a tail the global cache trim emptied is read back before it answers follow
     snapshot: continuitySnapshot(), transcript: Promise.resolve([]),
     events: { async *[Symbol.asyncIterator]() {} },
     transcriptBootstrap: {
-      throughSequence: 1, overlayMessageCount: 0,
-      durable: bootstrap, overlay: { ...bootstrap, source: 'overlay' },
+      durable: bootstrap,
     },
-    loadTranscriptOverlay: async () => [],
     decodeTranscriptPage: async (candidate) => ({
       messages: [record(1)], nextCursor: candidate === bootstrap ? 'older' : null,
     }),
@@ -171,10 +165,8 @@ test('return to latest answers with a tail after reclaim emptied the cache', asy
       snapshot: continuitySnapshot(), transcript: Promise.resolve([]),
       events: { async *[Symbol.asyncIterator]() { await eventsClosed.promise; } },
       transcriptBootstrap: {
-        throughSequence: 1, overlayMessageCount: 0,
-        durable: bootstrap, overlay: { ...bootstrap, source: 'overlay' },
+        durable: bootstrap,
       },
-      loadTranscriptOverlay: async () => [],
       // What global reclaim leaves behind: the watermark stands, the rows are gone.
       decodeTranscriptPage: async (candidate) => candidate === bootstrap
         ? { messages: [], nextCursor: 'older' }
@@ -215,7 +207,7 @@ test('a superseded fragmented reset cannot clear or complete the next navigation
   const stale = [...encodeDesktopTranscriptSnapshot({
     ...identity, durableThrough: 1,
     durable: [{ sequence: 0, message: { ...record(0).message, text: 'A'.repeat(300 * 1024) } as StoredMessage }],
-    overlay: [], hasOlder: false, hasNewer: true,
+    hasOlder: false, hasNewer: true,
   }, 1)];
   assert.equal(store.accept(stale[0]!), false);
   store.navigate();
@@ -239,7 +231,7 @@ test('a replica replacement is admitted whole, however far the window has naviga
       { sequence: 0, message: { ...record(0).message, text: 'A'.repeat(300 * 1024) } as StoredMessage },
       { sequence: 1, message: record(1).message },
     ],
-    overlay: [], hasOlder: false, hasNewer: false,
+    hasOlder: false, hasNewer: false,
   })];
   assert.ok(replacement.length > 1, 'the replacement has to span more than its reset batch');
   for (const batch of replacement) store.accept(batch);
@@ -333,7 +325,7 @@ test('a navigation outlives the band trimming the window it was issued under', (
       { sequence: 0, message: { ...record(0).message, text: 'A'.repeat(300 * 1024) } as StoredMessage },
       { sequence: 1, message: record(1).message },
     ],
-    overlay: [], hasOlder: false, hasNewer: false,
+    hasOlder: false, hasNewer: false,
   }, navigating)];
   assert.ok(replacement.length > 1, 'the replacement has to span more than its reset batch');
   for (const batch of replacement) store.accept(batch);
@@ -433,10 +425,8 @@ test('superseded batches remain ACKable and cannot reset the latest window while
       snapshot: continuitySnapshot(), transcript: Promise.resolve([]),
       events: { async *[Symbol.asyncIterator]() { await eventsClosed.promise; } },
       transcriptBootstrap: {
-        throughSequence: 1, overlayMessageCount: 0,
-        durable: bootstrap, overlay: { ...bootstrap, source: 'overlay' },
+        durable: bootstrap,
       },
-      loadTranscriptOverlay: async () => [],
       decodeTranscriptPage: async (candidate) => ({
         messages: candidate === historyPage ? [largeOld] : [latest],
         nextCursor: candidate === historyPage ? 'newer' : 'older',
@@ -493,10 +483,8 @@ test('a fill in flight does not discard the replacement it was issued under', as
       snapshot: continuitySnapshot(), transcript: Promise.resolve([]),
       events: { async *[Symbol.asyncIterator]() { await eventsClosed.promise; } },
       transcriptBootstrap: {
-        throughSequence: 1, overlayMessageCount: 0,
-        durable: bootstrap, overlay: { ...bootstrap, source: 'overlay' },
+        durable: bootstrap,
       },
-      loadTranscriptOverlay: async () => [],
       decodeTranscriptPage: async (candidate) => ({
         messages: [candidate === bootstrap ? record(1) : record(0)], nextCursor: null,
       }),
@@ -540,7 +528,7 @@ function acceptSnapshot(store: DesktopTranscriptRangeStore, navigation: number |
   for (const batch of encodeDesktopTranscriptSnapshot({
     ...identity, generation, durableThrough: 1,
     durable: records.map(({ identity: sequence, message }) => ({ sequence, message })),
-    overlay: [], hasOlder: true, hasNewer: false,
+    hasOlder: true, hasNewer: false,
   }, navigation)) store.accept(batch);
 }
 function record(identity: number) {
@@ -548,7 +536,7 @@ function record(identity: number) {
   return { identity, message };
 }
 function page(throughSequence: number): SessionTranscriptPage {
-  return { kind: 'page', sessionId: 'session-1', source: 'durable', direction: 'older', throughSequence,
+  return { kind: 'page', sessionId: 'session-1', direction: 'older', throughSequence,
     rawBytes: 1, fragments: [], rangeBoundarySequence: null, protectedTurnSequence: null, nextCursor: null };
 }
 function continuitySnapshot() {

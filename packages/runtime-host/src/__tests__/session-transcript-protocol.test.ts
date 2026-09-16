@@ -32,7 +32,6 @@ import {
 
 const input = {
   subscriptionId: 'subscription-1',
-  source: 'durable' as const,
   direction: 'older' as const,
   throughSequence: 3,
   cursor: null,
@@ -44,13 +43,11 @@ const payloadDigest = `sha256:${'a'.repeat(64)}` as const;
 const page = {
   kind: 'page' as const,
   sessionId: 'session-1',
-  source: 'durable' as const,
   direction: 'older' as const,
   throughSequence: 3,
   rawBytes: 4,
   fragments: [
     {
-      kind: 'durable' as const,
       sequence: 2,
       byteOffset: 0,
       totalBytes: 4,
@@ -70,37 +67,8 @@ test('Session transcript protocol accepts bounded correlated pages and bootstrap
     HOST_OPERATION_SPECS['session.transcript.page'].assertOutputForInput?.(input, page),
   );
 
-  const bootstrap = {
-    throughSequence: 3,
-    overlayMessageCount: 0,
-    durable: { ...page, direction: 'older' as const },
-    overlay: {
-      kind: 'page' as const,
-      sessionId: 'session-1',
-      source: 'overlay' as const,
-      direction: 'older' as const,
-      throughSequence: 3,
-      rawBytes: 0,
-      fragments: [],
-      rangeBoundarySequence: null,
-      protectedTurnSequence: null,
-      nextCursor: null,
-    },
-  };
+  const bootstrap = { durable: page };
   assert.deepEqual(decodeSessionTranscriptBootstrap(bootstrap), bootstrap);
-  assert.throws(
-    () => decodeSessionTranscriptBootstrap({ ...bootstrap, overlayMessageCount: 4_097 }),
-    isProtocolError,
-  );
-  const release = { subscriptionId: 'subscription-1' };
-  assert.deepEqual(
-    HOST_OPERATION_SPECS['session.transcript.overlay.release'].decodeInput(release),
-    release,
-  );
-  assert.deepEqual(
-    HOST_OPERATION_SPECS['session.transcript.overlay.release'].decodeOutput(release),
-    release,
-  );
 });
 
 test('a maximum single-fragment continuation remains transport safe', () => {
@@ -111,7 +79,6 @@ test('a maximum single-fragment continuation remains transport safe', () => {
     rawBytes: data.byteLength,
     fragments: [
       {
-        kind: 'durable' as const,
         sequence: 2,
         byteOffset: 1,
         totalBytes: data.byteLength + 1,
@@ -140,7 +107,6 @@ test('a maximum multi-message page remains transport safe', () => {
     throughSequence: Number.MAX_SAFE_INTEGER,
     rawBytes: SESSION_TRANSCRIPT_PAGE_MAX_BYTES,
     fragments: Array.from({ length: 256 }, (_, sequence) => ({
-      kind: 'durable' as const,
       sequence,
       byteOffset: 0,
       totalBytes: fragmentBytes,
@@ -177,19 +143,6 @@ test('Session transcript protocol rejects malformed and uncorrelated values', ()
     () =>
       decodeSessionTranscriptPage({
         ...page,
-        source: 'overlay',
-        rawBytes: 0,
-        fragments: [],
-        rangeBoundarySequence: null,
-        protectedTurnSequence: 2,
-        nextCursor: null,
-      }),
-    isProtocolError,
-  );
-  assert.throws(
-    () =>
-      decodeSessionTranscriptPage({
-        ...page,
         fragments: [{ ...page.fragments[0], data: 'not base64' }],
       }),
     isProtocolError,
@@ -203,13 +156,7 @@ test('Session transcript protocol rejects malformed and uncorrelated values', ()
     isProtocolError,
   );
   assert.throws(
-    () =>
-      decodeSessionTranscriptBootstrap({
-        throughSequence: 3,
-        overlayMessageCount: 0,
-        durable: page,
-        overlay: { ...page, source: 'overlay', throughSequence: 2 },
-      }),
+    () => decodeSessionTranscriptBootstrap({ durable: { ...page, direction: 'newer' as const } }),
     isProtocolError,
   );
 });

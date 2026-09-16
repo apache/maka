@@ -396,7 +396,7 @@ export class RuntimeHostSessionObserver {
       );
       return snapshot && {
         batches: encodeDesktopTranscriptSnapshot(snapshot, request.navigation),
-        bytes: [...snapshot.durable, ...snapshot.overlay.map((message) => ({ message }))],
+        bytes: snapshot.durable,
       };
     });
   }

@@ -28,13 +28,10 @@ import {
   type SessionTranscriptPage,
   type SessionTranscriptPageDirection,
   type SessionTranscriptPageInput,
-  type SessionTranscriptPageSource,
-  type TurnSnapshot,
 } from '../protocol/index.js';
 import {
-  ACTIVE_TRANSCRIPT_OVERLAY_MAX_BYTES,
-  ACTIVE_TRANSCRIPT_OVERLAY_MAX_MESSAGES,
   type SessionTranscriptReader,
+  TRANSCRIPT_TURN_MAX_BYTES,
 } from './session-transcript-reader.js';
 import { projectSharedSessionTranscriptMessage } from './shared-session-transcript.js';
 
@@ -44,7 +41,6 @@ interface TranscriptCursorState {
   readonly version: 1;
   readonly subscriptionId: string;
   readonly sessionId: string;
-  readonly source: SessionTranscriptPageSource;
   readonly direction: SessionTranscriptPageDirection;
   readonly throughSequence: number | null;
   readonly position: number;
@@ -55,18 +51,9 @@ interface TranscriptCursorState {
 export interface SubscriberTranscriptState {
   readonly sessionId: string;
   readonly subscriptionId: string;
-  readonly openedThroughSequence: number | null;
-  overlayMessages: readonly Buffer[] | undefined;
   readonly cursorSecret: Buffer;
   durableThroughSequence: number | null;
   readonly projection: SessionTranscriptProjection;
-}
-
-export interface ActiveTranscriptAssistantStream {
-  readonly turnId: string;
-  readonly messageId: string;
-  readonly kind: 'text' | 'thinking';
-  readonly text: string;
 }
 
 interface SelectedFragments {
@@ -80,38 +67,18 @@ export async function createSessionTranscriptBootstrap(input: {
   sessionId: string;
   subscriptionId: string;
   throughSequence: number | null;
-  rootTurn: TurnSnapshot | null;
-  activeAssistantStreams: Iterable<ActiveTranscriptAssistantStream>;
   maxBytes: number;
   maxEncodedBytes?: number;
-  preparedOverlayMessages?: readonly Buffer[];
   projection: SessionTranscriptProjection;
 }): Promise<{ bootstrap: SessionTranscriptBootstrap; state: SubscriberTranscriptState }> {
   const projection = input.projection;
-  const preparedOverlayMessages =
-    input.preparedOverlayMessages ?? (await prepareSessionTranscriptOverlay(input));
-  const overlayMessages =
-    projection === 'shared'
-      ? preparedOverlayMessages.flatMap((message) =>
-          projectEncodedSharedMessage(message, input.sessionId),
-        )
-      : preparedOverlayMessages;
   const cursorSecret = randomBytes(32);
   let rawBudget = input.maxBytes;
   for (;;) {
-    const overlayBudget = Math.min(8 * 1024, Math.max(1, Math.floor(rawBudget / 2)));
-    const selectedOverlay = selectOverlay(
-      overlayMessages,
-      'older',
-      overlayMessages.length - 1,
-      null,
-      overlayBudget,
-    );
-    const durableBudget = rawBudget - selectedOverlay.rawBytes;
     const durableRequest = {
       direction: 'older',
       throughSequence: input.throughSequence,
-      maxBytes: durableBudget,
+      maxBytes: rawBudget,
       maxMessages: SESSION_TRANSCRIPT_RANGE_MAX_MESSAGES,
     } as const;
     const durableStorage =
@@ -124,9 +91,7 @@ export async function createSessionTranscriptBootstrap(input: {
     const state: SubscriberTranscriptState = {
       sessionId: input.sessionId,
       subscriptionId: input.subscriptionId,
-      openedThroughSequence: input.throughSequence,
       durableThroughSequence: input.throughSequence,
-      overlayMessages,
       cursorSecret,
       projection,
     };
@@ -139,18 +104,14 @@ export async function createSessionTranscriptBootstrap(input: {
       selected: durableSelection,
     });
     const bootstrap: SessionTranscriptBootstrap = {
-      throughSequence: input.throughSequence,
-      overlayMessageCount: overlayMessages.length,
       durable: pageFromSelection(
         state,
-        'durable',
         'older',
         rangeEdges.selected,
         input.throughSequence,
         rangeEdges.rangeBoundarySequence,
         rangeEdges.protectedTurnSequence,
       ),
-      overlay: pageFromSelection(state, 'overlay', 'older', selectedOverlay),
     };
     const encodedBytes = Buffer.byteLength(JSON.stringify(bootstrap), 'utf8');
     if (input.maxEncodedBytes === undefined || encodedBytes <= input.maxEncodedBytes) {
@@ -162,31 +123,6 @@ export async function createSessionTranscriptBootstrap(input: {
     const excess = encodedBytes - input.maxEncodedBytes;
     rawBudget = Math.max(2, rawBudget - Math.max(1, Math.ceil((excess * 3) / 4)));
   }
-}
-
-export async function prepareSessionTranscriptOverlay(input: {
-  reader: SessionTranscriptReader;
-  sessionId: string;
-  throughSequence: number | null;
-  rootTurn: TurnSnapshot | null;
-  activeAssistantStreams: Iterable<ActiveTranscriptAssistantStream>;
-}): Promise<readonly Buffer[]> {
-  const activeAssistantStreams = [...input.activeAssistantStreams];
-  const activeMessageIds = [...new Set(activeAssistantStreams.map((stream) => stream.messageId))];
-  const activeOverlay = await input.reader.readActiveOverlay(input.sessionId, input.rootTurn);
-  const durableActiveMessages = await input.reader.readDurableMessagesById(input.sessionId, {
-    messageIds: activeMessageIds,
-    throughSequence: input.throughSequence,
-    maxBytes: ACTIVE_TRANSCRIPT_OVERLAY_MAX_BYTES,
-    maxMessages: ACTIVE_TRANSCRIPT_OVERLAY_MAX_MESSAGES,
-  });
-  const overlayMessages = mergeActiveAssistantStreams(
-    activeOverlay,
-    activeAssistantStreams,
-    durableActiveMessages,
-  ).map((message) => Buffer.from(JSON.stringify(message), 'utf8'));
-  assertOverlayRetainedBound(overlayMessages);
-  return overlayMessages;
 }
 
 export async function readSessionTranscriptPage(input: {
@@ -202,33 +138,8 @@ export async function readSessionTranscriptPage(input: {
   ) {
     throw new TranscriptPageRequestError('Transcript watermark is not known to this subscription');
   }
-  if (request.source === 'overlay' && request.throughSequence !== state.openedThroughSequence) {
-    throw new TranscriptPageRequestError('Transcript overlay watermark changed');
-  }
-  if (request.source === 'overlay' && state.overlayMessages === undefined) {
-    throw new TranscriptPageRequestError('Transcript overlay has been released');
-  }
   const position = resolvePosition(state, request);
   if (position === null) return emptyPage(state, request);
-  if (request.source === 'overlay') {
-    const overlayMessages = state.overlayMessages!;
-    const selected = selectOverlay(
-      overlayMessages,
-      request.direction,
-      position.position,
-      position.byteOffset,
-      request.maxBytes,
-      continuationMessageLimit(position),
-    );
-    return pageFromSelection(
-      state,
-      'overlay',
-      request.direction,
-      selected,
-      request.throughSequence,
-    );
-  }
-  if (request.throughSequence === null) return emptyPage(state, request);
   const durableRequest = {
     direction: request.direction,
     throughSequence: request.throughSequence,
@@ -260,7 +171,6 @@ export async function readSessionTranscriptPage(input: {
   });
   return pageFromSelection(
     state,
-    'durable',
     request.direction,
     rangeEdges.selected,
     request.throughSequence,
@@ -287,9 +197,7 @@ async function readRangeEdges(input: {
       protectedTurnSequence: null,
     };
   }
-  const selectedSequences = input.selected.fragments.flatMap((fragment) =>
-    fragment.kind === 'durable' ? [fragment.sequence] : [],
-  );
+  const selectedSequences = input.selected.fragments.map((fragment) => fragment.sequence);
   if (selectedSequences.length === 0) {
     return {
       selected: input.selected,
@@ -430,8 +338,8 @@ async function readRangeEdges(input: {
       ? input.selected
       : (() => {
           const retainedSequences = new Set(retainedRecords.map((record) => record.sequence));
-          const fragments = input.selected.fragments.filter(
-            (fragment) => fragment.kind === 'durable' && retainedSequences.has(fragment.sequence),
+          const fragments = input.selected.fragments.filter((fragment) =>
+            retainedSequences.has(fragment.sequence),
           );
           return {
             fragments,
@@ -481,7 +389,7 @@ async function readSharedDurablePage(
         ? {}
         : { throughSequence: request.throughSequence }),
       position: scanPosition,
-      maxStoredBytes: ACTIVE_TRANSCRIPT_OVERLAY_MAX_BYTES,
+      maxStoredBytes: TRANSCRIPT_TURN_MAX_BYTES,
       maxMessages: SESSION_TRANSCRIPT_PAGE_MAX_MESSAGES,
     });
     throughSequence = scanned.throughSequence;
@@ -549,14 +457,6 @@ async function readSharedDurablePage(
   };
 }
 
-function projectEncodedSharedMessage(bytes: Buffer, sessionId: string): Buffer[] {
-  const projected = projectSharedSessionTranscriptMessage(
-    JSON.parse(bytes.toString('utf8')),
-    sessionId,
-  );
-  return projected ? [Buffer.from(JSON.stringify(projected), 'utf8')] : [];
-}
-
 export function updateSubscriberTranscriptHighWater(
   state: SubscriberTranscriptState,
   throughSequence: number | null,
@@ -586,7 +486,6 @@ function resolvePosition(
     if (
       cursor.subscriptionId !== state.subscriptionId ||
       cursor.sessionId !== state.sessionId ||
-      cursor.source !== request.source ||
       cursor.direction !== request.direction ||
       cursor.throughSequence !== request.throughSequence
     ) {
@@ -597,16 +496,6 @@ function resolvePosition(
       byteOffset: cursor.byteOffset,
       rangeBoundarySequence: cursor.rangeBoundarySequence,
     };
-  }
-  if (request.source === 'overlay') {
-    const overlayMessages = state.overlayMessages;
-    if (overlayMessages === undefined) return null;
-    const anchor = request.anchorSequence;
-    const position =
-      request.direction === 'older' ? (anchor ?? overlayMessages.length) - 1 : (anchor ?? -1) + 1;
-    return position < 0 || position >= overlayMessages.length
-      ? null
-      : { position, byteOffset: null, rangeBoundarySequence: null };
   }
   if (request.throughSequence === null) return null;
   const position =
@@ -635,7 +524,6 @@ function storageSelection(
 ): SelectedFragments {
   return {
     fragments: storage.fragments.map((fragment) => ({
-      kind: 'durable' as const,
       sequence: fragment.sequence,
       byteOffset: fragment.byteOffset,
       totalBytes: fragment.totalBytes,
@@ -655,18 +543,13 @@ function selectionThroughRangeBoundary(
   if (rangeBoundarySequence === null) return selected;
   // RuntimeEvent-backed message sequences are sparse, so a continuation's
   // message limit cannot infer how many records remain from sequence distance.
-  const firstOmittedIndex = selected.fragments.findIndex(
-    (fragment) =>
-      fragment.kind === 'durable' &&
-      (direction === 'older'
-        ? fragment.sequence < rangeBoundarySequence
-        : fragment.sequence > rangeBoundarySequence),
+  const firstOmittedIndex = selected.fragments.findIndex((fragment) =>
+    direction === 'older'
+      ? fragment.sequence < rangeBoundarySequence
+      : fragment.sequence > rangeBoundarySequence,
   );
   if (firstOmittedIndex === -1) return selected;
   const firstOmitted = selected.fragments[firstOmittedIndex]!;
-  if (firstOmitted.kind !== 'durable') {
-    throw new Error('Session transcript durable range contained an overlay fragment');
-  }
   const fragments = selected.fragments.slice(0, firstOmittedIndex);
   return {
     fragments,
@@ -675,52 +558,6 @@ function selectionThroughRangeBoundary(
       0,
     ),
     next: { position: firstOmitted.sequence, byteOffset: null },
-  };
-}
-
-function selectOverlay(
-  messages: readonly Buffer[],
-  direction: SessionTranscriptPageDirection,
-  position: number,
-  byteOffset: number | null,
-  maxBytes: number,
-  maxMessages = SESSION_TRANSCRIPT_PAGE_MAX_MESSAGES,
-): SelectedFragments {
-  const fragments: SessionTranscriptFragment[] = [];
-  let rawBytes = 0;
-  let index = position;
-  let offset = byteOffset;
-  while (
-    index >= 0 &&
-    index < messages.length &&
-    rawBytes < maxBytes &&
-    fragments.length < maxMessages
-  ) {
-    const message = messages[index]!;
-    const selected = selectBuffer(message, direction, offset, maxBytes - rawBytes);
-    if (!selected) break;
-    fragments.push({
-      kind: 'overlay',
-      messageIndex: index,
-      byteOffset: selected.byteOffset,
-      totalBytes: message.byteLength,
-      data: selected.data.toString('base64'),
-    });
-    rawBytes += selected.data.byteLength;
-    if (!selected.complete) {
-      return {
-        fragments,
-        rawBytes,
-        next: { position: index, byteOffset: selected.nextOffset },
-      };
-    }
-    index += direction === 'older' ? -1 : 1;
-    offset = null;
-  }
-  return {
-    fragments,
-    rawBytes,
-    next: index >= 0 && index < messages.length ? { position: index, byteOffset: null } : null,
   };
 }
 
@@ -763,12 +600,11 @@ function selectBuffer(
 
 function pageFromSelection(
   state: SubscriberTranscriptState,
-  source: SessionTranscriptPageSource,
   direction: SessionTranscriptPageDirection,
   selected: SelectedFragments,
-  throughSequence: number | null = state.openedThroughSequence,
-  rangeBoundarySequence: number | null = null,
-  protectedTurnSequence: number | null = null,
+  throughSequence: number | null,
+  rangeBoundarySequence: number | null,
+  protectedTurnSequence: number | null,
 ): SessionTranscriptPage {
   const cursorRangeBoundarySequence =
     selected.next !== null &&
@@ -781,7 +617,6 @@ function pageFromSelection(
   return {
     kind: 'page',
     sessionId: state.sessionId,
-    source,
     direction,
     throughSequence,
     rawBytes: selected.rawBytes,
@@ -794,7 +629,6 @@ function pageFromSelection(
             version: 1,
             subscriptionId: state.subscriptionId,
             sessionId: state.sessionId,
-            source,
             direction,
             throughSequence,
             rangeBoundarySequence: cursorRangeBoundarySequence,
@@ -813,7 +647,6 @@ function emptyPage(
   return {
     kind: 'page',
     sessionId: state.sessionId,
-    source: request.source,
     direction: request.direction,
     throughSequence: request.throughSequence,
     rawBytes: 0,
@@ -858,7 +691,6 @@ function decodeCursor(value: string, secret: Buffer): TranscriptCursorState {
     'version',
     'subscriptionId',
     'sessionId',
-    'source',
     'direction',
     'throughSequence',
     'position',
@@ -875,7 +707,6 @@ function decodeCursor(value: string, secret: Buffer): TranscriptCursorState {
     cursor.version !== 1 ||
     typeof cursor.subscriptionId !== 'string' ||
     typeof cursor.sessionId !== 'string' ||
-    (cursor.source !== 'durable' && cursor.source !== 'overlay') ||
     (cursor.direction !== 'older' && cursor.direction !== 'newer') ||
     (cursor.throughSequence !== null && !isCount(cursor.throughSequence)) ||
     !isCount(cursor.position) ||
@@ -889,91 +720,6 @@ function decodeCursor(value: string, secret: Buffer): TranscriptCursorState {
 
 function signCursor(payload: string, secret: Buffer): Buffer {
   return createHmac('sha256', secret).update(payload, 'utf8').digest();
-}
-
-function mergeActiveAssistantStreams(
-  overlay: readonly StoredMessage[],
-  prefixes: Iterable<ActiveTranscriptAssistantStream>,
-  durable: readonly StoredMessage[],
-): StoredMessage[] {
-  const merged = [...overlay];
-  const indices = new Map(merged.map((message, index) => [message.id, index]));
-  const durableById = new Map<string, StoredMessage>();
-  for (const message of durable) durableById.set(message.id, message);
-  for (const prefix of prefixes) {
-    let index = indices.get(prefix.messageId);
-    const durableMessage = durableById.get(prefix.messageId);
-    if (index === undefined) {
-      if (!durableMessage) {
-        throw new Error('Active assistant prefix has no matching transcript message');
-      }
-      index = merged.length;
-      indices.set(prefix.messageId, index);
-      merged.push(durableMessage);
-    } else if (durableMessage) {
-      const projected = merged[index];
-      if (projected?.type !== 'assistant' || durableMessage.type !== 'assistant') {
-        throw new Error('Active assistant prefix has no matching transcript message');
-      }
-      merged[index] = reconcileAssistantMessage(durableMessage, projected);
-    }
-    const message = merged[index];
-    if (message?.type !== 'assistant' || message.turnId !== prefix.turnId) {
-      throw new Error('Active assistant prefix has no matching transcript message');
-    }
-    if (prefix.kind === 'text') {
-      merged[index] = { ...message, text: reconcileAssistantText(message.text, prefix.text) };
-      continue;
-    }
-    if (!message.thinking) {
-      throw new Error('Active thinking prefix has no matching transcript content');
-    }
-    merged[index] = {
-      ...message,
-      thinking: {
-        ...message.thinking,
-        text: reconcileAssistantText(message.thinking.text, prefix.text),
-      },
-    };
-  }
-  return merged;
-}
-
-function assertOverlayRetainedBound(messages: readonly Buffer[]): void {
-  if (messages.length > ACTIVE_TRANSCRIPT_OVERLAY_MAX_MESSAGES) {
-    throw new Error('Active Session transcript overlay exceeds its message limit');
-  }
-  let retainedBytes = 0;
-  for (const message of messages) {
-    retainedBytes += message.byteLength;
-    if (retainedBytes > ACTIVE_TRANSCRIPT_OVERLAY_MAX_BYTES) {
-      throw new Error('Active Session transcript overlay exceeds its byte limit');
-    }
-  }
-}
-
-function reconcileAssistantMessage(
-  durable: Extract<StoredMessage, { type: 'assistant' }>,
-  projected: Extract<StoredMessage, { type: 'assistant' }>,
-): Extract<StoredMessage, { type: 'assistant' }> {
-  const thinking =
-    durable.thinking && projected.thinking
-      ? {
-          ...projected.thinking,
-          text: reconcileAssistantText(durable.thinking.text, projected.thinking.text),
-        }
-      : (projected.thinking ?? durable.thinking);
-  return {
-    ...projected,
-    text: reconcileAssistantText(durable.text, projected.text),
-    ...(thinking ? { thinking } : {}),
-  };
-}
-
-function reconcileAssistantText(projected: string, active: string): string {
-  if (active.startsWith(projected)) return active;
-  if (projected.startsWith(active)) return projected;
-  return projected;
 }
 
 function isCount(value: unknown): value is number {

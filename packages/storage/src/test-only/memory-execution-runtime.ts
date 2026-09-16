@@ -440,17 +440,23 @@ function transcript(
     sessionId,
     entries.map((e) => e.event),
   )
-    .filter((i) => isSessionInlineInvocation(i.opening) && i.terminalEvent)
+    .filter((i) => isSessionInlineInvocation(i.opening))
     .map((invocation) => {
-      const own = entries.filter((e) => e.event.invocationId === invocation.invocationId);
+      const events = entries.filter(
+        (e) => e.event.invocationId === invocation.invocationId && e.ordinal <= throughOrdinal,
+      );
+      const ending = events.find((e) => e.event.id === invocation.terminalEvent?.id);
       return {
         invocation,
-        firstOrdinal: own.find((e) => e.event.content?.kind === 'invocation_opened')!.ordinal,
-        lastOrdinal: own.find((e) => e.event.id === invocation.terminalEvent!.id)!.ordinal,
-        events: own.filter((e) => e.ordinal <= throughOrdinal),
+        firstOrdinal: events.find((e) => e.event.content?.kind === 'invocation_opened')?.ordinal,
+        lastOrdinal: ending?.ordinal ?? events.at(-1)?.ordinal,
+        events,
       };
     })
-    .filter((i) => i.lastOrdinal <= throughOrdinal)
+    .filter(
+      (i): i is typeof i & { firstOrdinal: number; lastOrdinal: number } =>
+        i.firstOrdinal !== undefined,
+    )
     .sort((x, y) => x.firstOrdinal - y.firstOrdinal);
 }
 function limit(value: number) {
@@ -867,9 +873,15 @@ export function createMemoryRuntimeStore(a: MemoryExecutionAuthority): Execution
       ),
     readTranscriptHighWater: async (sessionId) =>
       a.read((s) => {
-        const all = transcript(s, sessionId);
-        return all.length ? Math.max(...all.map((i) => i.lastOrdinal)) : null;
+        check(sessionId);
+        return ordinals(s).get(sessionId)?.at(-1)?.ordinal ?? null;
       }),
+    subscribeRuntimeEventCommits: (listener) => {
+      a.runtimeEventListeners.add(listener);
+      return () => {
+        a.runtimeEventListeners.delete(listener);
+      };
+    },
     readTranscriptInvocations: async (sessionId, request, project) => {
       const { maxEvents, maxBytes, maxRecordBytes } = request;
       // Detach the selected storage facts before handing them to the caller.
@@ -901,8 +913,10 @@ export function createMemoryRuntimeStore(a: MemoryExecutionAuthority): Execution
                 .filter((i) => i.firstOrdinal <= position)
                 .sort((x, y) => y.firstOrdinal - x.firstOrdinal)
             : all
-                .filter((i) => i.lastOrdinal >= position)
-                .sort((x, y) => x.lastOrdinal - y.lastOrdinal)
+                .map((i) => ({ i, seen: i.events.find((e) => e.ordinal >= position)?.ordinal }))
+                .filter((x): x is { i: typeof x.i; seen: number } => x.seen !== undefined)
+                .sort((x, y) => x.seen - y.seen)
+                .map((x) => x.i)
         ).slice(0, n);
         return selected.sort((x, y) => x.firstOrdinal - y.firstOrdinal);
       });
@@ -926,8 +940,9 @@ export function createMemoryRuntimeStore(a: MemoryExecutionAuthority): Execution
           throw new RangeError('Invalid landmark bounds');
         if (n < 1) return [];
         const all = transcript(s, sessionId, throughOrdinal);
+        if (all.length === 0) return [];
         const positions = new Set(
-          Array.from({ length: Math.min(n, all.length) }, (_, i) =>
+          Array.from({ length: n }, (_, i) =>
             n === 1 ? all.length - 1 : Math.floor((i * (all.length - 1)) / (n - 1)),
           ),
         );

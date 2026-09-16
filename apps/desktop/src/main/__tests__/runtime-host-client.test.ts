@@ -151,12 +151,7 @@ function subscription(
     hostEpoch: 'host-1',
     subscriptionId: `subscription-${sessionId}`,
     activeAssistantStreams: [],
-    transcriptBootstrap: {
-      throughSequence: null,
-      overlayMessageCount: 0,
-      durable: emptyTranscriptPage(sessionId, 'durable'),
-      overlay: emptyTranscriptPage(sessionId, 'overlay'),
-    },
+    transcriptBootstrap: { durable: emptyTranscriptPage(sessionId) },
     snapshot: {
       schemaVersion: SESSION_CONTINUITY_SCHEMA_VERSION,
       session: {
@@ -176,7 +171,6 @@ function subscription(
       lifecycle.push(`${sessionId}:transcript`);
       return [] as T[];
     },
-    loadTranscriptOverlay: async <T>(_decodeMessage: (value: unknown) => T) => [] as T[],
     decodeTranscriptPage: async () => {
       throw new Error('Fake subscription does not expose transcript pages');
     },
@@ -190,11 +184,10 @@ function subscription(
   };
 }
 
-function emptyTranscriptPage(sessionId: string, source: 'durable' | 'overlay') {
+function emptyTranscriptPage(sessionId: string) {
   return {
     kind: 'page' as const,
     sessionId,
-    source,
     direction: 'older' as const,
     throughSequence: null,
     rawBytes: 0,

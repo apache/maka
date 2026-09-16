@@ -727,7 +727,6 @@ test('fences transcript range failures across same-source replica recovery', asy
         const bootstrap: SessionTranscriptPage = {
           kind: 'page',
           sessionId: 'session-1',
-          source: 'durable',
           direction: 'older',
           throughSequence: 1,
           rawBytes: 1,
@@ -740,12 +739,7 @@ test('fences transcript range failures across same-source replica recovery', asy
           snapshot: continuitySnapshot(),
           transcript: Promise.resolve([]),
           events,
-          transcriptBootstrap: {
-            throughSequence: 1,
-            overlayMessageCount: 0,
-            durable: bootstrap,
-            overlay: { ...bootstrap, source: 'overlay', nextCursor: null },
-          },
+          transcriptBootstrap: { durable: bootstrap },
           decodeTranscriptPage: async (page) => ({
             messages: page === bootstrap ? [{ identity: 1, message }] : [],
             nextCursor: page === bootstrap ? 'older' : null,
@@ -873,7 +867,6 @@ test('broadcasts durable admission and transcript changes from the same message'
           loadTranscriptPage: async () => ({
             kind: 'page',
             sessionId: 'session-1',
-            source: 'durable',
             direction: 'newer',
             throughSequence: 0,
             rawBytes: 1,
@@ -1036,7 +1029,6 @@ test('moves the read marker only as far as the Renderer window reports reaching'
           loadTranscriptPage: async (input) => ({
             kind: 'page',
             sessionId: 'session-1',
-            source: 'durable',
             direction: 'newer',
             throughSequence: input.throughSequence ?? null,
             rawBytes: 1,
@@ -1132,6 +1124,19 @@ test('keeps a bounded transcript batch window in flight until the renderer ackno
           snapshot: continuitySnapshot(),
           transcript: Promise.resolve([message]),
           events,
+          transcriptBootstrap: {
+            durable: {
+              kind: 'page',
+              sessionId: 'session-1',
+              direction: 'older',
+              throughSequence: 0,
+              rawBytes: 1,
+              fragments: [],
+              rangeBoundarySequence: 0,
+              protectedTurnSequence: 0,
+              nextCursor: null,
+            },
+          },
           async close() {
             events.end();
           },
@@ -1212,12 +1217,9 @@ test('finishes transcript open and replays a stale range request after replaceme
           transcript: Promise.resolve([message]),
           events,
           transcriptBootstrap: {
-            throughSequence: 0,
-            overlayMessageCount: 0,
             durable: {
               kind: 'page',
               sessionId: 'session-1',
-              source: 'durable',
               direction: 'older',
               throughSequence: 0,
               rawBytes: 1,
@@ -1226,20 +1228,7 @@ test('finishes transcript open and replays a stale range request after replaceme
               protectedTurnSequence: null,
               nextCursor: 'older',
             },
-            overlay: {
-              kind: 'page',
-              sessionId: 'session-1',
-              source: 'overlay',
-              direction: 'older',
-              throughSequence: null,
-              rawBytes: 0,
-              fragments: [],
-              rangeBoundarySequence: null,
-              protectedTurnSequence: null,
-              nextCursor: null,
-            },
           },
-          loadTranscriptOverlay: async () => [],
           decodeTranscriptPage: async (page) => ({
             messages: page.rawBytes === 1 ? [{ identity: 0, message }] : [],
             nextCursor: page.nextCursor,
@@ -1250,7 +1239,6 @@ test('finishes transcript open and replays a stale range request after replaceme
             return {
               kind: 'page',
               sessionId: 'session-1',
-              source: input.source,
               direction: input.direction,
               throughSequence: input.throughSequence,
               rawBytes: 0,
@@ -1398,7 +1386,6 @@ test('coalesces transcript changes into one bounded delta while renderer deliver
           loadTranscriptPage: async (input) => ({
             kind: 'page',
             sessionId: 'session-1',
-            source: 'durable',
             direction: 'newer',
             throughSequence: input.throughSequence,
             rawBytes: 1,
@@ -1506,7 +1493,6 @@ test('answers a window page read on its own navigation version and drops a stale
   const durablePage = (nextCursor: string | null): SessionTranscriptPage => ({
     kind: 'page',
     sessionId: 'session-1',
-    source: 'durable',
     direction: 'older',
     throughSequence: 2,
     rawBytes: 1,
@@ -1527,13 +1513,7 @@ test('answers a window page read on its own navigation version and drops a stale
           snapshot: continuitySnapshot(),
           transcript: Promise.resolve([]),
           events,
-          transcriptBootstrap: {
-            throughSequence: 2,
-            overlayMessageCount: 0,
-            durable: bootstrap,
-            overlay: { ...bootstrap, source: 'overlay' },
-          },
-          loadTranscriptOverlay: async () => [],
+          transcriptBootstrap: { durable: bootstrap },
           loadTranscriptPage: async (request) => {
             // `loadAround` probes one row older than its anchor to learn
             // whether history precedes it; that probe stays empty here.
@@ -1618,7 +1598,6 @@ test('does not let one backpressured transcript consumer block another', async (
           loadTranscriptPage: async (input) => ({
             kind: 'page',
             sessionId: 'session-1',
-            source: 'durable',
             direction: 'newer',
             throughSequence: input.throughSequence,
             rawBytes: 1,
@@ -1725,7 +1704,6 @@ test('keeps a transcript consumer available after a delivery fails', async () =>
           loadTranscriptPage: async (input) => ({
             kind: 'page',
             sessionId: 'session-1',
-            source: 'durable',
             direction: 'newer',
             throughSequence: input.throughSequence,
             rawBytes: 1,
@@ -2242,7 +2220,6 @@ test("recovers when transcript paging loses the active subscription", async () =
             return {
               kind: "page",
               sessionId: "session-1",
-              source: "durable",
               direction: "newer",
               throughSequence: 0,
               rawBytes: 0,
@@ -2844,7 +2821,6 @@ test('replays durable admission before a terminal successor on subscription reco
             },
           }),
           transcript: Promise.resolve(terminalTranscript),
-          loadTranscriptOverlay: async () => terminalTranscript,
           events: secondEvents,
           async close() {
             secondEvents.end();

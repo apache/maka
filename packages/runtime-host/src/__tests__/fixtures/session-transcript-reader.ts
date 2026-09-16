@@ -24,7 +24,6 @@ import type { SessionTranscriptReader } from '../../server/session-transcript-re
 
 export function transcriptReader(
   durable: readonly StoredMessage[],
-  overlay: readonly StoredMessage[] = [],
   sequenceStride = 1,
 ): SessionTranscriptReader {
   const durableRecords = () =>
@@ -136,14 +135,6 @@ export function transcriptReader(
           records.length < candidates.length ? candidates[records.length]!.sequence : null,
       };
     },
-    readDurableMessagesById: async (_sessionId, request) =>
-      request.throughSequence === null
-        ? []
-        : durableRecords().flatMap(({ sequence, message }) =>
-            sequence <= request.throughSequence! && request.messageIds.includes(message.id)
-              ? [message]
-              : [],
-          ),
     readDurableTurnContributions: async (
       _sessionId,
       throughSequence,
@@ -186,6 +177,5 @@ export function transcriptReader(
       }
       return { throughSequence: watermark, landmarks };
     },
-    readActiveOverlay: async () => overlay,
   };
 }

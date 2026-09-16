@@ -301,17 +301,14 @@ async function settleRestore(): Promise<void> {
   await new Promise<void>((resolve) => setImmediate(resolve));
 }
 
-test('a live second Turn remains reachable after persistence evicts the oversized first Turn', async () => {
+test('a second Turn reached by advancing evicts the oversized first Turn', async () => {
   const fixture = await oversizedHistoryFixture({ live: true });
   try {
     assert.deepEqual(sequences(fixture.replica), [0, 1]);
-    assert.deepEqual(fixture.replica.snapshot().overlay.map(({ id }) => id), ['user-b', 'assistant-b']);
 
     await fixture.replica.advance(3);
 
     assert.deepEqual(sequences(fixture.replica), [2, 3]);
-    assert.deepEqual(fixture.replica.snapshot().overlay, []);
-    assert.equal(fixture.replica.messages().filter(({ id }) => id === 'assistant-b').length, 1);
     const answer = fixture.replica.messages().at(-1);
     assert.equal(answer?.type, 'assistant');
     assert.equal(answer?.type === 'assistant' ? answer.text : undefined, 'Second answer, persisted completely.');
@@ -347,7 +344,6 @@ async function oversizedHistoryFixture(options: { live?: boolean } = {}) {
     const result: SessionTranscriptPage = {
       kind: 'page',
       sessionId: 'session-1',
-      source: 'durable',
       direction: input.direction,
       throughSequence: input.through,
       rawBytes: input.records.reduce((bytes, record) => bytes + Buffer.byteLength(JSON.stringify(record.message)), 0),
@@ -384,13 +380,7 @@ async function oversizedHistoryFixture(options: { live?: boolean } = {}) {
     },
     transcript: Promise.resolve([]),
     events: { async *[Symbol.asyncIterator]() {} },
-    transcriptBootstrap: {
-      throughSequence: through,
-      overlayMessageCount: options.live ? 2 : 0,
-      durable: bootstrapPage,
-      overlay: { ...bootstrapPage, source: 'overlay', nextCursor: null },
-    },
-    loadTranscriptOverlay: async () => options.live ? records.slice(2, 4).map(({ message }) => message) : [],
+    transcriptBootstrap: { durable: bootstrapPage },
     decodeTranscriptPage: async (candidate) => {
       const decoded = decodedPages.get(candidate);
       assert.ok(decoded, 'the replica must decode the page returned by its Host request');
