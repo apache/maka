@@ -33,17 +33,17 @@ after(async () => {
 describe('model discovery', () => {
   test('all token metadata adapters preserve valid limits and omit invalid optional limits', async () => {
     const values = [
-      undefined,
-      null,
-      '128000',
-      0,
-      -1,
-      1.5,
-      Number.MAX_SAFE_INTEGER + 1,
-      1,
-      128000,
-      Number.MAX_SAFE_INTEGER,
-    ];
+      [undefined, undefined],
+      [null, undefined],
+      ['128000', undefined],
+      [0, undefined],
+      [-1, undefined],
+      [1.5, undefined],
+      [Number.MAX_SAFE_INTEGER + 1, undefined],
+      [1, 1],
+      [128000, 128000],
+      [Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER],
+    ] as const;
     const cases = [
       {
         providerType: 'fireworks-ai',
@@ -97,7 +97,7 @@ describe('model discovery', () => {
             Response.json(
               new URL(String(input)).pathname === '/v1/accounts'
                 ? { accounts: [] }
-                : { [fixture.key]: values.map((value, i) => fixture.row(`model-${i}`, value)) },
+                : { [fixture.key]: values.map(([value], i) => fixture.row(`model-${i}`, value)) },
             ),
         },
       );
@@ -108,10 +108,10 @@ describe('model discovery', () => {
           contextWindow,
           maxOutputTokens,
         })),
-        values.map((_, i) => ({
+        values.map(([, expected], i) => ({
           id: `model-${i}`,
-          contextWindow: i < 7 ? undefined : values[i],
-          maxOutputTokens: fixture.output && i >= 7 ? values[i] : undefined,
+          contextWindow: expected,
+          maxOutputTokens: fixture.output ? expected : undefined,
         })),
         fixture.providerType,
       );
@@ -328,39 +328,25 @@ describe('model discovery', () => {
     assert.equal(repeatedRequests, 2);
   });
 
-  test('xAI OAuth classifies discovery authentication failure', async () => {
-    const server = await startJsonServer((_request, response) => {
-      respondJson(response, 401, { error: 'invalid_token' });
-    });
-
-    assert.deepEqual(
-      await runConnectionModelDiscoveryEffect(
-        {
-          providerType: 'xai-oauth',
-          baseUrl: `${server.url}/v1`,
-          defaultModel: 'grok-4.5',
-        },
-        'expired-xai-oauth-token',
-        { fetch: globalThis.fetch },
-      ),
-      { ok: false, error: { kind: 'auth', statusCode: 401 } },
-    );
-  });
-
-  test('provider auth failure exposes only its class and status, without secrets or fallback models', async () => {
+  test('discovery classifies HTTP authentication failure without secrets or fallback models', async () => {
     const server = await startJsonServer((_request, response) => {
       respondJson(response, 401, {
-        error: 'bad token',
-        authorization: 'Bearer zai-live-secret',
+        authorization: 'Bearer fixture-secret',
+        error: 'invalid_token',
       });
     });
-
-    const outcome = await runConnectionModelDiscoveryEffect(
-      { ...zaiConnection(), baseUrl: server.url },
-      'zai-live-secret',
-      { fetch: globalThis.fetch },
-    );
-    assert.deepEqual(outcome, { ok: false, error: { kind: 'auth', statusCode: 401 } });
+    for (const providerType of ['xai-oauth', 'openai-codex', 'zai-coding-plan'] as const) {
+      const outcome = await runConnectionModelDiscoveryEffect(
+        { providerType, baseUrl: server.url },
+        'fixture-secret',
+        { fetch: globalThis.fetch },
+      );
+      assert.deepEqual(
+        outcome,
+        { ok: false, error: { kind: 'auth', statusCode: 401 } },
+        providerType,
+      );
+    }
   });
 
   test('Codex OAuth discovers models from the chatgpt.com/backend-api/codex/models endpoint', async () => {
@@ -426,24 +412,6 @@ describe('model discovery', () => {
       token,
     );
     assert.equal(capturedAccountId, 'acct-42');
-  });
-
-  test('Codex OAuth classifies discovery authentication failure', async () => {
-    const server = await startJsonServer((_request, response) => {
-      respondJson(response, 401, { error: 'unauthorized' });
-    });
-    assert.deepEqual(
-      await runConnectionModelDiscoveryEffect(
-        {
-          providerType: 'openai-codex',
-          baseUrl: server.url,
-          defaultModel: 'gpt-5.6-sol',
-        },
-        'codex-oauth-token',
-        { fetch: globalThis.fetch },
-      ),
-      { ok: false, error: { kind: 'auth', statusCode: 401 } },
-    );
   });
 
   test('connection discovery classifies a wholly policy-blocked Copilot catalog as auth', async () => {

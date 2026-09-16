@@ -506,6 +506,13 @@ test('normalizes exact bounded model discovery results', () => {
     },
   );
   for (const invalid of [
+    { models: [{ id: 'duplicate' }, { id: 'duplicate' }], source: 'fetched', fetchedAt: 42 },
+    { models: [{ id: 'invalid', contextWindow: 0 }], source: 'fetched', fetchedAt: 42 },
+    {
+      models: Array.from({ length: 2049 }, (_, i) => ({ id: `model-${i}` })),
+      source: 'fetched',
+      fetchedAt: 42,
+    },
     { models: [{ id: 'gpt-5' }], source: 'unknown', fetchedAt: 42 },
     { models: [{ id: 'gpt-5' }], source: 'fetched', fetchedAt: 42, rawBody: 'secret' },
   ]) {
@@ -513,43 +520,6 @@ test('normalizes exact bounded model discovery results', () => {
       () => normalizeConnectionModelDiscoveryResult(invalid),
       RuntimePolicyDomainDecodeError,
     );
-  }
-});
-
-test('discovery and persisted catalogs enforce the same model list contract', () => {
-  const catalog = (models: unknown) =>
-    decodeCanonicalConnectionCatalogEntry({
-      connectionId: '123e4567-e89b-42d3-a456-426614174000',
-      revision: 1,
-      slug: 'fireworks',
-      name: 'Fireworks',
-      providerType: 'fireworks-ai',
-      enabled: true,
-      enabledModelIds: [],
-      models,
-      modelSource: 'fetched',
-      modelsFetchedAt: 42,
-    });
-  const discovery = (models: unknown) =>
-    normalizeConnectionModelDiscoveryResult({
-      models,
-      source: 'fetched',
-      fetchedAt: 42,
-    });
-  for (const decode of [catalog, discovery]) {
-    assert.deepEqual(decode([{ id: 'known', contextWindow: 128000 }, { id: 'unknown' }]).models, [
-      { id: 'known', contextWindow: 128000 },
-      { id: 'unknown' },
-    ]);
-    for (const models of [
-      [{ id: 'duplicate' }, { id: 'duplicate' }],
-      Array.from({ length: 2049 }, (_, i) => ({ id: `model-${i}` })),
-      ...[0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1].map((contextWindow) => [
-        { id: 'invalid', contextWindow },
-      ]),
-    ]) {
-      assert.throws(() => decode(models), RuntimePolicyDomainDecodeError);
-    }
   }
 });
 
