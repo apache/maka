@@ -160,6 +160,57 @@ test('reads one Host-owned Turn outside the bounded transcript tail', async () =
   assert.deepEqual(result, { messages: [...turnB, ...turnC], settled: true });
 });
 
+/**
+ * A byte-bounded tail can start inside the required Turn: its terminal row is
+ * there and its earlier rows are not. A terminal row is evidence about
+ * execution, not about how much of the Turn came back, so settling on it alone
+ * returns a Turn with a hole in it.
+ */
+test('reads the required Turn when the tail begins inside it', async () => {
+  const sessionKey = JSON.stringify(['host-1', 'session-1']);
+  const whole: StoredMessage[] = [
+    userMessage('the question', 'user-b'),
+    { ...assistantMessage('the intermediate step', 'assistant-b-step'), turnId: 'turn-b', ts: 4 },
+    { ...assistantMessage('the final answer', 'assistant-b'), turnId: 'turn-b', ts: 5 },
+    { type: 'turn_state', id: 'complete-b', turnId: 'turn-b', ts: 6, status: 'completed' },
+  ];
+  // What a 16 KiB bootstrap has room for once the final answer is large.
+  const tail = whole.slice(2);
+  const turnReads: string[] = [];
+  let deliverySequence = 0;
+
+  const result = await readSettledMessagesFrom(
+    {
+      transcripts: {
+        async readTurn(_sessionId, turnId) {
+          turnReads.push(turnId);
+          return whole;
+        },
+        open: async (_sessionId, handler) => {
+          for (const batch of encodeDesktopTranscriptSnapshot({
+            sessionId: 'session-1',
+            generation: 'generation-1',
+            hostEpoch: 'host-1',
+            durableThrough: 8,
+            durable: tail.map((message, index) => ({ sequence: index + 7, message })),
+            overlay: [],
+            hasOlder: true,
+          })) handler({ ...batch, deliverySequence: ++deliverySequence });
+          return transcriptHandle(
+            { sessionId: sessionKey, generation: 'generation-1', hostEpoch: 'host-1' },
+            { readThroughMessageId: 'complete-b' },
+          );
+        },
+      },
+    },
+    sessionKey,
+    { requiredTurnId: 'turn-b' },
+  );
+
+  assert.deepEqual(turnReads, ['turn-b'], 'the terminal row was taken as proof the Turn was whole');
+  assert.deepEqual(result.messages, whole);
+});
+
 for (const failure of ['is empty', 'fails'] as const) {
   test(`does not settle when the targeted Host-owned Turn read ${failure}`, async () => {
     const sessionKey = JSON.stringify(['host-1', 'session-1']);
