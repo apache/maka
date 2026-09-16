@@ -681,6 +681,62 @@ the Host's existing auxiliary-model execution and accounting.
 
 ## Verification boundaries
 
+### Current checkpoint: September 16, 2026
+
+Merged revision `6a32c2b992217274b593e84971b86825cf055450` preserves the
+History feature and upstream overlay ownership. The results below supersede
+pending statements for the same scope in the historical evidence that follows;
+different native generations and overlapping test suites are not interchangeable.
+
+- Final complete Desktop build and typecheck passed, including Storybook.
+  The merged Desktop batch passed 559 tests with two Windows-only skips before
+  the final primitive/story changes; the fresh emitted page/draft/overlay batch
+  afterward passed 43 without skips. Epoch 159 handshake/History checks passed
+  21 tests. Strict renderer architecture, 112 checker tests and the regenerated
+  294-file surface inventory passed, as did scoped ASF and commit guards.
+- Actual merged Electron composition passed nine check groups with 14 synthetic
+  screenshots at 1240 x 820 and 800 x 720. History settings/model/permissions
+  navigation restored focus, settings blocked underlying draft actions, and
+  confirmation appended once to the local composer without replacing its draft.
+  No forbidden History mutation or permission action occurred. These captures
+  preceded the final group-button change; separate current-primitive checks
+  passed 27 component tests and keyboard/focus/disclosure scenarios, with matched
+  decoded pixels. The final build includes that primitive and the overlays-owned
+  Storybook correction. See `.github/assets/computer-history/README.md`.
+- macOS synthetic AppKit selected-items run `s119C7` passed in 52.467 seconds.
+  Text and metadata modes each passed five positive and five negative cases
+  and sealed 12 events using actual append-end checkpoints. Independent export
+  replay, owned-process cleanup and original VM identity/pause readback passed.
+  This is selected-item acceptance for that generation, not physical-input parity.
+- Windows generation `final-native-fixture-timing-20260916` passed 228 MSVC
+  tests with zero failures and two expected interactive-hook tests ignored.
+  All three formerly failing tests passed, own-crate release compilation
+  succeeded, and native Node passed 17 without failures or skips. Its 56-file
+  export preserved original receipts and exact frozen sources; independent
+  cleanup found no owned processes and the earlier native215 helper unchanged.
+  The previous generation's 225-pass/3-fail/2-ignored result remains historical.
+- A single fresh selected-items run bound to that Windows helper passed all
+  11 scenarios: selection, clear/reselection, identical-label item/control
+  replacement, dynamic value/leaf changes, metadata-only capture, text recovery,
+  password recovery and blocked-source recovery. Independent readback sealed
+  17 events across 14 ended segments, matched every accepted event and rejected
+  denied markers. The 63-file export and independent cleanup passed, with zero
+  capture failures. This synthetic WPF run used an enabled-administrator token
+  and no physical input; it does not establish ordinary-user/UAC behavior.
+
+Native Windows Clippy remains unavailable (`fullPipelinePassed=false`); passing
+Windows GNU cross-target lint is separate evidence. The broader Host batch had
+239 passes and two process-timing failures that passed unchanged in isolation;
+their cause remains unresolved. The 50.60 ms no-input challenge preflight is not
+WPF physical-input acceptance. The fresh clean-release Rich cold attempt
+failed before body acceptance with one capture failure, two ended empty
+segments and no physical input. Its original bounds were unchanged; the
+uninstrumented result does not identify the failing provider call or establish
+that the earlier traversal-budget cause recurred. Rich/WPF physical input and
+the broader parity gates below remain open.
+
+### Historical evidence by generation
+
 Revision `c73755700` on September 15, 2026 passed native live acceptance with
 isolated synthetic applications. macOS Intel VM checks covered read-only
 AppKit bodies and scrolled tails, same-title sources, four input/consent modes
