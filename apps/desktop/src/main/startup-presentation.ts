@@ -23,8 +23,7 @@ import type { HostHandoffView, OpenHostHandoffSurface } from '@maka/runtime-host
 import { readableAppIconPath } from './app-icon-surface.js';
 import { installApplicationMenu } from './application-menu.js';
 import { installDesktopStartupBranding } from './desktop-shell-presentation.js';
-import { isIsolatedE2e } from './startup-context.js';
-import { resolveWindowRevealMode } from './window-reveal.js';
+import { revealMode } from './startup-context.js';
 import {
   createStartupProgressWindow,
   type StartupPhase,
@@ -40,11 +39,6 @@ const focus = () => progress?.focus();
 export function showDesktopStartupProgress(
   copyDiagnostics: (phase: StartupPhase) => void | Promise<void>,
 ): void {
-  const revealMode = resolveWindowRevealMode(
-    isIsolatedE2e || Boolean(process.env.MAKA_E2E_FIXTURE),
-    process.env.MAKA_E2E_SHOW_WINDOW === '1',
-    app.isPackaged,
-  );
   installDesktopStartupBranding(revealMode);
   // Automated runs retain their one-main-window contract and never steal focus.
   if (revealMode !== 'active') return;
@@ -56,6 +50,7 @@ export function showDesktopStartupProgress(
       locale: resolveSystemUiLocale(app.getPreferredSystemLanguages()),
       dark: nativeTheme.shouldUseDarkColors,
       icon: readableAppIconPath('default'),
+      revealMode,
       createWindow: (options) => new BrowserWindow(options),
       copyDiagnostics: (phase, handoff) => handoff
         ? clipboard.writeText(JSON.stringify(handoff, null, 2)) : copyDiagnostics(phase),
@@ -92,6 +87,7 @@ export function createDesktopHostHandoffSurface(resolveLocale: () => Promise<UiL
         ownWindow = true;
         window = createStartupProgressWindow({
           locale, dark: nativeTheme.shouldUseDarkColors, icon: readableAppIconPath('default'),
+          revealMode,
           createWindow: (options) => new BrowserWindow(options),
           copyDiagnostics: () => clipboard.writeText(JSON.stringify(latest, null, 2)),
           onError: (error) => console.error('[runtime-host] handoff presentation failed:', error),

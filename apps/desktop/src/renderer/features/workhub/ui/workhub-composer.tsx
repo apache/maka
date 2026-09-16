@@ -22,7 +22,7 @@ import { Composer, useToast, useUiLocale, type ComposerHandle, type ComposerProp
 import { useComposerAttachments } from '@maka/ui/use-composer-attachments';
 import { toComposerIngestItems } from '@maka/ui/composer-attachments';
 import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_COUNT } from '@maka/core/attachments';
-import type { AttachmentRef } from '@maka/core/events';
+import type { AttachmentRef, FollowUpMode } from '@maka/core/events';
 import { getDesktopConversationCopy } from '../../../locales/conversation-copy.js';
 import { localizedShellErrorMessage } from '../../../locales/shell-copy.js';
 import { useWorkHubServices } from '../services.js';
@@ -30,7 +30,7 @@ import { workHubLiveCopy } from '../locales/workhub-live-copy.js';
 
 export type WorkHubComposerProps = Omit<ComposerProps, 'onSend' | 'draftKey'> & {
   sessionId?: string;
-  onSend(text: string, attachments: AttachmentRef[]): Promise<boolean>;
+  onSend(text: string, attachments: AttachmentRef[], followUpMode?: FollowUpMode): Promise<boolean>;
 };
 
 /** The shared Composer and attachment lifecycle belong to the persistent coordination Session. */
@@ -69,7 +69,7 @@ export const WorkHubComposer = forwardRef<ComposerHandle, WorkHubComposerProps>(
     onPickAttachments={staged.pickAttachments}
     onAttachFilePaths={staged.attachFilePaths}
     onRemoveAttachment={staged.removeAttachment}
-    onSend={async (text) => {
+    onSend={async (text, metadata) => {
       if (!sessionId || submittingRef.current || composer.sendBlocked) return false;
       const snapshot = [...staged.pendingAttachments];
       submittingRef.current = true; setSubmitting(true);
@@ -90,7 +90,7 @@ export const WorkHubComposer = forwardRef<ComposerHandle, WorkHubComposerProps>(
         }
         // A Host switch during an upload must never submit the old draft into its successor.
         if (currentSessionId.current !== sessionId) return false;
-        const accepted = await onSend(text.trim() || t.reviewAttachments, attachments);
+        const accepted = await onSend(text.trim() || t.reviewAttachments, attachments, metadata?.followUpMode);
         if (accepted) {
           staged.clearSubmittedAttachments(snapshot);
           for (const item of snapshot) uploaded.current.delete(`${scope}:${item.stagingKey}`);

@@ -252,6 +252,9 @@ function MarkdownCode(props: {
       <CodeBlock
         code={props.code}
         language={props.language}
+        // Span highlighting avoids the higher CSS Highlight paint cost during
+        // transcript scrolling, including when virtualized code blocks remount.
+        highlightMode="spans"
         // Markdown fences are block content. Astryx defaults to fit-content
         // with a 400px floor, which leaves short-code fences visibly narrow
         // even when the surrounding transcript has room to stay readable.

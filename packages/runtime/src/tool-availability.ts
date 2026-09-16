@@ -39,7 +39,6 @@ export const TOOL_SEARCH_MAX_SCHEMA_CHARS = 64 * 1024;
 const DIRECT_TOOL_NAMES: ReadonlySet<string> = new Set([
   'Bash',
   'Read',
-  'ArchiveRead',
   'Write',
   'Edit',
   'Glob',
@@ -369,7 +368,6 @@ export class ToolAvailabilityRuntime {
           .optional()
           .describe(`Maximum matches to activate; defaults to ${TOOL_SEARCH_DEFAULT_LIMIT}.`),
       }),
-      nesting: 'direct_only',
       impl: ({ query, limit = TOOL_SEARCH_DEFAULT_LIMIT }, context) => {
         const normalizedQuery = query.trim();
         const ranked = this.searchIndex!.search(normalizedQuery)

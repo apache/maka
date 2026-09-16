@@ -36,6 +36,35 @@ import { ensureBootstrapRuntimePolicy } from '../server/bootstrap-runtime-policy
 const OPENCODE_FREE_ENABLED_MODEL_IDS: readonly string[] =
   defaultEnabledModelIdsWhenOmitted('opencode-free') ?? [];
 
+test('hosted initialization retries invalid input and rotates proxy credentials through the store', async () => {
+  await withFixture(async ({ root, stores }) => {
+    const initialize = (proxyUrl: string) =>
+      ensureBootstrapRuntimePolicy({
+        workspaceRoot: root,
+        stores,
+        environment: {},
+        initialization: { incognito: true, proxyUrl },
+      });
+    await assert.rejects(
+      initialize('socks5://user:secret@proxy.invalid:3128'),
+      /Invalid hosted HTTP proxy/,
+    );
+    assert.equal((await stores.operations.resolveHostOutboundExecution()).kind, 'privacy_mode');
+    await initialize('http://user:secret@proxy.invalid:3128');
+    await initialize('http://user:replacement@proxy.invalid:3128');
+    const admission = await stores.operations.resolveNetworkProxyExecution();
+    assert.equal(admission.kind, 'ready');
+    if (admission.kind !== 'ready') return;
+    assert.equal(admission.secretMaterial.networkProxy?.secret, 'replacement');
+    await initialize('http://proxy.invalid:3128');
+    const anonymous = await stores.operations.resolveNetworkProxyExecution();
+    assert.equal(anonymous.kind, 'ready');
+    if (anonymous.kind !== 'ready') return;
+    assert.equal(anonymous.networkProxy.authEnabled, false);
+    assert.equal(anonymous.secretMaterial.networkProxy, undefined);
+  });
+});
+
 test('a fresh Host starts with one anonymous runnable target', async () => {
   await withFixture(async ({ root, stores }) => {
     await ensureBootstrapRuntimePolicy({ workspaceRoot: root, stores, environment: {} });

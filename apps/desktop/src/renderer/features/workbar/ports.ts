@@ -17,7 +17,11 @@
  * under the License.
  */
 
+import type { SessionInspectorService } from '../../application/contracts/session-inspector/service.js';
+export type { SessionInspectorService, SessionTracePage, SessionUsageSummary } from '../../application/contracts/session-inspector/service.js';
+
 import type {
+  MessageQueuePlacement,
   QuoteRef,
   SessionEvent,
   ShellRunUpdate,
@@ -34,21 +38,19 @@ import type { PermissionMode } from '@maka/core/permission';
 import type { RegenerateTurnInput } from '@maka/core/runtime-inputs';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { ClientCapabilityResponse } from '@maka/core/client-capability-grant';
+import type { WorkBoardItem, WorkBoardLinkedSession } from '@maka/core/work-board';
 import type {
   SessionChangedEvent,
   SessionSummary,
   StoredMessage,
   TurnRecord,
 } from '@maka/core/session';
-import type { SessionTrace } from '@maka/core/session-trace';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import type { InteractionFormResponse } from '@maka/core/interaction';
-import type { Result } from '@maka/core/result';
 import type {
   ContextCompactResult,
-  ContextDiagnosticsResult,
+  TurnMessageExecutionQueryResult,
 } from '@maka/runtime-host/protocol';
-import type { MergedUsageSummary } from '@maka/core/usage-ledger-merge';
 import type {
   ShellRunPtyDataEvent,
   ShellRunPtySnapshot,
@@ -73,8 +75,12 @@ export interface WorkbarReviewService {
 }
 
 export interface WorkbarTerminalService {
+  /** Live, locally owned manual terminals; excludes model tools and inherited resources. */
+  recover(sessionId: string): Promise<import('../../../shared/runtime-host-identity.js').TerminalRecovery>;
+  subscribeCloseChanges(handler: (change: import('../../../shared/runtime-host-identity.js').TerminalCloseChange) => void): WorkbarUnsubscribe;
+  subscribeUpdates(handler: (update: ShellRunUpdate) => void): WorkbarUnsubscribe;
   start(sessionId: string): Promise<ShellRunUpdate>;
-  stop(input: { sessionId: string; ref: string }): Promise<ShellRunUpdate | null>;
+  stop(input: { sessionId: string; ref: string }): Promise<void>;
   attach(input: {
     sessionId: string;
     ref: string;
@@ -85,7 +91,7 @@ export interface WorkbarTerminalService {
     ref: string;
     input?: string;
     size?: { cols: number; rows: number };
-  }): Promise<ShellRunUpdate | null>;
+  }): Promise<void>;
   subscribePtyData(
     handler: (event: ShellRunPtyDataEvent) => void,
   ): WorkbarUnsubscribe;
@@ -106,9 +112,6 @@ export interface WorkbarBrowserService {
   getState(sessionId: string): Promise<BrowserState | null>;
   subscribeState(
     handler: (payload: { sessionId: string; state: BrowserState }) => void,
-  ): WorkbarUnsubscribe;
-  subscribeLive(
-    handler: (payload: { sessionIds: string[] }) => void,
   ): WorkbarUnsubscribe;
 }
 
@@ -139,31 +142,11 @@ export interface WorkbarArtifactsService {
     sessionId: string,
     artifactId: string,
   ): Promise<WorkbarOpenArtifactResult>;
+  showInFolder(
+    sessionId: string,
+    artifactId: string,
+  ): Promise<WorkbarOpenArtifactResult>;
   saveAs(sessionId: string, artifactId: string): Promise<ArtifactSaveResult>;
-}
-
-export interface WorkbarSessionTracePage {
-  readonly trace: SessionTrace;
-  readonly nextCursor: string | null;
-}
-
-export type WorkbarSessionUsageSummary = MergedUsageSummary;
-
-export interface WorkbarInspectorService {
-  trace(
-    sessionId: string,
-    cursor?: string,
-  ): Promise<Result<WorkbarSessionTracePage>>;
-  summary(sessionId: string): Promise<Result<WorkbarSessionUsageSummary>>;
-  context(sessionId: string): Promise<Result<ContextDiagnosticsResult>>;
-  subscribeSessionEvents(
-    sessionId: string,
-    handler: (event: SessionEvent) => void,
-  ): WorkbarUnsubscribe;
-  subscribeUsageChanges(
-    sessionId: string,
-    handler: () => void,
-  ): WorkbarUnsubscribe;
 }
 
 export interface WorkbarAttachmentsService {
@@ -186,15 +169,25 @@ export interface WorkbarAttachmentsService {
   >;
 }
 
+export interface WorkbarWorkBoardService {
+  linkSession(
+    id: string,
+    link: WorkBoardLinkedSession,
+  ): Promise<
+    | { readonly ok: true; readonly value: WorkBoardItem }
+    | { readonly ok: false; readonly message: string }
+  >;
+}
+
 export type SideChatSendResult =
   | { ok: true; turnId: string; steered?: false }
   | { ok: true; turnId: string; steered: true; messageId: string }
   | { ok: false; reason: 'outcome_unknown'; messageId: string }
   | { ok: false; reason?: string; messageId?: never };
 
-export type SideChatSteerResult =
-  | { kind: 'queued'; messageId: string }
-  | { kind: 'outcome_unknown'; messageId: string }
+export type SideChatFollowUpResult =
+  | { kind: 'queued' }
+  | { kind: 'outcome_unknown' }
   | { kind: 'started'; turnId: string };
 
 export type SideChatStopTarget =
@@ -206,7 +199,7 @@ export interface SideChatSessionPort {
   listTurns(sessionId: string): Promise<TurnRecord[]>;
   readSettledMessages(
     sessionId: string,
-    options?: { requiredAssistantMessageId?: string },
+    options?: { requiredAssistantMessageId?: string; requiredTurnId?: string },
   ): Promise<{ messages: StoredMessage[]; settled: boolean }>;
   branchFromTurn(
     sessionId: string,
@@ -237,7 +230,26 @@ export interface SideChatSessionPort {
     sessionId: string,
     target?: SideChatStopTarget,
   ): Promise<{ kind: 'retracted'; messageId: string } | undefined>;
-  steer(sessionId: string, text: string, admissionId?: string): Promise<SideChatSteerResult>;
+  submitFollowUp(
+    sessionId: string,
+    placement: MessageQueuePlacement,
+    text: string,
+    admissionId: string,
+    content?: { quotes?: QuoteRef[]; attachmentItems?: WorkbarIngestInput[] },
+  ): Promise<SideChatFollowUpResult>;
+  queryMessageExecutions(
+    sessionId: string,
+    messageIds: readonly string[],
+  ): Promise<TurnMessageExecutionQueryResult>;
+  retractQueueEntry(sessionId: string, entryId: string): Promise<void>;
+  promoteQueueEntry(sessionId: string, entryId: string): Promise<void>;
+  updateQueueEntry(
+    sessionId: string,
+    entryId: string,
+    expectedQueueRevision: number,
+    text: string,
+  ): Promise<void>;
+  reorderQueueEntries(sessionId: string, entryIds: readonly string[]): Promise<void>;
   setPermissionMode(
     sessionId: string,
     mode: PermissionMode,
@@ -262,8 +274,10 @@ export interface SideChatSessionPort {
   subscribeEvents(
     sessionId: string,
     handler: (event: SessionEvent) => void,
-    onSeeded?: () => void,
+    /** Called after the initial observation seed and each reconnect seed. */
+    onReady?: () => void,
     onSeedError?: (error: unknown) => void,
+    onExecution?: (projection: import('../../../shared/session-execution-projection.js').SessionExecutionProjection | undefined) => void,
   ): WorkbarUnsubscribe;
   subscribeSessionChanges(handler: (event: SessionChangedEvent) => void): WorkbarUnsubscribe;
 }
@@ -273,7 +287,8 @@ export interface WorkbarServices {
   readonly terminal: WorkbarTerminalService;
   readonly browser: WorkbarBrowserService;
   readonly artifacts: WorkbarArtifactsService;
-  readonly inspector: WorkbarInspectorService;
+  readonly inspector: SessionInspectorService;
   readonly attachments: WorkbarAttachmentsService;
+  readonly workBoard?: WorkbarWorkBoardService;
   readonly sideChat: SideChatSessionPort;
 }

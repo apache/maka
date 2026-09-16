@@ -27,7 +27,17 @@ export interface OAuthExternalPresentation {
 
 export interface OAuthPresentationExpectation {
   readonly presented: Promise<OAuthExternalPresentation>;
+  renew(): void;
   cancel(reason?: unknown): void;
+}
+
+/** Never crosses the Host protocol: raised and consumed inside the main process. */
+export class OAuthPresentationError extends Error {
+  name = 'OAuthPresentationError';
+}
+
+export class OAuthLoginInProgressError extends Error {
+  name = 'OAuthLoginInProgressError';
 }
 
 /** Bridges a Host-owned OAuth attempt to Desktop-owned system-browser presentation. */
@@ -36,8 +46,8 @@ export class RuntimeHostOAuthPresentation implements OAuthPresentationBackend {
 
   constructor(private readonly openSystemBrowser: (url: string) => Promise<void>) {}
 
-  expect(attemptId: string): OAuthPresentationExpectation {
-    if (this.#pending) throw new Error('Another OAuth login is already in progress');
+  expect(attemptId: string, expectedStateHint?: string): OAuthPresentationExpectation {
+    if (this.#pending) throw new OAuthLoginInProgressError('Another OAuth login is already in progress');
     let resolvePresented!: (presentation: OAuthExternalPresentation) => void;
     let rejectPresented!: (reason?: unknown) => void;
     let presentedSettled = false;
@@ -48,13 +58,15 @@ export class RuntimeHostOAuthPresentation implements OAuthPresentationBackend {
     // The timeout can fire before waitForPresentation attaches. Keep a no-op
     // handler; the real waiter still observes the same rejection.
     void presented.catch(() => undefined);
-    const timer = setTimeout(() => {
-      if (this.#pending?.attemptId !== attemptId) return;
+    const expire = () => {
+      if (this.#pending !== pending) return;
       this.#pending = undefined;
-      rejectPresented(new Error('Runtime Host did not present OAuth authorization'));
-    }, PRESENTATION_TIMEOUT_MS);
+      rejectPresented(new OAuthPresentationError('Runtime Host did not present OAuth authorization'));
+    };
+    let timer = setTimeout(expire, PRESENTATION_TIMEOUT_MS);
     const pending: PendingPresentation = {
       attemptId,
+      expectedStateHint,
       resolve: (presentation) => {
         clearTimeout(timer);
         presentedSettled = true;
@@ -70,6 +82,11 @@ export class RuntimeHostOAuthPresentation implements OAuthPresentationBackend {
     this.#pending = pending;
     return {
       presented,
+      renew: () => {
+        if (this.#pending !== pending) return;
+        clearTimeout(timer);
+        timer = setTimeout(expire, PRESENTATION_TIMEOUT_MS);
+      },
       cancel: (reason = new Error('OAuth presentation cancelled')) => {
         if (this.#pending === pending) pending.reject(reason);
       },
@@ -84,15 +101,25 @@ export class RuntimeHostOAuthPresentation implements OAuthPresentationBackend {
     signal.throwIfAborted();
     const pending = this.#pending;
     if (!pending || !stateHint) {
-      throw new Error('Desktop has no matching OAuth presentation request');
+      throw new OAuthPresentationError('Desktop has no matching OAuth presentation request');
     }
+    if (pending.expectedStateHint !== undefined && pending.expectedStateHint !== stateHint) {
+      throw new OAuthPresentationError('Desktop OAuth presentation belongs to another attempt');
+    }
+    let opened = false;
     try {
       await this.openSystemBrowser(url);
+      opened = true;
       signal.throwIfAborted();
       pending.resolve({ stateHint });
     } catch (error) {
-      pending.reject(error);
-      throw error;
+      // A browser that will not open is a Desktop-owned presentation failure;
+      // anything after it opened (an abort) keeps its own shape.
+      const failure = opened
+        ? error
+        : new OAuthPresentationError('Desktop could not open the system browser');
+      pending.reject(failure);
+      throw failure;
     }
   }
 
@@ -103,6 +130,7 @@ export class RuntimeHostOAuthPresentation implements OAuthPresentationBackend {
 
 interface PendingPresentation {
   readonly attemptId: string;
+  readonly expectedStateHint?: string;
   resolve(presentation: OAuthExternalPresentation): void;
   reject(reason?: unknown): void;
 }

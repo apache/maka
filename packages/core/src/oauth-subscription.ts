@@ -63,6 +63,8 @@ export type SubscriptionActionFailureReason =
   | 'token_exchange_failed' // /oauth/token returned non-200
   | 'refresh_failed' // refresh attempt errored
   | 'storage_failed' // shared credential store write failed
+  | 'login_in_progress'
+  | 'presentation_failed'
   // PR-OAUTH-SUBSCRIPTION-0 (kenji `45b31e16`): the experimental
   // env flag is OFF. Distinct from `provider_rejected` so the user
   // doesn't think Anthropic rejected their account — this is

@@ -70,7 +70,6 @@
 .maka-hero-visual {
     display: grid;
     justify-items: center;
-    color: var(--maka-brand);
   }
 .maka-hero-eyebrow {
     font: var(--maka-text-heading-5);

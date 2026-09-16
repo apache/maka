@@ -18,6 +18,8 @@
  */
 
 import type { OperationInput, TurnSnapshot } from '@maka/runtime-host/protocol';
+import type { AttachmentIngestBlockedCode } from '@maka/core/attachments';
+import type { AttachmentRef } from '@maka/core/events';
 
 /** A retry keeps the original Host epoch as well as the Turn and complete payload. */
 export type WorkHubAnswerInput = OperationInput<'workhub.coordination.answer'> & {
@@ -28,3 +30,7 @@ export type WorkHubAnswerResult =
   | { readonly kind: 'admitted'; readonly turnId: string; readonly status?: TurnSnapshot['status'] }
   | { readonly kind: 'unknown'; readonly originHostEpoch: string }
   | { readonly kind: 'not_admitted' };
+
+export type WorkHubPrepareAttachmentsResult =
+  | { readonly ok: true; readonly attachments: AttachmentRef[] }
+  | { readonly ok: false; readonly code: AttachmentIngestBlockedCode };
