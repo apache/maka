@@ -191,6 +191,13 @@ export class ModelAdapter {
     };
   }
 
+  supportsImageToolResults(): boolean {
+    // Chat Completions only accepts string content for `role: tool`. Passing a
+    // content-shaped image result makes the SDK stringify its file part,
+    // turning base64 into ordinary model-visible text.
+    return this.runtime.wire !== 'openai-chat';
+  }
+
   resolveModel(): unknown {
     if (providerAuthRequiresSecret(this.input.connection.providerType) && !this.input.apiKey) {
       throw new Error(`No API key stored for connection "${this.input.connection.slug}"`);

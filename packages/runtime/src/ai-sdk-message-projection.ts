@@ -122,6 +122,13 @@ function toolResultText(text: string): ToolResultOutput {
   return { type: 'content', value: [{ type: 'text', text }] };
 }
 
+const UNSUPPORTED_IMAGE_TOOL_RESULT_MESSAGE =
+  'Image was read successfully, but this provider protocol cannot represent image content in a tool result. The binary image was omitted.';
+
+function plainToolResultText(text: string): ToolResultOutput {
+  return { type: 'text', value: text };
+}
+
 function nativeApplyPatchFailureOutput(output: ToolResultOutput): ToolResultOutput {
   const value = output.type === 'json' || output.type === 'error-json' ? output.value : undefined;
   const record = value && typeof value === 'object' && !Array.isArray(value) ? value : undefined;
@@ -704,6 +711,9 @@ export class AiSdkMessageProjection {
     decisionKey: string,
   ): Promise<ToolResultOutput> {
     if (isError || !isImageToolResult(output)) return toolResultOutput(output, isError);
+    if (!this.input.modelAdapter.supportsImageToolResults()) {
+      return plainToolResultText(UNSUPPORTED_IMAGE_TOOL_RESULT_MESSAGE);
+    }
     if (this.input.supportsVision !== true) {
       return toolResultText('Image was read, but the selected model does not support image input.');
     }
@@ -747,6 +757,16 @@ export class AiSdkMessageProjection {
     decisionKey: string,
   ): Promise<ToolResultOutput> {
     if (projection.kind !== 'content') return durableProjectionToToolResultOutput(projection);
+    if (!this.input.modelAdapter.supportsImageToolResults()) {
+      const text = projection.parts
+        .filter((part): part is Extract<typeof part, { kind: 'text' }> => part.kind === 'text')
+        .map((part) => part.text)
+        .filter((part) => part.length > 0);
+      if (projection.parts.some((part) => part.kind === 'artifact')) {
+        text.push(UNSUPPORTED_IMAGE_TOOL_RESULT_MESSAGE);
+      }
+      return plainToolResultText(text.join('\n'));
+    }
     const value: Extract<ToolResultOutput, { type: 'content' }>['value'] = [];
     for (const [index, part] of projection.parts.entries()) {
       if (part.kind === 'text') {
