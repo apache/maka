@@ -18,7 +18,8 @@
  */
 
 import assert from 'node:assert/strict';
-import { createElement } from 'react';
+import { act, createElement } from 'react';
+import { createRoot } from 'react-dom/client';
 import { parseHTML } from 'linkedom';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { test } from 'node:test';
@@ -374,4 +375,41 @@ test('effects registered after activation start and dispose exactly once, includ
   assert.equal(cleaned, 2);
   assert.throws(() => ctx.effect(() => {}), /disposed/);
   assert.throws(() => ctx.style('body {}'), /disposed/);
+});
+
+test('a throwing plugin root preserves the app and other roots and recovers on a new generation', async () => {
+  const { window } = parseHTML('<html><body><div id="app"></div></body></html>');
+  const saved = Object.getOwnPropertyDescriptors(globalThis);
+  Object.assign(globalThis, { window, document: window.document, IS_REACT_ACT_ENVIRONMENT: true });
+  const root = new MakaClientRoot();
+  const container = window.document.getElementById('app')!;
+  const mounted = createRoot(container, { onCaughtError() {} });
+  let runtime!: ClientPluginRuntime;
+  runtime = new ClientPluginRuntime({ root, staticModules: {}, loadBundle: async (plugin) => {
+    runtime.registerBundle({ id: plugin.extensionId, factory: () => ({ apply(ctx: MakaClientPluginContext) {
+      ctx.slots.register({ name: 'root' }, ({ children }) => {
+        if (plugin.extensionId === 'broken' && plugin.generation === 1) throw new Error('root failure');
+        return <section data-plugin={plugin.extensionId}>{children}</section>;
+      });
+    } }) });
+  } });
+  const originalError = console.error;
+  console.error = () => {};
+  try {
+    await runtime.reconcile(snapshot(1, descriptor('broken', 1), descriptor('healthy', 1)));
+    await act(() => mounted.render(<MakaClientRootOutlet root={root}><button>app</button></MakaClientRootOutlet>));
+    assert.equal(container.querySelector('button')?.textContent, 'app');
+    assert.ok(container.querySelector('[data-plugin="healthy"]'));
+    assert.equal(container.querySelector('[data-plugin="broken"]'), null);
+    await act(() => runtime.reconcile(snapshot(2, descriptor('broken', 2), descriptor('healthy', 1))));
+    assert.ok(container.querySelector('[data-plugin="broken"]'));
+  } finally {
+    await act(() => runtime.close());
+    await act(() => mounted.unmount());
+    console.error = originalError;
+    for (const key of ['window', 'document', 'IS_REACT_ACT_ENVIRONMENT']) {
+      if (saved[key]) Object.defineProperty(globalThis, key, saved[key]!);
+      else Reflect.deleteProperty(globalThis, key);
+    }
+  }
 });

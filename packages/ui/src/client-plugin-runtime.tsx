@@ -18,7 +18,7 @@
  */
 
 import type { ReactNode } from 'react';
-import { useSyncExternalStore } from 'react';
+import { Component, useSyncExternalStore } from 'react';
 import type {
   MakaClientProductEventMap,
   MakaClientProductEventName,
@@ -139,8 +139,31 @@ export interface MakaClientPluginRuntimeInspection {
 }
 
 interface StagedRootRegistration {
+  readonly render: MakaClientRootComponent;
   readonly component: MakaClientRootComponent;
   cancelled: boolean;
+}
+
+class ClientRootBoundary extends Component<{
+  readonly registration: StagedRootRegistration;
+  readonly children?: ReactNode;
+}, { failed: boolean }> {
+  state = { failed: false };
+
+  static getDerivedStateFromError(): { failed: boolean } {
+    return { failed: true };
+  }
+
+  componentDidCatch(error: unknown): void {
+    this.props.registration.cancelled = true;
+    console.error('Client Plugin root failed', error);
+  }
+
+  render(): ReactNode {
+    if (this.state.failed || this.props.registration.cancelled) return this.props.children;
+    const Root = this.props.registration.render;
+    return <Root>{this.props.children}</Root>;
+  }
 }
 
 interface StagedEffect {
@@ -463,7 +486,12 @@ export class ClientPluginRuntime {
           throw new Error('Client Plugin root Slot component must be a function');
         }
         const registration: StagedRootRegistration = {
-          component: component as MakaClientRootComponent,
+          component: ({ children }) => (
+            <ClientRootBoundary registration={registration}>
+              {children}
+            </ClientRootBoundary>
+          ),
+          render: component as MakaClientRootComponent,
           cancelled: false,
         };
         instance.roots.push(registration);
