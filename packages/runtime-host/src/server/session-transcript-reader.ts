@@ -42,7 +42,7 @@ import type {
   SessionTurnContributionPage,
   SessionTurnLandmark,
   SessionTurnLandmarkSnapshot,
-  RuntimeTranscriptInvocationHeader,
+  RuntimeTranscriptRun,
 } from '@maka/storage/execution-stores';
 import { foldTurnContribution } from '@maka/storage/session-message-projection';
 
@@ -59,8 +59,6 @@ const TRANSCRIPT_SOURCE_MAX_RECORD_BYTES =
 // separate from the bounded amount of immutable input it may visit.
 const TRANSCRIPT_SOURCE_MAX_BYTES =
   TRANSCRIPT_SOURCE_MAX_EVENTS * TRANSCRIPT_SOURCE_MAX_RECORD_BYTES;
-/** Turns per storage round trip: one, so a page loads no Turn it cannot use. */
-const TRANSCRIPT_TURN_SCAN_LIMIT = 1;
 
 export function createSessionTranscriptReader(input: {
   stores: ExecutionStoresWriter<'interactive'>;
@@ -137,7 +135,7 @@ function createDurableLedgerTranscriptReader(input: {
 
   /** One Turn's rows, each at the sequence its own event sits at. */
   const projectTurn = async (
-    turn: PendingTranscriptTurn,
+    turn: PendingTranscriptRun,
   ): Promise<{ sequence: number; message: StoredMessage }[]> => {
     const projected = await turn.projection.finish(input.canonicalPermissionOutcomes);
     if (projected.diagnostics.some(isHardRuntimeEventReadModelDiagnostic)) {
@@ -176,16 +174,14 @@ function createDurableLedgerTranscriptReader(input: {
     });
   };
 
-  const readTurns = async (
+  const readRun = async (
     sessionId: string,
     request: { direction: 'older' | 'newer'; throughOrdinal: number; position: number },
-    limit = TRANSCRIPT_TURN_SCAN_LIMIT,
-  ): Promise<PendingTranscriptTurn[]> =>
-    store.readTranscriptInvocations(
+  ): Promise<PendingTranscriptRun | undefined> =>
+    store.readTranscriptRun(
       sessionId,
       {
         ...request,
-        limit,
         maxEvents: TRANSCRIPT_SOURCE_MAX_EVENTS,
         maxBytes: TRANSCRIPT_SOURCE_MAX_BYTES,
         maxRecordBytes: TRANSCRIPT_SOURCE_MAX_RECORD_BYTES,
@@ -215,49 +211,31 @@ function createDurableLedgerTranscriptReader(input: {
     const position = request.position ?? (request.direction === 'older' ? throughSequence : 0);
     const throughOrdinal = ordinalOf(throughSequence);
     const older = request.direction === 'older';
-    const readTurnAt = async (at: number): Promise<PendingTranscriptTurn | undefined> =>
-      at < 0 || at > throughOrdinal
-        ? undefined
-        : (
-            await readTurns(sessionId, {
-              direction: request.direction,
-              throughOrdinal,
-              position: at,
-            })
-          )[0];
     let ordinal = ordinalOf(position);
-    let carried: PendingTranscriptTurn | undefined;
     while (ordinal >= 0 && ordinal <= throughOrdinal) {
-      const first = carried ?? (await readTurnAt(ordinal));
-      carried = undefined;
-      if (first === undefined) return;
       // A page resumes from one record's sequence and drops everything the other
-      // side of it, so what this yields has to be monotone in sequence. Turns
-      // whose ordinal ranges overlap — a nested run inside its parent — are
-      // therefore drained together instead of one after the other.
-      const cluster = [first];
-      let low = first.firstOrdinal;
-      let high = first.lastOrdinal;
-      for (;;) {
-        const next = await readTurnAt(older ? low - 1 : high + 1);
-        if (next === undefined) break;
-        if (older ? next.lastOrdinal < low : next.firstOrdinal > high) {
-          carried = next;
-          break;
-        }
-        cluster.push(next);
-        low = Math.min(low, next.firstOrdinal);
-        high = Math.max(high, next.lastOrdinal);
-      }
-      const records = (await Promise.all(cluster.map(projectTurn)))
-        .flat()
+      // side of it, so what this yields has to be monotone in sequence. Storage
+      // answers with a stretch of ordinals one invocation owns outright, so the
+      // rows yielded here are the only ones the Session has in that stretch —
+      // whatever the Turn is interleaved with outside it.
+      const run = await readRun(sessionId, {
+        direction: request.direction,
+        throughOrdinal,
+        position: ordinal,
+      });
+      if (!run) return;
+      const from = run.firstOrdinal * EVENT_SEQUENCE_STRIDE;
+      const to = run.lastOrdinal * EVENT_SEQUENCE_STRIDE + EVENT_SEQUENCE_STRIDE - 1;
+      const records = (await projectTurn(run))
         .filter(
           ({ sequence }) =>
-            sequence <= throughSequence && (older ? sequence <= position : sequence >= position),
+            sequence >= from &&
+            sequence <= Math.min(to, throughSequence) &&
+            (older ? sequence <= position : sequence >= position),
         )
         .sort((a, b) => (older ? b.sequence - a.sequence : a.sequence - b.sequence));
       yield* records;
-      ordinal = older ? low - 1 : high + 1;
+      ordinal = older ? run.firstOrdinal - 1 : run.lastOrdinal + 1;
     }
   };
 
@@ -279,36 +257,38 @@ function createDurableLedgerTranscriptReader(input: {
       if (watermark === null) {
         return { throughSequence: null, contributions: [], nextPosition: null };
       }
-      const turns = await readTurns(
-        sessionId,
-        {
+      const throughOrdinal = ordinalOf(watermark);
+      // A Turn interleaved with another owns several stretches of the Session,
+      // and this walk meets each one. Folding by Turn keeps that one summary.
+      const contributions = new Map<string, SessionTurnContribution>();
+      let nextPosition: number | null = null;
+      for (let ordinal = ordinalOf(position); ordinal <= throughOrdinal; ) {
+        const run = await readRun(sessionId, {
           direction: 'newer',
-          throughOrdinal: ordinalOf(watermark),
-          position: ordinalOf(position),
-        },
-        maxContributions + 1,
-      );
-      const contributions: SessionTurnContribution[] = [];
-      for (const turn of turns.slice(0, maxContributions)) {
+          throughOrdinal,
+          position: ordinal,
+        });
+        if (!run) break;
+        const turnId = run.invocation.turnId;
+        if (!contributions.has(turnId) && contributions.size >= maxContributions) {
+          nextPosition = run.firstOrdinal * EVENT_SEQUENCE_STRIDE;
+          break;
+        }
         // Folded from the Turn's own rows, so `firstSequence` lands on its first
         // row rather than on the opening fact, which has no row at all.
-        let contribution: SessionTurnContribution | undefined;
-        for (const { sequence, message } of await projectTurn(turn)) {
+        for (const { sequence, message } of await projectTurn(run)) {
           if (sequence < position || sequence > watermark) continue;
-          contribution = foldTurnContribution(
-            contribution,
-            turn.invocation.turnId,
-            sequence,
-            message,
+          contributions.set(
+            turnId,
+            foldTurnContribution(contributions.get(turnId), turnId, sequence, message),
           );
         }
-        if (contribution) contributions.push(contribution);
+        ordinal = run.lastOrdinal + 1;
       }
-      const next = turns[maxContributions];
       return {
         throughSequence: watermark,
-        contributions,
-        nextPosition: next ? next.firstOrdinal * EVENT_SEQUENCE_STRIDE : null,
+        contributions: [...contributions.values()],
+        nextPosition,
       };
     },
 
@@ -488,7 +468,7 @@ async function readCanonicalPermissionOutcomes(
   return outcomes;
 }
 
-interface PendingTranscriptTurn extends RuntimeTranscriptInvocationHeader {
+interface PendingTranscriptRun extends RuntimeTranscriptRun {
   projection: ReturnType<typeof createTranscriptProjection>;
   ordinals: Map<string, number>;
 }

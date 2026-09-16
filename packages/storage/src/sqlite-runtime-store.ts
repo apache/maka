@@ -163,9 +163,9 @@ import { assertNoReservedWorkspaceAuthorityAppend } from './runtime-event-author
 import {
   RuntimeTranscriptQuery,
   TERMINAL_RUNTIME_EVENT_SQL,
-  type RuntimeTranscriptInvocationHeader,
-  type RuntimeTranscriptInvocationRequest,
   type RuntimeTranscriptLandmark,
+  type RuntimeTranscriptRun,
+  type RuntimeTranscriptRunRequest,
 } from './runtime-transcript-query.js';
 
 export { SQLITE_RUNTIME_SCHEMA_VERSION } from './sqlite-runtime-schema.js';
@@ -557,19 +557,16 @@ export class SqliteRuntimeStore
     return this.readTransaction(() => this.transcriptQuery().highWater(sessionId));
   }
 
-  async readTranscriptInvocations<T>(
+  async readTranscriptRun<T>(
     sessionId: string,
-    request: RuntimeTranscriptInvocationRequest,
+    request: RuntimeTranscriptRunRequest,
     project: (
-      turn: RuntimeTranscriptInvocationHeader,
+      run: RuntimeTranscriptRun,
       events: Iterable<{ readonly ordinal: number; readonly event: RuntimeEvent }>,
     ) => T,
-  ): Promise<T[]> {
+  ): Promise<T | undefined> {
     assertRuntimeStorageSafeId(sessionId, 'Invalid session id');
-    assertInvocationSearchLimit(request.limit);
-    return this.readTransaction(() =>
-      this.transcriptQuery().invocations(sessionId, request, project),
-    );
+    return this.readTransaction(() => this.transcriptQuery().run(sessionId, request, project));
   }
 
   async readTranscriptLandmarks(

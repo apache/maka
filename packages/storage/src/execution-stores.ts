@@ -157,8 +157,8 @@ export type {
 
 export type ExecutionSessionWriter = SessionAuthorityStore;
 export type {
-  RuntimeTranscriptInvocationHeader,
   RuntimeTranscriptLandmark,
+  RuntimeTranscriptRun,
 } from './runtime-transcript-query.js';
 export type ExecutionAgentRunWriter = DurableAgentRunStore;
 export type ExecutionRuntimeEventWriter = DurableRuntimeEventStore &
@@ -737,8 +737,8 @@ async function createExecutionStoresForWrite(
         run(() => runtimeEventStore.resequenceSessionEventOrdinals(sessionId)),
       readTranscriptHighWater: (sessionId) =>
         run(() => runtimeEventStore.readTranscriptHighWater(sessionId)),
-      readTranscriptInvocations: (sessionId, request, project) =>
-        run(() => runtimeEventStore.readTranscriptInvocations(sessionId, request, project)),
+      readTranscriptRun: (sessionId, request, project) =>
+        run(() => runtimeEventStore.readTranscriptRun(sessionId, request, project)),
       readTranscriptLandmarks: (sessionId, throughOrdinal, limit) =>
         run(() => runtimeEventStore.readTranscriptLandmarks(sessionId, throughOrdinal, limit)),
       subscribeRuntimeEventCommits: (listener) => {
