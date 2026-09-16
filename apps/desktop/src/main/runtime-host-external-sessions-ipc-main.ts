@@ -18,7 +18,10 @@
  */
 
 import type { SessionChangedReason } from '@maka/core/session';
-import { RuntimeHostOperationError } from '@maka/runtime-host/client';
+import {
+  RuntimeHostOperationError,
+  RuntimeHostRequestInterruptedError,
+} from '@maka/runtime-host/client';
 import type {
   ExternalSessionCatalogQueryInput,
   ExternalSessionCatalogQueryResult,
@@ -95,23 +98,20 @@ export function registerRuntimeHostExternalSessionsIpc(
         session: toDesktopHostSessionSummary(session),
       } satisfies ExternalSessionImportIpcResult;
     } catch (error) {
+      if (isUnknownImportOutcome(error)) {
+        // The task may be in the catalog, but neither Host error shape carries
+        // an operation-specific Session id. Refresh the catalog and keep the
+        // source locked in the renderer instead of making a blind retry safe.
+        deps.emitSessionsChanged('created');
+        return {
+          ok: false,
+          reason: 'commit_outcome_unknown',
+        } satisfies ExternalSessionImportIpcResult;
+      }
       if (
         error instanceof RuntimeHostOperationError &&
         error.operation === 'external-session.import'
       ) {
-        if (error.code === 'commit_outcome_unknown') {
-          // "Unknown" means the task may well be in the catalog, so tell the
-          // shell to read it again. Without this, the only trace of a maybe-
-          // committed import is the banner on the page, and the page is gone the
-          // moment the user leaves Settings -- which is exactly when they come
-          // back and import the same conversation a second time. No id: the
-          // whole point is that we do not know which task, if any, landed.
-          deps.emitSessionsChanged('created');
-          return {
-            ok: false,
-            reason: 'commit_outcome_unknown',
-          } satisfies ExternalSessionImportIpcResult;
-        }
         const reason = classifyImportFailure(error);
         if (reason !== undefined) {
           return { ok: false, reason } satisfies ExternalSessionImportIpcResult;
@@ -120,6 +120,17 @@ export function registerRuntimeHostExternalSessionsIpc(
       throw error;
     }
   });
+}
+
+function isUnknownImportOutcome(error: unknown): boolean {
+  return (
+    (error instanceof RuntimeHostOperationError &&
+      error.operation === 'external-session.import' &&
+      error.code === 'commit_outcome_unknown') ||
+    (error instanceof RuntimeHostRequestInterruptedError &&
+      error.operation === 'external-session.import' &&
+      error.dispatch === 'dispatched')
+  );
 }
 
 /**

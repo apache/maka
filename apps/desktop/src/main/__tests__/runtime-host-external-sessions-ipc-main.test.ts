@@ -21,7 +21,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { IpcMain } from 'electron';
 import type { SessionCatalogProjection } from '@maka/runtime-host/protocol';
-import { RuntimeHostOperationError } from '@maka/runtime-host/client';
+import {
+  RuntimeHostOperationError,
+  RuntimeHostRequestInterruptedError,
+} from '@maka/runtime-host/client';
 import { decodeExternalSessionImportResult } from '@maka/runtime-host/protocol';
 import {
   registerRuntimeHostExternalSessionsIpc,
@@ -132,6 +135,36 @@ test('an uncertain commit still asks the shell to re-read the catalog', async ()
   // moment the user leaves it the banner is unmounted -- which is exactly when
   // they come back and import the same conversation again. No id, because not
   // knowing which task landed is what `commit_outcome_unknown` means.
+  assert.deepEqual(events, [{ reason: 'created', sessionId: undefined }]);
+});
+
+test('a dispatched interrupted import has the same uncertain outcome as the Host error', async () => {
+  const events: unknown[] = [];
+  const ipc = ipcHarness();
+  registerRuntimeHostExternalSessionsIpc(
+    {
+      client: clientFixture({
+        importExternalSession: async () => {
+          throw new RuntimeHostRequestInterruptedError(
+            'external-session.import',
+            'command',
+            'dispatched',
+            'connection_lost',
+          );
+        },
+      }),
+      emitSessionsChanged: (reason, sessionId) => events.push({ reason, sessionId }),
+    },
+    ipc,
+  );
+
+  assert.deepEqual(
+    await ipc.invoke('external-sessions:import', {
+      adapterId: 'codex',
+      sourceSessionId: 'source-1',
+    }),
+    { ok: false, reason: 'commit_outcome_unknown' },
+  );
   assert.deepEqual(events, [{ reason: 'created', sessionId: undefined }]);
 });
 
