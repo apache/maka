@@ -141,7 +141,7 @@ export class ClientSessionSubscription
     this.#expectedSessionId = result.snapshot.session.sessionId;
     this.#expectedSequence = result.nextSequence;
     this.#latestProjectionRevision = result.snapshot.projectionRevision;
-    this.#latestTranscriptThroughSequence = result.transcript?.throughSequence ?? null;
+    this.#latestTranscriptThroughSequence = result.transcript?.durable.throughSequence ?? null;
     this.#requestClose = requestClose;
     this.#readTranscriptPage = readTranscriptPage;
   }

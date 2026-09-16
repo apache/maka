@@ -1276,7 +1276,7 @@ test('a running Turn row committed after open reaches the subscriber as transcri
   });
   connection.activate(opened.subscriptionId);
   assert.equal(opened.snapshot.rootTurn?.status, 'running');
-  assert.equal(opened.transcript?.throughSequence, 0);
+  assert.equal(opened.transcript?.durable.throughSequence, 0);
 
   durable.push(assistantMessage('first step'));
   coordinator.enqueueTranscriptAdvanced(SESSION_ID);
@@ -1493,7 +1493,7 @@ test('large transcript messages are paged and cursors remain subscription-owned'
     {
       subscriptionId: opened.subscriptionId,
       direction: 'older',
-      throughSequence: opened.transcript.throughSequence,
+      throughSequence: opened.transcript.durable.throughSequence,
       cursor: firstCursor,
       anchorSequence: null,
       maxBytes: 1024,
@@ -1541,7 +1541,7 @@ test('an in-flight transcript page cannot outlive its owning connection', async 
     {
       subscriptionId: opened.subscriptionId,
       direction: 'older',
-      throughSequence: opened.transcript.throughSequence,
+      throughSequence: opened.transcript.durable.throughSequence,
       cursor,
       anchorSequence: null,
       maxBytes: 1024,
@@ -1616,7 +1616,7 @@ test('an in-flight transcript page cannot outlive its Guest observation grant', 
     {
       subscriptionId: opened.subscriptionId,
       direction: 'older',
-      throughSequence: opened.transcript.throughSequence,
+      throughSequence: opened.transcript.durable.throughSequence,
       cursor,
       anchorSequence: null,
       maxBytes: 1024,

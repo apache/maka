@@ -536,7 +536,6 @@ test('reassembles bounded backward pages with a timeout independent of index pre
       assert.ok(!('kind' in next) && next.operation === 'subscription.open');
       openRequest = next;
       const opened = openResult(hostEpoch, 'subscription-fragmented', {
-        throughSequence: 0,
         durable: transcriptPage({
           rawBytes: encoded.byteLength - splitAt,
           fragments: [
@@ -615,7 +614,6 @@ test('decodes one bounded page without walking the remaining transcript', async 
   const requests: Array<{ cursor: string | null; maxBytes: number }> = [];
   const subscription = new ClientSessionSubscription(
     openResult('host-1', 'subscription-bounded-page', {
-      throughSequence: 4,
       durable: {
         ...transcriptPage({
           rawBytes: encoded.byteLength - splitAt,
@@ -722,7 +720,6 @@ test('assembles the complete edge Turn while paging newer transcript', async () 
   };
   const subscription = new ClientSessionSubscription(
     openResult('host-1', 'subscription-newer-turn', {
-      throughSequence: 1,
       durable: initial,
     }),
     async () => undefined,
@@ -776,7 +773,6 @@ test('loads a durable transcript whose sequences are sparse', async () => {
   );
   const subscription = new ClientSessionSubscription(
     openResult('host-1', 'subscription-projected', {
-      throughSequence: 2,
       durable: {
         ...transcriptPage({
           rawBytes: messages.reduce((total, message) => total + message.byteLength, 0),
@@ -818,7 +814,6 @@ test('rejects a durable message that does not match its payload digest', async (
   );
   const subscription = new ClientSessionSubscription(
     openResult('host-1', 'subscription-digest-mismatch', {
-      throughSequence: 0,
       durable: transcriptPage({
         rawBytes: message.byteLength,
         fragments: [
@@ -878,7 +873,6 @@ test('rejects a transcript cursor that does not advance', async () => {
   });
   const subscription = new ClientSessionSubscription(
     openResult('host-1', 'subscription-stuck-cursor', {
-      throughSequence: 0,
       durable: repeated,
     }),
     async () => undefined,
@@ -907,7 +901,6 @@ test('close stops transcript pagination after the in-flight page', async () => {
   let pageRequests = 0;
   const subscription = new ClientSessionSubscription(
     openResult('host-1', 'subscription-closing', {
-      throughSequence: 0,
       durable: transcriptPage({
         rawBytes: Math.floor(message.byteLength / 2),
         fragments: [
@@ -1270,7 +1263,6 @@ function openResult(
 
 function transcriptBootstrap(message: Buffer): SessionTranscriptBootstrap {
   return {
-    throughSequence: 0,
     durable: transcriptPage({
       rawBytes: message.byteLength,
       fragments: [

@@ -44,7 +44,7 @@ for (const kind of ['before', 'around'] as const) {
       snapshot: continuitySnapshot(), transcript: Promise.resolve([]),
       events: { async *[Symbol.asyncIterator]() {} },
       transcriptBootstrap: {
-        throughSequence: 1, durable: bootstrap,
+        durable: bootstrap,
       },
       decodeTranscriptPage: async (candidate) => ({
         messages: candidate === bootstrap ? [latest] : [older],
@@ -82,7 +82,7 @@ test('a global cache trim empties the tail without publishing or reading history
     snapshot: continuitySnapshot(), transcript: Promise.resolve([]),
     events: { async *[Symbol.asyncIterator]() {} },
     transcriptBootstrap: {
-      throughSequence: 1, durable: bootstrap,
+      durable: bootstrap,
     },
     decodeTranscriptPage: async (candidate) => ({ messages: [decoded.get(candidate)!], nextCursor: null }),
     loadTranscriptPage: async (request) => {
@@ -119,7 +119,7 @@ test('a tail the global cache trim emptied is read back before it answers follow
     snapshot: continuitySnapshot(), transcript: Promise.resolve([]),
     events: { async *[Symbol.asyncIterator]() {} },
     transcriptBootstrap: {
-      throughSequence: 1, durable: bootstrap,
+      durable: bootstrap,
     },
     decodeTranscriptPage: async (candidate) => ({
       messages: [record(1)], nextCursor: candidate === bootstrap ? 'older' : null,
@@ -165,7 +165,7 @@ test('return to latest answers with a tail after reclaim emptied the cache', asy
       snapshot: continuitySnapshot(), transcript: Promise.resolve([]),
       events: { async *[Symbol.asyncIterator]() { await eventsClosed.promise; } },
       transcriptBootstrap: {
-        throughSequence: 1, durable: bootstrap,
+        durable: bootstrap,
       },
       // What global reclaim leaves behind: the watermark stands, the rows are gone.
       decodeTranscriptPage: async (candidate) => candidate === bootstrap
@@ -425,7 +425,7 @@ test('superseded batches remain ACKable and cannot reset the latest window while
       snapshot: continuitySnapshot(), transcript: Promise.resolve([]),
       events: { async *[Symbol.asyncIterator]() { await eventsClosed.promise; } },
       transcriptBootstrap: {
-        throughSequence: 1, durable: bootstrap,
+        durable: bootstrap,
       },
       decodeTranscriptPage: async (candidate) => ({
         messages: candidate === historyPage ? [largeOld] : [latest],
@@ -483,7 +483,7 @@ test('a fill in flight does not discard the replacement it was issued under', as
       snapshot: continuitySnapshot(), transcript: Promise.resolve([]),
       events: { async *[Symbol.asyncIterator]() { await eventsClosed.promise; } },
       transcriptBootstrap: {
-        throughSequence: 1, durable: bootstrap,
+        durable: bootstrap,
       },
       decodeTranscriptPage: async (candidate) => ({
         messages: [candidate === bootstrap ? record(1) : record(0)], nextCursor: null,

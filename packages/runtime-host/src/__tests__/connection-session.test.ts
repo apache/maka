@@ -1774,7 +1774,6 @@ function canonicalProjection(sessionId: string): CanonicalSessionProjection {
 function transcriptBootstrapFor(sessionId: string) {
   const contents = Buffer.from('t'.repeat(16 * 1024));
   return {
-    throughSequence: 0,
     durable: {
       kind: 'page' as const,
       sessionId,

@@ -46,7 +46,7 @@ test('reads newly durable messages forward from an announced watermark', async (
     maxBytes: 1024,
     projection: 'owner',
   });
-  assert.equal(bootstrap.throughSequence, 1);
+  assert.equal(bootstrap.durable.throughSequence, 1);
 
   durable.push(userMessage(2), userMessage(3));
   assert.equal(updateSubscriberTranscriptHighWater(state, 3), true);
