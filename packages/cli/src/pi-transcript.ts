@@ -26,7 +26,7 @@ import type {
   SandboxBoundaryRequestEvent,
   UserQuestionRequestEvent,
   SessionEvent,
-  ShellRunSnapshotResult,
+  ShellRunStateResult,
   ToolOutputStream,
   ToolResultContent,
 } from '@maka/core/events';
@@ -392,7 +392,7 @@ export function applyShellRunUpdateToTranscript(
 /** Adds a local-only card for a `!<command>` resource without creating a model turn. */
 export function appendUserCommandToTranscript(
   state: MakaPiTranscriptState,
-  input: { commandId: string; command: string; result: ShellRunSnapshotResult },
+  input: { commandId: string; command: string; result: ShellRunStateResult },
 ): void {
   state.entries.push({
     kind: 'tool',

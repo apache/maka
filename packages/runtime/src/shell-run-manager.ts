@@ -390,7 +390,7 @@ export class ShellRunProcessManager
     let resizeChanged = false;
     let operationFailed = false;
     let exitBeforeControlCut = false;
-    const controlCut = live.collector.mutateAndSnapshotAtCut(() => {
+    const mutation = (): void => {
       if (input.abortSignal?.aborted) {
         throw abortError('WriteStdin aborted before the control operation was committed');
       }
@@ -433,14 +433,24 @@ export class ShellRunProcessManager
           this.handleIntegrityFailure(live, asError(error, 'PTY input write failed'));
         }
       }
-    });
-    const persistedControl = this.persistObservation(
-      live,
-      controlCut.then(
-        (snapshot) => (operationFailed || exitBeforeControlCut ? undefined : snapshot),
-        () => undefined,
-      ),
-    );
+    };
+    // Client control replies carry no output, so the keystroke path only needs
+    // the ordered mutation, not the snapshot + persist. The record still
+    // refreshes through output-driven flushes; a resize changes the screen
+    // without output, so that one is persisted eagerly.
+    const clientControl = input.caller === 'client';
+    const controlCut = clientControl
+      ? live.collector.mutateAtCut(mutation).then(() => undefined)
+      : live.collector.mutateAndSnapshotAtCut(mutation);
+    const persistedControl = clientControl
+      ? undefined
+      : this.persistObservation(
+          live,
+          controlCut.then(
+            (snapshot) => (operationFailed || exitBeforeControlCut ? undefined : snapshot),
+            () => undefined,
+          ),
+        );
     try {
       await controlCut;
     } catch (error) {
@@ -466,22 +476,27 @@ export class ShellRunProcessManager
       return shellRunContent(record, operation);
     }
     let record: ShellRunRecord;
-    try {
-      record = await persistedControl;
-    } catch (error) {
-      if (live.integrityFailure && !live.persistFailure) {
-        record = await this.markObserved(await live.finished.join());
-        return shellRunContent(
-          record,
-          ptyControlOperation(input, {
-            inputQueued,
-            resizeApplied,
-            resizeChanged,
-            failed: true,
-          }),
-        );
+    if (persistedControl) {
+      try {
+        record = await persistedControl;
+      } catch (error) {
+        if (live.integrityFailure && !live.persistFailure) {
+          record = await this.markObserved(await live.finished.join());
+          return shellRunContent(
+            record,
+            ptyControlOperation(input, {
+              inputQueued,
+              resizeApplied,
+              resizeChanged,
+              failed: true,
+            }),
+          );
+        }
+        throw error;
       }
-      throw error;
+    } else {
+      record = live.record;
+      if (resizeChanged) void this.persistObservation(live).catch(() => undefined);
     }
     if (live.integrityFailure && !live.persistFailure) {
       record = await this.markObserved(await live.finished.join());
@@ -495,7 +510,6 @@ export class ShellRunProcessManager
         }),
       );
     }
-    // persistObservation decides whether to join finalization at call time.
     // A real PTY can exit while that persist is still in flight, leaving a
     // running snapshot here even though finalizeOnce has already started.
     if (live.driverExit || live.finalizeOnce) {
@@ -503,7 +517,7 @@ export class ShellRunProcessManager
       return shellRunContent(record, operation);
     }
     if (isTerminalShellRunStatus(record.status)) record = await this.markObserved(record);
-    return shellRunContent(record, operation);
+    return clientControl ? compactShellRunContent(record) : shellRunContent(record, operation);
   }
 
   async readRuntimeResource(
@@ -597,7 +611,7 @@ export class ShellRunProcessManager
       sessionId,
       ref,
       sequence: live.rawSequence,
-      buffer: live.rawBuffer,
+      buffer: live.rawBuffer.slice(-PTY_RAW_REPLAY_CHARS),
       size: live.collector.currentSize(),
     };
   }
@@ -998,7 +1012,12 @@ export class ShellRunProcessManager
 
   private onPtyData(live: LivePtyShellRun, data: string): void {
     if (live.driverExit || live.finalizeOnce) return;
-    live.rawBuffer = `${live.rawBuffer}${data}`.slice(-PTY_RAW_REPLAY_CHARS);
+    // Amortize the tail trim: slicing on every tiny node-pty event copies the
+    // whole 16K replay buffer per event.
+    live.rawBuffer += data;
+    if (live.rawBuffer.length > PTY_RAW_REPLAY_CHARS * 2) {
+      live.rawBuffer = live.rawBuffer.slice(-PTY_RAW_REPLAY_CHARS);
+    }
     live.collector.accept(data);
     for (const chunk of splitPtyData(data)) {
       const combined = `${live.pendingRawData}${chunk}`;

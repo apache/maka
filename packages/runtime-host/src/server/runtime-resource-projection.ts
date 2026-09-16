@@ -20,12 +20,7 @@
 import { JsonArrayPageBudget } from './json-array-page-budget.js';
 
 import { createHash } from 'node:crypto';
-import type {
-  ShellRunSnapshotResult,
-  ShellRunStateResult,
-  ShellRunUpdate,
-  ToolResultContent,
-} from '@maka/core/events';
+import type { ShellRunStateResult, ShellRunUpdate } from '@maka/core/events';
 import {
   decodeRuntimeResourceQueryResult,
   RUNTIME_RESOURCE_PAGE_MAX_ITEMS,
@@ -94,25 +89,6 @@ export function createRuntimeResourcePage(
     resources: pageResources,
     nextCursor: nextOffset < resources.length ? String(nextOffset) : null,
   });
-}
-
-export function boundedRuntimeResourceSnapshot(
-  snapshot: ShellRunSnapshotResult,
-): ShellRunSnapshotResult {
-  const bounded = structuredClone(snapshot);
-  shrinkStateToFit(bounded);
-  if (bounded.output === undefined) throw new Error('Runtime Resource snapshot lost its output');
-  return bounded;
-}
-
-export function runtimeResourceSnapshotFromResult(
-  result: ToolResultContent,
-): ShellRunSnapshotResult {
-  if (result.kind !== 'shell_run' || result.output === undefined) {
-    throw new Error('Runtime Resource operation did not produce a ShellRun snapshot');
-  }
-  const { operation: _operation, ...snapshot } = result;
-  return snapshot;
 }
 
 function shrinkStateToFit(state: ShellRunStateResult): void {

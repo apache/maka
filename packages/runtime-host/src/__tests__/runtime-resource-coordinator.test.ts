@@ -426,12 +426,12 @@ describe('Host Runtime Resource coordinator', () => {
     harness.finishBackground({ successful: true });
   });
 
-  test('stops a launched one-shot command when the initial inspection fails', async () => {
-    // The command is live once runBackgroundBash returns; if the post-launch
-    // snapshot then fails, the operation must report failure AND stop the
-    // process, so a client retry cannot double-execute (#3210 review).
+  test('stops a launched one-shot command when the start reply cannot be honored', async () => {
+    // The command is live once runBackgroundBash returns; if the launch result
+    // cannot be encoded for the reply, the operation must report failure AND
+    // stop the process, so a client retry cannot double-execute (#3210 review).
     const harness = createHarness();
-    harness.inspectFailure = new Error('snapshot encode failed');
+    harness.malformedStartResult = true;
     const started = await harness.coordinator.handlers['runtime.resource.start'](
       { sessionId: SESSION_ID, launchId: 'user-command-1', command: 'sleep 3600' },
       connection('connection-1'),
@@ -632,8 +632,7 @@ describe('Host Runtime Resource coordinator', () => {
       { sessionId: SESSION_ID, ref: RUNTIME_REF },
       secondConnection,
     );
-    assert.equal(stopped.ok, true);
-    assert.equal(stopped.ok && stopped.result.resource.status, 'cancelled');
+    assert.deepEqual(stopped.ok && stopped.result, {});
     const retried = await harness.coordinator.handlers['runtime.resource.controller.control'](
       control,
       firstConnection,
@@ -797,7 +796,6 @@ function createHarness(
 ) {
   let backgroundCompletion: ShellRunBashInput['onCompletion'];
   let currentSnapshot = ptySnapshot();
-  let lastStartedSnapshot: ShellRunSnapshotResult | undefined;
   const state = {
     updates: [resourceUpdate(0)],
     sessionState: 'active' as 'active' | 'archived' | 'missing',
@@ -812,7 +810,7 @@ function createHarness(
     pointReadBarrier: undefined as Promise<void> | undefined,
     pointReadStarted: undefined as (() => void) | undefined,
     stateReadFailure: undefined as Error | undefined,
-    inspectFailure: undefined as Error | undefined,
+    malformedStartResult: false as boolean,
     activeResidencies: 0,
     lastBackgroundInput: undefined as ShellRunBashInput | undefined,
     lastForegroundInput: undefined as ShellRunBashInput | undefined,
@@ -829,11 +827,14 @@ function createHarness(
       state.lastBackgroundInput = input;
       backgroundCompletion = input.onCompletion;
       if (input.pty) {
-        lastStartedSnapshot = currentSnapshot;
         const { output: _output, ...snapshot } = currentSnapshot;
         return snapshot;
       }
-      lastStartedSnapshot = { ...pipeSnapshot(0), cmd: input.command };
+      if (state.malformedStartResult) {
+        // A launch result the start reply cannot encode must still stop the
+        // process so a client retry cannot double-execute.
+        return {} as never;
+      }
       return compactState(0);
     },
     readRuntimeResource: async () => currentSnapshot,
@@ -882,10 +883,6 @@ function createHarness(
         },
       };
     },
-    inspectResource: async () => {
-      if (state.inspectFailure) throw state.inspectFailure;
-      return structuredClone(lastStartedSnapshot ?? currentSnapshot);
-    },
     getLivePtySnapshot: (sessionId, ref) => ({
       sessionId,
       ref,
@@ -911,7 +908,10 @@ function createHarness(
         state.pointReadStarted?.();
         await state.pointReadBarrier;
         if (state.stateReadFailure) throw state.stateReadFailure;
-        return structuredClone(state.updates.find((update) => update.result.ref === ref) ?? null);
+        return structuredClone(
+          state.updates.find((update) => update.result.ref === ref) ??
+            (ref === RUNTIME_REF ? ptyUpdate() : null),
+        );
       },
     },
     sessionHeaders: {
@@ -999,6 +999,16 @@ function resourceUpdate(index: number, overrides: Partial<ShellRunUpdate> = {}):
     sourceToolCallId: `tool-${index}`,
     result: pipeSnapshot(index),
     ...overrides,
+  };
+}
+
+function ptyUpdate(): ShellRunUpdate {
+  return {
+    sessionId: SESSION_ID,
+    ownership: { kind: 'local' },
+    sourceTurnId: 'turn-pty',
+    sourceToolCallId: 'tool-pty',
+    result: ptySnapshot(),
   };
 }
 

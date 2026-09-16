@@ -174,8 +174,7 @@ describe('real Host Runtime Resource process lifecycle', {
       { sessionId: SESSION_ID, ref: background.ref },
       secondConnection,
     );
-    assert.equal(stopped.ok, true);
-    assert.equal(stopped.ok && stopped.result.resource.status, 'completed');
+    assert.deepEqual(stopped.ok && stopped.result, {});
 
     const queried = await coordinator.handlers['runtime.resource.query'](
       { kind: 'get', sessionId: SESSION_ID, ref: background.ref },

@@ -46,6 +46,7 @@ import {
 } from '../shell-run-contract.js';
 import { defaultShellPlan, type ShellPlan } from '../shell-detect.js';
 import { PtyProcessDriver } from '../pty-process-driver.js';
+import xtermHeadless from '@xterm/headless';
 import { PTY_PROTOCOL_REPLY_MAX_BYTES } from '../pty-screen-collector.js';
 import { waitFor } from '@maka/core/test-only/async-primitives';
 
@@ -1945,11 +1946,32 @@ describe('ShellRunProcessManager', () => {
 
   test('joins finalization when a real PTY exits before a queued control cut', async () => {
     const cwd = await workspace();
-    const dsrSeen = join(cwd, 'dsr-seen');
     const exitGate = join(cwd, 'exit-gate');
     const sizeBeforeExit = join(cwd, 'size-before-exit');
     const store = sqliteShellRunStore(await workspace());
     const manager = createManager(store);
+
+    // Hold one parser write so the control queues behind a real cut while the
+    // process exits; the exit flag then lands before the queued mutation runs.
+    const { Terminal } = xtermHeadless;
+    const originalWrite = Terminal.prototype.write;
+    let holdNextParse = false;
+    let releaseHeldParse: (() => void) | undefined;
+    Terminal.prototype.write = function (
+      this: InstanceType<typeof Terminal>,
+      data: string | Uint8Array,
+      callback?: () => void,
+    ): void {
+      if (holdNextParse && typeof data === 'string' && data.includes('HOLD-PARSE') && callback) {
+        holdNextParse = false;
+        return originalWrite.call(this, data, () => {
+          releaseHeldParse = callback;
+        });
+      }
+      return originalWrite.call(this, data, callback);
+    };
+    const liveRuns = (manager as unknown as { live: Map<string, { driverExit?: unknown }> }).live;
+
     const initial = await manager.runBackgroundBash(
       shellInput({
         cwd,
@@ -1957,40 +1979,24 @@ describe('ShellRunProcessManager', () => {
         const { readFileSync, writeFileSync } = require('node:fs');
         process.stdin.setRawMode?.(true);
         process.stdin.resume();
-        let received = Buffer.alloc(0);
-        let started = false;
-        let armed = false;
-
-        const exitWhenReleased = () => {
-          try {
-            readFileSync(${JSON.stringify(exitGate)});
-          } catch (error) {
-            if (error.code !== 'ENOENT') throw error;
-            setImmediate(exitWhenReleased);
-            return;
-          }
-          writeFileSync(
-            ${JSON.stringify(sizeBeforeExit)},
-            process.stdout.columns + 'x' + process.stdout.rows,
-          );
-          process.exit(0);
-        };
-
-        process.stdin.on('data', (chunk) => {
-          received = Buffer.concat([received, chunk]);
-          if (!started && received.includes(Buffer.from('START'))) {
-            started = true;
-            process.stdout.write(
-              '\\u001b[5n' + '\\u001b[2K\\r.'.repeat(256 * 1024),
+        process.stdin.once('data', () => {
+          process.stdout.write('HOLD-PARSE\\n');
+          const wait = () => {
+            try {
+              readFileSync(${JSON.stringify(exitGate)});
+            } catch (error) {
+              if (error.code !== 'ENOENT') throw error;
+              setImmediate(wait);
+              return;
+            }
+            writeFileSync(
+              ${JSON.stringify(sizeBeforeExit)},
+              process.stdout.columns + 'x' + process.stdout.rows,
             );
-          }
-          if (!armed && received.includes(Buffer.from('\\u001b[0n'))) {
-            armed = true;
-            writeFileSync(${JSON.stringify(dsrSeen)}, '1b5b306e');
-            exitWhenReleased();
-          }
+            process.exit(0);
+          };
+          wait();
         });
-
         process.stdout.write(
           'READY:' + process.stdout.columns + 'x' + process.stdout.rows + '\\n',
         );
@@ -2003,25 +2009,19 @@ describe('ShellRunProcessManager', () => {
 
     try {
       await waitForPtyText(manager, initial.ref, /READY:80x24/);
+      holdNextParse = true;
       const prime = await manager.writeStdin({
         sessionId: 'session-1',
         ref: initial.ref,
-        input: 'START',
+        input: 'GO',
         abortSignal: NO_ABORT,
       });
       assert.deepEqual(prime.operation, {
         kind: 'pty_control',
         failed: false,
-        input: { bytes: 5, queued: true },
+        input: { bytes: 2, queued: true },
       });
-      await waitUntil(async () => {
-        try {
-          return (await readFile(dsrSeen, 'utf8')) === '1b5b306e';
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
-          throw error;
-        }
-      }, 15_000);
+      await waitUntil(() => releaseHeldParse !== undefined, 15_000);
 
       const pending = manager.writeStdin({
         sessionId: 'session-1',
@@ -2030,6 +2030,11 @@ describe('ShellRunProcessManager', () => {
         abortSignal: NO_ABORT,
       });
       await writeFile(exitGate, 'exit');
+      await waitUntil(
+        () => [...liveRuns.values()].some((live) => live.driverExit !== undefined),
+        15_000,
+      );
+      releaseHeldParse?.();
       const control = await pending;
 
       assert.equal(await readFile(sizeBeforeExit, 'utf8'), '80x24');
@@ -2054,6 +2059,8 @@ describe('ShellRunProcessManager', () => {
       assert.equal(durable.revision, terminal.revision);
       assert.equal(manager.liveCount(), 0);
     } finally {
+      Terminal.prototype.write = originalWrite;
+      releaseHeldParse?.();
       if (manager.liveCount() > 0) {
         await manager.stopBackgroundTask('session-1', initial.ref, NO_ABORT);
       }
