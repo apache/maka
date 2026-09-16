@@ -327,7 +327,7 @@ jobs:
         env:
           NODE_VERSION: ${{ matrix.node }}
         run: |
-          echo "The installed tarball failed on Node $NODE_VERSION" >&2
+          echo "The installed tarball failed on Node $NODE_VERSION"
           exit 1
 
   state-root-qualification:

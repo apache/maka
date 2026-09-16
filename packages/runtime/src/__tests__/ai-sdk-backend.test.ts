@@ -10395,6 +10395,92 @@ describe('AiSdkBackend RunTrace', () => {
     );
   });
 
+  for (const [label, responseHeaders] of [
+    ['names no retry delay', undefined],
+    ['names an unparseable retry delay', { 'retry-after': 'not-a-delay' }],
+  ] as const) {
+    test(`retries a gateway rate limit that ${label}`, async () => {
+      let calls = 0;
+      const model = new MockLanguageModelV4({
+        doStream: async () => {
+          calls += 1;
+          if (calls === 1) {
+            throw new APICallError({
+              message: 'Upstream model provider is temporarily unavailable.',
+              url: 'https://gateway.invalid/v1/chat/completions',
+              requestBodyValues: {},
+              statusCode: 429,
+              ...(responseHeaders ? { responseHeaders } : {}),
+              data: {
+                error: {
+                  code: 'rate_limit_error',
+                  message: 'Upstream model provider is temporarily unavailable.',
+                },
+              },
+            });
+          }
+          return {
+            stream: simulateReadableStream({
+              chunks: [
+                { type: 'stream-start', warnings: [] },
+                { type: 'text-start', id: 'text-1' },
+                { type: 'text-delta', id: 'text-1', delta: 'recovered' },
+                { type: 'text-end', id: 'text-1' },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'stop', raw: 'stop' },
+                  usage: {
+                    inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+                    outputTokens: { total: 1, text: 1, reasoning: 0 },
+                  },
+                },
+              ],
+              initialDelayInMs: null,
+              chunkDelayInMs: null,
+            }),
+          };
+        },
+      });
+      const backend = createBackend({
+        connection: connection(),
+        modelId: 'mock-model-id',
+        modelFactory: () => model,
+        tools: [],
+        providerRetrySleep: async () => {},
+      });
+
+      const events: SessionEvent[] = [];
+      for await (const event of backend.send({ turnId: 'turn-1', text: 'hi', context: [] })) {
+        events.push(event);
+      }
+
+      assert.equal(calls, 2);
+      const retries = events.filter((event) => event.type === 'provider_retry');
+      assert.deepEqual(
+        retries.map(({ phase, reason }) => ({ phase, reason })),
+        [
+          { phase: 'scheduled', reason: 'rate_limit' },
+          { phase: 'started', reason: 'rate_limit' },
+        ],
+      );
+      // The provider named no usable delay, so the Turn's own first backoff step
+      // sets the wait: 1s base plus up to 25% jitter.
+      const delayMs = retries.flatMap((event) =>
+        event.phase === 'scheduled' ? [event.delayMs] : [],
+      );
+      assert.equal(delayMs.length, 1);
+      assert.ok(
+        delayMs[0]! >= 1_000 && delayMs[0]! <= 1_250,
+        `unexpected retry delay ${delayMs[0]}`,
+      );
+      assert.equal(
+        events.some((event) => event.type === 'error'),
+        false,
+      );
+      assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'end_turn');
+    });
+  }
+
   test('preserves a finished answer without regenerating when the provider connection stays open', async () => {
     const timers = manualWatchdogTimer();
     const assistants: AssistantMessage[] = [];

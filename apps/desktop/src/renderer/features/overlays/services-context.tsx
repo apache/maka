@@ -17,28 +17,13 @@
  * under the License.
  */
 
-import { createDefaultRuntimePolicy } from '@maka/core/runtime-policy';
+import { createServicesContext } from '../../application/contracts/feature-services.js';
+import type { OverlaysServices } from './ports.js';
 
-export function makaEvalRuntimePolicyDocument(proxyUrl?: string) {
-  const policy = createDefaultRuntimePolicy();
-  const proxy = proxyUrl ? new URL(proxyUrl) : undefined;
-  return {
-    schemaVersion: 2 as const,
-    revision: 0,
-    policy: {
-      ...policy,
-      ...(proxy
-        ? {
-            networkProxy: {
-              ...policy.networkProxy,
-              enabled: true,
-              protocol: 'http' as const,
-              host: proxy.hostname,
-              port: Number(proxy.port || 80),
-            },
-          }
-        : {}),
-      privacy: { incognitoActive: true },
-    },
-  };
+const { Provider, useServices } = createServicesContext<OverlaysServices>('OverlaysServicesProvider');
+
+export const OverlaysServicesProvider = Provider;
+
+export function useOverlaysServices(): OverlaysServices {
+  return useServices();
 }

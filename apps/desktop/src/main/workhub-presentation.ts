@@ -39,7 +39,9 @@ export interface WorkHubPresentationDeps {
   viteDevServerUrl?: string;
   preloadPath: string;
   onError?: (error: unknown) => void;
-  onViewCreated?: (contents: Electron.WebContents) => (() => void) | void;
+  onViewCreated?: (contents: Electron.WebContents, view: WebContentsView) => (() => void) | void;
+  /** Revoke native browser actions when this persistent renderer leaves the screen. */
+  onVisibilityChanged?: () => void;
 }
 
 /** One renderer owns the conversation, draft and model selection for its entire lifetime. */
@@ -98,7 +100,10 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     for (const wc of contents) if (wc && !wc.isDestroyed()) wc.send(channel, ...args);
   }
 
-  function changed(): void { send('workhub-presentation:changed', getSnapshot()); }
+  function changed(): void {
+    deps.onVisibilityChanged?.();
+    send('workhub-presentation:changed', getSnapshot());
+  }
 
   function focusComposer(): void {
     focusPending = true;
@@ -130,7 +135,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     rendererCrashed = false;
     view.setVisible(false);
     view.setBackgroundColor('#00000000');
-    const release = deps.onViewCreated?.(view.webContents);
+    const release = deps.onViewCreated?.(view.webContents, view);
     releaseView = typeof release === 'function' ? release : undefined;
     view.webContents.once('destroyed', releaseViewRegistration);
     installMainWindowPermissionPolicy(view.webContents, entry.url);
@@ -273,6 +278,10 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     // a Dock-less accessory application.
     if (process.platform === 'darwin') floating.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true, skipTransformProcessType: true });
     floating.on('resize', fitFloating);
+    floating.on('hide', () => deps.onVisibilityChanged?.());
+    floating.on('minimize', () => deps.onVisibilityChanged?.());
+    floating.on('show', () => deps.onVisibilityChanged?.());
+    floating.on('restore', () => deps.onVisibilityChanged?.());
     floating.on('close', (event) => {
       if (disposed) return;
       event.preventDefault();
@@ -297,6 +306,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     const height = Math.max(0, Math.min(size.height - y, Math.round(host.rect.height * zoom)));
     setViewBounds({ x, y, width, height });
     view.setVisible(host.visible && !host.occluded && width > 0 && height > 0);
+    deps.onVisibilityChanged?.();
     if (host.visible && width > 0 && height > 0 && focusPending) focusComposer();
   }
 
@@ -453,15 +463,22 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
       changed();
     };
     const onLoading = () => mainReady.delete(contents);
+    const onVisibilityChanged = () => deps.onVisibilityChanged?.();
     contents.on('did-start-loading', onLoading);
     main.on('close', onClose);
     main.on('resize', updateDockedBounds);
     main.on('show', updateDockedBounds);
+    main.on('hide', onVisibilityChanged);
+    main.on('minimize', onVisibilityChanged);
+    main.on('restore', onVisibilityChanged);
     const cleanup = () => {
       if (!contents.isDestroyed()) contents.removeListener('did-start-loading', onLoading);
       main.removeListener('close', onClose);
       main.removeListener('resize', updateDockedBounds);
       main.removeListener('show', updateDockedBounds);
+      main.removeListener('hide', onVisibilityChanged);
+      main.removeListener('minimize', onVisibilityChanged);
+      main.removeListener('restore', onVisibilityChanged);
       mainListeners.delete(main);
     };
     main.once('closed', cleanup);

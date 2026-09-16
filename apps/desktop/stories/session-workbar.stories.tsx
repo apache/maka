@@ -41,8 +41,8 @@ import {
   type QuoteCompanionPanelState,
   type SessionWorkbarTab,
   type SessionWorkbarTabKind,
-  type WorkbarSessionUsageSummary,
   type SessionExecutionProjection,
+  type SessionUsageSummary,
 } from '../src/renderer/features/workbar/testing';
 
 // Fidelity convention (#1433): every story below names the real app path
@@ -706,7 +706,7 @@ const olderTrace: SessionTrace = {
   ],
 };
 
-const emptyUsageSummary: WorkbarSessionUsageSummary = {
+const emptyUsageSummary: SessionUsageSummary = {
   range: { from: NOW, to: NOW },
   totalRequests: 0,
   totalCostUsd: 0,
@@ -738,7 +738,7 @@ const emptyUsageSummary: WorkbarSessionUsageSummary = {
   },
 };
 
-const populatedUsageSummary: WorkbarSessionUsageSummary = {
+const populatedUsageSummary: SessionUsageSummary = {
   range: { from: NOW, to: NOW + 43_600 },
   totalRequests: 3,
   totalCostUsd: 0.0243,

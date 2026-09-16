@@ -31,7 +31,7 @@
  * compensates for content that lands above them; that belongs to the authority.
  */
 
-import { useEffect, useRef, useState, type RefObject } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react';
 import type { StoredMessage } from '@maka/core/session';
 import { useTranscriptScrollAuthority } from './transcript-scroll-authority.js';
 import type { TranscriptViewportNavigation } from './transcript-viewport-navigation.js';
@@ -48,7 +48,6 @@ export function useChatScroll(input: {
    */
   target?: { turnId: string; nonce: number; preserveFocus?: boolean; align?: 'start' | 'center' };
   restoreTarget?: { turnId: string; unavailable?: boolean };
-  onTargetHandled?(nonce: number): void;
   viewportNavigation?: TranscriptViewportNavigation;
   onReadingAnchorChange?(turnId?: string): void;
   behavior: ScrollBehavior;
@@ -68,8 +67,6 @@ export function useChatScroll(input: {
   const handledTarget = useRef<string | null>(null);
   const anchorChangeRef = useRef(input.onReadingAnchorChange);
   anchorChangeRef.current = input.onReadingAnchorChange;
-  const targetHandledRef = useRef(input.onTargetHandled);
-  targetHandledRef.current = input.onTargetHandled;
   const reportReadingAnchor = useRef<(() => void) | undefined>(undefined);
   const reportedAnchor = useRef<{ sessionId?: string; turnId?: string } | undefined>(undefined);
   const activation = useRef<{ sessionId?: string; restoreTurnId?: string } | undefined>(undefined);
@@ -197,13 +194,14 @@ export function useChatScroll(input: {
     const check = (): void => {
       if (!root.isConnected || bandCheck.current !== check) return;
       const screen = Math.max(320, root.clientHeight);
-      const above = root.scrollTop;
-      const below = root.scrollHeight - root.clientHeight - root.scrollTop;
+      const above = Math.max(0, root.scrollTop);
+      const below = Math.max(0, root.scrollHeight - root.clientHeight - root.scrollTop);
       if (canLoad('up') && above < screen * 2) requestHistory('up');
       if (canLoad('down') && below < screen * 2) requestHistory('down');
-      // Source pages may have arrived without entering the DOM yet. Its old
-      // IDs cannot trim that source; settled rechecks after publication.
-      if (authority.isInputActive()) return;
+      // A read owns its pending range until publication finishes. Input may
+      // settle first; trimming from the old DOM then discards incoming rows.
+      // The read completion rechecks this band against the published window.
+      if (authority.isInputActive() || inFlight.up || inFlight.down) return;
       if (above <= screen * 6 && below <= screen * 6) return;
       const rect = root.getBoundingClientRect();
       const turns = [...root.querySelectorAll<HTMLElement>('[data-turn-id]')];
@@ -217,9 +215,12 @@ export function useChatScroll(input: {
         ? commandTargetTurnId.current
         : undefined;
       if (pending && turns.some((turn) => turn.dataset.turnId === pending)) return;
+      const selection = root.ownerDocument.getSelection?.();
       const kept = turns.filter((turn) => {
         const box = turn.getBoundingClientRect();
-        return box.bottom >= rect.top - screen * 4 && box.top <= rect.bottom + screen * 4;
+        return (box.bottom >= rect.top - screen * 4 && box.top <= rect.bottom + screen * 4)
+          || turn.contains(root.ownerDocument.activeElement)
+          || Boolean(selection && !selection.isCollapsed && selection.containsNode(turn, true));
       });
       const first = kept[0]?.dataset.turnId;
       const last = kept.at(-1)?.dataset.turnId;
@@ -241,12 +242,19 @@ export function useChatScroll(input: {
     // leaves the pin and the reading Turn alone reaches nothing but this.
     const size = new ResizeObserver(() => check());
     size.observe(root);
+    // The retained window also protects focus and selection. Releasing either
+    // makes distant rows eligible for the same existing eviction pass.
+    const afterFocus = () => queueMicrotask(check);
+    root.addEventListener('focusout', afterFocus);
+    root.ownerDocument.addEventListener('selectionchange', check);
     const frame = window.requestAnimationFrame(check);
     return () => {
       window.cancelAnimationFrame(frame);
       if (bandCheck.current === check) bandCheck.current = undefined;
       stopWatchingReader();
       size.disconnect();
+      root.removeEventListener('focusout', afterFocus);
+      root.ownerDocument.removeEventListener('selectionchange', check);
     };
   }, [authority, input.hasOlderHistory, input.hasNewerHistory, canPrefetch,
     input.scrollRef, input.sessionId]);
@@ -256,7 +264,7 @@ export function useChatScroll(input: {
     return () => window.cancelAnimationFrame(frame);
   }, [input.messages]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const explicitTarget = input.target?.turnId
       ? {
           kind: 'search' as const,
@@ -287,7 +295,7 @@ export function useChatScroll(input: {
       : restoreCommandKey(input.sessionId, target.turnId, target.unavailable);
     if (handledTarget.current === chosen) return;
     authority.releasePin();
-    const frame = window.requestAnimationFrame(() => {
+    const reveal = () => {
       if (commandTarget.current !== chosen) return;
       // A reader who asked for the tail while this frame was queued outranks it:
       // the bookmark describes where they were, the pin where they said to be.
@@ -309,7 +317,7 @@ export function useChatScroll(input: {
       handledTarget.current = chosen;
       const targetElement = element as HTMLElement;
       const alignToStart = target.kind !== 'search' || target.align === 'start';
-      targetElement.scrollIntoView({
+      authority.revealTurn(targetElement, {
         // A reveal that agrees with a requester already aiming this turn has to
         // be instant too: an animated one is a second writer moving the
         // scroller for a second after the requester has landed it.
@@ -326,15 +334,18 @@ export function useChatScroll(input: {
         targetElement.focus({ preventScroll: true });
       }
       setHighlightedTurnId(target.turnId);
-      targetHandledRef.current?.(target.nonce);
-    });
+    };
+    // A newly published range and its explicit reveal must reach the screen
+    // together. Only initial attachment waits for the ancestor's ref.
+    const frame = input.scrollRef.current ? undefined : window.requestAnimationFrame(reveal);
+    if (input.scrollRef.current) reveal();
     const clear = target.kind === 'search'
       ? window.setTimeout(() => {
           setHighlightedTurnId((current) => (current === target.turnId ? null : current));
         }, 2200)
       : undefined;
     return () => {
-      window.cancelAnimationFrame(frame);
+      if (frame !== undefined) window.cancelAnimationFrame(frame);
       if (clear !== undefined) window.clearTimeout(clear);
     };
   });

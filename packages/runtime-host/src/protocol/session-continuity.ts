@@ -28,6 +28,7 @@ import {
   requireEntityId,
   requireExactRecord,
   requireId,
+  requireOpaqueIdentity,
   requireRecord,
 } from './codec.js';
 import { invalidProtocolFrame } from './errors.js';
@@ -822,7 +823,7 @@ function decodeSessionToolEvent(value: unknown): SessionToolEvent {
     id: requireId(record.id, 'Session tool event id'),
     turnId: requireEntityId(record.turnId, 'turnId'),
     ts: requireCount(record.ts, 'Session tool event timestamp'),
-    toolUseId: requireId(record.toolUseId, 'toolUseId'),
+    toolUseId: requireOpaqueIdentity(record.toolUseId, 'toolUseId'),
   };
   if (record.type === 'tool_start') {
     const allowed = [
@@ -891,7 +892,9 @@ function decodeSessionToolEvent(value: unknown): SessionToolEvent {
       ...(record.argsPreview === undefined
         ? {}
         : { argsPreview: structuredClone(record.argsPreview) }),
-      ...(record.stepId === undefined ? {} : { stepId: requireEntityId(record.stepId, 'stepId') }),
+      ...(record.stepId === undefined
+        ? {}
+        : { stepId: requireOpaqueIdentity(record.stepId, 'stepId') }),
       ...(record.shellRunRef === undefined
         ? {}
         : { shellRunRef: decodeRuntimeResourceRef(record.shellRunRef) }),

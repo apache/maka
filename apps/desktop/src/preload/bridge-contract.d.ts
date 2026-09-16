@@ -1597,10 +1597,12 @@ export interface MakaBridge {
   search: {
     thread(
       request: SearchRequest,
+      requestId?: string,
     ): Promise<
       | SearchResult[]
       | { ok: false; reason: SearchErrorReason; message: string }
     >;
+    cancelThread(requestId: string): Promise<void>;
   };
   openAiCodex: {
     getAuthUrl(host: DesktopRuntimeHostRef | undefined, target: DesktopOAuthLoginTarget): Promise<DesktopOAuthAuthorizationStartResult>;

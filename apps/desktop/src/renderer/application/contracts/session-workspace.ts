@@ -17,27 +17,22 @@
  * under the License.
  */
 
-/**
- * Shared types for the Command Palette. Pulled out of
- * `command-palette.tsx` so non-JSX consumers can import them under the
- * main-process tsconfig that does not compile JSX.
- */
+import type { ComponentType, ReactNode, RefObject } from 'react';
+import type { SessionSummary } from '@maka/core/session';
+import type { ChatModelChoice, ComposerHandle } from '@maka/ui';
 
-import type { LucideIcon } from '@maka/ui/icons';
-
-export type CommandKind = 'action' | 'session';
-
-export interface Command {
-  id: string;
-  kind: CommandKind;
-  label: string;
-  hint?: string;
-  platformHint?: {
-    apple: string;
-    other: string;
-  };
-  group: string;
-  Icon: LucideIcon;
-  keywords?: string[];
-  run(): void | Promise<void>;
+/** Composition supplies the same session workspace used by ordinary conversations. */
+export interface SessionWorkspaceProps {
+  className?: string;
+  layoutScope?: string;
+  session?: SessionSummary;
+  sessionIds: ReadonlySet<string> | undefined;
+  modelChoices: readonly ChatModelChoice[];
+  visible: boolean;
+  composerRef: RefObject<ComposerHandle | null>;
+  onShowConversation(): void;
+  onOpenSession(sessionId: string): void;
+  children(workbar: { openUsage(): void; toggle: ReactNode }): ReactNode;
 }
+
+export type SessionWorkspaceComponent = ComponentType<SessionWorkspaceProps>;

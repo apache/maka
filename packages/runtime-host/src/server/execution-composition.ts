@@ -84,7 +84,7 @@ import {
   resolveTurnShellPlan,
   validateShellPreference,
 } from '@maka/runtime/shell-detect';
-import { type MakaTool } from '@maka/runtime/tool-runtime';
+import type { MakaTool } from '@maka/runtime/tool-runtime';
 import { Context } from '@maka/runtime/plugin-kernel';
 import { PluginAgentService } from '@maka/runtime/plugin-agent-service';
 import { PluginAttachmentService } from '@maka/runtime/plugin-attachment-service';
@@ -111,9 +111,12 @@ import { PluginLspService } from '@maka/runtime/plugin-lsp-service';
 import { PluginSessionQueryService } from '@maka/runtime/plugin-session-query-service';
 import { PluginShellEnvService } from '@maka/runtime/plugin-shell-env-service';
 import { PluginSkillService } from '@maka/runtime/plugin-skill-service';
-import { type RuntimeHostedRootAuthority } from '@maka/runtime/message-authority';
+import type { RuntimeHostedRootAuthority } from '@maka/runtime/message-authority';
 import { isHostedExecutionTerminal } from './hosted-execution-authority.js';
-import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
+import type {
+  ExecutionPersistenceProvider,
+  ExecutionGraphStore,
+} from '@maka/storage/execution-persistence-provider';
 import { createArtifactAttachmentResourceReader } from '@maka/storage/artifact-stores';
 import { createReadImageSnapshotStore } from '@maka/storage/read-image-snapshot-store';
 import { isSessionNotFoundError } from '@maka/storage/execution-stores';
@@ -281,12 +284,14 @@ const CONTEXT_OFFLOAD_LIMITS: ContextOffloadLimits = Object.freeze({
 });
 
 export interface CreateExecutionRuntimeHostCompositionOptions {
+  readonly initialization?: import('../client/connect-or-spawn.js').HostedRuntimeInitialization;
   readonly bootstrapRuntimePolicy?: boolean;
   readonly skillHomeDirectory?: string;
   readonly projectDirectoryRoots?: readonly PublishedProjectDirectoryRoot[];
 }
 
 export interface ExecutionRuntimeHostCompositionDependencies {
+  readonly executionPersistenceProvider?: ExecutionPersistenceProvider;
   readonly primaryBackendFactory?: BackendFactory;
   readonly workHubRoutingModel?: HostWorkHubRoutingModel;
   readonly oauthAuthorization?: Pick<
@@ -307,12 +312,14 @@ export async function createExecutionRuntimeHostComposition(
   dependencies: ExecutionRuntimeHostCompositionDependencies = {},
 ): Promise<ExecutionRuntimeHostComposition> {
   const storage = await openStorageWriterComposition(context.owner.lease, {
+    executionProvider: dependencies.executionPersistenceProvider,
     contextOffloadLimits: CONTEXT_OFFLOAD_LIMITS,
     afterRuntimePolicyOpened: async (stores) => {
       if (options.bootstrapRuntimePolicy !== false) {
         await ensureBootstrapRuntimePolicy({
           workspaceRoot: context.owner.capability.canonicalPath,
           stores,
+          initialization: options.initialization,
           onDeferredError: (error) =>
             console.error(
               `[runtime-host] optional bootstrap target could not be configured: ${generalizedErrorMessage(error)}`,
@@ -327,7 +334,7 @@ export async function createExecutionRuntimeHostComposition(
     );
   }
   const stores = storage.execution;
-  let graphControlStore: ReturnType<typeof createAgentGraphControlStore> | undefined;
+  let graphControlStore: ExecutionGraphStore | undefined;
   let graphClient: HostAgentGraphCoordinator | undefined;
   let sessionEffects: HostSessionEffectCoordinator | undefined;
   let memoryExtraction: HostMemoryExtractionCoordinator | undefined;
@@ -698,9 +705,7 @@ export async function createExecutionRuntimeHostComposition(
       hostTools: childHostTools,
       worktreePatchWriteBackAvailable: true,
     });
-    const openedGraphControlStore = createAgentGraphControlStore(
-      context.owner.capability.canonicalPath,
-    );
+    const openedGraphControlStore = stores.graphControlStore;
     graphControlStore = openedGraphControlStore;
     let resolveAvailableToolNames: ((sessionId: string) => Promise<string[]>) | undefined;
     let resolveNewSessionToolNames:
@@ -1365,6 +1370,15 @@ export async function createExecutionRuntimeHostComposition(
         },
       }),
       runBackendActivation: (operation) => runtimePolicyActivation.runBackendActivation(operation),
+      resolveFreshTurnToolMode: async (header) => {
+        // WorkHub keeps one permanent Session, so creation-time defaults cannot
+        // track this setting. Snapshot it per turn without rewriting that Session.
+        if (header.id !== WORKHUB_COORDINATION_SESSION_ID) return undefined;
+        return (await runtimePolicyStores.runtimePolicy.getSnapshot()).policy.chatDefaults
+          .codeModeEnabled
+          ? 'code_mode'
+          : 'direct';
+      },
       messageAuthority: runtimeAuthority,
       hostedAgentGraphExecution: {
         readAgentGraphIntentClaim: (graphId, intentId) =>

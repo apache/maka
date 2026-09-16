@@ -48,6 +48,19 @@ describe('provider connection slug derivation contract', () => {
   });
 });
 
+describe('Moonshot provider regions', () => {
+  it('offers the international API as its own provider', () => {
+    const global = PROVIDER_REGISTRY['moonshot-global'];
+    assert.equal(global.baseUrl, 'https://api.moonshot.ai/v1');
+    assert.equal(global.category, 'overseas');
+    assert.deepEqual(global.runtimeAdapter, {
+      kind: 'openai',
+      apiProtocol: 'openai-responses',
+    });
+    assert.ok(global.fallbackModels.includes('kimi-k3'));
+  });
+});
+
 describe('provider catalog contract — structural invariants over CATALOG_PROVIDER_TYPES', () => {
   it('exposes an endpoint source that passes the production baseUrl gate', () => {
     for (const type of CATALOG_PROVIDER_TYPES) {

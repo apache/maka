@@ -96,10 +96,9 @@ index ff9b9fa..f681cd0 100644
    const newMsgs = useChatNewMessages({
      isLocked: scroll.isLocked,
 diff --git a/node_modules/@astryxdesign/core/dist/Chat/ChatToolCalls.js b/node_modules/@astryxdesign/core/dist/Chat/ChatToolCalls.js
-index 889970f..459e6e8 100644
 --- a/node_modules/@astryxdesign/core/dist/Chat/ChatToolCalls.js
 +++ b/node_modules/@astryxdesign/core/dist/Chat/ChatToolCalls.js
-@@ -122,6 +122,7 @@ function CallRow({
+@@ -122,6 +122,7 @@
    const row = /*#__PURE__*/_jsxs("div", {
      role: hasDetail ? 'button' : undefined,
      tabIndex: hasDetail ? 0 : undefined,
@@ -107,6 +106,26 @@ index 889970f..459e6e8 100644
      "aria-expanded": hasDetail ? isDetailOpen : undefined,
      "aria-controls": hasDetail && isDetailOpen ? detailId : undefined,
      onClick: toggleDetail,
+@@ -278,6 +279,10 @@
+   const contentId = useId();
+   const isControlled = controlledExpanded !== undefined;
+   const isExpanded = isControlled ? controlledExpanded : internalExpanded;
++  // Defer hidden rows until first use. Keep them after closing so the grid
++  // animation and each row's expanded detail state survive a group toggle.
++  const [hasExpanded, setHasExpanded] = useState(isExpanded);
++  if (isExpanded && !hasExpanded) setHasExpanded(true);
+   const toggle = useCallback(() => {
+     const next = !isExpanded;
+     if (!isControlled) {
+@@ -417,7 +422,7 @@
+           ...{
+             className: "x78zum5 xdt5ytf x7a5moj xtedp8i"
+           },
+-          children: calls.map(call => /*#__PURE__*/_jsx(CallRow, {
++          children: (isExpanded || hasExpanded) && calls.map(call => /*#__PURE__*/_jsx(CallRow, {
+             call: call
+           }, getToolCallKey(call)))
+         })
 diff --git a/node_modules/@astryxdesign/core/dist/Chat/useTriggerMenu.js b/node_modules/@astryxdesign/core/dist/Chat/useTriggerMenu.js
 index e1d2ebd..1f8337e 100644
 --- a/node_modules/@astryxdesign/core/dist/Chat/useTriggerMenu.js
@@ -500,9 +519,18 @@ index 3d2cf00..c5c0d55 100644
        role: "group",
        "aria-labelledby": `${id}-label`,
 diff --git a/node_modules/@astryxdesign/core/dist/astryx.css b/node_modules/@astryxdesign/core/dist/astryx.css
-index 0159f32..654948b 100644
+index 0159f32..4067864 100644
 --- a/node_modules/@astryxdesign/core/dist/astryx.css
 +++ b/node_modules/@astryxdesign/core/dist/astryx.css
+@@ -564,7 +564,7 @@
+   .xk2sxw7:focus-within:not(#\#):not(#\#){border-color:var(--color-error)}
+   .xyq33ac:focus-within:not(#\#):not(#\#){border-color:var(--color-success)}
+   .xa1yw2k:focus-within:not(#\#):not(#\#){border-color:var(--color-warning)}
+-  .xafswnp.xafswnp:where(.x1iwu4tg:has(:focus-visible) *):not(#\#):not(#\#){outline:var(--focus-outline-width) var(--focus-outline-style) var(--focus-outline-color)}
++  :where(.x1iwu4tg:has(:focus-visible)) .xafswnp.xafswnp:not(#\#):not(#\#){outline:var(--focus-outline-width) var(--focus-outline-style) var(--focus-outline-color)}
+   .x1dordxg:focus-within:not(#\#):not(#\#){overflow:visible}
+   .x16s19ga:has(:focus-visible):not(#\#):not(#\#){outline:var(--focus-outline-width) var(--focus-outline-style) var(--focus-outline-color)}
+   .x64lkcz:focus:not(#\#):not(#\#){border-color:var(--color-error)}
 @@ -1280,6 +1280,7 @@
    .x1yn0g08:not(#\#):not(#\#):not(#\#){word-break:break-all}
    .x13faqbe:not(#\#):not(#\#):not(#\#){word-break:break-word}
@@ -511,6 +539,26 @@ index 0159f32..654948b 100644
    .x1ja2u2z:not(#\#):not(#\#):not(#\#){z-index:0}
    .x1vjfegm:not(#\#):not(#\#):not(#\#){z-index:1}
    .xfo81ep:not(#\#):not(#\#):not(#\#){z-index:1000}
+@@ -1321,7 +1322,7 @@
+   .x7s97pk:focus-visible:not(#\#):not(#\#):not(#\#){outline-offset:2px}
+   .x13aywxo:focus-visible:not(#\#):not(#\#):not(#\#){outline-offset:var(--button-focus-offset)}
+   .x1vwwbsn:focus-visible:not(#\#):not(#\#):not(#\#){outline-offset:var(--focus-outline-offset)}
+-  .xwz5zln.xwz5zln:where(.x1iwu4tg:has(:focus-visible) *):not(#\#):not(#\#):not(#\#){outline-offset:var(--focus-outline-offset)}
++  :where(.x1iwu4tg:has(:focus-visible)) .xwz5zln.xwz5zln:not(#\#):not(#\#):not(#\#){outline-offset:var(--focus-outline-offset)}
+   .x1jhp3zv:focus-visible:not(#\#):not(#\#):not(#\#){outline-style:var(--focus-outline-style)}
+   .x1vidyx5:focus-visible:not(#\#):not(#\#):not(#\#){outline-width:var(--focus-outline-width)}
+   .x1n6uwha:is([dir="rtl"] *):not(#\#):not(#\#):not(#\#){padding-inline-end:max(var(--spacing-4),env(safe-area-inset-left,0px))}
+@@ -1780,8 +1781,8 @@
+   .x5lhr3w:not(#\#):not(#\#):not(#\#):not(#\#){width:var(--x-width)}
+   .x1wp2rvj.x1wp2rvj:where(.x139im0d:last-child *):not(#\#):not(#\#):not(#\#):not(#\#){border-bottom-width:0}
+   .x132qfvm:focus-within:not(#\#):not(#\#):not(#\#):not(#\#){height:auto}
+-  .xsg11nj.xsg11nj:where(.x-default-marker:has(> .astryx-layout-footer:not([data-divider])) *):not(#\#):not(#\#):not(#\#):not(#\#){padding-bottom:0}
+-  .x1ioh5az.x1ioh5az:where(.x-default-marker:has(> .astryx-layout-header:not([data-divider])) *):not(#\#):not(#\#):not(#\#):not(#\#){padding-top:0}
++  :where(.x-default-marker:has(> .astryx-layout-footer:not([data-divider]))) .xsg11nj.xsg11nj:not(#\#):not(#\#):not(#\#):not(#\#){padding-bottom:0}
++  :where(.x-default-marker:has(> .astryx-layout-header:not([data-divider]))) .x1ioh5az.x1ioh5az:not(#\#):not(#\#):not(#\#):not(#\#){padding-top:0}
+   .x1kw28su:focus-within:not(#\#):not(#\#):not(#\#):not(#\#){padding-top:var(--spacing-1)}
+   .x10okhzq:focus-within:not(#\#):not(#\#):not(#\#):not(#\#){width:auto}
+   .x5du68j:has(~ * [data-chat-name]):not(#\#):not(#\#):not(#\#):not(#\#){margin-top:var(--spacing-5)}
 diff --git a/node_modules/@astryxdesign/core/dist/hooks/useStreamingText.d.ts b/node_modules/@astryxdesign/core/dist/hooks/useStreamingText.d.ts
 index 7a35d1c..50ee70b 100644
 --- a/node_modules/@astryxdesign/core/dist/hooks/useStreamingText.d.ts
@@ -743,10 +791,9 @@ index d45a912..efec9fd 100644
      WebkitMaskImage: 'linear-gradient(to bottom, transparent, black 48px)',
    },
 diff --git a/node_modules/@astryxdesign/core/src/Chat/ChatToolCalls.tsx b/node_modules/@astryxdesign/core/src/Chat/ChatToolCalls.tsx
-index f22bb1f..b710951 100644
 --- a/node_modules/@astryxdesign/core/src/Chat/ChatToolCalls.tsx
 +++ b/node_modules/@astryxdesign/core/src/Chat/ChatToolCalls.tsx
-@@ -399,6 +399,7 @@ function CallRow({call}: {call: ChatToolCallItem}) {
+@@ -399,6 +399,7 @@
      <div
        role={hasDetail ? 'button' : undefined}
        tabIndex={hasDetail ? 0 : undefined}
@@ -754,6 +801,26 @@ index f22bb1f..b710951 100644
        aria-expanded={hasDetail ? isDetailOpen : undefined}
        aria-controls={hasDetail && isDetailOpen ? detailId : undefined}
        onClick={toggleDetail}
+@@ -548,6 +549,10 @@
+   const contentId = useId();
+   const isControlled = controlledExpanded !== undefined;
+   const isExpanded = isControlled ? controlledExpanded : internalExpanded;
++  // Defer hidden rows until first use. Keep them after closing so the grid
++  // animation and each row's expanded detail state survive a group toggle.
++  const [hasExpanded, setHasExpanded] = useState(isExpanded);
++  if (isExpanded && !hasExpanded) setHasExpanded(true);
+ 
+   const toggle = useCallback(() => {
+     const next = !isExpanded;
+@@ -674,7 +679,7 @@
+         )}>
+         <div {...stylex.props(styles.groupContentInner)}>
+           <div {...stylex.props(styles.list)}>
+-            {calls.map(call => (
++            {(isExpanded || hasExpanded) && calls.map(call => (
+               <CallRow key={getToolCallKey(call)} call={call} />
+             ))}
+           </div>
 diff --git a/node_modules/@astryxdesign/core/src/Chat/useTriggerMenu.tsx b/node_modules/@astryxdesign/core/src/Chat/useTriggerMenu.tsx
 index 6eefd4a..17071f1 100644
 --- a/node_modules/@astryxdesign/core/src/Chat/useTriggerMenu.tsx

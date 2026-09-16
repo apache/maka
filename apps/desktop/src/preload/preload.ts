@@ -37,7 +37,7 @@ import {
 } from '@maka/runtime-host/profile-kind';
 import { AttachmentIngestBlockedError } from '@maka/core/attachments';
 import { encodeIngestItems } from './attachment-ingest-payload.js';
-import { collectThreadSearchResponses } from './multi-host-thread-search.js';
+import { createThreadSearchClient } from './multi-host-thread-search.js';
 import { releaseSessionObservation } from './session-observation-release.js';
 import {
   resolveDesktopWorkHubCoordinationCreateScope,
@@ -162,7 +162,7 @@ import type { OrchestrationMode } from '@maka/core/orchestration';
 
 import type { TurnOrchestration, SessionListFilter, RegenerateTurnInput } from '@maka/core/runtime-inputs';
 import type { PlanSessionState } from '@maka/core/plan';
-import type { SearchErrorReason, SearchRequest, SearchResult } from '@maka/core/search';
+import type { SearchErrorReason, SearchResult } from '@maka/core/search';
 import type {
   SessionCatalogSummary,
   SessionChangedEvent,
@@ -3189,34 +3189,29 @@ const makaBridge = {
       return invokeSessionRuntimeHost('attachments:readBytes', sessionId, artifactId);
     },
   },
-  search: {
+  search: createThreadSearchClient({
     // Search each ready Owner Host independently; Guests cannot search a workspace.
-    // Remote queries use that Host's authenticated connection, never telemetry.
-    async thread(request: SearchRequest): Promise<SearchResult[] | { ok: false; reason: SearchErrorReason; message: string }> {
-      const scopes = await readyOwnerRuntimeHostScopes();
-      return collectThreadSearchResponses(
-        scopes.map(async (scope) => {
-          const result = await ipcRenderer.invoke('search:thread', scope, request) as
-            | SearchResult[]
-            | { ok: false; reason: SearchErrorReason; message: string };
-          return Array.isArray(result)
-            ? result.map((entry) =>
-                entry.target?.kind === 'thread'
-                  ? {
-                      ...entry,
-                      target: {
-                        ...entry.target,
-                        sessionId: recordRuntimeHostSessionScope(scope, entry.target.sessionId),
-                      },
-                    }
-                  : entry,
-              )
-            : result;
-        }),
-        request.limit,
-      );
+    scopes: readyOwnerRuntimeHostScopes,
+    async search(scope, request, requestId) {
+      const result = await ipcRenderer.invoke('search:thread', scope, request, requestId) as
+        | SearchResult[]
+        | { ok: false; reason: SearchErrorReason; message: string };
+      return Array.isArray(result)
+        ? result.map((entry) =>
+            entry.target?.kind === 'thread'
+              ? {
+                  ...entry,
+                  target: {
+                    ...entry.target,
+                    sessionId: recordRuntimeHostSessionScope(scope, entry.target.sessionId),
+                  },
+                }
+              : entry,
+          )
+        : result;
     },
-  },
+    cancel: (scope, requestId) => ipcRenderer.invoke('search:thread:cancel', scope, requestId),
+  }),
   // Browser-assisted Codex account bridge. NEVER returns raw OAuth
   // credentials; the renderer only sees account state and action results.
   //

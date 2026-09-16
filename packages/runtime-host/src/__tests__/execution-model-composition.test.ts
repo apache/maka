@@ -29,9 +29,17 @@ import { promisify } from 'node:util';
 import { test } from 'node:test';
 import { z } from 'zod';
 import {
+  DEFAULT_BASH_TIMEOUT_MS,
+  MAX_FOREGROUND_BASH_TIMEOUT_MS,
+} from '@maka/runtime/shell-run-contract';
+import {
   clientCapabilityConnectionIdentity,
   clientCapabilityCoordinatorTestAdmission,
 } from './fixtures/client-capability.js';
+import {
+  WORKHUB_BROWSER_TOOL_NAMES,
+  workHubDesktopCapabilityOffers,
+} from './fixtures/workhub-capabilities.js';
 import {
   createBypassExecutionBoundary,
   createManagedExecutionBoundary,
@@ -151,8 +159,7 @@ const MAX_IMPLEMENTATION_CHILD_REQUESTS =
 const HEADLESS_CODING_V1_PROMPT_HASH =
   'sha256:b2773282ac4755dc8d8a663eafdec68c3fa6f5680ec8557d261b5f723672b467';
 const HEADLESS_CODING_V1_TOOLS_HASH =
-  // Unified Read pages and Grep completeness share the hosted tool profile.
-  'sha256:fb7f539090471695ec1d8ca31555d083d8c3c0e0c40d5dcf655b14c103b10c22';
+  'sha256:5cd4bc0df70d35f251065a3163fbaf1c54763b73838406514a21bccfb4552f2e';
 const execFileAsync = promisify(execFile);
 test('backend creation resolves a bound Session by immutable Connection identity', async () => {
   let observedRef: unknown;
@@ -2178,20 +2185,7 @@ test('cold WorkHub recovery waits for Desktop tools across pending-message and a
       const result = await handlers['client.capability.replace'](
         {
           registrationId,
-          offers: [
-            {
-              offerId: 'desktop-workhub',
-              version: '0',
-              affinity: 'session',
-              hostPathAccess: 'none',
-              label: 'Desktop WorkHub',
-              tools: names.map((name) => ({
-                serverId: 'desktop_workhub',
-                name,
-                inputSchema: { type: 'object', additionalProperties: false },
-              })),
-            },
-          ],
+          offers: workHubDesktopCapabilityOffers(names),
         },
         { ...context, connectionId },
       );
@@ -2338,6 +2332,7 @@ test('cold WorkHub recovery waits for Desktop tools across pending-message and a
               content,
               submittedContentDigest: digest,
               submittedPlacement: 'next_turn',
+              skillInvocation: { loaded: [], failed: [], receipts: [] },
               placement: 'next_turn',
               disposition: 'followup',
             },
@@ -2406,7 +2401,11 @@ test('cold WorkHub recovery waits for Desktop tools across pending-message and a
         .slice(requestsBeforeRecovery)
         .filter((request) => Array.isArray(request.body.tools));
       assert.equal(requests.length, 1, 'the recovered successor executes exactly once');
-      for (const name of ['mcp__desktop_workhub__control', 'mcp__desktop_workhub__tasks']) {
+      for (const name of [
+        'mcp__desktop_workhub__control',
+        'mcp__desktop_workhub__tasks',
+        ...WORKHUB_BROWSER_TOOL_NAMES.map((name) => `mcp__desktop_browser__${name}`),
+      ]) {
         assert.ok(responsesToolNames(requests[0]?.body).includes(name));
       }
       const users = (await readLedgerMessages(recoveredStores.runtimeEventStore, sessionId)).filter(
@@ -2437,6 +2436,49 @@ test('cold WorkHub recovery waits for Desktop tools across pending-message and a
         kind: 'routing',
         disposition: 'answer_here',
       });
+      if (crashCut === 'pending-message') {
+        // The recovered WorkHub keeps its permanent Session but new turns
+        // must follow the current switch rather than its creation-time default.
+        const currentPolicy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+        const originalMode = (await recoveredStores.sessionStore.readHeader(sessionId)).toolMode;
+        for (const enabled of [true, false]) {
+          const snapshot = await currentPolicy.runtimePolicy.getSnapshot();
+          const changed = await currentPolicy.runtimePolicy.mutate({
+            expectedRevision: snapshot.revision,
+            operation: {
+              kind: 'set_chat_defaults',
+              value: { ...snapshot.policy.chatDefaults, codeModeEnabled: enabled },
+            },
+          });
+          assert.equal(changed.kind, 'committed');
+          const turnId = randomUUID();
+          const started = await composition.handlers['workhub.coordination.answer'](
+            { turnId, text: `Code Mode ${enabled ? 'on' : 'off'}` },
+            context,
+          );
+          assert.ok(started.ok, JSON.stringify(started));
+          const query = await composition.handlers['turn.query']({ sessionId, turnId }, context);
+          assert.ok(query.ok, JSON.stringify(query));
+          const terminal = await waitForTerminal(
+            composition,
+            sessionId,
+            turnId,
+            query.result,
+            context,
+          );
+          assert.equal(terminal.status, 'completed');
+          const run = await readInvocation(recoveredStores, sessionId, terminal.runId!);
+          assert.equal(run.opening.configuration.toolMode, enabled ? 'code_mode' : 'direct');
+          assert.equal(
+            responsesToolNames(provider.requests.at(-1)?.body).includes('exec'),
+            enabled,
+          );
+          assert.equal(
+            (await recoveredStores.sessionStore.readHeader(sessionId)).toolMode,
+            originalMode,
+          );
+        }
+      }
       assert.equal(drained, false);
     } finally {
       await composition?.close();
@@ -2549,11 +2591,27 @@ test('hosted execution freezes the headless coding provider wire contract', asyn
       'Glob',
       'Grep',
       'Read',
+      'StopBackgroundTask',
       'Write',
+      'WriteStdin',
     ]);
     const bash = (tools as Array<Record<string, unknown>>).find((tool) => tool.name === 'Bash');
     assert.ok(bash);
-    assert.doesNotMatch(JSON.stringify(bash), /run_in_background|pty/u);
+    // The Eval session runs with Full access: the product Bash, minus the
+    // boundary declaration that Full access has nothing to enforce.
+    assert.deepEqual(
+      Object.keys((bash.parameters as { properties: Record<string, unknown> }).properties),
+      ['command', 'timeout_ms', 'run_in_background', 'pty'],
+    );
+    assert.match(
+      String(bash.description),
+      new RegExp(
+        `timeout ${DEFAULT_BASH_TIMEOUT_MS}ms, maximum ${MAX_FOREGROUND_BASH_TIMEOUT_MS}ms`,
+        'u',
+      ),
+    );
+    assert.doesNotMatch(String(bash.description), /sandbox boundary/u);
+    assert.equal(responsesToolNames(request?.body).includes('request_sandbox_boundary'), false);
 
     const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
     assert.equal(
@@ -4739,7 +4797,14 @@ test('the headless coding profile freezes the Eval prompt and tool ceiling', asy
       },
     } as unknown as HostMemoryCoordinator,
     sessionTodo: {} as SessionTodoToolStore,
-    builtinTools: {},
+    builtinTools: {
+      shellRuns: {
+        runForegroundBash: () => Promise.reject(new Error('not used')),
+        runBackgroundBash: () => Promise.reject(new Error('not used')),
+      },
+      backgroundTasks: { stopBackgroundTask: () => Promise.reject(new Error('not used')) },
+      ptyControls: { writeStdin: () => Promise.reject(new Error('not used')) },
+    },
     toolProfile: 'headless-coding-v1',
     parentAgentTools: buildParentAgentTools(),
     scheduledTaskTool: {
@@ -4752,7 +4817,17 @@ test('the headless coding profile freezes the Eval prompt and tool ceiling', asy
 
   assert.deepEqual(
     composition.tools.map(({ name }) => name),
-    ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'apply_patch'],
+    [
+      'Bash',
+      'StopBackgroundTask',
+      'WriteStdin',
+      'Read',
+      'Write',
+      'Edit',
+      'Glob',
+      'Grep',
+      'apply_patch',
+    ],
   );
   assert.equal(composition.toolAvailability, undefined);
   assert.equal(

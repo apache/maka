@@ -77,7 +77,7 @@ export function viewportBounds(rect: BrowserViewRect | null): BrowserViewRect | 
 export type BrowserActionKind = 'observe' | 'mutate' | 'navigate';
 
 /**
- * The visible-lease policy. The agent runs in a conversation's runtime, which may
+ * The ordinary-session visible-lease policy. The agent runs in a conversation's runtime, which may
  * NOT be the conversation on screen; without this gate it could drive a hidden,
  * zero-bounds view after the user switches away. EVERY action — including a
  * read (observe) — must happen in the conversation the user is looking at:

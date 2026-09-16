@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import type { SessionInspectorService } from './service.js';
 import { type ReactNode, useMemo, useState } from 'react';
 import { Banner } from '@astryxdesign/core/Banner';
 import { Button } from '@astryxdesign/core/Button';
@@ -30,10 +31,9 @@ import { traceTurnIdentityKey } from '@maka/core/session-trace';
 import { useToast, useUiLocale } from '@maka/ui';
 import { ICON_SIZE, Activity, AlertTriangle, Copy } from '@maka/ui/icons';
 import {
-  getDesktopConversationCopy,
   type InspectorCopy,
   inspectorStepKindLabel,
-} from '../../../../locales/conversation-copy.js';
+} from './copy.js';
 import {
   deriveInspectorOverviewModel,
   estimatedSessionCost,
@@ -63,14 +63,14 @@ import { useSessionTrace } from './use-session-trace.js';
  * like every other empty surface (EmptyState) rather than like a stray
  * paragraph.
  */
-export function SessionInspectorPanel(props: { sessionId: string; active: boolean }) {
+export function SessionInspectorPanel(props: { sessionId: string; active: boolean; inspector: SessionInspectorService; copy: InspectorCopy }) {
   const locale = useUiLocale();
-  const copy = getDesktopConversationCopy(locale).inspector;
+  const { copy } = props;
   const toast = useToast();
   const snapshot = useSessionTrace(props.sessionId, props.active, {
     loadFailed: copy.loadFailed,
     locale,
-  });
+  }, props.inspector);
   const model = useMemo(() => deriveInspectorPanelModel(snapshot.trace), [snapshot.trace]);
   const overview = useMemo(
     () => deriveInspectorOverviewModel(snapshot.context, snapshot.summary),

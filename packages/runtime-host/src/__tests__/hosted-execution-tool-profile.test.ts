@@ -21,6 +21,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { MakaTool } from '@maka/runtime/tool-runtime';
 import { buildBuiltinTools } from '@maka/runtime/builtin-tools';
+import { AiSdkBackend } from '@maka/runtime/ai-sdk-backend';
+import { createBypassExecutionBoundary } from '@maka/core/sandbox-boundary';
+import { WORKHUB_COORDINATION_SESSION_ID } from '@maka/core/session';
+import type { SessionEvent } from '@maka/core/events';
 import { z } from 'zod';
 import { decodeHostedExecutionStartInput } from '../protocol/index.js';
 import {
@@ -55,11 +59,13 @@ test('hosted execution tool profiles are durable Session creation inputs', () =>
   );
 });
 
-test('the headless coding profile freezes prompt, tools, memory, and foreground Bash', async () => {
+test('the headless coding profile freezes prompt, tools, and memory and passes product Bash through', () => {
   const profile = hostedExecutionRunProfile('headless-coding-v1');
   assert.ok(profile);
   assert.deepEqual(profile.toolNames, [
     'Bash',
+    'StopBackgroundTask',
+    'WriteStdin',
     'Read',
     'Write',
     'Edit',
@@ -114,15 +120,7 @@ test('the headless coding profile freezes prompt, tools, memory, and foreground 
     profileTools.map(({ name }) => name),
     profile.toolNames,
   );
-  const bash = profileTools[0];
-  assert.ok(bash);
-  const schema = bash.parameters as z.ZodType;
-  assert.equal((await schema.safeParseAsync({ command: 'true' })).success, true);
-  assert.equal(
-    (await schema.safeParseAsync({ command: 'true', run_in_background: true })).success,
-    false,
-  );
-  assert.equal((await schema.safeParseAsync({ command: 'true', pty: true })).success, false);
+  assert.equal(profileTools[0], original);
 });
 
 test('the WorkHub coordination profile has conversational authority but zero tools', () => {
@@ -142,7 +140,7 @@ test('the WorkHub coordination profile has conversational authority but zero too
   assert.deepEqual(projectHostedExecutionTools([productTool], 'workhub-coordination-v1'), []);
 });
 
-test('WorkHub v2 can read its attachments without inheriting terminal, browser, or filesystem access', async () => {
+test('WorkHub v2 keeps its attachment and browser tool ceiling visible in direct and Code Mode', async () => {
   const makeTool = (name: string): MakaTool => ({
     name,
     description: name,
@@ -151,6 +149,24 @@ test('WorkHub v2 can read its attachments without inheriting terminal, browser, 
   });
   const control = makeTool('mcp__desktop_workhub__control');
   const tasks = makeTool('mcp__desktop_workhub__tasks');
+  const browserCalls: unknown[] = [];
+  const browserNavigate: MakaTool = {
+    name: 'mcp__desktop_browser__browser_navigate',
+    description: 'Navigate the WorkHub browser',
+    parameters: z.object({ url: z.string().url() }),
+    impl: async (input) => {
+      browserCalls.push(input);
+      return `navigated:${input.url}`;
+    },
+  };
+  const browserTools = [
+    browserNavigate,
+    makeTool('mcp__desktop_browser__browser_snapshot'),
+    makeTool('mcp__desktop_browser__browser_click'),
+    makeTool('mcp__desktop_browser__browser_type'),
+    makeTool('mcp__desktop_browser__browser_wait'),
+    makeTool('mcp__desktop_browser__browser_extract'),
+  ];
   const reads: unknown[] = [];
   const builtinRead = buildBuiltinTools({
     attachmentResources: {
@@ -163,7 +179,7 @@ test('WorkHub v2 can read its attachments without inheriting terminal, browser, 
   const tools = [
     makeTool('Bash'),
     builtinRead,
-    makeTool('mcp__desktop_browser__browser_navigate'),
+    ...browserTools,
     control,
     tasks,
     makeTool('AskUserQuestion'),
@@ -171,9 +187,9 @@ test('WorkHub v2 can read its attachments without inheriting terminal, browser, 
   const projected = projectHostedExecutionTools(tools, 'workhub-coordination-v2');
   assert.deepEqual(
     projected.map(({ name }) => name),
-    [control.name, tasks.name, 'Read', 'AskUserQuestion'],
+    [control.name, tasks.name, ...browserTools.map(({ name }) => name), 'Read', 'AskUserQuestion'],
   );
-  const read = projected[2]!;
+  const read = projected.find(({ name }) => name === 'Read')!;
   const context = {
     sessionId: 'workhub',
     runId: 'run',
@@ -207,6 +223,143 @@ test('WorkHub v2 can read its attachments without inheriting terminal, browser, 
   assert.match(prompt, /only when the user explicitly asks to create new work/u);
   assert.match(prompt, /never implies create_new/u);
   assert.match(prompt, /ordinary request to continue work is routing, not a linked resume/u);
+
+  let providerCatalog = '';
+  let providerPrompt = '';
+  const backend = new AiSdkBackend({
+    sessionId: WORKHUB_COORDINATION_SESSION_ID,
+    header: {
+      id: WORKHUB_COORDINATION_SESSION_ID,
+      workspaceRoot: '/workspace',
+      cwd: '/workspace',
+      createdAt: 1,
+      name: 'WorkHub',
+      titleIsManual: true,
+      isFlagged: false,
+      labels: [],
+      isArchived: false,
+      status: 'active',
+      statusUpdatedAt: 1,
+      hasUnread: false,
+      backend: 'ai-sdk',
+      llmConnectionSlug: 'test',
+      connectionLocked: true,
+      model: 'test',
+      permissionMode: 'bypass',
+      toolProfile: 'workhub-coordination-v2',
+      toolMode: 'code_mode',
+      schemaVersion: 1,
+    },
+    connection: {
+      slug: 'test',
+      providerType: 'openai',
+      defaultModel: 'test',
+    },
+    apiKey: 'test',
+    modelId: 'test',
+    tools: [...projected],
+    maxSteps: 1,
+    readExecutionBoundary: async () => createBypassExecutionBoundary(0),
+    readPermissionMode: async () => 'bypass',
+    modelFactory: () => ({
+      specificationVersion: 'v4',
+      provider: 'test',
+      modelId: 'test',
+      supportedUrls: {},
+      doStream: async ({
+        tools: modelTools,
+        prompt: modelPrompt,
+      }: {
+        tools?: unknown;
+        prompt?: unknown;
+      }) => {
+        providerCatalog = JSON.stringify(modelTools);
+        providerPrompt = JSON.stringify(modelPrompt);
+        return {
+          stream: new ReadableStream({
+            start(controller) {
+              controller.enqueue({ type: 'stream-start', warnings: [] });
+              controller.enqueue({
+                type: 'tool-call',
+                toolCallId: 'exec-1',
+                toolName: 'exec',
+                input: JSON.stringify({
+                  code: `return {
+              names: Object.keys(tools).sort(),
+              allowed: [
+                'Read',
+                'mcp__desktop_workhub__control',
+                'mcp__desktop_browser__browser_navigate',
+                'mcp__desktop_browser__browser_snapshot',
+                'mcp__desktop_browser__browser_click',
+                'mcp__desktop_browser__browser_type',
+                'mcp__desktop_browser__browser_wait',
+                'mcp__desktop_browser__browser_extract'
+              ].map(name =>
+                [name in tools, typeof tools[name]]),
+              forbidden: ['Bash', 'Write'].map(name =>
+                [name in tools, typeof tools[name]]),
+              result: await tools.mcp__desktop_browser__browser_navigate({ url: 'https://example.com/' })
+            };`,
+                }),
+              });
+              controller.enqueue({
+                type: 'finish',
+                finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+                usage: { inputTokens: { total: 0 }, outputTokens: { total: 0 } },
+              });
+              controller.close();
+            },
+          }),
+        };
+      },
+    }),
+  });
+  const events: SessionEvent[] = [];
+  try {
+    for await (const event of backend.send({
+      turnId: 'code-mode-ceiling',
+      text: 'Inspect tools',
+      context: [],
+    })) {
+      events.push(event);
+    }
+  } finally {
+    await backend.dispose();
+  }
+  for (const name of projected.map((tool) => tool.name)) assert.ok(providerPrompt.includes(name));
+  assert.doesNotMatch(providerCatalog, /mcp__desktop_browser__browser_navigate/u);
+  assert.doesNotMatch(providerCatalog, /Bash|Write/u);
+  assert.deepEqual(browserCalls, [{ url: 'https://example.com/' }]);
+  const result = events.find(
+    (event) => event.type === 'tool_result' && event.toolUseId === 'exec-1',
+  );
+  assert.ok(result?.type === 'tool_result', JSON.stringify(events));
+  assert.deepEqual(result.content, {
+    kind: 'json',
+    value: {
+      ok: true,
+      value: {
+        names: projected.map((tool) => tool.name).sort(),
+        allowed: [
+          [true, 'function'],
+          [true, 'function'],
+          [true, 'function'],
+          [true, 'function'],
+          [true, 'function'],
+          [true, 'function'],
+          [true, 'function'],
+          [true, 'function'],
+        ],
+        forbidden: [
+          [false, 'undefined'],
+          [false, 'undefined'],
+        ],
+        result: 'navigated:https://example.com/',
+      },
+      toolCalls: [{ index: 1, name: browserNavigate.name }],
+    },
+  });
 });
 
 test('WorkHub routing prompt binds the exact recalled candidate without granting authority', () => {

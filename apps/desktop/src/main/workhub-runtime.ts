@@ -18,6 +18,7 @@
  */
 
 import { WORKHUB_COORDINATION_SESSION_ID, type WorkHubCreateDefaults } from '@maka/core/session';
+import { clientCapabilityEntityId } from '@maka/runtime-host/client-capability-entity-id';
 import type { WorkHubCoordinationProposal, WorkspaceTarget } from '@maka/runtime-host/protocol';
 import { desktopSessionKey, type DesktopTargetScope } from '../shared/runtime-host-identity.js';
 import type { WorkHubTasksInput } from '../shared/workhub-tool-schema.js';
@@ -55,10 +56,12 @@ export function createWorkHubRuntime(deps: WorkHubRuntimeDeps) {
       const turn = await queryTurn(client, turnId);
       if (isLive(turn)) await client.stopTurn({ sessionId: turn.sessionId, turnId: turn.turnId, runId: turn.runId });
     },
-    async actTasks(scope: DesktopTargetScope, turnId: string, actionId: string, input: WorkHubTasksInput) {
+    async actTasks(scope: DesktopTargetScope, turnId: string, toolCallId: string, input: WorkHubTasksInput) {
       requireCurrent(scope);
       const client = deps.client(scope);
       if (input.operation === 'candidates') return client.listWorkHubCoordinationCandidates();
+      // WorkHub persists actions as entities; capability tool-call IDs are opaque.
+      const actionId = clientCapabilityEntityId(toolCallId);
       if (input.operation === 'select_and_delegate') {
         const outcome = await client.selectAndDelegateWorkHubTarget({ turnId, actionId,
           candidateSetId: input.candidateSetId, candidateRefs: input.candidateRefs, delegationText: input.text });

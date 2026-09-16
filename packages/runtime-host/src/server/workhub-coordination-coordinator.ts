@@ -39,8 +39,8 @@ import {
   type WorkHubDelegationStopRequestedMessage,
   type WorkHubDelegationStopResolvedMessage,
 } from '@maka/core/session';
-import type { SessionAuthorityStore, SessionHeaderSnapshot } from '@maka/storage/session-store';
 import type { WorkHubRoutingDecision } from '@maka/core/workhub-routing';
+import type { ExecutionSessionWriter, SessionHeaderSnapshot } from '@maka/storage/execution-stores';
 import type {
   OperationOutcome,
   WorkHubCoordinationActResult,
@@ -99,7 +99,7 @@ export const WORKHUB_ROUTING_HISTORY_MAX_MESSAGES = 32;
 export const WORKHUB_ROUTING_HISTORY_MAX_STORED_BYTES = 64 * 1024;
 
 type CoordinationStores = Pick<
-  SessionAuthorityStore,
+  ExecutionSessionWriter,
   | 'appendMessages'
   | 'createStableSession'
   | 'listHeaders'
