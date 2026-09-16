@@ -107,9 +107,6 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
       onArchive: (sessionId) => {
         void controller.commands.archiveSession(sessionId);
       },
-      onUnarchive: (sessionId) => {
-        void controller.commands.unarchiveSession(sessionId);
-      },
       onRename: (sessionId, name) => {
         void controller.commands.renameSession(sessionId, name);
       },

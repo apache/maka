@@ -66,7 +66,6 @@ const session: SessionSummary = {
 const rowActions: SessionRowActions = {
   onToggleFlag: () => undefined,
   onArchive: () => undefined,
-  onUnarchive: () => undefined,
   onRename: () => undefined,
 };
 
