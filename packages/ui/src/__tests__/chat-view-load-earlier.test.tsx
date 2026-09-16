@@ -143,6 +143,18 @@ test('the load-earlier button exists only while earlier history does, and waits 
   assert.equal(view.loadButton()?.disabled, false);
 });
 
+/**
+ * A visible transcript with nothing in it is exactly when the reader most needs
+ * the control: WorkHub filters the list to one Work, and a Work whose Turns are
+ * all in unloaded history filters it down to nothing. The control is the only
+ * way to load those Turns, so it cannot be inside the non-empty branch.
+ */
+test('offers to load earlier history even with nothing to show', async () => {
+  const view = harness();
+  await view.render({ messages: [], hasEarlierHistory: true, onLoadEarlierHistory: () => {} });
+  assert.ok(view.loadButton(), 'an empty message list hid the only way to load the rest');
+});
+
 test('prepended Turns keep a released reader on their Turn without re-pinning', async () => {
   const view = harness();
   const scroller = await view.render({ messages: turnMessages(4, 8), hasEarlierHistory: true, onLoadEarlierHistory: () => {} });

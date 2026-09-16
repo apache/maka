@@ -736,6 +736,26 @@ export function ChatView(props: {
             <EmptyChatHero onPromptSuggestion={props.onPromptSuggestion} userLabel={props.userLabel} />
           )
         );
+  /**
+   * Nothing to show is exactly when this matters most: WorkHub filters the
+   * transcript to one Work, and a Work whose Turns are all still in unloaded
+   * history filters it down to nothing. So the control rides along with the
+   * empty state rather than sitting in the branch that replaces it — which
+   * also keeps the list's only child a single `null`, the shape that lets
+   * `ChatMessageList` render an empty state at all.
+   */
+  const loadEarlierHistoryControl = props.hasEarlierHistory && props.onLoadEarlierHistory ? (
+    <HStack hAlign="center">
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        label={copy.loadEarlierHistory}
+        isDisabled={loadingEarlierHistory}
+        onClick={loadEarlierHistory}
+      />
+    </HStack>
+  ) : null;
 
   return (
     <SessionAttachmentProvider
@@ -777,7 +797,12 @@ export function ChatView(props: {
           className="maka-chat-message-list maka-chatContent"
           data-turn-source-count={turns.length}
           isStreaming={streamingActive}
-          emptyState={showEmptyState ? emptyContent : undefined}
+          emptyState={showEmptyState ? (
+            <>
+              {loadEarlierHistoryControl}
+              {emptyContent}
+            </>
+          ) : undefined}
         >
           {showEmptyState ? null : (
             <>
@@ -789,18 +814,7 @@ export function ChatView(props: {
                 && !streamingActive
                 ? emptyContent
                 : null}
-              {props.hasEarlierHistory && props.onLoadEarlierHistory ? (
-                <HStack hAlign="center">
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    label={copy.loadEarlierHistory}
-                    isDisabled={loadingEarlierHistory}
-                    onClick={loadEarlierHistory}
-                  />
-                </HStack>
-              ) : null}
+              {loadEarlierHistoryControl}
               <div key={props.activeSession.id} ref={listRef}>
                 <Virtualizer
                   ref={virtualizerRef}
