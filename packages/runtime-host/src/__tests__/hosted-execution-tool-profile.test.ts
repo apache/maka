@@ -140,7 +140,7 @@ test('the WorkHub coordination profile has conversational authority but zero too
   assert.deepEqual(projectHostedExecutionTools([productTool], 'workhub-coordination-v1'), []);
 });
 
-test('WorkHub v2 keeps its attachment-only tool ceiling visible in direct and Code Mode', async () => {
+test('WorkHub v2 keeps its attachment and browser tool ceiling visible in direct and Code Mode', async () => {
   const makeTool = (name: string): MakaTool => ({
     name,
     description: name,
@@ -149,6 +149,24 @@ test('WorkHub v2 keeps its attachment-only tool ceiling visible in direct and Co
   });
   const control = makeTool('mcp__desktop_workhub__control');
   const tasks = makeTool('mcp__desktop_workhub__tasks');
+  const browserCalls: unknown[] = [];
+  const browserNavigate: MakaTool = {
+    name: 'mcp__desktop_browser__browser_navigate',
+    description: 'Navigate the WorkHub browser',
+    parameters: z.object({ url: z.string().url() }),
+    impl: async (input) => {
+      browserCalls.push(input);
+      return `navigated:${input.url}`;
+    },
+  };
+  const browserTools = [
+    browserNavigate,
+    makeTool('mcp__desktop_browser__browser_snapshot'),
+    makeTool('mcp__desktop_browser__browser_click'),
+    makeTool('mcp__desktop_browser__browser_type'),
+    makeTool('mcp__desktop_browser__browser_wait'),
+    makeTool('mcp__desktop_browser__browser_extract'),
+  ];
   const reads: unknown[] = [];
   const builtinRead = buildBuiltinTools({
     attachmentResources: {
@@ -161,7 +179,7 @@ test('WorkHub v2 keeps its attachment-only tool ceiling visible in direct and Co
   const tools = [
     makeTool('Bash'),
     builtinRead,
-    makeTool('mcp__desktop_browser__browser_navigate'),
+    ...browserTools,
     control,
     tasks,
     makeTool('AskUserQuestion'),
@@ -169,9 +187,9 @@ test('WorkHub v2 keeps its attachment-only tool ceiling visible in direct and Co
   const projected = projectHostedExecutionTools(tools, 'workhub-coordination-v2');
   assert.deepEqual(
     projected.map(({ name }) => name),
-    [control.name, tasks.name, 'Read', 'AskUserQuestion'],
+    [control.name, tasks.name, ...browserTools.map(({ name }) => name), 'Read', 'AskUserQuestion'],
   );
-  const read = projected[2]!;
+  const read = projected.find(({ name }) => name === 'Read')!;
   const context = {
     sessionId: 'workhub',
     runId: 'run',
@@ -207,6 +225,7 @@ test('WorkHub v2 keeps its attachment-only tool ceiling visible in direct and Co
   assert.match(prompt, /ordinary request to continue work is routing, not a linked resume/u);
 
   let providerCatalog = '';
+  let providerPrompt = '';
   const backend = new AiSdkBackend({
     sessionId: WORKHUB_COORDINATION_SESSION_ID,
     header: {
@@ -247,8 +266,15 @@ test('WorkHub v2 keeps its attachment-only tool ceiling visible in direct and Co
       provider: 'test',
       modelId: 'test',
       supportedUrls: {},
-      doStream: async ({ tools: modelTools }: { tools?: unknown }) => {
+      doStream: async ({
+        tools: modelTools,
+        prompt: modelPrompt,
+      }: {
+        tools?: unknown;
+        prompt?: unknown;
+      }) => {
         providerCatalog = JSON.stringify(modelTools);
+        providerPrompt = JSON.stringify(modelPrompt);
         return {
           stream: new ReadableStream({
             start(controller) {
@@ -260,11 +286,20 @@ test('WorkHub v2 keeps its attachment-only tool ceiling visible in direct and Co
                 input: JSON.stringify({
                   code: `return {
               names: Object.keys(tools).sort(),
-              allowed: ['Read', 'mcp__desktop_workhub__control'].map(name =>
+              allowed: [
+                'Read',
+                'mcp__desktop_workhub__control',
+                'mcp__desktop_browser__browser_navigate',
+                'mcp__desktop_browser__browser_snapshot',
+                'mcp__desktop_browser__browser_click',
+                'mcp__desktop_browser__browser_type',
+                'mcp__desktop_browser__browser_wait',
+                'mcp__desktop_browser__browser_extract'
+              ].map(name =>
                 [name in tools, typeof tools[name]]),
-              forbidden: ['Bash', 'Write', 'mcp__desktop_browser__browser_navigate'].map(name =>
+              forbidden: ['Bash', 'Write'].map(name =>
                 [name in tools, typeof tools[name]]),
-              result: await tools.mcp__desktop_workhub__control({})
+              result: await tools.mcp__desktop_browser__browser_navigate({ url: 'https://example.com/' })
             };`,
                 }),
               });
@@ -292,8 +327,10 @@ test('WorkHub v2 keeps its attachment-only tool ceiling visible in direct and Co
   } finally {
     await backend.dispose();
   }
-  for (const name of projected.map((tool) => tool.name)) assert.ok(providerCatalog.includes(name));
-  assert.doesNotMatch(providerCatalog, /Bash|Write|mcp__desktop_browser__browser_navigate/u);
+  for (const name of projected.map((tool) => tool.name)) assert.ok(providerPrompt.includes(name));
+  assert.doesNotMatch(providerCatalog, /mcp__desktop_browser__browser_navigate/u);
+  assert.doesNotMatch(providerCatalog, /Bash|Write/u);
+  assert.deepEqual(browserCalls, [{ url: 'https://example.com/' }]);
   const result = events.find(
     (event) => event.type === 'tool_result' && event.toolUseId === 'exec-1',
   );
@@ -307,15 +344,20 @@ test('WorkHub v2 keeps its attachment-only tool ceiling visible in direct and Co
         allowed: [
           [true, 'function'],
           [true, 'function'],
+          [true, 'function'],
+          [true, 'function'],
+          [true, 'function'],
+          [true, 'function'],
+          [true, 'function'],
+          [true, 'function'],
         ],
         forbidden: [
           [false, 'undefined'],
           [false, 'undefined'],
-          [false, 'undefined'],
         ],
-        result: control.name,
+        result: 'navigated:https://example.com/',
       },
-      toolCalls: [{ index: 1, name: control.name }],
+      toolCalls: [{ index: 1, name: browserNavigate.name }],
     },
   });
 });

@@ -1405,7 +1405,9 @@ function DeepThinking(props: { text: string; live: boolean; settledText?: string
       <Markdown
         text={props.text}
         streaming={props.live}
-        settledText={props.settledText}
+        // A truncated reasoning buffer slides at the head. It is a current
+        // snapshot, not an append-only prefix for the reveal cursor to replay.
+        settledText={props.truncated ? props.text : props.settledText}
         density="compact"
       />
     </ChatReasoning>

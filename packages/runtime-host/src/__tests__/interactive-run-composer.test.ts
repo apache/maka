@@ -33,6 +33,7 @@ import type { MakaTool } from '@maka/runtime/tool-runtime';
 import { createInteractiveRunComposer } from '../server/interactive-run-composer.js';
 import type { HostMemoryCoordinator } from '../server/memory-coordinator.js';
 import type { HostSkillCatalogCoordinator } from '../server/skill-catalog-coordinator.js';
+import { WORKHUB_BROWSER_TOOL_NAMES } from './fixtures/workhub-capabilities.js';
 
 test('the interactive tool surface does not expose the retired ExploreAgent tool', () => {
   const composer = createFixtureComposer();
@@ -272,8 +273,11 @@ function tool(name: string): MakaTool {
 test('WorkHub v2 binds control, tasks, attachment reading and user questions while legacy WorkHub stays tool-free', () => {
   const control = tool('mcp__desktop_workhub__control');
   const tasks = tool('mcp__desktop_workhub__tasks');
+  const browserTools = WORKHUB_BROWSER_TOOL_NAMES.map((name) =>
+    tool(`mcp__desktop_browser__${name}`),
+  );
   const clientCapabilities = {
-    tools: [control, tasks, tool('Bash'), tool('mcp__desktop_browser__navigate')],
+    tools: [control, tasks, ...browserTools, tool('Bash')],
     groups: [],
   };
   assert.deepEqual(
@@ -282,7 +286,7 @@ test('WorkHub v2 binds control, tasks, attachment reading and user questions whi
       clientCapabilities,
       resolveAdditionalTools: () => [tool('plugin_only'), tool('Read')],
     }).tools.map(({ name }) => name),
-    [control.name, tasks.name, 'Read', 'AskUserQuestion'],
+    [control.name, tasks.name, ...browserTools.map(({ name }) => name), 'Read', 'AskUserQuestion'],
   );
   assert.deepEqual(
     createFixtureComposer({

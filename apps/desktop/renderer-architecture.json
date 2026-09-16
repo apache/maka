@@ -250,7 +250,6 @@
     "src/renderer/features/workbar/controller/use-workbar-controller.ts -> src/renderer/browser-storage",
     "src/renderer/features/workbar/controller/use-workbar-controller.ts -> src/renderer/side-chat-command",
     "src/renderer/features/workbar/model/workbar-layout.ts -> src/renderer/browser-storage",
-    "src/renderer/features/workbar/model/workbar-tabs.ts -> src/renderer/browser-storage",
     "src/renderer/features/workbar/tools/artifacts/artifact-pane.tsx -> src/renderer/open-path",
     "src/renderer/features/workbar/tools/side-chat/quote-companion-core.ts -> src/renderer/model-connection-errors",
     "src/renderer/features/workbar/tools/side-chat/quote-companion-core.ts -> src/renderer/session-copy-attempt",

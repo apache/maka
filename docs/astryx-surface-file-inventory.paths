@@ -85,6 +85,7 @@ apps/desktop/src/renderer/features/workbar/ui/side-chat-close-confirmation.tsx
 apps/desktop/src/renderer/features/workbar/ui/workbar-host.tsx
 apps/desktop/src/renderer/features/workbar/ui/workbar-surface.tsx
 apps/desktop/src/renderer/features/workbar/ui/workbar-toggle.tsx
+apps/desktop/src/renderer/features/workbar/ui/workbar-workspace.tsx
 apps/desktop/src/renderer/features/workhub/ui/control-overlay.tsx
 apps/desktop/src/renderer/features/workhub/ui/cursor.tsx
 apps/desktop/src/renderer/features/workhub/ui/main-navigation.tsx

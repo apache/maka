@@ -22,9 +22,8 @@ import { ChatSurfaceLayout, UserQuestionPrompt, MakaWordmark, useUiLocale, type 
 import { Button, IconButton } from '@astryxdesign/core';
 import { ChevronDown, PictureInPicture2, Undo2, X } from '@maka/ui/icons';
 import { useLiveContextUsage } from '../../../application/contracts/session-inspector/use-live-context-usage.js';
-import { SessionInspectorPanel } from '../../../application/contracts/session-inspector/session-inspector-panel.js';
 import { selectLatestRequestUsage } from '../../../application/contracts/session-inspector/latest-request-usage.js';
-import { getDesktopConversationCopy } from '../../../locales/conversation-copy.js';
+import type { SessionWorkspaceComponent } from '../../../application/contracts/session-workspace.js';
 import { WorkHubProgressCard } from './workhub-progress-card.js';
 import { WorkHubComposer } from './workhub-composer.js';
 import { WorkHubConversation } from './workhub-conversation.js';
@@ -70,16 +69,18 @@ function revealWordmark(element: HTMLDivElement | null, content: HTMLDivElement 
   }
 }
 
-export function WorkHubRoot() {
+export function WorkHubRoot({ workspace: Workspace }: { workspace: SessionWorkspaceComponent }) {
   const highlight = useWorkHubHighlightState();
   const controller = useWorkHubController(() => highlight.selectWork(undefined));
   const { services, session, transcript, busy } = controller;
+  const sessionIds = useMemo(() => controller.sessionId
+    ? new Set([...controller.sessions.map((candidate) => candidate.id), controller.sessionId])
+    : undefined, [controller.sessions, controller.sessionId]);
   const modelChoice = controller.choices.find((choice) =>
     choice.connectionId === session?.llmConnectionId && choice.connectionSlug === session?.llmConnectionSlug && choice.model === session?.model,
   );
   const thinkingLevels = modelChoice?.thinkingLevels ?? [];
   const liveContextUsage = useLiveContextUsage({ inspector: services.inspector, sessionId: controller.sessionId, model: session?.model, providerType: modelChoice?.providerType });
-  const [inspectingContext, setInspectingContext] = useState(false);
   const thinkingLevel = session?.thinkingLevel && thinkingLevels.includes(session.thinkingLevel) ? session.thinkingLevel : undefined;
   const locale = useUiLocale();
   const t = workHubLiveCopy[locale];
@@ -287,7 +288,13 @@ export function WorkHubRoot() {
         </div>
       </div>}
       <div className="workHubRevealMark" ref={revealMark} aria-hidden="true"><MakaWordmark width={192} /></div>
-      <ChatSurfaceLayout
+      <Workspace className="workHubWorkspace" layoutScope="workhub" session={session} sessionIds={sessionIds} modelChoices={controller.choices} visible={showConversation} composerRef={composer}
+        onShowConversation={() => {
+          setConversationExpanded(true);
+          if (progress) call(services.presentation.expandProgress(presentation.progressRequest));
+        }}
+        onOpenSession={(id) => call(services.presentation.openSession(id))}>
+      {(workbar) => <ChatSurfaceLayout
         scrollButton={showConversation ? undefined : null}
         style={!showConversation ? { height: expandedLayoutHeight, flex: 'none', position: 'absolute', bottom: 0, width: '100%' } : undefined}
         onReturnToTail={transcript.hasNewer ? controller.loadLatest : undefined}
@@ -345,11 +352,7 @@ export function WorkHubRoot() {
                 declaredContextWindow: modelChoice?.declaredContextWindow,
                 meteredContextWindow: liveContextUsage?.contextWindow,
                 metadataContextWindow: modelChoice?.contextWindow,
-                onOpen: () => {
-                  setInspectingContext(true);
-                  setConversationExpanded(true);
-                  if (progress) call(services.presentation.expandProgress(presentation.progressRequest));
-                },
+                onOpen: workbar.openUsage,
               } : undefined}
               activeThinkingLevels={thinkingLevels}
               activeThinkingLevel={thinkingLevel}
@@ -357,6 +360,7 @@ export function WorkHubRoot() {
               modelSwitchHasHistory={transcript.messages.length > 0}
               footerAccessory={
                 <div className="workHubComposerActions">
+                  {workbar.toggle}
                   {control?.canUndo && <IconButton type="button" size="sm" variant="ghost" icon={<Undo2 size={16} />} label={t.undo} isDisabled={busy} onClick={() => call(services.control.undo())} />}
                   {!floating && <IconButton type="button" size="sm" variant="ghost" icon={<PictureInPicture2 size={16} />} label={t.float} tooltip={`${t.float} · ${shortcutLabel}`} onClick={() => call(services.presentation.detach())} />}
                 </div>
@@ -373,10 +377,7 @@ export function WorkHubRoot() {
         <div className="workhub-body">
         <WorkHubNavigationRail locale={locale} sessions={tasks} delegatedSessionIds={delegatedSessionIds} copy={getWorkHubRailCopy(locale)} />
         <div className="workhub-conversation-shell">
-        {inspectingContext && session ? <div className="workHubContextInspector">
-          <Button variant="ghost" size="sm" label={t.backToConversation} onClick={() => setInspectingContext(false)} />
-          <SessionInspectorPanel sessionId={session.id} active={showConversation} inspector={services.inspector} copy={getDesktopConversationCopy(locale).inspector} />
-        </div> : <WorkHubConversation
+        <WorkHubConversation
           promptStates={promptStates}
           workLinks={linksWithFeedback}
           onReadAttachmentBytes={services.readAttachmentBytes}
@@ -402,10 +403,11 @@ export function WorkHubRoot() {
               <p>{t.hint}</p>
             </div>
           }
-        />}
+        />
         </div></div>
         </div>
-      </ChatSurfaceLayout>
+      </ChatSurfaceLayout>}
+      </Workspace>
     </section>
     </WorkHubHueProvider>
     </WorkHubHighlightContext.Provider>

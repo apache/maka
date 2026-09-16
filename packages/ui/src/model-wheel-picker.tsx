@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { type CSSProperties, type ReactNode, useId, useLayoutEffect, useRef, useState } from 'react';
+import { type CSSProperties, type ReactNode, useCallback, useId, useLayoutEffect, useRef, useState } from 'react';
 import { Button, useLayer } from '@astryxdesign/core';
 import { Check, ICON_SIZE } from './icons.js';
 
@@ -59,6 +59,11 @@ export function ModelWheelPicker(props: {
   };
   const layer = useLayer({ mode: 'context', lazyMount: true, lightDismiss: true,
     onHide: () => setOpen(false) });
+  const positionRef = useRef(layer.ref).current;
+  const anchorRef = useCallback((element: HTMLSpanElement | null) => {
+    anchor.current = element;
+    positionRef(element);
+  }, [positionRef]);
   useLayoutEffect(() => {
     if (open) layer.show();
     else layer.hide();
@@ -71,7 +76,7 @@ export function ModelWheelPicker(props: {
     element.style.width = `${element.getBoundingClientRect().width}px`;
     return () => { element.style.removeProperty('width'); };
   }, [open]);
-  return <span ref={(element) => { anchor.current = element; layer.ref(element); }}
+  return <span ref={anchorRef}
     className="maka-model-wheel-anchor" data-open={open}
     style={{ '--maka-model-wheel-height': `${height}px` } as CSSProperties}>
     <Button ref={trigger} type="button" variant="ghost" size={props.size ?? 'sm'}
