@@ -36,6 +36,26 @@ import { TOOL_LINE_CAP, capLines, formatUserVisibleToolText } from './preview-ut
 import { getToolActivityCopy } from './copy.js';
 import { isSandboxDeniedToolResult } from './sandbox-denial.js';
 
+export interface QuietJsonPresentation {
+  body: string;
+  title?: string;
+}
+
+export function describeQuietJsonPresentation(
+  value: unknown,
+  locale: import('@maka/core/ui-locale').UiLocale,
+  invocationLine?: string,
+): QuietJsonPresentation {
+  const quiet = formatQuietJsonValue(value, locale);
+  const headline = quiet.headline && quiet.headline !== invocationLine
+    ? quiet.headline
+    : undefined;
+  return {
+    body: quiet.body,
+    title: headline ?? invocationLine,
+  };
+}
+
 /**
  * Shared Codex-like tool output well — one surface for live and settled
  * mono/command output. Tokens only: foreground-3 + border + radius-surface.
@@ -212,12 +232,12 @@ export function ToolResultPreview(props: {
 
   if (content.kind === 'json') {
     // No language: quiet text must stay contiguous (tokenizer splits words).
-    const quiet = formatQuietJsonValue(content.value, locale);
+    const quiet = describeQuietJsonPresentation(content.value, locale);
     return (
       <div data-kind="json">
         <ToolCodeBlock
           code={formatUserVisibleToolText(quiet.body, locale)}
-          title={quiet.headline ? formatUserVisibleToolText(quiet.headline, locale) : undefined}
+          title={quiet.title ? formatUserVisibleToolText(quiet.title, locale) : undefined}
           actionIdentity={props.actionIdentity}
         />
       </div>
