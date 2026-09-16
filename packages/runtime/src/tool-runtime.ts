@@ -71,6 +71,7 @@ import type {
   UserQuestionResponse,
   UserQuestionResult,
 } from '@maka/core/user-question';
+import { computerUseModelCallArgs } from '@maka/core/computer-use';
 import type { SessionHeader } from '@maka/core/session';
 import type { ToolInvocationRecord } from '@maka/core/usage-stats/types';
 import { redactSecrets } from '@maka/core/redaction';
@@ -84,7 +85,6 @@ import { stableHash } from './request-shape.js';
 import { classifyError } from './provider-error-classification.js';
 import type { RunTraceLike } from './run-trace.js';
 import { AwaitRegistry } from './await-registry.js';
-import { buildToolCallArgs, snapshotToolArgs } from './tool-call-snapshot.js';
 import type { ToolResultOutput } from './model-protocol.js';
 import {
   compatibilityToolResultProjection,
@@ -1079,7 +1079,7 @@ export class ToolRuntime {
     },
     stepId?: string,
   ): Promise<unknown> {
-    const rawExecutionArgs = snapshotToolArgs(args);
+    const executionArgs = snapshotToolArgs(args);
     const sandboxBoundaryDecisionGeneration = this.sandboxBoundaryDecisionGeneration;
     const toolUseId = ctx.toolCallId;
     // Registration is synchronous and happens before the first await, so
@@ -1089,26 +1089,39 @@ export class ToolRuntime {
         ? `Tool ${tool.name} is direct-only and cannot run inside exec.`
         : undefined;
     const admissionFailure = directOnlyFailure ?? this.admitToolForStep(tool, stepId);
-    // An unavailable sandbox-boundary surface cannot carry the expansion the
-    // tool requests, and that availability contract holds even when an older
-    // caller sends a legacy shape — validation stays deferred for it.
-    const sandboxBoundaryUnavailable =
-      directOnlyFailure === undefined &&
-      tool.name === 'request_sandbox_boundary' &&
-      !this.interactionRun() &&
-      (!this.input.createSandboxBoundaryRequest || !this.input.settleSandboxBoundaryRequest);
-    const { executionArgs, permissionArgs, persistedArgs, modelFacingArgs, permissionArgsError } =
-      await buildToolCallArgs({
-        parameters: tool.parameters,
-        categoryHint: tool.categoryHint,
-        permissionArgs: tool.permissionArgs,
-        executionArgs: rawExecutionArgs,
-        sessionId: this.input.sessionId,
-        turnId,
-        toolCallId: toolUseId,
-        directOnlyRejected: directOnlyFailure !== undefined,
-        validationDeferred: sandboxBoundaryUnavailable,
-      });
+    let permissionArgs = executionArgs;
+    let permissionArgsError: unknown;
+    if (directOnlyFailure === undefined) {
+      try {
+        // An unavailable sandbox-boundary surface rejects the expansion before
+        // interpreting it, including legacy shapes whose validation stays deferred.
+        const sandboxBoundaryUnavailable =
+          tool.name === 'request_sandbox_boundary' &&
+          !this.interactionRun() &&
+          (!this.input.createSandboxBoundaryRequest || !this.input.settleSandboxBoundaryRequest);
+        if (!sandboxBoundaryUnavailable) {
+          await validateDeclaredToolArgs(tool.parameters, executionArgs);
+        }
+        permissionArgs = tool.permissionArgs
+          ? snapshotToolArgs(
+              tool.permissionArgs(structuredClone(executionArgs) as never, {
+                sessionId: this.input.sessionId,
+                turnId,
+                toolCallId: toolUseId,
+              }),
+            )
+          : executionArgs;
+      } catch (error) {
+        permissionArgsError = error;
+      }
+    }
+    // Permission args are a policy/UI projection. Persistence and model replay
+    // share one canonical tool-dialect projection; Computer Use also strips
+    // screen-derived and user-typed values at this boundary.
+    const persistedArgs =
+      tool.categoryHint === 'computer_use'
+        ? snapshotToolArgs(computerUseModelCallArgs(permissionArgs))
+        : permissionArgs;
     const now = this.input.now();
     const trace = this.input.getRunTrace?.() ?? null;
     const runId = this.input.runId;
@@ -1473,7 +1486,6 @@ export class ToolRuntime {
         tool,
         startEvent: buildCallEvent('dispatch'),
         persistedArgs,
-        modelFacingArgs,
         abortSignal: ctx.abortSignal,
         ...(invocationId ? { invocationId } : {}),
         ...(runId ? { runId } : {}),
@@ -1877,8 +1889,6 @@ export class ToolRuntime {
     tool: MakaTool;
     startEvent: ToolStartEvent;
     persistedArgs: unknown;
-    /** The projection the model replays as its own call. */
-    modelFacingArgs: unknown;
     abortSignal: AbortSignal;
     invocationId?: string;
     runId?: string;
@@ -1924,7 +1934,7 @@ export class ToolRuntime {
         kind: 'function_call',
         id: input.startEvent.toolUseId,
         name: input.tool.name,
-        args: structuredClone(input.modelFacingArgs),
+        args: structuredClone(input.persistedArgs),
         ...(input.startEvent.providerOptions !== undefined
           ? { providerOptions: structuredClone(input.startEvent.providerOptions) }
           : {}),
@@ -2905,6 +2915,55 @@ export class ToolRuntime {
   }
 }
 
+async function validateDeclaredToolArgs(parameters: unknown, args: unknown): Promise<void> {
+  if (!parameters || (typeof parameters !== 'object' && typeof parameters !== 'function')) {
+    return;
+  }
+  const schema = parameters as {
+    safeParseAsync?: (
+      value: unknown,
+    ) => PromiseLike<{ success: true; data: unknown } | { success: false; error: unknown }>;
+    safeParse?: (
+      value: unknown,
+    ) => { success: true; data: unknown } | { success: false; error: unknown };
+    validate?: (
+      value: unknown,
+    ) =>
+      | { success: true; value: unknown }
+      | { success: false; error: unknown }
+      | PromiseLike<{ success: true; value: unknown } | { success: false; error: unknown }>;
+    '~standard'?: {
+      validate?: (
+        value: unknown,
+      ) =>
+        | { value: unknown }
+        | { issues: readonly unknown[] }
+        | PromiseLike<{ value: unknown } | { issues: readonly unknown[] }>;
+    };
+  };
+
+  if (typeof schema.safeParseAsync === 'function') {
+    const parsed = await schema.safeParseAsync(args);
+    if (parsed.success) return;
+    throw parsed.error;
+  }
+  if (typeof schema.safeParse === 'function') {
+    const parsed = schema.safeParse(args);
+    if (parsed.success) return;
+    throw parsed.error;
+  }
+  if (typeof schema.validate === 'function') {
+    const parsed = await schema.validate(args);
+    if (parsed.success) return;
+    throw parsed.error;
+  }
+  if (typeof schema['~standard']?.validate === 'function') {
+    const parsed = await schema['~standard'].validate(args);
+    if ('value' in parsed) return;
+    throw new Error('Tool arguments failed declared schema validation', { cause: parsed.issues });
+  }
+}
+
 function isInteractionControlError(error: unknown): boolean {
   return (
     error instanceof RuntimeInteractionAdmissionRejectedError ||
@@ -3482,4 +3541,26 @@ function byteLength(value: unknown): number {
   if (value === undefined) return 0;
   const text = typeof value === 'string' ? value : JSON.stringify(value ?? null);
   return Buffer.byteLength(text, 'utf8');
+}
+
+function snapshotToolArgs(value: unknown): unknown {
+  return snapshotJsonValue(value, new WeakSet<object>());
+}
+
+function snapshotJsonValue(value: unknown, seen: WeakSet<object>): unknown {
+  if (value === null || typeof value !== 'object') return value;
+  if (seen.has(value)) throw new Error('Tool arguments must not contain cycles');
+  seen.add(value);
+  if (Array.isArray(value)) {
+    return Object.freeze(value.map((entry) => snapshotJsonValue(entry, seen)));
+  }
+  const output: Record<string, unknown> = {};
+  for (const key of Object.keys(value)) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor || !('value' in descriptor)) {
+      throw new Error(`Tool argument ${key} must be a plain data property`);
+    }
+    output[key] = snapshotJsonValue(descriptor.value, seen);
+  }
+  return Object.freeze(output);
 }
