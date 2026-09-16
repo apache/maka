@@ -222,6 +222,8 @@ const E2E_DRIVING_SCRIPTS = new Set([
   'apps/desktop/scripts/workhub-browser-presentation-smoke.mjs',
   'scripts/audit-alignment.mjs',
   'scripts/ax-tree-audit.mjs',
+  'scripts/fixture-env.mjs',
+  'scripts/run-desktop-e2e-parallel.mjs',
 ]);
 
 // Scripts / paths that can break the built Storybook catalog. Product stories
@@ -423,13 +425,17 @@ export function planTests(changedFiles, options = {}) {
   const full = forceFull || files.some((path) => FULL_SUITE_FILES.has(path));
   if (full) {
     const workspaces = [...graph.dirs];
+    const workflow = files.includes('.github/workflows/ci.yml');
     return {
-      appIcons: true,
+      // Neither verdict follows a dependency bump, but the workflow file owns
+      // both steps' commands, so editing it still runs them.
+      appIcons: forceFull || workflow || files.some((path) => isAppIconPath(path)),
       asfSource: true,
       astryxSurface: true,
       cliPackage: true,
       code: true,
-      deepseekHarnessToolchain: true,
+      deepseekHarnessToolchain:
+        forceFull || workflow || files.some((path) => DEEPSEEK_HARNESS_TOOLCHAIN_FILES.has(path)),
       e2e: true,
       full: true,
       releaseContract: true,
