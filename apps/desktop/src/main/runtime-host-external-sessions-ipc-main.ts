@@ -80,10 +80,9 @@ export function registerRuntimeHostExternalSessionsIpc(
     };
   });
   ipcMain.handle('external-sessions:import', async (_event, input: unknown) => {
+    const request = decodeExternalSessionImportInput(input);
     try {
-      const result = await deps.client.importExternalSession(
-        decodeExternalSessionImportInput(input),
-      );
+      const result = await deps.client.importExternalSession(request);
       if (result.kind === 'source_limit_exceeded') {
         return {
           ok: false,
@@ -98,38 +97,36 @@ export function registerRuntimeHostExternalSessionsIpc(
         session: toDesktopHostSessionSummary(session),
       } satisfies ExternalSessionImportIpcResult;
     } catch (error) {
-      if (isUnknownImportOutcome(error)) {
-        // The task may be in the catalog, but neither Host error shape carries
-        // an operation-specific Session id. Refresh the catalog and keep the
-        // source locked in the renderer instead of making a blind retry safe.
-        deps.emitSessionsChanged('created');
-        return {
-          ok: false,
-          reason: 'commit_outcome_unknown',
-        } satisfies ExternalSessionImportIpcResult;
-      }
       if (
         error instanceof RuntimeHostOperationError &&
-        error.operation === 'external-session.import'
+        error.operation === 'external-session.import' &&
+        error.code !== 'commit_outcome_unknown'
       ) {
         const reason = classifyImportFailure(error);
         if (reason !== undefined) {
           return { ok: false, reason } satisfies ExternalSessionImportIpcResult;
         }
+        throw error;
       }
-      throw error;
+      if (isDefinitelyUndispatchedImport(error)) throw error;
+      // The task may be in the catalog, but no uncertain response carries an
+      // operation-specific Session id. A malformed response is equally
+      // uncertain: input was canonical before this call, so only an explicit
+      // not_dispatched interruption proves that a retry is safe.
+      deps.emitSessionsChanged('created');
+      return {
+        ok: false,
+        reason: 'commit_outcome_unknown',
+      } satisfies ExternalSessionImportIpcResult;
     }
   });
 }
 
-function isUnknownImportOutcome(error: unknown): boolean {
+function isDefinitelyUndispatchedImport(error: unknown): boolean {
   return (
-    (error instanceof RuntimeHostOperationError &&
+    error instanceof RuntimeHostRequestInterruptedError &&
       error.operation === 'external-session.import' &&
-      error.code === 'commit_outcome_unknown') ||
-    (error instanceof RuntimeHostRequestInterruptedError &&
-      error.operation === 'external-session.import' &&
-      error.dispatch === 'dispatched')
+    error.dispatch === 'not_dispatched'
   );
 }
 

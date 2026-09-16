@@ -1354,6 +1354,8 @@ export const TUI_COPY_RESOURCES = {
       externalUnavailable:
         'The external sessions on this page are not currently available to import.',
       externalImportedCount: 'imported {count} times',
+      externalImportBusy:
+        'Cannot import while a turn or another action is running. Wait for it to finish and try again.',
       externalImportFailed: 'Could not import the external session.',
       externalImportModelUnavailable:
         'No usable model connection is available. Configure and enable one before importing.',
@@ -1383,6 +1385,7 @@ export const TUI_COPY_RESOURCES = {
       externalEmpty: '没有找到外部会话。',
       externalUnavailable: '当前页的外部会话暂时不可导入。',
       externalImportedCount: '已导入 {count} 次',
+      externalImportBusy: '当前有回合或其他操作正在运行。请等待完成后重试。',
       externalImportFailed: '无法导入外部会话。',
       externalImportModelUnavailable: '没有可用的模型连接。请先配置并启用一个连接再导入。',
       externalImportSourceUnreadable: '无法读取或转换该外部会话。',
@@ -1408,6 +1411,7 @@ export const TUI_COPY_RESOURCES = {
       externalEmpty: '找不到外部工作階段。',
       externalUnavailable: '目前頁的外部工作階段暫時無法匯入。',
       externalImportedCount: '已匯入 {count} 次',
+      externalImportBusy: '目前有回合或其他操作正在執行。請等待完成後重試。',
       externalImportFailed: '無法匯入外部工作階段。',
       externalImportModelUnavailable: '沒有可用的模型連線。請先設定並啟用一個連線再匯入。',
       externalImportSourceUnreadable: '無法讀取或轉換該外部工作階段。',

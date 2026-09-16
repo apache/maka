@@ -155,8 +155,8 @@ type ImportAttempt = {
  *
  * A batch runs SEQUENTIALLY, and not because the Host cannot take two: it
  * dedupes per (adapter, source id) and is happy to convert different
- * conversations at once. The reasons are here, on this page. Recovery re-reads
- * the whole catalog window an attempt came from, so overlapping attempts would
+ * conversations at once. The reasons are here, on this page. Each attempt
+ * refreshes the catalog window it came from, so overlapping attempts would
  * race that read; a progress count is only true when one thing is happening;
  * and the page has no useful answer to "which of these five failed" if they
  * fail together.

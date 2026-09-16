@@ -803,7 +803,7 @@ export function isUserVisibleSessionSystemNote(kind: string): boolean {
 }
 
 /**
- * Whether a transcript row is conversation a foreign Session can be read as.
+ * Whether a transcript row contributes to imported conversation text.
  *
  * An imported transcript replays as text alone: another runtime's tool calls
  * belong to its protocol, and a note, a turn state or a token count is not

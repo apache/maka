@@ -6161,6 +6161,50 @@ Slug openai-work<cursor>
     await run;
   });
 
+  test('fails closed when an external import response cannot be decoded', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new SlashCommandDriver([]);
+    const externalSessions = {
+      listScopes: () => ['all'] as const,
+      listSources: async () => ['opencode'],
+      listSessions: async () => ({
+        sessions: [
+          {
+            id: 'ses_malformed_response',
+            name: 'Malformed response',
+            hostCwd: '/repo',
+            importState: { importedCount: 0, importedSessionIds: [], isImporting: false },
+          },
+        ],
+        nextCursor: null,
+      }),
+      importSession: async () => {
+        throw new Error('Invalid external Session import result');
+      },
+    };
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+      externalSessions,
+    });
+
+    terminal.input('/session');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('Import external session'));
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('Malformed response'));
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('result is uncertain'));
+
+    exitMaka(terminal);
+    await run;
+  });
+
   test('does not submit an external source the Host reports as already importing', async () => {
     const terminal = new FakeTerminal();
     const driver = new SlashCommandDriver([]);

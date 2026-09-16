@@ -168,6 +168,61 @@ test('a dispatched interrupted import has the same uncertain outcome as the Host
   assert.deepEqual(events, [{ reason: 'created', sessionId: undefined }]);
 });
 
+test('fails closed when a dispatched import response cannot be decoded', async () => {
+  const events: unknown[] = [];
+  const ipc = ipcHarness();
+  registerRuntimeHostExternalSessionsIpc(
+    {
+      client: clientFixture({
+        importExternalSession: async () => {
+          throw new Error('Invalid external Session import result');
+        },
+      }),
+      emitSessionsChanged: (reason, sessionId) => events.push({ reason, sessionId }),
+    },
+    ipc,
+  );
+
+  assert.deepEqual(
+    await ipc.invoke('external-sessions:import', {
+      adapterId: 'codex',
+      sourceSessionId: 'source-1',
+    }),
+    { ok: false, reason: 'commit_outcome_unknown' },
+  );
+  assert.deepEqual(events, [{ reason: 'created', sessionId: undefined }]);
+});
+
+test('does not relabel an explicitly undispatched import as uncertain', async () => {
+  const ipc = ipcHarness();
+  registerRuntimeHostExternalSessionsIpc(
+    {
+      client: clientFixture({
+        importExternalSession: async () => {
+          throw new RuntimeHostRequestInterruptedError(
+            'external-session.import',
+            'command',
+            'not_dispatched',
+            'connection_lost',
+          );
+        },
+      }),
+      emitSessionsChanged() {},
+    },
+    ipc,
+  );
+
+  await assert.rejects(
+    () =>
+      ipc.invoke('external-sessions:import', {
+        adapterId: 'codex',
+        sourceSessionId: 'source-1',
+      }),
+    (error: unknown) =>
+      error instanceof RuntimeHostRequestInterruptedError && error.dispatch === 'not_dispatched',
+  );
+});
+
 test('maps a no-usable-model failure to a distinct, non-recovering reason', async () => {
   const events: unknown[] = [];
   const ipc = ipcHarness();

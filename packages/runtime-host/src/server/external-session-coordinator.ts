@@ -399,10 +399,10 @@ function toWireSummary(summary: ExternalSessionSummary): ExternalSessionCatalogI
 function boundedCatalogPage(
   candidates: readonly {
     session: ExternalSessionCatalogItem;
-    nextSourceCursor: number | string;
+    nextSourceCursor: string;
   }[],
   hasMore: boolean,
-): { sessions: ExternalSessionCatalogItem[]; nextSourceCursor?: number | string } {
+): { sessions: ExternalSessionCatalogItem[]; nextSourceCursor?: string } {
   const page: ExternalSessionCatalogItem[] = [];
   const budget = new JsonArrayPageBudget(EXTERNAL_SESSION_RESULT_MAX_BYTES, {
     sessions: [],
@@ -417,8 +417,11 @@ function boundedCatalogPage(
       page.push(candidate.session);
       continue;
     }
-    // Every wire-valid row fits by itself. Resume after the last row returned,
-    // so the candidate that did not fit remains visible on the next page.
+    // Every wire-valid row must fit by itself; the wire caps are chosen to
+    // make that true independently of surrounding rows.
+    if (index === 0) throw new Error('External Session catalog row exceeds the page budget');
+    // Resume after the last row returned, so the candidate that did not fit
+    // remains visible on the next page.
     return { sessions: page, nextSourceCursor: candidates[index - 1]!.nextSourceCursor };
   }
   return { sessions: page };

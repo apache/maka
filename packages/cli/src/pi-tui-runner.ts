@@ -329,22 +329,28 @@ function externalSourceLabel(adapterId: string): string {
 function externalImportErrorCode(
   error: unknown,
 ): 'commit_outcome_unknown' | 'model_unavailable' | 'source_unreadable' | undefined {
-  if (typeof error !== 'object' || error === null) return undefined;
+  if (typeof error !== 'object' || error === null) return 'commit_outcome_unknown';
   const value = error as {
     readonly operation?: unknown;
     readonly code?: unknown;
     readonly mode?: unknown;
     readonly dispatch?: unknown;
   };
-  if (value.operation !== 'external-session.import') return undefined;
+  if (value.operation !== undefined && value.operation !== 'external-session.import') {
+    return undefined;
+  }
+  if (value.mode === 'command' && value.dispatch === 'not_dispatched') return undefined;
   if (value.mode === 'command' && value.dispatch === 'dispatched') {
     return 'commit_outcome_unknown';
   }
-  return value.code === 'commit_outcome_unknown' ||
+  if (
+    value.code === 'commit_outcome_unknown' ||
     value.code === 'model_unavailable' ||
     value.code === 'source_unreadable'
-    ? value.code
-    : undefined;
+  ) {
+    return value.code;
+  }
+  return value.code === undefined ? 'commit_outcome_unknown' : undefined;
 }
 
 export function resolveTaskbarProgress(
@@ -438,6 +444,7 @@ interface TuiSessionActionsCopy {
   readonly externalEmpty: string;
   readonly externalUnavailable: string;
   readonly externalImportedCount: string;
+  readonly externalImportBusy: string;
   readonly externalImportFailed: string;
   readonly externalImportModelUnavailable: string;
   readonly externalImportSourceUnreadable: string;
@@ -3119,6 +3126,8 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       void load(false);
     };
     const render = (): void => {
+      // SelectList has no disabled-row contract. Keep ineligible rows outside
+      // the selection domain and explain the empty eligible set below.
       const selectable = sessions.filter((session) => isExternalImportEligible(adapterId, session));
       byValue = new Map(
         selectable.map((session) => [`external:${adapterId}:${session.id}`, session] as const),
@@ -3198,7 +3207,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
           if (!source) return;
           closeOverlay();
           if (busy || turnRunning) {
-            state.entries.push({ kind: 'notice', level: 'error', text: copy.externalImportFailed });
+            state.entries.push({ kind: 'notice', level: 'error', text: copy.externalImportBusy });
             requestRender();
             return;
           }
