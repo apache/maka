@@ -101,6 +101,71 @@ test('shows one waiting indicator before a named live Turn reaches the transcrip
   assert.match(committed, /data-transcript-turn-id="pending-turn"/);
 });
 
+test('prefers a recorded failed tail over a stale running witness for that turn', () => {
+  const turnId = 'failed-turn';
+  const markup = renderChat(
+    { turnId, startedAt: 1, steps: [] },
+    {
+      messages: [
+        { type: 'user', id: 'user-1', turnId, text: 'Run this', ts: 1 },
+        { type: 'turn_state', id: 'state-1', turnId, status: 'failed', ts: 2 },
+      ],
+      activeTurn: { turnId },
+      deriveTurnPresentation: () => ({
+        footerActionsByTurn: {},
+        failedReasonLabels: { [turnId]: 'The turn failed' },
+        failedSeverities: {},
+        failedExecutionStateLabels: {},
+        lineageBadgesByTurn: {},
+      }),
+    },
+  );
+
+  assert.match(markup, /The turn failed/);
+  const { document } = parseHTML(markup);
+  assert.equal(document.querySelector('.maka-turn-processing'), null);
+  assert.equal(document.querySelector('.maka-turn')?.getAttribute('data-live-streaming'), null);
+});
+
+test('keeps a genuinely running sibling visible after a failed turn', () => {
+  const failedTurnId = 'failed-turn';
+  const runningTurnId = 'running-turn';
+  const markup = renderChat(
+    { turnId: runningTurnId, startedAt: 3, steps: [] },
+    {
+      messages: [
+        { type: 'user', id: 'user-1', turnId: failedTurnId, text: 'First', ts: 1 },
+        {
+          type: 'turn_state',
+          id: 'failed-state',
+          turnId: failedTurnId,
+          status: 'failed',
+          ts: 2,
+        },
+        { type: 'user', id: 'user-2', turnId: runningTurnId, text: 'Second', ts: 3 },
+        {
+          type: 'turn_state',
+          id: 'running-state',
+          turnId: runningTurnId,
+          status: 'running',
+          ts: 4,
+        },
+      ],
+      activeTurn: { turnId: runningTurnId },
+      deriveTurnPresentation: () => ({
+        footerActionsByTurn: {},
+        failedReasonLabels: { [failedTurnId]: 'The first turn failed' },
+        failedSeverities: {},
+        failedExecutionStateLabels: {},
+        lineageBadgesByTurn: {},
+      }),
+    },
+  );
+
+  assert.match(markup, /The first turn failed/);
+  assert.equal(parseHTML(markup).document.querySelectorAll('.maka-turn-processing').length, 1);
+});
+
 test('a new Host Turn owns its waiting footer while the previous answer remains buffered', () => {
   const oldTurn: LiveTurnProjection = {
     turnId: 'old-turn', terminal: true,
