@@ -1303,6 +1303,42 @@ test('cached fallback remains readable and retries once per observation generati
   await controller.close();
 });
 
+test('a reload that lands on the cached transcript recovers once the Host is back', async () => {
+  const store = transcriptStore();
+  let online = true;
+  let opens = 0;
+  const controller = createDesktopTranscriptRangeController(store, async () => {
+    opens += 1;
+    const identity = {
+      sessionId: 'session-1',
+      generation: online ? `live-${opens}` : `cached:${opens}`,
+      hostEpoch: 'host-1',
+    };
+    for (const batch of encodeDesktopTranscriptSnapshot({
+      beginsAtTurnBoundary: true,
+      ...identity, durableThrough: 1,
+      durable: [{ sequence: 1, message: assistantMessage(identity.generation) }],
+      hasOlder: false,
+    })) store.accept(batch);
+    return transcriptHandle(identity);
+  }, { onError: () => {} });
+  const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
+  await controller.ready();
+  controller.observationChanged('ready');
+  online = false;
+  await assert.rejects(controller.reload(), /waiting for Host reconnection/);
+  await settle();
+  assert.match(store.range().generation, /^cached:/);
+  online = true;
+  controller.observationChanged('pending');
+  controller.observationChanged('ready');
+  await settle();
+  await settle();
+  assert.match(store.range().generation, /^live-/);
+  assert.ok(opens >= 3);
+  await controller.close();
+});
+
 test('live transcript open failures without cache still report the original error', async () => {
   const failure = new Error('no Host and no cache');
   const errors: unknown[] = [];

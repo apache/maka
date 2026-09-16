@@ -153,7 +153,7 @@ export function createDesktopTranscriptRangeController(
       }
     })();
   };
-  const reload = async () => {
+  const reopen = async () => {
     const previous = handle;
     acknowledged = undefined;
     openController.abort();
@@ -167,22 +167,25 @@ export function createDesktopTranscriptRangeController(
       });
     handle = replacement;
     await replacement;
+    requireLive();
   };
   const recovery = createDesktopTranscriptReconnectRecovery({
-    async reload() {
-      await reload();
-      requireLive();
-    },
+    reload: reopen,
     onError(error) {
       if (!cached()) options.onError(error);
     },
+  });
+  // A reopen can land on the cached transcript; recovery must still hear of it.
+  const reload = () => reopen().catch((error: unknown) => {
+    recovery.transcriptFailed(error);
+    throw error;
   });
   let gapReload: Promise<void> | undefined;
   const unsubscribe = store.subscribe(() => {
     acknowledgeTail();
     if (!store.needsReload() || gapReload || closed) return;
     gapReload = reload()
-      .catch(recovery.transcriptFailed)
+      .catch(() => undefined)
       .finally(() => { gapReload = undefined; });
   });
   void handle.then(requireLive).catch(recovery.transcriptFailed);
