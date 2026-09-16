@@ -603,6 +603,27 @@ test('a navigation waits for its Turn, and a later command supersedes it before 
   });
 });
 
+test('a navigation whose arrival settles without its Turn ends', () => {
+  withObservers((_resize, frame) => {
+    const root = fakeRoot();
+    const list = turnList(root, ['c', 'd']);
+    const authority = createTranscriptScrollAuthority();
+    authority.attach(root as unknown as HTMLElement, list.layout);
+    let arrive!: () => void;
+    const arrival: PromiseLike<void> = { then: (resolve) => { arrive = () => resolve?.(); return arrival as never; } };
+    authority.navigate({ turnId: 'a', align: 'start', arrival });
+    arrive();
+    assert.equal(authority.getSnapshot().positioning, true, 'the list renders what arrived before this is decided');
+    frame();
+    assert.equal(authority.getSnapshot().positioning, false);
+
+    list.set(['a', 'b', 'c', 'd']);
+    authority.turnsChanged('prepend');
+    frames(frame);
+    assert.notEqual(root.scrollTop, 0, 'a Turn that arrives later does not pull the reader to it');
+  });
+});
+
 test('a transcript without a Turn reader has no reading position', () => {
   withObservers(() => {
     const root = fakeRoot();

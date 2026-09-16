@@ -179,7 +179,7 @@ function mountHook(env: Env) {
   const state: {
     authority?: TranscriptScrollAuthority;
     highlighted: string | null;
-    revealTurnAtStart?: (turnId: string) => void;
+    revealTurnAtStart?: (turnId: string, arrival: PromiseLike<unknown>) => void;
     measurement?: { shift: boolean; generation: number };
     anchors: Map<string, string | undefined>;
   } = { highlighted: null, anchors: new Map() };
@@ -336,7 +336,7 @@ test('a rail navigation releases the pin and scrolls its Turn to the top by inde
   const hook = mountHook(env);
   await hook.render({ sessionId: 's' });
   assert.equal(hook.state.authority?.getSnapshot().pinned, true);
-  await act(() => { hook.state.revealTurnAtStart?.('turn-3'); });
+  await act(() => { hook.state.revealTurnAtStart?.('turn-3', Promise.resolve()); });
   assert.equal(env.scroller.scrollTop, 3 * TURN_HEIGHT);
   assert.equal(hook.state.authority?.getSnapshot().pinned, false);
 

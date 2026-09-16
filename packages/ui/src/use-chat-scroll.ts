@@ -291,8 +291,8 @@ export function useChatScroll(input: {
     });
   });
 
-  const revealTurnAtStart = useCallback((turnId: string): void => {
-    authority.navigate({ turnId, align: 'start' });
+  const revealTurnAtStart = useCallback((turnId: string, arrival: PromiseLike<unknown>): void => {
+    authority.navigate({ turnId, align: 'start', arrival });
   }, [authority]);
 
   return {

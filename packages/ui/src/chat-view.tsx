@@ -554,10 +554,10 @@ export function ChatView(props: {
   onLoadTranscriptTurnRef.current = props.onLoadTranscriptTurn;
   const navigatePromptRail = useCallback(
     (turn: PromptAnchorRailTurn) => {
-      revealTurnAtStart(turn.turnId);
-      if (turn.sequence !== undefined && !orderedTurnIdsRef.current.includes(turn.turnId)) {
-        void onLoadTranscriptTurnRef.current?.({ turnId: turn.turnId, sequence: turn.sequence });
-      }
+      const load = turn.sequence !== undefined && !orderedTurnIdsRef.current.includes(turn.turnId)
+        ? onLoadTranscriptTurnRef.current?.({ turnId: turn.turnId, sequence: turn.sequence })
+        : undefined;
+      revealTurnAtStart(turn.turnId, Promise.resolve(load));
     },
     [revealTurnAtStart],
   );

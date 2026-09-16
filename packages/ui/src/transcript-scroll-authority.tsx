@@ -70,6 +70,11 @@ export interface TranscriptNavigation {
   readonly turnId: string;
   readonly align: 'start' | 'center';
   readonly smooth?: boolean;
+  /**
+   * What brings the Turn into the list. Once it settles and the list has
+   * rendered, a Turn still absent is not coming, and the navigation ends.
+   */
+  readonly arrival?: PromiseLike<unknown>;
   /** The positioning finished without being superseded. */
   onSettled?(): void;
 }
@@ -101,7 +106,8 @@ export interface TranscriptScrollAuthority {
   releasePin(): void;
   /**
    * Take the reader to a Turn. One that is not in the list yet is taken to
-   * when it arrives, unless another command or the reader moves first.
+   * when it arrives, unless another command or the reader moves first, or its
+   * `arrival` settles without it.
    */
   navigate(target: TranscriptNavigation): void;
   /**
@@ -435,6 +441,17 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
       };
       publish();
       settle();
+      const settled = () => requestAnimationFrame(() => {
+        if (positioning?.navigation !== navigation) return;
+        if (layout?.offsetOf(navigation.turnId) !== undefined) {
+          settle();
+          return;
+        }
+        endPositioning();
+        readingTurnId = readTurn();
+        publish();
+      });
+      navigation.arrival?.then(settled, settled);
     },
     turnsChanged(change) {
       if (change === 'same' || change === 'append') {
