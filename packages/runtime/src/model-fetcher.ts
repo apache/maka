@@ -522,9 +522,9 @@ function toGitHubCopilotModelInfo(model: RawGitHubCopilotModel): ModelInfo[] {
     limits?.vision?.supported_media_types?.some(
       (type) => typeof type === 'string' && type.startsWith('image/'),
     ) === true;
-  const contextWindow = providerTokenLimit(
-    limits?.max_context_window_tokens ?? limits?.max_prompt_tokens,
-  );
+  const contextWindow =
+    providerTokenLimit(limits?.max_context_window_tokens) ??
+    providerTokenLimit(limits?.max_prompt_tokens);
   const maxOutputTokens = providerTokenLimit(limits?.max_output_tokens);
   return [
     {
@@ -782,7 +782,8 @@ function toModelInfo(model: RawProviderModel): ModelInfo | null {
     model.providers,
     'model providers',
   );
-  const contextWindow = providerTokenLimit(model.context_length ?? model.context_window);
+  const contextWindow =
+    providerTokenLimit(model.context_length) ?? providerTokenLimit(model.context_window);
   const maxOutputTokens = providerTokenLimit(model.max_tokens);
   const capabilities: NonNullable<ModelInfo['capabilities']> = {};
   if (model.input_modalities?.includes('image')) capabilities.vision = true;

@@ -60,19 +60,28 @@ describe('model discovery', () => {
       },
       {
         providerType: 'openai-compatible',
-        row: (id: string, value: unknown) => ({ id, context_length: value, max_tokens: value }),
+        row: (id: string, value: unknown, fallback?: number) => ({
+          id,
+          context_length: value,
+          context_window: fallback,
+          max_tokens: value,
+        }),
         key: 'data',
         output: true,
       },
       {
         providerType: 'github-copilot',
-        row: (id: string, value: unknown) => ({
+        row: (id: string, value: unknown, fallback?: number) => ({
           id,
           model_picker_enabled: true,
           supported_endpoints: ['/responses'],
           capabilities: {
             supports: { tool_calls: true },
-            limits: { max_context_window_tokens: value, max_output_tokens: value },
+            limits: {
+              max_context_window_tokens: value,
+              max_prompt_tokens: fallback,
+              max_output_tokens: value,
+            },
           },
         }),
         key: 'data',
@@ -86,32 +95,42 @@ describe('model discovery', () => {
       },
     ] as const;
     for (const fixture of cases) {
-      const outcome = await runConnectionModelDiscoveryEffect(
-        { providerType: fixture.providerType, baseUrl: 'https://fixture.invalid/v1' },
-        'fixture-key',
-        {
-          fetch: async (input) =>
-            Response.json(
-              new URL(String(input)).pathname === '/v1/accounts'
-                ? { accounts: [] }
-                : { [fixture.key]: values.map(([value], i) => fixture.row(`model-${i}`, value)) },
-            ),
-        },
-      );
-      assert.ok(outcome.ok, fixture.providerType);
-      assert.deepEqual(
-        outcome.models.map(({ id, contextWindow, maxOutputTokens }) => ({
-          id,
-          contextWindow,
-          maxOutputTokens,
-        })),
-        values.map(([, expected], i) => ({
-          id: `model-${i}`,
-          contextWindow: expected,
-          maxOutputTokens: fixture.output ? expected : undefined,
-        })),
-        fixture.providerType,
-      );
+      const fallbacks =
+        fixture.providerType === 'openai-compatible' || fixture.providerType === 'github-copilot'
+          ? [undefined, 32768]
+          : [undefined];
+      for (const fallback of fallbacks) {
+        const outcome = await runConnectionModelDiscoveryEffect(
+          { providerType: fixture.providerType, baseUrl: 'https://fixture.invalid/v1' },
+          'fixture-key',
+          {
+            fetch: async (input) =>
+              Response.json(
+                new URL(String(input)).pathname === '/v1/accounts'
+                  ? { accounts: [] }
+                  : {
+                      [fixture.key]: values.map(([value], i) =>
+                        fixture.row(`model-${i}`, value, fallback),
+                      ),
+                    },
+              ),
+          },
+        );
+        assert.ok(outcome.ok, fixture.providerType);
+        assert.deepEqual(
+          outcome.models.map(({ id, contextWindow, maxOutputTokens }) => ({
+            id,
+            contextWindow,
+            maxOutputTokens,
+          })),
+          values.map(([, expected], i) => ({
+            id: `model-${i}`,
+            contextWindow: expected ?? fallback,
+            maxOutputTokens: fixture.output ? expected : undefined,
+          })),
+          fixture.providerType,
+        );
+      }
     }
   });
 
