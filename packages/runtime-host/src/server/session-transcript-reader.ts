@@ -213,8 +213,6 @@ function createDurableLedgerTranscriptReader(input: {
     const throughOrdinal = ordinalOf(throughSequence);
     const older = request.direction === 'older';
     let ordinal = ordinalOf(position);
-    /** The furthest ordinal, along the walk, of any Turn the walk has entered. */
-    let reach = older ? Number.POSITIVE_INFINITY : Number.NEGATIVE_INFINITY;
     while (ordinal >= 0 && ordinal <= throughOrdinal) {
       // A page resumes from one record's sequence and drops everything the other
       // side of it, so what this yields has to be monotone in sequence. Storage
@@ -229,15 +227,6 @@ function createDurableLedgerTranscriptReader(input: {
       if (!run) return;
       const from = run.firstOrdinal * EVENT_SEQUENCE_STRIDE;
       const to = run.lastOrdinal * EVENT_SEQUENCE_STRIDE + EVENT_SEQUENCE_STRIDE - 1;
-      const extent = [...run.ordinals.values()];
-      const start = older ? Math.max(...extent) : Math.min(...extent);
-      const end = older ? Math.min(...extent) : Math.max(...extent);
-      const edge = older ? run.lastOrdinal : run.firstOrdinal;
-      // Before this stretch the walk is between Turns only if every Turn it has
-      // entered is behind it and this one begins here. A Turn resumed after
-      // another nested inside it began further back.
-      let between = (older ? reach > edge : reach < edge) && start === edge;
-      reach = older ? Math.min(reach, end) : Math.max(reach, end);
       const records = (await projectTurn(run))
         .filter(
           ({ sequence }) =>
@@ -247,9 +236,14 @@ function createDurableLedgerTranscriptReader(input: {
             (older ? sequence <= position : sequence >= position),
         )
         .sort((a, b) => (older ? b.sequence - a.sequence : a.sequence - b.sequence));
-      for (const record of records) {
+      for (const [index, record] of records.entries()) {
+        const between =
+          index === 0 &&
+          !(await store.readTranscriptTurnCrossing(
+            sessionId,
+            older ? run.lastOrdinal + 1 : run.firstOrdinal,
+          ));
         yield { ...record, between };
-        between = false;
       }
       ordinal = older ? run.firstOrdinal - 1 : run.lastOrdinal + 1;
     }

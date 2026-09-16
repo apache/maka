@@ -22,7 +22,10 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { seedInvocation } from '@maka/runtime/test-only/invocation-fixture';
+import {
+  seedInvocation,
+  type TestInvocationOpeningOverrides,
+} from '@maka/runtime/test-only/invocation-fixture';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import {
   WORKHUB_COORDINATION_SESSION_ID,
@@ -844,16 +847,72 @@ test('ends a page between Turns only outside a nested Turn', async () => {
   });
 });
 
+test('does not end a page where a handoff resumes the same Turn', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-handoff-page-boundary-'));
+  await withNestedTranscript(base, async (read, sessionId) => {
+    await seed(read.stores, sessionId, 'first');
+    await read.text('first', 'first-a');
+    await read.pause('first', 'first-paused', 'resumed');
+    await seed(read.stores, sessionId, 'resumed', {
+      turnId: 'turn-first',
+      opening: {
+        source: {
+          kind: 'handoff',
+          rootRunId: 'first',
+          sourceInvocationId: 'first',
+          sourceRunId: 'first',
+          sourceTurnId: 'turn-first',
+          sourceRuntimeEventHighWater: 2,
+          claimId: 'claim-1',
+          boundaryDigest: `sha256:${'0'.repeat(64)}`,
+        },
+      },
+    });
+    await read.text('resumed', 'resumed-a', 'turn-first');
+    await read.end('resumed', 'resumed-end', 'turn-first');
+    await seed(read.stores, sessionId, 'later');
+    await read.text('later', 'later-a');
+    await read.end('later', 'later-end');
+    const throughSequence = (await read.readDurableHighWater(sessionId))!;
+
+    for (const direction of ['older', 'newer'] as const) {
+      const stops: Array<readonly [string, boolean]> = [];
+      let position: number | undefined;
+      for (let page = 0; page < 16; page++) {
+        const result = await read.readDurablePage(sessionId, {
+          direction,
+          throughSequence,
+          ...(position === undefined ? {} : { position }),
+          maxBytes: 1 << 20,
+          maxMessages: 1,
+        });
+        const { id } = JSON.parse(result.fragments[0]!.data.toString()) as StoredMessage;
+        stops.push([id, result.endsAtTurnBoundary]);
+        if (result.next === null) break;
+        position = result.next.position;
+      }
+      const between = direction === 'newer' ? 'resumed-end' : 'later-a';
+      assert.deepEqual(
+        stops,
+        stops.map(([id], index) => [id, id === between || index === stops.length - 1] as const),
+        direction,
+      );
+    }
+  });
+});
+
 const seed = (
   stores: Awaited<ReturnType<typeof openInteractiveExecutionStoresForWrite>>,
   sessionId: string,
   runId: string,
+  overrides: { turnId?: string; opening?: TestInvocationOpeningOverrides } = {},
 ) =>
   seedInvocation(stores.runtimeEventStore, {
     sessionId,
     runId,
-    turnId: `turn-${runId}`,
+    turnId: overrides.turnId ?? `turn-${runId}`,
     openedAt: 0,
+    ...(overrides.opening ? { opening: overrides.opening } : {}),
   });
 
 /** A reader over an empty Session, with the appenders these fixtures build from. */
@@ -862,8 +921,9 @@ async function withNestedTranscript(
   body: (
     read: ReturnType<typeof createSessionTranscriptReader> & {
       stores: Awaited<ReturnType<typeof openInteractiveExecutionStoresForWrite>>;
-      text(runId: string, id: string): Promise<unknown>;
-      end(runId: string, id: string): Promise<unknown>;
+      text(runId: string, id: string, turnId?: string): Promise<unknown>;
+      end(runId: string, id: string, turnId?: string): Promise<unknown>;
+      pause(runId: string, id: string, successor: string): Promise<unknown>;
     },
     sessionId: string,
   ) => Promise<void>,
@@ -881,7 +941,12 @@ async function withNestedTranscript(
       permissionMode: 'ask',
     });
     let ts = 0;
-    const append = (runId: string, id: string, overrides: Partial<RuntimeEvent>) =>
+    const append = (
+      runId: string,
+      id: string,
+      overrides: Partial<RuntimeEvent>,
+      turnId = `turn-${runId}`,
+    ) =>
       stores.runtimeEventStore.appendRuntimeEvent(
         session.id,
         runId,
@@ -889,7 +954,7 @@ async function withNestedTranscript(
           id,
           invocationId: runId,
           runId,
-          turnId: `turn-${runId}`,
+          turnId,
           ts: ++ts,
           ...overrides,
         }),
@@ -901,15 +966,36 @@ async function withNestedTranscript(
           canonicalPermissionOutcomes: { readPermissionOutcome: async () => undefined },
         }),
         stores,
-        text: (runId, id) =>
+        text: (runId, id, turnId) =>
+          append(
+            runId,
+            id,
+            {
+              role: 'model',
+              author: 'agent',
+              content: { kind: 'text', text: id },
+              refs: { storedMessageId: id },
+            },
+            turnId,
+          ),
+        end: (runId, id, turnId) =>
+          append(runId, id, { status: 'completed', actions: { endInvocation: true } }, turnId),
+        pause: (runId, id, successor) =>
           append(runId, id, {
-            role: 'model',
-            author: 'agent',
-            content: { kind: 'text', text: id },
-            refs: { storedMessageId: id },
+            actions: {
+              endInvocation: true,
+              handoffPause: {
+                protocol: 'runtime_handoff_pause_v1',
+                handoffId: `${runId}-handoff`,
+                remainingSteps: null,
+                hostEpoch: 'old-host',
+                rootRunId: runId,
+                successorRunId: successor,
+                successorInvocationId: successor,
+                claimId: `${runId}-claim`,
+              },
+            },
           }),
-        end: (runId, id) =>
-          append(runId, id, { status: 'completed', actions: { endInvocation: true } }),
       },
       session.id,
     );
