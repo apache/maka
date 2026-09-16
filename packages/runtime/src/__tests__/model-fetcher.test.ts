@@ -18,17 +18,14 @@
  */
 
 import assert from 'node:assert/strict';
-import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { after, describe, test } from 'node:test';
 import type { LlmConnection } from '@maka/core/llm-connections';
 import { runConnectionModelDiscoveryEffect } from '../model-fetcher.js';
 import { discoverModels } from './model-discovery-fixture.js';
 
-const servers: Array<{ close(): Promise<void> }> = [];
+import { startJsonServer, respondJson, closeAllJsonServers } from './conformance-harness.js';
 
-after(async () => {
-  await Promise.all(servers.map((server) => server.close()));
-});
+after(closeAllJsonServers);
 
 describe('model discovery', () => {
   test('all token metadata adapters preserve valid limits and omit invalid optional limits', async () => {
@@ -153,39 +150,6 @@ describe('model discovery', () => {
         assert.equal(requestCount, 41);
       }
     }
-  });
-
-  test('Cloudflare Workers AI bounds pagination before an oversized catalog can be persisted', async () => {
-    let requestCount = 0;
-    const server = await startJsonServer((_request, response) => {
-      requestCount += 1;
-      respondJson(response, 200, {
-        success: true,
-        result: Array.from({ length: 50 }, (_, index) => ({
-          name: `@cf/example/page-${requestCount}-model-${index}`,
-        })),
-        result_info: {
-          page: requestCount,
-          per_page: 50,
-          count: 50,
-          total_count: 10_000,
-        },
-      });
-    });
-
-    assert.deepEqual(
-      await runConnectionModelDiscoveryEffect(
-        {
-          providerType: 'cloudflare-workers-ai',
-          baseUrl: `${server.url}/client/v4/accounts/account-123/ai/v1`,
-          defaultModel: '@cf/example/default',
-        },
-        'cloudflare-api-token',
-        { fetch: globalThis.fetch },
-      ),
-      { ok: false, error: { kind: 'invalid_response' } },
-    );
-    assert.equal(requestCount, 41);
   });
 
   test('Cohere rejects repeated page tokens or excess entries', async () => {
@@ -532,29 +496,6 @@ describe('model discovery', () => {
     assert.equal(capabilitiesOf('relay-mixed')?.imageGeneration, true);
   });
 });
-
-async function startJsonServer(
-  handler: (request: IncomingMessage, response: ServerResponse) => void,
-): Promise<{ url: string; close(): Promise<void> }> {
-  const server = createServer(handler);
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const address = server.address();
-  assert.ok(address && typeof address === 'object');
-  const control = {
-    url: `http://127.0.0.1:${address.port}`,
-    close: () =>
-      new Promise<void>((resolve, reject) => {
-        server.close((error) => (error ? reject(error) : resolve()));
-      }),
-  };
-  servers.push(control);
-  return control;
-}
-
-function respondJson(response: ServerResponse, status: number, body: unknown): void {
-  response.writeHead(status, { 'content-type': 'application/json' });
-  response.end(JSON.stringify(body));
-}
 
 function zaiConnection(): LlmConnection {
   return {

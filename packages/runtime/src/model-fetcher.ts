@@ -425,7 +425,7 @@ type RawOpenAiCodexModel = {
  * dropped; the rest are sorted by `priority` (ascending) to match the
  * ChatGPT/Codex picker order.
  */
-export async function fetchOpenAiCodexModels(
+async function fetchOpenAiCodexModels(
   baseUrl: string,
   accessToken: string,
   fetchFn?: ConnectionEffectFetch,
@@ -672,12 +672,11 @@ async function fetchFireworksModels(
     authorization: `Bearer ${apiKey}`,
   };
   const signal = AbortSignal.timeout(MODEL_FETCH_TIMEOUT_MS);
+  let rawModelCount = 0;
   const fetchPages = async <T extends object>(
     path: string,
     query: Readonly<Record<string, string>>,
     itemKey: 'accounts' | 'models',
-    maxItems: number,
-    reserveItems?: (count: number) => void,
   ): Promise<T[]> => {
     const items: T[] = [];
     const seenPageTokens = new Set<string>();
@@ -709,10 +708,15 @@ async function fetchFireworksModels(
         nextPageToken?: unknown;
       }>(response);
       const rawItems = providerObjectArray<T>(data[itemKey], `Fireworks ${itemKey}`);
-      reserveItems?.(rawItems.length);
+      if (itemKey === 'models') {
+        rawModelCount += rawItems.length;
+        if (rawModelCount > CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION) {
+          throw new ConnectionEffectInvalidResponseError('Provider returned too many models');
+        }
+      }
       items.push(...rawItems);
-      if (items.length > maxItems) {
-        throw new ConnectionEffectInvalidResponseError(`Provider returned too many ${itemKey}`);
+      if (itemKey === 'accounts' && items.length > FIREWORKS_MAX_ACCOUNTS) {
+        throw new ConnectionEffectInvalidResponseError('Provider returned too many accounts');
       }
       pageToken = nextProviderPageToken(data.nextPageToken);
       if (!pageToken) return items;
@@ -727,7 +731,6 @@ async function fetchFireworksModels(
     discovery.accountsPath,
     { pageSize: String(FIREWORKS_PAGE_SIZE) },
     'accounts',
-    FIREWORKS_MAX_ACCOUNTS,
   );
   const accountNames = [
     ...accounts.flatMap((account) =>
@@ -738,13 +741,6 @@ async function fetchFireworksModels(
   if (accountNames.length > FIREWORKS_MAX_ACCOUNTS) {
     throw new ConnectionEffectInvalidResponseError('Provider returned too many accounts');
   }
-  let rawModelCount = 0;
-  const reserveModels = (count: number) => {
-    rawModelCount += count;
-    if (rawModelCount > CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION) {
-      throw new ConnectionEffectInvalidResponseError('Provider returned too many models');
-    }
-  };
   const modelLists: RawFireworksModel[][] = [];
   for (let index = 0; index < accountNames.length; index += FIREWORKS_ACCOUNT_CONCURRENCY) {
     modelLists.push(
@@ -752,13 +748,7 @@ async function fetchFireworksModels(
         accountNames
           .slice(index, index + FIREWORKS_ACCOUNT_CONCURRENCY)
           .map((accountName) =>
-            fetchPages<RawFireworksModel>(
-              `/v1/${accountName}/models`,
-              discovery.query,
-              'models',
-              CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION,
-              reserveModels,
-            ),
+            fetchPages<RawFireworksModel>(`/v1/${accountName}/models`, discovery.query, 'models'),
           ),
       )),
     );
