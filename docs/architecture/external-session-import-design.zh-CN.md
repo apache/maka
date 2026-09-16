@@ -170,7 +170,7 @@ Codex 不保存跨请求的 SQLite 事务、catalog snapshot、TTL 或 LRU 状�
 
 两条来源路径分别使用自己的稳定排序键：
 
-1. **state DB**：`(normalized sort_ts DESC, id DESC)`。首页选择当时最新的可读 `state_N.sqlite`，cursor 记录该 generation；续页仍只读打开同一个文件，通过 `WHERE` keyset 条件继续，完成后立即关闭连接。续页期间即使出现更新 generation 也不会中途切换；原 generation 已删除或不可读时，cursor 明确失效。Codex 的秒级与毫秒级时间戳先统一到毫秒尺度，再参与排序和展示。
+1. **state DB**：`(sort_key DESC, id DESC)`。`sort_key` 由查询算一次、随行一起选出，cursor 直接读回该行上的这个值 —— 这样 cursor 指向的位置必然就是查询排序的位置。秒级与毫秒级时间戳先统一成这一个数值键再排序。首页只读最新的 `state_N.sqlite`；若该 generation 读不了，本页改由 filesystem fallback 回答，而**不是**退到更旧的 generation：更旧那本是上一次跃迁时冻结的快照，跃迁之后新建的会话都不在里面。cursor 记录起始 generation，续页仍只读打开同一个文件，通过 `WHERE` keyset 条件继续，并保持严格 —— 原 generation 已删除或不可读时 cursor 明确失效，读失败仍是 persistence failure。连接用完立即关闭。
 2. **filesystem fallback**：`(mtime DESC, relative path ASC)`。一次遍历 active 和可选 archived roots，以 `maxCatalogCandidates` 限制遍历的文件数；超过上限返回 typed limit error。候选先用 stat 已知排序键与当前页尾比较，只有可能进入当前页的候选才读取有界 head 并完成 query/path 校验；内存最多保留 `limit + 1` 个匹配摘要，不物化整个 catalog，也不为深分页重复扫描多轮。
 
 keyset 的语义是“继续读取严格排在最后交付项之后的记录”。如果一个尚未读取的 live Session 在两页之间更新并移动到 cursor 之前，本次遍历可能看不到它，但不会因此重复已经交付的行；重新打开或刷新 catalog 会看到当前最新顺序。这是实时可变来源下不持有 snapshot 的明确边界。
@@ -211,6 +211,6 @@ adapter 负责产生结构化来源错误，Host 负责映射成公开结果，�
 
 ## 验证义务与边界
 
-- Adapter 测试覆盖来源筛选、完整或拒绝、资源上限、cursor 继续位置和 Codex 两条 catalog 路径；Host 与 Storage 测试覆盖 wire 截断、typed error、导入数量、并发合并、暂存发布及恢复。
+- Adapter 测试覆盖来源筛选、完整或拒绝、资源上限、cursor 继续位置和 Codex 两条 catalog 路径，包括「最新 generation 读不了时由 filesystem fallback 回答」与「排序值是 TEXT 时不会让后续页全部失联」；Host 与 Storage 测试覆盖 wire 截断、typed error、导入数量、并发合并、暂存发布及恢复。
 - Runtime 测试覆盖 assistant-first 保存与所有 provider 投影的 user-led 准入；TUI 与 Desktop 测试覆盖搜索、scope、打开已有副本、显式重复导入、unknown、取消、批量统计和导航失败。
 - 不承诺跨页读取实时可变来源时获得 snapshot，也不把 catalog 中的最近副本归因于结果未知的某次请求。未对打包后的 Desktop 或真实并发写入中的外部客户端做端到端验证。
