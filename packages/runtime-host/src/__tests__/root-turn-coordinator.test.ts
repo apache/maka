@@ -89,6 +89,10 @@ import {
 } from '@maka/storage/execution-stores';
 import { openInteractiveArtifactStoreForWrite } from '@maka/storage/artifact-stores';
 import { OPERATIONAL_STATE_DATABASE_NAME } from '@maka/storage/operational-state-store';
+import {
+  openInteractivePlanStoreForWrite,
+  type InteractivePlanStoreWriter,
+} from '@maka/storage/plan-authority';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
 import type { SubscriptionFrame, TurnSnapshot } from '../protocol/index.js';
 import { HostAgentGraphExecutionCoordinator } from '../server/agent-graph-execution-coordinator.js';
@@ -568,6 +572,132 @@ test('uses the submitted Turn identity for the canonical external user message',
   } finally {
     await fixture.coordinator.close();
     await fixture.messages.close();
+    await fixture.dispose();
+  }
+});
+
+test('a Plan settlement failure does not revoke a terminal root Turn', async (t) => {
+  const settlementFailure = new Error('injected Plan settlement write failure');
+  const backendGate = deferred<void>();
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) =>
+      backends.register('ai-sdk', async (context) => {
+        await backendGate.promise;
+        return new FakeBackend(context);
+      }),
+    // Settlement is post-terminal bookkeeping. A store that refuses this write
+    // must not be able to fail the Turn whose Run already completed.
+    planStore: (writer) => ({
+      ...writer,
+      interruptActiveExecution: async () => {
+        throw settlementFailure;
+      },
+    }),
+  });
+  const diagnostics: string[] = [];
+  t.mock.method(console, 'error', (...values: unknown[]) => {
+    diagnostics.push(values.map(String).join(' '));
+  });
+  try {
+    const writer = fixture.planStoreWriter;
+    assert.ok(writer);
+    if (!writer) return;
+    const submitted = await writer.submitProposal({
+      operationId: 'settlement-failure-submit',
+      sessionId: fixture.sessionId,
+      turnId: 'turn-plan-settlement-failure-seed',
+      title: 'Seeded plan',
+      steps: [{ id: 'step-1', title: 'Inspect the source', description: 'Read it.' }],
+    });
+    assert.equal(submitted.event.type, 'plan_submitted');
+    if (submitted.event.type !== 'plan_submitted') return;
+    const approved = await writer.approveProposal({
+      operationId: 'settlement-failure-approve',
+      sessionId: fixture.sessionId,
+      proposalId: submitted.event.proposal.proposalId,
+      expectedRevision: submitted.event.proposal.revision,
+      expectedStoreVersion: submitted.state.storeVersion,
+    });
+    assert.equal(approved.event.type, 'plan_approved');
+    assert.ok(
+      (await writer.readState(fixture.sessionId)).activeExecutionId,
+      'the seeded execution must still be active when the Turn completes',
+    );
+
+    const turnId = 'turn-plan-settlement-failure';
+    const starting = fixture.interactiveTurns.handlers['turn.start'](
+      {
+        sessionId: fixture.sessionId,
+        turnId,
+        content: { text: 'Run the approved plan.' },
+      },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency),
+    );
+    await waitUntil(
+      async () =>
+        (await fixture.stores.agentRunStore.readRootTurnAdmission(fixture.sessionId, turnId)) !==
+        undefined,
+    );
+    const admission = await fixture.stores.agentRunStore.readRootTurnAdmission(
+      fixture.sessionId,
+      turnId,
+    );
+    assert.ok(admission);
+    if (!admission) return;
+
+    // A parked follow-up makes a skipped terminal transition observable: the
+    // terminal transition fences the queued Message, so a Turn that never reached
+    // it leaves the Message sitting in the live queue instead.
+    const parked = await fixture.messages.handlers['turn.message.submit'](
+      {
+        originHostEpoch: fixture.hostEpoch,
+        sessionId: fixture.sessionId,
+        messageId: 'message-after-plan-settlement-failure',
+        content: { text: 'continue after the plan turn' },
+        placement: 'next_turn',
+      },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency),
+    );
+    assert.equal(parked.ok && parked.result.disposition, 'followup');
+
+    backendGate.resolve();
+    assertStartedTurn(await starting);
+    // Pre-fix this rejects with the injected settlement failure: the Run had
+    // already completed, so post-terminal bookkeeping must not fail the Turn.
+    await fixture.coordinator.whenIdle(fixture.sessionId);
+
+    const admissions = await fixture.stores.agentRunStore.listRootTurnAdmissionsForRecovery(
+      fixture.sessionId,
+    );
+    assert.equal(
+      admissions.length,
+      1,
+      'a draining Host must not start the parked successor; the next epoch recovers it',
+    );
+    assert.deepEqual(
+      fixture.messages.projection(fixture.sessionId).followup,
+      [],
+      'the terminal transition must still fence the parked follow-up for the next Host epoch',
+    );
+    assert.equal(fixture.drainRequested(), true);
+    assert.equal(
+      diagnostics.filter(
+        (line) => line.includes('Plan settlement failed') && line.includes(admission.runId),
+      ).length,
+      1,
+      'the contained settlement failure must be reported once for the terminal Turn',
+    );
+    // The settlement never committed, so the execution stays active: startup
+    // recovery settles it instead of the Turn.
+    assert.ok((await writer.readState(fixture.sessionId)).activeExecutionId);
+    await waitUntil(() => fixture.liveResidencies() === 0);
+  } finally {
+    backendGate.resolve();
+    // A pre-fix failure leaves a failed Turn and a live message owner behind,
+    // which both closes report as well; the assertions above name the real
+    // problem.
+    await fixture.coordinator.close().catch(() => undefined);
+    await fixture.messages.close().catch(() => undefined);
     await fixture.dispose();
   }
 });
@@ -6131,6 +6261,12 @@ async function createFailureFixture(options: {
   childTools?: MakaTool[];
   wrapAdmissionStore?(store: RootTurnAdmissionStore): RootTurnAdmissionStore;
   wrapMessageAuthority?(authority: RuntimeMessageAuthority): RuntimeMessageAuthority;
+  /**
+   * Gives the fixture a real Plan authority. The wrapper stands in for the
+   * settlement write a terminal root Turn performs, so a test can make that
+   * write fail without touching the store implementation.
+   */
+  planStore?(writer: InteractivePlanStoreWriter): InteractivePlanStoreWriter;
   withInteractions?: boolean;
   withArtifacts?: boolean;
   beforeInteractionPreflight?(): Promise<void>;
@@ -6170,6 +6306,9 @@ async function createFailureFixture(options: {
   const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
   const artifacts = options.withArtifacts
     ? await openInteractiveArtifactStoreForWrite(owner.lease)
+    : undefined;
+  const planStoreWriter = options.planStore
+    ? await openInteractivePlanStoreForWrite(owner.lease)
     : undefined;
   const session = await stores.sessionStore.create({
     cwd: capability.canonicalPath,
@@ -6309,6 +6448,9 @@ async function createFailureFixture(options: {
       : stores.runtimeEventStore,
     backends,
     ...(options.childTools ? { childTools: options.childTools } : {}),
+    ...(planStoreWriter && options.planStore
+      ? { planStore: options.planStore(planStoreWriter) }
+      : {}),
     newId: randomUUID,
     now: Date.now,
     messageAuthority: options.wrapMessageAuthority?.(messages) ?? messages,
@@ -6432,9 +6574,11 @@ async function createFailureFixture(options: {
     liveResidencies: () => liveResidencies,
     drainRequested: () => drainRequested,
     fallbackRunClosureClaims: () => fallbackRunClosureClaims,
+    planStoreWriter,
     dispose: async () => {
       requireContinuity(continuity).close();
       artifacts?.close();
+      planStoreWriter?.close();
       await stores.sessionStore.close?.();
       await owner.close();
       await rm(base, { recursive: true, force: true });
