@@ -502,7 +502,10 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
   ): void {
     const active = this.#activeTurn;
     if (!active || active.sessionId !== sessionId || active.turnId !== turnId) return;
-    active.outcome = classifierFromStoredTurn(messages, turnId, active.runId);
+    // A read of a running Turn stops wherever the transcript has been
+    // committed, so it can restore what the live stream missed but never
+    // proves that what the stream already delivered is gone.
+    acceptStoredTurn(active.outcome, messages, turnId);
   }
 
   #waitForGraphTurnTerminal(turnId: string): Promise<readonly StoredMessage[]> {
@@ -767,10 +770,18 @@ function classifierFromStoredTurn(
   outcomeId: string,
 ): TurnOutcomeClassifier {
   const classifier = new TurnOutcomeClassifier(outcomeId);
+  acceptStoredTurn(classifier, messages, turnId);
+  return classifier;
+}
+
+function acceptStoredTurn(
+  classifier: TurnOutcomeClassifier,
+  messages: readonly StoredMessage[],
+  turnId: string,
+): void {
   for (const message of messages) {
     if (message.turnId === turnId) classifier.accept(observationFromStoredMessage(message));
   }
-  return classifier;
 }
 
 class NonInteractiveInteractionController {
