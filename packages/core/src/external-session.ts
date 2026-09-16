@@ -128,8 +128,8 @@ export function externalSessionMatchesQuery(
   if (query.cwd !== undefined && !sameExternalSessionPath(summary.cwd, query.cwd)) return false;
   const text = normalizeExternalSessionQueryText(query.text);
   if (text === undefined) return true;
-  // Title and path, because those are the two things a user remembers about a
-  // conversation they are looking for. Both already sit on the summary, so
+  // Source id, title, and path are the bounded summary fields a user can paste
+  // or remember about a conversation. All already sit on the summary, so
   // matching costs no extra reads. Message content is deliberately excluded:
   // it would mean opening every transcript on every keystroke.
   //
@@ -143,6 +143,7 @@ export function externalSessionMatchesQuery(
   // `\\n` from finding the very title it names. The path pair has no such
   // ambiguity: a separator there is a separator.
   return (
+    normalizeExternalSessionMatchText(summary.id).includes(text) ||
     normalizeExternalSessionMatchText(summary.name).includes(text) ||
     foldExternalSessionPathSeparators(normalizeExternalSessionMatchText(summary.cwd)).includes(
       foldExternalSessionPathSeparators(text),

@@ -49,7 +49,7 @@ The design does not track source updates or incrementally synchronize an importe
 | Obligation | Single authority | Public seam |
 | --- | --- | --- |
 | Source format, discovery, filtering, paging, decoding, and conversion | Corresponding Storage adapter | `listSessionPage(query)`, `readSession(id)` |
-| Shared query, sanitize, and limit contracts | Core external-session | Contracts consumed by adapters and Host |
+| Shared query, source Session ID/title/cwd matching, sanitize, and limit contracts | Core external-session | Contracts consumed by adapters and Host |
 | Workspace resolution, import concurrency, result classification, staging, publication, and recovery | Runtime Host external-session coordinator | `external-session.catalog.query`, `external-session.import` |
 | Current published import count and recent Maka Session IDs | Storage Session authority | `lookupExternalSessionImports(adapterId, sourceSessionIds, limit)`, projected by Host as `importState` |
 | Provider admission for stored history | Runtime replay planner | `buildRuntimeEventModelReplayPlan`; continuation has separate admission |

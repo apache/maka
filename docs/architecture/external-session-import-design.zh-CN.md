@@ -79,7 +79,7 @@ TUI / Desktop 选择来源与外部 Session
 
 ## 1 · 模块边界
 
-- `packages/core/external-session` 只定义跨来源 contract、query、sanitize 和 limit 语义，不理解任何来源的文件格式。
+- `packages/core/external-session` 定义跨来源 contract、query、来源 Session ID/标题/cwd 匹配、sanitize 和 limit 语义，不理解任何来源的文件格式。
 - storage adapter 各自拥有 Claude、Codex、OpenCode 的发现、筛选、分页、解码和消息转换规则。
 - Runtime Host 拥有 workspace 解析、wire 边界、导入并发、错误分类、暂存和发布。
 - TUI 与 Desktop 只展示 catalog、提交选择、按稳定结果码更新交互，不解析来源数据或错误字符串。
