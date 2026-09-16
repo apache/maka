@@ -1171,7 +1171,7 @@ test('converts a legacy transcript larger than one page without reading it whole
   }
 });
 
-test('keeps every open turn when an older terminal row crosses a page boundary', async () => {
+test('keeps interleaved turns through their final state across a page boundary', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-interleaved-turn-repair-'));
   const sessions = createSessionStore(root);
   const runtimeEvents = createSqliteRuntimeStore(join(root, 'runtime.sqlite'));
@@ -1197,16 +1197,31 @@ test('keeps every open turn when an older terminal row crosses a page boundary',
       })),
       {
         type: 'turn_state',
-        id: 'a-state',
+        id: 'a-running',
         turnId: 'turn-a',
         ts: ts + 256,
+        status: 'running',
+      },
+      {
+        type: 'turn_state',
+        id: 'a-failed',
+        turnId: 'turn-a',
+        ts: ts + 257,
+        status: 'failed',
+        errorClass: 'tool_failed',
+      },
+      {
+        type: 'turn_state',
+        id: 'a-completed',
+        turnId: 'turn-a',
+        ts: ts + 258,
         status: 'completed',
       },
       {
         type: 'turn_state',
         id: 'b-state',
         turnId: 'turn-b',
-        ts: ts + 257,
+        ts: ts + 259,
         status: 'completed',
       },
     ]);

@@ -86,6 +86,8 @@ OpenCode import limits encoded source payload to 64 MiB, decoded message/part ro
 
 Importer and Ledger share `isConversationTextMessage`. Human user text counts; assistant content counts only when nonempty. Tool, note, token, turn-state, and steering projections alone do not make an importable conversation. A transcript containing only runtime metadata fails before a staged Session is created.
 
+Ledger repair groups each turn through its last stored row, even when turns interleave or a turn has several state rows. It first finds each turn's last sequence with bounded pages, then converts the same transcript through a fixed high-water sequence. The final state row determines the turn outcome.
+
 ## 5 · Assistant-first history and provider admission
 
 The Ledger preserves a source transcript that starts with assistant content. `buildRuntimeEventModelReplayPlan` uses durable `storedMessageId` provenance to recognize repaired backfill and defaults to projecting from the first model-visible user boundary for provider consumers. Continuations are admitted separately. The UI therefore retains the complete history while ordinary provider requests receive user-led history. Native legacy and imported Sessions use the same projection rule; ordinary tool or diagnostic prefixes are not blanket-deleted.

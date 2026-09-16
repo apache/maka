@@ -131,6 +131,8 @@ OpenCode catalog 只选择能确认 `parent_id` 为空的 root Session。明确�
 
 如果转换结果只有工具或运行元数据，导入会在创建暂存 Session 之前失败，不会发布一份看起来为空的任务。
 
+Ledger 修复会把同一 turn 的记录一直归组到最后一条，即使不同 turn 交错、同一 turn 有多条状态记录也一样。它先分页找出各 turn 的最后序号，再以固定的 high-water 序号分页转换同一份 transcript；最终状态由最后一条状态记录决定。
+
 ## 5 · assistant-first 历史的保存与模型准入
 
 来源 transcript 若确实以 assistant 开头，Maka Ledger 仍忠实保存这段历史。普通用户随后继续该 Session 时，provider-history 使用 durable `storedMessageId` provenance 识别 transcript repair 产生的 assistant 前缀，只在发给模型的副本中从第一个有效 user 边界开始投影。

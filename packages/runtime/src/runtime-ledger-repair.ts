@@ -158,46 +158,52 @@ export class RuntimeLedgerRepair {
   /**
    * The Session's legacy rows, one turn at a time, read a page at a time.
    *
-   * A turn is complete when its terminal row arrives. Codex can write a
-   * terminal row for an older turn after rows from a newer turn, so every open
-   * group crosses page boundaries; insertion order is not a closure signal.
-   * Turns with no terminal row stay open until EOF and are then repaired with
-   * the explicit missing-terminal outcome.
+   * A turn is complete at its last row, not its first state row: a transcript
+   * can record running, failed, and then completed for the same turn. Rows from
+   * other turns can be interleaved across page boundaries. First locate each
+   * turn's last sequence using bounded pages, then group and convert through
+   * that sequence on a second pass. A turn with no state row is still repaired
+   * with the explicit missing-terminal outcome.
    */
   private async *readTurnsInPages(
     sessionId: string,
   ): AsyncGenerator<{ messages: StoredMessage[]; firstSequence: number; highWater: number }> {
+    const lastSequenceByTurn = new Map<string, number>();
     const openTurns = new Map<string, { messages: StoredMessage[]; firstSequence: number }>();
-    let afterSequence: number | undefined;
-    while (true) {
-      const page = await this.deps.readMessagesAfter(sessionId, {
-        ...(afterSequence === undefined ? {} : { afterSequence }),
-        maxMessages: TRANSCRIPT_CONVERSION_PAGE_MAX_MESSAGES,
-        maxStoredBytes: TRANSCRIPT_CONVERSION_PAGE_MAX_BYTES,
-      });
-      const highWater = page.highWaterSequence;
-      if (highWater === null) return;
-      const scanned = page.records.filter(
-        ({ message }) => message.type !== 'user' || message.steeringEventId === undefined,
-      );
-      for (const { sequence, message } of scanned) {
-        const turnId = turnIdOf(message);
-        if (!turnId) continue;
-        const bucket = openTurns.get(turnId);
-        if (bucket) bucket.messages.push(message);
-        else openTurns.set(turnId, { messages: [message], firstSequence: sequence });
-        if (message.type === 'turn_state') {
-          const closed = openTurns.get(turnId);
-          openTurns.delete(turnId);
-          if (closed) yield { ...closed, highWater };
+    let highWater: number | null = null;
+    for (let pass = 0; pass < 2; pass += 1) {
+      let afterSequence: number | undefined;
+      while (true) {
+        const page = await this.deps.readMessagesAfter(sessionId, {
+          ...(afterSequence === undefined ? {} : { afterSequence }),
+          maxMessages: TRANSCRIPT_CONVERSION_PAGE_MAX_MESSAGES,
+          maxStoredBytes: TRANSCRIPT_CONVERSION_PAGE_MAX_BYTES,
+        });
+        if (highWater === null) highWater = page.highWaterSequence;
+        if (highWater === null) return;
+        for (const { sequence, message } of page.records) {
+          if (sequence > highWater) break;
+          if (message.type === 'user' && message.steeringEventId !== undefined) continue;
+          const turnId = turnIdOf(message);
+          if (!turnId) continue;
+          if (pass === 0) {
+            lastSequenceByTurn.set(turnId, sequence);
+            continue;
+          }
+          const bucket = openTurns.get(turnId);
+          if (bucket) bucket.messages.push(message);
+          else openTurns.set(turnId, { messages: [message], firstSequence: sequence });
+          if (lastSequenceByTurn.get(turnId) === sequence) {
+            const closed = openTurns.get(turnId);
+            openTurns.delete(turnId);
+            lastSequenceByTurn.delete(turnId);
+            if (closed) yield { ...closed, highWater };
+          }
         }
+        const lastSequence = page.records.at(-1)?.sequence;
+        if (lastSequence === undefined || lastSequence >= highWater) break;
+        afterSequence = lastSequence;
       }
-      const lastSequence = page.records.at(-1)?.sequence;
-      if (lastSequence === undefined) {
-        for (const turn of openTurns.values()) yield { ...turn, highWater };
-        return;
-      }
-      afterSequence = lastSequence;
     }
   }
 
