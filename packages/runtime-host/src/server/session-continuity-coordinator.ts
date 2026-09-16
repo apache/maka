@@ -933,7 +933,10 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
             });
             transcript = created.state;
             transcriptBootstrap = created.bootstrap;
-          } catch {
+          } catch (error) {
+            // The client can only retry, but a projection that outgrew its
+            // bounds is a Host defect and has to leave a trace here.
+            this.onPublicationFailure(error);
             return {
               ok: false as const,
               code: 'persistence_failed' as const,
