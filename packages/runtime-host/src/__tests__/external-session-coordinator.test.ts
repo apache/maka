@@ -295,6 +295,39 @@ test('maps malformed source-owned catalog cursors to invalid_request', async () 
   }
 });
 
+test('preserves typed source limits across the catalog Host boundary', async () => {
+  const adapter = adapterFixture();
+  adapter.listSessionPage = async () => {
+    throw new ExternalSessionLimitError('records', 2, 'private adapter details');
+  };
+  const fixture = coordinatorFixture([adapter]);
+
+  const outcome = await fixture.coordinator.handlers['external-session.catalog.query'](
+    { adapterId: 'codex' },
+    context,
+  );
+
+  assert.deepEqual(outcome, {
+    ok: false,
+    error: {
+      code: 'source_limit_exceeded',
+      message: 'External Session source exceeds the catalog read limit',
+    },
+  });
+  assert.deepEqual(
+    decodeResponseFrame({
+      requestId: 'catalog-limit',
+      operation: 'external-session.catalog.query',
+      ...outcome,
+    }),
+    {
+      requestId: 'catalog-limit',
+      operation: 'external-session.catalog.query',
+      ...outcome,
+    },
+  );
+});
+
 test('resolves a Project filter before calling the Host adapter', async () => {
   const adapter = adapterFixture();
   const filters: unknown[] = [];

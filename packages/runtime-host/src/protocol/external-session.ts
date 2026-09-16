@@ -58,7 +58,7 @@ const QUERY_ERRORS = [
   'persistence_failed',
   'internal_failure',
 ] as const;
-const CATALOG_QUERY_ERRORS = QUERY_ERRORS;
+const CATALOG_QUERY_ERRORS = [...QUERY_ERRORS, 'source_limit_exceeded'] as const;
 const IMPORT_ERRORS = [
   ...QUERY_ERRORS,
   'not_found',

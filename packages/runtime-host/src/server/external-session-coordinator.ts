@@ -239,6 +239,12 @@ export class HostExternalSessionCoordinator {
       if (error instanceof ExternalSessionCatalogCursorError) {
         return queryFailure('invalid_request', 'External Session catalog cursor is invalid');
       }
+      if (error instanceof ExternalSessionLimitError) {
+        return queryFailure(
+          'source_limit_exceeded',
+          'External Session source exceeds the catalog read limit',
+        );
+      }
       return queryFailure('persistence_failed', 'External Session catalog could not be read');
     }
   }
