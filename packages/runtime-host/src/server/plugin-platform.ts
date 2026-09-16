@@ -652,26 +652,28 @@ export class HostPluginPlatform {
     input: PluginClientRemoteCallInput,
     signal?: AbortSignal,
   ): Promise<unknown> {
-    return await this.read(async () => {
+    const execute = await this.read(async () => {
       const target = await this.#verifyClientRemoteFence(input);
       if (!this.#clientBridge) {
         throw new PluginPackageLoaderError('not_found', 'Plugin Client Remote is unavailable');
       }
-      return await this.#clientBridge.invoke(target, input.method, input.input, signal);
+      return this.#clientBridge.prepareInvoke(target, input.method, input.input, signal);
     });
+    return await execute();
   }
 
   async openClientRemoteStream(
     input: PluginClientRemoteCallInput,
     signal?: AbortSignal,
   ): Promise<PluginClientStreamBinding> {
-    return await this.read(async () => {
+    const execute = await this.read(async () => {
       const target = await this.#verifyClientRemoteFence(input);
       if (!this.#clientBridge) {
         throw new PluginPackageLoaderError('not_found', 'Plugin Client Remote is unavailable');
       }
-      return await this.#clientBridge.open(target, input.method, input.input, signal);
+      return this.#clientBridge.prepareOpen(target, input.method, input.input, signal);
     });
+    return await execute();
   }
 
   async #verifyClientRemoteFence(

@@ -196,3 +196,16 @@ Store and composition lifecycle.
 - typed Host-to-Client RPC, streams, and product events;
 - plugin management UI and SDK build tooling;
 - untrusted Renderer sandboxing or native permission escalation.
+
+## Failure-path verification
+
+Each root contribution has its own render error boundary. A failed root yields to its children,
+so other roots and the application remain mounted; a new activation may try the contribution again.
+Generation collection preserves directories owned by live packages across reconciliation.
+
+After building Runtime, Runtime Host, UI, and Desktop main, run
+`node apps/desktop/scripts/client-plugin-p1-smoke.mjs` for an isolated Electron test. It installs a
+temporary Host+Client package and exercises the actual preload routing, IPC handlers, bundle serving,
+Client Runtime, Session Remote override, pull stream, late effect disposal, throwing root,
+reconciliation, and shutdown with a non-cooperative RPC. It uses a temporary profile and removes it
+on exit; it is a test fixture, not a bundled example plugin.

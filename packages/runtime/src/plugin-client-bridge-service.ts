@@ -162,20 +162,42 @@ export class PluginClientBridgeService extends Service {
     input: unknown,
     signal?: AbortSignal,
   ): Promise<unknown> {
+    return await this.prepareInvoke(target, name, input, signal)();
+  }
+
+  /** Capture the verified registration before releasing the platform mutation lock. */
+  prepareInvoke(
+    target: PluginClientRemoteTarget,
+    name: string,
+    input: unknown,
+    signal?: AbortSignal,
+  ): () => Promise<unknown> {
     const entry = resolve(this.rpcs, target, name);
+    return async () => await this.invokeEntry(entry, target, name, input, signal);
+  }
+
+  private async invokeEntry(
+    entry: RegisteredRpc,
+    target: PluginClientRemoteTarget,
+    name: string,
+    input: unknown,
+    signal?: AbortSignal,
+  ): Promise<unknown> {
     const active = activate(entry, name, signal);
     try {
-      const decoded = await validateInputSchema(
-        entry.definition.input,
-        input,
-        `Client RPC ${name} input`,
+      const decoded = await untilAborted(active.abort.signal, () =>
+        validateInputSchema(entry.definition.input, input, `Client RPC ${name} input`),
       );
-      const output = await entry.definition.invoke(decoded, {
-        ...(target.sessionId ? { sessionId: target.sessionId } : {}),
-        signal: active.abort.signal,
-      });
+      const output = await untilAborted(active.abort.signal, () =>
+        entry.definition.invoke(decoded, {
+          ...(target.sessionId ? { sessionId: target.sessionId } : {}),
+          signal: active.abort.signal,
+        }),
+      );
       if (entry.retired) throw retiredError(name);
-      return await validateSchema(entry.definition.output, output, `Client RPC ${name} output`);
+      return await untilAborted(active.abort.signal, () =>
+        validateSchema(entry.definition.output, output, `Client RPC ${name} output`),
+      );
     } finally {
       finish(entry, active);
     }
@@ -187,18 +209,45 @@ export class PluginClientBridgeService extends Service {
     input: unknown,
     signal?: AbortSignal,
   ): Promise<PluginClientStreamBinding> {
+    return await this.prepareOpen(target, name, input, signal)();
+  }
+
+  /** Capture the verified registration before releasing the platform mutation lock. */
+  prepareOpen(
+    target: PluginClientRemoteTarget,
+    name: string,
+    input: unknown,
+    signal?: AbortSignal,
+  ): () => Promise<PluginClientStreamBinding> {
     const entry = resolve(this.streams, target, name);
+    return async () => await this.openEntry(entry, target, name, input, signal);
+  }
+
+  private async openEntry(
+    entry: RegisteredStream,
+    target: PluginClientRemoteTarget,
+    name: string,
+    input: unknown,
+    signal?: AbortSignal,
+  ): Promise<PluginClientStreamBinding> {
     const active = activate(entry, name, signal);
     try {
-      const decoded = await validateInputSchema(
-        entry.definition.input,
-        input,
-        `Client Stream ${name} input`,
+      const decoded = await untilAborted(active.abort.signal, () =>
+        validateInputSchema(entry.definition.input, input, `Client Stream ${name} input`),
       );
-      const iterable = await entry.definition.open(decoded, {
-        ...(target.sessionId ? { sessionId: target.sessionId } : {}),
-        signal: active.abort.signal,
-      });
+      const iterable = await untilAborted(
+        active.abort.signal,
+        () =>
+          entry.definition.open(decoded, {
+            ...(target.sessionId ? { sessionId: target.sessionId } : {}),
+            signal: active.abort.signal,
+          }),
+        (late) => {
+          void Promise.resolve()
+            .then(() => late[Symbol.asyncIterator]().return?.())
+            .catch(() => undefined);
+        },
+      );
       if (!iterable || typeof iterable[Symbol.asyncIterator] !== 'function') {
         throw new TypeError(`Client Stream ${name} did not return an AsyncIterable`);
       }
@@ -341,6 +390,49 @@ function activate<T extends RegisteredRpc | RegisteredStream>(
   };
   entry.active.add(active);
   return active;
+}
+
+function untilAborted<T>(
+  signal: AbortSignal,
+  run: () => T | PromiseLike<T>,
+  late?: (value: T) => void,
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    if (signal.aborted) {
+      reject(signal.reason);
+      return;
+    }
+    let settled = false;
+    const abort = () => {
+      settled = true;
+      reject(signal.reason);
+    };
+    signal.addEventListener('abort', abort, { once: true });
+    void Promise.resolve()
+      .then(() => {
+        signal.throwIfAborted();
+        return run();
+      })
+      .then(
+        (value) => {
+          signal.removeEventListener('abort', abort);
+          if (settled) {
+            late?.(value);
+            return;
+          }
+          settled = true;
+          resolve(value);
+        },
+        (error: unknown) => {
+          signal.removeEventListener('abort', abort);
+          if (!settled) {
+            settled = true;
+            reject(error);
+          }
+        },
+      )
+      .catch(() => undefined);
+  });
 }
 
 function finish(entry: RegisteredRpc | RegisteredStream, active: ActiveInvocation): void {

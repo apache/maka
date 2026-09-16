@@ -63,9 +63,24 @@ ctx.events.on('session.event', { sessionId }, ({ event }) => {
 });
 ```
 
-Remote identity is bound by the runtime; a plugin cannot choose another extension or generation.
-Event subscriptions are staged effects: they begin only after the complete candidate snapshot
-commits and are removed on reload, uninstall, rollback, or Renderer shutdown.
+The SDK binds Remote identity to its current snapshot. The Host verifies that generation before
+capturing the specific Remote registration, then runs plugin code outside the platform mutation
+queue. Retirement aborts the caller's wait even when an asynchronous handler ignores cancellation;
+late replies are discarded and late stream iterators are closed. This does not preempt synchronous
+plugin code or undo its side effects.
+
+Desktop snapshots and stream handles retain their originating Host scope. Session calls un-project
+the Desktop Session key and reject a Session belonging to a different Host instead of forwarding a
+foreign generation fence. Existing streams do not move when the selected Host changes.
+
+These fences validate generations, not mutually untrusted caller identities: Client bundles share
+a trusted Renderer realm. The event allowlist is an API compatibility surface, not per-plugin data
+authorization.
+
+Event subscriptions, effects, and styles registered during activation are staged until commit.
+Registrations made by mounted components after activation start immediately. Explicit disposal
+runs cleanup once; reload, uninstall, rollback, or Renderer shutdown clean up remaining effects.
+Registration after instance disposal is rejected.
 
 ## Product-event allowlist
 

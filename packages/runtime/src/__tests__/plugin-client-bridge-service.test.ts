@@ -151,3 +151,65 @@ test('closing a non-cooperative producer releases an outstanding pull', {
   assert.equal((await pending).done, true);
   await root.fiber.dispose();
 });
+
+test('retirement cancels uncooperative RPC and stream opens, and prepared calls never switch registrations', {
+  timeout: 2000,
+}, async () => {
+  const root = new Context();
+  const service = new PluginClientBridgeService(root);
+  const owner = plugin(root, 'profile', 'entry', 1);
+  let invoked = 0;
+  const dispose = owner.clientBridge.rpc({
+    name: 'fixture.hang',
+    invoke() {
+      invoked++;
+      return new Promise(() => {});
+    },
+  });
+  const target = { extensionId: 'fixture' };
+  const prepared = service.prepareInvoke(target, 'fixture.hang', null);
+  const pending = prepared();
+  const rejected = assert.rejects(pending, PluginClientBridgeError);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(invoked, 1);
+  await dispose();
+  await rejected;
+  owner.clientBridge.rpc({
+    name: 'fixture.hang',
+    invoke() {
+      invoked++;
+      return 'replacement';
+    },
+  });
+  await assert.rejects(prepared, PluginClientBridgeError);
+  assert.equal(invoked, 1);
+
+  let resolveOpen!: (value: AsyncIterable<unknown>) => void;
+  const disposeStream = owner.clientBridge.stream({
+    name: 'fixture.late',
+    open: () =>
+      new Promise<AsyncIterable<unknown>>((resolve) => {
+        resolveOpen = resolve;
+      }),
+  });
+  const opened = service.open(target, 'fixture.late', null);
+  const rejectedOpen = assert.rejects(opened, PluginClientBridgeError);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  await disposeStream();
+  await rejectedOpen;
+  let returned = 0;
+  resolveOpen({
+    [Symbol.asyncIterator]() {
+      return {
+        next: async () => ({ done: true, value: undefined }),
+        return: async () => {
+          returned++;
+          return { done: true, value: undefined };
+        },
+      };
+    },
+  });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(returned, 1);
+  await root.fiber.dispose();
+});

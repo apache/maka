@@ -18,7 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
-import { access, mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, writeFile, access } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, test } from 'node:test';
@@ -185,6 +185,8 @@ test('Client Remote is generation-fenced and streams are connection-owned', asyn
     join(source, 'host.js'),
     `export default {packageId:"bridge",host:{apply(ctx){
       ctx.clientBridge.rpc({name:"bridge.echo",invoke(input){return input;}});
+      ctx.clientBridge.rpc({name:"bridge.hang",invoke(){return new Promise(()=>{});}});
+      ctx.clientBridge.stream({name:"bridge.hangstream",open(){return new Promise(()=>{});}});
       ctx.clientBridge.stream({name:"bridge.count",open:async function*(){yield 1;yield 2;}});
     }}};`,
   );
@@ -284,6 +286,18 @@ test('Client Remote is generation-fenced and streams are connection-owned', asyn
       );
     }
     coordinator.releaseConnection(context.connectionId);
+    const call = platform.invokeClientRemote({ ...fence, method: 'bridge.hang', input: null });
+    const stream = platform.openClientRemoteStream({
+      ...fence,
+      method: 'bridge.hangstream',
+      input: null,
+    });
+    const stoppedCall = assert.rejects(call);
+    const stoppedStream = assert.rejects(stream);
+    await platform.read(() => platform.clientSnapshot());
+    // Both pending handlers ignore AbortSignal. Neither may hold the platform lock or shutdown.
+    await platform.close();
+    await Promise.all([stoppedCall, stoppedStream]);
   } finally {
     await platform.close();
     await pluginRoot.fiber.dispose();
