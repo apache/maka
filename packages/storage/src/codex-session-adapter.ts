@@ -141,11 +141,6 @@ export class CodexSessionAdapter implements ExternalSessionAdapter {
     );
   }
 
-  async listSessions(query: ExternalSessionQuery = {}): Promise<readonly ExternalSessionSummary[]> {
-    const entries = await this.listCatalog(query);
-    return entries.map(({ rolloutPath: _rolloutPath, ...summary }) => summary);
-  }
-
   async listSessionPage(
     query: ExternalSessionCatalogPageQuery,
   ): Promise<ExternalSessionCatalogPage> {
@@ -168,40 +163,6 @@ export class CodexSessionAdapter implements ExternalSessionAdapter {
       maxConvertedBytes: this.maxConvertedBytes,
       maxMessages: this.maxMessages,
     });
-  }
-
-  private async listCatalog(query: ExternalSessionQuery): Promise<CodexCatalogEntry[]> {
-    const offset = query.offset ?? 0;
-    const limit = query.limit ?? Number.MAX_SAFE_INTEGER;
-    if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 0) {
-      throw new Error('Invalid Codex catalog page');
-    }
-    if (limit === 0) return [];
-    for (const dbPath of await codexStateDbsNewestFirst(this.codexHome)) {
-      const page: CodexCatalogEntry[] = [];
-      let matched = 0;
-      let rawOffset = 0;
-      const batchSize = Math.max(32, Math.min(256, limit * 2));
-      while (page.length < limit) {
-        const rows = await readCodexThreadRows(dbPath, query, undefined, {
-          offset: rawOffset,
-          limit: batchSize,
-        });
-        if (rows === undefined) break;
-        for (const row of rows) {
-          const entry = await this.entryFromRow(row);
-          if (!entry || !matchesQuery(entry, query)) continue;
-          if (matched++ < offset) continue;
-          page.push(entry);
-          if (page.length === limit) break;
-        }
-        rawOffset += rows.length;
-        if (rows.length < batchSize) return page;
-      }
-      if (page.length > 0 || rawOffset > 0) return page;
-    }
-
-    return this.scanRolloutCatalog(query);
   }
 
   private async findCatalogEntry(sessionId: string): Promise<CodexCatalogEntry | undefined> {
@@ -239,40 +200,6 @@ export class CodexSessionAdapter implements ExternalSessionAdapter {
       archived: row.archived === true || row.archived === 1,
       rolloutPath,
     };
-  }
-
-  private async scanRolloutCatalog(query: ExternalSessionQuery): Promise<CodexCatalogEntry[]> {
-    const offset = query.offset ?? 0;
-    const limit = query.limit ?? Number.MAX_SAFE_INTEGER;
-    // The fallback has no state database to order from, so metadata discovery
-    // establishes one global source order before pagination. Rollout contents
-    // remain unread until a candidate is reached in that order.
-    const candidates = [
-      ...(await walkRolloutFiles(join(this.codexHome, 'sessions'), false)),
-      ...(query.includeArchived
-        ? await walkRolloutFiles(join(this.codexHome, 'archived_sessions'), true)
-        : []),
-    ].sort(compareRolloutCandidates);
-    const entries: CodexCatalogEntry[] = [];
-    let matched = 0;
-    for (const candidate of candidates) {
-      const head = await readUtf8Prefix(candidate.path, CODEX_ROLLOUT_HEAD_BYTES).catch(
-        () => undefined,
-      );
-      if (head === undefined) continue;
-      const entry = catalogEntryFromRolloutHead(head, candidate);
-      if (!entry || !matchesQuery(entry, query)) continue;
-      // Resolved before the page is counted, not after: a candidate the page
-      // cannot deliver is not a row of the source. Counting it here would
-      // advance the Host's cursor past a row the page never returned, and
-      // the next page would repeat this one's last row instead.
-      const rolloutPath = await this.resolveRolloutPath(candidate.path, entry.id);
-      if (!rolloutPath) continue;
-      if (matched++ < offset) continue;
-      entries.push({ ...entry, rolloutPath });
-      if (entries.length === limit) return entries;
-    }
-    return entries;
   }
 
   private async listCatalogKeysetPage(
@@ -341,8 +268,6 @@ export class CodexSessionAdapter implements ExternalSessionAdapter {
         });
       }
       return { items, hasMore: false };
-    } catch {
-      return undefined;
     } finally {
       db?.close();
     }
@@ -900,7 +825,6 @@ async function readCodexThreadRows(
   dbPath: string,
   query: ExternalSessionQuery,
   exactId?: string,
-  page?: { offset: number; limit: number },
 ): Promise<CodexThreadRow[] | undefined> {
   try {
     const sqlite = await import('node:sqlite');
@@ -908,9 +832,7 @@ async function readCodexThreadRows(
     try {
       const spec = codexThreadQuery(db, query, exactId);
       if (!spec) return undefined;
-      const sql = spec.sql + (page ? ' LIMIT ? OFFSET ?' : '');
-      const params = page ? [...spec.params, page.limit, page.offset] : spec.params;
-      return db.prepare(sql).all(...params) as CodexThreadRow[];
+      return db.prepare(spec.sql).all(...spec.params) as CodexThreadRow[];
     } finally {
       db.close();
     }
@@ -1069,31 +991,28 @@ async function nextRolloutCatalogBatch(
   limit: number,
   resolvePath: (candidate: RolloutCandidate, id: string) => Promise<string | undefined>,
 ): Promise<ReadonlyArray<{ candidate: RolloutCandidate; summary: ExternalSessionSummary }>> {
-  const candidates: Array<{ candidate: RolloutCandidate; summary: ExternalSessionSummary }> = [];
-  const roots: ReadonlyArray<readonly [string, boolean]> = [
-    [join(codexHome, 'sessions'), false],
-    ...(query.includeArchived ? ([[join(codexHome, 'archived_sessions'), true]] as const) : []),
-  ];
-  for (const [root, archived] of roots) {
-    for await (const candidate of iterateRolloutFiles(root, archived)) {
-      if (keyset && !rolloutCandidateIsAfter(candidate, keyset)) continue;
-      const head = await readUtf8Prefix(candidate.path, CODEX_ROLLOUT_HEAD_BYTES).catch(
-        () => undefined,
-      );
-      if (head === undefined) continue;
-      const entry = catalogEntryFromRolloutHead(head, candidate);
-      if (!entry || !matchesQuery(entry, query)) continue;
-      const rolloutPath = await resolvePath(candidate, entry.id);
-      if (!rolloutPath) continue;
-      const { rolloutPath: _rolloutPath, ...summary } = { ...entry, rolloutPath };
-      const index = candidates.findIndex(
-        (existing) => compareRolloutCandidates(candidate, existing.candidate) < 0,
-      );
-      candidates.splice(index < 0 ? candidates.length : index, 0, { candidate, summary });
-      if (candidates.length > limit) candidates.pop();
-    }
+  const ordered = [
+    ...(await walkRolloutFiles(join(codexHome, 'sessions'), false)),
+    ...(query.includeArchived
+      ? await walkRolloutFiles(join(codexHome, 'archived_sessions'), true)
+      : []),
+  ].sort(compareRolloutCandidates);
+  const page: Array<{ candidate: RolloutCandidate; summary: ExternalSessionSummary }> = [];
+  for (const candidate of ordered) {
+    if (keyset && !rolloutCandidateIsAfter(candidate, keyset)) continue;
+    const head = await readUtf8Prefix(candidate.path, CODEX_ROLLOUT_HEAD_BYTES).catch(
+      () => undefined,
+    );
+    if (head === undefined) continue;
+    const entry = catalogEntryFromRolloutHead(head, candidate);
+    if (!entry || !matchesQuery(entry, query)) continue;
+    const rolloutPath = await resolvePath(candidate, entry.id);
+    if (!rolloutPath) continue;
+    const { rolloutPath: _rolloutPath, ...summary } = { ...entry, rolloutPath };
+    page.push({ candidate, summary });
+    if (page.length === limit) break;
   }
-  return candidates;
+  return page;
 }
 
 function compareRolloutCandidates(

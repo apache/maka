@@ -33,13 +33,33 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, mock, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { ExternalSessionCatalogCursorError } from '@maka/core/external-session';
+import {
+  ExternalSessionCatalogCursorError,
+  type ExternalSessionQuery,
+  type ExternalSessionSummary,
+} from '@maka/core/external-session';
 import { decodeCanonicalMessage } from '@maka/core/session';
 import { CodexSessionAdapter } from '../codex-session-adapter.js';
 import { createExternalSessionAdapterRegistry } from '../external-session-adapters.js';
 
 const CURRENT_FIXTURE = fixturePath('codex-rollout-v0.144.jsonl');
 const ITEM_COMPLETED_FIXTURE = fixturePath('codex-rollout-v0.149-item-completed.jsonl');
+
+async function listSessions(
+  adapter: CodexSessionAdapter,
+  query: ExternalSessionQuery = {},
+): Promise<readonly ExternalSessionSummary[]> {
+  const { offset = 0, limit = Number.MAX_SAFE_INTEGER, ...filters } = query;
+  const summaries: ExternalSessionSummary[] = [];
+  let cursor: string | undefined;
+  while (summaries.length < offset + limit) {
+    const page = await adapter.listSessionPage({ ...filters, cursor, limit: 256 });
+    summaries.push(...page.items.map(({ summary }) => summary));
+    if (!page.hasMore || page.items.length === 0) break;
+    cursor = page.items.at(-1)!.nextCursor;
+  }
+  return summaries.slice(offset, offset + limit);
+}
 
 describe('CodexSessionAdapter', () => {
   test('lists active and archived root Sessions from the newest Codex state database', async () => {
@@ -87,7 +107,7 @@ describe('CodexSessionAdapter', () => {
 
       const adapter = new CodexSessionAdapter({ codexHome });
       assert.equal(await adapter.detect(), true);
-      assert.deepEqual(await adapter.listSessions(), [
+      assert.deepEqual(await listSessions(adapter), [
         {
           id: 'codex-session-1',
           name: 'Named Codex thread',
@@ -98,17 +118,17 @@ describe('CodexSessionAdapter', () => {
         },
       ]);
       assert.deepEqual(
-        (await adapter.listSessions({ includeArchived: true })).map((session) => session.id),
+        (await listSessions(adapter, { includeArchived: true })).map((session) => session.id),
         ['codex-session-1', 'codex-session-archived'],
       );
       assert.deepEqual(
-        (await adapter.listSessions({ includeArchived: true, offset: 0, limit: 1 })).map(
+        (await listSessions(adapter, { includeArchived: true, offset: 0, limit: 1 })).map(
           (session) => session.id,
         ),
         ['codex-session-1'],
       );
       assert.deepEqual(
-        (await adapter.listSessions({ includeArchived: true, offset: 1, limit: 1 })).map(
+        (await listSessions(adapter, { includeArchived: true, offset: 1, limit: 1 })).map(
           (session) => session.id,
         ),
         ['codex-session-archived'],
@@ -118,26 +138,26 @@ describe('CodexSessionAdapter', () => {
       // that silently worked for one source and not the other would be worse
       // than none — the user cannot see which source dropped their term.
       assert.deepEqual(
-        (await adapter.listSessions({ text: 'named' })).map((session) => session.id),
+        (await listSessions(adapter, { text: 'named' })).map((session) => session.id),
         ['codex-session-1'],
       );
       assert.deepEqual(
-        (await adapter.listSessions({ text: '/workspace/project' })).map((session) => session.id),
+        (await listSessions(adapter, { text: '/workspace/project' })).map((session) => session.id),
         ['codex-session-1'],
       );
-      assert.equal((await adapter.listSessions({ text: 'kubernetes' })).length, 0);
+      assert.equal((await listSessions(adapter, { text: 'kubernetes' })).length, 0);
       // A blank box selects nothing, so it must not filter.
-      assert.equal((await adapter.listSessions({ text: '  ' })).length, 1);
+      assert.equal((await listSessions(adapter, { text: '  ' })).length, 1);
       // Text does not override the archived gate.
-      assert.equal((await adapter.listSessions({ text: 'archived' })).length, 0);
+      assert.equal((await listSessions(adapter, { text: 'archived' })).length, 0);
       assert.deepEqual(
-        (await adapter.listSessions({ includeArchived: true, text: 'archived' })).map(
+        (await listSessions(adapter, { includeArchived: true, text: 'archived' })).map(
           (session) => session.id,
         ),
         ['codex-session-archived'],
       );
       assert.deepEqual(
-        await adapter.listSessions({ includeArchived: true, cwd: '/workspace/archive/' }),
+        await listSessions(adapter, { includeArchived: true, cwd: '/workspace/archive/' }),
         [
           {
             id: 'codex-session-archived',
@@ -209,7 +229,7 @@ describe('CodexSessionAdapter', () => {
       ]);
 
       assert.deepEqual(
-        (await new CodexSessionAdapter({ codexHome }).listSessions({ limit: 1 })).map(
+        (await listSessions(new CodexSessionAdapter({ codexHome }), { limit: 1 })).map(
           (session) => session.id,
         ),
         ['codex-newest-ms-in-legacy-column'],
@@ -263,7 +283,7 @@ describe('CodexSessionAdapter', () => {
       await seedStateDatabase(codexHome, rows);
 
       const listed = new Set(
-        (await new CodexSessionAdapter({ codexHome }).listSessions()).map((session) => session.id),
+        (await listSessions(new CodexSessionAdapter({ codexHome }))).map((session) => session.id),
       );
       for (const source of sources) {
         assert.ok(listed.has(`codex-bare-${source}`), `bare ${source} was dropped`);
@@ -304,13 +324,13 @@ describe('CodexSessionAdapter', () => {
       const adapter = new CodexSessionAdapter({ codexHome });
       for (const cwd of ['C:\\Repo\\App', 'C:/Repo/App', 'c:/repo/app', 'c:\\repo\\app\\']) {
         assert.deepEqual(
-          (await adapter.listSessions({ cwd })).map((session) => session.id),
+          (await listSessions(adapter, { cwd })).map((session) => session.id),
           ['codex-win'],
           `cwd=${cwd}`,
         );
       }
       // A genuinely different project is still excluded.
-      assert.equal((await adapter.listSessions({ cwd: 'C:/Repo/Other' })).length, 0);
+      assert.equal((await listSessions(adapter, { cwd: 'C:/Repo/Other' })).length, 0);
     });
   });
 
@@ -319,7 +339,7 @@ describe('CodexSessionAdapter', () => {
       await seedFixtureRollout(codexHome, 'codex-session-1', false);
       const adapter = new CodexSessionAdapter({ codexHome });
 
-      assert.deepEqual(await adapter.listSessions(), [
+      assert.deepEqual(await listSessions(adapter), [
         {
           id: 'codex-session-1',
           name: 'Fix the parser',
@@ -399,7 +419,7 @@ describe('CodexSessionAdapter', () => {
 
       const adapter = new CodexSessionAdapter({ codexHome });
       assert.deepEqual(
-        (await adapter.listSessions()).map(({ id, name }) => ({ id, name })),
+        (await listSessions(adapter)).map(({ id, name }) => ({ id, name })),
         [{ id: sessionId, name: 'Analyze the image. Use OpenCV.js.' }],
       );
       const session = await adapter.readSession(sessionId);
@@ -494,7 +514,7 @@ describe('CodexSessionAdapter', () => {
 
       const adapter = new CodexSessionAdapter({ codexHome });
       assert.deepEqual(
-        (await adapter.listSessions()).map((session) => session.id),
+        (await listSessions(adapter)).map((session) => session.id),
         ['codex-root-fallback'],
       );
       await assert.rejects(adapter.readSession(subagentId), /not found/);
@@ -534,19 +554,19 @@ describe('CodexSessionAdapter', () => {
       const adapter = new CodexSessionAdapter({ codexHome });
 
       assert.deepEqual(
-        (await adapter.listSessions({ includeArchived: true, offset: 0, limit: 1 })).map(
+        (await listSessions(adapter, { includeArchived: true, offset: 0, limit: 1 })).map(
           ({ id }) => id,
         ),
         ['codex-page-archived-newest'],
       );
       assert.deepEqual(
-        (await adapter.listSessions({ includeArchived: true, offset: 1, limit: 1 })).map(
+        (await listSessions(adapter, { includeArchived: true, offset: 1, limit: 1 })).map(
           ({ id }) => id,
         ),
         ['codex-page-a-fresh'],
       );
       assert.deepEqual(
-        (await adapter.listSessions({ includeArchived: true, offset: 2, limit: 1 })).map(
+        (await listSessions(adapter, { includeArchived: true, offset: 2, limit: 1 })).map(
           ({ id }) => id,
         ),
         ['codex-page-z-stale'],
@@ -687,6 +707,35 @@ describe('CodexSessionAdapter', () => {
         second.items.map(({ summary }) => summary.id),
         ['codex-old-2', 'codex-old-1'],
       );
+    });
+  });
+
+  test('database continuation surfaces source read failures without invalidating the cursor', async () => {
+    await withCodexHome(async (codexHome) => {
+      const rows: StateRow[] = [];
+      for (let index = 1; index <= 3; index++) {
+        const id = `codex-read-failure-${index}`;
+        rows.push({
+          id,
+          rolloutPath: await seedMinimalRollout(codexHome, id, false, '/workspace', id),
+          cwd: '/workspace',
+          name: id,
+          createdAtMs: index * 1000,
+          updatedAtMs: index * 1000,
+          archived: false,
+          source: 'cli',
+        });
+      }
+      await seedStateDatabase(codexHome, rows);
+      const adapter = new CodexSessionAdapter({ codexHome });
+      const first = await adapter.listSessionPage({ limit: 1 });
+      const cursor = first.items[0]!.nextCursor;
+      await writeFile(join(codexHome, 'state_5.sqlite'), 'not a sqlite database');
+
+      await assert.rejects(adapter.listSessionPage({ cursor, limit: 1 }), (error: unknown) => {
+        assert.equal(error instanceof ExternalSessionCatalogCursorError, false);
+        return true;
+      });
     });
   });
 
@@ -931,7 +980,7 @@ describe('CodexSessionAdapter', () => {
         ]);
 
         const adapter = new CodexSessionAdapter({ codexHome });
-        assert.deepEqual(await adapter.listSessions(), []);
+        assert.deepEqual(await listSessions(adapter), []);
         await assert.rejects(adapter.readSession(id), /not found/);
       });
     } finally {
