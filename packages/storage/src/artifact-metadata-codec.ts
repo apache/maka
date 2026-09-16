@@ -17,11 +17,10 @@
  * under the License.
  */
 
-import { isAbsolute, basename } from 'node:path';
+import { isAbsolute } from 'node:path';
 import {
   ARTIFACT_KINDS,
   ARTIFACT_SOURCES,
-  ARTIFACT_STATUSES,
   type ArtifactKind,
   type ArtifactRecord,
   type ArtifactSource,
@@ -29,11 +28,9 @@ import {
   isCanonicalArtifactEntityId,
 } from '@maka/core/artifacts';
 import { isDeepResearchArtifactRole } from '@maka/core/deep-research-run';
-import { ARTIFACT_PUBLICATION_STAGING_PATTERN } from './artifact-storage-layout.js';
 
 const ARTIFACT_KIND_SET = new Set<ArtifactKind>(ARTIFACT_KINDS);
 const ARTIFACT_SOURCE_SET = new Set<ArtifactSource>(ARTIFACT_SOURCES);
-const ARTIFACT_STATUS_SET = new Set<string>(ARTIFACT_STATUSES);
 const ARTIFACT_RECORD_KEYS = new Set([
   'id',
   'sessionId',
@@ -47,27 +44,36 @@ const ARTIFACT_RECORD_KEYS = new Set([
   'source',
   'summary',
   'deepResearchRole',
-  'status',
 ]);
 
 export function decodeArtifactRecordJsons(values: readonly unknown[]): ArtifactRecord[] {
   const records: ArtifactRecord[] = [];
   const ids = new Set<string>();
   for (const [index, value] of values.entries()) {
+    if (typeof value !== 'string') continue;
+    let parsed: unknown;
     try {
-      if (typeof value !== 'string') throw invalidMetadataRecord(index + 1);
-      const record = decodeArtifactRecord(JSON.parse(value), index + 1);
-      if (ids.has(record.id)) throw invalidMetadataRecord(index + 1);
+      parsed = JSON.parse(value);
+    } catch {
+      continue;
+    }
+    if (!hasSupportedArtifactSource(parsed)) continue;
+    try {
+      const record = decodeArtifactRecord(parsed, index + 1);
+      if (ids.has(record.id)) continue;
       ids.add(record.id);
       records.push(record);
-    } catch (error) {
-      if (error instanceof Error && error.message.startsWith('Invalid artifact metadata record')) {
-        throw error;
-      }
-      throw invalidMetadataRecord(index + 1, error);
-    }
+    } catch {}
   }
   return records;
+}
+
+function hasSupportedArtifactSource(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    typeof value.source === 'string' &&
+    ARTIFACT_SOURCE_SET.has(value.source as ArtifactSource)
+  );
 }
 
 export function isSafeRelativeArtifactPath(relativePath: string): boolean {
@@ -82,12 +88,6 @@ export function isSafeRelativeArtifactPath(relativePath: string): boolean {
 export function validateRelativeArtifactPath(relativePath: string): void {
   if (!isSafeRelativeArtifactPath(relativePath)) {
     throw new Error('Artifact relativePath must be artifact-root-relative');
-  }
-}
-
-export function validateCanonicalArtifactTargetName(targetName: string): void {
-  if (ARTIFACT_PUBLICATION_STAGING_PATTERN.test(targetName)) {
-    throw new Error('Artifact target name uses the reserved publication staging namespace');
   }
 }
 
@@ -110,19 +110,14 @@ function decodeArtifactRecord(value: unknown, index: number): ArtifactRecord {
     typeof value.sizeBytes !== 'number' ||
     !Number.isSafeInteger(value.sizeBytes) ||
     value.sizeBytes < 0 ||
-    typeof value.status !== 'string' ||
-    !ARTIFACT_STATUS_SET.has(value.status) ||
     !isOptionalNonEmptyString(value.mimeType) ||
     !isOptionalNonEmptyString(value.summary) ||
     (value.deepResearchRole !== undefined && !isDeepResearchArtifactRole(value.deepResearchRole)) ||
-    (value.source !== undefined &&
-      (typeof value.source !== 'string' ||
-        !ARTIFACT_SOURCE_SET.has(value.source as ArtifactSource)))
+    typeof value.source !== 'string'
   ) {
     throw invalidMetadataRecord(index);
   }
   validateRelativeArtifactPath(value.relativePath);
-  validateCanonicalArtifactTargetName(basename(value.relativePath));
   if (!isCompatibleArtifactName(value.name)) throw invalidMetadataRecord(index);
   if (value.relativePath !== `${value.sessionId}/${value.id}-${value.name}`) {
     throw invalidMetadataRecord(index);
@@ -138,11 +133,8 @@ function isCompatibleArtifactName(name: string): boolean {
   return true;
 }
 
-function invalidMetadataRecord(index: number, cause?: unknown): Error {
-  return new Error(
-    `Invalid artifact metadata record ${index}`,
-    cause === undefined ? {} : { cause },
-  );
+function invalidMetadataRecord(index: number): Error {
+  return new Error(`Invalid artifact metadata record ${index}`);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

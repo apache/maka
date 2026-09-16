@@ -75,6 +75,60 @@ describe('history compaction input fitting', () => {
     );
   });
 
+  test('bounds every oversized result in a multi-result tool message', () => {
+    const oversizedOutput = 'raw-tool-output-'.repeat(1_024);
+    const messages: ModelMessage[] = [
+      {
+        role: 'assistant',
+        content: [
+          { type: 'tool-call', toolCallId: 'call-1', toolName: 'shell', input: { command: 'a' } },
+          { type: 'tool-call', toolCallId: 'call-2', toolName: 'shell', input: { command: 'b' } },
+        ],
+      },
+      {
+        role: 'tool',
+        content: [
+          {
+            type: 'tool-result',
+            toolCallId: 'call-1',
+            toolName: 'shell',
+            output: { type: 'text', value: oversizedOutput },
+          },
+          {
+            type: 'tool-result',
+            toolCallId: 'call-2',
+            toolName: 'shell',
+            output: { type: 'text', value: oversizedOutput },
+          },
+        ],
+      },
+      { role: 'assistant', content: [{ type: 'text', text: 'Both inspections completed.' }] },
+    ];
+
+    const bounded = fitHistoryCompactMessages(messages, {
+      maxInputEstimatedTokens: 1_000,
+      charsPerToken: 1,
+    });
+
+    assert.ok(stableJsonLength(bounded) <= 1_000);
+    assert.equal(JSON.stringify(bounded).includes(oversizedOutput), false);
+    assert.deepEqual(
+      bounded.flatMap((message) =>
+        typeof message.content === 'string'
+          ? []
+          : message.content
+              .filter((part) => part.type === 'tool-call' || part.type === 'tool-result')
+              .map((part) => ({ type: part.type, toolCallId: part.toolCallId })),
+      ),
+      [
+        { type: 'tool-call', toolCallId: 'call-1' },
+        { type: 'tool-call', toolCallId: 'call-2' },
+        { type: 'tool-result', toolCallId: 'call-1' },
+        { type: 'tool-result', toolCallId: 'call-2' },
+      ],
+    );
+  });
+
   test('fails before dispatch when non-tool history cannot fit', () => {
     assert.throws(
       () =>

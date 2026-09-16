@@ -41,7 +41,7 @@ const composition = defineInteractiveRuntimeHostComposition(async () => ({
 const options = parseInteractiveRuntimeHostCandidateArguments(process.argv.slice(2));
 let result: Awaited<ReturnType<typeof startInteractiveRuntimeHostCandidate>>;
 try {
-  result = await startInteractiveRuntimeHostCandidate(options, composition);
+  result = await startInteractiveRuntimeHostCandidate(options, () => composition);
 } catch (error) {
   process.exit(candidateStartupFailureExitCode(classifyCandidateStartupFailure(error)));
 }

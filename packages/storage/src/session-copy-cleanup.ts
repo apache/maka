@@ -18,18 +18,23 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { acquireOperationalStateDatabase } from './operational-state-store.js';
+import {
+  acquireOperationalStateDatabase,
+  type OperationalStateDatabaseOptions,
+} from './operational-state-store.js';
 import {
   isProcessLifetimeOwnerReference,
   type ProcessLifetimeOwner,
   type ProcessLifetimeRecoveryClaim,
 } from './process-lifetime-owner.js';
+import { isSafeStorageId } from './storage-id.js';
 
 export interface SessionCopyCreationLease {
   sessionId: string;
   kind: 'branch' | 'revision';
   sourceSessionId: string;
-  sourceTurnId: string;
+  /** Settled turn the copy branches through. Absent marks an empty copy. */
+  sourceTurnId?: string;
   intent?: 'side_conversation';
   ownerId: string;
 }
@@ -83,9 +88,10 @@ export function createSessionCopyCleanupAuthority(input: {
   processId?: string;
   isOwnerProcessActive?: (ownerProcessId: string) => boolean | Promise<boolean>;
   processLifetimeOwner?: ProcessLifetimeOwner;
+  databaseOptions?: OperationalStateDatabaseOptions;
 }): SessionCopyCleanupAuthority {
   return new SessionCopyCleanupAuthorityImpl(
-    new SqliteSessionCopyCleanupStore(input.workspaceRoot),
+    new SqliteSessionCopyCleanupStore(input.workspaceRoot, input.databaseOptions),
     input.removeSession,
     input.resumeSessionCopy,
     input.processId ?? randomUUID(),
@@ -303,7 +309,10 @@ class SessionCopyCleanupAuthorityImpl implements SessionCopyCleanupAuthority {
 }
 
 class SqliteSessionCopyCleanupStore implements SessionCopyCleanupStore {
-  constructor(private readonly workspaceRoot: string) {}
+  constructor(
+    private readonly workspaceRoot: string,
+    private readonly databaseOptions: OperationalStateDatabaseOptions = {},
+  ) {}
 
   async list(): Promise<PersistedSessionCopyLease[]> {
     return this.withDatabase('read', (database) =>
@@ -356,7 +365,7 @@ class SqliteSessionCopyCleanupStore implements SessionCopyCleanupStore {
         creation: {
           kind: creation.kind,
           sourceSessionId: creation.sourceSessionId,
-          sourceTurnId: creation.sourceTurnId,
+          ...(creation.sourceTurnId === undefined ? {} : { sourceTurnId: creation.sourceTurnId }),
           ...(creation.intent ? { intent: creation.intent } : {}),
         },
       };
@@ -431,7 +440,7 @@ class SqliteSessionCopyCleanupStore implements SessionCopyCleanupStore {
     mode: 'read' | 'write',
     operation: (database: import('node:sqlite').DatabaseSync) => T,
   ): T {
-    const lease = acquireOperationalStateDatabase(this.workspaceRoot);
+    const lease = acquireOperationalStateDatabase(this.workspaceRoot, this.databaseOptions);
     try {
       return lease.transaction(mode, () => operation(lease.database));
     } finally {
@@ -492,7 +501,9 @@ function normalizeCreationLease(creation: SessionCopyCreationLease): SessionCopy
     sessionId: normalizeSessionId(creation.sessionId),
     kind: creation.kind,
     sourceSessionId: normalizeSessionId(creation.sourceSessionId),
-    sourceTurnId: normalizeSessionId(creation.sourceTurnId),
+    ...(creation.sourceTurnId === undefined
+      ? {}
+      : { sourceTurnId: normalizeSessionId(creation.sourceTurnId) }),
     ...(creation.intent === 'side_conversation' ? { intent: creation.intent } : {}),
     ownerId: normalizeOwnerId(creation.ownerId),
   };
@@ -524,7 +535,7 @@ function samePersistedCreation(
 function normalizeSessionId(value: unknown): string {
   if (typeof value !== 'string') throw new Error('Invalid Session copy id');
   const normalized = value.trim();
-  if (!/^[A-Za-z0-9_-]{1,128}$/.test(normalized)) {
+  if (!isSafeStorageId(normalized)) {
     throw new Error('Invalid Session copy id');
   }
   return normalized;

@@ -24,6 +24,7 @@ export type RuntimePolicyStoreErrorCode =
   | 'invalid_policy_input'
   | 'invalid_connection_input'
   | 'invalid_credential_input'
+  | 'revision_conflict'
   | 'io_failed'
   | 'commit_outcome_unknown';
 

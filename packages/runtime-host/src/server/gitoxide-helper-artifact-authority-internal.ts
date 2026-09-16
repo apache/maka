@@ -24,6 +24,13 @@ import { isAbsolute, join, parse, relative, resolve, sep } from 'node:path';
 const SHA256_PATTERN = /^sha256:[0-9a-f]{64}$/;
 const HASH_BUFFER_BYTES = 64 * 1024;
 const MAX_HELPER_ARTIFACT_BYTES = 256 * 1024 * 1024;
+export const GITOXIDE_HELPER_OPERATIONS_INTERNAL = Object.freeze([
+  'inspect_repository',
+  'import_source_head',
+  'create_candidate',
+  'read_tree_file',
+] as const);
+export type GitoxideHelperOperationInternal = (typeof GITOXIDE_HELPER_OPERATIONS_INTERNAL)[number];
 
 export interface GitoxideHelperReleaseArtifactClaim {
   readonly kind: 'gitoxide_helper_release_artifact_claim_v1';
@@ -40,17 +47,20 @@ export interface GitoxideHelperReleaseArtifactStateInternal {
   readonly platform: NodeJS.Platform;
   readonly arch: string;
   readonly protocolVersion: 1;
+  readonly supportedOperations: readonly GitoxideHelperOperationInternal[];
 }
 
 export interface VerifiedGitoxideHelperArtifactInternal {
   readonly executablePath: string;
   readonly protocolVersion: 1;
+  readonly supportedOperations: readonly GitoxideHelperOperationInternal[];
 }
 
 export interface GitoxideHelperArtifactIdentityInternal {
   readonly sha256: `sha256:${string}`;
   readonly bytes: number;
   readonly protocolVersion: 1;
+  readonly supportedOperations: readonly GitoxideHelperOperationInternal[];
 }
 
 export type GitoxideHelperArtifactAuthorityErrorCode =
@@ -96,7 +106,14 @@ export function issueGitoxideHelperReleaseArtifactClaimInternal(
   const claim = Object.freeze({
     kind: 'gitoxide_helper_release_artifact_claim_v1' as const,
   });
-  releaseClaims.set(claim, Object.freeze({ ...state, releaseOwnerToken }));
+  releaseClaims.set(
+    claim,
+    Object.freeze({
+      ...state,
+      supportedOperations: Object.freeze([...state.supportedOperations]),
+      releaseOwnerToken,
+    }),
+  );
   return claim;
 }
 
@@ -153,6 +170,7 @@ export async function verifyGitoxideHelperArtifactForInvocationInternal(
   return Object.freeze({
     executablePath: canonicalExecutablePath,
     protocolVersion: record.claim.protocolVersion,
+    supportedOperations: record.claim.supportedOperations,
   });
 }
 
@@ -171,7 +189,29 @@ export function requireGitoxideHelperArtifactIdentityInternal(
     sha256: record.claim.expectedSha256,
     bytes: record.claim.expectedBytes,
     protocolVersion: record.claim.protocolVersion,
+    supportedOperations: record.claim.supportedOperations,
   });
+}
+
+export function requireGitoxideHelperOperationsInternal(
+  invocationOwnerToken: object,
+  capability: GitoxideHelperInvocationCapability,
+  requiredOperations: readonly GitoxideHelperOperationInternal[],
+): void {
+  const record = invocationCapabilities.get(capability);
+  if (!record || record.invocationOwnerToken !== invocationOwnerToken) {
+    throw new GitoxideHelperArtifactAuthorityError(
+      'gitoxide_helper_invocation_capability_invalid',
+      'Gitoxide helper invocation capability is invalid for this owner',
+    );
+  }
+  const supported = new Set(record.claim.supportedOperations);
+  if (requiredOperations.some((operation) => !supported.has(operation))) {
+    throw new GitoxideHelperArtifactAuthorityError(
+      'gitoxide_helper_release_claim_unsupported',
+      'Gitoxide helper release artifact does not attest the required operations',
+    );
+  }
 }
 
 function assertReleaseArtifactState(state: GitoxideHelperReleaseArtifactStateInternal): void {
@@ -187,13 +227,25 @@ function assertReleaseArtifactState(state: GitoxideHelperReleaseArtifactStateInt
     state.platform.length === 0 ||
     typeof state.arch !== 'string' ||
     state.arch.length === 0 ||
-    state.protocolVersion !== 1
+    state.protocolVersion !== 1 ||
+    !isExactSupportedOperations(state.supportedOperations)
   ) {
     throw new GitoxideHelperArtifactAuthorityError(
       'gitoxide_helper_release_claim_invalid',
       'Gitoxide helper release artifact state is invalid',
     );
   }
+}
+
+function isExactSupportedOperations(
+  operations: readonly GitoxideHelperOperationInternal[],
+): boolean {
+  return (
+    Array.isArray(operations) &&
+    operations.length > 0 &&
+    new Set(operations).size === operations.length &&
+    operations.every((operation) => GITOXIDE_HELPER_OPERATIONS_INTERNAL.includes(operation))
+  );
 }
 
 async function verifyArtifact(claim: ReleaseClaimRecord): Promise<string> {

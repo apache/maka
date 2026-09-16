@@ -93,7 +93,7 @@ export function decryptQQBotSecret(encryptedSecret: string, decryptionKey: strin
   const iv = payload.subarray(0, 12);
   const authTag = payload.subarray(payload.length - 16);
   const ciphertext = payload.subarray(12, payload.length - 16);
-  const decipher = createDecipheriv('aes-256-gcm', key, iv);
+  const decipher = createDecipheriv('aes-256-gcm', key, iv, { authTagLength: 16 });
   decipher.setAuthTag(authTag);
   return Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString('utf8');
 }

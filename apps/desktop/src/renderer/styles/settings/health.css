@@ -41,7 +41,7 @@
     gap: var(--space-1) var(--space-4);
     font: var(--maka-text-body);
     font-variant-numeric: tabular-nums;
-    color: var(--foreground-secondary);
+    color: var(--muted-foreground);
   }
 
 .settingsHealthSummaryLine [data-tone="success"] {
@@ -49,7 +49,7 @@
   }
 
 .settingsHealthSummaryLine [data-tone="warning"] {
-    color: var(--warning-text, var(--info-text));
+    color: var(--warning-text);
   }
 
 .settingsHealthSummaryLine [data-tone="destructive"] {
@@ -103,13 +103,13 @@
   }
 
 .settingsHealthSignalMeta [data-tone="warning"] {
-    color: var(--warning-text, var(--info-text));
+    color: var(--warning-text);
   }
 
 
 .settingsHealthMetaLabel {
   font: var(--maka-text-supporting);
- color: var(--foreground-secondary); white-space: nowrap; }
+ color: var(--muted-foreground); white-space: nowrap; }
 .settingsHealthSignalLabel {
   /* A row label, not a heading — the role table's label weight carries it
      (detail audit: heading-4 here was the only heading-as-row-label in

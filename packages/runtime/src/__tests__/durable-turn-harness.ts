@@ -66,6 +66,8 @@ export function createDurableTurnHarness(input: {
     loadTurnRuntimeEvents: async (turnId: string) =>
       ledger.filter((event) => event.turnId === turnId),
     sendInput: (overrides: Partial<BackendSendInput> = {}): BackendSendInput => ({
+      invocationId,
+      runId,
       turnId: input.turnId,
       text: input.text,
       context: [],

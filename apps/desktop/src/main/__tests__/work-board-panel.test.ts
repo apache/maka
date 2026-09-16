@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import { strict as assert } from 'node:assert';
 import { afterEach, test } from 'node:test';
 import { parseHTML } from 'linkedom';
@@ -40,15 +41,6 @@ const originalGlobals = {
   }).IS_REACT_ACT_ENVIRONMENT,
 };
 const mountedRoots: Root[] = [];
-
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((next) => {
-    resolve = next;
-  });
-  return { promise, resolve };
-}
-
 function item(): WorkBoardItem {
   return {
     schemaVersion: 1,
@@ -127,13 +119,13 @@ test('prevents a second Work Board create while the first request is pending', a
     createCalls += 1;
     return createResult.promise;
   });
-  const input = harness.container.querySelector('input');
+  const input = harness.container.querySelector('textarea');
   assert.ok(input);
   input.value = 'Later';
   const propsKey = Object.keys(input).find((key) => key.startsWith('__reactProps$'));
   assert.ok(propsKey, 'missing React props on input');
   const props = (input as unknown as Record<string, unknown>)[propsKey] as {
-    onChange?: (event: { target: HTMLInputElement; defaultPrevented: boolean }) => void;
+    onChange?: (event: { target: HTMLTextAreaElement; defaultPrevented: boolean }) => void;
   };
   assert.ok(props.onChange, 'missing React change handler');
   await act(async () => {

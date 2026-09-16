@@ -17,8 +17,8 @@
  * under the License.
  */
 
+import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { expect } from '../../test-helpers.js';
 import { matchesBypassList } from '../bypass-matcher.js';
 
 describe('matchesBypassList', () => {
@@ -33,23 +33,23 @@ describe('matchesBypassList', () => {
   ];
 
   test('matches exact, wildcard, and CIDR entries', () => {
-    expect(matchesBypassList('localhost', list)).toBe(true);
-    expect(matchesBypassList('api.example.com', list)).toBe(true);
-    expect(matchesBypassList('example.com', list)).toBe(false);
-    expect(matchesBypassList('192.168.1.1', list)).toBe(true);
-    expect(matchesBypassList('10.5.5.5', list)).toBe(true);
-    expect(matchesBypassList('11.0.0.0', list)).toBe(false);
+    assert.strictEqual(matchesBypassList('localhost', list), true);
+    assert.strictEqual(matchesBypassList('api.example.com', list), true);
+    assert.strictEqual(matchesBypassList('example.com', list), false);
+    assert.strictEqual(matchesBypassList('192.168.1.1', list), true);
+    assert.strictEqual(matchesBypassList('10.5.5.5', list), true);
+    assert.strictEqual(matchesBypassList('11.0.0.0', list), false);
   });
 
   test('is case-insensitive and supports global wildcard', () => {
-    expect(matchesBypassList('LocalHost', list)).toBe(true);
-    expect(matchesBypassList('anything', ['*'])).toBe(true);
+    assert.strictEqual(matchesBypassList('LocalHost', list), true);
+    assert.strictEqual(matchesBypassList('anything', ['*']), true);
   });
 
   test('rejects malformed CIDR entries', () => {
-    expect(matchesBypassList('10.0.0.1', ['10.0.0.0/24.5'])).toBe(false);
-    expect(matchesBypassList('10.0.0.1', ['10.0.0.0/24/ignored'])).toBe(false);
-    expect(matchesBypassList('10.0.0.1', ['10.0.0.0/'])).toBe(false);
-    expect(matchesBypassList('10.0.0.1', ['1e1.0.0.0/8'])).toBe(false);
+    assert.strictEqual(matchesBypassList('10.0.0.1', ['10.0.0.0/24.5']), false);
+    assert.strictEqual(matchesBypassList('10.0.0.1', ['10.0.0.0/24/ignored']), false);
+    assert.strictEqual(matchesBypassList('10.0.0.1', ['10.0.0.0/']), false);
+    assert.strictEqual(matchesBypassList('10.0.0.1', ['1e1.0.0.0/8']), false);
   });
 });

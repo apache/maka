@@ -28,7 +28,7 @@ import {
   findMatch,
   foldForMatch,
   runThreadSearch,
-} from '../search/thread-search.js';
+} from '@maka/core/thread-search';
 
 type Entry = { session: SessionSummary; messages: StoredMessage[] };
 type SearchOutcome = Awaited<ReturnType<typeof runThreadSearch>>;
@@ -609,7 +609,6 @@ describe('thread search text projection', () => {
         turnId: 't1',
         ts: 1,
         status: 'completed',
-        partialOutputRetained: false,
       },
       {
         type: 'permission_decision',

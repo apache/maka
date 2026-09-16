@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { nextId } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { decodeToolStepProgress, type SessionEvent } from '@maka/core/events';
@@ -33,7 +34,6 @@ test('ToolRuntime emits only valid progress through the shared codec', async () 
     header: testHeader(),
     connection: testConnection(),
     modelId: 'test-model',
-    appendMessage: async () => {},
     newId: nextId(),
     now: () => 1,
     getPermissionPauseTarget: () => null,
@@ -106,9 +106,4 @@ function testConnection(): LlmConnection {
     createdAt: 1,
     updatedAt: 1,
   };
-}
-
-function nextId(): () => string {
-  let id = 0;
-  return () => `id-${++id}`;
 }

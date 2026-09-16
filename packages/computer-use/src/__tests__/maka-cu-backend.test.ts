@@ -24,7 +24,7 @@
 // NDJSON log the test inspects, the same way the cua-driver backend test does.
 //
 // Run (from repo root), after @maka/core + @maka/runtime are built:
-//   npm --workspace @maka/computer-use run test
+//   npm run build && npm --workspace @maka/computer-use run test:dist
 import assert from 'node:assert/strict';
 import { chmodSync } from 'node:fs';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
@@ -34,6 +34,7 @@ import { randomUUID } from 'node:crypto';
 import { after, before, describe, it } from 'node:test';
 
 import type { CuaBoundAction } from '@maka/runtime/cua-frame-state';
+import { deferred, withTimeout } from '@maka/core/test-only/async-primitives';
 
 import type { CuObservation, CuRunContext } from '@maka/runtime/computer-use-types';
 import {
@@ -94,6 +95,7 @@ const MALFORMED = process.env.MAKACU_MOCK_MALFORMED || '';
 const LAUNCH_ERROR = process.env.MAKACU_MOCK_LAUNCH_ERROR || '';
 const HANG_OBSERVE = process.env.MAKACU_MOCK_HANG_OBSERVE === '1';
 const TRUNCATED = process.env.MAKACU_MOCK_TRUNCATED === '1';
+const NO_FOCUSED_ELEMENT = process.env.MAKACU_MOCK_NO_FOCUSED_ELEMENT === '1';
 let DIFFERENCE_PRESENTATION = '';
 const LAUNCH_TOOK_FOREGROUND = process.env.MAKACU_MOCK_LAUNCH_FOREGROUND === '1';
 const WINDOW_ORIGIN_Y = Number(process.env.MAKACU_MOCK_WINDOW_ORIGIN_Y || '25');
@@ -172,7 +174,7 @@ function snapshot(includeImage) {
       displayId: '69732928',
     },
     windowDigest: digest('window_' + snapshotSeq),
-    focusedElementToken: 'el_2',
+    focusedElementToken: NO_FOCUSED_ELEMENT ? null : 'el_2',
     selectedText: null,
     image: includeImage ? writeImage(id) : null,
     displays: [{
@@ -182,7 +184,10 @@ function snapshot(includeImage) {
       scaleFactor: 2,
     }],
     obscuringRects: [],
-    elements: [element(1, 'Fixture Window', false), element(2, 'Send', true)],
+    elements: [
+      element(1, 'Fixture Window', false),
+      element(2, 'Send', !NO_FOCUSED_ELEMENT),
+    ],
     truncated: { elements: TRUNCATED, depth: false },
   };
   if (DIFFERENCE_PRESENTATION && previousSnapshotId) {
@@ -406,13 +411,14 @@ function makeBackend(
     launchError?: string;
     hangObserve?: boolean;
     truncated?: boolean;
+    noFocusedElement?: boolean;
     differencePresentation?: 'no-change' | 'difference' | 'full';
     timeoutMs?: number;
     launchTookForeground?: boolean;
     windowOriginY?: number;
     physicalInputRecentlyActive?: MakaCuBackendOptions['physicalInputRecentlyActive'];
-    allowCompatibilityInputDispatch?: boolean;
     onTrace?: MakaCuBackendOptions['onTrace'];
+    onSessionInvalidated?: MakaCuBackendOptions['onSessionInvalidated'];
   } = {},
 ): { backend: ReturnType<typeof createMakaCuBackend>; logPath: string; imageDir: string } {
   const logPath = join(workDir, 'log-' + randomUUID() + '.ndjson');
@@ -444,6 +450,7 @@ function makeBackend(
   process.env.MAKACU_MOCK_LAUNCH_ERROR = opts.launchError ?? '';
   process.env.MAKACU_MOCK_HANG_OBSERVE = opts.hangObserve ? '1' : '';
   process.env.MAKACU_MOCK_TRUNCATED = opts.truncated ? '1' : '';
+  process.env.MAKACU_MOCK_NO_FOCUSED_ELEMENT = opts.noFocusedElement ? '1' : '';
   process.env.MAKACU_MOCK_LAUNCH_FOREGROUND = opts.launchTookForeground ? '1' : '';
   process.env.MAKACU_MOCK_WINDOW_ORIGIN_Y = String(opts.windowOriginY ?? 25);
   const backend = createMakaCuBackend({
@@ -456,10 +463,8 @@ function makeBackend(
     ...(opts.physicalInputRecentlyActive
       ? { physicalInputRecentlyActive: opts.physicalInputRecentlyActive }
       : {}),
-    ...(opts.allowCompatibilityInputDispatch === undefined
-      ? {}
-      : { allowCompatibilityInputDispatch: opts.allowCompatibilityInputDispatch }),
     ...(opts.onTrace ? { onTrace: opts.onTrace } : {}),
+    ...(opts.onSessionInvalidated ? { onSessionInvalidated: opts.onSessionInvalidated } : {}),
   });
   disposers.push(() => backend.dispose());
   return { backend, logPath, imageDir };
@@ -481,12 +486,12 @@ async function observeFixture(
   );
 }
 
-function boundCoordinate(observation: CuObservation): CuaBoundAction {
+function boundWindow(observation: CuObservation): CuaBoundAction {
   return {
     frameId: observation.observationId,
     epoch: 0,
-    actionFingerprint: 'left_click',
-    fingerprint: 'bound-coordinate',
+    actionFingerprint: 'key',
+    fingerprint: 'bound-window',
     target: {
       pid: observation.pid,
       windowId: observation.windowId,
@@ -494,9 +499,6 @@ function boundCoordinate(observation: CuObservation): CuaBoundAction {
       bounds: observation.windowBounds!,
       sourceBoundsPx: observation.sourceBoundsPx!,
     },
-    sourceCoordinate: { x: 400, y: 200 },
-    windowCoordinate: { x: 400, y: 200 },
-    coordinateSpace: 'window-screenshot-local',
   };
 }
 
@@ -776,69 +778,6 @@ describe('maka-cu backend', () => {
     assert.match(message, /restarted|another way/);
   });
 
-  it('treats a global-pointer path as a compromised session', async () => {
-    const traces: any[] = [];
-    const { backend } = makeBackend({
-      tier: 'coordinate-background',
-      path: 'cg_event_global',
-      allowCompatibilityInputDispatch: true,
-      onTrace: (event) => traces.push(event),
-    });
-    const observation = await observeFixture(backend);
-    const result = await backend.run(
-      { type: 'left_click', coordinate: { x: 400, y: 200 } },
-      signal(),
-      { ...RUN_CONTEXT, boundAction: boundCoordinate(observation) },
-    );
-    // §6.3: the executor states the path and the host verifies it. A path that
-    // was never permitted at handshake means the system cursor moved.
-    assert.equal(!result.outcome.ok && result.outcome.error, 'service_mismatch');
-    assert.ok(traces.some((event) => event.type === 'protocol_violation'));
-    assert.match(
-      traces.find((event) => event.type === 'protocol_violation')?.reason ?? '',
-      /moves the system cursor/,
-    );
-  });
-
-  it('anchors a coordinate dispatch to the window digest in image pixels', async () => {
-    const { backend, logPath } = makeBackend({
-      tier: 'coordinate-background',
-      path: 'cg_event_pid',
-      allowCompatibilityInputDispatch: true,
-    });
-    const observation = await observeFixture(backend);
-    const result = await backend.run(
-      { type: 'left_click', coordinate: { x: 400, y: 200 } },
-      signal(),
-      { ...RUN_CONTEXT, boundAction: boundCoordinate(observation) },
-    );
-    assert.equal(result.outcome.ok, true);
-    assert.equal(result.outcome.ok && result.outcome.tier, 'coordinate-background');
-
-    const dispatch = received(await readRecords(logPath), 'dispatch.point')[0];
-    assert.equal(dispatch?.snapshotId, observation.observationId);
-    // §6.3: a point has no element to anchor to, so the window is the anchor.
-    assert.equal(dispatch?.expectWindowDigest, observation.contentFingerprint);
-    assert.equal(dispatch?.space, 'image_px');
-    assert.equal(dispatch?.occlusionPolicy, 'any');
-    assert.deepEqual(dispatch?.point, { x: 400, y: 200 });
-  });
-
-  it('keeps coordinate dispatch closed unless the host policy opens it', async () => {
-    const { backend, logPath } = makeBackend({
-      tier: 'coordinate-background',
-      path: 'cg_event_pid',
-    });
-    const observation = await observeFixture(backend);
-    const result = await backend.run(
-      { type: 'left_click', coordinate: { x: 400, y: 200 } },
-      signal(),
-      { ...RUN_CONTEXT, boundAction: boundCoordinate(observation) },
-    );
-    assert.equal(!result.outcome.ok && result.outcome.error, 'unsupported_action');
-    assert.equal(received(await readRecords(logPath), 'dispatch.point').length, 0);
-  });
-
   it('lets an element action through while the user is physically active', async () => {
     // The guard protects the one pointer and the one keyboard the user also
     // has. An element action names an element and lets the accessibility API
@@ -858,13 +797,12 @@ describe('maka-cu backend', () => {
 
   it('still fences synthesized input while the user is physically active', async () => {
     const { backend, logPath } = makeBackend({
-      allowCompatibilityInputDispatch: true,
       physicalInputRecentlyActive: () => true,
     });
     const observation = await observeFixture(backend);
     const result = await backend.run({ type: 'key', text: 'cmd+a' }, signal(), {
       ...RUN_CONTEXT,
-      boundAction: boundCoordinate(observation),
+      boundAction: boundWindow(observation),
     });
     assert.equal(!result.outcome.ok && result.outcome.error, 'user_intervened');
     assert.equal(received(await readRecords(logPath), 'dispatch.key').length, 0);
@@ -1172,8 +1110,15 @@ describe('maka-cu backend', () => {
     assert.equal(result.outcome.verified, true);
   });
 
-  it('ends the executor session when the host clears it', async () => {
-    const { backend, logPath } = makeBackend();
+  it('ends cleared sessions without re-notifying them and invalidates known sessions on generation loss', async () => {
+    const invalidated: string[] = [];
+    const generationReleased = deferred();
+    const { backend, logPath } = makeBackend({
+      onSessionInvalidated: ({ sessionId }) => {
+        invalidated.push(sessionId);
+        if (sessionId === 'still-known') generationReleased.resolve();
+      },
+    });
     await observeFixture(backend);
     // clearSession fires session.end without exposing the round-trip, so wait
     // on the delivered record itself instead of guessing scheduler timing.
@@ -1185,6 +1130,30 @@ describe('maka-cu backend', () => {
     );
     const records = await readRecords(logPath);
     assert.deepEqual(received(records, 'session.end')[0], { session: RUN_CONTEXT.sessionId });
+    assert.deepEqual(invalidated, [RUN_CONTEXT.sessionId]);
+    backend.clearSession(RUN_CONTEXT.sessionId);
+    backend.clearSession('never-begun');
+    assert.deepEqual(
+      invalidated,
+      [RUN_CONTEXT.sessionId],
+      'unknown cleanup must not notify observers',
+    );
+
+    // Completed work still owns a begun session even after its operation fence
+    // is released. Losing the generation must invalidate that session once.
+    await backend.observeApp!({ app: FIXTURE_APP_ID, includeScreenshot: true }, signal(), {
+      ...RUN_CONTEXT,
+      sessionId: 'still-known',
+    });
+    const pid: unknown = records.find((record) => record.kind === 'start')?.pid;
+    assert.equal(typeof pid, 'number');
+    process.kill(pid as number, 'SIGKILL');
+    await withTimeout(
+      generationReleased.promise,
+      5_000,
+      'generation loss did not invalidate the live session',
+    );
+    assert.deepEqual(invalidated, [RUN_CONTEXT.sessionId, 'still-known']);
   });
 
   it('maps apps.list onto CuAppSummary without a rendered catalogue', async () => {
@@ -1260,8 +1229,8 @@ describe('maka-cu backend', () => {
 
   // §6.4 — the host parses the key string.
 
-  it('asks the executor to take focus when the model named the control', async () => {
-    const { backend, logPath } = makeBackend({ allowCompatibilityInputDispatch: true });
+  it('enables bound keyboard dispatch by default and acquires a named control', async () => {
+    const { backend, logPath } = makeBackend();
     const observation = await observeFixture(backend);
     // el_1 is the window, not the focused element — exactly the case the
     // promise covers: name a control and it is focused before the key lands.
@@ -1281,8 +1250,30 @@ describe('maka-cu backend', () => {
     assert.equal(dispatch?.focusPolicy, 'acquire');
   });
 
+  it('rejects an invalid executor path reported by dispatch.key', async () => {
+    const traces: any[] = [];
+    const { backend, logPath } = makeBackend({
+      tier: 'ax',
+      path: 'cg_event_pid',
+      onTrace: (event) => traces.push(event),
+    });
+    const observation = await observeFixture(backend);
+    const result = await backend.runSemantic!(
+      { type: 'press_key', observationId: observation.observationId, key: 'Tab' },
+      signal(),
+      RUN_CONTEXT,
+    );
+
+    assert.equal(received(await readRecords(logPath), 'dispatch.key').length, 1);
+    assert.equal(!result.outcome.ok && result.outcome.error, 'service_mismatch');
+    assert.match(
+      traces.find((event) => event.type === 'protocol_violation')?.reason ?? '',
+      /does not permit path/,
+    );
+  });
+
   it('verifies rather than takes focus when the model named no control', async () => {
-    const { backend, logPath } = makeBackend({ allowCompatibilityInputDispatch: true });
+    const { backend, logPath } = makeBackend();
     const observation = await observeFixture(backend);
     const result = await backend.runSemantic!(
       { type: 'press_key', observationId: observation.observationId, key: 'Tab' },
@@ -1297,8 +1288,24 @@ describe('maka-cu backend', () => {
     assert.equal(dispatch?.focusPolicy, undefined);
   });
 
+  it('refuses keyboard dispatch when the observation has no verified focus owner', async () => {
+    const { backend, logPath } = makeBackend({ noFocusedElement: true });
+    const observation = await observeFixture(backend);
+    const result = await backend.run({ type: 'key', text: 'Tab' }, signal(), {
+      ...RUN_CONTEXT,
+      boundAction: boundWindow(observation),
+    });
+
+    assert.equal(!result.outcome.ok && result.outcome.error, 'unsupported_action');
+    assert.match(
+      result.outcome.ok ? '' : result.outcome.message,
+      /no focused element.*element_id|click the field and observe again/i,
+    );
+    assert.equal(received(await readRecords(logPath), 'dispatch.key').length, 0);
+  });
+
   it('refuses a key aimed at a control outside the quoted frame', async () => {
-    const { backend, logPath } = makeBackend({ allowCompatibilityInputDispatch: true });
+    const { backend, logPath } = makeBackend();
     const observation = await observeFixture(backend);
     const result = await backend.runSemantic!(
       {
@@ -1320,11 +1327,11 @@ describe('maka-cu backend', () => {
   });
 
   it('parses a key combination into the wire closed sets before sending it', async () => {
-    const { backend, logPath } = makeBackend({ allowCompatibilityInputDispatch: true });
+    const { backend, logPath } = makeBackend();
     const observation = await observeFixture(backend);
     const result = await backend.run({ type: 'key', text: 'cmd+a' }, signal(), {
       ...RUN_CONTEXT,
-      boundAction: boundCoordinate(observation),
+      boundAction: boundWindow(observation),
     });
     assert.equal(result.outcome.ok, true);
     const dispatch = received(await readRecords(logPath), 'dispatch.key')[0];
@@ -1335,7 +1342,7 @@ describe('maka-cu backend', () => {
 
   it('sends nothing for a key string it cannot parse', async () => {
     for (const key of ['delete', 'del', 'cmd+', 'a+b', 'hyper+a']) {
-      const { backend, logPath } = makeBackend({ allowCompatibilityInputDispatch: true });
+      const { backend, logPath } = makeBackend();
       const observation = await observeFixture(backend);
       const result = await backend.runSemantic!(
         { type: 'press_key', observationId: observation.observationId, key },

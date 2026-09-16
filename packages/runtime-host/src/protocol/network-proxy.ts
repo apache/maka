@@ -29,7 +29,6 @@ import {
 import { invalidProtocolFrame } from './errors.js';
 import { defineOperation } from './operation-spec.js';
 
-const SECRET_MAX_BYTES = 16 * 1024;
 const RESULT_MAX_BYTES = 8 * 1024;
 const ERRORS = [
   'host_not_ready',
@@ -41,7 +40,6 @@ const ERRORS = [
 
 export interface NetworkProxyTestInput {
   readonly networkProxy?: RuntimePolicy['networkProxy'];
-  readonly password?: string;
   readonly url?: string;
   readonly timeoutMs?: number;
 }
@@ -67,17 +65,12 @@ function decodeNetworkProxyTestInput(value: unknown): NetworkProxyTestInput {
     value,
     'network proxy test input',
     [],
-    ['networkProxy', 'password', 'url', 'timeoutMs'],
+    ['networkProxy', 'url', 'timeoutMs'],
   );
   return {
     ...(input.networkProxy === undefined
       ? {}
       : { networkProxy: decodeNetworkProxy(input.networkProxy) }),
-    ...(input.password === undefined
-      ? {}
-      : {
-          password: requireUtf8String(input.password, 'network proxy password', SECRET_MAX_BYTES),
-        }),
     ...(input.url === undefined ? {} : { url: decodeProbeUrl(input.url) }),
     ...(input.timeoutMs === undefined
       ? {}

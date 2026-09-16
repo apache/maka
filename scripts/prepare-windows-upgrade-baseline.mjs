@@ -18,6 +18,7 @@
  */
 
 import { execFile } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { mkdir, readFile, rm } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -59,6 +60,16 @@ export async function prepareWindowsUpgradeBaseline(
     candidateVersion,
   );
   const directory = resolve(outputDirectory);
+  const installer = join(directory, manifest.assetName);
+
+  // The manifest pins one immutable asset, so a copy already sitting here that
+  // hashes to the pinned digest is that asset and downloading it again would
+  // return the same bytes. CI restores this directory from a cache keyed on the
+  // manifest, and the release download is the most frequent failure on this
+  // lane, so reusing a verified copy is what removes those false reds. Anything
+  // that does not verify is discarded rather than trusted.
+  if (await hasVerifiedBaseline(installer, manifest.sha256, checksum)) return installer;
+
   await rm(directory, { recursive: true, force: true });
   await mkdir(directory, { recursive: true });
   await run('gh', [
@@ -72,7 +83,6 @@ export async function prepareWindowsUpgradeBaseline(
     '--dir',
     directory,
   ]);
-  const installer = join(directory, manifest.assetName);
   const actual = await checksum(installer);
   if (actual !== manifest.sha256) {
     throw new Error(
@@ -80,6 +90,17 @@ export async function prepareWindowsUpgradeBaseline(
     );
   }
   return installer;
+}
+
+async function hasVerifiedBaseline(installer, expected, checksum) {
+  if (!existsSync(installer)) return false;
+  // A truncated or half-written cache entry must send us to the network, not
+  // stop the run: only a digest mismatch on a fresh download is a real defect.
+  try {
+    return (await checksum(installer)) === expected;
+  } catch {
+    return false;
+  }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

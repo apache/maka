@@ -26,20 +26,71 @@ import {
   decodeOAuthLoginProjection,
   decodeOAuthPresentationRequest,
   decodeOAuthPresentationResult,
+  OAUTH_OPERATION_SPECS,
   type OAuthPresentationMethod,
 } from '../protocol/index.js';
 
 test('OAuth login protocol binds attempt identity and closes terminal projections', () => {
   assert.deepEqual(
     decodeClientFrame({
+      requestId: 'create-request',
+      operation: 'oauth.login.start',
+      input: {
+        attemptId: 'create-attempt',
+        target: {
+          kind: 'create',
+          providerType: 'openai-codex',
+          slug: 'codex-work',
+          name: 'Work Codex',
+        },
+      },
+    }),
+    {
+      requestId: 'create-request',
+      operation: 'oauth.login.start',
+      input: {
+        attemptId: 'create-attempt',
+        target: {
+          kind: 'create',
+          providerType: 'openai-codex',
+          slug: 'codex-work',
+          name: 'Work Codex',
+        },
+      },
+    },
+  );
+  assert.throws(
+    () =>
+      decodeClientFrame({
+        requestId: 'unnamed-provider-request',
+        operation: 'oauth.login.start',
+        input: {
+          attemptId: 'unnamed-provider-attempt',
+          target: {
+            kind: 'create',
+            providerType: 'xai-oauth',
+            slug: 'xai-work',
+          },
+        },
+      }),
+    RuntimeHostProtocolError,
+  );
+  assert.deepEqual(
+    decodeClientFrame({
       requestId: 'request',
       operation: 'oauth.login.start',
-      input: { attemptId: 'attempt', connectionId: 'connection' },
+      input: {
+        attemptId: 'attempt',
+        target: { kind: 'existing', connectionId: 'connection' },
+      },
     }),
     {
       requestId: 'request',
       operation: 'oauth.login.start',
-      input: { attemptId: 'attempt', connectionId: 'connection' },
+      input: {
+        attemptId: 'attempt',
+        target: { kind: 'existing', connectionId: 'connection' },
+      },
     },
   );
   assert.deepEqual(
@@ -49,8 +100,11 @@ test('OAuth login protocol binds attempt identity and closes terminal projection
       ok: true,
       result: {
         attemptId: 'attempt',
-        connectionId: 'connection',
-        provider: 'openai-codex',
+        connection: {
+          connectionId: 'connection',
+          slug: 'codex-subscription',
+          providerType: 'openai-codex',
+        },
         phase: 'failed',
         failure: 'provider_rejected',
       },
@@ -61,8 +115,11 @@ test('OAuth login protocol binds attempt identity and closes terminal projection
       ok: true,
       result: {
         attemptId: 'attempt',
-        connectionId: 'connection',
-        provider: 'openai-codex',
+        connection: {
+          connectionId: 'connection',
+          slug: 'codex-subscription',
+          providerType: 'openai-codex',
+        },
         phase: 'failed',
         failure: 'provider_rejected',
       },
@@ -76,11 +133,89 @@ test('OAuth login protocol binds attempt identity and closes terminal projection
         ok: true,
         result: {
           attemptId: 'attempt',
-          connectionId: 'connection',
-          provider: 'openai-codex',
+          connection: {
+            connectionId: 'connection',
+            slug: 'codex-subscription',
+            providerType: 'openai-codex',
+          },
           phase: 'authenticated',
           failure: 'internal_failure',
         },
+      }),
+    (error: unknown) => error instanceof RuntimeHostProtocolError,
+  );
+  assert.throws(
+    () =>
+      decodeClientFrame({
+        requestId: 'epoch-53-request',
+        operation: 'oauth.login.start',
+        input: { attemptId: 'attempt', connectionId: 'connection' },
+      }),
+    RuntimeHostProtocolError,
+  );
+  assert.throws(
+    () =>
+      decodeOAuthLoginProjection({
+        attemptId: 'attempt',
+        connectionId: 'connection',
+        provider: 'openai-codex',
+        phase: 'authenticated',
+      }),
+    RuntimeHostProtocolError,
+  );
+});
+
+test('OAuth slug collisions stay typed in operation errors and terminal projections', () => {
+  const projection = {
+    attemptId: 'attempt-slug-collision',
+    connection: {
+      connectionId: 'connection-id',
+      slug: 'codex-work',
+      providerType: 'openai-codex',
+    },
+    phase: 'failed',
+    failure: 'slug_taken',
+  } as const;
+
+  assert.ok(OAUTH_OPERATION_SPECS['oauth.login.start'].errors.includes('slug_taken' as never));
+  assert.deepEqual(decodeOAuthLoginProjection(projection), projection);
+});
+
+test('OAuth enrollment query carries the provider and its Host gate answer', () => {
+  assert.deepEqual(
+    decodeClientFrame({
+      requestId: 'request',
+      operation: 'oauth.enrollment.query',
+      input: { provider: 'github-copilot' },
+    }),
+    {
+      requestId: 'request',
+      operation: 'oauth.enrollment.query',
+      input: { provider: 'github-copilot' },
+    },
+  );
+  assert.deepEqual(
+    decodeHostFrame({
+      requestId: 'request',
+      operation: 'oauth.enrollment.query',
+      ok: true,
+      result: { provider: 'github-copilot', enabled: false },
+    }),
+    {
+      requestId: 'request',
+      operation: 'oauth.enrollment.query',
+      ok: true,
+      result: { provider: 'github-copilot', enabled: false },
+    },
+  );
+  // A missing or non-boolean `enabled` is refused rather than coerced.
+  assert.throws(
+    () =>
+      decodeHostFrame({
+        requestId: 'request',
+        operation: 'oauth.enrollment.query',
+        ok: true,
+        result: { provider: 'github-copilot' },
       }),
     (error: unknown) => error instanceof RuntimeHostProtocolError,
   );
@@ -146,8 +281,11 @@ test('OAuth login projections refuse a retired provider on the wire', () => {
     () =>
       decodeOAuthLoginProjection({
         attemptId: 'attempt',
-        connectionId: 'connection',
-        provider: 'claude-subscription',
+        connection: {
+          connectionId: 'connection',
+          slug: 'claude-subscription',
+          providerType: 'claude-subscription',
+        },
         phase: 'awaiting_authorization',
       }),
     RuntimeHostProtocolError,
@@ -155,15 +293,71 @@ test('OAuth login projections refuse a retired provider on the wire', () => {
   assert.deepEqual(
     decodeOAuthLoginProjection({
       attemptId: 'attempt',
-      connectionId: 'connection',
-      provider: 'openai-codex',
+      connection: {
+        connectionId: 'connection',
+        slug: 'codex-subscription',
+        providerType: 'openai-codex',
+      },
       phase: 'awaiting_authorization',
     }),
     {
       attemptId: 'attempt',
-      connectionId: 'connection',
-      provider: 'openai-codex',
+      connection: {
+        connectionId: 'connection',
+        slug: 'codex-subscription',
+        providerType: 'openai-codex',
+      },
       phase: 'awaiting_authorization',
     },
+  );
+});
+
+test('OAuth operations correlate attempt and Connection identity', () => {
+  const projection = decodeOAuthLoginProjection({
+    attemptId: 'attempt-output',
+    connection: {
+      connectionId: 'connection-output',
+      slug: 'codex-subscription',
+      providerType: 'openai-codex',
+    },
+    phase: 'authenticated',
+  });
+  assert.throws(
+    () =>
+      OAUTH_OPERATION_SPECS['oauth.login.query'].assertOutputForInput?.(
+        { attemptId: 'attempt-input' },
+        projection,
+      ),
+    RuntimeHostProtocolError,
+  );
+  assert.throws(
+    () =>
+      OAUTH_OPERATION_SPECS['oauth.login.start'].assertOutputForInput?.(
+        {
+          attemptId: projection.attemptId,
+          target: { kind: 'existing', connectionId: 'another-connection' },
+        },
+        projection,
+      ),
+    RuntimeHostProtocolError,
+  );
+  assert.throws(
+    () =>
+      OAUTH_OPERATION_SPECS['oauth.login.start'].assertOutputForInput?.(
+        {
+          attemptId: projection.attemptId,
+          target: { kind: 'create', providerType: 'xai-oauth' },
+        },
+        projection,
+      ),
+    RuntimeHostProtocolError,
+  );
+  assert.throws(
+    () =>
+      decodeOAuthLoginProjection({
+        ...projection,
+        connection: { ...projection.connection, slug: 'Invalid Slug' },
+      }),
+    RuntimeHostProtocolError,
   );
 });

@@ -66,17 +66,17 @@
   white-space: nowrap;
   border-radius: var(--radius-pill);
   background: oklch(from var(--foreground) l c h / 0.05);
-  color: var(--foreground-secondary);
+  color: var(--muted-foreground);
   padding: var(--space-0-5) var(--space-2);
 }
 
 .maka-skill-governance-warning {
   font: var(--maka-text-supporting);
   margin: 0;
-  border: var(--border-width-hairline) solid var(--warning-wash-border);
+  border: var(--border-width-hairline) solid var(--border);
   border-radius: var(--radius-control);
-  background: var(--warning-wash);
-  color: var(--foreground-secondary);
+  background: var(--color-warning-muted);
+  color: var(--foreground);
   padding: var(--space-2);
 }
 

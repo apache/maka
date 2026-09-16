@@ -142,12 +142,21 @@ const owners = new Map<string, OperationalStateDatabaseOwner>();
 
 export interface OperationalStateDatabaseOptions {
   now?: () => number;
+  /**
+   * `migrate` is reserved for the process that owns the State Root. A
+   * secondary process may use `require_current` to share current tables, but
+   * it must never rewrite the schema underneath that owner.
+   */
+  schemaMigration?: 'migrate' | 'require_current';
 }
 
 export class OperationalStateMigrationBlockedError extends Error {
   readonly code = 'operational_state_migration_blocked';
 
-  constructor(cause: unknown) {
+  constructor(
+    cause: unknown,
+    readonly reason: 'requires_host_migration' | 'blocked' = 'blocked',
+  ) {
     super(cause instanceof Error ? cause.message : 'Operational state migration is blocked', {
       cause,
     });
@@ -193,13 +202,23 @@ class OperationalStateDatabaseOwner {
     readonly databasePath: string,
     options: OperationalStateDatabaseOptions,
   ) {
+    if (options.schemaMigration === 'require_current' && !existsSync(databasePath)) {
+      throw new OperationalStateMigrationBlockedError(
+        new Error('Operational state has not been initialized by its Runtime Host'),
+        'requires_host_migration',
+      );
+    }
     mkdirSync(dirname(databasePath), { recursive: true });
     const Database = loadDatabaseSync();
     this.database = new Database(databasePath);
     try {
       configureSqliteRuntimeLockWait(this.database);
       this.database.exec('PRAGMA foreign_keys = ON');
-      inspectAndMigrateOperationalState(this.database, options.now ?? Date.now);
+      if (options.schemaMigration === 'require_current') {
+        requireCurrentOperationalState(this.database);
+      } else {
+        inspectAndMigrateOperationalState(this.database, options.now ?? Date.now);
+      }
       configureSqliteRuntimeDatabase(this.database);
     } catch (error) {
       this.database.close();
@@ -269,6 +288,21 @@ class OperationalStateDatabaseOwner {
     } finally {
       this.transactionDepth -= 1;
     }
+  }
+}
+
+function requireCurrentOperationalState(database: DatabaseSync): void {
+  try {
+    const inspection = inspectOperationalStateSchema(database);
+    if (inspection.status === 'current' && isCurrentOperationalTargetSchema(database)) return;
+    throw new OperationalStateMigrationBlockedError(
+      new Error('Operational state requires migration by its Runtime Host'),
+      'requires_host_migration',
+    );
+  } catch (error) {
+    if (isSqliteEnvironmentError(error)) throw error;
+    if (error instanceof OperationalStateMigrationBlockedError) throw error;
+    throw new OperationalStateMigrationBlockedError(error);
   }
 }
 

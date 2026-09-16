@@ -21,6 +21,7 @@ import { randomUUID } from 'node:crypto';
 import {
   prepareStorageRootControlDirectory,
   resolveStorageRoot,
+  StorageRootAuthorityError,
 } from '@maka/storage/root-authority';
 import { readStateRootCompositionBinding } from '@maka/storage/state-root-composition';
 import { performance } from 'node:perf_hooks';
@@ -36,6 +37,7 @@ import {
   connectResolvedRuntimeHost,
   type ConnectRuntimeHostResult,
   type RuntimeHostConnection,
+  type RuntimeHostConnectionFailure,
 } from './connection.js';
 import {
   launchDetachedRuntimeHostCandidate,
@@ -57,9 +59,20 @@ import {
   clearCandidateStartupDiagnostic,
   selectCandidateStartupDiagnostic,
 } from '../control/startup-diagnostic.js';
+import {
+  decodeRuntimeHostManagedLaunchClaim,
+  readRuntimeHostManagedDeploymentConfig,
+  runtimeHostManagedLaunchRejection,
+  RuntimeHostManagedDeploymentError,
+  type RuntimeHostManagedDeploymentAuthorityOptions,
+  type RuntimeHostManagedLaunchClaim,
+} from '../operator/managed-deployment.js';
 import { abortable, waitForRuntimeHostReady } from './wait-for-ready.js';
 
-const DEFAULT_ELECTION_DEADLINE_MS = 45_000;
+// Candidate readiness includes the Windows named-pipe ACL helper, whose
+// fail-closed ceiling is 60s. Leave enough room for election and connection
+// bookkeeping after that helper returns.
+const DEFAULT_ELECTION_DEADLINE_MS = 75_000;
 const DEFAULT_BACKOFF_MIN_MS = 20;
 const DEFAULT_BACKOFF_MAX_MS = 250;
 const MIN_CANDIDATE_INTERVAL_MS = 250;
@@ -76,7 +89,13 @@ export interface ConnectOrSpawnRuntimeHostInput {
   connectTimeoutMs?: number;
   handshakeTimeoutMs?: number;
   candidateEntrypoint: string | URL;
+  candidateExecutable?: string;
+  managedLaunchClaim?: RuntimeHostManagedLaunchClaim;
   signal?: AbortSignal;
+  /** Existing authority lease inherited by a launch-owner-supervised Candidate. */
+  inheritableAuthorityLeaseFd?: number;
+  /** Close a newly spawned ephemeral Candidate if this launcher exits. */
+  closeOnLauncherExit?: boolean;
   /** Candidate-exit sink forwarded to the launcher; the embedder owns the sink. */
   onExit?: (details: CandidateExitDetails) => void;
 }
@@ -87,6 +106,8 @@ interface ConnectOrSpawnRuntimeHostDependencies {
   /** Defaults to `process.env`; injected so tests never mutate the real environment. */
   env?: NodeJS.ProcessEnv;
   connectHost?: typeof connectResolvedRuntimeHost;
+  /** Authority-location override for tests and embedded runtimes. */
+  managedDeploymentAuthority?: RuntimeHostManagedDeploymentAuthorityOptions;
 }
 
 type ElectionConnectionResult = Awaited<ReturnType<typeof connectResolvedRuntimeHost>>;
@@ -142,6 +163,7 @@ export interface RuntimeHostElectionDiagnostic {
   readonly elapsedMs: number;
   readonly candidateLaunches: number;
   readonly sawEndpointConnected: boolean;
+  readonly lastConnectionFailure?: RuntimeHostConnectionFailure;
   readonly observations: {
     readonly totalResults: number;
     readonly notRegistered: number;
@@ -197,7 +219,8 @@ export async function connectOrSpawnRuntimeHost(
 export type ConnectOwnedRuntimeHostResult =
   | { kind: 'connected'; connection: RuntimeHostConnection; host: OwnedCandidateAttempt }
   | Exclude<ConnectOrSpawnRuntimeHostResult, { kind: 'connected' }>
-  | { kind: 'failed'; reason: 'existing_host' };
+  | { kind: 'failed'; reason: 'existing_host' }
+  | { kind: 'failed'; reason: 'startup_failed'; detail: string };
 
 interface ConnectOwnedRuntimeHostDependencies {
   launchCandidate: typeof launchOwnedRuntimeHostCandidate;
@@ -208,13 +231,13 @@ const defaultOwnedDependencies: ConnectOwnedRuntimeHostDependencies = {
 };
 
 export async function connectOwnedRuntimeHost(
-  input: Omit<ConnectOrSpawnRuntimeHostInput, 'candidateEntrypoint'>,
+  input: OwnedRuntimeHostInput,
 ): Promise<ConnectOwnedRuntimeHostResult> {
   return connectOwnedRuntimeHostWithDependencies(input, defaultOwnedDependencies);
 }
 
 export async function connectOwnedRuntimeHostWithDependencies(
-  input: Omit<ConnectOrSpawnRuntimeHostInput, 'candidateEntrypoint'>,
+  input: OwnedRuntimeHostInput,
   dependencies: ConnectOwnedRuntimeHostDependencies,
 ): Promise<ConnectOwnedRuntimeHostResult> {
   let launch: ReturnType<typeof launchOwnedRuntimeHostCandidate> | undefined;
@@ -230,6 +253,12 @@ export async function connectOwnedRuntimeHostWithDependencies(
           launch ??= dependencies.launchCandidate({
             ...candidate,
             idleGraceMs: 0,
+            // Proxy passwords belong in the child environment, never process arguments.
+            env: {
+              MAKA_HOSTED_INITIALIZATION: input.initialization
+                ? JSON.stringify(input.initialization)
+                : '',
+            },
           });
           return launch;
         },
@@ -261,12 +290,32 @@ export async function connectOwnedRuntimeHostWithDependencies(
       return { kind: 'failed', reason: 'existing_host' };
     }
     return { kind: 'connected', connection: ownedConnection, host };
-  } catch {
+  } catch (error) {
     await connection?.close().catch(() => undefined);
     releaseOwnedLaunch(launch);
-    return { kind: 'failed', reason: 'host_unresponsive' };
+    const code =
+      error instanceof StorageRootAuthorityError ? error.code : 'internal_startup_failure';
+    const cause = error instanceof Error ? error.cause : undefined;
+    const causeCode =
+      cause instanceof Error && 'code' in cause && typeof cause.code === 'string'
+        ? cause.code
+        : undefined;
+    return {
+      kind: 'failed',
+      reason: 'startup_failed',
+      detail: `${code}${causeCode && /^[A-Z0-9_]{1,64}$/.test(causeCode) ? ` (${causeCode})` : ''}`,
+    };
   }
 }
+
+export interface HostedRuntimeInitialization {
+  readonly incognito: true;
+  readonly proxyUrl?: string;
+}
+
+type OwnedRuntimeHostInput = Omit<ConnectOrSpawnRuntimeHostInput, 'candidateEntrypoint'> & {
+  readonly initialization?: HostedRuntimeInitialization;
+};
 
 function releaseOwnedLaunch(
   launch: ReturnType<typeof launchOwnedRuntimeHostCandidate> | undefined,
@@ -296,6 +345,10 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
   requireHostCompositionId(input.compositionId);
   requireOptionalTimeout(input.connectTimeoutMs, 'connectTimeoutMs', 1);
   requireOptionalTimeout(input.handshakeTimeoutMs, 'handshakeTimeoutMs', 1);
+  const managedLaunchClaim =
+    input.managedLaunchClaim === undefined
+      ? undefined
+      : decodeRuntimeHostManagedLaunchClaim(input.managedLaunchClaim);
   input.signal?.throwIfAborted();
   const clientInstanceId = requireClientInstanceId(input.clientInstanceId ?? randomUUID());
   const capability = await resolveStorageRoot({ path: input.rootPath, kind: 'interactive' });
@@ -321,6 +374,7 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
   const candidateLaunches = new Set<ReturnType<CandidateLauncher>>();
   let sawEndpointConnected = false;
   let lastRegistration: HostRegistration | undefined;
+  let lastConnectionFailure: RuntimeHostConnectionFailure | undefined;
   let latestCandidate: ObservedCandidateAttempt | undefined;
   const observations: MutableElectionObservations = {
     totalResults: 0,
@@ -351,6 +405,9 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
         electionDeadline: deadline,
       });
       const observed = recordElectionResult(result, observations);
+      if (result.kind === 'unavailable' && result.connectionFailure) {
+        lastConnectionFailure = result.connectionFailure;
+      }
       if (observed.registration) lastRegistration = observed.registration;
       if (observed.endpointConnected) sawEndpointConnected = true;
       if (result.kind === 'election_deadline_elapsed') {
@@ -408,6 +465,38 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
         !candidateInFlight &&
         now >= nextCandidateAt
       ) {
+        let managedDeployment;
+        try {
+          managedDeployment = await readRuntimeHostManagedDeploymentConfig(
+            capability,
+            dependencies.managedDeploymentAuthority,
+          );
+        } catch (error) {
+          if (
+            error instanceof RuntimeHostManagedDeploymentError &&
+            error.code === 'invalid_config'
+          ) {
+            return { kind: 'failed', reason: 'deployment_record_invalid' };
+          }
+          throw error;
+        }
+        const managedLaunchRejection = runtimeHostManagedLaunchRejection(
+          managedDeployment,
+          managedLaunchClaim,
+          'on_demand',
+        );
+        if (managedLaunchRejection !== undefined) {
+          // A managed endpoint that accepted a connection but did not answer
+          // is temporarily unavailable, not evidence that the client needs a
+          // new operator. Keep reconnecting without ever launching a replacement.
+          return {
+            kind: 'failed',
+            reason:
+              managedLaunchRejection === 'managed_root_requires_operator' && sawUnresponsiveEndpoint
+                ? 'host_unresponsive'
+                : managedLaunchRejection,
+          };
+        }
         try {
           const remaining = deadline - performance.now();
           if (remaining <= 0) break;
@@ -415,9 +504,22 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
             rootPath: capability.canonicalPath,
             expectedRootId: capability.rootId,
             entrypoint: input.candidateEntrypoint,
+            ...(input.candidateExecutable === undefined
+              ? {}
+              : { executable: input.candidateExecutable }),
             initialConnectionTimeoutMs: Math.ceil(remaining),
             ...(input.generation === undefined ? {} : { generation: input.generation }),
+            ...(managedLaunchClaim === undefined ? {} : { managedLaunchClaim }),
             ...(input.onExit === undefined ? {} : { onExit: input.onExit }),
+            ...(input.inheritableAuthorityLeaseFd === undefined
+              ? {}
+              : {
+                  inheritableAuthorityLeaseFd: input.inheritableAuthorityLeaseFd,
+                  launchOwnerClientInstanceId: clientInstanceId,
+                }),
+            ...(input.closeOnLauncherExit === undefined
+              ? {}
+              : { closeOnLauncherExit: input.closeOnLauncherExit }),
           });
           candidateLaunches.add(launch);
           const attempt = await settleBeforeDeadline(launch.spawned, deadline, input.signal);
@@ -501,6 +603,7 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
         sawEndpointConnected,
         observations,
         lastRegistration,
+        lastConnectionFailure,
         latestCandidate,
       }),
     };
@@ -574,6 +677,7 @@ function createElectionDiagnostic(input: {
   readonly sawEndpointConnected: boolean;
   readonly observations: MutableElectionObservations;
   readonly lastRegistration: HostRegistration | undefined;
+  readonly lastConnectionFailure: RuntimeHostConnectionFailure | undefined;
   readonly latestCandidate: ObservedCandidateAttempt | undefined;
 }): RuntimeHostElectionDiagnostic {
   const candidate = input.latestCandidate;
@@ -583,6 +687,7 @@ function createElectionDiagnostic(input: {
     candidateLaunches: input.candidateLaunches,
     sawEndpointConnected: input.sawEndpointConnected,
     observations: { ...input.observations },
+    ...(input.lastConnectionFailure ? { lastConnectionFailure: input.lastConnectionFailure } : {}),
     ...(input.lastRegistration
       ? {
           lastRegistration: {

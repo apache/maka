@@ -1,3 +1,15 @@
+---
+doc_id: workhub-domain-language
+title: "WorkHub domain language"
+language: en
+source_language: en
+implementation_status: current
+document_status: current
+translation_status: source-only
+last_verified: 2026-09-13
+owners:
+  - maka-backend
+---
 <!--
   Licensed to the Apache Software Foundation (ASF) under one
   or more contributor license agreements.  See the NOTICE file
@@ -19,76 +31,176 @@
 
 # WorkHub domain language
 
-WorkHub gives users one persistent conversational place to ask, clarify, continue,
-create, and inspect work. It is backed by one stable Coordination Session per
-Runtime Host while concrete execution remains authoritative in ordinary Sessions.
+WorkHub is one persistent conversation per Runtime Host. Its coordination model
+answers questions, clarifies requests, coordinates ordinary tasks, and operates
+Maka through restricted Desktop capabilities. Docked and floating presentations
+share one live renderer and the same Host-owned conversation.
 
-This document names the approved target architecture. Each Runtime Host now
-provisions and reuses the stable Coordination Session role described below. The
-current R2.4 routing behavior remains a transitional deterministic baseline or
-target resolver; it does not define the final WorkHub coordination semantics. The
-decision and authority boundaries are recorded in the
-[WorkHub Coordination Session ADR](./architecture/workhub-coordination-session-adr.md).
+## Ownership
 
-## Terms
+**Coordination Session** owns WorkHub messages, model Turns, and durable delegation
+links. It uses the existing Session transcript and recovery substrate. It is hidden
+from the ordinary task list and cannot delegate to itself.
 
-**Session**: The existing transcript, execution-boundary, permission, interaction,
-and recovery substrate. A Session owns only the conversation or execution admitted
-to that Session.
+**Ordinary Session** owns delegated execution: workspace, model, permissions,
+tools, artifacts, user interactions, Turn admission, and recovery. WorkHub reads
+its state without copying its execution transcript or acquiring ownership of
+unrelated user work.
 
-**Coordination Session**: The stable special Session role owned independently by
-each Runtime Host for its WorkHub conversation. It owns WorkHub user messages,
-ordinary Q&A, clarification, coordination decisions, bounded delegation references,
-and coordination summaries, but no ordinary Session execution or lifecycle facts.
-It is not a separate database, event store, transcript substrate, or lifecycle
-authority. It is hidden from the ordinary Session list and excluded from every
-routing-candidate set, so it never routes to itself. Cross-Host coordination is not
-supported in the first milestone.
+**Coordination model** interprets the admitted user request. Local answers and
+clarifications are normal model output. Its task actions produce advisory routing
+or linked-operation proposals; there is no parallel renderer classifier,
+exact-name resolver, or synthetic-summary writer.
 
-**ordinary Session**: A Session that owns concrete work execution, including its
-project/filesystem scope, model and permissions, root-Turn admission, tools,
-artifacts, recovery, lifecycle, and authoritative execution transcript.
+**Routing intent** begins a new coordination decision, such as discussing,
+executing, creating, or continuing work. _Avoid_: linked intent, disposition.
 
-**Work**: User-facing continuity around a goal. Whether Work is 1:1 with Session,
-1:N over Sessions, or an independent durable entity is deliberately unresolved.
+**Linked intent** refers to a delegation WorkHub already owns and asks to correct,
+stop, or resume it. _Avoid_: routing intent, disposition.
 
-**WorkHub**: The unified conversational entry and coordination surface backed by
-the active Runtime Host's Coordination Session. It may answer locally, clarify,
-delegate to an existing ordinary Session, or create a new ordinary Session.
+**Routing disposition** is the closed outcome of a new routing decision:
+`answer_here`, `delegate_existing`, `create_new`, or `clarify`. _Avoid_: stop,
+resume, correction.
 
-**projection**: A rebuildable, read-only view derived from Coordination Session and
-ordinary Session facts. WorkHub cards, filters, status summaries, and navigation
-aids are projections; they own no durable facts and can be discarded without losing
-work.
+**Linked operation** changes an existing delegation relationship: `correct`,
+`stop`, or `resume`. It is not a routing disposition.
 
-**disposition**: The single proposed coordination outcome for one WorkHub input:
-`answer_here` answers in the Coordination Session; `delegate_existing` targets one
-bounded, valid ordinary Session; `create_new` creates an ordinary Session before
-delegating; and `clarify` continues in the Coordination Session without guessing or
-creating.
+**Session Resolver** recalls and ranks bounded existing ordinary Sessions for a
+routing intent. It returns target evidence, never creation or execution authority.
 
-**delegation**: A bounded reference from a Coordination Turn to one target ordinary
-Session and Turn, including only its identity, disposition, and coordination-owned
-link status (`active` or `superseded`). Delegation links the separately authoritative
-transcripts; it does not copy the target's complete execution transcript into
-WorkHub. Target acceptance, running, waiting, completion, failure, abort, and
-recovery state remain ordinary Session facts and appear in WorkHub only as read-only
-projections.
+**Linked-target resolution** starts from a bounded WorkHub-owned delegation and
+follows its Session, Message, Turn, and continuation lineage. It does not infer an
+operation target from a similar display name.
 
-**Action Gate**: The deterministic Runtime boundary that validates a proposed
-disposition and operation before any write, including target/Host validity,
-archive and waiting state, self-routing, explicit creation, expected-Turn Stop
-ownership, confirmation, tools, and permissions. All model and routing output is
-advisory and cannot authorize a write.
+**Coordination policy** combines intent and resolved evidence into either a routing
+disposition or a linked-operation proposal. Its output remains advisory.
 
-**Route correction**: A user's decision that an input belongs to a different
-existing Session. R2.4 retains only bounded inference memory for later target
-resolution. Correction precedence follows user submission order, not asynchronous
-completion order, and it never replaces either Session's transcript authority.
+**Bound routing decision** is the Policy result stored with one Coordination root
+Turn. Recovery reuses it. The main coordination model may explain it or form a
+matching proposal, but cannot replace its candidate or operation. The binding is
+not Action Gate authorization.
 
-**R2.4**: The deterministic context-continuity routing baseline. It remains useful
-as an experiment baseline or target resolver behind WorkHub's coordination layer;
-it is not the final architecture or authority boundary of WorkHub.
+**Target choice** is a Host-owned interaction inside an admitted Coordination
+Turn. The production `tasks.select_and_delegate` operation accepts a bounded
+candidate offer and delegated task text, publishes a durable single-select Form,
+and submits the exact accepted target to the Action Gate. Its opaque option binds
+the candidate reference, Session identity and workspace fingerprint; display names
+and model-written question answers never supply this binding. The request identity
+includes the originating Turn, Run, operation input and admitted user content.
 
-_Avoid_: copied execution transcripts, self-routing, a second Session/WorkHub
-storage substrate, or treating model/routing output as execution authority.
+The generic interaction store owns pending/answered/closed state. Renderer reloads
+read that state; they do not restart submission or retain a separate waiting
+Promise. Cancellation and Run closure perform no delegation. A Host restart closes
+orphaned interactions through existing recovery; it cannot resurrect their local
+continuations. An unanswered offer expires for execution after ten minutes. An
+already assigned action replays its durable result rather than executing twice.
+
+A selected Session may be rebound against fresh candidate state in the same
+workspace. Changes to other candidates do not choose another Session. Removal,
+archival or workspace movement requires a new selection. The Gate repeats this
+validation under target admission before a fresh assignment.
+
+Coordination admission permits asking and waiting; it does not admit target
+execution. This interaction works with the default coordination model and does
+not enable the optional pre-admission model-routing experiment. An immutable
+Host-bound routing decision cannot be replaced by a choice in the same Turn.
+
+**Active-Turn action** names the currently executing coordination Turn. The Host
+checks its live execution, durable admission and coordination tool profile, then
+reads the original request and attachments from that admission. A tool cannot
+supply its own user-originated authority or attachment locators. Model-prepared
+`delegationText` is task content, separate from the original user request.
+
+**Action Gate** validates the resulting operation against durable ownership,
+candidate freshness, Session identity, archive/waiting state and existing claims.
+The policy proposes an action; the gate determines whether that exact action can
+be admitted. Creation workspace context comes from Desktop main, outside the model
+proposal. Each target still executes under its own permission boundary.
+
+## Delegation and recovery
+
+A delegation links the Coordination Session to an ordinary Session and its admitted
+message. Its coordination status is distinct from the target's execution status.
+Action identities and fingerprints bind retries to the same payload and target.
+
+A replacement first durably claims its source delegation, retires only work owned
+by that delegation, and records the replacement link and supersession. If the new
+target becomes unavailable after retirement, a terminal replacement-aborted fact
+preserves that outcome. A retry cannot redirect an already claimed replacement.
+
+Stop resolves exactly one active delegation that still holds work on the named
+Session. The Host rechecks ownership under the Coordination and target admission
+lanes. A delegated message consumed as steering does not grant authority to stop
+its surrounding user Turn; a recovery Turn shared by multiple messages is likewise
+not owned by one delegation.
+
+Stop records a durable request and one observed outcome: `cancelled_pending`,
+`stop_delivered`, `already_terminal`, or `not_owned`. The cancellation tombstone or
+exact root's abort source identifies the action that performed the stop. An
+unrecovered or unreadable target stays unresolved; it cannot be called terminal.
+A removed target's durable tombstone allows a committed stop to converge after
+restart. Stop and replacement claims exclude each other until a non-owning outcome
+releases that exclusion.
+
+Resume is admitted by the target's existing Turn authority and reports
+`resume_started` or `already_running`. It does not create another coordination
+resume ledger.
+
+New WorkHub conversations persist across application and Host restarts. Migration
+of pre-cutover beta WorkHub history is not part of this cutover contract.
+
+## Desktop presentation
+
+The client-owned enable setting gates sidebar, dock, shortcut and tray entries.
+Disabling hides the presentation and unregisters its shortcut while retaining the
+shared renderer, drafts and Host-owned work, including during a pending window open.
+
+The shortcut shows or hides the floating WorkHub window. Hiding does not open or
+focus Maka Desktop. The return button above an expanded conversation explicitly
+docks WorkHub into Desktop. Drafts, attachments, conversation and running state
+survive visibility changes and reparenting because the renderer is not recreated.
+A crashed renderer is disposed and recreated when WorkHub is reopened or docked.
+An empty dock exposes Retry so recovery does not depend on a layout change.
+The new view reconnects to the same Host-owned Session; unsent in-memory drafts
+are not crash-persistent.
+
+The composer retains a Stop requested before admission for that exact Session/Turn.
+A lost dispatched response leaves admission unresolved; a later observation delivers
+the intent through the existing Stop owner. Rejection or terminal evidence retires
+it, so neither a retry nor a later Turn inherits the intent.
+
+Both renderers use the shared document theme, palette and font application
+functions. Native main-window chrome remains owned by the main renderer. Restricted
+Desktop control observes current UI targets and revalidates them before acting;
+its capability boundary is separate from task execution authority.
+Password controls and explicitly excluded elements remain outside observation.
+Other visible content, including arbitrary editor values, may reach the model;
+WorkHub does not scan or rewrite that content for secrets.
+
+## Implementation map
+
+| Responsibility | Module |
+| --- | --- |
+| Task tool bridge | [workhub-runtime.ts](../apps/desktop/src/main/workhub-runtime.ts) |
+| Active-Turn protocol | [workhub-coordination.ts](../packages/runtime-host/src/protocol/workhub-coordination.ts) |
+| Coordination Session and active request | [workhub-coordination-coordinator.ts](../packages/runtime-host/src/server/workhub-coordination-coordinator.ts) |
+| Shared Intent, Recall, and Policy contracts | [workhub-routing.ts](../packages/core/src/workhub-routing.ts) |
+| Optional user-selected routing model adapter | [execution-model-authority.ts](../packages/runtime-host/src/server/execution-model-authority.ts) |
+| Delegation admission and recovery | [workhub-coordination-action-gate.ts](../packages/runtime-host/src/server/workhub-coordination-action-gate.ts) |
+| Transcript services | [create-workhub-services.ts](../apps/desktop/src/renderer/platform/desktop/create-workhub-services.ts) |
+| Native window presentation | [workhub-presentation.ts](../apps/desktop/src/main/workhub-presentation.ts) |
+| Shared document appearance | [document-appearance.ts](../apps/desktop/src/renderer/platform/desktop/document-appearance.ts) |
+
+## Presentation and submission boundaries
+
+Main owns the complete native progress-to-conversation transition: bounds,
+visibility, paint retirement and activation policy. The WorkHub renderer reports
+interaction content needs through conversation layout. Both orders of progress
+paint and interaction publication converge to the same conversation window;
+automatic expansion is passive and cannot reverse dismissal of the current Turn.
+
+The submission owner invokes visibility reset for a new send or a rejected send's
+retry. Unknown-outcome reconciliation and transcript refresh remain separate,
+read-oriented paths. The renderer restores local composer focus when an interaction
+ends only while it still owns focus; individual answer callbacks do not schedule
+focus changes.

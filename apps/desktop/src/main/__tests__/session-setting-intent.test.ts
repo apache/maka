@@ -22,11 +22,19 @@ import { afterEach, test } from 'node:test';
 import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { parseHTML } from 'linkedom';
-import { useSessionSettingIntent } from '../../renderer/use-session-setting-intent.js';
+import { useSessionSettingIntent } from '@maka/ui';
 
 type SessionSettingIntentController<Value> = ReturnType<
-  typeof useSessionSettingIntent<Value>
+  typeof useSessionSettingIntent<{ setting: Value }>
 >;
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((next) => {
+    resolve = next;
+  });
+  return { promise, resolve };
+}
 
 const originalGlobals = {
   document: globalThis.document,
@@ -74,7 +82,7 @@ test('Runtime leaving Plan after approval supersedes the committed Plan overlay'
 
   await render(0, false);
   await act(async () => {
-    await controller?.request('session-1', true);
+    await controller?.request('setting', 'session-1', true);
   });
   assert.equal(container.querySelector('output')?.getAttribute('data-value'), 'true');
 
@@ -86,6 +94,67 @@ test('Runtime leaving Plan after approval supersedes the committed Plan overlay'
   assert.equal(container.querySelector('output')?.getAttribute('data-value'), 'false');
 });
 
+test('rapid requests share the worker and settle only after the latest value commits', async () => {
+  const { document, window } = parseHTML('<div id="root"></div>');
+  Object.assign(globalThis, {
+    document,
+    window,
+    HTMLElement: window.HTMLElement,
+    Node: window.Node,
+    IS_REACT_ACT_ENVIRONMENT: true,
+  });
+  const container = document.querySelector('#root');
+  assert.ok(container);
+  const root = createRoot(container);
+  mountedRoot = root;
+
+  const writes: Array<{ value: string; result: ReturnType<typeof deferred<boolean>> }> = [];
+  let controller: SessionSettingIntentController<string> | undefined;
+  await act(async () => {
+    root.render(createElement(LatestIntentHarness, {
+      capture: (next) => {
+        controller = next;
+      },
+      write: (_sessionId, value) => {
+        const result = deferred<boolean>();
+        writes.push({ value, result });
+        return result.promise;
+      },
+    }));
+  });
+
+  let first!: Promise<boolean>;
+  let latest!: Promise<boolean>;
+  await act(async () => {
+    first = controller!.request('setting', 'session-1', 'first');
+    latest = controller!.request('setting', 'session-1', 'latest');
+  });
+  let latestSettled = false;
+  void latest.then(() => {
+    latestSettled = true;
+  });
+  await Promise.resolve();
+
+  assert.equal(latestSettled, false);
+  assert.deepEqual(writes.map((entry) => entry.value), ['first']);
+  assert.equal(container.querySelector('output')?.getAttribute('data-value'), 'latest');
+
+  await act(async () => {
+    writes[0]!.result.resolve(true);
+    await writes[0]!.result.promise;
+  });
+  assert.deepEqual(writes.map((entry) => entry.value), ['first', 'latest']);
+  assert.equal(latestSettled, false);
+
+  await act(async () => {
+    writes[1]!.result.resolve(true);
+    await Promise.all([first, latest]);
+  });
+  assert.equal(latestSettled, true);
+  assert.equal(await first, true);
+  assert.equal(await latest, true);
+});
+
 function Harness({
   catalogRevision,
   catalogValue,
@@ -95,16 +164,43 @@ function Harness({
   catalogValue: boolean;
   capture(controller: SessionSettingIntentController<boolean>): void;
 }) {
-  const controller = useSessionSettingIntent<boolean>({
+  const controller = useSessionSettingIntent<{ setting: boolean }>({
     catalogRevision,
-    write: async () => true,
     refreshCatalog: async () => {
       throw new Error('catalog unavailable');
     },
-    onWriteError: () => {},
+    channels: {
+      setting: {
+        write: async () => true,
+        onWriteError: () => {},
+      },
+    },
   });
   capture(controller);
   return createElement('output', {
-    'data-value': (controller.overlayBySession['session-1'] ?? catalogValue).toString(),
+    'data-value': (controller.overlayByChannel.setting['session-1'] ?? catalogValue).toString(),
+  });
+}
+
+function LatestIntentHarness({
+  capture,
+  write,
+}: {
+  capture(controller: SessionSettingIntentController<string>): void;
+  write(sessionId: string, value: string): Promise<boolean>;
+}) {
+  const controller = useSessionSettingIntent<{ setting: string }>({
+    catalogRevision: 0,
+    refreshCatalog: async () => {},
+    channels: {
+      setting: {
+        write,
+        onWriteError: () => {},
+      },
+    },
+  });
+  capture(controller);
+  return createElement('output', {
+    'data-value': controller.overlayByChannel.setting['session-1'],
   });
 }

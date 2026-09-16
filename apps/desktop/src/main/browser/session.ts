@@ -19,7 +19,12 @@
 
 import { CDPBridge } from '@jackwener/opencli/browser/cdp';
 import type { IPage } from '@jackwener/opencli/types';
-import { browserAutomationAvailable, browserViewHost } from './browser-host.js';
+import {
+  type BrowserOriginLease,
+  type BrowserActionLease,
+  browserAutomationAvailable,
+  browserViewHost,
+} from './browser-host.js';
 import { type BrowserActionKind, parseNavigable } from './logic.js';
 
 /**
@@ -132,11 +137,12 @@ const bySession = new Map<string, Connection>();
 // so two concurrent first calls for one conversation must share one attempt
 // instead of racing into a second connection (which the bridge would reject).
 const pendingAcquires = new Map<string, Promise<Connection>>();
-// Release epoch per conversation. A delete/archive cannot reliably see an
+// Release epoch per in-flight acquire. A delete/archive cannot reliably see an
 // in-flight acquire, so instead of the release waiting on the acquire, the
 // acquire notices the bump after connecting and unwinds itself — otherwise its
 // resolveEndpoint would resurrect the just-disposed view and the connection
-// would outlive the conversation with nothing left to ever clean it up.
+// would outlive the conversation with nothing left to ever clean it up. The
+// entry only lives until the acquire settles, not for every released session.
 const releaseEpochs = new Map<string, number>();
 // In-flight actions per conversation, so the visible lease can REVOKE — not just
 // preflight. canDrive gates the START on screen; this severs an action that was
@@ -162,16 +168,16 @@ function untrackInFlight(sessionId: string, ctrl: AbortController): void {
 }
 
 /**
- * The window switched to `shownSessionId` (or to nothing): abort any browser
- * action still running for a DIFFERENT conversation. The visible lease is
- * continuous, not a one-time preflight — an action that started while visible
- * must not keep reading or driving a page the user can no longer see. Severs the
+ * A renderer selection changed: abort any browser action whose session is no
+ * longer admitted by the Host (visible ordinary Session or background-authorized
+ * WorkHub coordination). The action lease is
+ * continuous, not a one-time preflight. Losing that admission severs the
  * connection like a timeout/abort; the page itself survives for when the user
  * switches back. Called from main's browser:active-session handler.
  */
-export function revokeHiddenBrowserActions(shownSessionId: string | null): void {
+export function revokeHiddenBrowserActions(isSessionAdmitted: (sessionId: string) => boolean): void {
   for (const [sessionId, set] of inFlightBySession) {
-    if (sessionId === shownSessionId) continue;
+    if (isSessionAdmitted(sessionId)) continue;
     for (const ctrl of set) ctrl.abort();
   }
 }
@@ -240,8 +246,11 @@ async function acquire(sessionId: string): Promise<Connection> {
   // call retries fresh; concurrent callers share the same outcome either way.
   const inflight = pendingAcquires.get(sessionId);
   if (inflight) return inflight;
+  const epoch = 0;
+  // Register before resolveEndpoint, which may synchronously release the session
+  // before this attempt can be registered in pendingAcquires.
+  releaseEpochs.set(sessionId, epoch);
   const promise = (async () => {
-    const epoch = releaseEpochs.get(sessionId);
     const endpoint = await browserViewHost().resolveEndpoint(sessionId);
     let conn: Connection;
     try {
@@ -268,12 +277,18 @@ async function acquire(sessionId: string): Promise<Connection> {
     }
     bySession.set(sessionId, conn);
     return conn;
-  })().finally(() => pendingAcquires.delete(sessionId));
+  })().finally(() => {
+    pendingAcquires.delete(sessionId);
+    releaseEpochs.delete(sessionId);
+  });
   pendingAcquires.set(sessionId, promise);
   return promise;
 }
 
-export type BrowserPageRun<T> = (page: IPage, info: { takeoverReloaded: boolean }) => Promise<T>;
+export type BrowserPageRun<T> = (
+  page: IPage,
+  info: { takeoverReloaded: boolean; originLease?: BrowserOriginLease },
+) => Promise<T>;
 
 /**
  * Run one tool action against the session's embedded-browser page: lazy connect
@@ -285,13 +300,17 @@ export async function withBrowserPage<T>(
   sessionId: string,
   label: string,
   run: BrowserPageRun<T>,
-  opts?: { timeoutMs?: number; abort?: AbortSignal; takeover?: TakeoverMode },
+  opts?: {
+    timeoutMs?: number;
+    abort?: AbortSignal;
+    takeover?: TakeoverMode;
+    originAdmission?: { approvedUrl: string };
+  },
 ): Promise<T> {
   if (opts?.abort?.aborted) throw new BrowserActionCanceledError(label);
   const kind: TakeoverMode = opts?.takeover ?? 'observe';
-  // Visible-lease gate (browserActionAllowed): EVERY action — read, navigate, or
-  // mutate — must target the conversation on screen, so the agent can never drive
-  // (or even read) a view the user can't see. Runs BEFORE acquire, so a vetoed
+  // The Host admits visible ordinary Sessions and the background-authorized
+  // WorkHub coordination Session. Runs BEFORE acquire, so a vetoed
   // background action creates no view and opens no connection. For a mutate whose
   // viewport is briefly absent (a permission modal just closed), canDrive waits
   // out the renderer's strip restore so the first approved click/type lands;
@@ -306,6 +325,14 @@ export async function withBrowserPage<T>(
   let timer: ReturnType<typeof setTimeout> | undefined;
   let onAbort: (() => void) | undefined;
   let onRevoke: (() => void) | undefined;
+  let actionLease: BrowserActionLease | undefined;
+  // Establish the page-host Origin lease before endpoint acquisition and a
+  // possible takeover reload. This closes the Provider-check → first-page-await
+  // gap, while still preserving canDrive's rule that a blocked action creates
+  // no view.
+  const originLease = opts?.originAdmission
+    ? browserViewHost().openOriginLease(sessionId, opts.originAdmission.approvedUrl, kind)
+    : undefined;
   // Track this action so a switch away from the conversation can revoke it (the
   // visible lease is continuous, not just the preflight canDrive above).
   // Registered AFTER canDrive resolved true, with no await between, so the
@@ -348,6 +375,8 @@ export async function withBrowserPage<T>(
     // rejection must not surface as an unhandled error.
     acquiring.catch(() => {});
     conn = await Promise.race([acquiring, interrupted]);
+    actionLease = browserViewHost().beginAction(sessionId);
+    if (actionLease) await Promise.race([actionLease.ready, interrupted]);
     // Resolve a pending takeover by the action's kind: a mutating action hardens
     // the page first (reload), a navigation just clears it (goto re-commits with
     // the script), and a pure observe leaves it pending so a later mutate still
@@ -362,7 +391,7 @@ export async function withBrowserPage<T>(
         conn.pendingTakeover = false;
       }
     }
-    return await Promise.race([run(conn.page, { takeoverReloaded }), interrupted]);
+    return await Promise.race([run(conn.page, { takeoverReloaded, ...(originLease ? { originLease } : {}) }), interrupted]);
   } catch (err) {
     if (conn && isConnectionLoss(err)) {
       invalidate(conn);
@@ -378,36 +407,42 @@ export async function withBrowserPage<T>(
   } finally {
     clearTimeout(timer);
     if (onAbort) opts?.abort?.removeEventListener('abort', onAbort);
+    originLease?.release();
+    await actionLease?.release();
     untrackInFlight(sessionId, revoke);
   }
 }
 
 /**
- * The session was deleted or archived: drop its browser connection and have the
- * desktop destroy its view outright. A session that never attached, or a
- * non-existent id, no-ops at every step.
+ * Drop a session's browser connection and have the desktop destroy its view
+ * outright when the page, Session, or owning renderer goes away. A session that
+ * never attached, or a non-existent id, no-ops at every step.
  */
 export async function releaseBrowserSession(sessionId: string): Promise<void> {
   // Bump first: an acquire still in flight for this conversation unwinds itself
   // when it sees the new epoch (see acquire) — it cannot be awaited here because
   // it may not have registered in pendingAcquires yet, and a hung endpoint
-  // resolution must not block the session's deletion.
-  releaseEpochs.set(sessionId, (releaseEpochs.get(sessionId) ?? 0) + 1);
+  // resolution must not block resource release.
+  const epoch = releaseEpochs.get(sessionId);
+  if (epoch !== undefined) releaseEpochs.set(sessionId, epoch + 1);
   const conn = bySession.get(sessionId);
+  let closeConnection: Promise<void> = Promise.resolve();
   if (conn) {
     bySession.delete(sessionId);
     conn.closed = true;
-    await conn.bridge.close().catch(() => {});
+    closeConnection = conn.bridge.close().catch(() => {});
   }
   // Dispose unconditionally, not just when a connection exists: a conversation
   // the user browsed by hand has a live view but never had a CDP connection, and
-  // its view must still die with the session. disposeSession implies the bridge
-  // detach that releaseSession would have done.
-  if (browserAutomationAvailable()) {
-    await browserViewHost()
+  // its view must still die with its owner. disposeSession implies the bridge
+  // detach that releaseSession would have done. Start disposal before awaiting
+  // the client close so a new renderer cannot reuse this dying controller.
+  const disposeView = browserAutomationAvailable()
+    ? browserViewHost()
       .disposeSession(sessionId)
-      .catch(() => {});
-  }
+      .catch(() => {})
+    : Promise.resolve();
+  await Promise.all([closeConnection, disposeView]);
 }
 
 export { browserAutomationAvailable };

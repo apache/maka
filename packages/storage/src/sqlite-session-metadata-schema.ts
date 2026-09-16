@@ -19,7 +19,7 @@
 
 import type { DatabaseSync } from 'node:sqlite';
 
-export const SQLITE_SESSION_METADATA_SCHEMA_VERSION = 32;
+export const SQLITE_SESSION_METADATA_SCHEMA_VERSION = 39;
 export const SQLITE_SESSION_MESSAGE_CHUNK_BYTES = 64 * 1024;
 export const SQLITE_SESSION_MESSAGE_CHUNK_MARKER = '{"$maka":"session-message-chunks-v1"}';
 
@@ -37,6 +37,17 @@ export const SQLITE_AGENT_GRAPH_CONTROL_TABLES = [
 ] as const;
 
 const MIGRATIONS: ReadonlyMap<number, string> = new Map([
+  [
+    39,
+    `
+    CREATE TABLE IF NOT EXISTS coordination_transcript_index (
+      sequence INTEGER PRIMARY KEY,
+      source TEXT NOT NULL CHECK (source IN ('legacy', 'runtime')),
+      source_sequence INTEGER NOT NULL CHECK (source_sequence >= 0),
+      UNIQUE (source, source_sequence)
+    );
+  `,
+  ],
   [
     1,
     `
@@ -1200,6 +1211,74 @@ const MIGRATIONS: ReadonlyMap<number, string> = new Map([
     ALTER TABLE message_admissions ADD COLUMN submitted_intent_json TEXT;
   `,
   ],
+  [
+    33,
+    `
+    UPDATE session_metadata
+    SET
+      payload_json = json_set(payload_json, '$.connectionLocked', json('true')),
+      metadata_version = metadata_version + 1,
+      committed_at = MAX(
+        committed_at,
+        CAST(strftime('%s', 'now') AS INTEGER) * 1000
+      )
+    WHERE
+      json_extract(payload_json, '$.connectionLocked') = 0
+      AND json_extract(payload_json, '$.subagentParent') IS NOT NULL;
+  `,
+  ],
+  [
+    34,
+    `
+    -- WorkHub delegation_assigned records are decoded by schema-aware builds.
+    -- Advancing the profile schema prevents an older build from opening a
+    -- transcript containing this new canonical message type.
+    SELECT 1;
+  `,
+  ],
+  [
+    35,
+    `
+    ALTER TABLE message_admissions
+      ADD COLUMN skill_invocation_json TEXT NOT NULL
+      DEFAULT '{"loaded":[],"failed":[],"receipts":[]}';
+  `,
+  ],
+  [
+    36,
+    `
+    -- WorkHub replacement intent and atomic supersession records require the
+    -- schema-v2 canonical message decoder. Prevent older builds from opening
+    -- a profile after either record has been committed.
+    SELECT 1;
+  `,
+  ],
+  [
+    37,
+    `
+    ALTER TABLE cancelled_message_admissions
+      ADD COLUMN cancellation_claim_id TEXT;
+  `,
+  ],
+  [
+    38,
+    `
+    -- The one global owner of a WorkHub action identity. It deliberately has no
+    -- Session foreign key: the claim must outlive removal of the target Session
+    -- so a committed destructive claim still converges after that removal.
+    CREATE TABLE IF NOT EXISTS workhub_action_claims (
+      action_id TEXT PRIMARY KEY,
+      operation TEXT NOT NULL CHECK (
+        operation IN (
+          'answer_here', 'clarify', 'delegate_existing', 'create_new', 'replace', 'stop'
+        )
+      ),
+      action_fingerprint TEXT NOT NULL,
+      subject TEXT NOT NULL,
+      claimed_at INTEGER NOT NULL CHECK (claimed_at >= 0)
+    );
+  `,
+  ],
 ]);
 
 if (MIGRATIONS.size !== SQLITE_SESSION_METADATA_SCHEMA_VERSION) {
@@ -1257,10 +1336,15 @@ export function migrateSqliteSessionMetadataDatabase(
     ) {
       const sql = MIGRATIONS.get(version);
       if (!sql) throw new Error(`Missing SQLite session metadata migration ${version}`);
-      // Version 32 adds one column, and the post-merge convergence path replays
-      // it onto a database that may already carry it. SQLite has no
-      // `ADD COLUMN IF NOT EXISTS`, so the guard lives here.
-      if (version !== 32 || !hasColumn(db, 'message_admissions', 'submitted_intent_json')) {
+      // Versions 32, 35, and 37 each add one column, and the post-merge convergence
+      // path can replay them onto a database that already carries the current
+      // table shape. SQLite has no `ADD COLUMN IF NOT EXISTS`, so the guards
+      // live here.
+      const columnAlreadyPresent =
+        (version === 32 && hasColumn(db, 'message_admissions', 'submitted_intent_json')) ||
+        (version === 35 && hasColumn(db, 'message_admissions', 'skill_invocation_json')) ||
+        (version === 37 && hasColumn(db, 'cancelled_message_admissions', 'cancellation_claim_id'));
+      if (!columnAlreadyPresent) {
         db.exec(sql);
       }
       if (version === 29 && hasColumn(db, 'session_metadata', 'last_used_at')) {

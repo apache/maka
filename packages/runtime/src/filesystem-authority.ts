@@ -46,28 +46,6 @@ export interface FilesystemTargetIdentity {
 }
 
 /**
- * The full target descriptor captured at lock acquisition (the earliest point a
- * mutation commits to a path). Modelled as a discriminated union so that
- * "the target had no identity to compare" is an explicit `missing` case,
- * never an accidentally-absent optional field. A later "skip the identity
- * check" change cannot compile without handling the `missing` arm, which is
- * what closes the "no identity → CAS passes" regression class.
- *
- * - `missing`: the path did not exist at capture (a create, or a write to a
- *   brand-new file). There is no inode to pin; the missing→existing transition
- *   is detected by `O_EXCL` / `wx` instead.
- * - the other variants carry the captured inode, which the worker compares
- *   against the on-disk inode immediately before mutating.
- */
-export type FilesystemTargetDescriptor =
-  | { readonly enforcementPath: string; readonly targetType: 'missing' }
-  | {
-      readonly enforcementPath: string;
-      readonly targetType: 'file' | 'directory' | 'symlink' | 'other';
-      readonly identity: FilesystemTargetIdentity;
-    };
-
-/**
  * The outcome a mutation can report. Distinct from "did the tool call succeed"
  * — a tool that fails to apply is `rejected`; a tool that may have applied
  * before losing the ability to confirm is `unknown`. Only `applied` leaves the

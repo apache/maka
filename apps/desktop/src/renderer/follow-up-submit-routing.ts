@@ -17,29 +17,11 @@
  * under the License.
  */
 
-import type { FollowUpMode, InlineReference } from '@maka/core/events';
+import type { InlineReference } from '@maka/core/events';
 
 export interface WorkspaceFileReferencePosition {
   value: string;
   start: number;
-}
-
-export function hasActiveTurnAtSubmit(input: {
-  liveTurn?: { turnId: string; terminal?: boolean };
-  runningTurnIds?: readonly string[];
-}): boolean {
-  if (input.liveTurn?.terminal !== true && input.liveTurn !== undefined) return true;
-  return input.runningTurnIds?.some((turnId) => turnId !== input.liveTurn?.turnId) === true;
-}
-
-export function resolveFollowUpModeAtSubmit(input: {
-  requestedMode?: FollowUpMode;
-  hasActiveTurn: boolean;
-}): FollowUpMode | undefined {
-  if (input.requestedMode) return input.requestedMode;
-  // Mid-turn submits always queue; Shift+Enter carries the one-shot steer as
-  // the requested mode.
-  return input.hasActiveTurn ? 'queue' : undefined;
 }
 
 export function mergeWorkspaceReferences(
@@ -63,4 +45,20 @@ export function mergeWorkspaceReferences(
     merged.set(`${start}:${reference.value}`, { value: reference.value, start });
   }
   return [...merged.values()].sort((left, right) => left.start - right.start);
+}
+
+export function rebaseWorkspaceFileReferences(
+  sourceText: string,
+  projectedText: string,
+  references: readonly WorkspaceFileReferencePosition[],
+): WorkspaceFileReferencePosition[] {
+  const offset = sourceText.lastIndexOf(projectedText);
+  if (offset < 0) return [];
+  return references
+    .filter(
+      (reference) =>
+        reference.start >= offset &&
+        reference.start + reference.value.length <= offset + projectedText.length,
+    )
+    .map((reference) => ({ ...reference, start: reference.start - offset }));
 }

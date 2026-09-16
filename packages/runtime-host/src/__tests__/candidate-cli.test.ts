@@ -23,6 +23,7 @@ import { parseInteractiveRuntimeHostCandidateArguments } from '../candidate-cli.
 
 const ROOT_ID = 'a'.repeat(64);
 const STARTUP_ATTEMPT_ID = '00000000-0000-4000-8000-000000000001';
+const DEPLOYMENT_ID = '00000000-0000-4000-8000-000000000002';
 
 test('parses the production candidate flags', () => {
   const parsed = parseInteractiveRuntimeHostCandidateArguments([
@@ -34,11 +35,19 @@ test('parses the production candidate flags', () => {
     STARTUP_ATTEMPT_ID,
     '--idle-grace-ms',
     '10000',
+    '--managed-deployment-id',
+    DEPLOYMENT_ID,
+    '--managed-config-revision',
+    '7',
   ]);
   assert.equal(parsed.rootPath, '/tmp/workspace');
   assert.equal(parsed.expectedRootId, ROOT_ID);
   assert.equal(parsed.startupAttemptId, STARTUP_ATTEMPT_ID);
   assert.equal(parsed.idleGraceMs, 10_000);
+  assert.deepEqual(parsed.managedLaunchClaim, {
+    deploymentId: DEPLOYMENT_ID,
+    configRevision: 7,
+  });
 });
 
 // The Desktop E2E composition is selected by its own entry module, not by a

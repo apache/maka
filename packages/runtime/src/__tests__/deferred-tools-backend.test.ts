@@ -79,18 +79,20 @@ function backend(input: {
   durable?: ReturnType<typeof createDurableTurnHarness>;
   traces?: RunTraceEvent[];
   toolAvailability?: ToolAvailabilityConfig;
+  fullSurface?: boolean;
+  resolveTools?: () => readonly MakaTool[];
 }): AiSdkBackend {
   let id = 0;
   return createTestAiSdkBackend({
     sessionId: 'session-1',
     header: header(),
-    appendMessage: async () => {},
     connection: connection(),
     apiKey: 'sk-test',
     modelId: 'mock-model-id',
     modelFactory: () => input.model,
     tools: boundTools(input.calls),
-    toolAvailability: input.toolAvailability ?? availability,
+    ...(input.resolveTools ? { resolveTools: input.resolveTools } : {}),
+    ...(input.fullSurface ? {} : { toolAvailability: input.toolAvailability ?? availability }),
     ...(input.durable ? { loadTurnRuntimeEvents: input.durable.loadTurnRuntimeEvents } : {}),
     ...(input.traces ? { recordRunTrace: (event) => input.traces!.push(event) } : {}),
     newId: () => `id-${++id}`,
@@ -135,6 +137,30 @@ describe('AiSdkBackend tool_search activation', () => {
     const searched = traces.find((event) => event.type === 'tool_searched');
     assert.equal(searched?.data?.query, 'browser click');
     assert.deepEqual(searched?.data?.activated, ['browser_click']);
+  });
+
+  test('equivalent Tool wrappers rebuilt between steps retain search activation', async () => {
+    const durable = createDurableTurnHarness({ turnId: 'turn-1', text: 'click it' });
+    const captured: string[][] = [];
+    const calls: string[] = [];
+    let resolutions = 0;
+    await drainWithDurableTurn(
+      backend({
+        model: searchThenUseModel(captured),
+        calls,
+        durable,
+        resolveTools: () => {
+          resolutions += 1;
+          return boundTools(calls);
+        },
+      }).send(durable.sendInput()),
+      durable,
+    );
+
+    assert.ok(resolutions >= 2);
+    assert.ok(!captured[0]?.includes('browser_click'));
+    assert.ok(captured[1]?.includes('browser_click'));
+    assert.deepEqual(calls, ['browser_click']);
   });
 
   test('parallel search and hidden-tool use still rejects the same-step call', async () => {
@@ -195,10 +221,10 @@ describe('AiSdkBackend tool_search activation', () => {
     assert.ok(!captured[0]?.includes('browser_click'));
   });
 
-  test('an empty search-space config keeps the complete bound surface direct', async () => {
+  test('omitting search availability keeps the complete bound surface direct', async () => {
     const captured: string[][] = [];
     await drain(
-      backend({ model: capturingModel(captured), calls: [], toolAvailability: {} }).send({
+      backend({ model: capturingModel(captured), calls: [], fullSurface: true }).send({
         turnId: 'turn-1',
         text: 'hi',
         context: [],

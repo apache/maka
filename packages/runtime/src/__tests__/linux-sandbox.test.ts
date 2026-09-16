@@ -19,7 +19,8 @@
 
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rename, rm, symlink, writeFile } from 'node:fs/promises';
+import { fstatSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -39,7 +40,46 @@ import {
 } from '../sandbox/linux-sandbox.js';
 import { detectLinuxSandboxCapability } from '../sandbox/linux-capability.js';
 import { LINUX_BWRAP_PROBE_ARGS } from '../sandbox/linux-capability.js';
+import { pinExistingLinuxProfilePath } from '../sandbox/linux-profile-path.js';
 import type { SandboxPathContext, SandboxTransformRequest } from '../sandbox/types.js';
+
+it('pins canonical objects and rejects an ancestor redirected after authorization', {
+  skip: process.platform !== 'linux',
+}, async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'maka-linux-pin-')));
+  const approved = join(root, 'approved');
+  const replacement = join(root, 'replacement');
+  await mkdir(approved);
+  await mkdir(replacement);
+  await writeFile(join(approved, 'rules'), 'original\n');
+  await writeFile(join(replacement, 'rules'), 'replacement\n');
+  try {
+    // Both operation directories and metadata files use this same pinning owner.
+    for (const targetType of ['directory', 'file'] as const) {
+      const path = targetType === 'directory' ? approved : join(approved, 'rules');
+      const pinned = pinExistingLinuxProfilePath({ path, access: 'read', targetType, childFd: 4 });
+      assert.ok(pinned);
+      assert.equal(fstatSync(pinned.sourceFd).isDirectory(), targetType === 'directory');
+      pinned.releaseSource();
+      assert.throws(() => fstatSync(pinned.sourceFd), { code: 'EBADF' });
+    }
+    const authorizedPath = await realpath(join(approved, 'rules'));
+    await rename(approved, join(root, 'original'));
+    await symlink(replacement, approved);
+    assert.throws(
+      () =>
+        pinExistingLinuxProfilePath({
+          path: authorizedPath,
+          access: 'read',
+          targetType: 'file',
+          childFd: 4,
+        }),
+      /path changed before pinning/,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 function workspaceRequest(profile: PermissionProfile): SandboxTransformRequest {
   return {
@@ -402,7 +442,7 @@ describe('discoverNestedProtectedMetadataPaths', () => {
 });
 
 describe('LinuxBubblewrapBackend', () => {
-  it('keeps mutable protected-metadata materialization out of probe', () => {
+  it('fails when protected-metadata discovery fails during transform', () => {
     let scans = 0;
     const backend = new LinuxBubblewrapBackend({
       capability: { available: true, bwrapPath: '/usr/bin/bwrap' },
@@ -413,8 +453,6 @@ describe('LinuxBubblewrapBackend', () => {
     });
     const request = workspaceRequest(protectedMetadataProfile());
 
-    assert.equal(backend.probe(request).ok, true);
-    assert.equal(scans, 0);
     const transformed = backend.transform(request);
     assert.equal(scans, 1);
     assert.equal(transformed.ok, false);

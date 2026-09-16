@@ -25,6 +25,7 @@ import {
   type HostOperationErrorCode,
   type RequestFrame,
 } from '../protocol/index.js';
+import { runtimeHostLogBuffer } from '../process-diagnostics.js';
 import type { RuntimeHostMessageTransport } from '../transport/message-transport.js';
 import {
   dispatchOperation,
@@ -43,15 +44,23 @@ import type {
   ClientCapabilityConnection,
   ClientCapabilityService,
 } from './client-capability-service.js';
-import type { HostChangeFeed, HostChangeSubscription } from './host-change-feed.js';
+import type {
+  HostChangeFeed,
+  HostChangeSubscription,
+  HostChangeSubscriptionMask,
+} from './host-change-feed.js';
 import type { RuntimeHostConnectionAuthority } from './connection-authority.js';
 import {
   authorizeClientCapabilityFrame,
   authorizeRuntimeHostOperation,
   hasRuntimeHostOperationGrant,
 } from './connection-authority.js';
+import { boundedFailureDiagnostic } from './failure-diagnostic.js';
 
-type AcceptedConnectionContext = Omit<ConnectionContext, 'acquireResidency' | 'principal'> & {
+type AcceptedConnectionContext = Omit<
+  ConnectionContext,
+  'acquireResidency' | 'principal' | 'inputClosedSignal'
+> & {
   readonly clientInstanceId: string;
   readonly authority: RuntimeHostConnectionAuthority;
 };
@@ -69,13 +78,16 @@ export interface RuntimeHostConnectionSessionOptions {
   resolveContinuity(): SessionContinuityService | undefined;
   resolveClientCapabilities?(): ClientCapabilityService | undefined;
   resolveHostChanges?(): HostChangeFeed | undefined;
+  resolveSharedSessionId?(): string | undefined;
   beginOperation(frame: RequestFrame): Promise<ConnectionOperationLease | HostOperationErrorCode>;
+  onDiagnostic?(diagnostic: string): void;
   onTeardown(): void;
 }
 
 export class RuntimeHostConnectionSession {
   readonly #options: RuntimeHostConnectionSessionOptions;
   readonly #writer: BoundedSerialOutboundWriter;
+  readonly #onDiagnostic: (diagnostic: string) => void;
   readonly #requests = new Map<string, Promise<void>>();
   #transcriptPageTail: Promise<void> = Promise.resolve();
   #inFlightStatusRequests = 0;
@@ -85,12 +97,14 @@ export class RuntimeHostConnectionSession {
   #clientCapabilities: ClientCapabilityConnection | undefined;
   #clientCapabilityCloseTask: Promise<void> | undefined;
   #hostChanges: HostChangeSubscription | undefined;
-  #inputClosed = false;
+  readonly #inputClosedAbort = new AbortController();
   #closed = false;
 
   constructor(options: RuntimeHostConnectionSessionOptions) {
     this.#options = options;
-    this.#writer = new BoundedSerialOutboundWriter(options.transport, () => this.#teardown());
+    this.#onDiagnostic =
+      options.onDiagnostic ?? ((diagnostic) => runtimeHostLogBuffer.append('error', diagnostic));
+    this.#writer = new BoundedSerialOutboundWriter(options.transport, (error) => this.#fail(error));
   }
 
   async run(): Promise<void> {
@@ -102,8 +116,8 @@ export class RuntimeHostConnectionSession {
         if (!isReadEof(error)) throw error;
         await this.#closeAfterDispatchedReplies();
       }
-    } catch {
-      this.#teardown();
+    } catch (error) {
+      this.#fail(error);
     } finally {
       this.#teardown();
       await Promise.allSettled(this.#requests.values());
@@ -116,7 +130,7 @@ export class RuntimeHostConnectionSession {
   }
 
   async #closeAfterDispatchedReplies(): Promise<void> {
-    this.#inputClosed = true;
+    this.#inputClosedAbort.abort();
     this.#detachContinuity();
     this.#detachClientCapabilities();
     this.#detachHostChanges();
@@ -146,7 +160,7 @@ export class RuntimeHostConnectionSession {
           if (
             !authorizeClientCapabilityFrame(this.#options.connection.authority, capabilityFrame)
           ) {
-            this.#teardown();
+            this.#fail(new Error('Runtime Host Client Capability frame is not authorized'));
             return;
           }
           this.#ensureClientCapabilities()?.accept(capabilityFrame);
@@ -157,11 +171,15 @@ export class RuntimeHostConnectionSession {
       const usesLivenessReserve =
         this.#requests.size === RUNTIME_HOST_MAX_IN_FLIGHT_DOMAIN_REQUESTS &&
         (frame.operation === 'host.status' || this.#inFlightStatusRequests > 0);
+      if (this.#requests.has(frame.requestId)) {
+        this.#fail(new Error('Runtime Host Client reused an active request id'));
+        return;
+      }
       if (
-        this.#requests.has(frame.requestId) ||
-        (this.#requests.size >= RUNTIME_HOST_MAX_IN_FLIGHT_DOMAIN_REQUESTS && !usesLivenessReserve)
+        this.#requests.size >= RUNTIME_HOST_MAX_IN_FLIGHT_DOMAIN_REQUESTS &&
+        !usesLivenessReserve
       ) {
-        this.#teardown();
+        this.#fail(new Error('Runtime Host Client exceeded the in-flight request limit'));
         return;
       }
       this.#dispatch(frame);
@@ -175,7 +193,7 @@ export class RuntimeHostConnectionSession {
         ? this.#transcriptPageTail.then(() => this.#handleRequest(frame))
         : this.#handleRequest(frame);
     const task = handling
-      .catch(() => this.#teardown())
+      .catch((error: unknown) => this.#fail(error))
       .finally(() => {
         if (this.#requests.get(frame.requestId) === task) {
           this.#requests.delete(frame.requestId);
@@ -221,9 +239,14 @@ export class RuntimeHostConnectionSession {
           : undefined;
       const response = await dispatchOperation(frame, this.#options.resolveHandlers(), {
         ...this.#options.connection,
+        inputClosedSignal: this.#inputClosedAbort.signal,
         principal: this.#options.connection.authority.principalId,
+        principalKind: this.#options.connection.authority.principalKind,
         ...(this.#options.connection.authority.credentialId
           ? { credentialId: this.#options.connection.authority.credentialId }
+          : {}),
+        ...(this.#options.connection.authority.clientInstanceId
+          ? { credentialClientInstanceId: this.#options.connection.authority.clientInstanceId }
           : {}),
         acquireResidency: () => admission.acquireResidency(),
       });
@@ -249,7 +272,7 @@ export class RuntimeHostConnectionSession {
   }
 
   #ensureContinuity(): SessionContinuityConnection | undefined {
-    if (this.#closed || this.#inputClosed) return;
+    if (this.#closed || this.#inputClosedAbort.signal.aborted) return;
     const service = this.#options.resolveContinuity();
     if (!service) return;
     if (this.#continuityService && this.#continuityService !== service) {
@@ -277,7 +300,12 @@ export class RuntimeHostConnectionSession {
   }
 
   #ensureClientCapabilities(): ClientCapabilityConnection | undefined {
-    if (this.#closed || this.#inputClosed) return;
+    if (this.#closed || this.#inputClosedAbort.signal.aborted) return;
+    // Guests observe and submit approval requests; they cannot provide Client
+    // Capabilities or directly admit a Turn. In particular, their pending and
+    // finalized connections may overlap while the credential becomes bound to
+    // the Client. Neither connection owns a capability-provider registration.
+    if (this.#options.connection.authority.principalKind === 'session_guest') return;
     const service = this.#options.resolveClientCapabilities?.();
     if (!service) return;
     if (this.#clientCapabilityService && this.#clientCapabilityService !== service) {
@@ -290,7 +318,16 @@ export class RuntimeHostConnectionSession {
           connectionId: this.#options.connection.connectionId,
           principalId: this.#options.connection.authority.principalId,
           clientInstanceId: this.#options.connection.clientInstanceId,
+          ...(this.#options.connection.authority.clientInstanceId
+            ? {
+                credentialBoundClientInstanceId:
+                  this.#options.connection.authority.clientInstanceId,
+              }
+            : {}),
           principalKind: this.#options.connection.authority.principalKind,
+          ...(this.#options.connection.authority.capabilityOwner
+            ? { capabilityOwner: this.#options.connection.authority.capabilityOwner }
+            : {}),
         },
         {
           send: (frame) => {
@@ -316,9 +353,23 @@ export class RuntimeHostConnectionSession {
   }
 
   attachGlobalChanges(): void {
-    if (this.#closed || this.#inputClosed) return;
+    if (this.#closed || this.#inputClosedAbort.signal.aborted) return;
     const service = this.#options.resolveHostChanges?.();
     if (!service || this.#hostChanges) return;
+    const sharedSessionId =
+      this.#options.connection.authority.principalKind === 'session_guest' &&
+      hasRuntimeHostOperationGrant(this.#options.connection.authority, 'session.shared.query')
+        ? this.#options.resolveSharedSessionId?.()
+        : undefined;
+    const sessionCatalog: HostChangeSubscriptionMask['sessionCatalog'] =
+      sharedSessionId !== undefined
+        ? {
+            sessionId: sharedSessionId,
+            principalId: this.#options.connection.authority.principalId,
+          }
+        : hasRuntimeHostOperationGrant(this.#options.connection.authority, 'session.catalog.query')
+          ? true
+          : undefined;
     this.#hostChanges = service.attachConnection(
       this.#options.connection.connectionId,
       {
@@ -326,14 +377,15 @@ export class RuntimeHostConnectionSession {
           this.#options.connection.authority,
           'runtime.policy.query',
         ),
+        connectionCatalog: hasRuntimeHostOperationGrant(
+          this.#options.connection.authority,
+          'connection.catalog.query',
+        ),
         projectCatalog: hasRuntimeHostOperationGrant(
           this.#options.connection.authority,
           'project.catalog.query',
         ),
-        sessionCatalog: hasRuntimeHostOperationGrant(
-          this.#options.connection.authority,
-          'session.catalog.query',
-        ),
+        sessionCatalog,
         scheduledTask: hasRuntimeHostOperationGrant(
           this.#options.connection.authority,
           'scheduled-task.query',
@@ -356,10 +408,22 @@ export class RuntimeHostConnectionSession {
     this.#hostChanges = undefined;
   }
 
+  #fail(error: unknown): void {
+    if (this.#closed) return;
+    try {
+      this.#onDiagnostic(
+        `[runtime-host] connection session failed: ${boundedFailureDiagnostic(error)}`,
+      );
+    } catch {
+      // Diagnostics cannot keep an invalid connection alive.
+    }
+    this.#teardown();
+  }
+
   #teardown(): void {
     if (this.#closed) return;
     this.#closed = true;
-    this.#inputClosed = true;
+    this.#inputClosedAbort.abort();
     this.#detachContinuity();
     this.#detachClientCapabilities();
     this.#detachHostChanges();

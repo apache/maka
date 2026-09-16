@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { SessionSummary } from '@maka/core/session';
@@ -30,7 +31,6 @@ describe('renderer session read state', () => {
     let listCalls = 0;
     let currentSessions: SessionSummary[] = [];
     const refresher = createSessionListRefresher({
-      captureRequestContext: () => undefined,
       listSessions: async () => {
         const result = listResults[listCalls];
         listCalls += 1;
@@ -65,7 +65,6 @@ describe('renderer session read state', () => {
     const errors: unknown[] = [];
     let currentSessions = original;
     const refresher = createSessionListRefresher({
-      captureRequestContext: () => undefined,
       listSessions: async () => {
         throw new Error('list failed');
       },
@@ -85,37 +84,37 @@ describe('renderer session read state', () => {
     assert.equal(errors.length, 1);
   });
 
-  it('commits the renderer context captured before the accepted authority read', async () => {
-    const listed = deferred<SessionSummary[]>();
-    let requestContext = 'before';
-    let committedContext: string | undefined;
+  it('does not lose a refresh admitted while the previous task is settling', async () => {
+    const firstList = deferred<SessionSummary[]>();
+    let listCalls = 0;
+    let currentSessions: SessionSummary[] = [];
+    const current = session({ id: 'current', lastMessageAt: 2 });
     const refresher = createSessionListRefresher({
-      captureRequestContext: () => requestContext,
-      listSessions: () => listed.promise,
-      currentSessions: () => [],
-      commitSessions: (_sessions, context) => {
-        committedContext = context;
+      listSessions: () => {
+        listCalls += 1;
+        return listCalls === 1 ? firstList.promise : Promise.resolve([current]);
+      },
+      currentSessions: () => currentSessions,
+      commitSessions: (next) => {
+        currentSessions = next;
       },
       onError: () => {},
     });
 
-    const refresh = refresher.refresh();
-    requestContext = 'after';
-    listed.resolve([]);
-    await refresh;
+    const firstRefresh = refresher.refresh();
+    firstList.resolve([session({ id: 'stale', lastMessageAt: 1 })]);
+    let settlementRefresh: Promise<SessionSummary[]> | undefined;
+    queueMicrotask(() => {
+      settlementRefresh = refresher.refresh();
+    });
 
-    assert.equal(committedContext, 'before');
+    assert.deepEqual((await firstRefresh).map(({ id }) => id), ['stale']);
+    await Promise.resolve();
+    assert.ok(settlementRefresh);
+    assert.deepEqual((await settlementRefresh).map(({ id }) => id), ['current']);
+    assert.equal(listCalls, 2);
   });
 });
-
-function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((innerResolve) => {
-    resolve = innerResolve;
-  });
-  return { promise, resolve };
-}
-
 function session(overrides: Partial<SessionSummary> & { id: string }): SessionSummary {
   return {
     id: overrides.id,

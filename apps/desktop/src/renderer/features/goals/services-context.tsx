@@ -17,24 +17,13 @@
  * under the License.
  */
 
-import { createContext, useContext, type ReactNode } from 'react';
+import { createServicesContext } from '../../application/contracts/feature-services.js';
 import type { GoalServices } from './ports.js';
 
-const GoalServicesContext = createContext<GoalServices | null>(null);
+const { Provider, useServices } = createServicesContext<GoalServices>('GoalServicesProvider');
 
-export function GoalServicesProvider(props: {
-  services: GoalServices;
-  children?: ReactNode;
-}) {
-  return (
-    <GoalServicesContext.Provider value={props.services}>
-      {props.children}
-    </GoalServicesContext.Provider>
-  );
-}
+export const GoalServicesProvider = Provider;
 
 export function useGoalServices(): GoalServices {
-  const services = useContext(GoalServicesContext);
-  if (!services) throw new Error('GoalServicesProvider is missing');
-  return services;
+  return useServices();
 }

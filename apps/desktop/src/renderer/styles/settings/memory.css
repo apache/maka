@@ -31,8 +31,12 @@
     color: var(--muted-foreground);
     font: var(--maka-text-supporting);
   }
+/* Active is the state this line exists to announce, and the inactive line is
+   already muted — so active takes full ink rather than the retired middle
+   grey. Collapsing both onto muted would erase the distinction the attribute
+   is for. */
 .settingsMemoryInjectState[data-active="true"] {
-    color: var(--foreground-secondary);
+    color: var(--foreground);
   }
 .settingsMemoryPromptPreview small {
     color: var(--muted-foreground);
@@ -40,7 +44,7 @@
   }
 .settingsMemoryPromptPreviewBudget {
     font: var(--maka-text-code);
-    color: var(--foreground-secondary);
+    color: var(--muted-foreground);
   }
 .settingsMemoryPromptPreview pre {
     max-height: 220px;
@@ -50,14 +54,14 @@
     border: var(--border-width-hairline) solid var(--foreground-10);
     border-radius: var(--radius-control);
     background: var(--background);
-    color: var(--foreground-secondary);
+    color: var(--muted-foreground);
     font: var(--maka-text-code);
     white-space: pre-wrap;
     word-break: break-word;
   }
 .settingsMemoryPromptPreview p {
     margin: 0;
-    color: var(--foreground-secondary);
+    color: var(--muted-foreground);
     font: var(--maka-text-body);
   }
 .settingsMemorySaveSummary {
@@ -73,7 +77,7 @@
     font: var(--maka-text-body);
   }
 .settingsMemorySaveSummary small {
-    color: var(--foreground-secondary);
+    color: var(--muted-foreground);
     font: var(--maka-text-body);
   }
 .settingsMemorySaveSummaryTime {
@@ -123,7 +127,7 @@
     justify-content: space-between;
     flex-wrap: wrap;
     gap: var(--space-1-5);
-    color: var(--foreground-secondary);
+    color: var(--muted-foreground);
     font: var(--maka-text-body);
   }
 .settingsMemoryBackupCandidate > span {
@@ -152,7 +156,7 @@
     justify-content: space-between;
     gap: var(--space-3);
     font: var(--maka-text-body);
-    color: var(--foreground-secondary);
+    color: var(--muted-foreground);
   }
 
 .settingsMemoryEntryGroupHeader strong {
@@ -219,13 +223,13 @@
   }
 
 .settingsMemoryDirtyState[data-dirty="true"] {
-    color: var(--warning-text, var(--info-text));
+    color: var(--warning-text);
     font: var(--maka-text-label);
   }
 
 .settingsMemoryEntryRow p {
     margin: 0;
-    color: var(--foreground-secondary);
+    color: var(--muted-foreground);
     font: var(--maka-text-body);
     white-space: pre-wrap;
     word-break: break-word;

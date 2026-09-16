@@ -219,10 +219,7 @@ function classifyAgentGraphOutcome(
   if (snapshot.status === 'completed') return { kind: 'completed', turnId: snapshot.turnId };
   if (snapshot.status === 'cancelled') return { kind: 'aborted', turnId: snapshot.turnId };
   if (snapshot.status === 'failed') {
-    if (
-      snapshot.failureClass === 'context_overflow' ||
-      snapshot.failureClass === 'context_budget_exhausted'
-    ) {
+    if (snapshot.failureClass === 'context_overflow') {
       return {
         kind: 'context_overflow',
         turnId: snapshot.turnId,

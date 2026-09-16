@@ -23,11 +23,13 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { requireComputerUseLabRoot } from './lab-root.mjs';
+
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '../..');
 const harnessPath = join(here, 'process-restart-harness.mjs');
 const monitorPath = join(here, 'real-e2e-monitor.swift');
-const labRoot = '/Users/haoqing/Documents/Learning/codex-computer-use-lab';
+const labRoot = requireComputerUseLabRoot();
 const statePath = join(labRoot, 'test-app', 'runtime', 'state.json');
 const SOAK_ROUNDS = 5;
 const FIXTURE_BUNDLE_ID = 'com.openai.codex.cualab';

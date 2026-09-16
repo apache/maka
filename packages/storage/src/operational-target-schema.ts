@@ -90,7 +90,7 @@ function readSchemaObjects(
     .prepare(`
       SELECT type, name, tbl_name, sql
       FROM sqlite_schema
-      WHERE name NOT LIKE 'sqlite_%' AND type IN ('table', 'index', 'trigger', 'view') AND sql IS NOT NULL
+      WHERE name NOT GLOB 'sqlite_*' AND type IN ('table', 'index', 'trigger', 'view') AND sql IS NOT NULL
       ORDER BY type, name
     `)
     .all() as Array<{ type: string; name: string; tbl_name: string; sql: string }>;

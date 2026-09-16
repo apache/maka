@@ -26,7 +26,8 @@ export const RUNTIME_HOST_ACCESS_MANAGEMENT_ERROR_MESSAGE_MAX_BYTES = 2 * 1024;
 
 const FRAME_MAX_BYTES = 768 * 1024;
 const CREDENTIAL_MAX_BYTES = 8 * 1024;
-const ACCESS_ACTIONS = ['list', 'prepare', 'revoke'] as const;
+const CONNECTION_CODE_MAX_BYTES = 64 * 1024;
+const ACCESS_ACTIONS = ['list', 'prepare', 'revoke', 'connection-code'] as const;
 
 const boundedString = (maxBytes: number) =>
   z
@@ -74,6 +75,14 @@ const ACCESS_MANAGEMENT_FRAME_SCHEMA = z.union([
       credentialId: boundedString(128),
       revoked: z.boolean(),
       credentials: z.array(CREDENTIAL_METADATA_SCHEMA),
+    })
+    .strict(),
+  z
+    .object({
+      schemaVersion: z.literal(1),
+      kind: z.literal('result'),
+      action: z.literal('connection-code'),
+      connectionCode: boundedString(CONNECTION_CODE_MAX_BYTES),
     })
     .strict(),
   z

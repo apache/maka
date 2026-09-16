@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import { JsonArrayPageBudget } from './json-array-page-budget.js';
+
 import type {
   ConnectionCatalogEntry,
   ConnectionCatalogSnapshot,
@@ -27,6 +29,7 @@ import type {
   MutateRuntimePolicyInput,
   RuntimePolicySnapshot,
 } from '@maka/core/runtime-policy';
+import { resolveConnectionModelCatalog } from '@maka/core/model-catalog';
 import type { MakaTool } from '@maka/runtime/tool-runtime';
 import {
   authenticateRuntimePolicyStoresWriter,
@@ -96,6 +99,7 @@ export class HostRuntimePolicyCoordinator {
   readonly handlers: RuntimePolicyOperationHandlerMap = {
     'runtime.policy.query': () => this.#queryPolicy(),
     'runtime.policy.mutate': (input) => this.#mutatePolicy(input),
+    'runtime.policy.network-proxy.update': (input) => this.#updateNetworkProxy(input),
     'connection.catalog.query': (input) => this.#queryCatalog(input),
     'connection.catalog.create': (input) => this.#createConnection(input),
     'connection.catalog.update': (input) => this.#updateConnection(input),
@@ -141,6 +145,33 @@ export class HostRuntimePolicyCoordinator {
         );
       }
       return projectPolicyMutation(await this.#stores.runtimePolicy.mutate(input));
+    });
+  }
+
+  async #updateNetworkProxy(
+    input: Parameters<RuntimePolicyOperationHandlerMap['runtime.policy.network-proxy.update']>[0],
+  ): Promise<OperationOutcome<'runtime.policy.network-proxy.update'>> {
+    return this.#storeMutation(async () => {
+      try {
+        await this.validateMutation({
+          expectedRevision: input.expectedPolicyRevision,
+          operation: { kind: 'set_network_proxy', value: input.networkProxy },
+        });
+      } catch (error) {
+        throw new RuntimePolicyStoreError(
+          'invalid_policy_input',
+          'Network proxy update failed Host validation',
+          { cause: error },
+        );
+      }
+      const result = await this.#stores.operations.updateNetworkProxy(input);
+      return result.kind === 'committed'
+        ? {
+            kind: 'committed' as const,
+            revision: result.snapshot.revision,
+            credentialStatus: result.credentialStatus,
+          }
+        : result;
     });
   }
 
@@ -240,7 +271,11 @@ export class HostRuntimePolicyCoordinator {
   ): Promise<OperationOutcome<'credential.vault.set'>> {
     return this.#storeMutation(async () => {
       const result = await this.#stores.credentialVault.set(input);
-      if (result.kind === 'connection_not_found' || result.kind === 'credential_stale') {
+      if (
+        result.kind === 'connection_not_found' ||
+        result.kind === 'connection_stale' ||
+        result.kind === 'credential_stale'
+      ) {
         return result;
       }
       const status = result.snapshot.entries.find((entry) =>
@@ -258,6 +293,9 @@ export class HostRuntimePolicyCoordinator {
   ): Promise<OperationOutcome<'credential.vault.delete'>> {
     return this.#storeMutation(async () => {
       const result = await this.#stores.credentialVault.delete(input);
+      if (result.kind === 'connection_stale') {
+        throw invariantFailure('Credential deletion returned an impossible connection conflict');
+      }
       if (result.kind === 'connection_not_found' || result.kind === 'credential_stale') {
         return result;
       }
@@ -360,6 +398,7 @@ export class HostRuntimePolicyCoordinator {
           };
         case 'invalid_policy_input':
         case 'invalid_connection_input':
+        case 'revision_conflict':
           if (mode !== 'mutation') {
             throw invariantFailure('A read operation admitted invalid runtime policy input');
           }
@@ -437,29 +476,60 @@ function connectionBasis(connection: ConnectionCatalogEntry): ConnectionVersionB
 function projectCatalogItems(snapshot: ConnectionCatalogSnapshot): ConnectionCatalogPageItem[] {
   const items: ConnectionCatalogPageItem[] = [];
   for (const [connectionIndex, connection] of snapshot.connections.entries()) {
-    // Profiles ride on their enabled_model_id item, never in one header
-    // table: a header item is atomic to the paginator, so a long declaration
-    // list would make the whole connection unreadable.
-    const { enabledModelIds, models, relayModelProfiles, ...header } = connection;
+    const {
+      enabledModelIds,
+      models,
+      modelOverrides,
+      // When the Host last ran discovery, and the marker that invalidates a
+      // test when model facts change: both are the Host's own bookkeeping,
+      // not part of the client-visible catalog protocol.
+      modelsFetchedAt: _modelsFetchedAt,
+      ...header
+    } = connection;
+    // The Host resolves the catalog because it owns the model metadata the
+    // resolution merges in. A client that merged its own bundled copy would
+    // describe a model by the version it happens to ship, so two clients on
+    // one Host could disagree about the same model.
+    const catalogEntries = resolveConnectionModelCatalog({
+      slug: connection.slug,
+      providerType: connection.providerType,
+      defaultModel:
+        snapshot.defaultTarget?.connectionId === connection.connectionId
+          ? snapshot.defaultTarget.modelId
+          : '',
+      enabledModelIds: [...enabledModelIds],
+      models: [...models],
+      ...(connection.modelSource === undefined ? {} : { modelSource: connection.modelSource }),
+      ...(modelOverrides === undefined ? {} : { modelOverrides }),
+    });
     items.push({
       kind: 'connection',
       connectionIndex,
       ...header,
       enabledModelIdCount: enabledModelIds.length,
       modelCount: models.length,
+      catalogEntryCount: catalogEntries.length,
     });
     for (const [itemIndex, modelId] of enabledModelIds.entries()) {
-      const relayProfile = relayModelProfiles?.[modelId];
       items.push({
         kind: 'enabled_model_id',
         connectionIndex,
         itemIndex,
         modelId,
-        ...(relayProfile === undefined ? {} : { relayProfile }),
       });
     }
     for (const [itemIndex, model] of models.entries()) {
       items.push({ kind: 'model', connectionIndex, itemIndex, model });
+    }
+    for (const [itemIndex, entry] of catalogEntries.entries()) {
+      const modelOverride = modelOverrides?.[entry.id];
+      items.push({
+        kind: 'catalog_entry',
+        connectionIndex,
+        itemIndex,
+        entry,
+        ...(modelOverride === undefined ? {} : { modelOverride }),
+      });
     }
   }
   return items;
@@ -471,21 +541,25 @@ function catalogPage(
   offset: number,
 ): ConnectionCatalogQueryResult {
   const items: ConnectionCatalogPageItem[] = [];
+  const budget = new JsonArrayPageBudget(CONNECTION_CATALOG_PAGE_MAX_BYTES, {
+    kind: 'page',
+    revision: snapshot.revision,
+    defaultTarget: snapshot.defaultTarget,
+    connectionCount: snapshot.connections.length,
+    items: [],
+    nextCursor: null,
+  });
   const limit = Math.min(allItems.length, offset + CONNECTION_CATALOG_PAGE_MAX_ITEMS);
   for (let index = offset; index < limit; index += 1) {
     const item = allItems[index];
     if (!item) throw invariantFailure('Catalog projection index was out of bounds');
-    const candidate = [...items, item];
-    const nextOffset = offset + candidate.length;
-    const result = {
-      kind: 'page' as const,
-      revision: snapshot.revision,
-      defaultTarget: snapshot.defaultTarget,
-      connectionCount: snapshot.connections.length,
-      items: candidate,
-      nextCursor: nextOffset < allItems.length ? cursorForItem(allItems[nextOffset]) : null,
-    };
-    if (Buffer.byteLength(JSON.stringify(result), 'utf8') > CONNECTION_CATALOG_PAGE_MAX_BYTES) {
+    const nextOffset = offset + items.length + 1;
+    if (
+      !budget.tryAppend(
+        item,
+        nextOffset < allItems.length ? cursorForItem(allItems[nextOffset]) : null,
+      )
+    ) {
       break;
     }
     items.push(item);

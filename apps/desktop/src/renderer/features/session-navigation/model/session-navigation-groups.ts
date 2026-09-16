@@ -19,36 +19,37 @@
 
 import type { ProjectRecord } from '@maka/core/project';
 import type { UiLocale } from '@maka/core/ui-locale';
+import { runtimeHostProfileUsesHostWorkspace } from '@maka/runtime-host/profile-kind';
 import type { SessionHistoryGroup } from '@maka/ui';
 import type { SessionNavigationSession } from '../ports.js';
 import { deriveProjectGroups } from './session-project-grouping.js';
 
-/** Groups local Sessions by Project and remote Sessions by Runtime Host. */
+/** Groups native-local Sessions by Project and other Sessions by Runtime Host. */
 export function deriveSessionNavigationGroups(
   sessions: readonly SessionNavigationSession[],
   projects: readonly ProjectRecord[],
   locale: UiLocale,
 ): SessionHistoryGroup[] {
   const local: SessionNavigationSession[] = [];
-  const remote = new Map<
+  const hosts = new Map<
     string,
     { label: string; sessions: SessionNavigationSession[] }
   >();
   for (const session of sessions) {
-    if (session.profileKind !== 'remote') {
+    if (!runtimeHostProfileUsesHostWorkspace(session.profileKind)) {
       local.push(session);
       continue;
     }
-    const group = remote.get(session.profileId) ?? {
+    const group = hosts.get(session.profileId) ?? {
       label: session.profileName,
       sessions: [],
     };
     group.sessions.push(session);
-    remote.set(session.profileId, group);
+    hosts.set(session.profileId, group);
   }
   return [
     ...deriveProjectGroups(local, projects, locale),
-    ...[...remote].map(([id, group]) => ({
+    ...[...hosts].map(([id, group]) => ({
       id: `runtime-host:${id}`,
       label: group.label,
       sessions: group.sessions,

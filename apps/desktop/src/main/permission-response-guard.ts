@@ -23,9 +23,15 @@ import type {
   ReviseBeforeTurnInput,
   TurnOrchestration,
 } from '@maka/core/runtime-inputs';
-import type { QuoteRef } from '@maka/core/events';
+import {
+  isDirectoryReference,
+  DIRECTORY_REFERENCE_MAX_COUNT,
+  type DirectoryReference,
+  type QuoteRef,
+} from '@maka/core/events';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
+import type { ClientCapabilityResponse } from '@maka/core/client-capability-grant';
 import { MAX_ATTACHMENT_COUNT } from '@maka/core/attachments';
 import { isAttachmentRef, isCanonicalStorageRef, type AttachmentRef } from '@maka/core/events';
 
@@ -60,6 +66,7 @@ interface NormalizedSendSessionCommand {
   attachmentItems?: unknown;
   retainedAttachments?: AttachmentRef[];
   turnOrchestration?: TurnOrchestration;
+  directoryReferences?: DirectoryReference[];
   quotes?: QuoteRef[];
   workspaceFileReferences?: WorkspaceFileReferencePosition[];
 }
@@ -88,6 +95,24 @@ export function normalizeSandboxBoundaryResponse(input: unknown): SandboxBoundar
     requestId: value.requestId,
     decision: value.decision,
   };
+}
+
+export function normalizeClientCapabilityResponse(input: unknown): ClientCapabilityResponse {
+  if (!input || typeof input !== 'object') {
+    throw new Error('Invalid Client Capability response');
+  }
+  const value = input as Record<string, unknown>;
+  if (
+    typeof value.requestId !== 'string' ||
+    value.requestId.length === 0 ||
+    value.requestId.length > MAX_PERMISSION_REQUEST_ID_LENGTH
+  ) {
+    throw new Error('Invalid Client Capability response requestId');
+  }
+  if (value.decision !== 'allow' && value.decision !== 'deny') {
+    throw new Error('Invalid Client Capability response decision');
+  }
+  return { requestId: value.requestId, decision: value.decision };
 }
 
 export function normalizeUserQuestionResponse(input: unknown): UserQuestionResponse {
@@ -129,8 +154,18 @@ export function normalizeBranchFromTurnInput(input: unknown): BranchFromTurnInpu
   if (value.sideConversation !== undefined && typeof value.sideConversation !== 'boolean') {
     throw new Error('Invalid branch sideConversation');
   }
+  // Absent sourceTurnId forks with an empty context (a side conversation opened
+  // before the source has any settled turn).
+  const sourceTurnId =
+    value.sourceTurnId === undefined
+      ? undefined
+      : normalizeRequiredString(
+          value.sourceTurnId,
+          'Invalid branch sourceTurnId',
+          MAX_TURN_ID_LENGTH,
+        );
   return {
-    sourceTurnId: normalizeRequiredString(value.sourceTurnId, 'Invalid branch sourceTurnId', MAX_TURN_ID_LENGTH),
+    ...(sourceTurnId === undefined ? {} : { sourceTurnId }),
     ...(name ? { name } : {}),
     ...(value.sideConversation === true ? { sideConversation: true } : {}),
   };
@@ -174,7 +209,29 @@ export function normalizeSessionSendCommand(input: unknown): NormalizedSendSessi
   const displayText =
     value.displayText === undefined ? undefined : normalizeSendText(value.displayText);
   const skillIds = normalizeSessionSkillIds(value.skillIds);
-  if (!text.trim() && skillIds.length === 0) {
+  // A send may carry structured content instead of text (a pure quote or a
+  // pure attachment, #4804). Only the presence is decided here: attachment
+  // state, ownership, and size limits stay with the ingestion checks, and
+  // quotes are normalized below before the command is returned.
+  const quotes = normalizeOptionalQuotes(value.quotes).quotes;
+  // A normal edit can keep an existing attachment while dropping all inline
+  // text; the retained refs travel separately from attachmentItems and are
+  // normalized before the empty-body rejection so a retained-attachment-only
+  // edit is not refused (#4804).
+  const retainedAttachments = normalizeOptionalRetainedAttachments(value.retainedAttachments);
+  // attachmentItems get the same per-item normalization as the other
+  // structured carriers: a junk entry (`[null]`, `[{}]`) used to satisfy the
+  // empty-body check while nothing ingestible would arrive downstream
+  // (#4815 review, reachability ③).
+  const attachmentItems = normalizeOptionalAttachmentItems(value.attachmentItems);
+  const hasAttachmentItems = (attachmentItems.attachmentItems?.length ?? 0) > 0;
+  if (
+    !text.trim() &&
+    skillIds.length === 0 &&
+    (quotes?.length ?? 0) === 0 &&
+    !hasAttachmentItems &&
+    (retainedAttachments.retainedAttachments?.length ?? 0) === 0
+  ) {
     throw new Error('Invalid send text');
   }
   return {
@@ -184,12 +241,13 @@ export function normalizeSessionSendCommand(input: unknown): NormalizedSendSessi
     text,
     ...(displayText !== undefined ? { displayText } : {}),
     ...(skillIds.length > 0 ? { skillIds } : {}),
-    ...(value.attachmentItems !== undefined ? { attachmentItems: value.attachmentItems } : {}),
-    ...normalizeOptionalRetainedAttachments(value.retainedAttachments),
+    ...attachmentItems,
+    ...retainedAttachments,
     ...(value.turnOrchestration !== undefined
       ? { turnOrchestration: normalizeTurnOrchestration(value.turnOrchestration) }
       : {}),
-    ...normalizeOptionalQuotes(value.quotes),
+    ...normalizeOptionalDirectoryReferences(value.directoryReferences),
+    ...(quotes !== undefined ? { quotes } : {}),
     ...normalizeOptionalWorkspaceFileReferences(
       value.workspaceFileReferences,
       displayText ?? text,
@@ -218,6 +276,32 @@ function normalizeOptionalRetainedAttachments(
   return input.length > 0
     ? { retainedAttachments: input.map((attachment) => structuredClone(attachment)) }
     : {};
+}
+
+// The wire shape is the preload's IngestPayload: an approval-backed descriptor
+// (`approvalId` + `name`, optional `mimeType`) or inline `base64` bytes for a
+// dragged/pasted blob — the same shapes prepareIngestItems resolves. A bare
+// `{}` or `null` entry used to satisfy the empty-body check while carrying
+// nothing ingestible (#4815 review).
+function isComposerIngestItem(item: unknown): boolean {
+  if (typeof item !== 'object' || item === null) return false;
+  const candidate = item as Record<string, unknown>;
+  if (typeof candidate.approvalId === 'string') {
+    return typeof candidate.name === 'string';
+  }
+  return typeof candidate.name === 'string' && typeof candidate.base64 === 'string';
+}
+
+function normalizeOptionalAttachmentItems(input: unknown): { attachmentItems?: unknown[] } {
+  if (input === undefined) return {};
+  if (
+    !Array.isArray(input) ||
+    input.length > MAX_ATTACHMENT_COUNT ||
+    !input.every(isComposerIngestItem)
+  ) {
+    throw new Error('Invalid attachment items');
+  }
+  return input.length > 0 ? { attachmentItems: input } : {};
 }
 
 function normalizeOptionalWorkspaceFileReferences(
@@ -386,4 +470,18 @@ function normalizeOptionalSendTurnId(input: unknown): { turnId?: string } {
   return {
     turnId: normalizeRequiredString(input, 'Invalid send turnId', MAX_TURN_ID_LENGTH),
   };
+}
+
+function normalizeOptionalDirectoryReferences(
+  input: unknown,
+): { directoryReferences?: DirectoryReference[] } {
+  if (input === undefined) return {};
+  if (
+    !Array.isArray(input) ||
+    input.length > DIRECTORY_REFERENCE_MAX_COUNT ||
+    !input.every(isDirectoryReference)
+  ) {
+    throw new Error('Invalid directory references');
+  }
+  return input.length ? { directoryReferences: input.map((ref) => ({ ...ref })) } : {};
 }

@@ -22,7 +22,7 @@
 // process is involved — these are pure functions over the wire's shapes.
 //
 // Run (from repo root), after @maka/core + @maka/runtime are built:
-//   npm --workspace @maka/computer-use run test
+//   npm run build && npm --workspace @maka/computer-use run test:dist
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 

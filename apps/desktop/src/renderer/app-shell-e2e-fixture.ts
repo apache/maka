@@ -33,8 +33,8 @@ export function createAppShellE2eFixtureActions(options: {
   refreshSessions: () => Promise<unknown>;
   setActiveId: (sessionId: string | undefined) => void;
   setNavSelection: Dispatch<SetStateAction<NavSelection>>;
-  setSearchModalOpen: Dispatch<SetStateAction<boolean>>;
-  setSessionListCollapsed: Dispatch<SetStateAction<boolean>>;
+  openSearchModal(): void;
+  setSessionListCollapsed(collapsed: boolean): void;
   workbar: {
     rightCollapsed: boolean;
     toggleRight(): void;
@@ -51,7 +51,7 @@ export function createAppShellE2eFixtureActions(options: {
     refreshSessions,
     setActiveId,
     setNavSelection,
-    setSearchModalOpen,
+    openSearchModal,
     setSessionListCollapsed,
     workbar,
     setThemePref,
@@ -69,12 +69,6 @@ export function createAppShellE2eFixtureActions(options: {
       Date.now = () => state.now!;
     }
     document.documentElement.setAttribute('data-maka-e2e-fixture', 'true');
-    // Read by `scroll-motion-policy`: a fixture whose subject is scrolling
-    // asks for the production behavior back, since the blanket collapse would
-    // finish every scroll in one frame and hide what it is testing.
-    if (state.scrollMotion) {
-      document.documentElement.setAttribute('data-maka-scroll-motion', state.scrollMotion);
-    }
     // PR-IR-01b: theme override applied BEFORE the persisted user pref so
     // the rendered fixture matches the `<theme>-<viewport>-<motion>` variant
     // exactly. `applyTheme` writes both the React state + the `.dark` class
@@ -132,7 +126,6 @@ export function createAppShellE2eFixtureActions(options: {
     if (
       state.workbarTab === 'review' ||
       state.workbarTab === 'terminal' ||
-      state.workbarTab === 'tasks' ||
       state.workbarTab === 'browser' ||
       state.workbarTab === 'files' ||
       state.workbarTab === 'inspector'
@@ -148,7 +141,7 @@ export function createAppShellE2eFixtureActions(options: {
     // shell is on screen deterministically. Real users never reach this branch
     // (e2eFixture.getState returns null without MAKA_E2E_FIXTURE).
     if (state.searchModalOpen) {
-      setSearchModalOpen(true);
+      openSearchModal();
     }
     if (state.sidebarSection === 'automations') {
       setNavSelection({ section: 'automations', module: 'scheduled-tasks' });

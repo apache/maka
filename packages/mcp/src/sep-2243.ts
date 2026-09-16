@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { truncateUtf16Safe } from '@maka/core/text-sanitize';
 import { formatMcpDiagnosticText } from './diagnostic-text.js';
 
 const X_MCP_HEADER = 'x-mcp-header';
@@ -281,9 +282,8 @@ function valueAtPath(root: unknown, path: readonly string[]): unknown {
 
 function truncateRenderedWarning(value: string): string {
   if (value.length <= MCP_HEADER_WARNING_LENGTH_LIMIT) return value;
-  const end = MCP_HEADER_WARNING_LENGTH_LIMIT - 1;
-  const safeEnd = end > 0 && /[\uD800-\uDBFF]/u.test(value[end - 1] ?? '') ? end - 1 : end;
-  return `${value.slice(0, safeEnd)}\u2026`;
+  // The ellipsis is one BMP code unit, so it fits in the unit it reclaims.
+  return `${truncateUtf16Safe(value, MCP_HEADER_WARNING_LENGTH_LIMIT - 1)}\u2026`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

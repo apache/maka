@@ -22,13 +22,10 @@ import { getEventListeners } from 'node:events';
 import { test } from 'node:test';
 import type { BotIncomingMessage, BotRegistry } from '@maka/runtime/bots';
 import { createBotIncomingMainService } from '../bot-incoming-main.js';
+import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
 
 async function waitFor(predicate: () => boolean, message: string): Promise<void> {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    if (predicate()) return;
-    await new Promise<void>((resolve) => setImmediate(resolve));
-  }
-  assert.fail(message);
+  await pollFor(predicate, { attempts: 100, message });
 }
 
 test('the bot typing loop owns only its active abort listener', async (t) => {

@@ -31,8 +31,8 @@
       ],
       "egressProxy": {
         "composeSourceEnv": "MAKA_EVAL_MAKA_BUNDLE_PATH",
-        "composeRelativePath": "packages/eval/harbor/docker-compose-egress-proxy.yaml",
-        "networkPolicyRelativePath": "packages/eval/harbor/egress-proxy/network-policy",
+        "composeRelativePath": "node_modules/@maka/eval/harbor/docker-compose-egress-proxy.yaml",
+        "networkPolicyRelativePath": "node_modules/@maka/eval/harbor/egress-proxy/network-policy",
         "proxyUrl": "http://maka-eval-mitmproxy:8080",
         "allowedHost": "maka-eval-mitmproxy",
         "containerCaPath": "/opt/maka-egress/mitmproxy-ca-cert.pem"
@@ -94,7 +94,7 @@
       "credentials": ["DEEPSEEK_API_KEY"],
       "config": {
         "nodePath": "/opt/maka-node-toolchain/bin/node",
-        "shimPath": "/opt/maka-agent/packages/eval/dist/harbor-maka-subject.js",
+        "shimPath": "/opt/maka-agent/node_modules/@maka/eval/dist/harbor-maka-subject.js",
         "runtimeHostsPath": "/tmp/maka-runtime-hosts",
         "hostSettlementTimeoutMs": 120000,
         "connectionSlug": "env-deepseek",
@@ -115,7 +115,7 @@
         "command": "/opt/maka-node-toolchain/bin/node",
         "credentialEnvironment": { "OPENAI_API_KEY": "DEEPSEEK_API_KEY" },
         "args": [
-          "/opt/maka-agent/packages/eval/dist/harbor-external-subject.js",
+          "/opt/maka-agent/node_modules/@maka/eval/dist/harbor-external-subject.js",
           "codex",
           "https://api.deepseek.com",
           "/",
@@ -139,7 +139,7 @@
         "command": "/opt/maka-node-toolchain/bin/node",
         "credentialEnvironment": { "ANTHROPIC_API_KEY": "DEEPSEEK_API_KEY" },
         "args": [
-          "/opt/maka-agent/packages/eval/dist/harbor-external-subject.js",
+          "/opt/maka-agent/node_modules/@maka/eval/dist/harbor-external-subject.js",
           "claude-code",
           "https://api.deepseek.com/anthropic",
           "/",
@@ -170,7 +170,7 @@
         "command": "/opt/maka-node-toolchain/bin/node",
         "credentialEnvironment": { "OPENAI_API_KEY": "DEEPSEEK_API_KEY" },
         "args": [
-          "/opt/maka-agent/packages/eval/dist/harbor-external-subject.js",
+          "/opt/maka-agent/node_modules/@maka/eval/dist/harbor-external-subject.js",
           "reasonix",
           "https://api.deepseek.com",
           "/",
@@ -195,7 +195,7 @@
         "command": "/opt/maka-node-toolchain/bin/node",
         "credentialEnvironment": { "OPENAI_API_KEY": "DEEPSEEK_API_KEY" },
         "args": [
-          "/opt/maka-agent/packages/eval/dist/harbor-external-subject.js",
+          "/opt/maka-agent/node_modules/@maka/eval/dist/harbor-external-subject.js",
           "opencode",
           "https://api.deepseek.com",
           "/",
@@ -223,7 +223,7 @@
         "command": "/opt/maka-node-toolchain/bin/node",
         "credentialEnvironment": { "OPENAI_API_KEY": "DEEPSEEK_API_KEY" },
         "args": [
-          "/opt/maka-agent/packages/eval/dist/harbor-external-subject.js",
+          "/opt/maka-agent/node_modules/@maka/eval/dist/harbor-external-subject.js",
           "kimi-code",
           "https://api.deepseek.com",
           "/",
@@ -244,7 +244,7 @@
         "command": "/opt/maka-node-toolchain/bin/node",
         "credentialEnvironment": { "OPENAI_API_KEY": "DEEPSEEK_API_KEY" },
         "args": [
-          "/opt/maka-agent/packages/eval/dist/harbor-external-subject.js",
+          "/opt/maka-agent/node_modules/@maka/eval/dist/harbor-external-subject.js",
           "zcode",
           "https://api.deepseek.com/v1",
           "/",
@@ -267,7 +267,7 @@
         "command": "/opt/maka-node-toolchain/bin/node",
         "credentialEnvironment": { "OPENAI_API_KEY": "DEEPSEEK_API_KEY" },
         "args": [
-          "/opt/maka-agent/packages/eval/dist/harbor-external-subject.js",
+          "/opt/maka-agent/node_modules/@maka/eval/dist/harbor-external-subject.js",
           "pi",
           "https://api.deepseek.com",
           "/",

@@ -24,6 +24,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { RUNTIME_HOST_SERVICE_LOG_MAX_BYTES } from '@maka/runtime-host/operator';
 import {
+  createLaunchAgentRuntimeHostLifecycleProvider,
   createLaunchAgentRuntimeHostService,
   renderLaunchAgentPlist,
   renderLaunchAgentUpdatePlist,
@@ -85,6 +86,41 @@ test('renders managed update reconciliation as a periodic one-shot LaunchAgent',
   assert.match(plist, /<string>--framed<\/string>/u);
   assert.match(plist, /<key>StartInterval<\/key>\n  <integer>86400<\/integer>/u);
   assert.doesNotMatch(plist, /<key>KeepAlive<\/key>/u);
+});
+
+test('canonical LaunchAgent projection owns persistent enablement', async () => {
+  await withFixture(async ({ homeDir, launchctl }) => {
+    launchctl.disabled = true;
+    launchctl.updateDisabled = true;
+    const provider = createLaunchAgentRuntimeHostLifecycleProvider(SERVICE_ID, {
+      homeDir,
+      uid: UID,
+      runLaunchctl: launchctl.run,
+      isProcessAlive: () => false,
+    });
+    const supervisor = { command: [process.execPath, '/tmp/maka-cli.js'] as const };
+    const reconciliation = {
+      command: ['/tmp/maka-operator', 'reconcile-update', '--framed'] as const,
+    };
+
+    await provider.supervisor.converge(supervisor);
+    await provider.reconciliationTrigger.converge(reconciliation);
+    await provider.supervisor.verify(supervisor);
+    await provider.reconciliationTrigger.verify(reconciliation);
+    await provider.supervisor.activate();
+    await provider.reconciliationTrigger.activate();
+
+    assert.equal((await provider.supervisor.status()).enabled, true);
+    assert.deepEqual(
+      launchctl.calls.filter(([command]) => command === 'enable'),
+      [
+        ['enable', TARGET],
+        ['enable', UPDATE_TARGET],
+      ],
+    );
+    assert.equal(launchctl.loaded, true);
+    assert.equal(launchctl.updateLoaded, true);
+  });
 });
 
 test('installs and removes the update scheduler with a managed LaunchAgent', async () => {
@@ -156,6 +192,9 @@ test('installs and removes the update scheduler with a managed LaunchAgent', asy
       (error: unknown) =>
         error instanceof Error && 'code' in error && error.code === 'target_mismatch',
     );
+    await applyStagedDeployment(backend, config, { activate: false });
+    assert.equal((await backend.status()).state, 'stopped');
+    assert.equal(launchctl.updateLoaded, false);
     await backend.replace(config);
     assert.equal(launchctl.updateLoaded, true);
     await backend.verifyDeployment(config, { requireSchedulerReady: true });
@@ -263,7 +302,7 @@ test('recognizes and transactionally replaces the exact legacy LaunchAgent defin
 
     const deployment = await backend.stageDeployment();
     await backend.retire();
-    await deployment.apply({ ...config, schemaVersion: 2 });
+    await deployment.apply({ ...config, schemaVersion: 2 }, true);
     await backend.verifyDeployment({ ...config, schemaVersion: 2 });
     assert.match(await readFile(plistPath, 'utf8'), /--managed-service-config/u);
 
@@ -295,7 +334,7 @@ test('restores the previous loaded LaunchAgent when deployment bootstrap fails',
       if (action === 'install') {
         const deployment = await backend.stageDeployment();
         await assert.rejects(
-          deployment.apply(config),
+          deployment.apply(config, true),
           /Starting the Runtime Host LaunchAgent failed/u,
         );
         await deployment.rollback();
@@ -316,6 +355,8 @@ interface FakeLaunchctl {
   running: boolean;
   updateLoaded: boolean;
   updateRunning: boolean;
+  disabled: boolean;
+  updateDisabled: boolean;
   failNextBootstrap: boolean;
   readonly calls: string[][];
   readonly run: (args: readonly string[]) => Promise<{
@@ -332,12 +373,27 @@ function createFakeLaunchctl(): FakeLaunchctl {
     running: false,
     updateLoaded: false,
     updateRunning: false,
+    disabled: false,
+    updateDisabled: false,
     failNextBootstrap: false,
     calls: [],
     run: async (args) => {
       fake.calls.push([...args]);
       if (args[0] === 'print' && args[1] === DOMAIN) {
         return { exitCode: 0, stdout: 'domain = gui\n', stderr: '' };
+      }
+      if (args[0] === 'print-disabled' && args[1] === DOMAIN) {
+        return {
+          exitCode: 0,
+          stdout: [
+            'disabled services = {',
+            `  "${LABEL}" => ${fake.disabled ? 'disabled' : 'enabled'}`,
+            `  "${UPDATE_LABEL}" => ${fake.updateDisabled ? 'disabled' : 'enabled'}`,
+            '}',
+            '',
+          ].join('\n'),
+          stderr: '',
+        };
       }
       if (args[0] === 'print' && (args[1] === TARGET || args[1] === UPDATE_TARGET)) {
         const update = args[1] === UPDATE_TARGET;
@@ -367,6 +423,12 @@ function createFakeLaunchctl(): FakeLaunchctl {
           fake.running = true;
         }
         pid += 1;
+        return { exitCode: 0, stdout: '', stderr: '' };
+      }
+      if (args[0] === 'enable') {
+        if (args[1] === UPDATE_TARGET) fake.updateDisabled = false;
+        else if (args[1] === TARGET) fake.disabled = false;
+        else throw new Error(`Unexpected launchctl enable target: ${String(args[1])}`);
         return { exitCode: 0, stdout: '', stderr: '' };
       }
       if (args[0] === 'bootout') {
@@ -470,9 +532,10 @@ function legacyLaunchAgentPlistFixture(
 async function applyStagedDeployment(
   backend: RuntimeHostServiceBackend,
   config: RuntimeHostManagedServiceConfig,
+  options?: { readonly activate?: boolean },
 ): Promise<RuntimeHostServiceDeployment> {
   const deployment = await backend.stageDeployment();
-  await deployment.apply(config);
+  await deployment.apply(config, options?.activate ?? true);
   return deployment;
 }
 

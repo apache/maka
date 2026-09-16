@@ -36,6 +36,7 @@ import { join, parse, sep } from 'node:path';
 import { afterEach, describe, test } from 'node:test';
 
 import { executeFilesystemWorkerRequest } from '../filesystem-worker/operations.js';
+import type { GrepRunInput } from '../grep-search.js';
 import {
   FILESYSTEM_WORKER_PROTOCOL_VERSION,
   type FilesystemWorkerOperation,
@@ -446,7 +447,7 @@ describe('filesystem worker operations', () => {
         grepExecutable: '/usr/bin/rg',
         runGrep: async (input) => {
           grepCwd = input.cwd;
-          return { exitCode: 0, stdout: '1:const healthSignal = true;\n', stderrTail: '' };
+          return grepRunOutput(input, target, 'const healthSignal = true;');
         },
       },
     );
@@ -456,7 +457,125 @@ describe('filesystem worker operations', () => {
       version: FILESYSTEM_WORKER_PROTOCOL_VERSION,
       requestId: 'request-1',
       ok: true,
-      result: { kind: 'grep', matches: ['1:const healthSignal = true;'] },
+      result: {
+        kind: 'grep',
+        matches: [`${target}:1:const healthSignal = true;`],
+        matchedLines: 1,
+        returnedLines: 1,
+        omittedLines: 0,
+        truncated: false,
+      },
+    });
+  });
+
+  test('names ripgrep, where to install it, and a retry when no usable copy was found (#5167)', async () => {
+    const root = await temporaryDirectory('maka-worker-grep-missing-');
+    const target = join(root, 'file.ts');
+    await writeFile(target, 'const healthSignal = true;', 'utf8');
+
+    const response = await executeFilesystemWorkerRequest(
+      await requestFor(
+        {
+          kind: 'grep',
+          cwd: root,
+          path: target,
+          pattern: 'healthSignal',
+          maxCountPerFile: 50,
+          limit: 200,
+          timeoutMs: 1_000,
+        },
+        { enforcementPath: target, access: 'read', scope: 'exact', targetType: 'file' },
+      ),
+      { ripgrepEnvironment: { kind: 'wsl', name: 'Ubuntu-24.04' } },
+    );
+
+    assert.equal(response.ok, false);
+    if (!response.ok) {
+      assert.equal(response.error.code, 'grep_unavailable');
+      assert.match(response.error.message, /ripgrep/);
+      assert.match(response.error.message, /the WSL distribution "Ubuntu-24\.04"/);
+      assert.match(response.error.message, /then retry/);
+      assert.doesNotMatch(response.error.message, /restart/i);
+    }
+  });
+
+  test('reports a ripgrep that vanished after startup as unavailable, not as a missing search path', async () => {
+    // The launch configuration checks the executable before every launch, so
+    // this is the narrow window where it disappears after that check.
+    const root = await temporaryDirectory('maka-worker-grep-vanished-');
+    const target = join(root, 'file.ts');
+    const vanished = join(root, 'uninstalled', 'rg');
+    await writeFile(target, 'const healthSignal = true;', 'utf8');
+
+    const response = await executeFilesystemWorkerRequest(
+      await requestFor(
+        {
+          kind: 'grep',
+          cwd: root,
+          path: target,
+          pattern: 'healthSignal',
+          maxCountPerFile: 50,
+          limit: 200,
+          timeoutMs: 1_000,
+        },
+        { enforcementPath: target, access: 'read', scope: 'exact', targetType: 'file' },
+      ),
+      { grepExecutable: vanished },
+    );
+
+    assert.equal(response.ok, false);
+    if (!response.ok) {
+      assert.equal(response.error.code, 'grep_unavailable');
+      assert.ok(response.error.message.includes(vanished));
+      assert.match(
+        response.error.message,
+        /for a remote Host, that server rather than this computer/,
+      );
+      assert.match(response.error.message, /then retry/);
+    }
+  });
+
+  test('passes option-like Grep patterns after a `--` separator', async () => {
+    const root = await temporaryDirectory('maka-worker-grep-option-like-');
+    const target = join(root, 'file.ts');
+    await writeFile(target, 'const style = "-webkit-box";', 'utf8');
+    let grepArgs: readonly string[] | undefined;
+
+    const response = await executeFilesystemWorkerRequest(
+      await requestFor(
+        {
+          kind: 'grep',
+          cwd: root,
+          path: target,
+          pattern: '-webkit-box',
+          maxCountPerFile: 50,
+          limit: 200,
+          timeoutMs: 1_000,
+        },
+        { enforcementPath: target, access: 'read', scope: 'exact', targetType: 'file' },
+      ),
+      {
+        grepExecutable: '/usr/bin/rg',
+        runGrep: async (input) => {
+          grepArgs = input.args;
+          return grepRunOutput(input, target, 'const style = "-webkit-box";');
+        },
+      },
+    );
+
+    assert.deepEqual(grepArgs?.slice(-3), ['--', '-webkit-box', target]);
+    assert.deepEqual(response, {
+      version: FILESYSTEM_WORKER_PROTOCOL_VERSION,
+      requestId: 'request-1',
+      ok: true,
+      result: {
+        kind: 'grep',
+        matches: [`${target}:1:const style = "-webkit-box";`],
+        matchedLines: 1,
+        returnedLines: 1,
+        omittedLines: 0,
+        truncated: false,
+      },
     });
   });
 
@@ -482,10 +601,18 @@ describe('filesystem worker operations', () => {
 
     const empty = await executeFilesystemWorkerRequest(request, {
       grepExecutable: '/usr/bin/rg',
-      runGrep: async () => ({ exitCode: 1, stdout: '', stderrTail: '' }),
+      runGrep: async (input) => grepRunOutput(input, target),
     });
     assert.equal(empty.ok, true);
-    if (empty.ok) assert.deepEqual(empty.result, { kind: 'grep', matches: [] });
+    if (empty.ok)
+      assert.deepEqual(empty.result, {
+        kind: 'grep',
+        matches: [],
+        matchedLines: 0,
+        returnedLines: 0,
+        omittedLines: 0,
+        truncated: false,
+      });
 
     const failed = await executeFilesystemWorkerRequest(request, {
       grepExecutable: '/usr/bin/rg',
@@ -564,7 +691,15 @@ describe('filesystem worker operations', () => {
       ),
     );
     assert.equal(textResponse.ok, true);
-    if (textResponse.ok) assert.deepEqual(textResponse.result, { kind: 'read', content: 'notes' });
+    if (textResponse.ok)
+      assert.deepEqual(textResponse.result, {
+        kind: 'read',
+        content: 'notes',
+        offset: 0,
+        returnedLines: 1,
+        totalLines: 1,
+        next: null,
+      });
   });
 
   test('reads and writes only the canonical path capability in the request', async () => {
@@ -581,7 +716,15 @@ describe('filesystem worker operations', () => {
       ),
     );
     assert.equal(readResponse.ok, true);
-    if (readResponse.ok) assert.deepEqual(readResponse.result, { kind: 'read', content: 'inside' });
+    if (readResponse.ok)
+      assert.deepEqual(readResponse.result, {
+        kind: 'read',
+        content: 'inside',
+        offset: 0,
+        returnedLines: 1,
+        totalLines: 1,
+        next: null,
+      });
 
     const denied = await executeFilesystemWorkerRequest(
       await requestFor(
@@ -803,6 +946,17 @@ describe('filesystem worker operations', () => {
     assert.equal(response.result.diff, undefined);
   });
 });
+
+function grepRunOutput(input: GrepRunInput, path: string, text?: string) {
+  const events = [
+    ...(text === undefined
+      ? []
+      : [{ type: 'match', data: { path: { text: path }, lines: { text }, line_number: 1 } }]),
+    { type: 'summary', data: { stats: { matched_lines: text === undefined ? 0 : 1 } } },
+  ];
+  input.onStdout(Buffer.from(events.map((event) => JSON.stringify(event)).join('\n') + '\n'));
+  return { exitCode: text === undefined ? 1 : 0, stderrTail: '' };
+}
 
 async function requestFor(
   operation: FilesystemWorkerOperation,

@@ -26,7 +26,7 @@ import type { LlmConnection } from '@maka/core/llm-connections';
 import { isRetiredProvider } from '@maka/core/provider-registry';
 
 import type { UiLocale } from '@maka/core/ui-locale';
-import { getProviderSettingsCopy } from '../locales/settings-provider-copy.js';
+import { getProviderSettingsCopy } from '../features/connection-settings/index.js';
 import type { StatusSemantic } from '@maka/ui';
 
 export interface ConnectionChipStatus {
@@ -62,7 +62,7 @@ export interface ConnectionChipStatus {
  *   readiness, fixed to credential-only language. Matches the doc warning
  *   at SettingsModal `验证通过 ≠ 运行可用`.
  */
-export function connectionChipStatus(connection: LlmConnection, locale: UiLocale = 'zh'): ConnectionChipStatus | null {
+export function connectionChipStatus(connection: LlmConnection, locale: UiLocale): ConnectionChipStatus | null {
   const copy = getProviderSettingsCopy(locale).shared.connectionStatuses;
   // Ahead of every other branch, including needs_reauth: a retired provider
   // has no sign-in left to return to, so any repair-shaped status here would

@@ -29,7 +29,7 @@ import assert from 'node:assert/strict';
 import { adaptToCuAction, computerActionNames } from '../computer-use-codec.js';
 
 test('a missing text is reported as a missing argument, not a bad coordinate', () => {
-  for (const action of ['type', 'key', 'hold_key'] as const) {
+  for (const action of ['type', 'key'] as const) {
     assert.throws(
       () => adaptToCuAction({ action, observation_id: 'obs-1' } as never),
       (error: Error) => {
@@ -49,7 +49,7 @@ test('an unknown action is answered with the actions this tool takes', () => {
     (error: Error) => {
       assert.doesNotMatch(error.message, /invalid_coordinate/);
       // The word it sent back is not the answer; the closed set is.
-      for (const name of ['type', 'key', 'left_click', 'observe', 'click_element']) {
+      for (const name of ['type', 'key', 'screenshot', 'observe', 'click_element']) {
         assert.ok(error.message.includes(name), `the refusal should list \`${name}\``);
       }
       return true;
@@ -75,9 +75,22 @@ test('the action list is read off the schema rather than kept by hand', () => {
   assert.equal(new Set(names).size, names.length, 'no action should be listed twice');
 });
 
-test('a coordinate action that is missing its coordinate still says so', () => {
+test('a removed coordinate action is rejected as unknown', () => {
   assert.throws(
     () => adaptToCuAction({ action: 'left_click', observation_id: 'obs-1' } as never),
-    /invalid_coordinate/,
+    /unknown action/,
+  );
+});
+
+test('unsupported hold_key is rejected as unknown', () => {
+  assert.throws(
+    () =>
+      adaptToCuAction({
+        action: 'hold_key',
+        observation_id: 'obs-1',
+        text: 'shift',
+        duration: 1,
+      } as never),
+    /unknown action/,
   );
 });

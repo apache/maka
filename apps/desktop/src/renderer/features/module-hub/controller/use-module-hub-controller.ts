@@ -51,15 +51,17 @@ export interface ModuleHubHostModel {
   readonly openSession: (sessionId: string) => void;
 }
 
+export interface ModuleHubCommands {
+  refreshProjectSkills(): Promise<void>;
+  openScheduledTaskCreate(): void;
+  copyTodayDailyReview(): Promise<void>;
+  pasteTodayDailyReview(): Promise<void>;
+  saveTodayDailyReview(): Promise<void>;
+}
+
 export interface ModuleHubController {
   readonly host: ModuleHubHostModel;
-  readonly commands: {
-    refreshProjectSkills(): Promise<void>;
-    openScheduledTaskCreate(): void;
-    copyTodayDailyReview(): Promise<void>;
-    pasteTodayDailyReview(): Promise<void>;
-    saveTodayDailyReview(): Promise<void>;
-  };
+  readonly commands: ModuleHubCommands;
   readonly selectors: {
     readonly scheduledTasks: readonly ScheduledTask[];
     /** Invalidates the composer's Runtime-owned invocable Skills projection. */

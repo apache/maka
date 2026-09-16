@@ -50,6 +50,7 @@ test('does not render legacy zero cost as a known free Session', () => {
     cacheHitRequests: 0,
     cacheCreateRequests: 0,
     errorRequests: 0,
+    totalDurationMs: 0,
     provenance: {
       coverage: {
         attempts: 0,
@@ -85,6 +86,7 @@ test('reports incomplete provenance as unavailable regardless of recorded reques
     cacheHitRequests: 0,
     cacheCreateRequests: 0,
     errorRequests: 0,
+    totalDurationMs: 0,
     provenance: {
       coverage: {
         attempts: 0,
@@ -121,6 +123,7 @@ test('does not estimate a cache-hit ratio from partial usage', () => {
     cacheHitRequests: 1,
     cacheCreateRequests: 0,
     errorRequests: 0,
+    totalDurationMs: 0,
     provenance: {
       coverage: {
         attempts: 1,

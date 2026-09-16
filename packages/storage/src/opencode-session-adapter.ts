@@ -285,7 +285,6 @@ export function convertTranscript(
         ts: turn.lastTs,
         status: 'failed',
         errorClass: 'opencode_error',
-        partialOutputRetained: true,
       });
     } else if (turn.aborted) {
       out.push({
@@ -296,7 +295,6 @@ export function convertTranscript(
         status: 'aborted',
         abortedAt: turn.lastTs,
         abortSource: EXTERNAL_SNAPSHOT_ABORT_SOURCE,
-        partialOutputRetained: true,
       });
     } else if (turn.closed) {
       out.push({
@@ -305,7 +303,6 @@ export function convertTranscript(
         turnId: turn.turnId,
         ts: turn.lastTs,
         status: 'completed',
-        partialOutputRetained: true,
       });
     } else {
       // A turn whose last assistant step asked for tools and never came back:
@@ -319,7 +316,6 @@ export function convertTranscript(
         status: 'aborted',
         abortedAt: turn.lastTs,
         abortSource: EXTERNAL_SNAPSHOT_ABORT_SOURCE,
-        partialOutputRetained: true,
       });
     }
     turn = undefined;

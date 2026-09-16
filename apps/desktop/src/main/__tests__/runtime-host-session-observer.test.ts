@@ -17,10 +17,12 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import test from "node:test";
 import type { SessionEvent } from '@maka/core/events';
+import type { SessionObservationMessage } from '../../shared/session-execution-projection.js';
 import type { StoredMessage } from '@maka/core/session';
 import {
   SESSION_CONTINUITY_SCHEMA_VERSION,
@@ -36,6 +38,7 @@ import type { DesktopRuntimeHostSession } from "../runtime-host-client.js";
 import {
   DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES,
   type DesktopTranscriptBatch,
+  type DesktopTranscriptOpenResult,
 } from '../../preload/transcript-contract.js';
 import { RuntimeHostSessionObservationRegistry } from "../runtime-host-session-observation-registry.js";
 import {
@@ -46,6 +49,46 @@ import {
 } from "../runtime-host-session-observer.js";
 import { RuntimeHostSessionSubscriptionOwner } from '../runtime-host-session-subscription-owner.js';
 import { runtimeHostSessionFixture } from "./runtime-host-session-test-fixture.js";
+import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
+
+test('projects root lifecycle without fabricating content events', async (t) => {
+  const events = new AsyncFrameQueue();
+  const observer = new RuntimeHostSessionObserver({
+    client: { openSession: async () => runtimeHostSessionFixture({
+      snapshot: continuitySnapshot({ rootTurn: null }), activeAssistantStreams: [],
+      transcript: Promise.resolve([]), events, async close() { events.end(); },
+    }) },
+    emitSessionsChanged() {},
+  });
+  const messages: Parameters<RuntimeHostSessionObserverTarget['send']>[1][] = [];
+  t.after(() => observer.close());
+  await observer.observe('session-1', 'execution-observer', {
+    id: 99, send(_channel, message) { messages.push(message); }, once() {}, off() {},
+  });
+  assert.ok(messages.length > 0);
+  assert.equal(messages.length, 1);
+  const seed = messages[0];
+  assert.equal(seed?.type, 'host_observation_seed');
+  if (seed?.type === 'host_observation_seed') {
+    assert.deepEqual(seed.observerIds, ['execution-observer']);
+    assert.equal(seed.execution.rootTurn, null);
+    assert.deepEqual(seed.events, []);
+  }
+  const seededCount = messages.length;
+  events.push({
+    kind: 'subscription.session_projection', hostEpoch: 'host-1', subscriptionId: 'subscription-1', sequence: 1,
+    snapshot: continuitySnapshot({ projectionRevision: 2 }),
+  });
+  await waitFor(() => messages.length > seededCount);
+  const started = messages.at(-1);
+  assert.equal(started?.type, 'host_execution');
+  if (started?.type === 'host_execution') {
+    assert.equal(started.rootTurn?.turnId, 'turn-1');
+    assert.equal(started.rootTurn?.status, 'running');
+    assert.equal(started.available, true);
+  }
+  await observer.close();
+});
 
 test("joins an active Turn without losing or replaying assistant text", async () => {
   const transcript = deferred<StoredMessage[]>();
@@ -432,10 +475,7 @@ test('restores transcript consumers across Host replacement', async () => {
         generation,
         hostEpoch: `host-${generation}`,
         durableThrough: null,
-        fragments: [],
-        evictedDurableSequences: [],
-        completedOverlayMessageIds: [],
-        hasOlder: false,
+        fragments: [],        hasOlder: false,
         hasNewer: false,
         reset: true,
         ready: true,
@@ -448,7 +488,10 @@ test('restores transcript consumers across Host replacement', async () => {
       };
     },
     async loadTranscriptBefore() {},
+    async loadTranscriptAfter() {},
     async loadTranscriptAround() {},
+    async loadTranscriptLatest() {},
+    acknowledgeTranscriptTail() {},
     async closeTranscript() {},
   });
   const first = source('first');
@@ -483,6 +526,104 @@ test('restores transcript consumers across Host replacement', async () => {
   await observations.close();
 });
 
+test('does not hold Host observation recovery on transcript replay', async () => {
+  const observations = new RuntimeHostSessionObservationRegistry();
+  const target = eventTarget(18);
+  const transcriptTarget: RuntimeHostTranscriptTarget = {
+    id: 19,
+    send() {},
+    once() {},
+    off() {},
+  };
+  const transcriptResult = (generation: string) => ({
+    sessionId: 'session-1',
+    generation,
+    hostEpoch: `host-${generation}`,
+    readThroughMessageId: null,
+  });
+  const source = (generation: string) => ({
+    async observe() {},
+    async unobserve() {},
+    async openTranscript() {
+      return transcriptResult(generation);
+    },
+    async loadTranscriptBefore() {},
+    async loadTranscriptAfter() {},
+    async loadTranscriptAround() {},
+    async loadTranscriptLatest() {},
+    acknowledgeTranscriptTail() {},
+    async closeTranscript() {},
+  });
+  const first = source('first');
+  await observations.attach(first);
+  await observations.observe('session-1', 'observer-1', target);
+  await observations.openTranscript('session-1', 'consumer-1', transcriptTarget);
+  observations.detach(first);
+
+  const observationSeed = deferred<void>();
+  const transcriptReplay = deferred<DesktopTranscriptOpenResult>();
+  let transcriptReplayStarted = false;
+  let transcriptReplayCompleted = false;
+  let transcriptRangeStarted = false;
+  let transcriptAcknowledged = false;
+  const replacement = {
+    async observe() {
+      await observationSeed.promise;
+    },
+    async unobserve() {},
+    async openTranscript() {
+      transcriptReplayStarted = true;
+      const result = await transcriptReplay.promise;
+      transcriptReplayCompleted = true;
+      return result;
+    },
+    async loadTranscriptBefore() {
+      transcriptRangeStarted = true;
+    },
+    async loadTranscriptAfter() {},
+    async loadTranscriptAround() {},
+    async loadTranscriptLatest() {},
+    acknowledgeTranscriptTail() {},
+    acknowledgeTranscript() {
+      transcriptAcknowledged = true;
+    },
+    async closeTranscript() {},
+  };
+  const attaching = observations.attach(replacement);
+  let attached = false;
+  void attaching.then(() => {
+    attached = true;
+  });
+  await waitFor(() => transcriptReplayStarted);
+  assert.equal(attached, false);
+
+  observationSeed.resolve();
+  assert.deepEqual(await attaching, ['session-1']);
+  assert.equal(attached, true);
+
+  const range = observations.loadTranscriptBefore(
+    {
+      consumerId: 'consumer-1',
+      sessionId: 'session-1',
+      hostEpoch: 'host-second',
+      anchorSequence: null,
+      maxBytes: DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES,
+      navigation: 1,
+    },
+    transcriptTarget.id,
+  );
+  observations.acknowledgeTranscript('consumer-1', 'second', 1, transcriptTarget.id);
+  await Promise.resolve();
+  assert.equal(transcriptRangeStarted, false);
+  assert.equal(transcriptAcknowledged, true);
+
+  transcriptReplay.resolve(transcriptResult('second'));
+  await range;
+  assert.equal(transcriptRangeStarted, true);
+  await waitFor(() => transcriptReplayCompleted);
+  await observations.close();
+});
+
 test('fences transcript range failures to the current registration and Host source', async () => {
   const observations = new RuntimeHostSessionObservationRegistry();
   const target: RuntimeHostTranscriptTarget = {
@@ -506,7 +647,10 @@ test('fences transcript range failures to the current registration and Host sour
       };
     },
     loadTranscriptBefore,
+    async loadTranscriptAfter() {},
     async loadTranscriptAround() {},
+    async loadTranscriptLatest() {},
+    acknowledgeTranscriptTail() {},
     async closeTranscript() {},
   });
   const request = (consumerId: string, generation: string) => ({
@@ -515,6 +659,7 @@ test('fences transcript range failures to the current registration and Host sour
     hostEpoch: `host-${generation}`,
     anchorSequence: null,
     maxBytes: DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES,
+    navigation: 1,
   });
 
   const closedFailure = deferred<void>();
@@ -572,6 +717,7 @@ test('fences transcript range failures across same-source replica recovery', asy
   };
   let opens = 0;
   let staleRangeStarted = false;
+  let currentRangeStarted = false;
   const observer = new RuntimeHostSessionObserver({
     client: {
       openSession: async () => {
@@ -586,6 +732,8 @@ test('fences transcript range failures across same-source replica recovery', asy
           throughSequence: 1,
           rawBytes: 1,
           fragments: [],
+          rangeBoundarySequence: null,
+          protectedTurnSequence: null,
           nextCursor: 'older',
         };
         return runtimeHostSessionFixture({
@@ -608,6 +756,7 @@ test('fences transcript range failures across same-source replica recovery', asy
                 return staleRange.promise;
               }
             : async () => {
+                currentRangeStarted = true;
                 throw currentFailure;
               },
           async close() {
@@ -627,6 +776,7 @@ test('fences transcript range failures across same-source replica recovery', asy
     hostEpoch,
     anchorSequence: 1,
     maxBytes: DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES,
+    navigation: 1,
   });
   const target: RuntimeHostTranscriptTarget = {
     id: 20,
@@ -656,7 +806,10 @@ test('fences transcript range failures across same-source replica recovery', asy
     sequence: 1,
     reason: 'slow_consumer',
   });
-  await waitFor(() => batches.at(-1)?.generation !== opened.generation);
+  // Recovery installs a replacement replica and resets every consumer onto its
+  // tail; no page read is replayed on its behalf.
+  await waitFor(() => batches.some((batch) => batch.reset && batch.generation !== opened.generation));
+  assert.equal(currentRangeStarted, false);
   staleRange.reject(new Error('stale replica rejected its range'));
   await assert.doesNotReject(staleLoad);
 
@@ -664,6 +817,7 @@ test('fences transcript range failures across same-source replica recovery', asy
     observations.loadTranscriptBefore(request(opened.hostEpoch), target.id),
     (error) => error === currentFailure,
   );
+  assert.equal(currentRangeStarted, true);
   await observations.close();
   await observer.close();
 });
@@ -708,7 +862,6 @@ test('broadcasts durable admission and transcript changes from the same message'
     turnId: 'turn-1',
     ts: 2,
     text: 'Continue here',
-    steeringEventId: 'steering-event-1',
   };
   const observer = new RuntimeHostSessionObserver({
     client: {
@@ -725,6 +878,8 @@ test('broadcasts durable admission and transcript changes from the same message'
             throughSequence: 0,
             rawBytes: 1,
             fragments: [],
+            rangeBoundarySequence: null,
+            protectedTurnSequence: null,
             nextCursor: null,
           }),
           decodeTranscriptPage: async () => ({
@@ -751,14 +906,26 @@ test('broadcasts durable admission and transcript changes from the same message'
       id: 19 + index,
       send(_channel, batch) {
         batches.push(batch);
-        queueMicrotask(() =>
+        queueMicrotask(() => {
           observer.acknowledgeTranscript(
             consumerId,
             batch.generation,
             batch.deliverySequence!,
             19 + index,
-          ),
-        );
+          );
+          // Stand in for a Renderer window that installs what it is sent.
+          if (batch.ready && batch.durableThrough !== null) {
+            observer.acknowledgeTranscriptTail(
+              {
+                consumerId,
+                sessionId: 'session-1',
+                hostEpoch: batch.hostEpoch,
+                through: batch.durableThrough,
+              },
+              19 + index,
+            );
+          }
+        });
       },
       once() {},
       off() {},
@@ -775,10 +942,10 @@ test('broadcasts durable admission and transcript changes from the same message'
     throughSequence: 0,
   });
   await waitFor(() =>
-    markers.length === 1 && transcriptBatches.every((batches) => batches.length > 0),
+    markers.length > 0 && transcriptBatches.every((batches) => batches.length > 0),
   );
 
-  assert.deepEqual(markers, ['ticket-1']);
+  assert.deepEqual([...new Set(markers)], ['ticket-1']);
   assert.deepEqual(transcriptBatches[1], transcriptBatches[0]);
   assert.deepEqual(
     eventConsumer.events
@@ -786,6 +953,165 @@ test('broadcasts durable admission and transcript changes from the same message'
       .map((event) => ({ turnId: event.turnId, messageId: event.messageId })),
     [{ turnId: 'turn-1', messageId: 'ticket-1' }],
   );
+  await observer.close();
+});
+
+for (const resolution of ['owned', 'cancelled', 'pending', 'unavailable'] as const) {
+  test(`proves a removed follow-up is ${resolution} before successor content`, async (t) => {
+    const events = new AsyncFrameQueue();
+    const queries: string[][] = [];
+    const observer = new RuntimeHostSessionObserver({
+      client: {
+        openSession: async () => runtimeHostSessionFixture({
+          snapshot: continuitySnapshot({
+            queue: {
+              hostEpoch: 'host-1', queueRevision: 1, steering: [],
+              followup: [{
+                entryId: 'entry-1', messageId: 'followup-1', content: { text: 'Next question' },
+                placement: 'next_turn', state: 'queued',
+              }],
+            },
+          }),
+          transcript: Promise.resolve([]), events, async close() { events.end(); },
+        }),
+        queryMessageExecutions: async ({ messageIds }) => {
+          queries.push([...messageIds]);
+          if (resolution === 'unavailable') throw new Error('Host proof unavailable');
+          return { resolutions: messageIds.map((messageId) => resolution === 'owned'
+            ? { messageId, state: 'owned' as const, turnId: 'turn-2', runId: 'run-2' }
+            : { messageId, state: resolution }) };
+        },
+      },
+      emitSessionsChanged() {},
+    });
+    t.after(() => observer.close());
+    const target = eventTarget(25);
+    await observer.observe('session-1', 'observer-followup', target, true);
+    target.events.splice(0);
+    events.push({
+      kind: 'subscription.session_projection', hostEpoch: 'host-1',
+      subscriptionId: 'subscription-1', sequence: 1,
+      snapshot: continuitySnapshot({
+        projectionRevision: 2,
+        rootTurn: { sessionId: 'session-1', turnId: 'turn-2', runId: 'run-2', status: 'running' },
+        queue: { hostEpoch: 'host-1', queueRevision: 2, steering: [], followup: [] },
+      }),
+    });
+    events.push({
+      kind: 'subscription.session_delta', hostEpoch: 'host-1',
+      subscriptionId: 'subscription-1', sessionId: 'session-1', sequence: 2,
+      delta: { kind: 'text', turnId: 'turn-2', runId: 'run-2', messageId: 'answer-2', startOffset: 0, text: 'Next answer' },
+    });
+    await waitFor(() => target.events.some((event) => event.type === 'text_delta'));
+
+    assert.deepEqual(queries, [['followup-1']]);
+    const admissions = target.events.filter((event) => event.type === 'message_admission');
+    assert.deepEqual(admissions.map((event) => ({
+      messageId: event.messageId, turnId: event.turnId, outcome: event.outcome,
+    })), resolution === 'owned' || resolution === 'cancelled' ? [{
+      messageId: 'followup-1', turnId: 'turn-2',
+      outcome: resolution === 'owned' ? 'admitted' : 'retracted',
+    }] : []);
+    if (admissions.length > 0) {
+      assert.ok(target.events.indexOf(admissions[0]!)
+        < target.events.findIndex((event) => event.type === 'text_delta'));
+    }
+  });
+}
+
+test('moves the read marker only as far as the Renderer window reports reaching', async () => {
+  const events = new AsyncFrameQueue();
+  const markers: string[] = [];
+  const rows: StoredMessage[] = [
+    { type: 'assistant', id: 'answer-1', turnId: 'turn-1', ts: 1, text: 'One', modelId: 'test-model' },
+    { type: 'assistant', id: 'answer-2', turnId: 'turn-2', ts: 2, text: 'Two', modelId: 'test-model' },
+  ];
+  const observer = new RuntimeHostSessionObserver({
+    client: {
+      openSession: async () =>
+        runtimeHostSessionFixture({
+          snapshot: continuitySnapshot(),
+          transcript: Promise.resolve([]),
+          events,
+          loadTranscriptPage: async (input) => ({
+            kind: 'page',
+            sessionId: 'session-1',
+            source: 'durable',
+            direction: 'newer',
+            throughSequence: input.throughSequence ?? null,
+            rawBytes: 1,
+            fragments: [],
+            rangeBoundarySequence: null,
+            protectedTurnSequence: null,
+            nextCursor: null,
+          }),
+          // One durable row per catch-up target; the bootstrap page carries none.
+          decodeTranscriptPage: async (page) => {
+            const identity = page.throughSequence;
+            return identity === null
+              ? { messages: [], nextCursor: null }
+              : { messages: [{ identity, message: rows[identity]! }], nextCursor: null };
+          },
+          async close() {
+            events.end();
+          },
+        }),
+      setSessionReadMarker: async (_sessionId, messageId) => {
+        markers.push(messageId);
+        return undefined as never;
+      },
+    },
+    emitSessionsChanged() {},
+  });
+  const batches: DesktopTranscriptBatch[] = [];
+  const consumer: RuntimeHostTranscriptTarget = {
+    id: 31,
+    send(_channel, batch) {
+      batches.push(batch);
+      queueMicrotask(() =>
+        observer.acknowledgeTranscript(
+          'consumer-parked',
+          batch.generation,
+          batch.deliverySequence!,
+          31,
+        ),
+      );
+    },
+    once() {},
+    off() {},
+  };
+  const opened = await observer.openTranscript('session-1', 'consumer-parked', consumer);
+  const acknowledgeTail = (through: number) =>
+    observer.acknowledgeTranscriptTail(
+      { consumerId: 'consumer-parked', sessionId: 'session-1', hostEpoch: opened.hostEpoch, through },
+      31,
+    );
+  const advance = async (sequence: number, throughSequence: number) => {
+    const delivered = batches.length;
+    events.push({
+      kind: 'subscription.transcript_advanced',
+      hostEpoch: 'host-1',
+      subscriptionId: 'subscription-1',
+      sessionId: 'session-1',
+      sequence,
+      throughSequence,
+    });
+    await waitFor(() => batches.length > delivered);
+  };
+
+  await advance(1, 0);
+  assert.deepEqual(markers, [], 'delivery alone is not proof the reader reached the tail');
+  acknowledgeTail(0);
+  assert.deepEqual(markers, ['answer-1']);
+
+  // The reader is parked off the tail: the change is broadcast, but the window
+  // it names never joins, so nothing acknowledges the new watermark.
+  await advance(2, 1);
+  acknowledgeTail(0);
+  assert.deepEqual(markers, ['answer-1'], 'an unread Turn stays unread while the reader is parked');
+
+  acknowledgeTail(1);
+  assert.deepEqual(markers, ['answer-1', 'answer-2']);
   await observer.close();
 });
 
@@ -896,6 +1222,8 @@ test('finishes transcript open and replays a stale range request after replaceme
               throughSequence: 0,
               rawBytes: 1,
               fragments: [],
+              rangeBoundarySequence: null,
+              protectedTurnSequence: null,
               nextCursor: 'older',
             },
             overlay: {
@@ -906,6 +1234,8 @@ test('finishes transcript open and replays a stale range request after replaceme
               throughSequence: null,
               rawBytes: 0,
               fragments: [],
+              rangeBoundarySequence: null,
+              protectedTurnSequence: null,
               nextCursor: null,
             },
           },
@@ -925,6 +1255,8 @@ test('finishes transcript open and replays a stale range request after replaceme
               throughSequence: input.throughSequence,
               rawBytes: 0,
               fragments: [],
+              rangeBoundarySequence: null,
+              protectedTurnSequence: null,
               nextCursor: null,
             };
           },
@@ -1010,6 +1342,7 @@ test('finishes transcript open and replays a stale range request after replaceme
         hostEpoch: 'host-1',
         anchorSequence: 0,
         maxBytes: DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES,
+        navigation: 1,
       },
       22,
     ),
@@ -1028,6 +1361,7 @@ test('finishes transcript open and replays a stale range request after replaceme
           hostEpoch: 'other-host',
           anchorSequence: 0,
           maxBytes: DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES,
+          navigation: 1,
         },
         22,
       ),
@@ -1042,6 +1376,7 @@ test('finishes transcript open and replays a stale range request after replaceme
           hostEpoch: 'host-1',
           anchorSequence: 0,
           maxBytes: DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES,
+          navigation: 1,
         },
         22,
       ),
@@ -1068,6 +1403,8 @@ test('coalesces transcript changes into one bounded delta while renderer deliver
             throughSequence: input.throughSequence,
             rawBytes: 1,
             fragments: [],
+            rangeBoundarySequence: null,
+            protectedTurnSequence: null,
             nextCursor: null,
           }),
           decodeTranscriptPage: async (page) => {
@@ -1141,12 +1478,130 @@ test('coalesces transcript changes into one bounded delta while renderer deliver
   assert.equal(batches[1]!.reset, false);
   assert.equal(batches[1]!.durableThrough, 4);
   assert.equal(batches[1]!.fragments.length, 4);
+  assert.equal(batches[1]!.navigation, undefined, 'tail growth is a broadcast, not an answer');
+  assert.equal(batches[1]!.hasOlder, undefined);
+  assert.equal(batches[1]!.hasNewer, undefined);
   observer.acknowledgeTranscript(
     consumerId,
     batches[1]!.generation,
     batches[1]!.deliverySequence,
     22,
   );
+  await observer.close();
+});
+
+test('answers a window page read on its own navigation version and drops a stale one', async () => {
+  const events = new AsyncFrameQueue();
+  const record = (sequence: number) => ({
+    identity: sequence,
+    message: {
+      type: 'assistant' as const,
+      id: `a-${sequence}`,
+      turnId: `turn-${sequence}`,
+      ts: sequence,
+      text: String(sequence),
+      modelId: 'test-model',
+    },
+  });
+  const durablePage = (nextCursor: string | null): SessionTranscriptPage => ({
+    kind: 'page',
+    sessionId: 'session-1',
+    source: 'durable',
+    direction: 'older',
+    throughSequence: 2,
+    rawBytes: 1,
+    fragments: [],
+    rangeBoundarySequence: null,
+    protectedTurnSequence: null,
+    nextCursor,
+  });
+  const bootstrap = durablePage(null);
+  const decoded = new Map<SessionTranscriptPage, {
+    messages: Array<ReturnType<typeof record>>;
+    nextCursor: string | null;
+  }>([[bootstrap, { messages: [record(2)], nextCursor: null }]]);
+  const observer = new RuntimeHostSessionObserver({
+    client: {
+      openSession: async () =>
+        runtimeHostSessionFixture({
+          snapshot: continuitySnapshot(),
+          transcript: Promise.resolve([]),
+          events,
+          transcriptBootstrap: {
+            throughSequence: 2,
+            overlayMessageCount: 0,
+            durable: bootstrap,
+            overlay: { ...bootstrap, source: 'overlay' },
+          },
+          loadTranscriptOverlay: async () => [],
+          loadTranscriptPage: async (request) => {
+            // `loadAround` probes one row older than its anchor to learn
+            // whether history precedes it; that probe stays empty here.
+            const answer = request.direction === 'older'
+              ? request.maxBytes === 1
+                ? { messages: [], nextCursor: null }
+                : { messages: [record(1)], nextCursor: 'older' }
+              : request.anchorSequence === 0
+                ? { messages: [record(1)], nextCursor: 'newer' }
+                : { messages: [record(2)], nextCursor: null };
+            const page = durablePage(answer.nextCursor);
+            decoded.set(page, answer);
+            return page;
+          },
+          decodeTranscriptPage: async (page) => decoded.get(page)!,
+          async close() {
+            events.end();
+          },
+        }),
+    },
+    emitSessionsChanged() {},
+  });
+  const batches: DesktopTranscriptBatch[] = [];
+  const consumerId = 'consumer-window';
+  const request = (navigation: number, anchorSequence: number | null) => ({
+    consumerId,
+    sessionId: 'session-1',
+    hostEpoch: 'host-1',
+    anchorSequence,
+    maxBytes: DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES,
+    navigation,
+  });
+  await observer.openTranscript('session-1', consumerId, {
+    id: 26,
+    send(_channel, batch) {
+      batches.push(batch);
+      queueMicrotask(() =>
+        observer.acknowledgeTranscript(consumerId, batch.generation, batch.deliverySequence, 26),
+      );
+    },
+    once() {},
+    off() {},
+  });
+  batches.splice(0);
+
+  await observer.loadTranscriptBefore(request(1, 2), 26);
+  assert.equal(batches.length, 1);
+  assert.equal(batches[0]!.navigation, 1);
+  assert.equal(batches[0]!.reset, false, 'extending the window does not replace it');
+  assert.equal(batches[0]!.hasOlder, true);
+  assert.equal(batches[0]!.hasNewer, undefined, 'an older page establishes only its older edge');
+
+  // The same version extends the window the Renderer already holds.
+  await observer.loadTranscriptAfter(request(1, 1), 26);
+  assert.equal(batches.length, 2);
+  assert.equal(batches[1]!.navigation, 1);
+  assert.equal(batches[1]!.reset, false);
+  assert.equal(batches[1]!.hasNewer, false);
+
+  await observer.loadTranscriptAround(request(2, 1), 26);
+  assert.equal(batches.length, 3);
+  assert.equal(batches[2]!.navigation, 2);
+  assert.equal(batches[2]!.reset, true, 'a window-replacing command resets the Renderer');
+  assert.equal(batches[2]!.hasOlder, false);
+  assert.equal(batches[2]!.hasNewer, true);
+
+  await observer.loadTranscriptBefore(request(1, 2), 26);
+  assert.equal(batches.length, 3, 'a version the Renderer already abandoned is dropped silently');
   await observer.close();
 });
 
@@ -1168,6 +1623,8 @@ test('does not let one backpressured transcript consumer block another', async (
             throughSequence: input.throughSequence,
             rawBytes: 1,
             fragments: [],
+            rangeBoundarySequence: null,
+            protectedTurnSequence: null,
             nextCursor: null,
           }),
           decodeTranscriptPage: async (page) => {
@@ -1273,6 +1730,8 @@ test('keeps a transcript consumer available after a delivery fails', async () =>
             throughSequence: input.throughSequence,
             rawBytes: 1,
             fragments: [],
+            rangeBoundarySequence: null,
+            protectedTurnSequence: null,
             nextCursor: null,
           }),
           decodeTranscriptPage: async (page) => ({
@@ -1341,6 +1800,7 @@ test('keeps a transcript consumer available after a delivery fails', async () =>
         hostEpoch: opened.hostEpoch,
         anchorSequence: 0,
         maxBytes: DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES,
+        navigation: 1,
       },
       25,
     ),
@@ -1629,9 +2089,10 @@ test("abandons a watched Turn when the initial Host subscription fails", async (
   await observer.close();
 });
 
-test("abandons a watched Turn when the Session is removed", async () => {
+test("abandons a watched Turn and removes it from the catalog when Guest access ends", async () => {
   const events = new AsyncFrameQueue();
   const finishedTurns: Array<[string, "completed" | "abandoned"]> = [];
+  const sessionChanges: string[] = [];
   let closeCount = 0;
   const observer = new RuntimeHostSessionObserver({
     client: {
@@ -1646,7 +2107,9 @@ test("abandons a watched Turn when the Session is removed", async () => {
         },
       }),
     },
-    emitSessionsChanged() {},
+    emitSessionsChanged(reason) {
+      sessionChanges.push(reason);
+    },
     onWatchedTurnFinished: (sessionId, outcome) => {
       finishedTurns.push([sessionId, outcome]);
     },
@@ -1658,15 +2121,17 @@ test("abandons a watched Turn when the Session is removed", async () => {
     hostEpoch: "host-1",
     subscriptionId: "subscription-1",
     sequence: 1,
-    reason: "session_removed",
+    reason: "access_revoked",
   });
 
   await waitFor(() => closeCount === 1);
   assert.deepEqual(finishedTurns, [["session-1", "abandoned"]]);
+  assert.deepEqual(sessionChanges, ["deleted"]);
   await observer.close();
 });
 
 test("reopens an evicted active subscription without a renderer resubscribe", async () => {
+  const reopen = deferred<void>();
   const firstEvents = new AsyncFrameQueue();
   const secondEvents = new AsyncFrameQueue();
   const sessionChanges: Array<{ reason: string; sessionId: string }> = [];
@@ -1675,6 +2140,7 @@ test("reopens an evicted active subscription without a renderer resubscribe", as
     client: {
       openSession: async () => {
         openCount += 1;
+        if (openCount === 2) await reopen.promise;
         const events = openCount === 1 ? firstEvents : secondEvents;
         return runtimeHostSessionFixture({
           snapshot: continuitySnapshot(),
@@ -1715,7 +2181,13 @@ test("reopens an evicted active subscription without a renderer resubscribe", as
     sequence: 2,
     reason: "slow_consumer",
   });
-  await waitFor(() => openCount === 2 && target.events.length === 2);
+  await waitFor(() => openCount === 2);
+  assert.equal(target.observations.at(-1)?.type, 'host_observation_pending',
+    'observation is invalidated while reopen is still waiting');
+  assert.equal(target.events.length, 1, 'no replacement content is accepted before reopen completes');
+  reopen.resolve();
+  await waitFor(() => target.events.length === 2);
+  assert.equal(target.observations.at(-1)?.type, 'host_observation_seed');
 
   secondEvents.push(deltaFrame(1, 5, " world"));
   await waitFor(() => target.events.length === 3);
@@ -1775,6 +2247,8 @@ test("recovers when transcript paging loses the active subscription", async () =
               throughSequence: 0,
               rawBytes: 0,
               fragments: [],
+              rangeBoundarySequence: null,
+              protectedTurnSequence: null,
               nextCursor: null,
             };
           },
@@ -2044,7 +2518,6 @@ test("finishes a watched predecessor after initial catch-up recovery", async () 
               turnId: "turn-1",
               ts: 20,
               status: "completed" as const,
-              partialOutputRetained: true,
             },
           ]),
           events: secondEvents,
@@ -2200,7 +2673,6 @@ test("reconciles terminal, Goal, interaction, and sidecar state after subscripti
         turnId: 'turn-1',
         status: 'completed' as const,
         statusSource: 'recorded' as const,
-        partialOutputRetained: true,
       }],
       openSession: async () => {
         openCount += 1;
@@ -2259,9 +2731,6 @@ test("reconciles terminal, Goal, interaction, and sidecar state after subscripti
     emitSubscriptionRecovered: (sessionId) => {
       recoveredSessions.push(sessionId);
     },
-    emitObservationSeed: (sessionId, phase) => {
-      seedTimeline.push(`${phase}:${sessionId}`);
-    },
     now: () => 50,
   });
   const target = eventTarget(15);
@@ -2284,13 +2753,10 @@ test("reconciles terminal, Goal, interaction, and sidecar state after subscripti
 
   assert.deepEqual(finishedTurns, [["session-1", "completed"]]);
   assert.deepEqual(recoveredSessions, ["session-1"]);
-  const pendingAt = seedTimeline.indexOf("pending:session-1");
-  const readyAt = seedTimeline.indexOf("ready:session-1");
+  const pendingAt = seedTimeline.indexOf('event:host_observation_pending');
+  const readyAt = seedTimeline.lastIndexOf('event:host_observation_seed');
   assert.ok(pendingAt >= 0);
   assert.ok(readyAt > pendingAt);
-  assert.ok(
-    seedTimeline.slice(pendingAt + 1, readyAt).some((entry) => entry.startsWith("event:")),
-  );
   assert.ok(sessionChanges.includes("goal-change"));
   assert.deepEqual(
     interactionSnapshots.at(-1)?.map((interaction) => interaction.requestId),
@@ -2314,6 +2780,109 @@ test("reconciles terminal, Goal, interaction, and sidecar state after subscripti
       (event) =>
         event.type === "user_question_request" && event.requestId === "interaction-2",
     ),
+  );
+  await observer.close();
+});
+
+test('replays durable admission before a terminal successor on subscription recovery', async () => {
+  const firstEvents = new AsyncFrameQueue();
+  const secondEvents = new AsyncFrameQueue();
+  const recoveredSessions: string[] = [];
+  const terminalTranscript: StoredMessage[] = [
+    {
+      type: 'user',
+      id: 'follow-up-message',
+      turnId: 'turn-2',
+      ts: 20,
+      text: 'Continue',
+    },
+    {
+      type: 'assistant',
+      id: 'assistant-2',
+      turnId: 'turn-2',
+      ts: 30,
+      text: 'Done',
+      modelId: 'test-model',
+    },
+    {
+      type: 'turn_state',
+      id: 'terminal-2',
+      turnId: 'turn-2',
+      ts: 40,
+      status: 'completed',
+    },
+  ];
+  let openCount = 0;
+  const observer = new RuntimeHostSessionObserver({
+    client: {
+      listSessionTurns: async () => [{
+        turnId: 'turn-1',
+        status: 'completed' as const,
+        statusSource: 'recorded' as const,
+      }],
+      openSession: async () => {
+        openCount += 1;
+        if (openCount === 1) {
+          return runtimeHostSessionFixture({
+            snapshot: continuitySnapshot(),
+            transcript: Promise.resolve([]),
+            events: firstEvents,
+            async close() {
+              firstEvents.end();
+            },
+          });
+        }
+        return runtimeHostSessionFixture({
+          snapshot: continuitySnapshot({
+            projectionRevision: 2,
+            rootTurn: {
+              sessionId: 'session-1',
+              turnId: 'turn-2',
+              runId: 'run-2',
+              status: 'completed',
+              terminalEventId: 'terminal-2',
+            },
+          }),
+          transcript: Promise.resolve(terminalTranscript),
+          loadTranscriptOverlay: async () => terminalTranscript,
+          events: secondEvents,
+          async close() {
+            secondEvents.end();
+          },
+        });
+      },
+    },
+    emitSessionsChanged() {},
+    emitSubscriptionRecovered: (sessionId) => {
+      recoveredSessions.push(sessionId);
+    },
+    now: () => 50,
+  });
+  const target = eventTarget(23);
+  await observer.observe('session-1', 'observer-1', target, true);
+
+  firstEvents.push({
+    kind: 'subscription.closed',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-1',
+    sequence: 1,
+    reason: 'slow_consumer',
+  });
+  await waitFor(() => recoveredSessions.length === 1);
+
+  assert.deepEqual(
+    target.events
+      .filter((event) => event.turnId === 'turn-2')
+      .map((event) => event.type),
+    ['message_admission', 'queue_update', 'text_complete', 'complete'],
+  );
+  const admission = target.events.find(
+    (event): event is Extract<SessionEvent, { type: 'message_admission' }> =>
+      event.type === 'message_admission',
+  );
+  assert.deepEqual(
+    admission && { messageId: admission.messageId, turnId: admission.turnId },
+    { messageId: 'follow-up-message', turnId: 'turn-2' },
   );
   await observer.close();
 });
@@ -2471,6 +3040,57 @@ test("rehydrates pending interactions and publishes answer acknowledgements", as
   await observer.close();
 });
 
+test("publishes form answer acknowledgements for renderer queue retirement", async () => {
+  const pending = {
+    schemaVersion: 1 as const,
+    interactionId: "form-1",
+    sessionId: "session-1",
+    turnId: "turn-1",
+    runId: "run-1",
+    revision: 1 as const,
+    status: "pending" as const,
+    outcome: null,
+    request: {
+      kind: "form" as const,
+      toolUseId: "tool-1",
+      message: "Configure deployment",
+      requester: { name: "deploy" },
+      fields: [{ kind: "boolean" as const, name: "confirm", label: "Confirm", required: true }],
+    },
+  };
+  const observer = new RuntimeHostSessionObserver({
+    client: {
+      openSession: async () => runtimeHostSessionFixture({
+        snapshot: continuitySnapshot({ interactions: { pending: [pending] } }),
+        activeAssistantStreams: [],
+        transcript: Promise.resolve([]),
+        events: new AsyncFrameQueue(),
+        async close() {},
+      }),
+    },
+    emitSessionsChanged() {},
+    now: () => 80,
+  });
+  const target = eventTarget(2);
+  await observer.observe("session-1", "observer-1", target);
+  observer.publishInteractionAnswer({
+    ...pending,
+    revision: 2,
+    status: "answered",
+    outcome: { kind: "form_answer", action: "accept", values: { confirm: true }, committedAt: 80 },
+  }, pending);
+
+  assert.deepEqual(target.events.at(-1), {
+    type: "form_answer_ack",
+    id: "host-interaction:form-1:2",
+    turnId: "turn-1",
+    ts: 80,
+    requestId: "form-1",
+    toolUseId: "tool-1",
+  });
+  await observer.close();
+});
+
 test("projects Host queue revisions and newly delivered steering messages", async () => {
   const events = new AsyncFrameQueue();
   const observer = new RuntimeHostSessionObserver({
@@ -2621,7 +3241,6 @@ test("publishes Host sidecar and graph invalidations without inventing Session s
     kind: "subscription.runtime_resource_pty_data",
     hostEpoch: "host-1",
     subscriptionId: "subscription-1",
-    sequence: 3,
     sessionId: "session-1",
     ref: "maka://runtime/background-tasks/shell-1",
     ptySequence: 7,
@@ -2764,13 +3383,20 @@ function pendingQuestion(interactionId: string, turnId: string, runId: string) {
 
 function eventTarget(
   id: number,
-): RuntimeHostSessionObserverTarget & { events: SessionEvent[] } {
+): RuntimeHostSessionObserverTarget & { events: SessionEvent[]; observations: SessionObservationMessage[] } {
   const events: SessionEvent[] = [];
+  const observations: SessionObservationMessage[] = [];
   return {
     id,
     events,
+    observations,
     send(_channel, event) {
-      events.push(event);
+      if (event.type === 'host_observation_seed') {
+        observations.push(event);
+        events.push(...event.events);
+      } else if (event.type === 'host_execution' || event.type === 'host_observation_error'
+        || event.type === 'host_observation_pending') observations.push(event);
+      else events.push(event);
     },
     once() {},
     off() {},
@@ -2810,25 +3436,37 @@ class AsyncFrameQueue implements AsyncIterable<SubscriptionFrame> {
     };
   }
 }
-
-function deferred<T>(): {
-  promise: Promise<T>;
-  resolve(value: T): void;
-  reject(error: Error): void;
-} {
-  let resolve!: (value: T) => void;
-  let reject!: (error: Error) => void;
-  const promise = new Promise<T>((settle, rejectPromise) => {
-    resolve = settle;
-    reject = rejectPromise;
-  });
-  return { promise, resolve, reject };
-}
-
 async function waitFor(predicate: () => boolean): Promise<void> {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    if (predicate()) return;
-    await new Promise((resolve) => setImmediate(resolve));
-  }
-  assert.fail("Timed out waiting for observer state");
+  await pollFor(predicate, { attempts: 100, message: 'Timed out waiting for observer state' });
 }
+
+test('a later observer in the same renderer receives the accumulated active stream', async () => {
+  const events = new AsyncFrameQueue();
+  let opens = 0;
+  const handle = runtimeHostSessionFixture({
+    snapshot: continuitySnapshot(),
+    activeAssistantStreams: [activeText('message-1')],
+    transcript: Promise.resolve([{ type: 'assistant', id: 'message-1', turnId: 'turn-1', ts: 1, text: 'Hello', modelId: 'test-model' }]),
+    events,
+    async close() { events.end(); },
+  });
+  const observer = new RuntimeHostSessionObserver({
+    client: { openSession: async () => { opens += 1; return handle; } },
+    emitSessionsChanged() {},
+  });
+  const target = eventTarget(1);
+  await observer.observe('session-1', 'feature-first', target);
+  events.push(deltaFrame(1, 5, ' world'));
+  await waitFor(() => target.events.some((event) => 'text' in event && event.text === ' world'));
+  await observer.observe('session-1', 'conversation-later', target);
+  assert.equal(opens, 1);
+  const seed = target.observations.at(-1);
+  assert.equal(seed?.type, 'host_observation_seed');
+  if (seed?.type === 'host_observation_seed') {
+    assert.deepEqual(seed.observerIds, ['conversation-later']);
+    assert.equal(seed.execution.rootTurn?.turnId, 'turn-1');
+    assert.ok(seed.events.some((event) =>
+      event.type === 'text_delta' && event.startOffset === 0 && event.text === 'Hello world'));
+  }
+  await observer.close();
+});

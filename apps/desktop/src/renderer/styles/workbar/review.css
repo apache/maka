@@ -47,6 +47,17 @@
   flex: 1;
 }
 
+/* Collapsible wraps the trigger row in its own flex <span>, which keeps the
+   browser default `min-width: auto` and so refuses to shrink below the full
+   file path — the row overflows the narrow panel and clips the change counts
+   and chevron instead of truncating the path. Let that label track the trigger
+   width so the path ellipsizes and the stats stay in view. */
+.maka-session-review-file .astryx-collapsible-trigger > span:first-child {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+}
+
 .maka-session-review-file-path {
   min-width: 0;
   flex: 1;

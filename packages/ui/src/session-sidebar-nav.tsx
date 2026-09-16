@@ -17,28 +17,19 @@
  * under the License.
  */
 
-import type { ScheduledTask } from '@maka/core/scheduled-task';
 import { AlertCircle, Blocks, Download, Network, Settings, SquarePen, Timer } from './icons.js';
-import type { NavModuleMemory, NavSelection } from './nav-selection.js';
+import { useSessionRailChrome } from './session-rail-context.js';
+import { useSidebarUpdateProjection } from './sidebar-update-projection-context.js';
 import { useUiLocale } from './locale-context.js';
 import { getShellControlsCopy } from './shell-controls-copy.js';
+import { PlatformShortcutText } from './platform-shortcut-text.js';
 import { Icon } from '@astryxdesign/core/Icon';
 import { IconButton } from '@astryxdesign/core/IconButton';
 import { SideNavItem, SideNavSection } from '@astryxdesign/core/SideNav';
 import { Tooltip } from '@astryxdesign/core/Tooltip';
 
-export function SessionSidebarNav(props: {
-  selection: NavSelection;
-  scheduledTasks?: readonly ScheduledTask[];
-  moduleMemory?: NavModuleMemory;
-  onSelect(selection: NavSelection): void;
-  onNew(): void;
-  workHubEntry?: {
-    active: boolean;
-    label: string;
-    onSelect(): void;
-  };
-}) {
+export function SessionSidebarNav() {
+  const props = useSessionRailChrome();
   const locale = useUiLocale();
   const copy = getShellControlsCopy(locale).navigation;
   const extensionsActive = props.selection.section === 'extensions';
@@ -62,11 +53,16 @@ export function SessionSidebarNav(props: {
   return (
     <SideNavSection title={copy.mainLabel} isHeaderHidden className="maka-session-panel-top">
       <SideNavItem
+        data-maka-assistant-target="app.newTask"
         label={copy.newTask}
         icon={SquarePen}
         size="md"
         onClick={props.onNew}
-        endContent={<kbd className="maka-nav-kbd" aria-hidden="true">⌘ N</kbd>}
+        endContent={(
+          <kbd className="maka-nav-kbd" aria-hidden="true">
+            <PlatformShortcutText apple="⌘ N" other="Ctrl N" />
+          </kbd>
+        )}
       />
       {props.workHubEntry ? (
         <SideNavItem
@@ -88,6 +84,7 @@ export function SessionSidebarNav(props: {
           save that one click would be paying a permanent slot for a state the
           user is leaving anyway. */}
       <SideNavItem
+        data-maka-assistant-target="app.extensions"
         label={copy.extensions}
         icon={Blocks}
         size="md"
@@ -95,6 +92,7 @@ export function SessionSidebarNav(props: {
         onClick={() => props.onSelect({ section: 'extensions', module: moduleMemory.extensions })}
       />
       <SideNavItem
+        data-maka-assistant-target="app.automations"
         label={activeScheduledTaskCount > 0
           ? copy.pendingTasks(activeScheduledTaskCount)
           : copy.automations}
@@ -103,6 +101,7 @@ export function SessionSidebarNav(props: {
         isSelected={automationsActive}
         onClick={() => props.onSelect({ section: 'automations', module: moduleMemory.automations })}
       />
+      {props.auxiliaryNavigation}
     </SideNavSection>
   );
 }
@@ -112,8 +111,8 @@ export function SessionSidebarNav(props: {
  *
  * The updater runs with `autoDownload = true` and `autoInstallOnAppQuit =
  * false` (app-update-service.ts), so discovery and download ask nothing of
- * anyone — the shell drops `available` and `downloading` before they reach
- * here rather than the footer rendering a control for them. The old chip sat
+ * anyone — the App Update projection drops `available` and `downloading`
+ * before they reach here rather than the footer rendering a control for them. The old chip sat
  * in the footer through that whole silent phase counting bytes at someone who
  * had nothing to decide.
  */
@@ -122,41 +121,13 @@ export type SidebarUpdateReminder = {
   latestVersion: string;
 };
 
-/**
- * What build is running, shown where the user already looks to reach Settings.
- *
- * The About page has carried this since `PR-BUILD-HYGIENE-0`, but reaching it
- * takes two clicks and a scroll — so the question it answers ("is this the
- * release or the tree I just built?") is asked in the wrong place to be
- * answered by it. On the rail it costs a glance.
- *
- * `commit` is present only on a dev build (`build-info.ts` resolves it from
- * `.git/HEAD` and returns null once packaged), which is exactly when the
- * version number alone cannot distinguish two builds.
- */
-export type SidebarBuildStamp = {
-  version: string;
-  commit?: string | null;
-};
-
-export function SessionSidebarFooter(props: {
-  buildStamp?: SidebarBuildStamp;
-  updateReminder?: SidebarUpdateReminder;
-  onOpenSettings(): void;
-  onOpenUpdate?(): void;
-}) {
+export function SessionSidebarFooter() {
+  const props = useSessionRailChrome();
+  const update = useSidebarUpdateProjection();
   const locale = useUiLocale();
   const copy = getShellControlsCopy(locale).navigation;
-  const reminder = props.updateReminder;
-  // `v0.1.11` on a release, `v0.1.11 · a1b2c3d` on a dev build. Seven hex
-  // characters is what `git log --oneline` shows and what a commit is quoted
-  // as in review, so it is the form a reader can act on without reformatting.
-  const stamp = props.buildStamp
-    ? `v${props.buildStamp.version}${
-        props.buildStamp.commit ? ` · ${props.buildStamp.commit.slice(0, 7)}` : ''
-      }`
-    : undefined;
-  const updateAction = reminder && props.onOpenUpdate
+  const reminder = update.reminder;
+  const updateAction = reminder && update.onOpenUpdate
     ? {
         // One sentence, serving as both the tooltip and the accessible name.
         // The button carries no visible text, so a bare verb ("Restart")
@@ -177,7 +148,7 @@ export function SessionSidebarFooter(props: {
         // downward arrow is the convention every app store made for exactly
         // this moment.
         icon: reminder.state === 'downloaded' ? Download : AlertCircle,
-        onClick: props.onOpenUpdate,
+        onClick: update.onOpenUpdate,
       }
     : undefined;
 
@@ -196,21 +167,13 @@ export function SessionSidebarFooter(props: {
       <div className="maka-sidebar-footer-row">
         <div className="maka-sidebar-footer-row-primary">
           <SideNavItem
+            data-maka-assistant-target="settings.open"
             label={copy.settings}
             icon={Settings}
             size="md"
             onClick={props.onOpenSettings}
           />
         </div>
-        {stamp && (
-          // Between Settings and the update button, not after it: the update
-          // button is an action and keeps the edge, where a control is
-          // reached. The stamp is a label — it reads on the way to that edge
-          // and never moves when the button appears or goes away.
-          <span className="maka-sidebar-build-stamp" title={copy.buildStamp(stamp)}>
-            {stamp}
-          </span>
-        )}
         {updateAction && (
           <Tooltip content={updateAction.label}>
             <IconButton

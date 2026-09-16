@@ -17,19 +17,13 @@
  * under the License.
  */
 
-import type { ModelCallAttempt, ModelCallCoverage } from './model-call-attempt.js';
-import {
-  projectModelCallUsageBuckets,
-  projectModelCallUsageLogs,
-  projectModelCallUsageSummary,
-} from './model-call-usage-projection.js';
+import type { ModelCallCoverage } from './model-call-attempt.js';
 import type {
-  UsageBucket,
-  UsageGroupBy,
-  UsageLogRow,
-  UsageQuery,
-  UsageSummaryV2,
-} from './usage-stats/types.js';
+  ModelCallUsageBuckets,
+  ModelCallUsageLogs,
+  ModelCallUsageSummary,
+} from './model-call-usage-projection.js';
+import type { UsageBucket, UsageLogRow, UsageSummaryV2 } from './usage-stats/types.js';
 
 /**
  * Merges the canonical `ModelCallAttempt` ledger with the frozen pre-cutover
@@ -70,6 +64,62 @@ export interface UsageProvenance {
   pendingRepairs: number;
 }
 
+/**
+ * The cost to present for a usage total, or `undefined` when it cannot be shown
+ * honestly. Trust the total only when at least one canonical attempt was priced;
+ * otherwise a legacy total is a usable estimate only when strictly positive (a
+ * zero cannot tell a free call apart from one whose price was never resolved),
+ * and everything else is unknown rather than `$0`. Shared with Session
+ * Inspector's `estimatedSessionCost` so the two surfaces qualify cost the same way.
+ */
+export function estimatedUsageCost(
+  provenance: UsageProvenance,
+  totalCostUsd: number,
+): number | undefined {
+  if (provenance.coverage.pricedAttempts > 0) return totalCostUsd;
+  return provenance.legacyRecords > 0 && totalCostUsd > 0 ? totalCostUsd : undefined;
+}
+
+/**
+ * Whether real spend is missing from the totals: canonical records that failed
+ * to decode, or runs the read model has not folded in yet. When true, a total
+ * reads low and the surface should say so.
+ */
+export function hasUnavailableUsage(provenance: UsageProvenance): boolean {
+  return provenance.unreadableRecords > 0 || provenance.pendingRepairs > 0;
+}
+
+export const EMPTY_MODEL_CALL_COVERAGE: ModelCallCoverage = {
+  attempts: 0,
+  pricedAttempts: 0,
+  unpricedAttempts: 0,
+  usageReportedAttempts: 0,
+  usagePartialAttempts: 0,
+  usageMissingAttempts: 0,
+};
+
+/** Provenance for a result with no canonical or legacy records behind it. */
+export const EMPTY_USAGE_PROVENANCE: UsageProvenance = {
+  coverage: EMPTY_MODEL_CALL_COVERAGE,
+  legacyRecords: 0,
+  unreadableRecords: 0,
+  pendingRepairs: 0,
+};
+
+/**
+ * Provenance for a result built entirely from the frozen legacy table: its cost
+ * is present but was never qualified with a cost basis, so a positive total is a
+ * usable estimate while a zero stays "unknown".
+ */
+export function legacyUsageProvenance(legacyRecords: number): UsageProvenance {
+  return {
+    coverage: EMPTY_MODEL_CALL_COVERAGE,
+    legacyRecords,
+    unreadableRecords: 0,
+    pendingRepairs: 0,
+  };
+}
+
 export interface MergedUsageSummary extends UsageSummaryV2 {
   provenance: UsageProvenance;
 }
@@ -85,23 +135,29 @@ export interface MergedUsageLogs {
   provenance: UsageProvenance;
 }
 
-export interface CanonicalUsageSource {
-  attempts: readonly ModelCallAttempt[];
+/**
+ * One canonical answer, already aggregated by the ledger, with what qualifies
+ * it: rows in the window whose pricing was lost, and runs the projection has
+ * not folded in yet.
+ */
+export interface CanonicalUsageSource<T> {
+  projection: T;
   unreadableRecords: number;
   pendingRepairs: number;
 }
 
 export function mergeUsageSummary(
   legacy: UsageSummaryV2,
-  canonical: CanonicalUsageSource,
-  query: UsageQuery,
-  now: number,
+  canonical: CanonicalUsageSource<ModelCallUsageSummary>,
 ): MergedUsageSummary {
-  const projected = projectModelCallUsageSummary(canonical.attempts, query, now);
+  const projected = canonical.projection;
   return {
     range: projected.range,
     totalRequests: legacy.totalRequests + projected.totalRequests,
     totalCostUsd: legacy.totalCostUsd + projected.totalCostUsd,
+    // The projection always measures the attempts it counted, and every legacy
+    // summary carries the same field.
+    totalDurationMs: legacy.totalDurationMs + projected.totalDurationMs,
     totalTokens: {
       input: legacy.totalTokens.input + projected.totalTokens.input,
       output: legacy.totalTokens.output + projected.totalTokens.output,
@@ -125,21 +181,17 @@ export function mergeUsageSummary(
 
 export function mergeUsageBuckets(
   legacy: readonly UsageBucket[],
-  canonical: CanonicalUsageSource,
-  query: UsageQuery,
-  groupBy: UsageGroupBy,
-  now: number,
+  canonical: CanonicalUsageSource<ModelCallUsageBuckets>,
 ): MergedUsageBuckets {
-  const projected = projectModelCallUsageBuckets(canonical.attempts, query, groupBy, now);
   const merged = new Map<string, UsageBucket>();
-  for (const bucket of [...legacy, ...projected]) {
+  for (const bucket of [...legacy, ...canonical.projection.buckets]) {
     const existing = merged.get(bucket.key);
     merged.set(bucket.key, existing ? combineBuckets(existing, bucket) : { ...bucket });
   }
   return {
     buckets: [...merged.values()].sort((left, right) => right.requests - left.requests),
     provenance: {
-      coverage: projectModelCallUsageSummary(canonical.attempts, query, now).coverage,
+      coverage: canonical.projection.coverage,
       legacyRecords: legacy.reduce((total, bucket) => total + bucket.requests, 0),
       unreadableRecords: canonical.unreadableRecords,
       pendingRepairs: canonical.pendingRepairs,
@@ -154,13 +206,11 @@ export function mergeUsageBuckets(
  */
 export function mergeUsageLogs(
   legacy: { rows: readonly UsageLogRow[]; total: number },
-  canonical: CanonicalUsageSource,
-  query: UsageQuery,
-  now: number,
+  canonical: CanonicalUsageSource<ModelCallUsageLogs>,
   offset: number,
   limit: number,
 ): MergedUsageLogs {
-  const projected = projectModelCallUsageLogs(canonical.attempts, query, now, 0, offset + limit);
+  const projected = canonical.projection;
   const rows: UsageLogRow[] = [];
   let left = 0;
   let right = 0;

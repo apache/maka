@@ -173,9 +173,18 @@ export async function findRendererTarget(port, child, { timeoutMs = 90_000 } = {
       });
       if (response.ok) {
         const targets = await response.json();
-        const page = targets.find(
-          (target) => target.type === 'page' && target.webSocketDebuggerUrl,
-        );
+        // Startup and recovery windows can appear before the application.
+        // Only the packaged main entry owns the bridge and app-shell contract;
+        // selecting the first page pins subsequent probes to a temporary window.
+        const page = targets.find((target) => {
+          if (target.type !== 'page' || !target.webSocketDebuggerUrl) return false;
+          try {
+            const url = new URL(target.url);
+            return url.protocol === 'file:' && url.pathname.endsWith('/dist-renderer/index.html');
+          } catch {
+            return false;
+          }
+        });
         if (page) return page;
       }
     } catch (error) {
@@ -1002,11 +1011,6 @@ export async function assertPackagedResources(
     requirePath,
     forbidPath = assertMissing,
     requireWindowsSandbox = process.platform === 'win32',
-    // Current ASF artifacts must not carry Git. The Windows upgrade lane also
-    // verifies a previously released installer, whose historical contract did
-    // require the bundled distribution and its compliance files; keep that
-    // baseline explicit instead of judging old bytes by today's absence rule.
-    bundledGitContract = 'forbidden',
     // The upgrade-lifecycle check runs this against a previously released
     // build, which predates the disclaimer being packaged. Requiring it there
     // would fail a release that was correct when it shipped.
@@ -1022,26 +1026,22 @@ export async function assertPackagedResources(
     // artifacts that were correct when they shipped. The canonical icon itself
     // is `requireCanonicalIcon` above, not this.
     requireAppIconCatalog = true,
+    // Current Desktop builds ship the direct-peer Client addon beside its Rust
+    // notices. Upgrade baselines may predate both resources.
+    requireDirectPeerArtifact = true,
   } = {},
 ) {
-  if (bundledGitContract !== 'forbidden' && bundledGitContract !== 'legacy-required') {
-    throw new Error(`Unknown bundled Git artifact contract: ${bundledGitContract}`);
-  }
-  const requiresLegacyBundledGit = bundledGitContract === 'legacy-required';
   const required = [
     'app.asar',
     'bundled-tools.json',
-    ...(requiresLegacyBundledGit
-      ? [
-          'bundled-git.json',
-          join('licenses', 'git', 'LICENSE.txt'),
-          join('licenses', 'git', 'SOURCE_OFFER.txt'),
-          join('licenses', 'dugite', 'LICENSE'),
-          join('licenses', 'git', 'NOTICE.txt'),
-        ]
-      : []),
     ...(requireCanonicalIcon ? [join('assets', 'icon.png')] : []),
     join('workers', 'filesystem-worker.js'),
+    ...(requireDirectPeerArtifact
+      ? [
+          join('runtime-host-peer', 'maka_runtime_host_peer.node'),
+          join('licenses', 'runtime-host-peer', 'THIRD_PARTY_NOTICES.txt'),
+        ]
+      : []),
     // The picker's catalog is read at runtime, and Electron reports a missing
     // file as an empty image rather than an error — a packaging change that
     // dropped one would ship a blank tile silently.
@@ -1078,9 +1078,13 @@ export async function assertPackagedResources(
     await requirePath(join(resourcesPath, path));
   }
   const forbidden = [
-    ...(requiresLegacyBundledGit
-      ? []
-      : ['git', 'bundled-git.json', join('licenses', 'dugite'), join('licenses', 'git')]),
+    // No packaged artifact carries Git any more, and no baseline that did is
+    // still published, so the absence rule applies to every build this
+    // verifier can be pointed at.
+    'git',
+    'bundled-git.json',
+    join('licenses', 'dugite'),
+    join('licenses', 'git'),
     join('tools', 'officecli'),
     join('licenses', 'officecli'),
     // cua-driver is gone from this repository, and these two forbids stay for the

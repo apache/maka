@@ -593,7 +593,7 @@ async function run() {
       .filter(
         (action) =>
           action.success === true &&
-          !['list_apps', 'observe', 'screenshot', 'cursor_position', 'wait'].includes(action.type),
+          !['list_apps', 'launch_app', 'observe', 'screenshot', 'wait'].includes(action.type),
       )
       .map((action) => action.toolCallId)
       .filter((toolCallId) => typeof toolCallId === 'string');
@@ -765,7 +765,7 @@ async function handleRunFailure(error) {
 
 function requiredDispatchPathPassed(scenario, traces) {
   const mutationActions = scenario.allowedActions.filter(
-    (action) => !['list_apps', 'observe', 'screenshot', 'cursor_position', 'wait'].includes(action),
+    (action) => !['list_apps', 'launch_app', 'observe', 'screenshot', 'wait'].includes(action),
   );
   if (mutationActions.length === 0) return true;
   return traces.some(
@@ -807,7 +807,7 @@ export function bindActionTargets(actions, traces, fixtureIdentity) {
   );
   const consumed = new Set();
   return actions.map((action) => {
-    if (['list_apps', 'wait', 'cursor_position'].includes(action.type)) {
+    if (['list_apps', 'launch_app', 'wait'].includes(action.type)) {
       return { ...action, targetOwned: false };
     }
     const index = dispatches.findIndex(
@@ -849,7 +849,7 @@ export function bindActionTargets(actions, traces, fixtureIdentity) {
 export function allActionTargetsOwned(actions) {
   return actions.every(
     (action) =>
-      ['list_apps', 'wait', 'cursor_position'].includes(action.type) || action.targetOwned === true,
+      ['list_apps', 'launch_app', 'wait'].includes(action.type) || action.targetOwned === true,
   );
 }
 

@@ -130,6 +130,21 @@ test('an action row above the mode controls keeps the divider', async () => {
   assert.equal(withAction.includes('astryx-dropdown-menu-divider'), true);
 });
 
+test('file and folder actions have distinct labels and folder references remain removable', async () => {
+  const menu = await plusMenu({
+    ...base,
+    onPickAttachments: () => undefined,
+    onPickDirectory: () => undefined,
+    pendingDirectories: [{ hostId: 'host-a', path: '/workspace/source' }],
+    onRemoveDirectory: () => undefined,
+  });
+  assert.ok(menu.includes('Add files'));
+  assert.ok(menu.includes('Reference folder'));
+  assert.ok(menu.includes('source'));
+  assert.ok(menu.includes('aria-label="Remove source"'));
+  assert.equal((await plusMenu(base)).includes('Reference folder'), false);
+});
+
 test('each mode row is the control its field is, and none of them is on', async () => {
   const menu = await plusMenu(base);
   assert.equal(count(menu, 'role="menuitemcheckbox"'), 1, 'Plan alone is a switch');

@@ -24,7 +24,11 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
 import type { SessionHeader } from '@maka/core/session';
-import { acquireOperationalStateDatabase } from '../operational-state-store.js';
+import {
+  acquireOperationalStateDatabase,
+  OperationalStateMigrationBlockedError,
+} from '../operational-state-store.js';
+import { SQLITE_ARTIFACT_SCHEMA_VERSION } from '../sqlite-artifact-schema.js';
 import { SQLITE_RUNTIME_SCHEMA_VERSION } from '../sqlite-runtime-schema.js';
 import { SQLITE_SESSION_METADATA_SCHEMA_VERSION } from '../sqlite-session-metadata-schema.js';
 import { SQLITE_USAGE_SCHEMA_VERSION } from '../sqlite-usage-schema.js';
@@ -94,6 +98,138 @@ test('atomically reapplies current owner schema without republishing its registr
         )
         .get(),
       registry,
+    );
+    reopened.close();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('a non-owner rejects an older schema without migrating it behind the Runtime Host', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-operational-non-owner-'));
+  const databasePath = join(root, 'runtime.sqlite');
+  try {
+    acquireOperationalStateDatabase(root).close();
+    const older = new DatabaseSync(databasePath);
+    older.exec(`
+      ALTER TABLE core_agent_runs ADD COLUMN record_json TEXT;
+      UPDATE operational_schema_migrations
+      SET version = 6
+      WHERE scope = 'core_execution';
+    `);
+    older.close();
+
+    assert.throws(
+      () =>
+        acquireOperationalStateDatabase(root, {
+          schemaMigration: 'require_current',
+        }),
+      (error: unknown) =>
+        error instanceof OperationalStateMigrationBlockedError &&
+        error.reason === 'requires_host_migration' &&
+        /requires migration by its Runtime Host/u.test(error.message),
+    );
+
+    const preserved = new DatabaseSync(databasePath, { readOnly: true });
+    try {
+      const columns = preserved.prepare('PRAGMA table_info(core_agent_runs)').all() as Array<{
+        name: string;
+      }>;
+      assert.ok(columns.some(({ name }) => name === 'record_json'));
+      assert.equal(
+        (
+          preserved
+            .prepare(
+              "SELECT version FROM operational_schema_migrations WHERE scope = 'core_execution'",
+            )
+            .get() as { version: number }
+        ).version,
+        6,
+      );
+    } finally {
+      preserved.close();
+    }
+
+    const hostOwned = acquireOperationalStateDatabase(root);
+    try {
+      const columns = hostOwned.database
+        .prepare('PRAGMA table_info(core_agent_runs)')
+        .all() as Array<{ name: string }>;
+      assert.equal(
+        columns.some(({ name }) => name === 'record_json'),
+        false,
+      );
+    } finally {
+      hostOwned.close();
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('preserves live supported v1 Artifacts when opening existing Sessions', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-operational-artifact-v1-retirement-'));
+  const databasePath = join(root, 'runtime.sqlite');
+  try {
+    const lease = acquireOperationalStateDatabase(root);
+    const metadata = createSqliteSessionMetadataStore(databasePath, { databaseLease: lease });
+    await metadata.create(sessionHeader());
+    metadata.close();
+    lease.close();
+
+    const legacy = new DatabaseSync(databasePath);
+    legacy.exec(`
+      DROP TABLE artifact_records;
+      CREATE TABLE artifact_records (
+        storage_key TEXT PRIMARY KEY,
+        artifact_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        created_at INTEGER NOT NULL CHECK (created_at >= 0),
+        status TEXT NOT NULL CHECK (status IN ('live', 'deleted')),
+        relative_path TEXT NOT NULL,
+        record_json TEXT NOT NULL
+      );
+      CREATE INDEX artifact_records_session_order
+        ON artifact_records(session_id, created_at, storage_key);
+      CREATE UNIQUE INDEX artifact_records_relative_path
+        ON artifact_records(relative_path);
+      INSERT INTO artifact_records VALUES (
+        'legacy-key',
+        'legacy-artifact',
+        'session-1',
+        1,
+        'live',
+        'session-1/legacy-artifact-result.txt',
+        '{"id":"legacy-artifact","sessionId":"session-1","turnId":"turn-1","createdAt":1,"name":"result.txt","kind":"file","sizeBytes":4,"relativePath":"session-1/legacy-artifact-result.txt","source":"tool_result_archive","status":"live"}'
+      );
+      UPDATE operational_schema_migrations SET version = 1 WHERE scope = 'artifact';
+    `);
+    legacy.close();
+
+    const reopened = acquireOperationalStateDatabase(root);
+    assert.equal(
+      (
+        reopened.database
+          .prepare("SELECT COUNT(*) AS count FROM session_metadata WHERE session_id = 'session-1'")
+          .get() as { count: number }
+      ).count,
+      1,
+    );
+    assert.equal(
+      (
+        reopened.database.prepare('SELECT COUNT(*) AS count FROM artifact_records').get() as {
+          count: number;
+        }
+      ).count,
+      1,
+    );
+    assert.equal(
+      (
+        reopened.database
+          .prepare("SELECT version FROM operational_schema_migrations WHERE scope = 'artifact'")
+          .get() as { version: number }
+      ).version,
+      SQLITE_ARTIFACT_SCHEMA_VERSION,
     );
     reopened.close();
   } finally {
@@ -913,7 +1049,7 @@ for (const { name, mutation } of [
         DROP INDEX artifact_records_relative_path;
         CREATE UNIQUE INDEX artifact_records_relative_path
           ON artifact_records(relative_path)
-          WHERE status = 'live';
+          WHERE relative_path <> '';
       `),
   },
   {
@@ -922,12 +1058,10 @@ for (const { name, mutation } of [
       database.exec(`
         DROP TABLE artifact_records;
         CREATE TABLE artifact_records (
-          storage_key TEXT PRIMARY KEY,
-          artifact_id TEXT NOT NULL,
+          artifact_id TEXT PRIMARY KEY,
           session_id TEXT NOT NULL,
           created_at INTEGER NOT NULL CHECK (created_at >= 0),
-          status TEXT NOT NULL CHECK (status IN ('LIVE', 'DELETED')),
-          relative_path TEXT NOT NULL,
+          relative_path TEXT NOT NULL CHECK (relative_path <> ''),
           record_json TEXT NOT NULL
         );
       `),
@@ -996,13 +1130,13 @@ test('rejects a nonempty database with no operational registry', async () => {
     'missing-registry',
     (database) =>
       database.exec(
-        'DROP TABLE operational_schema_migrations; DROP TABLE workflow_task_ledger_events',
+        'DROP TABLE operational_schema_migrations; DROP TABLE workflow_session_todo_documents',
       ),
     /registry is missing from a nonempty database/,
     (database) =>
       assert.equal(
         database
-          .prepare("SELECT 1 FROM sqlite_schema WHERE name = 'workflow_task_ledger_events'")
+          .prepare("SELECT 1 FROM sqlite_schema WHERE name = 'workflow_session_todo_documents'")
           .get(),
         undefined,
       ),
@@ -1161,6 +1295,13 @@ test('rejects a newer scope before migrating an older scope', async () => {
     assert.throws(
       () => acquireOperationalStateDatabase(root),
       /Operational schema usage is newer than supported/,
+    );
+    assert.throws(
+      () => acquireOperationalStateDatabase(root, { schemaMigration: 'require_current' }),
+      (error: unknown) =>
+        error instanceof OperationalStateMigrationBlockedError &&
+        error.reason === 'blocked' &&
+        /Operational schema usage is newer than supported/u.test(error.message),
     );
 
     const preserved = new DatabaseSync(databasePath, { readOnly: true });

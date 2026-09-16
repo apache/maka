@@ -47,6 +47,7 @@ import { open, readdir, realpath, stat, type FileHandle } from 'node:fs/promises
 import { homedir } from 'node:os';
 import { basename, join, resolve, sep } from 'node:path';
 import {
+  CODEX_SUPPORTED_THREAD_SOURCES,
   FOREIGN_SESSION_DIGEST_MAX_READ_BYTES,
   FOREIGN_SESSION_HEAD_BYTES,
   FOREIGN_SESSION_SCAN_MAX_AGE_MS,
@@ -538,13 +539,6 @@ async function codexStateDbsNewestFirst(codexRoot: string): Promise<string[]> {
 }
 
 /**
- * Codex source tokens as stored in the DB — bare for cli/vscode, JSON-wrapped
- * for the `custom` variants. Used as bound `source IN (…)` params so archived
- * / foreign-source rows are excluded IN SQL (before LIMIT), not after.
- */
-const CODEX_SOURCE_SQL_VALUES = ['cli', 'vscode', '{"custom":"atlas"}', '{"custom":"chatgpt"}'];
-
-/**
  * Read candidate thread rows from one state DB, filtered and ordered in SQL.
  * undefined = DB unusable (cannot open, or lacks the id/rollout_path columns)
  * so the caller descends to an older generation. An empty array is a real
@@ -582,8 +576,21 @@ async function readCodexThreadRows(
       const params: string[] = [];
       if (columns.has('archived')) where.push('(archived IS NULL OR archived = 0)');
       if (columns.has('source')) {
-        where.push(`source IN (${CODEX_SOURCE_SQL_VALUES.map(() => '?').join(', ')})`);
-        params.push(...CODEX_SOURCE_SQL_VALUES);
+        const sourceTokens = [...CODEX_SUPPORTED_THREAD_SOURCES];
+        const placeholders = sourceTokens.map(() => '?').join(', ');
+        // Keep unsupported rows from consuming the bounded SQL window, but
+        // derive this coarse prefilter from the same token authority as
+        // normalizeCodexThreadRow(). The JS gate remains authoritative over
+        // exact shapes after bare, wrapped-custom, and legacy NULL sources
+        // have survived the query.
+        where.push(`(
+          source IS NULL
+          OR source IN (${placeholders})
+          OR CASE WHEN json_valid(source)
+            THEN json_extract(source, '$.custom')
+          END IN (${placeholders})
+        )`);
+        params.push(...sourceTokens, ...sourceTokens);
       }
       // Filter cwd IN SQL, before LIMIT: otherwise a multi-project store with
       // many newer threads from other directories fills the LIMIT window and

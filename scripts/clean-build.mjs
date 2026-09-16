@@ -55,6 +55,8 @@ targets.push(
   'apps/desktop/dist-renderer',
   'apps/desktop/tsconfig.main.tsbuildinfo',
   'apps/desktop/tsconfig.renderer.tsbuildinfo',
+  'packages/core/src/model-metadata.generated.ts',
+  'packages/runtime/src/telemetry/model-pricing.generated.ts',
 );
 
 let removed = 0;

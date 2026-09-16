@@ -19,7 +19,11 @@
 
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { CU_TOOL_ACTION_TYPES, type CuAction } from '@maka/core/computer-use';
+import {
+  computerUseApprovalSummary,
+  CU_TOOL_ACTION_TYPES,
+  type CuAction,
+} from '@maka/core/computer-use';
 import { zodSchema } from 'ai';
 import {
   adaptToCuAction,
@@ -106,6 +110,7 @@ function observation(over: Partial<CuObservation> = {}): CuObservation {
         elementId: '5',
         role: 'AXButton',
         label: 'Continue',
+        frame: { x: 280, y: 190, width: 40, height: 20 },
         identity: { token: 'button-token', role: 'AXButton', label: 'Continue' },
       },
     ],
@@ -120,15 +125,15 @@ function observation(over: Partial<CuObservation> = {}): CuObservation {
 }
 
 describe('adaptToCuAction — flat Anthropic grammar → discriminated CuAction', () => {
-  test('a click without a coordinate throws invalid_coordinate', () => {
-    assert.throws(() => adaptToCuAction({ action: 'left_click' } as never), /invalid_coordinate/);
+  test('a removed coordinate action is rejected as unknown', () => {
+    assert.throws(() => adaptToCuAction({ action: 'left_click' } as never), /unknown action/);
   });
 
   test('type without text throws', () => {
     assert.throws(() => adaptToCuAction({ action: 'type' } as never), /requires text/);
   });
 
-  test('provider function schema rejects unrelated fields and invalid coordinates', () => {
+  test('provider function schema excludes coordinate actions and fields', () => {
     const [tool] = buildComputerUseTools({ backend: fakeBackend() });
     const schema = tool.parameters as {
       safeParse(value: unknown): { success: boolean };
@@ -139,11 +144,11 @@ describe('adaptToCuAction — flat Anthropic grammar → discriminated CuAction'
         app: 'Fixture',
         coordinate: [1, 2],
       }).success,
-      true,
+      false,
     );
-    assert.equal(schema.safeParse({ action: 'left_click', coordinate: [-1, 2] }).success, false);
-    assert.equal(schema.safeParse({ action: 'left_click', coordinate: [1.5, 2] }).success, false);
-    assert.equal(schema.safeParse({ action: 'left_click', coordinate: [1, 2] }).success, true);
+    assert.equal(schema.safeParse({ action: 'left_click', coordinate: [1, 2] }).success, false);
+    assert.equal(schema.safeParse({ action: 'scroll', coordinate: [1, 2] }).success, false);
+    assert.equal(schema.safeParse({ action: 'zoom', region: [1, 2, 3, 4] }).success, false);
   });
 
   test('runtime strict parsing rejects fields that are irrelevant to the selected action', async () => {
@@ -196,15 +201,11 @@ test('provider schema explains the required semantic action fields', async () =>
 });
 
 test('computer params are copied and frozen before asynchronous policy checks', () => {
-  const coordinate = [10, 20] as [number, number];
-  const input = { action: 'left_click', coordinate } as never;
-  const snapshot = snapshotComputerParams(input);
-  coordinate[0] = 999;
-  (input as { action: string }).action = 'right_click';
+  const input = { action: 'key', text: 'cmd+a' } as const;
+  const snapshot = snapshotComputerParams(input as never);
 
-  assert.deepEqual(snapshot, { action: 'left_click', coordinate: [10, 20] });
+  assert.deepEqual(snapshot, { action: 'key', text: 'cmd+a' });
   assert.equal(Object.isFrozen(snapshot), true);
-  assert.equal(Object.isFrozen(snapshot.coordinate), true);
 });
 
 test('computer params reject accessors before policy or execution', () => {
@@ -293,9 +294,12 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
       observeApp: NonNullable<CuDispatchBackend['observeApp']>;
     };
     backend.observeApp = async () => observation();
-    backend.run = async () => {
+    backend.runSemantic = async () => {
       dispatchCount += 1;
-      return { outcome: { ok: true, tier: 'ax', verified: true } };
+      return {
+        outcome: { ok: true, tier: 'ax', verified: true },
+        observation: observation({ observationId: 'backend-obs-2' }),
+      };
     };
     const tools = buildComputerUseTools({
       backend,
@@ -322,9 +326,9 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
     const observationId = observationIdOf(observed.modelText);
     const pending = tool.impl(
       {
-        action: 'left_click',
+        action: 'click_element',
         observation_id: observationId,
-        coordinate: [10, 10],
+        element_id: '5',
       } as never,
       ctx(),
     );
@@ -378,6 +382,10 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
         windowBounds: { x: 100, y: 50, width: 400, height: 300 },
         sourceBoundsPx: { x: 0, y: 0, width: 800, height: 600 },
       });
+    backend.runSemantic = async () => ({
+      outcome: { ok: true, tier: 'ax', verified: true },
+      observation: observation({ observationId: 'backend-obs-2' }),
+    });
     const [tool] = buildComputerUseTools({
       backend,
       overlay: {
@@ -397,11 +405,7 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
     };
     const observationId = observationIdOf(observed.modelText);
     await tool.impl(
-      {
-        action: 'left_click',
-        observation_id: observationId,
-        coordinate: [400, 300],
-      } as never,
+      { action: 'click_element', observation_id: observationId, element_id: '5' } as never,
       ctx(),
     );
     assert.deepEqual(point, { x: 300, y: 200 });
@@ -424,6 +428,10 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
         windowBounds: { x: 100, y: 50, width: 400, height: 300 },
         sourceBoundsPx: { x: 0, y: 0, width: 800, height: 600 },
       });
+    backend.runSemantic = async () => ({
+      outcome: { ok: true, tier: 'ax', verified: true },
+      observation: observation({ observationId: 'backend-obs-2' }),
+    });
     const [tool] = buildComputerUseTools({
       backend,
       overlay: {
@@ -437,11 +445,7 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
     };
     const observationId = observationIdOf(observed.modelText);
     await tool.impl(
-      {
-        action: 'left_click',
-        observation_id: observationId,
-        coordinate: [400, 300],
-      } as never,
+      { action: 'click_element', observation_id: observationId, element_id: '5' } as never,
       ctx(),
     );
     assert.equal(seen, 4321);
@@ -501,9 +505,12 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
       observation({
         observationId: 'backend-obs-2',
       });
-    backend.run = async () => {
+    backend.runSemantic = async () => {
       tools.sessionEvents.physicalUserIntervened('s1');
-      return { outcome: { ok: true, tier: 'ax', verified: true } };
+      return {
+        outcome: { ok: true, tier: 'ax', verified: true },
+        observation: observation({ observationId: 'backend-obs-2' }),
+      };
     };
     tools = buildComputerUseTools({
       backend,
@@ -532,9 +539,9 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
     const observationId = observationIdOf(observed.modelText);
     const result = (await tool.impl(
       {
-        action: 'left_click',
+        action: 'click_element',
         observation_id: observationId,
-        coordinate: [10, 10],
+        element_id: '5',
       } as never,
       ctx(),
     )) as { error?: string };
@@ -866,9 +873,9 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
     assert.deepEqual(
       tool.permissionArgs?.(
         {
-          action: 'left_click',
+          action: 'click_element',
           observation_id: observationId,
-          coordinate: [25, 30],
+          element_id: '5',
         } as never,
         {
           sessionId: 's1',
@@ -877,19 +884,24 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
         },
       ),
       {
-        action: 'left_click',
+        action: 'click_element',
         observation_id: observationId,
-        coordinate: [25, 30],
+        element_id: '5',
         app: 'Fixture',
         window_id: 7,
+        element_identity: {
+          token: 'button-token',
+          role: 'AXButton',
+          label: 'Continue',
+        },
       },
     );
     assert.deepEqual(
       tool.permissionArgs?.(
         {
-          action: 'left_click',
+          action: 'click_element',
           observation_id: 'wrong-frame',
-          coordinate: [25, 30],
+          element_id: '5',
         } as never,
         {
           sessionId: 's1',
@@ -898,11 +910,49 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
         },
       ),
       {
-        action: 'left_click',
+        action: 'click_element',
         observation_id: 'wrong-frame',
-        coordinate: [25, 30],
+        element_id: '5',
       },
     );
+  });
+
+  test('keyboard actions reach approval as observation-bound keyboard mutations', async () => {
+    const backend = fakeBackend() as CuDispatchBackend & {
+      observeApp: NonNullable<CuDispatchBackend['observeApp']>;
+    };
+    backend.observeApp = async () => observation();
+    const [tool] = buildComputerUseTools({ backend });
+    const observed = (await tool.impl(
+      { action: 'observe', app: 'Fixture', window_id: 7 } as never,
+      ctx(),
+    )) as { text: string };
+    const observationId = JSON.parse(observed.text).observation_id as string;
+
+    for (const args of [
+      { action: 'type', observation_id: observationId, text: 'hello' },
+      { action: 'key', observation_id: observationId, text: 'Tab' },
+      { action: 'press_key', observation_id: observationId, text: 'Return' },
+    ] as const) {
+      const permissionArgs = tool.permissionArgs?.(args as never, {
+        sessionId: 's1',
+        turnId: 't1',
+        toolCallId: `approve-${args.action}`,
+      });
+      assert.deepEqual(permissionArgs, {
+        ...args,
+        app: 'Fixture',
+        window_id: 7,
+      });
+      assert.deepEqual(computerUseApprovalSummary(permissionArgs), {
+        action: args.action,
+        approvalClass: 'keyboard_mutation',
+        rememberForTurnAllowed: true,
+        app: 'Fixture',
+        windowId: 7,
+        observationId,
+      });
+    }
   });
 
   test('an element action may repeat the target it already named, and the host still resolves it', async () => {
@@ -916,6 +966,9 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
       runSemantic: NonNullable<CuDispatchBackend['runSemantic']>;
     };
     backend.observeApp = async () => observation();
+    backend.runSemantic = async () => ({
+      outcome: { ok: true, tier: 'ax', verified: true },
+    });
     let dispatched = 0;
     backend.runSemantic = async () => {
       dispatched += 1;
@@ -1529,17 +1582,20 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
     }
   });
 
-  test('coordinate action is bound to a window-local screenshot and consumes the observation', async () => {
+  test('semantic action is bound to an observed element and consumes the observation', async () => {
     const backend = fakeBackend() as CuDispatchBackend & {
       observeApp: NonNullable<CuDispatchBackend['observeApp']>;
       captureObservation: NonNullable<CuDispatchBackend['captureObservation']>;
       lastContext?: CuRunContext;
     };
     backend.observeApp = async () => observation();
-    backend.captureObservation = async () =>
-      observation({
-        observationId: 'backend-obs-2',
-      });
+    backend.runSemantic = async (_action, _signal, context) => {
+      backend.lastContext = context;
+      return {
+        outcome: { ok: true, tier: 'ax', verified: true },
+        observation: observation({ observationId: 'backend-obs-2' }),
+      };
+    };
     const [tool] = buildComputerUseTools({ backend });
     const observed = (await tool.impl({ action: 'observe', app: 'Fixture' } as never, ctx())) as {
       text: string;
@@ -1548,9 +1604,9 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
 
     const result = (await tool.impl(
       {
-        action: 'left_click',
+        action: 'click_element',
         observation_id: observationId,
-        coordinate: [25, 30],
+        element_id: '5',
       } as never,
       ctx(),
     )) as {
@@ -1558,9 +1614,8 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
       screenshot?: { base64: string; mimeType: string };
     };
 
-    assert.equal(backend.lastContext?.boundAction?.coordinateSpace, 'window-screenshot-local');
     assert.equal(backend.lastContext?.boundAction?.target.contentFingerprint, 'ax-structure-1');
-    assert.deepEqual(backend.lastContext?.boundAction?.windowCoordinate, { x: 25, y: 30 });
+    assert.equal(backend.lastContext?.boundAction?.elementId, '5');
     assert.match(result.text, /Fresh observation/);
     assert.deepEqual(result.screenshot, {
       base64: 'AA==',
@@ -1569,9 +1624,9 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
 
     const replay = (await tool.impl(
       {
-        action: 'left_click',
+        action: 'click_element',
         observation_id: observationId,
-        coordinate: [25, 30],
+        element_id: '5',
       } as never,
       ctx(),
     )) as { text: string };
@@ -1581,8 +1636,12 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
   test('successful bound action fails closed without a fresh full observation', async () => {
     const backend = fakeBackend() as CuDispatchBackend & {
       observeApp: NonNullable<CuDispatchBackend['observeApp']>;
+      runSemantic: NonNullable<CuDispatchBackend['runSemantic']>;
     };
     backend.observeApp = async () => observation();
+    backend.runSemantic = async () => ({
+      outcome: { ok: true, tier: 'ax', verified: true },
+    });
     const [tool] = buildComputerUseTools({ backend });
     const observed = (await tool.impl({ action: 'observe', app: 'Fixture' } as never, ctx())) as {
       text: string;
@@ -1591,9 +1650,9 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
 
     const result = (await tool.impl(
       {
-        action: 'left_click',
+        action: 'click_element',
         observation_id: observationId,
-        coordinate: [25, 30],
+        element_id: '5',
       } as never,
       ctx(),
     )) as { text: string };
@@ -1640,57 +1699,6 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
     )) as { text: string };
     assert.match(semantic.text, /permission_missing/);
     assert.equal(dispatches, 0);
-
-    const observedAgain = (await tool.impl(
-      {
-        action: 'observe',
-        app: 'Fixture',
-        include_screenshot: false,
-      } as never,
-      ctx(),
-    )) as { text: string };
-    const coordinate = (await tool.impl(
-      {
-        action: 'left_click',
-        observation_id: JSON.parse(observedAgain.text).observation_id,
-        coordinate: [25, 30],
-      } as never,
-      ctx(),
-    )) as { text: string };
-    assert.match(coordinate.text, /permission_missing/);
-    assert.equal(dispatches, 0);
-  });
-
-  test('zoom consumes the source observation and cannot reuse crop coordinates as the old frame', async () => {
-    const backend = fakeBackend() as CuDispatchBackend & {
-      observeApp: NonNullable<CuDispatchBackend['observeApp']>;
-    };
-    backend.observeApp = async () => observation();
-    const [tool] = buildComputerUseTools({ backend });
-    const observed = (await tool.impl({ action: 'observe', app: 'Fixture' } as never, ctx())) as {
-      text: string;
-    };
-    const observationId = JSON.parse(observed.text).observation_id as string;
-
-    const zoom = (await tool.impl(
-      {
-        action: 'zoom',
-        observation_id: observationId,
-        region: [0, 0, 50, 40],
-      } as never,
-      ctx(),
-    )) as { text: string };
-    assert.match(zoom.text, /outcome_unknown/);
-
-    const click = (await tool.impl(
-      {
-        action: 'left_click',
-        observation_id: observationId,
-        coordinate: [10, 10],
-      } as never,
-      ctx(),
-    )) as { text: string };
-    assert.match(click.text, /stale_frame|no_active_frame|reobserve_required/);
   });
 
   test('runtime does not infer user intervention from observation content changes', async () => {
@@ -1935,10 +1943,13 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
       observation({
         observationId: 'backend-obs-2',
       });
-    backend.run = async () => {
+    backend.runSemantic = async () => {
       markDispatchStarted();
       await dispatchGate;
-      return { outcome: { ok: true, tier: 'ax', verified: true } };
+      return {
+        outcome: { ok: true, tier: 'ax', verified: true },
+        observation: observation({ observationId: 'backend-obs-2' }),
+      };
     };
     const tools = buildComputerUseTools({ backend });
     const [tool] = tools;
@@ -1947,9 +1958,9 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
     };
     const action = tool.impl(
       {
-        action: 'left_click',
+        action: 'click_element',
         observation_id: JSON.parse(observed.text).observation_id,
-        coordinate: [25, 30],
+        element_id: '5',
       } as never,
       ctx(),
     );
@@ -2001,7 +2012,7 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
         observation({
           observationId: 'backend-obs-2',
         });
-      backend.run = async () => ({
+      backend.runSemantic = async () => ({
         outcome: {
           ok: false,
           error,
@@ -2019,9 +2030,9 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
       )) as { text: string };
       await tool.impl(
         {
-          action: 'left_click',
+          action: 'click_element',
           observation_id: JSON.parse(observed.text).observation_id,
-          coordinate: [25, 30],
+          element_id: '5',
         } as never,
         ctx(),
       );
@@ -2029,7 +2040,7 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
     });
   }
 
-  test('generic outcome_unknown remains model-visible while requiring reobserve', async () => {
+  test('keyboard outcome_unknown remains model-visible while requiring reobserve', async () => {
     const backend = fakeBackend() as CuDispatchBackend & {
       observeApp: NonNullable<CuDispatchBackend['observeApp']>;
     };
@@ -2049,9 +2060,9 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
 
     const result = (await tool.impl(
       {
-        action: 'left_click',
+        action: 'key',
         observation_id: JSON.parse(observed.text).observation_id,
-        coordinate: [25, 30],
+        text: 'Tab',
       } as never,
       ctx(),
     )) as { text: string };
@@ -2094,76 +2105,108 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
     assert.equal(tools.sessionEvents.snapshot('s1').status, 'reobserve_required');
   });
 
-  for (const semantic of [false, true]) {
-    test(`clearSession cannot mask a delivered ${semantic ? 'semantic ' : ''}mutation outcome`, async () => {
-      let release!: () => void;
-      let started!: () => void;
-      const gate = new Promise<void>((resolve) => {
-        release = resolve;
-      });
-      const entered = new Promise<void>((resolve) => {
-        started = resolve;
-      });
-      const backend = fakeBackend() as CuDispatchBackend & {
-        observeApp: NonNullable<CuDispatchBackend['observeApp']>;
-        runSemantic: NonNullable<CuDispatchBackend['runSemantic']>;
-      };
-      backend.observeApp = async () => observation();
-      backend.run = async () => {
-        started();
-        await gate;
-        return {
-          outcome: {
-            ok: false,
-            error: 'outcome_unknown',
-            message: 'coordinate delivery may have occurred',
-          },
-        };
-      };
-      backend.runSemantic = async () => {
-        started();
-        await gate;
-        return {
-          outcome: {
-            ok: false,
-            error: 'capture_failed',
-            message: 'semantic verification failed after delivery',
-            completedSubSteps: 1,
-          },
-        };
-      };
-      const tools = buildComputerUseTools({ backend });
-      const [tool] = tools;
-      const observed = (await tool.impl({ action: 'observe', app: 'Fixture' } as never, ctx())) as {
-        text: string;
-      };
-      const observationId = JSON.parse(observed.text).observation_id as string;
-      const pending = tool.impl(
-        semantic
-          ? ({
-              action: 'click_element',
-              observation_id: observationId,
-              element_id: '5',
-            } as never)
-          : ({
-              action: 'left_click',
-              observation_id: observationId,
-              coordinate: [25, 30],
-            } as never),
-        ctx(),
-      );
-      await entered;
-
-      tools.clearSession('s1');
-      release();
-
-      const result = (await pending) as { text: string; error?: string };
-      assert.equal(result.error, 'outcome_unknown');
-      assert.match(result.text, /outcome_unknown/);
-      assert.doesNotMatch(result.text, /user_stopped|no_active_frame/);
-      assert.equal(tools.sessionEvents.snapshot('s1').status, 'user_stopped');
+  test('clearSession cannot mask a delivered semantic mutation outcome', async () => {
+    let release!: () => void;
+    let started!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
     });
-  }
+    const entered = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const backend = fakeBackend() as CuDispatchBackend & {
+      observeApp: NonNullable<CuDispatchBackend['observeApp']>;
+      runSemantic: NonNullable<CuDispatchBackend['runSemantic']>;
+    };
+    backend.observeApp = async () => observation();
+    backend.runSemantic = async () => {
+      started();
+      await gate;
+      return {
+        outcome: {
+          ok: false,
+          error: 'capture_failed',
+          message: 'semantic verification failed after delivery',
+          completedSubSteps: 1,
+        },
+      };
+    };
+    const tools = buildComputerUseTools({ backend });
+    const [tool] = tools;
+    const observed = (await tool.impl({ action: 'observe', app: 'Fixture' } as never, ctx())) as {
+      text: string;
+    };
+    const observationId = JSON.parse(observed.text).observation_id as string;
+    const pending = tool.impl(
+      {
+        action: 'click_element',
+        observation_id: observationId,
+        element_id: '5',
+      } as never,
+      ctx(),
+    );
+    await entered;
+
+    tools.clearSession('s1');
+    release();
+
+    const result = (await pending) as { text: string; error?: string };
+    assert.equal(result.error, 'outcome_unknown');
+    assert.match(result.text, /outcome_unknown/);
+    assert.doesNotMatch(result.text, /user_stopped|no_active_frame/);
+    assert.equal(tools.sessionEvents.snapshot('s1').status, 'user_stopped');
+  });
+
+  test('clearSession cannot mask a delivered keyboard mutation outcome', async () => {
+    let release!: () => void;
+    let started!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const entered = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const backend = fakeBackend() as CuDispatchBackend & {
+      observeApp: NonNullable<CuDispatchBackend['observeApp']>;
+    };
+    backend.observeApp = async () => observation();
+    backend.run = async () => {
+      started();
+      await gate;
+      return {
+        outcome: {
+          ok: false,
+          error: 'capture_failed',
+          message: 'keyboard verification failed after delivery',
+          completedSubSteps: 1,
+        },
+      };
+    };
+    const tools = buildComputerUseTools({ backend });
+    const [tool] = tools;
+    const observed = (await tool.impl({ action: 'observe', app: 'Fixture' } as never, ctx())) as {
+      text: string;
+    };
+    const observationId = JSON.parse(observed.text).observation_id as string;
+    const pending = tool.impl(
+      {
+        action: 'key',
+        observation_id: observationId,
+        text: 'Tab',
+      } as never,
+      ctx(),
+    );
+    await entered;
+
+    tools.clearSession('s1');
+    release();
+
+    const result = (await pending) as { text: string; error?: string };
+    assert.equal(result.error, 'outcome_unknown');
+    assert.match(result.text, /outcome_unknown/);
+    assert.doesNotMatch(result.text, /user_stopped|no_active_frame/);
+    assert.equal(tools.sessionEvents.snapshot('s1').status, 'user_stopped');
+  });
 
   test('a queued keyboard mutation cannot silently target a newer frame', async () => {
     let releaseClick!: () => void;
@@ -2180,10 +2223,13 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
       observation({
         observationId: 'backend-obs-2',
       });
-    backend.run = async (action) => {
+    backend.runSemantic = async () => {
       dispatches += 1;
-      if (action.type === 'left_click') await clickGate;
-      return { outcome: { ok: true, tier: 'ax', verified: true } };
+      await clickGate;
+      return {
+        outcome: { ok: true, tier: 'ax', verified: true },
+        observation: observation({ observationId: 'backend-obs-2' }),
+      };
     };
     const [tool] = buildComputerUseTools({ backend });
     const observed = (await tool.impl({ action: 'observe', app: 'Fixture' } as never, ctx())) as {
@@ -2193,9 +2239,9 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
 
     const click = tool.impl(
       {
-        action: 'left_click',
+        action: 'click_element',
         observation_id: observationId,
-        coordinate: [25, 30],
+        element_id: '5',
       } as never,
       ctx(undefined, { toolCallId: 'click' }),
     );
@@ -2222,7 +2268,7 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
       observeApp: NonNullable<CuDispatchBackend['observeApp']>;
     };
     backend.observeApp = async () => observation();
-    backend.run = async () => {
+    backend.runSemantic = async () => {
       throw new Error('child exited after dispatch');
     };
     const tools = buildComputerUseTools({ backend });
@@ -2235,9 +2281,9 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
       Promise.resolve(
         tool.impl(
           {
-            action: 'left_click',
+            action: 'click_element',
             observation_id: JSON.parse(observed.text).observation_id,
-            coordinate: [25, 30],
+            element_id: '5',
           } as never,
           ctx(),
         ),
@@ -2360,7 +2406,6 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
     for (const input of [
       { action: 'list_apps' },
       { action: 'screenshot', app: 'Fixture' },
-      { action: 'cursor_position' },
       { action: 'wait', duration: 0.001 },
     ] as const) {
       let release!: () => void;
@@ -2385,15 +2430,10 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
         await gate;
         return observation();
       };
-      backend.run = async (action) => {
+      backend.run = async () => {
         started();
         await gate;
-        return action.type === 'cursor_position'
-          ? {
-              outcome: { ok: true, tier: 'coordinate-background' },
-              resolvedScreenPoint: { x: 10, y: 20 },
-            }
-          : { outcome: { ok: true, tier: 'coordinate-background' } };
+        return { outcome: { ok: true, tier: 'ax' } };
       };
       const tools = buildComputerUseTools({ backend });
       const tool = tools[0];
@@ -2409,7 +2449,7 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
   });
 
   test('clearSession fences failed host-reading results that complete after stop', async () => {
-    for (const action of ['cursor_position', 'wait'] as const) {
+    for (const action of ['wait'] as const) {
       let release!: () => void;
       let started!: () => void;
       const gate = new Promise<void>((resolve) => {
@@ -2432,10 +2472,7 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
       };
       const tools = buildComputerUseTools({ backend });
       const [tool] = tools;
-      const pending = tool.impl(
-        action === 'wait' ? ({ action, duration: 0.001 } as never) : ({ action } as never),
-        ctx(),
-      );
+      const pending = tool.impl({ action, duration: 0.001 } as never, ctx());
       await entered;
       tools.clearSession('s1');
       release();
@@ -2447,7 +2484,7 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
   });
 
   test('ordinary failed host reads preserve their typed backend error', async () => {
-    for (const action of ['cursor_position', 'wait'] as const) {
+    for (const action of ['wait'] as const) {
       const backend = fakeBackend({
         result: {
           outcome: {
@@ -2458,10 +2495,10 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
         },
       });
       const [tool] = buildComputerUseTools({ backend });
-      const result = (await tool.impl(
-        action === 'wait' ? ({ action, duration: 0.001 } as never) : ({ action } as never),
-        ctx(),
-      )) as { text: string; error?: string };
+      const result = (await tool.impl({ action, duration: 0.001 } as never, ctx())) as {
+        text: string;
+        error?: string;
+      };
 
       assert.equal(result.error, 'service_unavailable', action);
       assert.match(result.text, /service_unavailable/, action);
@@ -2469,27 +2506,12 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
     }
   });
 
-  test('cursor_position returns the resolved screen point to the model', async () => {
-    const backend = fakeBackend({
-      result: {
-        outcome: { ok: true, tier: 'coordinate-background', verified: true },
-        resolvedScreenPoint: { x: 10, y: 20 },
-      },
-    });
-    const [tool] = buildComputerUseTools({ backend });
-    const result = (await tool.impl({ action: 'cursor_position' } as never, ctx())) as {
-      text: string;
-    };
-
-    assert.match(result.text, /screen_point=10,20/);
-  });
-
   test('fresh observations inherit a separately returned screenshot', async () => {
     const backend = fakeBackend() as CuDispatchBackend & {
       observeApp: NonNullable<CuDispatchBackend['observeApp']>;
     };
     backend.observeApp = async () => observation();
-    backend.run = async () => ({
+    backend.runSemantic = async () => ({
       outcome: { ok: true, tier: 'ax', verified: true },
       observation: observation({
         observationId: 'backend-obs-2',
@@ -2508,9 +2530,9 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
     };
     const result = (await tool.impl(
       {
-        action: 'left_click',
+        action: 'click_element',
         observation_id: JSON.parse(observed.text).observation_id,
-        coordinate: [25, 30],
+        element_id: '5',
       } as never,
       ctx(),
     )) as {
@@ -2527,13 +2549,13 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
     );
     const followUp = (await tool.impl(
       {
-        action: 'left_click',
+        action: 'click_element',
         observation_id: freshObservationId,
-        coordinate: [30, 35],
+        element_id: '5',
       } as never,
       ctx(),
     )) as { text: string };
-    assert.match(followUp.text, /computer\.left_click ok/);
+    assert.match(followUp.text, /computer\.click_element ok/);
   });
 
   test('S17: surfaces the typed backend failure code without leaking raw driver text', async () => {
@@ -2667,7 +2689,7 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
     const ac = new AbortController();
     ac.abort();
     const backend = fakeBackend();
-    const r = await callComputer(backend, { action: 'left_click', coordinate: [1, 1] }, ac.signal);
+    const r = await callComputer(backend, { action: 'wait', duration: 0.001 }, ac.signal);
     assert.match(r.text, /aborted/);
     assert.equal(backend.last, undefined, 'backend.run must not be called after abort');
   });

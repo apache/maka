@@ -40,7 +40,7 @@ export type DailyReviewSettingsCopy = {
 };
 
 const SETTINGS_DAILY_REVIEW_COPY = {
-  zh: {
+  'zh-CN': {
     defaultModel: '跟随任务默认',
     saveFailed: '保存每日回顾设置失败',
     aria: '每日回顾',
@@ -58,6 +58,25 @@ const SETTINGS_DAILY_REVIEW_COPY = {
     analysisDescription: '选择用于生成固定结构报告的模型。',
     model: '分析模型',
     modelHelp: '未指定时跟随当前任务的默认模型。',
+  },
+  'zh-TW': {
+    defaultModel: '跟隨任務預設',
+    saveFailed: '儲存每日回顧設定失敗',
+    aria: '每日回顧',
+    unavailable: '目前版本無法讀取每日回顧設定。',
+    loadFailed: (error) => `讀取每日回顧設定失敗：${error}`,
+    scheduleTitle: '定時分析',
+    scheduleDescription: '按本地時間自動分析前一個完整自然日的活動。',
+    enabled: '啟用定時分析',
+    enabledHelp: '每天生成一份昨日活動分析。',
+    executeTime: '執行時間',
+    executeTimeHelp: '使用 24 小時制的本地時間。',
+    executeTimePlaceholder: 'HH:mm',
+    executeTimeInvalid: '請輸入 24 小時制時間，例如 08:00。',
+    analysisTitle: '分析',
+    analysisDescription: '選擇用於生成固定結構報告的模型。',
+    model: '分析模型',
+    modelHelp: '未指定時跟隨目前任務的預設模型。',
   },
   en: {
     defaultModel: 'Follow task default',

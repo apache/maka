@@ -19,6 +19,7 @@
 
 import {
   startInteractiveRuntimeHostCandidate,
+  type InteractiveRuntimeHostCandidateDependencies,
   type InteractiveRuntimeHostCandidateOptions,
   type InteractiveRuntimeHostCandidateResult,
 } from './candidate.js';
@@ -29,14 +30,28 @@ import {
 
 export type ExecutionRuntimeHostCandidateResult = InteractiveRuntimeHostCandidateResult;
 
-export type ExecutionRuntimeHostCandidateOptions = InteractiveRuntimeHostCandidateOptions;
+export type ExecutionRuntimeHostCandidateOptions = InteractiveRuntimeHostCandidateOptions & {
+  readonly initialization?: import('../client/connect-or-spawn.js').HostedRuntimeInitialization;
+};
 
-export type ExecutionRuntimeHostCandidateDependencies = ExecutionRuntimeHostCompositionDependencies;
+export interface ExecutionRuntimeHostCandidateDependencies
+  extends ExecutionRuntimeHostCompositionDependencies,
+    InteractiveRuntimeHostCandidateDependencies {}
 
 export async function startExecutionRuntimeHostCandidate(
   options: ExecutionRuntimeHostCandidateOptions,
   dependencies: ExecutionRuntimeHostCandidateDependencies = {},
 ): Promise<ExecutionRuntimeHostCandidateResult> {
-  const composition = await createExecutionRuntimeHostCompositionSource({}, dependencies);
-  return startInteractiveRuntimeHostCandidate(options, composition);
+  return startInteractiveRuntimeHostCandidate(
+    options,
+    (managedConfig) =>
+      createExecutionRuntimeHostCompositionSource(
+        {
+          ...(managedConfig ? { projectDirectoryRoots: managedConfig.projectDirectoryRoots } : {}),
+          ...(options.initialization ? { initialization: options.initialization } : {}),
+        },
+        dependencies,
+      ),
+    dependencies,
+  );
 }

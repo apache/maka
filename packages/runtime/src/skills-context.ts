@@ -67,6 +67,12 @@ export interface HostCapabilities {
   capabilities?: ReadonlySet<string>;
 }
 
+export function buildHostCapabilitiesFromBinding(
+  boundToolNames: Iterable<string>,
+): HostCapabilities {
+  return Object.freeze({ toolNames: new Set(boundToolNames) });
+}
+
 /** Resolves the capability surface for the session executing a Skill call. */
 export type HostCapabilitiesResolver = (
   context: Pick<MakaToolContext, 'sessionId' | 'cwd'>,

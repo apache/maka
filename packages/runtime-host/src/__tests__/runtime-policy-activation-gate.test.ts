@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred, type Deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { RuntimePolicyActivationGate } from '../server/runtime-policy-activation-gate.js';
@@ -181,16 +182,3 @@ test('poison preserves an executing mutation outcome and closes queued and later
   assert.equal(laterStartEntered, false);
   assert.equal(laterMutationEntered, false);
 });
-
-interface Deferred {
-  readonly promise: Promise<void>;
-  resolve(): void;
-}
-
-function deferred(): Deferred {
-  let resolve!: () => void;
-  const promise = new Promise<void>((settle) => {
-    resolve = settle;
-  });
-  return { promise, resolve };
-}

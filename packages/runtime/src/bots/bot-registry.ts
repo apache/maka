@@ -49,14 +49,12 @@ export interface BotRegistryDeps {
   onStatusChange: (status: BotStatus) => void;
 }
 
-export class BotRegistry extends EventEmitter {
+export class BotRegistry {
   private bridges = new Map<BotPlatform, BotBridge>();
   private statuses = new Map<BotPlatform, BotStatus>();
   private applyQueue: Promise<void> = Promise.resolve();
 
-  constructor(private readonly deps: BotRegistryDeps) {
-    super();
-  }
+  constructor(private readonly deps: BotRegistryDeps) {}
 
   async applySettings(settings: BotChatSettings): Promise<void> {
     const next = this.applyQueue.then(

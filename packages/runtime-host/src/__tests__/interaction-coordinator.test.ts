@@ -17,18 +17,24 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
 import type { SandboxBoundaryRequest } from '@maka/core/sandbox-boundary';
-import type { SandboxBoundaryRequestEvent, UserQuestionRequestEvent } from '@maka/core/events';
+import type {
+  FormRequestEvent,
+  SandboxBoundaryRequestEvent,
+  UserQuestionRequestEvent,
+} from '@maka/core/events';
 import {
   bindRuntimeInteractionRun,
   RuntimeInteractionAdmissionRejectedError,
   RuntimeInteractionFailStopError,
   type RuntimeInteractionRunIdentity,
+  type RuntimeFormContinuation,
   type RuntimeSandboxBoundaryContinuation,
   type RuntimeUserQuestionContinuation,
 } from '@maka/runtime/interaction-authority';
@@ -48,6 +54,7 @@ import {
 import type { SessionInteractionProjection } from '../protocol/index.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
 import {
+  ClientCapabilityApprovalClosedError,
   HostInteractionCoordinator,
   type HostInteractionCoordinatorOptions,
 } from '../server/interaction-coordinator.js';
@@ -60,6 +67,157 @@ const RUN = Object.freeze({
 });
 
 describe('HostInteractionCoordinator', () => {
+  test('Host-owned forms reuse durable answers and concurrent requests without rebinding the Run', async () => {
+    await withStore(async ({ store }) => {
+      const published = deferred();
+      const coordinator = createCoordinator(store, {
+        refreshCanonicalContinuity: async () => {
+          published.resolve();
+        },
+      });
+      const owner = coordinator.bindRun(RUN);
+      const input = {
+        ...RUN,
+        requestId: 'host-choice',
+        create: async () => ({
+          kind: 'form' as const,
+          toolUseId: 'select-tool',
+          message: 'Choose work',
+          requester: { name: 'WorkHub' },
+          fields: [
+            {
+              kind: 'single_select' as const,
+              name: 'target',
+              label: 'Work',
+              required: true,
+              options: [
+                { value: 'opaque-a', label: 'Same name / alpha' },
+                { value: 'opaque-b', label: 'Same name / beta' },
+              ],
+            },
+          ],
+        }),
+      };
+      const first = coordinator.requestForm(input);
+      const second = coordinator.requestForm(input);
+      await published.promise;
+      const invalid = await coordinator.handlers['interaction.answer'](
+        {
+          sessionId: RUN.sessionId,
+          interactionId: input.requestId,
+          answer: { kind: 'form', action: 'accept', values: { target: 'forged' } },
+        },
+        connection(),
+      );
+      assert.equal(invalid.ok, false);
+      assert.equal((await store.listPending(RUN)).length, 1);
+      const answered = await coordinator.handlers['interaction.answer'](
+        {
+          sessionId: RUN.sessionId,
+          interactionId: input.requestId,
+          answer: { kind: 'form', action: 'accept', values: { target: 'opaque-b' } },
+        },
+        connection(),
+      );
+      assert.equal(answered.ok, true);
+      const result = await first;
+      assert.deepEqual(result.answer, { action: 'accept', values: { target: 'opaque-b' } });
+      assert.deepEqual(await second, result);
+      assert.deepEqual(
+        await coordinator.requestForm({
+          ...input,
+          create: async () => {
+            throw new Error('Must reuse offer');
+          },
+        }),
+        result,
+      );
+      assert.equal(coordinator.isPoisoned(), false);
+      await owner.close('turn_terminal');
+      owner.release();
+      await coordinator.close();
+    });
+  });
+
+  test('a rejected Host form admission settles every concurrent caller without poisoning', async () => {
+    await withStore(async ({ store }) => {
+      const coordinator = createCoordinator(store, { preflightSessionSnapshot: () => false });
+      const owner = coordinator.bindRun(RUN);
+      const input = {
+        ...RUN,
+        requestId: 'oversized-host-form',
+        create: async () => ({
+          kind: 'form' as const,
+          toolUseId: 'select-tool',
+          message: 'Choose work',
+          requester: { name: 'WorkHub' },
+          fields: [
+            {
+              kind: 'single_select' as const,
+              name: 'target',
+              label: 'Work',
+              required: true,
+              options: [{ value: 'a', label: 'A' }],
+            },
+          ],
+        }),
+      };
+      const outcomes = await Promise.allSettled([
+        coordinator.requestForm(input),
+        coordinator.requestForm(input),
+      ]);
+      assert.deepEqual(
+        outcomes.map((outcome) => outcome.status),
+        ['rejected', 'rejected'],
+      );
+      assert.equal(coordinator.isPoisoned(), false);
+      assert.equal((await store.listPending(RUN)).length, 0);
+      await owner.close('turn_terminal');
+      owner.release();
+      await coordinator.close();
+    });
+  });
+
+  test('stopping the owning Run cancels its Host-owned form and closes the durable offer', async () => {
+    await withStore(async ({ store }) => {
+      const published = deferred();
+      const coordinator = createCoordinator(store, {
+        refreshCanonicalContinuity: async () => {
+          published.resolve();
+        },
+      });
+      const owner = coordinator.bindRun(RUN);
+      const pending = coordinator.requestForm({
+        ...RUN,
+        requestId: 'stopped-choice',
+        create: async () => ({
+          kind: 'form',
+          toolUseId: 'select-tool',
+          message: 'Choose work',
+          requester: { name: 'WorkHub' },
+          fields: [
+            {
+              kind: 'single_select',
+              name: 'target',
+              label: 'Work',
+              required: true,
+              options: [{ value: 'a', label: 'A' }],
+            },
+          ],
+        }),
+      });
+      await published.promise;
+      await owner.close('turn_stopped');
+      assert.deepEqual((await pending).answer, { action: 'cancel' });
+      assert.equal(
+        (await store.readInteraction('stopped-choice'))?.outcome?.outcome.kind,
+        'closure',
+      );
+      owner.release();
+      await coordinator.close();
+    });
+  });
+
   test('admits a durable question before continuity and returns one canonical answer to concurrent clients', async () => {
     await withStore(async ({ store }) => {
       const order: string[] = [];
@@ -118,12 +276,144 @@ describe('HostInteractionCoordinator', () => {
     });
   });
 
+  test('closes a pending Client Capability approval when its provider disconnects', async () => {
+    await withStore(async ({ store }) => {
+      const coordinator = createCoordinator(store);
+      const owner = coordinator.bindRun(RUN);
+      const provider = new AbortController();
+      const approval = coordinator.requestClientCapabilityApproval({
+        ...RUN,
+        toolCallId: 'browser-call-disconnected',
+        providerSignal: provider.signal,
+        target: {
+          providerId: 'provider-1',
+          contractId: 'contract-1',
+          serverId: 'desktop_browser',
+          toolName: 'browser_snapshot',
+          capability: 'browser',
+          scope: { kind: 'browser_origin', origin: 'https://example.com' },
+        },
+      });
+      let pending = await store.listSessionPending(RUN.sessionId);
+      while (pending.length === 0) {
+        await new Promise((resolve) => setImmediate(resolve));
+        pending = await store.listSessionPending(RUN.sessionId);
+      }
+
+      provider.abort();
+      await assert.rejects(
+        approval,
+        (error: unknown) =>
+          error instanceof ClientCapabilityApprovalClosedError &&
+          error.reason === 'provider_disconnected',
+      );
+      const record = await store.readInteraction(pending[0]?.requestId ?? 'missing');
+      assert.equal(record?.outcome?.outcome.kind, 'closure');
+      if (record?.outcome?.outcome.kind === 'closure') {
+        assert.equal(record.outcome.outcome.reason, 'provider_disconnected');
+      }
+
+      await owner.close('turn_terminal');
+      owner.release();
+      await coordinator.close();
+    });
+  });
+
+  test('validates and commits one canonical form answer before resuming its exact continuation', async () => {
+    await withStore(async ({ store }) => {
+      const order: string[] = [];
+      const coordinator = createCoordinator(store, {
+        refreshCanonicalContinuity: async () => {
+          const record = await store.readInteraction('form_1');
+          order.push(record?.outcome ? 'refresh:answered' : 'refresh:pending');
+        },
+      });
+      const owner = coordinator.bindRun(RUN);
+      assert.ok(owner.acceptFormRequest);
+      await owner.acceptFormRequest({
+        request: formEvent('form_1', 10),
+        continuation: formContinuation('form_1', {
+          answer: (answer) => order.push(`apply:${answer.action}`),
+        }),
+      });
+      assert.deepEqual(order, ['refresh:pending']);
+
+      const invalid = await coordinator.handlers['interaction.answer'](
+        {
+          sessionId: RUN.sessionId,
+          interactionId: 'form_1',
+          answer: { kind: 'form', action: 'accept', values: { replicas: 0 } },
+        },
+        connection(),
+      );
+      assert.equal(invalid.ok, false);
+      if (!invalid.ok) assert.equal(invalid.error.code, 'operation_conflict');
+      assert.deepEqual(order, ['refresh:pending']);
+
+      const answer = {
+        sessionId: RUN.sessionId,
+        interactionId: 'form_1',
+        answer: {
+          kind: 'form',
+          action: 'accept',
+          values: { replicas: 3, regions: ['us', 'eu'] },
+        },
+      } as const;
+      const [first, second] = await Promise.all([
+        coordinator.handlers['interaction.answer'](answer, connection()),
+        coordinator.handlers['interaction.answer'](answer, connection()),
+      ]);
+      assert.equal(first.ok, true);
+      assert.equal(second.ok, true);
+      assert.deepEqual(order, ['refresh:pending', 'refresh:answered', 'apply:accept']);
+      const record = await store.readInteraction('form_1');
+      assert.deepEqual(record?.outcome?.outcome, {
+        kind: 'form_answer',
+        action: 'accept',
+        values: { replicas: 3, regions: ['us', 'eu'] },
+        committedAt: 101,
+      });
+
+      const closures: string[] = [];
+      await owner.acceptFormRequest({
+        request: formEvent('form_2', 11),
+        continuation: formContinuation('form_2', {
+          closure: (reason) => closures.push(reason),
+        }),
+      });
+      await owner.withdrawFormRequest('form_2');
+      assert.deepEqual(closures, ['producer_cancelled']);
+      assert.deepEqual((await store.readInteraction('form_2'))?.outcome?.outcome, {
+        kind: 'closure',
+        reason: 'producer_cancelled',
+        committedAt: 102,
+      });
+
+      await owner.acceptFormRequest({
+        request: formEvent('form_3', 12),
+        continuation: formContinuation('form_3', {
+          closure: (reason) => closures.push(reason),
+        }),
+      });
+      await owner.close('turn_terminal');
+      assert.deepEqual(closures, ['producer_cancelled', 'turn_terminal']);
+      assert.deepEqual((await store.readInteraction('form_3'))?.outcome?.outcome, {
+        kind: 'closure',
+        reason: 'turn_terminal',
+        committedAt: 103,
+      });
+      owner.release();
+      await coordinator.close();
+    });
+  });
+
   test('settles a sandbox boundary once through the canonical boundary Store and wakes its graph', async () => {
     await withStore(async ({ owner, store, stores }) => {
       const workspace = join(owner.capability.canonicalPath, 'workspace');
       await mkdir(workspace);
       const session = await stores.sessionStore.create({
         cwd: workspace,
+        llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
         llmConnectionSlug: 'fake',
         model: 'fake-model',
         permissionMode: 'ask',
@@ -255,6 +545,7 @@ describe('HostInteractionCoordinator', () => {
       await mkdir(workspace);
       const session = await stores.sessionStore.create({
         cwd: workspace,
+        llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
         llmConnectionSlug: 'fake',
         model: 'fake-model',
         permissionMode: 'ask',
@@ -326,6 +617,7 @@ describe('HostInteractionCoordinator', () => {
       await mkdir(workspace);
       const session = await stores.sessionStore.create({
         cwd: workspace,
+        llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
         llmConnectionSlug: 'fake',
         model: 'fake-model',
         permissionMode: 'ask',
@@ -501,6 +793,7 @@ describe('HostInteractionCoordinator', () => {
       await mkdir(workspace);
       const session = await stores.sessionStore.create({
         cwd: workspace,
+        llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
         llmConnectionSlug: 'fake',
         model: 'fake-model',
         permissionMode: 'ask',
@@ -725,6 +1018,59 @@ function questionEvent(requestId: string, ts: number): UserQuestionRequestEvent 
   };
 }
 
+function formEvent(requestId: string, ts: number): FormRequestEvent {
+  return {
+    id: `event_${requestId}`,
+    type: 'form_request',
+    turnId: RUN.turnId,
+    ts,
+    requestId,
+    toolUseId: `tool_${requestId}`,
+    message: 'Choose deployment settings',
+    requester: { name: 'deploy', source: 'Synthetic provider' },
+    fields: [
+      {
+        kind: 'integer',
+        name: 'replicas',
+        label: 'Replicas',
+        required: true,
+        minimum: 1,
+        maximum: 10,
+      },
+      {
+        kind: 'multi_select',
+        name: 'regions',
+        label: 'Regions',
+        required: false,
+        options: [
+          { value: 'us', label: 'US' },
+          { value: 'eu', label: 'EU' },
+        ],
+      },
+    ],
+  };
+}
+
+function formContinuation(
+  requestId: string,
+  callbacks: {
+    answer?: (answer: Parameters<RuntimeFormContinuation['applyAnswer']>[0]) => unknown;
+    closure?: (reason: Parameters<RuntimeFormContinuation['applyClosure']>[0]) => unknown;
+  } = {},
+): RuntimeFormContinuation {
+  return {
+    ...RUN,
+    requestId,
+    waitForPublication: async () => {},
+    applyAnswer: async (answer) => {
+      await callbacks.answer?.(answer);
+    },
+    applyClosure: async (reason) => {
+      await callbacks.closure?.(reason);
+    },
+  };
+}
+
 function questionContinuation(
   requestId: string,
   callbacks: {
@@ -836,12 +1182,4 @@ async function withStore(run: (context: StoreContext) => Promise<void>): Promise
     await rm(owner.controlDirectory, { recursive: true, force: true });
     await rm(base, { recursive: true, force: true });
   }
-}
-
-function deferred(): { promise: Promise<void>; resolve: () => void } {
-  let resolve!: () => void;
-  const promise = new Promise<void>((resolvePromise) => {
-    resolve = resolvePromise;
-  });
-  return { promise, resolve };
 }

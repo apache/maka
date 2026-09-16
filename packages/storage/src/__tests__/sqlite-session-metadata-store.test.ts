@@ -25,7 +25,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { describe, test } from 'node:test';
 import { Worker } from 'node:worker_threads';
 import { AgentGraphClientTerminalCursorError } from '@maka/core/agent-graph-client-projection';
-import { messageContentDigest } from '@maka/core/events';
+import { messageContentDigest, type MessageContent } from '@maka/core/events';
 import {
   canReadPath,
   createReadOnlyPermissionProfile,
@@ -46,7 +46,11 @@ import {
   type SessionConfigurationMetadataUpdate,
   type SqliteSessionMetadataStoreFailpoint,
 } from '../sqlite-session-metadata-store.js';
-import type { PendingMessageAdmission } from '../message-admission-store.js';
+import type {
+  MarkMessagesHandedOffInput,
+  PendingMessageAdmission,
+  ProvenRootMessageHandoff,
+} from '../message-admission-store.js';
 import {
   createSqliteRuntimeStore,
   SQLITE_RUNTIME_SCHEMA_VERSION,
@@ -54,6 +58,71 @@ import {
 import { SQLITE_AGENT_GRAPH_CONTROL_TABLES } from '../sqlite-session-metadata-schema.js';
 
 describe('SqliteSessionMetadataStore', () => {
+  test('migrates version 38 and resumes the body-free Coordination index idempotently', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-coordination-index-migration-'));
+    const path = join(root, 'state.sqlite');
+    try {
+      const setup = createSqliteSessionMetadataStore(path);
+      setup.close();
+      const baseline = new DatabaseSync(path);
+      baseline.exec(
+        "DROP TABLE coordination_transcript_index; UPDATE session_metadata_schema SET version = 38 WHERE scope = 'session_metadata'",
+      );
+      baseline.close();
+      const migrated = createSqliteSessionMetadataStore(path);
+      await migrated.appendCoordinationTranscriptIndex([
+        { source: 'legacy', sourceSequence: 0 },
+        { source: 'runtime', sourceSequence: 8 },
+      ]);
+      migrated.close();
+      const reopened = createSqliteSessionMetadataStore(path);
+      try {
+        await reopened.appendCoordinationTranscriptIndex([
+          { source: 'runtime', sourceSequence: 8 },
+          { source: 'legacy', sourceSequence: 1 },
+        ]);
+        assert.deepEqual(
+          { ...(await reopened.readCoordinationTranscriptIndexState()) },
+          { highWater: 2, legacy: 1, runtime: 8 },
+        );
+        const records = await reopened.readCoordinationTranscriptIndex({
+          direction: 'older',
+          throughSequence: 1,
+          position: 1,
+          limit: 64,
+        });
+        assert.deepEqual(
+          records.map((record) => ({ ...record })),
+          [
+            { sequence: 1, source: 'runtime', sourceSequence: 8 },
+            { sequence: 0, source: 'legacy', sourceSequence: 0 },
+          ],
+        );
+        await assert.rejects(
+          () =>
+            reopened.appendCoordinationTranscriptIndex(
+              Array.from({ length: 65 }, () => ({ source: 'legacy' as const, sourceSequence: 2 })),
+            ),
+          /batch exceeds limit/,
+        );
+        assert.equal((await reopened.readCoordinationTranscriptIndexState()).highWater, 2);
+      } finally {
+        reopened.close();
+      }
+      const inspect = new DatabaseSync(path);
+      assert.deepEqual(
+        inspect
+          .prepare('PRAGMA table_info(coordination_transcript_index)')
+          .all()
+          .map((column) => column.name),
+        ['sequence', 'source', 'source_sequence'],
+      );
+      inspect.close();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   for (const version30Shape of ['admissions-only', 'coordination-only', 'complete'] as const) {
     test(`converges the ${version30Shape} version-30 schema after the merge`, async () => {
       const root = await mkdtemp(join(tmpdir(), `maka-session-v30-${version30Shape}-`));
@@ -120,6 +189,60 @@ describe('SqliteSessionMetadataStore', () => {
       }
     });
   }
+
+  test('migrates a legacy subagent Session to a frozen model route', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-metadata-v32-'));
+    const path = join(root, 'state.sqlite');
+    const child = fullHeader({
+      id: 'legacy-child',
+      parentSessionId: undefined,
+      branchOfTurnId: undefined,
+      revisionRootSessionId: undefined,
+      revisionParentSessionId: undefined,
+      revisionOfTurnId: undefined,
+      revisionIndex: undefined,
+      revisionState: undefined,
+      connectionLocked: false,
+      subagentParent: {
+        kind: 'subagent',
+        parentSessionId: 'parent-session',
+        spawnedBy: {
+          parentRunId: 'parent-run',
+          parentTurnId: 'parent-turn',
+          toolCallId: 'tool-call',
+        },
+        lifecycle: 'foreground',
+      },
+    });
+    const ordinary = fullHeader({ id: 'legacy-ordinary', connectionLocked: false });
+    const setup = createSqliteSessionMetadataStore(path);
+    try {
+      await setup.create(child);
+      await setup.create(ordinary);
+    } finally {
+      setup.close();
+    }
+    // A subagent spawned before the route froze at creation, and abandoned
+    // before its first Message, is the one shape nothing else can lock.
+    const legacy = new DatabaseSync(path);
+    try {
+      legacy.exec(`
+        UPDATE session_metadata_schema SET version = 32 WHERE scope = 'session_metadata';
+      `);
+    } finally {
+      legacy.close();
+    }
+
+    const migrated = createSqliteSessionMetadataStore(path);
+    try {
+      assert.equal(migrated.schemaVersion(), SQLITE_SESSION_METADATA_SCHEMA_VERSION);
+      assert.equal((await migrated.read('legacy-child')).header.connectionLocked, true);
+      assert.equal((await migrated.read('legacy-ordinary')).header.connectionLocked, false);
+    } finally {
+      migrated.close();
+    }
+    await rm(root, { recursive: true, force: true });
+  });
 
   test('migrates v27 metadata to the current schema without backfilling external origin', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-session-metadata-v27-'));
@@ -223,7 +346,7 @@ describe('SqliteSessionMetadataStore', () => {
       const store = createSqliteSessionMetadataStore(path);
       try {
         await assert.rejects(
-          () => store.readMessagesForRecovery('session-1'),
+          () => store.readMessages('session-1'),
           (error: unknown) =>
             error instanceof StoredSessionMessageIncompatibleError &&
             error.code === 'stored_session_message_incompatible' &&
@@ -307,11 +430,16 @@ describe('SqliteSessionMetadataStore', () => {
     }
   });
 
-  test('materializes an accepted steering draft when it is handed off', async () => {
+  test('retires an accepted steering draft when it is handed off', async () => {
     const store = createSqliteSessionMetadataStore(':memory:');
     try {
       await store.create(fullHeader({ id: 'session-1', connectionLocked: false }));
-      const admission: PendingMessageAdmission = {
+      const skillInvocation = {
+        loaded: [{ id: 'review', name: 'Review' }],
+        failed: [{ request: 'typo', reason: 'not_found' as const }],
+        receipts: [],
+      };
+      const admission = {
         sessionId: 'session-1',
         turnId: 'turn-1',
         runId: 'run-1',
@@ -328,8 +456,9 @@ describe('SqliteSessionMetadataStore', () => {
           skillIds: ['review'],
           turnOrchestration: { mode: 'graph', source: 'slash_command' },
         },
+        skillInvocation,
         admittedAt: 10,
-      };
+      } satisfies PendingMessageAdmission & { readonly skillInvocation: typeof skillInvocation };
 
       const normalizedAdmission = {
         ...admission,
@@ -348,39 +477,509 @@ describe('SqliteSessionMetadataStore', () => {
         (await store.listMessageAdmissions('session-1')).map((entry) => entry.messageId),
         ['message-1'],
       );
+      await assert.rejects(
+        store.commitMessageAdmission({
+          ...admission,
+          skillInvocation: { loaded: [], failed: [], receipts: [] },
+        }),
+        /Message admission identity conflict/,
+      );
       await store.markMessagesHandedOff({
         sessionId: 'session-1',
         messageIds: ['message-1'],
         turnId: 'turn-1',
       });
-      assert.deepEqual(
-        (await store.readMessages('session-1')).map((message) => ({
-          id: message.id,
-          type: message.type,
-          turnId: message.turnId,
-          text: message.type === 'user' ? message.text : undefined,
-          steeringEventId: message.type === 'user' ? message.steeringEventId : undefined,
-        })),
-        [
-          {
-            id: 'message-1',
-            type: 'user',
-            turnId: 'turn-1',
-            text: 'submitted',
-            steeringEventId: 'message-1',
-          },
-        ],
-      );
-      assert.equal((await store.read('session-1')).header.lastMessageAt, 10);
-      assert.equal((await store.readCatalogRecord('session-1')).lastMessagePreview, 'submitted');
-      assert.equal((await store.read('session-1')).header.connectionLocked, true);
+      // Handoff retires the admission and nothing else: the message itself is a
+      // RuntimeEvent, and its catalog facts come from the run that wrote it.
+      assert.deepEqual(await store.readMessages('session-1'), []);
+      assert.equal((await store.read('session-1')).header.lastMessageAt, 3);
+      assert.equal((await store.readCatalogRecord('session-1')).lastMessagePreview, undefined);
+      assert.equal((await store.read('session-1')).header.connectionLocked, false);
       assert.deepEqual(await store.listMessageAdmissions('session-1'), []);
     } finally {
       store.close();
     }
   });
 
-  test('removes the accepted payload after transcript handoff', async () => {
+  test('migrates v34 message admissions with an empty Skill invocation outcome', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-message-admission-v34-'));
+    const path = join(root, 'state.sqlite');
+    try {
+      const setup = createSqliteSessionMetadataStore(path);
+      try {
+        await setup.create(fullHeader({ id: 'session-v34-admission' }));
+        await setup.commitMessageAdmission({
+          sessionId: 'session-v34-admission',
+          turnId: 'turn-1',
+          runId: 'run-1',
+          messageId: 'message-1',
+          content: { text: 'queued before the migration' },
+          submittedContentDigest: messageContentDigest({ text: 'queued before the migration' }),
+          submittedPlacement: 'next_turn',
+          placement: 'next_turn',
+          disposition: 'followup',
+          skillInvocation: { loaded: [], failed: [], receipts: [] },
+          admittedAt: 10,
+        });
+      } finally {
+        setup.close();
+      }
+
+      const legacy = new DatabaseSync(path);
+      try {
+        legacy.exec(`
+          ALTER TABLE message_admissions DROP COLUMN skill_invocation_json;
+          UPDATE session_metadata_schema SET version = 34 WHERE scope = 'session_metadata';
+        `);
+      } finally {
+        legacy.close();
+      }
+
+      const migrated = createSqliteSessionMetadataStore(path);
+      try {
+        assert.equal(migrated.schemaVersion(), SQLITE_SESSION_METADATA_SCHEMA_VERSION);
+        assert.deepEqual(
+          (await migrated.readMessageAdmission('session-v34-admission', 'message-1'))
+            ?.skillInvocation,
+          { loaded: [], failed: [], receipts: [] },
+        );
+      } finally {
+        migrated.close();
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('migrates a v36 cancellation tombstone without inventing a claim owner', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-message-cancellation-v36-'));
+    const path = join(root, 'state.sqlite');
+    try {
+      const setup = createSqliteSessionMetadataStore(path);
+      try {
+        await setup.create(fullHeader({ id: 'session-v36-cancellation' }));
+        const content = { text: 'cancelled before claim provenance existed' };
+        await setup.commitMessageAdmission({
+          sessionId: 'session-v36-cancellation',
+          turnId: 'turn-1',
+          runId: 'run-1',
+          messageId: 'message-1',
+          content,
+          submittedContentDigest: messageContentDigest(content),
+          submittedPlacement: 'next_turn',
+          placement: 'next_turn',
+          disposition: 'followup',
+          skillInvocation: { loaded: [], failed: [], receipts: [] },
+          admittedAt: 10,
+        });
+        await setup.cancelMessageAdmissions('session-v36-cancellation', ['message-1']);
+      } finally {
+        setup.close();
+      }
+
+      const legacy = new DatabaseSync(path);
+      try {
+        legacy.exec(`
+          ALTER TABLE cancelled_message_admissions DROP COLUMN cancellation_claim_id;
+          UPDATE session_metadata_schema SET version = 36 WHERE scope = 'session_metadata';
+        `);
+      } finally {
+        legacy.close();
+      }
+
+      const migrated = createSqliteSessionMetadataStore(path);
+      try {
+        assert.equal(migrated.schemaVersion(), SQLITE_SESSION_METADATA_SCHEMA_VERSION);
+        assert.equal(
+          await migrated.hasCancelledMessageAdmission('session-v36-cancellation', 'message-1'),
+          true,
+        );
+        assert.equal(
+          await migrated.claimMessageAdmissionCancellation(
+            'session-v36-cancellation',
+            'message-1',
+            'later-workhub-claim',
+          ),
+          'already_cancelled',
+        );
+      } finally {
+        migrated.close();
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('rejects an admission handed off to a different Turn', async () => {
+    const store = createSqliteSessionMetadataStore(':memory:');
+    try {
+      await store.create(fullHeader({ id: 'session-admission-turn-conflict' }));
+      await store.commitMessageAdmission({
+        sessionId: 'session-admission-turn-conflict',
+        turnId: 'turn-admission-authority',
+        runId: 'run-admission-turn-conflict',
+        messageId: 'message-admission-turn-conflict',
+        content: { text: 'turn-owned admission' },
+        submittedContentDigest: messageContentDigest({ text: 'turn-owned admission' }),
+        submittedPlacement: 'current_turn',
+        placement: 'current_turn',
+        disposition: 'steering',
+        skillInvocation: { loaded: [], failed: [], receipts: [] },
+        admittedAt: 24,
+      });
+
+      await assert.rejects(
+        store.markMessagesHandedOff({
+          sessionId: 'session-admission-turn-conflict',
+          messageIds: ['message-admission-turn-conflict'],
+          turnId: 'turn-different',
+        }),
+        /Turn conflict/,
+      );
+      assert.deepEqual(await store.readMessages('session-admission-turn-conflict'), []);
+      assert.equal(
+        (await store.listMessageAdmissions('session-admission-turn-conflict')).length,
+        1,
+      );
+    } finally {
+      store.close();
+    }
+  });
+
+  test('retires an interrupted steering admission proven by its successor Root', async () => {
+    const store = createSqliteSessionMetadataStore(':memory:');
+    try {
+      await store.create(fullHeader({ id: 'session-interrupted-root-handoff' }));
+      const content = { text: 'handed to the successor before interruption' };
+      await store.commitMessageAdmission({
+        sessionId: 'session-interrupted-root-handoff',
+        turnId: 'turn-predecessor',
+        runId: 'run-predecessor',
+        messageId: 'message-successor-root',
+        content,
+        submittedContentDigest: messageContentDigest(content),
+        submittedPlacement: 'current_turn',
+        placement: 'current_turn',
+        disposition: 'steering',
+        skillInvocation: { loaded: [], failed: [], receipts: [] },
+        admittedAt: 24,
+      });
+      const handoff = {
+        sessionId: 'session-interrupted-root-handoff',
+        messageIds: ['message-successor-root'],
+        turnId: 'turn-successor',
+        provenRootMessages: [provenRootMessage('message-successor-root', content, 25)],
+      } satisfies ProvenRootHandoffInput;
+
+      await markMessagesHandedOffWithProvenRoots(store, handoff);
+      await markMessagesHandedOffWithProvenRoots(store, handoff);
+
+      assert.equal(
+        await store.readMessageAdmission(
+          'session-interrupted-root-handoff',
+          'message-successor-root',
+        ),
+        undefined,
+      );
+    } finally {
+      store.close();
+    }
+  });
+
+  test('rejects a successor Root proof whose content conflicts with the stale admission', async () => {
+    const store = createSqliteSessionMetadataStore(':memory:');
+    try {
+      await store.create(fullHeader({ id: 'session-interrupted-root-content-conflict' }));
+      const content = { text: 'original steering content' };
+      await store.commitMessageAdmission({
+        sessionId: 'session-interrupted-root-content-conflict',
+        turnId: 'turn-predecessor',
+        runId: 'run-predecessor',
+        messageId: 'message-conflicting-successor-root',
+        content,
+        submittedContentDigest: messageContentDigest(content),
+        submittedPlacement: 'current_turn',
+        placement: 'current_turn',
+        disposition: 'steering',
+        skillInvocation: { loaded: [], failed: [], receipts: [] },
+        admittedAt: 26,
+      });
+
+      await assert.rejects(
+        markMessagesHandedOffWithProvenRoots(store, {
+          sessionId: 'session-interrupted-root-content-conflict',
+          messageIds: ['message-conflicting-successor-root'],
+          turnId: 'turn-successor',
+          provenRootMessages: [
+            provenRootMessage(
+              'message-conflicting-successor-root',
+              { text: 'different successor content' },
+              27,
+            ),
+          ],
+        }),
+        /fallback payload conflict/,
+      );
+      assert.deepEqual(
+        await store.readMessageAdmission(
+          'session-interrupted-root-content-conflict',
+          'message-conflicting-successor-root',
+        ),
+        {
+          sessionId: 'session-interrupted-root-content-conflict',
+          turnId: 'turn-predecessor',
+          runId: 'run-predecessor',
+          messageId: 'message-conflicting-successor-root',
+          content,
+          submittedContentDigest: messageContentDigest(content),
+          submittedPlacement: 'current_turn',
+          placement: 'current_turn',
+          disposition: 'steering',
+          skillInvocation: { loaded: [], failed: [], receipts: [] },
+          admittedAt: 26,
+        },
+      );
+    } finally {
+      store.close();
+    }
+  });
+
+  test('rejects successor Root proof with matching content but different submit semantics', async () => {
+    const content = { text: 'same canonical successor content' };
+    const variants: readonly [string, Partial<ProvenRootMessageHandoff>][] = [
+      [
+        'digest',
+        { submittedContentDigest: messageContentDigest({ text: 'different raw submission' }) },
+      ],
+      ['placement', { submittedPlacement: 'next_turn' }],
+      ['intent', { submittedIntent: { skillIds: ['review'] } }],
+    ];
+    for (const [suffix, override] of variants) {
+      const store = createSqliteSessionMetadataStore(':memory:');
+      const sessionId = `session-interrupted-root-${suffix}-conflict`;
+      const messageId = `message-successor-root-${suffix}-conflict`;
+      try {
+        await store.create(fullHeader({ id: sessionId }));
+        await store.commitMessageAdmission({
+          sessionId,
+          turnId: 'turn-predecessor',
+          runId: 'run-predecessor',
+          messageId,
+          content,
+          submittedContentDigest: messageContentDigest(content),
+          submittedPlacement: 'current_turn',
+          placement: 'current_turn',
+          disposition: 'steering',
+          skillInvocation: { loaded: [], failed: [], receipts: [] },
+          admittedAt: 28,
+        });
+
+        await assert.rejects(
+          markMessagesHandedOffWithProvenRoots(store, {
+            sessionId,
+            messageIds: [messageId],
+            turnId: 'turn-successor',
+            provenRootMessages: [provenRootMessage(messageId, content, 29, override)],
+          }),
+          /fallback payload conflict/,
+          suffix,
+        );
+        assert.notEqual(await store.readMessageAdmission(sessionId, messageId), undefined, suffix);
+      } finally {
+        store.close();
+      }
+    }
+  });
+
+  test('repeats a proven Root message handoff after its admission is gone', async () => {
+    const store = createSqliteSessionMetadataStore(':memory:');
+    try {
+      await store.create(fullHeader({ id: 'session-legacy-repeat' }));
+      await store.commitMessageAdmission({
+        sessionId: 'session-legacy-repeat',
+        turnId: 'turn-legacy-repeat',
+        runId: 'run-legacy-repeat',
+        messageId: 'message-legacy-repeat',
+        content: { text: 'a single durable message' },
+        submittedContentDigest: messageContentDigest({ text: 'a single durable message' }),
+        submittedPlacement: 'current_turn',
+        placement: 'current_turn',
+        disposition: 'steering',
+        skillInvocation: { loaded: [], failed: [], receipts: [] },
+        admittedAt: 18,
+      });
+      const input = {
+        sessionId: 'session-legacy-repeat',
+        messageIds: ['message-legacy-repeat'],
+        turnId: 'turn-legacy-repeat',
+        provenRootMessages: [
+          provenRootMessage('message-legacy-repeat', { text: 'a single durable message' }, 18, {
+            disposition: 'steering',
+          }),
+        ],
+      };
+
+      await markMessagesHandedOffWithProvenRoots(store, input);
+      await markMessagesHandedOffWithProvenRoots(store, input);
+
+      assert.deepEqual(await store.listMessageAdmissions('session-legacy-repeat'), []);
+      assert.deepEqual(await store.readMessages('session-legacy-repeat'), []);
+    } finally {
+      store.close();
+    }
+  });
+
+  test('rejects an admission-less handoff without a proven Root message', async () => {
+    const store = createSqliteSessionMetadataStore(':memory:');
+    try {
+      await store.create(fullHeader({ id: 'session-no-legacy-proof' }));
+
+      await assert.rejects(
+        store.markMessagesHandedOff({
+          sessionId: 'session-no-legacy-proof',
+          messageIds: ['message-no-legacy-proof'],
+          turnId: 'turn-no-legacy-proof',
+        }),
+        /Message admission does not exist/,
+      );
+    } finally {
+      store.close();
+    }
+  });
+
+  test('rejects a proven Root handoff for a cancelled admission', async () => {
+    const store = createSqliteSessionMetadataStore(':memory:');
+    try {
+      await store.create(fullHeader({ id: 'session-legacy-cancelled' }));
+      await store.commitMessageAdmission({
+        sessionId: 'session-legacy-cancelled',
+        turnId: 'turn-legacy-cancelled',
+        runId: 'run-legacy-cancelled',
+        messageId: 'message-legacy-cancelled',
+        content: { text: 'cancelled' },
+        submittedContentDigest: messageContentDigest({ text: 'cancelled' }),
+        submittedPlacement: 'current_turn',
+        placement: 'current_turn',
+        disposition: 'steering',
+        skillInvocation: { loaded: [], failed: [], receipts: [] },
+        admittedAt: 19,
+      });
+      await store.cancelMessageAdmissions('session-legacy-cancelled', ['message-legacy-cancelled']);
+
+      await assert.rejects(
+        markMessagesHandedOffWithProvenRoots(store, {
+          sessionId: 'session-legacy-cancelled',
+          messageIds: ['message-legacy-cancelled'],
+          turnId: 'turn-legacy-cancelled',
+          provenRootMessages: [
+            provenRootMessage('message-legacy-cancelled', { text: 'cancelled' }, 19, {
+              disposition: 'steering',
+            }),
+          ],
+        }),
+        /already cancelled/,
+      );
+    } finally {
+      store.close();
+    }
+  });
+
+  test('rejects proven Root fallback content that drifts from an admission', async () => {
+    const store = createSqliteSessionMetadataStore(':memory:');
+    try {
+      await store.create(fullHeader({ id: 'session-admission-drift' }));
+      await store.commitMessageAdmission({
+        sessionId: 'session-admission-drift',
+        turnId: 'turn-admission-drift',
+        runId: 'run-admission-drift',
+        messageId: 'message-admission-drift',
+        content: { text: 'admitted content' },
+        submittedContentDigest: messageContentDigest({ text: 'admitted content' }),
+        submittedPlacement: 'current_turn',
+        placement: 'current_turn',
+        disposition: 'steering',
+        skillInvocation: { loaded: [], failed: [], receipts: [] },
+        admittedAt: 22,
+      });
+
+      await assert.rejects(
+        markMessagesHandedOffWithProvenRoots(store, {
+          sessionId: 'session-admission-drift',
+          messageIds: ['message-admission-drift'],
+          turnId: 'turn-admission-drift',
+          provenRootMessages: [
+            provenRootMessage('message-admission-drift', { text: 'drifted content' }, 22, {
+              disposition: 'steering',
+            }),
+          ],
+        }),
+        /fallback payload conflict/,
+      );
+      assert.deepEqual(await store.readMessages('session-admission-drift'), []);
+      assert.equal((await store.listMessageAdmissions('session-admission-drift')).length, 1);
+    } finally {
+      store.close();
+    }
+  });
+
+  test('validates proven Root fallback identities and timestamps before handoff', async () => {
+    const store = createSqliteSessionMetadataStore(':memory:');
+    try {
+      await store.create(fullHeader({ id: 'session-legacy-validation' }));
+      const base = {
+        sessionId: 'session-legacy-validation',
+        messageIds: ['message-legacy-validation'],
+        turnId: 'turn-legacy-validation',
+      };
+
+      await assert.rejects(
+        markMessagesHandedOffWithProvenRoots(store, {
+          ...base,
+          provenRootMessages: [
+            provenRootMessage('message-legacy-validation', { text: 'first' }, 23),
+            provenRootMessage('message-legacy-validation', { text: 'second' }, 24),
+          ],
+        }),
+        /duplicate identities/,
+      );
+      await assert.rejects(
+        markMessagesHandedOffWithProvenRoots(store, {
+          ...base,
+          provenRootMessages: [
+            provenRootMessage('message-not-requested', { text: 'not requested' }, 23),
+          ],
+        }),
+        /not present in messageIds/,
+      );
+      await assert.rejects(
+        markMessagesHandedOffWithProvenRoots(store, {
+          ...base,
+          provenRootMessages: [
+            provenRootMessage('message-legacy-validation', { text: 'bad timestamp' }, -1),
+          ],
+        }),
+        /timestamp/,
+      );
+      await assert.rejects(
+        markMessagesHandedOffWithProvenRoots(store, {
+          ...base,
+          provenRootMessages: [
+            provenRootMessage(
+              'message-not-requested',
+              { text: 23 } as unknown as MessageContent,
+              23,
+              { submittedContentDigest: messageContentDigest({ text: 'invalid proof content' }) },
+            ),
+          ],
+        }),
+        /Invalid root turn source message content/,
+      );
+    } finally {
+      store.close();
+    }
+  });
+
+  test('removes the accepted payload without writing a transcript row', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-message-handoff-'));
     const path = join(root, 'state.sqlite');
     const store = createSqliteSessionMetadataStore(path);
@@ -396,6 +995,7 @@ describe('SqliteSessionMetadataStore', () => {
         submittedPlacement: 'current_turn',
         placement: 'current_turn',
         disposition: 'steering',
+        skillInvocation: { loaded: [], failed: [], receipts: [] },
         admittedAt: 10,
       });
       await store.markMessagesHandedOff({
@@ -423,10 +1023,102 @@ describe('SqliteSessionMetadataStore', () => {
             'SELECT COUNT(*) AS count FROM session_messages WHERE session_id = ? AND message_id = ?',
           )
           .get('session-1', 'message-1')?.count,
-        1,
+        0,
       );
     } finally {
       persisted.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('accepts a proof-backed steering handoff from a later execution Turn', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-message-cross-turn-steering-'));
+    const path = join(root, 'state.sqlite');
+    const store = createSqliteSessionMetadataStore(path);
+    try {
+      await store.create(fullHeader({ id: 'session-1' }));
+      const content = { text: 'carried into a later successor' };
+      const admission = {
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+        runId: 'run-1',
+        messageId: 'message-1',
+        content,
+        submittedContentDigest: messageContentDigest(content),
+        submittedPlacement: 'next_turn' as const,
+        placement: 'next_turn' as const,
+        disposition: 'followup' as const,
+        skillInvocation: { loaded: [], failed: [], receipts: [] },
+        admittedAt: 10,
+      };
+      await store.commitMessageAdmission(admission);
+      await store.updateMessageAdmission({
+        ...admission,
+        placement: 'current_turn',
+        disposition: 'steering',
+      });
+
+      await assert.rejects(
+        store.markMessagesHandedOff({
+          sessionId: 'session-1',
+          messageIds: ['message-1'],
+          turnId: 'turn-2',
+          provenSteeringMessages: [
+            {
+              messageId: 'message-1',
+              admissionTurnId: 'wrong-turn',
+              admissionRunId: 'run-1',
+              executionTurnId: 'turn-2',
+              eventId: 'event-message-1',
+              eventTs: 20,
+              content,
+              admittedAt: 10,
+            },
+          ],
+        }),
+        /Proven steering admission identity conflict/,
+      );
+
+      await store.markMessagesHandedOff({
+        sessionId: 'session-1',
+        messageIds: ['message-1'],
+        turnId: 'turn-2',
+        provenSteeringMessages: [
+          {
+            messageId: 'message-1',
+            admissionTurnId: 'turn-1',
+            admissionRunId: 'run-1',
+            executionTurnId: 'turn-2',
+            eventId: 'event-message-1',
+            eventTs: 20,
+            content,
+            admittedAt: 10,
+          },
+        ],
+      });
+
+      await store.markMessagesHandedOff({
+        sessionId: 'session-1',
+        messageIds: ['message-1'],
+        turnId: 'turn-2',
+        provenSteeringMessages: [
+          {
+            messageId: 'message-1',
+            admissionTurnId: 'turn-1',
+            admissionRunId: 'run-1',
+            executionTurnId: 'turn-2',
+            eventId: 'event-message-1',
+            eventTs: 20,
+            content,
+            admittedAt: 10,
+          },
+        ],
+      });
+
+      assert.equal(await store.readMessageAdmission('session-1', 'message-1'), undefined);
+      assert.deepEqual(await store.readMessages('session-1'), []);
+    } finally {
+      store.close();
       await rm(root, { recursive: true, force: true });
     }
   });
@@ -447,6 +1139,7 @@ describe('SqliteSessionMetadataStore', () => {
         submittedPlacement: 'next_turn',
         placement: 'next_turn',
         disposition: 'followup',
+        skillInvocation: { loaded: [], failed: [], receipts: [] },
         admittedAt: 10,
       };
       await store.commitMessageAdmission(admission);
@@ -495,7 +1188,108 @@ describe('SqliteSessionMetadataStore', () => {
     }
   });
 
-  test('materializes an accepted follow-up under its successor root', async () => {
+  test('a WorkHub action identity owns one operation across store restarts', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-workhub-action-claim-'));
+    const path = join(root, 'state.sqlite');
+    const stopClaim = {
+      actionId: 'stop-action',
+      operation: 'stop' as const,
+      actionFingerprint: `sha256:${'a'.repeat(64)}` as const,
+      subject: 'whd_payments',
+    };
+    let store = createSqliteSessionMetadataStore(path);
+    try {
+      assert.equal(await store.claimWorkHubAction(stopClaim), 'claimed');
+      assert.equal(await store.claimWorkHubAction(stopClaim), 'same_claim');
+    } finally {
+      store.close();
+    }
+
+    store = createSqliteSessionMetadataStore(path);
+    try {
+      assert.deepEqual(await store.readWorkHubActionClaim('stop-action'), stopClaim);
+      assert.equal(await store.claimWorkHubAction(stopClaim), 'same_claim');
+      // A second delegation, a second disposition, and a changed payload are
+      // each a different operation for the same identity.
+      assert.equal(
+        await store.claimWorkHubAction({ ...stopClaim, subject: 'whd_login' }),
+        'conflict',
+      );
+      assert.equal(
+        await store.claimWorkHubAction({ ...stopClaim, operation: 'delegate_existing' }),
+        'conflict',
+      );
+      assert.equal(
+        await store.claimWorkHubAction({
+          ...stopClaim,
+          actionFingerprint: `sha256:${'b'.repeat(64)}`,
+        }),
+        'conflict',
+      );
+      assert.equal(await store.readWorkHubActionClaim('unclaimed-action'), undefined);
+    } finally {
+      store.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('cancellation tombstones retain the durable claim that created them', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-message-cancellation-claim-'));
+    const path = join(root, 'state.sqlite');
+    let store = createSqliteSessionMetadataStore(path);
+    try {
+      await store.create(fullHeader({ id: 'session-claim' }));
+      const content = { text: 'cancel this pending work' };
+      await store.commitMessageAdmission({
+        sessionId: 'session-claim',
+        turnId: 'turn-claim',
+        runId: 'run-claim',
+        messageId: 'message-claim',
+        content,
+        submittedContentDigest: messageContentDigest(content),
+        submittedPlacement: 'next_turn',
+        placement: 'next_turn',
+        disposition: 'followup',
+        skillInvocation: { loaded: [], failed: [], receipts: [] },
+        admittedAt: 10,
+      });
+      assert.equal(
+        await store.claimMessageAdmissionCancellation(
+          'session-claim',
+          'message-claim',
+          'stop-claim',
+        ),
+        'cancelled_by_claim',
+      );
+    } finally {
+      store.close();
+    }
+
+    store = createSqliteSessionMetadataStore(path);
+    try {
+      assert.equal(
+        await store.claimMessageAdmissionCancellation(
+          'session-claim',
+          'message-claim',
+          'stop-claim',
+        ),
+        'same_claim',
+      );
+      assert.equal(
+        await store.claimMessageAdmissionCancellation(
+          'session-claim',
+          'message-claim',
+          'other-claim',
+        ),
+        'already_cancelled',
+      );
+    } finally {
+      store.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('retires an accepted follow-up under its successor root', async () => {
     const store = createSqliteSessionMetadataStore(':memory:');
     try {
       await store.create(fullHeader({ id: 'session-followup-admission' }));
@@ -511,76 +1305,86 @@ describe('SqliteSessionMetadataStore', () => {
         submittedPlacement: 'next_turn',
         placement: 'next_turn',
         disposition: 'followup',
+        skillInvocation: { loaded: [], failed: [], receipts: [] },
         admittedAt: 11,
       });
       assert.equal(admission.disposition, 'followup');
       assert.deepEqual(await store.readMessages('session-followup-admission'), []);
-      await store.markMessagesHandedOff({
+      const handoff = {
         sessionId: 'session-followup-admission',
         messageIds: ['message-followup'],
         turnId: 'turn-successor',
-      });
-      await store.markMessagesHandedOff({
-        sessionId: 'session-followup-admission',
-        messageIds: ['message-followup'],
-        turnId: 'turn-successor',
-      });
-      assert.deepEqual(
-        (await store.readMessages('session-followup-admission')).map((message) => ({
-          id: message.id,
-          turnId: message.turnId,
-        })),
-        [{ id: 'message-followup', turnId: 'turn-successor' }],
-      );
+        provenRootMessages: [
+          provenRootMessage('message-followup', { text: 'queued before the successor root' }, 11, {
+            submittedPlacement: 'next_turn',
+            placement: 'next_turn',
+            disposition: 'followup',
+          }),
+        ],
+      };
+      await markMessagesHandedOffWithProvenRoots(store, handoff);
+      await markMessagesHandedOffWithProvenRoots(store, handoff);
+      assert.deepEqual(await store.listMessageAdmissions('session-followup-admission'), []);
+      assert.deepEqual(await store.readMessages('session-followup-admission'), []);
     } finally {
       store.close();
     }
   });
 
-  test('persists a follow-up reorder across SQLite restart', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'maka-message-reorder-'));
-    const path = join(root, 'state.sqlite');
-    try {
-      const store = createSqliteSessionMetadataStore(path);
+  for (const disposition of ['steering', 'followup'] as const) {
+    test(`persists a ${disposition} reorder across SQLite restart`, async () => {
+      const root = await mkdtemp(join(tmpdir(), 'maka-message-reorder-'));
+      const path = join(root, 'state.sqlite');
+      const earlierBatch =
+        disposition === 'steering' ? ['in-flight-first', 'in-flight-second'] : [];
       try {
-        await store.create(fullHeader({ id: 'session-reorder' }));
-        for (const [index, messageId] of ['message-first', 'message-second'].entries()) {
-          await store.commitMessageAdmission({
-            sessionId: 'session-reorder',
-            turnId: 'turn-current',
-            runId: 'run-current',
-            messageId,
-            content: { text: messageId },
-            submittedContentDigest: messageContentDigest({ text: messageId }),
-            submittedPlacement: 'next_turn',
-            placement: 'next_turn',
-            disposition: 'followup',
-            admittedAt: 20 + index,
-          });
+        const store = createSqliteSessionMetadataStore(path);
+        try {
+          await store.create(fullHeader({ id: 'session-reorder' }));
+          for (const [index, messageId] of [
+            ...earlierBatch,
+            'message-first',
+            'message-second',
+          ].entries()) {
+            await store.commitMessageAdmission({
+              sessionId: 'session-reorder',
+              turnId: 'turn-current',
+              runId: 'run-current',
+              messageId,
+              content: { text: messageId },
+              submittedContentDigest: messageContentDigest({ text: messageId }),
+              submittedPlacement: disposition === 'steering' ? 'current_turn' : 'next_turn',
+              placement: disposition === 'steering' ? 'current_turn' : 'next_turn',
+              disposition,
+              skillInvocation: { loaded: [], failed: [], receipts: [] },
+              admittedAt: 20 + index,
+            });
+          }
+          await store.reorderMessageAdmissions(
+            'session-reorder',
+            ['message-second', 'message-first'],
+            disposition,
+          );
+        } finally {
+          store.close();
         }
-        await store.reorderMessageAdmissions('session-reorder', [
-          'message-second',
-          'message-first',
-        ]);
-      } finally {
-        store.close();
-      }
 
-      const reopened = createSqliteSessionMetadataStore(path);
-      try {
-        assert.deepEqual(
-          (await reopened.listMessageAdmissions('session-reorder')).map(
-            (admission) => admission.messageId,
-          ),
-          ['message-second', 'message-first'],
-        );
+        const reopened = createSqliteSessionMetadataStore(path);
+        try {
+          assert.deepEqual(
+            (await reopened.listMessageAdmissions('session-reorder')).map(
+              (admission) => admission.messageId,
+            ),
+            [...earlierBatch, 'message-second', 'message-first'],
+          );
+        } finally {
+          reopened.close();
+        }
       } finally {
-        reopened.close();
+        await rm(root, { recursive: true, force: true });
       }
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
+    });
+  }
 
   test('migrates v24 legacy session statuses to active exactly once', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-session-status-v24-'));
@@ -1949,6 +2753,119 @@ describe('SqliteSessionMetadataStore', () => {
     }
   });
 
+  test('projects only explicit denials from exact trusted continuation identities', async () => {
+    const store = createSqliteSessionMetadataStore(':memory:');
+    try {
+      await store.create(fullHeader());
+      for (const reason of [
+        'client_denied',
+        'turn_stopped',
+        'turn_terminal',
+        'host_restarted',
+      ] as const) {
+        await store.createSandboxBoundaryRequest({
+          sessionId: 'session-1',
+          requestId: reason,
+          turnId: 'turn-1',
+          runId: reason,
+          expansion: { network: { enabled: true } },
+          justification: 'Fetch a dependency.',
+        });
+        const settlement = await store.settleSandboxBoundaryRequest({
+          sessionId: 'session-1',
+          requestId: reason,
+          decision: 'deny',
+          ...(reason === 'client_denied' ? {} : { closureReason: reason }),
+        });
+        assert.equal(settlement.request.outcomeReason, reason);
+        assert.equal(
+          await store.hasExplicitSandboxBoundaryDenial([
+            { sessionId: 'session-1', runId: reason, turnId: 'turn-1' },
+          ]),
+          reason === 'client_denied',
+        );
+      }
+      for (const identity of [
+        {
+          sessionId: 'other-session',
+          runId: 'client_denied',
+          turnId: 'turn-1',
+        },
+        { sessionId: 'session-1', runId: 'other-run', turnId: 'turn-1' },
+        {
+          sessionId: 'session-1',
+          runId: 'client_denied',
+          turnId: 'other-turn',
+        },
+      ])
+        assert.equal(await store.hasExplicitSandboxBoundaryDenial([identity]), false);
+      assert.equal(await store.hasExplicitSandboxBoundaryDenial([]), false);
+      assert.equal(
+        await store.hasExplicitSandboxBoundaryDenial([
+          { sessionId: 'session-1', runId: 'turn_stopped', turnId: 'turn-1' },
+          { sessionId: 'session-1', runId: 'client_denied', turnId: 'turn-1' },
+        ]),
+        true,
+      );
+    } finally {
+      store.close();
+    }
+  });
+
+  test('ambiguous legacy denial blocks only its trusted chain, even after an explicit denial', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'maka-legacy-denial-'));
+    const path = join(directory, 'runtime.sqlite');
+    const store = createSqliteSessionMetadataStore(path);
+    try {
+      await store.create(fullHeader());
+      for (const runId of ['explicit', 'legacy', 'unknown']) {
+        await store.createSandboxBoundaryRequest({
+          sessionId: 'session-1',
+          requestId: runId,
+          turnId: 'turn-1',
+          runId,
+          expansion: { network: { enabled: true } },
+          justification: 'Use the network.',
+        });
+        await store.settleSandboxBoundaryRequest({
+          sessionId: 'session-1',
+          requestId: runId,
+          decision: 'deny',
+        });
+      }
+      const legacy = new DatabaseSync(path);
+      try {
+        legacy
+          .prepare("UPDATE sandbox_boundary_log SET outcome_reason = NULL WHERE run_id = 'legacy'")
+          .run();
+        legacy
+          .prepare(
+            "UPDATE sandbox_boundary_log SET outcome_reason = 'unknown_reason' WHERE run_id = 'unknown'",
+          )
+          .run();
+      } finally {
+        legacy.close();
+      }
+      const identity = (runId: string) => ({ sessionId: 'session-1', runId, turnId: 'turn-1' });
+      assert.equal(await store.hasExplicitSandboxBoundaryDenial([identity('unrelated')]), false);
+      assert.equal(await store.hasExplicitSandboxBoundaryDenial([identity('explicit')]), true);
+      for (const runId of ['legacy', 'unknown']) {
+        for (const chain of [
+          [identity('explicit'), identity(runId)],
+          [identity(runId), identity('explicit')],
+        ]) {
+          await assert.rejects(
+            store.hasExplicitSandboxBoundaryDenial(chain),
+            /cannot be attributed safely/,
+          );
+        }
+      }
+    } finally {
+      store.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   test('does not invent revisions for denial or an already-contained approval', async () => {
     const store = createSqliteSessionMetadataStore(':memory:');
     try {
@@ -2547,6 +3464,7 @@ describe('SqliteSessionMetadataStore', () => {
       expectedVersion: 1,
       configuration: {
         backend: 'ai-sdk' as const,
+        llmConnectionId: '11111111-1111-4111-8111-111111111111',
         llmConnectionSlug: 'openrouter',
         connectionLocked: true,
         model: 'openrouter/free',
@@ -2584,6 +3502,7 @@ describe('SqliteSessionMetadataStore', () => {
 
       const updated = await store.updateSessionConfiguration('configured-session', configuration);
       assert.equal(updated.metadataVersion, 2);
+      assert.equal(updated.header.llmConnectionId, '11111111-1111-4111-8111-111111111111');
       assert.equal(updated.header.model, 'openrouter/free');
       assert.equal(updated.header.collaborationMode, 'plan');
       assert.equal(updated.header.orchestrationMode, 'graph');
@@ -2629,6 +3548,7 @@ describe('SqliteSessionMetadataStore', () => {
         expectedVersion: 1,
         configuration: {
           backend: 'ai-sdk',
+          llmConnectionId: '11111111-1111-4111-8111-111111111111',
           llmConnectionSlug: 'openrouter',
           connectionLocked: true,
           model: 'openrouter/free',
@@ -3363,6 +4283,36 @@ function fullHeader(overrides: Partial<SessionHeader> = {}): SessionHeader {
     schemaVersion: 1,
     ...overrides,
   };
+}
+
+type ProvenRootHandoffInput = MarkMessagesHandedOffInput & {
+  readonly provenRootMessages: readonly ProvenRootMessageHandoff[];
+};
+
+function provenRootMessage(
+  messageId: string,
+  content: MessageContent,
+  admittedAt: number,
+  overrides: Partial<ProvenRootMessageHandoff> = {},
+): ProvenRootMessageHandoff {
+  return {
+    messageId,
+    content,
+    submittedContentDigest: messageContentDigest(content),
+    submittedPlacement: 'current_turn',
+    skillInvocation: { loaded: [], failed: [], receipts: [] },
+    placement: 'current_turn',
+    disposition: 'turn_started',
+    admittedAt,
+    ...overrides,
+  };
+}
+
+async function markMessagesHandedOffWithProvenRoots(
+  store: ReturnType<typeof createSqliteSessionMetadataStore>,
+  input: ProvenRootHandoffInput,
+): Promise<void> {
+  return store.markMessagesHandedOff(input);
 }
 
 function graphRootHeader(id: string): SessionHeader {

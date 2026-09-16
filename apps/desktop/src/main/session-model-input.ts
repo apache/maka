@@ -18,6 +18,7 @@
  */
 
 export interface SessionModelSelection {
+  llmConnectionId: string;
   llmConnectionSlug: string;
   model: string;
 }
@@ -27,9 +28,10 @@ export function normalizeSessionModelSelection(input: unknown): SessionModelSele
     throw new Error('Invalid model selection');
   }
   const record = input as Record<string, unknown>;
+  const llmConnectionId = normalizeRequiredString(record.llmConnectionId, 'model connection id');
   const llmConnectionSlug = normalizeRequiredString(record.llmConnectionSlug, 'model connection');
   const model = normalizeRequiredString(record.model, 'model');
-  return { llmConnectionSlug, model };
+  return { llmConnectionId, llmConnectionSlug, model };
 }
 
 function normalizeRequiredString(value: unknown, label: string): string {

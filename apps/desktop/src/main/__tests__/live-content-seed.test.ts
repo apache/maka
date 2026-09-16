@@ -21,16 +21,42 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   EMPTY_LIVE_CONTENT_SEED,
+  EMPTY_SESSION_OBSERVATION_AUTHORITY,
+  advanceSessionObservationAuthority,
   beginLiveContentSeed,
   completeLiveContentSeed,
   liveContentSeedRevision,
 } from '../../renderer/live-content-seed.js';
 
+test('catalog hydration does not replace an already-bound Session observation', () => {
+  const selected = advanceSessionObservationAuthority(
+    EMPTY_SESSION_OBSERVATION_AUTHORITY,
+    'session-a',
+    undefined,
+  );
+  const hydrated = advanceSessionObservationAuthority(selected, 'session-a', 'profile-a');
+
+  assert.equal(hydrated.profileId, 'profile-a');
+  assert.equal(hydrated.revision, selected.revision);
+});
+
+test('a real Session observation authority handoff advances the revision', () => {
+  const selected = advanceSessionObservationAuthority(
+    EMPTY_SESSION_OBSERVATION_AUTHORITY,
+    'session-a',
+    'profile-a',
+  );
+  const handedOff = advanceSessionObservationAuthority(selected, 'session-a', 'profile-b');
+
+  assert.equal(handedOff.profileId, 'profile-b');
+  assert.equal(handedOff.revision, selected.revision + 1);
+});
+
 test('withholds live content until the current observation generation is ready', () => {
   const first = beginLiveContentSeed(EMPTY_LIVE_CONTENT_SEED, 'session-a');
   assert.equal(liveContentSeedRevision(first, 'session-a'), 0);
 
-  const ready = completeLiveContentSeed(first, 'session-a', first.generation);
+  const ready = completeLiveContentSeed(first, 'session-a');
   assert.equal(liveContentSeedRevision(ready, 'session-a'), first.generation);
   assert.equal(liveContentSeedRevision(ready, 'session-b'), 0);
 });
@@ -39,7 +65,6 @@ test('A → B → A does not reuse the previous ready generation', () => {
   const firstReady = completeLiveContentSeed(
     beginLiveContentSeed(EMPTY_LIVE_CONTENT_SEED, 'session-a'),
     'session-a',
-    1,
   );
   assert.equal(liveContentSeedRevision(firstReady, 'session-a'), 1);
 
@@ -51,11 +76,7 @@ test('A → B → A does not reuse the previous ready generation', () => {
   assert.equal(pendingA.generation, 3);
   assert.equal(liveContentSeedRevision(pendingA, 'session-a'), 0);
 
-  const staleFirstSeed = completeLiveContentSeed(pendingA, 'session-a', 1);
-  assert.equal(staleFirstSeed, pendingA);
-  assert.equal(liveContentSeedRevision(staleFirstSeed, 'session-a'), 0);
-
-  const recovered = completeLiveContentSeed(pendingA, 'session-a', pendingA.generation);
+  const recovered = completeLiveContentSeed(pendingA, 'session-a');
   assert.equal(liveContentSeedRevision(recovered, 'session-a'), 3);
 });
 
@@ -63,14 +84,10 @@ test('a recovery generation only exposes live content after that generation comp
   const firstReady = completeLiveContentSeed(
     beginLiveContentSeed(EMPTY_LIVE_CONTENT_SEED, 'session-a'),
     'session-a',
-    1,
   );
   const recovering = beginLiveContentSeed(firstReady, 'session-a');
   assert.equal(liveContentSeedRevision(recovering, 'session-a'), 0);
 
-  const stale = completeLiveContentSeed(recovering, 'session-a', firstReady.generation);
-  assert.equal(liveContentSeedRevision(stale, 'session-a'), 0);
-
-  const ready = completeLiveContentSeed(recovering, 'session-a', recovering.generation);
+  const ready = completeLiveContentSeed(recovering, 'session-a');
   assert.equal(liveContentSeedRevision(ready, 'session-a'), 2);
 });

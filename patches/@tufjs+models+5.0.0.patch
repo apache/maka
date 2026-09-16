@@ -1,0 +1,11 @@
+diff --git a/node_modules/@tufjs/models/dist/utils/verify.js b/node_modules/@tufjs/models/dist/utils/verify.js
+--- a/node_modules/@tufjs/models/dist/utils/verify.js
++++ b/node_modules/@tufjs/models/dist/utils/verify.js
+@@ -9,5 +9,6 @@ const crypto_1 = __importDefault(require("crypto"));
+ const verifySignature = (metaDataSignedData, key, signature) => {
+     const canonicalData = Buffer.from((0, canonical_json_1.canonicalize)(metaDataSignedData));
+-    return crypto_1.default.verify(undefined, canonicalData, key, Buffer.from(signature, 'hex'));
++    const algorithm = key.key.asymmetricKeyType === 'ed25519' ? null : 'sha256';
++    return crypto_1.default.verify(algorithm, canonicalData, key, Buffer.from(signature, 'hex'));
+ };
+ exports.verifySignature = verifySignature;

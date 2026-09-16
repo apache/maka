@@ -18,10 +18,12 @@
  */
 
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { DatabaseSync } from 'node:sqlite';
 import type { StoredMessage } from '@maka/core/session';
 import { createSqliteAgentRunStore } from '@maka/storage/agent-run-store';
 import { createExternalSessionAdapterRegistry } from '@maka/storage/external-sessions';
@@ -29,8 +31,15 @@ import { createSessionStore } from '@maka/storage/session-store';
 import { createSqliteRuntimeStore } from '@maka/storage/sqlite-runtime-store';
 import { buildRuntimeEventModelReplayPlan } from '../model-history.js';
 import { buildPriorRuntimeContext } from '../prior-run-context.js';
+import {
+  buildInvocationOpenedEvent,
+  buildSyntheticTerminalRuntimeEvent,
+  runtimeInvocationOutcome,
+} from '@maka/core/runtime-invocation';
+import { runtimeInvocationFailureClass } from '../runtime-event-read-model.js';
 import { backfillRuntimeEventsFromStoredMessages } from '../runtime-event-backfill.js';
 import { RuntimeLedgerRepair } from '../runtime-ledger-repair.js';
+import { BackendRegistry, SessionManager } from '../session-manager.js';
 
 test('repairs imported transcript turns into provider-neutral canonical history', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-transcript-ledger-repair-'));
@@ -82,7 +91,6 @@ test('repairs imported transcript turns into provider-neutral canonical history'
         turnId: 'turn-1',
         ts: externalTs,
         status: 'completed',
-        partialOutputRetained: true,
       },
     ];
     const session = await sessions.createImportedSession(
@@ -97,23 +105,18 @@ test('repairs imported transcript turns into provider-neutral canonical history'
     );
     assert.equal(session.transcriptLedgerVersion, 0);
     const repair = new RuntimeLedgerRepair({
-      runStore: runs,
       runtimeEventStore: runtimeEvents,
-      readMessages: (sessionId) => sessions.readMessages(sessionId),
-      appendMessage: (sessionId, message) => sessions.appendMessage(sessionId, message),
-      appendTurnState: async () => undefined,
-      newId,
-      now: () => 100,
+      readMessagesAfter: (sessionId, request) => sessions.readMessagesAfter(sessionId, request),
     });
 
     await repair.materializeTranscriptLedger(session);
     await repair.materializeTranscriptLedger(session);
 
-    const [importedRun] = await runs.listSessionRuns(session.id);
+    const [importedRun] = await runtimeEvents.listSessionInvocations(session.id);
     assert.ok(importedRun);
     assert.equal(importedRun.turnId, 'turn-1');
-    assert.equal(importedRun.status, 'completed');
-    assert.ok(importedRun.createdAt < session.createdAt);
+    assert.equal(runtimeInvocationOutcome(importedRun), 'completed');
+    assert.ok(importedRun.openedAt < session.createdAt);
 
     const importedEvents = await runtimeEvents.readRuntimeEvents(session.id, importedRun.runId);
     assert.deepEqual(
@@ -148,19 +151,24 @@ test('repairs imported transcript turns into provider-neutral canonical history'
         turnId: 'turn-2',
         ts: session.createdAt + 3,
         status: 'completed',
-        partialOutputRetained: true,
       },
     ];
-    const continuedRun = await runs.createRun({
-      ...importedRun,
+    const continuedRun = {
+      sessionId: session.id,
       runId: 'continued-run',
       invocationId: 'continued-invocation',
       turnId: 'turn-2',
-      status: 'completed',
-      createdAt: session.createdAt + 1,
-      updatedAt: session.createdAt + 3,
-      completedAt: session.createdAt + 3,
-    });
+    };
+    await runtimeEvents.appendRuntimeEvent(
+      session.id,
+      continuedRun.runId,
+      buildInvocationOpenedEvent({
+        id: newId(),
+        run: continuedRun,
+        openedAt: session.createdAt + 1,
+        opening: importedRun.opening,
+      }),
+    );
     for (const event of backfillRuntimeEventsFromStoredMessages({
       run: continuedRun,
       messages: continuedMessages,
@@ -171,26 +179,27 @@ test('repairs imported transcript turns into provider-neutral canonical history'
     }
 
     const currentRunId = 'current-run';
-    await runs.createRun({
-      ...continuedRun,
-      runId: currentRunId,
-      invocationId: 'current-invocation',
-      turnId: 'turn-3',
-      status: 'running',
-      createdAt: session.createdAt + 4,
-      updatedAt: session.createdAt + 4,
-      completedAt: undefined,
-    });
+    await runtimeEvents.appendRuntimeEvent(
+      session.id,
+      currentRunId,
+      buildInvocationOpenedEvent({
+        id: newId(),
+        run: {
+          sessionId: session.id,
+          runId: currentRunId,
+          invocationId: 'current-invocation',
+          turnId: 'turn-3',
+        },
+        openedAt: session.createdAt + 4,
+        opening: importedRun.opening,
+      }),
+    );
     const prior = await buildPriorRuntimeContext({
       sessionId: session.id,
       currentRunId,
       currentTurnId: 'turn-3',
-      linkedChildSession: false,
-      runStore: runs,
       runtimeEventStore: runtimeEvents,
-      runStoreAvailable: true,
       runtimeEventStoreAvailable: true,
-      readMessages: () => sessions.readMessages(session.id),
     });
     assert.deepEqual(
       buildRuntimeEventModelReplayPlan(prior?.events ?? []).items.map((item) =>
@@ -260,7 +269,6 @@ test('an imported snapshot cutoff survives materialization as aborted', async ()
         status: 'aborted',
         abortedAt: ts,
         abortSource: 'external_session_snapshot',
-        partialOutputRetained: true,
       },
     ];
     const session = await sessions.createImportedSession(
@@ -274,24 +282,19 @@ test('an imported snapshot cutoff survives materialization as aborted', async ()
       { adapterId: 'claude-code', sourceSessionId: 'cut-1' },
     );
     const repair = new RuntimeLedgerRepair({
-      runStore: runs,
       runtimeEventStore: runtimeEvents,
-      readMessages: (sessionId) => sessions.readMessages(sessionId),
-      appendMessage: (sessionId, message) => sessions.appendMessage(sessionId, message),
-      appendTurnState: async () => undefined,
-      newId,
-      now: () => 100,
+      readMessagesAfter: (sessionId, request) => sessions.readMessagesAfter(sessionId, request),
     });
 
     await repair.materializeTranscriptLedger(session);
 
-    const [run] = await runs.listSessionRuns(session.id);
+    const [run] = await runtimeEvents.listSessionInvocations(session.id);
     assert.ok(run);
     // `cancelled`, not `failed`: the Ledger accepted the recorded abort. Before
     // the adapter emitted one, this same transcript materialized as
     // `failed / missing_terminal_event`.
-    assert.equal(run.status, 'cancelled');
-    assert.notEqual(run.failureClass, 'missing_terminal_event');
+    assert.equal(runtimeInvocationOutcome(run), 'cancelled');
+    assert.notEqual(runtimeInvocationFailureClass(run), 'missing_terminal_event');
   } finally {
     await runtimeEvents.close?.();
     await rm(root, { recursive: true, force: true });
@@ -327,24 +330,18 @@ test('does not import Host-handed-off transcript messages as synthetic runs', as
           turnId: 'host-turn',
           ts: 11,
           status: 'completed',
-          partialOutputRetained: false,
         },
       ],
       { adapterId: 'test', sourceSessionId: 'host-session' },
     );
     const repair = new RuntimeLedgerRepair({
-      runStore: runs,
       runtimeEventStore: runtimeEvents,
-      readMessages: (sessionId) => sessions.readMessages(sessionId),
-      appendMessage: (sessionId, message) => sessions.appendMessage(sessionId, message),
-      appendTurnState: async () => undefined,
-      newId: () => `host-repair-${++sequence}`,
-      now: () => 100,
+      readMessagesAfter: (sessionId, request) => sessions.readMessagesAfter(sessionId, request),
     });
 
     await repair.materializeTranscriptLedger(session);
 
-    assert.deepEqual(await runs.listSessionRuns(session.id), []);
+    assert.deepEqual(await runtimeEvents.listSessionInvocations(session.id), []);
   } finally {
     runtimeEvents.close();
     runs.close?.();
@@ -387,23 +384,311 @@ test('an imported turn with no terminal state is repaired to failed', async () =
       { adapterId: 'claude-code', sourceSessionId: 'missing-1' },
     );
     const repair = new RuntimeLedgerRepair({
-      runStore: runs,
       runtimeEventStore: runtimeEvents,
-      readMessages: (sessionId) => sessions.readMessages(sessionId),
-      appendMessage: (sessionId, message) => sessions.appendMessage(sessionId, message),
-      appendTurnState: async () => undefined,
-      newId,
-      now: () => 100,
+      readMessagesAfter: (sessionId, request) => sessions.readMessagesAfter(sessionId, request),
     });
 
     await repair.materializeTranscriptLedger(session);
 
-    const [run] = await runs.listSessionRuns(session.id);
+    const [run] = await runtimeEvents.listSessionInvocations(session.id);
     assert.ok(run);
-    assert.equal(run.status, 'failed');
-    assert.equal(run.failureClass, 'missing_terminal_event');
+    assert.equal(runtimeInvocationOutcome(run), 'failed');
+    assert.equal(runtimeInvocationFailureClass(run), 'missing_terminal_event');
   } finally {
     await runtimeEvents.close?.();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("converts Maka's own legacy transcript whole, and resumes an interrupted conversion", async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-native-transcript-'));
+  const sessions = createSessionStore(root);
+  const runtimeEvents = createSqliteRuntimeStore(join(root, 'runtime.sqlite'));
+
+  try {
+    const ts = Date.now();
+    const session = await sessions.create({
+      cwd: '/repo',
+      llmConnectionSlug: 'anthropic',
+      model: 'claude-opus-5',
+      permissionMode: 'ask',
+    });
+    await sessions.appendMessages(session.id, [
+      { type: 'user', id: 'n-user', turnId: 'turn-1', ts, text: 'run the tests' },
+      {
+        type: 'tool_call',
+        id: 'n-tool',
+        turnId: 'turn-1',
+        ts: ts + 1,
+        toolName: 'Bash',
+        args: { command: 'npm test' },
+      },
+      {
+        type: 'tool_result',
+        id: 'n-result',
+        turnId: 'turn-1',
+        ts: ts + 2,
+        toolUseId: 'n-tool',
+        isError: false,
+        content: { kind: 'text', text: 'ok' },
+      },
+      {
+        type: 'system_note',
+        id: 'n-note',
+        turnId: 'turn-1',
+        ts: ts + 3,
+        kind: 'step_limit',
+      },
+      {
+        type: 'assistant',
+        id: 'n-assistant',
+        turnId: 'turn-1',
+        ts: ts + 4,
+        text: 'All green.',
+        modelId: 'claude-opus-5',
+      },
+      {
+        type: 'turn_state',
+        id: 'n-state',
+        turnId: 'turn-1',
+        ts: ts + 5,
+        status: 'completed',
+      },
+    ]);
+
+    const repair = new RuntimeLedgerRepair({
+      runtimeEventStore: runtimeEvents,
+      readMessagesAfter: (sessionId, request) => sessions.readMessagesAfter(sessionId, request),
+    });
+
+    const append = runtimeEvents.appendRuntimeEvent.bind(runtimeEvents);
+    runtimeEvents.appendRuntimeEvent = async (sessionId, runId, event) => {
+      await append(sessionId, runId, event);
+      if (event.role === 'user') throw new Error('interrupted conversion');
+    };
+    await assert.rejects(
+      repair.materializeTranscriptLedger(await sessions.readHeader(session.id)),
+      /interrupted conversion/,
+    );
+    runtimeEvents.appendRuntimeEvent = append;
+    const [interrupted] = await runtimeEvents.listSessionInvocations(session.id);
+    assert.ok(interrupted);
+    const prefix = await runtimeEvents.readRuntimeEvents(session.id, interrupted.runId);
+    assert.equal(interrupted.terminalEvent, undefined);
+    const resumed = new RuntimeLedgerRepair({
+      runtimeEventStore: runtimeEvents,
+      readMessagesAfter: (sessionId, request) => sessions.readMessagesAfter(sessionId, request),
+    });
+    await resumed.materializeTranscriptLedger(await sessions.readHeader(session.id));
+
+    const [run] = await runtimeEvents.listSessionInvocations(session.id);
+    assert.ok(run);
+    assert.equal(runtimeInvocationOutcome(run), 'completed');
+    const events = await runtimeEvents.readRuntimeEvents(session.id, run.runId);
+    assert.deepEqual(events.slice(0, prefix.length), prefix);
+    assert.deepEqual(
+      events.flatMap((event) => (event.content ? [event.content.kind] : [])),
+      ['invocation_opened', 'text', 'function_call', 'function_response', 'system_note', 'text'],
+    );
+  } finally {
+    await runtimeEvents.close?.();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('converts an imported turn ahead of a run the Session already sent', async () => {
+  // The state a released build leaves behind: it imported a transcript and then
+  // sent on that Session without converting first, so the native run took the
+  // Session's ordinals before the older imported turn was ever on the ledger.
+  const root = await mkdtemp(join(tmpdir(), 'maka-transcript-mixed-'));
+  const sessions = createSessionStore(root);
+  const runtimeEvents = createSqliteRuntimeStore(join(root, 'runtime.sqlite'));
+  try {
+    const ts = Date.now();
+    const session = await sessions.createImportedSession(
+      {
+        cwd: '/repo',
+        llmConnectionSlug: 'anthropic',
+        model: 'claude-opus-5',
+        permissionMode: 'ask',
+      },
+      [
+        { type: 'user', id: 'i-user', turnId: 'turn-old', ts, text: 'the older question' },
+        {
+          type: 'assistant',
+          id: 'i-assistant',
+          turnId: 'turn-old',
+          ts: ts + 1,
+          text: 'the older answer',
+          modelId: 'claude-opus-5',
+        },
+        {
+          type: 'turn_state',
+          id: 'i-state',
+          turnId: 'turn-old',
+          ts: ts + 2,
+          status: 'completed',
+        },
+      ],
+      { adapterId: 'claude-code', sourceSessionId: 'imported-source' },
+    );
+    const run = { sessionId: session.id, runId: 'native-run', turnId: 'turn-new' };
+    const sentAt = ts + 1_000;
+    await sessions.appendMessages(session.id, [
+      { type: 'user', id: 'n-user', turnId: 'turn-new', ts: sentAt, text: 'the newer question' },
+    ]);
+    for (const event of [
+      buildInvocationOpenedEvent({
+        id: 'native-opening',
+        run: { ...run, invocationId: run.runId },
+        openedAt: sentAt,
+        opening: {
+          kind: 'invocation_opened',
+          protocol: 'invocation_opened_v1',
+          route: {
+            provenance: 'unknown',
+            backendKind: 'ai-sdk',
+            llmConnectionSlug: 'anthropic',
+            modelId: 'claude-opus-5',
+          },
+          configuration: {
+            cwd: '/repo',
+            permissionMode: 'ask',
+            collaborationMode: 'agent',
+            orchestrationMode: 'default',
+            orchestrationSource: 'session',
+            toolMode: 'direct',
+          },
+          root: { kind: 'user' },
+          source: { kind: 'fresh' },
+        },
+      }),
+      {
+        id: 'native-user',
+        sessionId: session.id,
+        invocationId: run.runId,
+        runId: run.runId,
+        turnId: run.turnId,
+        ts: sentAt,
+        partial: false,
+        role: 'user',
+        author: 'user',
+        modelVisibility: 'visible',
+        content: { kind: 'text', text: 'the newer question' },
+      } as const,
+      buildSyntheticTerminalRuntimeEvent({
+        id: 'native-terminal',
+        invocationId: run.runId,
+        run,
+        status: 'completed',
+        ts: sentAt + 1,
+      }),
+    ]) {
+      await runtimeEvents.appendRuntimeEvent(session.id, run.runId, event);
+    }
+
+    const repair = new RuntimeLedgerRepair({
+      runtimeEventStore: runtimeEvents,
+      readMessagesAfter: (sessionId, request) => sessions.readMessagesAfter(sessionId, request),
+    });
+    await repair.materializeTranscriptLedger(await sessions.readHeader(session.id));
+
+    const entries = await runtimeEvents.readSessionRuntimeEventEntries(session.id);
+    assert.deepEqual(
+      entries.flatMap(({ event }) => (event.content?.kind === 'text' ? [event.content.text] : [])),
+      ['the older question', 'the older answer', 'the newer question'],
+    );
+    assert.deepEqual(
+      entries.map(({ ordinal }) => ordinal),
+      entries.map((_, index) => index + 1),
+    );
+  } finally {
+    await runtimeEvents.close?.();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('startup recovery leaves an interrupted legacy conversion for the importer to finish', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-transcript-restart-'));
+  const sessions = createSessionStore(root);
+  const runs = createSqliteAgentRunStore(root);
+  const runtimeEvents = createSqliteRuntimeStore(join(root, 'runtime.sqlite'));
+  try {
+    const session = await sessions.create({
+      cwd: '/repo',
+      llmConnectionSlug: 'fake',
+      model: 'fake-model',
+      permissionMode: 'ask',
+    });
+    const db = new DatabaseSync(join(root, 'runtime.sqlite'));
+    try {
+      db.prepare(
+        "UPDATE session_metadata SET payload_json = json_remove(payload_json, '$.transcriptLedgerVersion') WHERE session_id = ?",
+      ).run(session.id);
+    } finally {
+      db.close();
+    }
+    await sessions.appendMessages(session.id, [
+      {
+        type: 'user',
+        id: 'legacy-user',
+        turnId: 'legacy-turn',
+        ts: 10,
+        text: 'Keep this conversation',
+      },
+      {
+        type: 'assistant',
+        id: 'legacy-answer',
+        turnId: 'legacy-turn',
+        ts: 20,
+        text: 'The complete original answer',
+        modelId: 'fake-model',
+      },
+      {
+        type: 'turn_state',
+        id: 'legacy-end',
+        turnId: 'legacy-turn',
+        ts: 30,
+        status: 'completed',
+      },
+    ]);
+    const append = runtimeEvents.appendRuntimeEvent.bind(runtimeEvents);
+    runtimeEvents.appendRuntimeEvent = async (sessionId, runId, event) => {
+      await append(sessionId, runId, event);
+      if (event.role === 'user') throw new Error('interrupted conversion');
+    };
+    const repair = new RuntimeLedgerRepair({
+      runtimeEventStore: runtimeEvents,
+      readMessagesAfter: (id, request) => sessions.readMessagesAfter(id, request),
+    });
+    await assert.rejects(
+      repair.materializeTranscriptLedger(await sessions.readHeader(session.id)),
+      /interrupted conversion/,
+    );
+    runtimeEvents.appendRuntimeEvent = append;
+    let id = 0;
+    const manager = new SessionManager({
+      store: sessions,
+      runStore: runs,
+      runtimeEventStore: runtimeEvents,
+      backends: new BackendRegistry(),
+      now: () => 100,
+      newId: () => `recovery-${++id}`,
+    });
+    await manager.recoverInterruptedSessionsStrict({ sessionStore: sessions, agentRunStore: runs });
+    const [pending] = await runtimeEvents.listSessionInvocations(session.id);
+    assert.ok(pending);
+    assert.equal(pending.terminalEvent, undefined);
+    const messages = await manager.getMessages(session.id);
+    assert.deepEqual(
+      messages.map((message) => message.id),
+      ['legacy-user', 'legacy-answer', 'legacy-end'],
+    );
+    assert.equal((await sessions.readHeader(session.id)).transcriptLedgerVersion, 1);
+  } finally {
+    runtimeEvents.close();
+    await runs.close?.();
+    await sessions.close?.();
     await rm(root, { recursive: true, force: true });
   }
 });
@@ -555,17 +840,12 @@ test('a resolved Claude transcript replays as the conversation the user kept', a
       { adapterId: 'claude-code', sourceSessionId: SOURCE_SESSION_ID },
     );
     const repair = new RuntimeLedgerRepair({
-      runStore: runs,
       runtimeEventStore: runtimeEvents,
-      readMessages: (sessionId) => sessions.readMessages(sessionId),
-      appendMessage: (sessionId, message) => sessions.appendMessage(sessionId, message),
-      appendTurnState: async () => undefined,
-      newId,
-      now: () => 100,
+      readMessagesAfter: (sessionId, request) => sessions.readMessagesAfter(sessionId, request),
     });
     await repair.materializeTranscriptLedger(session);
 
-    const [run] = await runs.listSessionRuns(session.id);
+    const [run] = await runtimeEvents.listSessionInvocations(session.id);
     assert.ok(run);
     const events = await runtimeEvents.readRuntimeEvents(session.id, run.runId);
     const replay = buildRuntimeEventModelReplayPlan(events).items;
@@ -614,11 +894,217 @@ test('a resolved Claude transcript replays as the conversation the user kept', a
     assert.deepEqual(shape, ['call:toolu_a', 'call:toolu_b', 'result:toolu_a', 'result:toolu_b']);
 
     // And the turn is terminal on its own evidence, not repaired into one.
-    assert.equal(run.status, 'completed');
-    assert.notEqual(run.failureClass, 'missing_terminal_event');
+    assert.equal(runtimeInvocationOutcome(run), 'completed');
+    assert.notEqual(runtimeInvocationFailureClass(run), 'missing_terminal_event');
   } finally {
     runtimeEvents.close();
     runs.close?.();
+    await sessions.close?.();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+/** One legacy turn, as a released build would have left it for the converter. */
+async function seedLegacyTurn(sessions: ReturnType<typeof createSessionStore>) {
+  const ts = Date.now();
+  const session = await sessions.create({
+    cwd: '/repo',
+    llmConnectionSlug: 'anthropic',
+    model: 'claude-opus-5',
+    permissionMode: 'ask',
+  });
+  await sessions.appendMessages(session.id, [
+    { type: 'user', id: 'r-user', turnId: 'turn-1', ts, text: 'run the tests' },
+    {
+      type: 'assistant',
+      id: 'r-assistant',
+      turnId: 'turn-1',
+      ts: ts + 1,
+      text: 'All green.',
+      modelId: 'claude-opus-5',
+    },
+    {
+      type: 'turn_state',
+      id: 'r-state',
+      turnId: 'turn-1',
+      ts: ts + 2,
+      status: 'completed',
+    },
+  ]);
+  return session;
+}
+
+test('resumes a conversion a released build opened under a random event id', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-released-prefix-'));
+  const sessions = createSessionStore(root);
+  const runtimeEvents = createSqliteRuntimeStore(join(root, 'runtime.sqlite'));
+
+  try {
+    const session = await seedLegacyTurn(sessions);
+    const deps = {
+      runtimeEventStore: runtimeEvents,
+      readMessagesAfter: (
+        sessionId: string,
+        request: { maxMessages: number; maxStoredBytes: number },
+      ) => sessions.readMessagesAfter(sessionId, request),
+    };
+
+    // A released build derived the run id the same way but every event id with
+    // `newId()`, so its interrupted conversion left an opening this build
+    // cannot name. `runtime_events_one_opening_per_invocation` refuses a second
+    // one, so the retry has to read what the run already holds.
+    const append = runtimeEvents.appendRuntimeEvent.bind(runtimeEvents);
+    runtimeEvents.appendRuntimeEvent = async (sessionId, runId, event) => {
+      await append(sessionId, runId, { ...event, id: randomUUID() });
+      throw new Error('interrupted conversion');
+    };
+    await assert.rejects(
+      new RuntimeLedgerRepair(deps).materializeTranscriptLedger(
+        await sessions.readHeader(session.id),
+      ),
+      /interrupted conversion/,
+    );
+    runtimeEvents.appendRuntimeEvent = append;
+
+    await new RuntimeLedgerRepair(deps).materializeTranscriptLedger(
+      await sessions.readHeader(session.id),
+    );
+
+    const [run] = await runtimeEvents.listSessionInvocations(session.id);
+    assert.ok(run);
+    assert.equal(runtimeInvocationOutcome(run), 'completed');
+    const events = await runtimeEvents.readRuntimeEvents(session.id, run.runId);
+    assert.deepEqual(
+      events.flatMap((event) => (event.content ? [event.content.kind] : [])),
+      ['invocation_opened', 'text', 'text'],
+    );
+  } finally {
+    runtimeEvents.close();
+    await sessions.close?.();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('finishes a released conversion that had already converted messages', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-released-partial-'));
+  const sessions = createSessionStore(root);
+  const runtimeEvents = createSqliteRuntimeStore(join(root, 'runtime.sqlite'));
+
+  try {
+    const session = await seedLegacyTurn(sessions);
+    const deps = {
+      runtimeEventStore: runtimeEvents,
+      readMessagesAfter: (
+        sessionId: string,
+        request: { maxMessages: number; maxStoredBytes: number },
+      ) => sessions.readMessagesAfter(sessionId, request),
+    };
+
+    const append = runtimeEvents.appendRuntimeEvent.bind(runtimeEvents);
+    let written = 0;
+    runtimeEvents.appendRuntimeEvent = async (sessionId, runId, event) => {
+      await append(sessionId, runId, { ...event, id: randomUUID() });
+      written += 1;
+      if (written === 2) throw new Error('interrupted conversion');
+    };
+    await assert.rejects(
+      new RuntimeLedgerRepair(deps).materializeTranscriptLedger(
+        await sessions.readHeader(session.id),
+      ),
+      /interrupted conversion/,
+    );
+    runtimeEvents.appendRuntimeEvent = append;
+
+    await new RuntimeLedgerRepair(deps).materializeTranscriptLedger(
+      await sessions.readHeader(session.id),
+    );
+
+    const [run] = await runtimeEvents.listSessionInvocations(session.id);
+    assert.ok(run);
+    // The prefix is resumed by the legacy row each event names, so the turn
+    // converts whole and no row it already carried is converted twice.
+    assert.equal(runtimeInvocationOutcome(run), 'completed');
+    const events = await runtimeEvents.readRuntimeEvents(session.id, run.runId);
+    assert.deepEqual(
+      events.flatMap((event) => (event.content ? [event.content.kind] : [])),
+      ['invocation_opened', 'text', 'text'],
+    );
+  } finally {
+    runtimeEvents.close();
+    await sessions.close?.();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('converts a legacy transcript larger than one page without reading it whole', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-paged-conversion-'));
+  const sessions = createSessionStore(root);
+  const runtimeEvents = createSqliteRuntimeStore(join(root, 'runtime.sqlite'));
+
+  try {
+    const ts = Date.now();
+    const session = await sessions.create({
+      cwd: '/repo',
+      llmConnectionSlug: 'anthropic',
+      model: 'claude-opus-5',
+      permissionMode: 'ask',
+    });
+    const turnCount = 200;
+    for (let turn = 0; turn < turnCount; turn += 1) {
+      await sessions.appendMessages(session.id, [
+        {
+          type: 'user',
+          id: `p-user-${turn}`,
+          turnId: `turn-${turn}`,
+          ts: ts + turn * 3,
+          text: `ask ${turn}`,
+        },
+        {
+          type: 'assistant',
+          id: `p-assistant-${turn}`,
+          turnId: `turn-${turn}`,
+          ts: ts + turn * 3 + 1,
+          text: `answer ${turn}`,
+          modelId: 'claude-opus-5',
+        },
+        {
+          type: 'turn_state',
+          id: `p-state-${turn}`,
+          turnId: `turn-${turn}`,
+          ts: ts + turn * 3 + 2,
+          status: 'completed',
+        },
+      ]);
+    }
+
+    // The whole transcript is 600 rows. A conversion that still read it whole
+    // would ask for all of them at once, and the Session cannot serve its first
+    // transcript page until this finishes.
+    let largestRead = 0;
+    await new RuntimeLedgerRepair({
+      runtimeEventStore: runtimeEvents,
+      readMessagesAfter: async (sessionId, request) => {
+        const page = await sessions.readMessagesAfter(sessionId, request);
+        largestRead = Math.max(largestRead, page.records.length);
+        return page;
+      },
+    }).materializeTranscriptLedger(await sessions.readHeader(session.id));
+
+    assert.ok(largestRead < turnCount * 3, `read ${largestRead} rows in one page`);
+    const invocations = await runtimeEvents.listSessionInvocations(session.id);
+    assert.equal(invocations.length, turnCount);
+    assert.ok(invocations.every((run) => runtimeInvocationOutcome(run) === 'completed'));
+    // Every imported opening still sorts ahead of anything the Session does
+    // natively, and turns keep the order the transcript had.
+    const openedAt = invocations.map((run) => run.openedAt);
+    assert.ok(openedAt.every((value) => value < session.createdAt));
+    assert.deepEqual(
+      openedAt,
+      [...openedAt].sort((left, right) => left - right),
+    );
+    assert.equal(new Set(openedAt).size, turnCount);
+  } finally {
+    runtimeEvents.close();
     await sessions.close?.();
     await rm(root, { recursive: true, force: true });
   }

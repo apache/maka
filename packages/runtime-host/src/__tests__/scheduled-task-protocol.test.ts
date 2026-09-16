@@ -97,6 +97,41 @@ describe('ScheduledTask protocol', () => {
     assertDropped(updated.kind === 'update' ? updated.patch.effect : undefined);
   });
 
+  test('requires Connection identity on Agent task mutations but accepts legacy reads', () => {
+    const legacy = agentRunEffect('project-1');
+    if (legacy.kind !== 'agent_run') return;
+    const { llmConnectionId: _legacyId, ...legacyExecution } = legacy.execution;
+    assert.throws(
+      () =>
+        decodeScheduledTaskMutateInput({
+          kind: 'create',
+          input: {
+            title: 'Legacy task',
+            intentBody: 'Run it',
+            schedule: { kind: 'once', runAt: 1 },
+            effect: { kind: 'agent_run', execution: legacyExecution },
+          },
+        }),
+      /requires Connection id/u,
+    );
+    assert.deepEqual(
+      decodeScheduledTaskQueryResult({
+        kind: 'task',
+        task: {
+          ...scheduledTask('legacy-task'),
+          effect: { kind: 'agent_run', execution: legacyExecution },
+        },
+      }),
+      {
+        kind: 'task',
+        task: {
+          ...scheduledTask('legacy-task'),
+          effect: { kind: 'agent_run', execution: legacyExecution },
+        },
+      },
+    );
+  });
+
   test('accepts signal-only catalog changes', () => {
     const frame = {
       kind: 'scheduled-task.changed' as const,
@@ -169,6 +204,7 @@ function agentRunEffect(projectId: string | null | undefined): ScheduledTaskEffe
     execution: {
       cwd: '/workspace',
       ...(projectId === undefined ? {} : { projectId }),
+      llmConnectionId: 'connection-openai',
       llmConnectionSlug: 'openai',
       model: 'gpt-5',
       permissionMode: 'ask',

@@ -55,27 +55,21 @@ describe('the call a model reads back as its own', () => {
     );
   });
 
-  test('a coordinate the model chose comes back whole, and a broken one degrades', () => {
-    // Written when this projection reduced every coordinate to `<point>`, and
-    // that was the wrong half of the rule: a coordinate is not read off the
-    // screen, it is four digits the model chose and sent. Reduced to a shape, a
-    // model that clicked and missed cannot tell whether it has already tried
-    // that point — the repeated-call shape this record exists to make visible.
+  test('a semantic element id comes back whole, and a broken one degrades', () => {
     const readBack = computerUseModelCallArgs({
-      action: 'left_click',
+      action: 'click_element',
       observation_id: 'obs-1',
-      coordinate: [812, 466],
+      element_id: 'e12',
     });
 
-    assert.deepEqual(readBack.coordinate, [812, 466]);
-    // Only integers. Anything else is not a coordinate and is not echoed as one.
+    assert.equal(readBack.element_id, 'e12');
     assert.equal(
       computerUseModelCallArgs({
-        action: 'left_click',
+        action: 'click_element',
         observation_id: 'obs-1',
-        coordinate: ['812', '466'],
-      }).coordinate,
-      '<2 items>',
+        element_id: ['e12'],
+      }).element_id,
+      undefined,
     );
   });
 

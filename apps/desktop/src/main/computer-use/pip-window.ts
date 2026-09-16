@@ -761,12 +761,3 @@ export function createComputerUsePipController(
     },
   };
 }
-
-
-
-// Re-exported so callers keep their type import path while the code moves.
-export type { ParentWindowLike, PipWindowLike } from './pip-electron.js';
-
-// Re-exported so callers and tests keep their import path while the code
-// moves. Comes out in a later cut.
-export { withComputerUsePip } from './pip-feed.js';

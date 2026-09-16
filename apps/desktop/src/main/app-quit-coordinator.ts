@@ -22,12 +22,12 @@ export interface AppQuitEvent {
 }
 
 export interface AppQuitCoordinator {
-  focusOrCreateWindow(): void;
+  focusOrCreateWindow(): Promise<void>;
   handleBeforeQuit(event: AppQuitEvent): void;
 }
 
 export interface AppQuitCoordinatorDeps {
-  prepareToQuit(): Promise<void>;
+  prepareToQuit(): Promise<'ready' | 'cancelled'>;
   cleanup(): Promise<void>;
   focusOrCreateWindow(signal: AbortSignal): void | Promise<void>;
   onPreparationError(error: unknown): void;
@@ -42,14 +42,15 @@ export function createAppQuitCoordinator(deps: AppQuitCoordinatorDeps): AppQuitC
   let phase: AppQuitPhase = 'running';
   let windowCreationAbort = new AbortController();
 
-  const focusOrCreateWindow = (): void => {
-    if (phase !== 'running') return;
+  const focusOrCreateWindow = (): Promise<void> => {
+    if (phase !== 'running') return Promise.resolve();
     try {
-      void Promise.resolve(deps.focusOrCreateWindow(windowCreationAbort.signal)).catch(
+      return Promise.resolve(deps.focusOrCreateWindow(windowCreationAbort.signal)).catch(
         deps.onWindowCreationError,
       );
     } catch (error) {
       deps.onWindowCreationError(error);
+      return Promise.resolve();
     }
   };
 
@@ -75,7 +76,13 @@ export function createAppQuitCoordinator(deps: AppQuitCoordinatorDeps): AppQuitC
       void Promise.resolve()
         .then(() => deps.prepareToQuit())
         .then(
-          () => {
+          (preparation) => {
+            if (preparation === 'cancelled') {
+              phase = 'running';
+              windowCreationAbort = new AbortController();
+              focusOrCreateWindow();
+              return;
+            }
             phase = 'cleaning';
             return Promise.resolve()
               .then(() => deps.cleanup())

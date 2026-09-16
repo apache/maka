@@ -23,51 +23,49 @@ export interface SessionListRefresher<T extends SessionSummary = SessionSummary>
   refresh(): Promise<T[]>;
 }
 
-export interface SessionListRefresherOptions<T extends SessionSummary, TRequestContext> {
-  captureRequestContext: () => TRequestContext;
+export interface SessionListRefresherOptions<T extends SessionSummary> {
   listSessions: () => Promise<T[]>;
   currentSessions: () => T[];
-  commitSessions: (sessions: T[], requestContext: TRequestContext) => void;
+  commitSessions: (sessions: T[]) => void;
   onError: (error: unknown) => void;
 }
 
-export function createSessionListRefresher<T extends SessionSummary, TRequestContext>(
-  options: SessionListRefresherOptions<T, TRequestContext>,
+export function createSessionListRefresher<T extends SessionSummary>(
+  options: SessionListRefresherOptions<T>,
 ): SessionListRefresher<T> {
   let requestedGeneration = 0;
   let completedGeneration = 0;
   let activeRefresh: Promise<T[]> | undefined;
 
   const drainRefreshes = async (): Promise<T[]> => {
-    let result = options.currentSessions();
-    while (completedGeneration < requestedGeneration) {
-      const generation = requestedGeneration;
-      const requestContext = options.captureRequestContext();
-      try {
-        const listed = await options.listSessions();
-        if (generation === requestedGeneration) {
-          result = listed;
-          options.commitSessions(result, requestContext);
-        } else {
+    try {
+      let result = options.currentSessions();
+      while (completedGeneration < requestedGeneration) {
+        const generation = requestedGeneration;
+        try {
+          const listed = await options.listSessions();
+          if (generation === requestedGeneration) {
+            result = listed;
+            options.commitSessions(result);
+          } else {
+            result = options.currentSessions();
+          }
+        } catch (error) {
+          if (generation === requestedGeneration) options.onError(error);
           result = options.currentSessions();
         }
-      } catch (error) {
-        if (generation === requestedGeneration) options.onError(error);
-        result = options.currentSessions();
+        completedGeneration = generation;
       }
-      completedGeneration = generation;
+      return result;
+    } finally {
+      activeRefresh = undefined;
     }
-    return result;
   };
 
   return {
     refresh(): Promise<T[]> {
       requestedGeneration += 1;
-      if (!activeRefresh) {
-        activeRefresh = drainRefreshes().finally(() => {
-          activeRefresh = undefined;
-        });
-      }
+      if (!activeRefresh) activeRefresh = drainRefreshes();
       return activeRefresh;
     },
   };

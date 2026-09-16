@@ -22,13 +22,61 @@ import { describe, it } from 'node:test';
 import { decodeRuntimeEvent, type RuntimeEvent } from '../runtime-event.js';
 import {
   buildWorkspaceBaselineAuthorityEvents,
+  buildWorkspaceSuccessorAuthorityEvent,
   scanWorkspaceBaselineAuthority,
   validateWorkspaceFactEventLane,
   workspaceAuthorityIdentity,
   type WorkspaceBaselineAuthorityInput,
+  type WorkspaceSuccessorAuthorityInput,
 } from '../workspace-version-authority.js';
 
 describe('workspace version authority contract', () => {
+  it('decodes a causal tool-mutation successor fact on the authority lane', () => {
+    const workspaceEpochId = 'epoch_33333333333333333333333333333333';
+    const event = {
+      id: 'workspace-successor-event-1',
+      ...workspaceAuthorityIdentity(workspaceEpochId),
+      ts: 1_700_000_000_001,
+      partial: false,
+      role: 'system',
+      author: 'system',
+      actions: {
+        workspaceFact: {
+          kind: 'maka.workspace.version_accepted',
+          version: 1,
+          payload: {
+            protocol: 'workspace_version_accepted_v1',
+            repositoryId: 'repository_11111111111111111111111111111111',
+            workspaceId: 'workspace_22222222222222222222222222222222',
+            workspaceEpochId,
+            workspaceVersionId: 'version_77777777777777777777777777777777',
+            objectFormat: 'sha1',
+            parents: ['version_44444444444444444444444444444444'],
+            origin: {
+              kind: 'tool_mutation',
+              operationId: 'operation-successor-1',
+              dispatchEventId: 'dispatch-successor-1',
+              outcomeEventId: 'outcome-successor-1',
+            },
+            baseAcceptedEventId: 'workspace-baseline-event-1',
+            baseHeadRevision: 1,
+            commitOid: '7'.repeat(40),
+            treeOid: '8'.repeat(40),
+            policyHash: `sha256:${'6'.repeat(64)}`,
+            treeDeltaDigest: `sha256:${'9'.repeat(64)}`,
+            changedPaths: ['notes.txt'],
+            changedFileCount: 1,
+            deletedFileCount: 0,
+            executionProfileDigest:
+              'sha256:ffdfdda9cf38f382e0c4db81dac7319cd33586a6c65051a97a15e6c41b88f825' as const,
+          },
+        },
+      },
+    };
+
+    assert.deepEqual(decodeRuntimeEvent(event), event);
+  });
+
   it('decodes only exact v1 baseline facts on the store-owned semantic lane', () => {
     const { epochOpenedEvent, baselineAcceptedEvent } = buildWorkspaceBaselineAuthorityEvents(
       baselineInput(),
@@ -191,7 +239,72 @@ describe('workspace version authority contract', () => {
     assert.equal(orphan.hasCorruption, true);
     assert.equal(orphan.issues[0]?.code, 'orphan_baseline_version');
   });
+
+  it('advances one canonical head through a causal successor fact', () => {
+    const baseline = buildWorkspaceBaselineAuthorityEvents(baselineInput());
+    const successor = buildWorkspaceSuccessorAuthorityEvent(successorInput());
+    assert.deepEqual(decodeRuntimeEvent(successor), successor);
+    const missingChangedPaths = structuredClone(successor) as unknown as {
+      actions: { workspaceFact: { payload: Record<string, unknown> } };
+    };
+    delete missingChangedPaths.actions.workspaceFact.payload.changedPaths;
+    assert.throws(() => decodeRuntimeEvent(missingChangedPaths), /Invalid RuntimeEvent schema/);
+
+    const scan = scanWorkspaceBaselineAuthority([
+      { event: baseline.epochOpenedEvent, eventSeq: 1 },
+      { event: baseline.baselineAcceptedEvent, eventSeq: 2 },
+      { event: successor, eventSeq: 3 },
+    ]);
+
+    assert.equal(scan.hasCorruption, false);
+    assert.equal(scan.successors.length, 1);
+    assert.deepEqual(scan.successors[0]?.successor.changedPaths, ['notes.txt']);
+    assert.deepEqual(scan.heads, [
+      {
+        repositoryId: baselineInput().epoch.repositoryId,
+        workspaceId: baselineInput().epoch.workspaceId,
+        workspaceEpochId: baselineInput().epoch.workspaceEpochId,
+        workspaceVersionId: successorInput().successor.workspaceVersionId,
+        acceptedEventId: successorInput().acceptedEventId,
+        commitOid: successorInput().successor.commitOid,
+        treeOid: successorInput().successor.treeOid,
+        revision: 2,
+      },
+    ]);
+  });
 });
+
+function successorInput(): WorkspaceSuccessorAuthorityInput {
+  const baseline = baselineInput();
+  return {
+    acceptedEventId: 'workspace-successor-event-1',
+    committedAt: baseline.committedAt + 1,
+    successor: {
+      repositoryId: baseline.epoch.repositoryId,
+      workspaceId: baseline.epoch.workspaceId,
+      workspaceEpochId: baseline.epoch.workspaceEpochId,
+      workspaceVersionId: 'version_77777777777777777777777777777777',
+      objectFormat: baseline.epoch.objectFormat,
+      parentWorkspaceVersionId: baseline.baseline.workspaceVersionId,
+      baseAcceptedEventId: baseline.baselineAcceptedEventId,
+      baseHeadRevision: 1,
+      commitOid: '7'.repeat(40),
+      treeOid: '8'.repeat(40),
+      policyHash: baseline.epoch.policyHash,
+      treeDeltaDigest: `sha256:${'9'.repeat(64)}`,
+      changedPaths: ['notes.txt'],
+      changedFileCount: 1,
+      deletedFileCount: 0,
+      executionProfileDigest:
+        'sha256:ffdfdda9cf38f382e0c4db81dac7319cd33586a6c65051a97a15e6c41b88f825' as const,
+    },
+    origin: {
+      operationId: 'operation-successor-1',
+      dispatchEventId: 'dispatch-successor-1',
+      outcomeEventId: 'outcome-successor-1',
+    },
+  };
+}
 
 function baselineInput(
   overrides: Partial<WorkspaceBaselineAuthorityInput> = {},

@@ -1,0 +1,178 @@
+---
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+import Site from '../layouts/Site.astro';
+import { links, localized } from '../copy/links';
+import type { Copy } from '../copy/types';
+
+interface Props {
+  copy: Copy;
+}
+
+const { copy } = Astro.props;
+const l = copy.locale;
+const downloads = `/${l}/downloads/`;
+
+// Pass@1 from docs/eval/terminal-bench-2.1-deepseek-v4-flash-nine-arm.md.
+// The report owns these numbers; this figure only draws them.
+const leaderboard = [
+  ['Codex', 82.0],
+  ['Maka', 77.5],
+  ['Pi', 74.2],
+  ['DSH', 73.0],
+  ['ZCode', 70.8],
+  ['Reasonix', 67.4],
+  ['OpenCode', 65.2],
+  ['Kimi Code', 59.6],
+  ['Claude Code', 55.1],
+] as const;
+
+const reads = [
+  { ...copy.reads.blogLog, href: localized.blogLog[l] },
+  { ...copy.reads.blogTools, href: localized.blogTools[l] },
+  { ...copy.reads.nineArm, href: links.nineArm },
+  { ...copy.reads.paired, href: links.paired },
+];
+---
+
+<Site copy={copy} page="home" title={copy.siteName} description={copy.positioning}>
+  <header class="hero">
+    <h1 class="display">{copy.hero.headline[0]}<b>{copy.hero.headline[1]}</b>{copy.hero.headline[2]}</h1>
+    <p class="lede">{copy.hero.lede}</p>
+    <div class="cta">
+      <a class="btn primary" href={links.releases}>{copy.hero.nightly} <span class="arr">→</span></a>
+      <a class="btn secondary" href={`${downloads}#source`}>{copy.hero.source}</a>
+    </div>
+    <div class="fine">{copy.hero.fine} · <a href={localized.architecture[l]}>{copy.hero.architecture}</a></div>
+
+    <div class="scene" aria-hidden="true">
+      <div class="turn">
+        <div class="rail"></div>
+        <div class="hwline" style="--i: 5"><span>{copy.scene.highWater}</span></div>
+        {copy.scene.events.map((event, index) => (
+          <div class:list={['ev-pill', event.tone]} style={`--i: ${index}`}><b>{event.label}</b><small>{event.detail}</small></div>
+        ))}
+      </div>
+      <div class="tape-cap"><span>{copy.scene.caption}</span><span class="hw">{copy.scene.formula}</span></div>
+    </div>
+  </header>
+
+  <section class="sec">
+    <div class="sec-h">
+      <h2>{copy.measured.h2}</h2>
+      <p>{copy.measured.p}</p>
+    </div>
+    <div class="bento">
+      <div class="tile c5 r2">
+        <h3>{copy.leaderboard.h3}</h3>
+        <p>{copy.leaderboard.p}</p>
+        <a class="more" href={links.nineArm}>{copy.leaderboard.more}</a>
+        <div class="fig">
+          <div class="lb">
+            {leaderboard.map(([name, pct], index) => (
+              <div class:list={['row', { me: name === 'Maka' }]}>
+                <span class="rk">{index + 1}</span>
+                <span class="nm">{name}</span>
+                <div class="tr"><div class="fi" style={`width:${pct}%`}></div></div>
+                <span class="pc">{pct.toFixed(1)}%</span>
+              </div>
+            ))}
+            <div class="cap">{copy.leaderboard.caption}</div>
+          </div>
+        </div>
+      </div>
+      <div class="tile c4">
+        <h3>{copy.paired.h3}</h3>
+        <p>{copy.paired.p}</p>
+        <a class="more" href={links.paired}>{copy.paired.more}</a>
+        <div class="fig"><div class="stat">{copy.paired.stat}<small>{copy.paired.statSmall}</small></div></div>
+      </div>
+      <div class="tile c3 plain">
+        <h3>{copy.host.h3}</h3>
+        <p>{copy.host.p}</p>
+        <a class="more" href={localized.runtimeHost[l]}>{copy.host.more}</a>
+        <div class="fig host">
+          <div class="col">{copy.host.clients.map((client) => <span class="chip">{client}</span>)}</div>
+          <div class="lines">→</div>
+          <div class="core">{copy.host.core}<small>{copy.host.coreSmall}</small></div>
+        </div>
+      </div>
+      <div class="tile c7">
+        <h3>{copy.log.h3}</h3>
+        <p>{copy.log.p}</p>
+        <a class="more" href={localized.blogLog[l]}>{copy.log.more}</a>
+        <div class="fig evs">
+          {copy.scene.events.map((event, index) => (
+            <span class:list={['e', event.tone.replace('dim', '').trim()]} style={`--i: ${index}`}>{event.name}</span>
+          ))}
+          <span class="cur" style={`--i: ${copy.scene.events.length}`}></span>
+        </div>
+      </div>
+      <div class="tile c12 plain get">
+        <div class="get-h"><h3>{copy.get.h3}</h3><p>{copy.get.p}</p></div>
+        <div class="paths3">
+          <a class="path" href={links.releases}>
+            <div><b>{copy.get.nightly.title}</b><span>{copy.get.nightly.body}</span></div>
+            <span class="note">{copy.get.nightly.note}</span>
+          </a>
+          <a class="path" href={`${downloads}#source`}>
+            <div><b>{copy.get.source.title}</b><span>{copy.get.source.body}</span></div>
+            <span class="note mut">{copy.get.source.note}</span>
+          </a>
+          <a class="path" href={`${downloads}#apache-releases`}>
+            <div><b>{copy.get.releases.title}</b><span>{copy.get.releases.body}</span></div>
+            <span class="note mut">{copy.get.releases.note}</span>
+          </a>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="sec">
+    <div class="sec-h">
+      <h2>{copy.reads.h2}</h2>
+      <p>{copy.reads.p}</p>
+    </div>
+    <div class="reads">
+      {reads.map((read) => (
+        <a class="rc" href={read.href}>
+          <div class="cover">
+            {read.cover.split('\n').map((line, index) => (index === 0 ? line : <><br />{line}</>))}
+            <small>{read.small}</small>
+          </div>
+          <div class="body"><h3>{read.h3}</h3><div class="meta">{read.meta}</div></div>
+        </a>
+      ))}
+    </div>
+  </section>
+
+  <script is:inline>
+    // The hero scene and the log tile append their events one by one the first time they are seen.
+    (() => {
+      for (const el of document.querySelectorAll('.turn, .evs')) {
+        el.classList.add('armed');
+        new IntersectionObserver((entries, observer) => {
+          if (!entries.some((entry) => entry.isIntersecting)) return;
+          el.classList.add('play');
+          observer.disconnect();
+        }, { threshold: 0.4 }).observe(el);
+      }
+    })();
+  </script>
+</Site>

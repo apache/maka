@@ -28,7 +28,7 @@ import {
 import { invalidProtocolFrame } from './errors.js';
 import { defineOperation } from './operation-spec.js';
 import { decodeSessionCreateInput, type SessionCreateInput } from './session-catalog.js';
-import { decodeMessageContent } from './turn.js';
+import { decodeMessageAdmissionContent, decodeMessageContent } from './turn.js';
 
 const ERRORS = [
   'host_not_ready',
@@ -124,7 +124,7 @@ export function decodeHostedExecutionStartInput(value: unknown): HostedExecution
   return {
     executionId,
     session,
-    content: decodeMessageContent(input.content),
+    content: decodeMessageAdmissionContent(input.content),
     ...(input.maxSteps === undefined
       ? {}
       : { maxSteps: requirePositiveCount(input.maxSteps, 'maxSteps') }),

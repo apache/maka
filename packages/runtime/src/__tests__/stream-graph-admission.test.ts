@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { nextId } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import type {
@@ -133,9 +134,4 @@ function runnableIntent(): AgentGraphRunnableIntent {
     triggerRouteIds: ['route-1'],
     triggerRecordIds: ['record-1'],
   };
-}
-
-function nextId(): () => string {
-  let value = 0;
-  return () => `id-${++value}`;
 }

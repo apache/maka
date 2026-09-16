@@ -17,13 +17,18 @@
  * under the License.
  */
 
+import { deferred, nextId, waitFor } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
-import { createWorkspaceWritePermissionProfile } from '@maka/core/permission-profile';
 import {
+  createReadOnlyPermissionProfile,
+  createWorkspaceWritePermissionProfile,
+} from '@maka/core/permission-profile';
+import {
+  applySandboxBoundaryExpansion,
   type ExecutionBoundary,
   type SandboxBoundaryRequest,
   type SandboxBoundarySettlement,
@@ -45,6 +50,54 @@ import { SandboxCommandError } from '../sandbox/errors.js';
 import { ToolRuntime, type MakaTool, type ToolRuntimeInput } from '../tool-runtime.js';
 
 describe('ToolRuntime session sandbox boundary', () => {
+  test('inherits explicit denial without inheriting correction budgets or replacing live authority', async () => {
+    let reads = 0;
+    const create = (inheritedSandboxBoundaryDenied = false): ToolRuntime =>
+      new ToolRuntime({
+        inheritedSandboxBoundaryDenied,
+        turnId: 'turn-1',
+        sessionId: 'session-1',
+        header: header(),
+        connection: { providerType: 'openai', slug: 'test' } as never,
+        modelId: 'test',
+        readPermissionMode: async () => 'ask',
+        readExecutionBoundary: async () => {
+          reads += 1;
+          return {
+            kind: 'managed',
+            profile: createWorkspaceWritePermissionProfile(),
+            revision: 7,
+          };
+        },
+        newId: nextId(),
+        now: () => 1,
+        getPermissionPauseTarget: () => null,
+      });
+    const continued = create(true);
+    assert.equal(continued.hasSandboxBoundaryDenial(), true);
+    assert.equal(continued.shouldFinalizeSandboxBoundary(), false);
+    await settle(
+      continued,
+      {
+        name: 'Read',
+        description: 'Read within current authority',
+        parameters: {},
+        impl: (_args, context) => {
+          assert.equal(context.executionBoundary?.revision, 7);
+          return 'read';
+        },
+      },
+      'allowed-read',
+    );
+    assert.equal(reads, 1);
+    assert.equal(continued.shouldFinalizeSandboxBoundary(), false);
+    await continued.endTurn();
+    const fresh = create();
+    assert.equal(fresh.hasSandboxBoundaryDenial(), false);
+    assert.equal(fresh.shouldFinalizeSandboxBoundary(), false);
+    await fresh.endTurn();
+  });
+
   test('rejects an embedding without explicit execution boundary authority', () => {
     assert.throws(
       () =>
@@ -54,7 +107,6 @@ describe('ToolRuntime session sandbox boundary', () => {
           header: header(),
           connection: { providerType: 'openai', slug: 'test' } as never,
           modelId: 'test',
-          appendMessage: async () => {},
           newId: nextId(),
           now: () => 1,
           getPermissionPauseTarget: () => null,
@@ -66,13 +118,13 @@ describe('ToolRuntime session sandbox boundary', () => {
   test('reads the authoritative boundary for every tool invocation', async () => {
     const observed: ExecutionBoundary[] = [];
     let revision = 0;
-    const runtime = new ToolRuntime({
+    const runtime = createRuntime({
       turnId: 'turn-1',
       sessionId: 'session-1',
       header: header(),
       connection: { providerType: 'openai', slug: 'test' } as never,
       modelId: 'test',
-      appendMessage: async () => {},
+      readPermissionMode: async () => 'ask',
       readExecutionBoundary: async () => ({
         kind: 'managed',
         profile: createWorkspaceWritePermissionProfile(),
@@ -102,6 +154,93 @@ describe('ToolRuntime session sandbox boundary', () => {
     );
   });
 
+  test('reads the selected mode live while letting a Bypass boundary override it', async () => {
+    let selectedMode: 'explore' | 'ask' = 'explore';
+    let boundary: ExecutionBoundary = {
+      kind: 'managed',
+      profile: applySandboxBoundaryExpansion(createReadOnlyPermissionProfile(), {
+        filesystem: {
+          entries: [{ path: '/approved/output', access: 'write', scope: 'subtree' }],
+        },
+      }),
+      revision: 0,
+    };
+    const observed: Array<{ kind: string; permissionMode: string | undefined }> = [];
+    const runtime = createRuntime({
+      turnId: 'turn-1',
+      sessionId: 'session-1',
+      header: header(),
+      connection: { providerType: 'openai', slug: 'test' } as never,
+      modelId: 'test',
+      readPermissionMode: async () => selectedMode,
+      readExecutionBoundary: async () => boundary,
+      newId: nextId(),
+      now: () => 1,
+      getPermissionPauseTarget: () => null,
+    });
+    const tool: MakaTool = {
+      name: 'Bash',
+      description: 'test',
+      parameters: {},
+      impl: (_args, context) => {
+        assert.ok(context.executionBoundary);
+        observed.push({
+          kind: context.executionBoundary.kind,
+          permissionMode: context.permissionMode,
+        });
+        return { ok: true };
+      },
+    };
+
+    await settle(runtime, tool, 'tool-1');
+    selectedMode = 'ask';
+    await settle(runtime, tool, 'tool-2');
+    boundary = { kind: 'bypass', revision: 1 };
+    await settle(runtime, tool, 'tool-3');
+
+    assert.equal(header().permissionMode, 'ask');
+    assert.deepEqual(observed, [
+      { kind: 'managed', permissionMode: 'explore' },
+      { kind: 'managed', permissionMode: 'ask' },
+      { kind: 'bypass', permissionMode: 'bypass' },
+    ]);
+  });
+
+  test('holds Plan mode to read-only even when the live boundary allows writes', async () => {
+    let observed: string | undefined;
+    const runtime = createRuntime({
+      turnId: 'turn-1',
+      sessionId: 'session-1',
+      header: { ...header(), collaborationMode: 'plan' },
+      connection: { providerType: 'openai', slug: 'test' } as never,
+      modelId: 'test',
+      readExecutionBoundary: async () => ({
+        kind: 'managed',
+        profile: createWorkspaceWritePermissionProfile(),
+        revision: 0,
+      }),
+      newId: nextId(),
+      now: () => 1,
+      getPermissionPauseTarget: () => null,
+    });
+
+    await settle(
+      runtime,
+      {
+        name: 'Bash',
+        description: 'test',
+        parameters: {},
+        impl: (_args, context) => {
+          observed = context.permissionMode;
+          return { ok: true };
+        },
+      },
+      'tool-1',
+    );
+
+    assert.equal(observed, 'explore');
+  });
+
   test('parks the dedicated tool and admits only one boundary request at a time', async () => {
     const events: SessionEvent[] = [];
     const managed: ExecutionBoundary = {
@@ -110,13 +249,12 @@ describe('ToolRuntime session sandbox boundary', () => {
       revision: 0,
     };
     let created: SandboxBoundaryRequest | undefined;
-    const runtime = new ToolRuntime({
+    const runtime = createRuntime({
       turnId: 'turn-1',
       sessionId: 'session-1',
       header: header(),
       connection: { providerType: 'openai', slug: 'test' } as never,
       modelId: 'test',
-      appendMessage: async () => {},
       readExecutionBoundary: async () => managed,
       createSandboxBoundaryRequest: async (input) => {
         created = {
@@ -190,7 +328,7 @@ describe('ToolRuntime session sandbox boundary', () => {
     });
     assert.match(JSON.stringify(overlapping.result), /already pending/u);
     assert.equal(events.filter((event) => event.type === 'sandbox_boundary_request').length, 1);
-    await runtime.respondToSandboxBoundaryRequest('turn-1', {
+    await runtime.respondToSandboxBoundaryResponse({
       requestId: requestEvent.requestId,
       decision: 'allow',
     });
@@ -218,6 +356,12 @@ describe('ToolRuntime session sandbox boundary', () => {
       admitUserQuestionRequest: async () => {
         throw new Error('Unexpected user question');
       },
+      admitFormRequest: async () => {
+        throw new Error('Unexpected user form');
+      },
+      withdrawFormRequest: async () => {
+        throw new Error('Unexpected user form withdrawal');
+      },
       admitSandboxBoundaryRequest: async ({ request, settlement }) => {
         admittedRequest = request;
         captured = settlement;
@@ -225,14 +369,13 @@ describe('ToolRuntime session sandbox boundary', () => {
         await releaseAdmission.promise;
       },
     };
-    const runtime = new ToolRuntime({
+    const runtime = createRuntime({
       turnId: 'turn-1',
       hostedInteraction,
       sessionId: 'session-1',
       header: header(),
       connection: { providerType: 'openai', slug: 'test' } as never,
       modelId: 'test',
-      appendMessage: async () => {},
       readExecutionBoundary: async () => managed,
       newId: nextId(),
       now: () => 1,
@@ -266,7 +409,7 @@ describe('ToolRuntime session sandbox boundary', () => {
       false,
     );
     await assert.rejects(
-      runtime.respondToSandboxBoundaryRequest('turn-1', {
+      runtime.respondToSandboxBoundaryResponse({
         requestId: admittedRequest!.requestId,
         decision: 'allow',
       }),
@@ -308,13 +451,12 @@ describe('ToolRuntime session sandbox boundary', () => {
 
   test('rejects an invalid expansion before creating durable pending state', async () => {
     let createCalls = 0;
-    const runtime = new ToolRuntime({
+    const runtime = createRuntime({
       turnId: 'turn-1',
       sessionId: 'session-1',
       header: header(),
       connection: { providerType: 'openai', slug: 'test' } as never,
       modelId: 'test',
-      appendMessage: async () => {},
       readExecutionBoundary: async () => ({
         kind: 'managed',
         profile: createWorkspaceWritePermissionProfile(),
@@ -366,13 +508,12 @@ describe('ToolRuntime session sandbox boundary', () => {
     const canonicalFile = await realpath(file);
     let created: SandboxBoundaryRequest | undefined;
     const events: SessionEvent[] = [];
-    const runtime = new ToolRuntime({
+    const runtime = createRuntime({
       turnId: 'turn-1',
       sessionId: 'session-1',
       header: header(root),
       connection: { providerType: 'openai', slug: 'test' } as never,
       modelId: 'test',
-      appendMessage: async () => {},
       readExecutionBoundary: async () => ({
         kind: 'managed',
         profile: createWorkspaceWritePermissionProfile(),
@@ -432,7 +573,7 @@ describe('ToolRuntime session sandbox boundary', () => {
       const request = await waitForBoundaryRequest(events);
       assert.equal(request.expansion.filesystem?.entries[0]?.path, canonicalFile);
       assert.equal(created?.expansion.filesystem?.entries[0]?.path, canonicalFile);
-      await runtime.respondToSandboxBoundaryRequest('turn-1', {
+      await runtime.respondToSandboxBoundaryResponse({
         requestId: request.requestId,
         decision: 'deny',
       });
@@ -445,13 +586,12 @@ describe('ToolRuntime session sandbox boundary', () => {
   test('rejects exact directory authority before creating durable pending state', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-boundary-directory-'));
     let createCalls = 0;
-    const runtime = new ToolRuntime({
+    const runtime = createRuntime({
       turnId: 'turn-1',
       sessionId: 'session-1',
       header: header(root),
       connection: { providerType: 'openai', slug: 'test' } as never,
       modelId: 'test',
-      appendMessage: async () => {},
       readExecutionBoundary: async () => ({
         kind: 'managed',
         profile: createWorkspaceWritePermissionProfile(),
@@ -505,13 +645,12 @@ describe('ToolRuntime session sandbox boundary', () => {
     };
     let created: SandboxBoundaryRequest | undefined;
     const settlements: Array<{ requestId: string; decision: string }> = [];
-    const runtime = new ToolRuntime({
+    const runtime = createRuntime({
       turnId: 'turn-1',
       sessionId: 'session-1',
       header: header(),
       connection: { providerType: 'openai', slug: 'test' } as never,
       modelId: 'test',
-      appendMessage: async () => {},
       readExecutionBoundary: async () => managed,
       createSandboxBoundaryRequest: async (input) => {
         created = {
@@ -581,13 +720,12 @@ describe('ToolRuntime session sandbox boundary', () => {
       releaseCreate = resolve;
     });
     const settlements: string[] = [];
-    const runtime = new ToolRuntime({
+    const runtime = createRuntime({
       turnId: 'turn-1',
       sessionId: 'session-1',
       header: header(),
       connection: { providerType: 'openai', slug: 'test' } as never,
       modelId: 'test',
-      appendMessage: async () => {},
       readExecutionBoundary: async () => managed,
       createSandboxBoundaryRequest: async () => {
         markCreateStarted();
@@ -646,13 +784,12 @@ describe('ToolRuntime session sandbox boundary', () => {
   });
 
   test('returns a structured boundary requirement to the agent', async () => {
-    const runtime = new ToolRuntime({
+    const runtime = createRuntime({
       turnId: 'turn-1',
       sessionId: 'session-1',
       header: header(),
       connection: { providerType: 'openai', slug: 'test' } as never,
       modelId: 'test',
-      appendMessage: async () => {},
       readExecutionBoundary: async () => ({
         kind: 'managed',
         profile: createWorkspaceWritePermissionProfile(),
@@ -709,13 +846,12 @@ describe('ToolRuntime session sandbox boundary', () => {
   });
 
   test('counts one boundary correction per model step and keeps failure kinds independent', async () => {
-    const runtime = new ToolRuntime({
+    const runtime = createRuntime({
       turnId: 'turn-1',
       sessionId: 'session-1',
       header: header(),
       connection: { providerType: 'openai', slug: 'test' } as never,
       modelId: 'test',
-      appendMessage: async () => {},
       readExecutionBoundary: async () => ({
         kind: 'managed',
         profile: createWorkspaceWritePermissionProfile(),
@@ -783,13 +919,12 @@ describe('ToolRuntime session sandbox boundary', () => {
   test('cancels a suspended nested boundary wait when its cell aborts', async () => {
     const events: SessionEvent[] = [];
     const settlements: string[] = [];
-    const runtime = new ToolRuntime({
+    const runtime = createRuntime({
       turnId: 'turn-1',
       sessionId: 'session-1',
       header: header(),
       connection: { providerType: 'openai', slug: 'test' } as never,
       modelId: 'test',
-      appendMessage: async () => {},
       readExecutionBoundary: async () => ({
         kind: 'managed',
         profile: createWorkspaceWritePermissionProfile(),
@@ -802,6 +937,7 @@ describe('ToolRuntime session sandbox boundary', () => {
         createdAt: 1,
       }),
       settleSandboxBoundaryRequest: async (input) => {
+        assert.equal(input.closureReason, 'turn_stopped');
         settlements.push(input.decision);
         return {
           request: {
@@ -864,13 +1000,12 @@ describe('ToolRuntime session sandbox boundary', () => {
 
   test('keeps a durable deny failure attached to the aborted nested call', async () => {
     const events: SessionEvent[] = [];
-    const runtime = new ToolRuntime({
+    const runtime = createRuntime({
       turnId: 'turn-1',
       sessionId: 'session-1',
       header: header(),
       connection: { providerType: 'openai', slug: 'test' } as never,
       modelId: 'test',
-      appendMessage: async () => {},
       readExecutionBoundary: async () => ({
         kind: 'managed',
         profile: createWorkspaceWritePermissionProfile(),
@@ -920,13 +1055,12 @@ describe('ToolRuntime session sandbox boundary', () => {
 
   test('returns structured requires_bypass without opening an interaction', async () => {
     const events: SessionEvent[] = [];
-    const runtime = new ToolRuntime({
+    const runtime = createRuntime({
       turnId: 'turn-1',
       sessionId: 'session-1',
       header: header(),
       connection: { providerType: 'openai', slug: 'test' } as never,
       modelId: 'test',
-      appendMessage: async () => {},
       readExecutionBoundary: async () => ({
         kind: 'managed',
         profile: createWorkspaceWritePermissionProfile(),
@@ -989,13 +1123,12 @@ describe('ToolRuntime session sandbox boundary', () => {
     // here: ToolRuntime injects that callback unconditionally. This is the
     // branch a model actually reaches, and it used to say something different
     // from the tool the model called.
-    const runtime = new ToolRuntime({
+    const runtime = createRuntime({
       turnId: 'turn-1',
       sessionId: 'session-1',
       header: header(),
       connection: { providerType: 'openai', slug: 'test' } as never,
       modelId: 'test',
-      appendMessage: async () => {},
       readExecutionBoundary: async () => ({
         kind: 'managed',
         profile: createWorkspaceWritePermissionProfile(),
@@ -1006,6 +1139,7 @@ describe('ToolRuntime session sandbox boundary', () => {
       getPermissionPauseTarget: () => null,
     });
 
+    const events: SessionEvent[] = [];
     const settlement = await runtime.settleToolCall({
       tool: buildRequestSandboxBoundaryTool() as unknown as MakaTool,
       turnId: 'turn-1',
@@ -1016,17 +1150,32 @@ describe('ToolRuntime session sandbox boundary', () => {
       },
       abortSignal: new AbortController().signal,
       eventSink: {
-        push: () => {},
-        pushAndWaitUntilConsumed: async () => {},
+        push: (event) => events.push(event),
+        pushAndWaitUntilConsumed: async (event) => {
+          events.push(event);
+        },
       },
     });
 
-    assert.deepEqual(settlement.modelOutput, {
-      type: 'error-text',
-      value: `Error: ${SANDBOX_BOUNDARY_UNAVAILABLE}`,
+    assert.equal(settlement.providerError, SANDBOX_BOUNDARY_UNAVAILABLE);
+    assert.deepEqual(events.find((event) => event.type === 'tool_result')?.modelProjection, {
+      version: 1,
+      kind: 'text',
+      text: `Error: ${SANDBOX_BOUNDARY_UNAVAILABLE}`,
+      isError: true,
     });
   });
 });
+
+type SandboxToolRuntimeInput = Omit<ToolRuntimeInput, 'readPermissionMode'> &
+  Partial<Pick<ToolRuntimeInput, 'readPermissionMode'>>;
+
+function createRuntime(input: SandboxToolRuntimeInput): ToolRuntime {
+  return new ToolRuntime({
+    readPermissionMode: async () => input.header.permissionMode,
+    ...input,
+  });
+}
 
 async function settle(runtime: ToolRuntime, tool: MakaTool, toolCallId: string): Promise<void> {
   const events: SessionEvent[] = [];
@@ -1067,30 +1216,25 @@ function header(cwd = process.cwd()): SessionHeader {
     schemaVersion: 1,
   };
 }
-
-function nextId(): () => string {
-  let value = 0;
-  return () => `id-${++value}`;
-}
-
 async function waitForBoundaryRequest(
   events: SessionEvent[],
 ): Promise<Extract<SessionEvent, { type: 'sandbox_boundary_request' }>> {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    const event = events.find((candidate) => candidate.type === 'sandbox_boundary_request');
-    if (event?.type === 'sandbox_boundary_request') return event;
-    await new Promise((resolve) => setTimeout(resolve, 0));
-  }
-  throw new Error('Sandbox boundary request was not emitted');
-}
-
-function deferred<T>(): {
-  readonly promise: Promise<T>;
-  readonly resolve: (value: T | PromiseLike<T>) => void;
-} {
-  let resolve!: (value: T | PromiseLike<T>) => void;
-  const promise = new Promise<T>((resolvePromise) => {
-    resolve = resolvePromise;
-  });
-  return { promise, resolve };
+  let event: Extract<SessionEvent, { type: 'sandbox_boundary_request' }> | undefined;
+  await waitFor(
+    () => {
+      const candidate = events.find((entry) => entry.type === 'sandbox_boundary_request');
+      if (candidate?.type === 'sandbox_boundary_request') {
+        event = candidate;
+        return true;
+      }
+      return false;
+    },
+    {
+      timeoutMs: 5_000,
+      pollMs: 10,
+      message: 'Sandbox boundary request was not emitted',
+    },
+  );
+  assert.ok(event);
+  return event;
 }

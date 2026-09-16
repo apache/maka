@@ -19,7 +19,7 @@
 
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
-import type { RootExecutionDescriptor } from '@maka/core/agent-run';
+import type { RootExecutionDescriptor } from '@maka/core/runtime-invocation';
 import { normalizeMessageContent, type MessageContent } from '@maka/core/events';
 import type { SkillInvocationResult } from '@maka/core/skill-invocation';
 import { RuntimeMessageAuthorityInvariantError } from '@maka/runtime/message-authority';

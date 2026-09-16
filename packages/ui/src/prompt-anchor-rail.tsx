@@ -18,22 +18,25 @@
  */
 
 import {
-  memo,
+  createContext,
   useCallback,
+  useContext,
+  memo,
   useEffect,
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type CSSProperties,
   type RefObject,
 } from 'react';
+import { createPortal } from 'react-dom';
 import { Button } from '@astryxdesign/core/Button';
 import { HoverCard } from '@astryxdesign/core/HoverCard';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
+import { useTranscriptScrollAuthority } from './transcript-scroll-authority.js';
 
-/** Match Astryx scroll-spy: Chromium sub-pixel scroll end can read 1px short. */
-const SCROLL_END_EPSILON_PX = 2;
 /** Hover falloff radius in ticks (0 = hovered). */
 const HOVER_FALLOFF_TICKS = 3;
 /**
@@ -46,139 +49,9 @@ const HOVER_FALLOFF_TICKS = 3;
 const PREVIEW_DELAY_MS = 120;
 const MAX_PROMPT_RAIL_TICKS = 64;
 
-/** Quiet frames at the destination that end a jump's hold. */
-const JUMP_SETTLE_QUIET_FRAMES = 3;
-/**
- * Frames a hold may run before it gives up regardless. Only a backstop against
- * a destination that never mounts; this is ~4s at 60Hz.
- */
-const JUMP_HOLD_FRAME_BUDGET = 240;
-/** How close to the scrollport's top edge counts as landed. */
-const JUMP_LANDED_TOLERANCE_PX = 4;
-/** Input that means the reader has taken the transcript back. */
-const READER_SCROLL_EVENTS = ['wheel', 'touchstart', 'pointerdown', 'keydown'] as const;
-
 interface PromptRailResizeObserver {
   observe(target: Element): void;
   disconnect(): void;
-}
-
-/** Frame scheduler seam, so the jump hold can be driven by a test. */
-export interface PromptRailFrameScheduler {
-  request(callback: () => void): number;
-  cancel(handle: number): void;
-}
-
-const browserFrameScheduler: PromptRailFrameScheduler = {
-  request: (callback) => requestAnimationFrame(callback),
-  cancel: (handle) => cancelAnimationFrame(handle),
-};
-
-/**
- * Hold a jump's destination while the transcript grows under it.
- *
- * Two different things move the transcript out from under a jump, and
- * releasing auto-follow (`onNavigateStart`) only answers the first:
- *
- *  - Astryx's auto-follow spring, which keeps pulling toward the bottom
- *    because it never sees the jump as a reader-initiated scroll up.
- *  - The virtual window's scroll compensation while the destination is
- *    mounted and its measured height replaces the estimate.
- *
- * Re-aiming outlasts both: through each geometry change, and once more if a still
- * frame finds the target off the top edge, which is what a scroll cancelled
- * part-way leaves behind. A frame where nothing moved and the target is where
- * the click asked costs one `getBoundingClientRect` and nothing else.
- *
- * `releaseAutoFollow` runs on every frame of the hold rather than once at the
- * click, because Astryx re-locks on any `scrollend` that settles near the
- * bottom. A jump from the initial tail can otherwise undo a single release
- * while the destination window is mounting.
- *
- * The hold ends after the mounted destination is still for a few frames, or
- * the moment the reader takes the transcript back.
- */
-export function holdJumpDestination(input: {
-  root: Element;
-  readTargetId: () => string | null;
-  /** Astryx's auto-follow release, re-asserted for the life of the hold. */
-  releaseAutoFollow?: (() => void) | undefined;
-  onSettled: () => void;
-  scheduler?: PromptRailFrameScheduler;
-}): () => void {
-  const { root, readTargetId, releaseAutoFollow, onSettled } = input;
-  const scheduler = input.scheduler ?? browserFrameScheduler;
-  let handle = 0;
-  let done = false;
-  let lastHeight = root.scrollHeight;
-  let lastTop = root.scrollTop;
-  let quietFrames = 0;
-  let framesRun = 0;
-
-  const stop = (): void => {
-    if (done) return;
-    done = true;
-    scheduler.cancel(handle);
-    for (const type of READER_SCROLL_EVENTS) root.removeEventListener(type, stop);
-    onSettled();
-  };
-
-  const reaim = (): { found: boolean; corrected: boolean } => {
-    const turnId = readTargetId();
-    if (turnId === null) return { found: false, corrected: false };
-    const target = root.querySelector(`[data-turn-id="${CSS.escape(turnId)}"]`);
-    if (!target) return { found: false, corrected: false };
-    const offset = target.getBoundingClientRect().top - root.getBoundingClientRect().top;
-    if (Math.abs(offset) <= JUMP_LANDED_TOLERANCE_PX) {
-      return { found: true, corrected: false };
-    }
-    const before = root.scrollTop;
-    // `auto`: this is a correction, not a second journey.
-    (target as HTMLElement).scrollIntoView({ behavior: 'auto', block: 'start' });
-    lastTop = root.scrollTop;
-    // A correction that moves nothing means the target is as close to the top
-    // as this scroller can put it — the last turn of a transcript cannot reach
-    // it at all. Report it as landed, or the hold would keep trying until its
-    // frame budget ran out.
-    return { found: true, corrected: root.scrollTop !== before };
-  };
-
-  const hold = (): void => {
-    if (done) return;
-    handle = scheduler.request(hold);
-    framesRun += 1;
-    releaseAutoFollow?.();
-    const grew = root.scrollHeight !== lastHeight;
-    const moved = root.scrollTop !== lastTop;
-    lastHeight = root.scrollHeight;
-    lastTop = root.scrollTop;
-    // Growth is the virtual window replacing estimates; re-aim through it.
-    // A still frame that is nonetheless off-target is the other failure: a
-    // scroll that was cancelled part-way and will never resume on its own,
-    // which is what happens when the mount's compensation lands on top of one.
-    const target = grew || !moved
-      ? reaim()
-      : { found: false, corrected: false };
-    // Quiet means nothing moved at all — not the content, not the position.
-    // Height alone was not enough: with the transcript already mounted there
-    // is nothing to re-aim through, and the hold released three frames in,
-    // handing the highlight and the auto-follow release back while the jump's
-    // own scroll was still in flight.
-    if (
-      !grew &&
-      !moved &&
-      !target.corrected &&
-      target.found
-    ) quietFrames += 1;
-    else quietFrames = 0;
-    if (quietFrames >= JUMP_SETTLE_QUIET_FRAMES || framesRun >= JUMP_HOLD_FRAME_BUDGET) stop();
-  };
-
-  for (const type of READER_SCROLL_EVENTS) {
-    root.addEventListener(type, stop, { passive: true });
-  }
-  handle = scheduler.request(hold);
-  return stop;
 }
 
 type PromptRailResizeObserverFactory = (
@@ -210,199 +83,160 @@ export function observeActivePromptRailVisibility(
 }
 
 export interface PromptAnchorRailTurn {
+  /** Optional host identity color; ordinary Session ticks remain neutral. */
+  accentColor?: string;
+  highlighted?: boolean;
   turnId: string;
   label: string;
   reply?: string;
   sequence?: number;
 }
 
+export function mergePromptAnchorRailTurns(
+  loadedTurns: ReadonlyArray<{ turnId: string; label: string; reply: string }>,
+  index?: ReadonlyArray<{ turnId: string; sequence: number; label: string }>,
+): PromptAnchorRailTurn[] {
+  if (!index || index.length === 0) {
+    return loadedTurns.map((turn) => ({ ...turn }));
+  }
+  const loadedByTurnId = new Map(loadedTurns.map((turn) => [turn.turnId, turn]));
+  return index.map((landmark) => {
+    const loaded = loadedByTurnId.get(landmark.turnId);
+    return {
+      ...(loaded ?? {
+        turnId: landmark.turnId,
+        label: landmark.label,
+        reply: '',
+      }),
+      sequence: landmark.sequence,
+    };
+  });
+}
+
 export interface PromptAnchorRailProps {
+  /** Presentation-only hover/focus linkage; never navigates the transcript. */
+  onHighlightTurn?: (turn: PromptAnchorRailTurn | undefined) => void;
   turns: readonly PromptAnchorRailTurn[];
   scrollRef: RefObject<HTMLElement | null>;
-  /** When the bounded virtual window has not placed the turn in the DOM. */
-  onNavigateFallback?: (turn: PromptAnchorRailTurn) => void;
+  /** Owns indexed navigation, including superseding pending range reads. */
+  onNavigateTurn?: (turn: PromptAnchorRailTurn) => void;
   /**
-   * Release Astryx's auto-follow before a jump scrolls.
+   * Stop following the tail, before a jump scrolls.
    *
-   * ChatLayout keeps the transcript pinned to the bottom while a turn streams
-   * and unlocks when the reader scrolls up, which it detects by comparing
-   * scrollTop between scroll events — but it discards any scroll event that
-   * arrives with a changed scrollHeight, since Chrome fires those on content
-   * resize and they are not the reader moving. A jump to an unmounted turn
-   * changes the virtual window's height, so auto-follow must be released first.
+   * A tick is the reader choosing where to look, which outranks the tail. It
+   * has to be said before the scroll, not after: released afterwards, the
+   * release lands on a viewport the pin has already written back to the bottom.
    */
   onNavigateStart?: (() => void) | undefined;
 }
 
+/**
+ * The tick for a reading position the rail may not have sampled. Past its cap
+ * the rail shows one tick per few Turns, so it projects the reader's Turn onto
+ * the sampled positions the same way the sampling picked them.
+ */
+export function selectPromptRailTick(input: {
+  readingTurnId: string | undefined;
+  orderedTurnIds: readonly string[];
+  railTurnIds: readonly string[];
+  previousRailTurnId: string | null;
+}): string | null {
+  const { readingTurnId, orderedTurnIds, railTurnIds } = input;
+  if (readingTurnId !== undefined) {
+    if (railTurnIds.includes(readingTurnId)) return readingTurnId;
+    const readingIndex = orderedTurnIds.indexOf(readingTurnId);
+    if (readingIndex !== -1 && orderedTurnIds.length > 1 && railTurnIds.length > 1) {
+      return railTurnIds[Math.round(
+        readingIndex * (railTurnIds.length - 1) / (orderedTurnIds.length - 1),
+      )] ?? null;
+    }
+  }
+  // An unknown reading position — a Turn the rail has no landmark for, or none
+  // reported yet — leaves the current tick alone rather than jumping it home.
+  return input.previousRailTurnId !== null && railTurnIds.includes(input.previousRailTurnId)
+    ? input.previousRailTurnId
+    : null;
+}
+
+/** The scroll layout owns the rail's full-width sticky anchor. */
+export const PromptAnchorRailHostContext = createContext<HTMLElement | null>(null);
+
 /** Right-edge rail: bounded prompt landmarks that scroll to `[data-turn-id]`. */
-export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRef, onNavigateFallback, onNavigateStart }: PromptAnchorRailProps): React.ReactElement | null {
+export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRef, onNavigateTurn, onNavigateStart, onHighlightTurn }: PromptAnchorRailProps): React.ReactElement | null {
+  const host = useContext(PromptAnchorRailHostContext);
   const copy = getConversationCopy(useUiLocale()).sessions;
-  const activeTurnIdRef = useRef<string | null>(null);
+  const authority = useTranscriptScrollAuthority();
+  const snapshot = useSyncExternalStore(
+    authority.subscribe,
+    authority.getSnapshot,
+    authority.getSnapshot,
+  );
   const [safeArea, setSafeArea] = useState<{ scrollport: number; dock: number } | null>(null);
   const railRef = useRef<HTMLElement | null>(null);
+  const previousActiveRailTurnIdRef = useRef<string | null>(null);
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
   const activeVisibilityFrame = useRef(0);
-  const markActiveTurn = useCallback((turnId: string) => {
-    if (activeTurnIdRef.current === turnId) return;
-    activeTurnIdRef.current = turnId;
-    const rail = railRef.current;
-    const previous = rail?.querySelector<HTMLElement>('[data-active="true"]');
-    previous?.removeAttribute('data-active');
-    previous?.removeAttribute('aria-current');
-    const target = rail?.querySelector<HTMLElement>(
-      `[data-prompt-turn-id="${CSS.escape(turnId)}"]`,
+  // Prompt/reply text changes while an answer streams, but the tick layout only
+  // depends on Turn identity and order. Keep that structural value stable so a
+  // text delta does not rebuild the sampling.
+  const orderedTurnIdsRef = useRef<readonly string[]>([]);
+  const nextOrderedTurnIds = turns.map((turn) => turn.turnId);
+  if (
+    orderedTurnIdsRef.current.length !== nextOrderedTurnIds.length
+    || nextOrderedTurnIds.some((turnId, index) => orderedTurnIdsRef.current[index] !== turnId)
+  ) {
+    orderedTurnIdsRef.current = nextOrderedTurnIds;
+  }
+  const orderedTurnIds = orderedTurnIdsRef.current;
+  const railTurnIndexes = useMemo(() => {
+    if (orderedTurnIds.length <= MAX_PROMPT_RAIL_TICKS) {
+      return orderedTurnIds.map((_, index) => index);
+    }
+    return Array.from({ length: MAX_PROMPT_RAIL_TICKS }, (_, index) =>
+      Math.round(index * (orderedTurnIds.length - 1) / (MAX_PROMPT_RAIL_TICKS - 1)),
     );
-    target?.setAttribute('data-active', 'true');
-    target?.setAttribute('aria-current', 'true');
+  }, [orderedTurnIds]);
+  const railTurnIds = useMemo(
+    () => railTurnIndexes.map((turnIndex) => orderedTurnIds[turnIndex]!),
+    [orderedTurnIds, railTurnIndexes],
+  );
+  const railTurns = railTurnIndexes.map((turnIndex) => turns[turnIndex]!);
+  const activeRailTurnId = selectPromptRailTick({
+    // Pinned to the tail, the reader is on the newest Turn, whichever one
+    // happens to cross the top of the scrollport.
+    readingTurnId: snapshot.pinned ? orderedTurnIds.at(-1) : snapshot.readingTurnId,
+    orderedTurnIds,
+    railTurnIds,
+    previousRailTurnId: previousActiveRailTurnIdRef.current,
+  });
+  useEffect(() => {
+    if (activeRailTurnId !== null) previousActiveRailTurnIdRef.current = activeRailTurnId;
+  }, [activeRailTurnId]);
+
+  // React is the only writer of the active attributes. Once that render has
+  // committed, bring the current tick into the rail's own bounded viewport.
+  useEffect(() => {
+    const rail = railRef.current;
+    if (!rail || activeRailTurnId === null) return;
     if (activeVisibilityFrame.current !== 0) cancelAnimationFrame(activeVisibilityFrame.current);
     activeVisibilityFrame.current = requestAnimationFrame(() => {
       activeVisibilityFrame.current = requestAnimationFrame(() => {
         activeVisibilityFrame.current = 0;
-        if (rail) keepActivePromptRailTickVisible(rail);
+        keepActivePromptRailTickVisible(rail);
       });
     });
-  }, []);
-  useEffect(() => () => {
-    if (activeVisibilityFrame.current !== 0) {
-      cancelAnimationFrame(activeVisibilityFrame.current);
-    }
-  }, []);
-  // Identified by a sequence number rather than a boolean so a second click
-  // during a jump starts its own claim instead of inheriting what is left of
-  // the first one's — which would leave the earlier jump's lifetime governing
-  // the later jump's target.
-  const [jump, setJump] = useState<{ sequence: number; turnId: string } | null>(null);
-  const jumpSequenceRef = useRef(0);
-  // The turn a click aimed at, held until that click's scroll settles. A ref,
-  // not state: the observer effect reads it on every scroll frame and must not
-  // be torn down and rebuilt over the whole transcript when it changes.
-  const jumpTargetRef = useRef<string | null>(null);
-  const onNavigateStartRef = useRef(onNavigateStart);
-  onNavigateStartRef.current = onNavigateStart;
-  const turnIndexById = useMemo(
-    () => new Map(turns.map((turn, index) => [turn.turnId, index])),
-    [turns],
-  );
-  const railTurns = useMemo(() => {
-    if (turns.length <= MAX_PROMPT_RAIL_TICKS) return turns;
-    return Array.from({ length: MAX_PROMPT_RAIL_TICKS }, (_, index) =>
-      turns[Math.round(index * (turns.length - 1) / (MAX_PROMPT_RAIL_TICKS - 1))]!,
-    );
-  }, [turns]);
-
-  const railTurnIdFor = (turnId: string): string | null => {
-    const turnIndex = turnIndexById.get(turnId);
-    if (turnIndex === undefined) return null;
-    if (turns.length === railTurns.length) return turnId;
-    const railIndex = Math.round(turnIndex * (railTurns.length - 1) / (turns.length - 1));
-    return railTurns[railIndex]?.turnId ?? null;
-  };
-
-  useEffect(() => {
-    const root = scrollRef.current;
-    if (!root || turns.length === 0) return;
-
-    const idByElement = new Map<Element, string>();
-    const visible = new Set<string>();
-    const observeElement = (element: Element): void => {
-      const turnId = element.getAttribute('data-turn-id');
-      if (!turnId || !turnIndexById.has(turnId) || idByElement.has(element)) return;
-      idByElement.set(element, turnId);
-      observer.observe(element);
-    };
-    const unobserveElement = (element: Element): void => {
-      const turnId = idByElement.get(element);
-      if (!turnId) return;
-      idByElement.delete(element);
-      visible.delete(turnId);
-      observer.unobserve(element);
-    };
-    const visitTurnElements = (node: Node, visit: (element: Element) => void): void => {
-      if (!(node instanceof Element)) return;
-      if (node.hasAttribute('data-turn-id')) visit(node);
-      for (const element of node.querySelectorAll('[data-turn-id]')) visit(element);
-    };
-    const activeFor = (turnId: string | null): void => {
-      if (turnId === null) return;
-      const railTurnId = railTurnIdFor(turnId);
-      if (railTurnId !== null) markActiveTurn(railTurnId);
-    };
-    const resolveActive = (): void => {
-      // A jump owns the highlight until its scroll settles. Without this the
-      // observer walks the highlight through every prompt the scroll passes,
-      // which is the travelling the click was meant to skip.
-      if (jumpTargetRef.current !== null) return;
-      if (root.scrollHeight - root.scrollTop - root.clientHeight <= SCROLL_END_EPSILON_PX) {
-        let latest: string | null = null;
-        let latestIndex = -1;
-        for (const turnId of idByElement.values()) {
-          const index = turnIndexById.get(turnId) ?? -1;
-          if (index > latestIndex) {
-            latest = turnId;
-            latestIndex = index;
-          }
-        }
-        activeFor(latest);
-        return;
-      }
-      let firstVisible: string | null = null;
-      let firstIndex = Number.POSITIVE_INFINITY;
-      for (const turnId of visible) {
-        const index = turnIndexById.get(turnId) ?? Number.POSITIVE_INFINITY;
-        if (index < firstIndex) {
-          firstVisible = turnId;
-          firstIndex = index;
-        }
-      }
-      activeFor(firstVisible);
-    };
-
-    const observer = new IntersectionObserver(
-      (entries) => {
-        for (const entry of entries) {
-          const id = idByElement.get(entry.target);
-          if (!id) continue;
-          if (entry.isIntersecting) visible.add(id);
-          else visible.delete(id);
-        }
-        resolveActive();
-      },
-      { root, rootMargin: '0px 0px -66% 0px', threshold: 0 },
-    );
-    for (const element of root.querySelectorAll('[data-turn-id]')) observeElement(element);
-
-    const mutationObserver = new MutationObserver((records) => {
-      for (const record of records) {
-        for (const node of record.removedNodes) visitTurnElements(node, unobserveElement);
-        for (const node of record.addedNodes) visitTurnElements(node, observeElement);
-      }
-      resolveActive();
-    });
-    mutationObserver.observe(root, { childList: true, subtree: true });
-
-    let frame = 0;
-    const onScroll = (): void => {
-      if (frame !== 0) return;
-      frame = requestAnimationFrame(() => {
-        frame = 0;
-        resolveActive();
-      });
-    };
-    root.addEventListener('scroll', onScroll, { passive: true });
-
     return () => {
-      observer.disconnect();
-      mutationObserver.disconnect();
-      root.removeEventListener('scroll', onScroll);
-      if (frame !== 0) cancelAnimationFrame(frame);
+      if (activeVisibilityFrame.current !== 0) {
+        cancelAnimationFrame(activeVisibilityFrame.current);
+        activeVisibilityFrame.current = 0;
+      }
     };
-  }, [markActiveTurn, scrollRef, turnIndexById, railTurns]);
+  }, [activeRailTurnId, host]);
 
   useEffect(() => {
     const root = scrollRef.current;
     if (!root) return;
-    // Astryx renders the dock as the scroll container's last child; the
-    // scroll-geometry spec reads it the same way for want of a published hook.
+    // Astryx renders the dock as the scroll container's last child.
     const dock = root.lastElementChild;
     const measure = (): void => {
       setSafeArea((previous) => {
@@ -436,65 +270,39 @@ export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRe
     const rail = railRef.current;
     if (!rail) return;
     return observeActivePromptRailVisibility(rail);
-  }, [turns]);
+  }, [orderedTurnIds, host]);
 
-  // A click owns the highlight until the destination settles, so the scroll it
-  // started cannot walk the active tick through every prompt on the way. Keyed
-  // on the jump sequence so a second click starts its own claim.
-  //
-  // The hold re-aims through virtual-window geometry changes and reports back
-  // when the mounted destination is still, or when the reader takes it back.
-  useEffect(() => {
-    if (!jump) return;
+  const jumpTo = useCallback((turn: PromptAnchorRailTurn): void => {
     const root = scrollRef.current;
-    if (!root) return;
-    return holdJumpDestination({
-      root,
-      readTargetId: () => jumpTargetRef.current,
-      releaseAutoFollow: onNavigateStartRef.current,
-      onSettled: () => {
-        // Only the latest jump releases the highlight: a later click has
-        // already claimed it, and its own hold owns it now. Decided against
-        // the ref rather than inside the state updater, which React may run
-        // twice.
-        if (jumpSequenceRef.current !== jump.sequence) return;
-        jumpTargetRef.current = null;
-        setJump((current) => (current?.sequence === jump.sequence ? null : current));
-      },
-    });
-  }, [jump, scrollRef]);
-
-  function jumpTo(turn: PromptAnchorRailTurn): void {
-    const turnId = turn.turnId;
-    const root = scrollRef.current;
-    const el = root?.querySelector(`[data-turn-id="${CSS.escape(turnId)}"]`);
-    // Before the scroll, not after: auto-follow has to be released while the
+    const el = root?.querySelector(`[data-turn-id="${CSS.escape(turn.turnId)}"]`);
+    // Before the scroll, not after: the tail has to be released while the
     // transcript is still where the reader left it, or the release lands after
-    // it has already pulled the view back to the bottom.
+    // the next growth has already written the view back to the bottom.
     onNavigateStart?.();
-    // Claimed before the scroll starts: a same-frame `scroll` event would
-    // otherwise reach the observer while the highlight is still unowned.
-    jumpTargetRef.current = turnId;
-    if (el && 'scrollIntoView' in el) {
+    if (turn.sequence !== undefined && onNavigateTurn) {
+      onNavigateTurn(turn);
+    } else if (el && 'scrollIntoView' in el) {
       // Instant, whatever the app's scroll-motion policy says. A jump is a
       // teleport the reader asked for, not a journey — and an animated one
       // does not survive this surface: traced against a 30-prompt session, the
-      // smooth scroll was cancelled by the mount's own scroll compensation and
-      // by auto-follow's spring, and stalled two pixels from where it started.
-      // Landing reliably beats animating unreliably.
+      // smooth scroll was cancelled by concurrent content growth and stalled
+      // two pixels from where it started. Landing reliably beats animating
+      // unreliably.
       (el as HTMLElement).scrollIntoView({ behavior: 'auto', block: 'start' });
     } else if (!el) {
-      onNavigateFallback?.(turn);
+      onNavigateTurn?.(turn);
     }
-    jumpSequenceRef.current += 1;
-    setJump({ sequence: jumpSequenceRef.current, turnId });
-    markActiveTurn(turnId);
-  }
+  }, [scrollRef, onNavigateStart, onNavigateTurn]);
+
+  const hoverTurn = useCallback((turn: PromptAnchorRailTurn, index: number) => {
+    setHoveredIndex(index);
+    onHighlightTurn?.(turn);
+  }, [onHighlightTurn]);
 
   // A rail is only useful once there are a few prompts to jump between.
-  if (railTurns.length < 3) return null;
+  if (railTurns.length < 3 || !host) return null;
 
-  return (
+  const rail = (
     <div
       className="maka-prompt-rail-anchor"
       style={
@@ -510,55 +318,83 @@ export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRe
         className="maka-prompt-rail"
         aria-label={copy.promptRailAriaLabel}
         ref={railRef}
-        onPointerLeave={() => setHoveredIndex(null)}
+        onPointerLeave={() => { setHoveredIndex(null); onHighlightTurn?.(undefined); }}
       >
         {railTurns.map((turn, index) => {
-          const isActive = turn.turnId === activeTurnIdRef.current;
-          const preview = turn.label.trim() || copy.emptyPrompt;
-          const replyPreview = (turn.reply ?? '').replace(/\s+/g, ' ').trim().slice(0, 140);
+          const isActive = turn.turnId === activeRailTurnId;
           const proximity =
             hoveredIndex === null
               ? HOVER_FALLOFF_TICKS
               : Math.min(Math.abs(index - hoveredIndex), HOVER_FALLOFF_TICKS);
           const scale = (14 + ((HOVER_FALLOFF_TICKS - proximity) * 3)) / 26;
           return (
-            <HoverCard
+            <PromptRailTick
               key={turn.turnId}
-              placement="start"
-              delay={PREVIEW_DELAY_MS}
-              content={
-                <span className="maka-prompt-rail-preview">
-                  <span className="maka-prompt-rail-preview-prompt">{preview}</span>
-                  {replyPreview ? (
-                    <span className="maka-prompt-rail-preview-reply">{replyPreview}</span>
-                  ) : null}
-                </span>
-              }
-            >
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                label={copy.jumpToPrompt(preview)}
-                className="maka-prompt-rail-tick"
-                data-prompt-turn-id={turn.turnId}
-                data-active={isActive ? 'true' : undefined}
-                aria-current={isActive ? 'true' : undefined}
-                onClick={() => jumpTo(turn)}
-                onPointerEnter={() => setHoveredIndex(index)}
-                style={
-                  {
-                    '--maka-prompt-rail-index': index,
-                    '--maka-prompt-rail-scale': scale,
-                  } as CSSProperties
-                }
-              >
-                <span className="maka-prompt-rail-tick-bar" />
-              </Button>
-            </HoverCard>
+              turn={turn}
+              index={index}
+              isActive={isActive}
+              scale={scale}
+              onNavigate={jumpTo}
+              onHover={hoverTurn}
+              onHighlight={onHighlightTurn}
+            />
           );
         })}
       </nav>
     </div>
+  );
+  return createPortal(rail, host);
+});
+
+// Reading-position updates change the active ticks, not every preview. Keep
+// each tick's interaction tree reusable; content and locale changes still render.
+const PromptRailTick = memo(function PromptRailTick({
+  turn, index, isActive, scale, onNavigate, onHover, onHighlight,
+}: {
+  turn: PromptAnchorRailTurn;
+  index: number;
+  isActive: boolean;
+  scale: number;
+  onNavigate(turn: PromptAnchorRailTurn): void;
+  onHover(turn: PromptAnchorRailTurn, index: number): void;
+  onHighlight: PromptAnchorRailProps['onHighlightTurn'];
+}) {
+  const copy = getConversationCopy(useUiLocale()).sessions;
+  const preview = turn.label.trim() || copy.emptyPrompt;
+  const replyPreview = (turn.reply ?? '').replace(/\s+/g, ' ').trim().slice(0, 140);
+  return (
+    <HoverCard
+      placement="start"
+      delay={PREVIEW_DELAY_MS}
+      content={
+        <span className="maka-prompt-rail-preview">
+          <span className="maka-prompt-rail-preview-prompt">{preview}</span>
+          {replyPreview ? <span className="maka-prompt-rail-preview-reply">{replyPreview}</span> : null}
+        </span>
+      }
+    >
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        label={copy.jumpToPrompt(preview)}
+        className="maka-prompt-rail-tick"
+        data-prompt-turn-id={turn.turnId}
+        data-highlighted={turn.highlighted || undefined}
+        data-active={isActive ? 'true' : undefined}
+        aria-current={isActive ? 'true' : undefined}
+        onClick={() => onNavigate(turn)}
+        onPointerEnter={() => onHover(turn, index)}
+        onFocus={() => onHighlight?.(turn)}
+        onBlur={() => onHighlight?.(undefined)}
+        style={{
+          color: turn.accentColor,
+          '--maka-prompt-rail-index': index,
+          '--maka-prompt-rail-scale': scale,
+        } as CSSProperties}
+      >
+        <span className="maka-prompt-rail-tick-bar" />
+      </Button>
+    </HoverCard>
   );
 });

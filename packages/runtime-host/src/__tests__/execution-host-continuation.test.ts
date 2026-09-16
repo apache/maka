@@ -96,59 +96,25 @@ test('two Clients idempotently start one Host-owned safe-boundary continuation',
       if (admission?.execution.kind !== 'safe_boundary_continuation') return;
       assert.equal(admission.execution.sourceRunId, source.sourceRunId);
       assert.equal(admission.execution.sourceInvocationId, source.sourceInvocationId);
-      assert.equal(admission.execution.sourceRuntimeEventHighWater, 2);
+      assert.equal(admission.execution.sourceRuntimeEventHighWater, 3);
 
       const ledger = await fixture.readTurn(turnId);
       assert.equal(ledger.runs.length, 1);
       const run = ledger.runs[0];
-      assert.equal(run?.parentRunId, source.sourceRunId);
-      assert.equal(run?.parentTurnId, source.sourceTurnId);
+      assert.equal(run?.opening.lineage?.parentRunId, source.sourceRunId);
+      assert.equal(run?.opening.lineage?.parentTurnId, source.sourceTurnId);
       assert.equal(run?.invocationId, admission.execution.targetInvocationId);
-      assert.equal(run?.continuationSource?.sourceRunId, source.sourceRunId);
-      assert.equal(
-        run?.continuationSource && 'protocol' in run.continuationSource
-          ? run.continuationSource.claimId
-          : undefined,
-        admission.execution.claimId,
-      );
+      const openSource = run?.opening.source;
+      assert.equal(openSource?.kind, 'continuation');
+      if (openSource?.kind !== 'continuation') return;
+      assert.equal(openSource.sourceRunId, source.sourceRunId);
+      assert.equal(openSource.claimId, admission.execution.claimId);
     } finally {
       if (!clientsClosed) {
         await first.close();
         await second.close();
       }
       if (!hostStopped) await fixture.stopHost(host);
-    }
-  });
-});
-
-test('startup repairs a continuation Run created before its durable start', async () => {
-  await withExecutionRoot(async (fixture) => {
-    const crash = await fixture.seedSafeBoundaryContinuationCrash('after_run_created');
-    const host = await fixture.startHost();
-    const client = await connectClient(fixture.root);
-    try {
-      const repaired = await client.request('turn.query', {
-        sessionId: fixture.sessionId,
-        turnId: crash.targetTurnId,
-      });
-      assert.equal(repaired.runId, crash.targetRunId);
-      assert.equal(repaired.status, 'failed');
-      assert.equal(repaired.failureClass, 'continuation_abandoned_before_provider_dispatch');
-      assert.deepEqual(
-        await client.request('turn.resume.query', {
-          sessionId: fixture.sessionId,
-          sourceRunId: crash.sourceRunId,
-          expectedRuntimeEventHighWater: crash.sourceRuntimeEventHighWater,
-        }),
-        {
-          sessionId: fixture.sessionId,
-          disposition: 'parked',
-          reason: 'continuation_already_exists',
-        },
-      );
-    } finally {
-      await client.close();
-      await fixture.stopHost(host);
     }
   });
 });
@@ -293,7 +259,7 @@ test('startup parks a provider-indeterminate continuation when resume is disable
         {
           sessionId: fixture.sessionId,
           disposition: 'parked',
-          reason: 'continuation_unavailable',
+          reason: 'resume_feature_disabled',
         },
       );
       const sibling = requireStartedTurn(
@@ -392,7 +358,7 @@ test('Runtime Host keeps safe-boundary continuation opt-in', async () => {
       const plan = {
         sessionId: fixture.sessionId,
         disposition: 'parked' as const,
-        reason: 'continuation_unavailable' as const,
+        reason: 'resume_feature_disabled' as const,
       };
       assert.deepEqual(
         await client.request('turn.resume.query', {
@@ -488,7 +454,7 @@ function resumeFixtureProvider(
       },
     ],
     call: async (_frame, { accept }) => {
-      await accept();
+      await accept({ kind: 'none' });
       return { content: [{ type: 'text', text: 'ok' }] };
     },
   };

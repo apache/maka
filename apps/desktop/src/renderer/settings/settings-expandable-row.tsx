@@ -53,7 +53,8 @@ import { SettingsField, SettingsRow } from './settings-section';
  * permanently-open input would use.
  */
 export function SettingsExpandableRow(props: {
-  label: string;
+  label: ReactNode;
+  assistantTarget?: string;
   /** The settled value, shown while collapsed. */
   value: ReactNode;
   /** Label for the affordance that opens the editor (更改 / 设置 / 编辑).
@@ -70,6 +71,13 @@ export function SettingsExpandableRow(props: {
    * this lives here instead of being hand-rolled per page.
    */
   end?: ReactNode;
+  /**
+   * Content that sits beside the built-in trigger while collapsed, after it —
+   * a model row's enable switch, say, which reads as the row's last control.
+   * Unlike `end`, this keeps the trigger and the focus return that goes with
+   * it.
+   */
+  afterAction?: ReactNode;
   isEditing: boolean;
   isDisabled?: boolean;
   /** Save stays disabled until the draft actually differs from the value. */
@@ -117,15 +125,19 @@ export function SettingsExpandableRow(props: {
         description={props.value}
         align="start"
         end={props.end ?? (
-          <Button
-            ref={triggerRef}
-            variant="ghost"
-            size="sm"
-            isDisabled={props.isDisabled}
-            onClick={props.onEdit}
-            label={props.actionLabel ?? ''}
-            aria-label={props.actionAriaLabel}
-          />
+          <>
+            <Button
+              ref={triggerRef}
+              data-maka-assistant-target={props.assistantTarget ? `${props.assistantTarget}.edit` : undefined}
+              variant="ghost"
+              size="sm"
+              isDisabled={props.isDisabled}
+              onClick={props.onEdit}
+              label={props.actionLabel ?? ''}
+              aria-label={props.actionAriaLabel}
+            />
+            {props.afterAction}
+          </>
         )}
       />
     );
@@ -145,6 +157,7 @@ export function SettingsExpandableRow(props: {
           <Button
             variant="primary"
             isDisabled={props.isDisabled || props.canSave === false}
+            data-maka-assistant-target={props.assistantTarget ? `${props.assistantTarget}.save` : undefined}
             clickAction={() => props.onSave()}
             label={props.saveLabel}
           />

@@ -32,6 +32,7 @@ import {
   type DesktopTargetScope,
 } from '../shared/runtime-host-identity.js';
 import type { MainProcessRecoveryEvidence } from './main-process-recovery-journal.js';
+import type { RuntimeHostDesktopTargetState } from './runtime-host-desktop-manager.js';
 
 const INPUT_LIMITS = {
   title: 512,
@@ -44,9 +45,18 @@ const INPUT_TRUNCATION_MARKER = '\n<diagnostic input truncated>';
 const EXECUTION_DIAGNOSTIC_TIMEOUT_MS = 2_000;
 export const MAIN_PROCESS_DIAGNOSTIC_LOG_MAX_BYTES = 256 * 1024;
 
+/**
+ * The release feed a build follows, as a report names it. `buildMode` alone
+ * cannot say this: every packaged install reports `packaged`, so a nightly and
+ * a release looked identical in a report while following different feeds and
+ * different attestation signers. `dev` is not a feed — a checkout follows none.
+ */
+export type DesktopDiagnosticChannel = 'release' | 'nightly' | 'dev' | 'unknown';
+
 export interface DesktopDiagnosticEnvironment {
   readonly appVersion: string;
   readonly buildMode: 'dev' | 'packaged';
+  readonly updateChannel: DesktopDiagnosticChannel;
   readonly buildCommit: string | null;
   readonly electronVersion: string;
   readonly nodeVersion: string;
@@ -63,6 +73,7 @@ export interface DesktopDiagnosticEnvironment {
 export interface DesktopDiagnosticEnvironmentSource {
   readonly appVersion: string;
   readonly buildMode: 'dev' | 'packaged';
+  readonly updateChannel: DesktopDiagnosticChannel;
   readonly buildCommit: string | null;
   readonly locale: string;
   readonly workspacePath: string;
@@ -120,6 +131,7 @@ export interface DesktopDiagnosticsDeps {
   readonly environment: () => DesktopDiagnosticEnvironment;
   readonly mainLogs: () => readonly string[];
   readonly runtimeHostProcessLogs?: () => readonly string[];
+  readonly runtimeHostConnections?: () => readonly RuntimeHostDesktopTargetState[];
   readonly resolveActiveRuntimeHost: () => RuntimeHostDiagnosticsClient | undefined;
   readonly resolveRuntimeHost: (scope: DesktopTargetScope) => RuntimeHostDiagnosticsClient | undefined;
   readonly writeClipboard: (value: string) => void;
@@ -379,6 +391,7 @@ export async function copyDesktopDiagnosticReport(
       runtimeExecution,
       undefined,
       deps.runtimeHostProcessLogs?.() ?? [],
+      deps.runtimeHostConnections?.() ?? [],
     ),
   );
 }
@@ -391,6 +404,7 @@ export function formatDesktopDiagnosticReport(
   runtimeExecution: RuntimeHostExecutionDiagnosticRead | undefined = undefined,
   capturedAt = new Date(),
   runtimeHostProcessLogs: readonly string[] = [],
+  runtimeHostConnections: readonly RuntimeHostDesktopTargetState[] = [],
 ): string {
   const lines = ['Maka Desktop diagnostic report', `Captured at: ${capturedAt.toISOString()}`];
   const rendererContext =
@@ -431,6 +445,7 @@ export function formatDesktopDiagnosticReport(
       'Environment',
       `Maka: ${environment.appVersion}`,
       `Build: ${environment.buildMode}${environment.buildCommit ? ` @ ${environment.buildCommit.slice(0, 12)}` : ''}`,
+      `Channel: ${environment.updateChannel}`,
       `Electron: ${environment.electronVersion}`,
       `Chrome: ${environment.chromeVersion}`,
       `Node: ${environment.nodeVersion}`,
@@ -449,6 +464,25 @@ export function formatDesktopDiagnosticReport(
         ? runtimeHostProcessLogs
         : ['<none captured>']),
     );
+  }
+
+  if (input.surface !== 'previous_main_process_interruption' && runtimeHostConnections.length > 0) {
+    lines.push('', `Runtime Host connections (${runtimeHostConnections.length})`);
+    for (const state of runtimeHostConnections) {
+      lines.push(`${JSON.stringify(state.target.profile.id)}: ${state.readiness}`);
+      if (state.reconnect) {
+        lines.push(
+          `  Failed attempts: ${state.reconnect.failures}`,
+          `  First failure: ${new Date(state.reconnect.firstFailureAt).toISOString()}`,
+          `  Last failure: ${new Date(state.reconnect.lastFailureAt).toISOString()}`,
+        );
+      }
+      if (state.readiness !== 'ready' && state.error) {
+        const code = 'code' in state.error && typeof state.error.code === 'string'
+          ? ` [${state.error.code}]` : '';
+        lines.push(`  Latest error${code}: ${boundedDiagnosticError(state.error)}`);
+      }
+    }
   }
 
   lines.push('', 'Runtime Host');

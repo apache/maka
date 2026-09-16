@@ -21,27 +21,19 @@ import { createRoot } from 'react-dom/client';
 import { syncUiLocaleDocument } from '@maka/ui';
 import { App } from './app';
 import { applyCachedThemeBeforeMount } from './cached-theme-bootstrap';
-import type { OnboardingSnapshot } from '../preload/bridge-contract.js';
 import './styles.css';
 import { readSystemUiLocale } from './use-system-ui-locale';
-import { WorkbarServicesProvider } from './features/workbar';
-import { createDesktopWorkbarServices } from './platform/desktop/create-workbar-services';
-import { GoalServicesProvider } from './features/goals';
-import { createDesktopGoalServices } from './platform/desktop/create-goal-services';
-import { ModuleHubServicesProvider } from './features/module-hub';
-import { createDesktopModuleHubServices } from './platform/desktop/create-module-hub-services';
-import { SessionNavigationServicesProvider } from './features/session-navigation';
-import { createDesktopSessionNavigationServices } from './platform/desktop/create-session-navigation-services';
+import {
+  createDesktopFeatureServices,
+  DesktopFeatureServicesProvider,
+} from './composition/desktop-feature-services';
 
 const ONBOARDING_SNAPSHOT_RETRY_DELAY_MS = 150;
 const ONBOARDING_SNAPSHOT_TIMEOUT_MS = 2_500;
 
 syncUiLocaleDocument(readSystemUiLocale());
 applyCachedThemeBeforeMount();
-const workbarServices = createDesktopWorkbarServices();
-const goalServices = createDesktopGoalServices();
-const moduleHubServices = createDesktopModuleHubServices();
-const sessionNavigationServices = createDesktopSessionNavigationServices();
+const desktopFeatureServices = createDesktopFeatureServices();
 
 /**
  * Prefetch the onboarding snapshot BEFORE mounting React. The preload
@@ -55,8 +47,10 @@ const sessionNavigationServices = createDesktopSessionNavigationServices();
  * can never block the renderer from mounting. On timeout/failure React
  * mounts with `null` and the classic in-app loading path takes over.
  */
-async function prefetchOnboardingSnapshot(): Promise<OnboardingSnapshot | null> {
-  const attempt = async (): Promise<OnboardingSnapshot | null> => {
+async function prefetchOnboardingSnapshot() {
+  // WorkHub owns its session readiness and never consumes Desktop onboarding.
+  if (desktopFeatureServices.workHub.surface === 'workhub') return null;
+  const attempt = async () => {
     try {
       return await window.maka.onboarding.getSnapshot();
     } catch {
@@ -74,14 +68,8 @@ async function prefetchOnboardingSnapshot(): Promise<OnboardingSnapshot | null> 
 
 void prefetchOnboardingSnapshot().then((initialOnboardingSnapshot) => {
   createRoot(document.getElementById('root')!).render(
-    <SessionNavigationServicesProvider services={sessionNavigationServices}>
-      <ModuleHubServicesProvider services={moduleHubServices}>
-        <GoalServicesProvider services={goalServices}>
-          <WorkbarServicesProvider services={workbarServices}>
-            <App initialOnboardingSnapshot={initialOnboardingSnapshot} />
-          </WorkbarServicesProvider>
-        </GoalServicesProvider>
-      </ModuleHubServicesProvider>
-    </SessionNavigationServicesProvider>,
+    <DesktopFeatureServicesProvider services={desktopFeatureServices}>
+      <App initialOnboardingSnapshot={initialOnboardingSnapshot} />
+    </DesktopFeatureServicesProvider>,
   );
 });

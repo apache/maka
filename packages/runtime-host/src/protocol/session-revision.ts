@@ -44,7 +44,12 @@ const SESSION_COPY_ERRORS = [
 export interface SessionConversationCopyInput {
   readonly sourceSessionId: string;
   readonly targetSessionId: string;
-  readonly sourceTurnId: string;
+  /**
+   * Settled turn to branch through. Absent forks with an empty context — a side
+   * conversation opened before the source has any completed turn (valid only
+   * with `intent: 'side_conversation'`).
+   */
+  readonly sourceTurnId?: string;
   readonly expectedSourceRevision: number;
   readonly intent?: 'side_conversation';
 }
@@ -116,6 +121,9 @@ function decodeSessionRevisionCopyInput(value: unknown): SessionConversationCopy
   if (input.intent !== undefined) {
     throw invalidProtocolFrame('Session revision copy does not support an intent');
   }
+  // A revision never carries an intent, so the shared decoder above already
+  // rejected a missing `sourceTurnId` (an empty copy requires the
+  // side_conversation intent); reaching here guarantees a turn boundary.
   return input;
 }
 
@@ -142,8 +150,8 @@ export function decodeSessionConversationCopyInput(value: unknown): SessionConve
   const input = requireShapedRecord(
     value,
     'Session conversation-copy input',
-    ['sourceSessionId', 'targetSessionId', 'sourceTurnId', 'expectedSourceRevision'],
-    ['intent'],
+    ['sourceSessionId', 'targetSessionId', 'expectedSourceRevision'],
+    ['sourceTurnId', 'intent'],
   );
   const sourceSessionId = requireEntityId(input.sourceSessionId, 'sourceSessionId');
   const targetSessionId = requireEntityId(input.targetSessionId, 'targetSessionId');
@@ -153,10 +161,17 @@ export function decodeSessionConversationCopyInput(value: unknown): SessionConve
   if (input.intent !== undefined && input.intent !== 'side_conversation') {
     throw invalidProtocolFrame('Invalid Session conversation-copy intent');
   }
+  const sourceTurnId =
+    input.sourceTurnId === undefined
+      ? undefined
+      : requireEntityId(input.sourceTurnId, 'sourceTurnId');
+  if (sourceTurnId === undefined && input.intent !== 'side_conversation') {
+    throw invalidProtocolFrame('An empty conversation copy requires the side_conversation intent');
+  }
   return {
     sourceSessionId,
     targetSessionId,
-    sourceTurnId: requireEntityId(input.sourceTurnId, 'sourceTurnId'),
+    ...(sourceTurnId === undefined ? {} : { sourceTurnId }),
     expectedSourceRevision: positiveRevision(
       input.expectedSourceRevision,
       'expected source Session revision',

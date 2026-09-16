@@ -22,10 +22,11 @@ import { tmpdir } from 'node:os';
 import { join, relative, resolve } from 'node:path';
 import { createMakaCuBackend } from '../../packages/computer-use/dist/index.js';
 import { buildComputerUseTools } from '../../packages/runtime/dist/computer-use-tools.js';
+import { requireComputerUseLabRoot } from './lab-root.mjs';
 
 const repoRoot = new URL('../..', import.meta.url).pathname;
 const binaryPath = join(repoRoot, 'apps/desktop/resources/bin/maka-cu');
-const labRoot = '/Users/haoqing/Documents/Learning/codex-computer-use-lab';
+const labRoot = requireComputerUseLabRoot();
 const expectedAppPath = join(labRoot, 'test-app/build/Codex CUA Lab.app');
 const statePath = join(labRoot, 'test-app/runtime/state.json');
 const temporaryDirectory = process.env.MAKA_CU_RESTART_TEMP_DIR;

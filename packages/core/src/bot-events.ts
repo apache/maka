@@ -74,6 +74,7 @@ export interface BotMessageEvent {
  * different copy without diluting the core message. Exported so the
  * handler can use it AND a contract test can pin it.
  */
+// bot-channel notices follow the bot audience language; localization tracked under #2672
 export function nonTextMessageAck(kind: BotAttachmentKind): string {
   switch (kind) {
     case 'photo':
@@ -213,73 +214,27 @@ function sanitizeBotUserName(value: string): string {
 }
 
 /**
- * PR-BOT-LASTERROR-FROM-SEND-0 (external bot research): translate the bridge's
- * machine-readable `BotStatus.reason` into a short user-readable string
- * suitable for persistence in `BotChannelSettings.lastError`. The Settings
- * page reads `lastError` from persisted settings (not live status), so
- * without this persistence step the user sees stale connection-test
- * errors instead of the actual send-path failure that happened minutes
- * ago.
- *
- * Returns `undefined` for non-error reasons (disabled/stopped/missing
- * credentials — those have their own UI surface) and for unrecognized
- * inputs whose pass-through risks leaking unredacted payloads.
- *
- * Length-capped at 200 chars defensively; a real Telegram error
- * description is typically well under 80 chars.
+ * Non-error `BotStatus.reason` values. These states have their own UI surface,
+ * so an error readout must not repeat them as failures.
  */
-const BOT_REASON_HUMANIZE: Record<string, string | undefined> = {
-  'rate-limited': '发送被节流（429）；上一条回复可能截断，可以请用户再发一次',
-  'polling-timeout': '事件轮询超时；可能是网络抖动或代理失效',
-  'send-failed': '上一次发送失败，详细原因 Telegram 没有返回',
-  'get-me-failed': '凭据探测失败；请检查 Bot Token',
-  // Non-error states surface elsewhere in the UI — return undefined so
-  // we do not overwrite a real lastError with a benign status change.
-  disabled: undefined,
-  stopped: undefined,
-  'no-token': undefined,
-  'missing-feishu-credentials': undefined,
-  'feishu-domain-required': undefined,
-  'feishu-events-not-connected': undefined,
-  'scaffold-only': undefined,
-  unimplemented: undefined,
-};
+const BOT_BENIGN_STATUS_REASONS: ReadonlySet<string> = new Set([
+  'disabled',
+  'stopped',
+  'token_missing',
+  'feishu_credentials_missing',
+  'feishu-domain-required',
+  'feishu-events-not-connected',
+  'scaffold-only',
+  'unimplemented',
+]);
 
 /**
- * PR-BOT-RUNTIME-REASON-HUMANIZE-0: Discord / DingTalk / QQ bridges
- * emit parameterized reason strings like `gateway-closed-4004` and
- * `connections-open-500`. Without these patterns the user sees the
- * raw machine code in `lastError`; with them they get a translated
- * description plus the diagnostic code preserved in parentheses.
- *
- * Each entry is a regex with one numeric capture group; the matched
- * code is preserved verbatim so support diagnostics still survive.
+ * `BotStatus.reason` stays a stable code; presenters own the copy. Benign
+ * states yield `undefined` so they never overwrite a real error readout.
  */
-const BOT_REASON_HUMANIZE_PATTERNS: Array<{ pattern: RegExp; format: (code: string) => string }> = [
-  { pattern: /^gateway-bot-(\d+)$/, format: (code) => `获取 Gateway 失败（HTTP ${code}）` },
-  { pattern: /^gateway-closed-(\d+)$/, format: (code) => `Gateway 连接关闭（${code}）；正在重连` },
-  { pattern: /^connections-open-(\d+)$/, format: (code) => `Stream 订阅打开失败（HTTP ${code}）` },
-  { pattern: /^stream-closed-(\d+)$/, format: (code) => `Stream 连接关闭（${code}）；正在重连` },
-  { pattern: /^send-failed-(\d+)$/, format: (code) => `发送失败（HTTP ${code}）` },
-  {
-    pattern: /^getAppAccessToken-(\d+)$/,
-    format: (code) => `获取 access_token 失败（HTTP ${code}）`,
-  },
-];
-
-export function humanizeBotStatusReason(reason: string | undefined): string | undefined {
-  if (typeof reason !== 'string' || reason.length === 0) return undefined;
-  if (reason in BOT_REASON_HUMANIZE) {
-    return BOT_REASON_HUMANIZE[reason];
-  }
-  for (const { pattern, format } of BOT_REASON_HUMANIZE_PATTERNS) {
-    const match = pattern.exec(reason);
-    if (match) return format(match[1]);
-  }
-  // Pass-through for platform-supplied descriptions ("Bad Request:
-  // chat not found", etc.). Trim + length-cap to keep `lastError`
-  // bounded.
+export function botStatusErrorReason(reason: string | undefined): string | undefined {
+  if (typeof reason !== 'string') return undefined;
   const trimmed = reason.trim();
-  if (trimmed.length === 0) return undefined;
+  if (trimmed.length === 0 || BOT_BENIGN_STATUS_REASONS.has(trimmed)) return undefined;
   return trimmed.length > 200 ? trimmed.slice(0, 200) : trimmed;
 }

@@ -32,6 +32,8 @@ test('keeps manual diagnostics available while About metadata is pending', () =>
     createElement(LocaleProvider, { locale: 'en', children: withAstryxLocale }),
   );
 
-  assert.match(markup, />Copy diagnostics</);
+  // The row LABEL also reads "Copy diagnostics", so match the control itself:
+  // its accessible name is the aria-label, not the verb on its face.
+  assert.match(markup, /<button[^>]*aria-label="Copy diagnostics"/);
   assert.match(markup, /role="status"[^>]*aria-busy="true"/);
 });

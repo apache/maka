@@ -18,7 +18,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import type { PersistedBackendKind, SessionHeader, StoredMessage } from '@maka/core/session';
+import type { PersistedBackendKind } from '@maka/core/session';
 import type { SessionEvent } from '@maka/core/events';
 import type {
   AgentBackend,
@@ -36,10 +36,10 @@ import {
   RuntimeInteractionInvariantError,
   type RuntimeUserQuestionClosureReason,
 } from '../interaction-authority.js';
-import type { SessionStore } from '../session-manager.js';
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 export const FAKE_ASK_USER_QUESTION_PROMPT = '__e2e_ask_user_question__';
+export const FAKE_ASK_USER_QUESTION_DURING_DRAIN_PROMPT = '__e2e_ask_user_question_during_drain__';
 export const FAKE_ASK_SANDBOX_BOUNDARY_PROMPT = '__e2e_ask_sandbox_boundary__';
 export const FAKE_WAIT_FOR_STEERING_PROMPT = '__e2e_wait_for_steering__';
 export const FAKE_WAIT_FOR_STEERING_LARGE_RESPONSE_PROMPT =
@@ -70,21 +70,21 @@ export class FakeBackend implements AgentBackend {
   private stopped = false;
   private pendingQuestion: PendingQuestion | undefined;
   private pendingSandboxBoundary: PendingSandboxBoundary | undefined;
+  private readonly questionAdmissionWaiters: Array<() => void> = [];
+  private readonly questionAdmissionCheckpointWaiters: Array<() => void> = [];
+  private readonly stopWaiters: Array<() => void> = [];
+  private questionAdmissionWaiting = false;
 
-  constructor(
-    private readonly ctx: {
-      sessionId: string;
-      header: SessionHeader;
-      store: SessionStore;
-      appendMessage?: (message: StoredMessage) => Promise<void>;
-    },
-  ) {
+  constructor(ctx: { sessionId: string }) {
     this.sessionId = ctx.sessionId;
   }
 
   async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
     this.stopped = false;
-    if (input.text === FAKE_ASK_USER_QUESTION_PROMPT) {
+    if (
+      input.text === FAKE_ASK_USER_QUESTION_PROMPT ||
+      input.text === FAKE_ASK_USER_QUESTION_DURING_DRAIN_PROMPT
+    ) {
       yield* this.sendQuestionScenario(input);
       return;
     }
@@ -175,8 +175,8 @@ export class FakeBackend implements AgentBackend {
       outstanding.splice(index, 1);
       input.ackSteering?.([leaseId]);
     };
-    const drainSteering = (): Array<{ leaseId: string; event: SessionEvent }> => {
-      const leases = input.pullSteering?.() ?? [];
+    const drainSteering = async (): Promise<Array<{ leaseId: string; event: SessionEvent }>> => {
+      const leases = (await input.pullSteering?.()) ?? [];
       if (leases.length === 0) return [];
       outstanding.push(...leases.map((lease) => lease.id));
       return leases.map((lease) => {
@@ -214,7 +214,7 @@ export class FakeBackend implements AgentBackend {
           text: waitingText,
         };
         while (!this.stopped) {
-          const pending = drainSteering();
+          const pending = await drainSteering();
           for (const { leaseId, event } of pending) {
             yield event;
             settleOutstanding(leaseId);
@@ -248,10 +248,10 @@ export class FakeBackend implements AgentBackend {
       }
 
       if (isSteeringScenario) {
-        let pending = drainSteering();
+        let pending = await drainSteering();
         while (pending.length === 0 && !this.stopped) {
           await sleep(5);
-          pending = drainSteering();
+          pending = await drainSteering();
         }
         for (const { leaseId, event } of pending) {
           yield event;
@@ -272,7 +272,7 @@ export class FakeBackend implements AgentBackend {
           return;
         }
         if (!isSteeringScenario) await sleep(45);
-        for (const { leaseId, event } of drainSteering()) {
+        for (const { leaseId, event } of await drainSteering()) {
           yield event;
           settleOutstanding(leaseId);
         }
@@ -288,7 +288,7 @@ export class FakeBackend implements AgentBackend {
 
       // Final stranded drain (grok-build safety): a steer that landed after the
       // last boundary still lands in this turn instead of being lost.
-      for (const { leaseId, event } of drainSteering()) {
+      for (const { leaseId, event } of await drainSteering()) {
         yield event;
         settleOutstanding(leaseId);
       }
@@ -306,17 +306,6 @@ export class FakeBackend implements AgentBackend {
       }
 
       const ts = Date.now();
-      const appendMessage =
-        this.ctx.appendMessage ??
-        ((message: StoredMessage) => this.ctx.store.appendMessage(this.sessionId, message));
-      await appendMessage({
-        type: 'assistant',
-        id: messageId,
-        turnId,
-        ts,
-        text,
-        modelId: this.ctx.header.model,
-      });
       yield { type: 'text_complete', id: randomUUID(), turnId, ts, messageId, text };
       yield { type: 'complete', id: randomUUID(), turnId, ts: Date.now(), stopReason: 'end_turn' };
     } finally {
@@ -326,6 +315,8 @@ export class FakeBackend implements AgentBackend {
 
   async stop(): Promise<void> {
     this.stopped = true;
+    this.releaseQuestionAdmission();
+    for (const resolve of this.stopWaiters.splice(0)) resolve();
     if (this.pendingQuestion && !this.pendingQuestion.hosted) {
       this.pendingQuestion.resolve(null);
       this.pendingQuestion = undefined;
@@ -349,6 +340,15 @@ export class FakeBackend implements AgentBackend {
   }
 
   async dispose(): Promise<void> {}
+
+  releaseQuestionAdmission(): void {
+    for (const resolve of this.questionAdmissionWaiters.splice(0)) resolve();
+  }
+
+  waitForQuestionAdmissionCheckpoint(): Promise<void> {
+    if (this.questionAdmissionWaiting) return Promise.resolve();
+    return new Promise((resolve) => this.questionAdmissionCheckpointWaiters.push(resolve));
+  }
 
   private async *sendErrorScenario(
     input: BackendSendInput,
@@ -416,19 +416,7 @@ export class FakeBackend implements AgentBackend {
         options: [{ label: '是' }, { label: '否' }],
       },
     ];
-    const appendMessage =
-      this.ctx.appendMessage ??
-      ((message: StoredMessage) => this.ctx.store.appendMessage(this.sessionId, message));
     const startedAt = Date.now();
-    await appendMessage({
-      type: 'tool_call',
-      id: toolUseId,
-      turnId,
-      stepId,
-      ts: startedAt,
-      toolName: 'AskUserQuestion',
-      args: { questions },
-    });
     yield {
       type: 'tool_start',
       id: randomUUID(),
@@ -439,6 +427,10 @@ export class FakeBackend implements AgentBackend {
       toolName: 'AskUserQuestion',
       args: { questions },
     };
+
+    if (input.text === FAKE_ASK_USER_QUESTION_DURING_DRAIN_PROMPT) {
+      await this.waitForQuestionAdmissionRelease();
+    }
 
     let resolveResponse!: (response: UserQuestionResponse | null) => void;
     const responsePromise = new Promise<UserQuestionResponse | null>((resolve) => {
@@ -465,6 +457,7 @@ export class FakeBackend implements AgentBackend {
         await input.hostedInteraction.admitUserQuestionRequest({ request, settlement });
       } catch (error) {
         this.takePendingQuestion(turnId, requestId).resolve(null);
+        if (input.text === FAKE_ASK_USER_QUESTION_DURING_DRAIN_PROMPT) await this.waitForStop();
         throw error;
       }
     }
@@ -495,15 +488,6 @@ export class FakeBackend implements AgentBackend {
     };
     const resultContent = { kind: 'json' as const, value: result };
     const resultTs = Date.now();
-    await appendMessage({
-      type: 'tool_result',
-      id: randomUUID(),
-      turnId,
-      ts: resultTs,
-      toolUseId,
-      isError: false,
-      content: resultContent,
-    });
     yield {
       type: 'tool_result',
       id: randomUUID(),
@@ -527,16 +511,24 @@ export class FakeBackend implements AgentBackend {
       };
     }
     const completedAt = Date.now();
-    await appendMessage({
-      type: 'assistant',
-      id: messageId,
-      turnId,
-      ts: completedAt,
-      text,
-      modelId: this.ctx.header.model,
-    });
     yield { type: 'text_complete', id: randomUUID(), turnId, ts: completedAt, messageId, text };
     yield { type: 'complete', id: randomUUID(), turnId, ts: Date.now(), stopReason: 'end_turn' };
+  }
+
+  private async waitForQuestionAdmissionRelease(): Promise<void> {
+    if (this.stopped) return Promise.resolve();
+    this.questionAdmissionWaiting = true;
+    for (const resolve of this.questionAdmissionCheckpointWaiters.splice(0)) resolve();
+    try {
+      await new Promise<void>((resolve) => this.questionAdmissionWaiters.push(resolve));
+    } finally {
+      this.questionAdmissionWaiting = false;
+    }
+  }
+
+  private waitForStop(): Promise<void> {
+    if (this.stopped) return Promise.resolve();
+    return new Promise((resolve) => this.stopWaiters.push(resolve));
   }
 
   private async *sendSandboxBoundaryScenario(input: BackendSendInput): AsyncIterable<SessionEvent> {
@@ -558,19 +550,7 @@ export class FakeBackend implements AgentBackend {
     const stepId = randomUUID();
     const expansion = { network: { enabled: true as const } };
     const justification = 'Connect to the deterministic fake test endpoint.';
-    const appendMessage =
-      this.ctx.appendMessage ??
-      ((message: StoredMessage) => this.ctx.store.appendMessage(this.sessionId, message));
     const startedAt = Date.now();
-    await appendMessage({
-      type: 'tool_call',
-      id: toolUseId,
-      turnId,
-      stepId,
-      ts: startedAt,
-      toolName: 'RequestSandboxBoundary',
-      args: { expansion, justification },
-    });
     yield {
       type: 'tool_start',
       id: randomUUID(),
@@ -645,15 +625,6 @@ export class FakeBackend implements AgentBackend {
       value: { decision, status: settlement.request.status },
     };
     const resultTs = Date.now();
-    await appendMessage({
-      type: 'tool_result',
-      id: randomUUID(),
-      turnId,
-      ts: resultTs,
-      toolUseId,
-      isError: decision === 'deny',
-      content: resultContent,
-    });
     yield {
       type: 'tool_result',
       id: randomUUID(),
@@ -675,14 +646,6 @@ export class FakeBackend implements AgentBackend {
       text,
     };
     const completedAt = Date.now();
-    await appendMessage({
-      type: 'assistant',
-      id: messageId,
-      turnId,
-      ts: completedAt,
-      text,
-      modelId: this.ctx.header.model,
-    });
     yield { type: 'text_complete', id: randomUUID(), turnId, ts: completedAt, messageId, text };
     yield { type: 'complete', id: randomUUID(), turnId, ts: Date.now(), stopReason: 'end_turn' };
   }

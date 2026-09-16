@@ -31,6 +31,7 @@ import {
   requireExactRecord,
   requireId,
   requireRecord,
+  requireShapedRecord,
   requireUtf8String,
 } from './codec.js';
 import { invalidProtocolFrame } from './errors.js';
@@ -42,6 +43,7 @@ export const RUNTIME_RESOURCE_PAGE_MAX_ITEMS = 64;
 export const RUNTIME_RESOURCE_CURSOR_MAX_BYTES = 32;
 export const RUNTIME_RESOURCE_REF_MAX_BYTES = 256;
 export const RUNTIME_RESOURCE_CONTROL_INPUT_MAX_BYTES = 32 * 1024;
+export const RUNTIME_RESOURCE_COMMAND_MAX_BYTES = 32 * 1024;
 export const RUNTIME_RESOURCE_MAX_CONTROL_SEQUENCE = Number.MAX_SAFE_INTEGER - 1;
 export const RUNTIME_RESOURCE_MIN_PTY_COLS = 2;
 export const RUNTIME_RESOURCE_MAX_PTY_COLS = 240;
@@ -162,6 +164,8 @@ export interface RuntimeResourceStopInput {
 export interface RuntimeResourceStartInput {
   readonly sessionId: string;
   readonly launchId: string;
+  /** Omitted only for the Desktop-owned interactive terminal resource. */
+  readonly command?: string;
 }
 
 export interface RuntimeResourceStartResult {
@@ -242,13 +246,27 @@ export const RUNTIME_RESOURCE_OPERATION_SPECS = {
 } as const;
 
 export function decodeRuntimeResourceStartInput(value: unknown): RuntimeResourceStartInput {
-  const input = requireExactRecord(value, 'Runtime Resource start input', [
-    'sessionId',
-    'launchId',
-  ]);
+  const input = requireShapedRecord(
+    value,
+    'Runtime Resource start input',
+    ['sessionId', 'launchId'],
+    ['command'],
+  );
+  const command =
+    input.command === undefined
+      ? undefined
+      : requireUtf8String(
+          input.command,
+          'Runtime Resource command',
+          RUNTIME_RESOURCE_COMMAND_MAX_BYTES,
+        );
+  if (command !== undefined && !command.trim()) {
+    throw invalidProtocolFrame('Invalid Runtime Resource command');
+  }
   return {
     sessionId: requireEntityId(input.sessionId, 'sessionId'),
     launchId: requireId(input.launchId, 'launchId'),
+    ...(command === undefined ? {} : { command }),
   };
 }
 

@@ -343,6 +343,20 @@ export function isMcpStdioConfig(config: McpServerConfig): config is McpStdioSer
   return 'command' in config;
 }
 
+/** True when a configuration change can leave credentials bound to an
+ * endpoint the server id no longer names. Removals retire regardless of
+ * transport so a stale record cannot survive the id being freed for reuse. */
+export function mcpConfigChangeRetiresCredentials(
+  previous: McpServerConfig,
+  next: McpServerConfig | undefined,
+): boolean {
+  if (!next) return true;
+  const previousStdio = isMcpStdioConfig(previous);
+  const nextStdio = isMcpStdioConfig(next);
+  if (previousStdio || nextStdio) return previousStdio !== nextStdio;
+  return previous.url !== next.url;
+}
+
 export function resolveMcpProtocolPreference(config: McpServerConfig): McpProtocolPreference {
   return config.protocol ?? 'legacy';
 }

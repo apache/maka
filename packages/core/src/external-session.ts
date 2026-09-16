@@ -22,7 +22,7 @@ import type { StoredMessage } from './session.js';
 /** Stable identifier for one external Agent integration, for example `codex`. */
 export type ExternalAgentId = string;
 
-/** A search term longer than this is refused rather than matched. */
+/** A search term longer than this is truncated to this length before matching. */
 export const EXTERNAL_SESSION_QUERY_TEXT_MAX_CHARS = 200;
 
 export interface ExternalSessionQuery {
@@ -167,6 +167,33 @@ export interface ExternalMakaSession {
     cwd: string;
   };
   messages: readonly StoredMessage[];
+}
+
+export const EXTERNAL_SESSION_LIMIT_KINDS = [
+  'transcript_bytes',
+  'record_bytes',
+  'records',
+  'converted_bytes',
+  'messages',
+] as const;
+
+/** Safe import refusal data: no source paths, transcript content, or raw errors. */
+export interface ExternalSessionLimit {
+  readonly kind: (typeof EXTERNAL_SESSION_LIMIT_KINDS)[number];
+  readonly max: number;
+}
+
+export class ExternalSessionLimitError extends Error {
+  readonly limit: ExternalSessionLimit;
+
+  constructor(kind: ExternalSessionLimit['kind'], max: number, message: string) {
+    super(message);
+    if (!EXTERNAL_SESSION_LIMIT_KINDS.includes(kind) || !Number.isSafeInteger(max) || max <= 0) {
+      throw new Error('Invalid external Session import limit');
+    }
+    this.name = 'ExternalSessionLimitError';
+    this.limit = Object.freeze({ kind, max });
+  }
 }
 
 /** Read-only, source-specific conversion boundary for one external Agent. */

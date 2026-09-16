@@ -31,11 +31,11 @@ interface MovePayload {
   actionId: string;
   x: number;
   y: number;
-  kind?: 'move' | 'click' | 'drag' | 'scroll';
+  kind?: 'click' | 'scroll';
   pressed?: boolean;
   instant?: boolean;
 }
-interface CompletePayload { actionId?: string; x: number; y: number; kind?: 'move' | 'click' | 'drag' | 'scroll'; pulse?: boolean }
+interface CompletePayload { actionId?: string; x: number; y: number; kind?: 'click' | 'scroll'; pulse?: boolean }
 interface CancelPayload { actionId: string }
 interface ResetPayload { sessionId: string; generation: number }
 declare global {

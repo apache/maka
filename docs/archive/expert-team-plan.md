@@ -102,7 +102,7 @@ QoderWork **没有**命名人格选择器。它的三层值得参考：
 
 | 关注点 | 复用/扩展 | 位置 |
 |---|---|---|
-| 专家**人格注入** | `mode:` 标签 + prompt fragment（照抄 Deep Research） | `apps/desktop/src/main/system-prompt-main.ts`（已有 `childInstruction` seam）；`packages/core/src/explore-agent.ts`（`mode:deep_research` 先例） |
+| 专家**人格注入** | `mode:` 标签 + prompt fragment（照抄 Deep Research） | `apps/desktop/src/main/system-prompt-main.ts`（已有 `childInstruction` seam）；`packages/core/src/deep-research.ts`（`mode:deep_research` 先例） |
 | 专家=**带工具作用域的专业 agent** | 扩展 `BUILTIN_AGENT_DEFINITIONS`（每条已带 `systemPrompt`） | `packages/runtime/src/agent-catalog.ts`、`subagent-tools.ts`（`agent_spawn`/`SessionManager.spawnChildAgent`） |
 | 专家**目录 + 按需安装** | 克隆 managed/bundled 技能目录 | `apps/desktop/src/main/managed-skill-sources.ts`、`bundled-skill-catalog.generated.ts`、`skills.ts`（install→`skill.lock.json`→baseline→update diff，PR #842） |
 | 专家**定义文件格式** | 复用 SKILL.md frontmatter 解析 | `packages/runtime/src/skills.ts`（`parseSkillFrontMatter`） |

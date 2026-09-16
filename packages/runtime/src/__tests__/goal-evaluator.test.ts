@@ -46,6 +46,44 @@ describe('parseGoalEvaluation', () => {
     assert.equal(r.reason, 'No reason provided');
   });
 
+  for (const field of ['met', 'impossible', 'progress', 'waiting']) {
+    for (const value of ['false', 'true', '', 0, 1, null, []]) {
+      test(`rejects ${field}=${JSON.stringify(value)} as a neutral evaluator failure`, () => {
+        const r = parseGoalEvaluation(
+          JSON.stringify({
+            met: false,
+            impossible: false,
+            progress: false,
+            waiting: false,
+            [field]: value,
+          }),
+        );
+        assert.equal(r.evaluatorFailed, true);
+        assert.equal(r.met, false);
+        assert.equal(r.impossible, false);
+        assert.equal(r.progress, false);
+        assert.equal(r.waiting, false);
+      });
+    }
+  }
+
+  test('rejects the whole judgment when a true verdict accompanies an invalid field', () => {
+    const r = parseGoalEvaluation('{"met":true,"progress":"false"}');
+    assert.equal(r.evaluatorFailed, true);
+    assert.equal(r.met, false);
+  });
+
+  test('accepts boolean false as a real no-progress judgment', () => {
+    const r = parseGoalEvaluation(
+      '{"met":false,"impossible":false,"progress":false,"waiting":false}',
+    );
+    assert.equal(r.evaluatorFailed, false);
+    assert.equal(r.met, false);
+    assert.equal(r.impossible, false);
+    assert.equal(r.progress, false);
+    assert.equal(r.waiting, false);
+  });
+
   test('unparseable output → neutral evaluator failure (not real no-progress)', () => {
     const r = parseGoalEvaluation('I cannot determine this');
     assert.equal(r.met, false);

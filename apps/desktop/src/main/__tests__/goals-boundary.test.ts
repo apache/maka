@@ -24,6 +24,7 @@ import { describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 const desktopRoot = resolve(fileURLToPath(new URL('../../../', import.meta.url)));
+const repoRoot = resolve(desktopRoot, '..', '..');
 const featureRoot = join(desktopRoot, 'src', 'renderer', 'features', 'goals');
 
 function sourceFiles(root: string): string[] {
@@ -56,7 +57,8 @@ describe('Goals feature boundary', () => {
   });
 
   it('is consumed outside the feature only through public entries', () => {
-    const allowed = /\/features\/goals\/(?:index|testing)(?:\.js)?$/;
+    const productionEntry = /\/features\/goals\/index(?:\.js)?$/;
+    const testingEntry = /\/features\/goals\/testing(?:\.js)?$/;
     const violations: string[] = [];
     for (const root of [join(desktopRoot, 'src'), join(desktopRoot, 'stories')]) {
       for (const path of sourceFiles(root)) {
@@ -68,7 +70,13 @@ describe('Goals feature boundary', () => {
           const explicitEntry = normalized.endsWith('/features/goals')
             ? `${normalized}/index`
             : normalized;
-          if (!allowed.test(explicitEntry)) {
+          const consumer = relative(desktopRoot, path).replace(/\\/g, '/');
+          const testConsumer =
+            consumer.includes('/__tests__/') || consumer.startsWith('stories/');
+          if (
+            !productionEntry.test(explicitEntry) &&
+            !(testConsumer && testingEntry.test(explicitEntry))
+          ) {
             violations.push(`${relative(desktopRoot, path)}: ${imported}`);
           }
         }
@@ -81,9 +89,144 @@ describe('Goals feature boundary', () => {
     const productionEntry = readFileSync(join(featureRoot, 'index.ts'), 'utf8');
     assert.equal(productionEntry.includes('createFakeGoalServices'), false);
     assert.equal(productionEntry.includes("from './testing"), false);
+    assert.equal(productionEntry.includes('useGoalController'), false);
   });
 
-  it('keeps Goal state, controls, and dialog ownership out of AppShell', () => {
+  it('keeps the controller owned by GoalProvider and out of renderer roots', () => {
+    const controllerOwner = join(featureRoot, 'ui', 'goal-provider.tsx');
+    const consumers: string[] = [];
+    for (const path of sourceFiles(join(desktopRoot, 'src', 'renderer'))) {
+      if (!/\.tsx?$/.test(path) || path.endsWith('use-goal-controller.ts')) continue;
+      const source = readFileSync(path, 'utf8');
+      if (/\buseGoalController\s*\(/.test(source)) {
+        consumers.push(relative(desktopRoot, path));
+      }
+    }
+    assert.deepEqual(consumers, [relative(desktopRoot, controllerOwner)]);
+  });
+
+  it('keeps the controller module behind GoalProvider and the testing entry', () => {
+    const importers: string[] = [];
+    for (const path of sourceFiles(featureRoot)) {
+      if (!/\.tsx?$/.test(path)) continue;
+      const source = readFileSync(path, 'utf8');
+      for (const match of source.matchAll(/from\s+['"]([^'"]+)['"]/g)) {
+        if (match[1]?.includes('controller/use-goal-controller')) {
+          importers.push(relative(desktopRoot, path));
+        }
+      }
+    }
+    assert.deepEqual(importers.sort(), [
+      'src/renderer/features/goals/testing.ts',
+      'src/renderer/features/goals/ui/goal-provider.tsx',
+    ]);
+  });
+
+  it('binds separate projection contexts at the authoritative UI readers', () => {
+    const provider = readFileSync(
+      join(featureRoot, 'ui', 'goal-provider.tsx'),
+      'utf8',
+    );
+    for (const required of [
+      'ChatViewGoalProjectionProvider,',
+      'ComposerGoalProjectionProvider,',
+      '<ComposerGoalProjectionProvider value={composer}>',
+      '<ChatViewGoalProjectionProvider value={indicator}>',
+    ]) {
+      assert.equal(provider.includes(required), true, required);
+    }
+    assert.equal(provider.includes('cloneElement'), false);
+
+    const composer = readFileSync(
+      join(desktopRoot, 'src', 'renderer', 'chat-composer-region.tsx'),
+      'utf8',
+    );
+    const messageSurface = readFileSync(
+      join(desktopRoot, 'src', 'renderer', 'chat-message-surface.tsx'),
+      'utf8',
+    );
+    const uiComposer = readFileSync(
+      join(repoRoot, 'packages', 'ui', 'src', 'composer.tsx'),
+      'utf8',
+    );
+    const uiChatView = readFileSync(
+      join(repoRoot, 'packages', 'ui', 'src', 'chat-view.tsx'),
+      'utf8',
+    );
+    const uiGoalProjection = readFileSync(
+      join(repoRoot, 'packages', 'ui', 'src', 'goal-projection-context.ts'),
+      'utf8',
+    );
+    for (const [source, required] of [
+      [composer, 'ComposerGoalProjectionConsumer,'],
+      [composer, '<ComposerGoalProjectionConsumer>'],
+      [composer, 'goalActive={goalProjection.goalActive}'],
+      [composer, 'onSetGoal={goalProjection.onSetGoal}'],
+      [messageSurface, 'ChatViewGoalProjectionConsumer,'],
+      [messageSurface, '<ChatViewGoalProjectionConsumer>'],
+      [messageSurface, 'goalIndicator={goalProjection.goalIndicator}'],
+      [uiComposer, 'export interface ComposerGoalProps {'],
+      [uiComposer, '} & ComposerGoalProps'],
+      [uiChatView, 'export interface ChatViewGoalIndicatorProps {'],
+      [uiChatView, '} & ChatViewGoalIndicatorProps)'],
+      [uiGoalProjection, 'export interface ComposerGoalProjection {'],
+      [uiGoalProjection, "ComposerGoalProps['goalActive']"],
+      [uiGoalProjection, "ComposerGoalProps['onSetGoal']"],
+      [uiGoalProjection, 'export interface ChatViewGoalProjection {'],
+      [uiGoalProjection, "ChatViewGoalIndicatorProps['goalIndicator']"],
+      [uiGoalProjection, 'export const ComposerGoalProjectionConsumer ='],
+      [uiGoalProjection, 'export const ChatViewGoalProjectionConsumer ='],
+    ] as const) {
+      assert.equal(source.includes(required), true, required);
+    }
+    assert.equal(composer.includes("from './features/goals"), false);
+    assert.equal(messageSurface.includes("from './features/goals"), false);
+    assert.equal(composer.includes('useComposerGoalProjection'), false);
+    assert.equal(messageSurface.includes('useChatViewGoalProjection'), false);
+    assert.equal(uiComposer.includes('goal-projection-context'), false);
+    assert.equal(uiChatView.includes('goal-projection-context'), false);
+  });
+
+  it('keeps Goal projection consumers exclusive to the authorized renderer leaves', () => {
+    const rendererRoot = join(desktopRoot, 'src', 'renderer');
+    const productionSources = sourceFiles(rendererRoot).filter((path) => {
+      const name = relative(desktopRoot, path).replace(/\\/g, '/');
+      return /\.tsx?$/.test(path) && !name.includes('/__tests__/');
+    });
+    const importersOf = (name: string) =>
+      productionSources
+        .filter((path) => readFileSync(path, 'utf8').includes(name))
+        .map((path) => relative(desktopRoot, path).replace(/\\/g, '/'))
+        .sort();
+
+    assert.deepEqual(importersOf('ComposerGoalProjectionConsumer'), [
+      'src/renderer/chat-composer-region.tsx',
+    ]);
+    assert.deepEqual(importersOf('ChatViewGoalProjectionConsumer'), [
+      'src/renderer/chat-message-surface.tsx',
+    ]);
+    assert.deepEqual(importersOf('useComposerGoalProjection'), []);
+    assert.deepEqual(importersOf('useChatViewGoalProjection'), []);
+
+    const composer = readFileSync(
+      join(rendererRoot, 'chat-composer-region.tsx'),
+      'utf8',
+    );
+    const messageSurface = readFileSync(
+      join(rendererRoot, 'chat-message-surface.tsx'),
+      'utf8',
+    );
+    for (const omitted of ["| 'goalActive'", "| 'onSetGoal'"]) {
+      assert.equal(composer.includes(omitted), true, omitted);
+    }
+    assert.equal(
+      messageSurface.includes("| 'goalIndicator'"),
+      true,
+      'goalIndicator',
+    );
+  });
+
+  it('keeps Goal state, controls, and dialog reads below AppShell', () => {
     const appShell = readFileSync(
       join(desktopRoot, 'src', 'renderer', 'app-shell.tsx'),
       'utf8',
@@ -94,10 +237,28 @@ describe('Goals feature boundary', () => {
       'pendingGoalControlSessionIdsRef',
       'goalDialogSessionId',
       'setGoalDialogSessionId',
+      'useGoalController',
+      'goals.commands',
+      'goals.selectors',
+      'goals.host',
+      '<GoalHost model=',
+      'onSetGoal=',
+      'goalActive=',
+      'goalIndicator=',
+      '<Goals.GoalComposerBoundary',
+      '<Goals.GoalIndicatorBoundary',
+      'ComposerGoalProjectionConsumer',
+      'ChatViewGoalProjectionConsumer',
+      'useComposerGoalProjection',
+      'useChatViewGoalProjection',
     ]) {
       assert.equal(appShell.includes(forbidden), false, forbidden);
     }
-    assert.equal(appShell.includes('const goals = useGoalController({'), true);
-    assert.equal(appShell.includes('<GoalHost model={goals.host} />'), true);
+    for (const required of [
+      '<Goals.GoalProvider',
+      '<Goals.GoalHost />',
+    ]) {
+      assert.equal(appShell.includes(required), true, required);
+    }
   });
 });

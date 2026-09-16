@@ -17,10 +17,15 @@
  * under the License.
  */
 
-export { useModuleHubController } from './controller/use-module-hub-controller.js';
 export { ModuleHubServicesProvider } from './services-context.js';
 export type {
   ModuleHubClipboardService,
   ModuleHubServices,
 } from './ports.js';
-export { ModuleHubHost } from './ui/module-hub-host.js';
+export { ModuleHubHost, ModuleHubHostView } from './ui/module-hub-host.js';
+export {
+  createModuleHubCommandPort,
+  ModuleHubProvider,
+  ModuleHubScheduledTasksBoundary,
+  ModuleHubSkillCatalogRevisionBoundary,
+} from './ui/module-hub-provider.js';

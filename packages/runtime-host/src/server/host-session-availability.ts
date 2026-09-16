@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { RootExecutionDescriptor } from '@maka/core/agent-run';
+import type { RootExecutionDescriptor } from '@maka/core/runtime-invocation';
 import {
   isWorkHubCoordinationSession,
   isWorkHubCoordinationSessionId,
@@ -35,24 +35,51 @@ export const WORKHUB_COORDINATION_EXECUTION_UNAVAILABLE_REASON =
   'WorkHub Coordination Session execution requires WorkHub authority';
 export const WORKHUB_COORDINATION_TARGET_UNAVAILABLE_REASON =
   'WorkHub Coordination execution requires the reserved Coordination Session';
+export const LEGACY_CONNECTION_IDENTITY_EXECUTION_UNAVAILABLE_REASON =
+  'This Session requires an explicit account selection before it can run.';
+export const PLUGIN_EXECUTOR_CONTINUATION_UNAVAILABLE_REASON =
+  'Plugin executor Sessions cannot resume without provider-owned durable continuation support.';
+export const PLUGIN_EXECUTOR_COPY_UNAVAILABLE_REASON =
+  'Plugin executor Sessions cannot be copied without provider-owned conversation cloning';
+
+export function runtimeHostConversationCopyUnavailableReason(
+  header: Pick<SessionHeader, 'backend'>,
+): string | undefined {
+  return header.backend === 'plugin-executor' ? PLUGIN_EXECUTOR_COPY_UNAVAILABLE_REASON : undefined;
+}
 
 export function runtimeHostExternalTurnUnavailableReason(
   header: Pick<
     SessionHeader,
-    'id' | 'role' | 'collaborationMode' | 'subagentWorkspace' | 'transcriptLedgerVersion'
+    | 'id'
+    | 'role'
+    | 'collaborationMode'
+    | 'subagentWorkspace'
+    | 'transcriptLedgerVersion'
+    | 'llmConnectionId'
+    | 'backend'
   >,
 ): string | undefined {
   return runtimeHostExecutionUnavailableReason(header, { kind: 'external_message' });
 }
 
 export function runtimeHostSafeBoundaryContinuationUnavailableReason(
-  header: Pick<SessionHeader, 'id' | 'role' | 'subagentParent' | 'transcriptLedgerVersion'>,
+  header: Pick<
+    SessionHeader,
+    'id' | 'role' | 'subagentParent' | 'transcriptLedgerVersion' | 'llmConnectionId' | 'backend'
+  >,
 ): string | undefined {
   return (
     (isWorkHubCoordinationSessionTarget(header)
       ? WORKHUB_COORDINATION_EXECUTION_UNAVAILABLE_REASON
       : undefined) ??
     (header.transcriptLedgerVersion === 0 ? IMPORT_STAGING_UNAVAILABLE_REASON : undefined) ??
+    (header.llmConnectionId === undefined && header.backend === 'ai-sdk'
+      ? LEGACY_CONNECTION_IDENTITY_EXECUTION_UNAVAILABLE_REASON
+      : undefined) ??
+    (header.backend === 'plugin-executor'
+      ? PLUGIN_EXECUTOR_CONTINUATION_UNAVAILABLE_REASON
+      : undefined) ??
     (header.subagentParent ? CHILD_CONTINUATION_UNAVAILABLE_REASON : undefined)
   );
 }
@@ -60,7 +87,13 @@ export function runtimeHostSafeBoundaryContinuationUnavailableReason(
 export function runtimeHostExecutionUnavailableReason(
   header: Pick<
     SessionHeader,
-    'id' | 'role' | 'collaborationMode' | 'subagentWorkspace' | 'transcriptLedgerVersion'
+    | 'id'
+    | 'role'
+    | 'collaborationMode'
+    | 'subagentWorkspace'
+    | 'transcriptLedgerVersion'
+    | 'llmConnectionId'
+    | 'backend'
   > & {
     readonly toolProfile?: SessionToolProfile;
     readonly permissionMode?: SessionHeader['permissionMode'];
@@ -78,16 +111,22 @@ export function runtimeHostExecutionUnavailableReason(
     (execution.kind === 'workhub_coordination' && !coordinationIdentity
       ? WORKHUB_COORDINATION_TARGET_UNAVAILABLE_REASON
       : undefined) ??
-    (execution.kind === 'workhub_coordination' && header.toolProfile !== 'workhub-coordination-v1'
+    (execution.kind === 'workhub_coordination' &&
+    header.toolProfile !== 'workhub-coordination-v1' &&
+    header.toolProfile !== 'workhub-coordination-v2'
       ? WORKHUB_COORDINATION_EXECUTION_UNAVAILABLE_REASON
       : undefined) ??
     (execution.kind === 'workhub_coordination' &&
-    (header.permissionMode !== 'explore' ||
+    (header.permissionMode !==
+      (header.toolProfile === 'workhub-coordination-v2' ? 'bypass' : 'explore') ||
       (header.collaborationMode ?? 'agent') !== 'agent' ||
       (header.orchestrationMode ?? 'default') !== 'default')
       ? WORKHUB_COORDINATION_EXECUTION_UNAVAILABLE_REASON
       : undefined) ??
     (header.transcriptLedgerVersion === 0 ? IMPORT_STAGING_UNAVAILABLE_REASON : undefined) ??
+    (header.llmConnectionId === undefined && header.backend === 'ai-sdk'
+      ? LEGACY_CONNECTION_IDENTITY_EXECUTION_UNAVAILABLE_REASON
+      : undefined) ??
     (header.collaborationMode === 'plan' &&
     execution.kind !== 'external_message' &&
     execution.kind !== 'regenerate' &&

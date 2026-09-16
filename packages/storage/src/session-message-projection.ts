@@ -18,6 +18,7 @@
  */
 
 import type { StoredMessage, UserMessage } from '@maka/core/session';
+import type { SessionTurnContribution } from './session-store.js';
 
 export function projectSessionCatalogMessages(messages: readonly StoredMessage[]): {
   readonly lastMessageAt?: number;
@@ -40,7 +41,13 @@ export function catalogPreviewForUserMessage(message: UserMessage): string | und
 export function latestVisibleMessageAt(messages: readonly StoredMessage[]): number | undefined {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index]!;
-    if (message.type === 'user' || message.type === 'assistant') return message.ts;
+    if (
+      message.type === 'user' ||
+      message.type === 'assistant' ||
+      message.type === 'workhub_coordination'
+    ) {
+      return message.ts;
+    }
   }
   return undefined;
 }
@@ -64,6 +71,10 @@ export function lastMessagePreviewForMessages(
       const text = normalizePreviewText(message.text);
       if (text) return truncatePreview(text);
     }
+    if (message.type === 'workhub_coordination') {
+      const text = 'userText' in message ? normalizePreviewText(message.userText) : '';
+      if (text) return truncatePreview(text);
+    }
   }
   return undefined;
 }
@@ -73,7 +84,33 @@ function normalizePreviewText(text: string): string {
 }
 
 function truncatePreview(text: string, maxLength = 96): string {
-  const chars = Array.from(text);
-  if (chars.length <= maxLength) return text;
-  return `${chars.slice(0, maxLength - 1).join('')}…`;
+  const chars: string[] = [];
+  for (const point of text) {
+    if (chars.length === maxLength) {
+      return `${chars.slice(0, maxLength - 1).join('')}…`;
+    }
+    chars.push(point);
+  }
+  return text;
+}
+
+/** One Turn's summary, folded message by message in transcript order. */
+export function foldTurnContribution(
+  current: SessionTurnContribution | undefined,
+  turnId: string,
+  sequence: number,
+  message: StoredMessage,
+): SessionTurnContribution {
+  const contribution = current ?? {
+    turnId,
+    firstSequence: sequence,
+    latestState: null,
+    userPromptPreview: null,
+  };
+  const userPrompt = message.type === 'user' ? (message.displayText ?? message.text).trim() : '';
+  return {
+    ...contribution,
+    latestState: message.type === 'turn_state' ? { sequence, message } : contribution.latestState,
+    userPromptPreview: contribution.userPromptPreview ?? (userPrompt || null),
+  };
 }

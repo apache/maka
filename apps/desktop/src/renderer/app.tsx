@@ -20,7 +20,7 @@
 import { StrictMode, useEffect } from 'react';
 import { Theme } from '@astryxdesign/core/theme';
 import { makaTheme } from './astryx-theme/maka';
-import { AppShell } from './app-shell';
+import { AppShell } from './composition/legacy-desktop-region';
 import { useAstryxThemeMode } from './astryx-theme-mode';
 import type { OnboardingSnapshot } from '../preload/bridge-contract.js';
 

@@ -22,9 +22,14 @@ import { describe, it } from 'node:test';
 import {
   ASSISTANT_MAX_DELTA_CHARS,
   ASSISTANT_MAX_TOTAL_CHARS,
-  applyAssistantComplete,
-  applyAssistantDelta,
+  applyAssistantComplete as applyAssistantCompleteWithLocale,
+  applyAssistantDelta as applyAssistantDeltaWithLocale,
 } from '@maka/ui/assistant-stream';
+// Tests exercise stream mechanics, not copy; pin zh so markers stay verbatim.
+const applyAssistantDelta = (prev: string, delta: string, options?: Partial<Parameters<typeof applyAssistantDeltaWithLocale>[2]>) =>
+  applyAssistantDeltaWithLocale(prev, delta, { locale: 'zh-CN', ...options });
+const applyAssistantComplete = (text: string, options?: Partial<Parameters<typeof applyAssistantCompleteWithLocale>[1]>) =>
+  applyAssistantCompleteWithLocale(text, { locale: 'zh-CN', ...options });
 
 function visibleDeltaResult(result: ReturnType<typeof applyAssistantDelta>) {
   return {

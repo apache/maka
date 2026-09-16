@@ -145,6 +145,7 @@ export type {
 
 // ── From skills-context ────────────────────────────────────────────────────
 export {
+  buildHostCapabilitiesFromBinding,
   gateSkillsByHostCapabilities,
   resolveSkillsPromptCharBudget,
   selectSkillsForContext,

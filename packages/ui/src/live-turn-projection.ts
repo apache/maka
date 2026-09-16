@@ -37,6 +37,20 @@ import { applyToolOutputChunk } from './tool-output-stream.js';
 
 type LiveTurnContentEvent = Extract<SessionEvent, { type: 'thinking_delta' | 'thinking_complete' | 'text_delta' | 'text_complete' | 'tool_start' | 'tool_output_delta' | 'tool_progress' | 'tool_result_preview' | 'tool_result' }>;
 
+/**
+ * A provider retry event plus the CLIENT-local time it entered this
+ * projection. Counting down from `receivedAtMs` keeps the whole countdown in
+ * one clock domain — the event's `ts` is stamped on the (possibly remote)
+ * Runtime Host clock, so subtracting it from a client clock would skew the
+ * display by the clock offset between the two machines. The countdown length
+ * itself comes from the skew-free `remainingMs` duration when the emitter
+ * provided one.
+ */
+export interface LiveProviderRetry {
+  event: ProviderRetryEvent;
+  receivedAtMs: number;
+}
+
 export interface LiveThinkingProjection {
   text: string;
   truncated: boolean;
@@ -60,6 +74,7 @@ export interface LiveTurnStepProjection {
 export type LiveTurnStepContentKind = 'thinking' | 'text' | 'tools';
 
 export interface LiveTextProjection {
+  interrupted?: true;
   text: string;
   truncated: boolean;
   complete: boolean;
@@ -77,13 +92,22 @@ export interface LiveSteeringProjection {
 
 export interface LiveTurnProjection {
   turnId: string;
-  phase: 'waiting' | 'streamed';
   terminal?: true;
+  /**
+   * Set when this live Turn is a host-owned explicit context-compaction run.
+   * A `context_compact` Turn emits no assistant content, so `overlayLiveTurn`
+   * renders a single "compacting" system row from this flag while the Turn is in
+   * flight; the row disappears when the Turn settles (no durable turn state).
+   */
+  rootExecutionKind?: 'context_compact';
+  /** Event ts of the first authority word about this Turn; a stable ts for the
+   *  synthesized "compacting" row so reprojection does not churn identity. */
+  startedAt?: number;
   /** Steering acknowledged after the current content and awaiting its next provider step. */
   pendingSteering?: LiveSteeringProjection[];
   /**
    * Set by `armLiveTurn` and cleared by the first word the authority says about
-   * this turn (`confirmLiveTurn`, or any event carrying the same turnId).
+   * this turn (any event carrying the same turnId).
    *
    * A client that just sent cannot tell "the authority has not reached my turn
    * yet" from "my turn is over" by reading session status: it reads the same
@@ -93,7 +117,7 @@ export interface LiveTurnProjection {
    * settling it. Dropped for good once the answer arrives.
    */
   unconfirmed?: true;
-  providerRetry?: ProviderRetryEvent;
+  providerRetry?: LiveProviderRetry;
   steps: LiveTurnStepProjection[];
 }
 
@@ -152,7 +176,7 @@ function appendContentKind(
 }
 
 export function armLiveTurn(turnId: string): LiveTurnProjection {
-  return { turnId, phase: 'waiting', steps: [], unconfirmed: true };
+  return { turnId, steps: [], unconfirmed: true };
 }
 
 /** Drop the `unconfirmed` claim; identity-preserving when there is none. */
@@ -162,38 +186,25 @@ function confirmed(projection: LiveTurnProjection): LiveTurnProjection {
   return rest;
 }
 
-/**
- * The authority answered about `turnId`: clear the arm's pending claim so a
- * later snapshot may retire it. A different turn's answer says nothing about
- * this one, so the projection is returned unchanged (same reference).
- */
-export function confirmLiveTurn(
-  current: LiveTurnProjection | undefined,
-  turnId: string,
-): LiveTurnProjection | undefined {
-  if (!current || current.turnId !== turnId) return current;
-  return confirmed(current);
-}
-
 export function applyLiveTurnEvent(
   current: LiveTurnProjection | undefined,
   event: LiveTurnContentEvent,
-  locale?: UiLocale,
+  locale: UiLocale,
 ): LiveTurnProjection;
 export function applyLiveTurnEvent(
   current: LiveTurnProjection | undefined,
   event: SessionEvent,
-  locale?: UiLocale,
+  locale: UiLocale,
 ): LiveTurnProjection | undefined;
 export function applyLiveTurnEvent(
   current: LiveTurnProjection | undefined,
   event: SessionEvent,
-  locale: UiLocale = 'zh',
+  locale: UiLocale,
 ): LiveTurnProjection | undefined {
   if (event.type === 'steering_message') {
     const prior = current?.turnId === event.turnId
       ? current
-      : { turnId: event.turnId, phase: 'waiting' as const, steps: [] };
+      : { turnId: event.turnId, steps: [] };
     if (liveSteeringMessages(prior).some((message) => message.id === event.messageId)) {
       return confirmed(prior);
     }
@@ -212,8 +223,8 @@ export function applyLiveTurnEvent(
   if (event.type === 'provider_retry') {
     const prior = current?.turnId === event.turnId
       ? current
-      : { turnId: event.turnId, phase: 'waiting' as const, steps: [] };
-    return { ...confirmed(prior), providerRetry: event };
+      : { turnId: event.turnId, steps: [] };
+    return { ...confirmed(prior), providerRetry: { event, receivedAtMs: Date.now() } };
   }
   if (event.type === 'error' || event.type === 'abort') {
     if (!current || current.turnId !== event.turnId) return current;
@@ -234,6 +245,13 @@ export function applyLiveTurnEvent(
       steps: terminalizeLiveSteps(current.steps),
     };
   }
+  if (event.type === 'context_compaction_started') {
+    const prior =
+      current?.turnId === event.turnId
+        ? current
+        : { turnId: event.turnId, steps: [] };
+    return { ...confirmed(prior), rootExecutionKind: 'context_compact', startedAt: event.ts };
+  }
   if (
     event.type !== 'thinking_delta'
     && event.type !== 'thinking_complete'
@@ -249,7 +267,7 @@ export function applyLiveTurnEvent(
   }
   const prior = current?.turnId === event.turnId
     ? current
-    : { turnId: event.turnId, phase: 'streamed' as const, steps: [] };
+    : { turnId: event.turnId, steps: [] };
   const { providerRetry: _providerRetry, ...priorWithoutRetry } = confirmed(prior);
   const messageEvent = event.type === 'thinking_delta'
     || event.type === 'thinking_complete'
@@ -344,6 +362,7 @@ export function applyLiveTurnEvent(
     nextStep = {
       ...step,
       text: {
+        ...(event.interrupted ? { interrupted: true } : {}),
         text: applied.text,
         truncated: applied.truncated,
         complete: true,
@@ -359,6 +378,7 @@ export function applyLiveTurnEvent(
       ...(event.activityKind !== undefined ? { activityKind: event.activityKind } : {}),
       ...(event.displayName !== undefined ? { displayName: event.displayName } : {}),
       ...(event.intent !== undefined ? { intent: event.intent } : {}),
+      ...(event.argsPreview !== undefined ? { argsPreview: event.argsPreview } : {}),
       ...projectToolActivityIdentity(event),
       ...(event.stepId !== undefined ? { stepId: event.stepId } : {}),
       status: 'running',
@@ -498,7 +518,6 @@ export function applyLiveTurnEvent(
   const { pendingSteering: _pendingSteering, ...withoutPendingSteering } = priorWithoutRetry;
   return {
     ...(claimsPendingSteering ? withoutPendingSteering : priorWithoutRetry),
-    phase: 'streamed',
     steps,
   };
 }
@@ -652,8 +671,16 @@ export function reconcileTerminalLiveTurn(
       return withoutSteering;
     });
   }
+  if (
+    steps.length === 0
+    && projection.terminal
+    && (
+      projection.rootExecutionKind === 'context_compact'
+      || transcriptReachedTerminal
+      || steps.length !== projection.steps.length
+    )
+  ) return undefined;
   if (steps.length === projection.steps.length && !steeringSettled) return projection;
-  if (steps.length === 0 && projection.terminal) return undefined;
   if (!steeringSettled) return { ...projection, steps };
   const { pendingSteering: _pendingSteering, ...withoutSteering } = projection;
   return { ...withoutSteering, steps };

@@ -19,10 +19,10 @@
 
 import * as nodeCrypto from 'node:crypto';
 import type { Hash } from 'node:crypto';
-import { decodeAgentRunHeader, type AgentRunHeader } from './agent-run.js';
 import { encodeCanonicalRuntimeEvent } from './canonical-runtime-event.js';
 import { isRecord } from './record-schema.js';
-import type { RuntimeEvent } from './runtime-event.js';
+import { decodeRuntimeInvocationOpened, TOOL_BOUNDARY_PROTOCOL_V1 } from './runtime-event.js';
+import type { RuntimeEvent, RuntimeEventInvocationOpenedContent } from './runtime-event.js';
 import { stableJsonStringify } from './tool-args-identity.js';
 
 export type RuntimeBoundaryDigest = `sha256:${string}`;
@@ -53,6 +53,16 @@ export interface ImmutableRuntimePrefixV1 {
   events: readonly RuntimeEvent[];
 }
 
+/** A one-pass proof of an immutable prefix that retains only its endpoints. */
+export interface ImmutableRuntimePrefixProofV1 {
+  protocol: 'immutable_runtime_prefix_proof_v1';
+  identity: RuntimePrefixIdentityV1;
+  position: RuntimePrefixPositionV1;
+  prefixDigest: RuntimeBoundaryDigest;
+  firstEvent: RuntimeEvent;
+  lastEvent: RuntimeEvent;
+}
+
 export interface RuntimePrefixSegmentV1 {
   protocol: 'runtime_prefix_segment_v1';
   identity: RuntimePrefixIdentityV1;
@@ -66,12 +76,21 @@ export interface RuntimeBoundaryCursorV1 {
   manifestDigest: RuntimeBoundaryDigest;
 }
 
+/** V2 permits consecutive physical attempts of the same logical Turn.
+ * Segment digests identify the facts; the authority must authenticate every edge.
+ */
+export interface RuntimeBoundaryCursorV2 extends Omit<RuntimeBoundaryCursorV1, 'protocol'> {
+  protocol: 'runtime_boundary_cursor_v2';
+}
+
+export type RuntimeBoundaryCursor = RuntimeBoundaryCursorV1 | RuntimeBoundaryCursorV2;
+
 export interface ContinuationClaimV1 {
   protocol: 'continuation_claim_v1';
   claimId: string;
   boundaryDigest: RuntimeBoundaryDigest;
-  boundary: RuntimeBoundaryCursorV1;
-  providerProjectionVersion: 1;
+  boundary: RuntimeBoundaryCursor;
+  providerProjectionVersion: 1 | 2;
   providerReplayDigest: RuntimeBoundaryDigest;
   target: {
     sessionId: string;
@@ -79,46 +98,64 @@ export interface ContinuationClaimV1 {
     runId: string;
     turnId: string;
   };
-  /** Exact pre-provider target Run header used by both normal admission and crash repair. */
-  targetRunHeader: AgentRunHeader;
+  /**
+   * The opening fact the target invocation's first event must carry.
+   *
+   * This is what the claim is actually for: a continuation's start event is
+   * event 1 of its target, so it is also that invocation's opening fact, and the
+   * claim has to say in advance exactly what that fact will be. Everything else
+   * about the target is fixed by the claim's own fields, so the pre-provider Run
+   * header is a projection of this rather than a second record of it.
+   */
+  targetOpening: RuntimeEventInvocationOpenedContent;
   claimedAt: number;
 }
 
 export function buildImmutableRuntimePrefix(
   identity: RuntimePrefixIdentityV1,
-  rows: readonly RuntimePrefixRowV1[],
+  rows: Iterable<RuntimePrefixRowV1>,
 ): ImmutableRuntimePrefixV1 {
-  const canonicalRows = canonicalizePrefixRows(identity, rows);
-  const last = canonicalRows.at(-1);
-  if (!last) throw new Error('immutable RuntimeEvent prefix is empty');
+  const events: RuntimeEvent[] = [];
+  const proof = foldImmutableRuntimePrefix(identity, rows, (event) => events.push(event));
   return {
     protocol: 'immutable_runtime_prefix_v1',
-    identity: { ...identity },
-    position: {
-      lastEventSeq: last.eventSeq,
-      eventCount: canonicalRows.length,
-      lastEventId: last.event.id,
-    },
-    prefixDigest: digestCanonicalRuntimePrefix(identity, canonicalRows),
-    events: canonicalRows.map((row) => row.event),
+    identity: proof.identity,
+    position: proof.position,
+    prefixDigest: proof.prefixDigest,
+    events,
   };
+}
+
+export function buildImmutableRuntimePrefixProof(
+  identity: RuntimePrefixIdentityV1,
+  rows: Iterable<RuntimePrefixRowV1>,
+): ImmutableRuntimePrefixProofV1 {
+  return foldImmutableRuntimePrefix(identity, rows);
 }
 
 export function digestRuntimePrefix(
   identity: RuntimePrefixIdentityV1,
-  rows: readonly RuntimePrefixRowV1[],
+  rows: Iterable<RuntimePrefixRowV1>,
 ): RuntimeBoundaryDigest {
-  return digestCanonicalRuntimePrefix(identity, canonicalizePrefixRows(identity, rows));
+  return foldImmutableRuntimePrefix(identity, rows).prefixDigest;
 }
 
-export function runtimePrefixSegment(prefix: ImmutableRuntimePrefixV1): RuntimePrefixSegmentV1 {
-  if (prefix.protocol !== 'immutable_runtime_prefix_v1') {
+export function runtimePrefixSegment(
+  prefix: ImmutableRuntimePrefixV1 | ImmutableRuntimePrefixProofV1,
+): RuntimePrefixSegmentV1 {
+  if (
+    prefix.protocol !== 'immutable_runtime_prefix_v1' &&
+    prefix.protocol !== 'immutable_runtime_prefix_proof_v1'
+  ) {
     throw new Error('Invalid immutable RuntimeEvent prefix protocol');
   }
-  const rebuilt = buildImmutableRuntimePrefix(
-    prefix.identity,
-    prefix.events.map((event, index) => ({ eventSeq: index + 1, event })),
-  );
+  const rebuilt =
+    prefix.protocol === 'immutable_runtime_prefix_v1'
+      ? buildImmutableRuntimePrefix(
+          prefix.identity,
+          prefix.events.map((event, index) => ({ eventSeq: index + 1, event })),
+        )
+      : validateImmutableRuntimePrefixProof(prefix);
   if (stableJsonStringify(rebuilt.position) !== stableJsonStringify(prefix.position)) {
     throw new Error('Immutable RuntimeEvent prefix position mismatch');
   }
@@ -135,7 +172,7 @@ export function runtimePrefixSegment(prefix: ImmutableRuntimePrefixV1): RuntimeP
 
 export function createRuntimeBoundaryCursor(
   segments: readonly [RuntimePrefixSegmentV1, ...RuntimePrefixSegmentV1[]],
-): RuntimeBoundaryCursorV1 {
+): RuntimeBoundaryCursor {
   const canonicalSegments = segments.map(decodeRuntimePrefixSegment) as [
     RuntimePrefixSegmentV1,
     ...RuntimePrefixSegmentV1[],
@@ -144,6 +181,8 @@ export function createRuntimeBoundaryCursor(
   const invocationIds = new Set<string>();
   const runIds = new Set<string>();
   const turnIds = new Set<string>();
+  let previousTurnId: string | undefined;
+  let protocol: RuntimeBoundaryCursor['protocol'] = 'runtime_boundary_cursor_v1';
   for (const segment of canonicalSegments) {
     if (segment.identity.sessionId !== sessionId) {
       throw new Error('Runtime boundary segments must belong to the same session');
@@ -157,27 +196,40 @@ export function createRuntimeBoundaryCursor(
     }
     invocationIds.add(segment.identity.invocationId);
     if (turnIds.has(segment.identity.turnId)) {
-      throw new Error('Runtime boundary lineage contains a duplicate turnId');
+      if (previousTurnId !== segment.identity.turnId) {
+        throw new Error('Runtime boundary lineage returns to a previous turnId');
+      }
+      protocol = 'runtime_boundary_cursor_v2';
     }
     turnIds.add(segment.identity.turnId);
+    previousTurnId = segment.identity.turnId;
   }
   return {
-    protocol: 'runtime_boundary_cursor_v1',
+    protocol,
     segments: canonicalSegments,
-    manifestDigest: digestRuntimeBoundaryManifest(canonicalSegments),
+    manifestDigest: digestRuntimeBoundaryManifest(canonicalSegments, protocol),
   };
 }
 
 export function digestRuntimeBoundaryManifest(
   segments: readonly [RuntimePrefixSegmentV1, ...RuntimePrefixSegmentV1[]],
+  protocol: RuntimeBoundaryCursor['protocol'] = 'runtime_boundary_cursor_v1',
 ): RuntimeBoundaryDigest {
   const canonicalSegments = segments.map(decodeRuntimePrefixSegment);
   const json = stableJsonStringify({
-    protocol: 'runtime_boundary_cursor_v1',
+    protocol,
     segments: canonicalSegments,
   });
   const hash = nodeCrypto.createHash('sha256');
-  updateLengthPrefixed(hash, Buffer.from('maka.runtime-boundary-manifest.v1', 'utf8'));
+  updateLengthPrefixed(
+    hash,
+    Buffer.from(
+      protocol === 'runtime_boundary_cursor_v1'
+        ? 'maka.runtime-boundary-manifest.v1'
+        : 'maka.runtime-boundary-manifest.v2',
+      'utf8',
+    ),
+  );
   updateLengthPrefixed(hash, Buffer.from(json, 'utf8'));
   return `sha256:${hash.digest('hex')}`;
 }
@@ -198,11 +250,12 @@ export function decodeRuntimePrefixSegment(value: unknown): RuntimePrefixSegment
   };
 }
 
-export function decodeRuntimeBoundaryCursor(value: unknown): RuntimeBoundaryCursorV1 {
+export function decodeRuntimeBoundaryCursor(value: unknown): RuntimeBoundaryCursor {
   if (
     !isRecord(value) ||
     !hasExactKeys(value, ['protocol', 'segments', 'manifestDigest']) ||
-    value.protocol !== 'runtime_boundary_cursor_v1' ||
+    (value.protocol !== 'runtime_boundary_cursor_v1' &&
+      value.protocol !== 'runtime_boundary_cursor_v2') ||
     !Array.isArray(value.segments) ||
     value.segments.length === 0
   ) {
@@ -213,6 +266,8 @@ export function decodeRuntimeBoundaryCursor(value: unknown): RuntimeBoundaryCurs
     ...RuntimePrefixSegmentV1[],
   ];
   const cursor = createRuntimeBoundaryCursor(segments);
+  if (cursor.protocol !== value.protocol)
+    throw new Error('RuntimeEvent boundary cursor version mismatch');
   const manifestDigest = decodeBoundaryDigest(value.manifestDigest);
   if (cursor.manifestDigest !== manifestDigest) {
     throw new Error('RuntimeEvent boundary manifest digest mismatch');
@@ -231,7 +286,7 @@ export function decodeContinuationClaim(value: unknown): ContinuationClaimV1 {
       'providerProjectionVersion',
       'providerReplayDigest',
       'target',
-      'targetRunHeader',
+      'targetOpening',
       'claimedAt',
     ]) ||
     value.protocol !== 'continuation_claim_v1' ||
@@ -242,7 +297,7 @@ export function decodeContinuationClaim(value: unknown): ContinuationClaimV1 {
     !isNonEmptyString(value.target.invocationId) ||
     !isNonEmptyString(value.target.runId) ||
     !isNonEmptyString(value.target.turnId) ||
-    value.providerProjectionVersion !== 1 ||
+    (value.providerProjectionVersion !== 1 && value.providerProjectionVersion !== 2) ||
     !Number.isSafeInteger(value.claimedAt) ||
     (value.claimedAt as number) < 0
   ) {
@@ -267,42 +322,36 @@ export function decodeContinuationClaim(value: unknown): ContinuationClaimV1 {
     throw new Error('Continuation claim target invocationId reuses source identity');
   }
   const targetTurnId = value.target.turnId;
-  if (boundary.segments.some((segment) => segment.identity.turnId === targetTurnId)) {
+  const targetOpening = decodeRuntimeInvocationOpened(value.targetOpening);
+  const openSource = targetOpening.source;
+  if (openSource.kind === 'handoff') {
+    if (targetTurnId !== source.identity.turnId) {
+      throw new Error('Handoff claim must preserve the logical turnId');
+    }
+    const root = boundary.segments.find((segment) => segment.identity.turnId === targetTurnId);
+    if (root?.identity.runId !== openSource.rootRunId) {
+      throw new Error('Handoff claim logical root mismatch');
+    }
+  } else if (boundary.segments.some((segment) => segment.identity.turnId === targetTurnId)) {
     throw new Error('Continuation claim target turnId reuses source identity');
   }
-  const targetRunHeader = decodeAgentRunHeader(value.targetRunHeader);
-  const continuationSource = targetRunHeader.continuationSource;
   if (
-    targetRunHeader.runId !== targetRunId ||
-    targetRunHeader.invocationId !== targetInvocationId ||
-    targetRunHeader.sessionId !== value.target.sessionId ||
-    targetRunHeader.turnId !== targetTurnId ||
-    targetRunHeader.status !== 'created' ||
-    targetRunHeader.createdAt !== value.claimedAt ||
-    targetRunHeader.updatedAt !== value.claimedAt ||
-    targetRunHeader.completedAt !== undefined ||
-    targetRunHeader.failureClass !== undefined ||
-    targetRunHeader.failureMessage !== undefined ||
-    !continuationSource ||
-    !('protocol' in continuationSource) ||
-    continuationSource.protocol !== 'continuation_source_v2' ||
-    continuationSource.claimId !== value.claimId ||
-    continuationSource.boundaryDigest !== boundaryDigest ||
-    continuationSource.sourceInvocationId !== source.identity.invocationId ||
-    continuationSource.sourceRunId !== source.identity.runId ||
-    continuationSource.sourceTurnId !== source.identity.turnId ||
-    continuationSource.sourceRuntimeEventHighWater !== source.position.lastEventSeq ||
-    continuationSource.sourcePrefixDigest !== source.prefixDigest ||
-    continuationSource.replayManifestDigest !== boundary.manifestDigest
+    (openSource.kind !== 'continuation' && openSource.kind !== 'handoff') ||
+    openSource.claimId !== value.claimId ||
+    openSource.boundaryDigest !== boundaryDigest ||
+    openSource.sourceInvocationId !== source.identity.invocationId ||
+    openSource.sourceRunId !== source.identity.runId ||
+    openSource.sourceTurnId !== source.identity.turnId ||
+    openSource.sourceRuntimeEventHighWater !== source.position.lastEventSeq
   ) {
-    throw new Error('Continuation claim target Run header mismatch');
+    throw new Error('Continuation claim target opening mismatch');
   }
   return {
     protocol: 'continuation_claim_v1',
     claimId: value.claimId,
     boundaryDigest,
     boundary,
-    providerProjectionVersion: 1,
+    providerProjectionVersion: value.providerProjectionVersion,
     providerReplayDigest,
     target: {
       sessionId: value.target.sessionId,
@@ -310,19 +359,108 @@ export function decodeContinuationClaim(value: unknown): ContinuationClaimV1 {
       runId: value.target.runId,
       turnId: value.target.turnId,
     },
-    targetRunHeader,
+    targetOpening,
     claimedAt: value.claimedAt as number,
   };
 }
 
-function canonicalizePrefixRows(
+/**
+ * Is this the invocation the claim opened?
+ *
+ * The claim froze the target's opening, so the check is that the invocation
+ * still carries it, plus the identity the claim fixed. There is nothing else to
+ * compare: an invocation's lifecycle lives in its events, not in a record that
+ * a frozen copy could go stale against.
+ */
+export function invocationMatchesClaimTarget(
+  invocation: {
+    sessionId: string;
+    invocationId: string;
+    runId: string;
+    turnId: string;
+    opening: RuntimeEventInvocationOpenedContent;
+  },
+  claim: ContinuationClaimV1,
+): boolean {
+  return (
+    invocation.sessionId === claim.target.sessionId &&
+    invocation.invocationId === claim.target.invocationId &&
+    invocation.runId === claim.target.runId &&
+    invocation.turnId === claim.target.turnId &&
+    stableJsonStringify(invocation.opening) === stableJsonStringify(claim.targetOpening)
+  );
+}
+
+/**
+ * Does this event discharge the claim as its target's first event?
+ *
+ * One rule, one implementation. The store refuses a start that fails it and the
+ * runtime refuses to resume across one; when those were two copies of the same
+ * predicate, a fix to either left the other admitting what the other rejected.
+ */
+export function continuationStartEventMatchesClaim(
+  event: RuntimeEvent | undefined,
+  claim: ContinuationClaimV1,
+  /** Undefined means the claim has not recorded a start yet, so nothing matches. */
+  startKind: 'runtime_admission' | 'claim_repair' | undefined,
+): boolean {
+  if (!event?.actions) return false;
+  const start = event.actions.continuationStart;
+  const runtimeProtocol = event.actions.runtimeProtocol;
+  const actionKeys = Object.keys(event.actions);
+  const source = claim.boundary.segments.at(-1)!;
+  return Boolean(
+    event.sessionId === claim.target.sessionId &&
+      event.invocationId === claim.target.invocationId &&
+      event.runId === claim.target.runId &&
+      event.turnId === claim.target.turnId &&
+      event.ts >= claim.claimedAt &&
+      event.partial !== true &&
+      event.role === 'system' &&
+      event.author === 'system' &&
+      event.status === undefined &&
+      // Event 1 of a continuation target is also that invocation's opening fact,
+      // which is why the claim names it in advance.
+      stableJsonStringify(event.content) === stableJsonStringify(claim.targetOpening) &&
+      actionKeys.includes('continuationStart') &&
+      actionKeys.every((key) => key === 'continuationStart' || key === 'runtimeProtocol') &&
+      actionKeys.length === (runtimeProtocol === undefined ? 1 : 2) &&
+      (runtimeProtocol === undefined ||
+        (startKind === 'runtime_admission' &&
+          runtimeProtocol.toolBoundary === TOOL_BOUNDARY_PROTOCOL_V1)) &&
+      start?.protocol === 'continuation_start_v2' &&
+      start.provenance === startKind &&
+      start.claimId === claim.claimId &&
+      start.boundaryDigest === claim.boundaryDigest &&
+      start.replayManifestDigest === claim.boundary.manifestDigest &&
+      start.providerProjectionVersion === claim.providerProjectionVersion &&
+      start.providerReplayDigest === claim.providerReplayDigest &&
+      stableJsonStringify(start.immediateSource) ===
+        stableJsonStringify({
+          sessionId: source.identity.sessionId,
+          invocationId: source.identity.invocationId,
+          runId: source.identity.runId,
+          turnId: source.identity.turnId,
+          highWater: source.position.lastEventSeq,
+          prefixDigest: source.prefixDigest,
+        }),
+  );
+}
+
+function foldImmutableRuntimePrefix(
   identity: RuntimePrefixIdentityV1,
-  rows: readonly RuntimePrefixRowV1[],
-): RuntimePrefixRowV1[] {
+  rows: Iterable<RuntimePrefixRowV1>,
+  visit?: (event: RuntimeEvent) => void,
+): ImmutableRuntimePrefixProofV1 {
   const canonicalIdentity = decodePrefixIdentity(identity);
-  const canonicalRows: RuntimePrefixRowV1[] = [];
-  for (const [index, row] of rows.entries()) {
-    const expectedEventSeq = index + 1;
+  const hash = nodeCrypto.createHash('sha256');
+  updateLengthPrefixed(hash, Buffer.from('maka.runtime-prefix.v1', 'utf8'));
+  updateLengthPrefixed(hash, Buffer.from(stableJsonStringify(canonicalIdentity), 'utf8'));
+  let eventCount = 0;
+  let firstEvent: RuntimeEvent | undefined;
+  let lastEvent: RuntimeEvent | undefined;
+  for (const row of rows) {
+    const expectedEventSeq = eventCount + 1;
     if (
       !Number.isSafeInteger(row.eventSeq) ||
       row.eventSeq <= 0 ||
@@ -344,23 +482,62 @@ function canonicalizePrefixRows(
     ) {
       throw new Error(`immutable RuntimeEvent identity mismatch for ${event.id}`);
     }
-    canonicalRows.push({ eventSeq: row.eventSeq, event });
+    hash.update(uint64be(row.eventSeq));
+    updateLengthPrefixed(hash, Buffer.from(encodeRuntimePrefixV1Event(event), 'utf8'));
+    firstEvent ??= event;
+    lastEvent = event;
+    eventCount += 1;
+    visit?.(event);
   }
-  return canonicalRows;
+  if (!firstEvent || !lastEvent) throw new Error('immutable RuntimeEvent prefix is empty');
+  return {
+    protocol: 'immutable_runtime_prefix_proof_v1',
+    identity: canonicalIdentity,
+    position: {
+      lastEventSeq: eventCount,
+      eventCount,
+      lastEventId: lastEvent.id,
+    },
+    prefixDigest: `sha256:${hash.digest('hex')}`,
+    firstEvent,
+    lastEvent,
+  };
 }
 
-function digestCanonicalRuntimePrefix(
-  identity: RuntimePrefixIdentityV1,
-  rows: readonly RuntimePrefixRowV1[],
-): RuntimeBoundaryDigest {
-  const hash = nodeCrypto.createHash('sha256');
-  updateLengthPrefixed(hash, Buffer.from('maka.runtime-prefix.v1', 'utf8'));
-  updateLengthPrefixed(hash, Buffer.from(stableJsonStringify(identity), 'utf8'));
-  for (const row of rows) {
-    hash.update(uint64be(row.eventSeq));
-    updateLengthPrefixed(hash, Buffer.from(encodeRuntimePrefixV1Event(row.event), 'utf8'));
+function validateImmutableRuntimePrefixProof(
+  proof: ImmutableRuntimePrefixProofV1,
+): ImmutableRuntimePrefixProofV1 {
+  const identity = decodePrefixIdentity(proof.identity);
+  const position = decodePrefixPosition(proof.position);
+  const prefixDigest = decodeBoundaryDigest(proof.prefixDigest);
+  const firstEvent = encodeCanonicalRuntimeEvent(proof.firstEvent).event;
+  const lastEvent = encodeCanonicalRuntimeEvent(proof.lastEvent).event;
+  for (const event of [firstEvent, lastEvent]) {
+    if (event.partial === true)
+      throw new Error('Immutable RuntimeEvent proof contains a partial endpoint');
+    if (
+      event.sessionId !== identity.sessionId ||
+      event.invocationId !== identity.invocationId ||
+      event.runId !== identity.runId ||
+      event.turnId !== identity.turnId
+    ) {
+      throw new Error(`Immutable RuntimeEvent proof identity mismatch for ${event.id}`);
+    }
   }
-  return `sha256:${hash.digest('hex')}`;
+  if (position.lastEventId !== lastEvent.id) {
+    throw new Error('Immutable RuntimeEvent prefix position mismatch');
+  }
+  if (position.eventCount === 1 && firstEvent.id !== lastEvent.id) {
+    throw new Error('Immutable RuntimeEvent proof endpoints mismatch');
+  }
+  return {
+    protocol: 'immutable_runtime_prefix_proof_v1',
+    identity,
+    position,
+    prefixDigest,
+    firstEvent,
+    lastEvent,
+  };
 }
 
 function encodeRuntimePrefixV1Event(event: RuntimeEvent): string {

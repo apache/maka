@@ -24,6 +24,7 @@ import { toNodeHandler } from '@modelcontextprotocol/node';
 import { createMcpHandler, InMemoryServerEventBus, Server } from '@modelcontextprotocol/server';
 import { MCP_CONFIG_VERSION, type McpConfigFile, type McpServerStatus } from '@maka/core/mcp';
 import { McpClientManager } from '../index.js';
+import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
 
 const managers: McpClientManager[] = [];
 const fixtures: SubscriptionFixture[] = [];
@@ -501,12 +502,11 @@ async function readJsonBody(req: IncomingMessage): Promise<unknown> {
 }
 
 async function waitFor(predicate: () => boolean, timeoutMs = 2_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (predicate()) return;
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  }
-  assert.ok(predicate(), 'condition was not met before timeout');
+  await pollFor(predicate, {
+    timeoutMs,
+    pollMs: 5,
+    message: 'condition was not met before timeout',
+  });
 }
 
 async function settleEventLoop(): Promise<void> {

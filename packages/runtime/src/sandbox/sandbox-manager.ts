@@ -21,7 +21,6 @@ import type { PermissionProfile } from '@maka/core/permission-profile';
 
 import type {
   SandboxBackend,
-  SandboxCapabilityProbeResult,
   SandboxPlatform,
   SandboxSelectionInput,
   SandboxSelectionResult,
@@ -153,44 +152,6 @@ export class SandboxManager {
     if (!backend) return false;
     if (!(backend.isAvailable?.(selected.platform) ?? true)) return false;
     return backend.canEnforceProfile?.(input.profile) ?? true;
-  }
-
-  probe(request: SandboxTransformRequest): SandboxCapabilityProbeResult {
-    const selected = this.selectInitial({
-      profile: request.command.profile,
-      preference: request.preference,
-      platform: request.platform,
-    });
-
-    if (!selected.ok) return selected;
-    if (selected.sandboxType === 'none') {
-      return {
-        ok: true,
-        executable: request.command.program,
-        sandboxType: 'none',
-        requiresSandbox: false,
-        preference: selected.preference,
-      };
-    }
-
-    const backend = this.backends.get(selected.sandboxType);
-    if (!backend) {
-      return {
-        ok: false,
-        reason: 'backend_not_available',
-        sandboxType: selected.sandboxType,
-        requiresSandbox: selected.requiresSandbox,
-        platform: selected.platform,
-        preference: selected.preference,
-        message: `Sandbox backend ${selected.sandboxType} is not registered.`,
-      };
-    }
-
-    return backend.probe({
-      ...request,
-      preference: selected.preference,
-      platform: selected.platform,
-    });
   }
 
   transform(request: SandboxTransformRequest): SandboxTransformResult {

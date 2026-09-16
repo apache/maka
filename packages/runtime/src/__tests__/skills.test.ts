@@ -520,6 +520,106 @@ Open local targets carefully.`,
     });
   });
 
+  it('discovers contained symlinked skill directories using the link identity', async () => {
+    await withWorkspace(async (workspaceRoot) => {
+      const skillsDir = join(workspaceRoot, 'skills');
+      const sourceDir = join(workspaceRoot, 'linked-skill-sources');
+      const linkedSkill = join(skillsDir, 'linked-alias');
+      await mkdir(skillsDir, { recursive: true });
+      await writeSkillInDirectory(
+        sourceDir,
+        'source-name',
+        'Linked Skill',
+        'A contained symlinked skill.',
+      );
+      await symlink(join(sourceDir, 'source-name'), linkedSkill, 'dir');
+
+      const scan = await scanSkillsWithDiagnostics(workspaceRoot);
+
+      assert.deepEqual(
+        scan.skills.map((skill) => ({ id: skill.id, ref: skill.ref, path: skill.path })),
+        [
+          {
+            id: 'linked-alias',
+            ref: 'workspace:legacy:linked-alias',
+            path: linkedSkill,
+          },
+        ],
+      );
+      assert.deepEqual(scan.discoveryDiagnostics, []);
+    });
+  });
+
+  it('diagnoses unusable symlinked skill directories without hiding valid skills', async () => {
+    await withWorkspace(async (workspaceRoot) => {
+      const outside = await mkdtemp(join(tmpdir(), 'maka-skill-entry-outside-'));
+      const skillsDir = join(workspaceRoot, 'skills');
+      const containedFile = join(workspaceRoot, 'contained-file');
+      const containedFileLink = join(skillsDir, 'contained-file-link');
+      const cyclicSkill = join(skillsDir, 'cyclic-link');
+      const danglingSkill = join(skillsDir, 'dangling-link');
+      const notDirectorySkill = join(skillsDir, 'not-directory-link');
+      const escapingSkill = join(skillsDir, 'escaping-link');
+      try {
+        await writeSkill(
+          workspaceRoot,
+          'valid',
+          `---
+name: Valid
+description: A valid local skill.
+---
+# Valid`,
+        );
+        await writeSkillInDirectory(outside, 'source-name', 'Outside', 'An escaping skill.');
+        await writeFile(containedFile, 'not a directory', 'utf8');
+        await symlink(containedFile, containedFileLink, 'file');
+        await symlink(cyclicSkill, cyclicSkill, 'dir');
+        await symlink(join(workspaceRoot, 'missing-target'), danglingSkill, 'dir');
+        await symlink(join(containedFile, 'child'), notDirectorySkill, 'dir');
+        await symlink(join(outside, 'source-name'), escapingSkill, 'dir');
+
+        const scan = await scanSkillsWithDiagnostics(workspaceRoot);
+
+        assert.deepEqual(
+          scan.skills.map((skill) => skill.id),
+          ['valid'],
+        );
+        assert.deepEqual(scan.discoveryDiagnostics, [
+          {
+            path: cyclicSkill,
+            scope: 'workspace',
+            source: 'legacy',
+            precedence: 0,
+            reason: 'read_failed',
+          },
+          {
+            path: danglingSkill,
+            scope: 'workspace',
+            source: 'legacy',
+            precedence: 0,
+            reason: 'blocked_path',
+          },
+          {
+            path: escapingSkill,
+            scope: 'workspace',
+            source: 'legacy',
+            precedence: 0,
+            reason: 'blocked_path',
+          },
+          {
+            path: notDirectorySkill,
+            scope: 'workspace',
+            source: 'legacy',
+            precedence: 0,
+            reason: 'blocked_path',
+          },
+        ]);
+      } finally {
+        await rm(outside, { recursive: true, force: true });
+      }
+    });
+  });
+
   it('readSkillRuntimeState does not read through a symlinked state file', async () => {
     await withWorkspace(async (workspaceRoot) => {
       const outside = await mkdtemp(join(tmpdir(), 'maka-skill-state-file-outside-'));

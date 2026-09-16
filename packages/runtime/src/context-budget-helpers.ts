@@ -26,7 +26,10 @@ import type { RuntimeEvent } from '@maka/core/runtime-event';
  * modules can reuse them without a reverse import into `context-budget.ts`.
  *
  * These are intentionally dependency-free (only `node:crypto` and the
- * `RuntimeEvent` type); no domain policy types live here.
+ * `RuntimeEvent` type); no domain policy types live here. Sizing a
+ * RuntimeEvent is NOT such a helper — it must read the effective model
+ * projection — so `estimateRuntimeEventChars`/`estimateRuntimeEventsTokens`/
+ * `groupEventsByTurn` live with the reducer in `model-history.ts`.
  */
 
 export function estimateTokens(chars: number, charsPerToken = 4): number {
@@ -43,81 +46,12 @@ export function stableJsonLength(value: unknown): number {
   }
 }
 
-export function estimateRuntimeEventChars(event: RuntimeEvent): number {
-  let total = 0;
-  const content = event.content;
-  if (content?.kind === 'text' || content?.kind === 'thinking') total += content.text.length;
-  else if (content?.kind === 'function_call')
-    total += content.name.length + stableJsonLength(content.args);
-  else if (content?.kind === 'function_response')
-    total +=
-      content.name.length +
-      stableJsonLength(
-        content.providerExecuted && content.providerOutput !== undefined
-          ? content.providerOutput
-          : content.result,
-      );
-  else if (content?.kind === 'error') total += content.message.length;
-  return total;
-}
-
-export function estimateRuntimeEventsTokens(
-  events: readonly RuntimeEvent[],
-  charsPerToken = 4,
-): number {
-  const chars = events.reduce(
-    (total, event) =>
-      event.modelVisibility === 'hidden' ? total : total + estimateRuntimeEventChars(event),
-    0,
-  );
-  return estimateTokens(chars, charsPerToken);
-}
-
 export function turnKey(event: RuntimeEvent): string {
   return event.turnId || '<unknown-turn>';
 }
 
-export function groupEventsByTurn(
-  events: readonly RuntimeEvent[],
-  charsPerToken: number,
-): Array<{
-  turnId: string;
-  estimatedTokens: number;
-  events: RuntimeEvent[];
-}> {
-  const order: string[] = [];
-  const byTurn = new Map<string, RuntimeEvent[]>();
-  for (const event of events) {
-    const key = turnKey(event);
-    const group = byTurn.get(key);
-    if (group) group.push(event);
-    else {
-      order.push(key);
-      byTurn.set(key, [event]);
-    }
-  }
-  return order.map((turnId) => ({
-    turnId,
-    events: byTurn.get(turnId) ?? [],
-    estimatedTokens: estimateRuntimeEventsTokens(byTurn.get(turnId) ?? [], charsPerToken),
-  }));
-}
-
-export function uniqueSorted(values: readonly string[]): string[] {
-  return [...new Set(values.filter((value) => value.length > 0))].sort();
-}
-
 export function sha256(text: string): string {
   return createHash('sha256').update(text).digest('hex');
-}
-
-export function stableStringify(value: unknown): string {
-  if (value === undefined) return '';
-  try {
-    return JSON.stringify(value) ?? '';
-  } catch {
-    return String(value);
-  }
 }
 
 export function finitePositive(value: number | undefined): number | undefined {
@@ -128,8 +62,4 @@ export function finitePositive(value: number | undefined): number | undefined {
 
 export function utf8ByteLength(text: string): number {
   return Buffer.byteLength(text, 'utf8');
-}
-
-export function optionalNonNegativeFiniteNumber(value: unknown): boolean {
-  return value === undefined || (typeof value === 'number' && Number.isFinite(value) && value >= 0);
 }

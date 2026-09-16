@@ -54,7 +54,7 @@
     place-items: center;
     /* Square icon plate — ratio-governed, see --radius-plate. */
     border-radius: var(--radius-plate);
-    background: oklch(from var(--destructive) l c h / 0.10);
+    background: var(--color-error-muted);
     color: var(--destructive-text);
   }
 
@@ -72,22 +72,8 @@
 .maka-error-copy p {
     font: var(--maka-text-body);
     margin: 0;
-    color: var(--foreground-secondary);
+    color: var(--muted-foreground);
     max-width: 56ch;
-  }
-
-.maka-error-stack {
-    font: var(--maka-text-supporting);
-    margin: var(--space-1) 0 0;
-    max-height: 220px;
-    padding: var(--space-2-5) var(--space-3);
-    border: var(--border-width-hairline) solid var(--border);
-    border-radius: var(--radius-surface);
-    background: var(--foreground-3);
-    color: var(--foreground-secondary);
-    overflow: auto;
-    white-space: pre-wrap;
-    word-break: break-word;
   }
 
 .maka-error-actions {
@@ -103,9 +89,10 @@
     cursor: progress;
   }
 
+/* Ink only: the label already states the failure, and a second tinted edge
+   beside it is the One Means Rule (DESIGN.md §8). */
 .maka-error-copy-action[data-copy-state="failed"] {
     color: var(--destructive);
-    border-color: oklch(from var(--destructive) l c h / 0.35);
   }
 
 .maka-error-copy-status {

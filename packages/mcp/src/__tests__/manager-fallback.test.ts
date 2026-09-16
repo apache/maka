@@ -31,6 +31,7 @@ import {
   type McpToolBinding,
 } from '@maka/core/mcp';
 import { McpClientManager } from '../index.js';
+import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
 
 const managers: McpClientManager[] = [];
 const fixtures: FallbackFixture[] = [];
@@ -510,11 +511,7 @@ async function readJsonBody(req: IncomingMessage): Promise<unknown> {
 }
 
 async function waitFor(predicate: () => boolean, timeoutMs = 1_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (!predicate()) {
-    if (Date.now() >= deadline) throw new Error('condition was not reached');
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  }
+  await pollFor(predicate, { timeoutMs, pollMs: 5, message: 'condition was not reached' });
 }
 
 async function settlesWithin<T>(promise: Promise<T>, timeoutMs = 500): Promise<T> {

@@ -44,6 +44,7 @@ if (!Number.isSafeInteger(idleGraceMs) || idleGraceMs < 0) {
 // candidate host in its own right, so it supplies the deterministic one through
 // the composition's `primaryBackendFactory` seam — the same path Desktop E2E
 // takes — and its sessions declare the real `ai-sdk` backend kind.
+const fakeBackends = new Set<FakeBackend>();
 const result = await startExecutionRuntimeHostCandidate(
   {
     rootPath,
@@ -53,7 +54,11 @@ const result = await startExecutionRuntimeHostCandidate(
   {
     createComposition: (context, compositionOptions) =>
       createExecutionRuntimeHostComposition(context, compositionOptions, {
-        primaryBackendFactory: (backendContext) => new FakeBackend(backendContext),
+        primaryBackendFactory: (backendContext) => {
+          const backend = new FakeBackend(backendContext);
+          fakeBackends.add(backend);
+          return backend;
+        },
       }),
   },
 );
@@ -72,11 +77,20 @@ if (recoverySessionId && recoveryRunId) {
 }
 
 process.on('message', (message: unknown) => {
-  if (
-    message &&
-    typeof message === 'object' &&
-    (message as { type?: unknown }).type === 'shutdown'
-  ) {
+  const type =
+    message && typeof message === 'object' ? (message as { type?: unknown }).type : undefined;
+  if (type === 'shutdown_question_admission') {
+    void (async () => {
+      await Promise.all(
+        [...fakeBackends].map((backend) => backend.waitForQuestionAdmissionCheckpoint()),
+      );
+      // Host.close() synchronously drains every authority before returning.
+      void result.host.close();
+      for (const backend of fakeBackends) backend.releaseQuestionAdmission();
+    })();
+    return;
+  }
+  if (type === 'shutdown') {
     void result.host.close();
   }
 });

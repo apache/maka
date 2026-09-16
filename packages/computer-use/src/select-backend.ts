@@ -92,11 +92,6 @@ export interface MakaCuSelection {
   screenLocked?: (context: { sessionId: string }) => boolean | Promise<boolean>;
   overlay?: CuOverlayHook;
   onTrace?: MakaCuBackendOptions['onTrace'];
-  /**
-   * Coordinate and key dispatch post synthetic events. Off unless a host policy
-   * says otherwise; the model-facing contract already states they fail closed.
-   */
-  allowCompatibilityInputDispatch?: boolean;
   createBackend?: (options: MakaCuBackendOptions) => DisposableBackend;
 }
 
@@ -117,9 +112,6 @@ export function selectComputerUseBackend(deps?: MakaCuSelection): SelectedComput
         ? { physicalInputRecentlyActive: deps.physicalInputRecentlyActive }
         : {}),
       ...(deps.onTrace ? { onTrace: deps.onTrace } : {}),
-      ...(deps.allowCompatibilityInputDispatch === undefined
-        ? {}
-        : { allowCompatibilityInputDispatch: deps.allowCompatibilityInputDispatch }),
       onSessionInvalidated: ({ sessionId }) => {
         tools?.sessionEvents.reobserveRequired(sessionId);
       },

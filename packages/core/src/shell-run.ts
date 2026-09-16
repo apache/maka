@@ -70,6 +70,13 @@ export type ShellRunTerminalStatus = (typeof SHELL_RUN_TERMINAL_STATUSES)[number
 export type ShellRunActiveStatus = (typeof SHELL_RUN_ACTIVE_STATUSES)[number];
 export type ShellMode = 'pipes' | 'pty';
 
+/**
+ * Determines whether a runtime shell resource may be summarized to the model.
+ * User-owned interactive terminals remain observable to their attached Client,
+ * but their command stream and output are not part of an agent turn.
+ */
+export type ShellRunVisibility = 'model' | 'user';
+
 export interface PipeShellOutput {
   mode: 'pipes';
   stdout: string;
@@ -125,9 +132,13 @@ export interface ShellRunRecord {
   sourceRunId?: string;
   sourceTurnId: string;
   sourceToolCallId: string;
+  /** Defaults to `model` for model-initiated Bash runs. */
+  visibility?: ShellRunVisibility;
   cwd: string;
   command: string;
   status: ShellRunStatus;
+  /** Native root process id, when admitted by the process driver. */
+  pid?: number;
   exitCode?: number;
   failureMessage?: string;
   startedAt: number;
@@ -150,7 +161,14 @@ export interface ShellRunRecord {
 export type ShellRunPatch = Partial<
   Pick<
     ShellRunRecord,
-    'status' | 'exitCode' | 'failureMessage' | 'updatedAt' | 'completedAt' | 'observedAt' | 'output'
+    | 'status'
+    | 'pid'
+    | 'exitCode'
+    | 'failureMessage'
+    | 'updatedAt'
+    | 'completedAt'
+    | 'observedAt'
+    | 'output'
   >
 >;
 
@@ -298,6 +316,7 @@ const SHELL_RUN_SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 
 const SHELL_RUN_PATCH_KEYS: ReadonlySet<string> = new Set([
   'status',
+  'pid',
   'exitCode',
   'failureMessage',
   'updatedAt',
@@ -312,9 +331,11 @@ const SHELL_RUN_RECORD_KEYS: ReadonlySet<string> = new Set([
   'sourceRunId',
   'sourceTurnId',
   'sourceToolCallId',
+  'visibility',
   'cwd',
   'command',
   'status',
+  'pid',
   'startedAt',
   'updatedAt',
   'completedAt',
@@ -364,9 +385,13 @@ export function normalizeShellRunRecord(
     hasOnlyKeys(record, SHELL_RUN_RECORD_KEYS) &&
     requiredStrings.every((item) => typeof item === 'string') &&
     isShellRunSourceToolCallId(record.sourceToolCallId) &&
+    (record.visibility === undefined ||
+      record.visibility === 'model' ||
+      record.visibility === 'user') &&
     record.sessionId === sessionId &&
     record.shellRunId === shellRunId &&
     isShellRunStatus(record.status) &&
+    (record.pid === undefined || isPositiveInteger(record.pid)) &&
     isFiniteNumber(record.startedAt) &&
     isFiniteNumber(record.updatedAt) &&
     isPositiveInteger(record.revision) &&
@@ -502,11 +527,13 @@ function isShellRunSandboxEscalation(value: unknown, execution: unknown): boolea
 
 function canonicalShellRunRecord(record: ShellRunRecord): ShellRunRecord {
   return {
+    ...(record.pid !== undefined ? { pid: record.pid } : {}),
     shellRunId: record.shellRunId,
     sessionId: record.sessionId,
     ...(record.sourceRunId !== undefined ? { sourceRunId: record.sourceRunId } : {}),
     sourceTurnId: record.sourceTurnId,
     sourceToolCallId: record.sourceToolCallId,
+    ...(record.visibility !== undefined ? { visibility: record.visibility } : {}),
     cwd: record.cwd,
     command: record.command,
     status: record.status,

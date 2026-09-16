@@ -1,3 +1,15 @@
+---
+doc_id: permission-onboarding-plan
+title: "Drag-to-grant permission onboarding (macOS)"
+language: en
+source_language: en
+implementation_status: current
+document_status: current
+translation_status: source-only
+last_verified: 2026-09-04
+owners:
+  - maka-backend
+---
 <!--
   Licensed to the Apache Software Foundation (ASF) under one
   or more contributor license agreements.  See the NOTICE file
@@ -22,6 +34,8 @@
 Status: **Stage 1 built** (`apps/desktop/src/main/permission-overlay/`,
 `apps/desktop/src/overlay/permission-overlay.*`). Stage 2 is still a proposal.
 Written 2026-07-27 for maka.
+
+Tracking: [macOS permission onboarding Stage 2 #4328](https://github.com/apache/maka/issues/4328)
 
 ## The problem
 

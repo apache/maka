@@ -19,15 +19,111 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { resolveConnectionModelCatalog } from '@maka/core/model-catalog';
 import type { RuntimeHostConnection } from '../client/connection.js';
 import {
   RuntimeHostCatalogReadError,
+  RuntimeHostSessionCatalogRevisionChangedError,
   readRuntimeHostConnectionCatalog,
   readRuntimeHostProjectDetails,
   readRuntimeHostProjects,
+  readRuntimeHostSessionCatalogPage,
   readRuntimeHostSessions,
   readRuntimeHostSkillCatalog,
 } from '../client/catalog-reader.js';
+
+test('reads one Session catalog page and carries its revision into the continuation cursor', async () => {
+  const inputs: Record<string, unknown>[] = [];
+  const connection = fakeConnection(async (operation, input) => {
+    assert.equal(operation, 'session.catalog.query');
+    inputs.push(input);
+    const continuation = input.kind === 'list_continue';
+    return {
+      kind: 'page',
+      revision: 'sha256:sessions',
+      sessions: [
+        {
+          kind: 'unsupported_legacy_record',
+          id: continuation ? 'legacy-2' : 'legacy-1',
+          revision: 1,
+          reason: 'not_wire_representable',
+        },
+      ],
+      nextCursor: continuation ? null : 'page-2',
+    };
+  });
+
+  const first = await readRuntimeHostSessionCatalogPage(connection);
+  assert.deepEqual(first, {
+    revision: 'sha256:sessions',
+    sessions: [
+      {
+        kind: 'unsupported_legacy_record',
+        id: 'legacy-1',
+        revision: 1,
+        reason: 'not_wire_representable',
+      },
+    ],
+    nextCursor: { revision: 'sha256:sessions', cursor: 'page-2' },
+  });
+  assert.deepEqual(await readRuntimeHostSessionCatalogPage(connection, first.nextCursor!), {
+    revision: 'sha256:sessions',
+    sessions: [
+      {
+        kind: 'unsupported_legacy_record',
+        id: 'legacy-2',
+        revision: 1,
+        reason: 'not_wire_representable',
+      },
+    ],
+    nextCursor: null,
+  });
+  assert.deepEqual(inputs, [
+    { kind: 'list_start' },
+    { kind: 'list_continue', revision: 'sha256:sessions', cursor: 'page-2' },
+  ]);
+});
+
+test('reports a changed Session catalog revision through a typed page-reader error', async () => {
+  const connection = fakeConnection(async () => ({
+    kind: 'revision_changed',
+    expectedRevision: 'sha256:old',
+    actualRevision: 'sha256:new',
+  }));
+
+  await assert.rejects(
+    () =>
+      readRuntimeHostSessionCatalogPage(connection, {
+        revision: 'sha256:old',
+        cursor: 'page-2',
+      }),
+    (error) =>
+      error instanceof RuntimeHostSessionCatalogRevisionChangedError &&
+      error.expectedRevision === 'sha256:old' &&
+      error.actualRevision === 'sha256:new',
+  );
+});
+
+test('rejects a Session page reader cursor that does not advance', async () => {
+  const connection = fakeConnection(async () => ({
+    kind: 'page',
+    revision: 'sha256:sessions',
+    sessions: [],
+    nextCursor: 'page-2',
+  }));
+
+  await assert.rejects(
+    () =>
+      readRuntimeHostSessionCatalogPage(connection, {
+        revision: 'sha256:sessions',
+        cursor: 'page-2',
+      }),
+    (error) =>
+      error instanceof RuntimeHostCatalogReadError &&
+      error.catalog === 'session' &&
+      error.reason === 'repeated_cursor',
+  );
+});
 
 test('waits out a burst of Session catalog revisions', async () => {
   let starts = 0;
@@ -62,6 +158,31 @@ test('waits out a burst of Session catalog revisions', async () => {
   assert.equal(starts, 4);
 });
 
+test('retries when the first Session catalog page reports a revision change', async () => {
+  let starts = 0;
+  const connection = fakeConnection(async (operation, input) => {
+    assert.equal(operation, 'session.catalog.query');
+    assert.equal(input.kind, 'list_start');
+    starts += 1;
+    if (starts === 1) {
+      return {
+        kind: 'revision_changed',
+        expectedRevision: 'sha256:old',
+        actualRevision: 'sha256:new',
+      };
+    }
+    return {
+      kind: 'page',
+      revision: 'sha256:new',
+      sessions: [],
+      nextCursor: null,
+    };
+  });
+
+  assert.deepEqual(await readRuntimeHostSessions(connection), []);
+  assert.equal(starts, 2);
+});
+
 test('rejects a repeated Skill catalog cursor instead of looping forever', async () => {
   const connection = fakeConnection(async (operation, input) => {
     assert.equal(operation, 'skill.catalog.query');
@@ -94,6 +215,15 @@ test('rejects a repeated Skill catalog cursor instead of looping forever', async
 
 test('reassembles per-item relay profiles into the connection profile table', async () => {
   const profile = { thinkingLevels: ['low'], vision: false, contextWindow: 65_536 } as const;
+  const [entry] = resolveConnectionModelCatalog({
+    slug: 'relay',
+    providerType: 'openai-compatible',
+    defaultModel: '',
+    models: [],
+    modelSource: 'fetched',
+    enabledModelIds: [],
+    modelOverrides: { declared: profile },
+  });
   const connection = fakeConnection(async (_operation, input) => {
     const continuation = input.kind === 'continue';
     return {
@@ -102,31 +232,37 @@ test('reassembles per-item relay profiles into the connection profile table', as
       defaultTarget: null,
       connectionCount: 1,
       items: continuation
-        ? [{ kind: 'enabled_model_id', connectionIndex: 0, itemIndex: 1, modelId: 'plain' }]
+        ? [
+            {
+              kind: 'catalog_entry',
+              connectionIndex: 0,
+              itemIndex: 0,
+              entry,
+              modelOverride: profile,
+            },
+          ]
         : [
-            connectionHeader(2),
+            { ...connectionHeader(1), catalogEntryCount: 1 },
             {
               kind: 'enabled_model_id',
               connectionIndex: 0,
               itemIndex: 0,
-              modelId: 'declared',
-              relayProfile: profile,
+              modelId: 'plain',
             },
           ],
-      nextCursor: continuation
-        ? null
-        : { connectionIndex: 0, part: 'enabled_model_id', itemIndex: 1 },
+      nextCursor: continuation ? null : { connectionIndex: 0, part: 'catalog_entry', itemIndex: 0 },
     };
   });
 
   const catalog = await readRuntimeHostConnectionCatalog(connection);
   assert.deepEqual(catalog.connections, [
     {
-      enabledModelIds: ['declared', 'plain'],
+      enabledModelIds: ['plain'],
       models: [],
+      catalogEntries: [entry],
       // Only the profiled model lands in the reassembled table — the item
       // shape is wire-only and never surfaces per item downstream.
-      relayModelProfiles: { declared: profile },
+      modelOverrides: { declared: profile },
     },
   ]);
 });
@@ -300,6 +436,7 @@ function connectionHeader(enabledModelIdCount: number) {
     connectionIndex: 0,
     enabledModelIdCount,
     modelCount: 0,
+    catalogEntryCount: 0,
   } as const;
 }
 

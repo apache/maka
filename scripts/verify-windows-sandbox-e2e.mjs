@@ -135,7 +135,7 @@ export async function verifyWindowsSandboxWorkerE2E(appDirectoryPath) {
       executable: appExecutable,
       resourceLocation: { kind: 'desktop-packaged', resourcesPath },
     });
-    const launchSpec = await getLaunchSpec();
+    const launchSpec = await getLaunchSpec({ kind: 'read' });
     assertCondition(launchSpec.ok, 'Windows filesystem-worker launch spec was unavailable.');
     assertCondition(
       launchSpec.ok && launchSpec.spec.program === (await realpath(appExecutable)),
@@ -446,7 +446,7 @@ async function runRuntimeHostMidLaunchChild({ appDirectory, workspace, targetPat
     executable: appExecutable,
     resourceLocation: { kind: 'desktop-packaged', resourcesPath },
   });
-  const packaged = await getPackagedLaunchSpec();
+  const packaged = await getPackagedLaunchSpec({ kind: 'read' });
   assertCondition(packaged.ok, 'Runtime Host fixture could not resolve the packaged launch spec.');
   const client = new FilesystemWorkerClient({
     sandboxManager: new SandboxManager([
@@ -674,13 +674,12 @@ async function verifyPackagedClientCancellation({
 async function listCancellationProcesses(sandboxExecutable, timeoutMs = 10_000) {
   const script = String.raw`
 $imageName = [IO.Path]::GetFileName($env:MAKA_CANCEL_SANDBOX)
+$escapedImageName = $imageName.Replace("'", "''")
 $matches = @(
-  Get-CimInstance Win32_Process | ForEach-Object {
-    if ($_.Name -eq $imageName) {
-      [PSCustomObject]@{
-        processId = $_.ProcessId
-        commandLine = [string]$_.CommandLine
-      }
+  Get-CimInstance Win32_Process -Filter "Name='$escapedImageName'" | ForEach-Object {
+    [PSCustomObject]@{
+      processId = $_.ProcessId
+      commandLine = [string]$_.CommandLine
     }
   }
 )

@@ -17,13 +17,22 @@
  * under the License.
  */
 
+import { assertMaximalJsonPages } from './fixtures/json-pages.js';
+import {
+  SKILL_CATALOG_PAGE_MAX_BYTES,
+  SKILL_CATALOG_PAGE_MAX_ITEMS,
+  type SkillCatalogInvocableQueryResult,
+} from '../protocol/index.js';
+
 import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, test } from 'node:test';
+import { promisify } from 'node:util';
 import {
   BUNDLED_SKILL_CATALOG,
   buildStarterSkillTemplate,
@@ -47,6 +56,7 @@ import {
 } from '../server/skill-catalog-transaction.js';
 
 const roots = new Set<string>();
+const execFileAsync = promisify(execFile);
 
 afterEach(async () => {
   await Promise.all([...roots].map((root) => rm(root, { recursive: true, force: true })));
@@ -317,7 +327,7 @@ test('noncanonical external ids remain wire-safe governance entries', async () =
   );
   await createSkill(
     join(fixture.project, '.maka', 'skills'),
-    'bad\nskill',
+    'bad\u007Fskill',
     skillBody('Control Skill', 'control directory id'),
   );
   const repository = fixture.repository();
@@ -444,10 +454,9 @@ test('repository preserves filesystem-safe ids and codec preserves the 256-byte 
 });
 
 test('managed source read failures are not projected as an empty catalog', async () => {
-  if (process.platform === 'win32') return;
   const fixture = await createFixture();
   await createSkill(fixture.sources, 'restricted', skillBody('Restricted', 'unreadable'));
-  await chmod(fixture.sources, 0o000);
+  const restoreReadAccess = await makeUnreadable(fixture.sources, 0o700);
   try {
     await assert.rejects(
       start(fixture.repository(), fixture.project, 'managed_sources'),
@@ -458,12 +467,11 @@ test('managed source read failures are not projected as an empty catalog', async
       },
     );
   } finally {
-    await chmod(fixture.sources, 0o700);
+    await restoreReadAccess();
   }
 });
 
 test('one unreadable managed source child makes the Host catalog fail closed', async () => {
-  if (process.platform === 'win32') return;
   const fixture = await createFixture();
   await createSkill(fixture.sources, 'readable', skillBody('Readable', 'valid source'));
   const unreadable = await createSkill(
@@ -472,7 +480,7 @@ test('one unreadable managed source child makes the Host catalog fail closed', a
     skillBody('Unreadable', 'restricted source'),
   );
   const unreadableFile = join(unreadable, 'SKILL.md');
-  await chmod(unreadableFile, 0o000);
+  const restoreReadAccess = await makeUnreadable(unreadableFile, 0o600);
   try {
     await assert.rejects(
       start(fixture.repository(), fixture.project, 'managed_sources'),
@@ -483,7 +491,7 @@ test('one unreadable managed source child makes the Host catalog fail closed', a
       },
     );
   } finally {
-    await chmod(unreadableFile, 0o600);
+    await restoreReadAccess();
   }
 });
 
@@ -902,6 +910,78 @@ test('non-force managed update preserves a local edit made after its snapshot', 
   assert.equal(await readFile(installedPath, 'utf8'), localEdit);
 });
 
+test('managed update blocks a symlink redirected outside its discovery root after scanning', async () => {
+  const fixture = await createFixture();
+  const sourceId = 'managed-symlink-race';
+  const installedContent = skillBody('Managed Symlink Race', 'installed');
+  const updateContent = skillBody('Managed Symlink Race', 'source update');
+  const outsideContent = skillBody('Managed Symlink Race', 'outside replacement');
+  await createSkill(fixture.sources, sourceId, updateContent);
+
+  const containedSkill = await createSkill(
+    join(fixture.root, 'linked-skill-sources'),
+    sourceId,
+    installedContent,
+  );
+  await mkdir(join(containedSkill, '.maka', 'baseline'), { recursive: true });
+  await writeFile(
+    join(containedSkill, 'skill.lock.json'),
+    `${JSON.stringify(
+      createManagedSkillLock(sourceId, sha256(installedContent), sha256(installedContent)),
+      null,
+      2,
+    )}\n`,
+  );
+  await writeFile(join(containedSkill, '.maka', 'baseline', 'SKILL.md'), installedContent);
+
+  const skillsDirectory = join(fixture.root, 'skills');
+  const linkedSkill = join(skillsDirectory, sourceId);
+  await mkdir(skillsDirectory, { recursive: true });
+  await symlink(containedSkill, linkedSkill, 'dir');
+
+  const outsideSkill = await createSkill(
+    await tempDirectory('maka-skill-symlink-race-outside-'),
+    sourceId,
+    outsideContent,
+  );
+  await mkdir(join(outsideSkill, '.maka', 'baseline'), { recursive: true });
+  await writeFile(
+    join(outsideSkill, 'skill.lock.json'),
+    `${JSON.stringify(
+      createManagedSkillLock(sourceId, sha256(outsideContent), sha256(outsideContent)),
+      null,
+      2,
+    )}\n`,
+  );
+  await writeFile(join(outsideSkill, '.maka', 'baseline', 'SKILL.md'), outsideContent);
+
+  let redirectAfterScan = false;
+  const repository = fixture.repository(undefined, {
+    beforeManagedInstalledArtifactsRead: async () => {
+      if (!redirectAfterScan) return;
+      redirectAfterScan = false;
+      await rm(linkedSkill);
+      await symlink(outsideSkill, linkedSkill, 'dir');
+    },
+  });
+  const snapshot = await start(repository, fixture.project, 'governance');
+
+  redirectAfterScan = true;
+  const result = await repository.mutate({
+    expectedRevision: snapshot.revision,
+    mutation: {
+      kind: 'update_managed',
+      ref: `workspace:legacy:${sourceId}`,
+      force: false,
+      expectedCurrentSha256: null,
+      expectedSourceSha256: null,
+    },
+  });
+
+  assert.deepEqual(result, { kind: 'rejected', reason: 'metadata_error' });
+  assert.equal(await readFile(join(outsideSkill, 'SKILL.md'), 'utf8'), outsideContent);
+});
+
 test('revision covers exact managed lock and baseline bytes and rejects post-snapshot edits', async () => {
   const fixture = await createFixture();
   const sourceId = 'managed-artifact-race';
@@ -1226,6 +1306,19 @@ async function tempDirectory(prefix: string): Promise<string> {
   return root;
 }
 
+async function makeUnreadable(target: string, restoreMode: number): Promise<() => Promise<void>> {
+  if (process.platform !== 'win32') {
+    await chmod(target, 0o000);
+    return () => chmod(target, restoreMode);
+  }
+  const principal = process.env.USERNAME;
+  assert.ok(principal, 'Windows test identity must be available');
+  await execFileAsync('icacls.exe', [target, '/deny', `${principal}:(R)`]);
+  return async () => {
+    await execFileAsync('icacls.exe', [target, '/remove:d', principal]);
+  };
+}
+
 async function createSkill(parent: string, id: string, content: string): Promise<string> {
   const directory = join(parent, id);
   await mkdir(directory, { recursive: true });
@@ -1312,4 +1405,74 @@ function governanceItem(
 
 function sha256(content: string | Uint8Array): SkillCatalogRevision {
   return `sha256:${createHash('sha256').update(content).digest('hex')}`;
+}
+
+for (const view of ['governance', 'invocable'] as const) {
+  test(`${view} Skill pages preserve every entry when metadata reaches the byte budget`, async () => {
+    const fixture = await createFixture();
+    const ids = Array.from({ length: 80 }, (_, index) => `skill-${String(index).padStart(3, '0')}`);
+    const description = '文🙂'.repeat(120);
+    await Promise.all(
+      ids.map((id) =>
+        createSkill(join(fixture.project, '.maka', 'skills'), id, skillBody(id, description)),
+      ),
+    );
+    const repository = fixture.repository();
+    type Page = Extract<
+      Awaited<ReturnType<typeof repository.query>> | SkillCatalogInvocableQueryResult,
+      { kind: 'page' }
+    >;
+    const pages: Page[] = [];
+    let cursor: string | null = null;
+    let revision: SkillCatalogRevision | undefined;
+    do {
+      const continuation:
+        | { kind: 'start' }
+        | { kind: 'continue'; revision: SkillCatalogRevision; cursor: string } =
+        revision === undefined
+          ? { kind: 'start' as const }
+          : { kind: 'continue' as const, revision, cursor: cursor! };
+      const page: Awaited<ReturnType<typeof repository.query>> | SkillCatalogInvocableQueryResult =
+        view === 'invocable'
+          ? await repository.queryInvocable(
+              continuation,
+              { projectRoot: fixture.project },
+              { toolNames: new Set(['Read']) },
+            )
+          : await repository.query({ ...continuation, view });
+      assert.ok(page.kind === 'page');
+      assert.ok(page.items.length > 0);
+      pages.push(page);
+      assert.ok(pages.length <= ids.length);
+      revision = page.revision;
+      cursor = page.nextCursor;
+    } while (cursor !== null);
+    const items = pages.flatMap((page) => [...page.items]);
+    assert.deepEqual(
+      items.map((item) => item.id),
+      ids,
+    );
+    assert.ok(items.every((item) => item.description === description));
+    assert.ok(pages.length > 1);
+    assert.ok(pages[0]!.items.length < SKILL_CATALOG_PAGE_MAX_ITEMS);
+    assertMaximalJsonPages(pages, items, {
+      maxBytes: SKILL_CATALOG_PAGE_MAX_BYTES,
+      maxItems: SKILL_CATALOG_PAGE_MAX_ITEMS,
+      items: (page) => page.items,
+      candidate: (page, items, end) => ({
+        ...page,
+        items,
+        nextCursor:
+          end === ids.length
+            ? null
+            : Buffer.from(
+                JSON.stringify(
+                  view === 'invocable'
+                    ? { v: 1, kind: 'invocable', offset: end }
+                    : { v: 1, view, offset: end },
+                ),
+              ).toString('base64url'),
+      }),
+    });
+  });
 }

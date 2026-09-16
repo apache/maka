@@ -1,3 +1,15 @@
+---
+doc_id: web-search-provider-capability
+title: "Provider-hosted web search capability"
+language: en
+source_language: en
+implementation_status: current
+document_status: current
+translation_status: source-only
+last_verified: 2026-09-04
+owners:
+  - maka-backend
+---
 <!--
   Licensed to the Apache Software Foundation (ASF) under one
   or more contributor license agreements.  See the NOTICE file
@@ -71,13 +83,19 @@ All production `AiSdkBackend` composition roots use the same
 | Desktop | persisted `webSearch.enabled/defaultProvider` settings | May add provider-native `WebSearch` |
 | CLI / TUI / `maka run` | the same persisted settings | May add provider-native `WebSearch` |
 | Runtime Host | runtime-policy web-search settings | May add provider-native `WebSearch` |
-| Headless Harbor | explicit `MAKA_WEB_SEARCH_ENABLED=true` | May add provider-native `WebSearch` |
 
-Headless remains opt-in because silently enabling network search would change
-benchmark semantics and historical baselines. Merely speaking Anthropic
-Messages is not enough to infer hosted-search support; Maka uses explicit model
-metadata or narrow model-id rules, including DeepSeek V4 Flash on an
-`anthropic-compatible` connection.
+The former Headless Harbor surface was retired by #2605 (2026-08-11, replaced
+by the minimal Eval kernel); its `MAKA_WEB_SEARCH_ENABLED=true` opt-in no
+longer exists. Its opt-in rationale — silently enabling network search would
+change benchmark semantics and historical baselines — now applies to eval
+subjects inverted: current benchmark subjects have no enablement path at all.
+Every subject removes `WebSearch`, `WebFetch`, and `FetchURL` from the
+provider-visible tool list, and the Eval metering proxy structurally strips
+named and provider-native web tools from external-harness requests, so
+results stay comparable across providers and baselines. Merely speaking
+Anthropic Messages is not enough to infer hosted-search support; Maka uses
+explicit model metadata or narrow model-id rules, including DeepSeek V4 Flash
+on an `anthropic-compatible` connection.
 
 An explicit `BackendFactoryContext.tools` list is a hard ceiling. Root surfaces
 may add native search, but scoped child agents do not gain it unless their
@@ -225,18 +243,10 @@ search-heavy workflows that value source visibility over cache economics.
 
 ## Follow-up adapters
 
-Add adapters in this order:
-
-1. Add an opt-in `web_search_20260209` capability for Anthropic deployments
-   that support dynamic filtering; retain `20250305` as the compatibility
-   baseline used by Claude Code and third-party Anthropic-compatible services.
-2. Gemini grounding with Google Search.
-3. Z.AI native model tool. Keep its standalone Search API outside the
-   provider-native path.
-4. OpenRouter web plugin.
-5. Mistral Agents and Groq Compound, after defining their cost and result-row
-   projection contracts.
-
 Every adapter must execute in the primary model request, preserve provider tool
 events and citation metadata, keep credential isolation, and retain explicit
 no-fallback behavior.
+
+Adapter status and ordering live in the tracker rather than a duplicate list in this design.
+
+Tracking: [Provider-native web search #4330](https://github.com/apache/maka/issues/4330)

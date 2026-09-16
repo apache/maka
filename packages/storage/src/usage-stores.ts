@@ -18,6 +18,11 @@
  */
 
 import type {
+  ModelCallUsageBuckets,
+  ModelCallUsageLogs,
+  ModelCallUsageSummary,
+} from '@maka/core/model-call-usage-projection';
+import type {
   PricingConfig,
   UsageBucket,
   UsageGroupBy,
@@ -33,7 +38,6 @@ import {
   ModelCallLedgerClosedError,
   ModelCallLedgerPublicationError,
   type ModelCallLedger,
-  type ModelCallLedgerPage,
   type ModelCallLedgerReader,
 } from './model-call-ledger.js';
 import {
@@ -74,6 +78,7 @@ const writerOpeningByLease = new WeakMap<object, Promise<InteractiveUsageStoresW
 
 export interface TelemetryIndexReader {
   summary(query: UsageQuery): Promise<UsageSummaryV2>;
+  toolSummary(query: UsageQuery): Promise<{ requests: number; durationMs: number }>;
   buckets(query: UsageQuery, groupBy: UsageGroupBy): Promise<UsageBucket[]>;
   logs(
     query: UsageQuery,
@@ -98,14 +103,28 @@ export interface TelemetryIndexWriter extends TelemetryIndexReader {
  * synchronous store beneath it — because every authority read goes through the
  * storage-root lease.
  */
+/** One Usage answer from the canonical ledger, with the rows it could not read. */
+export interface ModelCallLedgerResult<T> {
+  readonly projection: T;
+  readonly unreadableRecords: number;
+}
+
 export interface ModelCallIndexReader {
-  modelCallAttempts(
-    range: {
-      readonly from: number;
-      readonly to: number;
-    },
-    sessionId?: string,
-  ): Promise<ModelCallLedgerPage>;
+  modelCallSummary(
+    query: UsageQuery,
+    now: number,
+  ): Promise<ModelCallLedgerResult<ModelCallUsageSummary>>;
+  modelCallBuckets(
+    query: UsageQuery,
+    groupBy: UsageGroupBy,
+    now: number,
+  ): Promise<ModelCallLedgerResult<ModelCallUsageBuckets>>;
+  modelCallLogs(
+    query: UsageQuery,
+    now: number,
+    offset: number,
+    limit: number,
+  ): Promise<ModelCallLedgerResult<ModelCallUsageLogs>>;
 }
 
 export interface ModelCallIndexWriter extends ModelCallIndexReader {
@@ -454,6 +473,7 @@ function createWriterFacade(
     [writerBrand]: true,
     telemetry: {
       summary: (query) => read(() => telemetry.summary(query)),
+      toolSummary: (query) => read(() => telemetry.toolSummary(query)),
       buckets: (query, groupBy) => read(() => telemetry.buckets(query, groupBy)),
       logs: (query, offset, limit) => read(() => telemetry.logs(query, offset, limit)),
       toolLogs: (query, offset, limit) => read(() => telemetry.toolLogs(query, offset, limit)),
@@ -462,10 +482,14 @@ function createWriterFacade(
       recordLlmCall: (record) =>
         admitSessionUsageMutation(record.sessionId, () => telemetry.insertLlmCall(record)),
       recordToolInvocation: (record) =>
-        admit(() => run(() => telemetry.insertToolInvocation(record))),
+        admitSessionUsageMutation(record.sessionId, () => telemetry.insertToolInvocation(record)),
     },
     modelCalls: {
-      modelCallAttempts: (range, sessionId) => read(() => modelCalls.read(range, sessionId)),
+      modelCallSummary: (query, now) => read(() => modelCalls.summary(query, now)),
+      modelCallBuckets: (query, groupBy, now) =>
+        read(() => modelCalls.buckets(query, groupBy, now)),
+      modelCallLogs: (query, now, offset, limit) =>
+        read(() => modelCalls.logs(query, now, offset, limit)),
       catchUpModelCallProjection: admitModelCallProjectionCatchUp,
     },
     pricing: {
@@ -497,6 +521,7 @@ function telemetryReader(
 ): Readonly<TelemetryIndexReader> {
   return Object.freeze({
     summary: (query: UsageQuery) => run(() => repo.summary(query)),
+    toolSummary: (query: UsageQuery) => run(() => repo.toolSummary(query)),
     buckets: (query: UsageQuery, groupBy: UsageGroupBy) => run(() => repo.buckets(query, groupBy)),
     logs: (query: UsageQuery, offset?: number, limit?: number) =>
       run(() => repo.logs(query, offset, limit)),
@@ -512,10 +537,11 @@ function modelCallReader(
   run: <T>(operation: () => T | Promise<T>) => Promise<T>,
 ): Readonly<ModelCallIndexReader> {
   return Object.freeze({
-    modelCallAttempts: (
-      range: { readonly from: number; readonly to: number },
-      sessionId?: string,
-    ) => run(() => ledger.read(range, sessionId)),
+    modelCallSummary: (query: UsageQuery, now: number) => run(() => ledger.summary(query, now)),
+    modelCallBuckets: (query: UsageQuery, groupBy: UsageGroupBy, now: number) =>
+      run(() => ledger.buckets(query, groupBy, now)),
+    modelCallLogs: (query: UsageQuery, now: number, offset: number, limit: number) =>
+      run(() => ledger.logs(query, now, offset, limit)),
   });
 }
 

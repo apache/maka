@@ -405,7 +405,7 @@ test('refuses a mounted toolchain that is not the pinned tree', async () => {
       ...externalCell({
         command: '/opt/maka-node-toolchain/bin/node',
         args: [
-          '/opt/maka-agent/packages/eval/dist/harbor-external-subject.js',
+          '/opt/maka-agent/node_modules/@maka/eval/dist/harbor-external-subject.js',
           'codex',
           'https://api.deepseek.com',
           '/',
@@ -469,7 +469,7 @@ test('a verified toolchain reaches the subject and its later attempts', async ()
       ...externalCell({
         command: '/opt/maka-node-toolchain/bin/node',
         args: [
-          '/opt/maka-agent/packages/eval/dist/harbor-external-subject.js',
+          '/opt/maka-agent/node_modules/@maka/eval/dist/harbor-external-subject.js',
           'codex',
           'https://api.deepseek.com',
           '/',

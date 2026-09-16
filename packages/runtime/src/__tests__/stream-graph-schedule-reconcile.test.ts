@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred, nextId } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import type {
@@ -1145,24 +1146,7 @@ class MemoryStopController {
     this.observation.stopSession(sessionId);
   }
 }
-
-function nextId(): () => string {
-  let value = 0;
-  return () => `schedule-id-${++value}`;
-}
-
 function nextNumber(start: number): () => number {
   let value = start;
   return () => value++;
-}
-
-function deferred<T>(): {
-  promise: Promise<T>;
-  resolve(value: T): void;
-} {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((next) => {
-    resolve = next;
-  });
-  return { promise, resolve };
 }

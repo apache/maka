@@ -24,6 +24,7 @@ import { join } from 'node:path';
 import { describe, test } from 'node:test';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
+import { deferred, withTimeout } from '@maka/core/test-only/async-primitives';
 import {
   AGENT_GRAPH_INTENT_CLAIM_SCHEMA_VERSION,
   type AgentGraphIntentClaim,
@@ -33,7 +34,10 @@ import {
   type AgentGraphOperatorProvision,
 } from '@maka/core/agent-graph-topology';
 import { type AgentGraphScheduleUpdate } from '@maka/core/agent-graph-schedule';
-import { type AgentRunHeader } from '@maka/core/agent-run';
+import {
+  runtimeInvocationOutcome,
+  type RuntimeInvocationRecord,
+} from '@maka/core/runtime-invocation';
 import { type RuntimeEvent } from '@maka/core/runtime-event';
 import { OPERATIONAL_STATE_DATABASE_NAME } from '@maka/storage/operational-state-store';
 import { createSessionStore, isSessionNotFoundError } from '@maka/storage/session-store';
@@ -61,6 +65,7 @@ import {
   type UpdateAgentGraphToolInput,
 } from '../stream-graph-supervisor-tools.js';
 import { projectAgentGraphRecords } from '../stream-graph-projection.js';
+import { testInvocationOpening } from './invocation-fixture.js';
 
 describe('host-managed agent graph coordinator', () => {
   test('authorizes only selected committed results from an earlier epoch of the same root', async () => {
@@ -68,20 +73,34 @@ describe('host-managed agent graph coordinator', () => {
     const rootSessionId = 'root-session';
     const sourceGraphId = agentGraphIdForRootSession(rootSessionId);
     const currentGraphId = agentGraphIdForRootSessionEpoch(rootSessionId, 2);
-    const sourceRun: AgentRunHeader = {
+    const sourceRun: RuntimeInvocationRecord = {
       sessionId: 'source-child',
       runId: 'source-run',
       turnId: 'source-turn',
       invocationId: 'source-invocation',
-      backendKind: 'fake',
-      llmConnectionSlug: 'fake',
-      modelId: 'fake',
-      cwd: '/workspace',
-      permissionMode: 'explore',
-      status: 'completed',
-      createdAt: 1,
-      updatedAt: 2,
-      completedAt: 2,
+      openedAt: 1,
+      opening: testInvocationOpening({
+        route: {
+          provenance: 'runtime',
+          backendKind: 'fake',
+          llmConnectionId: 'fake-connection',
+          llmConnectionSlug: 'fake',
+          modelId: 'fake',
+        },
+        configuration: { cwd: '/workspace', permissionMode: 'explore' },
+      }),
+      terminalEvent: {
+        id: 'source-terminal',
+        sessionId: 'source-child',
+        invocationId: 'source-invocation',
+        runId: 'source-run',
+        turnId: 'source-turn',
+        ts: 2,
+        partial: false,
+        role: 'system',
+        author: 'system',
+        status: 'completed',
+      },
     };
     const sourceEvent: RuntimeEvent = {
       id: 'source-result-event',
@@ -152,11 +171,9 @@ describe('host-managed agent graph coordinator', () => {
         readHeader: async (sessionId: string) =>
           ({ id: sessionId, status: 'active', isArchived: false }) as never,
       },
-      runStore: {
-        listSessionRuns: async (sessionId: string) =>
-          sessionId === sourceRun.sessionId ? [sourceRun] : [],
-      },
       runtimeEventStore: {
+        listSessionInvocations: async (sessionId: string) =>
+          sessionId === sourceRun.sessionId ? [sourceRun] : [],
         readImmutableRuntimeEvents: async (sessionId, runId) =>
           sessionId === sourceRun.sessionId && runId === sourceRun.runId ? [sourceEvent] : [],
       },
@@ -307,7 +324,7 @@ describe('host-managed agent graph coordinator', () => {
       })) {
         // Drain the ordinary root turn so its source AgentRun is durable.
       }
-      const sourceRun = (await runStore.listSessionRuns(rootSession.id)).find(
+      const sourceRun = (await runtimeEventStore.listSessionInvocations(rootSession.id)).find(
         (run) => run.turnId === sourceTurnId,
       );
       assert.ok(sourceRun);
@@ -329,11 +346,14 @@ describe('host-managed agent graph coordinator', () => {
           return { kind: 'completed', turnId: input.turnId };
         },
         inspectAttempt: async (sessionId, attemptId, turnId) => {
-          const run = (await runStore.listSessionRuns(sessionId)).find(
+          const run = (await runtimeEventStore.listSessionInvocations(sessionId)).find(
             (candidate) =>
-              candidate.agentGraphWakeAttemptId === attemptId && candidate.turnId === turnId,
+              candidate.opening.root.kind === 'agent_graph_supervisor_wake' &&
+              candidate.opening.root.attemptId === attemptId &&
+              candidate.turnId === turnId,
           );
-          return run?.status ?? 'missing';
+          if (!run) return 'missing';
+          return runtimeInvocationOutcome(run) ?? 'running';
         },
         newId: randomUUID,
         onError: (_rootSessionId, error) => {
@@ -424,15 +444,32 @@ describe('host-managed agent graph coordinator', () => {
         ),
         'the original root Agent must run again and produce a deliverable response',
       );
-      const wakeRun = (await runStore.listSessionRuns(rootSession.id)).find(
+      const wakeRun = (await runtimeEventStore.listSessionInvocations(rootSession.id)).find(
         (run) => run.turnId === graphWake.turnId,
       );
       assert.ok(wakeRun);
-      assert.equal(wakeRun.agentGraphWakeId, graphWake.origin.wakeId);
-      assert.equal(wakeRun.agentGraphWakeAttemptId, graphWake.origin.attemptId);
+      assert.deepEqual(wakeRun.opening.root, {
+        kind: 'agent_graph_supervisor_wake',
+        wakeId: graphWake.origin.wakeId,
+        attemptId: graphWake.origin.attemptId,
+      });
+      const wakeEvents = await runtimeEventStore.readImmutableRuntimeEvents(
+        rootSession.id,
+        wakeRun.runId,
+      );
+      assert.deepEqual(
+        wakeEvents[0]?.content?.kind === 'invocation_opened'
+          ? wakeEvents[0].content.root
+          : undefined,
+        {
+          kind: 'agent_graph_supervisor_wake',
+          wakeId: graphWake.origin.wakeId,
+          attemptId: graphWake.origin.attemptId,
+        },
+        'the opening fact must name the host authority that woke this invocation',
+      );
       assert.equal(
-        (await runtimeEventStore.readImmutableRuntimeEvents(rootSession.id, wakeRun.runId))[0]
-          ?.author,
+        wakeEvents[1]?.author,
         'host',
         'canonical provenance must distinguish the host-authored wake from human input',
       );
@@ -738,8 +775,10 @@ describe('host-managed agent graph coordinator', () => {
           throw new Error('wake must fail before reading the Session');
         },
       },
-      runStore: { listSessionRuns: async () => [] },
-      runtimeEventStore: { readImmutableRuntimeEvents: async () => [] },
+      runtimeEventStore: {
+        listSessionInvocations: async () => [],
+        readImmutableRuntimeEvents: async () => [],
+      },
       controlStore,
       epochStore: {
         resolveCurrentAgentGraphEpoch: async () => {
@@ -797,8 +836,10 @@ describe('host-managed agent graph coordinator', () => {
           } as never;
         },
       },
-      runStore: { listSessionRuns: async () => [] },
-      runtimeEventStore: { readImmutableRuntimeEvents: async () => [] },
+      runtimeEventStore: {
+        listSessionInvocations: async () => [],
+        readImmutableRuntimeEvents: async () => [],
+      },
       controlStore,
       epochStore: {
         resolveCurrentAgentGraphEpoch: async () => {
@@ -894,8 +935,10 @@ describe('host-managed agent graph coordinator', () => {
           throw new Error('removed Session header must not be read during cleanup');
         },
       },
-      runStore: { listSessionRuns: async () => [] },
-      runtimeEventStore: { readImmutableRuntimeEvents: async () => [] },
+      runtimeEventStore: {
+        listSessionInvocations: async () => [],
+        readImmutableRuntimeEvents: async () => [],
+      },
       controlStore,
       epochStore: {
         resolveCurrentAgentGraphEpoch: async () => epochs[0]!,
@@ -933,13 +976,16 @@ describe('host-managed agent graph coordinator', () => {
     }
   });
 
-  test('advances only a finished and quiescent graph to a deterministic next epoch', async () => {
+  test('advances only a finished and quiescent graph without waiting for old operator cleanup', async (t) => {
     const root = await mkdtemp(join(tmpdir(), 'maka-graph-epoch-cutover-'));
     const controlStore = createSqliteSessionMetadataStore(
       join(root, OPERATIONAL_STATE_DATABASE_NAME),
     );
     const rootSessionId = 'root-session';
     const graphId = agentGraphIdForRootSession(rootSessionId);
+    const stopStarted = deferred();
+    const releaseStop = deferred();
+    let stopping: Promise<void> | undefined;
     const coordinator = new AgentGraphCoordinator({
       sessionStore: {
         listForRecovery: async () => [],
@@ -951,8 +997,10 @@ describe('host-managed agent graph coordinator', () => {
             orchestrationMode: 'graph',
           }) as never,
       },
-      runStore: { listSessionRuns: async () => [] },
-      runtimeEventStore: { readImmutableRuntimeEvents: async () => [] },
+      runtimeEventStore: {
+        listSessionInvocations: async () => [],
+        readImmutableRuntimeEvents: async () => [],
+      },
       controlStore,
       epochStore: controlStore,
       runtime: {
@@ -962,7 +1010,10 @@ describe('host-managed agent graph coordinator', () => {
         runClaimedAgentGraphIntent: async () => {
           throw new Error('epoch cutover cannot dispatch operators');
         },
-        stopSession: async () => {},
+        stopSession: async () => {
+          stopStarted.resolve();
+          await releaseStop.promise;
+        },
       },
       newId: randomUUID,
     });
@@ -988,7 +1039,33 @@ describe('host-managed agent graph coordinator', () => {
           context: toolContext(rootSessionId, 'run-root', 'turn-root', 'tool-finish'),
         }),
       );
-      const next = await coordinator.beginNextGraphEpoch(rootSessionId, withWakesSuppressed);
+      t.mock.method(controlStore, 'listAgentGraphOperatorProvisions', async (id: string) =>
+        id === graphId
+          ? [
+              {
+                schemaVersion: AGENT_GRAPH_OPERATOR_PROVISION_SCHEMA_VERSION,
+                graphId,
+                provisionId: `graph_provision_${'1'.repeat(32)}`,
+                provisionFingerprint: `sha256:${'2'.repeat(64)}`,
+                workId: `graph_work_${'3'.repeat(32)}`,
+                agentId: 'agent',
+                operatorId: `graph_operator_${'4'.repeat(32)}`,
+                targetSessionId: 'child-session',
+                initialTurnId: 'child-turn',
+                initialRunId: 'child-run',
+                provisionedAt: 1,
+                edges: [],
+              },
+            ]
+          : [],
+      );
+      stopping = coordinator.stop(rootSessionId);
+      await stopStarted.promise;
+      const next = await withTimeout(
+        coordinator.beginNextGraphEpoch(rootSessionId, withWakesSuppressed),
+        5_000,
+        'a terminal epoch must not block the next turn on old operator cleanup',
+      );
       assert.equal(next.epoch, 2);
       assert.equal(next.graphId, agentGraphIdForRootSessionEpoch(rootSessionId, 2));
       assert.equal(suppressions, 1);
@@ -1007,6 +1084,8 @@ describe('host-managed agent graph coordinator', () => {
         ],
       );
     } finally {
+      releaseStop.resolve();
+      await stopping;
       await coordinator.close();
       controlStore.close();
       await rm(root, { recursive: true, force: true });
@@ -1028,8 +1107,10 @@ describe('host-managed agent graph coordinator', () => {
             orchestrationMode: 'graph',
           }) as never,
       },
-      runStore: { listSessionRuns: async () => [] },
-      runtimeEventStore: { readImmutableRuntimeEvents: async () => [] },
+      runtimeEventStore: {
+        listSessionInvocations: async () => [],
+        readImmutableRuntimeEvents: async () => [],
+      },
       controlStore,
       epochStore: controlStore,
       runtime: {
@@ -1118,7 +1199,7 @@ describe('host-managed agent graph coordinator', () => {
       })) {
         // Drain the source turn so its AgentRun is durable.
       }
-      const sourceRun = (await runStore.listSessionRuns(rootSession.id)).find(
+      const sourceRun = (await runtimeEventStore.listSessionInvocations(rootSession.id)).find(
         (run) => run.turnId === sourceTurnId,
       );
       assert.ok(sourceRun);
@@ -1132,7 +1213,6 @@ describe('host-managed agent graph coordinator', () => {
       const create = () =>
         new AgentGraphCoordinator({
           sessionStore,
-          runStore,
           runtimeEventStore,
           controlStore,
           runtime: failingRuntime,
@@ -1217,8 +1297,10 @@ describe('host-managed agent graph coordinator', () => {
             isArchived: true,
           }) as never,
       },
-      runStore: { listSessionRuns: async () => [] },
-      runtimeEventStore: { readImmutableRuntimeEvents: async () => [] },
+      runtimeEventStore: {
+        listSessionInvocations: async () => [],
+        readImmutableRuntimeEvents: async () => [],
+      },
       epochStore: {
         resolveCurrentAgentGraphEpoch: async () => ({
           schemaVersion: 1,
@@ -1317,7 +1399,7 @@ describe('host-managed agent graph coordinator', () => {
     await coordinator.close();
   });
 
-  test('fences retirement from durable open and closing graph state, not a stale client projection', async () => {
+  test('classifies retirement from durable graph state, not a stale client projection', async () => {
     const rootSessionId = 'root-session';
     const childSessionId = 'child-session';
     const graphId = agentGraphIdForRootSession(rootSessionId);
@@ -1343,6 +1425,19 @@ describe('host-managed agent graph coordinator', () => {
       committedAt: 10,
     };
     const workId = addUpdate.addWork[0]!.workId;
+    const stopRequest = compileAgentGraphScheduleUpdate({
+      graphId,
+      input: {
+        operation: 'stop',
+        stop: [{ target_id: workId, reason: 'The work was stopped by the user.' }],
+      },
+      context: toolContext(rootSessionId, 'root-run', 'root-turn', 'stop-work'),
+    });
+    const stopUpdate: AgentGraphScheduleUpdate = {
+      ...stopRequest,
+      revision: 2,
+      committedAt: 20,
+    };
     const finishRequest = compileAgentGraphScheduleUpdate({
       graphId,
       input: {
@@ -1387,19 +1482,22 @@ describe('host-managed agent graph coordinator', () => {
       targetRunId: runId,
       claimedAt: 12,
     };
-    const runningRun: AgentRunHeader = {
+    const runningRun: RuntimeInvocationRecord = {
       sessionId: childSessionId,
+      invocationId: 'child-invocation',
       runId,
       turnId,
-      invocationId: 'child-invocation',
-      backendKind: 'fake',
-      llmConnectionSlug: 'fake',
-      modelId: 'fake',
-      cwd: '/workspace',
-      permissionMode: 'explore',
-      status: 'running',
-      createdAt: 12,
-      updatedAt: 12,
+      openedAt: 12,
+      opening: testInvocationOpening({
+        route: {
+          provenance: 'runtime',
+          backendKind: 'fake',
+          llmConnectionId: 'fake-connection',
+          llmConnectionSlug: 'fake',
+          modelId: 'fake',
+        },
+        configuration: { cwd: '/workspace', permissionMode: 'explore' },
+      }),
     };
     const runningEvent: RuntimeEvent = {
       id: 'child-started',
@@ -1416,7 +1514,7 @@ describe('host-managed agent graph coordinator', () => {
     let scheduleUpdates: AgentGraphScheduleUpdate[] = [];
     let provisions: AgentGraphOperatorProvision[] = [];
     let claims: AgentGraphIntentClaim[] = [];
-    let runs: AgentRunHeader[] = [runningRun];
+    let runs: RuntimeInvocationRecord[] = [runningRun];
     let runtimeEvents: RuntimeEvent[] = [runningEvent];
     let projection:
       | {
@@ -1438,8 +1536,10 @@ describe('host-managed agent graph coordinator', () => {
             isArchived: false,
           }) as never,
       },
-      runStore: { listSessionRuns: async () => runs },
-      runtimeEventStore: { readImmutableRuntimeEvents: async () => runtimeEvents },
+      runtimeEventStore: {
+        listSessionInvocations: async () => runs,
+        readImmutableRuntimeEvents: async () => runtimeEvents,
+      },
       controlStore: {
         listAgentGraphOperatorProvisions: async () => provisions,
         listAgentGraphScheduleUpdates: async () => scheduleUpdates,
@@ -1486,18 +1586,92 @@ describe('host-managed agent graph coordinator', () => {
     try {
       assert.equal((await coordinator.getSnapshot(rootSessionId)).scheduleRevision, 0);
       assert.equal(await coordinator.readSessionState(rootSessionId), 'absent');
+      assert.deepEqual(await coordinator.readRetirementDisposition(rootSessionId), {
+        kind: 'clear',
+      });
 
       scheduleUpdates = [addUpdate];
       assert.equal(await coordinator.readSessionState(rootSessionId), 'live');
       assert.equal(await coordinator.hasLiveSessionState(rootSessionId), true);
+      assert.deepEqual(await coordinator.readRetirementDisposition(rootSessionId), {
+        kind: 'busy',
+        status: 'waiting',
+      });
 
-      scheduleUpdates = [addUpdate, finishUpdate];
       provisions = [provision];
       claims = [claim];
+      assert.deepEqual(await coordinator.readRetirementDisposition(rootSessionId), {
+        kind: 'busy',
+        status: 'active',
+      });
+
+      scheduleUpdates = [addUpdate, stopUpdate];
+      runs = [
+        {
+          ...runningRun,
+          terminalEvent: {
+            id: 'child-aborted-terminal',
+            sessionId: childSessionId,
+            invocationId: 'child-invocation',
+            runId,
+            turnId,
+            ts: 14,
+            partial: false,
+            role: 'system',
+            author: 'system',
+            status: 'aborted',
+          },
+        },
+      ];
+      runtimeEvents = [
+        runningEvent,
+        {
+          id: 'child-aborted',
+          invocationId: 'child-invocation',
+          sessionId: childSessionId,
+          runId,
+          turnId,
+          ts: 14,
+          role: 'system',
+          author: 'system',
+          partial: false,
+          status: 'aborted',
+          actions: { endInvocation: true },
+        },
+      ];
       assert.equal(await coordinator.readSessionState(rootSessionId), 'live');
       assert.equal(await coordinator.hasLiveSessionState(rootSessionId), true);
+      assert.deepEqual(await coordinator.readRetirementDisposition(rootSessionId), {
+        kind: 'quiescent_open',
+      });
 
-      runs = [{ ...runningRun, status: 'completed', completedAt: 14, updatedAt: 14 }];
+      scheduleUpdates = [addUpdate, finishUpdate];
+      runs = [runningRun];
+      runtimeEvents = [runningEvent];
+      assert.equal(await coordinator.readSessionState(rootSessionId), 'live');
+      assert.equal(await coordinator.hasLiveSessionState(rootSessionId), true);
+      assert.deepEqual(await coordinator.readRetirementDisposition(rootSessionId), {
+        kind: 'busy',
+        status: 'closing',
+      });
+
+      runs = [
+        {
+          ...runningRun,
+          terminalEvent: {
+            id: 'child-terminal',
+            sessionId: childSessionId,
+            invocationId: 'child-invocation',
+            runId,
+            turnId,
+            ts: 14,
+            partial: false,
+            role: 'system',
+            author: 'system',
+            status: 'completed',
+          },
+        },
+      ];
       runtimeEvents = [
         runningEvent,
         {
@@ -1516,6 +1690,47 @@ describe('host-managed agent graph coordinator', () => {
       ];
       assert.equal(await coordinator.readSessionState(rootSessionId), 'terminal');
       assert.equal(await coordinator.hasLiveSessionState(rootSessionId), false);
+      assert.deepEqual(await coordinator.readRetirementDisposition(rootSessionId), {
+        kind: 'clear',
+      });
+
+      scheduleUpdates = [addUpdate];
+      runs = [
+        {
+          ...runningRun,
+          terminalEvent: {
+            id: 'child-failed-terminal',
+            sessionId: childSessionId,
+            invocationId: 'child-invocation',
+            runId,
+            turnId,
+            ts: 15,
+            partial: false,
+            role: 'system',
+            author: 'system',
+            status: 'failed',
+          },
+        },
+      ];
+      runtimeEvents = [
+        runningEvent,
+        {
+          id: 'child-failed',
+          invocationId: 'child-invocation',
+          sessionId: childSessionId,
+          runId,
+          turnId,
+          ts: 15,
+          role: 'system',
+          author: 'system',
+          partial: false,
+          status: 'failed',
+          actions: { endInvocation: true },
+        },
+      ];
+      assert.deepEqual(await coordinator.readRetirementDisposition(rootSessionId), {
+        kind: 'quiescent_open',
+      });
     } finally {
       await coordinator.close();
     }
@@ -1533,8 +1748,10 @@ describe('host-managed agent graph coordinator', () => {
             isArchived: false,
           }) as never,
       },
-      runStore: { listSessionRuns: async () => [] },
-      runtimeEventStore: { readImmutableRuntimeEvents: async () => [] },
+      runtimeEventStore: {
+        listSessionInvocations: async () => [],
+        readImmutableRuntimeEvents: async () => [],
+      },
       controlStore: {
         listAgentGraphOperatorProvisions: async () => {
           throw topologyFailure;
@@ -1583,8 +1800,10 @@ describe('host-managed agent graph coordinator', () => {
             isArchived: false,
           }) as never,
       },
-      runStore: { listSessionRuns: async () => [] },
-      runtimeEventStore: { readImmutableRuntimeEvents: async () => [] },
+      runtimeEventStore: {
+        listSessionInvocations: async () => [],
+        readImmutableRuntimeEvents: async () => [],
+      },
       controlStore: {
         listAgentGraphOperatorProvisions: async () =>
           ['a', 'b'].map((suffix, index) => ({
@@ -1663,8 +1882,10 @@ describe('host-managed agent graph coordinator', () => {
             isArchived: false,
           }) as never,
       },
-      runStore: { listSessionRuns: async () => [] },
-      runtimeEventStore: { readImmutableRuntimeEvents: async () => [] },
+      runtimeEventStore: {
+        listSessionInvocations: async () => [],
+        readImmutableRuntimeEvents: async () => [],
+      },
       controlStore: gatedStore,
       runtime: {
         provisionAgentGraphOperator: async () => {

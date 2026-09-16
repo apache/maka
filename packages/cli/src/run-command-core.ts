@@ -82,7 +82,7 @@ export interface MakaRunOutcome {
   status: 'completed' | 'failed';
   finalOutput?: string;
   failure?: { class: string; message?: string };
-  sandboxBoundary: 'none' | 'unresolved' | 'recovered';
+  sandboxBoundary: 'none' | 'unresolved';
 }
 
 export interface MakaRunContextInput {
@@ -280,8 +280,7 @@ export async function runMakaTextCliCore(
   }
 
   let outcome: MakaRunOutcome | undefined;
-  let unclassifiedBoundaryFailure = false;
-  const boundaryFailureInvocationIds = new Set<string>();
+  let boundaryFailure = false;
   let context: MakaRunContext;
   try {
     context = await deps.createContext({
@@ -311,13 +310,7 @@ export async function runMakaTextCliCore(
       ...(parsed.options.hostProfileId ? { hostProfileId: parsed.options.hostProfileId } : {}),
       ...(parsed.options.projectId ? { projectId: parsed.options.projectId } : {}),
       runOutcomeObserver: (result) => {
-        if (result.sandboxBoundary === 'recovered') {
-          boundaryFailureInvocationIds.delete(result.outcomeId);
-          unclassifiedBoundaryFailure = false;
-        } else if (result.sandboxBoundary === 'unresolved') {
-          boundaryFailureInvocationIds.add(result.outcomeId);
-          unclassifiedBoundaryFailure = false;
-        }
+        if (result.sandboxBoundary === 'unresolved') boundaryFailure = true;
         outcome = result;
       },
     });
@@ -403,7 +396,7 @@ export async function runMakaTextCliCore(
         : {}),
     })) {
       if (event.type === 'sandbox_boundary_request') {
-        unclassifiedBoundaryFailure = true;
+        boundaryFailure = true;
         deps.writeStderr(
           'maka run: sandbox boundary expansion is unavailable in non-interactive mode\n',
         );
@@ -414,7 +407,7 @@ export async function runMakaTextCliCore(
       }
       const sandboxFailureReason = sessionEventSandboxBoundaryFailureReason(event);
       if (sandboxFailureReason) {
-        unclassifiedBoundaryFailure = true;
+        boundaryFailure = true;
         deps.writeStderr(
           sandboxFailureReason === 'requires_bypass'
             ? 'maka run: sandbox bypass requires an explicit --yolo\n'
@@ -446,9 +439,7 @@ export async function runMakaTextCliCore(
     return 1;
   }
   if (streamFailed) return 1;
-  if (unclassifiedBoundaryFailure || boundaryFailureInvocationIds.size > 0) {
-    return 1;
-  }
+  if (boundaryFailure) return 1;
   if (!outcome) {
     deps.writeStderr('maka run: runtime produced no outcome\n');
     return 1;

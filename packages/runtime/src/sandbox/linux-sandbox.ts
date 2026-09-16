@@ -18,7 +18,7 @@
  */
 
 import { posix } from 'node:path';
-import { readdirSync } from 'node:fs';
+import { fstatSync, readdirSync } from 'node:fs';
 
 import type { PermissionProfile } from '@maka/core/permission-profile';
 
@@ -29,7 +29,6 @@ import {
 } from './linux-capability.js';
 import type {
   SandboxBackend,
-  SandboxCapabilityProbeResult,
   SandboxCommand,
   SandboxPathContext,
   SandboxTransformRequest,
@@ -102,18 +101,6 @@ export class LinuxBubblewrapBackend implements SandboxBackend {
     return validateLinuxProfile(profile, this.options.arch ?? process.arch).ok;
   }
 
-  probe(request: SandboxTransformRequest): SandboxCapabilityProbeResult {
-    const plan = this.plan(request);
-    if (!plan.ok) return plan;
-    return {
-      ok: true,
-      executable: plan.bwrapPath,
-      sandboxType: 'linux',
-      requiresSandbox: true,
-      preference: plan.preference,
-    };
-  }
-
   transform(request: SandboxTransformRequest): SandboxTransformResult {
     const { command } = request;
     const plan = this.plan(request);
@@ -139,13 +126,21 @@ export class LinuxBubblewrapBackend implements SandboxBackend {
       );
     }
 
-    const pinnedFdInputs = command.pathContext.pinnedProfilePaths?.map(
-      ({ fd, sourceFd, releaseSource }) => ({
+    const exactReadableRoots = exactProfileRoots(command.profile, 'read');
+    const pinnedFdInputs = command.pathContext.pinnedProfilePaths
+      ?.filter(
+        (entry) =>
+          !(
+            entry.access === 'read' &&
+            exactReadableRoots.has(entry.path) &&
+            fstatSync(entry.sourceFd).isDirectory()
+          ),
+      )
+      .map(({ fd, sourceFd, releaseSource }) => ({
         fd,
         sourceFd,
         ...(releaseSource ? { releaseSource } : {}),
-      }),
-    );
+      }));
     const pinnedRuntimeWritableFdInputs = command.pathContext.pinnedRuntimeWritableRoots?.map(
       ({ fd, sourceFd, releaseSource }) => ({
         fd,
@@ -269,10 +264,6 @@ function buildBubblewrapArgvWithRoots(
     argv.push('--unshare-net', '--seccomp', '3');
   }
 
-  for (const path of DEFAULT_READ_ONLY_HOST_PATHS) {
-    argv.push('--ro-bind-try', path, path);
-  }
-
   const runtimeWritableRoots = removeNestedRoots(
     (command.pathContext.runtimeWritableRoots ?? []).filter(isUsableRuntimeRoot),
   );
@@ -353,6 +344,19 @@ function buildBubblewrapArgvWithRoots(
   for (const directory of requiredParentDirectories(mountRoots)) {
     argv.push('--dir', directory);
   }
+  // Materialize exact directory markers before any host bind. Creating them
+  // inside an already-mounted tree could follow concurrently replaced symlinks.
+  const exactReadableDirectories = new Set(
+    profileReadableRoots.filter((root) => {
+      const pinned = pinnedProfilePaths.get(root);
+      return exactReadableRoots.has(root) && pinned && fstatSync(pinned.sourceFd).isDirectory();
+    }),
+  );
+  for (const directory of exactReadableDirectories) argv.push('--dir', directory);
+
+  for (const path of DEFAULT_READ_ONLY_HOST_PATHS) {
+    argv.push('--ro-bind-try', path, path);
+  }
 
   for (const directory of extraProgramDirectories) {
     argv.push('--ro-bind', directory, directory);
@@ -375,6 +379,7 @@ function buildBubblewrapArgvWithRoots(
   for (const root of profileReadableRoots) {
     const pinned = pinnedProfilePaths.get(root);
     if (exactReadableRoots.has(root) && !pinned) continue;
+    if (exactReadableDirectories.has(root)) continue;
     argv.push('--ro-bind', pinned ? `/proc/self/fd/${pinned.fd}` : root, root);
   }
   for (const root of profileWritableRoots) {

@@ -22,6 +22,7 @@ import { describe, it } from 'node:test';
 
 import {
   normalizeBranchFromTurnInput,
+  normalizeClientCapabilityResponse,
   normalizeRegenerateTurnInput,
   normalizeReviseBeforeTurnInput,
   normalizeRuntimeHostBranchFromTurnInput,
@@ -50,6 +51,14 @@ describe('permission response IPC boundary', () => {
       }),
       { requestId: 'question-1', answers: ['Option A', null] },
     );
+    assert.deepEqual(
+      normalizeClientCapabilityResponse({
+        requestId: 'capability-1',
+        decision: 'allow',
+        ignored: true,
+      }),
+      { requestId: 'capability-1', decision: 'allow' },
+    );
 
     const invalidPermissionResponses = [
       null,
@@ -59,6 +68,12 @@ describe('permission response IPC boundary', () => {
     ];
     for (const response of invalidPermissionResponses) {
       assert.throws(() => normalizeSandboxBoundaryResponse(response), /sandbox boundary response/);
+    }
+    for (const response of invalidPermissionResponses) {
+      assert.throws(
+        () => normalizeClientCapabilityResponse(response),
+        /Client Capability response/,
+      );
     }
 
     const invalidQuestionResponses = [
@@ -77,6 +92,11 @@ describe('permission response IPC boundary', () => {
       sourceTurnId: 'turn-2',
       turnId: 'turn-3',
     });
+    // A through-turn branch keeps its sourceTurnId; a spurious copyId is dropped.
+    assert.deepEqual(
+      normalizeBranchFromTurnInput({ sourceTurnId: 'turn-legacy', copyId: 'ignored-here' }),
+      { sourceTurnId: 'turn-legacy' },
+    );
     assert.deepEqual(
       normalizeBranchFromTurnInput({
         sourceTurnId: 'turn-3',
@@ -84,7 +104,16 @@ describe('permission response IPC boundary', () => {
         sideConversation: true,
         ignored: 1,
       }),
-      { sourceTurnId: 'turn-3', name: 'Branch name', sideConversation: true },
+      {
+        sourceTurnId: 'turn-3',
+        name: 'Branch name',
+        sideConversation: true,
+      },
+    );
+    // An empty side-conversation branch omits sourceTurnId entirely.
+    assert.deepEqual(
+      normalizeBranchFromTurnInput({ sideConversation: true }),
+      { sideConversation: true },
     );
     assert.deepEqual(
       normalizeRuntimeHostBranchFromTurnInput({
@@ -115,11 +144,23 @@ describe('permission response IPC boundary', () => {
 
     const invalidActions: Array<() => unknown> = [
       () => normalizeRegenerateTurnInput({ sourceTurnId: 'turn-1', turnId: 1 }),
-      () => normalizeBranchFromTurnInput({ sourceTurnId: 'turn-1', name: 1 }),
-      () => normalizeBranchFromTurnInput({ sourceTurnId: 'turn-1', sideConversation: 'yes' }),
-      () => normalizeBranchFromTurnInput({ sourceTurnId: 'x'.repeat(129) }),
+      () =>
+        normalizeBranchFromTurnInput({
+          sourceTurnId: 'turn-1',
+          name: 1,
+        }),
+      () =>
+        normalizeBranchFromTurnInput({
+          sourceTurnId: 'turn-1',
+          sideConversation: 'yes',
+        }),
+      () =>
+        normalizeBranchFromTurnInput({ sourceTurnId: 'x'.repeat(129) }),
       () => normalizeReviseBeforeTurnInput({ sourceTurnId: 1 }),
-      () => normalizeRuntimeHostBranchFromTurnInput({ sourceTurnId: 'turn-1' }),
+      () =>
+        normalizeRuntimeHostBranchFromTurnInput({
+          sourceTurnId: 'turn-1',
+        }),
       () => normalizeRuntimeHostReviseBeforeTurnInput({ sourceTurnId: 'turn-1', copyId: '' }),
     ];
     for (const action of invalidActions) assert.throws(action, /Invalid/);
@@ -205,6 +246,15 @@ describe('permission response IPC boundary', () => {
       { type: 'send', text: '' },
       { type: 'send', text: 'x'.repeat(128_001) },
       { type: 'send', text: 'ok', retainedAttachments: [{ name: 'broken' }] },
+      // Junk attachment items must not satisfy the empty-body check
+      // (#4815 review reachability ③).
+      { type: 'send', text: '', attachmentItems: [null] },
+      { type: 'send', text: '', attachmentItems: [{}] },
+      { type: 'send', text: '', attachmentItems: [{ approvalId: 7 }] },
+      { type: 'send', text: 'hello', attachmentItems: 'notes.txt' },
+      // A raw File carrier never crosses the preload: it is encoded to inline
+      // base64 bytes before IPC, and main resolves only the encoded shapes.
+      { type: 'send', text: 'hello', attachmentItems: [{ file: {} }] },
       { type: 'send', text: 'hello', turnId: 1 },
       { type: 'send', text: 'hello', skillIds: ['/bad'] },
       { type: 'send', text: 'hello', turnOrchestration: { mode: 'swarm', source: 'prompt' } },
@@ -243,6 +293,46 @@ describe('permission response IPC boundary', () => {
       () => normalizeSessionSendCommand({ type: 'send', text: '   ' }),
       /Invalid send text/,
     );
+  });
+
+  it('accepts a retained-attachment-only edit without inline text', () => {
+    // A normal edit can keep an existing attachment while dropping all inline
+    // text; the retained refs travel separately from attachmentItems and must
+    // count as content before the empty-body rejection (#4804).
+    const command = normalizeSessionSendCommand({
+      type: 'send',
+      text: '   ',
+      retainedAttachments: [
+        {
+          kind: 'image',
+          name: 'kept.png',
+          mimeType: 'image/png',
+          bytes: 12,
+          ref: {
+            kind: 'session_file',
+            sessionId: 'session-1',
+            relativePath: 'attachments/kept.png',
+          },
+        },
+      ],
+    });
+    assert.equal(command?.retainedAttachments?.length, 1);
+    assert.equal(command?.retainedAttachments?.[0]?.name, 'kept.png');
+  });
+
+  it('accepts an inline base64 attachment as the only content', () => {
+    // Dragged/pasted blobs cross IPC as inline base64 bytes (the preload
+    // encodes the File before invoke), so an attachment-only send with no text
+    // is the #4804 shape at this boundary and must reach ingestion, which owns
+    // the byte-size and MIME checks.
+    const command = normalizeSessionSendCommand({
+      type: 'send',
+      text: '',
+      attachmentItems: [{ name: 'pasted.png', mimeType: 'image/png', base64: 'aGVsbG8=' }],
+    });
+    assert.deepEqual(command?.attachmentItems, [
+      { name: 'pasted.png', mimeType: 'image/png', base64: 'aGVsbG8=' },
+    ]);
   });
 
   it('accepts only the supported stop source', () => {

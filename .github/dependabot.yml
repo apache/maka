@@ -22,6 +22,8 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 10
+    labels:
+      - dependencies
     groups:
       minor-and-patch:
         patterns:
@@ -45,6 +47,8 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 10
+    labels:
+      - dependencies
     groups:
       official-actions:
         patterns:

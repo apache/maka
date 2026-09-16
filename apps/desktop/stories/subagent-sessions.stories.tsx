@@ -47,9 +47,9 @@ import { Text } from '@astryxdesign/core/Text';
 import type { SessionSummary } from '@maka/core/session';
 import type { ToolResultContent } from '@maka/core/events';
 import {
-  SessionListPanel,
   TitlebarSessionIdentity,
 } from '@maka/ui';
+import { SessionRail } from '../../../packages/ui/stories/session-rail-harness.js';
 import { ToolTrow } from '../../../packages/ui/src/tool-activity.js';
 import type { ToolActivityItem } from '../../../packages/ui/src/materialize.js';
 import { deriveSessionRail } from '../src/renderer/features/session-navigation/testing';
@@ -375,7 +375,7 @@ function ProductRail(props: { activeSessionId: string }) {
   );
   return (
     <div style={shell.rail}>
-      <SessionListPanel
+      <SessionRail
         selection={{ section: 'sessions' }}
         sessions={sessions}
         activeId={activeRowId}

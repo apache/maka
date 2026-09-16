@@ -28,7 +28,7 @@
 // that was written but never flushed. Every one of those was a live defect.
 //
 // Run (from repo root):
-//   npm --workspace @maka/computer-use run test
+//   npm run build && npm --workspace @maka/computer-use run test:dist
 import assert from 'node:assert/strict';
 import { chmodSync, existsSync } from 'node:fs';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';

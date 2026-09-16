@@ -174,6 +174,29 @@ describe('InteractiveUsageStores', () => {
     });
   });
 
+  test('publishes the owning Session after a durable tool-usage write', async () => {
+    await withInteractiveRoot(async ({ capability }) => {
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert(owner);
+      const stores = await openInteractiveUsageStoresForWrite(owner.lease);
+      const changed: string[] = [];
+      const unsubscribe = stores.subscribeSessionUsageChanges((sessionId) =>
+        changed.push(sessionId),
+      );
+      try {
+        // A session whose last activity is a tool invocation must still see the
+        // usage summary refresh — the trace panel's time ring reads the
+        // summary on exactly this signal.
+        await stores.telemetry.recordToolInvocation(toolRecord({ sessionId: 'session-tool' }));
+        assert.deepEqual(changed, ['session-tool']);
+      } finally {
+        unsubscribe();
+        await stores.close();
+        await owner.close();
+      }
+    });
+  });
+
   test('does not republish idempotent model-usage mutations', async () => {
     await withInteractiveRoot(async ({ root, capability }) => {
       const owner = await tryAcquireInteractiveRootOwner(capability);
@@ -416,6 +439,162 @@ describe('InteractiveUsageStores', () => {
     });
   });
 
+  test('legacy summary sums recorded call time over the same rows as its tokens', async () => {
+    await withInteractiveRoot(async ({ capability }) => {
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert(owner);
+      const stores = await openInteractiveUsageStoresForWrite(owner.lease);
+      await stores.telemetry.recordLlmCall(llmRecord({ id: 'call-a', latencyMs: 1_200 }));
+      await stores.telemetry.recordLlmCall(llmRecord({ id: 'call-b', latencyMs: 300 }));
+
+      const summary = await stores.telemetry.summary({ range: 'all' });
+      assert.equal(summary.totalDurationMs, 1_500);
+
+      await stores.close();
+      await owner.close();
+    });
+  });
+
+  test('tool summary scopes to the requested Session and range', async () => {
+    await withInteractiveRoot(async ({ capability }) => {
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert(owner);
+      const stores = await openInteractiveUsageStoresForWrite(owner.lease);
+      await stores.telemetry.recordToolInvocation(
+        toolRecord({ id: 'tool-a', sessionId: 'session-a', durationMs: 120 }),
+      );
+      await stores.telemetry.recordToolInvocation(
+        toolRecord({ id: 'tool-b', sessionId: 'session-b', durationMs: 80 }),
+      );
+
+      const sessionA = await stores.telemetry.toolSummary({
+        range: 'all',
+        sessionId: 'session-a',
+      });
+      assert.deepEqual(sessionA, { requests: 1, durationMs: 120 });
+
+      // Without a session filter the ledger answers with everything in range —
+      // the same contract the tool buckets follow.
+      const everySession = await stores.telemetry.toolSummary({ range: 'all' });
+      assert.deepEqual(everySession, { requests: 2, durationMs: 200 });
+
+      const empty = await stores.telemetry.toolSummary({
+        range: { from: 0, to: 1 },
+        sessionId: 'session-a',
+      });
+      assert.deepEqual(empty, { requests: 0, durationMs: 0 });
+
+      await stores.close();
+      await owner.close();
+    });
+  });
+
+  test('tool summary applies the full summary query to the tool rows', async () => {
+    await withInteractiveRoot(async ({ capability }) => {
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert(owner);
+      const stores = await openInteractiveUsageStoresForWrite(owner.lease);
+      await stores.telemetry.recordToolInvocation(
+        toolRecord({
+          id: 'tool-openai-ok',
+          sessionId: 'session-a',
+          toolName: 'Bash',
+          providerId: 'openai',
+          modelId: 'gpt-5',
+          status: 'success',
+          durationMs: 100,
+        }),
+      );
+      await stores.telemetry.recordToolInvocation(
+        toolRecord({
+          id: 'tool-anthropic-err',
+          sessionId: 'session-a',
+          toolName: 'Read',
+          providerId: 'anthropic',
+          modelId: 'claude-opus-5',
+          status: 'error',
+          durationMs: 300,
+        }),
+      );
+
+      // The tool ring sits beside the model totals under one query, so a
+      // filter the rows can answer must narrow both sides the same way.
+      const provider = await stores.telemetry.toolSummary({
+        range: 'all',
+        sessionId: 'session-a',
+        providerId: 'openai',
+      });
+      assert.deepEqual(provider, { requests: 1, durationMs: 100 });
+
+      const status = await stores.telemetry.toolSummary({
+        range: 'all',
+        sessionId: 'session-a',
+        status: 'error',
+      });
+      assert.deepEqual(status, { requests: 1, durationMs: 300 });
+
+      const model = await stores.telemetry.toolSummary({
+        range: 'all',
+        sessionId: 'session-a',
+        modelId: 'gpt-5',
+      });
+      assert.deepEqual(model, { requests: 1, durationMs: 100 });
+
+      const tool = await stores.telemetry.toolSummary({
+        range: 'all',
+        sessionId: 'session-a',
+        toolName: 'Read',
+      });
+      assert.deepEqual(tool, { requests: 1, durationMs: 300 });
+
+      await stores.close();
+      await owner.close();
+    });
+  });
+
+  test('tool buckets answer the full summary query, including Session and provider', async () => {
+    await withInteractiveRoot(async ({ capability }) => {
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert(owner);
+      const stores = await openInteractiveUsageStoresForWrite(owner.lease);
+      // Two rows share provider and model, so only the session (and the tool
+      // name) can tell them apart — the bucket view must apply the same
+      // filters the summary beside it applies.
+      await stores.telemetry.recordToolInvocation(
+        toolRecord({
+          id: 'bucket-session-a',
+          sessionId: 'session-a',
+          toolName: 'Bash',
+          providerId: 'openai',
+          modelId: 'gpt-5',
+          durationMs: 100,
+        }),
+      );
+      await stores.telemetry.recordToolInvocation(
+        toolRecord({
+          id: 'bucket-session-b',
+          sessionId: 'session-b',
+          toolName: 'Bash',
+          providerId: 'openai',
+          modelId: 'gpt-5',
+          durationMs: 400,
+        }),
+      );
+
+      const scoped = await stores.telemetry.buckets(
+        { range: 'all', sessionId: 'session-a', providerId: 'openai' },
+        'tool',
+      );
+      assert.deepEqual(
+        scoped.map((bucket) => [bucket.key, bucket.requests, bucket.avgLatencyMs]),
+        [['Bash', 1, 100]],
+      );
+
+      await stores.close();
+      await owner.close();
+    });
+  });
+
   test('every facade read observes lease revocation', async () => {
     await withInteractiveRoot(async ({ capability }) => {
       const owner = await tryAcquireInteractiveRootOwner(capability);
@@ -502,7 +681,7 @@ function llmRecord(overrides: Record<string, unknown> = {}) {
   >[0];
 }
 
-function toolRecord() {
+function toolRecord(overrides: Record<string, unknown> = {}) {
   return {
     id: 'tool_1',
     toolName: 'Bash',
@@ -513,6 +692,7 @@ function toolRecord() {
     date: '2026-01-01',
     ts: Date.UTC(2026, 0, 1),
     startedAt: Date.UTC(2026, 0, 1),
+    ...overrides,
   } as Parameters<
     Awaited<
       ReturnType<typeof openInteractiveUsageStoresForWrite>
@@ -555,8 +735,8 @@ function appendModelCallAuthorityEvent(
     lease.transaction('write', () => {
       lease.database
         .prepare(`
-          INSERT INTO core_agent_runs(session_id, run_id, created_at, record_json)
-          VALUES (?, ?, 0, '{}')
+          INSERT INTO core_agent_runs(session_id, run_id, created_at)
+          VALUES (?, ?, 0)
         `)
         .run(value.sessionId, value.runId);
       lease.database

@@ -21,10 +21,7 @@ import type { Decorator, Meta, StoryObj } from '@storybook/react-vite';
 import { useRef, useState } from 'react';
 import { expect, fn, userEvent, waitFor, within } from 'storybook/test';
 import type { ArtifactDescriptor } from '@maka/core/artifacts';
-import { ToastProvider } from '@maka/ui';
-import {
-  WorkbarSurface,
-} from '../src/renderer/features/workbar';
+import { Button, ToastProvider } from '@maka/ui';
 import {
   createFakeWorkbarServices,
   createSessionWorkbarPanelsState,
@@ -34,6 +31,7 @@ import {
   WorkbarServicesProvider,
   type WorkbarServices,
 } from '../src/renderer/features/workbar/testing';
+import { WorkbarSurface } from '../src/renderer/features/workbar/stories';
 import { RemoteProjectDirectoryDialog } from '../src/renderer/remote-project-directory-dialog';
 import { RuntimeHostSshTerminalDialog } from '../src/renderer/settings/runtime-host-ssh-terminal-dialog';
 import { withScopedMakaBridge } from './maka-bridge';
@@ -48,7 +46,7 @@ type Story = StoryObj<typeof meta>;
 
 const unsubscribe = () => () => undefined;
 const noop = () => undefined;
-const terminalWrite = fn(async () => null);
+const terminalWrite = fn(async () => undefined);
 const sshWrite = fn(async () => undefined);
 const browserNavigate = fn(async () => undefined);
 const registerDirectory = fn(async () => ({
@@ -67,7 +65,7 @@ function withWorkbarServices(overrides: Partial<WorkbarServices>): Decorator {
   );
 }
 
-function WorkbarToolSurface(props: { kind: 'terminal' | 'browser' | 'files' }) {
+function WorkbarToolSurface(props: { kind: 'terminal' | 'browser' | 'files'; hidden?: boolean; backgroundFiles?: boolean }) {
   const terminalRef = 'pty:storybook';
   const right = props.kind === 'terminal'
     ? createSessionWorkbarTabsState(
@@ -89,20 +87,17 @@ function WorkbarToolSurface(props: { kind: 'terminal' | 'browser' | 'files' }) {
         <div className="mainColumn" />
         <WorkbarSurface
           sessionId="runtime-surface"
-          hidden={false}
+          hidden={props.hidden ?? false}
           onDismissPanel={noop}
-          panelsState={createSessionWorkbarPanelsState(right)}
+          panelsState={createSessionWorkbarPanelsState(props.backgroundFiles ? openStaticSessionWorkbarTab(right, 'review') : right)}
           rightCollapsed={false}
           bottomOpen={false}
           onActivateTab={noop}
           onCloseTab={noop}
           onCloseTabs={noop}
-          onReorderTab={noop}
-          onMoveTab={noop}
-          onMoveTabToPanel={noop}
-          onPinTab={noop}
           onOpenLauncher={noop}
           onRequestOpenTab={noop}
+          confirmBypass={async () => true}
         />
       </div>
     </ToastProvider>
@@ -113,10 +108,13 @@ export const ActiveTerminal: Story = {
   decorators: [
     withWorkbarServices({
       terminal: {
+        recover: async () => ({ resources: [], closes: [] }),
+        subscribeCloseChanges: () => () => undefined,
+        subscribeUpdates: () => () => undefined,
         start: async () => {
           throw new Error('not used by this story');
         },
-        stop: async () => null,
+        stop: async () => undefined,
         attach: async () => ({
           sessionId: 'runtime-surface',
           ref: 'pty:storybook',
@@ -207,7 +205,6 @@ export const BrowserLoaded: Story = {
           hasPage: true,
         }),
         subscribeState: unsubscribe,
-        subscribeLive: unsubscribe,
         setViewport: () => undefined,
         back: async () => undefined,
         forward: async () => undefined,
@@ -249,8 +246,7 @@ const htmlArtifact: ArtifactDescriptor = {
   kind: 'html',
   sizeBytes: 256,
   mimeType: 'text/html',
-  source: 'fixture',
-  status: 'live',
+  source: 'subagent_writeback',
 };
 
 function RemoteProjectDirectoryStory() {
@@ -273,11 +269,18 @@ function RemoteProjectDirectoryStory() {
   );
 }
 
+let htmlPublished = false;
+const listHtmlArtifacts = fn(async () => htmlPublished ? [htmlArtifact] : []);
+
 export const HtmlArtifact: Story = {
+  beforeEach: () => {
+    htmlPublished = false;
+    listHtmlArtifacts.mockClear();
+  },
   decorators: [
     withWorkbarServices({
       artifacts: {
-        list: async () => [htmlArtifact],
+        list: listHtmlArtifacts,
         readText: async () => ({
           ok: true,
           text: [
@@ -290,8 +293,8 @@ export const HtmlArtifact: Story = {
         }),
         readBinary: async () => ({ ok: false, reason: 'unsupported_mime' }),
         delete: async () => undefined,
-        subscribeChanges: unsubscribe,
         openPath: async () => ({ ok: false, reason: 'missing' }),
+        showInFolder: async () => ({ ok: false, reason: 'missing' }),
         saveAs: async () => ({ ok: false, reason: 'canceled' }),
       },
     }),
@@ -299,12 +302,56 @@ export const HtmlArtifact: Story = {
   render: () => <WorkbarToolSurface kind="files" />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
+    await waitFor(() => expect(listHtmlArtifacts).toHaveBeenCalled());
+    await expect(canvas.queryByRole('option', { name: /agent-report\.html/ })).toBeNull();
+    htmlPublished = true;
     await userEvent.click(
-      await canvas.findByRole('option', { name: /agent-report\.html/ }),
+      await canvas.findByRole('option', { name: /agent-report\.html/ }, { timeout: 10_000 }),
     );
     const frame = await canvas.findByTitle('生成文件预览 · agent-report.html');
     await expect(frame).toHaveAttribute('sandbox', 'allow-scripts');
     await expect(frame).toHaveAttribute('srcdoc', expect.stringContaining('Run report'));
+  },
+};
+
+function HiddenArtifactSurface() {
+  const [hidden, setHidden] = useState(true);
+  return <>
+    <Button label={hidden ? 'Show files' : 'Hide files'} onClick={() => setHidden(!hidden)} />
+    <WorkbarToolSurface kind="files" hidden={hidden} />
+  </>;
+}
+
+export const HiddenArtifact: Story = {
+  decorators: HtmlArtifact.decorators,
+  beforeEach: HtmlArtifact.beforeEach,
+  render: () => <HiddenArtifactSurface />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    htmlPublished = true;
+    await new Promise(resolve => setTimeout(resolve, 2_200));
+    await expect(listHtmlArtifacts).not.toHaveBeenCalled();
+    await userEvent.click(canvas.getByRole('button', { name: 'Show files' }));
+    await canvas.findByRole('option', { name: /agent-report\.html/ });
+    await userEvent.click(canvas.getByRole('button', { name: 'Hide files' }));
+    const reads = listHtmlArtifacts.mock.calls.length;
+    await new Promise(resolve => setTimeout(resolve, 2_200));
+    await expect(listHtmlArtifacts.mock.calls.length).toBe(reads);
+  },
+};
+
+export const BackgroundArtifactCount: Story = {
+  decorators: HtmlArtifact.decorators,
+  beforeEach: HtmlArtifact.beforeEach,
+  render: () => <WorkbarToolSurface kind="files" backgroundFiles />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const tab = await canvas.findByRole('tab', { name: /^生成文件/ });
+    await expect(within(tab).getByText('0', { exact: true })).toBeVisible();
+    await expect(tab).toHaveAttribute('aria-selected', 'false');
+    htmlPublished = true;
+    await within(tab).findByText('1', { exact: true }, { timeout: 10_000 });
+    await expect(tab).toHaveAttribute('aria-selected', 'false');
   },
 };
 

@@ -17,21 +17,21 @@
  * under the License.
  */
 
-import type {
-  AgentRunEvent,
-  AgentRunEventType,
-  AgentRunHeader,
-  AgentRunProjectionKey,
-} from '@maka/core/agent-run';
+import type { AgentRunEvent, AgentRunEventType, AgentRunProjectionKey } from '@maka/core/agent-run';
 import type { RuntimeEvent, ToolBoundaryProtocol } from '@maka/core/runtime-event';
 import type { RuntimeContinuationAuthorityStore } from '@maka/core/runtime-event-store';
+import type { ImmutableRuntimePrefixProofV1 } from '@maka/core/runtime-boundary';
+import type { RuntimeTranscriptQueries } from './runtime-transcript-query.js';
+import type {
+  RuntimeInvocationPageInput,
+  RuntimeInvocationPageResult,
+  RuntimeInvocationRecord,
+  RuntimeInvocationSearchResult,
+} from '@maka/core/runtime-invocation';
 import type { SessionHeader, SessionSummary, StoredMessage, TurnRecord } from '@maka/core/session';
 import type { SessionListFilter } from '@maka/core/runtime-inputs';
 import {
   createSqliteAgentRunStore,
-  type AgentRunIdentitySearchResult,
-  type AgentRunPageInput,
-  type AgentRunPageResult,
   type AdmitRootTurnInput,
   type AdmitRootTurnResult,
   type CommitRootTurnStartRejectionInput,
@@ -42,13 +42,12 @@ import {
   type RootTurnAdmission,
   type RootTurnSourceMessageReceipt,
 } from './agent-run-store.js';
-import {
-  createConversationOperationalStateStore,
-  type ConversationOperationalStateStore,
-} from './conversation-operational-state.js';
-import { createSessionStore, type SessionAuthorityStore } from './session-store.js';
+import type { ConversationOperationalStateStore } from './conversation-operational-state.js';
+import { createSessionStore } from './session-store.js';
+import type { SessionAuthorityStore } from './session-store-contract.js';
 import {
   assertStorageRootLease,
+  assertStorageRootLeaseActive,
   runWithStorageRootLease,
   StorageRootAuthorityError,
   type StorageRootKind,
@@ -58,20 +57,38 @@ import {
   closeSqliteInteractionStoreFacade,
   openSqliteInteractiveInteractionStoreForRead,
   openSqliteInteractiveInteractionStoreForWrite,
+  createSqliteInteractionStore,
   type InteractiveInteractionStoreReaderFacade,
   type InteractiveInteractionStoreWriterFacade,
 } from './interaction-store.js';
-import {
-  openRuntimeEventPersistence,
-  openRuntimeEventReadPersistence,
-} from './runtime-event-persistence.js';
+import { openRuntimeEventReadPersistence } from './runtime-event-persistence.js';
 import type {
   CommitToolOutcomeInput,
   CommitToolPreparedInput,
   SessionRuntimeEventEntry,
   ToolCommitResult,
   ToolOperationRecord,
-} from './sqlite-runtime-store.js';
+  ImmutableRuntimePrefixProofReadBudget,
+} from './runtime-event-store-contract.js';
+
+import { localExecutionPersistenceProvider } from './local-execution-persistence.js';
+import {
+  EXECUTION_GRAPH_METHODS,
+  type ExecutionGraphStore,
+  type ExecutionPersistenceProvider,
+} from './execution-persistence-provider.js';
+import {
+  openInteractiveGoalAuthorityForWrite,
+  createSqliteGoalAuthority,
+  type InteractiveGoalAuthorityWriter,
+} from './goal-authority.js';
+export type {
+  ExecutionPersistenceProvider,
+  ExecutionGraphStore,
+} from './execution-persistence-provider.js';
+
+const executionStoreProvidersByLease = new WeakMap<object, ExecutionPersistenceProvider>();
+const failedExecutionLeases = new WeakSet<object>();
 
 const executionStoresWriterBrand: unique symbol = Symbol('ExecutionStoresWriter');
 const executionStoresReaderBrand: unique symbol = Symbol('ExecutionStoresReader');
@@ -80,20 +97,18 @@ const executionStoresReaderKinds = new WeakMap<object, StorageRootKind>();
 const executionStoresWritersByLease = new WeakMap<object, object>();
 const executionStoresWritersOpeningByLease = new WeakMap<object, Promise<void>>();
 
-export { normalizeRootTurnAdmissionPayload } from './agent-run-store.js';
 export {
-  isSessionNotFoundError,
-  SessionReadMarkerMessageNotFoundError,
-} from './session-store.js';
+  normalizeRootTurnAdmissionPayload,
+  rootTurnAdmissionRecordFits,
+  rootTurnSourceMessagePayloadsEqual,
+} from './agent-run-store.js';
+export { isSessionNotFoundError } from './session-store-contract.js';
 export {
   SessionMetadataConflictError,
   SessionMetadataVersionConflictError,
-} from './sqlite-session-metadata-store.js';
+} from './session-store-contract.js';
 
 export type {
-  AgentRunIdentitySearchResult,
-  AgentRunPageInput,
-  AgentRunPageResult,
   AdmitRootTurnInput,
   AdmitRootTurnResult,
   CommitRootTurnStartRejectionInput,
@@ -102,6 +117,7 @@ export type {
   EvidenceReadBudget,
   ImmutableSteeringMessageProof,
   RootTurnAdmission,
+  RootTurnAdmissionAuthorization,
   RootTurnAdmissionStore,
   RootTurnStartRejectionStore,
   RootTurnSourceMessage,
@@ -111,12 +127,15 @@ export type {
   RuntimeEventScanResult,
 } from './agent-run-store.js';
 export type {
+  MarkMessagesHandedOffInput,
   MessageAdmissionStore,
   PendingMessageAdmission,
+  ProvenSteeringMessageHandoff,
 } from './message-admission-store.js';
 export { submittedTurnIntentsEqual } from './submitted-turn-intent.js';
 export type { SubmittedTurnIntent } from './submitted-turn-intent.js';
 export type {
+  CreateStableSessionRequest,
   ProbeSessionRemovalResult,
   ExternalSessionImportLookupResult,
   SessionCatalogPageCursor,
@@ -125,14 +144,30 @@ export type {
   SessionHeaderSnapshot,
   SessionTranscriptMessageLookupRequest,
   SessionTranscriptPageRequest,
+  CoordinationTranscriptReference,
+  SessionTranscriptRecordScanPage,
+  SessionTranscriptRecordScanRequest,
   SessionTranscriptStoragePage,
   SessionTranscriptStorageFragment,
-} from './session-store.js';
+  SessionTurnContribution,
+  SessionTurnContributionPage,
+  SessionTurnLandmark,
+  SessionTurnLandmarkSnapshot,
+} from './session-store-contract.js';
 
 export type ExecutionSessionWriter = SessionAuthorityStore;
+export type {
+  RuntimeTranscriptInvocationHeader,
+  RuntimeTranscriptLandmark,
+} from './runtime-transcript-query.js';
 export type ExecutionAgentRunWriter = DurableAgentRunStore;
 export type ExecutionRuntimeEventWriter = DurableRuntimeEventStore &
+  RuntimeTranscriptQueries &
   RuntimeContinuationAuthorityStore & {
+    readImmutableRuntimePrefixProof(
+      input: { sessionId: string; runId: string; upToEventSeq?: number },
+      budget: ImmutableRuntimePrefixProofReadBudget,
+    ): Promise<ImmutableRuntimePrefixProofV1>;
     readonly toolBoundaryProtocol: ToolBoundaryProtocol;
     commitToolPrepared(input: CommitToolPreparedInput): Promise<ToolCommitResult>;
     commitToolOutcome(input: CommitToolOutcomeInput): Promise<ToolCommitResult>;
@@ -154,6 +189,8 @@ interface ExecutionStoresWriterBase<K extends StorageRootKind> {
 }
 
 export interface InteractiveExecutionStoresWriter extends ExecutionStoresWriterBase<'interactive'> {
+  readonly graphControlStore: ExecutionGraphStore;
+  readonly goalStore: InteractiveGoalAuthorityWriter;
   readonly interactionStore: InteractiveInteractionStoreWriterFacade;
 }
 
@@ -172,11 +209,6 @@ export interface ExecutionSessionReader {
 }
 
 export interface ExecutionAgentRunReader {
-  readRun(sessionId: string, runId: string): Promise<AgentRunHeader>;
-  findRunsById(runId: string, limit: number): Promise<AgentRunIdentitySearchResult>;
-  listSessionRuns(sessionId: string): Promise<AgentRunHeader[]>;
-  listSessionRunsBounded(sessionId: string, limit: number): Promise<AgentRunIdentitySearchResult>;
-  listSessionRunsPage(sessionId: string, input: AgentRunPageInput): Promise<AgentRunPageResult>;
   readEvents(sessionId: string, runId: string): Promise<AgentRunEvent[]>;
   readEventsBounded(
     sessionId: string,
@@ -194,6 +226,11 @@ export interface ExecutionAgentRunReader {
     type: AgentRunProjectionKey,
   ): Promise<AgentRunEvent | null | undefined>;
   readRootTurnAdmission(sessionId: string, turnId: string): Promise<RootTurnAdmission | undefined>;
+  readRootTurnContinuationAdmission(
+    sessionId: string,
+    sourceTurnId: string,
+    sourceRunId: string,
+  ): Promise<RootTurnAdmission | undefined>;
   readRootTurnSourceMessageReceipt(
     sessionId: string,
     sourceMessageId: string,
@@ -201,6 +238,22 @@ export interface ExecutionAgentRunReader {
 }
 
 export interface ExecutionRuntimeEventReader {
+  /**
+   * A Session's run inventory, read from its canonical events. This is the
+   * definition of the inventory, not a cache of it, so nothing writes or
+   * repairs it.
+   */
+  listSessionInvocations(sessionId: string): Promise<RuntimeInvocationRecord[]>;
+  readRunInvocation(sessionId: string, runId: string): Promise<RuntimeInvocationRecord | undefined>;
+  listSessionInvocationsBounded(
+    sessionId: string,
+    limit: number,
+  ): Promise<RuntimeInvocationSearchResult>;
+  listSessionInvocationsPage(
+    sessionId: string,
+    input: RuntimeInvocationPageInput,
+  ): Promise<RuntimeInvocationPageResult>;
+  readInvocation(sessionId: string, invocationId: string): Promise<RuntimeInvocationRecord>;
   readRuntimeEvents(sessionId: string, runId: string): Promise<RuntimeEvent[]>;
   readRuntimeEventsBounded(
     sessionId: string,
@@ -209,6 +262,10 @@ export interface ExecutionRuntimeEventReader {
   ): Promise<BoundedEvidenceReadResult<RuntimeEvent>>;
   readImmutableRuntimeEvents(sessionId: string, runId: string): Promise<RuntimeEvent[]>;
   readSessionRuntimeEvents(sessionId: string): Promise<RuntimeEvent[]>;
+  /** Session-wide events with the ordinal that fixes their transcript order. */
+  readSessionRuntimeEventEntries(
+    sessionId: string,
+  ): Promise<ReadonlyArray<{ ordinal: number; event: RuntimeEvent }>>;
 }
 
 interface ExecutionStoresReaderBase<K extends StorageRootKind> {
@@ -251,87 +308,203 @@ export function authenticateExecutionStoresReader<K extends StorageRootKind>(
 
 export async function openInteractiveExecutionStoresForWrite(
   lease: StorageRootLease<'interactive', 'write'>,
+  provider: ExecutionPersistenceProvider = localExecutionPersistenceProvider,
 ): Promise<ExecutionStoresWriter<'interactive'>> {
-  const interactionStore = await openSqliteInteractiveInteractionStoreForWrite(lease);
-  return openExecutionStoresForWrite(lease, 'interactive', {
-    interactionStore,
-  });
-}
-
-async function openExecutionStoresForWrite<K extends StorageRootKind, E extends object>(
-  lease: StorageRootLease<K, 'write'>,
-  kind: K,
-  extension: E,
-): Promise<ExecutionStoresWriterBase<K> & E> {
-  await assertStorageRootLease(lease, kind, 'write');
+  await assertStorageRootLease(lease, 'interactive', 'write');
+  if (failedExecutionLeases.has(lease)) {
+    throw new StorageRootAuthorityError(
+      'invalid_lease',
+      'Execution persistence requires a fresh owner after an uncertain open or close',
+    );
+  }
+  const selected = executionStoreProvidersByLease.get(lease);
+  if (selected && selected !== provider) {
+    throw new StorageRootAuthorityError(
+      'invalid_lease',
+      'A different execution provider already owns this lease',
+    );
+  }
   const existing = executionStoresWritersByLease.get(lease);
-  if (existing) return existing as ExecutionStoresWriterBase<K> & E;
-
+  if (existing) {
+    if (executionStoresWriterKinds.get(existing) !== 'interactive')
+      throw invalidExecutionStores('interactive', 'write');
+    return existing as InteractiveExecutionStoresWriter;
+  }
   const opening = executionStoresWritersOpeningByLease.get(lease);
   if (opening) {
     await opening;
-    return openExecutionStoresForWrite(lease, kind, extension);
+    return openInteractiveExecutionStoresForWrite(lease, provider);
   }
-
+  executionStoreProvidersByLease.set(lease, provider);
   let releaseOpening!: () => void;
   const openingGate = new Promise<void>((resolve) => {
     releaseOpening = resolve;
   });
   executionStoresWritersOpeningByLease.set(lease, openingGate);
   try {
-    return await createExecutionStoresForWrite(lease, kind, extension);
+    return await createExecutionStoresForWrite(lease, provider);
+  } catch (error) {
+    if (!executionStoresWritersByLease.has(lease) && !failedExecutionLeases.has(lease))
+      executionStoreProvidersByLease.delete(lease);
+    throw error;
   } finally {
     executionStoresWritersOpeningByLease.delete(lease);
     releaseOpening();
   }
 }
 
-async function createExecutionStoresForWrite<K extends StorageRootKind, E extends object>(
-  lease: StorageRootLease<K, 'write'>,
-  kind: K,
-  extension: E,
-): Promise<ExecutionStoresWriterBase<K> & E> {
-  const sessionStore = createSessionStore(lease.canonicalPath);
-  const agentRunStore = createSqliteAgentRunStore(lease.canonicalPath);
-  const interactionStore =
-    'interactionStore' in extension
-      ? (extension.interactionStore as InteractiveInteractionStoreWriterFacade)
-      : undefined;
-  const runtimePersistence = await openRuntimeEventPersistence({
-    workspaceRoot: lease.canonicalPath,
-  }).catch(async (error) => {
-    await sessionStore.close?.().catch(() => {});
-    agentRunStore.close?.();
-    if (interactionStore) closeSqliteInteractionStoreFacade(interactionStore);
+async function createExecutionStoresForWrite(
+  lease: StorageRootLease<'interactive', 'write'>,
+  provider: ExecutionPersistenceProvider,
+): Promise<InteractiveExecutionStoresWriter> {
+  const kind = 'interactive' as const;
+  const persistence = await runWithStorageRootLease(lease, kind, 'write', () =>
+    provider.open({
+      rootId: lease.rootId,
+      canonicalPath: lease.canonicalPath,
+    }),
+  ).catch((error: unknown) => {
+    // An unsuccessful factory must clean up its own partial handles. Until a
+    // fresh owner is acquired, do not assume an unknown factory failure did so.
+    failedExecutionLeases.add(lease);
     throw error;
   });
-  const runtimeEventStore = runtimePersistence.runtimeEventStore;
-  let conversationOperationalStateStore: ConversationOperationalStateStore;
+  let closed = false;
+  let closeTask: Promise<void> | undefined;
+  const active = new Set<Promise<unknown>>();
+  const subscriptions = new Set<() => void>();
+  const run = <T>(operation: () => Promise<T>): Promise<T> => {
+    if (closed) return Promise.reject(invalidExecutionStores(kind, 'write'));
+    const pending = runWithStorageRootLease(lease, kind, 'write', () => {
+      if (closed) throw invalidExecutionStores(kind, 'write');
+      return operation();
+    });
+    active.add(pending);
+    void pending.finally(() => active.delete(pending)).catch(() => undefined);
+    return pending;
+  };
+  const sessionStore = persistence.sessionStore;
+  const agentRunStore = persistence.agentRunStore;
+  const runtimeEventStore = persistence.runtimeEventStore;
+  const runtimePersistence = { runtimeCommitStore: runtimeEventStore };
+  const conversationOperationalStateStore = {
+    purge: (sessionId: string) => persistence.purgeConversationOperationalState(sessionId),
+  };
+  let interactionStore: InteractiveInteractionStoreWriterFacade | undefined;
+  let goalStore: InteractiveGoalAuthorityWriter | undefined;
+  const releaseChildBindings: Array<() => void> = [];
+  const retainUntilGroupClose = (release: () => void) => releaseChildBindings.push(release);
   try {
-    conversationOperationalStateStore = createConversationOperationalStateStore(
-      lease.canonicalPath,
+    await assertStorageRootLease(lease, kind, 'write');
+    await sessionStore.ready();
+    await agentRunStore.ready?.();
+    interactionStore = await openSqliteInteractiveInteractionStoreForWrite(
+      lease,
+      () =>
+        new Proxy(persistence.interactionStore, {
+          get(target, property, receiver) {
+            if (property === 'close') return () => {};
+            const value = Reflect.get(target, property, receiver);
+            return typeof value === 'function'
+              ? (...args: unknown[]) => run(async () => Reflect.apply(value, target, args))
+              : value;
+          },
+        }),
+      provider === localExecutionPersistenceProvider ? createSqliteInteractionStore : provider,
+      retainUntilGroupClose,
+    );
+    goalStore = await openInteractiveGoalAuthorityForWrite(
+      lease,
+      () => ({
+        list: () => run(async () => persistence.goalStore.list()),
+        read: (sessionId) => run(async () => persistence.goalStore.read(sessionId)),
+        commit: (input) => run(async () => persistence.goalStore.commit(input)),
+        // The group owns the backend handle; closing this facade only revokes it.
+        close: () => {},
+      }),
+      provider === localExecutionPersistenceProvider ? createSqliteGoalAuthority : provider,
+      retainUntilGroupClose,
     );
   } catch (error) {
-    await closeExecutionStorePersistence(sessionStore, runtimePersistence, {
-      agentRunStore,
-      interactionStore,
-    }).catch(() => {});
+    closed = true;
+    const failures: unknown[] = [error];
+    try {
+      if (interactionStore) closeSqliteInteractionStoreFacade(interactionStore);
+    } catch (closeError) {
+      failures.push(closeError);
+    }
+    try {
+      await goalStore?.close();
+    } catch (closeError) {
+      failures.push(closeError);
+    }
+    try {
+      await persistence.close();
+    } catch (closeError) {
+      failures.push(closeError);
+    }
+    if (failures.length > 1) {
+      failedExecutionLeases.add(lease);
+      throw new AggregateError(failures, 'Unable to compose execution persistence');
+    }
+    for (const release of releaseChildBindings) release();
     throw error;
   }
-  await agentRunStore.ready?.().catch(async (error) => {
-    await closeExecutionStorePersistence(sessionStore, runtimePersistence, {
-      agentRunStore,
-      conversationOperationalStateStore,
-      interactionStore,
-    }).catch(() => {});
-    throw error;
+  const close = () =>
+    (closeTask ??= (async () => {
+      closed = true;
+      executionStoresWriterKinds.delete(stores);
+      const errors: unknown[] = [];
+      for (const unsubscribe of subscriptions) {
+        try {
+          unsubscribe();
+        } catch (error) {
+          errors.push(error);
+        }
+      }
+      subscriptions.clear();
+      await Promise.allSettled([...active]);
+      try {
+        await goalStore!.close();
+      } catch (error) {
+        errors.push(error);
+      }
+      try {
+        closeSqliteInteractionStoreFacade(interactionStore!);
+      } catch (error) {
+        errors.push(error);
+      }
+      try {
+        await persistence.close();
+      } catch (error) {
+        errors.push(error);
+      }
+      // Failed close retains the closed owner, so another backend cannot open over it.
+      if (errors.length) throw new AggregateError(errors, 'Unable to close execution persistence');
+      for (const release of releaseChildBindings) release();
+      if (executionStoresWritersByLease.get(lease) === stores) {
+        executionStoresWritersByLease.delete(lease);
+        executionStoreProvidersByLease.delete(lease);
+      }
+    })());
+  const graphMethods = Object.fromEntries(
+    EXECUTION_GRAPH_METHODS.map((name) => [
+      name,
+      (...args: unknown[]) =>
+        run(() =>
+          Reflect.apply(persistence.graphControlStore[name], persistence.graphControlStore, args),
+        ),
+    ]),
+  ) as Omit<ExecutionGraphStore, 'close'>;
+  const graphControlStore: ExecutionGraphStore = Object.freeze({
+    ...graphMethods,
+    close: () => {},
   });
-  const run = <T>(operation: () => Promise<T>) =>
-    runWithStorageRootLease(lease, kind, 'write', operation);
-  let closeTask: Promise<void> | undefined;
 
-  const stores: ExecutionStoresWriterBase<K> & E = {
-    ...extension,
+  const stores: InteractiveExecutionStoresWriter = {
+    interactionStore,
+    graphControlStore,
+    goalStore,
     kind,
     [executionStoresWriterBrand]: kind,
     purgeConversationOperationalState: (sessionId) =>
@@ -353,6 +526,28 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
         run(() => sessionStore.probeStableSessionCreate(sessionId, requestFingerprint)),
       createStableSession: (request, initialBoundary) =>
         run(() => sessionStore.createStableSession(request, initialBoundary)),
+      assignWorkHubMessage: (request) => run(() => sessionStore.assignWorkHubMessage(request)),
+      readWorkHubAssignment: (actionId) => run(() => sessionStore.readWorkHubAssignment(actionId)),
+      readActiveWorkHubAssignmentsByTarget: (targetSessionIds, maxAssignmentsPerTarget) =>
+        run(() =>
+          sessionStore.readActiveWorkHubAssignmentsByTarget(
+            targetSessionIds,
+            maxAssignmentsPerTarget,
+          ),
+        ),
+      readWorkHubReplacement: (delegationId) =>
+        run(() => sessionStore.readWorkHubReplacement(delegationId)),
+      readWorkHubReplacementAbort: (delegationId) =>
+        run(() => sessionStore.readWorkHubReplacementAbort(delegationId)),
+      readWorkHubSupersession: (delegationId) =>
+        run(() => sessionStore.readWorkHubSupersession(delegationId)),
+      readWorkHubStopRequest: (delegationId) =>
+        run(() => sessionStore.readWorkHubStopRequest(delegationId)),
+      readWorkHubStopResolution: (delegationId) =>
+        run(() => sessionStore.readWorkHubStopResolution(delegationId)),
+      claimWorkHubAction: (claim) => run(() => sessionStore.claimWorkHubAction(claim)),
+      readWorkHubActionClaim: (actionId) =>
+        run(() => sessionStore.readWorkHubActionClaim(actionId)),
       discardStableConversationCopy: (sessionId, requestFingerprint) =>
         run(() => sessionStore.discardStableConversationCopy(sessionId, requestFingerprint)),
       createSubagent: (input, initialBoundary) =>
@@ -371,6 +566,8 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
         run(() => sessionStore.listPendingSandboxBoundaryRequests(sessionId)),
       listSandboxBoundaryRestartClosures: (sessionId) =>
         run(() => sessionStore.listSandboxBoundaryRestartClosures(sessionId)),
+      hasExplicitSandboxBoundaryDenial: (identities) =>
+        run(() => sessionStore.hasExplicitSandboxBoundaryDenial(identities)),
       settleSandboxBoundaryRequest: (input) =>
         run(() => sessionStore.settleSandboxBoundaryRequest(input)),
       setExecutionBoundaryKind: (sessionId, boundaryKind, projection) =>
@@ -383,59 +580,66 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
       readHeaderSnapshot: (sessionId) => run(() => sessionStore.readHeaderSnapshot(sessionId)),
       readHeaderRecordSnapshot: (sessionId) =>
         run(() => sessionStore.readHeaderRecordSnapshot(sessionId)),
-      readCatalogRecord: (sessionId) => run(() => sessionStore.readCatalogRecord(sessionId)),
+      readCatalogRecord: (sessionId, roleScope) =>
+        run(() => sessionStore.readCatalogRecord(sessionId, roleScope)),
       probeSessionRemoval: (sessionId) => run(() => sessionStore.probeSessionRemoval(sessionId)),
       readMessagesSnapshot: (sessionId) => run(() => sessionStore.readMessagesSnapshot(sessionId)),
-      readTranscriptPageSnapshot: (sessionId, request) =>
-        run(() => sessionStore.readTranscriptPageSnapshot(sessionId, request)),
       readTranscriptMessagesSnapshot: (sessionId, request) =>
         run(() => sessionStore.readTranscriptMessagesSnapshot(sessionId, request)),
+      readCoordinationTranscriptIndexState: () =>
+        run(() => sessionStore.readCoordinationTranscriptIndexState()),
+      appendCoordinationTranscriptIndex: (records) =>
+        run(() => sessionStore.appendCoordinationTranscriptIndex(records)),
+      readCoordinationTranscriptIndex: (request) =>
+        run(() => sessionStore.readCoordinationTranscriptIndex(request)),
       readTranscriptHighWaterSnapshot: (sessionId) =>
         run(() => sessionStore.readTranscriptHighWaterSnapshot(sessionId)),
-      readTurnContributionsSnapshot: (sessionId, throughSequence, position, maxContributions) =>
-        run(() =>
-          sessionStore.readTurnContributionsSnapshot(
-            sessionId,
-            throughSequence,
-            position,
-            maxContributions,
-          ),
-        ),
-      readTurnLandmarksSnapshot: (sessionId, maxLandmarks) =>
-        run(() => sessionStore.readTurnLandmarksSnapshot(sessionId, maxLandmarks)),
-      readMessagesForRecovery: (sessionId) =>
-        run(() => sessionStore.readMessagesForRecovery(sessionId)),
       listTurnsSnapshot: (sessionId) => run(() => sessionStore.listTurnsSnapshot(sessionId)),
       readHeader: (sessionId) => run(() => sessionStore.readHeader(sessionId)),
       readMessages: (sessionId) => run(() => sessionStore.readMessages(sessionId)),
+      readMessagesAfter: (sessionId, request) =>
+        run(() => sessionStore.readMessagesAfter(sessionId, request)),
       listTurns: (sessionId) => run(() => sessionStore.listTurns(sessionId)),
       appendMessage: (sessionId, message) =>
         run(() => sessionStore.appendMessage(sessionId, message)),
       appendMessages: (sessionId, messages) =>
         run(() => sessionStore.appendMessages(sessionId, messages)),
+      commitMessageCatalogProjection: (sessionId, message) =>
+        run(() => sessionStore.commitMessageCatalogProjection(sessionId, message)),
       commitMessageAdmission: (admission) =>
         run(() => sessionStore.commitMessageAdmission(admission)),
       readMessageAdmission: (sessionId, messageId) =>
         run(() => sessionStore.readMessageAdmission(sessionId, messageId)),
       hasCancelledMessageAdmission: (sessionId, messageId) =>
         run(() => sessionStore.hasCancelledMessageAdmission(sessionId, messageId)),
+      claimMessageAdmissionCancellation: (sessionId, messageId, claimId) =>
+        run(() => sessionStore.claimMessageAdmissionCancellation(sessionId, messageId, claimId)),
       listMessageAdmissions: (sessionId) =>
         run(() => sessionStore.listMessageAdmissions(sessionId)),
       markMessagesHandedOff: (input) => run(() => sessionStore.markMessagesHandedOff(input)),
       updateMessageAdmission: (admission) =>
         run(() => sessionStore.updateMessageAdmission(admission)),
-      reorderMessageAdmissions: (sessionId, messageIds) =>
-        run(() => sessionStore.reorderMessageAdmissions(sessionId, messageIds)),
+      reorderMessageAdmissions: (sessionId, messageIds, disposition) =>
+        run(() => sessionStore.reorderMessageAdmissions(sessionId, messageIds, disposition)),
       cancelMessageAdmissions: (sessionId, messageIds) =>
         run(() => sessionStore.cancelMessageAdmissions(sessionId, messageIds)),
-      subscribeTranscriptChanges: (listener) => sessionStore.subscribeTranscriptChanges(listener),
+      subscribeTranscriptChanges: (listener) => {
+        if (closed) throw invalidExecutionStores(kind, 'write');
+        assertStorageRootLeaseActive(lease, kind, 'write');
+        const unsubscribe = sessionStore.subscribeTranscriptChanges((sessionId) => {
+          if (!closed) listener(sessionId);
+        });
+        subscriptions.add(unsubscribe);
+        return () => {
+          subscriptions.delete(unsubscribe);
+          unsubscribe();
+        };
+      },
       updateHeader: (sessionId, patch) => run(() => sessionStore.updateHeader(sessionId, patch)),
       updateHeaderVersioned: (sessionId, patch, expectedRevision) =>
         run(() => sessionStore.updateHeaderVersioned(sessionId, patch, expectedRevision)),
       updateSessionConfiguration: (sessionId, input) =>
         run(() => sessionStore.updateSessionConfiguration(sessionId, input)),
-      markSessionReadThroughMessage: (sessionId, messageId) =>
-        run(() => sessionStore.markSessionReadThroughMessage(sessionId, messageId)),
       setFlagged: (sessionId, isFlagged) =>
         run(() => sessionStore.setFlagged(sessionId, isFlagged)),
       rename: (sessionId, name) => run(() => sessionStore.rename(sessionId, name)),
@@ -452,31 +656,9 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
         run(() => sessionStore.listPendingSessionRetirementCleanupIds(sessionId)),
       completeSessionRetirementCleanup: (sessionId) =>
         run(() => sessionStore.completeSessionRetirementCleanup(sessionId)),
-      close: () =>
-        (closeTask ??= (async () => {
-          if (executionStoresWritersByLease.get(lease) === stores) {
-            executionStoresWritersByLease.delete(lease);
-          }
-          await closeExecutionStorePersistence(sessionStore, runtimePersistence, {
-            agentRunStore,
-            conversationOperationalStateStore,
-            interactionStore,
-          });
-        })()),
+      close,
     },
     agentRunStore: {
-      createRun: (header, options) => run(() => agentRunStore.createRun(header, options)),
-      updateRun: (sessionId, runId, patch, options) =>
-        run(() => agentRunStore.updateRun(sessionId, runId, patch, options)),
-      readRun: (sessionId, runId) => run(() => agentRunStore.readRun(sessionId, runId)),
-      findRunsById: (runId, limit) => run(() => agentRunStore.findRunsById(runId, limit)),
-      listSessionRuns: (sessionId) => run(() => agentRunStore.listSessionRuns(sessionId)),
-      listSessionRunsBounded: (sessionId, limit) =>
-        run(() => agentRunStore.listSessionRunsBounded(sessionId, limit)),
-      listSessionRunsPage: (sessionId, input) =>
-        run(() => agentRunStore.listSessionRunsPage(sessionId, input)),
-      listSessionRunsForRecovery: (sessionId) =>
-        run(() => agentRunStore.listSessionRunsForRecovery(sessionId)),
       appendEvent: (sessionId, runId, event, options) =>
         run(() => agentRunStore.appendEvent(sessionId, runId, event, options)),
       readEvents: (sessionId, runId) => run(() => agentRunStore.readEvents(sessionId, runId)),
@@ -490,12 +672,18 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
         run(() => agentRunStore.readEventsForEvidence(sessionId, runId)),
       readEventProjection: (sessionId, type) =>
         run(() => agentRunStore.readEventProjection(sessionId, type)),
+      readEventLedgerRevision: (sessionId) =>
+        run(() => agentRunStore.readEventLedgerRevision(sessionId)),
       repairEventProjection: (sessionId, type, event, options) =>
         run(() => agentRunStore.repairEventProjection(sessionId, type, event, options)),
       admitRootTurn: (input: AdmitRootTurnInput): Promise<AdmitRootTurnResult> =>
         run(() => agentRunStore.admitRootTurn(input)),
       readRootTurnAdmission: (sessionId, turnId) =>
         run(() => agentRunStore.readRootTurnAdmission(sessionId, turnId)),
+      readRootTurnContinuationAdmission: (sessionId, sourceTurnId, sourceRunId) =>
+        run(() =>
+          agentRunStore.readRootTurnContinuationAdmission(sessionId, sourceTurnId, sourceRunId),
+        ),
       readRootTurnStartRejection: (sessionId, turnId) =>
         run(() => agentRunStore.readRootTurnStartRejection(sessionId, turnId)),
       commitRootTurnStartRejection: (input: CommitRootTurnStartRejectionInput) =>
@@ -527,10 +715,30 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
         run(() => runtimeEventStore.readImmutableRuntimeEvents(sessionId, runId)),
       readImmutableRuntimePrefix: (input) =>
         run(() => runtimeEventStore.readImmutableRuntimePrefix(input)),
+      readImmutableRuntimePrefixProof: (input, budget) =>
+        run(() => runtimeEventStore.readImmutableRuntimePrefixProof(input, budget)),
+      listSessionInvocations: (sessionId) =>
+        run(() => runtimeEventStore.listSessionInvocations(sessionId)),
+      readRunInvocation: (sessionId, runId) =>
+        run(() => runtimeEventStore.readRunInvocation(sessionId, runId)),
+      listSessionInvocationsBounded: (sessionId, limit) =>
+        run(() => runtimeEventStore.listSessionInvocationsBounded(sessionId, limit)),
+      listSessionInvocationsPage: (sessionId, input) =>
+        run(() => runtimeEventStore.listSessionInvocationsPage(sessionId, input)),
+      readInvocation: (sessionId, invocationId) =>
+        run(() => runtimeEventStore.readInvocation(sessionId, invocationId)),
       readSessionRuntimeEvents: (sessionId) =>
         run(() => runtimeEventStore.readSessionRuntimeEvents(sessionId)),
       readSessionRuntimeEventEntries: (sessionId) =>
         run(() => runtimeEventStore.readSessionRuntimeEventEntries(sessionId)),
+      resequenceSessionEventOrdinals: (sessionId) =>
+        run(() => runtimeEventStore.resequenceSessionEventOrdinals(sessionId)),
+      readTranscriptHighWater: (sessionId) =>
+        run(() => runtimeEventStore.readTranscriptHighWater(sessionId)),
+      readTranscriptInvocations: (sessionId, request, project) =>
+        run(() => runtimeEventStore.readTranscriptInvocations(sessionId, request, project)),
+      readTranscriptLandmarks: (sessionId, throughOrdinal, limit) =>
+        run(() => runtimeEventStore.readTranscriptLandmarks(sessionId, throughOrdinal, limit)),
       claimContinuation: (input) => run(() => runtimeEventStore.claimContinuation(input)),
       readContinuationClaimByBoundary: (boundaryDigest) =>
         run(() => runtimeEventStore.readContinuationClaimByBoundary(boundaryDigest)),
@@ -613,13 +821,6 @@ async function openExecutionStoresForRead<K extends StorageRootKind, E extends o
         }),
     },
     agentRunStore: {
-      readRun: (sessionId, runId) => run(() => agentRunStore.readRun(sessionId, runId)),
-      findRunsById: (runId, limit) => run(() => agentRunStore.findRunsById(runId, limit)),
-      listSessionRuns: (sessionId) => run(() => agentRunStore.listSessionRuns(sessionId)),
-      listSessionRunsBounded: (sessionId, limit) =>
-        run(() => agentRunStore.listSessionRunsBounded(sessionId, limit)),
-      listSessionRunsPage: (sessionId, input) =>
-        run(() => agentRunStore.listSessionRunsPage(sessionId, input)),
       readEvents: (sessionId, runId) => run(() => agentRunStore.readEvents(sessionId, runId)),
       readEventsBounded: (sessionId, runId, budget) =>
         run(() => agentRunStore.readEventsBounded(sessionId, runId, budget)),
@@ -629,6 +830,10 @@ async function openExecutionStoresForRead<K extends StorageRootKind, E extends o
         run(() => agentRunStore.readEventProjection(sessionId, type)),
       readRootTurnAdmission: (sessionId, turnId) =>
         run(() => agentRunStore.readRootTurnAdmission(sessionId, turnId)),
+      readRootTurnContinuationAdmission: (sessionId, sourceTurnId, sourceRunId) =>
+        run(() =>
+          agentRunStore.readRootTurnContinuationAdmission(sessionId, sourceTurnId, sourceRunId),
+        ),
       readRootTurnSourceMessageReceipt: (sessionId, sourceMessageId) =>
         run(() => agentRunStore.readRootTurnSourceMessageReceipt(sessionId, sourceMessageId)),
     },
@@ -639,8 +844,20 @@ async function openExecutionStoresForRead<K extends StorageRootKind, E extends o
         run(() => runtimeEventStore.readRuntimeEventsBounded(sessionId, runId, budget)),
       readImmutableRuntimeEvents: (sessionId, runId) =>
         run(() => runtimeEventStore.readImmutableRuntimeEvents(sessionId, runId)),
+      listSessionInvocations: (sessionId) =>
+        run(() => runtimeEventStore.listSessionInvocations(sessionId)),
+      readRunInvocation: (sessionId, runId) =>
+        run(() => runtimeEventStore.readRunInvocation(sessionId, runId)),
+      listSessionInvocationsBounded: (sessionId, limit) =>
+        run(() => runtimeEventStore.listSessionInvocationsBounded(sessionId, limit)),
+      listSessionInvocationsPage: (sessionId, input) =>
+        run(() => runtimeEventStore.listSessionInvocationsPage(sessionId, input)),
+      readInvocation: (sessionId, invocationId) =>
+        run(() => runtimeEventStore.readInvocation(sessionId, invocationId)),
       readSessionRuntimeEvents: (sessionId) =>
         run(() => runtimeEventStore.readSessionRuntimeEvents(sessionId)),
+      readSessionRuntimeEventEntries: (sessionId) =>
+        run(() => runtimeEventStore.readSessionRuntimeEventEntries(sessionId)),
     },
   };
   freezeExecutionStoresFacade(stores);

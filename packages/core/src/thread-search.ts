@@ -465,6 +465,7 @@ export function threadSearchMatchKind(message: StoredMessage): ThreadSearchMatch
     case 'permission_decision':
     case 'token_usage':
     case 'turn_state':
+    case 'workhub_coordination':
     case 'system_note':
       throw new Error(`Message type ${message.type} is not searchable`);
   }
@@ -488,6 +489,8 @@ export function formatSearchResultSummary(message: StoredMessage): string {
       return '用量记录';
     case 'turn_state':
       return '回合状态';
+    case 'workhub_coordination':
+      return 'WorkHub 协调记录';
     case 'system_note':
       return '系统记录';
   }
@@ -543,8 +546,11 @@ export function collectSearchableText(message: StoredMessage): string | undefine
     case 'permission_decision':
     case 'token_usage':
     case 'turn_state':
+    case 'workhub_coordination':
     case 'system_note':
-      // Excluded — not user-typed / not user-visible content.
+      // Coordination records are rendered by WorkHub, but the reserved
+      // Coordination Session is intentionally outside general thread search.
+      // The remaining cases are not user-typed / not user-visible content.
       return undefined;
   }
 }

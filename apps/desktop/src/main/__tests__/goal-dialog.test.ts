@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 import { act, createElement } from 'react';
@@ -24,7 +25,10 @@ import { createRoot, type Root } from 'react-dom/client';
 import { parseHTML } from 'linkedom';
 import { AstryxLocaleProvider, LocaleProvider } from '@maka/ui';
 import type { GoalArmOutcome } from '../../shared/goal-arm.js';
-import { GoalDialog } from '../../renderer/features/goals/testing.js';
+import {
+  GoalDialog,
+  type GoalArmInput,
+} from '../../renderer/features/goals/testing.js';
 
 const originalGlobals = {
   document: globalThis.document,
@@ -134,8 +138,46 @@ test('keeps the Goal form editable after a deterministic rejection', async () =>
   assert.equal(findButton(harness.document, 'Start').hasAttribute('disabled'), false);
 });
 
+test('blocks invalid budgets and arms the exact values the form shows', async () => {
+  const requests: unknown[] = [];
+  const harness = installGoalDialog(async (sessionId, request) => {
+    requests.push({ sessionId, request });
+    return { kind: 'armed', goal: goalState() };
+  });
+  await harness.render('session-1');
+  await setInputValue(harness.document, 'textarea', 'All tests pass');
+
+  const [maxIterations, tokenBudget] = harness.document.querySelectorAll('input');
+  assert.ok(maxIterations);
+  assert.ok(tokenBudget);
+
+  await setInputElementValue(tokenBudget, '500');
+  assert.equal(findButton(harness.document, 'Start').hasAttribute('disabled'), true);
+  assert.match(harness.document.body.textContent, /at least 1,?000/i);
+
+  await setInputElementValue(tokenBudget, '5000');
+  assert.equal(findButton(harness.document, 'Start').hasAttribute('disabled'), false);
+
+  await setInputElementValue(maxIterations, '250');
+  assert.equal(findButton(harness.document, 'Start').hasAttribute('disabled'), true);
+  assert.match(harness.document.body.textContent, /from 1 to 200/i);
+
+  await setInputElementValue(maxIterations, '25');
+  await clickButton(harness.document, 'Start');
+
+  assert.deepEqual(requests, [{
+    sessionId: 'session-1',
+    request: {
+      condition: 'All tests pass',
+      maxIterations: 25,
+      tokenBudget: 5_000,
+    },
+  }]);
+  assert.equal(harness.closed, 1);
+});
+
 function installGoalDialog(
-  arm: (sessionId: string) => Promise<GoalArmOutcome>,
+  arm: (sessionId: string, request: GoalArmInput) => Promise<GoalArmOutcome>,
 ) {
   const parsed = parseHTML('<html><body><div id="root"></div></body></html>');
   const { document, window } = parsed;
@@ -210,6 +252,13 @@ async function setInputValue(
 ): Promise<void> {
   const input = document.querySelector(selector) as HTMLInputElement | null;
   assert.ok(input, `missing input: ${selector}`);
+  await setInputElementValue(input, value);
+}
+
+async function setInputElementValue(
+  input: HTMLInputElement,
+  value: string,
+): Promise<void> {
   await act(async () => {
     input.value = value;
     const propsKey = Object.keys(input).find((key) => key.startsWith('__reactProps$'));
@@ -238,17 +287,6 @@ function findButton(document: Document, label: string): HTMLButtonElement {
   assert.ok(button, `missing button: ${label}`);
   return button;
 }
-
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  let reject!: (reason?: unknown) => void;
-  const promise = new Promise<T>((accept, decline) => {
-    resolve = accept;
-    reject = decline;
-  });
-  return { promise, resolve, reject };
-}
-
 function goalState() {
   return {
     id: 'goal-1',

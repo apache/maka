@@ -20,7 +20,6 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import net from 'node:net';
-import { expect } from '../../test-helpers.js';
 import { PROXY_DEFAULTS } from '@maka/core/settings/network-settings';
 import { testProxyConnection } from '../proxy-test.js';
 
@@ -32,8 +31,8 @@ describe('testProxyConnection', () => {
       timeoutMs: 1_000,
     });
 
-    expect(result.ok).toBe(false);
-    expect(result.error ?? '').toMatch(/ECONNREFUSED|fetch failed|bad port|timeout/i);
+    assert.strictEqual(result.ok, false);
+    assert.match(String(result.error ?? ''), /ECONNREFUSED|fetch failed|bad port|timeout/i);
   });
 
   test('does not depend on the ambient global fetch when using the proxy dispatcher', async () => {
@@ -88,9 +87,9 @@ describe('testProxyConnection', () => {
         timeoutMs: 1_000,
       });
 
-      expect(result.ok).toBe(true);
-      expect(result.status).toBe(200);
-      expect(ambientFetchCalled).toBe(false);
+      assert.strictEqual(result.ok, true);
+      assert.strictEqual(result.status, 200);
+      assert.strictEqual(ambientFetchCalled, false);
     } finally {
       globalThis.fetch = originalFetch;
       for (const socket of sockets) socket.destroy();
@@ -128,8 +127,8 @@ describe('testProxyConnection', () => {
         timeoutMs: 100,
       });
 
-      expect(result.ok).toBe(false);
-      expect(result.error ?? '').toMatch(/timeout|fetch failed/i);
+      assert.strictEqual(result.ok, false);
+      assert.match(String(result.error ?? ''), /timeout|fetch failed/i);
       assert.ok(Date.now() - started < 2_000);
     } finally {
       for (const socket of sockets) socket.destroy();

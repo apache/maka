@@ -23,9 +23,9 @@ import {
   type AgentGraphSupervisorWakeStore,
 } from '@maka/core/agent-graph-supervisor-wake';
 import type { ContextCompactionOutcome } from '@maka/core/events';
-import { type AgentRunHeader } from '@maka/core/agent-run';
 import { type SessionEvent } from '@maka/core/events';
 import { type UserMessageInput } from '@maka/core/runtime-inputs';
+import type { RuntimeInvocationOutcome } from '@maka/core/runtime-invocation';
 import type {
   GoalTurnOutcome,
   SessionActivityLease,
@@ -174,6 +174,14 @@ export type AgentGraphSupervisorWakeDiagnostic =
       };
     };
 
+/**
+ * What the delivering invocation has to say for itself when the wake is settled.
+ *
+ * An invocation the events never closed is `running`, whether it is still on a
+ * provider or was parked on an interaction the host restart threw away.
+ */
+export type AgentGraphWakeAttemptStatus = RuntimeInvocationOutcome | 'running' | 'missing';
+
 export interface AgentGraphSupervisorWakeInput {
   activityRegistry: SessionActivityRegistry;
   wakeStore: AgentGraphSupervisorWakeStore;
@@ -189,7 +197,7 @@ export interface AgentGraphSupervisorWakeInput {
     rootSessionId: string,
     attemptId: string,
     turnId: string,
-  ): Promise<AgentRunHeader['status'] | 'missing'>;
+  ): Promise<AgentGraphWakeAttemptStatus>;
   shouldWake?(
     rootSessionId: string,
     result: AgentGraphScheduleReconciliationResult | undefined,

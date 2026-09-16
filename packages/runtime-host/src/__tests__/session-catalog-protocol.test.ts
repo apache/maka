@@ -204,6 +204,25 @@ describe('Session catalog protocol', () => {
         }),
       isProtocolError,
     );
+    assert.throws(
+      () =>
+        decodeClientFrame({
+          requestId: 'request-2b',
+          operation: 'session.configuration.update',
+          input: {
+            sessionId: 'session-1',
+            expectedRevision: 1,
+            patch: {
+              modelTarget: {
+                kind: 'explicit',
+                connectionSlug: 'openai-main',
+                model: 'gpt-5',
+              },
+            },
+          },
+        }),
+      isProtocolError,
+    );
   });
 
   test('decodes exact stable creation and full replacement configuration inputs', () => {
@@ -218,6 +237,7 @@ describe('Session catalog protocol', () => {
           labels: ['catalog'],
           modelTarget: {
             kind: 'explicit',
+            connectionId: 'connection-1',
             connectionSlug: 'openai-main',
             model: 'gpt-5',
           },
@@ -237,6 +257,7 @@ describe('Session catalog protocol', () => {
           labels: ['catalog'],
           modelTarget: {
             kind: 'explicit',
+            connectionId: 'connection-1',
             connectionSlug: 'openai-main',
             model: 'gpt-5',
           },
@@ -250,6 +271,50 @@ describe('Session catalog protocol', () => {
 
     assert.deepEqual(
       decodeClientFrame({
+        requestId: 'request-executor',
+        operation: 'session.create',
+        input: {
+          sessionId: 'session-executor',
+          workspace: { kind: 'project', projectId: 'project-1' },
+          executorId: 'codex.app-server',
+        },
+      }),
+      {
+        requestId: 'request-executor',
+        operation: 'session.create',
+        input: {
+          sessionId: 'session-executor',
+          workspace: { kind: 'project', projectId: 'project-1' },
+          executorId: 'codex.app-server',
+        },
+      },
+    );
+
+    for (const input of [
+      {
+        sessionId: 'session-missing-route',
+        workspace: { kind: 'project', projectId: 'project-1' },
+      },
+      {
+        sessionId: 'session-ambiguous-route',
+        workspace: { kind: 'project', projectId: 'project-1' },
+        executorId: 'codex',
+        modelTarget: { kind: 'default' },
+      },
+    ]) {
+      assert.throws(
+        () =>
+          decodeClientFrame({
+            requestId: 'request-invalid-executor',
+            operation: 'session.create',
+            input,
+          }),
+        isProtocolError,
+      );
+    }
+
+    assert.deepEqual(
+      decodeClientFrame({
         requestId: 'request-3',
         operation: 'session.workspace.relocate',
         input: {
@@ -276,8 +341,13 @@ describe('Session catalog protocol', () => {
         input: {
           sessionId: 'session-1',
           expectedRevision: 2,
-          configuration: {
-            modelTarget: { kind: 'default' },
+          patch: {
+            modelTarget: {
+              kind: 'explicit',
+              connectionId: 'connection-1',
+              connectionSlug: 'openai-main',
+              model: 'gpt-5',
+            },
             thinkingLevel: null,
             permissionMode: 'bypass',
             collaborationMode: 'plan',
@@ -291,8 +361,13 @@ describe('Session catalog protocol', () => {
         input: {
           sessionId: 'session-1',
           expectedRevision: 2,
-          configuration: {
-            modelTarget: { kind: 'default' },
+          patch: {
+            modelTarget: {
+              kind: 'explicit',
+              connectionId: 'connection-1',
+              connectionSlug: 'openai-main',
+              model: 'gpt-5',
+            },
             thinkingLevel: null,
             permissionMode: 'bypass',
             collaborationMode: 'plan',
@@ -325,11 +400,8 @@ describe('Session catalog protocol', () => {
           input: {
             sessionId: 'session-1',
             expectedRevision: 1,
-            configuration: {
+            patch: {
               modelTarget: { kind: 'default' },
-              thinkingLevel: null,
-              permissionMode: 'ask',
-              collaborationMode: 'agent',
             },
           },
         }),
@@ -545,6 +617,15 @@ describe('Session catalog protocol', () => {
     );
   });
 
+  test('requires a nullable Connection identity in Session catalog projections', () => {
+    assert.deepEqual(
+      decodeSessionCatalogItem(projection({ llmConnectionId: null })),
+      projection({ llmConnectionId: null }),
+    );
+    const { llmConnectionId: _omitted, ...withoutConnectionId } = projection();
+    assert.throws(() => decodeSessionCatalogItem(withoutConnectionId), isProtocolError);
+  });
+
   test('bounds pages and preserves revision-pinned continuation results', () => {
     const sessions = Array.from({ length: SESSION_CATALOG_PAGE_MAX_ITEMS }, (_, index) =>
       projection({ id: `session-${index}` }),
@@ -591,6 +672,7 @@ function projection(overrides: Partial<SessionCatalogProjection> = {}): SessionC
     hasUnread: false,
     status: 'active',
     backend: 'ai-sdk',
+    llmConnectionId: 'connection-1',
     llmConnectionSlug: 'openai-main',
     connectionLocked: true,
     model: 'gpt-5',

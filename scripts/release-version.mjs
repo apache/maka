@@ -41,6 +41,50 @@ export function parseProductReleaseVersion(version) {
   };
 }
 
+export function assertProductNightlyVersion(version, productVersion) {
+  const product = parseProductReleaseVersion(productVersion);
+  if (product.prerelease.length > 0) {
+    throw new Error('Product Nightly requires a stable checked-in product version');
+  }
+  const nightly = parseProductNightlyVersion(version);
+  if (nightly.core.some((identifier, index) => identifier !== product.core[index])) {
+    throw new Error(`Product Nightly version ${version} must be a dev build of ${productVersion}`);
+  }
+  return version;
+}
+
+export function parseProductNightlyVersion(version) {
+  const nightly = parseProductReleaseVersion(version);
+  if (
+    nightly.prerelease.length !== 3 ||
+    nightly.prerelease[0] !== 'dev' ||
+    !/^[1-9]\d*$/u.test(nightly.prerelease[1]) ||
+    !/^\d{8}$/u.test(nightly.prerelease[2])
+  ) {
+    throw new Error(`Expected a valid Product Nightly version; found ${version}`);
+  }
+  return nightly;
+}
+
+export function productNightlyRunNumber(version) {
+  return BigInt(parseProductNightlyVersion(version).prerelease[1]);
+}
+
+export function assertProductNightlyAdvances(candidateVersion, currentVersion, productVersion) {
+  assertProductNightlyVersion(candidateVersion, productVersion);
+  const candidateRun = productNightlyRunNumber(candidateVersion);
+  if (currentVersion === undefined || currentVersion === null || currentVersion === '') {
+    return candidateVersion;
+  }
+  const currentRun = productNightlyRunNumber(currentVersion);
+  if (candidateRun <= currentRun) {
+    throw new Error(
+      `Product Nightly ${candidateVersion} does not advance current run ${currentVersion}`,
+    );
+  }
+  return candidateVersion;
+}
+
 export function compareProductReleaseVersions(left, right) {
   const a = parseProductReleaseVersion(left);
   const b = parseProductReleaseVersion(right);

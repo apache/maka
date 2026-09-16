@@ -18,20 +18,30 @@
  */
 
 import {
+  isModelModality,
   isRelayProviderType,
-  PROVIDER_DEFAULTS,
+  effectiveBaseUrl,
+  PROVIDER_REGISTRY,
   providerDefaultsOf,
   validateSlug,
+  type ModelModality,
   type ProviderType,
+  type SlugValidationIssue,
 } from '../llm-connections.js';
+import {
+  CONNECTION_MODEL_DESCRIPTION_MAX_LENGTH,
+  CONNECTION_MODEL_DISPLAY_NAME_MAX_LENGTH,
+  MAX_PREPENDED_FALLBACK_MODELS,
+} from '../model-catalog.js';
 import {
   DECLARABLE_RELAY_THINKING_LEVELS,
   isThinkingLevel,
-  type RelayModelProfile,
+  type ModelOverride,
   type ThinkingLevel,
 } from '../model-thinking.js';
 import type {
   ConnectionCatalogEntry,
+  ConnectionCredentialTarget,
   ConnectionCatalogEntryDraft,
   ConnectionCatalogEntryUpdate,
   ConnectionModel,
@@ -65,6 +75,22 @@ import {
 export const CONNECTION_CATALOG_MAX_CONNECTIONS = 1_024;
 export const CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION = 2_048;
 export const CONNECTION_CATALOG_MAX_ENABLED_MODEL_IDS = 512;
+/**
+ * A resolved entry exists for every stored model and profile, for every enabled
+ * id the inventory never listed, for the connection default when it lists none, and —
+ * on a provider with no model-list endpoint — for every model that provider
+ * ships, which the resolver prepends rather than substitutes.
+ *
+ * That last term is why this cannot be the sum of the two persisted lists
+ * alone: without it, a catalog the storage decoder accepts at its own maxima
+ * resolves to more entries than the wire admits, and the Host's own page is
+ * rejected on arrival, leaving every client with no models to choose from.
+ */
+export const CONNECTION_CATALOG_MAX_ENTRIES_PER_CONNECTION =
+  2 * CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION +
+  CONNECTION_CATALOG_MAX_ENABLED_MODEL_IDS +
+  MAX_PREPENDED_FALLBACK_MODELS +
+  1;
 export const CONNECTION_NAME_MAX_LENGTH = 256;
 export const CONNECTION_MODEL_ID_MAX_LENGTH = 512;
 
@@ -128,7 +154,7 @@ export function normalizeConnectionCatalogEntryDraft(value: unknown): Connection
       'baseUrl',
       'enabled',
       'enabledModelIds',
-      'relayModelProfiles',
+      'modelOverrides',
       'requestBodyOverlay',
     ],
     ['slug', 'name', 'providerType', 'enabled', 'enabledModelIds'],
@@ -141,10 +167,8 @@ export function normalizeConnectionCatalogEntryDraft(value: unknown): Connection
       ? undefined
       : decodeRequestBodyOverlay(item.requestBodyOverlay);
   const profiles =
-    item.relayModelProfiles === undefined
-      ? {}
-      : nonEmptyRelayProfiles(item.relayModelProfiles, enabledModelIds);
-  assertProfileFieldsFitProvider(profiles.relayModelProfiles, providerType);
+    item.modelOverrides === undefined ? {} : nonEmptyRelayProfiles(item.modelOverrides);
+  assertProfileFieldsFitProvider(profiles.modelOverrides, providerType);
   return {
     slug: decodeConnectionSlug(item.slug),
     name: decodeConnectionName(item.name),
@@ -163,7 +187,7 @@ export function normalizeConnectionCatalogEntryUpdate(
   const item = exactRecord(
     value,
     'connection update',
-    ['name', 'baseUrl', 'enabled', 'enabledModelIds', 'relayModelProfiles', 'requestBodyOverlay'],
+    ['name', 'baseUrl', 'enabled', 'enabledModelIds', 'modelOverrides', 'requestBodyOverlay'],
     ['name', 'enabled', 'enabledModelIds'],
   );
   const baseUrl = normalizeCatalogConnectionBaseUrl(item.baseUrl);
@@ -182,22 +206,16 @@ export function normalizeConnectionCatalogEntryUpdate(
     ...(baseUrl === undefined ? {} : { baseUrl }),
     enabled: booleanValue(item.enabled, 'connection enabled'),
     enabledModelIds,
-    ...(item.relayModelProfiles === undefined
-      ? {}
-      : profilesUpdateInstruction(item.relayModelProfiles, enabledModelIds)),
+    ...(item.modelOverrides === undefined ? {} : profilesUpdateInstruction(item.modelOverrides)),
     ...(requestBodyOverlay === undefined ? {} : { requestBodyOverlay }),
   };
 }
 
-function profilesUpdateInstruction(
-  value: unknown,
-  enabledModelIds: readonly string[],
-): { readonly relayModelProfiles: Readonly<Record<string, RelayModelProfile>> | null } {
+function profilesUpdateInstruction(value: unknown): {
+  readonly modelOverrides: Readonly<Record<string, ModelOverride>> | null;
+} {
   return {
-    relayModelProfiles:
-      value === null
-        ? null
-        : (nonEmptyRelayProfiles(value, enabledModelIds).relayModelProfiles ?? null),
+    modelOverrides: value === null ? null : (nonEmptyRelayProfiles(value).modelOverrides ?? null),
   };
 }
 
@@ -207,15 +225,13 @@ export function normalizeConnectionCatalogEntryUpdateForProvider(
 ): ConnectionCatalogEntryUpdate {
   const update = normalizeConnectionCatalogEntryUpdate(value);
   const baseUrl = normalizeCatalogConnectionBaseUrl(update.baseUrl, providerType);
-  assertProfileFieldsFitProvider(update.relayModelProfiles, providerType);
+  assertProfileFieldsFitProvider(update.modelOverrides, providerType);
   return {
     name: update.name,
     ...(baseUrl === undefined ? {} : { baseUrl }),
     enabled: update.enabled,
     enabledModelIds: update.enabledModelIds,
-    ...(update.relayModelProfiles === undefined
-      ? {}
-      : { relayModelProfiles: update.relayModelProfiles }),
+    ...(update.modelOverrides === undefined ? {} : { modelOverrides: update.modelOverrides }),
     ...(update.requestBodyOverlay === undefined
       ? {}
       : { requestBodyOverlay: update.requestBodyOverlay }),
@@ -226,16 +242,15 @@ export function normalizeConnectionCatalogEntryUpdateForProvider(
  * The relay profiles carried by catalog entries, keyed by model id. Strict
  * on purpose: writers (the settings UI) emit already-normalized tables, so
  * anything malformed here is a corrupt document or a foreign writer, and
- * the catalog fails loudly the way every exactRecord does. Profiles are
- * scoped to `enabledModelIds` — the store prunes them when the selection
- * changes, so a key outside the set marks a document the store never wrote.
+ * the catalog fails loudly the way every exactRecord does. Profiles also
+ * describe disabled models; selection controls use, not configuration.
  */
-export function decodeRelayModelProfilesTable(
-  value: unknown,
-  enabledModelIds: readonly string[],
-): Readonly<Record<string, RelayModelProfile>> {
+export function decodeModelOverridesTable(value: unknown): Readonly<Record<string, ModelOverride>> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     throw domainError('connection relay model profiles must be a record');
+  }
+  if (Object.keys(value).length > CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION) {
+    throw domainError('too many connection model profiles');
   }
   // fromEntries, not `table[modelId] = declared` on a `{}`: model ids are
   // arbitrary relay-supplied strings, and a literal `obj['__proto__'] = x`
@@ -243,24 +258,30 @@ export function decodeRelayModelProfilesTable(
   // entry would then vanish from Object.entries and JSON.stringify (silent
   // data loss on the persistence roundtrip). fromEntries defines every key
   // as an own data property.
-  const parsed: [string, RelayModelProfile][] = [];
+  const parsed: [string, ModelOverride][] = [];
   for (const [modelId, rawEntry] of Object.entries(value)) {
     decodeConnectionModelId(modelId);
-    if (!enabledModelIds.includes(modelId)) {
-      throw domainError(`relay model profile for ${modelId} is not an enabled model`);
-    }
     const entry = exactRecord(
       rawEntry,
       `relay model profile for ${modelId}`,
-      ['thinkingLevels', 'vision', 'contextWindow', 'serviceTier'],
+      [
+        'thinkingLevels',
+        'vision',
+        'contextWindow',
+        'serviceTier',
+        'compactionThreshold',
+        'inputLimit',
+        'maxOutputTokens',
+        'displayName',
+        'description',
+        'apiProtocol',
+        'knowledgeCutoff',
+        'capabilities',
+        'modalities',
+      ],
       [],
     );
-    const declared: {
-      thinkingLevels?: readonly ThinkingLevel[];
-      vision?: boolean;
-      contextWindow?: number;
-      serviceTier?: 'fast';
-    } = {};
+    const declared: { -readonly [K in keyof ModelOverride]: ModelOverride[K] } = {};
     if (entry.thinkingLevels !== undefined) {
       if (!Array.isArray(entry.thinkingLevels) || entry.thinkingLevels.length === 0) {
         throw domainError(`declared thinking levels for ${modelId} must be a non-empty array`);
@@ -284,22 +305,39 @@ export function decodeRelayModelProfilesTable(
     if (entry.vision !== undefined) {
       declared.vision = booleanValue(entry.vision, `declared vision for ${modelId}`);
     }
-    if (entry.contextWindow !== undefined) {
-      declared.contextWindow = integerValue(
-        entry.contextWindow,
-        `declared context window for ${modelId}`,
-        1,
-        Number.MAX_SAFE_INTEGER,
-      );
+    for (const field of [
+      'contextWindow',
+      'compactionThreshold',
+      'inputLimit',
+      'maxOutputTokens',
+    ] as const) {
+      if (entry[field] !== undefined)
+        declared[field] = integerValue(entry[field], `model ${field}`, 1, Number.MAX_SAFE_INTEGER);
     }
+    for (const field of ['displayName', 'description'] as const) {
+      if (entry[field] !== undefined)
+        declared[field] = stringValue(entry[field], `model ${field}`, 2048);
+    }
+    if (entry.apiProtocol !== undefined) {
+      const model = decodeConnectionModel({ id: modelId, apiProtocol: entry.apiProtocol });
+      declared.apiProtocol = model.apiProtocol;
+    }
+    const facts = decodeConnectionModel({
+      id: modelId,
+      ...(entry.capabilities === undefined ? {} : { capabilities: entry.capabilities }),
+      ...(entry.modalities === undefined ? {} : { modalities: entry.modalities }),
+      ...(entry.knowledgeCutoff === undefined ? {} : { knowledgeCutoff: entry.knowledgeCutoff }),
+    });
+    if (facts.capabilities?.vision !== undefined)
+      throw domainError('Use the model vision override');
+    if (facts.capabilities !== undefined) declared.capabilities = facts.capabilities;
+    if (facts.modalities !== undefined) declared.modalities = facts.modalities;
+    if (facts.knowledgeCutoff !== undefined) declared.knowledgeCutoff = facts.knowledgeCutoff;
     if (entry.serviceTier !== undefined) {
       if (entry.serviceTier !== 'fast') {
         throw domainError(`declared service tier for ${modelId} must be fast`);
       }
       declared.serviceTier = 'fast';
-    }
-    if (Object.keys(declared).length === 0) {
-      throw domainError(`relay model profile for ${modelId} declares nothing`);
     }
     parsed.push([modelId, declared]);
   }
@@ -323,7 +361,7 @@ export function decodeRelayModelProfilesTable(
  * the unknown value, a 400 the user cannot explain.
  */
 function assertProfileFieldsFitProvider(
-  profiles: Readonly<Record<string, RelayModelProfile>> | null | undefined,
+  profiles: Readonly<Record<string, ModelOverride>> | null | undefined,
   providerType: ProviderType,
 ): void {
   if (!profiles || isRelayProviderType(providerType)) return;
@@ -343,14 +381,11 @@ function assertProfileFieldsFitProvider(
 
 // An empty table is not a state worth storing: drafts/canonical entries omit
 // the key, and updates treat it as the same instruction as `null` (clear).
-function nonEmptyRelayProfiles(
-  value: unknown,
-  enabledModelIds: readonly string[],
-): {
-  readonly relayModelProfiles?: Readonly<Record<string, RelayModelProfile>>;
+function nonEmptyRelayProfiles(value: unknown): {
+  readonly modelOverrides?: Readonly<Record<string, ModelOverride>>;
 } {
-  const table = decodeRelayModelProfilesTable(value, enabledModelIds);
-  return Object.keys(table).length > 0 ? { relayModelProfiles: table } : {};
+  const table = decodeModelOverridesTable(value);
+  return Object.keys(table).length > 0 ? { modelOverrides: table } : {};
 }
 
 export function decodeCanonicalConnectionCatalogEntry(value: unknown): ConnectionCatalogEntry {
@@ -366,7 +401,7 @@ export function decodeCanonicalConnectionCatalogEntry(value: unknown): Connectio
       'baseUrl',
       'enabled',
       'enabledModelIds',
-      'relayModelProfiles',
+      'modelOverrides',
       'requestBodyOverlay',
       'models',
       'modelSource',
@@ -391,9 +426,7 @@ export function decodeCanonicalConnectionCatalogEntry(value: unknown): Connectio
     ...(item.baseUrl === undefined ? {} : { baseUrl: item.baseUrl }),
     enabled: item.enabled,
     enabledModelIds: item.enabledModelIds,
-    ...(item.relayModelProfiles === undefined
-      ? {}
-      : { relayModelProfiles: item.relayModelProfiles }),
+    ...(item.modelOverrides === undefined ? {} : { modelOverrides: item.modelOverrides }),
     ...(item.requestBodyOverlay === undefined
       ? {}
       : { requestBodyOverlay: item.requestBodyOverlay }),
@@ -453,6 +486,67 @@ export function decodeConnectionVersionBasis(value: unknown): ConnectionVersionB
   };
 }
 
+export function canonicalConnectionEffectiveBaseUrl(
+  connection: Pick<ConnectionCatalogEntry, 'providerType' | 'baseUrl'>,
+): string {
+  const endpoint = effectiveBaseUrl(connection);
+  try {
+    return new URL(endpoint).toString();
+  } catch {
+    throw domainError('connection has an invalid effective base URL');
+  }
+}
+
+export function connectionCredentialTarget(
+  connection: Pick<
+    ConnectionCatalogEntry,
+    'connectionId' | 'revision' | 'slug' | 'providerType' | 'baseUrl'
+  >,
+): ConnectionCredentialTarget {
+  return {
+    connectionId: connection.connectionId,
+    revision: connection.revision,
+    slug: connection.slug,
+    providerType: connection.providerType,
+    effectiveBaseUrl: canonicalConnectionEffectiveBaseUrl(connection),
+  };
+}
+
+export function decodeConnectionCredentialTarget(value: unknown): ConnectionCredentialTarget {
+  const item = exactRecord(value, 'connection credential target', [
+    'connectionId',
+    'revision',
+    'slug',
+    'providerType',
+    'effectiveBaseUrl',
+  ]);
+  const version = decodeConnectionVersionBasis({
+    connectionId: item.connectionId,
+    revision: item.revision,
+  });
+  const providerType = decodeProviderType(item.providerType);
+  const effectiveBaseUrl = stringValue(
+    item.effectiveBaseUrl,
+    'connection credential target effective base URL',
+    2_048,
+  );
+  let canonical: string;
+  try {
+    canonical = new URL(effectiveBaseUrl).toString();
+  } catch {
+    throw domainError('connection credential target effective base URL must be valid');
+  }
+  if (canonical !== effectiveBaseUrl) {
+    throw domainError('connection credential target effective base URL must be canonical');
+  }
+  return {
+    ...version,
+    slug: decodeConnectionSlug(item.slug),
+    providerType,
+    effectiveBaseUrl,
+  };
+}
+
 export function decodeConnectionTarget(value: unknown): ConnectionTarget {
   const item = exactRecord(value, 'connection target', ['connectionId', 'modelId']);
   return {
@@ -465,7 +559,20 @@ export function decodeConnectionModel(value: unknown): ConnectionModel {
   const item = exactRecord(
     value,
     'connection model',
-    ['id', 'displayName', 'apiProtocol', 'contextWindow', 'maxOutputTokens', 'capabilities'],
+    [
+      'id',
+      'displayName',
+      'description',
+      'apiProtocol',
+      'contextWindow',
+      'inputLimit',
+      'maxOutputTokens',
+      'knowledgeCutoff',
+      'structuredOutput',
+      'lastUpdated',
+      'capabilities',
+      'modalities',
+    ],
     ['id'],
   );
   if (
@@ -500,11 +607,28 @@ export function decodeConnectionModel(value: unknown): ConnectionModel {
       );
     }
   }
+  const modalities =
+    item.modalities === undefined ? undefined : decodeModelModalities(item.modalities);
   return {
     id: decodeConnectionModelId(item.id),
     ...(item.displayName === undefined
       ? {}
-      : { displayName: stringValue(item.displayName, 'model display name', 512) }),
+      : {
+          displayName: stringValue(
+            item.displayName,
+            'model display name',
+            CONNECTION_MODEL_DISPLAY_NAME_MAX_LENGTH,
+          ),
+        }),
+    ...(item.description === undefined
+      ? {}
+      : {
+          description: stringValue(
+            item.description,
+            'model description',
+            CONNECTION_MODEL_DESCRIPTION_MAX_LENGTH,
+          ),
+        }),
     ...(item.apiProtocol === undefined ? {} : { apiProtocol: item.apiProtocol }),
     ...(item.contextWindow === undefined
       ? {}
@@ -512,6 +636,16 @@ export function decodeConnectionModel(value: unknown): ConnectionModel {
           contextWindow: integerValue(
             item.contextWindow,
             'model context window',
+            1,
+            Number.MAX_SAFE_INTEGER,
+          ),
+        }),
+    ...(item.inputLimit === undefined
+      ? {}
+      : {
+          inputLimit: integerValue(
+            item.inputLimit,
+            'model input limit',
             1,
             Number.MAX_SAFE_INTEGER,
           ),
@@ -526,8 +660,39 @@ export function decodeConnectionModel(value: unknown): ConnectionModel {
             Number.MAX_SAFE_INTEGER,
           ),
         }),
+    ...(item.knowledgeCutoff === undefined
+      ? {}
+      : { knowledgeCutoff: stringValue(item.knowledgeCutoff, 'model knowledge cutoff', 2048) }),
+    ...(item.structuredOutput === undefined
+      ? {}
+      : { structuredOutput: booleanValue(item.structuredOutput, 'model structured output') }),
+    ...(item.lastUpdated === undefined
+      ? {}
+      : { lastUpdated: stringValue(item.lastUpdated, 'model last updated', 2048) }),
     ...(capabilities === undefined ? {} : { capabilities }),
+    ...(modalities === undefined ? {} : { modalities }),
   };
+}
+
+function decodeModelModalities(value: unknown): NonNullable<ConnectionModel['modalities']> {
+  const item = exactRecord(value, 'connection model modalities', ['input', 'output']);
+  if (!Array.isArray(item.input) || !Array.isArray(item.output)) {
+    throw domainError('connection model modalities must contain input and output arrays');
+  }
+  const input = Array.from(item.input, (entry) => decodeModelModality(entry, 'input'));
+  const output = Array.from(item.output, (entry) => decodeModelModality(entry, 'output'));
+  return { input, output };
+}
+
+// Both directions accept the same set. models.dev declares video on either
+// side and pdf on both, so splitting them again only invites one direction to
+// drift behind the catalog it decodes.
+function decodeModelModality(value: unknown, direction: 'input' | 'output'): ModelModality {
+  const modality = stringValue(value, `connection model ${direction} modality`, 16);
+  if (!isModelModality(modality)) {
+    throw domainError(`connection model ${direction} modality is invalid`);
+  }
+  return modality;
 }
 
 export function decodeConnectionTestSummary(value: unknown): ConnectionTestSummary {
@@ -589,7 +754,14 @@ export function normalizeConnectionModelDiscoveryResult(
 export function decodeConnectionSlug(value: unknown): string {
   if (typeof value !== 'string') throw domainError('connection slug must be a string');
   const error = validateSlug(value);
-  if (error) throw domainError(`connection slug: ${error}`);
+  if (error) {
+    const messages = {
+      required: 'Slug is required',
+      format: 'Slug must be lowercase letters, digits, and hyphens',
+      too_long: 'Slug must be 64 characters or fewer',
+    } satisfies Record<SlugValidationIssue, string>;
+    throw domainError(`connection slug: ${messages[error]}`);
+  }
   return value;
 }
 
@@ -663,7 +835,7 @@ export function normalizeCatalogConnectionBaseUrl(
   if (
     override !== undefined &&
     providerType &&
-    PROVIDER_DEFAULTS[providerType].authKind === 'oauth_token'
+    PROVIDER_REGISTRY[providerType].authKind === 'oauth_token'
   ) {
     throw domainError('OAuth provider endpoint cannot be overridden');
   }
@@ -680,7 +852,7 @@ export function decodeCanonicalConnectionBaseUrl(
 }
 
 function canonicalProviderBaseUrl(providerType: ProviderType): string | undefined {
-  const raw = PROVIDER_DEFAULTS[providerType].baseUrl.trim();
+  const raw = PROVIDER_REGISTRY[providerType].baseUrl.trim();
   if (!raw) return undefined;
   try {
     return new URL(raw).toString();

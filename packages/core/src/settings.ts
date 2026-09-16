@@ -36,9 +36,11 @@ import {
 import { defaultLocalMemorySettings, normalizeLocalMemorySettings } from './local-memory.js';
 import type { PermissionMode } from './permission.js';
 import { decodePersistedPermissionMode } from './permission.js';
+import type { UsageProvenance } from './usage-ledger-merge.js';
 import {
   UI_LOCALE_PREFERENCES,
   isUiLocalePreference,
+  normalizeUiLocalePreference,
   type UiLocalePreference,
 } from './ui-locale.js';
 import { normalizeSubagentSettings, type SubagentSettings } from './subagent-settings.js';
@@ -74,6 +76,7 @@ export const SETTINGS_SECTIONS = [
   'daily-review',
   'models',
   'subagents',
+  'external-agents',
   'usage',
   // `maka://settings/<section>` is a public deep link, so the id names what
   // the page is rather than the noun it lives under.
@@ -98,9 +101,44 @@ export interface NetworkProxySettings {
   port: number;
   authEnabled: boolean;
   username: string;
-  password: string;
   bypassList: string[];
   autoBypassDomains: string[];
+}
+
+export interface NetworkProxyCredentialTarget {
+  readonly protocol: ProxyProtocol;
+  readonly host: string;
+  readonly port: number;
+  readonly username: string;
+}
+
+export function networkProxyCredentialTarget(
+  proxy: Pick<NetworkProxySettings, 'protocol' | 'host' | 'port' | 'username'>,
+): NetworkProxyCredentialTarget {
+  return {
+    protocol: proxy.protocol,
+    host: proxy.host.trim().toLowerCase(),
+    port: proxy.port,
+    username: proxy.username,
+  };
+}
+
+export type NetworkProxyCredentialOperation =
+  | {
+      kind: 'replace';
+      secret: string;
+      expectedTarget?: NetworkProxyCredentialTarget;
+    }
+  | { kind: 'delete' };
+
+/** A write-only proxy patch. Credential operations are never persisted. */
+export type NetworkProxySettingsPatch = Partial<NetworkProxySettings> & {
+  credential?: NetworkProxyCredentialOperation;
+};
+
+/** Runtime Host read projection; the saved secret itself never crosses IPC. */
+export interface RuntimeHostNetworkProxySettings extends NetworkProxySettings {
+  readonly passwordConfigured: boolean;
 }
 
 /**
@@ -112,7 +150,7 @@ export interface AppNetworkSettings {
 }
 
 export type UsageRange = '24h' | '7d' | '30d' | 'all';
-export type UsageStatus = 'all' | 'success' | 'error';
+export type UsageStatus = 'all' | 'success' | 'error' | 'aborted';
 export type UsageTab = 'requests' | 'providers' | 'models' | 'tools' | 'pricing';
 
 export interface UsageSettings {
@@ -360,6 +398,47 @@ export function appIconForTheme(
   return appearance.appIconDark === undefined ? light : toAppIconChoice(appearance.appIconDark);
 }
 
+/**
+ * UI base font size in px, exposed as a numeric stepper like Codex's
+ * "UI font size". The renderer's type scale is generated from base 14
+ * (`makaTheme.ts`), and every `--font-size-*` token is `rem`, so the applied
+ * document-root font-size scales proportionally as `16 * uiFontSize / 14`.
+ * This scales what is rem-derived — text and Astryx's rem-based icon atoms —
+ * while px-literal spacing and control widths stay fixed, which is why the
+ * range is clamped tightly around the base rather than offered as a free
+ * zoom. It is NOT the density hack removed in `makaTheme.ts`.
+ *
+ * Continuous within a clamped range: a wrong-typed value fails closed to the
+ * default, an out-of-range number clamps to the nearest bound (a valid intent,
+ * just bounded — so an extreme persisted value can't make the UI unusable).
+ */
+export const UI_FONT_SIZE_MIN = 11;
+export const UI_FONT_SIZE_MAX = 22;
+export const DEFAULT_UI_FONT_SIZE = 14;
+
+/** Terminal (xterm) font size in px, same numeric-stepper treatment. */
+export const TERMINAL_FONT_SIZE_MIN = 9;
+export const TERMINAL_FONT_SIZE_MAX = 24;
+export const DEFAULT_TERMINAL_FONT_SIZE = 12;
+
+function clampFontSize(value: unknown, min: number, max: number, fallback: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+  return Math.min(max, Math.max(min, Math.round(value)));
+}
+
+export function normalizeUiFontSize(value: unknown): number {
+  return clampFontSize(value, UI_FONT_SIZE_MIN, UI_FONT_SIZE_MAX, DEFAULT_UI_FONT_SIZE);
+}
+
+export function normalizeTerminalFontSize(value: unknown): number {
+  return clampFontSize(
+    value,
+    TERMINAL_FONT_SIZE_MIN,
+    TERMINAL_FONT_SIZE_MAX,
+    DEFAULT_TERMINAL_FONT_SIZE,
+  );
+}
+
 export interface AppearanceSettings {
   theme: ThemePreference;
   /** Optional palette override; missing values normalize to `default`. */
@@ -371,6 +450,10 @@ export interface AppearanceSettings {
    * `appIcon` is used in both.
    */
   appIconDark?: AppIconChoice;
+  /** Optional UI base font size in px. Missing normalizes to the default. */
+  uiFontSize?: number;
+  /** Optional terminal font size in px. Missing normalizes to the default. */
+  terminalFontSize?: number;
 }
 
 export interface PersonalizationSettings {
@@ -428,6 +511,8 @@ export function isChatDefaultPermissionMode(value: unknown): value is ChatDefaul
 /** Seeds new sessions' starting permission mode (Settings → 通用 → 默认权限模式). */
 export interface ChatDefaultsSettings {
   permissionMode: ChatDefaultPermissionMode;
+  /** Applies only when a new task is created. */
+  codeModeEnabled?: boolean;
   /**
    * Seeds new sessions' thinking level. `undefined` means "whatever the model
    * does on its own" — the absence of a preference, not a level.
@@ -502,18 +587,25 @@ export interface AppSettings {
   notifications: NotificationSettings;
   workHub: WorkHubSettings;
   system: SystemSettings;
+  externalAgents: { antigravity: { executable: string } };
   shell: ShellSettings;
   subagents: SubagentSettings;
+}
+
+export interface RuntimeHostAppSettings extends Omit<AppSettings, 'network'> {
+  network: {
+    proxy: RuntimeHostNetworkProxySettings;
+  };
 }
 
 export interface UsageRequestLog {
   id: string;
   ts: number;
   kind: 'model' | 'tool';
-  sessionId: string;
+  sessionId?: string;
   /** Human-readable session title (SessionHeader.name); may be empty for untitled sessions. */
-  sessionName: string;
-  turnId: string;
+  sessionName?: string;
+  turnId?: string;
   provider: string;
   model: string;
   toolName?: string;
@@ -525,7 +617,7 @@ export interface UsageRequestLog {
   reasoning?: number;
   costUsd?: number;
   latencyMs?: number;
-  status: 'success' | 'error';
+  status: 'success' | 'error' | 'aborted';
 }
 
 export interface UsageSummary {
@@ -569,6 +661,19 @@ export interface UsageStats {
     inputPerMTokUsd: number;
     outputPerMTokUsd: number;
   }>;
+  /**
+   * Coverage/legacy/unreadable/pending accounting behind these totals, so the
+   * page can qualify a cost that reads low (unpriced/unreadable/pending) rather
+   * than presenting it as authoritative. Same provenance the summary IPC and
+   * Session Inspector already carry.
+   */
+  provenance: UsageProvenance;
+  /**
+   * True when the activity log was capped at MAX_ACTIVITY_RECORDS, so the page
+   * can say the list (and the log-derived breakdowns) are incomplete instead of
+   * silently showing a short list.
+   */
+  logsTruncated?: boolean;
 }
 
 export interface SettingsTestResult {
@@ -583,6 +688,7 @@ export type SettingsTestResultCode =
   | 'proxy_reachable'
   | 'proxy_disabled'
   | 'proxy_configuration_missing'
+  | 'proxy_credential_missing'
   | 'proxy_timeout'
   | 'proxy_http_error'
   | 'proxy_unreachable'
@@ -590,11 +696,19 @@ export type SettingsTestResultCode =
   | 'bot_token_missing'
   | 'bot_token_invalid'
   | 'bot_app_credentials_missing'
+  | 'slack_tokens_missing'
+  | 'wecom_credentials_missing'
+  | 'dingtalk_credentials_missing'
+  | 'dingtalk_no_access_token'
+  | 'qq_credentials_missing'
+  | 'qq_no_access_token'
+  | 'wechat_bridge_url_invalid'
+  | 'wechat_ilink_credentials_incomplete'
   | 'bot_connection_failed';
 
 export type UpdateAppSettingsInput = Partial<{
   network: Partial<{
-    proxy: Partial<NetworkProxySettings>;
+    proxy: NetworkProxySettingsPatch;
   }>;
   botChat: BotChatSettingsPatch;
   usage: Partial<UsageSettings>;
@@ -608,10 +722,16 @@ export type UpdateAppSettingsInput = Partial<{
   notifications: Partial<NotificationSettings>;
   workHub: Partial<WorkHubSettings>;
   system: Partial<SystemSettings>;
+  externalAgents: AppSettings['externalAgents'];
   shell: Partial<ShellSettings>;
   webSearch: WebSearchSettingsPatch;
   subagents: SubagentSettings;
 }>;
+
+/** Preconditions for a Host-owned Settings write that must not be retried past a semantic change. */
+export interface RuntimeHostSettingsUpdateGuard {
+  readonly expectedExternalAgentExecutable?: string;
+}
 
 export type PersonalizationSettingsWarning =
   | 'override-attempt'
@@ -622,8 +742,8 @@ export interface UpdateAppSettingsWarnings {
   personalization?: PersonalizationSettingsWarning[];
 }
 
-export interface UpdateAppSettingsResult {
-  settings: AppSettings;
+export interface UpdateAppSettingsResult<TSettings extends AppSettings = AppSettings> {
+  settings: TSettings;
   warnings?: UpdateAppSettingsWarnings;
 }
 
@@ -647,7 +767,6 @@ export function createDefaultSettings(): AppSettings {
         port: 7890,
         authEnabled: false,
         username: '',
-        password: '',
         bypassList: ['metaso.cn', 'baidu.com'],
         autoBypassDomains: DEFAULT_PROXY_BYPASS_DOMAINS,
       },
@@ -664,6 +783,8 @@ export function createDefaultSettings(): AppSettings {
       theme: 'auto',
       palette: 'default',
       appIcon: DEFAULT_APP_ICON,
+      uiFontSize: DEFAULT_UI_FONT_SIZE,
+      terminalFontSize: DEFAULT_TERMINAL_FONT_SIZE,
     },
     personalization: {
       displayName: '',
@@ -693,6 +814,7 @@ export function createDefaultSettings(): AppSettings {
       // battery-affecting opt-in, not a silent default.
       keepSystemAwake: false,
     },
+    externalAgents: { antigravity: { executable: '' } },
     shell: {
       preference: 'auto',
       executable: '',
@@ -702,6 +824,15 @@ export function createDefaultSettings(): AppSettings {
 }
 
 export function mergeSettings(current: AppSettings, patch: UpdateAppSettingsInput): AppSettings {
+  const {
+    credential: _credential,
+    password: _legacyPassword,
+    passwordConfigured: _derivedStatus,
+    ...proxyPatch
+  } = (patch.network?.proxy ?? {}) as NetworkProxySettingsPatch & {
+    password?: unknown;
+    passwordConfigured?: unknown;
+  };
   return {
     ...current,
     network: {
@@ -709,7 +840,7 @@ export function mergeSettings(current: AppSettings, patch: UpdateAppSettingsInpu
       ...(patch.network ?? {}),
       proxy: {
         ...current.network.proxy,
-        ...(patch.network?.proxy ?? {}),
+        ...proxyPatch,
       },
     },
     botChat: mergeBotChatSettings(current.botChat, patch.botChat),
@@ -772,6 +903,7 @@ export function mergeSettings(current: AppSettings, patch: UpdateAppSettingsInpu
       ...current.system,
       ...(patch.system ?? {}),
     },
+    externalAgents: patch.externalAgents ?? current.externalAgents,
     shell: {
       ...current.shell,
       ...(patch.shell ?? {}),
@@ -803,6 +935,7 @@ export function normalizeSettings(input: unknown): AppSettings {
     notifications: value.notifications,
     workHub: value.workHub,
     system: value.system,
+    externalAgents: value.externalAgents,
     shell: value.shell,
     subagents: value.subagents,
   });
@@ -850,6 +983,10 @@ export function normalizeSettings(input: unknown): AppSettings {
       appIcon: isAppIconChoice(base.appearance.appIcon)
         ? base.appearance.appIcon
         : DEFAULT_APP_ICON,
+      // Wrong-typed → default; out-of-range number → clamped to bounds, so an
+      // extreme persisted value can't drive an unusable root/terminal size.
+      uiFontSize: normalizeUiFontSize(base.appearance.uiFontSize),
+      terminalFontSize: normalizeTerminalFontSize(base.appearance.terminalFontSize),
       // Cleared first, then re-set from the RAW input rather than from `base`:
       // `base` has already been merged over the defaults, which carry a dark
       // icon, so an existing settings file that predates this option would
@@ -863,13 +1000,12 @@ export function normalizeSettings(input: unknown): AppSettings {
     // PR-LANG-PREF-0: closed-enum fail-closed for the new
     // `personalization.uiLocale` preference. mergeSettings spreads
     // raw user values, so an unknown value would otherwise reach the
-    // renderer outside the closed reactive-locale contract. Fall back to
-    // 'auto' on any miss.
+    // renderer outside the closed reactive-locale contract. Preserve the
+    // former generic `zh` preference as Simplified Chinese, then fall back to
+    // 'auto' on any other miss.
     personalization: {
       ...base.personalization,
-      uiLocale: isUiLocalePreference(base.personalization.uiLocale)
-        ? base.personalization.uiLocale
-        : 'auto',
+      uiLocale: normalizeUiLocalePreference(base.personalization.uiLocale),
       selectedPetId: normalizeSelectedPetId(base.personalization.selectedPetId),
     },
     botChat: normalizeBotChatSettings(base.botChat, value.botChat),
@@ -903,6 +1039,14 @@ export function normalizeSettings(input: unknown): AppSettings {
     system: {
       keepSystemAwake:
         typeof base.system.keepSystemAwake === 'boolean' ? base.system.keepSystemAwake : false,
+    },
+    externalAgents: {
+      antigravity: {
+        executable:
+          typeof base.externalAgents?.antigravity?.executable === 'string'
+            ? base.externalAgents.antigravity.executable
+            : '',
+      },
     },
     shell: normalizeShellSettings(base.shell),
     subagents: normalizeSubagentSettings(base.subagents),
@@ -950,6 +1094,7 @@ function defaultChatDefaultsSettings(): ChatDefaultsSettings {
 // doesn't recognize -- fall back to the safest default instead.
 function normalizeChatDefaultsSettings(settings: ChatDefaultsSettings): ChatDefaultsSettings {
   return {
+    ...(settings.codeModeEnabled === true ? { codeModeEnabled: true } : {}),
     // Same fail-closed reasoning as the mode below: a garbage persisted level
     // drops to "no preference" (the model's own default) rather than reaching
     // session creation as a rung no picker recognizes.

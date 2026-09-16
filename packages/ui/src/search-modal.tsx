@@ -19,8 +19,6 @@
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { SearchErrorReason, SearchRequest, SearchResult } from '@maka/core/search';
-import type { UiLocale } from '@maka/core/ui-locale';
-import { generalizedErrorMessage, generalizedErrorMessageChinese } from '@maka/core/redaction';
 import {
   CommandPalette as AstryxCommandPalette,
   CommandPaletteFooter,
@@ -29,12 +27,14 @@ import {
   type SearchableItem,
 } from '@astryxdesign/core';
 import { AstryxLocaleProvider } from './astryx-i18n.js';
+import { lookupCopy } from '@maka/core/ui-locale';
 import { getShellControlsCopy } from './shell-controls-copy.js';
 import { useUiLocale } from './locale-context.js';
 
 interface SearchModalDeps {
   searchThread(
     request: SearchRequest,
+    requestId?: string,
   ): Promise<
     SearchResult[] | {
       ok: false;
@@ -42,6 +42,7 @@ interface SearchModalDeps {
       message: string;
     }
   >;
+  cancelThread?(requestId: string): Promise<void>;
 }
 
 interface SearchItemAuxiliaryData {
@@ -52,27 +53,31 @@ type SearchItem = SearchableItem<SearchItemAuxiliaryData>;
 
 interface ThreadSearchSourceInput {
   searchThread?: SearchModalDeps['searchThread'];
+  cancelThread?: SearchModalDeps['cancelThread'];
   canNavigate: boolean;
   resultsLabel: string;
   onQueryChange(query: string): void;
-  onErrorChange(
-    error: { reason: SearchErrorReason; message: string } | null,
-  ): void;
+  onErrorChange(error: { reason: SearchErrorReason } | null): void;
   onItemsChange(items: SearchItem[]): void;
-  thrownErrorMessage(error: unknown): string;
 }
 
 export function createThreadSearchSource(
   input: ThreadSearchSourceInput,
 ): SearchSource<SearchItem> {
   let generation = 0;
+  let cancelPending: (() => void) | undefined;
+  const cancel = () => {
+    generation += 1;
+    const pending = cancelPending;
+    cancelPending = undefined;
+    pending?.();
+  };
   return {
     bootstrap: () => [],
-    cancel: () => {
-      generation += 1;
-    },
+    cancel,
     search: async (query) => {
-      const requestGeneration = ++generation;
+      cancel();
+      const requestGeneration = generation;
       const trimmed = query.trim();
       input.onQueryChange(trimmed);
       if (!trimmed || !input.searchThread) {
@@ -80,18 +85,26 @@ export function createThreadSearchSource(
         input.onItemsChange([]);
         return [];
       }
-      try {
-        const response = await input.searchThread({
-          source: 'thread',
-          query: trimmed,
-          limit: 10,
-        });
-        if (generation !== requestGeneration) return [];
-        if (!Array.isArray(response)) {
-          input.onErrorChange({
-            reason: response.reason,
-            message: response.message,
+      const requestId = crypto.randomUUID();
+      const cancelled = new Promise<undefined>((resolve) => {
+        cancelPending = () => {
+          // React's palette transition must finish even if the Host is slow
+          // or disconnected. Ignoring its eventual result alone leaves it busy.
+          resolve(undefined);
+          void input.cancelThread?.(requestId).catch((error) => {
+            console.error('[search] cancellation failed', error);
           });
+        };
+      });
+      try {
+        const response = await Promise.race([
+          input.searchThread({ source: 'thread', query: trimmed, limit: 10 }, requestId),
+          cancelled,
+        ]);
+        if (generation !== requestGeneration || response === undefined) return [];
+        if (!Array.isArray(response)) {
+          console.error('[search] thread search failed', response);
+          input.onErrorChange({ reason: response.reason });
           input.onItemsChange([]);
           return [];
         }
@@ -112,25 +125,22 @@ export function createThreadSearchSource(
         return items;
       } catch (caught) {
         if (generation !== requestGeneration) return [];
-        input.onErrorChange({
-          reason: 'provider_error',
-          message: input.thrownErrorMessage(caught),
-        });
+        console.error('[search] thread search failed', caught);
+        input.onErrorChange({ reason: 'provider_error' });
         input.onItemsChange([]);
         return [];
+      } finally {
+        if (generation === requestGeneration) cancelPending = undefined;
       }
     },
   };
 }
 
-function searchModalThrownErrorMessage(
-  error: unknown,
-  locale: UiLocale,
-  fallback: string,
+export function searchErrorText(
+  reason: SearchErrorReason,
+  copy: ReturnType<typeof getShellControlsCopy>['search'],
 ): string {
-  return locale === 'zh'
-    ? generalizedErrorMessageChinese(error, fallback)
-    : generalizedErrorMessage(error, fallback);
+  return lookupCopy(copy.errorByReason, reason) ?? copy.errorFallback;
 }
 
 /**
@@ -153,10 +163,7 @@ export function SearchModal(props: {
     }),
     [copy.resultsLabel],
   );
-  const [error, setError] = useState<{
-    reason: SearchErrorReason;
-    message: string;
-  } | null>(null);
+  const [error, setError] = useState<{ reason: SearchErrorReason } | null>(null);
   const [activeQuery, setActiveQuery] = useState('');
   const itemByIdRef = useRef(new Map<string, SearchItem>());
   const pendingNavigationRef = useRef<{
@@ -184,6 +191,7 @@ export function SearchModal(props: {
     () =>
       createThreadSearchSource({
         searchThread: props.deps?.searchThread,
+        cancelThread: props.deps?.cancelThread,
         canNavigate: Boolean(props.onNavigateToSession),
         resultsLabel: copy.resultsLabel,
         onQueryChange: setActiveQuery,
@@ -193,26 +201,17 @@ export function SearchModal(props: {
             items.map((item) => [item.id, item]),
           );
         },
-        thrownErrorMessage: (caught) =>
-          searchModalThrownErrorMessage(
-            caught,
-            locale,
-            copy.errorFallback,
-          ),
       }),
-    [
-      copy.errorFallback,
-      copy.resultsLabel,
-      locale,
-      props.deps,
-      props.onNavigateToSession,
-    ],
+    [copy.resultsLabel, props.deps, props.onNavigateToSession],
   );
 
+  useEffect(() => {
+    if (!props.isOpen) searchSource.cancel?.();
+    return () => searchSource.cancel?.();
+  }, [props.isOpen, searchSource]);
+
   const emptySearchText = error
-    ? error.reason === 'incognito_active'
-      ? copy.privacyDetail
-      : error.message
+    ? searchErrorText(error.reason, copy)
     : copy.empty;
 
   return (

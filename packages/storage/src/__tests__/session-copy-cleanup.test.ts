@@ -181,7 +181,9 @@ describe('session copy cleanup authority', () => {
       workspaceRoot,
       processId: 'process-after-crash',
       resumeSessionCopy: async (creation) => {
-        events.push(`resume:${creation.sessionId}:${creation.sourceTurnId}:${creation.intent}`);
+        events.push(
+          `resume:${creation.sessionId}:${creation.sourceTurnId ?? 'empty'}:${creation.intent}`,
+        );
       },
       removeSession: async (sessionId) => {
         events.push(`remove:${sessionId}`);

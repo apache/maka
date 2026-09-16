@@ -23,7 +23,7 @@ import type { SessionEvent } from '@maka/core/events';
 import {
   createTraceRefreshCoalescer,
   isTraceRelevantEvent,
-} from '../../renderer/session-trace-refresh.js';
+} from '../../renderer/features/workbar/testing.js';
 
 function event(type: SessionEvent['type'], extra: Record<string, unknown> = {}): SessionEvent {
   return { type, id: `${type}-1`, turnId: 'turn-1', ts: 1, ...extra } as SessionEvent;

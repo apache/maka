@@ -25,16 +25,28 @@ import {
 import { projectPickerTitle } from '../project-picker-copy.js';
 
 test('localizes native picker and client settings confirmation copy', () => {
-  assert.equal(projectPickerTitle('zh'), '添加项目');
+  assert.equal(projectPickerTitle('zh-CN'), '添加项目');
+  assert.equal(projectPickerTitle('zh-TW'), '新增專案');
   assert.deepEqual(
     clientSettingsConfirmation(
       [{ key: 'keepSystemAwake', current: false, next: true }],
-      'zh',
+      'zh-CN',
     ),
     {
       message: '允许 Maka 更新此客户端的设置吗？',
       detail: '保持系统唤醒: 关闭 → 开启',
       buttons: ['应用更改', '取消'],
+    },
+  );
+  assert.deepEqual(
+    clientSettingsConfirmation(
+      [{ key: 'theme', current: 'light', next: 'dark' }],
+      'zh-TW',
+    ),
+    {
+      message: '允許 Maka 更新此用戶端的設定嗎？',
+      detail: '主題: light → dark',
+      buttons: ['套用變更', '取消'],
     },
   );
 });

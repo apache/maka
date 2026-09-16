@@ -17,14 +17,33 @@
  * under the License.
  */
 
+/**
+ * Ways a summarizer's own output can be unusable. Owned here, in the
+ * history-compaction domain that produces and repairs them.
+ */
+const MALFORMED_HISTORY_COMPACT_SUMMARY_REASONS = [
+  'malformed_summary_missing_section',
+  'malformed_summary_truncated',
+  'malformed_summary_too_small_for_fold',
+] as const;
+
+export type MalformedHistoryCompactSummaryReason =
+  (typeof MALFORMED_HISTORY_COMPACT_SUMMARY_REASONS)[number];
+
 export type HistoryCompactSummarizerFailureReason =
   | 'output_length'
   | 'input_too_large'
   | 'provider_error'
   | 'invalid_provider_state'
-  | 'malformed_summary_missing_section'
-  | 'malformed_summary_truncated'
-  | 'malformed_summary_too_small_for_fold';
+  | MalformedHistoryCompactSummaryReason;
+
+export function isMalformedHistoryCompactSummaryReason(
+  reason: string,
+): reason is MalformedHistoryCompactSummaryReason {
+  return MALFORMED_HISTORY_COMPACT_SUMMARY_REASONS.includes(
+    reason as MalformedHistoryCompactSummaryReason,
+  );
+}
 
 export class HistoryCompactSummarizerError extends Error {
   constructor(

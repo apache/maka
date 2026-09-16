@@ -95,6 +95,15 @@ it('projects WriteStdin activity to a bounded human-readable input preview', () 
   assert.equal(projectWriteStdinPermissionSummary(invalidSize).size, undefined);
 });
 
+it('never projects uncommitted todo_write arguments into activity history', () => {
+  assert.deepEqual(
+    projectToolActivityArgs('todo_write', {
+      todos: [{ content: 'uncommitted item', status: 'pending' }],
+    }),
+    {},
+  );
+});
+
 it('projects ordered terminal actions without exposing encoded control bytes', () => {
   const args = {
     ref: 'maka://runtime/background-tasks/one',

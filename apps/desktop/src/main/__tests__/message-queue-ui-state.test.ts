@@ -18,16 +18,52 @@
  */
 
 import assert from 'node:assert/strict';
-import test from 'node:test';
+import { afterEach, test } from 'node:test';
+import { act, createElement } from 'react';
+import { LocaleProvider, type TransientUserMessageProjection } from '@maka/ui';
+import { ConversationServicesProvider, SessionLocalMessages } from '../../renderer/features/conversation/index.js';
+import type { DesktopLocalMessage } from '../../shared/session-local-contract.js';
+import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
 import { createAppShellSessionEventHandlers } from '../../renderer/app-shell-session-events.js';
 import { createAppShellSessionUiStateController } from '../../renderer/app-shell-session-ui-state.js';
 
+afterEach(cleanupFakeDom);
+
+test('local delivery recovery cannot republish accepted Host queue rows', async () => {
+  const { root } = installReactRenderer();
+  const transient = new Map<string, TransientUserMessageProjection>();
+  let changed!: (sessionId: string) => void;
+  let messages: DesktopLocalMessage[] = ['steering', 'followup', 'root'].map((messageId) => ({
+    sessionId: 'session-1', messageId, createdAt: 1, state: 'unknown', canCancel: false,
+    text: messageId, attachments: [], inlineReferences: [],
+    placement: messageId === 'steering' ? 'current_turn' : 'next_turn',
+  }));
+  await act(async () => root.render(createElement(LocaleProvider, { locale: 'en', children:
+    createElement(ConversationServicesProvider, { services: {
+      listMessages: async () => messages,
+      subscribeChanges: (handler) => { changed = handler; return () => {}; },
+      cancelMessage: async () => {}, reconcileMessage: async () => {},
+    }, children: createElement(SessionLocalMessages, {
+      sessionId: 'session-1',
+      publish: (_id, message) => { transient.set(message.id, message); },
+      retire: (_id, messageId) => { transient.delete(messageId); },
+      reportError: (message) => { throw new Error(message); },
+    }) }),
+  })));
+  assert.equal(transient.get('steering')?.deliveryActions?.length, 1, 'unconfirmed sends retain their receipt check');
+  messages = messages.map((message) => ({ ...message, state: 'accepted', ...(message.messageId === 'root' ? { turnId: 'started-turn' } : {}) }));
+  await act(async () => changed('session-1'));
+  assert.deepEqual([...transient.keys()], ['root']);
+  assert.equal(transient.get('root')?.transientPlacement, 'current_turn');
+  await act(async () => changed('session-1'));
+  assert.deepEqual([...transient.keys()], ['root'], 'a retained local copy cannot resurrect a withdrawn queue entry');
+});
+
 test('queue_update events drive the independent desktop queue projection', () => {
   const controller = createAppShellSessionUiStateController();
-  const transientMessages: unknown[] = [];
-  const removedTransientMessageIds: string[] = [];
+  const transientMessages = new Set(['message-steer', 'message-next']);
   const handlers = createAppShellSessionEventHandlers({
-    uiLocale: 'zh',
+    uiLocale: 'zh-CN',
     activeIdRef: { current: 'session-1' },
     liveTurnBySessionRef: controller.liveTurnBySessionRef,
     refreshMessages: async () => true,
@@ -35,9 +71,8 @@ test('queue_update events drive the independent desktop queue projection', () =>
     setLiveTurnBySession: controller.setLiveTurnBySession,
     setInteractionBySession: controller.setInteractionBySession,
     setMessageQueueBySession: controller.setMessageQueueBySession,
-    projectQueuedTransientMessages: (_sessionId, messages) => transientMessages.push(...messages),
     removeTransientMessage: (_sessionId, messageId) =>
-      removedTransientMessageIds.push(messageId),
+      transientMessages.delete(messageId),
     showModelSetupToast() {},
     toastApi: { error() {} },
   });
@@ -84,21 +119,7 @@ test('queue_update events drive the independent desktop queue projection', () =>
       },
     ],
   });
-  assert.deepEqual(transientMessages, [
-    {
-      id: 'message-steer',
-      transientPlacement: 'current_turn',
-      hostTurnId: 'turn-1',
-      ts: 1,
-      text: 'adjust this run',
-    },
-    {
-      id: 'message-next',
-      transientPlacement: 'next_turn',
-      ts: 1,
-      text: 'do this next',
-    },
-  ]);
+  assert.equal(transientMessages.size, 0, 'Host evidence retires local placeholders');
 
   handlers.handleEvent('session-1', {
     type: 'steering_message',
@@ -108,7 +129,17 @@ test('queue_update events drive the independent desktop queue projection', () =>
     ts: 2,
     content: { text: 'adjust this run' },
   });
-  assert.deepEqual(removedTransientMessageIds, ['message-steer']);
+  assert.equal(transientMessages.size, 0);
+  assert.deepEqual(controller.getState().messageQueueBySession['session-1'], {
+    queueRevision: 3,
+    entries: [{
+      entryId: 'entry-next',
+      messageId: 'message-next',
+      content: { text: 'do this next' },
+      placement: 'next_turn',
+      state: 'queued',
+    }],
+  });
 
   handlers.handleEvent('session-1', {
     type: 'queue_update',
@@ -134,8 +165,8 @@ test('queue_update events drive the independent desktop queue projection', () =>
     placement: 'next_turn',
     state: 'queued',
   }]);
-  assert.deepEqual(removedTransientMessageIds, ['message-steer']);
-  assert.equal(transientMessages.length, 3, 'in-flight queue projection must not re-add the row');
+  assert.equal(transientMessages.size, 0);
+  assert.equal(transientMessages.size, 0, 'in-flight queue projection must not re-add a local row');
 
   handlers.handleEvent('session-1', {
     type: 'message_admission',
@@ -145,7 +176,53 @@ test('queue_update events drive the independent desktop queue projection', () =>
     messageId: 'message-next',
     outcome: 'retracted',
   });
-  assert.deepEqual(removedTransientMessageIds, ['message-steer', 'message-next']);
+  assert.equal(transientMessages.size, 0);
+});
+
+test('steering delivery clears a promoted follow-up from the desktop queue', () => {
+  const controller = createAppShellSessionUiStateController();
+  const handlers = createAppShellSessionEventHandlers({
+    uiLocale: 'en',
+    activeIdRef: { current: 'session-1' },
+    liveTurnBySessionRef: controller.liveTurnBySessionRef,
+    refreshMessages: async () => true,
+    refreshSessions: async () => [],
+    setLiveTurnBySession: controller.setLiveTurnBySession,
+    setInteractionBySession: controller.setInteractionBySession,
+    setMessageQueueBySession: controller.setMessageQueueBySession,
+    showModelSetupToast() {},
+    toastApi: { error() {} },
+  });
+
+  handlers.handleEvent('session-1', {
+    type: 'queue_update',
+    id: 'queue-followup',
+    turnId: 'turn-1',
+    ts: 1,
+    queueRevision: 1,
+    steering: [],
+    followup: ['adjust this run'],
+    steeringEntries: [],
+    followupEntries: [{
+      entryId: 'entry-followup',
+      messageId: 'message-followup',
+      content: { text: 'adjust this run' },
+      placement: 'next_turn',
+      state: 'queued',
+    }],
+  });
+  assert.equal(controller.getState().messageQueueBySession['session-1']?.entries.length, 1);
+
+  handlers.handleEvent('session-1', {
+    type: 'steering_message',
+    id: 'steering-message-followup',
+    turnId: 'turn-1',
+    messageId: 'message-followup',
+    ts: 2,
+    content: { text: 'adjust this run' },
+  });
+
+  assert.equal(controller.getState().messageQueueBySession['session-1'], undefined);
 });
 
 test('complete events deliver the durable context compaction outcome to Desktop', () => {

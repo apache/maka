@@ -24,6 +24,7 @@ import type {
 } from './agent-graph-control.js';
 import type { AgentGraphTopologyStore } from './agent-graph-topology.js';
 import type { OrchestrationMode } from './orchestration.js';
+import { isExecutorId } from './executor-id.js';
 
 export const AGENT_GRAPH_SCHEDULE_UPDATE_SCHEMA_VERSION = 1 as const;
 
@@ -48,10 +49,12 @@ export type AgentGraphWorkTarget =
   | {
       kind: 'agent';
       agentId: string;
+      executorId?: string;
     }
   | {
       kind: 'preset';
       presetId: string;
+      executorId?: string;
     }
   | {
       kind: 'operator';
@@ -346,16 +349,26 @@ function isSelectedResultInput(value: unknown): value is AgentGraphSelectedResul
 function isWorkTarget(value: unknown): value is AgentGraphWorkTarget {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   if (
-    isExactRecord(value, ['kind', 'agentId']) &&
+    isExactRecord(value, [
+      'kind',
+      'agentId',
+      ...(hasOwn(value, 'executorId') ? ['executorId'] : []),
+    ]) &&
     value.kind === 'agent' &&
-    isOpaqueIdentity(value.agentId)
+    isOpaqueIdentity(value.agentId) &&
+    (value.executorId === undefined || isExecutorId(value.executorId))
   ) {
     return true;
   }
   if (
-    isExactRecord(value, ['kind', 'presetId']) &&
+    isExactRecord(value, [
+      'kind',
+      'presetId',
+      ...(hasOwn(value, 'executorId') ? ['executorId'] : []),
+    ]) &&
     value.kind === 'preset' &&
-    isOpaqueIdentity(value.presetId)
+    isOpaqueIdentity(value.presetId) &&
+    (value.executorId === undefined || isExecutorId(value.executorId))
   ) {
     return true;
   }

@@ -19,7 +19,11 @@
 
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import type { ConnectionCatalogSnapshot, ConnectionTarget } from '@maka/core/runtime-policy';
+import type { ConnectionTarget } from '@maka/core/runtime-policy';
+import type {
+  RuntimeHostConnectionCatalogEntry as ConnectionCatalogEntry,
+  RuntimeHostConnectionCatalogSnapshot as ConnectionCatalogSnapshot,
+} from '@maka/runtime-host/client';
 import {
   synchronizeRuntimeHostAccountConnection,
   type RuntimeHostAccountConnectionClient,
@@ -42,9 +46,9 @@ function catalogWithoutDefault(): ConnectionCatalogSnapshot {
         providerType: 'openai-codex',
         enabled: true,
         enabledModelIds: ['gpt-5-codex', 'gpt-5-codex-mini'],
+        catalogEntries: [],
         models: [{ id: 'gpt-5-codex' }, { id: 'gpt-5-codex-mini' }],
         modelSource: 'fallback',
-        modelsFetchedAt: 0,
       },
     ],
   };

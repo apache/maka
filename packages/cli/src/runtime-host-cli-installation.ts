@@ -24,10 +24,8 @@ import { open, realpath, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import {
-  isProductReleaseVersion,
-  type RuntimeHostInstallationOwner,
-} from '@maka/runtime-host/operator';
+import type { RuntimeHostInstallationOwner } from '@maka/runtime-host/operator';
+import { isProductReleaseVersion } from '@maka/runtime-host/operator/update-package-evidence';
 
 const PACKAGE_NAME = 'maka-agent';
 const MANIFEST_MAX_BYTES = 64 * 1024;
@@ -122,15 +120,23 @@ export async function resolveRuntimeHostNpmGlobalInstallation(
 }
 
 export async function isTemporaryNpxInstallation(
-  path: string,
+  path: string = fileURLToPath(new URL('../', import.meta.url)),
   input: {
     readonly environment: NodeJS.ProcessEnv;
     readonly homeDir: string;
-  },
+    readonly platform?: NodeJS.Platform;
+  } = { environment: process.env, homeDir: homedir() },
 ): Promise<boolean> {
   const canonicalPath = await realpath(path).catch(() => resolve(path));
+  const defaultCache =
+    (input.platform ?? process.platform) === 'win32'
+      ? join(input.environment.LOCALAPPDATA || input.homeDir, 'npm-cache')
+      : join(input.homeDir, '.npm');
   const cacheRoots = await Promise.all(
-    [input.environment.npm_config_cache, join(input.homeDir, '.npm')].flatMap((root) =>
+    [
+      input.environment.npm_config_cache ?? input.environment.NPM_CONFIG_CACHE,
+      defaultCache,
+    ].flatMap((root) =>
       root ? [realpath(resolve(root, '_npx')).catch(() => resolve(root, '_npx'))] : [],
     ),
   );

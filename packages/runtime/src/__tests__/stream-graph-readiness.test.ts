@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import type { AgentRunHeader } from '@maka/core/agent-run';
+import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import {
   AGENT_GRAPH_READINESS_SCHEMA_VERSION,
@@ -28,13 +28,14 @@ import {
 } from '../stream-graph-readiness.js';
 import { projectAgentGraphRecords } from '../stream-graph-projection.js';
 import type { AgentGraphTraceTopology } from '../stream-graph-trace.js';
+import { testInvocationRecord } from './invocation-fixture.js';
 
 const baseTs = 1_800_000_000_000;
 
 describe('operator-local stream graph readiness', () => {
   test('derives one stable map intent per direct input route without supervisor gating', () => {
-    const source = runHeader('source', baseTs);
-    const worker = runHeader('worker', baseTs + 1);
+    const source = runInvocation('source', baseTs);
+    const worker = runInvocation('worker', baseTs + 1);
     const projection = projectAgentGraphRecords({
       graphId: 'graph-map',
       streams: [
@@ -116,8 +117,8 @@ describe('operator-local stream graph readiness', () => {
   });
 
   test('keeps a map operator waiting while exposing that state to the supervisor', () => {
-    const source = runHeader('empty-source', baseTs);
-    const worker = runHeader('empty-worker', baseTs + 1);
+    const source = runInvocation('empty-source', baseTs);
+    const worker = runInvocation('empty-worker', baseTs + 1);
     const snapshot = buildAgentGraphReadinessSnapshot({
       topology: {
         graphId: 'graph-map-waiting',
@@ -144,15 +145,15 @@ describe('operator-local stream graph readiness', () => {
   });
 
   test('waits for an exact all-settled activation frontier and accepts every terminal outcome', () => {
-    const branchA = runHeader('branch-a', baseTs, 'completed');
-    const branchBRunning = runHeader('branch-b', baseTs + 1);
+    const branchA = runInvocation('branch-a', baseTs, 'completed');
+    const branchBRunning = runInvocation('branch-b', baseTs + 1);
     const branchBFailed = {
       ...branchBRunning,
       status: 'failed' as const,
       completedAt: baseTs + 4,
     };
-    const branchC = runHeader('branch-c', baseTs + 2, 'completed');
-    const join = runHeader('join', baseTs + 3);
+    const branchC = runInvocation('branch-c', baseTs + 2, 'completed');
+    const join = runInvocation('join', baseTs + 3);
     const topology: AgentGraphTraceTopology = {
       graphId: 'graph-all-settled',
       operators: [
@@ -245,15 +246,15 @@ describe('operator-local stream graph readiness', () => {
   });
 
   test('does not let a later follow-up activation rewrite a sealed all-settled intent', () => {
-    const branchA = runHeader('sealed-a', baseTs, 'completed');
-    const branchAFollowup = runHeader(
+    const branchA = runInvocation('sealed-a', baseTs, 'completed');
+    const branchAFollowup = runInvocation(
       'sealed-a-followup',
       baseTs + 20,
       'running',
       branchA.sessionId,
     );
-    const branchB = runHeader('sealed-b', baseTs + 1, 'completed');
-    const join = runHeader('sealed-join', baseTs + 2);
+    const branchB = runInvocation('sealed-b', baseTs + 1, 'completed');
+    const join = runInvocation('sealed-join', baseTs + 2);
     const topology: AgentGraphTraceTopology = {
       graphId: 'graph-sealed-frontier',
       operators: [binding(branchA, 'a'), binding(branchB, 'b'), binding(join, 'join')],
@@ -308,9 +309,9 @@ describe('operator-local stream graph readiness', () => {
   });
 
   test('keeps local intent identity stable across unrelated and downstream-only topology changes', () => {
-    const source = runHeader('fingerprint-source', baseTs);
-    const worker = runHeader('fingerprint-worker', baseTs + 1);
-    const observer = runHeader('fingerprint-observer', baseTs + 2);
+    const source = runInvocation('fingerprint-source', baseTs);
+    const worker = runInvocation('fingerprint-worker', baseTs + 1);
+    const observer = runInvocation('fingerprint-observer', baseTs + 2);
     const records = projectAgentGraphRecords({
       graphId: 'graph-fingerprint',
       streams: [stream(source, 'source', [runtimeEvent(source, 'record', baseTs + 1, 'record')])],
@@ -392,9 +393,9 @@ describe('operator-local stream graph readiness', () => {
   });
 
   test('orders distinct Unicode identities canonically across topology and sealed inputs', () => {
-    const precomposed = runHeader('unicode-precomposed', baseTs);
-    const decomposed = runHeader('unicode-decomposed', baseTs + 1);
-    const join = runHeader('unicode-join', baseTs + 2);
+    const precomposed = runInvocation('unicode-precomposed', baseTs);
+    const decomposed = runInvocation('unicode-decomposed', baseTs + 1);
+    const join = runInvocation('unicode-join', baseTs + 2);
     const precomposedId = '\u00e9';
     const decomposedId = 'e\u0301';
     assert.equal(precomposedId.localeCompare(decomposedId), 0);
@@ -453,8 +454,8 @@ describe('operator-local stream graph readiness', () => {
   });
 
   test('keeps reserved JavaScript property names safe in readiness identities', () => {
-    const source = runHeader('reserved-source', baseTs);
-    const worker = runHeader('reserved-worker', baseTs + 1);
+    const source = runInvocation('reserved-source', baseTs);
+    const worker = runInvocation('reserved-worker', baseTs + 1);
     const records = projectAgentGraphRecords({
       graphId: 'graph-reserved-readiness',
       streams: [stream(source, 'source', [runtimeEvent(source, 'record', baseTs + 1, 'record')])],
@@ -485,9 +486,9 @@ describe('operator-local stream graph readiness', () => {
   });
 
   test('fails closed on ambiguous or incomplete local readiness policies', () => {
-    const sourceA = runHeader('invalid-a', baseTs);
-    const sourceB = runHeader('invalid-b', baseTs + 1);
-    const target = runHeader('invalid-target', baseTs + 2);
+    const sourceA = runInvocation('invalid-a', baseTs);
+    const sourceB = runInvocation('invalid-b', baseTs + 1);
+    const target = runInvocation('invalid-target', baseTs + 2);
     const topology: AgentGraphTraceTopology = {
       graphId: 'graph-invalid-readiness',
       operators: [binding(sourceA, 'a'), binding(sourceB, 'b'), binding(target, 'target')],
@@ -572,36 +573,28 @@ describe('operator-local stream graph readiness', () => {
   });
 });
 
-function runHeader(
+/** One invocation, open or ended, as its opening fact and terminal event say. */
+function runInvocation(
   name: string,
-  createdAt: number,
-  status: AgentRunHeader['status'] = 'running',
+  openedAt: number,
+  status: 'running' | 'completed' | 'failed' | 'aborted' = 'running',
   sessionId = `session-${name}`,
-): AgentRunHeader {
-  return {
+): RuntimeInvocationRecord {
+  return testInvocationRecord({
     sessionId,
+    invocationId: `invocation-${name}`,
     runId: `run-${name}`,
     turnId: `turn-${name}`,
-    invocationId: `invocation-${name}`,
-    backendKind: 'ai-sdk',
-    llmConnectionSlug: 'deepseek',
-    modelId: 'deepseek-chat',
-    cwd: '/workspace',
-    permissionMode: 'explore',
-    status,
-    createdAt,
-    updatedAt: createdAt + 1,
-    ...(status === 'completed' || status === 'failed' || status === 'cancelled'
-      ? { completedAt: createdAt + 1 }
-      : {}),
-  };
+    openedAt,
+    ...(status === 'running' ? {} : { outcome: status }),
+  });
 }
 
-function binding(run: AgentRunHeader, operatorId: string) {
+function binding(run: RuntimeInvocationRecord, operatorId: string) {
   return { operatorId, sessionId: run.sessionId };
 }
 
-function stream(run: AgentRunHeader, operatorId: string, events: readonly RuntimeEvent[]) {
+function stream(run: RuntimeInvocationRecord, operatorId: string, events: readonly RuntimeEvent[]) {
   return {
     operator: binding(run, operatorId),
     run,
@@ -609,10 +602,15 @@ function stream(run: AgentRunHeader, operatorId: string, events: readonly Runtim
   };
 }
 
-function runtimeEvent(run: AgentRunHeader, id: string, ts: number, text: string): RuntimeEvent {
+function runtimeEvent(
+  run: RuntimeInvocationRecord,
+  id: string,
+  ts: number,
+  text: string,
+): RuntimeEvent {
   return {
     id,
-    invocationId: run.invocationId ?? `invocation-${run.runId}`,
+    invocationId: run.invocationId,
     runId: run.runId,
     sessionId: run.sessionId,
     turnId: run.turnId,
@@ -625,14 +623,14 @@ function runtimeEvent(run: AgentRunHeader, id: string, ts: number, text: string)
 }
 
 function terminalEvent(
-  run: AgentRunHeader,
+  run: RuntimeInvocationRecord,
   id: string,
   ts: number,
-  status: Extract<AgentRunHeader['status'], 'completed' | 'failed' | 'cancelled'>,
+  status: 'completed' | 'failed' | 'aborted',
 ): RuntimeEvent {
   return {
     id,
-    invocationId: run.invocationId ?? `invocation-${run.runId}`,
+    invocationId: run.invocationId,
     runId: run.runId,
     sessionId: run.sessionId,
     turnId: run.turnId,

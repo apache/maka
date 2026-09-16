@@ -24,12 +24,26 @@ export interface CompletedProviderStep {
   usage?: NormalizedUsage;
 }
 
+/** The system prompt and active tool subset one request actually dispatches. */
+export interface DispatchRequestShape {
+  systemPromptChars: number;
+  activeTools: string[];
+}
+
 export interface RequestProjectionContext {
   completedSteps: readonly CompletedProviderStep[];
   stepNumber: number;
   model: unknown;
   messages: ModelMessage[];
   activeTools?: readonly string[];
+  /**
+   * Resolve what this step will really send, from a stage's projected active
+   * tool set. Dispatch appends step-specific system prompt fragments and can
+   * clear the tool set entirely on a finalization step, so a stage that
+   * MEASURES the request must price this shape, not the pre-dispatch inputs —
+   * otherwise a payload measure gets paired with a different request's tokens.
+   */
+  resolveDispatch: (activeTools: readonly string[] | undefined) => DispatchRequestShape;
 }
 
 export interface RequestProjection {
@@ -41,27 +55,10 @@ export type RequestProjectionStage = (
   context: RequestProjectionContext,
 ) => RequestProjection | undefined | PromiseLike<RequestProjection | undefined>;
 
-/**
- * Deterministic request-projection pipeline over ONE provider-visible request.
- * Order is a contract: mid-turn capacity compaction runs first among the
- * message-shaping hooks so every later mechanism operates on its projection —
- * active tool-result pruning re-archives large tool results in the rebuilt
- * tail.
- *
- * Every hook here only SHAPES the projection. The pass/terminate capacity
- * verdict is issued once, after the whole pipeline, by the final-request
- * estimate owner (buildMidTurnFinalRequestVerdict) over the actual outgoing
- * (messages, tools) payload — never by an individual hook over an intermediate
- * projection that a later hook could still rescue.
- */
 export function composeRequestProjection(
-  toolAvailability: RequestProjectionStage | undefined,
-  midTurnCapacityCompact: RequestProjectionStage | undefined,
-  activeToolResultPrune: RequestProjectionStage | undefined,
+  ...stages: Array<RequestProjectionStage | undefined>
 ): RequestProjectionStage | undefined {
-  const hooks = [toolAvailability, midTurnCapacityCompact, activeToolResultPrune].filter(
-    Boolean,
-  ) as RequestProjectionStage[];
+  const hooks = stages.filter((stage): stage is RequestProjectionStage => stage !== undefined);
   if (hooks.length === 0) return undefined;
   return async (context: RequestProjectionContext): Promise<RequestProjection | undefined> => {
     let result: RequestProjection | undefined;

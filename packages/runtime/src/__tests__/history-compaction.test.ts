@@ -21,56 +21,14 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import {
-  estimateNextRequestTokens,
-  exceedsContextWindow,
-  exceedsHighWater,
   applyRuntimeEventHistoryCompact,
   planHistoryCompaction,
   selectSafeCompactionPrefix,
   type PlanHistoryCompactionInput,
 } from '../history-compaction.js';
 import { HistoryCompactSummarizerError } from '../history-compact-summarizer.js';
+import { testInvocationRecord } from './invocation-fixture.js';
 import { matchHistoryCompactCheckpointPrefix } from '../history-compact-checkpoint.js';
-
-describe('context compaction trigger measurement', () => {
-  test('anchors on real provider usage plus a tail char/4 delta', () => {
-    // last step: 100 input + 40 output real tokens, then 400 chars of new tool results
-    assert.equal(
-      estimateNextRequestTokens({ priorUsageTokens: 140, appendedChars: 400, charsPerToken: 4 }),
-      140 + 100,
-    );
-  });
-
-  test('credits a SIGNED negative payload delta after a compaction shrank the projection', () => {
-    // The last usage sample measured the PRE-compaction request; the payload
-    // delta is negative after the fold, so the estimate must shrink with it —
-    // clamping the delta at zero would judge the compacted request by the
-    // pre-compaction usage and wrongly exhaust a rescued turn.
-    assert.equal(
-      estimateNextRequestTokens({ priorUsageTokens: 700, appendedChars: -1_200, charsPerToken: 4 }),
-      400,
-    );
-    // The estimate never goes below zero even when the shrink exceeds usage.
-    assert.equal(
-      estimateNextRequestTokens({ priorUsageTokens: 100, appendedChars: -4_000, charsPerToken: 4 }),
-      0,
-    );
-  });
-
-  test('falls back to whole-projection char/4 on cold start (no usage)', () => {
-    assert.equal(
-      estimateNextRequestTokens({ appendedChars: 40, charsPerToken: 4, coldStartChars: 800 }),
-      200,
-    );
-  });
-
-  test('high-water crosses at contextWindow minus reserve; hard cap at the window', () => {
-    assert.equal(exceedsHighWater(100_000, 128_000, 16_384), false);
-    assert.equal(exceedsHighWater(120_000, 128_000, 16_384), true);
-    assert.equal(exceedsContextWindow(120_000, 128_000), false);
-    assert.equal(exceedsContextWindow(130_000, 128_000), true);
-  });
-});
 
 describe('safe compaction prefix selection', () => {
   test('folds the largest immutable non-partial prefix, leaving the reserved tail', () => {
@@ -219,7 +177,10 @@ describe('plan context compaction', () => {
     assert.deepEqual(result.replacementEvents[1], events[2]);
   });
 
-  test('backs the safe prefix down locally when the full summary input does not fit', async () => {
+  test('retreats to the span the last accepted input covered', async () => {
+    // The newest reply's events end that span: everything before the first of
+    // them was in the request the provider accepted, so it is provably within
+    // capacity. Halving would be a guess in either direction (#4559).
     const events = [
       user('old-user', 'old-turn'),
       model('old-model', 'old-turn', 'old result'),
@@ -231,10 +192,12 @@ describe('plan context compaction', () => {
       planInput({
         phase: 'standalone',
         orderedEvents: events,
+        invocations: RUNS_A,
+        acceptedRoute: ROUTE_A,
         reserveTailEvents: 0,
         summarize: ({ coveredRuntimeEvents }) => {
           attemptedCoverage.push(coveredRuntimeEvents.map((event) => event.id));
-          if (coveredRuntimeEvents.length === events.length) {
+          if (attemptedCoverage.length === 1) {
             throw new HistoryCompactSummarizerError('input_too_large');
           }
           return structuredSummary('A bounded automatic summary.');
@@ -254,6 +217,186 @@ describe('plan context compaction', () => {
     );
   });
 
+  test('a later fold rolls over the reply the retreat left verbatim', async () => {
+    // The retreat keeps the newest reply out of the fold, so it stays in the
+    // request as raw text. It does not stay there: the next fold covers it,
+    // rolling the checkpoint forward, because by then a newer reply ends the
+    // proven span. This bounds how long a retreat's leftover survives.
+    const first = [
+      user('old-user', 'old-turn'),
+      model('old-model', 'old-turn', 'old result'),
+      user('recent-user', 'recent-turn'),
+      model('recent-model', 'recent-turn', 'recent result'),
+    ];
+    let attempts = 0;
+    const retreated = await planHistoryCompaction(
+      planInput({
+        phase: 'standalone',
+        orderedEvents: first,
+        invocations: RUNS_A,
+        acceptedRoute: ROUTE_A,
+        reserveTailEvents: 0,
+        summarize: () => {
+          attempts += 1;
+          if (attempts === 1) throw new HistoryCompactSummarizerError('input_too_large');
+          return structuredSummary('A bounded automatic summary.');
+        },
+      }),
+    );
+    assert.equal(retreated.decision, 'compacted');
+    if (retreated.decision !== 'compacted') return;
+    assert.deepEqual(
+      retreated.tailRuntimeEvents.map((event) => event.id),
+      ['recent-model'],
+    );
+
+    // The turn continues: a newer reply arrives, so the proven span now ends
+    // after the one the retreat spared.
+    const later = [...first, user('next-user', 'next-turn'), model('next-model', 'next-turn')];
+    const rolled = await planHistoryCompaction(
+      planInput({
+        phase: 'standalone',
+        orderedEvents: later,
+        invocations: RUNS_A,
+        acceptedRoute: ROUTE_A,
+        reserveTailEvents: 0,
+        previousCheckpoint: retreated.checkpoint,
+        summarize: () => structuredSummary('A bounded automatic summary.'),
+      }),
+    );
+    assert.equal(rolled.decision, 'compacted');
+    if (rolled.decision !== 'compacted') return;
+    assert.equal(
+      rolled.coveredRuntimeEvents.some((event) => event.id === 'recent-model'),
+      true,
+    );
+  });
+
+  test('fails open when the proven boundary is refused too', async () => {
+    // One retreat, because there is one proven boundary. A rejection of that
+    // span is the provider saying this fold cannot be made.
+    const events = [
+      user('old-user', 'old-turn'),
+      model('old-model', 'old-turn', 'old result'),
+      user('recent-user', 'recent-turn'),
+      model('recent-model', 'recent-turn', 'recent result'),
+    ];
+    let attempts = 0;
+    const result = await planHistoryCompaction(
+      planInput({
+        phase: 'standalone',
+        orderedEvents: events,
+        invocations: RUNS_A,
+        acceptedRoute: ROUTE_A,
+        reserveTailEvents: 0,
+        summarize: () => {
+          attempts += 1;
+          throw new HistoryCompactSummarizerError('input_too_large');
+        },
+      }),
+    );
+
+    assert.equal(attempts, 2);
+    assert.equal(result.decision, 'fail_open');
+    if (result.decision !== 'fail_open') return;
+    assert.equal(result.diagnosticReason, 'input_too_large');
+  });
+
+  test("a mixed-route session retreats to this route's own newest reply", async () => {
+    // History can span runs on several routes. A span another model accepted
+    // proves nothing about this summarizer's window, so the retreat targets the
+    // newest reply THIS route produced, found through each run's opening.
+    const events = [
+      user('old-user', 'old-turn'),
+      modelOnRun('mine', 'old-turn', 'run-1', 'accepted by this route'),
+      user('switch-user', 'switch-turn'),
+      modelOnRun('theirs', 'switch-turn', 'run-2', 'accepted by another route'),
+    ];
+    const attemptedCoverage: string[][] = [];
+    const result = await planHistoryCompaction(
+      planInput({
+        phase: 'standalone',
+        orderedEvents: events,
+        invocations: [runOn('run-1', 'model-a', 'conn-a'), runOn('run-2', 'model-b', 'conn-b')],
+        acceptedRoute: ROUTE_A,
+        reserveTailEvents: 0,
+        summarize: ({ coveredRuntimeEvents }) => {
+          attemptedCoverage.push(coveredRuntimeEvents.map((event) => event.id));
+          if (attemptedCoverage.length === 1) {
+            throw new HistoryCompactSummarizerError('input_too_large');
+          }
+          return structuredSummary('A bounded automatic summary.');
+        },
+      }),
+    );
+
+    assert.equal(result.decision, 'compacted');
+    // Not ['old-user', 'mine', 'switch-user'], which stops at the other route's
+    // reply: that span is proven only for the model that accepted it.
+    assert.deepEqual(attemptedCoverage, [
+      ['old-user', 'mine', 'switch-user', 'theirs'],
+      ['old-user'],
+    ]);
+  });
+
+  test('fails open when only another route has ever been accepted', async () => {
+    let attempts = 0;
+    const result = await planHistoryCompaction(
+      planInput({
+        phase: 'standalone',
+        orderedEvents: [user('u1', 't1'), modelOnRun('theirs', 't1', 'run-2')],
+        invocations: [runOn('run-2', 'model-b', 'conn-b')],
+        acceptedRoute: ROUTE_A,
+        reserveTailEvents: 0,
+        summarize: () => {
+          attempts += 1;
+          throw new HistoryCompactSummarizerError('input_too_large');
+        },
+      }),
+    );
+
+    assert.equal(attempts, 1);
+    assert.equal(result.decision, 'fail_open');
+  });
+
+  test('fails open without retrying when no accepted reply proves a boundary', async () => {
+    // No model reply anywhere, so no request has ever been accepted on this
+    // ledger; inventing a boundary would be the guess this change removes.
+    let attempts = 0;
+    const result = await planHistoryCompaction(
+      planInput({
+        phase: 'standalone',
+        orderedEvents: [user('u1', 't1'), user('u2', 't1'), user('u3', 't2')],
+        invocations: RUNS_A,
+        acceptedRoute: ROUTE_A,
+        reserveTailEvents: 0,
+        summarize: () => {
+          attempts += 1;
+          throw new HistoryCompactSummarizerError('input_too_large');
+        },
+      }),
+    );
+
+    assert.equal(attempts, 1);
+    assert.equal(result.decision, 'fail_open');
+  });
+
+  test('fails open on an input-too-large rejection with the summarizer reason', async () => {
+    // The retreat is bounded by what a provider has already accepted, so a
+    // rejection that outlives it fails open carrying the summarizer's own
+    // reason rather than a span-selection one.
+    const result = await planHistoryCompaction(
+      planInput({
+        summarize: () => {
+          throw new HistoryCompactSummarizerError('input_too_large');
+        },
+      }),
+    );
+    assert.equal(result.decision, 'fail_open');
+    if (result.decision !== 'fail_open') return;
+    assert.equal(result.diagnosticReason, 'input_too_large');
+  });
+
   test('persisted checkpoint replay-validates against the same ledger prefix (recovery)', async () => {
     const events = longTurnEvents();
     const result = await planHistoryCompaction(planInput({ orderedEvents: events }));
@@ -267,14 +410,12 @@ describe('plan context compaction', () => {
     assert.equal(match.coveredEventCount, result.coveredRuntimeEvents.length);
 
     // Normal thresholds: even though the raw ledger is far below the default
-    // high water, the accepted mid_turn checkpoint replays — recovery never
+    // local threshold, the accepted mid_turn checkpoint replays — recovery never
     // re-injects the replaced raw span.
-    const replay = applyRuntimeEventHistoryCompact(
-      events,
-      { enabled: true, checkpoint: result.checkpoint },
-      4,
-      1_000_000,
-    );
+    const replay = applyRuntimeEventHistoryCompact(events, {
+      enabled: true,
+      checkpoint: result.checkpoint,
+    });
     assert.equal(replay.checkpoint?.checkpointId, result.checkpoint.checkpointId);
     const replayIds = replay.events.map((event) => event.id);
     assert.equal(replayIds[0], `history-compact:${result.checkpoint.checkpointId}`);
@@ -393,6 +534,123 @@ describe('plan context compaction', () => {
     assert.deepEqual(seenNewlyFolded, ['call-a', 'res-a']);
     assert.equal(second.checkpoint.previousCheckpointId, first.checkpoint.checkpointId);
   });
+
+  test('keeps rolling forward when the effective coverage is unchanged', async () => {
+    const events = longTurnEvents();
+    const longerEvents = [
+      ...events,
+      call('call-c', 'cc', 'turn-1'),
+      result('res-c', 'cc', 'turn-1'),
+    ];
+    const identityFold = async (covered: readonly RuntimeEvent[]) => [...covered];
+    // Coverage ends at `res-a`: the first fold's covered span contains it.
+    const first = await planHistoryCompaction(
+      planInput({ orderedEvents: events, projectEffectiveCoverage: identityFold }),
+    );
+    assert.equal(first.decision, 'compacted');
+    if (first.decision !== 'compacted') return;
+
+    let seenNewlyFolded: string[] = [];
+    const second = await planHistoryCompaction(
+      planInput({
+        orderedEvents: longerEvents,
+        previousCheckpoint: first.checkpoint,
+        projectEffectiveCoverage: identityFold,
+        summarize: ({ newlyFoldedRuntimeEvents, previousCheckpoint }) => {
+          seenNewlyFolded = newlyFoldedRuntimeEvents.map((event) => event.id);
+          assert.equal(previousCheckpoint?.checkpointId, first.checkpoint.checkpointId);
+          return structuredSummary('rolled-forward summary');
+        },
+      }),
+    );
+    assert.equal(second.decision, 'compacted');
+    if (second.decision !== 'compacted') return;
+    assert.deepEqual(seenNewlyFolded, ['call-b', 'res-b']);
+    assert.equal(second.checkpoint.previousCheckpointId, first.checkpoint.checkpointId);
+  });
+
+  test('discards a previous checkpoint whose effective coverage drifted before roll-forward (#4845 review)', async () => {
+    const events = longTurnEvents();
+    const longerEvents = [
+      ...events,
+      call('call-c', 'cc', 'turn-1'),
+      result('res-c', 'cc', 'turn-1'),
+    ];
+    const identityFold = async (covered: readonly RuntimeEvent[]) => [...covered];
+    // First fold: no transition exists, so the effective view IS the raw view
+    // and the checkpoint (covering through `res-a`) pins that digest.
+    const first = await planHistoryCompaction(
+      planInput({ orderedEvents: events, projectEffectiveCoverage: identityFold }),
+    );
+    assert.equal(first.decision, 'compacted');
+    if (first.decision !== 'compacted') return;
+
+    // A cross-turn projection transition then archives `res-a` — INSIDE the
+    // first checkpoint's coverage — leaving the raw prefix untouched. The
+    // inherited summary still quotes the raw body, but the view it describes
+    // no longer exists.
+    const foldWithArchive = async (covered: readonly RuntimeEvent[]): Promise<RuntimeEvent[]> =>
+      covered.map((event) => {
+        if (event.id !== 'res-a') return event;
+        const content = event.content as Extract<
+          RuntimeEvent['content'],
+          { kind: 'function_response' }
+        >;
+        return {
+          ...event,
+          content: {
+            ...content,
+            modelProjection: {
+              version: 1 as const,
+              kind: 'text' as const,
+              text: '[archived: artifact-res-a]',
+            },
+          },
+        };
+      });
+
+    let summarizeSawPrevious: string | undefined;
+    let seenCovered: string[] = [];
+    let seenNewlyFolded: string[] = [];
+    const second = await planHistoryCompaction(
+      planInput({
+        orderedEvents: longerEvents,
+        previousCheckpoint: first.checkpoint,
+        projectEffectiveCoverage: foldWithArchive,
+        summarize: ({ coveredRuntimeEvents, newlyFoldedRuntimeEvents, previousCheckpoint }) => {
+          summarizeSawPrevious = previousCheckpoint?.checkpointId;
+          seenCovered = coveredRuntimeEvents.map((event) => event.id);
+          seenNewlyFolded = newlyFoldedRuntimeEvents.map((event) => event.id);
+          return structuredSummary('re-summarized effective span');
+        },
+      }),
+    );
+    assert.equal(second.decision, 'compacted');
+    if (second.decision !== 'compacted') return;
+
+    // The drifted checkpoint is discarded: nothing is inherited (the text
+    // summarizer cannot prepend the stale summary, the codex path receives no
+    // stale provider state), the whole effective span is re-summarized, and
+    // the new checkpoint records no lineage to the stale one.
+    assert.equal(summarizeSawPrevious, undefined);
+    assert.deepEqual(seenNewlyFolded, seenCovered);
+    assert.deepEqual(seenCovered, [
+      'prior-0',
+      'prior-1',
+      'anchor',
+      'call-a',
+      'res-a',
+      'call-b',
+      'res-b',
+    ]);
+    assert.equal(second.checkpoint.previousCheckpointId, undefined);
+    // Coverage identity stays raw: the new checkpoint still matches the ledger
+    // prefix, now with the drifted effective digest pinned.
+    assert.equal(
+      matchHistoryCompactCheckpointPrefix(second.checkpoint, longerEvents.slice(0, 7)).reason,
+      undefined,
+    );
+  });
 });
 
 function base(id: string, turnId: string): Omit<RuntimeEvent, 'role' | 'author' | 'content'> {
@@ -412,6 +670,31 @@ function user(id: string, turnId: string): RuntimeEvent {
 function model(id: string, turnId: string, text: string = id): RuntimeEvent {
   return { ...base(id, turnId), role: 'model', author: 'agent', content: { kind: 'text', text } };
 }
+/** A model reply produced by a named run, so a route can be attached to it. */
+function modelOnRun(id: string, turnId: string, runId: string, text: string = id): RuntimeEvent {
+  return { ...model(id, turnId, text), runId, invocationId: runId };
+}
+/** A completed run opened on the named route. */
+function runOn(runId: string, modelId: string, llmConnectionId: string) {
+  return testInvocationRecord({
+    sessionId: 'session-1',
+    runId,
+    turnId: 'turn-1',
+    outcome: 'completed',
+    opening: {
+      route: {
+        provenance: 'runtime',
+        backendKind: 'ai-sdk',
+        llmConnectionId,
+        llmConnectionSlug: llmConnectionId,
+        modelId,
+      },
+    },
+  });
+}
+const ROUTE_A = { modelId: 'model-a', connectionId: 'conn-a' };
+const RUNS_A = [runOn('run-1', 'model-a', 'conn-a')];
+
 function call(id: string, callId: string, turnId: string): RuntimeEvent {
   return {
     ...base(id, turnId),

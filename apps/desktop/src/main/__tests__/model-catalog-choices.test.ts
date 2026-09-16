@@ -19,14 +19,24 @@
 
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
-import type { LlmConnection } from '@maka/core/llm-connections';
+import type {
+  IdentifiedLlmConnection,
+  ProjectedLlmConnection,
+} from '@maka/core/llm-connections';
+import {
+  resolveConnectionModelCatalog,
+  type ModelCatalogEntry,
+} from '@maka/core/model-catalog';
 import { buildChatModelChoices } from '@maka/core/chat-model-choice';
 import { pickNewChatModel } from '../../renderer/shell-chat-model-selection.js';
+import { buildCatalogDailyReviewModelOptions } from '../../renderer/model-catalog-choices.js';
 
 function connection(
-  overrides: Partial<LlmConnection> & Pick<LlmConnection, 'slug' | 'providerType'>,
-): LlmConnection {
-  return {
+  overrides: Partial<IdentifiedLlmConnection> &
+    Pick<IdentifiedLlmConnection, 'slug' | 'providerType'>,
+): ProjectedLlmConnection {
+  const stored: IdentifiedLlmConnection = {
+    connectionId: `connection-${overrides.slug}`,
     name: overrides.slug,
     defaultModel: '',
     enabled: true,
@@ -35,6 +45,9 @@ function connection(
     updatedAt: 1,
     ...overrides,
   };
+  // The Host resolves the catalog and projects it; tests build connections the
+  // same way so they exercise what a client actually receives.
+  return { ...stored, catalogEntries: resolveConnectionModelCatalog(stored) };
 }
 
 describe('model catalog picker helpers', () => {
@@ -49,6 +62,7 @@ describe('model catalog picker helpers', () => {
         catalogDefault: undefined,
         choices: [
           {
+            connectionId: 'connection-missing',
             connectionSlug: 'missing-key-first',
             providerType: 'anthropic',
             providerLabel: 'Anthropic',
@@ -58,6 +72,7 @@ describe('model catalog picker helpers', () => {
             thinkingLevels: [],
           },
           {
+            connectionId: 'connection-ready',
             connectionSlug: 'ready-second',
             providerType: 'opencode-free',
             providerLabel: 'OpenCode Zen',
@@ -68,7 +83,11 @@ describe('model catalog picker helpers', () => {
           },
         ],
       }),
-      { llmConnectionSlug: 'ready-second', model: 'ready-model' },
+      {
+        llmConnectionId: 'connection-ready',
+        llmConnectionSlug: 'ready-second',
+        model: 'ready-model',
+      },
     );
   });
   it('keeps API connection labels while redacting OAuth account identities', () => {
@@ -102,4 +121,39 @@ describe('model catalog picker helpers', () => {
     assert.ok(choices.every((choice) => !(choice.connectionName ?? '').includes('@')));
   });
 
+  it('does not offer Daily Review a Codex model the subscription cannot serve', () => {
+    // A connection saved while `gpt-5-codex` was still picker-visible keeps it
+    // in `enabledModelIds`. The inventory filter alone left it there, and the
+    // catalog listed it back as a model no inventory describes — selectable,
+    // and failing at the provider once a scheduled run sent to it.
+    const options = buildCatalogDailyReviewModelOptions(
+      [
+        connection({
+          slug: 'codex',
+          providerType: 'openai-codex',
+          defaultModel: 'gpt-5.5',
+          enabledModelIds: ['gpt-5.5', 'gpt-5-codex'],
+          models: [{ id: 'gpt-5.5' }],
+          modelSource: 'fetched',
+        }),
+      ],
+      '',
+      'zh-CN',
+    );
+    const keys = options.map(([key]) => key);
+    assert.ok(
+      keys.includes('codex::gpt-5.5'),
+      `expected the servable model to be offered, got ${JSON.stringify(keys)}`,
+    );
+    assert.equal(
+      keys.includes('codex::gpt-5-codex'),
+      false,
+      `unsupported Codex model was offered: ${JSON.stringify(keys)}`,
+    );
+  });
+
+  it('labels a saved-but-unavailable selection in the UI locale', () => {
+    const [, label] = buildCatalogDailyReviewModelOptions([], 'codex::gone', 'en').at(-1)!;
+    assert.equal(label, 'gone · codex · Currently unavailable');
+  });
 });

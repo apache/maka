@@ -277,75 +277,8 @@ export function bindCuaSemanticActionToObservation(
 export function bindCuaActionToObservation(
   observation: CuaObservation,
   action: CuAction,
-): CuaBoundAction | undefined {
-  const base = bindCuaAction(observation, fingerprintCuaAction(action), observation.target);
-  if (action.type === 'zoom') {
-    const start = bindWindowPoint(observation, {
-      x: Math.min(action.region.x1, action.region.x2),
-      y: Math.min(action.region.y1, action.region.y2),
-    });
-    const end = bindWindowPoint(observation, {
-      x: Math.max(action.region.x1, action.region.x2),
-      y: Math.max(action.region.y1, action.region.y2),
-    });
-    if (!start || !end) return undefined;
-    return {
-      ...finalizeBoundAction({
-        ...base,
-        sourceStartCoordinate: start,
-        sourceCoordinate: end,
-        windowStartCoordinate: start,
-        windowCoordinate: end,
-        coordinateSpace: 'window-screenshot-local',
-      }),
-    };
-  }
-  if ('coordinate' in action) {
-    const end = bindWindowPoint(observation, action.coordinate);
-    if (!end) return undefined;
-    if (action.type === 'left_click_drag') {
-      const start = bindWindowPoint(observation, action.startCoordinate);
-      if (!start) return undefined;
-      return finalizeBoundAction({
-        ...base,
-        sourceStartCoordinate: start,
-        sourceCoordinate: end,
-        windowStartCoordinate: start,
-        windowCoordinate: end,
-        coordinateSpace: 'window-screenshot-local',
-      });
-    }
-    return finalizeBoundAction({
-      ...base,
-      sourceCoordinate: end,
-      windowCoordinate: end,
-      coordinateSpace: 'window-screenshot-local',
-    });
-  }
-  return base;
-}
-
-function bindWindowPoint(observation: CuaObservation, point: CuPoint): CuPoint | undefined {
-  const width = observation.screenshotWidthPx ?? observation.target.sourceBoundsPx?.width ?? 0;
-  const height = observation.screenshotHeightPx ?? observation.target.sourceBoundsPx?.height ?? 0;
-  return width > 0 &&
-    height > 0 &&
-    point.x >= 0 &&
-    point.y >= 0 &&
-    point.x < width &&
-    point.y < height
-    ? point
-    : undefined;
-}
-
-function finalizeBoundAction(
-  action: Omit<CuaBoundAction, 'fingerprint'> & { fingerprint?: string },
 ): CuaBoundAction {
-  const withPlaceholder = { ...action, fingerprint: '' };
-  return {
-    ...withPlaceholder,
-    fingerprint: fingerprintBoundAction(withPlaceholder),
-  };
+  return bindCuaAction(observation, fingerprintCuaAction(action), observation.target);
 }
 
 function fingerprintBoundAction(
@@ -358,7 +291,5 @@ function fingerprintBoundAction(
     action.target.pid,
     action.target.windowId,
     action.elementId ?? null,
-    action.sourceStartCoordinate ?? null,
-    action.sourceCoordinate ?? null,
   ]);
 }

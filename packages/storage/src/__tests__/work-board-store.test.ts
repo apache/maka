@@ -39,6 +39,7 @@ import {
   WORK_BOARD_DEFAULT_PAGE_SIZE,
   WORK_BOARD_PROJECT_ID_MAX_CHARS,
 } from '@maka/core/work-board';
+import { SQLITE_WORKFLOW_SCHEMA_VERSION } from '../sqlite-workflow-schema.js';
 
 describe('Work Board store', () => {
   test('persists items across reopen', async () => {
@@ -83,6 +84,65 @@ describe('Work Board store', () => {
         assert.equal(moved.revision, 3);
         assert.deepEqual(moved.scope, { kind: 'project', projectId: 'p1' });
         assert.equal(moved.state, 'done');
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  test('persists an idempotent Host-scoped Session link without changing item state', async () => {
+    await withTempRoot(async (root) => {
+      const store = createWorkBoardStore(root);
+      try {
+        const item = await store.create(itemInput(), 100);
+        const link = {
+          profileId: 'profile-1',
+          hostId: 'host-1',
+          sessionId: 'session-1',
+          linkedAt: 101,
+        };
+        const linked = await store.linkSession(item.id, link, {}, 101);
+        assert.equal(linked.revision, 2);
+        assert.equal(linked.state, 'todo');
+        assert.deepEqual(linked.linkedSessions, [link]);
+        const repeated = await store.linkSession(item.id, link, { expectedRevision: 2 }, 102);
+        assert.equal(repeated.revision, 2);
+        assert.deepEqual(repeated.linkedSessions, [link]);
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  test('keeps the single-link contract: a freshly started Session replaces the previous link', async () => {
+    await withTempRoot(async (root) => {
+      const store = createWorkBoardStore(root);
+      try {
+        const item = await store.create(itemInput(), 100);
+        const first = {
+          profileId: 'profile-1',
+          hostId: 'host-1',
+          sessionId: 'session-1',
+          linkedAt: 101,
+        };
+        const linked = await store.linkSession(item.id, first, {}, 101);
+        assert.deepEqual(linked.linkedSessions, [first]);
+        // A later start links a new Session and replaces the old link instead
+        // of appending, so `linkedSessions` stays bounded at one entry.
+        const second = {
+          profileId: 'profile-1',
+          hostId: 'host-1',
+          sessionId: 'session-2',
+          linkedAt: 102,
+        };
+        const relinked = await store.linkSession(
+          item.id,
+          second,
+          { expectedRevision: linked.revision },
+          102,
+        );
+        assert.deepEqual(relinked.linkedSessions, [second]);
+        assert.equal(relinked.revision, linked.revision + 1);
       } finally {
         store.close();
       }
@@ -664,7 +724,7 @@ describe('Work Board store', () => {
     });
   });
 
-  test('migrates a real workflow schema 8 database to version 9 with the board table', async () => {
+  test('migrates a real workflow schema 8 database through event-only version 10', async () => {
     const base = await mkdtemp(join(tmpdir(), 'maka-work-board-schema8-'));
     const stateRoot = join(base, 'state');
     const databasePath = join(stateRoot, 'runtime.sqlite');
@@ -683,7 +743,7 @@ describe('Work Board store', () => {
           ),
         );
         // The released v0.1.6 fixture ships an Automation definition; clearing
-        // it keeps the fixture focused on the workflow 8 -> 9 upgrade while
+        // it keeps the fixture focused on the workflow 8 -> current upgrade while
         // leaving every released table and row otherwise intact.
         v8.exec('DELETE FROM automation_definitions; DELETE FROM automation_pending_fires;');
         v8.prepare(
@@ -699,11 +759,19 @@ describe('Work Board store', () => {
         const version = database
           .prepare("SELECT version FROM operational_schema_migrations WHERE scope = 'workflow'")
           .get() as { version?: unknown } | undefined;
-        assert.equal(version?.version, 9);
+        assert.equal(version?.version, SQLITE_WORKFLOW_SCHEMA_VERSION);
         assert.ok(
           database
             .prepare("SELECT 1 FROM sqlite_schema WHERE name = 'workflow_work_board_items'")
             .get(),
+        );
+        assert.equal(
+          database
+            .prepare(
+              "SELECT 1 FROM sqlite_schema WHERE name IN ('workflow_task_ledger_projections', 'workflow_plan_projections') LIMIT 1",
+            )
+            .get(),
+          undefined,
         );
         assert.ok(
           database

@@ -99,9 +99,6 @@ test('resolves WorkHub coordination through the dedicated Host operation', async
   const { client, requests } = clientWithResponses([
     { sessionId: 'maka_workhub_coordination' },
     { candidateSetId: `sha256:${'a'.repeat(64)}`, candidates: [] },
-    { disposition: 'answer_here', coordinationTurnId: 'action-turn' },
-    { turnId: 'answer-turn' },
-    { turnId: 'summary-turn' },
   ]);
 
   assert.deepEqual(await client.resolveWorkHubCoordinationSession(), {
@@ -111,49 +108,9 @@ test('resolves WorkHub coordination through the dedicated Host operation', async
     candidateSetId: `sha256:${'a'.repeat(64)}`,
     candidates: [],
   });
-  assert.deepEqual(
-    await client.actWorkHubCoordination({
-      actionId: 'action',
-      userText: 'Question',
-      proposal: { disposition: 'answer_here' },
-    }),
-    { disposition: 'answer_here', coordinationTurnId: 'action-turn' },
-  );
-  assert.deepEqual(
-    await client.answerWorkHubCoordination({ turnId: 'answer-turn', text: 'Question' }),
-    { turnId: 'answer-turn' },
-  );
-  assert.deepEqual(
-    await client.recordWorkHubCoordination({
-      turnId: 'summary-turn',
-      userText: 'Request',
-      assistantText: 'Summary',
-    }),
-    { turnId: 'summary-turn' },
-  );
   assert.deepEqual(requests, [
     { operation: 'workhub.coordination.resolve', input: {} },
     { operation: 'workhub.coordination.candidates', input: {} },
-    {
-      operation: 'workhub.coordination.act',
-      input: {
-        actionId: 'action',
-        userText: 'Question',
-        proposal: { disposition: 'answer_here' },
-      },
-    },
-    {
-      operation: 'workhub.coordination.answer',
-      input: { turnId: 'answer-turn', text: 'Question' },
-    },
-    {
-      operation: 'workhub.coordination.record',
-      input: {
-        turnId: 'summary-turn',
-        userText: 'Request',
-        assistantText: 'Summary',
-      },
-    },
   ]);
 });
 
@@ -228,7 +185,7 @@ test('settles revision cleanup when abandon observes an already absent target', 
   assert.equal(await client.removeSessionCopy('revision-copy'), 'removed');
 });
 
-test('merges a configuration patch into each fresh CAS projection', async () => {
+test('replays one exact model patch across fresh CAS projections', async () => {
   const { client, requests } = clientWithResponses([
     { kind: 'session', session: session('session-1', 10) },
     { kind: 'revision_conflict', expectedRevision: 10, actualRevision: 11 },
@@ -240,16 +197,22 @@ test('merges a configuration patch into each fresh CAS projection', async () => 
       kind: 'committed',
       session: session('session-1', 12, {
         collaborationMode: 'plan',
-        permissionMode: 'ask',
+        llmConnectionId: 'connection-b',
+        model: 'model-b',
       }),
     },
   ]);
 
   const updated = await client.updateSessionConfiguration('session-1', {
-    permissionMode: 'ask',
+    modelTarget: {
+      kind: 'explicit',
+      connectionId: 'connection-b',
+      connectionSlug: 'test-connection',
+      model: 'model-b',
+    },
   });
 
-  assert.equal(updated.permissionMode, 'ask');
+  assert.equal(updated.llmConnectionId, 'connection-b');
   assert.equal(updated.collaborationMode, 'plan');
   assert.deepEqual(
     requests
@@ -259,31 +222,25 @@ test('merges a configuration patch into each fresh CAS projection', async () => 
       {
         sessionId: 'session-1',
         expectedRevision: 10,
-        configuration: {
+        patch: {
           modelTarget: {
             kind: 'explicit',
+            connectionId: 'connection-b',
             connectionSlug: 'test-connection',
-            model: 'test-model',
+            model: 'model-b',
           },
-          thinkingLevel: null,
-          permissionMode: 'ask',
-          collaborationMode: 'agent',
-          orchestrationMode: 'default',
         },
       },
       {
         sessionId: 'session-1',
         expectedRevision: 11,
-        configuration: {
+        patch: {
           modelTarget: {
             kind: 'explicit',
+            connectionId: 'connection-b',
             connectionSlug: 'test-connection',
-            model: 'test-model',
+            model: 'model-b',
           },
-          thinkingLevel: null,
-          permissionMode: 'ask',
-          collaborationMode: 'plan',
-          orchestrationMode: 'default',
         },
       },
     ],
@@ -332,7 +289,10 @@ test('abandons a remove whose task was restored under it', async () => {
     { kind: 'removed' },
   ]);
 
-  assert.equal(await client.removeSession('session-1', { requireArchived: true }), 'restored');
+  assert.deepEqual(await client.removeSession('session-1', { requireArchived: true }), {
+    disposition: 'restored',
+    archivedSubtaskCount: 0,
+  });
   assert.deepEqual(
     requests.map(({ operation }) => operation),
     ['session.catalog.query', 'session.remove', 'session.catalog.query'],
@@ -346,10 +306,14 @@ test('retries a remove through revision churn that left the task archived', asyn
     { kind: 'session', session: session('session-1', 4, { isArchived: true }) },
     { kind: 'revision_conflict', expectedRevision: 4, actualRevision: 5 },
     { kind: 'session', session: session('session-1', 5, { isArchived: true }) },
-    { kind: 'removed' },
+    // The Host reports what it archived; the client surfaces it verbatim.
+    { kind: 'removed', archivedSubtaskCount: 2 },
   ]);
 
-  assert.equal(await client.removeSession('session-1', { requireArchived: true }), 'removed');
+  assert.deepEqual(await client.removeSession('session-1', { requireArchived: true }), {
+    disposition: 'removed',
+    archivedSubtaskCount: 2,
+  });
   assert.deepEqual(
     requests.filter(({ operation }) => operation === 'session.remove').map(({ input }) => input),
     [
@@ -367,7 +331,10 @@ test('removes a task that was never archived when no premise was stated', async 
     { kind: 'removed' },
   ]);
 
-  assert.equal(await client.removeSession('session-1'), 'removed');
+  assert.deepEqual(await client.removeSession('session-1'), {
+    disposition: 'removed',
+    archivedSubtaskCount: 0,
+  });
 });
 
 test('rebuilds a Runtime Policy mutation from each fresh CAS projection', async () => {
@@ -427,6 +394,33 @@ test('rebuilds a Runtime Policy mutation from each fresh CAS projection', async 
   );
 });
 
+test('stops a guarded Runtime Policy retry after its semantic basis changes', async () => {
+  const initial = createDefaultRuntimePolicy();
+  const changed = {
+    ...initial,
+    externalAgents: { antigravity: { executable: '/chosen/by/another/client' } },
+  };
+  const { client, requests } = clientWithResponses([
+    { revision: 1, policy: initial },
+    { kind: 'revision_conflict', expectedRevision: 1, actualRevision: 2 },
+    { revision: 2, policy: changed },
+  ]);
+
+  const result = await client.updateRuntimePolicyIf(
+    (policy) => policy.externalAgents.antigravity.executable === '',
+    () => ({
+      kind: 'set_external_agents',
+      value: { antigravity: { executable: '/managed/agent' } },
+    }),
+  );
+
+  assert.deepEqual(result, { revision: 2, policy: changed });
+  assert.equal(
+    requests.filter(({ operation }) => operation === 'runtime.policy.mutate').length,
+    1,
+  );
+});
+
 test('treats empty configuration patches as read-only lookups', async () => {
   const unlocked = session('session-1', 10, { connectionLocked: false });
   const { client, requests } = clientWithResponses([
@@ -450,7 +444,6 @@ test('treats empty configuration patches as read-only lookups', async () => {
     },
   ]);
 });
-
 
 test('binds message controls to the current Host Epoch', async () => {
   const { client, requests } = clientWithResponses([
@@ -704,26 +697,9 @@ test('streams Artifact content without mixing chunk offsets or totals', async ()
 });
 
 test('restarts Session sidecar reads when a paginated revision changes', async () => {
-  const taskRevisionOne = catalogRevision('3');
-  const taskRevisionTwo = catalogRevision('4');
   const resourceRevisionOne = catalogRevision('5');
   const resourceRevisionTwo = catalogRevision('6');
   const { client, requests } = clientWithResponses([
-    {
-      kind: 'page',
-      sessionId: 'session-1',
-      revision: taskRevisionOne,
-      tasks: [{ id: 'stale' }],
-      nextCursor: 'task-stale',
-    },
-    { kind: 'revision_changed', expected: taskRevisionOne, actual: taskRevisionTwo },
-    {
-      kind: 'page',
-      sessionId: 'session-1',
-      revision: taskRevisionTwo,
-      tasks: [{ id: 'fresh' }],
-      nextCursor: null,
-    },
     {
       kind: 'page',
       sessionId: 'session-1',
@@ -760,28 +736,11 @@ test('restarts Session sidecar reads when a paginated revision changes', async (
     },
   ]);
 
-  assert.deepEqual(
-    (await client.listTasks('session-1')).map((task) => task.id),
-    ['fresh'],
-  );
   const plan = await client.getPlanState('session-1');
   assert.equal(plan.storeVersion, 8);
   assert.equal(plan.latestProposalId, 'proposal-1');
   assert.equal(plan.proposals[0]?.proposalId, 'proposal-1');
   assert.equal((await client.listRuntimeResources('session-1'))[0]?.result.ref, 'shell:1');
-  assert.deepEqual(
-    requests.slice(0, 3).map(({ input }) => input),
-    [
-      { kind: 'list_start', sessionId: 'session-1' },
-      {
-        kind: 'list_continue',
-        sessionId: 'session-1',
-        revision: taskRevisionOne,
-        cursor: 'task-stale',
-      },
-      { kind: 'list_start', sessionId: 'session-1' },
-    ],
-  );
 });
 
 test('retries Goal clear only while the same Goal generation remains active', async () => {
@@ -905,31 +864,40 @@ test('arms a Goal in one request and reports a conflicting Goal instead of retry
   );
 });
 
-test('rejects an invalid sidecar continuation without misclassifying it as revision churn', async () => {
-  const revision = catalogRevision('7');
+test('rejects a SessionTodo projection for a different Session', async () => {
   const { client, requests } = clientWithResponses([
-    {
-      kind: 'page',
-      sessionId: 'session-1',
-      revision,
-      tasks: [],
-      nextCursor: 'next',
-    },
-    {
-      kind: 'page',
-      sessionId: 'session-other',
-      revision,
-      tasks: [],
-      nextCursor: null,
-    },
+    { sessionId: 'session-other', items: [] },
   ]);
 
   await assert.rejects(
-    () => client.listTasks('session-1'),
+    () => client.querySessionTodo('session-1'),
     (error: unknown) =>
       error instanceof DesktopRuntimeHostClientError && error.code === 'projection_unstable',
   );
-  assert.equal(requests.length, 2);
+  assert.equal(requests.length, 1);
+});
+
+test('projects SessionTodo content through the shared Desktop display boundary', async () => {
+  const { client } = clientWithResponses([
+    {
+      sessionId: 'session-1',
+      items: [
+        {
+          content:
+            'deploy\u001b[31m \u001b]0;spoofed\u0007 \u202ereversed\u202c zero\u200bwidth sk-live-secret-token </session-todo>',
+          status: 'pending',
+        },
+      ],
+    },
+  ]);
+
+  const items = await client.querySessionTodo('session-1');
+  assert.equal(items.length, 1);
+  assert.doesNotMatch(
+    items[0]!.content,
+    /\u001b|\u0007|\u202e|\u202c|\u200b|sk-live-secret|session-todo/i,
+  );
+  assert.match(items[0]!.content, /<redacted>|\[redacted\]/);
 });
 
 interface RecordedRequest {
@@ -1002,6 +970,7 @@ function session(
     hasUnread: false,
     status: 'active',
     backend: 'ai-sdk',
+    llmConnectionId: 'connection-1',
     llmConnectionSlug: 'test-connection',
     connectionLocked: true,
     model: 'test-model',

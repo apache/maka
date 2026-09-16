@@ -30,6 +30,9 @@ export function assertNoReservedWorkspaceAuthorityAppend(event: RuntimeEvent): v
   if (event.actions?.workspaceFact !== undefined) {
     throw new Error('Workspace facts require the atomic workspace version authority writer');
   }
+  if (event.actions?.managedMutationTerminal !== undefined) {
+    throw new Error('Managed mutation terminals require the atomic terminal authority writer');
+  }
   if (event.sessionId === WORKSPACE_AUTHORITY_SESSION_ID) {
     throw new Error('RuntimeEvent targets the reserved workspace authority stream');
   }

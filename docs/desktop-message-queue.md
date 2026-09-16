@@ -26,7 +26,7 @@ Desktop used a rendered `streaming` prop to decide whether a composer submit sta
 Runtime Host already owns the durable message semantics:
 
 - `current_turn` queues steering for the next provider boundary.
-- `next_turn` queues a successor turn.
+- `next_turn` queues one successor turn per accepted message.
 - queue projections are authoritative.
 - queue projections carry the canonical queued message content; mutation results return only queue state.
 

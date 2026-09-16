@@ -76,7 +76,7 @@ export function createRuntimeHostBotSessionAdapter(
           name: input.name,
           labels: [...input.labels],
           modelTarget: { kind: 'default' },
-          permissionMode: 'explore',
+          mode: 'bot',
         });
       } catch (error) {
         if (

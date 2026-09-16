@@ -97,6 +97,78 @@ const zhCopy = {
     intentSeparator: " — ",
   },
 } as const;
+const zhTwCopy = {
+  scheduledTaskActions: {
+    refreshFailed: "重新整理計劃失敗",
+    refreshFallback: "重新整理定時任務失敗，請稍後重試。",
+    created: "已建立定時任務",
+    createFailed: "建立計劃失敗",
+    createFallback: "建立定時任務失敗，請稍後重試。",
+    createIncognitoBlocked: "隱身模式開啟時不能建立定時任務。",
+    saved: "已儲存定時任務",
+    saveFailed: "儲存計劃失敗",
+    saveFallback: "儲存定時任務失敗，請稍後重試。",
+    enabled: "已啟用任務",
+    paused: "已暫停任務",
+    updateFailed: "更新計劃失敗",
+    updateFallback: "更新定時任務失敗，請稍後重試。",
+    triggered: "已觸發定時任務",
+    triggerFailed: "觸發計劃失敗",
+    triggerFallback: "觸發定時任務失敗，請稍後重試。",
+    snoozed: "已延後 10 分鐘",
+    snoozeFailed: "延後計劃失敗",
+    snoozeFallback: "延後定時任務失敗，請稍後重試。",
+    task: "定時任務",
+    clearTitle: (name: string) => `清空 “${name}” 的執行記錄`,
+    clearDescription: "定時任務本身會保留；只清空最近執行記錄和最近狀態。",
+    clear: "清空記錄",
+    cancel: "取消",
+    cleared: "已清空執行記錄",
+    clearFailed: "清空記錄失敗",
+    clearFallback: "清空定時任務記錄失敗，請稍後重試。",
+    deleteTitle: (name: string) => `刪除 “${name}”`,
+    deleteDescription: "該任務和最近執行記錄會被刪除。該操作不可撤銷。",
+    delete: "刪除",
+    deleted: "已刪除定時任務",
+    deleteFailed: "刪除計劃失敗",
+    deleteFallback: "刪除定時任務失敗，請稍後重試。",
+  },
+  dailyReview: {
+    yesterday: "昨天",
+    today: "今天",
+    followSettings: "跟隨設定",
+    unavailable: "每日回顧生成暫不可用",
+    historyUnavailable: "每日回顧歷史暫不可用",
+    archiveMissing: "找不到每日回顧報告",
+    settingsUnavailable: "每日回顧設定暫不可用",
+  },
+  connections: {
+    refreshFailed: "重新整理模型連線失敗",
+    refreshFallback: "模型連線暫時無法重新整理，請稍後重試。",
+  },
+  tasks: { loadFailed: "待辦載入失敗，請重試。" },
+  projects: { ungrouped: "未歸屬專案" },
+  models: { unavailable: "目前不可用" },
+  overlays: {
+    loadingSettings: "正在載入設定",
+    loadingSettingsProgress: "正在載入設定…",
+  },
+  notifications: {
+    scheduledTask: "定時任務",
+    viewScheduledTasks: "檢視定時任務",
+  },
+  previousMainProcessInterruption: {
+    title: "Maka 已恢復",
+    description: "上次退出未完成。",
+    copyDiagnostics: "複製報告",
+  },
+  conversationExport: {
+    exported: (date: string) => `由 Maka 於 ${date} 匯出。`,
+    you: "你",
+    toolCalls: "工具呼叫",
+    intentSeparator: " — ",
+  },
+} as const;
 
 export type ShellRemainingCopy = WidenCopy<typeof zhCopy>;
 
@@ -179,7 +251,11 @@ const enCopy: ShellRemainingCopy = {
   },
 };
 
-const COPY = { zh: zhCopy, en: enCopy } satisfies UiCatalog<ShellRemainingCopy>;
+const COPY = {
+  'zh-CN': zhCopy,
+  'zh-TW': zhTwCopy,
+  en: enCopy,
+} satisfies UiCatalog<ShellRemainingCopy>;
 
 export function getShellRemainingCopy(locale: UiLocale): ShellRemainingCopy {
   return COPY[locale];

@@ -28,7 +28,7 @@ export function configureInstalledEvalBundle(
 ): void {
   if (Object.hasOwn(environment, MAKA_EVAL_BUNDLE_ENV)) return;
   try {
-    if (!statSync(resolve(packageRoot, 'packages/eval')).isDirectory()) return;
+    if (!statSync(resolve(packageRoot, 'node_modules/@maka/eval')).isDirectory()) return;
   } catch {
     return;
   }

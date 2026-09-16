@@ -27,10 +27,29 @@ import {
 import {
   buildContinuationReplayPlan,
   buildContinuationReplaySegment,
+  digestProviderReplayAdmission,
 } from '../continuation-replay.js';
-import { PROVIDER_REPLAY_PROJECTION_VERSION } from '../model-history.js';
+import {
+  PROVIDER_REPLAY_PROJECTION_VERSION,
+  type RuntimeEventModelReplayItem,
+} from '../model-history.js';
 
 describe('continuation replay segment', () => {
+  it('rejects a persisted v1 admission under the route-bound v2 projection', () => {
+    const identity = runtimeIdentity();
+    const result = buildContinuationReplaySegment({
+      prefix: buildImmutableRuntimePrefix(identity, [
+        { eventSeq: 1, event: textEvent('legacy-user', 'user', identity) },
+      ]),
+      providerProjectionVersion: 1,
+    });
+
+    assert.equal(result.kind, 'blocked');
+    if (result.kind !== 'blocked') return;
+    assert.equal(result.reason, 'provider_replay_unsupported');
+    assert.match(result.diagnostics[0]?.message ?? '', /projection 1 is unsupported/);
+  });
+
   it('trims an interrupted assistant suffix after the last stable user boundary', () => {
     const identity = runtimeIdentity();
     const result = buildContinuationReplaySegment({
@@ -326,6 +345,11 @@ describe('continuation replay segment', () => {
     const result = buildContinuationReplayPlan({
       prefixes: [ancestor, source],
       providerProjectionVersion: PROVIDER_REPLAY_PROJECTION_VERSION,
+      admissionRoute: {
+        invocations: [],
+        targetProviderStateIdentity: undefined,
+        targetModelId: 'test-model',
+      },
     });
 
     assert.equal(result.kind, 'replayable');
@@ -341,6 +365,34 @@ describe('continuation replay segment', () => {
     assert.deepEqual(
       result.plan.boundary.segments.map((segment) => segment.identity.runId),
       ['run-1', 'run-2'],
+    );
+  });
+});
+
+describe('continuation replay digest', () => {
+  it('keeps the projection v2 digest compatible while excluding internal invocation identity', () => {
+    const digest = (invocationId: string) =>
+      digestProviderReplayAdmission({
+        providerProjectionVersion: PROVIDER_REPLAY_PROJECTION_VERSION,
+        targetProviderStateIdentity: undefined,
+        targetModelId: 'test-model',
+        items: [
+          {
+            kind: 'tool_call',
+            invocationId,
+            toolCallId: 'read-1',
+            toolName: 'Read',
+            input: { path: 'notes.md' },
+            eventId: 'call-1',
+            ts: 1,
+          } satisfies RuntimeEventModelReplayItem,
+        ],
+      });
+
+    assert.equal(digest('invocation-a'), digest('invocation-b'));
+    assert.equal(
+      digest('invocation-a'),
+      'sha256:775dac9a0959d888541d9e4930431b60dee89e4f28b62238ddde64dfd5f542ee',
     );
   });
 });

@@ -27,9 +27,9 @@
 // the model is trapped writing `dir /s /b` style commands. This module detects
 // a better shell (pwsh > powershell > cmd) and carries the result to the two
 // places that need it: the spawn call (shell-exec / shell-run-manager) and the
-// prompt surfaces that must DECLARE the dialect to the model (tool description,
-// session environment fragment). Selection without declaration — or the other
-// way round — makes the model guess the dialect, which is the original bug.
+// Bash tool description that declares the dialect to the model. Selection
+// without declaration — or the other way round — makes the model guess the
+// dialect, which is the original bug.
 
 import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
@@ -40,7 +40,7 @@ export type ShellKind = 'posix' | 'git-bash' | 'legacy-wsl-bash' | 'pwsh' | 'pow
 
 export interface ShellPlan {
   kind: ShellKind;
-  /** Human-readable name for prompt surfaces, e.g. "PowerShell 7 (pwsh)". */
+  /** Human-readable name for Bash tool guidance, e.g. "PowerShell 7 (pwsh)". */
   displayName: string;
   /** Executable to spawn explicitly for non-default shell plans. */
   exe?: string;
@@ -141,11 +141,6 @@ export function resolveTurnShellPlan(
 /** Fail-closed gate for the Bash/PTY boundary: never execute through a broken preference. */
 export function throwIfShellSetupFailed(shell: TurnShellPlan): void {
   if (shell.setupError) throw shell.setupError;
-}
-
-/** Model-facing shell name; a broken preference is declared, not silently hidden. */
-export function turnShellDisplayName(shell: TurnShellPlan): string {
-  return shell.setupError ? `Unavailable (${shell.setupError.message})` : shell.plan.displayName;
 }
 
 export interface ValidateShellPreferenceInput extends ResolveShellPlanInput {

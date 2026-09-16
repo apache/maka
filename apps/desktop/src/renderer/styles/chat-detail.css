@@ -35,11 +35,11 @@
   background: oklch(from var(--accent) l c h / 0.045);
 }
 
-/* Turn aborted marker / failed banner / lineage rows + badges / footer +
- * footer actions retired to the `@maka/ui` Marker chat primitive
- * (`aborted` / `failed-banner` / `failed-icon` / `failed-recovery` /
- * `lineage-row` / `lineage-row-reverse` / `lineage-badge` / `footer` /
- * `footer-action`), issue #332 PR2 — packages/ui/src/primitives/chat.tsx.
+/* Lineage rows + badges / footer + footer actions retired to the `@maka/ui`
+ * Marker chat primitive (`lineage-row` / `lineage-row-reverse` /
+ * `lineage-badge` / `footer` / `footer-action`), issue #332 PR2 —
+ * packages/ui/src/primitives/chat.tsx.
+ * The failed-turn banner is an Astryx `Banner`, not a Marker variant.
  * The measure-column geometry the `tool-output.css` re-anchor used to add
  * to the summary / lineage rows / footer is folded into those Marker
  * variants. */

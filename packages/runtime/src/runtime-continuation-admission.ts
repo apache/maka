@@ -34,7 +34,7 @@ export interface RuntimeContinuationStartAdmissionIdentity {
   startEventId: string;
   claimId: string;
   boundaryDigest: `sha256:${string}`;
-  providerProjectionVersion: 1;
+  providerProjectionVersion: 1 | 2;
   providerReplayDigest: `sha256:${string}`;
   toolBoundaryProtocol?: ToolBoundaryProtocol;
   target: {
@@ -54,7 +54,7 @@ export function createRuntimeContinuationStartAdmissionProof(
     identity.startEventId.length === 0 ||
     identity.claimId.length === 0 ||
     !/^sha256:[0-9a-f]{64}$/.test(identity.boundaryDigest) ||
-    identity.providerProjectionVersion !== 1 ||
+    (identity.providerProjectionVersion !== 1 && identity.providerProjectionVersion !== 2) ||
     !/^sha256:[0-9a-f]{64}$/.test(identity.providerReplayDigest) ||
     (identity.toolBoundaryProtocol !== undefined &&
       identity.toolBoundaryProtocol !== TOOL_BOUNDARY_PROTOCOL_V1) ||

@@ -17,14 +17,17 @@
  * under the License.
  */
 
-import type {
-  ExternalSessionAdapter,
-  ExternalSessionAdapterRegistry,
-  ExternalSessionSummary,
+import { JsonArrayPageBudget } from './json-array-page-budget.js';
+
+import {
+  ExternalSessionLimitError,
+  type ExternalSessionAdapter,
+  type ExternalSessionAdapterRegistry,
+  type ExternalSessionSummary,
 } from '@maka/core/external-session';
 import type { CreateSessionInput } from '@maka/core/runtime-inputs';
 import type { SessionExternalOrigin, SessionHeader, StoredMessage } from '@maka/core/session';
-import type { ExternalSessionImportLookupResult } from '@maka/storage/session-store';
+import type { ExternalSessionImportLookupResult } from '@maka/storage/execution-stores';
 import type { SessionCatalogRecord } from '@maka/storage/execution-stores';
 import { ExternalSessionImporter } from '@maka/storage/external-sessions';
 import {
@@ -45,6 +48,7 @@ import type { ExternalSessionOperationHandlerMap } from './operation-dispatcher.
 import {
   projectSessionCatalogRecord,
   SessionOperationFailure,
+  NoUsableImportModelError,
 } from './session-catalog-coordinator.js';
 import type { SessionAdmissionGate } from './session-admission-gate.js';
 import { type HostWorkspaceResolver, WorkspaceResolutionError } from './workspace-resolver.js';
@@ -246,6 +250,9 @@ export class HostExternalSessionCoordinator {
     try {
       target = await this.#resolveTarget();
     } catch (error) {
+      if (error instanceof NoUsableImportModelError) {
+        return importFailure('model_unavailable', error.message);
+      }
       if (error instanceof SessionOperationFailure) {
         return importFailure(error.code, error.message);
       }
@@ -268,11 +275,20 @@ export class HostExternalSessionCoordinator {
       });
     } catch (error) {
       if (!commitAttempted) {
+        if (error instanceof ExternalSessionLimitError) {
+          return {
+            ok: true,
+            result: {
+              kind: 'source_limit_exceeded',
+              limit: { kind: error.limit.kind, max: error.limit.max },
+            },
+          };
+        }
         return importFailure(
-          isSourceSessionNotFound(error) ? 'not_found' : 'invalid_request',
+          isSourceSessionNotFound(error) ? 'not_found' : 'source_unreadable',
           isSourceSessionNotFound(error)
             ? 'External Session does not exist'
-            : 'External Session could not be converted',
+            : 'External Session could not be read or converted',
         );
       }
       this.#requestDrain();
@@ -298,7 +314,10 @@ export class HostExternalSessionCoordinator {
 
     try {
       const record = await this.#sessions.readCatalogRecord(header.id);
-      return { ok: true, result: { session: projectSessionCatalogRecord(record) } };
+      return {
+        ok: true,
+        result: { kind: 'imported', session: projectSessionCatalogRecord(record) },
+      };
     } catch {
       this.#requestDrain();
       return importFailure(
@@ -358,14 +377,13 @@ function boundedCatalogPage(
   totalCount: number,
 ): ExternalSessionCatalogItem[] {
   const page: ExternalSessionCatalogItem[] = [];
+  const budget = new JsonArrayPageBudget(EXTERNAL_SESSION_RESULT_MAX_BYTES, {
+    sessions: [],
+    nextCursor: null,
+  });
   for (const candidate of candidates) {
-    const nextPage = [...page, candidate];
-    const nextOffset = offset + nextPage.length;
-    const result = {
-      sessions: nextPage,
-      nextCursor: nextOffset < totalCount ? String(nextOffset) : null,
-    };
-    if (Buffer.byteLength(JSON.stringify(result), 'utf8') > EXTERNAL_SESSION_RESULT_MAX_BYTES) {
+    const nextOffset = offset + page.length + 1;
+    if (!budget.tryAppend(candidate, nextOffset < totalCount ? String(nextOffset) : null)) {
       break;
     }
     page.push(candidate);

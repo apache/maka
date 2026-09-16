@@ -80,6 +80,7 @@ test('rejects a release claim reached through a symbolic link or junction', asyn
     platform: process.platform,
     arch: process.arch,
     protocolVersion: 1,
+    supportedOperations: ['inspect_repository', 'import_source_head'],
   });
 
   await assert.rejects(
@@ -109,6 +110,7 @@ test('keeps an admitted helper artifact opaque and bound to its invocation owner
     platform: process.platform,
     arch: process.arch,
     protocolVersion: 1,
+    supportedOperations: ['inspect_repository', 'import_source_head'],
   });
 
   const capability = await admitGitoxideHelperArtifactInternal({
@@ -146,6 +148,7 @@ test('rejects a helper artifact changed after admission', async (t) => {
     platform: process.platform,
     arch: process.arch,
     protocolVersion: 1,
+    supportedOperations: ['inspect_repository', 'import_source_head'],
   });
   const capability = await admitGitoxideHelperArtifactInternal({
     releaseOwnerToken,

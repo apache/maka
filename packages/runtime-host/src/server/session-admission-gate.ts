@@ -27,6 +27,7 @@ export interface SessionAdmissionLease {
 
 interface SessionAdmissionContext {
   readonly sessionIds: ReadonlySet<string>;
+  readonly lease: SessionAdmissionLease;
   active: boolean;
 }
 
@@ -74,11 +75,33 @@ export class SessionAdmissionGate {
     return this.#runQueued(sessionIds, operation);
   }
 
+  /** Leaf work may join an existing admission, but never acquire a second Session inside it. */
+  runOrJoin<T>(sessionId: string, operation: () => Promise<T> | T): Promise<T> {
+    const inherited = this.#context.getStore();
+    if (inherited?.active) {
+      return this.runAdmitted(sessionId, inherited.lease, operation);
+    }
+    return this.run(sessionId, operation);
+  }
+
   enqueueDetached(
     sessionId: string,
     operation: (lease: SessionAdmissionLease) => Promise<void> | void,
   ): Promise<void> {
     return this.#runQueued([sessionId], operation);
+  }
+
+  /**
+   * Start work that outlives the admission that reserved it.
+   *
+   * A drained Turn is not admission work: it runs for as long as the Turn does
+   * and takes admissions of its own along the way. Started plainly it inherits
+   * the admission context of the caller, and whether its first admission is
+   * rejected then comes down to which finishes first — the admission, or the
+   * Turn reaching its own. Leaving the context here settles that by saying so.
+   */
+  detach<T>(operation: () => T): T {
+    return this.#context.exit(operation);
   }
 
   runAdmitted<T>(
@@ -137,10 +160,10 @@ export class SessionAdmissionGate {
     }
 
     const ownedSessionIds = new Set(sessionIds);
-    const context: SessionAdmissionContext = { sessionIds: ownedSessionIds, active: true };
     const lease: SessionAdmissionLease = Object.freeze({
       [sessionAdmissionLeaseBrand]: true as const,
     });
+    const context: SessionAdmissionContext = { sessionIds: ownedSessionIds, lease, active: true };
     const state: SessionAdmissionLeaseState = {
       sessionIds: ownedSessionIds,
       context,

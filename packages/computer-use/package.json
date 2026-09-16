@@ -11,7 +11,6 @@
     "clean": "node ../../scripts/clean-paths.mjs dist tsconfig.tsbuildinfo",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run clean && npm run build && npm run test:dist",
     "test:dist": "node --test \"dist/**/*.test.js\""
   },
   "dependencies": {

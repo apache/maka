@@ -46,7 +46,7 @@ export interface StartRuntimeHostWebSocketListenerOptions {
   readonly tls?: RuntimeHostWebSocketTls;
   readonly allowInsecureRemote?: boolean;
   readonly allowedOrigins?: readonly string[];
-  readonly accessAuthority: RuntimeHostAccessAuthority;
+  readonly accessAuthority: Pick<RuntimeHostAccessAuthority, 'authenticate'>;
   readonly isReady: () => boolean;
   readonly accept: (connection: RuntimeHostListenerConnection) => void;
 }

@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import assert from 'node:assert/strict';
 import { createServer, Socket, type Server } from 'node:net';
@@ -239,15 +240,4 @@ function closeServer(server: Server): Promise<void> {
   return new Promise((resolve, reject) => {
     server.close((error) => (error ? reject(error) : resolve()));
   });
-}
-
-function deferred<T>(): {
-  promise: Promise<T>;
-  resolve(value: T | PromiseLike<T>): void;
-} {
-  let resolve!: (value: T | PromiseLike<T>) => void;
-  const promise = new Promise<T>((resolvePromise) => {
-    resolve = resolvePromise;
-  });
-  return { promise, resolve };
 }

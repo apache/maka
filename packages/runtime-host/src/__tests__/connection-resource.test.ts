@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred, type Deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { test } from 'node:test';
@@ -140,23 +141,6 @@ function isResourceInterruption(
   else assert.ok(error.cause.cause instanceof Error);
   return true;
 }
-
-interface Deferred<T> {
-  readonly promise: Promise<T>;
-  resolve(value: T): void;
-  reject(error: Error): void;
-}
-
-function deferred<T>(): Deferred<T> {
-  let resolve!: (value: T) => void;
-  let reject!: (error: Error) => void;
-  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
-    resolve = resolvePromise;
-    reject = rejectPromise;
-  });
-  return { promise, resolve, reject };
-}
-
 function deferredResource(): RuntimeHostConnectionResource & {
   resolve(): void;
   reject(error: Error): void;

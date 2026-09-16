@@ -28,7 +28,6 @@ import {
   resolveTurnShellPlan,
   ShellPreferenceError,
   throwIfShellSetupFailed,
-  turnShellDisplayName,
   validateShellPreference,
 } from '../shell-detect.js';
 
@@ -223,14 +222,12 @@ describe('resolveTurnShellPlan', () => {
     assert.match(guidance, /unavailable this turn/);
     assert.match(guidance, /not found/i);
     assert.doesNotMatch(guidance, /write POSIX shell syntax/);
-    assert.match(turnShellDisplayName(broken), /Unavailable/);
 
     const healthy = resolveTurnShellPlan(
       { preference: 'git_bash', executable },
       { platform: 'win32', fileExists: existsIn(executable) },
     );
     assert.match(bashToolTurnShellGuidance(healthy), /write POSIX shell syntax/);
-    assert.equal(turnShellDisplayName(healthy), 'Git Bash');
   });
 });
 

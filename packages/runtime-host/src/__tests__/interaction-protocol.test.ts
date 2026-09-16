@@ -169,6 +169,56 @@ describe('Runtime Host Interaction protocol', () => {
     );
   });
 
+  test('decodes a form snapshot and exact form answer without widening the wire', () => {
+    const snapshot = {
+      schemaVersion: 1,
+      interactionId: 'form-1',
+      sessionId: 'session-1',
+      turnId: 'turn-1',
+      runId: 'run-1',
+      revision: 1,
+      status: 'pending',
+      outcome: null,
+      request: {
+        kind: 'form',
+        toolUseId: 'tool-1',
+        message: 'Choose settings',
+        requester: { name: 'deploy', source: 'Example server' },
+        fields: [
+          {
+            kind: 'boolean',
+            name: 'confirm',
+            label: 'Confirm',
+            required: true,
+          },
+        ],
+      },
+    } as const;
+    assert.deepEqual(decodeInteractionSnapshot(snapshot), snapshot);
+
+    const frame = {
+      requestId: 'answer-form',
+      operation: 'interaction.answer',
+      input: {
+        sessionId: 'session-1',
+        interactionId: 'form-1',
+        answer: { kind: 'form', action: 'accept', values: { confirm: true } },
+      },
+    } as const;
+    assert.deepEqual(decodeClientFrame(frame), frame);
+    assert.throws(
+      () =>
+        decodeClientFrame({
+          ...frame,
+          input: {
+            ...frame.input,
+            answer: { ...frame.input.answer, requestState: 'must-not-cross-host-wire' },
+          },
+        }),
+      isInvalidFrame,
+    );
+  });
+
   test('returns the canonical winner only for an equivalent normalized answer retry', () => {
     const request = storedRequest('interaction-1', 10);
     const answered: InteractionRecord & { outcome: NonNullable<InteractionRecord['outcome']> } = {

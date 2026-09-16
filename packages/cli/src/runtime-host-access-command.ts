@@ -17,17 +17,21 @@
  * under the License.
  */
 
+import { randomUUID } from 'node:crypto';
+import { hostname } from 'node:os';
 import { truncateUtf8 } from '@maka/core/diagnostic-log';
 import {
   connectExistingRuntimeHost,
   consumeAccessCredentialDelivery,
+  issueRuntimeHostOwnerConnectionCode,
+  REMOTE_DESKTOP_OWNER_ACCESS_POLICY,
 } from '@maka/runtime-host/client';
 import {
   isOperationKey,
   REMOTE_OWNER_OPERATION_GRANTS,
   RUNTIME_HOST_PROTOCOL_VERSION,
   type AccessCredentialRotationRevokeInput,
-  type AccessCredentialPrincipalKind,
+  type ManagedAccessCredentialPrincipalKind,
   type OperationKey,
 } from '@maka/runtime-host/protocol';
 import {
@@ -45,21 +49,33 @@ const PROTOCOL = {
   max: RUNTIME_HOST_PROTOCOL_VERSION,
 } as const;
 
+export class RuntimeHostAccessUnavailableError extends Error {
+  constructor(
+    readonly reason: string,
+    options?: ErrorOptions,
+  ) {
+    super(`Runtime Host service is not available (${reason})`, options);
+    this.name = 'RuntimeHostAccessUnavailableError';
+  }
+}
+
 export interface RuntimeHostAccessIssueOptions {
   readonly rootPath: string;
   readonly expectedRootId?: string;
-  readonly principalKind: AccessCredentialPrincipalKind;
+  readonly principalKind: ManagedAccessCredentialPrincipalKind;
   readonly principalId: string;
   readonly operationGrants: readonly string[];
   readonly canPublishClientCapabilities: boolean;
   readonly canUseHostPaths: boolean;
+  readonly capabilityOwnerCredentialId?: string;
   readonly preset?: RuntimeHostAccessPreset;
+  readonly bindClientInstance?: boolean;
 }
 
 export type RuntimeHostAccessPreset = 'desktop-client' | 'terminal-client';
 
 export interface ResolvedRuntimeHostAccessIssue {
-  readonly principalKind: AccessCredentialPrincipalKind;
+  readonly principalKind: ManagedAccessCredentialPrincipalKind;
   readonly operationGrants: readonly OperationKey[];
   readonly canPublishClientCapabilities: boolean;
   readonly canUseHostPaths: boolean;
@@ -75,6 +91,10 @@ export interface RuntimeHostAccessListOptions {
   readonly expectedRootId?: string;
 }
 
+export interface RuntimeHostAccessConnectionCodeOptions extends RuntimeHostAccessListOptions {
+  readonly name?: string;
+}
+
 export interface RuntimeHostAccessRevokeOptions extends RuntimeHostAccessListOptions {
   readonly credentialId: string;
   readonly currentCredentialFingerprint?: string;
@@ -88,7 +108,7 @@ export interface IssuedRuntimeHostAccessCredential {
   readonly rootId: string;
   readonly credential: string;
   readonly credentialId: string;
-  readonly principalKind: AccessCredentialPrincipalKind;
+  readonly principalKind: ManagedAccessCredentialPrincipalKind;
   readonly principalId: string;
   readonly operationGrants: readonly OperationKey[];
   readonly canPublishClientCapabilities: boolean;
@@ -125,6 +145,39 @@ export async function runRuntimeHostAccessListCli(
     if (!framed) throw error;
     writeAccessManagementError('list', error);
     return 1;
+  }
+}
+
+export async function runRuntimeHostAccessConnectionCodeCli(
+  options: RuntimeHostAccessConnectionCodeOptions,
+  framed = false,
+): Promise<number> {
+  let connection: Awaited<ReturnType<typeof connectLocalOwner>> | undefined;
+  try {
+    connection = await connectLocalOwner(options.rootPath, options.expectedRootId);
+    const connectionCode = await issueRuntimeHostOwnerConnectionCode({
+      rootPath: options.rootPath,
+      name: options.name?.trim() || truncateUtf8(hostname(), 128) || 'Runtime Host',
+      principalId: `connection-code:${randomUUID()}`,
+      client: connection,
+    });
+    process.stdout.write(
+      framed
+        ? encodeRuntimeHostAccessManagementFrame({
+            schemaVersion: 1,
+            kind: 'result',
+            action: 'connection-code',
+            connectionCode,
+          })
+        : `${connectionCode}\n`,
+    );
+    return 0;
+  } catch (error) {
+    if (!framed) throw error;
+    writeAccessManagementError('connection-code', error);
+    return 1;
+  } finally {
+    await connection?.close();
   }
 }
 
@@ -217,6 +270,12 @@ async function mutateRuntimeHostAccessCredential(
       operationGrants: resolved.operationGrants,
       canPublishClientCapabilities: resolved.canPublishClientCapabilities,
       canUseHostPaths: resolved.canUseHostPaths,
+      ...(operation !== 'access.credential.prepare' && options.capabilityOwnerCredentialId
+        ? { capabilityOwnerCredentialId: options.capabilityOwnerCredentialId }
+        : {}),
+      ...(operation === 'access.credential.prepare' && options.bindClientInstance
+        ? { bindClientInstance: true }
+        : {}),
     });
     const credential = await consumeAccessCredentialDelivery(
       options.rootPath,
@@ -247,15 +306,14 @@ export function resolveRuntimeHostAccessIssue(
       canUseHostPaths: options.canUseHostPaths,
     };
   }
-  const canPublishClientCapabilities = options.preset === 'desktop-client';
+  if (options.preset === 'desktop-client') return REMOTE_DESKTOP_OWNER_ACCESS_POLICY;
   const operationGrants = REMOTE_OWNER_OPERATION_GRANTS.filter(
-    (operation) =>
-      canPublishClientCapabilities || !CLIENT_CAPABILITY_PUBLICATION_OPERATIONS.has(operation),
+    (operation) => !CLIENT_CAPABILITY_PUBLICATION_OPERATIONS.has(operation),
   );
   return {
     principalKind: 'remote_owner',
     operationGrants,
-    canPublishClientCapabilities,
+    canPublishClientCapabilities: false,
     canUseHostPaths: false,
   };
 }
@@ -346,12 +404,15 @@ export async function revokeRuntimeHostAccessCredential(
 }
 
 async function connectLocalOwner(rootPath: string, expectedRootId?: string) {
-  const result = await connectExistingRuntimeHost({
-    rootPath,
-    protocol: PROTOCOL,
-  });
+  const result = await connectExistingRuntimeHost({ rootPath, protocol: PROTOCOL }).catch(
+    (error: unknown) => {
+      throw new RuntimeHostAccessUnavailableError('connection_failed', { cause: error });
+    },
+  );
   if (result.kind !== 'connected') {
-    throw new Error(`Runtime Host service is not available (${result.kind})`);
+    throw new RuntimeHostAccessUnavailableError(
+      result.kind === 'unavailable' ? result.reason : result.kind,
+    );
   }
   if (expectedRootId && result.connection.rootId !== expectedRootId) {
     await result.connection.close();

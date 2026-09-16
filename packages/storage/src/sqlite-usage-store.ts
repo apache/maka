@@ -179,6 +179,7 @@ class SqliteTelemetryRepo implements TelemetryRepo {
       range: { from, to },
       totalRequests: rows.length,
       totalCostUsd: sum(rows.map((row) => row.costUsd)),
+      totalDurationMs: sum(rows.map((row) => row.latencyMs)),
       totalTokens: {
         input: sum(rows.map((row) => row.inputTokens)),
         output: sum(rows.map((row) => row.outputTokens)),
@@ -195,6 +196,16 @@ class SqliteTelemetryRepo implements TelemetryRepo {
       ).length,
       cacheCreateRequests: rows.filter((row) => row.cacheWriteInputTokens > 0).length,
       errorRequests: rows.filter((row) => row.status === 'error').length,
+    });
+  }
+
+  toolSummary(query: UsageQuery): { requests: number; durationMs: number } {
+    this.assertReady();
+    const { from, to } = resolveRange(query.range);
+    const rows = this.filteredToolRows(query, from, to);
+    return detached({
+      requests: rows.length,
+      durationMs: sum(rows.map((row) => row.durationMs)),
     });
   }
 
@@ -300,10 +311,19 @@ class SqliteTelemetryRepo implements TelemetryRepo {
   }
 
   private filteredToolRows(query: UsageQuery | ToolUsageQuery, from: number, to: number) {
-    return this.readToolRows().filter((row) => {
-      if (row.ts < from || row.ts > to) return false;
+    // One filter policy for every tool read — summary, buckets, and logs — so
+    // two views of one query cannot disagree. Fields the narrower query types
+    // do not carry simply never match a row out of range.
+    return this.readToolRows(from, to).filter((row) => {
       if (query.toolName && row.toolName !== query.toolName) return false;
       if (query.status && query.status !== 'all' && row.status !== query.status) return false;
+      if ('sessionId' in query && query.sessionId && row.sessionId !== query.sessionId) {
+        return false;
+      }
+      if ('providerId' in query && query.providerId && row.providerId !== query.providerId) {
+        return false;
+      }
+      if ('modelId' in query && query.modelId && row.modelId !== query.modelId) return false;
       return true;
     });
   }
@@ -324,11 +344,15 @@ class SqliteTelemetryRepo implements TelemetryRepo {
     ).map((row) => decodePersistedLlmCallRecord(JSON.parse(row.record_json)));
   }
 
-  private readToolRows(): PersistedToolInvocationRecord[] {
+  // The ts range goes into the query, not the decode: the invocation ledger
+  // has no retention, and a full-table decode per summary read would only grow
+  // with it. The `(ts, id)` index answers the range; the remaining filters run
+  // over the few decoded rows it returns.
+  private readToolRows(from: number, to: number): PersistedToolInvocationRecord[] {
     return (
       this.#lease.database
-        .prepare('SELECT record_json FROM usage_tool_invocations')
-        .all() as Array<{ record_json: string }>
+        .prepare('SELECT record_json FROM usage_tool_invocations WHERE ts >= ? AND ts <= ?')
+        .all(from, to) as Array<{ record_json: string }>
     ).map((row) => decodePersistedToolInvocationRecord(JSON.parse(row.record_json)));
   }
 

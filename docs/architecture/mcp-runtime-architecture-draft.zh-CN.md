@@ -1,3 +1,15 @@
+---
+doc_id: architecture.mcp-runtime-architecture-draft
+title: "Maka MCP runtime architecture"
+language: zh-CN
+source_language: zh-CN
+implementation_status: current
+document_status: current
+translation_status: source-only
+last_verified: 2026-09-04
+owners:
+  - maka-backend
+---
 <!--
   Licensed to the Apache Software Foundation (ASF) under one
   or more contributor license agreements.  See the NOTICE file
@@ -19,9 +31,9 @@
 
 # Maka MCP runtime architecture
 
-状态：remote 与 stdio dual-era V3 implemented（2026-08-25）
+状态：remote 与 stdio dual-era V3 implemented（2026-08-25，见已完成的 [#1650](https://github.com/apache/maka/issues/1650)）
 
-跟踪：[MCP 2026-07-28 dual-era rollout #1650](https://github.com/apache/maka/issues/1650)
+跟踪：[MCP post-V3 roadmap #4329](https://github.com/apache/maka/issues/4329)
 
 ## 1. 目标与边界
 
@@ -113,7 +125,7 @@ Bundled catalog 不是第二份 runtime truth：点击安装只把选中的模�
 
 ## 5. 安全与权限
 
-- stdio 默认只继承运行所需 allowlist：`PATH`、`HOME`、`USER`、`SHELL`、`LANG`、`LC_*`、`TMPDIR`、`XDG_*` 和 Windows system variables。配置中的显式 `env` 最后覆盖。
+- stdio 默认只继承运行所需 allowlist：`PATH`、`HOME`、`USER`、`LOGNAME`、`SHELL`、`LANG`、`LC_*`、`TMPDIR`、`XDG_*` 和 Windows system variables。配置中的显式 `env` 最后覆盖。
 - 普通配置型 MCP tool 默认为 `categoryHint: network_send`，用于 trace 分类和 Plan-mode exclusion；它本身不是用户审批机制。`readOnlyHint` 是不可信的 server advisory，不能降低这个分类。受信任的 host composition 可以显式选择更严格的 category/recovery policy，但该 authority 来自 Maka composition，而不是 server annotation。
 - Direct/Code Mode 的 managed execution 在 provider dispatch 前由 runtime adapter 检查 `ExecutionBoundary`；network 尚未启用时必须先通过 `requestSandboxBoundary`。协议协商只改变 manager 内部 wire codec，不能绕过这条授权路径。
 - manager 只提供 generation-bound tool snapshot 和远端调用。ToolRuntime 总是在 implementation 前投影 `tool_call` / `tool_start`；只有 host 配置 `runtimeCommitSink` 时，才要求 durable T1 在 provider side effect 前成功，并在结果后写 T2。没有 sink 的路径不得声称拥有 durable operation id 或 T1/T2 recovery authority。
@@ -151,10 +163,8 @@ timeout 默认值：remote connect 30s、stdio connect 60s、list 15s、call 10m
 11. SEP-2243 定义 partition、bounded warning、safe integer 和 wire 前失败有自动化覆盖；legacy 路径不误启用 modern header 语义。
 12. stdio 省略 protocol 只启动一个 legacy child；`auto`、legacy/modern exact pin、probe/actual 顺序、probe stderr 隔离，以及 probe 前或进行中的 abort 都有真实 child-process fixture 覆盖。
 
-## 8. 后续 backlog
+## 8. 后续路线
 
-- OAuth 2.1 authorization server metadata、PKCE、dynamic client registration 和 Keychain token persistence。
-- resources/templates browse、read、subscribe/unsubscribe 及 host UI。
-- authenticated loopback MCP proxy，供受控 subprocess client 共享 pool。
-- per-server health/backoff/automatic crash recovery 与 finer-grained permission policy。
-- signed remote catalog、last-known-good cache、guided setup schema、package provenance 与 update permission diff。
+Post-V3 工作继续围绕 credential custody、resources/templates、受控 subprocess 复用、server health 与可信分发推进。具体完成状态和剩余交付只在 tracker 中维护，避免本文形成第二份会漂移的 checklist。
+
+跟踪：[MCP post-V3 roadmap #4329](https://github.com/apache/maka/issues/4329)

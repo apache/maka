@@ -22,6 +22,7 @@ import {
   requireEncodedByteLimit,
   requireEntityId,
   requireExactRecord,
+  requireOpaqueIdentity,
   requireShapedRecord,
   requireUtf8String,
 } from './codec.js';
@@ -112,6 +113,7 @@ export type AgentGraphRecordFacet =
   | 'permission_request'
   | 'permission_decision'
   | 'user_question_request'
+  | 'form_request'
   | 'transfer'
   | 'usage'
   | 'completed'
@@ -121,7 +123,10 @@ export type AgentGraphRecordFacet =
   | 'runtime_fact';
 
 export type AgentGraphSupervisorSignal =
-  | { readonly kind: 'attention'; readonly reason: 'permission_request' | 'user_question_request' }
+  | {
+      readonly kind: 'attention';
+      readonly reason: 'permission_request' | 'user_question_request' | 'form_request';
+    }
   | {
       readonly kind: 'terminal';
       readonly status: 'completed' | 'failed' | 'aborted' | 'cancelled';
@@ -1194,7 +1199,11 @@ function decodeSignal(value: unknown): AgentGraphSupervisorSignal {
   const record = requireShapedRecord(value, 'agent graph signal', ['kind'], ['reason', 'status']);
   if (record.kind === 'attention') {
     requireExactRecord(record, 'agent graph attention signal', ['kind', 'reason']);
-    if (record.reason !== 'permission_request' && record.reason !== 'user_question_request') {
+    if (
+      record.reason !== 'permission_request' &&
+      record.reason !== 'user_question_request' &&
+      record.reason !== 'form_request'
+    ) {
       throw invalidProtocolFrame('Invalid agent graph attention reason');
     }
     return { kind: record.kind, reason: record.reason };
@@ -1340,19 +1349,6 @@ function requireBoolean(value: unknown, label: string): boolean {
   return value;
 }
 
-function requireOpaqueIdentity(value: unknown, label: string): string {
-  if (
-    typeof value !== 'string' ||
-    value.length === 0 ||
-    value.length > 256 ||
-    value.trim() !== value ||
-    /[\u0000-\u001f\u007f]/.test(value)
-  ) {
-    throw invalidProtocolFrame(`Invalid ${label}`);
-  }
-  return value;
-}
-
 function requireFingerprint(value: unknown, label: string): `sha256:${string}` {
   if (typeof value !== 'string' || !/^sha256:[a-f0-9]{64}$/.test(value)) {
     throw invalidProtocolFrame(`Invalid ${label}`);
@@ -1429,6 +1425,7 @@ function requireFacet(value: unknown): AgentGraphRecordFacet {
     value === 'permission_request' ||
     value === 'permission_decision' ||
     value === 'user_question_request' ||
+    value === 'form_request' ||
     value === 'transfer' ||
     value === 'usage' ||
     value === 'completed' ||

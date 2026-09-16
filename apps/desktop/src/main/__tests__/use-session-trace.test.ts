@@ -31,9 +31,8 @@ import {
   createFakeWorkbarServices,
   TRACE_REFRESH_DEBOUNCE_MS,
   useSessionTrace,
-  WorkbarServicesProvider,
-  type WorkbarSessionTracePage,
-  type WorkbarSessionUsageSummary,
+  type SessionTracePage,
+  type SessionUsageSummary,
   type WorkbarServices,
 } from '../../renderer/features/workbar/testing.js';
 
@@ -62,7 +61,7 @@ function trace(sessionId: string): SessionTrace {
 function usageSummary(
   totalRequests = 0,
   totalCostUsd = 0,
-): WorkbarSessionUsageSummary {
+): SessionUsageSummary {
   return {
     range: { from: 0, to: 1 },
     totalRequests,
@@ -79,6 +78,7 @@ function usageSummary(
     cacheHitRequests: 0,
     cacheCreateRequests: 0,
     errorRequests: 0,
+    totalDurationMs: 0,
     provenance: {
       coverage: {
         attempts: totalRequests,
@@ -111,15 +111,15 @@ interface TraceHarness {
 
 function createTraceHarness(
   options: {
-    tracePages?: WorkbarSessionTracePage[];
+    tracePages?: SessionTracePage[];
     trace?: (
       sessionId: string,
       cursor?: string,
-    ) => Promise<Result<WorkbarSessionTracePage>>;
+    ) => Promise<Result<SessionTracePage>>;
     summary?: (
       sessionId: string,
       readIndex: number,
-    ) => Promise<Result<WorkbarSessionUsageSummary>>;
+    ) => Promise<Result<SessionUsageSummary>>;
   } = {},
 ): TraceHarness {
   const handlers = new Set<(event: SessionEvent) => void>();
@@ -146,7 +146,7 @@ function createTraceHarness(
       trace: async (
         sessionId: string,
         cursor?: string,
-      ): Promise<Result<WorkbarSessionTracePage>> => {
+      ): Promise<Result<SessionTracePage>> => {
         harness.reads.push(sessionId);
         harness.traceRequests.push({ sessionId, ...(cursor ? { cursor } : {}) });
         if (options.trace) return options.trace(sessionId, cursor);
@@ -212,20 +212,7 @@ function Probe(props: {
   onSnapshot?: (trace: SessionTrace | undefined) => void;
   onHookSnapshot?: (snapshot: ReturnType<typeof useSessionTrace>) => void;
 }) {
-  return createElement(
-    WorkbarServicesProvider,
-    { services: props.services },
-    createElement(TraceProbe, props),
-  );
-}
-
-function TraceProbe(props: {
-  sessionId?: string;
-  active: boolean;
-  onSnapshot?: (trace: SessionTrace | undefined) => void;
-  onHookSnapshot?: (snapshot: ReturnType<typeof useSessionTrace>) => void;
-}) {
-  const snapshot = useSessionTrace(props.sessionId, props.active, COPY);
+  const snapshot = useSessionTrace(props.sessionId, props.active, COPY, props.services.inspector);
   props.onSnapshot?.(snapshot.trace);
   props.onHookSnapshot?.(snapshot);
   return null;
@@ -235,7 +222,7 @@ function tracePage(
   sessionId: string,
   runId: string,
   nextCursor: string | null,
-): WorkbarSessionTracePage {
+): SessionTracePage {
   const startedAt = Number(runId.replace(/\D/g, ''));
   return {
     trace: {
@@ -458,6 +445,45 @@ describe('useSessionTrace', () => {
     );
   });
 
+  it('collapses all loaded earlier pages after reaching the oldest page', async () => {
+    const { root } = installReactRenderer();
+    const harness = createTraceHarness({
+      tracePages: [
+        tracePage('session-1', 'run-3', 'cursor-3'),
+        tracePage('session-1', 'run-2', null),
+      ],
+    });
+    let snapshot: ReturnType<typeof useSessionTrace> | undefined;
+    await act(async () => {
+      root.render(
+        createElement(Probe, {
+          services: harness.services,
+          sessionId: 'session-1',
+          active: true,
+          onHookSnapshot: (value) => {
+            snapshot = value;
+          },
+        }),
+      );
+    });
+
+    assert.equal(snapshot?.canHideEarlier, false);
+    await act(async () => snapshot?.loadEarlier());
+    assert.equal(snapshot?.canHideEarlier, true);
+    assert.deepEqual(
+      snapshot?.trace?.turns.map((turn) => turn.runId),
+      ['run-2', 'run-3'],
+    );
+
+    await act(async () => snapshot?.hideEarlier());
+    assert.equal(snapshot?.canHideEarlier, false);
+    assert.equal(snapshot?.nextCursor, 'cursor-3');
+    assert.deepEqual(
+      snapshot?.trace?.turns.map((turn) => turn.runId),
+      ['run-3'],
+    );
+  });
+
   it('rebuilds the loaded window when a run is inserted behind an unchanged head cursor', async () => {
     const { root } = installReactRenderer();
     const harness = createTraceHarness({
@@ -503,8 +529,8 @@ describe('useSessionTrace', () => {
 
   it('keeps the requested page depth when a head refresh supersedes load-earlier', async () => {
     const { root } = installReactRenderer();
-    let resolveEarlierPage: ((result: Result<WorkbarSessionTracePage>) => void) | undefined;
-    const earlierPage = new Promise<Result<WorkbarSessionTracePage>>((resolve) => {
+    let resolveEarlierPage: ((result: Result<SessionTracePage>) => void) | undefined;
+    const earlierPage = new Promise<Result<SessionTracePage>>((resolve) => {
       resolveEarlierPage = resolve;
     });
     let startReads = 0;
@@ -559,8 +585,8 @@ describe('useSessionTrace', () => {
 
   it('settles loading when load-earlier supersedes an in-flight retry', async () => {
     const { root } = installReactRenderer();
-    let resolveRetry: ((result: Result<WorkbarSessionTracePage>) => void) | undefined;
-    const retryPage = new Promise<Result<WorkbarSessionTracePage>>((resolve) => {
+    let resolveRetry: ((result: Result<SessionTracePage>) => void) | undefined;
+    const retryPage = new Promise<Result<SessionTracePage>>((resolve) => {
       resolveRetry = resolve;
     });
     let headReads = 0;

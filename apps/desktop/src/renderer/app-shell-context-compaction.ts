@@ -32,7 +32,7 @@ export interface ContextCompactionNotice {
 
 export function contextCompactionNotice(
   outcome: ContextCompactionOutcome,
-  uiLocale: UiLocale = 'en',
+  uiLocale: UiLocale,
 ): ContextCompactionNotice {
   const copy = getShellCopy(uiLocale).app;
   if (outcome.kind === 'compacted') {

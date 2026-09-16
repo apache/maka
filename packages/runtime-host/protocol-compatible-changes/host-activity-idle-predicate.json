@@ -1,0 +1,8 @@
+{
+  "epoch": 92,
+  "files": [
+    "packages/runtime-host/src/protocol/host-status.ts",
+    "packages/runtime-host/src/protocol/operations.ts"
+  ],
+  "reason": "Adds a shared non-wire Host activity predicate and export without changing any protocol codec or message shape"
+}

@@ -26,7 +26,8 @@ Use the narrowest deterministic check that covers the change, then add live-wind
 Run the desktop test suite for main-process, IPC, fixture, or contract changes:
 
 ```bash
-npm --workspace @maka/desktop test
+npm run build:test
+npm --workspace @maka/desktop run test:dist
 ```
 
 For a journey across renderer and main, extend the existing Playwright E2E suite and run:

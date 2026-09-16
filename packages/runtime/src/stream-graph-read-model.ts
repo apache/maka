@@ -941,6 +941,11 @@ function projectClientSessionEvent(
         facets: ['user_question_request'],
         signals: [{ kind: 'attention', reason: 'user_question_request' }],
       };
+    case 'form_request':
+      return {
+        facets: ['form_request'],
+        signals: [{ kind: 'attention', reason: 'form_request' }],
+      };
     case 'token_usage':
       return { facets: ['usage'], signals: [] };
     case 'error':

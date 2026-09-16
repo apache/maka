@@ -20,10 +20,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { LlmConnection } from '@maka/core/llm-connections';
-import {
-  createDesktopTaskSubmissionReadinessService,
-  resolveStoredModelTarget,
-} from '../task-submission-readiness-main.js';
+import { createDesktopTaskSubmissionReadinessService } from '../task-submission-readiness-main.js';
 
 test('keeps credential lookup failure unknown instead of inventing a repair failure', async () => {
   const service = createDesktopTaskSubmissionReadinessService({
@@ -77,24 +74,6 @@ test('passes an explicit slug to one model-target resolution without requiring a
   const snapshot = await service.getSnapshot({ connectionSlug: 'deleted' });
   assert.deepEqual(requestedSlugs, ['deleted']);
   assert.equal(snapshot.blockers[0]?.blockerCode, 'model_connection_missing');
-});
-
-test('resolves connection and default from one immutable catalog snapshot', async () => {
-  let reads = 0;
-  const resolution = await resolveStoredModelTarget(undefined, {
-    getSnapshot: async () => {
-      reads += 1;
-      return { defaultSlug: 'provider', connections: [connection()] };
-    },
-    hasCredential: async (candidate) => candidate.slug === 'provider',
-  });
-
-  assert.equal(reads, 1);
-  assert.equal(resolution.kind, 'resolved');
-  if (resolution.kind === 'resolved') {
-    assert.equal(resolution.connection.slug, 'provider');
-    assert.equal(resolution.hasSecret, true);
-  }
 });
 
 test('rejects malformed renderer input before reading stores', async () => {

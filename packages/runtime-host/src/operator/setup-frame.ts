@@ -19,11 +19,13 @@
 
 import { z } from 'zod';
 import { isCanonicalRuntimeHostWebSocketPath } from '../protocol/index.js';
+import { decodeRuntimeHostOperatorCommand } from './operator-command.js';
 
 export const RUNTIME_HOST_SETUP_FRAME_PREFIX = 'MAKA_RUNTIME_HOST_SETUP_V1 ';
 const SETUP_FRAME_MAX_BYTES = 32 * 1024;
 const SETUP_FIELD_MAX_BYTES = 1024;
 const SETUP_CREDENTIAL_MAX_BYTES = 8 * 1024;
+const SETUP_PEER_ADDRESS_MAX_BYTES = 2 * 1024;
 export const RUNTIME_HOST_SETUP_ERROR_CODE_MAX_BYTES = 128;
 export const RUNTIME_HOST_SETUP_ERROR_MESSAGE_MAX_BYTES = SETUP_FIELD_MAX_BYTES;
 const SETUP_PHASES = [
@@ -45,6 +47,28 @@ const frameBase = {
   schemaVersion: z.literal(1),
   sequence: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
 } as const;
+const environmentBindingFields = {
+  version: boundedString(128),
+  serviceId: z.string().regex(/^[a-f0-9]{64}$/u),
+  deploymentId: z.string().uuid(),
+  operator: z.unknown().transform((value, context) => {
+    try {
+      const command = decodeRuntimeHostOperatorCommand(value);
+      if (command.kind !== 'node') {
+        throw new Error('Runtime Host setup operator must be a Node command');
+      }
+      return command;
+    } catch (error) {
+      context.addIssue({
+        code: 'custom',
+        message: error instanceof Error ? error.message : 'Runtime Host operator is invalid',
+      });
+      return z.NEVER;
+    }
+  }),
+  rootPath: boundedString(4 * 1024).refine((value) => !/[\u0000-\u001f\u007f]/u.test(value)),
+  rootId: z.string().regex(/^[a-f0-9]{64}$/u),
+} as const;
 const SETUP_FRAME_SCHEMA = z.discriminatedUnion('kind', [
   z
     .object({
@@ -57,18 +81,27 @@ const SETUP_FRAME_SCHEMA = z.discriminatedUnion('kind', [
     .object({
       ...frameBase,
       kind: z.literal('complete'),
-      version: boundedString(128),
-      serviceId: z.string().regex(/^[a-f0-9]{64}$/u),
-      operatorPath: boundedString(4 * 1024).refine(
-        (value) => value.startsWith('/') && !/[\u0000-\u001f\u007f]/u.test(value),
-      ),
-      rootPath: boundedString(4 * 1024).refine((value) => !/[\u0000-\u001f\u007f]/u.test(value)),
-      rootId: z.string().regex(/^[a-f0-9]{64}$/u),
+      ...environmentBindingFields,
       endpoint: boundedString(SETUP_FIELD_MAX_BYTES).refine(
         (value) => parseRuntimeHostSetupEndpoint(value) !== undefined,
       ),
       credentialId: boundedString(SETUP_FIELD_MAX_BYTES),
       credential: boundedString(SETUP_CREDENTIAL_MAX_BYTES),
+      directPeer: z
+        .object({
+          peerId: boundedString(160),
+          routeHints: z.array(boundedString(SETUP_PEER_ADDRESS_MAX_BYTES)).max(16),
+          coordinationRelays: z.array(boundedString(SETUP_PEER_ADDRESS_MAX_BYTES)).max(16),
+        })
+        .strict()
+        .optional(),
+    })
+    .strict(),
+  z
+    .object({
+      ...frameBase,
+      kind: z.literal('existing_environment'),
+      ...environmentBindingFields,
     })
     .strict(),
   z

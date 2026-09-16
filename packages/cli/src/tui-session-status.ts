@@ -18,7 +18,12 @@
  */
 
 import type { SessionSummary } from '@maka/core/session';
-import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
+import {
+  defineUiMessageCatalog,
+  resolveUiMessageCatalog,
+  type UiLocale,
+} from '@maka/core/ui-locale';
+import { TUI_COPY_RESOURCES } from './tui-copy-catalog.js';
 
 interface TuiSessionStatusCopy {
   readonly running: string;
@@ -29,24 +34,9 @@ interface TuiSessionStatusCopy {
   readonly stopped: string;
 }
 
-const TUI_SESSION_STATUS_COPY = {
-  zh: {
-    running: '进行中',
-    waitingForUser: '等你确认',
-    permissionRequired: '需要权限',
-    connectionRequired: '需要连接',
-    signInRequired: '需要重新登录',
-    stopped: '已中止',
-  },
-  en: {
-    running: 'running',
-    waitingForUser: 'waiting for you',
-    permissionRequired: 'needs permission',
-    connectionRequired: 'needs connection',
-    signInRequired: 'needs sign-in',
-    stopped: 'stopped',
-  },
-} satisfies UiCatalog<TuiSessionStatusCopy>;
+const TUI_SESSION_STATUS_COPY = resolveUiMessageCatalog(
+  defineUiMessageCatalog<TuiSessionStatusCopy>()(TUI_COPY_RESOURCES['session-status']),
+);
 
 /**
  * Present the runtime Session state as compact picker copy.

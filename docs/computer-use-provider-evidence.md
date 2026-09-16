@@ -1,3 +1,15 @@
+---
+doc_id: computer-use-provider-evidence
+title: "Computer Use Provider Evidence"
+language: en
+source_language: en
+implementation_status: current
+document_status: current
+translation_status: source-only
+last_verified: 2026-09-11
+owners:
+  - maka-backend
+---
 <!--
   Licensed to the Apache Software Foundation (ASF) under one
   or more contributor license agreements.  See the NOTICE file
@@ -38,7 +50,7 @@ provider transports, or execution backends.
 
 ## Report Contract
 
-Reports separate three evidence classes:
+Reports separate four evidence classes:
 
 - `real-runtime`: a live provider model used the production Maka runtime;
 - `fault-injection`: a live provider and Runtime exercised a named injected
@@ -82,8 +94,10 @@ Qualification also keeps three fail-closed invariants:
 
 The old direct real-machine qualification runner was removed. The five-round
 restart runner remains available as `npm run computer-use -- restart-soak`,
-but is regression-only and cannot satisfy a provider matrix cell. There is one
-qualification path rather than parallel evidence standards.
+using the `MAKA_CU_AX_MODEL_LAB_ROOT` fixture checkout described in
+[Lab fixture setup](./computer-use-evidence-classes.md#lab-fixture-setup). The
+runner is regression-only and cannot satisfy a provider matrix cell. There is
+one qualification path rather than parallel evidence standards.
 
 ## Next Layer
 

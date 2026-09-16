@@ -33,7 +33,7 @@ jobs:
       github.event.pull_request.draft == false &&
       !endsWith(github.event.pull_request.user.login, '[bot]') &&
       !contains(github.event.pull_request.labels.*.name, 'copilot-skip')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
 
     steps:

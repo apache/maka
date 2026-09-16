@@ -23,9 +23,16 @@ import { normalizeSubagentSettings } from '../subagent-settings.js';
 import type {
   AgentRuntimeSettingsPatch,
   MutateRuntimePolicyInput,
+  NetworkProxyCredentialUpdate,
+  NetworkProxyCredentialTarget,
   RuntimePolicy,
   RuntimePolicyMutation,
+  UpdateNetworkProxyInput,
 } from '../runtime-policy.js';
+import {
+  decodeCredentialVersionBasis,
+  normalizeCredentialSecret,
+} from './credential-vault-codec.js';
 import { WEB_SEARCH_PROVIDERS } from '../web-search.js';
 import {
   assertCanonicalValue,
@@ -61,7 +68,7 @@ export function decodeRuntimePolicyV2(value: unknown): RuntimePolicy {
     normalizeSubagentSettings(policy.subagents),
     { preference: 'auto', executable: '' },
   );
-  assertCanonicalValue(value, withoutShell(decoded), 'runtime policy v2');
+  assertCanonicalValue(value, withoutExternalAgents(withoutShell(decoded)), 'runtime policy v2');
   return decoded;
 }
 
@@ -71,6 +78,99 @@ export function normalizeRuntimePolicyMutation(value: unknown): MutateRuntimePol
   return {
     expectedRevision: revisionValue(input.expectedRevision, 'runtime policy expected revision'),
     operation: normalizeMutationOperation(operation),
+  };
+}
+
+export function normalizeNetworkProxyUpdate(value: unknown): UpdateNetworkProxyInput {
+  const input = exactRecord(value, 'network proxy update', [
+    'expectedPolicyRevision',
+    'expectedCredential',
+    'networkProxy',
+    'credential',
+  ]);
+  const expectedCredential =
+    input.expectedCredential === null
+      ? null
+      : decodeCredentialVersionBasis(input.expectedCredential);
+  if (expectedCredential !== null && expectedCredential.locator.scope !== 'network_proxy') {
+    throw domainError('network proxy update requires a network proxy credential basis');
+  }
+  const credential = normalizeNetworkProxyCredentialUpdate(input.credential);
+  const networkProxy = normalizeNetworkProxy(input.networkProxy);
+  if (!networkProxy.authEnabled && credential.kind !== 'delete') {
+    throw domainError('disabled proxy authentication requires credential deletion');
+  }
+  return {
+    expectedPolicyRevision: revisionValue(
+      input.expectedPolicyRevision,
+      'network proxy expected policy revision',
+    ),
+    expectedCredential,
+    networkProxy,
+    credential,
+  };
+}
+
+function normalizeNetworkProxyCredentialUpdate(value: unknown): NetworkProxyCredentialUpdate {
+  const base = exactRecord(
+    value,
+    'network proxy credential update',
+    ['kind', 'secret', 'expectedTarget'],
+    ['kind'],
+  );
+  switch (base.kind) {
+    case 'keep':
+    case 'delete': {
+      exactRecord(value, `network proxy credential ${base.kind}`, ['kind']);
+      return { kind: base.kind };
+    }
+    case 'replace': {
+      const replacement = exactRecord(
+        value,
+        'network proxy credential replacement',
+        ['kind', 'secret', 'expectedTarget'],
+        ['kind', 'secret'],
+      );
+      return {
+        kind: 'replace',
+        secret: normalizeCredentialSecret(replacement.secret),
+        ...(replacement.expectedTarget === undefined
+          ? {}
+          : {
+              expectedTarget: normalizeNetworkProxyCredentialTarget(replacement.expectedTarget),
+            }),
+      };
+    }
+    default:
+      throw domainError(`network proxy credential update '${String(base.kind)}' is unknown`);
+  }
+}
+
+export function normalizeNetworkProxyCredentialTarget(
+  value: unknown,
+): NetworkProxyCredentialTarget {
+  const item = exactRecord(value, 'network proxy credential target', [
+    'protocol',
+    'host',
+    'port',
+    'username',
+  ]);
+  if (item.protocol !== 'http' && item.protocol !== 'https' && item.protocol !== 'socks5') {
+    throw domainError('network proxy credential target protocol is invalid');
+  }
+  const rawHost = stringValue(item.host, 'network proxy credential target host', 255);
+  if (/[\u0000-\u001f\u007f-\u009f]/.test(rawHost)) {
+    throw domainError('network proxy credential target host must not contain control characters');
+  }
+  const host = rawHost.trim().toLowerCase();
+  if (host.length === 0) {
+    throw domainError('network proxy credential target host must not be empty');
+  }
+  return {
+    protocol: item.protocol,
+    host,
+    port: integerValue(item.port, 'network proxy credential target port', 1, 65_535),
+    username: stringValue(item.username, 'network proxy credential target username', 256),
   };
 }
 
@@ -85,11 +185,13 @@ function normalizeRuntimePolicy(value: unknown): RuntimePolicy {
     'webSearch',
     'subagents',
     'shell',
+    'externalAgents',
   ]);
   return normalizeRuntimePolicyFields(
     policy,
     normalizeSubagentSettings(policy.subagents),
     normalizeShell(policy.shell),
+    normalizeExternalAgents(policy.externalAgents),
   );
 }
 
@@ -97,6 +199,7 @@ function normalizeRuntimePolicyFields(
   policy: Record<string, unknown>,
   subagents: RuntimePolicy['subagents'],
   shell: RuntimePolicy['shell'],
+  externalAgents: RuntimePolicy['externalAgents'] = { antigravity: { executable: '' } },
 ): RuntimePolicy {
   return {
     networkProxy: normalizeNetworkProxy(policy.networkProxy),
@@ -108,6 +211,7 @@ function normalizeRuntimePolicyFields(
     webSearch: normalizeWebSearch(policy.webSearch),
     subagents,
     shell,
+    externalAgents,
   };
 }
 
@@ -134,6 +238,8 @@ function normalizeMutationOperation(operation: Record<string, unknown>): Runtime
       return { kind: operation.kind, value: normalizeWebSearch(operation.value) };
     case 'set_subagents':
       return { kind: operation.kind, value: normalizeSubagentSettings(operation.value) };
+    case 'set_external_agents':
+      return { kind: operation.kind, value: normalizeExternalAgents(operation.value) };
     case 'set_shell':
       return { kind: operation.kind, value: normalizeShell(operation.value) };
     case 'patch_agent_settings':
@@ -302,7 +408,7 @@ function normalizeChatDefaults(value: unknown): RuntimePolicy['chatDefaults'] {
   const item = exactRecord(
     value,
     'chat defaults',
-    ['permissionMode', 'thinkingLevel'],
+    ['permissionMode', 'thinkingLevel', 'codeModeEnabled'],
     ['permissionMode'],
   );
   if (!(CHAT_DEFAULT_PERMISSION_MODES as readonly unknown[]).includes(item.permissionMode)) {
@@ -311,8 +417,12 @@ function normalizeChatDefaults(value: unknown): RuntimePolicy['chatDefaults'] {
   if (item.thinkingLevel !== undefined && !isThinkingLevel(item.thinkingLevel)) {
     throw domainError('chat default thinking level is invalid');
   }
+  if (item.codeModeEnabled !== undefined && typeof item.codeModeEnabled !== 'boolean') {
+    throw domainError('chat default code mode is invalid');
+  }
   return {
     permissionMode: item.permissionMode as RuntimePolicy['chatDefaults']['permissionMode'],
+    ...(item.codeModeEnabled === true ? { codeModeEnabled: true } : {}),
     ...(item.thinkingLevel === undefined ? {} : { thinkingLevel: item.thinkingLevel }),
   };
 }
@@ -326,4 +436,40 @@ function normalizeWebSearch(value: unknown): RuntimePolicy['webSearch'] {
     enabled: booleanValue(item.enabled, 'web search enabled'),
     defaultProvider: item.defaultProvider as RuntimePolicy['webSearch']['defaultProvider'],
   };
+}
+
+/** Read the previous document without loosening the current wire decoder. */
+export function decodeRuntimePolicyV3(value: unknown): RuntimePolicy {
+  const old = exactRecord(value, 'runtime policy v3', [
+    'networkProxy',
+    'personalization',
+    'memory',
+    'workspaceInstructions',
+    'privacy',
+    'chatDefaults',
+    'webSearch',
+    'subagents',
+    'shell',
+  ]);
+  return decodeCanonicalRuntimePolicy({
+    ...old,
+    externalAgents: { antigravity: { executable: '' } },
+  });
+}
+
+function withoutExternalAgents<T extends { externalAgents: RuntimePolicy['externalAgents'] }>(
+  policy: T,
+): Omit<T, 'externalAgents'> {
+  const { externalAgents: _externalAgents, ...legacy } = policy;
+  return legacy;
+}
+
+function normalizeExternalAgents(value: unknown): RuntimePolicy['externalAgents'] {
+  const agents = exactRecord(value, 'external agents', ['antigravity']);
+  const agent = exactRecord(agents.antigravity, 'Antigravity', ['executable']);
+  const executable = stringValue(agent.executable, 'Antigravity executable', 4096);
+  if (executable !== '' && (!executable.startsWith('/') || /[\x00-\x1f]/u.test(executable))) {
+    throw domainError('Antigravity executable must be an absolute macOS path');
+  }
+  return { antigravity: { executable } };
 }

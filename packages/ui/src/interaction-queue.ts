@@ -17,10 +17,31 @@
  * under the License.
  */
 
-import type { ActiveInteractionRequestEvent } from '@maka/core/events';
+import type {
+  ActiveInteractionRequestEvent,
+  ClientCapabilityRequestEvent,
+  FormRequestEvent,
+  SandboxBoundaryRequestEvent,
+  SessionEvent,
+  UserQuestionRequestEvent,
+} from '@maka/core/events';
 
-export type ComposerInteraction = ActiveInteractionRequestEvent;
+/** Requests this surface can render and settle itself. */
+export type ComposerInteraction =
+  | SandboxBoundaryRequestEvent
+  | ClientCapabilityRequestEvent
+  | UserQuestionRequestEvent
+  | FormRequestEvent;
 export type InteractionQueues = Record<string, ComposerInteraction[]>;
+
+function isComposerInteraction(event: ActiveInteractionRequestEvent): event is ComposerInteraction {
+  return (
+    event.type === 'sandbox_boundary_request' ||
+    event.type === 'client_capability_request' ||
+    event.type === 'user_question_request' ||
+    event.type === 'form_request'
+  );
+}
 
 export function enqueueInteraction(
   queues: InteractionQueues,
@@ -52,9 +73,37 @@ export function dequeueInteractionByToolUseId(
   return { ...queues, [sessionId]: queue.filter((interaction) => interaction.toolUseId !== toolUseId) };
 }
 
-export function clearInteractions(queues: InteractionQueues, sessionId: string): InteractionQueues {
+export function clearInteractions(queues: InteractionQueues, sessionId: string, turnId?: string): InteractionQueues {
   if (!queues[sessionId]?.length) return queues;
-  return { ...queues, [sessionId]: [] };
+  const retained = turnId ? queues[sessionId]!.filter((interaction) => interaction.turnId !== turnId) : [];
+  return retained.length === queues[sessionId]!.length ? queues : { ...queues, [sessionId]: retained };
+}
+
+export function reduceInteractionQueues(
+  queues: InteractionQueues,
+  sessionId: string,
+  event: SessionEvent,
+): InteractionQueues {
+  switch (event.type) {
+    case 'sandbox_boundary_request':
+    case 'client_capability_request':
+    case 'user_question_request':
+    case 'form_request':
+      return enqueueInteraction(queues, sessionId, event);
+    case 'sandbox_boundary_decision_ack':
+    case 'client_capability_decision_ack':
+    case 'user_question_answer_ack':
+    case 'form_answer_ack':
+      return dequeueInteractionByRequestId(queues, sessionId, event.requestId);
+    case 'tool_result':
+      return dequeueInteractionByToolUseId(queues, sessionId, event.toolUseId);
+    case 'error':
+    case 'abort':
+    case 'complete':
+      return clearInteractions(queues, sessionId, event.turnId);
+    default:
+      return queues;
+  }
 }
 
 /**
@@ -65,9 +114,10 @@ export function clearInteractions(queues: InteractionQueues, sessionId: string):
 export function reconcileInteractions(
   queues: InteractionQueues,
   sessionId: string,
-  liveRequests: readonly ComposerInteraction[],
+  liveRequests: readonly ActiveInteractionRequestEvent[],
 ): InteractionQueues {
-  const liveById = new Map(liveRequests.map((request) => [request.requestId, request]));
+  const visibleRequests = liveRequests.filter(isComposerInteraction);
+  const liveById = new Map(visibleRequests.map((request) => [request.requestId, request]));
   const seen = new Set<string>();
   const reconciled: ComposerInteraction[] = [];
   for (const interaction of queues[sessionId] ?? []) {
@@ -76,7 +126,7 @@ export function reconcileInteractions(
     seen.add(interaction.requestId);
     reconciled.push(live);
   }
-  for (const request of liveRequests) {
+  for (const request of visibleRequests) {
     if (!seen.has(request.requestId)) reconciled.push(request);
   }
   return { ...queues, [sessionId]: reconciled };

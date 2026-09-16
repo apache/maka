@@ -966,6 +966,9 @@ function readCapabilities(value: unknown): MakaCuCapabilities {
   return {
     captureStream: record.captureStream,
     elementActions: readStringArray(record.elementActions, 'capabilities.elementActions'),
+    // Keep validating the complete maka.cu/2 handshake even though Maka no
+    // longer dispatches point actions. An older or future executor must not be
+    // allowed to change the closed protocol shape silently.
     pointActions: readStringArray(record.pointActions, 'capabilities.pointActions'),
     keyActions: readStringArray(record.keyActions, 'capabilities.keyActions'),
     imageFormats: readStringArray(record.imageFormats, 'capabilities.imageFormats'),

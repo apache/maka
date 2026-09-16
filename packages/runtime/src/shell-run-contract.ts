@@ -46,7 +46,6 @@ export const DEFAULT_MAX_LIVE_PTY_RUNS = 8;
 export const DEFAULT_SHELL_RUN_FLUSH_INTERVAL_MS = 1_000;
 export const DEFAULT_SHELL_RUN_FLUSH_BYTES = 64 * 1024;
 export const DEFAULT_PIPE_OUTPUT_DRAIN_MS = 2_000;
-export const SHELL_RUN_CONTEXT_SUMMARY_LIMIT = 8;
 export const SHELL_RUN_RESOURCE_PREFIX = 'maka://runtime/background-tasks';
 export const MAX_SHELL_RUN_RESOURCE_REF_CHARS =
   SHELL_RUN_RESOURCE_PREFIX.length + 1 + SHELL_RUN_ID_MAX_CHARS;
@@ -90,6 +89,8 @@ export interface ShellRunBashInput {
   sourceRunId?: string;
   sourceTurnId: string;
   sourceToolCallId: string;
+  /** User-owned terminals stay outside model context summaries. */
+  visibility?: 'model' | 'user';
   cwd: string;
   command: string;
   /** Final executable argv. When present, bypasses host-shell parsing. */
@@ -115,6 +116,8 @@ export interface ShellRunWriteInput {
   actions?: readonly TerminalInputAction[];
   size?: { cols: number; rows: number };
   abortSignal?: AbortSignal;
+  /** Client control may reach user-owned resources; model tools may not. */
+  caller?: 'model' | 'client';
 }
 
 export interface ShellRunPtyDataEvent {
@@ -145,6 +148,7 @@ export interface BackgroundTaskStopper {
     sessionId: string,
     ref: string,
     abortSignal: AbortSignal,
+    caller?: 'model' | 'client',
   ): Promise<ToolResultContent>;
 }
 

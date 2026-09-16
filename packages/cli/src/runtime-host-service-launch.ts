@@ -86,12 +86,14 @@ export async function validateRuntimeHostServiceLaunch(
       realpath(config.launch.cliPath),
     ]);
     const [node, cli] = await Promise.all([stat(nodePath), stat(cliPath)]);
-    if (!node.isFile() || !cli.isFile()) throw new Error('Launch path is not a file');
+    if (!node.isFile() || !cli.isFile()) {
+      throw new Error('Launch path is not a file');
+    }
     await Promise.all([access(nodePath, constants.X_OK), access(cliPath, constants.R_OK)]);
   } catch (error) {
     throw new RuntimeHostServiceManagerError(
       'invalid_launch',
-      'The configured Node.js or Maka CLI installation is unavailable',
+      'A configured Runtime Host launch file is unavailable',
       { cause: error },
     );
   }

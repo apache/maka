@@ -19,6 +19,7 @@
 
 import type { ToolResultContent } from '@maka/core/events';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
+import { compatibilityToolResultProjection } from '@maka/runtime/durable-tool-result-projection';
 import type { ExecutionRuntimeEventWriter } from '@maka/storage/execution-stores';
 
 const OUTCOME_UNKNOWN_TEXT =
@@ -43,6 +44,14 @@ export async function recoverClientCapabilityOutcomes(
           retrySafe: false,
         },
       } as const satisfies ToolResultContent;
+      const responseContent = {
+        kind: 'function_response' as const,
+        id: operation.providerToolCallId,
+        name: operation.toolName,
+        result,
+        isError: true as const,
+      };
+      const modelProjection = compatibilityToolResultProjection(responseContent, sessionId);
       const runtimeEvent: RuntimeEvent = {
         id: `${operation.operationId}_response`,
         invocationId: operation.invocationId,
@@ -53,13 +62,7 @@ export async function recoverClientCapabilityOutcomes(
         partial: false,
         role: 'tool',
         author: 'tool',
-        content: {
-          kind: 'function_response',
-          id: operation.providerToolCallId,
-          name: operation.toolName,
-          result,
-          isError: true,
-        },
+        content: { ...responseContent, ...(modelProjection ? { modelProjection } : {}) },
         refs: {
           operationId: operation.operationId,
           toolCallId: operation.providerToolCallId,

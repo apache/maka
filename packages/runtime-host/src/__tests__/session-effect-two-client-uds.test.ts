@@ -77,6 +77,8 @@ test('two Clients share one durable Session recap effect', async () => {
         readSessionHeader: async () =>
           ({ isArchived: false, status: 'active' }) as unknown as SessionHeader,
         sessionAdmission: new SessionAdmissionGate(),
+        nameSessionIfUnnamed: async () => assert.fail('this Host only serves recap effects'),
+        onSessionNamed: () => assert.fail('this Host only serves recap effects'),
         acquireResidency: () => context.acquireResidency('session-effect'),
         requestDrain: context.requestDrain,
       });
@@ -86,7 +88,7 @@ test('two Clients share one durable Session recap effect', async () => {
           ...coordinator.handlers,
         },
         beginDrain: () => coordinator.beginDrain(),
-        recover: () => artifacts.recover(),
+        recover: async () => {},
         close: async () => {
           await coordinator.close();
           artifacts.close();

@@ -25,6 +25,9 @@ import {
   composerWireText,
   createTriggerSearchSource,
   isChatInputComposing,
+  selectedSkillIds,
+  skillMentionQuery,
+  slashCommandQuery,
 } from '../chat-input-behavior.js';
 
 describe('shared chat input behavior', () => {
@@ -112,6 +115,38 @@ describe('shared chat input behavior', () => {
     assert.deepEqual(states, ['drop', null]);
   });
 
+  // The `/` trigger serves two catalogs from one menu. A Skill matches wherever
+  // the trigger is legal, a command only when the slash opens the draft's first
+  // token — otherwise `请看 /Users/me` and `修一下 /compact` would both read as
+  // an instruction to run something.
+  it('offers commands only for a slash that opens the draft', () => {
+    // Caret right after a leading `/`, then after four typed characters.
+    assert.equal(slashCommandQuery('/', '', ''), '');
+    assert.equal(slashCommandQuery('/comp', '', 'comp'), 'comp');
+    // Leading whitespace is still an empty first token.
+    assert.equal(slashCommandQuery('  /comp', '', 'comp'), 'comp');
+    // A slash later in the draft is prose or a path, never a command.
+    assert.equal(slashCommandQuery('explain /', '', ''), null);
+    assert.equal(slashCommandQuery('first line\n/', '', ''), null);
+    // `/skill:` is the explicit Skill grammar and addresses no command.
+    assert.equal(slashCommandQuery('/skill:compact', '', 'skill:compact'), null);
+    assert.equal(slashCommandQuery('/SKILL:compact', '', 'SKILL:compact'), null);
+    // Text after the caret means the user is editing inside a word, not
+    // starting a command — `/side` with the caret between `/` and `side`.
+    assert.equal(slashCommandQuery('/', 'side', ''), null);
+    // A space after the caret is not text the command would swallow.
+    assert.equal(slashCommandQuery('/comp', ' tail', 'comp'), 'comp');
+    // The query must actually sit against the trigger the menu reports.
+    assert.equal(slashCommandQuery('comp', '', 'comp'), null);
+  });
+
+  it('reads `/skill:<query>` and a bare `/<query>` as the same Skill search', () => {
+    assert.equal(skillMentionQuery('skill:comp'), 'comp');
+    assert.equal(skillMentionQuery('SKILL:Comp'), 'Comp');
+    assert.equal(skillMentionQuery('comp'), 'comp');
+    assert.equal(skillMentionQuery('skill:'), '');
+  });
+
   it('does not let late completion clear state after reset', async () => {
     const states: Array<string | null> = [];
     const owner = createChatInputActionOwner<string>((action) => states.push(action));
@@ -121,5 +156,25 @@ describe('shared chat input behavior', () => {
     release();
     await action;
     assert.deepEqual(states, ['drop']);
+  });
+
+  it('recognizes selected Skill ids independently of labels, case and chip anchors', () => {
+    const draft = '/skill:Writer\u00a0/skill:writer-extra\n/skill:writer /';
+    assert.deepEqual(selectedSkillIds(draft, ''), new Set(['writer', 'writer-extra']));
+    assert.deepEqual(selectedSkillIds('path/skill:writer https://example/skill:writer /', ''), new Set());
+  });
+
+  it('excludes only the active explicit Skill query, not another occurrence of that Skill', () => {
+    assert.deepEqual(selectedSkillIds('/skill:writer', 'skill:writer'), new Set());
+    assert.deepEqual(selectedSkillIds('/skill:writer\u00a0 /skill:Writer', 'skill:Writer'), new Set(['writer']));
+    assert.deepEqual(selectedSkillIds('/skill:writer /skill:wri', 'skill:wri'), new Set(['writer']));
+    assert.deepEqual(selectedSkillIds('/skill:writer /SKILL:writer', 'SKILL:writer'), new Set(['writer']));
+  });
+
+  it('derives selection from each draft without retaining deleted or previous-session Skills', () => {
+    assert.deepEqual(selectedSkillIds('/skill:writer /', ''), new Set(['writer']));
+    assert.deepEqual(selectedSkillIds('/', ''), new Set());
+    assert.deepEqual(selectedSkillIds('/skill:reviewer /', ''), new Set(['reviewer']));
+    assert.deepEqual(selectedSkillIds('/skill:writer /', ''), new Set(['writer']));
   });
 });

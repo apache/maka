@@ -30,7 +30,7 @@
 
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
-import { DEEP_RESEARCH_SESSION_LABEL } from '@maka/core/explore-agent';
+import { DEEP_RESEARCH_SESSION_LABEL } from '@maka/core/deep-research';
 
 import { DEFAULT_SESSION_NAME } from '@maka/core/session-name';
 

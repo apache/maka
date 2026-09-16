@@ -53,6 +53,7 @@ function session(): SessionSummary {
     lastMessagePreview: '查一下 PR #3526 相关的 session。',
     status: 'running',
     backend: 'ai-sdk',
+    llmConnectionId: 'connection-anthropic-main',
     llmConnectionSlug: 'anthropic-main',
     connectionLocked: false,
     model: 'claude-sonnet-4-5',
@@ -62,6 +63,7 @@ function session(): SessionSummary {
 
 const modelChoices: ChatModelChoice[] = [
   {
+    connectionId: 'connection-anthropic-main',
     connectionSlug: 'anthropic-main',
     providerType: 'anthropic',
     providerLabel: 'Anthropic',

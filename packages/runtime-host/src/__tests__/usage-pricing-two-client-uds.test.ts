@@ -17,6 +17,16 @@
  * under the License.
  */
 
+import { assertMaximalJsonPages } from './fixtures/json-pages.js';
+import {
+  USAGE_PAGE_MAX_BYTES,
+  USAGE_PAGE_MAX_ITEMS,
+  PRICING_PAGE_MAX_BYTES,
+  PRICING_PAGE_MAX_ITEMS,
+  type UsageQueryResult,
+} from '../protocol/index.js';
+
+import { deferred } from '@maka/core/test-only/async-primitives';
 import { defineInteractiveRuntimeHostComposition } from '../server/host-composition.js';
 import assert from 'node:assert/strict';
 import { lstat, mkdtemp, rename, rm } from 'node:fs/promises';
@@ -30,6 +40,7 @@ import {
 import type { PricingConfig } from '@maka/core/usage-stats/types';
 import { BUILTIN_PRICING } from '@maka/runtime/telemetry';
 import { openInteractiveUsageStoresForWrite } from '@maka/storage/usage-stores';
+import { SessionNotFoundError } from '@maka/storage/session-store';
 import {
   resolveRootControlNamespace,
   resolveStorageRoot,
@@ -292,6 +303,151 @@ test('pricing root identity failure requests drain while expected failures do no
     );
     assert.equal(drainRequests, 1);
     await rename(movedRoot, root);
+  });
+});
+
+test('usage logs carry the Host-resolved session title and tolerate unreadable sessions', async () => {
+  await withUsageAuthority('session-title', async ({ stores }) => {
+    await Promise.all([
+      stores.telemetry.recordLlmCall({
+        ...usageRecord('llm-named', 10, 'openai', 'gpt-a'),
+        sessionId: 'session-named',
+        turnId: 'turn-1',
+      }),
+      stores.telemetry.recordLlmCall({
+        ...usageRecord('llm-blank', 11, 'openai', 'gpt-a'),
+        sessionId: 'session-blank',
+        turnId: 'turn-2',
+      }),
+      stores.telemetry.recordLlmCall({
+        ...usageRecord('llm-missing', 12, 'openai', 'gpt-a'),
+        sessionId: 'session-missing',
+        turnId: 'turn-3',
+      }),
+      stores.telemetry.recordToolInvocation({
+        ...toolRecord('tool-a', 13),
+        sessionId: 'session-named',
+      }),
+    ]);
+    const titles = new Map([
+      // Leading/trailing whitespace must be trimmed; a blank title is not a title.
+      ['session-named', '  重构使用统计页请求日志的任务列  '],
+      ['session-blank', '   '],
+    ]);
+    const coordinator = new HostUsagePricingCoordinator(
+      stores,
+      () => {},
+      new RuntimePolicyActivationGate(),
+      () => {},
+      async (sessionId) => {
+        // A genuinely missing session is tolerated: its row stays untitled.
+        if (sessionId === 'session-missing') throw new SessionNotFoundError('session-missing');
+        return titles.get(sessionId);
+      },
+    );
+
+    const llm = await coordinator.handlers['usage.query'](
+      { kind: 'logs', source: 'llm', query: { range: 'all' }, offset: 0, limit: 100 },
+      CONNECTION_CONTEXT,
+    );
+    assert.ok(llm.ok);
+    assert.equal(llm.result.kind, 'logs');
+    if (llm.result.kind !== 'logs' || llm.result.source !== 'llm')
+      throw new Error('expected llm logs');
+    const llmById = new Map(llm.result.rows.map((row) => [row.id, row]));
+    assert.equal(llmById.get('llm-named')?.sessionTitle, '重构使用统计页请求日志的任务列');
+    // Whitespace-only title is dropped; the row stays untitled and the UI falls back.
+    assert.equal(llmById.get('llm-blank')?.sessionTitle, undefined);
+    // A genuinely missing session is tolerated — one missing session never blanks the rest.
+    assert.equal(llmById.get('llm-missing')?.sessionTitle, undefined);
+    assert.equal(llmById.get('llm-named')?.sessionId, 'session-named');
+
+    const tool = await coordinator.handlers['usage.query'](
+      { kind: 'logs', source: 'tool', query: { range: 'all' }, offset: 0, limit: 100 },
+      CONNECTION_CONTEXT,
+    );
+    assert.ok(tool.ok);
+    if (tool.result.kind !== 'logs' || tool.result.source !== 'tool')
+      throw new Error('expected tool logs');
+    assert.equal(
+      tool.result.rows.find((row) => row.id === 'tool-a')?.sessionTitle,
+      '重构使用统计页请求日志的任务列',
+    );
+  });
+});
+
+test('a connection-scoped summary omits the tool split instead of sending an unscoped one', async () => {
+  await withUsageAuthority('summary-slug-omission', async ({ stores }) => {
+    await Promise.all([
+      stores.telemetry.recordLlmCall({
+        ...usageRecord('llm-slug', 30, 'openai', 'gpt-a'),
+        connectionSlug: 'openai',
+      }),
+      stores.telemetry.recordToolInvocation(toolRecord('tool-slug', 31)),
+    ]);
+    const coordinator = new HostUsagePricingCoordinator(
+      stores,
+      () => {},
+      new RuntimePolicyActivationGate(),
+      () => {},
+      async () => undefined,
+    );
+
+    // Tool rows predate connection attribution, so a connectionSlug-filtered
+    // query cannot scope them; the summary omits the split rather than let the
+    // tool ring quietly contradict the model totals beside it.
+    const scoped = await coordinator.handlers['usage.query'](
+      { kind: 'summary', query: { range: 'all', connectionSlug: 'openai' } },
+      CONNECTION_CONTEXT,
+    );
+    assert.ok(scoped.ok);
+    if (scoped.result.kind !== 'summary') throw new Error('expected summary');
+    assert.equal(scoped.result.summary.toolUsage, undefined);
+    assert.equal(scoped.result.summary.totalRequests, 1);
+
+    const unscoped = await coordinator.handlers['usage.query'](
+      { kind: 'summary', query: { range: 'all' } },
+      CONNECTION_CONTEXT,
+    );
+    assert.ok(unscoped.ok);
+    if (unscoped.result.kind !== 'summary') throw new Error('expected summary');
+    assert.deepEqual(unscoped.result.summary.toolUsage, { requests: 1, durationMs: 12 });
+  });
+});
+
+test('a non–not-found title read failure propagates out of usage.query instead of blanking the row', async () => {
+  await withUsageAuthority('session-title-failure', async ({ stores }) => {
+    await stores.telemetry.recordLlmCall({
+      ...usageRecord('llm-live', 20, 'openai', 'gpt-a'),
+      sessionId: 'session-live',
+      turnId: 'turn-1',
+    });
+    const coordinator = new HostUsagePricingCoordinator(
+      stores,
+      () => {},
+      new RuntimePolicyActivationGate(),
+      () => {},
+      // The production reader is SessionStore.readHeaderSnapshot. A closed
+      // metadata store rejects with exactly this generic error — not a
+      // usage-store lifecycle type — so it classifies as `unknown` and must
+      // reach #queryUsage's failure mapping rather than be swallowed into an
+      // untitled row.
+      async () => {
+        throw new Error('SQLite session metadata store is closed');
+      },
+    );
+
+    // Not swallowed: the read failure propagates rather than yielding a
+    // false-success page. (A genuinely draining host is caught earlier by the
+    // primary usage read; this narrow case is a session store that fails on its
+    // own, which surfaces instead of masking the problem.)
+    await assert.rejects(
+      coordinator.handlers['usage.query'](
+        { kind: 'logs', source: 'llm', query: { range: 'all' }, offset: 0, limit: 100 },
+        CONNECTION_CONTEXT,
+      ),
+      /SQLite session metadata store is closed/,
+    );
   });
 });
 
@@ -753,6 +909,7 @@ async function readPricing(client: RuntimeHostConnection): Promise<{
     await client.request('pricing.query', { kind: 'start' }, REQUEST_TIMEOUT_MS),
   );
   const entries = [...first.entries];
+  const pages = [first];
   let nextOffset = first.nextOffset;
   let pageCount = 1;
   while (nextOffset !== null) {
@@ -765,10 +922,22 @@ async function readPricing(client: RuntimeHostConnection): Promise<{
     );
     assert.equal(page.revision, first.revision);
     assert.equal(page.offset, nextOffset);
+    assert.ok(page.entries.length > 0);
     entries.push(...page.entries);
+    pages.push(page);
     nextOffset = page.nextOffset;
     pageCount += 1;
   }
+  assertMaximalJsonPages(pages, entries, {
+    maxBytes: PRICING_PAGE_MAX_BYTES,
+    maxItems: PRICING_PAGE_MAX_ITEMS,
+    items: (page) => page.entries,
+    candidate: (page, items, end) => ({
+      ...page,
+      entries: items,
+      nextOffset: end < entries.length ? end : null,
+    }),
+  });
   return { revision: first.revision, entries, pageCount };
 }
 
@@ -813,18 +982,6 @@ function requirePricingPage(
   if (result.kind !== 'page') throw new Error('Pricing revision changed during page read');
   return result;
 }
-
-function deferred(): {
-  readonly promise: Promise<void>;
-  resolve(): void;
-} {
-  let resolve!: () => void;
-  const promise = new Promise<void>((settle) => {
-    resolve = settle;
-  });
-  return { promise, resolve };
-}
-
 function usageRecord(
   id: string,
   ts: number,
@@ -918,4 +1075,123 @@ async function withUsageAuthority(
     });
     await rm(base, { recursive: true, force: true });
   }
+}
+
+test('Usage bucket pages account for provenance and preserve every group across byte-limited pages', async () => {
+  await withUsageAuthority('bucket-pages', async ({ stores }) => {
+    const providers = Array.from(
+      { length: 60 },
+      (_, index) => `provider-${String(index).padStart(3, '0')}-${'文'.repeat(270)}`,
+    );
+    for (const [index, provider] of providers.entries()) {
+      await stores.telemetry.recordLlmCall(
+        usageRecord(`usage-${index}`, index, provider, 'test-model'),
+      );
+    }
+    const coordinator = new HostUsagePricingCoordinator(
+      stores,
+      () => {},
+      new RuntimePolicyActivationGate(),
+    );
+    const pages: Extract<UsageQueryResult, { kind: 'buckets' }>[] = [];
+    let offset = 0;
+    do {
+      const outcome = await coordinator.handlers['usage.query'](
+        {
+          kind: 'buckets',
+          query: { range: 'all' },
+          groupBy: 'provider',
+          offset,
+          limit: USAGE_PAGE_MAX_ITEMS,
+        },
+        CONNECTION_CONTEXT,
+      );
+      assert.ok(outcome.ok && outcome.result.kind === 'buckets');
+      const page = outcome.result;
+      assert.equal(page.offset, offset);
+      assert.equal(page.total, providers.length);
+      assert.ok(page.buckets.length > 0);
+      pages.push(page);
+      offset += page.buckets.length;
+      assert.equal(page.nextOffset, offset < providers.length ? offset : null);
+      if (page.nextOffset === null) break;
+    } while (offset < providers.length);
+    const items = pages.flatMap((page) => page.buckets);
+    assert.deepEqual(items.map((item) => item.key).sort(), [...providers].sort());
+    assert.ok(pages.length > 1);
+    assertMaximalJsonPages(pages, items, {
+      maxBytes: USAGE_PAGE_MAX_BYTES,
+      maxItems: USAGE_PAGE_MAX_ITEMS,
+      items: (page) => page.buckets,
+      candidate: (page, buckets, end) => ({
+        ...page,
+        buckets,
+        nextOffset: end < items.length ? end : null,
+      }),
+    });
+  });
+});
+
+for (const source of ['llm', 'tool'] as const) {
+  test(`${source} Usage log pages preserve byte-limited continuations with the source-specific header`, async () => {
+    await withUsageAuthority(`${source}-log-pages`, async ({ stores }) => {
+      const ids = Array.from(
+        { length: 60 },
+        (_, index) => `${source}-${String(index).padStart(3, '0')}`,
+      );
+      for (const [index, id] of ids.entries()) {
+        if (source === 'llm') {
+          await stores.telemetry.recordLlmCall(
+            usageRecord(id, index, '文'.repeat(270), '模'.repeat(270)),
+          );
+        } else {
+          await stores.telemetry.recordToolInvocation({
+            ...toolRecord(id, index),
+            argsSummary: '文"\\🙂'.repeat(110),
+            toolName: '具'.repeat(270),
+          });
+        }
+      }
+      const coordinator = new HostUsagePricingCoordinator(
+        stores,
+        () => {},
+        new RuntimePolicyActivationGate(),
+      );
+      const pages: Extract<UsageQueryResult, { kind: 'logs' }>[] = [];
+      let offset = 0;
+      do {
+        const outcome = await coordinator.handlers['usage.query'](
+          { kind: 'logs', source, query: { range: 'all' }, offset, limit: USAGE_PAGE_MAX_ITEMS },
+          CONNECTION_CONTEXT,
+        );
+        assert.ok(outcome.ok && outcome.result.kind === 'logs');
+        const page = outcome.result;
+        assert.equal(page.source, source);
+        assert.equal('provenance' in page, source === 'llm');
+        assert.equal(page.offset, offset);
+        assert.equal(page.total, ids.length);
+        assert.ok(page.rows.length > 0);
+        pages.push(page);
+        offset += page.rows.length;
+        assert.equal(page.nextOffset, offset < ids.length ? offset : null);
+        if (page.nextOffset === null) break;
+      } while (offset < ids.length);
+      const items = pages.flatMap((page) => [...page.rows]);
+      assert.deepEqual(
+        items.map((item) => item.id),
+        [...ids].reverse(),
+      );
+      assert.ok(pages.length > 1);
+      assertMaximalJsonPages(pages, items, {
+        maxBytes: USAGE_PAGE_MAX_BYTES,
+        maxItems: USAGE_PAGE_MAX_ITEMS,
+        items: (page) => page.rows,
+        candidate: (page, rows, end) => ({
+          ...page,
+          rows,
+          nextOffset: end < items.length ? end : null,
+        }),
+      });
+    });
+  });
 }

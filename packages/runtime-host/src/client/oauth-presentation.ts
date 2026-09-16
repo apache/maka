@@ -48,7 +48,7 @@ export function createOAuthPresentationClientProvider(
       assertOAuthPresentationContract(frame);
       const request = decodeOAuthPresentationRequest(frame.method, frame.input);
       const url = trustedPresentationUrl(request.url);
-      await options.accept();
+      await options.accept({ kind: 'none' });
       await backend.openExternal(url, request.stateHint, options.signal);
       return decodeOAuthPresentationResult(request.method, { kind: 'presented' });
     },

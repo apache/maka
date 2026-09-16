@@ -83,7 +83,12 @@ function input() {
     executionId: ID,
     session: {
       workspace: { kind: 'host_path' as const, path: '/workspace' },
-      modelTarget: { kind: 'explicit' as const, connectionSlug: 'env-openai', model: 'model' },
+      modelTarget: {
+        kind: 'explicit' as const,
+        connectionId: 'connection-1',
+        connectionSlug: 'env-openai',
+        model: 'model',
+      },
     },
     content: { text: 'solve' },
   };

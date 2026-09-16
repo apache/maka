@@ -21,6 +21,42 @@
 
 The Electron desktop app: `main` (Node/Electron main process) + `preload` (context bridge) + `renderer` (React UI). This file covers the three-layer split and the IPC contract. For build/test commands and the test-layer selection guide, see the top-level `README.md`; for the renderer interior, see `src/renderer/README.md`.
 
+## Managed HTML Artifact previews
+
+Generated Files → the HTML file's menu → **Open in default app** opens a
+Desktop-owned HTTP snapshot in the system browser. The session-bound
+`ArtifactPreview({ artifactId })` tool prepares the same kind of endpoint for
+browser tools without starting a shell server or relaxing the `file://` policy.
+Save As and Show in Folder still export the original, unrestricted file.
+
+Snapshots support self-contained interactive HTML: inline scripts/styles and
+embedded images/fonts. A response CSP sandbox blocks same-origin authority,
+fetch requests, remote subresources, forms, frames and popups. This is not an
+OS network sandbox: an external browser can still navigate away from the
+document. Referenced workspace files are not served. Use Save As for documents
+requiring external resources.
+
+Each snapshot gets its own loopback port and a 256-bit bearer URL. Do not share
+the URL. There is no directory listing, CORS access, persistent disk copy or
+cache. The server checks the exact Host and path, accepts GET/HEAD only, caps
+each snapshot at 8 MiB and reserves at most 16 concurrent snapshots. Listeners
+and memory are released after 30 minutes, on Artifact deletion through the
+Desktop, on host-target retirement, or when the app exits. A remote Host's
+Artifact is streamed to the Desktop through the existing authenticated client;
+the resulting URL belongs to the Desktop machine, not the Host's localhost.
+
+`reachable: true` is evidence that a bounded Desktop HTTP probe succeeded.
+`loaded: false` deliberately does **not** assert browser rendering. An OS
+launch success also does not prove page load; browser observation is required
+before reporting that the page loaded or its interaction worked (#5235).
+
+Focused regression checks (build workspace dependencies first):
+
+```sh
+npm run build:main --workspace apps/desktop
+node --test apps/desktop/dist/main/__tests__/managed-artifact-preview.test.js apps/desktop/dist/main/__tests__/runtime-host-artifacts-ipc-main.test.js
+```
+
 ## macOS development permissions
 
 `npm run dev` and `npm start` use the plain Electron executable on every
@@ -139,7 +175,7 @@ Sub-folders hold OS-facing implementations such as `browser/`, `computer-use/`, 
 Three patterns, all rooted in preload's `maka` namespace. Channel names are `<domain>:<action>`.
 
 - **Request/response** — `ipcRenderer.invoke('<domain>:<action>', …args)` in preload ↔ `ipcMain.handle('<domain>:<action>', …)`. Runtime domains are projected by `runtime-host-*-ipc-main.ts`; OS-facing client domains use a focused `*-ipc-main.ts` module.
-- **Main→renderer push** — main sends through the safe-send guard (`safeSendToRenderer` via `mainWindowController.send`), not raw `webContents.send` (which throws when the window/`webContents` is destroyed); preload subscribes via `ipcRenderer.on` and returns an unsubscribe fn (e.g. `sessions:changed`, `scheduled-tasks:changed`, `artifacts:changed`). The safe-send contract test scans a fixed list of main-source files for direct `mainWindow.webContents.send(...)` forms — new `*-ipc-main.ts` files aren't auto-covered, so route sends through the guard in every new file (an alias for `mainWindow` can bypass the literal scan).
+- **Main→renderer push** — main sends through the safe-send guard (`safeSendToRenderer` via `mainWindowController.send`), not raw `webContents.send` (which throws when the window/`webContents` is destroyed); preload subscribes via `ipcRenderer.on` and returns an unsubscribe fn (e.g. `sessions:changed`, `scheduled-tasks:changed`). The guard checks both the `BrowserWindow` and its `webContents` before delivery. Route every new main-window push through it.
 - **Renderer→main fire-and-forget** — `ipcRenderer.send('<domain>:<action>', …)` in preload ↔ `ipcMain.on('<domain>:<action>', …)`. Used when no response is needed (e.g. `browser:active-session`, `browser:setViewport`).
 
 Adding a new IPC surface: if extracting, write the `*-ipc-main.ts` exporting a `register*Ipc(...)`, import it in `main.ts`, and call it inside `registerIpc()`; add the matching method to the `maka` namespace in `preload.ts`; add the method to the `window.maka` type in `src/global.d.ts` (the renderer's typed bridge — without it, renderer calls get a TS error); keep the `<domain>:<action>` channel naming. A handler file that isn't registered in `registerIpc()` compiles but never mounts.

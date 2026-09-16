@@ -23,6 +23,7 @@ import { Layout, LayoutContent, LayoutFooter } from '@astryxdesign/core/Layout';
 import { Banner, Button, useUiLocale } from '@maka/ui';
 import { FitAddon } from '@xterm/addon-fit';
 import { Terminal } from '@xterm/xterm';
+import { getTerminalFontSize, subscribeTerminalFontSize } from '../theme';
 import type {
   DesktopRuntimeHostSshTerminalEvent,
   DesktopRuntimeHostSshTerminalSnapshot,
@@ -139,7 +140,7 @@ export function RuntimeHostSshTerminalDialog() {
     const terminal = new Terminal({
       cursorBlink: true,
       fontFamily: 'Geist Mono Variable, ui-monospace, SFMono-Regular, Menlo, monospace',
-      fontSize: 12,
+      fontSize: getTerminalFontSize(),
       lineHeight: 1.2,
       screenReaderMode: true,
       scrollback: 2_000,
@@ -164,6 +165,10 @@ export function RuntimeHostSshTerminalDialog() {
     };
     const observer = new ResizeObserver(resize);
     observer.observe(host);
+    const unsubscribeFontSize = subscribeTerminalFontSize((size) => {
+      terminal.options.fontSize = size;
+      resize();
+    });
     const input = terminal.onData((data) => {
       const sessionId = sessionIdRef.current;
       if (sessionId) {
@@ -178,6 +183,7 @@ export function RuntimeHostSshTerminalDialog() {
     });
     return () => {
       observer.disconnect();
+      unsubscribeFontSize();
       input.dispose();
       terminalRef.current = undefined;
       terminal.dispose();

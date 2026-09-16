@@ -19,7 +19,7 @@
 
 import { useEffect, useRef } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import { expect, userEvent, within } from 'storybook/test';
+import { expect, userEvent, waitFor, within } from 'storybook/test';
 import { ToolCallDetail, ToolTrow } from '../src/tool-activity.js';
 import type { ToolActivityItem } from '../src/materialize.js';
 import {
@@ -235,28 +235,30 @@ export const ContiguousDiffGroup: Story = {
 
 const longIntentItems: ToolActivityItem[] = [
   {
-    toolUseId: 'explore-agent-long-intent',
-    toolName: 'ExploreAgent',
-    displayName: '只读探索',
+    toolUseId: 'grep-long-intent',
+    toolName: 'Grep',
+    displayName: 'Search repository',
     activityKind: 'tool',
     status: 'completed',
-    intent: '审计模型选择、切换、持久化、event log、replay/resume 路径：当前模型事实由谁持有，何时切换，是否已有事件或消息可表达',
-    args: {},
+    intent:
+      '审计模型选择、切换、持久化、event log、replay/resume 路径：当前模型事实由谁持有，何时切换，是否已有事件或消息可表达',
+    args: { pattern: 'model|replay|resume', path: 'packages' },
   },
   {
-    toolUseId: 'explore-agent-long-intent-2',
-    toolName: 'ExploreAgent',
-    displayName: '只读探索',
+    toolUseId: 'grep-long-intent-2',
+    toolName: 'Grep',
+    displayName: 'Search repository',
     activityKind: 'tool',
     status: 'completed',
-    intent: '审计提示词构筑与缓存路径：追踪 durable system prompt、turnTailPrompt、provider-visible messages 与 request shape',
-    args: {},
+    intent:
+      '审计提示词构筑与缓存路径：追踪 durable system prompt、provider-visible messages 与 request shape',
+    args: { pattern: 'systemPrompt|requestShape', path: 'packages' },
   },
 ];
 
-// Regression path: a narrow conversation contains a grouped ExploreAgent run
-// whose intent summaries are much wider than the reading column. Expanding the
-// group must truncate those rows without widening the turn itself.
+// Regression path: a narrow conversation contains a grouped tool run whose
+// intent summaries are much wider than the reading column. Expanding the group
+// must truncate those rows without widening the turn itself.
 export const LongIntentGroupNarrow: Story = {
   args: { items: longIntentItems },
   render: (args) => (
@@ -274,6 +276,15 @@ export const LongIntentGroupNarrow: Story = {
     );
     expect(disclosure).not.toBeNull();
     await userEvent.click(disclosure!);
+    await waitFor(() => expect(disclosure).toHaveAttribute('aria-expanded', 'true'));
+    expect(getComputedStyle(disclosure!).position).toBe('static');
+    const callRow = group!.querySelector<HTMLElement>(
+      ':scope > [role="button"] + div [role="button"][aria-expanded="false"]',
+    );
+    expect(callRow).not.toBeNull();
+    await userEvent.click(callRow!);
+    await waitFor(() => expect(callRow).toHaveAttribute('aria-expanded', 'true'));
+    expect(getComputedStyle(callRow!).position).toBe('static');
     const rows = Array.from(group!.querySelectorAll<HTMLElement>('[role="button"]'));
     expect(Math.max(...rows.map((row) => row.getBoundingClientRect().width))).toBeLessThanOrEqual(
       turn.clientWidth + 8,

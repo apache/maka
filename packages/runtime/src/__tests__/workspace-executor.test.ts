@@ -19,11 +19,11 @@
 
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, truncate, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, truncate, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { expect } from '../test-helpers.js';
 import { LocalWorkspaceExecutor } from '../workspace-executor.js';
+import { createBoundaryFilesystemExecutor } from '../filesystem-executor.js';
 
 const ONE_PIXEL_IMAGES = [
   [
@@ -55,17 +55,19 @@ describe('LocalWorkspaceExecutor exec', () => {
       emitOutput: (stream, chunk) => events.push({ stream, chunk }),
     });
 
-    expect(result).toMatchObject({
+    assert.partialDeepStrictEqual(result, {
       exitCode: 0,
       stdout: 'from-cwd',
       stderr: 'err-data',
     });
-    expect(
+    assert.strictEqual(
       events.some((event) => event.stream === 'stdout' && event.chunk.includes('from-cwd')),
-    ).toBe(true);
-    expect(
+      true,
+    );
+    assert.strictEqual(
       events.some((event) => event.stream === 'stderr' && event.chunk.includes('err-data')),
-    ).toBe(true);
+      true,
+    );
   });
 
   test('reports non-zero exit without throwing so tools can preserve their own error contract', async () => {
@@ -78,13 +80,13 @@ describe('LocalWorkspaceExecutor exec', () => {
       timeoutMs: 5_000,
     });
 
-    expect(result).toMatchObject({
+    assert.partialDeepStrictEqual(result, {
       exitCode: 7,
       stdout: 'out-data',
       stderr: 'err-data',
     });
-    expect(result.timedOut).toBe(false);
-    expect(result.aborted).toBe(false);
+    assert.strictEqual(result.timedOut, false);
+    assert.strictEqual(result.aborted, false);
   });
 
   test('runs argv commands without routing through the host shell', async () => {
@@ -103,7 +105,7 @@ describe('LocalWorkspaceExecutor exec', () => {
       timeoutMs: 5_000,
     });
 
-    expect(result).toMatchObject({
+    assert.partialDeepStrictEqual(result, {
       exitCode: 0,
       stdout: 'literal $HOME && ok',
       stderr: '',
@@ -120,9 +122,9 @@ describe('LocalWorkspaceExecutor exec', () => {
       timeoutMs: 200,
     });
 
-    expect(result.exitCode).toBe(124);
-    expect(result.timedOut).toBe(true);
-    expect(result.stdout).toBe('before-timeout');
+    assert.strictEqual(result.exitCode, 124);
+    assert.strictEqual(result.timedOut, true);
+    assert.strictEqual(result.stdout, 'before-timeout');
   });
 
   test('reports abort with captured output', async () => {
@@ -139,10 +141,10 @@ describe('LocalWorkspaceExecutor exec', () => {
     setTimeout(() => controller.abort(), 100);
     const result = await resultPromise;
 
-    expect(result.exitCode).toBe(130);
-    expect(result.aborted).toBe(true);
-    expect(result.timedOut).toBe(false);
-    expect(result.stdout).toBe('before-abort');
+    assert.strictEqual(result.exitCode, 130);
+    assert.strictEqual(result.aborted, true);
+    assert.strictEqual(result.timedOut, false);
+    assert.strictEqual(result.stdout, 'before-abort');
   });
 });
 
@@ -157,8 +159,8 @@ describe('LocalWorkspaceExecutor file operations', () => {
       await writeFile(file, bytes);
       const result = await executor.readFile({ cwd, path: file });
       if (!('bytes' in result)) throw new Error('expected image result');
-      expect(result.mimeType).toBe(mimeType);
-      expect([...result.bytes]).toEqual([...bytes]);
+      assert.strictEqual(result.mimeType, mimeType);
+      assert.deepStrictEqual([...result.bytes], [...bytes]);
     }
   });
 
@@ -171,7 +173,7 @@ describe('LocalWorkspaceExecutor file operations', () => {
     const result = await executor.readFile({ cwd, path: file, offset: 1, limit: 1 });
 
     if (!('bytes' in result)) throw new Error('expected image result');
-    expect([...result.bytes]).toEqual([...ONE_PIXEL_PNG]);
+    assert.deepStrictEqual([...result.bytes], [...ONE_PIXEL_PNG]);
   });
 
   test('rejects extension-only and over-limit image files', async () => {
@@ -201,13 +203,13 @@ describe('LocalWorkspaceExecutor file operations', () => {
     const writeResult = await executor.writeFile({ cwd, path: file, content: 'hello' });
     const readResult = await executor.readFile({ cwd, path: file });
 
-    expect(writeResult).toMatchObject({
+    assert.partialDeepStrictEqual(writeResult, {
       ok: true,
       path: file,
       bytes: 5,
     });
-    expect(readResult).toMatchObject({ content: 'hello' });
-    expect(await readFile(file, 'utf8')).toBe('hello');
+    assert.partialDeepStrictEqual(readResult, { content: 'hello' });
+    assert.strictEqual(await readFile(file, 'utf8'), 'hello');
   });
 
   test('applies read offset and limit at the executor boundary', async () => {
@@ -218,7 +220,7 @@ describe('LocalWorkspaceExecutor file operations', () => {
 
     const readResult = await executor.readFile({ cwd, path: file, offset: 1, limit: 2 });
 
-    expect(readResult).toMatchObject({ content: 'line2\nline3' });
+    assert.partialDeepStrictEqual(readResult, { content: 'line2\nline3' });
   });
 
   test('globs files from the provided cwd with a result cap', async () => {
@@ -231,7 +233,9 @@ describe('LocalWorkspaceExecutor file operations', () => {
 
     const result = await executor.globFiles({ cwd, pattern: 'src/*.*', limit: 2 });
 
-    expect(result.files).toEqual(['src/a.ts', 'src/b.ts']);
+    assert.equal(result.files.length, 2);
+    assert.equal(new Set(result.files).size, 2);
+    assert.ok(result.files.every((file) => ['src/a.ts', 'src/b.ts', 'src/c.js'].includes(file)));
   });
 
   test('greps file contents with rg-compatible no-match behavior', async () => {
@@ -265,12 +269,154 @@ describe('LocalWorkspaceExecutor file operations', () => {
       timeoutMs: 5_000,
     });
 
-    expect(hit.matches).toEqual([
+    assert.deepStrictEqual(hit.matches, [
       `${join(cwd, 'src', 'main.ts')}:1:export const token = 1; // --flag`,
     ]);
-    expect(miss).toMatchObject({ matches: [] });
-    expect(optionLikePattern.matches).toEqual([
+    assert.deepStrictEqual((miss as { matches: string[] }).matches, []);
+    assert.deepStrictEqual(optionLikePattern.matches, [
       `${join(cwd, 'src', 'main.ts')}:1:export const token = 1; // --flag`,
     ]);
   });
+
+  test('reports a missing ripgrep as grep_unavailable with an install hint (#5167)', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'maka-workspace-grep-no-rg-'));
+    const emptyBin = await mkdtemp(join(tmpdir(), 'maka-workspace-grep-empty-path-'));
+    const executor = new LocalWorkspaceExecutor({ rgCandidates: [] });
+
+    await withPath(emptyBin, () =>
+      assert.rejects(
+        executor.grepFiles({
+          cwd,
+          pattern: 'token',
+          path: cwd,
+          maxCountPerFile: 50,
+          limit: 200,
+          timeoutMs: 5_000,
+        }),
+        (error: NodeJS.ErrnoException) => {
+          assert.equal(error.code, 'grep_unavailable');
+          assert.match(error.message, /ripgrep/);
+          assert.match(error.message, /BurntSushi\/ripgrep/);
+          assert.match(error.message, /then retry/);
+          return true;
+        },
+      ),
+    );
+  });
+
+  test('keeps a missing working directory distinct from a missing ripgrep', async () => {
+    // Node reports a missing spawn cwd exactly like a missing executable
+    // (`spawn rg ENOENT`), so the command name alone cannot tell them apart.
+    const parent = await mkdtemp(join(tmpdir(), 'maka-workspace-grep-gone-cwd-'));
+    const cwd = join(parent, 'deleted');
+    await mkdir(cwd);
+    await writeFile(join(parent, 'kept.ts'), 'token', 'utf8');
+    await rm(cwd, { recursive: true });
+    const executor = new LocalWorkspaceExecutor();
+
+    await assert.rejects(
+      executor.grepFiles({
+        cwd,
+        pattern: 'token',
+        path: parent,
+        maxCountPerFile: 50,
+        limit: 200,
+        timeoutMs: 5_000,
+      }),
+      (error: NodeJS.ErrnoException) => {
+        assert.equal(error.code, 'ENOENT');
+        assert.notEqual(error.name, 'RipgrepUnavailableError');
+        return true;
+      },
+    );
+  });
+
+  test('a bypass Grep finds ripgrep installed after Host startup outside its inherited PATH', {
+    skip: process.platform === 'win32' ? 'POSIX executable fixture' : false,
+  }, async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'maka-workspace-bypass-grep-'));
+    const emptyBin = await mkdtemp(join(tmpdir(), 'maka-workspace-bypass-old-path-'));
+    const localAppData = await mkdtemp(join(tmpdir(), 'maka-workspace-bypass-local-app-data-'));
+    try {
+      const executable = join(localAppData, 'Microsoft', 'WinGet', 'Links', 'rg.exe');
+      const filesystem = createBoundaryFilesystemExecutor({
+        workspace: new LocalWorkspaceExecutor({
+          platform: 'win32',
+          hostEnv: { PATH: emptyBin, LOCALAPPDATA: localAppData },
+        }),
+      });
+      const request = {
+        operation: {
+          kind: 'grep' as const,
+          pattern: 'token',
+          path: cwd,
+          maxCountPerFile: 50,
+          limit: 200,
+          timeoutMs: 5_000,
+        },
+        cwd,
+        executionBoundary: { kind: 'bypass' as const, revision: 1 },
+      };
+
+      await withPath(emptyBin, async () => {
+        await assert.rejects(filesystem.execute(request), { code: 'grep_unavailable' });
+
+        await mkdir(join(localAppData, 'Microsoft', 'WinGet', 'Links'), { recursive: true });
+        await writeFile(
+          executable,
+          `#!/bin/sh\nprintf '%s\\n' '{"type":"summary","data":{"stats":{"matched_lines":0}}}'\n`,
+          'utf8',
+        );
+        await chmod(executable, 0o755);
+
+        assert.deepEqual(await filesystem.execute(request), {
+          kind: 'grep',
+          matches: [],
+          matchedLines: 0,
+          returnedLines: 0,
+          omittedLines: 0,
+          truncated: false,
+        });
+      });
+    } finally {
+      await Promise.all(
+        [cwd, emptyBin, localAppData].map((path) => rm(path, { recursive: true, force: true })),
+      );
+    }
+  });
+
+  test('leaves other spawn failures, such as a non-executable rg, untouched', {
+    skip: process.platform === 'win32' ? 'POSIX execute permissions' : false,
+  }, async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'maka-workspace-grep-eacces-'));
+    const bin = await mkdtemp(join(tmpdir(), 'maka-workspace-grep-noexec-bin-'));
+    await writeFile(join(bin, 'rg'), '#!/bin/sh\n', 'utf8');
+    await chmod(join(bin, 'rg'), 0o644);
+    const executor = new LocalWorkspaceExecutor({ rgCandidates: [join(bin, 'rg')] });
+
+    await withPath(bin, () =>
+      assert.rejects(
+        executor.grepFiles({
+          cwd,
+          pattern: 'token',
+          path: cwd,
+          maxCountPerFile: 50,
+          limit: 200,
+          timeoutMs: 5_000,
+        }),
+        { code: 'EACCES' },
+      ),
+    );
+  });
 });
+
+async function withPath<T>(path: string, run: () => Promise<T>): Promise<T> {
+  const original = process.env.PATH;
+  process.env.PATH = path;
+  try {
+    return await run();
+  } finally {
+    if (original === undefined) delete process.env.PATH;
+    else process.env.PATH = original;
+  }
+}

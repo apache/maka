@@ -42,9 +42,8 @@ export class AgentGraphProviderScenario {
 
   respond(body: Record<string, unknown>, reply: AgentGraphProviderReply): void {
     const names = toolNames(body);
-    // The graph child's exact surface: its read-only allowlist plus the archive
-    // decoder every session that archives now carries (#2026).
-    if (names.join(',') === 'ArchiveRead,Glob,Grep,Read') {
+    // Read covers both files and the child's Session-scoped tool results.
+    if (names.join(',') === 'Glob,Grep,Read') {
       assert.equal(this.#childCompleted, false, 'Graph child provider request was repeated');
       this.#childCompleted = true;
       reply.text(this.childResultText);
@@ -140,7 +139,11 @@ export class AgentGraphProviderScenario {
           requireRecord(output.execution, 'agent output execution').kind,
           'child_session',
         );
-        assert.equal(requireRecord(output.header, 'agent output header').status, 'completed');
+        const invocation = requireRecord(output.invocation, 'agent output invocation');
+        assert.equal(
+          requireRecord(invocation.terminalEvent, 'agent output terminal event').status,
+          'completed',
+        );
         const result = requireRecord(output.result, 'agent output payload');
         assert.equal(result.status, 'completed');
         assert.equal(result.text, this.childResultText);

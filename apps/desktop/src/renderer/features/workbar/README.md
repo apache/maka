@@ -27,7 +27,12 @@ remounted when the active session changes.
 ## Dependency direction
 
 - Consumers import production APIs from `features/workbar`.
-- Tests and stories may additionally import `features/workbar/testing`.
+- Node test suites may additionally import `features/workbar/testing`.
+- Storybook may additionally import `features/workbar/stories`, which exposes
+  `WorkbarSurface`. It stays out of the production entry because `workbar-host`
+  reaches the surface through `lazy()`, and out of `testing` because that entry
+  is loaded by `node --test` against tsc output while the surface and its tool
+  panels use extensionless relative specifiers only a bundler resolves.
 - Workbar may use shared renderer primitives, core types and Maka UI.
 - Workbar must not import shell composition, Desktop bridge, or main-process implementation.
 - Desktop I/O enters through `WorkbarServices`; tool code does not read
@@ -47,21 +52,37 @@ remounted when the active session changes.
 
 ## Lifecycle invariants
 
-- Review, Tasks, Browser, Files and Inspector tabs are persisted globally.
-- Terminal and Side Chat tabs, preview state and resource metadata are
-  transient.
+- Review, Work Board, Browser, Files and Inspector tabs are persisted globally.
+- Terminal and Side Chat tabs and their resource metadata are transient.
 - `WORKBAR_TOOL_DEFINITIONS` is the authority for persistence, singleton
-  behavior and default placement; storage and controller code consume it
-  rather than maintaining parallel kind lists.
-- Closing or leaving the owner session stops Terminal resources.
-- A Terminal start is tagged with its source generation. If it resolves after
-  a Session switch or controller disposal, the returned resource is stopped
-  immediately and never enters the tab topology.
-- Terminal ownership is registered as soon as `start` returns, before the tab
-  state commits. Host projection excludes resources owned by another Session,
-  so a Session switch cannot briefly reattach an old Terminal.
+  behavior, default placement, icon and shortcut; storage, controller and UI
+  code consume it rather than maintaining parallel kind lists.
+- A face is opened and closed only from the strip's `[+]` menu, which lists
+  every registered tool and marks the open ones. Tabs carry no close control:
+  `Tab` renders `endContent` inside its own `<button>`, so a per-tab close
+  would nest a button in a button. Tabs are never reordered, so the strip's
+  order is the order the faces were opened in.
+- Host Sessions own Terminal processes. Switching Sessions, collapsing a panel,
+  or disposing a window never stops them; disposal releases xterm and its control
+  connection. Explicit close removes a tab only after Host confirms Stop.
+- Main's Host target owns pending and uncertain Close intents across renderer
+  and connection replacement. A successful Stop closes the exact owner/ref in
+  the current topology; a failed attempt remains available for explicit retry.
+  No Close history or terminal contents are persisted for recovery.
+- Activation and reconnect restore live desktop Terminal entries from Host.
+  Presentation is transient and reconstructible, never the resource inventory.
+  Recovery preserves panel visibility and selection, and excludes inherited,
+  completed, and model-created resources. Late start results stay with Host if
+  their requesting view has disappeared.
+- Natural completion detaches live controls and subscriptions but may retain
+  the current local xterm picture until its view closes. Late output can be
+  lost; completion does not promise a final output snapshot or replay.
+- Removing a Session from the authoritative catalog retires its Terminal views.
+  Host owns admission of Session retirement while processes are live.
 - Side Chat survives panel collapse and is cleaned only when its tab closes or
   when navigation leaves its source session.
+- Fork creation hides the internal Session until cleanup succeeds. Catalog
+  absence does not confirm cleanup because a snapshot may predate creation.
 - Disposed Side Chat operations are fenced at every fork/send boundary; a late
   fork is cleaned and a late send cannot write back into an abandoned panel.
 - Inactive tabs stay mounted; their hooks receive the existing active/hidden

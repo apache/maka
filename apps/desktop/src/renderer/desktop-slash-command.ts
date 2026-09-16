@@ -18,6 +18,7 @@
  */
 
 import { parseGraphCommand, type ParsedGraphCommand } from '@maka/core/graph-command';
+import type { SlashCommandSpec } from '@maka/core/slash-command-catalog';
 import { parseSwarmCommand, type ParsedSwarmCommand } from '@maka/core/swarm-command';
 import { parseSideChatCommand, type SideChatCommand } from './side-chat-command.js';
 
@@ -36,4 +37,18 @@ export function parseDesktopSlashCommand(input: string): DesktopSlashCommand | n
   if (graph) return { kind: 'graph', command: graph };
   const swarm = parseSwarmCommand(input);
   return swarm ? { kind: 'swarm', command: swarm } : null;
+}
+
+/**
+ * Which catalog commands the Desktop composer offers in the state it is in.
+ * `/compact` rewrites the context the running Turn is still reading from, so it
+ * is withheld while a stream is live; every other command only needs a Session
+ * to act on.
+ */
+export function desktopSlashCommandAvailability(state: {
+  hasSession: boolean;
+  streaming: boolean;
+}): (command: Pick<SlashCommandSpec, 'id' | 'session'>) => boolean {
+  return ({ id, session }) =>
+    (session === 'none' || state.hasSession) && !(state.streaming && id === 'compact');
 }

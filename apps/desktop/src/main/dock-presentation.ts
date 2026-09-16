@@ -17,15 +17,21 @@
  * under the License.
  */
 
+import type { WindowRevealMode } from './window-reveal.js';
+
 /**
  * What the macOS dock should show for this run.
  *
  * Its own module, free of an `electron` import, so the rule can be tested
  * without launching Electron. The branch this replaced lived inside
  * `app.whenReady()` and keyed off a re-derivation of the start-hidden
- * condition that had already drifted from the real one — it missed the
- * `MAKA_E2E_SHOW_WINDOW` escape hatch, so a window a developer explicitly
- * asked to see still launched as an accessory app.
+ * condition that had already drifted from the real one.
+ *
+ * Keyed off the run's reveal mode, not off "does a window appear": an E2E run
+ * that asks for a visible window (`MAKA_E2E_SHOW_WINDOW`) wants pixels, not
+ * the foreground — the compositor throttles a hidden window and geometry
+ * assertions need a real layout, and neither needs a dock tile. Only a real
+ * `active` run gets one.
  *
  *  - `hide`: run as an accessory app. No dock tile, no dock bounce, and it
  *    never becomes frontmost, so a capture or E2E run cannot steal focus from
@@ -37,8 +43,8 @@
  */
 export function resolveDockPresentation(
   platform: NodeJS.Platform,
-  startHidden: boolean,
+  revealMode: WindowRevealMode,
 ): 'hide' | 'icon' | 'none' {
   if (platform !== 'darwin') return 'none';
-  return startHidden ? 'hide' : 'icon';
+  return revealMode === 'active' ? 'icon' : 'hide';
 }

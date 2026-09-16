@@ -24,7 +24,6 @@ import type { MakaTool } from '@maka/runtime/tool-runtime';
 const ACTIONS_WITHOUT_OBSERVATION_OWNERSHIP = new Set([
   'list_apps',
   'wait',
-  'cursor_position',
 ]);
 
 export interface ComputerUseRealModelPolicy {

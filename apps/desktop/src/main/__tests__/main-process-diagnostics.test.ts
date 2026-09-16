@@ -32,11 +32,13 @@ import {
   MAIN_PROCESS_DIAGNOSTIC_LOG_MAX_BYTES,
   mainProcessLogBuffer,
   parseDesktopDiagnosticInput,
+  type DesktopDiagnosticChannel,
 } from '../main-process-diagnostics.js';
 
 const environment = {
   appVersion: '0.1.8',
   buildMode: 'dev' as const,
+  updateChannel: 'dev' as const,
   buildCommit: 'a'.repeat(40),
   electronVersion: '38.0.0',
   nodeVersion: '22.0.0',
@@ -59,6 +61,7 @@ const runtimeHostDiagnostics = {
   connections: 1,
   activeOperations: 1,
   activeResidencies: 0,
+  upgradeBlockingActivity: true,
   residencies: [],
   protocolVersion: 0,
   compatibilityEpoch: 16,
@@ -105,6 +108,25 @@ test('formats one redacted Desktop and Runtime Host diagnostic report', () => {
   assert.match(report, /Runtime Host[\s\S]*Recent Runtime Host logs \(1\)\nhost log/);
   assert.match(report, /Workspace: ~\/\.local\/share\/maka\/workspaces\/default/);
   assert.doesNotMatch(report, /sk-secretvalue123|\/home\/tester/);
+});
+
+test('names the update channel, which buildMode alone cannot distinguish', () => {
+  const reportFor = (channel: DesktopDiagnosticChannel, buildMode: 'dev' | 'packaged') =>
+    formatDesktopDiagnosticReport(
+      { surface: 'manual', hostTarget: 'default' },
+      { ...environment, buildMode, updateChannel: channel },
+      [],
+      { ok: false, error: 'not started' },
+      undefined,
+      new Date('2026-08-09T00:00:00Z'),
+    );
+
+  // Both packaged installs report `Build: packaged`; only the channel line
+  // says which feed and which attestation signer they trust.
+  assert.match(reportFor('nightly', 'packaged'), /^Channel: nightly$/mu);
+  assert.match(reportFor('release', 'packaged'), /^Channel: release$/mu);
+  // A checkout follows no feed, so it is neither of them.
+  assert.match(reportFor('dev', 'dev'), /^Channel: dev$/mu);
 });
 
 test('bounds renderer diagnostic text and rejects unknown fields', () => {
@@ -248,6 +270,26 @@ test('copies Desktop diagnostics while Runtime Host is unavailable', async () =>
     runtimeHostProcessLogs: () => [
       '[2026-08-20T00:00:00.000Z] ERROR [runtime-host] local Host child exited: pid=42 code=23 signal=none',
     ],
+    runtimeHostConnections: () => [{
+      epoch: 'guest-target',
+      target: {
+        profile: {
+          id: 'offline-guest', name: 'Shared Session', kind: 'remote',
+          access: 'session_guest', rootId: 'a'.repeat(64),
+          transport: { kind: 'tls', url: 'wss://example.com' },
+        },
+        credential: 'private-guest-credential',
+      },
+      readiness: 'reconnecting',
+      reconnect: {
+        failures: 27,
+        firstFailureAt: Date.parse('2026-09-09T00:00:00Z'),
+        lastFailureAt: Date.parse('2026-09-09T01:00:00Z'),
+      },
+      error: Object.assign(new Error('route unavailable api_key=sk-secretvalue123'), {
+        code: 'peer_reachability_needs_repair',
+      }),
+    }],
     resolveActiveRuntimeHost: () => undefined,
     resolveRuntimeHost: () => ({
       getDiagnostics: async () => {
@@ -274,6 +316,12 @@ test('copies Desktop diagnostics while Runtime Host is unavailable', async () =>
     /Recent local Runtime Host process exits \(1\)[\s\S]*pid=42 code=23 signal=none/,
   );
   assert.match(clipboard, /Diagnostics unavailable: Runtime Host disconnected/);
+  assert.match(clipboard, /Runtime Host connections \(1\)\n"offline-guest": reconnecting/);
+  assert.match(clipboard, /Failed attempts: 27/);
+  assert.match(clipboard, /First failure: 2026-09-09T00:00:00.000Z/);
+  assert.match(clipboard, /Last failure: 2026-09-09T01:00:00.000Z/);
+  assert.match(clipboard, /Latest error \[peer_reachability_needs_repair\]: route unavailable/);
+  assert.doesNotMatch(clipboard, /private-guest-credential|sk-secretvalue123/);
 });
 
 test('acknowledges one previous-run notice while keeping its diagnostics copyable', async () => {

@@ -17,7 +17,7 @@
  * under the License.
  */
 
-export type OAuthEnrollmentProvider = 'openai-codex' | 'xai-oauth';
+export type OAuthEnrollmentProvider = 'openai-codex' | 'xai-oauth' | 'github-copilot';
 
 export type OAuthTokenEndpointErrorCategory =
   | 'invalid_grant'
@@ -71,6 +71,25 @@ export const OAUTH_PROVIDER_CONTRACTS = {
     deviceRedirectUri: 'https://auth.openai.com/deviceauth/callback',
     experimentalEnvironmentVariable: 'MAKA_CODEX_SUBSCRIPTION_EXPERIMENTAL',
   },
+  'github-copilot': {
+    // Borrowed identity, not Maka's. This is the GitHub Copilot editor OAuth
+    // app: GitHub's consent screen names that application while Maka receives
+    // and stores the credential. Copilot entitlement is granted to editor
+    // clients only, so no Maka-owned app can reach a user's own subscription
+    // today — but GitHub has not published an authorization for third-party
+    // reuse of this identity either. Because that basis is missing, the device
+    // sign-in ships off and an operator opts in per install with the variable
+    // below. Provenance, consent identity, and what would settle the question
+    // are recorded in `docs/github-copilot-oauth-identity.md`.
+    clientId: 'Iv1.b507a08c87ecfe98',
+    deviceEndpoint: 'https://github.com/login/device/code',
+    tokenEndpoint: 'https://github.com/login/oauth/access_token',
+    // `read:user` is what the Copilot token endpoint checks; no repository or
+    // workflow scope is requested, so the grant cannot reach a user's code.
+    scope: 'read:user',
+    deviceGrant: 'urn:ietf:params:oauth:grant-type:device_code',
+    experimentalEnvironmentVariable: 'MAKA_GITHUB_COPILOT_DEVICE_LOGIN_EXPERIMENTAL',
+  },
   'xai-oauth': {
     clientId: 'b1a00492-073a-47ea-816f-4c329264a828',
     // xAI device-code flow: request a user code at `deviceEndpoint`, then
@@ -90,7 +109,14 @@ export function isOAuthEnrollmentProviderEnabled(
   environment: Readonly<Record<string, string | undefined>> = process.env,
 ): boolean {
   if (provider === 'xai-oauth') return true;
-  return environment[OAUTH_PROVIDER_CONTRACTS[provider].experimentalEnvironmentVariable] !== '0';
+  const flag = environment[OAUTH_PROVIDER_CONTRACTS[provider].experimentalEnvironmentVariable];
+  // GitHub Copilot is opt-in, not kill-switched: the device grant presents an
+  // OAuth identity Maka has no published authorization to use, so the sign-in
+  // stays off until an operator turns it on for their own install. The flag is
+  // how that choice is expressed; it is not the authorization basis.
+  if (provider === 'github-copilot') return flag === '1';
+  // Codex enrollment ships on, with the flag as its kill switch.
+  return flag !== '0';
 }
 
 /**

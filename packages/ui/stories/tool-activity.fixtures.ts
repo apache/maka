@@ -168,10 +168,10 @@ export const statusOverviewItems = [
   }),
   toolItem({
     toolUseId: 'status-interrupted',
-    toolName: 'explore',
-    displayName: 'Explore repository',
+    toolName: 'Grep',
+    displayName: 'Search repository',
     status: 'interrupted',
-    args: { roots: ['packages/ui/src'], query: 'ToolActivity' },
+    args: { pattern: 'ToolActivity', path: 'packages/ui/src' },
     result: { kind: 'text', text: 'The turn was interrupted after partial output was retained.' },
     durationMs: 9_360,
   }),

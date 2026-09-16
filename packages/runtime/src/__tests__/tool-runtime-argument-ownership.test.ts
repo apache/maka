@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { nextId } from '@maka/core/test-only/async-primitives';
 import { createTestToolRuntime } from './execution-boundary-test-helpers.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
@@ -48,10 +49,6 @@ describe('ToolRuntime argument ownership', () => {
       header: testHeader(),
       connection: testConnection(),
       modelId: 'test-model',
-      appendMessage: async (message) => {
-        if (message.type !== 'tool_call') return;
-        observeAndMutate(observed, 'storage', message.args);
-      },
       newId: nextId(),
       now: () => 1,
       getPermissionPauseTarget: () => null,
@@ -89,7 +86,7 @@ describe('ToolRuntime argument ownership', () => {
     });
     mutateArgs(providerArgs, 'provider');
 
-    const owners = ['storage', 'event', 'implementation', 'artifact'];
+    const owners = ['event', 'implementation', 'artifact'];
     for (const owner of owners) {
       assert.deepEqual(observed.get(owner), initialArgs);
     }
@@ -145,9 +142,4 @@ function testConnection(): LlmConnection {
     createdAt: 1,
     updatedAt: 1,
   };
-}
-
-function nextId(): () => string {
-  let id = 0;
-  return () => `id-${++id}`;
 }

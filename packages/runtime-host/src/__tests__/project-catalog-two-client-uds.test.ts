@@ -164,6 +164,7 @@ function sessionInput(cwd: string, projectId: string) {
     cwd,
     projectId,
     backend: 'fake' as const,
+    llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
     llmConnectionSlug: 'fake',
     model: 'fake-model',
     permissionMode: 'ask' as const,

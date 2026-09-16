@@ -36,7 +36,7 @@ export function deriveMemorySettingsViewModel(input: {
   query: string;
   copy?: MemorySettingsCopy;
 }) {
-  const copy = input.copy ?? getMemorySettingsCopy('zh');
+  const copy = input.copy ?? getMemorySettingsCopy('zh-CN');
   const effective = input.state ?? {
     path: '',
     enabled: input.localMemorySettings.enabled,

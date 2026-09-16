@@ -60,6 +60,8 @@ export function projectSessionCatalogSummary(
     ...(session.revisionIndex === undefined ? {} : { revisionIndex: session.revisionIndex }),
     ...(session.revisionState === undefined ? {} : { revisionState: session.revisionState }),
     backend: session.backend,
+    ...(session.executorId ? { executorId: session.executorId } : {}),
+    ...(session.llmConnectionId === null ? {} : { llmConnectionId: session.llmConnectionId }),
     llmConnectionSlug: session.llmConnectionSlug,
     connectionLocked: session.connectionLocked,
     model: session.model,

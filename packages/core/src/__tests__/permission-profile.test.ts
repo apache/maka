@@ -17,8 +17,8 @@
  * under the License.
  */
 
+import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { expect } from './test-helpers.js';
 import { pathWithinRoot } from '../absolute-path.js';
 import {
   canReadPath,
@@ -26,6 +26,7 @@ import {
   createDangerFullAccessPermissionProfile,
   createReadOnlyPermissionProfile,
   createWorkspaceWritePermissionProfile,
+  isCanonicalReadOnlyPermissionProfile,
   isDeniedPath,
   isProtectedMetadataPath,
   isReadOnlyPermissionProfile,
@@ -43,10 +44,20 @@ describe('PermissionProfile factories', () => {
   test('read-only profile allows workspace reads and blocks writes', () => {
     const profile = createReadOnlyPermissionProfile();
 
-    expect(canReadPath(profile, '/workspace/project/src/index.ts', WORKSPACE_CONTEXT)).toBe(true);
-    expect(canWritePath(profile, '/workspace/project/src/index.ts', WORKSPACE_CONTEXT)).toBe(false);
-    expect(canReadPath(profile, '/workspace/project2/src/index.ts', WORKSPACE_CONTEXT)).toBe(false);
-    expect(canWritePath(profile, '/workspace/project2/src/index.ts', WORKSPACE_CONTEXT)).toBe(
+    assert.strictEqual(
+      canReadPath(profile, '/workspace/project/src/index.ts', WORKSPACE_CONTEXT),
+      true,
+    );
+    assert.strictEqual(
+      canWritePath(profile, '/workspace/project/src/index.ts', WORKSPACE_CONTEXT),
+      false,
+    );
+    assert.strictEqual(
+      canReadPath(profile, '/workspace/project2/src/index.ts', WORKSPACE_CONTEXT),
+      false,
+    );
+    assert.strictEqual(
+      canWritePath(profile, '/workspace/project2/src/index.ts', WORKSPACE_CONTEXT),
       false,
     );
   });
@@ -54,9 +65,16 @@ describe('PermissionProfile factories', () => {
   test('workspace-write profile allows ordinary workspace writes and blocks outside writes', () => {
     const profile = createWorkspaceWritePermissionProfile();
 
-    expect(canReadPath(profile, '/workspace/project/src/index.ts', WORKSPACE_CONTEXT)).toBe(true);
-    expect(canWritePath(profile, '/workspace/project/src/index.ts', WORKSPACE_CONTEXT)).toBe(true);
-    expect(canWritePath(profile, '/workspace/project2/src/index.ts', WORKSPACE_CONTEXT)).toBe(
+    assert.strictEqual(
+      canReadPath(profile, '/workspace/project/src/index.ts', WORKSPACE_CONTEXT),
+      true,
+    );
+    assert.strictEqual(
+      canWritePath(profile, '/workspace/project/src/index.ts', WORKSPACE_CONTEXT),
+      true,
+    );
+    assert.strictEqual(
+      canWritePath(profile, '/workspace/project2/src/index.ts', WORKSPACE_CONTEXT),
       false,
     );
   });
@@ -64,9 +82,9 @@ describe('PermissionProfile factories', () => {
   test('workspace-write profile allows tmp writes when tmp context is provided', () => {
     const profile = createWorkspaceWritePermissionProfile();
 
-    expect(canWritePath(profile, '/private/tmp/maka/out.txt', WORKSPACE_CONTEXT)).toBe(true);
-    expect(canWritePath(profile, '/tmp/maka-out.txt', WORKSPACE_CONTEXT)).toBe(true);
-    expect(canWritePath(profile, '/tmp2/maka-out.txt', WORKSPACE_CONTEXT)).toBe(false);
+    assert.strictEqual(canWritePath(profile, '/private/tmp/maka/out.txt', WORKSPACE_CONTEXT), true);
+    assert.strictEqual(canWritePath(profile, '/tmp/maka-out.txt', WORKSPACE_CONTEXT), true);
+    assert.strictEqual(canWritePath(profile, '/tmp2/maka-out.txt', WORKSPACE_CONTEXT), false);
   });
 
   test('workspace-write profile allows protected metadata writes inside the workspace', () => {
@@ -77,56 +95,76 @@ describe('PermissionProfile factories', () => {
       '/workspace/project/.agents/state.json',
       '/workspace/project/packages/demo/.codex/settings.json',
     ]) {
-      expect(isProtectedMetadataPath(path, WORKSPACE_CONTEXT.workspaceRoots)).toBe(true);
-      expect(canReadPath(profile, path, WORKSPACE_CONTEXT)).toBe(true);
-      expect(canWritePath(profile, path, WORKSPACE_CONTEXT)).toBe(true);
+      assert.strictEqual(isProtectedMetadataPath(path, WORKSPACE_CONTEXT.workspaceRoots), true);
+      assert.strictEqual(canReadPath(profile, path, WORKSPACE_CONTEXT), true);
+      assert.strictEqual(canWritePath(profile, path, WORKSPACE_CONTEXT), true);
     }
 
-    expect(
+    assert.strictEqual(
       isProtectedMetadataPath('/workspace/project/.gitignore', WORKSPACE_CONTEXT.workspaceRoots),
-    ).toBe(false);
-    expect(canWritePath(profile, '/workspace/project/.gitignore', WORKSPACE_CONTEXT)).toBe(true);
+      false,
+    );
+    assert.strictEqual(
+      canWritePath(profile, '/workspace/project/.gitignore', WORKSPACE_CONTEXT),
+      true,
+    );
   });
 
   test('matches Windows drive roots and protected metadata by backslash-separated segment', () => {
-    expect(pathWithinRoot('C:\\Windows', 'C:\\')).toBe(true);
-    expect(pathWithinRoot('C:\\workspace2', 'C:\\workspace')).toBe(false);
-    expect(isProtectedMetadataPath('C:\\workspace\\.git\\config', ['C:\\workspace'])).toBe(true);
-    expect(
+    assert.strictEqual(pathWithinRoot('C:\\Windows', 'C:\\'), true);
+    assert.strictEqual(pathWithinRoot('C:\\workspace2', 'C:\\workspace'), false);
+    assert.strictEqual(
+      isProtectedMetadataPath('C:\\workspace\\.git\\config', ['C:\\workspace']),
+      true,
+    );
+    assert.strictEqual(
       isProtectedMetadataPath('C:\\workspace\\packages\\demo\\.agents\\state.json', [
         'C:\\workspace',
       ]),
-    ).toBe(true);
-    expect(isProtectedMetadataPath('C:\\workspace\\.gitignore', ['C:\\workspace'])).toBe(false);
+      true,
+    );
+    assert.strictEqual(
+      isProtectedMetadataPath('C:\\workspace\\.gitignore', ['C:\\workspace']),
+      false,
+    );
     // Windows containment is case-insensitive, so metadata names must be too:
     // `.GIT\config` reaches the real `.git\config` on a Windows filesystem.
-    expect(isProtectedMetadataPath('C:\\workspace\\.GIT\\config', ['C:\\workspace'])).toBe(true);
-    expect(isProtectedMetadataPath('C:\\WORKSPACE\\.Git\\HEAD', ['C:\\workspace'])).toBe(true);
+    assert.strictEqual(
+      isProtectedMetadataPath('C:\\workspace\\.GIT\\config', ['C:\\workspace']),
+      true,
+    );
+    assert.strictEqual(
+      isProtectedMetadataPath('C:\\WORKSPACE\\.Git\\HEAD', ['C:\\workspace']),
+      true,
+    );
     // POSIX filesystems are case-sensitive; `.GIT` is a distinct directory.
-    expect(isProtectedMetadataPath('/workspace/.GIT/config', ['/workspace'])).toBe(false);
-    expect(pathWithinRoot('C:\\workspace\\..\\secret', 'C:\\workspace')).toBe(false);
-    expect(pathWithinRoot('/workspace/../secret', '/workspace')).toBe(false);
-    expect(pathWithinRoot('C:\\workspace\\file:stream', 'C:\\workspace')).toBe(false);
-    expect(pathWithinRoot('\\\\server\\share\\file', '\\\\server\\share')).toBe(false);
+    assert.strictEqual(isProtectedMetadataPath('/workspace/.GIT/config', ['/workspace']), false);
+    assert.strictEqual(pathWithinRoot('C:\\workspace\\..\\secret', 'C:\\workspace'), false);
+    assert.strictEqual(pathWithinRoot('/workspace/../secret', '/workspace'), false);
+    assert.strictEqual(pathWithinRoot('C:\\workspace\\file:stream', 'C:\\workspace'), false);
+    assert.strictEqual(pathWithinRoot('\\\\server\\share\\file', '\\\\server\\share'), false);
   });
 
   test('danger-full-access profile is managed unrestricted access with network enabled', () => {
     const profile = createDangerFullAccessPermissionProfile();
 
-    expect(profile.type).toBe('managed');
+    assert.strictEqual(profile.type, 'managed');
     if (profile.type !== 'managed') throw new Error('expected managed profile');
-    expect(profile.fileSystem.kind).toBe('unrestricted');
-    expect(profile.network.kind).toBe('enabled');
-    expect(canReadPath(profile, '/etc/passwd')).toBe(true);
-    expect(canWritePath(profile, '/var/log/maka.log')).toBe(true);
+    assert.strictEqual(profile.fileSystem.kind, 'unrestricted');
+    assert.strictEqual(profile.network.kind, 'enabled');
+    assert.strictEqual(canReadPath(profile, '/etc/passwd'), true);
+    assert.strictEqual(canWritePath(profile, '/var/log/maka.log'), true);
   });
 });
 
 describe('isReadOnlyPermissionProfile', () => {
   test('separates the read-only profile from every profile that grants more', () => {
-    expect(isReadOnlyPermissionProfile(createReadOnlyPermissionProfile())).toBe(true);
-    expect(isReadOnlyPermissionProfile(createWorkspaceWritePermissionProfile())).toBe(false);
-    expect(isReadOnlyPermissionProfile(createDangerFullAccessPermissionProfile())).toBe(false);
+    assert.strictEqual(isReadOnlyPermissionProfile(createReadOnlyPermissionProfile()), true);
+    assert.strictEqual(isReadOnlyPermissionProfile(createWorkspaceWritePermissionProfile()), false);
+    assert.strictEqual(
+      isReadOnlyPermissionProfile(createDangerFullAccessPermissionProfile()),
+      false,
+    );
   });
 
   test('follows the policy rather than the profile name', () => {
@@ -140,19 +178,75 @@ describe('isReadOnlyPermissionProfile', () => {
         ],
       },
     };
-    expect(isReadOnlyPermissionProfile(widenedByExpansion)).toBe(false);
+    assert.strictEqual(isReadOnlyPermissionProfile(widenedByExpansion), false);
 
     const networkEnabled: PermissionProfileManaged = {
       ...createReadOnlyPermissionProfile(),
       network: { kind: 'enabled' },
     };
-    expect(isReadOnlyPermissionProfile(networkEnabled)).toBe(false);
+    assert.strictEqual(isReadOnlyPermissionProfile(networkEnabled), false);
 
     const renamedButStillReadOnly: PermissionProfileManaged = {
       ...createReadOnlyPermissionProfile(),
       name: 'custom',
     };
-    expect(isReadOnlyPermissionProfile(renamedButStillReadOnly)).toBe(true);
+    assert.strictEqual(isReadOnlyPermissionProfile(renamedButStillReadOnly), true);
+  });
+});
+
+describe('isCanonicalReadOnlyPermissionProfile', () => {
+  test('matches the canonical policy without relying on its display name', () => {
+    const { name: _name, ...policy } = createReadOnlyPermissionProfile();
+    for (const profile of [
+      policy,
+      { ...policy, name: 'custom' },
+      { ...policy, name: 'read-only' },
+    ]) {
+      assert.strictEqual(isCanonicalReadOnlyPermissionProfile(profile), true);
+    }
+  });
+
+  test('distinguishes extra read authority from the canonical Explore policy', () => {
+    const profile = createReadOnlyPermissionProfile();
+    const extraRead: PermissionProfileManaged = {
+      ...profile,
+      fileSystem: {
+        ...profile.fileSystem,
+        entries: [
+          ...profile.fileSystem.entries,
+          { kind: 'path', access: 'read', path: '/outside' },
+        ],
+      },
+    };
+    assert.strictEqual(isReadOnlyPermissionProfile(extraRead), true);
+    assert.strictEqual(isCanonicalReadOnlyPermissionProfile(extraRead), false);
+  });
+
+  test('does not certify other managed policies as canonical Explore', () => {
+    const profile = createReadOnlyPermissionProfile();
+    const nonCanonical: PermissionProfileManaged[] = [
+      createWorkspaceWritePermissionProfile(),
+      createDangerFullAccessPermissionProfile(),
+      { ...profile, network: { kind: 'enabled' } },
+      { ...profile, fileSystem: { kind: 'restricted', entries: [] } },
+      {
+        ...profile,
+        fileSystem: {
+          ...profile.fileSystem,
+          entries: [{ kind: 'special', access: 'read', special: ':root' }],
+        },
+      },
+      {
+        ...profile,
+        fileSystem: {
+          ...profile.fileSystem,
+          protectedMetadata: { access: 'deny_write', names: ['.git'] },
+        },
+      },
+    ];
+    for (const candidate of nonCanonical) {
+      assert.strictEqual(isCanonicalReadOnlyPermissionProfile(candidate), false);
+    }
   });
 });
 
@@ -170,9 +264,9 @@ describe('PermissionProfile matcher rules', () => {
       network: { kind: 'restricted' },
     };
 
-    expect(isDeniedPath(profile, '/repo/secret/token.txt')).toBe(true);
-    expect(canReadPath(profile, '/repo/secret/token.txt')).toBe(false);
-    expect(canWritePath(profile, '/repo/secret/token.txt')).toBe(false);
+    assert.strictEqual(isDeniedPath(profile, '/repo/secret/token.txt'), true);
+    assert.strictEqual(canReadPath(profile, '/repo/secret/token.txt'), false);
+    assert.strictEqual(canWritePath(profile, '/repo/secret/token.txt'), false);
   });
 
   test('write access implies read access', () => {
@@ -185,8 +279,8 @@ describe('PermissionProfile matcher rules', () => {
       network: { kind: 'restricted' },
     };
 
-    expect(canReadPath(profile, '/repo/src/index.ts')).toBe(true);
-    expect(canWritePath(profile, '/repo/src/index.ts')).toBe(true);
+    assert.strictEqual(canReadPath(profile, '/repo/src/index.ts'), true);
+    assert.strictEqual(canWritePath(profile, '/repo/src/index.ts'), true);
   });
 
   test('path matching respects segment boundaries', () => {
@@ -199,8 +293,8 @@ describe('PermissionProfile matcher rules', () => {
       network: { kind: 'restricted' },
     };
 
-    expect(canReadPath(profile, '/repo/src/index.ts')).toBe(true);
-    expect(canReadPath(profile, '/repo2/src/index.ts')).toBe(false);
+    assert.strictEqual(canReadPath(profile, '/repo/src/index.ts'), true);
+    assert.strictEqual(canReadPath(profile, '/repo2/src/index.ts'), false);
   });
 
   test('special entries resolve through matcher context', () => {
@@ -213,7 +307,13 @@ describe('PermissionProfile matcher rules', () => {
       network: { kind: 'restricted' },
     };
 
-    expect(canWritePath(profile, '/private/tmp/maka/result.txt', WORKSPACE_CONTEXT)).toBe(true);
-    expect(canWritePath(profile, '/private/tmp2/maka/result.txt', WORKSPACE_CONTEXT)).toBe(false);
+    assert.strictEqual(
+      canWritePath(profile, '/private/tmp/maka/result.txt', WORKSPACE_CONTEXT),
+      true,
+    );
+    assert.strictEqual(
+      canWritePath(profile, '/private/tmp2/maka/result.txt', WORKSPACE_CONTEXT),
+      false,
+    );
   });
 });

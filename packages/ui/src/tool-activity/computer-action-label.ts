@@ -232,6 +232,9 @@ function describeAction(
       return copy.wait;
     case 'zoom':
       return copy.zoom;
+    // Coordinate actions are no longer accepted by the live tool schema.
+    // Keep their labels so persisted transcripts from older versions remain
+    // readable after an upgrade.
     case 'cursor_position':
       return copy.cursorPosition;
     case 'scroll':

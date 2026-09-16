@@ -20,7 +20,7 @@
 import { randomUUID } from 'node:crypto';
 import { lstat, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname } from 'node:path';
+import { dirname, join } from 'node:path';
 import { canReadPath, canWritePath, type PermissionProfile } from '@maka/core/permission-profile';
 
 import { compilePermissionProfile } from '@maka/core/permission-profile-compiler';
@@ -30,6 +30,7 @@ import { type ExecutionBoundary, type SandboxBoundaryExpansion } from '@maka/cor
 import { type PermissionMode } from '@maka/core/permission';
 
 import { normalizeSandboxBoundaryPath } from '../sandbox-boundary-path.js';
+import { MAX_CHILD_FD } from '../child-fd-input.js';
 import { resolveCanonicalDirectoryEntryTarget } from '../path-containment.js';
 import { pinExistingLinuxProfilePath } from '../sandbox/linux-profile-path.js';
 import { classifyWindowsBrokerFailure } from '../sandbox/windows-broker-errors.js';
@@ -373,9 +374,8 @@ export class FilesystemWorkerClient {
       throw clientError('request_overflow', 'validation', requestId);
     }
 
-    const launch = await this.input.getLaunchSpec();
+    const launch = await this.input.getLaunchSpec(operation);
     if (!launch.ok) throw clientError(launch.reason, 'launch', requestId, launch.message);
-    const workerProfile = deriveWorkerProfile(effectiveProfile, operationBoundary);
     const windowsNonFollowingReadRoot =
       platform === 'win32' &&
       operation.kind === 'glob' &&
@@ -383,6 +383,54 @@ export class FilesystemWorkerClient {
       target.targetType === 'directory'
         ? target.enforcementPath
         : undefined;
+    const searchMetadata: {
+      path: string;
+      canonicalPath: string;
+      targetType: 'file' | 'directory';
+    }[] = [];
+    if (operation.kind === 'grep' && target.targetType === 'directory') {
+      // Narrow the data scan to its target without dropping already-authorized
+      // ancestor ignore rules. Configuration files never grant their parent tree.
+      for (let parent = dirname(target.enforcementPath); ; parent = dirname(parent)) {
+        for (const name of ['.gitignore', '.ignore', '.rgignore', '.git', '.git/info/exclude']) {
+          const path = join(parent, name);
+          if (!canReadPath(effectiveProfile, path, pathContext)) continue;
+          const canonical = await realpath(path).catch(() => undefined);
+          if (canonical && canReadPath(effectiveProfile, canonical, pathContext)) {
+            const metadata = await lstat(canonical).catch(() => undefined);
+            if (metadata?.isFile() || (name === '.git' && metadata?.isDirectory())) {
+              searchMetadata.push({
+                path,
+                canonicalPath: canonical,
+                targetType: metadata.isDirectory() ? 'directory' : 'file',
+              });
+            }
+          }
+        }
+        if (dirname(parent) === parent) break;
+      }
+    }
+    const firstMetadataFd = 5;
+    if (
+      platform === 'linux' &&
+      searchMetadata.some(
+        ({ targetType }, index) => targetType === 'file' && firstMetadataFd + index > MAX_CHILD_FD,
+      )
+    ) {
+      throw clientError(
+        'request_overflow',
+        'validation',
+        requestId,
+        'Too many ancestor ignore files for one Grep operation. Search from a higher-level directory.',
+      );
+    }
+    const workerProfile = deriveWorkerProfile(
+      effectiveProfile,
+      operationBoundary,
+      searchMetadata.map(({ path, canonicalPath }) =>
+        platform === 'linux' ? path : canonicalPath,
+      ),
+    );
     const pinnedTarget =
       platform === 'linux' && !entryMode && target.targetType !== 'missing'
         ? (() => {
@@ -447,7 +495,29 @@ export class FilesystemWorkerClient {
       );
     }
     let transformed: ReturnType<SandboxManager['transform']>;
+    const pinnedMetadata: NonNullable<ReturnType<typeof pinExistingLinuxProfilePath>>[] = [];
+    const releasePinnedPaths = () => {
+      pinnedTarget?.releaseSource();
+      pinnedRuntimeWritableRoot?.releaseSource();
+      for (const pinned of pinnedMetadata) pinned.releaseSource();
+    };
     try {
+      if (platform === 'linux') {
+        for (const metadata of searchMetadata) {
+          const pinned = pinExistingLinuxProfilePath({
+            path: metadata.canonicalPath,
+            targetType: metadata.targetType,
+            access: 'read',
+            childFd: firstMetadataFd + pinnedMetadata.length,
+          });
+          if (!pinned) {
+            throw clientError('path_changed', 'validation', requestId);
+          }
+          // rg opens the ancestor's lexical name. Bind the verified canonical
+          // source there even when the original metadata entry was a symlink.
+          pinnedMetadata.push({ ...pinned, path: metadata.path });
+        }
+      }
       transformed = this.input.sandboxManager.transform({
         platform,
         command: {
@@ -461,17 +531,18 @@ export class FilesystemWorkerClient {
             runtimeReadableRoots: launch.spec.runtimeReadableRoots,
             executableRoots: launch.spec.executableRoots,
             ...(windowsNonFollowingReadRoot ? { windowsNonFollowingReadRoot } : {}),
-            ...(pinnedTarget
+            ...(pinnedTarget || pinnedMetadata.length
               ? {
                   pinnedProfilePaths: [
-                    {
-                      path: pinnedTarget.path,
-                      access: pinnedTarget.access,
-                      fd: pinnedTarget.childFd,
-                      sourceFd: pinnedTarget.sourceFd,
-                      releaseSource: pinnedTarget.releaseSource,
-                    },
-                  ],
+                    ...(pinnedTarget ? [pinnedTarget] : []),
+                    ...pinnedMetadata,
+                  ].map((pinned) => ({
+                    path: pinned.path,
+                    access: pinned.access,
+                    fd: pinned.childFd,
+                    sourceFd: pinned.sourceFd,
+                    releaseSource: pinned.releaseSource,
+                  })),
                 }
               : {}),
             ...(pinnedRuntimeWritableRoot
@@ -490,13 +561,11 @@ export class FilesystemWorkerClient {
         },
       });
     } catch (error) {
-      pinnedTarget?.releaseSource();
-      pinnedRuntimeWritableRoot?.releaseSource();
+      releasePinnedPaths();
       throw error;
     }
     if (!transformed.ok) {
-      pinnedTarget?.releaseSource();
-      pinnedRuntimeWritableRoot?.releaseSource();
+      releasePinnedPaths();
       throw clientError(transformed.reason, 'transform', requestId, transformed.message, false, {
         backend: transformed.sandboxType,
         profileName: effectiveProfile.name ?? effectiveProfile.type,
@@ -532,8 +601,7 @@ export class FilesystemWorkerClient {
         dispatched,
       );
     } finally {
-      pinnedTarget?.releaseSource();
-      pinnedRuntimeWritableRoot?.releaseSource();
+      releasePinnedPaths();
     }
     if (processResult.timedOut) {
       throw clientError(
@@ -677,6 +745,7 @@ function deriveWorkerProfile(
       ];
     };
   },
+  searchMetadata: readonly string[],
 ): PermissionProfile {
   if (profile.type !== 'managed' || profile.fileSystem.kind !== 'restricted') return profile;
   const target = operationBoundary.filesystem.entries[0];
@@ -692,6 +761,12 @@ function deriveWorkerProfile(
           access: target.access,
           match: target.scope,
         },
+        ...searchMetadata.map((path) => ({
+          kind: 'path' as const,
+          path,
+          access: 'read' as const,
+          match: 'exact' as const,
+        })),
       ],
     },
     network: { kind: 'restricted' },

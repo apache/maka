@@ -48,6 +48,12 @@ export function fitHistoryCompactMessages(
   for (let messageIndex = 0; messageIndex < bounded.length; messageIndex += 1) {
     const message = bounded[messageIndex]!;
     if (message.role !== 'tool') continue;
+    // Accumulate replacements across the parts of this one tool message. A
+    // message that batches several tool results (one per parallel tool call)
+    // must keep every earlier placeholder, not just the last one — otherwise
+    // the returned history still carries full-size payloads even though the
+    // budget accounting already credited their removal.
+    let content = message.content;
     for (let partIndex = 0; partIndex < message.content.length; partIndex += 1) {
       const part = message.content[partIndex]!;
       if (part.type !== 'tool-result') continue;
@@ -62,7 +68,7 @@ export function fitHistoryCompactMessages(
       const originalChars = stableJsonLength(part);
       const replacementChars = stableJsonLength(replacement);
       if (replacementChars >= originalChars) continue;
-      const content = [...message.content];
+      content = [...content];
       content[partIndex] = replacement;
       bounded = [...bounded];
       bounded[messageIndex] = { ...message, content };

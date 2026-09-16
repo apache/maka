@@ -34,7 +34,7 @@ import {
   watchDesktopE2eParentProcess,
 } from './desktop-e2e-execution.js';
 
-await runExecutionCandidateEntry(process.argv.slice(2), {
+await runExecutionCandidateEntry(process.argv.slice(2), import.meta.url, {
   overrideOptions: (options) => ({ ...options, idleGraceMs: DESKTOP_E2E_IDLE_GRACE_MS }),
   dependencies: createDesktopE2eExecutionCandidateDependencies(),
   onWon: (host) => watchDesktopE2eParentProcess(() => host.close()),

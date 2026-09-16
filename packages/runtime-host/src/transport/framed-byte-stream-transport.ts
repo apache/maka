@@ -87,11 +87,14 @@ export class FramedByteStreamTransport implements RuntimeHostMessageTransport {
       this.#drainInbound();
     });
     stream.onError((error) => this.#fail(transportFailure(error)));
-    void stream.closed.then(() => {
-      if (!this.#readTerminal && !this.#failure) {
-        this.#fail(new RuntimeHostTransportError('closed', 'Runtime Host transport closed'));
-      }
-    });
+    void stream.closed.then(
+      () => {
+        if (!this.#readTerminal && !this.#failure) {
+          this.#fail(new RuntimeHostTransportError('closed', 'Runtime Host transport closed'));
+        }
+      },
+      (error) => this.#fail(transportFailure(asError(error))),
+    );
   }
 
   async read(timeoutMs: number): Promise<unknown> {
@@ -181,7 +184,10 @@ export class FramedByteStreamTransport implements RuntimeHostMessageTransport {
           break;
         }
         const encoded = this.#buffered.subarray(0, encodedBytes);
-        this.#buffered = this.#buffered.subarray(encodedBytes);
+        this.#buffered =
+          encodedBytes === this.#buffered.byteLength
+            ? Buffer.alloc(0)
+            : this.#buffered.subarray(encodedBytes);
         const frames = this.#decoder.push(encoded);
         if (frames.length !== 1) {
           throw new Error('Runtime Host decoder did not produce one complete frame');

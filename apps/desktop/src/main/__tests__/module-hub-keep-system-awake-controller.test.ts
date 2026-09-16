@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 import { act, createElement } from 'react';
@@ -26,17 +27,6 @@ import {
   useKeepSystemAwakeController,
 } from '../../renderer/features/module-hub/testing.js';
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
-
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  let reject!: (error: unknown) => void;
-  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
-    resolve = resolvePromise;
-    reject = rejectPromise;
-  });
-  return { promise, resolve, reject };
-}
-
 test('falls back safely after the initial read fails and propagates write failures', async () => {
   const { root } = installReactRenderer();
   const services = createFakeModuleHubServices({

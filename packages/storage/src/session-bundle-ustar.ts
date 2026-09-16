@@ -38,6 +38,17 @@ export interface SessionBundleUstarHeader {
   size: number;
 }
 
+/** Return whether a path belongs to the exact portable path language used by Bundle V1. */
+export function isSessionBundleUstarPathV1(path: string): boolean {
+  try {
+    splitUstarPath(path);
+    return true;
+  } catch (error) {
+    if (error instanceof SessionBundleFileError && error.code === 'unsafe_path') return false;
+    throw error;
+  }
+}
+
 /**
  * Encode the exact POSIX USTAR header admitted by Session Bundle codec V1.
  * Paths use a portable subset on every host: Windows device names, forbidden

@@ -18,10 +18,13 @@
  */
 
 import { openInteractiveArtifactStoreForWrite } from './artifact-stores.js';
+import type { ContextOffloadLimits } from '@maka/core/context-offload';
+import { openInteractiveContextOffloadStoreForWrite } from './context-offload-store.js';
 import { openInteractiveDailyReviewAuthorityForWrite } from './daily-review-authority.js';
 import { openInteractiveDeepResearchStoreForWrite } from './deep-research-authority.js';
 import { openInteractiveExecutionStoresForWrite } from './execution-stores.js';
-import { openInteractiveGoalAuthorityForWrite } from './goal-authority.js';
+import type { ExecutionPersistenceProvider } from './execution-persistence-provider.js';
+import type { InteractiveGoalAuthorityWriter } from './goal-authority.js';
 import { openInteractiveLongTermMemoryStoreForWrite } from './long-term-memory-store.js';
 import { openInteractiveMemoryBundleStoreForWrite } from './memory-bundle-store.js';
 import { openInteractivePlanStoreForWrite } from './plan-authority.js';
@@ -29,15 +32,19 @@ import { openInteractiveProjectCatalogForWrite } from './project-catalog-authori
 import { assertStorageRootLease, type StorageRootLease } from './root-authority.js';
 import { openInteractiveRuntimePolicyStoresForWrite } from './runtime-policy-stores.js';
 import { openInteractiveScheduledTaskStoreForWrite } from './scheduled-task-store.js';
+import { openInteractiveSessionTodoStoreForWrite } from './session-todo-authority.js';
 import { openInteractiveShellRunStoreForWrite } from './shell-run-authority.js';
-import { openInteractiveTaskLedgerStoreForWrite } from './task-ledger-authority.js';
 import { openInteractiveUsageStoresForWrite } from './usage-stores.js';
 
 export interface OpenStorageWriterCompositionOptions {
+  /** One trusted backend for the complete execution transaction domain. */
+  executionProvider?: ExecutionPersistenceProvider;
   /** Runs after the runtime-policy stores open and before the remaining writers open. */
   afterRuntimePolicyOpened?: (
     stores: Awaited<ReturnType<typeof openInteractiveRuntimePolicyStoresForWrite>>,
   ) => void | Promise<void>;
+  /** Opens the context-offload authority only when a reader or writer is composed. */
+  contextOffloadLimits?: ContextOffloadLimits;
 }
 
 export interface StorageWriterComposition {
@@ -48,11 +55,14 @@ export interface StorageWriterComposition {
   readonly plan: Awaited<ReturnType<typeof openInteractivePlanStoreForWrite>>;
   readonly deepResearch: Awaited<ReturnType<typeof openInteractiveDeepResearchStoreForWrite>>;
   readonly dailyReview: Awaited<ReturnType<typeof openInteractiveDailyReviewAuthorityForWrite>>;
-  readonly goal: Awaited<ReturnType<typeof openInteractiveGoalAuthorityForWrite>>;
+  readonly goal: InteractiveGoalAuthorityWriter;
   readonly memoryBundle: Awaited<ReturnType<typeof openInteractiveMemoryBundleStoreForWrite>>;
   readonly longTermMemory: Awaited<ReturnType<typeof openInteractiveLongTermMemoryStoreForWrite>>;
-  readonly taskLedger: Awaited<ReturnType<typeof openInteractiveTaskLedgerStoreForWrite>>;
+  readonly sessionTodo: Awaited<ReturnType<typeof openInteractiveSessionTodoStoreForWrite>>;
   readonly artifacts: Awaited<ReturnType<typeof openInteractiveArtifactStoreForWrite>>;
+  readonly contextOffload?: Awaited<ReturnType<typeof openInteractiveContextOffloadStoreForWrite>>;
+  /** Present when the optional context-offload capability could not be opened. */
+  readonly contextOffloadUnavailable?: { readonly cause: unknown };
   readonly usage: Awaited<ReturnType<typeof openInteractiveUsageStoresForWrite>>;
   readonly shellRuns: Awaited<ReturnType<typeof openInteractiveShellRunStoreForWrite>>;
   close(): Promise<void>;
@@ -108,7 +118,7 @@ async function createComposition(
   };
 
   const execution = await openWriter(
-    () => openInteractiveExecutionStoresForWrite(lease),
+    () => openInteractiveExecutionStoresForWrite(lease, options.executionProvider),
     (writer) => writer.sessionStore.close?.(),
   );
   try {
@@ -139,20 +149,36 @@ async function createComposition(
     () => openInteractiveDailyReviewAuthorityForWrite(lease),
     closeWriter,
   );
-  const goal = await openWriter(() => openInteractiveGoalAuthorityForWrite(lease), closeWriter);
+  const goal = execution.goalStore;
   const memoryBundle = await openWriter(() => openInteractiveMemoryBundleStoreForWrite(lease));
   const longTermMemory = await openWriter(
     () => openInteractiveLongTermMemoryStoreForWrite(lease),
     closeWriter,
   );
-  const taskLedger = await openWriter(
-    () => openInteractiveTaskLedgerStoreForWrite(lease),
+  const sessionTodo = await openWriter(
+    () => openInteractiveSessionTodoStoreForWrite(lease),
     closeWriter,
   );
   const artifacts = await openWriter(
     () => openInteractiveArtifactStoreForWrite(lease),
     closeWriter,
   );
+  const contextOffloadLimits = options.contextOffloadLimits;
+  let contextOffload:
+    | Awaited<ReturnType<typeof openInteractiveContextOffloadStoreForWrite>>
+    | undefined;
+  let contextOffloadUnavailable: { readonly cause: unknown } | undefined;
+  if (contextOffloadLimits) {
+    try {
+      const openedContextOffload = await openInteractiveContextOffloadStoreForWrite(lease, {
+        limits: contextOffloadLimits,
+      });
+      contextOffload = openedContextOffload;
+      closes.push(() => closeWriter(openedContextOffload));
+    } catch (cause) {
+      contextOffloadUnavailable = Object.freeze({ cause });
+    }
+  }
   const usage = await openWriter(() => openInteractiveUsageStoresForWrite(lease), closeWriter);
   const shellRuns = await openWriter(
     () => openInteractiveShellRunStoreForWrite(lease),
@@ -169,8 +195,10 @@ async function createComposition(
     goal,
     memoryBundle,
     longTermMemory,
-    taskLedger,
+    sessionTodo,
     artifacts,
+    ...(contextOffload ? { contextOffload } : {}),
+    ...(contextOffloadUnavailable ? { contextOffloadUnavailable } : {}),
     usage,
     shellRuns,
     close,

@@ -21,7 +21,12 @@
 
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
-import { applyThinkingComplete, applyThinkingDelta } from '@maka/ui';
+import { applyThinkingComplete as applyThinkingCompleteWithLocale, applyThinkingDelta as applyThinkingDeltaWithLocale } from '@maka/ui';
+// Tests exercise stream mechanics, not copy; pin zh so markers stay verbatim.
+const applyThinkingDelta = (prev: string, delta: string, options?: Partial<Parameters<typeof applyThinkingDeltaWithLocale>[2]>) =>
+  applyThinkingDeltaWithLocale(prev, delta, { locale: 'zh-CN', ...options });
+const applyThinkingComplete = (text: string, options?: Partial<Parameters<typeof applyThinkingCompleteWithLocale>[1]>) =>
+  applyThinkingCompleteWithLocale(text, { locale: 'zh-CN', ...options });
 
 describe('applyThinkingDelta — secondary redaction', () => {
   it('masks raw `Authorization: Bearer ...` text before storing', () => {

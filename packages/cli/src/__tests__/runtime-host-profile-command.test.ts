@@ -88,7 +88,7 @@ describe('Runtime Host profile CLI', () => {
         expectedRootId: ROOT_ID,
       },
     );
-    assert.deepEqual(
+    assert.equal(
       parseRuntimeHostCommand([
         'profile',
         'set',
@@ -102,19 +102,8 @@ describe('Runtime Host profile CLI', () => {
         '/ip4/192.0.2.10/udp/4001/quic-v1',
         '--expected-root',
         ROOT_ID,
-      ]),
-      {
-        kind: 'runtime-host-profile-set',
-        id: 'peer-lab',
-        name: 'Peer Lab',
-        transport: {
-          kind: 'libp2p-direct',
-          peerId: '12D3KooWPeer',
-          routeHints: ['/ip4/192.0.2.10/udp/4001/quic-v1'],
-          coordinationRelays: [],
-        },
-        expectedRootId: ROOT_ID,
-      },
+      ]).kind,
+      'error',
     );
     assert.equal(
       parseRuntimeHostCommand([
@@ -166,6 +155,33 @@ describe('Runtime Host profile CLI', () => {
       parseRuntimeHostCommand(['profile', 'set', '--credential', 'secret']).kind,
       'error',
     );
+    assert.deepEqual(
+      parseRuntimeHostCommand([
+        'profile',
+        'set',
+        '--id',
+        'wsl',
+        '--name',
+        'Ubuntu',
+        '--wsl-distribution',
+        'Ubuntu',
+        '--operator-path',
+        '/home/operator/.local/share/maka/operator',
+        '--expected-root',
+        ROOT_ID,
+      ]),
+      {
+        kind: 'runtime-host-profile-set-environment',
+        id: 'wsl',
+        name: 'Ubuntu',
+        distribution: 'Ubuntu',
+        operator: {
+          kind: 'legacy_posix_executable',
+          executablePath: '/home/operator/.local/share/maka/operator',
+        },
+        expectedRootId: ROOT_ID,
+      },
+    );
   });
 
   test('passes the credential to the catalog without writing it to command output', async () => {
@@ -214,8 +230,8 @@ function createProfileCatalogCapture(): {
   catalog: RuntimeHostProfileCatalog;
   saved: Array<{ profile: RemoteRuntimeHostProfile; credential?: string }>;
 } {
-  const state = {
-    document: { schemaVersion: 1, profiles: [] } as RuntimeHostProfileDocument,
+  const state: { document: RuntimeHostProfileDocument } = {
+    document: { schemaVersion: 5, profiles: [] },
   };
   const saved: Array<{ profile: RemoteRuntimeHostProfile; credential?: string }> = [];
   const catalog: RuntimeHostProfileCatalog = {
@@ -225,7 +241,7 @@ function createProfileCatalogCapture(): {
     save: async (profile: RemoteRuntimeHostProfile, credential?: string) => {
       saved.push({ profile, credential });
       state.document = {
-        schemaVersion: 1,
+        schemaVersion: 5,
         profiles: [
           ...state.document.profiles.filter((candidate) => candidate.id !== profile.id),
           profile,
@@ -236,6 +252,9 @@ function createProfileCatalogCapture(): {
     remove: async () => assert.fail('unexpected profile removal'),
     removeIfCurrent: async () => assert.fail('unexpected conditional profile removal'),
     rebindIfCurrent: async () => assert.fail('unexpected conditional profile rebind'),
+    updateRemoteProfileIfCurrent: async () => assert.fail('unexpected conditional update'),
+    mutateRemoteProfileIfCurrent: async () => assert.fail('unexpected conditional mutation'),
+    readRemoteProfileIfCurrent: async () => assert.fail('unexpected conditional read'),
   };
   return {
     get document() {

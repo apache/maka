@@ -32,16 +32,21 @@
  * no E2E can reach deterministically.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
+import { act, createElement } from 'react';
+import type { StoredMessage } from '@maka/core/session';
+import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
+import { useAppShellSessionUiState } from '../../renderer/features/conversation/index.js';
 
 import type { LiveTurnProjection } from '@maka/ui';
-import type { DesktopTranscriptRangeController } from '../../renderer/desktop-transcript-range-store.js';
+import type { DesktopTranscriptRangeController } from '../../renderer/platform/desktop/desktop-transcript-range-store.js';
 import { createAppShellChatActions } from '../../renderer/app-shell-chat-actions.js';
+import { prepareTranscriptForSend } from '../../renderer/features/conversation/testing.js';
 
 import {
   createActionsDeps,
-  createTurnState,
   installWindow,
 } from './app-shell-chat-actions-fixture.js';
 
@@ -81,6 +86,86 @@ describe('composer first-send cleanup', () => {
     }
   });
 
+  it('rejects a same-target New Task reopen while readiness is pending', async () => {
+    const readiness = deferred<boolean>();
+    let revision = 1;
+    let creates = 0;
+    let resolved = 0;
+    const restoreWindow = installWindow({
+      newTasks: { create: async () => { creates += 1; return { id: 'stale-session' }; } },
+    });
+    try {
+      const actions = createAppShellChatActions({
+        ...createActionsDeps(),
+        captureComposerImportOwner: () => ({
+          sessionId: undefined,
+          navSection: 'sessions',
+          newTaskDraftKey: 'same-project',
+        }),
+        captureSelection: () => {
+          const captured = revision;
+          return () => captured === revision;
+        },
+        checkTaskSubmissionReadiness: () => readiness.promise,
+      });
+      const sending = actions.send('old draft', undefined, {
+        onSessionResolved: () => { resolved += 1; },
+      });
+      revision += 1;
+      readiness.resolve(true);
+      assert.equal(await sending, false);
+      assert.equal(creates, 0);
+      assert.equal(resolved, 0);
+    } finally {
+      restoreWindow();
+    }
+  });
+
+  it('retires an unsent Session if its New Task surface reopens during creation', async () => {
+    const created = deferred<{ id: string }>();
+    const enteredCreate = deferred<void>();
+    let revision = 1;
+    let activated = 0;
+    let submitted = 0;
+    let resolved = 0;
+    const removed: string[] = [];
+    const restoreWindow = installWindow({
+      newTasks: { create: () => { enteredCreate.resolve(); return created.promise; } },
+      sessions: {
+        remove: async (id: string) => { removed.push(id); },
+        submitMessage: async () => { submitted += 1; },
+      },
+    });
+    try {
+      const actions = createAppShellChatActions({
+        ...createActionsDeps(),
+        captureComposerImportOwner: () => ({
+          sessionId: undefined,
+          navSection: 'sessions',
+          newTaskDraftKey: 'same-project',
+        }),
+        captureSelection: () => {
+          const captured = revision;
+          return () => captured === revision;
+        },
+        activateSessionForFirstSend: async () => { activated += 1; },
+      });
+      const sending = actions.send('old draft', undefined, {
+        onSessionResolved: () => { resolved += 1; },
+      });
+      await enteredCreate.promise;
+      revision += 1;
+      created.resolve({ id: 'stale-session' });
+      assert.equal(await sending, false);
+      assert.deepEqual(removed, ['stale-session']);
+      assert.equal(activated, 0);
+      assert.equal(submitted, 0);
+      assert.equal(resolved, 0);
+    } finally {
+      restoreWindow();
+    }
+  });
+
   it('passes the effective offered model when creating the first session', async () => {
     let createInput: unknown;
     const restoreWindow = installWindow({
@@ -103,6 +188,7 @@ describe('composer first-send cleanup', () => {
       const deps = {
         ...createActionsDeps(),
         newChatModel: {
+          llmConnectionId: 'connection-1',
           llmConnectionSlug: 'opencode-free',
           model: 'mimo-v2.5-free',
         },
@@ -276,6 +362,7 @@ describe('composer first-send cleanup', () => {
 
   it('keeps the session once the first send lands', async () => {
     const removed: string[] = [];
+    let currentDraftKey = 'draft:project-A';
     const restoreWindow = installWindow({
       newTasks: { create: async () => ({ id: 'session-1' }) },
       sessions: {
@@ -293,12 +380,155 @@ describe('composer first-send cleanup', () => {
     });
 
     try {
-      assert.equal(await createAppShellChatActions(createActionsDeps()).send('hello'), true);
+      const actions = createAppShellChatActions({
+        ...createActionsDeps(),
+        captureComposerImportOwner: () => ({
+          sessionId: undefined,
+          navSection: 'sessions',
+          newTaskDraftKey: currentDraftKey,
+        }),
+        checkTaskSubmissionReadiness: async () => {
+          currentDraftKey = 'draft:project-B';
+          return true;
+        },
+      });
+      let resolved: [string, string?] | undefined;
+      assert.equal(
+        await actions.send('hello', undefined, {
+          onSessionResolved: (...args) => {
+            resolved = args;
+          },
+        }),
+        true,
+      );
+      assert.deepEqual(resolved, ['session-1', 'draft:project-A']);
     } finally {
       restoreWindow();
     }
 
     assert.deepEqual(removed, []);
+  });
+
+  it('does not report a resolved session when the first send outcome is unknown', async () => {
+    let resolved = 0;
+    const restoreWindow = installWindow({
+      newTasks: { create: async () => ({ id: 'session-1' }) },
+      sessions: {
+        // `outcome_unknown`: the Host may have admitted the Message, so the
+        // Session is kept and the send counts as landed — but nothing proves
+        // the outcome, so it must not look like a resolved Session. The Work
+        // Board only links a task to a Session whose first send projected.
+        submitMessage: async () => ({ ok: false as const, reason: 'outcome_unknown' as const }),
+      },
+    });
+
+    try {
+      const actions = createAppShellChatActions(createActionsDeps());
+      const result = await actions.send('hello', undefined, {
+        onSessionResolved: () => {
+          resolved += 1;
+        },
+      });
+      assert.equal(result, true);
+    } finally {
+      restoreWindow();
+    }
+
+    assert.equal(resolved, 0);
+  });
+
+  it('projects the first message before activation while waiting to submit until observation', async () => {
+    const observation = deferred<void>();
+    const order: string[] = [];
+    const activeIdRef = { current: undefined as string | undefined };
+    const restoreWindow = installWindow({
+      newTasks: {
+        create: async () => {
+          order.push('create');
+          return { id: 'session-1' };
+        },
+      },
+      sessions: {
+        submitMessage: async () => {
+          order.push('submit');
+          return { ok: true, attachments: [], skillInvocation: { loaded: [], failed: [] } };
+        },
+      },
+    });
+
+    try {
+      const sending = createAppShellChatActions({
+        ...createActionsDeps(),
+        activeIdRef,
+        addTransientMessage: () => {
+          order.push('optimistic');
+        },
+        activateSessionForFirstSend: async (sessionId) => {
+          order.push('observe');
+          activeIdRef.current = sessionId;
+          await observation.promise;
+          order.push('seeded');
+        },
+      }).send('hello');
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.deepEqual(order, ['create', 'optimistic', 'observe']);
+
+      observation.resolve();
+      assert.equal(await sending, true);
+      assert.deepEqual(order, ['create', 'optimistic', 'observe', 'seeded', 'submit']);
+    } finally {
+      restoreWindow();
+    }
+  });
+
+  it('removes the unsent session and surfaces an observation barrier failure', async () => {
+    const activeIdRef = { current: undefined as string | undefined };
+    const removed: string[] = [];
+    const errors: string[] = [];
+    let submissions = 0;
+    const restoreWindow = installWindow({
+      newTasks: { create: async () => ({ id: 'session-1' }) },
+      sessions: {
+        submitMessage: async () => {
+          submissions += 1;
+          return { ok: true, attachments: [], skillInvocation: { loaded: [], failed: [] } };
+        },
+        remove: async (sessionId: string) => {
+          removed.push(sessionId);
+        },
+      },
+    });
+
+    try {
+      const actions = createAppShellChatActions({
+        ...createActionsDeps(),
+        activeIdRef,
+        activateSessionForFirstSend: async (sessionId) => {
+          activeIdRef.current = sessionId;
+          throw new Error('Timed out while preparing the new Session event stream');
+        },
+        retireSession: (sessionId) => {
+          if (activeIdRef.current === sessionId) activeIdRef.current = undefined;
+        },
+        isNewChatSendSurfaceActive: () => activeIdRef.current === undefined,
+        isShellSurfaceOwnerActive: (owner) =>
+          owner.navSection === 'sessions' && owner.sessionId === activeIdRef.current,
+        toastApi: {
+          error: (_title, description) => {
+            if (description) errors.push(description);
+          },
+          info: () => undefined,
+        },
+      });
+      assert.equal(await actions.send('hello'), false);
+    } finally {
+      restoreWindow();
+    }
+
+    assert.equal(submissions, 0);
+    assert.deepEqual(removed, ['session-1']);
+    assert.equal(activeIdRef.current, undefined);
+    assert.deepEqual(errors, ['The message could not be sent. Try again later.']);
   });
 
   it('leaves an EXISTING session alone when its send rejects', async () => {
@@ -327,13 +557,89 @@ describe('composer first-send cleanup', () => {
     assert.deepEqual(removed, []);
   });
 
-  it('returns a sparse existing session to latest before sending', async () => {
+  it('does not report a resolved Session from an existing-Session send', async () => {
+    // `onSessionResolved` is the contract for a Session this send created and
+    // whose first message projected (the new-Session branch). An existing-
+    // Session send must never fire it, or a consumer binding follow-up state
+    // to a newly resolved Session (e.g. a Work Board start claim) would bind
+    // it to an unrelated pre-existing conversation.
+    let resolved = 0;
+    const restoreWindow = installWindow({
+      sessions: {
+        submitMessage: async () => ({
+          ok: true,
+          attachments: [],
+          skillInvocation: { loaded: [], failed: [] },
+        }),
+      },
+    });
+
+    try {
+      const actions = createAppShellChatActions({
+        ...createActionsDeps(),
+        activeIdRef: { current: 'existing-session' },
+      });
+      const result = await actions.send('hello', undefined, {
+        onSessionResolved: () => {
+          resolved += 1;
+        },
+      });
+      assert.equal(result, true);
+    } finally {
+      restoreWindow();
+    }
+
+    assert.equal(resolved, 0);
+  });
+
+  it('does not report a resolved Session when the first send is outcome_unknown', async () => {
+    // `onSessionResolved` is the contract for a Session this send created AND
+    // whose first message projected. `outcome_unknown` maps to `unreconciled`:
+    // `send()` intentionally returns `true` (the Message may well have been
+    // admitted), but the callback must not fire — a consumer binding follow-up
+    // state to a newly resolved Session (e.g. a Work Board start claim) would
+    // otherwise bind to a Session whose first message was never confirmed.
+    let resolved = 0;
+    const removed: string[] = [];
+    const restoreWindow = installWindow({
+      newTasks: { create: async () => ({ id: 'session-1' }) },
+      sessions: {
+        submitMessage: async () => ({
+          ok: false,
+          reason: 'outcome_unknown' as const,
+        }),
+        remove: async (sessionId: string) => {
+          removed.push(sessionId);
+        },
+      },
+    });
+
+    try {
+      const actions = createAppShellChatActions(createActionsDeps());
+      const result = await actions.send('hello', undefined, {
+        onSessionResolved: () => {
+          resolved += 1;
+        },
+      });
+      // The row stays for canonical transcript to settle, so the session is
+      // kept and the send reports success — only the callback is silenced.
+      assert.equal(result, true);
+      assert.deepEqual(removed, []);
+    } finally {
+      restoreWindow();
+    }
+
+    assert.equal(resolved, 0);
+  });
+
+  it('cancels restoration and accepts a message while latest history catches up in the background', async () => {
     const latest = deferred<void>();
     const order: string[] = [];
     const activeIdRef = { current: 'existing-session' as string | undefined };
     const transcript = {
       store: {
-        range: () => ({ sessionId: 'existing-session', hasNewer: true }),
+        sessionId: 'existing-session',
+        range: () => ({ sessionId: 'existing-session', hasNewer: false }),
         snapshot: () => ({ messages: [] }),
       },
       async loadLatest() {
@@ -356,26 +662,134 @@ describe('composer first-send cleanup', () => {
         ...createActionsDeps(),
         activeIdRef,
         transcriptRangeRef,
+        onFollowLatest: (sessionId) => prepareTranscriptForSend({
+          sessionId, currentSessionId: activeIdRef, controller: transcriptRangeRef,
+          cancel: () => { order.push('cancel-restore'); }, followLatest: () => {},
+        }),
       }).send('hello');
       await new Promise((resolve) => setImmediate(resolve));
-      assert.deepEqual(order, ['latest']);
-      latest.resolve();
+      assert.deepEqual(order, ['cancel-restore', 'latest', 'send']);
       assert.equal(await sending, true);
-      assert.deepEqual(order, ['latest', 'send']);
+      latest.resolve();
+      assert.deepEqual(order, ['cancel-restore', 'latest', 'send']);
     } finally {
       restoreWindow();
     }
   });
-});
 
-function deferred<T>() {
-  let resolve!: (value: T | PromiseLike<T>) => void;
-  const promise = new Promise<T>((settle) => {
-    resolve = settle;
+  it('refresh waits for durable messages without bypassing range publication', async () => {
+    const deps = createActionsDeps();
+    deps.activeIdRef.current = 'session';
+    let durable = false;
+    const durableAnswer = { id: 'answer' };
+    let publishedAnswer = { id: 'answer' };
+    const ready = deferred<void>();
+    const controller = {
+      ready: () => ready.promise,
+      waitForDurableMessage: async () => { durable = true; return true; },
+      store: {
+        snapshot: () => ({ sessionId: 'session', messages: [durableAnswer] }),
+        hasDurableMessage: () => durable,
+      },
+    } as unknown as DesktopTranscriptRangeController;
+    const dependencies = {
+      ...deps,
+      transcriptRangeRef: { current: controller },
+      isMessagePublished: (message: unknown) => message === publishedAnswer,
+    };
+    const actions = createAppShellChatActions(dependencies);
+    const refresh = actions.refreshMessages('session', { requiredAssistantMessageId: 'answer' });
+    assert.equal(durable, false);
+    ready.resolve();
+    assert.equal(await refresh, false, 'durability cannot retire the live answer before publication');
+    publishedAnswer = durableAnswer;
+    assert.equal(await actions.refreshMessages('session', { requiredAssistantMessageId: 'answer' }), true);
   });
-  return { promise, resolve };
-}
 
+  it('an in-flight refresh reads publication that commits after the call began', async () => {
+    const deps = createActionsDeps();
+    deps.activeIdRef.current = 'session';
+    const answer = { type: 'assistant', id: 'answer', text: 'done', ts: 1 } as StoredMessage;
+    const ready = deferred<void>();
+    const controller = {
+      ready: () => ready.promise,
+      store: {
+        snapshot: () => ({ sessionId: 'session', messages: [answer] }),
+        hasDurableMessage: () => true,
+      },
+    } as unknown as DesktopTranscriptRangeController;
+    const { root } = installReactRenderer();
+    let publication!: ReturnType<typeof useAppShellSessionUiState>['publication'];
+    function Probe(): null {
+      publication = useAppShellSessionUiState(
+        [], undefined, deps.activeIdRef,
+        (_sessionId, _messages, _controller: DesktopTranscriptRangeController) => true,
+      ).publication;
+      return null;
+    }
+    try {
+      act(() => root.render(createElement(Probe)));
+      const actions = createAppShellChatActions({
+        ...deps, transcriptRangeRef: { current: controller },
+        isMessagePublished: publication.isMessagePublished,
+      });
+      const refresh = actions.refreshMessages('session', { requiredAssistantMessageId: 'answer' });
+      act(() => {
+        publication.messagesRef.current = [answer];
+        publication.setMessagesState([answer]);
+      });
+      ready.resolve();
+      assert.equal(await refresh, true, 'the original invocation must see the new publication');
+      assert.equal(publication.isMessagePublished({ ...answer }), false, 'same id is not the published version');
+    } finally {
+      cleanupFakeDom();
+    }
+  });
+
+  for (const initialized of [false, true]) {
+  it(`does not navigate the previous Session controller (${initialized ? 'initialized' : 'opening'}) while sending`, async () => {
+    const submissions: string[] = [];
+    let latestReads = 0;
+    const transcript = {
+      store: {
+        sessionId: 'previous-session',
+        range: () => {
+          if (!initialized) throw new Error('Desktop transcript range is not initialized');
+          return { sessionId: 'previous-session' };
+        },
+      },
+      loadLatest: async () => { latestReads += 1; },
+    } as unknown as DesktopTranscriptRangeController;
+    const restoreWindow = installWindow({
+      sessions: {
+        submitMessage: async (sessionId: string) => {
+          submissions.push(sessionId);
+          return { ok: true, attachments: [], skillInvocation: { loaded: [], failed: [] } };
+        },
+      },
+    });
+    const activeIdRef = { current: 'selected-session' };
+    const transcriptRangeRef = { current: transcript };
+    try {
+      const result = await createAppShellChatActions({
+        ...createActionsDeps(),
+        activeIdRef,
+        transcriptRangeRef,
+        onFollowLatest: (sessionId) => prepareTranscriptForSend({
+          sessionId, currentSessionId: activeIdRef, controller: transcriptRangeRef,
+          cancel: () => {},
+          followLatest: (sessionId) => { assert.equal(sessionId, 'selected-session'); },
+        }),
+      }).send('hello');
+      assert.equal(result, true);
+      assert.deepEqual(submissions, ['selected-session']);
+      assert.equal(latestReads, 0, 'the previous Session must not be navigated');
+    } finally {
+      restoreWindow();
+    }
+  });
+  }
+});
 /**
  * #1433 round 5: the failure feedback for a send is addressed to the surface
  * that sent, and `showModelSetupToast` is not just a toast — it ends in
@@ -417,24 +831,6 @@ describe('composer send failure feedback', () => {
     }
 
     assert.deepEqual(setupToasts, [], 'a stale surface must not be navigated to 设置 · 模型');
-  });
-
-  it('does not invent a live turn when the send never lands', async () => {
-    const turnState = createTurnState();
-    const restoreWindow = installWindow(readinessFailure());
-
-    try {
-      const actions = createAppShellChatActions({
-        ...createActionsDeps(),
-        activeIdRef: { current: 'session-a' },
-        setLiveTurnBySession: turnState.setLiveTurnBySession,
-      });
-      assert.equal(await actions.send('hello'), false);
-    } finally {
-      restoreWindow();
-    }
-
-    assert.deepEqual(turnState.liveTurnBySession, {}, 'the arm must be disarmed');
   });
 
   it('still answers the surface that is actually waiting', async () => {

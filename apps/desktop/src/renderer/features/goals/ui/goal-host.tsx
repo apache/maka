@@ -19,6 +19,7 @@
 
 import type { GoalArmInput, GoalArmOutcome } from '../ports.js';
 import { GoalDialog } from './goal-dialog.js';
+import { useGoalHostModel } from './goal-provider.js';
 
 export interface GoalHostModel {
   dialogSessionId?: string;
@@ -26,7 +27,12 @@ export interface GoalHostModel {
   closeDialog(): void;
 }
 
-export function GoalHost({ model }: { model: GoalHostModel }) {
+export function GoalHost() {
+  return <GoalHostView model={useGoalHostModel()} />;
+}
+
+/** Environment-free view seam for focused tests and Storybook. */
+export function GoalHostView({ model }: { model: GoalHostModel }) {
   return (
     <GoalDialog
       {...(model.dialogSessionId
