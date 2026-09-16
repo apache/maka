@@ -19,13 +19,20 @@
 
 import { randomUUID } from 'node:crypto';
 import type { SessionEvent } from '@maka/core/events';
-import type { AgentBackend, BackendSendInput } from '@maka/core/backend-types';
+import type {
+  AgentBackend,
+  BackendSendInput,
+  HostedFormSettlement,
+} from '@maka/core/backend-types';
+import type { FormRequestEvent } from '@maka/core/events';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import { AsyncEventQueue } from './async-queue.js';
 import type {
   PluginExecutorBinding,
   PluginExecutorOutputEvent,
+  PluginExecutorPermissionRequest,
+  PluginExecutorPermissionResult,
   PluginExecutorResult,
 } from './plugin-executor-service.js';
 
@@ -140,6 +147,8 @@ export class PluginExecutorBackend implements AgentBackend {
             if (event.type === 'thinking_delta') thinkingText += event.text;
             this.#publishOutputEvent(turnId, messageId, event, toolUseIds, queue);
           },
+          onPermissionRequest: (request) =>
+            this.#requestPermission(input, request, signal, toolUseIds, queue),
         },
       );
     } catch (error) {
@@ -172,6 +181,85 @@ export class PluginExecutorBackend implements AgentBackend {
       return;
     }
     this.#publishResult(turnId, messageId, result, queue);
+  }
+
+  async #requestPermission(
+    input: BackendSendInput,
+    request: PluginExecutorPermissionRequest,
+    signal: AbortSignal,
+    toolUseIds: ReadonlyMap<string, string>,
+    queue: AsyncEventQueue<SessionEvent>,
+  ): Promise<PluginExecutorPermissionResult> {
+    const hosted = input.hostedInteraction;
+    if (!hosted || signal.aborted) return { outcome: 'cancelled' };
+    const requestId = this.#newId();
+    const event: FormRequestEvent = {
+      type: 'form_request',
+      id: this.#newId(),
+      turnId: input.turnId,
+      ts: this.#now(),
+      requestId,
+      toolUseId: toolUseIds.get(request.toolCallId) ?? request.toolCallId,
+      message: request.title,
+      requester: {
+        name: this.#binding.identity.displayName,
+        source: this.#binding.identity.extensionId,
+      },
+      fields: [
+        {
+          kind: 'single_select',
+          name: 'optionId',
+          label: 'Permission',
+          required: true,
+          options: request.options.map((option) => ({
+            value: option.optionId,
+            label: option.name,
+          })),
+        },
+      ],
+    };
+    let settle!: (result: PluginExecutorPermissionResult) => void;
+    const answer = new Promise<PluginExecutorPermissionResult>((resolve) => {
+      settle = resolve;
+    });
+    let settled = false;
+    const finish = (result: PluginExecutorPermissionResult): void => {
+      if (settled) return;
+      settled = true;
+      settle(result);
+    };
+    const settlement: HostedFormSettlement = {
+      applyAnswer: async (result) => {
+        if (result.action !== 'accept') return finish({ outcome: 'cancelled' });
+        const selected = result.values.optionId;
+        if (
+          typeof selected !== 'string' ||
+          !request.options.some((option) => option.optionId === selected)
+        ) {
+          return finish({ outcome: 'cancelled' });
+        }
+        finish({ outcome: 'selected', optionId: selected });
+      },
+      applyClosure: async () => finish({ outcome: 'cancelled' }),
+    };
+    let admission: Promise<void> | undefined;
+    const onAbort = (): void => {
+      finish({ outcome: 'cancelled' });
+      void Promise.resolve().then(async () => {
+        await admission?.catch(() => undefined);
+        await hosted.withdrawFormRequest(requestId).catch(() => undefined);
+      });
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+    try {
+      admission = hosted.admitFormRequest({ request: event, settlement });
+      await admission;
+      if (signal.aborted) return { outcome: 'cancelled' };
+      queue.push(event);
+      return await answer;
+    } finally {
+      signal.removeEventListener('abort', onAbort);
+    }
   }
 
   #closeOptionalOutput(
@@ -343,7 +431,10 @@ export class PluginExecutorBackend implements AgentBackend {
       toolUseId,
       providerExecuted: true,
       isError: event.isError ?? false,
-      content: { kind: 'text', text: event.text },
+      content:
+        event.content.kind === 'text'
+          ? event.content
+          : { kind: 'file_diff', paths: [...event.content.paths], diff: event.content.diff },
     });
   }
 

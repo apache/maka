@@ -209,6 +209,7 @@ import {
 } from './project-directory-authority.js';
 import { HostProjectCatalogCoordinator } from './project-catalog-coordinator.js';
 import { HostProjectMembershipGate } from './project-membership-gate.js';
+import { HostBuiltinExternalAgentPluginCoordinator } from './builtin-external-agent-plugins.js';
 import { HostPluginPlatformCoordinator } from './plugin-platform-coordinator.js';
 import { HostPluginPlatform } from './plugin-platform.js';
 import { RootAdmissionOwner } from './root-admission-owner.js';
@@ -389,6 +390,11 @@ export async function createExecutionRuntimeHostComposition(
     const pluginPlatformCoordinator = new HostPluginPlatformCoordinator(pluginPlatform);
     const openedProjectCatalog = storage.projectCatalog;
     const runtimePolicyStores = storage.runtimePolicy;
+    const builtinExternalAgentPlugins = new HostBuiltinExternalAgentPluginCoordinator({
+      platform: pluginPlatform,
+      controlDirectory: context.owner.controlDirectory,
+      readPolicy: () => runtimePolicyStores.runtimePolicy.getSnapshot(),
+    });
     const oauthCredentials = new HostOAuthExecutionAuthority(runtimePolicyStores);
     const openedScheduledTaskStore = storage.scheduledTasks;
     const openedPlanStore = storage.plan;
@@ -1969,6 +1975,7 @@ export async function createExecutionRuntimeHostComposition(
     });
     async function applyRuntimePolicyMutationEffects(): Promise<void> {
       try {
+        await builtinExternalAgentPlugins.reconcile();
         await requireMemory(memory).refreshAfterPolicyMutation();
       } catch (error) {
         context.requestDrain();
@@ -2507,6 +2514,10 @@ export async function createExecutionRuntimeHostComposition(
         recovery: { state: () => pluginPlatform!.recover() },
         drain: [() => pluginPlatform!.beginDrain()],
         close: [() => pluginPlatform!.close()],
+      }),
+      createRuntimeHostDomainModule({
+        id: 'builtin-external-agent-plugins',
+        recovery: { state: () => builtinExternalAgentPlugins.recover() },
       }),
       createRuntimeHostDomainModule({
         id: 'memory',
