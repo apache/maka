@@ -665,6 +665,13 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
           result,
           () => this.#closeSessionSubscription(result.subscriptionId),
           (query) => this.request('session.transcript.page', query, requestTimeoutMs),
+          async () => {
+            await this.request(
+              'subscription.ready',
+              { subscriptionId: result.subscriptionId },
+              requestTimeoutMs,
+            );
+          },
         );
         this.#subscriptions.set(result.subscriptionId, subscription);
         return subscription;

@@ -170,9 +170,9 @@ export class RuntimeHostSessionSubscriptionOwner {
       this.#attempt = attempt;
       previous.replica?.close();
       await previous.handle.close().catch(() => undefined);
-      await this.#drainPendingFrames(attempt);
       attempt.phase = 'active';
       attempt.preparationFailure = undefined;
+      await attempt.handle.ready();
     } catch (error) {
       const failure = asError(error);
       if (attempt && this.#attempt === attempt) {
@@ -252,9 +252,9 @@ export class RuntimeHostSessionSubscriptionOwner {
         activate();
         this.#candidate = undefined;
         this.#attempt = attempt;
-        await this.#drainPendingFrames(attempt);
         attempt.phase = "active";
         attempt.preparationFailure = undefined;
+        await attempt.handle.ready();
       } catch (error) {
         if (this.#candidate === attempt) this.#candidate = undefined;
         if (this.#attempt === attempt) this.#attempt = undefined;
@@ -367,7 +367,12 @@ export class RuntimeHostSessionSubscriptionOwner {
         if (frame.kind === "subscription.closed") {
           throw subscriptionClosedError(frame.reason);
         }
-        if (attempt.phase !== 'active') {
+        if (attempt.phase === 'preparing') {
+          // The Host holds frames until `ready()`, so one arriving here is a
+          // broken contract rather than a consumer falling behind.
+          throw new Error('Runtime Host sent a Session frame before the subscriber was ready');
+        }
+        if (attempt.phase === 'retiring') {
           const frameBytes = Buffer.byteLength(JSON.stringify(frame), 'utf8');
           if (
             attempt.pendingFrames.length >= MAX_PENDING_FRAMES ||

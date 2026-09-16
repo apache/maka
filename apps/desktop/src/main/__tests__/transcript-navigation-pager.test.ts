@@ -159,7 +159,7 @@ async function openReplica(ledger: Ledger, throughSequence: number | null) {
       queue: { hostEpoch: HOST_EPOCH, queueRevision: 0, steering: [], followup: [] },
       interactions: { pending: [] },
     },
-  }, async () => undefined, (request) => readSessionTranscriptPage({ reader, state: opened.state, request }));
+  }, async () => undefined, (request) => readSessionTranscriptPage({ reader, state: opened.state, request }), async () => undefined);
   const decodeMessage = (value: unknown) => decodeStoredMessage(markPersisted<StoredMessage>(value));
   const replica = await DesktopTranscriptReplica.prepare(runtimeHostSessionFixture({
     snapshot: subscription.snapshot, transcript: Promise.resolve([]), events: subscription,

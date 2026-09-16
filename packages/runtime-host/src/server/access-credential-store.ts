@@ -99,6 +99,7 @@ export const SESSION_GUEST_OPERATION_GRANTS = Object.freeze([
   'subscription.open',
   'subscription.close',
   'subscription.pty_interest.set',
+  'subscription.ready',
   'session.transcript.page',
 ] as const satisfies readonly OperationKey[]);
 

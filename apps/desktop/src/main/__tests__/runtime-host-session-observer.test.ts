@@ -2262,7 +2262,6 @@ test('does not activate a refresh candidate that fails during commit preparation
   const accepted: SubscriptionFrame[] = [];
   let opens = 0;
   let preparations = 0;
-  let activated = false;
   let firstCloses = 0;
   const owner = new RuntimeHostSessionSubscriptionOwner({
     client: {
@@ -2302,20 +2301,11 @@ test('does not activate a refresh candidate that fails during commit preparation
 
   const refresh = owner.refresh();
   await waitFor(() => preparations === 2);
-  secondEvents.push({
-    kind: 'subscription.closed',
-    hostEpoch: 'host-1',
-    subscriptionId: 'subscription-2',
-    sequence: 1,
-    reason: 'slow_consumer',
-  });
-  await assert.rejects(refresh, /slow consumer/);
-  activation.resolve(() => {
-    activated = true;
-  });
-  await new Promise((resolve) => setImmediate(resolve));
+  activation.reject(new Error('commit preparation failed'));
+  await assert.rejects(refresh, /commit preparation failed/);
 
-  assert.equal(activated, false);
+  // Retiring the previous subscription is the first thing activation does, so
+  // it still being open is how a skipped activation shows.
   assert.equal(firstCloses, 0);
   firstEvents.push(deltaFrame(1, 0, 'still live'));
   await waitFor(() => accepted.length === 1);
@@ -2399,10 +2389,9 @@ test('lets an active recovery supersede a concurrent cold refresh', async () => 
   await owner.close();
 });
 
-test("retries an initial subscription closed before commit and resyncs once", async () => {
+test("retries an initial subscription evicted before readiness and resyncs once", async () => {
   const firstEvents = new AsyncFrameQueue();
   const secondEvents = new AsyncFrameQueue();
-  const firstTranscript = deferred<StoredMessage[]>();
   const secondTranscript = deferred<StoredMessage[]>();
   const recoveredSessions: string[] = [];
   let openCount = 0;
@@ -2414,7 +2403,7 @@ test("retries an initial subscription closed before commit and resyncs once", as
         return runtimeHostSessionFixture({
           snapshot: continuitySnapshot(),
           activeAssistantStreams: [],
-          transcript: first ? firstTranscript.promise : secondTranscript.promise,
+          transcript: first ? Promise.resolve([]) : secondTranscript.promise,
           events: first ? firstEvents : secondEvents,
           async close() {
             (first ? firstEvents : secondEvents).end();
@@ -2427,16 +2416,8 @@ test("retries an initial subscription closed before commit and resyncs once", as
       recoveredSessions.push(sessionId);
     },
   });
-  let observingSettled = false;
-  const observing = observer.observe("session-1", "observer-1", eventTarget(16));
-  void observing.then(
-    () => {
-      observingSettled = true;
-    },
-    () => {
-      observingSettled = true;
-    },
-  );
+  // The Host evicts a subscriber that has not declared readiness by queueing
+  // this frame; it is released the moment readiness arrives.
   firstEvents.push({
     kind: "subscription.closed",
     hostEpoch: "host-1",
@@ -2444,14 +2425,15 @@ test("retries an initial subscription closed before commit and resyncs once", as
     sequence: 1,
     reason: "slow_consumer",
   });
-  firstTranscript.resolve([]);
+  const observing = observer.observe("session-1", "observer-1", eventTarget(16));
   await waitFor(() => openCount === 2);
-  assert.equal(observingSettled, false);
   assert.deepEqual(recoveredSessions, []);
 
   secondTranscript.resolve([]);
+  await waitFor(() => recoveredSessions.length === 1);
   await observing;
   assert.deepEqual(recoveredSessions, ["session-1"]);
+  assert.equal(openCount, 2);
   await observer.close();
 });
 
@@ -2528,7 +2510,7 @@ test("finishes a watched predecessor after initial catch-up recovery", async () 
   await observer.close();
 });
 
-test("keeps a joining observer pending across repeated catch-up eviction", async () => {
+test("seeds a joining observer from the attempt that survives repeated catch-up eviction", async () => {
   const firstEvents = new AsyncFrameQueue();
   const replacementEvents = new AsyncFrameQueue();
   const finalEvents = new AsyncFrameQueue();
@@ -2592,15 +2574,8 @@ test("keeps a joining observer pending across repeated catch-up eviction", async
     "observer-2",
     joiningTarget,
   );
-  let joiningSettled = false;
-  void joining.then(
-    () => {
-      joiningSettled = true;
-    },
-    () => {
-      joiningSettled = true;
-    },
-  );
+  // Held until the replacement declares readiness, which it only does once its
+  // transcript lands — so the observer joins an attempt already evicted.
   replacementEvents.push({
     kind: "subscription.closed",
     hostEpoch: "host-1",
@@ -2610,8 +2585,6 @@ test("keeps a joining observer pending across repeated catch-up eviction", async
   });
   replacementTranscript.resolve([]);
   await waitFor(() => openCount === 3);
-  await Promise.resolve();
-  assert.equal(joiningSettled, false);
   finalTranscript.resolve([
     {
       type: "assistant" as const,
@@ -2623,6 +2596,11 @@ test("keeps a joining observer pending across repeated catch-up eviction", async
     },
   ]);
   await joining;
+  await waitFor(() =>
+    joiningTarget.events.some(
+      (event) => event.type === "text_delta" && event.text === "Hello",
+    ),
+  );
 
   assert.equal(firstTarget.events.some((event) => event.type === "error"), false);
   assert.equal(joiningTarget.events.some((event) => event.type === "error"), false);

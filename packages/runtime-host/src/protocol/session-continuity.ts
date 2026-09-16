@@ -380,6 +380,21 @@ export const SESSION_CONTINUITY_OPERATION_SPECS = {
     decodeInput: decodeSubscriptionCloseInput,
     decodeOutput: decodeSubscriptionCloseResult,
   }),
+  /**
+   * The subscriber can take frames now.
+   *
+   * The Host holds a new subscription's frames until this arrives. What it
+   * holds includes the in-flight answer a mid-stream subscriber has not seen,
+   * which is as large as the answer and so cannot be handed to a client that
+   * is still assembling the state those frames apply to.
+   */
+  'subscription.ready': defineOperation({
+    mode: 'control',
+    availability: 'ready',
+    errors: SUBSCRIPTION_CLOSE_ERRORS,
+    decodeInput: decodeSubscriptionCloseInput,
+    decodeOutput: decodeSubscriptionCloseResult,
+  }),
 } as const;
 
 export function decodeSubscriptionFrame(value: unknown): SubscriptionFrame {

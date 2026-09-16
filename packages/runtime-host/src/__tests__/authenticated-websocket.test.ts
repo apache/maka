@@ -260,6 +260,7 @@ test('one Local IPC owner and one authenticated WebSocket Client control the sam
       sessionId: 'shared-session',
       transcript: { kind: 'none' },
     });
+    await guestSubscription.ready();
     const observationGrant = preparedGuest.grants.find(
       (grant) => grant.kind === 'session_observation',
     )!;

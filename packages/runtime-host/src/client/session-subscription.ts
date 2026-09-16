@@ -79,6 +79,8 @@ export interface RuntimeHostSessionSubscription extends AsyncIterable<Subscripti
   loadTranscriptPage(
     input: Omit<SessionTranscriptPageInput, 'subscriptionId'>,
   ): Promise<SessionTranscriptPage>;
+  /** Frames are held by the Host until this resolves. */
+  ready(): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -104,6 +106,8 @@ export class ClientSessionSubscription
   readonly activeAssistantStreams: readonly SessionAssistantStreamIdentity[];
   readonly transcriptBootstrap: SessionTranscriptBootstrap | null;
   readonly #requestClose: () => Promise<void>;
+  readonly #requestReady: () => Promise<void>;
+  #readyTask: Promise<void> | undefined;
   readonly #readTranscriptPage: (
     input: SessionTranscriptPageInput,
   ) => Promise<SessionTranscriptPage>;
@@ -132,6 +136,7 @@ export class ClientSessionSubscription
     result: SubscriptionOpenResult,
     requestClose: () => Promise<void>,
     readTranscriptPage: (input: SessionTranscriptPageInput) => Promise<SessionTranscriptPage>,
+    requestReady: () => Promise<void>,
   ) {
     this.hostEpoch = result.hostEpoch;
     this.subscriptionId = result.subscriptionId;
@@ -144,6 +149,19 @@ export class ClientSessionSubscription
     this.#latestTranscriptThroughSequence = result.transcript?.durable.throughSequence ?? null;
     this.#requestClose = requestClose;
     this.#readTranscriptPage = readTranscriptPage;
+    this.#requestReady = requestReady;
+  }
+
+  /**
+   * Take frames from here on.
+   *
+   * Until this is called the Host holds them, so a subscriber assembles the
+   * state frames apply to without an in-flight answer of any size arriving
+   * against a queue sized for live traffic.
+   */
+  ready(): Promise<void> {
+    this.#readyTask ??= this.#requestReady();
+    return this.#readyTask;
   }
 
   [Symbol.asyncIterator](): AsyncIterator<SubscriptionFrame> {

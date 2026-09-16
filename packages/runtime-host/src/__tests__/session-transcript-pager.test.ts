@@ -24,7 +24,7 @@ import {
   type StoredMessage,
 } from '@maka/core/session';
 import { markPersisted } from '@maka/core/persisted-value';
-import { ClientSessionSubscription } from '../client/session-subscription.js';
+import { clientSubscription } from './fixtures/client-session-subscription.js';
 import { SESSION_CONTINUITY_SCHEMA_VERSION } from '../protocol/index.js';
 import {
   createSessionTranscriptBootstrap,
@@ -318,7 +318,7 @@ test('opens the complete latest Turn when bootstrap starts inside its assistant'
   assert.equal(bootstrap.durable.rangeBoundarySequence, 0);
   assert.equal(bootstrap.durable.protectedTurnSequence, 1);
   assert.ok(bootstrap.durable.nextCursor);
-  const subscription = new ClientSessionSubscription(
+  const subscription = clientSubscription(
     {
       hostEpoch: 'host-1',
       subscriptionId: 'subscription-1',
@@ -461,7 +461,7 @@ test('pages through a terminal Turn that exceeds the Host range message bound', 
   assert.equal(bootstrap.durable.protectedTurnSequence, null);
   assert.ok(bootstrap.durable.nextCursor);
 
-  const subscription = new ClientSessionSubscription(
+  const subscription = clientSubscription(
     {
       hostEpoch: 'host-1',
       subscriptionId: 'subscription-1',
@@ -916,7 +916,7 @@ async function decodeSparseTranscriptRanges(
     maxBytes: 16 * 1024,
     projection,
   });
-  const subscription = new ClientSessionSubscription(
+  const subscription = clientSubscription(
     {
       hostEpoch: 'host-1',
       subscriptionId,

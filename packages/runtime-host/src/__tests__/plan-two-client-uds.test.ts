@@ -106,6 +106,7 @@ test('two Clients and a restarted production Host share one retry-safe Plan auth
       sessionId: session.id,
       transcript: { kind: 'none' },
     });
+    await subscription.ready();
 
     const first = await desktop.request('plan.query', {
       kind: 'list_start',

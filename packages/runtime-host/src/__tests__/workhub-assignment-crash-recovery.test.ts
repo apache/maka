@@ -427,6 +427,7 @@ test('real Host uses the independent Memory provider for messages, history and W
       { sessionId: 'memory-task', transcript: { kind: 'tail', maxBytes: 16384 } },
       TIMEOUT,
     );
+    await subscription.ready();
     try {
       const history = subscription.transcriptBootstrap;
       assert.ok(history);

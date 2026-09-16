@@ -40,7 +40,7 @@ import {
   RuntimeHostSubscriptionError,
   type RuntimeHostConnection,
 } from '../client/index.js';
-import { ClientSessionSubscription } from '../client/session-subscription.js';
+import { clientSubscription } from './fixtures/client-session-subscription.js';
 import { prepareRuntimeHostEndpoint } from '../control/endpoint.js';
 import { removeHostRegistration, writeHostRegistration } from '../control/registration.js';
 import {
@@ -146,7 +146,7 @@ test('unobserved PTY bytes do not consume the Session iterator or sequence', asy
 });
 
 test('PTY callbacks bypass a stalled Session iterator and isolate consumer failures', async () => {
-  const subscription = new ClientSessionSubscription(
+  const subscription = clientSubscription(
     openResult('host-1', 'subscription-1'),
     async () => undefined,
     async () => {
@@ -182,7 +182,7 @@ test('PTY callbacks bypass a stalled Session iterator and isolate consumer failu
 });
 
 test('domain callbacks validate identity, support unsubscribe, and stop on close', async () => {
-  const subscription = new ClientSessionSubscription(
+  const subscription = clientSubscription(
     openResult('host-1', 'subscription-domain'),
     async () => undefined,
     async () => {
@@ -612,7 +612,7 @@ test('decodes one bounded page without walking the remaining transcript', async 
   const encoded = Buffer.from(JSON.stringify(message), 'utf8');
   const splitAt = Math.floor(encoded.byteLength / 2);
   const requests: Array<{ cursor: string | null; maxBytes: number }> = [];
-  const subscription = new ClientSessionSubscription(
+  const subscription = clientSubscription(
     openResult('host-1', 'subscription-bounded-page', {
       durable: {
         ...transcriptPage({
@@ -718,7 +718,7 @@ test('assembles the complete edge Turn while paging newer transcript', async () 
     rangeBoundarySequence: 1,
     protectedTurnSequence: 1,
   };
-  const subscription = new ClientSessionSubscription(
+  const subscription = clientSubscription(
     openResult('host-1', 'subscription-newer-turn', {
       durable: initial,
     }),
@@ -771,7 +771,7 @@ test('loads a durable transcript whose sequences are sparse', async () => {
       'utf8',
     ),
   );
-  const subscription = new ClientSessionSubscription(
+  const subscription = clientSubscription(
     openResult('host-1', 'subscription-projected', {
       durable: {
         ...transcriptPage({
@@ -812,7 +812,7 @@ test('rejects a durable message that does not match its payload digest', async (
     }),
     'utf8',
   );
-  const subscription = new ClientSessionSubscription(
+  const subscription = clientSubscription(
     openResult('host-1', 'subscription-digest-mismatch', {
       durable: transcriptPage({
         rawBytes: message.byteLength,
@@ -871,7 +871,7 @@ test('rejects a transcript cursor that does not advance', async () => {
       },
     ],
   });
-  const subscription = new ClientSessionSubscription(
+  const subscription = clientSubscription(
     openResult('host-1', 'subscription-stuck-cursor', {
       durable: repeated,
     }),
@@ -899,7 +899,7 @@ test('close stops transcript pagination after the in-flight page', async () => {
   );
   const page = deferred<ReturnType<typeof transcriptPage>>();
   let pageRequests = 0;
-  const subscription = new ClientSessionSubscription(
+  const subscription = clientSubscription(
     openResult('host-1', 'subscription-closing', {
       durable: transcriptPage({
         rawBytes: Math.floor(message.byteLength / 2),

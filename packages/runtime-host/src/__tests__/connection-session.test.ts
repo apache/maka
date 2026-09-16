@@ -436,7 +436,7 @@ test('serial outbound writer reports its 2 MiB byte bound before its frame bound
   }
 });
 
-test('flushes concurrent subscription opens before activating their live frame streams', async () => {
+test('flushes concurrent subscription opens before the frames their readiness starts', async () => {
   const releaseWrites = deferred();
   const requestsEntered = deferred();
   const allWrites = deferred();
@@ -444,6 +444,13 @@ test('flushes concurrent subscription opens before activating their live frame s
     requestId: `open-${index}`,
     operation: 'subscription.open',
     input: { sessionId: `session-${index}`, transcript: { kind: 'none' } },
+  }));
+  // A Client learns a subscriptionId from the open result, so it cannot ask for
+  // frames before that result reaches it. These follow the same way.
+  const followUp = Array.from({ length: 16 }, (_, index) => ({
+    requestId: `ready-${index}`,
+    operation: 'subscription.ready',
+    input: { subscriptionId: `subscription-session-${index}` },
   }));
   const written: EncodedProtocolMessage[] = [];
   let aborted = false;
@@ -457,6 +464,9 @@ test('flushes concurrent subscription opens before activating their live frame s
     read: async () => {
       const frame = inbound.shift();
       if (frame) return frame;
+      await releaseWrites.promise;
+      const next = followUp.shift();
+      if (next) return next;
       return new Promise<never>((_resolve, reject) => {
         rejectRead = reject;
       });
@@ -464,7 +474,7 @@ test('flushes concurrent subscription opens before activating their live frame s
     write: async (message) => {
       await releaseWrites.promise;
       written.push(message);
-      if (written.length === 32) allWrites.resolve();
+      if (written.length === 48) allWrites.resolve();
     },
     closeAfterFlush: () => {
       resolveClosed();
@@ -525,6 +535,19 @@ test('flushes concurrent subscription opens before activating their live frame s
         ok: true,
         result: { subscriptionId: input.subscriptionId },
       }),
+      'subscription.ready': async (input) => {
+        const sessionId = input.subscriptionId.slice('subscription-'.length);
+        void sink
+          ?.send({
+            kind: 'subscription.session_projection',
+            hostEpoch: 'host-epoch',
+            subscriptionId: input.subscriptionId,
+            sequence: 1,
+            snapshot: largeSnapshot(sessionId),
+          })
+          .catch(() => undefined);
+        return { ok: true, result: { subscriptionId: input.subscriptionId } };
+      },
       'session.transcript.page': async () => ({
         ok: false,
         error: { code: 'operation_unavailable', message: 'not used' },
@@ -532,22 +555,7 @@ test('flushes concurrent subscription opens before activating their live frame s
     },
     attachConnection: (_connectionId, attachedSink) => {
       sink = attachedSink;
-      return {
-        activate: (subscriptionId) => {
-          const sessionId = subscriptionId.slice('subscription-'.length);
-          void sink
-            ?.send({
-              kind: 'subscription.session_projection',
-              hostEpoch: 'host-epoch',
-              subscriptionId,
-              sequence: 1,
-              snapshot: largeSnapshot(sessionId),
-            })
-            .catch(() => undefined);
-        },
-        abort() {},
-        close() {},
-      };
+      return { abort() {}, close() {} };
     },
   };
   const handlers: OperationHandlerMap = {
@@ -1734,6 +1742,17 @@ async function openSubscription(transport: FramedTransport, sessionId: string, r
   const response = decodeHostFrame(await transport.read(1_000));
   if ('kind' in response || response.operation !== 'subscription.open' || !response.ok) {
     throw new Error(`Unable to open ${sessionId} subscription`);
+  }
+  // Frames start where the subscriber says it can take them, which is what a
+  // Client does once it has the open result in hand.
+  await writeProtocolFrame(transport, {
+    requestId: `${requestId}-ready`,
+    operation: 'subscription.ready',
+    input: { subscriptionId: response.result.subscriptionId },
+  });
+  const ready = decodeHostFrame(await transport.read(1_000));
+  if ('kind' in ready || ready.operation !== 'subscription.ready' || !ready.ok) {
+    throw new Error(`Unable to start ${sessionId} subscription frames`);
   }
   return response.result;
 }

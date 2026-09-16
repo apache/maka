@@ -177,6 +177,9 @@ function subscription(
     loadTranscriptPage: async () => {
       throw new Error('Fake subscription does not expose transcript pages');
     },
+    ready: async () => {
+      lifecycle.push(`${sessionId}:ready`);
+    },
     close: async () => {
       lifecycle.push(`${sessionId}:close`);
     },

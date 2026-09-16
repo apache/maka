@@ -249,6 +249,16 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
             error: { code: 'not_found', message: 'Session subscription was not found' },
           };
     },
+    'subscription.ready': async (input, context) => {
+      if (!this.#ownedSubscriber(context.connectionId, input.subscriptionId)) {
+        return {
+          ok: false,
+          error: { code: 'not_found', message: 'Session subscription was not found' },
+        };
+      }
+      this.#activate(context.connectionId, input.subscriptionId);
+      return { ok: true, result: { subscriptionId: input.subscriptionId } };
+    },
     'session.transcript.page': (input, context) =>
       this.#readTranscriptPage(context.connectionId, input),
   };
@@ -315,9 +325,6 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
     });
     let attached = true;
     return {
-      activate: (subscriptionId) => {
-        if (attached) this.#activate(connectionId, subscriptionId);
-      },
       abort: (subscriptionId) => {
         if (attached) this.#abortSubscription(connectionId, subscriptionId);
       },

@@ -35,6 +35,7 @@ export function runtimeHostSessionFixture(input: {
   readonly transcriptBootstrap?: DesktopRuntimeHostSession['transcriptBootstrap'];
   decodeTranscriptPage?: DesktopRuntimeHostSession['decodeTranscriptPage'];
   loadTranscriptPage?: DesktopRuntimeHostSession['loadTranscriptPage'];
+  ready?: DesktopRuntimeHostSession['ready'];
   close(): Promise<void>;
 }): DesktopRuntimeHostSession {
   const sessionId = input.snapshot.session.sessionId;
@@ -42,13 +43,23 @@ export function runtimeHostSessionFixture(input: {
     throughSequence: null,
     durable: emptyPage(sessionId),
   };
+  // The Host holds a subscription's frames until the subscriber declares
+  // readiness, so a fixture that hands them over earlier would let an ordering
+  // bug pass.
+  let releaseFrames = (): void => undefined;
+  const readyGate = new Promise<void>((resolve) => {
+    releaseFrames = resolve;
+  });
   return {
     hostEpoch: 'host-1',
     subscriptionId: `subscription-${sessionId}`,
     snapshot: input.snapshot,
     activeAssistantStreams: input.activeAssistantStreams ?? [],
     transcriptBootstrap,
-    events: input.events,
+    events: (async function* () {
+      await readyGate;
+      yield* input.events;
+    })(),
     loadTranscript: () => input.transcript,
     decodeTranscriptPage: input.decodeTranscriptPage ??
       (async (page): Promise<DecodedSessionTranscriptPage<StoredMessage>> => ({
@@ -59,6 +70,10 @@ export function runtimeHostSessionFixture(input: {
       })),
     loadTranscriptPage: input.loadTranscriptPage ??
       (async () => emptyPage(sessionId)),
+    ready: async () => {
+      releaseFrames();
+      await input.ready?.();
+    },
     close: input.close,
   };
 }

@@ -43,7 +43,7 @@ import {
 import { SessionAdmissionGate } from '../server/session-admission-gate.js';
 import type { SessionContinuityFrameSink } from '../server/session-continuity-service.js';
 import type { SessionTranscriptReader } from '../server/session-transcript-reader.js';
-import { ClientSessionSubscription } from '../client/session-subscription.js';
+import { clientSubscription } from './fixtures/client-session-subscription.js';
 import { transcriptReader } from './fixtures/session-transcript-reader.js';
 import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
 
@@ -68,7 +68,7 @@ test('open is an inactive publication barrier and live sequence starts at nextSe
     new SessionAdmissionGate(),
   );
   const sink = new RecordingSink();
-  const connection = coordinator.attachConnection('connection-1', sink);
+  const connection = attachTestConnection(coordinator, 'connection-1', sink);
 
   const opening = coordinator.handlers['subscription.open'](
     { sessionId: SESSION_ID, transcript: { kind: 'none' } },
@@ -126,7 +126,7 @@ test('Guest revocation wins a concurrent subscription open', async () => {
       },
     },
   );
-  coordinator.attachConnection('guest-connection', new RecordingSink());
+  attachTestConnection(coordinator, 'guest-connection', new RecordingSink());
 
   const opening = coordinator.handlers['subscription.open'](
     { sessionId: SESSION_ID, transcript: { kind: 'none' } },
@@ -154,7 +154,7 @@ test('forwards the durable steering echo to subscribers as a session event', asy
     async () => canonical(),
     new SessionAdmissionGate(),
   );
-  const connection = coordinator.attachConnection('connection-1', sink);
+  const connection = attachTestConnection(coordinator, 'connection-1', sink);
   const opened = await open(coordinator, 'connection-1');
   connection.activate(opened.subscriptionId);
   await delayImmediate();
@@ -217,7 +217,7 @@ test('projects model-only user content out of Guest queue and steering frames', 
       subscribeGrantRevocations: () => () => undefined,
     },
   );
-  const connection = coordinator.attachConnection('guest-connection', sink);
+  const connection = attachTestConnection(coordinator, 'guest-connection', sink);
   const opened = await open(
     coordinator,
     'guest-connection',
@@ -267,7 +267,7 @@ test('open snapshot includes pending Interactions from the canonical projection'
     async () => canonical({ interactions: { pending: [pending] } }),
     new SessionAdmissionGate(),
   );
-  const connection = coordinator.attachConnection('connection-1', new RecordingSink());
+  const connection = attachTestConnection(coordinator, 'connection-1', new RecordingSink());
 
   const opened = await open(coordinator, 'connection-1');
   assert.deepEqual(opened.snapshot.interactions, { pending: [pending] });
@@ -282,7 +282,7 @@ test('open identifies every assistant stream that is still active and round-trip
     async () => canonical(),
     new SessionAdmissionGate(),
   );
-  coordinator.attachConnection('connection-1', new RecordingSink());
+  attachTestConnection(coordinator, 'connection-1', new RecordingSink());
   await open(coordinator, 'connection-1');
   await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', textEvent(1));
   await coordinator.acceptRuntimeEvent(
@@ -295,7 +295,7 @@ test('open identifies every assistant stream that is still active and round-trip
     messageId: 'message-3',
   });
 
-  coordinator.attachConnection('connection-2', new RecordingSink());
+  attachTestConnection(coordinator, 'connection-2', new RecordingSink());
   const active = await open(coordinator, 'connection-2');
   assert.deepEqual(active.activeAssistantStreams, [
     { kind: 'text', turnId: 'turn-1', messageId: 'message-1' },
@@ -322,7 +322,7 @@ test('open identifies every assistant stream that is still active and round-trip
     'run-1',
     textCompleteEvent('message-1', 'chunk-1'),
   );
-  coordinator.attachConnection('connection-3', new RecordingSink());
+  attachTestConnection(coordinator, 'connection-3', new RecordingSink());
   const remaining = await open(coordinator, 'connection-3');
   assert.deepEqual(remaining.activeAssistantStreams, [
     { kind: 'thinking', turnId: 'turn-1', messageId: 'message-2' },
@@ -340,7 +340,7 @@ test('open identifies every assistant stream that is still active and round-trip
     'run-1',
     textCompleteEvent('message-3', 'chunk-2'),
   );
-  coordinator.attachConnection('connection-4', new RecordingSink());
+  attachTestConnection(coordinator, 'connection-4', new RecordingSink());
   const completed = await open(coordinator, 'connection-4');
   assert.deepEqual(completed.activeAssistantStreams, []);
   coordinator.close();
@@ -353,7 +353,7 @@ test('publishes a non-prefix final value as an authoritative replacement', async
     new SessionAdmissionGate(),
   );
   const sink = new RecordingSink();
-  const connection = coordinator.attachConnection('connection-1', sink);
+  const connection = attachTestConnection(coordinator, 'connection-1', sink);
   const opened = await open(coordinator, 'connection-1');
   connection.activate(opened.subscriptionId);
 
@@ -400,7 +400,7 @@ test('coalesces reasoning parts and completes the step before later steps contin
     new SessionAdmissionGate(),
   );
   const sink = new RecordingSink();
-  const connection = coordinator.attachConnection('connection-1', sink);
+  const connection = attachTestConnection(coordinator, 'connection-1', sink);
   const opened = await open(coordinator, 'connection-1');
   connection.activate(opened.subscriptionId);
 
@@ -463,7 +463,7 @@ test('terminal fence suppresses ordinary refresh until the exact terminal cut pu
     new SessionAdmissionGate(),
   );
   const sink = new RecordingSink();
-  const connection = coordinator.attachConnection('connection-1', sink);
+  const connection = attachTestConnection(coordinator, 'connection-1', sink);
   const opened = await open(coordinator, 'connection-1');
   connection.activate(opened.subscriptionId);
 
@@ -511,7 +511,7 @@ test('detached canonical refreshes coalesce before Store I/O', async () => {
     new SessionAdmissionGate(),
   );
   const sink = new RecordingSink();
-  const connection = coordinator.attachConnection('connection-1', sink);
+  const connection = attachTestConnection(coordinator, 'connection-1', sink);
   const opened = await open(coordinator, 'connection-1');
   connection.activate(opened.subscriptionId);
 
@@ -540,7 +540,7 @@ test('in-flight canonical refresh observes an invalidation after its first read'
     new SessionAdmissionGate(),
   );
   const sink = new RecordingSink();
-  const connection = coordinator.attachConnection('connection-1', sink);
+  const connection = attachTestConnection(coordinator, 'connection-1', sink);
   const opened = await open(coordinator, 'connection-1');
   connection.activate(opened.subscriptionId);
 
@@ -575,7 +575,7 @@ test('reports a detached canonical publication failure to the Host lifecycle', a
     new SessionAdmissionGate(),
     (error) => observed.resolve(error),
   );
-  const connection = coordinator.attachConnection('connection-1', new RecordingSink());
+  const connection = attachTestConnection(coordinator, 'connection-1', new RecordingSink());
   const opened = await open(coordinator, 'connection-1');
   connection.activate(opened.subscriptionId);
 
@@ -591,7 +591,7 @@ test('rejects a live event that is not owned by the canonical root', async () =>
     async () => canonical(),
     new SessionAdmissionGate(),
   );
-  const connection = coordinator.attachConnection('connection-1', new RecordingSink());
+  const connection = attachTestConnection(coordinator, 'connection-1', new RecordingSink());
   const opened = await open(coordinator, 'connection-1');
   connection.activate(opened.subscriptionId);
 
@@ -609,7 +609,7 @@ test('coalesces Agent graph invalidations onto the Session subscription sequence
     new SessionAdmissionGate(),
   );
   const sink = new RecordingSink();
-  const connection = coordinator.attachConnection('connection-1', sink);
+  const connection = attachTestConnection(coordinator, 'connection-1', sink);
   const opened = await open(coordinator, 'connection-1');
   connection.activate(opened.subscriptionId);
 
@@ -648,7 +648,7 @@ test('coalesces typed domain invalidations without publishing continuity project
     new SessionAdmissionGate(),
   );
   const sink = new RecordingSink();
-  const connection = coordinator.attachConnection('connection-1', sink);
+  const connection = attachTestConnection(coordinator, 'connection-1', sink);
   const opened = await open(coordinator, 'connection-1');
   connection.activate(opened.subscriptionId);
 
@@ -695,7 +695,7 @@ test('fans one bounded Runtime Resource burst out to an inherited Session view',
     },
   );
   const sink = new RecordingSink();
-  const connection = coordinator.attachConnection('connection-1', sink);
+  const connection = attachTestConnection(coordinator, 'connection-1', sink);
   const outcome = await coordinator.handlers['subscription.open'](
     { sessionId: childSessionId, transcript: { kind: 'none' } },
     connectionContext('connection-1'),
@@ -704,7 +704,7 @@ test('fans one bounded Runtime Resource burst out to an inherited Session view',
   if (!outcome.ok) return;
   connection.activate(outcome.result.subscriptionId);
   const guestSink = new RecordingSink();
-  const guestConnection = coordinator.attachConnection('guest-connection', guestSink);
+  const guestConnection = attachTestConnection(coordinator, 'guest-connection', guestSink);
   const guestOutcome = await coordinator.handlers['subscription.open'](
     { sessionId: childSessionId, transcript: { kind: 'none' } },
     connectionContext('guest-connection', {
@@ -764,7 +764,7 @@ test('publishes live PTY bytes independently of the Session continuity sequence'
     new SessionAdmissionGate(),
   );
   const sink = new RecordingSink();
-  const connection = coordinator.attachConnection('connection-1', sink);
+  const connection = attachTestConnection(coordinator, 'connection-1', sink);
   const opened = await open(coordinator, 'connection-1');
   connection.activate(opened.subscriptionId);
 
@@ -835,7 +835,7 @@ test('PTY overflow is bounded and requests terminal-only recovery while Session 
   );
   const blocked = deferred<void>();
   const frames: SubscriptionFrame[] = [];
-  const connection = coordinator.attachConnection('connection-1', {
+  const connection = attachTestConnection(coordinator, 'connection-1', {
     async send(frame) {
       frames.push(frame);
       if (frame.kind === 'subscription.runtime_resource_pty_data' && frames.length === 1)
@@ -878,8 +878,8 @@ test('slow subscriber receives a terminal eviction without delaying another subs
   );
   const slowSink = new RecordingSink();
   const fastSink = new RecordingSink();
-  const slowConnection = coordinator.attachConnection('connection-slow', slowSink);
-  const fastConnection = coordinator.attachConnection('connection-fast', fastSink);
+  const slowConnection = attachTestConnection(coordinator, 'connection-slow', slowSink);
+  const fastConnection = attachTestConnection(coordinator, 'connection-fast', fastSink);
   const slow = await open(coordinator, 'connection-slow');
   const fast = await open(coordinator, 'connection-fast');
   fastConnection.activate(fast.subscriptionId);
@@ -918,8 +918,8 @@ test('coalesces queued assistant deltas instead of evicting a slow subscriber', 
   );
   const slowSink = new RecordingSink();
   const fastSink = new RecordingSink();
-  const slowConnection = coordinator.attachConnection('connection-slow', slowSink);
-  const fastConnection = coordinator.attachConnection('connection-fast', fastSink);
+  const slowConnection = attachTestConnection(coordinator, 'connection-slow', slowSink);
+  const fastConnection = attachTestConnection(coordinator, 'connection-fast', fastSink);
   const slow = await open(coordinator, 'connection-slow');
   const fast = await open(coordinator, 'connection-fast');
   fastConnection.activate(fast.subscriptionId);
@@ -965,7 +965,7 @@ test('keeps stream, kind, and completion boundaries when coalescing deltas', asy
     new SessionAdmissionGate(),
   );
   const sink = new RecordingSink();
-  const connection = coordinator.attachConnection('connection-1', sink);
+  const connection = attachTestConnection(coordinator, 'connection-1', sink);
   const opened = await open(coordinator, 'connection-1');
 
   await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', textEvent(1, 'message-1'));
@@ -1029,7 +1029,7 @@ test('keeps coalesced deltas within the protocol text and frame limits', async (
     new SessionAdmissionGate(),
   );
   const sink = new RecordingSink();
-  const connection = coordinator.attachConnection('connection-1', sink);
+  const connection = attachTestConnection(coordinator, 'connection-1', sink);
   const opened = await open(coordinator, 'connection-1');
 
   // Each delta is individually protocol-valid, but merging the two would
@@ -1074,8 +1074,8 @@ test('removal closes every Session subscriber at the admitted sequence boundary'
   );
   const desktopSink = new RecordingSink();
   const tuiSink = new RecordingSink();
-  const desktop = coordinator.attachConnection('connection-desktop', desktopSink);
-  const tui = coordinator.attachConnection('connection-tui', tuiSink);
+  const desktop = attachTestConnection(coordinator, 'connection-desktop', desktopSink);
+  const tui = attachTestConnection(coordinator, 'connection-tui', tuiSink);
   const desktopSubscription = await open(coordinator, 'connection-desktop');
   const tuiSubscription = await open(coordinator, 'connection-tui');
   desktop.activate(desktopSubscription.subscriptionId);
@@ -1114,7 +1114,7 @@ test('open returns a bounded immutable durable tail', async () => {
     undefined,
     transcriptReader(durable),
   );
-  const connection = coordinator.attachConnection('connection-1', new RecordingSink());
+  const connection = attachTestConnection(coordinator, 'connection-1', new RecordingSink());
   const opened = await open(coordinator, 'connection-1', {
     kind: 'tail',
     maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
@@ -1122,7 +1122,7 @@ test('open returns a bounded immutable durable tail', async () => {
   connection.activate(opened.subscriptionId);
   assert.ok(opened.transcript);
   if (!opened.transcript) return;
-  const client = new ClientSessionSubscription(
+  const client = clientSubscription(
     opened,
     async () => undefined,
     async () => {
@@ -1149,7 +1149,7 @@ test('reports a durable bootstrap read failure as unavailable persistence', asyn
     undefined,
     reader,
   );
-  coordinator.attachConnection('connection-failed-bootstrap', new RecordingSink());
+  attachTestConnection(coordinator, 'connection-failed-bootstrap', new RecordingSink());
   const outcome = await coordinator.handlers['subscription.open'](
     {
       sessionId: SESSION_ID,
@@ -1188,7 +1188,11 @@ test('rejects a subscription open whose connection closes during transcript boot
     undefined,
     reader,
   );
-  const interrupted = coordinator.attachConnection('connection-interrupted', new RecordingSink());
+  const interrupted = attachTestConnection(
+    coordinator,
+    'connection-interrupted',
+    new RecordingSink(),
+  );
   const opening = coordinator.handlers['subscription.open'](
     {
       sessionId: 'session-interrupted',
@@ -1236,7 +1240,7 @@ test('fits a transcript bootstrap inside a near-limit subscription open response
     undefined,
     transcriptReader(durable),
   );
-  coordinator.attachConnection('connection-open-budget', new RecordingSink());
+  attachTestConnection(coordinator, 'connection-open-budget', new RecordingSink());
   const opened = await open(coordinator, 'connection-open-budget', {
     kind: 'tail',
     maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
@@ -1269,7 +1273,7 @@ test('a running Turn row committed after open reaches the subscriber as transcri
     transcriptReader(durable),
   );
   const sink = new RecordingSink();
-  const connection = coordinator.attachConnection('connection-running-row', sink);
+  const connection = attachTestConnection(coordinator, 'connection-running-row', sink);
   const opened = await open(coordinator, 'connection-running-row', {
     kind: 'tail',
     maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
@@ -1321,7 +1325,7 @@ test('opening mid-stream pays out the streamed prefix before live deltas without
     await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', { ...textEvent(index), text });
   }
   const sink = new RecordingSink();
-  const connection = coordinator.attachConnection('connection-mid-stream', sink);
+  const connection = attachTestConnection(coordinator, 'connection-mid-stream', sink);
   const opened = await open(coordinator, 'connection-mid-stream');
   assert.deepEqual(opened.activeAssistantStreams, [
     { kind: 'text', turnId: 'turn-1', messageId: 'message-1' },
@@ -1357,6 +1361,51 @@ test('opening mid-stream pays out the streamed prefix before live deltas without
   coordinator.close();
 });
 
+// #5365: the in-flight answer a mid-stream subscriber has not seen is as large
+// as the answer. Delivering it as soon as the open result flushed handed it to
+// a Client that was still assembling the state those frames apply to, whose
+// preparation buffer is sized for live traffic, not for a whole answer.
+test('holds every frame, including the in-flight answer, until the subscriber declares readiness', async () => {
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => canonical(),
+    new SessionAdmissionGate(),
+  );
+  let streamed = '';
+  for (let index = 0; index < 24; index += 1) {
+    const text = `${index}:${'x'.repeat(8 * 1024)}`;
+    streamed += text;
+    await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', { ...textEvent(index), text });
+  }
+  const sink = new RecordingSink();
+  const connection = attachTestConnection(coordinator, 'connection-unready', sink);
+  const opened = await open(coordinator, 'connection-unready');
+  streamed += 'live-1';
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', { ...textEvent(99), text: 'live-1' });
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(sink.frames.length, 0);
+
+  connection.activate(opened.subscriptionId);
+  await coordinator.acceptRuntimeEvent(
+    SESSION_ID,
+    'run-1',
+    textCompleteEvent('message-1', streamed),
+  );
+  await waitFor(() =>
+    sink.frames.some(
+      (frame) => frame.kind === 'subscription.session_delta' && frame.delta.complete,
+    ),
+  );
+  let received = '';
+  for (const frame of sink.frames) {
+    assert.equal(frame.kind, 'subscription.session_delta');
+    if (frame.kind !== 'subscription.session_delta') return;
+    received += frame.delta.text;
+  }
+  assert.equal(received, streamed);
+  coordinator.close();
+});
+
 // #5365: a subscriber has one delivery order. A message that needs no catch-up
 // used to be delivered and completed while an earlier message was still being
 // paid out, so the answers arrived in the opposite order to the one the Host
@@ -1374,7 +1423,7 @@ test('a later message cannot complete ahead of the prefix a subscriber is still 
     await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', { ...textEvent(index), text });
   }
   const sink = new GatedSink();
-  const connection = coordinator.attachConnection('connection-order', sink);
+  const connection = attachTestConnection(coordinator, 'connection-order', sink);
   const opened = await open(coordinator, 'connection-order');
   connection.activate(opened.subscriptionId);
 
@@ -1413,7 +1462,7 @@ test('a terminal publication finishes the prefix it found unpaid instead of drop
     await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', { ...textEvent(index), text });
   }
   const sink = new GatedSink();
-  const connection = coordinator.attachConnection('connection-terminal', sink);
+  const connection = attachTestConnection(coordinator, 'connection-terminal', sink);
   const opened = await open(coordinator, 'connection-terminal');
   connection.activate(opened.subscriptionId);
   await coordinator.acceptRuntimeEvent(
@@ -1459,7 +1508,7 @@ test('a stream completing before a mid-stream subscriber catches up is still pai
     await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', { ...textEvent(index), text });
   }
   const sink = new RecordingSink();
-  const connection = coordinator.attachConnection('connection-late-complete', sink);
+  const connection = attachTestConnection(coordinator, 'connection-late-complete', sink);
   const opened = await open(coordinator, 'connection-late-complete');
   await coordinator.acceptRuntimeEvent(
     SESSION_ID,
@@ -1506,7 +1555,7 @@ test('commit-driven transcript progress waits for a fenced terminal publication'
     },
   );
   const sink = new RecordingSink();
-  const connection = coordinator.attachConnection('connection-fenced', sink);
+  const connection = attachTestConnection(coordinator, 'connection-fenced', sink);
   const opened = await open(coordinator, 'connection-fenced', {
     kind: 'tail',
     maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
@@ -1555,8 +1604,8 @@ test('large transcript messages are paged and cursors remain subscription-owned'
     undefined,
     transcriptReader([message]),
   );
-  const owner = coordinator.attachConnection('connection-owner', new RecordingSink());
-  const sibling = coordinator.attachConnection('connection-sibling', new RecordingSink());
+  const owner = attachTestConnection(coordinator, 'connection-owner', new RecordingSink());
+  const sibling = attachTestConnection(coordinator, 'connection-sibling', new RecordingSink());
   const opened = await open(coordinator, 'connection-owner', {
     kind: 'tail',
     maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
@@ -1564,7 +1613,7 @@ test('large transcript messages are paged and cursors remain subscription-owned'
   assert.ok(opened.transcript?.durable.nextCursor);
   if (!opened.transcript?.durable.nextCursor) return;
   const firstCursor = opened.transcript.durable.nextCursor;
-  const client = new ClientSessionSubscription(
+  const client = clientSubscription(
     opened,
     async () => undefined,
     async (input) => {
@@ -1618,7 +1667,7 @@ test('an in-flight transcript page cannot outlive its owning connection', async 
     undefined,
     reader,
   );
-  const connection = coordinator.attachConnection('connection-1', new RecordingSink());
+  const connection = attachTestConnection(coordinator, 'connection-1', new RecordingSink());
   const opened = await open(coordinator, 'connection-1', {
     kind: 'tail',
     maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
@@ -1683,7 +1732,7 @@ test('an in-flight transcript page cannot outlive its Guest observation grant', 
       },
     },
   );
-  coordinator.attachConnection('guest-connection', new RecordingSink());
+  attachTestConnection(coordinator, 'guest-connection', new RecordingSink());
   const opened = await open(
     coordinator,
     'guest-connection',
@@ -1738,7 +1787,7 @@ test('a durable append refresh advances transcript before its completion event',
     reader,
   );
   const sink = new RecordingSink();
-  const connection = coordinator.attachConnection('connection-1', sink);
+  const connection = attachTestConnection(coordinator, 'connection-1', sink);
   const opened = await open(coordinator, 'connection-1', {
     kind: 'tail',
     maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
@@ -1763,7 +1812,11 @@ test('absolute live offsets survive a gap with no connected subscribers', async 
     async () => canonical(),
     new SessionAdmissionGate(),
   );
-  const firstConnection = coordinator.attachConnection('connection-first', new RecordingSink());
+  const firstConnection = attachTestConnection(
+    coordinator,
+    'connection-first',
+    new RecordingSink(),
+  );
   const first = await open(coordinator, 'connection-first');
   firstConnection.activate(first.subscriptionId);
   await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', textEvent(1));
@@ -1772,7 +1825,7 @@ test('absolute live offsets survive a gap with no connected subscribers', async 
 
   await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', textEvent(2));
   const sink = new RecordingSink();
-  const secondConnection = coordinator.attachConnection('connection-second', sink);
+  const secondConnection = attachTestConnection(coordinator, 'connection-second', sink);
   const second = await open(coordinator, 'connection-second');
   secondConnection.activate(second.subscriptionId);
   await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', textEvent(3));
@@ -1799,7 +1852,7 @@ test('keeps the current provider retry on the live Turn until the next content e
     new SessionAdmissionGate(),
   );
   const liveSink = new RecordingSink();
-  const live = coordinator.attachConnection('connection-live', liveSink);
+  const live = attachTestConnection(coordinator, 'connection-live', liveSink);
   const opened = await open(coordinator, 'connection-live');
   assert.equal(opened.snapshot.rootTurn && 'providerRetry' in opened.snapshot.rootTurn, false);
   live.activate(opened.subscriptionId);
@@ -1826,7 +1879,7 @@ test('keeps the current provider retry on the live Turn until the next content e
     ts: 1,
     reason: 'rate_limit' as const,
   };
-  coordinator.attachConnection('connection-remount', new RecordingSink());
+  attachTestConnection(coordinator, 'connection-remount', new RecordingSink());
   const remounted = await open(coordinator, 'connection-remount');
   assert.deepEqual(
     remounted.snapshot.rootTurn && 'providerRetry' in remounted.snapshot.rootTurn
@@ -1845,7 +1898,7 @@ test('keeps the current provider retry on the live Turn until the next content e
   );
 
   await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', textEvent(1));
-  coordinator.attachConnection('connection-after-text', new RecordingSink());
+  attachTestConnection(coordinator, 'connection-after-text', new RecordingSink());
   const afterText = await open(coordinator, 'connection-after-text');
   assert.equal(
     afterText.snapshot.rootTurn && 'providerRetry' in afterText.snapshot.rootTurn,
@@ -1865,7 +1918,7 @@ test('rejoin seeds tool_result_preview at the open nextSequence without sequence
   await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', previewEvent());
 
   const sink = new RecordingSink();
-  const connection = coordinator.attachConnection('connection-rejoin', sink);
+  const connection = attachTestConnection(coordinator, 'connection-rejoin', sink);
   const opened = await open(coordinator, 'connection-rejoin');
   assert.equal(opened.nextSequence, 1);
 
@@ -1877,7 +1930,7 @@ test('rejoin seeds tool_result_preview at the open nextSequence without sequence
   assert.equal(sink.frames[0].sequence, 1);
   assert.equal(sink.frames[0].event.type, 'tool_result_preview');
 
-  const client = new ClientSessionSubscription(
+  const client = clientSubscription(
     opened,
     async () => {},
     async () => {
@@ -1897,7 +1950,7 @@ test('live tool_start projects intent and a bounded args preview, never full arg
     new SessionAdmissionGate(),
   );
   const sink = new RecordingSink();
-  const connection = coordinator.attachConnection('connection-tool-start', sink);
+  const connection = attachTestConnection(coordinator, 'connection-tool-start', sink);
   const opened = await open(coordinator, 'connection-tool-start');
   connection.activate(opened.subscriptionId);
 
@@ -1933,7 +1986,7 @@ test('live tool_start never forwards a generic input payload as argsPreview', as
     new SessionAdmissionGate(),
   );
   const sink = new RecordingSink();
-  const connection = coordinator.attachConnection('connection-tool-input', sink);
+  const connection = attachTestConnection(coordinator, 'connection-tool-input', sink);
   const opened = await open(coordinator, 'connection-tool-input');
   connection.activate(opened.subscriptionId);
 
@@ -1984,7 +2037,7 @@ test('tool_result clears retained tool_result_preview so a later open does not s
   });
 
   const sink = new RecordingSink();
-  const connection = coordinator.attachConnection('connection-after-settle', sink);
+  const connection = attachTestConnection(coordinator, 'connection-after-settle', sink);
   const opened = await open(coordinator, 'connection-after-settle');
   assert.equal(opened.nextSequence, 1);
   connection.activate(opened.subscriptionId);
@@ -2008,7 +2061,7 @@ test('publishes only the minimal sandbox failure reason from a tool result', asy
     new SessionAdmissionGate(),
   );
   const sink = new RecordingSink();
-  const connection = coordinator.attachConnection('connection-1', sink);
+  const connection = attachTestConnection(coordinator, 'connection-1', sink);
   const opened = await open(coordinator, 'connection-1');
   connection.activate(opened.subscriptionId);
 
@@ -2051,7 +2104,7 @@ test('publishes only the bounded shell-run correlation from poll args', async ()
     new SessionAdmissionGate(),
   );
   const sink = new RecordingSink();
-  const connection = coordinator.attachConnection('connection-1', sink);
+  const connection = attachTestConnection(coordinator, 'connection-1', sink);
   const opened = await open(coordinator, 'connection-1');
   connection.activate(opened.subscriptionId);
   const ref = 'maka://runtime/background-tasks/bg-1';
@@ -2083,6 +2136,29 @@ test('publishes only the bounded shell-run correlation from poll args', async ()
   connection.abort(opened.subscriptionId);
   coordinator.close();
 });
+
+/**
+ * A connection whose `activate` is the Client's own `subscription.ready`.
+ *
+ * Frames start where a subscriber says it can take them, so a test that starts
+ * them any other way is not exercising the path a Client uses.
+ */
+function attachTestConnection(
+  coordinator: SessionContinuityCoordinator,
+  connectionId: string,
+  sink: SessionContinuityFrameSink,
+  identity?: TestIdentity,
+) {
+  const connection = coordinator.attachConnection(connectionId, sink);
+  return {
+    ...connection,
+    activate: (subscriptionId: string) =>
+      coordinator.handlers['subscription.ready'](
+        { subscriptionId },
+        connectionContext(connectionId, identity),
+      ),
+  };
+}
 
 class RecordingSink implements SessionContinuityFrameSink {
   readonly frames: SubscriptionFrame[] = [];
