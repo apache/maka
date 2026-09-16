@@ -19,6 +19,7 @@
 
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { expect, fn, userEvent, waitFor, within } from 'storybook/test';
+import { ResizeHandle, useResizable } from '@astryxdesign/core/Resizable';
 import { useEffect, useReducer, useState, type CSSProperties, type ReactNode } from 'react';
 import type { ComponentProps } from 'react';
 import type { ProjectRecord } from '@maka/core/project';
@@ -42,7 +43,6 @@ import { AppShellTopbarActions } from '../src/renderer/app-shell-chrome-actions'
 import { SettingsOverlay } from '../src/renderer/app-shell-overlays';
 import {
   WorkbarServicesProvider,
-  WorkbarTitlebarActions,
 } from '../src/renderer/features/workbar';
 import { WorkbarSurface } from '../src/renderer/features/workbar/stories';
 import {
@@ -364,10 +364,8 @@ function ComposedShell(props: {
   frameHeight?: number | string;
   /** Drives the footer's update action; `undefined` is the silent phase. */
   updateReminder?: SessionListPanelProps['updateReminder'];
-  workbarCollapsed?: boolean;
   workbarWidth?: number;
   onShare?: () => void;
-  onToggleWorkbar?: () => void;
 }) {
   const [collapsed, setCollapsed] = useState(props.sidebarCollapsed ?? false);
   const [viewMode, setViewMode] = useState<SessionViewMode>(props.initialViewMode ?? 'conversation');
@@ -440,11 +438,7 @@ function ComposedShell(props: {
             })()}
           />
         )}
-        <WorkbarTitlebarActions
-          available
-          collapsed={props.workbarCollapsed ?? false}
-          onToggle={props.onToggleWorkbar ?? noop}
-        />
+
       </header>
       <AstryxAppShell
         className="app maka-shell-astryx agents-layout-body"
@@ -3415,8 +3409,13 @@ const workbarLayoutWithOneFace: WorkbarLayoutState = reduceWorkbarLayout(
   { type: 'open', placement: 'right', tab: { id: 'workbar:files', kind: 'files' } },
 );
 
-function WorkbarInShell(props: { longTitle?: boolean; onShare?: () => void; workbarWidth?: number } = {}) {
+function WorkbarInShell(props: { longTitle?: boolean; onShare?: () => void; workbarWidth?: number; withConversation?: boolean } = {}) {
   const [layout, dispatch] = useReducer(reduceWorkbarLayout, workbarLayoutWithOneFace);
+  const resizable = useResizable({
+    defaultSize: props.workbarWidth ?? layout.rightWidth,
+    minSizePx: 320, maxSizePx: 760,
+    onSizeChange: (size) => dispatch({ type: 'resize', placement: 'right', size }),
+  });
   const workbarWidth = props.workbarWidth ?? layout.rightWidth;
   const rightCollapsed = isSessionWorkbarCollapsed(layout);
   const collapseRight = (collapsed: boolean) =>
@@ -3426,18 +3425,23 @@ function WorkbarInShell(props: { longTitle?: boolean; onShare?: () => void; work
       <WorkbarServicesProvider services={createFakeWorkbarServices()}>
         <ComposedShell
           motionEnabled
-          workbarCollapsed={rightCollapsed}
           workbarWidth={workbarWidth}
           session={props.longTitle ? { name: '主对话标题与右侧工作栏的宽度和信息层级验证 Long conversation title' } : undefined}
           onShare={props.onShare}
-          onToggleWorkbar={() => collapseRight(!rightCollapsed)}
           detailChildren={
             <div className="maka-detail-with-artifacts">
-              <div className="mainColumn" />
+              <div className="mainColumn">
+                {props.withConversation && <ChatSurfaceLayout composer={<Composer {...baseComposerProps} activeSession={activeSession} />}>
+                  <ChatView {...baseChatProps} messages={promptRailMessages} />
+                </ChatSurfaceLayout>}
+              </div>
+              {!rightCollapsed && <ResizeHandle className="maka-workbar-resize-handle maka-workbar-resize-handle-right" resizable={resizable.props}
+                direction="horizontal" isReversed isAlwaysVisible={false} pillPlacement="center" label="调整工作栏宽度" />}
               <WorkbarSurface
                 sessionId="session-active"
                 hidden={false}
                 onDismissPanel={() => collapseRight(true)}
+                onToggleRightPanel={() => collapseRight(!rightCollapsed)}
                 panelsState={layout.panels}
                 rightCollapsed={rightCollapsed}
                 bottomOpen={layout.bottomOpen}
@@ -3446,9 +3450,6 @@ function WorkbarInShell(props: { longTitle?: boolean; onShare?: () => void; work
                 }
                 onCloseTab={(placement, tab) =>
                   dispatch({ type: 'close', placement, tabIds: [tab.id] })
-                }
-                onCloseTabs={(placement, tabs) =>
-                  dispatch({ type: 'close', placement, tabIds: tabs.map((tab) => tab.id) })
                 }
                 onOpenLauncher={(placement) => dispatch({ type: 'open-launcher', placement })}
                 onRequestOpenTab={(placement, kind) =>
@@ -3524,147 +3525,66 @@ export const TitlebarWithWideWorkbar: Story = {
   },
 };
 
-// Real path: 收起一个开着面的工作栏 → 从标题栏再展开. The face is opened by
-// dispatching the app's own `open` action rather than by clicking through the
-// launcher, so the story starts where the app does without re-testing the
-// launcher's own path.
-//
-// The collapse toggle is one control that moves between two bands — the
-// workbar's own bar and the titlebar's right cluster — and `workbar/shell.css`
-// pads the bar with the titlebar strip's gutter precisely so it lands on the
-// same x in both, one `--space-2` in from the plate's edge on a platform that
-// draws nothing there. Only a story that mounts both bands can hold it there,
-// which is why this lives beside the shell rather than with the workbar's own
-// stories. The column eases shut and open the way the sidebar does, and the
-// face and the toggle keep their x through every frame of it: the box's left
-// edge sweeps over content that is already where it will rest.
-export const WorkbarCollapseKeepsOneToggleInPlace: Story = {
-  render: () => <WorkbarInShell />,
+// Real path: hover the conversation/Workbar edge → collapse → restore from the
+// window edge. The native conversation and browser occupy neither hit target.
+export const WorkbarEdgeRevealAndCollapse: Story = {
+  render: () => <WorkbarInShell withConversation />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const frame = canvasElement.querySelector<HTMLElement>(
-      '[data-maka-contract="session-workbar-right"]',
-    );
-    if (!frame) throw new Error('the right workbar is missing');
-    // The face's content is a sibling overlay panel with its own `hidden`
-    // (workbar-surface.tsx), so a visible frame does not mean a visible face.
-    const facePanel = canvasElement.querySelector<HTMLElement>(
-      '.maka-session-workbar-panel[data-overlay][data-placement="right"]',
-    );
-    if (!facePanel) throw new Error('the open face has no panel');
-    const bar = within(frame.querySelector<HTMLElement>('.maka-session-workbar-toolbar')!);
-    const collapse = bar.getByRole('button', { name: '收起任务工作栏' });
-    // The launcher stays mounted behind the face, so "not the picker" is a
-    // claim about reachability: `queryByRole` skips the inactive panel.
-    const pickerIsShowing = () =>
-      canvas.queryByRole('list', { name: '打开工具' }) !== null;
-    const face = await bar.findByRole('tab', { selected: true });
-    expect(
-      window.matchMedia('(prefers-reduced-motion: reduce)').matches,
-      'a reduced-motion browser collapses in one frame and this story stops testing the ease',
-    ).toBe(false);
-    // Frames around a click. The runner may be too slow to land the 280ms ease
-    // inside the window, so the resting state is awaited separately.
-    const faceContent = facePanel.firstElementChild!;
-    const sample = () =>
-      new Promise<{
-        frame: number[];
-        panel: number[];
-        faceRight: number[];
-        toggleX: number[];
-        eased: boolean;
-      }>((resolve) => {
-        const out = {
-          frame: [] as number[],
-          panel: [] as number[],
-          faceRight: [] as number[],
-          toggleX: [] as number[],
-          eased: false,
-        };
-        const start = performance.now();
-        const tick = () => {
-          const frameBox = frame.getBoundingClientRect();
-          out.frame.push(Math.round(frameBox.width));
-          out.panel.push(Math.round(facePanel.getBoundingClientRect().width));
-          out.faceRight.push(Math.round(faceContent.getBoundingClientRect().right - frameBox.right));
-          out.toggleX.push(Math.round(collapse.getBoundingClientRect().x));
-          out.eased ||= frame
-            .getAnimations()
-            .some((animation) => (animation as CSSTransition).transitionProperty === 'width');
-          if (performance.now() - start < 500) requestAnimationFrame(tick);
-          else resolve(out);
-        };
-        requestAnimationFrame(tick);
-      });
-    const eased = (sampled: Awaited<ReturnType<typeof sample>>, toggleX: number) => {
-      expect(sampled.eased).toBe(true);
-      expect(sampled.panel).toEqual(sampled.frame);
-      expect(new Set(sampled.faceRight)).toEqual(new Set([0]));
-      expect(new Set(sampled.toggleX)).toEqual(new Set([Math.round(toggleX)]));
-    };
-
+    const frame = canvasElement.querySelector<HTMLElement>('[data-maka-contract="session-workbar-right"]')!;
+    const panel = canvasElement.querySelector<HTMLElement>('.maka-session-workbar-panel[data-overlay][data-placement="right"]')!;
+    const edge = canvas.getByRole('button', { name: '收起任务工作栏' });
+    const glass = edge.querySelector<HTMLElement>('.maka-workbar-edge-glass')!;
     expect(canvas.queryByRole('toolbar', { name: '工作区辅助操作' })).toBeNull();
-    expect(pickerIsShowing()).toBe(false);
-
-    const faceBox = face.getBoundingClientRect();
-    const openToggleBox = collapse.getBoundingClientRect();
-    expect(
-      Math.abs(
-        faceBox.y + faceBox.height / 2 - (openToggleBox.y + openToggleBox.height / 2),
-      ),
-    ).toBeLessThanOrEqual(1);
-    expect(frame.getBoundingClientRect().right - openToggleBox.right).toBe(8);
-
-    // Windows draws its caption buttons over the right of the strip and reports
-    // their width here; macOS reports 0. The bar has to give that width back.
-    // The root is where `maka-tokens.css` reads it into the gutter, so the
-    // override goes there, the way `env()` would report it.
-    const captionWidth = 80;
-    document.documentElement.style.setProperty(
-      '--maka-titlebar-overlay-right-width',
-      `${captionWidth}px`,
-    );
-    try {
-      await waitFor(() => {
-        expect(collapse.getBoundingClientRect().x).toBeCloseTo(
-          openToggleBox.x - captionWidth,
-          0,
-        );
-      });
-      const parked = collapse.getBoundingClientRect();
-
-      // [+] is a menu over the panel, not a swap to the launcher: the face you
-      // are reading stays on screen while you pick another one.
-      await userEvent.click(bar.getByRole('button', { name: '打开或关闭工作栏的面' }));
-      const menu = await within(document.body).findByRole('menu');
-      await userEvent.keyboard('{Escape}');
-      await waitFor(() => expect(menu).not.toBeVisible());
-      expect(pickerIsShowing()).toBe(false);
-
-      let sampling = sample();
-      await userEvent.click(collapse);
-      const restore = await canvas.findByRole('button', { name: '展开任务工作栏' });
-      eased(await sampling, parked.x);
-      await waitFor(() => expect(frame).not.toBeVisible());
-      expect(facePanel).not.toBeVisible();
-      const restoreBox = restore.getBoundingClientRect();
-      expect(Math.abs(restoreBox.x - parked.x)).toBeLessThanOrEqual(1);
-      expect(Math.abs(restoreBox.y - parked.y)).toBeLessThanOrEqual(1);
-
-      sampling = sample();
-      await userEvent.click(restore);
-      eased(await sampling, parked.x);
-      await waitFor(() => expect(frame).toBeVisible());
-      expect(facePanel).toBeVisible();
-      expect(pickerIsShowing()).toBe(false);
-      const restoredToggleBox = bar
-        .getByRole('button', { name: '收起任务工作栏' })
-        .getBoundingClientRect();
-      expect(Math.abs(restoredToggleBox.x - parked.x)).toBeLessThanOrEqual(1);
-      expect(Math.abs(restoredToggleBox.y - parked.y)).toBeLessThanOrEqual(1);
-    } finally {
-      document.documentElement.style.removeProperty('--maka-titlebar-overlay-right-width');
-    }
+    expect(frame.querySelector('.maka-workbar-edge')).toBeNull();
+    const width = frame.getBoundingClientRect().width;
+    const rail = await waitFor(() => {
+      const value = canvasElement.querySelector<HTMLElement>('.maka-prompt-rail');
+      expect(value).toBeVisible(); return value!;
+    });
+    expect(rail.getBoundingClientRect().right).toBeLessThan(edge.getBoundingClientRect().left);
+    const tick = [...rail.querySelectorAll<HTMLElement>('.maka-prompt-rail-tick')].at(-4)!;
+    await userEvent.hover(tick);
+    await userEvent.click(tick);
+    await waitFor(() => expect(tick).toHaveAttribute('aria-current', 'true'));
+    expect(edge).toHaveAttribute('aria-expanded', 'true');
+    expect(Number(getComputedStyle(glass).opacity)).toBe(0);
+    // Storybook userEvent hover is synthetic; keyboard focus exercises the
+    // same visible affordance without pretending to move the native pointer.
+    edge.focus();
+    await waitFor(() => expect(Number(getComputedStyle(glass).opacity)).toBe(1));
+    expect(frame.getBoundingClientRect().width).toBe(width);
+    const conversation = canvasElement.querySelector('.maka-detail-with-artifacts > .mainColumn')!.getBoundingClientRect();
+    expect(edge.getBoundingClientRect().left).toBeGreaterThan(conversation.left);
+    expect(edge.getBoundingClientRect().right).toBeLessThanOrEqual(conversation.right - 12);
+    expect(frame.getBoundingClientRect().left - conversation.right).toBeLessThanOrEqual(8);
+    expect(edge.getBoundingClientRect().right).toBeLessThanOrEqual(frame.getBoundingClientRect().left);
+    const separator = canvas.getByRole('separator', { name: '调整工作栏宽度' });
+    const separatorBox = separator.getBoundingClientRect();
+    const point = { x: separatorBox.x + 2, y: separatorBox.y + separatorBox.height / 2 };
+    const resizeTarget = document.elementFromPoint(point.x, point.y)!;
+    expect(separator.contains(resizeTarget)).toBe(true);
+    // Real pointer events exercise Astryx's production resize handler; the
+    // edge control must neither steal the drag nor interpret it as a toggle.
+    await userEvent.pointer([
+      { keys: '[MouseLeft>]', target: resizeTarget, coords: { clientX: point.x, clientY: point.y } },
+      { target: resizeTarget, coords: { clientX: point.x - 40, clientY: point.y } },
+      { keys: '[/MouseLeft]', target: resizeTarget, coords: { clientX: point.x - 40, clientY: point.y } },
+    ]);
+    await waitFor(() => expect(frame.getBoundingClientRect().width).toBeGreaterThan(width + 30));
+    expect(edge).toHaveAttribute('aria-expanded', 'true');
+    await userEvent.click(edge);
+    await waitFor(() => expect(frame).not.toBeVisible());
+    expect(panel).not.toBeVisible();
+    const layout = canvasElement.querySelector('.maka-detail-with-artifacts')!;
+    await waitFor(() => expect(Math.abs(layout.getBoundingClientRect().right - layout.querySelector('.mainColumn')!.getBoundingClientRect().right)).toBeLessThan(1));
+    const restore = canvas.getByRole('button', { name: '展开任务工作栏' });
+    expect(restore).toBe(edge);
+    restore.focus();
+    await userEvent.keyboard('{Enter}');
+    await waitFor(() => expect(frame).toBeVisible());
+    expect(panel).toBeVisible();
+    expect(canvas.queryByRole('list', { name: '打开工具' })).toBeNull();
   },
 };
 
@@ -3705,7 +3625,7 @@ export const NarrowWorkbarClearsTitlebarReserve: Story = {
     await userEvent.click(restore);
     await waitFor(() => {
       expect(workbar).toBeVisible();
-      // Collapsing adds a titlebar toggle, so expanding may give space back.
+      // The edge control never takes space from the titlebar.
       expect(identity.getBoundingClientRect().width).toBeGreaterThanOrEqual(
         collapsedIdentityWidth - 1,
       );

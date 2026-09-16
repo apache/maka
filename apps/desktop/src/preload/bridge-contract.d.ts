@@ -411,6 +411,35 @@ export type DesktopOAuthAuthorizationResult =
   | { readonly ok: true; readonly connection: DesktopOAuthConnectionIdentity }
   | Exclude<SubscriptionActionResult, { readonly ok: true }>;
 
+/**
+ * Browser-assisted Command Code sign-in. Desktop-local, not Host-scoped: the
+ * Studio page posts the minted key to a loopback port beside the browser, and
+ * the key then travels through the ordinary `connections` path like a pasted
+ * one. Mirrored by `features/connection-settings/ports.ts` on the renderer side.
+ */
+export type DesktopCommandCodeLoginFailureReason =
+  | 'denied'
+  | 'timeout'
+  | 'cancelled'
+  | 'superseded'
+  | 'port_unavailable'
+  | 'browser_unavailable';
+export interface DesktopCommandCodeLoginStartInput {
+  readonly baseUrl?: string;
+}
+export type DesktopCommandCodeLoginStartResult =
+  | { readonly ok: true; readonly attemptId: string; readonly authUrl: string }
+  | {
+      readonly ok: false;
+      readonly reason: 'port_unavailable' | 'browser_unavailable' | 'superseded';
+    };
+export type DesktopCommandCodeLoginResult =
+  | {
+      readonly ok: true;
+      readonly credentials: { readonly apiKey: string; readonly userName: string; readonly keyName: string };
+    }
+  | { readonly ok: false; readonly reason: DesktopCommandCodeLoginFailureReason };
+
 export type DesktopNewTaskHostRef = DesktopRuntimeHostRef;
 
 export interface DesktopNewTaskTarget extends DesktopRuntimeHostRef {
@@ -1332,7 +1361,7 @@ export interface MakaBridge {
   externalSessions: {
     listSources(host?: DesktopRuntimeHostRef): Promise<{ adapterIds: string[] }>;
     list(
-      input: { adapterId: string; includeArchived?: boolean; cursor?: string },
+      input: { adapterId: string; includeArchived?: boolean; cursor?: string; text?: string },
       host?: DesktopRuntimeHostRef,
     ): Promise<{
       sessions: DesktopExternalSessionCatalogItem[];
@@ -1657,6 +1686,12 @@ export interface MakaBridge {
     refreshTokens(host: DesktopRuntimeHostRef | undefined, connectionId: string): Promise<SubscriptionActionResult>;
     logout(host: DesktopRuntimeHostRef | undefined, connectionId: string): Promise<SubscriptionActionResult>;
   };
+  /** Desktop-local browser sign-in for Command Code; see `DesktopCommandCodeLoginResult`. */
+  commandCodeLogin: {
+    start(input: DesktopCommandCodeLoginStartInput): Promise<DesktopCommandCodeLoginStartResult>;
+    complete(attemptId: string): Promise<DesktopCommandCodeLoginResult>;
+    cancel(attemptId: string): Promise<void>;
+  };
   githubCopilotSubscription: {
     connectExistingLogin(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult>;
     getAuthUrl(
@@ -1751,6 +1786,7 @@ export interface MakaBridge {
      */
   };
   appWindow: {
+    popupMenu(input: import('../shared/native-menu.js').NativeMenuRequest): Promise<string | null>;
     setTitlebarControlsVisible(visible: boolean): Promise<void>;
     setThemeSource(themePref: ThemePreference): Promise<void>;
     // PR-WINDOW-TITLEBAR-0: re-sync the native Windows titleBarOverlay
@@ -1950,6 +1986,7 @@ export interface MakaBridge {
   browser: {
     setActiveSession(sessionId: string | null): void;
     setViewport(input: { sessionId: string; rect: BrowserViewRect | null }): void;
+  capturePage(sessionId: string): Promise<string | undefined>;
     navigate(sessionId: string, url: string): Promise<void>;
     back(sessionId: string): Promise<void>;
     forward(sessionId: string): Promise<void>;

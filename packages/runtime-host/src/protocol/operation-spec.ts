@@ -38,6 +38,8 @@ export type HostOperationErrorCode =
   | 'model_unavailable'
   // External-session import: the source could not be read or converted.
   | 'source_unreadable'
+  // External-session catalog: the source exceeds an adapter-owned read bound.
+  | 'source_limit_exceeded'
   | 'projection_incomplete'
   | 'stale_cursor'
   | 'persistence_failed'

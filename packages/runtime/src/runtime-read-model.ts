@@ -124,8 +124,7 @@ export class RuntimeReadModel {
 
       // No terminal event yet: the invocation is still open, or the process died
       // holding it. Either way its own events are the whole truth about it, read
-      // as a running turn reads — the arriving text presented as settled. No
-      // durable ordinals exist for them yet, so they keep ledger order.
+      // as a running turn reads — the arriving text presented as settled.
       if (!invocation.terminalEvent) {
         inFlightTurnIds.add(invocation.turnId);
         appendOrderedEvents(ordered, activePresentationRuntimeEvents(runEvents), runIndex);

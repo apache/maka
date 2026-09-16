@@ -21,6 +21,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   ELECTION_DEADLINE_MS_ENV_VAR,
+  IDLE_GRACE_MS_ENV_VAR,
   connectOrSpawnRuntimeHostWithDependencies,
   electionDeadlineMsFromEnvironment,
 } from '../client/connect-or-spawn.js';
@@ -67,5 +68,25 @@ test('an invalid environment override fails the election before touching storage
     ),
     (error: unknown) =>
       error instanceof RangeError && /MAKA_RUNTIME_HOST_ELECTION_DEADLINE_MS/u.test(error.message),
+  );
+});
+
+test('an invalid idle grace override fails before touching storage', async () => {
+  await assert.rejects(
+    connectOrSpawnRuntimeHostWithDependencies(
+      {
+        rootPath: '/nonexistent-maka-idle-grace-root',
+        protocol: { min: RUNTIME_HOST_PROTOCOL_VERSION, max: RUNTIME_HOST_PROTOCOL_VERSION },
+        compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
+        candidateEntrypoint: 'candidate-entry.js',
+      },
+      {
+        launchCandidate: () => ({ spawned: Promise.reject(new Error('must not spawn')) }),
+        random: Math.random,
+        env: { [IDLE_GRACE_MS_ENV_VAR]: 'not-a-number' },
+      },
+    ),
+    (error: unknown) =>
+      error instanceof RangeError && /MAKA_RUNTIME_HOST_IDLE_GRACE_MS/u.test(error.message),
   );
 });

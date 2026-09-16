@@ -61,7 +61,7 @@ test('a bookmark older than the loaded history is restored by loading earlier hi
   const store = new DesktopTranscriptRangeStore(SESSION_ID);
   for (const batch of encodeDesktopTranscriptSnapshot({
     beginsAtTurnBoundary: true,
-    ...IDENTITY, durableThrough: 30, durable: [{ sequence: 30, message: answer('c') }], overlay: [], hasOlder: true,
+    ...IDENTITY, durableThrough: 30, durable: [{ sequence: 30, message: answer('c') }], hasOlder: true,
   })) store.accept(batch);
   const earlier = [
     { sequence: 20, turnId: 'b', hasOlder: true },
@@ -72,7 +72,7 @@ test('a bookmark older than the loaded history is restored by loading earlier hi
     async loadEarlier() {
       const page = earlier[reads++]!;
       for (const batch of encodeDesktopTranscriptBatches(IDENTITY, {
-        durableThrough: 30, durable: [{ sequence: page.sequence, message: answer(page.turnId) }], overlay: [],
+        durableThrough: 30, durable: [{ sequence: page.sequence, message: answer(page.turnId) }],
         hasOlder: page.hasOlder, earlierThan: store.snapshot().messages.length === 1 ? 30 : 20,
         reset: false, ready: true,
       })) store.accept(batch);
@@ -128,42 +128,12 @@ test('sending before transcript open completes cancels the queued bookmark witho
     opening.resolve(handle({ loadEarlier: async () => { reads += 1; } }));
     for (const batch of encodeDesktopTranscriptSnapshot({
       beginsAtTurnBoundary: true,
-      ...IDENTITY, durableThrough: 20, durable: [{ sequence: 20, message: answer('b') }], overlay: [], hasOlder: true,
+      ...IDENTITY, durableThrough: 20, durable: [{ sequence: 20, message: answer('b') }], hasOlder: true,
     })) store.accept(batch);
     await settle();
     restore();
     await settle();
     assert.equal(reads, 0, 'the cancelled bookmark must not load earlier history');
-  } finally {
-    await controller.close();
-  }
-});
-
-test('an overlay-only bookmark stays available without loading earlier history', async () => {
-  const store = new DesktopTranscriptRangeStore(SESSION_ID);
-  for (const batch of encodeDesktopTranscriptSnapshot({
-    beginsAtTurnBoundary: true,
-    ...IDENTITY, durableThrough: null, durable: [], overlay: [answer('b')], hasOlder: true,
-  })) store.accept(batch);
-  const controller = createDesktopTranscriptRangeController(store, async () => handle(), {
-    onError: (error) => assert.fail(String(error)),
-  });
-  const lifecycle = createTranscriptRestoreLifecycle();
-  let unavailable = 0;
-  let cleared = 0;
-  const restore = () => restoreSessionTranscriptRange({
-    lifecycle, sessionId: SESSION_ID, controller, readingAnchor: { turnId: 'b' },
-    isCurrent: () => true,
-    setReadingAnchor: (_sessionId, anchor) => { if (!anchor) cleared += 1; },
-    onRestoreUnavailable: () => { unavailable += 1; }, onError: (error) => assert.fail(String(error)),
-  });
-  try {
-    await controller.ready();
-    restore();
-    await settle();
-    restore();
-    assert.equal(unavailable, 0);
-    assert.equal(cleared, 0);
   } finally {
     await controller.close();
   }

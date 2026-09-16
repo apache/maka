@@ -102,6 +102,8 @@ export interface DesktopConversationCopy {
     sideChat: string;
     sideChatNumbered(index: number): string;
     openTab: string;
+    closeTab: (name: string) => string;
+    closeTabHint: string;
     openTools: string;
     launcher: {
       review: string;
@@ -363,7 +365,9 @@ const COPY = {
       inspector: '追踪',
       sideChat: '侧边对话',
       sideChatNumbered: (index) => `侧边对话 ${index}`,
-      openTab: '打开或关闭工作栏的面',
+      openTab: '添加面板',
+      closeTab: (name) => `关闭 ${name}`,
+      closeTabHint: '按 Delete 关闭此标签页',
       openTools: '打开工具',
       launcher: {
         review: '查看当前 Git 工作区变化',
@@ -604,7 +608,9 @@ const COPY = {
       inspector: '追蹤',
       sideChat: '側邊對話',
       sideChatNumbered: (index) => `側邊對話 ${index}`,
-      openTab: '開啟或關閉工作欄的面',
+      openTab: '新增面板',
+      closeTab: (name) => `關閉 ${name}`,
+      closeTabHint: '按 Delete 關閉此分頁',
       openTools: '開啟工具',
       launcher: {
         review: '檢視目前 Git 工作區變化',
@@ -836,7 +842,9 @@ const COPY = {
       inspector: 'Trace',
       sideChat: 'Side chat',
       sideChatNumbered: (index) => `Side chat ${index}`,
-      openTab: 'Open or close a workbar face',
+      openTab: 'Add panel',
+      closeTab: (name) => `Close ${name}`,
+      closeTabHint: 'Press Delete to close this tab',
       openTools: 'Open tools',
       launcher: {
         review: 'View changes in the current Git workspace',

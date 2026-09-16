@@ -91,6 +91,7 @@ import type {
 } from '../../src/preload/bridge-contract.js';
 import { withScopedMakaBridge } from '../maka-bridge';
 import { getDailyReviewSettingsCopy } from '../../src/renderer/locales/settings-daily-review-copy';
+import { getExternalSessionImportCopy } from '../../src/renderer/locales/external-session-import-copy';
 import { getUsageSettingsCopy } from '../../src/renderer/locales/settings-usage-copy';
 
 /**
@@ -1549,14 +1550,22 @@ const externalConversations: DesktopExternalSessionCatalogItem[] = [
     name: '把 provider catalog 的分页改成游标',
     cwd: '/Users/storybook-fixture-user/workspace/maka-agent',
     updatedAt: Date.now() - 3 * 60 * 60 * 1000,
-    importState: { importedCount: 1, importedSessionIds: ['imported-task-1'], isImporting: true },
+    importState: {
+      importedCount: 1,
+      importedSessionIds: ['imported-task-1'],
+      isImporting: true,
+    },
   },
   {
     id: 'codex-01930a',
     name: 'Reproduce the SQLite lock contention under parallel evals',
     cwd: '/Users/storybook-fixture-user/workspace/maka-agent',
     updatedAt: Date.now() - 2 * 24 * 60 * 60 * 1000,
-    importState: { importedCount: 0, importedSessionIds: [], isImporting: false },
+    importState: {
+      importedCount: 0,
+      importedSessionIds: [],
+      isImporting: false,
+    },
   },
   {
     id: 'codex-01929c',
@@ -1564,7 +1573,11 @@ const externalConversations: DesktopExternalSessionCatalogItem[] = [
     cwd: '/Users/storybook-fixture-user/workspace/docs',
     updatedAt: Date.now() - 6 * 24 * 60 * 60 * 1000,
     archived: true,
-    importState: { importedCount: 1, importedSessionIds: ['imported-archived'], isImporting: false },
+    importState: {
+      importedCount: 1,
+      importedSessionIds: ['imported-archived'],
+      isImporting: false,
+    },
   },
 ];
 
@@ -3523,21 +3536,33 @@ function importOutcomeRecoveryBridge(): Record<string, unknown> {
 }
 
 // The import response is deliberately unknown; the next authoritative catalog
-// read proves that the task landed and turns the banner into a usable entry.
+// read proves that the task landed. There is no positive "confirmed" copy any
+// more: the unknown-outcome banner stays up and the row's "imported N times"
+// annotation carries the landed signal, so both halves are asserted here.
 // Real path: 设置 → 导入任务 → 导入, when Main reports an unknown commit outcome that catalog recovery confirms.
 export const ImportTasksOutcomeUnknownRecovered: Story = {
   decorators: [withScopedMakaBridge(importOutcomeRecoveryBridge())],
   render: () => <SettingsStory section="import-tasks" />,
-  play: async ({ canvasElement }) => {
+  play: async ({ canvasElement, globals }) => {
+    const importCopy = getExternalSessionImportCopy(
+      globals.locale === 'en' ? 'en' : globals.locale === 'zh-TW' ? 'zh-TW' : 'zh-CN',
+    );
     const importButton = await waitForStoryButton(canvasElement, (candidate) =>
       ['导入', 'Import'].includes(candidate.textContent?.trim() ?? ''),
     );
     await userEvent.click(importButton);
+    // The banner is set when the import settles; the annotation only appears
+    // once the follow-up catalog read lands, so requiring both is what pins
+    // the recovery — a banner alone would pass before the row was refreshed.
     await waitForStoryCondition(
-      () =>
-        canvasElement.textContent?.includes('已确认导入') === true ||
-        canvasElement.textContent?.includes('Import confirmed') === true,
-      'Unknown-outcome recovery did not expose the imported task',
+      () => {
+        const text = canvasElement.textContent ?? '';
+        return (
+          text.includes(importCopy.importOutcomeUnknownTitle) &&
+          text.includes(importCopy.importedCount(1))
+        );
+      },
+      'Unknown-outcome recovery did not surface the catalog-confirmed import',
     );
   },
 };

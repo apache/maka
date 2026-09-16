@@ -101,13 +101,14 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 159 as const;
-// 159: Every Session transcript page says whether it stops between two Turns.
-// A reader cutting its own answers into whole Turns cannot derive that locally,
-// because a nested Turn's rows sit between the rows of the Turn around it.
-// 158: Session transcript reads return the whole transcript under a byte budget.
-// The windowed read — its turn-range operation, cursors and gap rows — is gone,
-// so a peer older than this epoch asks for a window this Host no longer answers.
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 160 as const;
+// 160: Session transcript reads return the whole transcript under a byte budget,
+// and every page says whether it stops between two Turns. The windowed read —
+// its range edges and the Turn landmark query — is gone, so a peer older than
+// this epoch asks for what this Host no longer answers.
+// 159: External Session catalog queries distinguish adapter source limits from
+// persistence failures. Older Clients reject the new closed error code.
+// 158: Session transcripts advance per committed RuntimeEvent; the active overlay is gone.
 // 154: External Session import results distinguish committed Sessions from typed source limits.
 // 153: Sessions may select plugin executors and Plugin Platform queries expose them.
 // 152: Assistant completions and transcript rows preserve interrupted responses.

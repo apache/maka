@@ -52,9 +52,6 @@ test('keeps both Turns reachable when an oversized ledger Turn is followed by a 
     const { replica, subscription, state } = opened;
     assertTailOf(replica, first);
 
-    // RuntimeEvent transcripts publish a Turn durably only after it ends. The
-    // running checkpoints below stay in the overlay, then this terminal event
-    // advances the actual Host watermark and exercises live-to-durable eviction.
     const completeThrough = await ledger.appendThrough('completed-b');
     assert.ok(completeThrough !== null);
     const complete = await ledger.durableRecords();
@@ -101,26 +98,23 @@ test('keeps both Turns reachable when an oversized ledger Turn is followed by a 
 });
 
 for (const checkpoint of ['running-b', 'result-b'] as const) {
-  test(`keeps the running second Turn reachable at ${checkpoint} behind an oversized durable Turn`, async () => {
+  test(`serves the running second Turn through durable pages at ${checkpoint}`, async () => {
     const source = transcriptFixture();
     const ledger = await openTranscriptLedger([...source.first, ...source.second]);
     let opened: Awaited<ReturnType<typeof openReplica>> | undefined;
     try {
       const firstThrough = await ledger.appendThrough('completed-a');
-      const first = await ledger.durableRecords();
-      assert.equal(await ledger.appendThrough(checkpoint), firstThrough,
-        'a running invocation changes its overlay, not the durable watermark');
-      const rootTurn = {
-        sessionId: ledger.sessionId, turnId: 'b',
-        runId: 'run-b', status: 'running' as const,
-      };
-      opened = await openReplica(ledger, firstThrough, rootTurn);
+      const runningThrough = await ledger.appendThrough(checkpoint);
+      assert.ok(firstThrough !== null && runningThrough !== null && runningThrough > firstThrough,
+        'each committed RuntimeEvent of a running Turn advances the watermark');
+      opened = await openReplica(ledger, runningThrough);
       const { replica } = opened;
-      assertTailOf(replica, first);
       const expected = source.second.slice(0, source.second.findIndex(({ id }) => id === checkpoint) + 1)
         .filter((message) => message.type !== 'turn_state').map(({ id }) => id);
-      assert.deepEqual(replica.snapshot().overlay.map(({ id }) => id), expected);
-      assert.ok(replica.messages().some(({ id }) => id === expected.at(-1)), 'the running Turn remains reachable');
+      assert.deepEqual(
+        replica.snapshot().durable.filter(({ message }) => message.turnId === 'b').map(({ message }) => message.id),
+        expected,
+      );
 
       const throughSequence = await ledger.appendThrough('completed-b');
       assert.ok(throughSequence !== null);
@@ -132,8 +126,7 @@ for (const checkpoint of ['running-b', 'result-b'] as const) {
       });
       assert.equal((await opened.subscription.next()).value?.kind, 'subscription.transcript_advanced');
       await replica.advance(throughSequence);
-      assert.deepEqual(replica.snapshot().overlay, []);
-      const second = (await ledger.durableRecords()).filter(({ message }) => message.turnId === rootTurn.turnId);
+      const second = (await ledger.durableRecords()).filter(({ message }) => message.turnId === 'b');
       assertRecords(replica, second);
     } finally {
       opened?.replica.close();
@@ -146,7 +139,7 @@ for (const checkpoint of ['running-b', 'result-b'] as const) {
 /**
  * The Host writes a nested Turn's rows between its parent's, so the two share a
  * stretch of the Session's ordinals (see `session-transcript-reader.test.ts`,
- * "pages a nested Turn the same way a single sweep reads it"). A targeted read
+ * "serves every row of a Turn nested inside another"). A targeted read
  * of the outer Turn has to read through that stretch, not stop at it.
  */
 test('reads a Turn through the rows of a nested one', async () => {
@@ -181,61 +174,12 @@ test('reads a Turn through the rows of a nested one', async () => {
   }
 });
 
-/**
- * A Turn's rows become durable when the Turn ends, and they carry the ordinals
- * they were written at. A nested Turn that ends first publishes a watermark
- * above rows the Turn around it has not published yet, so a row can appear
- * BELOW a watermark a reader has already seen.
- *
- * So a reader that keeps what it holds and only takes what arrived above its
- * watermark ends up missing rows. This is why recovery rereads the range it
- * delivered instead of catching up from the newest sequence it handed over —
- * residency removes eviction, not the need to reconcile.
- */
-test('publishes rows below a watermark a reader has already been given', async () => {
-  const source: StoredMessage[] = [
-    { type: 'user', id: 'user-outer', turnId: 'outer', ts: 1, text: 'Outer question' },
-    { type: 'assistant', id: 'outer-before', turnId: 'outer', ts: 2, text: 'outer before', modelId: 'fixture-model' },
-    { type: 'user', id: 'user-inner', turnId: 'inner', ts: 3, text: 'Inner question' },
-    { type: 'assistant', id: 'inner-answer', turnId: 'inner', ts: 4, text: 'inner answer', modelId: 'fixture-model' },
-    { type: 'turn_state', id: 'completed-inner', turnId: 'inner', ts: 5, status: 'completed' },
-    { type: 'assistant', id: 'outer-after', turnId: 'outer', ts: 6, text: 'outer after', modelId: 'fixture-model' },
-    { type: 'turn_state', id: 'completed-outer', turnId: 'outer', ts: 7, status: 'completed' },
-  ];
-  const ledger = await openTranscriptLedger(source);
-  try {
-    const innerThrough = await ledger.appendThrough('completed-inner');
-    assert.ok(innerThrough !== null);
-    const afterInner = await ledger.durableRecords();
-    assert.deepEqual(
-      afterInner.map(({ message }) => message.turnId),
-      afterInner.map(() => 'inner'),
-      'only the Turn that ended is durable yet',
-    );
-
-    await ledger.appendThrough('completed-outer');
-    const afterOuter = await ledger.durableRecords();
-    const below = afterOuter.filter(({ sequence }) => sequence <= innerThrough);
-    assert.deepEqual(
-      below.map(({ message }) => message.id),
-      ['user-outer', 'outer-before', 'user-inner', 'inner-answer', 'completed-inner'],
-      'the Turn around the nested one publishes its opening below the watermark',
-    );
-  } finally {
-    await ledger.close();
-  }
-});
-
 type Ledger = Awaited<ReturnType<typeof openTranscriptLedger>>;
-async function openReplica(
-  ledger: Ledger,
-  throughSequence: number | null,
-  rootTurn: { sessionId: string; turnId: string; runId: string; status: 'running' } | null = null,
-) {
+async function openReplica(ledger: Ledger, throughSequence: number | null) {
   const { reader, sessionId } = ledger;
   const opened = await createSessionTranscriptBootstrap({
-    reader, sessionId, subscriptionId: SUBSCRIPTION_ID, throughSequence, rootTurn,
-    activeAssistantStreams: [], maxBytes: 16 * 1024, projection: 'owner',
+    reader, sessionId, subscriptionId: SUBSCRIPTION_ID, throughSequence,
+    maxBytes: 16 * 1024, projection: 'owner',
   });
   const subscription = new ClientSessionSubscription({
     hostEpoch: HOST_EPOCH, subscriptionId: SUBSCRIPTION_ID, nextSequence: 1,
@@ -243,16 +187,15 @@ async function openReplica(
     snapshot: {
       schemaVersion: SESSION_CONTINUITY_SCHEMA_VERSION,
       session: { sessionId, metadataRevision: 1, status: 'active', createdAt: 1, isArchived: false },
-      projectionRevision: 1, rootTurn, goal: null,
+      projectionRevision: 1, rootTurn: null, goal: null,
       queue: { hostEpoch: HOST_EPOCH, queueRevision: 0, steering: [], followup: [] },
       interactions: { pending: [] },
     },
-  }, async () => undefined, (request) => readSessionTranscriptPage({ reader, state: opened.state, request }));
+  }, async () => undefined, (request) => readSessionTranscriptPage({ reader, state: opened.state, request }), async () => undefined);
   const decodeMessage = (value: unknown) => decodeStoredMessage(markPersisted<StoredMessage>(value));
   const replica = await DesktopTranscriptReplica.prepare(runtimeHostSessionFixture({
     snapshot: subscription.snapshot, transcript: Promise.resolve([]), events: subscription,
     transcriptBootstrap: opened.bootstrap,
-    loadTranscriptOverlay: (maxBytes, accountBytes) => subscription.loadTranscriptOverlay(decodeMessage, maxBytes, accountBytes),
     decodeTranscriptPage: (page, maxBytes, accountBytes) => subscription.decodeTranscriptPage(page, decodeMessage, maxBytes, accountBytes),
     loadTranscriptPage: (request) => subscription.loadTranscriptPage(request),
     close: () => subscription.close(),

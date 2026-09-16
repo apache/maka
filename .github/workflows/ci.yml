@@ -24,8 +24,10 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# A group holds at most one pending run, and a third entering cancels the queued
+# second even with cancel-in-progress off, so every main commit needs its own key.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
@@ -163,6 +165,10 @@ jobs:
       # the other install-free checks.
       - name: Check ASF source headers
         run: npm run check:asf-headers
+
+      # Every tracked input can change the source archive, including docs and images.
+      - name: Verify repository source archive
+        run: node scripts/asf-source-release.mjs create --revision HEAD --version "$(node -p 'require("./package.json").version')"
 
       # Locale hygiene ratchet (node built-ins only, so it runs install-free): a new UI locale must only ever mean a new
       # UiCatalog key, so locale-literal branches, silent locale defaults,
@@ -396,11 +402,15 @@ jobs:
 
       - name: Ensure xvfb
         if: steps.plan.outputs.e2e == 'true'
-        run: command -v xvfb-run >/dev/null 2>&1 || { sudo apt-get update && sudo apt-get install -y xvfb; }
+        run: |
+          command -v Xvfb >/dev/null 2>&1 && command -v xdpyinfo >/dev/null 2>&1 && exit 0
+          sudo apt-get update && sudo apt-get install -y xvfb x11-utils
 
+      # One X server per worker: a server has one input focus, one pointer and
+      # one stacking order, and this tier is the set of tests that assert those.
       - name: Desktop e2e
         if: steps.plan.outputs.e2e == 'true'
-        run: xvfb-run -a npm exec -w @maka/desktop -- playwright test --config e2e/playwright.config.ts
+        run: node scripts/run-desktop-e2e-parallel.mjs --workers 3
 
       # Playwright keeps a trace, a video and a screenshot for every failed
       # test. Without this they die with the runner, and an e2e flake can only
@@ -419,6 +429,10 @@ jobs:
         # Hosted Linux runners cannot configure Electron's SUID helper. This
         # smoke loads only its loopback fixture; production stays sandboxed.
         run: xvfb-run -a npm exec --workspace @maka/desktop -- electron --no-sandbox scripts/browser-observe-act-smoke.mjs
+
+      - name: WorkHub native browser presentation smoke
+        if: steps.plan.outputs.e2e == 'true'
+        run: xvfb-run -a -s "-screen 0 1920x1080x24" npm exec --workspace @maka/desktop -- electron --no-sandbox scripts/workhub-browser-presentation-smoke.mjs
 
       - name: Alignment audit
         if: steps.plan.outputs.e2e == 'true'

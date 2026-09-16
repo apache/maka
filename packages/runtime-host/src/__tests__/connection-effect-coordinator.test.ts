@@ -51,6 +51,79 @@ const context: ConnectionContext = {
   acquireResidency: () => ({ release: () => undefined }),
 };
 
+test('Fireworks onboarding keeps an unrelated model with unknown limits and persists the selected K3', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-fireworks-onboarding-'));
+  const capability = await resolveStorageRoot({
+    path: join(base, 'interactive'),
+    kind: 'interactive',
+  });
+  const k3 = 'accounts/fireworks/models/kimi-k3';
+  const other = 'accounts/fireworks/models/qwen3p8-max';
+  const requests: string[] = [];
+  try {
+    for (const reopen of [false, true]) {
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(owner);
+      try {
+        const stores = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+        if (!reopen) {
+          const coordinator = new HostConnectionEffectCoordinator({
+            stores,
+            activation: new RuntimePolicyActivationGate(),
+            oauthCredentials: new HostOAuthExecutionAuthority(stores),
+            createTransport: () => ({
+              fetch: async (input) => {
+                const path = new URL(String(input)).pathname;
+                requests.push(path);
+                if (path === '/v1/accounts') return Response.json({ accounts: [] });
+                assert.equal(path, '/v1/accounts/fireworks/models');
+                return Response.json({
+                  models: [
+                    { name: k3, contextLength: 1048576 },
+                    { name: other, contextLength: 0 },
+                  ],
+                });
+              },
+              close: async () => undefined,
+            }),
+          });
+          try {
+            const saved = await coordinator.handlers['connection.onboarding.save'](
+              {
+                target: {
+                  kind: 'create',
+                  providerType: 'fireworks-ai',
+                  slug: 'fireworks',
+                  name: 'Fireworks',
+                },
+                apiKey: 'fixture-key',
+                baseUrl: null,
+                enabledModelIds: [k3],
+              },
+              context,
+            );
+            assertSaved(saved);
+          } finally {
+            await coordinator.close();
+          }
+        }
+        const catalog = await stores.connectionCatalog.getSnapshot();
+        assert.equal(catalog.connections.length, 1);
+        assert.deepEqual(catalog.connections[0]?.enabledModelIds, [k3]);
+        assert.deepEqual(catalog.connections[0]?.models, [
+          { id: k3, contextWindow: 1048576 },
+          { id: other },
+        ]);
+      } finally {
+        await owner.close();
+      }
+    }
+    assert.deepEqual(requests, ['/v1/accounts', '/v1/accounts/fireworks/models']);
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
 test('verifies a first-run API key without persisting a connection or credential', async () => {
   await withFixture(async ({ stores }) => {
     let observed: { slug: string; secret: string } | undefined;

@@ -58,14 +58,9 @@ const PERSISTED_GRANT_MIGRATIONS: ReadonlyMap<string, PersistedGrantMigration> =
   string,
   PersistedGrantMigration
 >([
-  // The transcript query split into paging and its overlay release.
-  [
-    'session.transcript.query',
-    {
-      kind: 'replace',
-      successors: ['session.transcript.page', 'session.transcript.overlay.release'],
-    },
-  ],
+  ['session.transcript.query', { kind: 'replace', successors: ['session.transcript.page'] }],
+  // Retired with the active transcript overlay; pages alone carry a running Turn.
+  ['session.transcript.overlay.release', { kind: 'release' }],
   // Resource inventory is a dedicated facet of the existing Host diagnostics authority.
   [
     'host.diagnostics.query',
@@ -79,7 +74,7 @@ const PERSISTED_GRANT_MIGRATIONS: ReadonlyMap<string, PersistedGrantMigration> =
   // Retired with the second execution-inspection contract; no shipped surface
   // called execution.inspect.resolve.
   ['execution.inspect.resolve', { kind: 'release' }],
-  // Retired with Desktop's windowed transcript scrollbar, its only caller.
+  // Retired with Desktop's windowed transcript; the prompt rail ticks only Turns already read.
   ['session.turn_landmarks.query', { kind: 'release' }],
   // Direct WorkHub actions and record writes were retired. Their grants do not
   // authorize actFromTurn, which requires the active coordination Turn.
@@ -101,8 +96,8 @@ export const SESSION_GUEST_OPERATION_GRANTS = Object.freeze([
   'subscription.open',
   'subscription.close',
   'subscription.pty_interest.set',
+  'subscription.ready',
   'session.transcript.page',
-  'session.transcript.overlay.release',
 ] as const satisfies readonly OperationKey[]);
 
 // A Client Capability provider serves exactly this much and nothing else. It

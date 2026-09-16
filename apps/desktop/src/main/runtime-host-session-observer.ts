@@ -1089,21 +1089,27 @@ export class RuntimeHostSessionObserver {
   }
 
   async #closeIfIdle(state: ObservedSessionState): Promise<void> {
-    if (
+    if (this.#isRetained(state)) return;
+    await Promise.resolve();
+    if (!this.#isRetained(state)) {
+      await this.#closeState(state);
+    }
+  }
+
+  /**
+   * A running root Turn keeps the subscription whether or not anyone is
+   * looking: the Host goes on producing either way, and letting go here only
+   * makes the next viewer ask it to send everything a second time.
+   */
+  #isRetained(state: ObservedSessionState): boolean {
+    const root = state.snapshot?.rootTurn;
+    return (
       state.targets.size > 0 ||
       state.watchedTurnIds.size > 0 ||
       state.transcriptConsumers.size > 0 ||
-      state.pendingTranscriptConsumers > 0
-    ) return;
-    await Promise.resolve();
-    if (
-      state.targets.size === 0 &&
-      state.watchedTurnIds.size === 0 &&
-      state.transcriptConsumers.size === 0 &&
-      state.pendingTranscriptConsumers === 0
-    ) {
-      await this.#closeState(state);
-    }
+      state.pendingTranscriptConsumers > 0 ||
+      (root !== null && root !== undefined && !isTerminalTurn(root))
+    );
   }
 
   #finishWatchedTurn(
@@ -1325,16 +1331,12 @@ export class RuntimeHostSessionObserver {
 
   /**
    * One history answer: a reset reads the newest whole Turns through the tail
-   * watermark and ends with the overlay; an earlier read continues below what
-   * was delivered. Each answer stops at a Turn boundary once it reaches its
-   * byte budget.
+   * watermark; an earlier read continues below what was delivered. Each answer
+   * stops at a Turn boundary once it reaches its byte budget.
    *
-   * A reset also reads back down to the oldest sequence this consumer was
-   * already given, so a recovery hands back the history the reader had rather
-   * than one budget's worth of it. The reread is not window-era baggage: a
-   * Turn's rows become durable when the Turn ends, so a nested Turn that ends
-   * first publishes a watermark above rows the Turn around it has not
-   * published yet, and rows can arrive below a boundary the reader holds.
+   * A reset replaces everything the reader holds, so it also reads back down
+   * to the oldest sequence this consumer was already given. Stopping at one
+   * budget would take back history the reader had loaded.
    */
   async #sendTranscriptHistory(
     state: ObservedSessionState,
@@ -1343,13 +1345,11 @@ export class RuntimeHostSessionObserver {
     replica: DesktopTranscriptReplica,
     reset: boolean,
   ): Promise<void> {
-    let overlay: readonly StoredMessage[] = [];
     let earlierThan: number | undefined;
     /** The oldest sequence already delivered, which a reset has to reach again. */
     let floor: number | null = null;
     if (reset) {
       const snapshot = replica.snapshot();
-      overlay = snapshot.overlay;
       floor = history.oldestSequence;
       Object.assign(history, {
         throughSequence: snapshot.durableThrough,
@@ -1377,7 +1377,6 @@ export class RuntimeHostSessionObserver {
         encodeDesktopTranscriptBatches(identity, {
           durableThrough: history.throughSequence,
           durable,
-          overlay: ready ? overlay : [],
           hasOlder: historyHasOlder(history),
           beginsAtTurnBoundary,
           ...(earlierThan === undefined ? {} : { earlierThan }),

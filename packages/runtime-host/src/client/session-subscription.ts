@@ -42,7 +42,6 @@ export type RuntimeHostSubscriptionFailureReason =
   | 'correlation_changed'
   | 'projection_revision_invalid'
   | 'slow_consumer'
-  | 'transcript_release_failed'
   | 'connection_closed';
 
 export class RuntimeHostSubscriptionError extends Error {
@@ -69,11 +68,6 @@ export interface RuntimeHostSessionSubscription extends AsyncIterable<Subscripti
   readonly activeAssistantStreams: readonly SessionAssistantStreamIdentity[];
   readonly transcriptBootstrap: SessionTranscriptBootstrap | null;
   loadTranscript<T>(decodeMessage: (value: unknown) => T): Promise<T[]>;
-  loadTranscriptOverlay<T>(
-    decodeMessage: (value: unknown) => T,
-    maxMessageBytes?: number,
-    accountAssemblyBytes?: (deltaBytes: number) => void,
-  ): Promise<T[]>;
   decodeTranscriptPage<T>(
     page: SessionTranscriptPage,
     decodeMessage: (value: unknown) => T,
@@ -83,6 +77,8 @@ export interface RuntimeHostSessionSubscription extends AsyncIterable<Subscripti
   loadTranscriptPage(
     input: Omit<SessionTranscriptPageInput, 'subscriptionId'>,
   ): Promise<SessionTranscriptPage>;
+  /** Frames are held by the Host until this resolves. */
+  ready(): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -108,10 +104,11 @@ export class ClientSessionSubscription
   readonly activeAssistantStreams: readonly SessionAssistantStreamIdentity[];
   readonly transcriptBootstrap: SessionTranscriptBootstrap | null;
   readonly #requestClose: () => Promise<void>;
+  readonly #requestReady: () => Promise<void>;
+  #readyTask: Promise<void> | undefined;
   readonly #readTranscriptPage: (
     input: SessionTranscriptPageInput,
   ) => Promise<SessionTranscriptPage>;
-  readonly #releaseTranscriptOverlay: () => Promise<void>;
   readonly #expectedSessionId: string;
   readonly #queue: QueuedFrame[] = [];
   readonly #ptyListeners = new Set<(frame: SessionRuntimeResourcePtyDataFrame) => void>();
@@ -131,15 +128,13 @@ export class ClientSessionSubscription
   #closing = false;
   #closeTask: Promise<void> | undefined;
   #transcriptTask: Promise<unknown[]> | undefined;
-  #overlayTask: Promise<Array<{ identity: number; value: unknown }>> | undefined;
-  #overlayConsumed = false;
   #latestTranscriptThroughSequence: number | null;
 
   constructor(
     result: SubscriptionOpenResult,
     requestClose: () => Promise<void>,
     readTranscriptPage: (input: SessionTranscriptPageInput) => Promise<SessionTranscriptPage>,
-    releaseTranscriptOverlay: () => Promise<void> = async () => undefined,
+    requestReady: () => Promise<void>,
   ) {
     this.hostEpoch = result.hostEpoch;
     this.subscriptionId = result.subscriptionId;
@@ -149,10 +144,22 @@ export class ClientSessionSubscription
     this.#expectedSessionId = result.snapshot.session.sessionId;
     this.#expectedSequence = result.nextSequence;
     this.#latestProjectionRevision = result.snapshot.projectionRevision;
-    this.#latestTranscriptThroughSequence = result.transcript?.throughSequence ?? null;
+    this.#latestTranscriptThroughSequence = result.transcript?.durable.throughSequence ?? null;
     this.#requestClose = requestClose;
     this.#readTranscriptPage = readTranscriptPage;
-    this.#releaseTranscriptOverlay = releaseTranscriptOverlay;
+    this.#requestReady = requestReady;
+  }
+
+  /**
+   * Take frames from here on.
+   *
+   * Until this is called the Host holds them, so a subscriber assembles the
+   * state frames apply to without an in-flight answer of any size arriving
+   * against a queue sized for live traffic.
+   */
+  ready(): Promise<void> {
+    this.#readyTask ??= this.#requestReady();
+    return this.#readyTask;
   }
 
   [Symbol.asyncIterator](): AsyncIterator<SubscriptionFrame> {
@@ -212,26 +219,6 @@ export class ClientSessionSubscription
     return this.#transcriptTask.then((messages) => messages.map(decodeMessage));
   }
 
-  loadTranscriptOverlay<T>(
-    decodeMessage: (value: unknown) => T,
-    maxMessageBytes = Number.MAX_SAFE_INTEGER,
-    accountAssemblyBytes: (deltaBytes: number) => void = () => undefined,
-  ): Promise<T[]> {
-    this.#assertTranscriptReadable();
-    const bootstrap = this.transcriptBootstrap;
-    if (!bootstrap) {
-      return Promise.reject(
-        new RuntimeHostSubscriptionError(
-          'correlation_changed',
-          'Session subscription was opened without transcript access',
-        ),
-      );
-    }
-    return this.#consumeTranscriptOverlay(bootstrap, maxMessageBytes, accountAssemblyBytes).then(
-      (messages) => messages.map((entry) => decodeMessage(entry.value)),
-    );
-  }
-
   async decodeTranscriptPage<T>(
     page: SessionTranscriptPage,
     decodeMessage: (value: unknown) => T,
@@ -240,13 +227,11 @@ export class ClientSessionSubscription
   ): Promise<DecodedSessionTranscriptPage<T>> {
     this.#assertTranscriptReadable();
     this.#assertTranscriptPage(page, {
-      source: page.source,
       direction: page.direction,
       throughSequence: page.throughSequence,
       maxBytes: Math.max(1, page.rawBytes),
     });
     const assembler = new TranscriptFragmentAssembler(
-      page.source,
       page.direction,
       maxMessageBytes,
       accountAssemblyBytes,
@@ -263,7 +248,6 @@ export class ClientSessionSubscription
         }
         const requestedCursor = cursor;
         const continuation = await this.loadTranscriptPage({
-          source: page.source,
           direction: page.direction,
           throughSequence: page.throughSequence,
           cursor,
@@ -334,96 +318,24 @@ export class ClientSessionSubscription
         'Session subscription was opened without transcript access',
       );
     }
-    const overlay = await this.#consumeTranscriptOverlay(bootstrap);
     const durable = await this.#loadTranscriptSource(bootstrap.durable);
-    const messages = durable.map((entry) => entry.value);
-    const indexById = new Map<string, number>();
-    for (const [index, message] of messages.entries()) {
-      const id = messageIdentity(message);
-      if (id) indexById.set(id, index);
-    }
-    for (const entry of overlay) {
-      const id = messageIdentity(entry.value);
-      const index = id ? indexById.get(id) : undefined;
-      if (index === undefined) {
-        if (id) indexById.set(id, messages.length);
-        messages.push(entry.value);
-      } else {
-        messages[index] = entry.value;
-      }
-    }
-    return messages;
-  }
-
-  #consumeTranscriptOverlay(
-    bootstrap: SessionTranscriptBootstrap,
-    maxMessageBytes = Number.MAX_SAFE_INTEGER,
-    accountAssemblyBytes: (deltaBytes: number) => void = () => undefined,
-  ): Promise<Array<{ identity: number; value: unknown }>> {
-    if (this.#overlayConsumed && !this.#overlayTask) {
-      return Promise.reject(
-        new RuntimeHostSubscriptionError(
-          'correlation_changed',
-          'Session transcript overlay was already consumed',
-        ),
-      );
-    }
-    this.#overlayTask ??= (async () => {
-      const overlay = await this.#loadTranscriptSource(
-        bootstrap.overlay,
-        maxMessageBytes,
-        accountAssemblyBytes,
-      );
-      assertCompleteIdentities(
-        overlay,
-        bootstrap.overlayMessageCount === 0 ? null : bootstrap.overlayMessageCount - 1,
-      );
-      if (bootstrap.overlayMessageCount === 0) {
-        this.#overlayConsumed = true;
-        return overlay;
-      }
-      try {
-        await this.#releaseTranscriptOverlay();
-      } catch (cause) {
-        await this.close().catch(() => undefined);
-        throw new RuntimeHostSubscriptionError(
-          'transcript_release_failed',
-          'Runtime Host Session transcript overlay release was not confirmed',
-          { cause },
-        );
-      }
-      this.#overlayConsumed = true;
-      return overlay;
-    })();
-    const task = this.#overlayTask;
-    return task.finally(() => {
-      if (this.#overlayTask === task) this.#overlayTask = undefined;
-    });
+    return durable.map((entry) => entry.value);
   }
 
   async #loadTranscriptSource(
     initial: SessionTranscriptPage,
-    maxMessageBytes = Number.MAX_SAFE_INTEGER,
-    accountAssemblyBytes: (deltaBytes: number) => void = () => undefined,
   ): Promise<Array<{ identity: number; value: unknown }>> {
     this.#assertTranscriptPage(initial, {
-      source: initial.source,
       direction: initial.direction,
       throughSequence: initial.throughSequence,
       maxBytes: Math.max(1, initial.rawBytes),
     });
-    const assembler = new TranscriptFragmentAssembler(
-      initial.source,
-      initial.direction,
-      maxMessageBytes,
-      accountAssemblyBytes,
-    );
+    const assembler = new TranscriptFragmentAssembler(initial.direction);
     try {
       assembler.accept(initial.fragments);
       let cursor = initial.nextCursor;
       while (cursor !== null) {
         const page = await this.loadTranscriptPage({
-          source: initial.source,
           direction: initial.direction,
           throughSequence: initial.throughSequence,
           cursor,
@@ -456,14 +368,10 @@ export class ClientSessionSubscription
 
   #assertTranscriptPage(
     page: SessionTranscriptPage,
-    expected: Pick<
-      SessionTranscriptPageInput,
-      'source' | 'direction' | 'throughSequence' | 'maxBytes'
-    >,
+    expected: Pick<SessionTranscriptPageInput, 'direction' | 'throughSequence' | 'maxBytes'>,
   ): void {
     if (
       page.sessionId !== this.#expectedSessionId ||
-      page.source !== expected.source ||
       page.direction !== expected.direction ||
       page.throughSequence !== expected.throughSequence ||
       page.rawBytes > expected.maxBytes
@@ -642,7 +550,6 @@ class TranscriptFragmentAssembler {
   #lastStartedIdentity: number | undefined;
 
   constructor(
-    private readonly source: 'durable' | 'overlay',
     private readonly direction: 'older' | 'newer',
     private readonly maxMessageBytes = Number.MAX_SAFE_INTEGER,
     private readonly accountAssemblyBytes: (deltaBytes: number) => void = () => undefined,
@@ -676,15 +583,9 @@ class TranscriptFragmentAssembler {
   }
 
   #accept(fragment: SessionTranscriptFragment): void {
-    if (fragment.kind !== this.source) {
-      throw new RuntimeHostSubscriptionError(
-        'correlation_changed',
-        'Session transcript fragment source changed',
-      );
-    }
-    const identity = fragment.kind === 'durable' ? fragment.sequence : fragment.messageIndex;
+    const identity = fragment.sequence;
     const bytes = Buffer.from(fragment.data, 'base64');
-    const payloadDigest = fragment.kind === 'durable' ? fragment.payloadDigest : null;
+    const payloadDigest = fragment.payloadDigest;
     if (!this.#current) this.#start(identity, fragment.totalBytes, payloadDigest);
     if (
       this.#current?.identity !== identity ||
@@ -775,34 +676,4 @@ class TranscriptFragmentAssembler {
     }
     this.#current = undefined;
   }
-}
-
-function assertCompleteIdentities(
-  messages: readonly { identity: number }[],
-  throughIdentity: number | null,
-): void {
-  if (throughIdentity === null) {
-    if (messages.length !== 0) {
-      throw new RuntimeHostSubscriptionError(
-        'correlation_changed',
-        'Session transcript contains messages without a watermark',
-      );
-    }
-    return;
-  }
-  if (
-    messages.length !== throughIdentity + 1 ||
-    messages.some((message, index) => message.identity !== index)
-  ) {
-    throw new RuntimeHostSubscriptionError(
-      'correlation_changed',
-      'Session transcript has a message sequence gap',
-    );
-  }
-}
-
-function messageIdentity(value: unknown): string | undefined {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return;
-  const id = (value as Record<string, unknown>).id;
-  return typeof id === 'string' ? id : undefined;
 }

@@ -39,7 +39,6 @@ export interface TranscriptBatchIdentity {
 export interface TranscriptBatchContent {
   readonly durableThrough: number | null;
   readonly durable: readonly DesktopSequencedTranscriptMessage[];
-  readonly overlay: readonly StoredMessage[];
   readonly hasOlder?: boolean;
   readonly beginsAtTurnBoundary?: boolean;
   readonly earlierThan?: number;
@@ -54,7 +53,6 @@ export function encodeDesktopTranscriptSnapshot(
   return encodeDesktopTranscriptBatches(snapshot, {
     durableThrough: snapshot.durableThrough,
     durable: snapshot.durable,
-    overlay: snapshot.overlay,
     hasOlder: snapshot.hasOlder,
     beginsAtTurnBoundary: snapshot.beginsAtTurnBoundary,
     reset: true,
@@ -69,7 +67,6 @@ export function encodeDesktopTranscriptChange(
   return encodeDesktopTranscriptBatches(identity, {
     durableThrough: change.durableThrough,
     durable: change.durableUpserts,
-    overlay: [],
     coversFrom: change.coversFrom,
     reset: false,
     ready: true,
@@ -116,27 +113,18 @@ export function* encodeDesktopTranscriptBatches(
 }
 
 function* encodeMessages(content: TranscriptBatchContent): Generator<DesktopTranscriptFragment> {
-  for (const entry of content.durable) {
-    yield* encodeMessage('durable', entry.sequence, null, entry.message);
-  }
-  for (const [order, message] of content.overlay.entries()) {
-    yield* encodeMessage('overlay', message.id, order, message);
-  }
+  for (const entry of content.durable) yield* encodeMessage(entry.sequence, entry.message);
 }
 
 function* encodeMessage(
-  source: 'durable' | 'overlay',
-  identity: number | string,
-  order: number | null,
+  sequence: number,
   message: StoredMessage,
 ): Generator<DesktopTranscriptFragment> {
   const bytes = Buffer.from(JSON.stringify(message), 'utf8');
   for (let byteOffset = 0; byteOffset < bytes.byteLength; ) {
     const end = Math.min(byteOffset + DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES, bytes.byteLength);
     yield {
-      source,
-      identity,
-      order,
+      sequence,
       byteOffset,
       totalBytes: bytes.byteLength,
       data: Uint8Array.from(bytes.subarray(byteOffset, end)),

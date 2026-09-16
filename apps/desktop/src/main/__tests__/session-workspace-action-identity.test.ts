@@ -142,7 +142,7 @@ describe('session workspace action identity', () => {
     for (const batch of encodeDesktopTranscriptSnapshot({
       beginsAtTurnBoundary: true,
       sessionId: 'c', generation: 'publication', hostEpoch: 'host',
-      durableThrough: null, durable: [], overlay: c, hasOlder: false,
+      durableThrough: 0, durable: c.map((message, sequence) => ({ sequence, message })), hasOlder: false,
     })) readerC.store.accept(batch);
     let publications = 0;
     const retiredSelection = workspace.captureSelection();

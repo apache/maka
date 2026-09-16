@@ -17,22 +17,11 @@
  * under the License.
  */
 
-import type { ComponentType, ReactNode, RefObject } from 'react';
-import type { SessionSummary } from '@maka/core/session';
-import type { ChatModelChoice, ComposerHandle } from '@maka/ui';
-
-/** Composition supplies the same session workspace used by ordinary conversations. */
-export interface SessionWorkspaceProps {
-  className?: string;
-  layoutScope?: string;
-  session?: SessionSummary;
-  sessionIds: ReadonlySet<string> | undefined;
-  modelChoices: readonly ChatModelChoice[];
-  visible: boolean;
-  composerRef: RefObject<ComposerHandle | null>;
-  onShowConversation(): void;
-  onOpenSession(sessionId: string): void;
-  children(workbar: { openUsage(): void; toggle: ReactNode }): ReactNode;
+/** Native child views sit above DOM top-layer content, regardless of z-index. */
+export function isNativeSurfaceOccluded(rect: DOMRect, document: Document): boolean {
+  return Array.from(document.querySelectorAll(':popover-open:not(:empty), dialog[open]')).some((overlay) => {
+    if (overlay.matches(':modal')) return true;
+    const bounds = overlay.getBoundingClientRect();
+    return bounds.width > 0 && bounds.height > 0 && bounds.left < rect.right && bounds.right > rect.left && bounds.top < rect.bottom && bounds.bottom > rect.top;
+  });
 }
-
-export type SessionWorkspaceComponent = ComponentType<SessionWorkspaceProps>;

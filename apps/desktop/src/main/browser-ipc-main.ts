@@ -52,14 +52,19 @@ export function registerBrowserIpc(deps: BrowserIpcDeps): BrowserIpcController {
   const observedRenderers = new WeakSet<Electron.WebContents>();
   const views = deps.mainWindowController.getBrowserViews();
 
+  const isCoordination = (sessionId: string): boolean =>
+    isWorkHubCoordinationSessionId(parseDesktopSessionResourceKey(sessionId).sessionId);
+
+  // Coordination has one persistent conversation owner and may also be
+  // presented by Main. Only its native page moves; automation keeps its owner.
   const ownerForSession = (sessionId: string): Electron.WebContents | undefined => {
+    let owner: Electron.WebContents | undefined;
     for (const [contents, selection] of selections) {
-      if (
-        selection.sessionId === sessionId &&
-        deps.mainWindowController.ownsRenderer(contents)
-      ) return contents;
+      if (selection.sessionId !== sessionId || !deps.mainWindowController.ownsRenderer(contents)) continue;
+      if (!deps.mainWindowController.isMainRenderer(contents)) return contents;
+      owner = contents;
     }
-    return undefined;
+    return owner;
   };
 
   const isSessionShown = (sessionId: string): boolean => {
@@ -85,8 +90,12 @@ export function registerBrowserIpc(deps: BrowserIpcDeps): BrowserIpcController {
     const selection = selections.get(contents);
     const sessionId = selection?.sessionId;
     if (!selection || !sessionId) return;
+    const view = views.get(sessionId);
+    const parent = deps.mainWindowController.browserParentForRenderer(contents);
     selection.sessionId = null;
-    views.get(sessionId)?.setViewport(null);
+    if (view && parent && view.hasParent(parent)) {
+      view.park();
+    }
   };
 
   const clearRendererSelection = (contents: Electron.WebContents): void => {
@@ -100,21 +109,29 @@ export function registerBrowserIpc(deps: BrowserIpcDeps): BrowserIpcController {
     observedRenderers.add(contents);
     const parent = deps.mainWindowController.browserParentForRenderer(contents);
     const window = BrowserWindow.fromWebContents(contents);
+    const parkPresentedPages = () => {
+      if (!parent) return;
+      for (const sessionId of views.sessionIds()) {
+        const view = views.get(sessionId);
+        if (view?.hasParent(parent) && !view.hasOwner(parent)) view.park();
+      }
+    };
+    window?.on('close', parkPresentedPages);
     window?.on('hide', revokeHiddenActions);
     window?.on('minimize', revokeHiddenActions);
     window?.on('show', revokeHiddenActions);
     window?.on('restore', revokeHiddenActions);
     contents.on('render-process-gone', () => clearRendererSelection(contents));
     contents.once('destroyed', () => {
+      window?.removeListener('close', parkPresentedPages);
       window?.removeListener('hide', revokeHiddenActions);
       window?.removeListener('minimize', revokeHiddenActions);
       window?.removeListener('show', revokeHiddenActions);
       window?.removeListener('restore', revokeHiddenActions);
-      clearRendererSelection(contents);
-      if (!parent) return;
       const owned = views.sessionIds().filter((sessionId) =>
-        views.get(sessionId)?.hasParent(parent),
+        parent && views.get(sessionId)?.hasOwner(parent),
       );
+      clearRendererSelection(contents);
       void Promise.all(owned.map((sessionId) => releaseBrowserSession(sessionId)));
     });
   };
@@ -182,7 +199,8 @@ export function registerBrowserIpc(deps: BrowserIpcDeps): BrowserIpcController {
     sessionId: string | null,
   ): void => {
     const previousOwner = sessionId ? ownerForSession(sessionId) : undefined;
-    if (previousOwner && previousOwner !== contents) return;
+    if (previousOwner && previousOwner !== contents && (!isCoordination(sessionId!) ||
+      deps.mainWindowController.isMainRenderer(previousOwner) === deps.mainWindowController.isMainRenderer(contents))) return;
     if (selection.sessionId && selection.sessionId !== sessionId) relinquishSession(contents);
     if (!sessionId) {
       selection.sessionId = null;
@@ -190,6 +208,10 @@ export function registerBrowserIpc(deps: BrowserIpcDeps): BrowserIpcController {
       return;
     }
     selection.sessionId = sessionId;
+    if (isCoordination(sessionId) && !deps.mainWindowController.isMainRenderer(contents)) {
+      const parent = deps.mainWindowController.browserParentForRenderer(contents);
+      if (parent) views.get(sessionId)?.setOwner(parent);
+    }
     revokeHiddenActions();
   };
 
@@ -245,7 +267,22 @@ export function registerBrowserIpc(deps: BrowserIpcDeps): BrowserIpcController {
       return;
     }
     if (!target) return;
-    views.get(target)?.setViewport(input.rect ?? null);
+    const view = views.get(target);
+    const parent = deps.mainWindowController.browserParentForRenderer(contents);
+    if (!view || !parent) return;
+    if (input.rect) {
+      view.setParent(parent);
+      view.setViewport(input.rect);
+    } else if (view.hasParent(parent)) {
+      view.park();
+    }
+  });
+
+  ipcMain.handle('browser:capture-page', (event, scope: unknown, target: unknown) => {
+    const selected = selectedTarget(event, scope, target);
+    const parent = deps.mainWindowController.browserParentForRenderer(event.sender);
+    const view = selected ? views.get(selected) : undefined;
+    return parent && view?.hasParent(parent) ? view.capturePage() : undefined;
   });
 
   ipcMain.handle('browser:navigate', async (event, scope: unknown, target: unknown, url: unknown) => {

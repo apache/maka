@@ -610,7 +610,7 @@
           "@maka/ui": 1
         },
         "importSpecifiers": 7,
-        "nonTriviaTokens": 2725
+        "nonTriviaTokens": 2687
       },
       "src/renderer/app-shell-session-start-actions.ts": {
         "importDeclarations": 2,
@@ -860,7 +860,7 @@
           "react": 1
         },
         "importSpecifiers": 100,
-        "nonTriviaTokens": 13076
+        "nonTriviaTokens": 13067
       },
       "src/renderer/use-app-shell-composer-quotes.ts": {
         "importDeclarations": 2,
@@ -2594,9 +2594,9 @@
         "hookCalls": {
           "useEffect": 5,
           "useMountedRef": 1,
-          "useRef": 5,
+          "useRef": 4,
           "useRuntimeHostSettingsTarget": 1,
-          "useState": 18,
+          "useState": 15,
           "useUiLocale": 1
         },
         "lifecycleMethods": {},

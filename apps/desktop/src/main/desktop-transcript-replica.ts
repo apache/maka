@@ -30,7 +30,6 @@ import {
 } from '@maka/runtime-host/protocol';
 import {
   DESKTOP_TRANSCRIPT_MESSAGE_MAX_BYTES,
-  DESKTOP_TRANSCRIPT_OVERLAY_CACHE_MAX_BYTES,
   DESKTOP_TRANSCRIPT_TAIL_MAX_BYTES,
   DESKTOP_TRANSCRIPT_TAIL_MAX_TURNS,
 } from '../preload/transcript-contract.js';
@@ -41,7 +40,6 @@ export interface DesktopTranscriptReplicaOptions {
   readonly maxMessageBytes?: number;
   readonly maxResidentBytes?: number;
   readonly maxResidentTurns?: number;
-  readonly maxOverlayBytes?: number;
   readonly accountPreparationBytes?: (deltaBytes: number) => void;
   readonly onChange?: (
     replica: DesktopTranscriptReplica,
@@ -60,7 +58,6 @@ export interface DesktopTranscriptReplicaSnapshot {
   readonly hostEpoch: string;
   readonly durableThrough: number | null;
   readonly durable: readonly DesktopSequencedTranscriptMessage[];
-  readonly overlay: readonly StoredMessage[];
   readonly hasOlder: boolean;
   /**
    * Whether the oldest Turn in the tail has all its rows here. The tail is
@@ -94,9 +91,9 @@ interface ResidentMessage extends DesktopSequencedTranscriptMessage {
 }
 
 /**
- * Main's view of one Session transcript: the durable tail the projector needs,
- * the overlay of not-yet-durable messages, and pass-through reads of older
- * history. This class only keeps the tail current and answers those reads.
+ * Main's view of one Session transcript: the durable tail the projector needs
+ * and pass-through reads of older history. This class only keeps the tail
+ * current and answers those reads.
  */
 export class DesktopTranscriptReplica {
   readonly sessionId: string;
@@ -105,7 +102,6 @@ export class DesktopTranscriptReplica {
   readonly #handle: DesktopRuntimeHostSession;
   readonly #maxResidentBytes: number;
   readonly #maxResidentTurns: number;
-  readonly #maxOverlayBytes: number;
   readonly #maxMessageBytes: number;
   readonly #accountPreparationBytes: (deltaBytes: number) => void;
   readonly #onChange: (
@@ -113,9 +109,7 @@ export class DesktopTranscriptReplica {
     change: DesktopTranscriptReplicaChange,
   ) => void;
   readonly #durable = new Map<number, ResidentMessage>();
-  readonly #overlay = new Map<string, StoredMessage>();
   #residentBytes = 0;
-  #overlayBytes = 0;
   #durableThrough: number | null;
   #targetThrough: number | null;
   #hasOlder: boolean;
@@ -138,12 +132,10 @@ export class DesktopTranscriptReplica {
       options.maxResidentBytes ?? DESKTOP_TRANSCRIPT_TAIL_MAX_BYTES;
     this.#maxResidentTurns =
       options.maxResidentTurns ?? DESKTOP_TRANSCRIPT_TAIL_MAX_TURNS;
-    this.#maxOverlayBytes =
-      options.maxOverlayBytes ?? DESKTOP_TRANSCRIPT_OVERLAY_CACHE_MAX_BYTES;
     this.#maxMessageBytes = options.maxMessageBytes ?? DESKTOP_TRANSCRIPT_MESSAGE_MAX_BYTES;
     this.#accountPreparationBytes = options.accountPreparationBytes ?? (() => undefined);
     this.#onChange = options.onChange ?? (() => undefined);
-    this.#durableThrough = handle.transcriptBootstrap.throughSequence;
+    this.#durableThrough = handle.transcriptBootstrap.durable.throughSequence;
     this.#targetThrough = this.#durableThrough;
     this.#hasOlder = handle.transcriptBootstrap.durable.nextCursor !== null;
     this.#beginsAtTurnBoundary = handle.transcriptBootstrap.durable.endsAtTurnBoundary;
@@ -155,19 +147,11 @@ export class DesktopTranscriptReplica {
   ): Promise<DesktopTranscriptReplica> {
     const replica = new DesktopTranscriptReplica(handle, options);
     try {
-      await replica.#withAssembly(async (accountAssemblyBytes) => {
-        replica.#installOverlay(
-          await handle.loadTranscriptOverlay(replica.#maxMessageBytes, accountAssemblyBytes),
-        );
-      });
       await replica.#withDecodedPage(handle.transcriptBootstrap.durable, (durable) => {
         replica.#installDurable(durable.messages);
         replica.#hasOlder = durable.nextCursor !== null;
       });
       replica.#evictToBudget();
-      if (replica.#overlayBytes > replica.#maxOverlayBytes) {
-        throw new RangeError('Desktop transcript overlay exceeds the session cache limit');
-      }
       return replica;
     } catch (error) {
       replica.close();
@@ -207,7 +191,6 @@ export class DesktopTranscriptReplica {
       hostEpoch: this.hostEpoch,
       durableThrough: this.#durableThrough,
       durable: this.#orderedDurable(false),
-      overlay: [...this.#overlay.values()],
       hasOlder: this.#hasOlder,
       beginsAtTurnBoundary: this.#beginsAtTurnBoundary,
     };
@@ -216,9 +199,7 @@ export class DesktopTranscriptReplica {
   messages(): StoredMessage[] {
     this.#assertOpen();
     this.#assertResident();
-    return this.#orderedDurable()
-      .map((entry) => entry.message)
-      .concat([...this.#overlay.values()].map((message) => structuredClone(message)));
+    return this.#orderedDurable().map((entry) => entry.message);
   }
 
   messagesForTurn(turnId: string): StoredMessage[] {
@@ -247,7 +228,6 @@ export class DesktopTranscriptReplica {
   ): Promise<DesktopTranscriptHistoryPage> {
     this.#assertLive();
     const page = await this.#handle.loadTranscriptPage({
-      source: 'durable',
       direction: 'older',
       throughSequence,
       cursor,
@@ -257,7 +237,6 @@ export class DesktopTranscriptReplica {
     return this.#withDecodedPage(page, (decoded) => {
       this.#assertLive();
       this.#acceptRange(decoded.messages);
-      this.#completeOverlay(decoded.messages);
       return {
         durable: decoded.messages.map((entry) => ({
           sequence: entry.identity,
@@ -271,8 +250,8 @@ export class DesktopTranscriptReplica {
 
   /**
    * Every durable row of one Turn, read forward from its first sequence to the
-   * watermark this replica holds, plus its overlay. Only the Turn's own rows
-   * count toward `maxBytes`.
+   * watermark this replica holds. Only the Turn's own rows count toward
+   * `maxBytes`.
    *
    * The Host writes a nested Turn's rows between the rows of the Turn around
    * it, so the two share a stretch of the Session's ordinals and a row of
@@ -289,7 +268,6 @@ export class DesktopTranscriptReplica {
     if (throughSequence !== null && firstSequence <= throughSequence) {
       do {
         const page: SessionTranscriptPage = await this.#handle.loadTranscriptPage({
-          source: 'durable',
           direction: 'newer',
           throughSequence,
           cursor,
@@ -308,12 +286,7 @@ export class DesktopTranscriptReplica {
         });
       } while (cursor !== null);
     }
-    const durableIds = new Set(durable.map((message) => message.id));
-    return durable.concat(
-      [...this.#overlay.values()]
-        .filter((message) => messageTurnId(message) === turnId && !durableIds.has(message.id))
-        .map((message) => structuredClone(message)),
-    );
+    return durable;
   }
 
   advance(throughSequence: number): Promise<void> {
@@ -349,19 +322,12 @@ export class DesktopTranscriptReplica {
     if (!this.#resident) return;
     this.#resident = false;
     this.#clearDurable();
-    for (const message of this.#overlay.values()) {
-      this.#adjustOverlayBytes(-encodedMessageBytes(message));
-    }
-    this.#overlay.clear();
-    this.#overlayBytes = 0;
   }
 
   close(): void {
     this.#closed = true;
     this.#resident = false;
     this.#durable.clear();
-    this.#overlay.clear();
-    this.#overlayBytes = 0;
     if (this.#residentExternallyAccounted) {
       this.#accountPreparationBytes(-this.#residentBytes);
     }
@@ -382,7 +348,6 @@ export class DesktopTranscriptReplica {
       do {
         if (!this.#isLive()) return;
         const page: SessionTranscriptPage = await this.#handle.loadTranscriptPage({
-          source: 'durable',
           direction: 'newer',
           throughSequence: target,
           cursor,
@@ -425,15 +390,6 @@ export class DesktopTranscriptReplica {
     }
   }
 
-  #installOverlay(messages: readonly StoredMessage[]): void {
-    for (const message of messages) {
-      const previous = this.#overlay.get(message.id);
-      if (previous) this.#adjustOverlayBytes(-encodedMessageBytes(previous));
-      this.#overlay.set(message.id, message);
-      this.#adjustOverlayBytes(encodedMessageBytes(message));
-    }
-  }
-
   #installDurable(
     messages: readonly {
       readonly identity: number;
@@ -454,17 +410,6 @@ export class DesktopTranscriptReplica {
         encodedBytes,
       });
       this.#adjustResidentBytes(encodedBytes);
-    }
-    this.#completeOverlay(messages);
-  }
-
-  /** The durable row settles the overlay it replaces, so the tail cache stops carrying both. */
-  #completeOverlay(messages: readonly { readonly message: StoredMessage }[]): void {
-    for (const { message } of messages) {
-      const overlay = this.#overlay.get(message.id);
-      if (!overlay) continue;
-      this.#overlay.delete(message.id);
-      this.#adjustOverlayBytes(-encodedMessageBytes(overlay));
     }
   }
 
@@ -514,7 +459,7 @@ export class DesktopTranscriptReplica {
    * complete. Global pressure passes a budget and may empty the tail.
    */
   #evictToBudget(budget?: number): void {
-    const residentBudget = budget ?? this.#maxResidentBytes + this.#overlayBytes;
+    const residentBudget = budget ?? this.#maxResidentBytes;
     const turns = new Map<string, number[]>();
     const sequences = [...this.#durable.keys()].sort((left, right) => left - right);
     for (const sequence of sequences) {
@@ -563,11 +508,6 @@ export class DesktopTranscriptReplica {
   #adjustResidentBytes(deltaBytes: number): void {
     if (this.#residentExternallyAccounted) this.#accountPreparationBytes(deltaBytes);
     this.#residentBytes += deltaBytes;
-  }
-
-  #adjustOverlayBytes(deltaBytes: number): void {
-    this.#adjustResidentBytes(deltaBytes);
-    this.#overlayBytes += deltaBytes;
   }
 
   async #withDecodedPage<T>(

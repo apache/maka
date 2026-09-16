@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { BrowserWindow, WebContentsView, globalShortcut, ipcMain, screen, systemPreferences } from 'electron';
+import { BrowserWindow, View, WebContentsView, globalShortcut, ipcMain, screen, systemPreferences } from 'electron';
 import type { WorkHubHost, WorkHubMainNavigation, WorkHubPresentationSnapshot } from '../shared/workhub-presentation.js';
 import { parseDesktopSessionKey } from '../shared/runtime-host-identity.js';
 import { loadMainRenderer, resolveMainRendererEntry } from './main-renderer-loader.js';
@@ -39,13 +39,16 @@ export interface WorkHubPresentationDeps {
   viteDevServerUrl?: string;
   preloadPath: string;
   onError?: (error: unknown) => void;
-  onViewCreated?: (contents: Electron.WebContents, view: WebContentsView) => (() => void) | void;
+  onViewCreated?: (contents: Electron.WebContents, container: View) => (() => void) | void;
   /** Revoke native browser actions when this persistent renderer leaves the screen. */
   onVisibilityChanged?: () => void;
 }
 
 /** One renderer owns the conversation, draft and model selection for its entire lifetime. */
 export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
+  // WebContentsView cannot reliably composite another WebContentsView child.
+  // Keep the renderer and its browser as siblings in a movable native container.
+  let container: View | undefined;
   let view: WebContentsView | undefined;
   let viewBounds: Electron.Rectangle | undefined;
   let floating: BrowserWindow | undefined;
@@ -91,7 +94,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
   }
 
   function getSnapshot(): WorkHubPresentationSnapshot {
-    return { placement, floatingVisible: !!floating && !floating.isDestroyed() && floating.isVisible(), shortcutRegistered, rendererCrashed, ...(progressRequest !== undefined ? { progressRequest } : {}) };
+    return { placement, ...(host.workbar ? { workbar: host.workbar } : {}), floatingVisible: !!floating && !floating.isDestroyed() && floating.isVisible(), shortcutRegistered, rendererCrashed, ...(progressRequest !== undefined ? { progressRequest } : {}) };
   }
 
   function send(channel: string, ...args: unknown[]): void {
@@ -120,9 +123,9 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
   }
 
   function attach(next: BrowserWindow): void {
-    if (!view || parent === next) return;
-    if (parent && !parent.isDestroyed()) parent.contentView.removeChildView(view);
-    next.contentView.addChildView(view);
+    if (!container || parent === next) return;
+    if (parent && !parent.isDestroyed()) parent.contentView.removeChildView(container);
+    next.contentView.addChildView(container);
     parent = next;
   }
 
@@ -133,9 +136,11 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
       sandbox: true, webSecurity: true, allowRunningInsecureContent: false,
     } });
     rendererCrashed = false;
-    view.setVisible(false);
+    container = new View();
+    container.setVisible(false);
+    container.addChildView(view);
     view.setBackgroundColor('#00000000');
-    const release = deps.onViewCreated?.(view.webContents, view);
+    const release = deps.onViewCreated?.(view.webContents, container);
     releaseView = typeof release === 'function' ? release : undefined;
     view.webContents.once('destroyed', releaseViewRegistration);
     installMainWindowPermissionPolicy(view.webContents, entry.url);
@@ -231,7 +236,8 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
   function setViewBounds(bounds: Electron.Rectangle): void {
     if (!view || (viewBounds && bounds.x === viewBounds.x && bounds.y === viewBounds.y &&
       bounds.width === viewBounds.width && bounds.height === viewBounds.height)) return;
-    view.setBounds(bounds);
+    container!.setBounds(bounds);
+    view.setBounds({ x: 0, y: 0, width: bounds.width, height: bounds.height });
     viewBounds = bounds;
   }
 
@@ -305,7 +311,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     const width = Math.max(0, Math.min(size.width - x, Math.round(host.rect.width * zoom)));
     const height = Math.max(0, Math.min(size.height - y, Math.round(host.rect.height * zoom)));
     setViewBounds({ x, y, width, height });
-    view.setVisible(host.visible && !host.occluded && width > 0 && height > 0);
+    container!.setVisible(host.visible && !host.occluded && width > 0 && height > 0);
     deps.onVisibilityChanged?.();
     if (host.visible && width > 0 && height > 0 && focusPending) focusComposer();
   }
@@ -337,7 +343,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     clearProgressRequest();
     placement = 'floating';
     attach(target);
-    view!.setVisible(true);
+    container!.setVisible(true);
     // Summoning follows the pointer's display, including an existing window
     // that was last used on another monitor.
     const old = conversationBounds ?? target.getBounds();
@@ -386,7 +392,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
   function requestProgress(): void {
     const main = deps.mainWindow();
     const dockVisible = placement === 'docked' && parent === main && main?.isVisible() && !main.isMinimized()
-      && host.visible && !host.occluded && view?.getVisible();
+      && host.visible && !host.occluded && container?.getVisible();
     if (!controlTurnId || dismissedTurnId === controlTurnId || progressRequest !== undefined || dockVisible
       || (placement === 'floating' && (floating?.isVisible() || focusPending)) || !deps.isEnabled() || disposed) return;
     ensureView();
@@ -400,7 +406,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     view!.webContents.setBackgroundThrottling(false);
     placement = 'floating';
     attach(target);
-    view!.setVisible(true);
+    container!.setVisible(true);
     const area = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea;
     const width = Math.min(360, area.width), height = Math.min(112, area.height);
     target.setBounds({ width, height, x: area.x + Math.round((area.width - width) / 2), y: Math.max(area.y, area.y + area.height - height - 96) });
@@ -507,7 +513,8 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
       }
       const changesPresentation = command === 'detach' || command === 'show-conversation' || command === 'dock' || command === 'hide' || command === 'session';
       const revision = changesPresentation ? ++presentationRevision : presentationRevision;
-      return enqueue(async () => {
+      let backdrop: Promise<string | undefined> | undefined;
+      const result = await enqueue(async () => {
         const { main, isMain } = authorize();
         // A newer shortcut takes effect immediately, including during a pending dock.
         if (changesPresentation && revision !== presentationRevision) return;
@@ -532,17 +539,17 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
             if (typeof value.visible !== 'boolean' || (value.occluded !== undefined && typeof value.occluded !== 'boolean') || !value.rect ||
               ![value.rect.x, value.rect.y, value.rect.width, value.rect.height].every((n) => typeof n === 'number' && Number.isFinite(n)) ||
               value.rect.width < 0 || value.rect.height < 0) throw new Error('Invalid WorkHub host');
+            if (value.workbar && (typeof value.workbar.collapsed !== 'boolean' || !['right', 'bottom'].includes(value.workbar.placement))) throw new Error('Invalid WorkHub workbar');
+            const workbarChanged = host.workbar?.collapsed !== value.workbar?.collapsed || host.workbar?.placement !== value.workbar?.placement;
             // Native child views sit above the main renderer's top layer. Keep
             // a still frame behind its menus/dialogs while yielding native input.
-            let backdrop: string | undefined;
-            if (placement === 'docked' && value.visible && value.occluded && !host.occluded && view?.getVisible() &&
+            if (placement === 'docked' && value.visible && value.occluded && !host.occluded && view && container?.getVisible() &&
               rendererReady && main?.isVisible() && !main.isMinimized()) {
-              try { backdrop = (await view.webContents.capturePage()).toDataURL(); }
-              catch (error) {
-                // Reparenting or hiding can retire the compositor surface before
-                // capture completes. Menus still work without this optional frame.
+              backdrop = view.webContents.capturePage().then((image) => image.toDataURL()).catch((error: unknown) => {
+                // Capture is optional; native input yields without awaiting it.
                 if (!(error instanceof Error && error.message === 'UnknownVizError')) reportError(error);
-              }
+                return undefined;
+              });
             }
             if (disposed) return;
             // Layout cannot reopen a disabled dock.
@@ -555,7 +562,8 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
             }
             if (!host.visible) requestProgress();
             updateDockedBounds();
-            return backdrop;
+            if (workbarChanged) send('workhub-presentation:changed', getSnapshot());
+            return;
           }
           case 'progress-ready':
             if (isMain) throw new Error('Only the WorkHub view can present its progress');
@@ -609,6 +617,10 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
           }
           case 'dock': await dock(revision); return;
           case 'hide': hideFloating(); return;
+          case 'toggle-workbar':
+          case 'usage':
+            await navigateMain({ kind: 'workhub', panelAction: command === 'usage' ? 'usage' : 'toggle' }, revision);
+            return;
           case 'session':
             if (typeof payload !== 'string' || payload.length > 4096) throw new Error('Invalid session key');
             parseDesktopSessionKey(payload);
@@ -617,6 +629,8 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
           default: throw new Error('Unknown WorkHub presentation command');
         }
       });
+      // The optional image must not hold up layout restoration or user commands.
+      return backdrop ?? result;
     });
     ipcRegistered = true;
   }
@@ -644,7 +658,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
       cancelFloatingAnimation();
       focusPending = false;
       host = { ...host, visible: false };
-      view?.setVisible(false);
+      container?.setVisible(false);
       hideFloating();
       return;
     }
@@ -668,7 +682,8 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     // can register. A delayed destroyed event must not release its replacement.
     previous?.webContents.removeListener('destroyed', releaseViewRegistration);
     releaseViewRegistration();
-    if (previous && parent && !parent.isDestroyed()) parent.contentView.removeChildView(previous);
+    if (container && parent && !parent.isDestroyed()) parent.contentView.removeChildView(container);
+    container = undefined;
     parent = undefined;
     if (previous && !previous.webContents.isDestroyed()) previous.webContents.close({ waitForBeforeUnload: false });
   }

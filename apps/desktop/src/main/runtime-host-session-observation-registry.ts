@@ -359,10 +359,9 @@ export class RuntimeHostSessionObservationRegistry {
       },
       send: (channel, payload) => {
         if (payload.reset) registration.deliveredFrom = null;
-        for (const fragment of payload.fragments) {
-          if (fragment.source !== 'durable' || typeof fragment.identity !== 'number') continue;
-          if (registration.deliveredFrom === null || fragment.identity < registration.deliveredFrom) {
-            registration.deliveredFrom = fragment.identity;
+        for (const { sequence } of payload.fragments) {
+          if (registration.deliveredFrom === null || sequence < registration.deliveredFrom) {
+            registration.deliveredFrom = sequence;
           }
         }
         target.send(channel, payload);

@@ -105,6 +105,8 @@ export function lookupModelMetadata(providerType: ProviderType, modelId: string)
   const id = modelId.trim();
   const metadataProviderType = generatedMetadataProviderType(providerType);
   const generated = activeMetadata()[metadataProviderType]?.[id];
+  const providerMetadata =
+    providerType === 'openai-codex' ? withoutInputLimit(generated) : generated;
   const statics = staticModelMetadata();
   const override =
     statics[providerType]?.[id] ??
@@ -113,13 +115,13 @@ export function lookupModelMetadata(providerType: ProviderType, modelId: string)
       : providerType === 'opencode-free'
         ? statics.opencode?.[id]
         : undefined);
-  if (!generated) return override ?? {};
-  if (!override) return generated;
+  if (!providerMetadata) return override ?? {};
+  if (!override) return providerMetadata;
   return {
-    ...generated,
+    ...providerMetadata,
     ...override,
-    capabilities: { ...generated.capabilities, ...override.capabilities },
-    modalities: override.modalities ?? generated.modalities,
+    capabilities: { ...providerMetadata.capabilities, ...override.capabilities },
+    modalities: override.modalities ?? providerMetadata.modalities,
   };
 }
 
@@ -251,7 +253,15 @@ const GOOGLE_MODEL_OVERRIDES: Record<string, ModelMetadata> = {
 // catalog says. Base facts come from the active table, falling back to the
 // shipped snapshot so a model upstream stops listing keeps a display name.
 function openAiOAuthBase(active: ModelsDevMetadata, modelId: string): ModelMetadata {
-  return active.openai?.[modelId] ?? GENERATED_MODELS_DEV_METADATA.openai[modelId] ?? {};
+  const metadata = active.openai?.[modelId] ?? GENERATED_MODELS_DEV_METADATA.openai[modelId];
+  return withoutInputLimit(metadata) ?? {};
+}
+
+/** OAuth model metadata must not inherit public OpenAI API input limits. */
+function withoutInputLimit(metadata: ModelMetadata | undefined): ModelMetadata | undefined {
+  if (!metadata) return undefined;
+  const { inputLimit: _inputLimit, ...withoutLimit } = metadata;
+  return withoutLimit;
 }
 
 function openAiOAuthModelMetadata(active: ModelsDevMetadata): Record<string, ModelMetadata> {

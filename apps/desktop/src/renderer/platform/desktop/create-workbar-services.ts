@@ -27,6 +27,7 @@ import { expectSessionUpdate } from './create-session-settings-services.js';
 
 export type DesktopWorkbarBridge = Pick<
   MakaBridge,
+  | 'appWindow'
   | 'app'
   | 'artifacts'
   | 'attachments'
@@ -102,6 +103,7 @@ export function createDesktopWorkbarServices(
   };
 
   return {
+    popupMenu: (input) => bridge.appWindow.popupMenu(input),
     review: {
       read: (input) => bridge.gitReview.read(input),
       subscribeSessionEvents: (sessionId, handler) =>
@@ -129,6 +131,7 @@ export function createDesktopWorkbarServices(
     browser: {
       setActiveSession: (sessionId) => bridge.browser.setActiveSession(sessionId),
       setViewport: (input) => bridge.browser.setViewport(input),
+      capturePage: (sessionId) => bridge.browser.capturePage(sessionId),
       navigate: (sessionId, url) => bridge.browser.navigate(sessionId, url),
       back: (sessionId) => bridge.browser.back(sessionId),
       forward: (sessionId) => bridge.browser.forward(sessionId),

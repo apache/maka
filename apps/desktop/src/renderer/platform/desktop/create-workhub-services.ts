@@ -41,6 +41,7 @@ import {
 export function createDesktopWorkHubServices(
   bridge: Pick<
     MakaBridge,
+    | 'browser'
     | 'inspector'
     | 'workHub'
     | 'workHubControl'
@@ -56,6 +57,7 @@ export function createDesktopWorkHubServices(
   const delegatedResultCache = new Map<string, string>();
   return {
     inspector: createDesktopInspectorService(bridge),
+    bindBrowserSession: (sessionId) => bridge.browser.setActiveSession(sessionId),
     surface: new URLSearchParams(window.location.search).get('surface') === 'workhub' ? 'workhub' : 'main',
     initialLocale: resolveSystemUiLocale(navigator.languages),
     subscribeAppearance(handler) {

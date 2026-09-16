@@ -54,6 +54,7 @@ export interface MemoryExecutionFaults {
 export class MemoryExecutionAuthority {
   state: MemoryState = new Map();
   readonly listeners = new Set<(sessionId: string) => void>();
+  readonly runtimeEventListeners = new Set<(sessionId: string) => void>();
   constructor(readonly faults: MemoryExecutionFaults = {}) {}
   read<T>(operation: (state: MemoryState) => T): T {
     try {
@@ -70,7 +71,12 @@ export class MemoryExecutionAuthority {
       if (result instanceof Promise)
         throw new TypeError('Memory reference transactions must be synchronous');
       this.faults.beforeCommit?.(name);
+      const before = rows<unknown[]>(this.state, 'runtimeOrdinals');
       this.state = draft;
+      for (const [sessionId, entries] of rows<unknown[]>(draft, 'runtimeOrdinals')) {
+        if (entries.length === before.get(sessionId)?.length) continue;
+        for (const listener of this.runtimeEventListeners) listener(sessionId);
+      }
       this.faults.afterCommit?.(name);
       return copy(result);
     } catch (error) {

@@ -24,16 +24,14 @@ import {
   type StoredMessage,
 } from '@maka/core/session';
 import { markPersisted } from '@maka/core/persisted-value';
-import { ClientSessionSubscription } from '../client/session-subscription.js';
+import { clientSubscription } from './fixtures/client-session-subscription.js';
 import { SESSION_CONTINUITY_SCHEMA_VERSION } from '../protocol/index.js';
 import {
   createSessionTranscriptBootstrap,
-  prepareSessionTranscriptOverlay,
   readSessionTranscriptPage,
   TranscriptPageRequestError,
   updateSubscriberTranscriptHighWater,
 } from '../server/session-transcript-pager.js';
-import type { SessionTranscriptReader } from '../server/session-transcript-reader.js';
 import { projectSharedSessionTranscriptMessage } from '../server/shared-session-transcript.js';
 import { transcriptReader } from './fixtures/session-transcript-reader.js';
 
@@ -45,12 +43,10 @@ test('reads newly durable messages forward from an announced watermark', async (
     sessionId: 'session-1',
     subscriptionId: 'subscription-1',
     throughSequence: 1,
-    rootTurn: null,
-    activeAssistantStreams: [],
     maxBytes: 1024,
     projection: 'owner',
   });
-  assert.equal(bootstrap.throughSequence, 1);
+  assert.equal(bootstrap.durable.throughSequence, 1);
 
   durable.push(userMessage(2), userMessage(3));
   assert.equal(updateSubscriberTranscriptHighWater(state, 3), true);
@@ -59,7 +55,6 @@ test('reads newly durable messages forward from an announced watermark', async (
     state,
     request: {
       subscriptionId: 'subscription-1',
-      source: 'durable',
       direction: 'newer',
       throughSequence: 3,
       cursor: null,
@@ -68,9 +63,7 @@ test('reads newly durable messages forward from an announced watermark', async (
     },
   });
   assert.deepEqual(
-    page.fragments.map((fragment) =>
-      fragment.kind === 'durable' ? fragment.sequence : fragment.messageIndex,
-    ),
+    page.fragments.map((fragment) => fragment.sequence),
     [2, 3],
   );
   assert.equal(page.nextCursor, null);
@@ -95,8 +88,6 @@ test('preserves the canonical retry decision in shared bootstrap and later pages
     sessionId: 'session-1',
     subscriptionId: 'shared',
     throughSequence: 0,
-    rootTurn: null,
-    activeAssistantStreams: [],
     maxBytes: 1024,
     projection: 'shared',
   });
@@ -121,7 +112,6 @@ test('preserves the canonical retry decision in shared bootstrap and later pages
     state,
     request: {
       subscriptionId: 'shared',
-      source: 'durable',
       direction: 'newer',
       throughSequence: 1,
       cursor: null,
@@ -133,7 +123,7 @@ test('preserves the canonical retry decision in shared bootstrap and later pages
   assert.deepEqual(decodeBootstrap(page)[0]?.retry, { decision: 'exhausted', attempts: 2 });
 });
 
-test('projects durable and active transcript records before sharing them', async () => {
+test('projects durable transcript records before sharing them', async () => {
   const durable: StoredMessage[] = [
     {
       ...assistantMessage(0),
@@ -188,20 +178,12 @@ test('projects durable and active transcript records before sharing them', async
       ],
     },
   ];
-  const overlay: StoredMessage[] = [
-    {
-      ...assistantMessage(1),
-      providerOptions: { replay: 'private' },
-    },
-  ];
-  const reader = transcriptReader(durable, overlay);
+  const reader = transcriptReader(durable);
   const owner = await createSessionTranscriptBootstrap({
     reader,
     sessionId: 'session-1',
     subscriptionId: 'owner',
     throughSequence: 2,
-    rootTurn: null,
-    activeAssistantStreams: [],
     maxBytes: 16 * 1024,
     projection: 'owner',
   });
@@ -210,19 +192,12 @@ test('projects durable and active transcript records before sharing them', async
     sessionId: 'session-1',
     subscriptionId: 'shared',
     throughSequence: 3,
-    rootTurn: null,
-    activeAssistantStreams: [],
     maxBytes: 16 * 1024,
     projection: 'shared',
   });
 
   assert.equal(
     (decodeBootstrap(owner.bootstrap.durable)[0] as { data?: unknown }).data !== undefined,
-    true,
-  );
-  assert.equal(
-    (decodeBootstrap(owner.bootstrap.overlay)[0] as { providerOptions?: unknown })
-      .providerOptions !== undefined,
     true,
   );
   const sharedDurable = decodeBootstrap(shared.bootstrap.durable);
@@ -243,7 +218,6 @@ test('projects durable and active transcript records before sharing them', async
   assert.equal('providerOutput' in sharedDurable[1]!, false);
   assert.equal('providerOptions' in sharedDurable[2]!, false);
   assert.deepEqual(sharedDurable[2]!.thinking, { text: 'visible thought' });
-  assert.equal('providerOptions' in decodeBootstrap(shared.bootstrap.overlay)[0]!, false);
   const projectedState = projectSharedSessionTranscriptMessage(
     {
       type: 'turn_state',
@@ -284,8 +258,6 @@ test('rejects cursor tampering and cross-subscription replay', async () => {
     sessionId: 'session-1',
     subscriptionId: 'subscription-1',
     throughSequence: 0,
-    rootTurn: null,
-    activeAssistantStreams: [],
     maxBytes: 128,
     projection: 'owner',
   });
@@ -294,8 +266,6 @@ test('rejects cursor tampering and cross-subscription replay', async () => {
     sessionId: 'session-1',
     subscriptionId: 'subscription-2',
     throughSequence: 0,
-    rootTurn: null,
-    activeAssistantStreams: [],
     maxBytes: 128,
     projection: 'owner',
   });
@@ -305,7 +275,6 @@ test('rejects cursor tampering and cross-subscription replay', async () => {
   const tampered = `${cursor.slice(0, -1)}${cursor.endsWith('A') ? 'B' : 'A'}`;
   const request = {
     subscriptionId: 'subscription-1',
-    source: 'durable' as const,
     direction: 'older' as const,
     throughSequence: 0,
     cursor,
@@ -327,23 +296,6 @@ test('rejects cursor tampering and cross-subscription replay', async () => {
   );
 });
 
-test('keeps a durable continuation when overlay bytes reduce the bootstrap budget', async () => {
-  const durable = [userMessage(0, 'a'.repeat(240)), userMessage(1, 'b'.repeat(240))];
-  const reader = transcriptReader(durable, [userMessage(0, 'overlay'.repeat(40))]);
-  const { bootstrap } = await createSessionTranscriptBootstrap({
-    reader,
-    sessionId: 'session-1',
-    subscriptionId: 'subscription-1',
-    throughSequence: 1,
-    rootTurn: null,
-    activeAssistantStreams: [],
-    maxBytes: Buffer.byteLength(JSON.stringify(durable[0]), 'utf8') * 2,
-    projection: 'owner',
-  });
-  assert.ok(bootstrap.overlay.rawBytes > 0);
-  assert.ok(bootstrap.durable.nextCursor);
-});
-
 test('completes a byte-sliced bootstrap message from its continuation', async () => {
   const prompt = { ...userMessage(0, 'hello'), turnId: 'turn-1' };
   const assistant = {
@@ -357,19 +309,12 @@ test('completes a byte-sliced bootstrap message from its continuation', async ()
     sessionId: 'session-1',
     subscriptionId: 'subscription-1',
     throughSequence: 1,
-    rootTurn: {
-      sessionId: 'session-1',
-      turnId: 'turn-1',
-      runId: 'run-1',
-      status: 'running',
-    },
-    activeAssistantStreams: [],
     maxBytes: 16 * 1024,
     projection: 'owner',
   });
 
   assert.ok(bootstrap.durable.nextCursor);
-  const subscription = new ClientSessionSubscription(
+  const subscription = clientSubscription(
     {
       hostEpoch: 'host-1',
       subscriptionId: 'subscription-1',
@@ -446,14 +391,6 @@ test('pages through a terminal Turn longer than one page', async () => {
     sessionId: 'session-1',
     subscriptionId: 'subscription-1',
     throughSequence: durable.length - 1,
-    rootTurn: {
-      sessionId: 'session-1',
-      turnId: 'turn-1',
-      runId: 'run-1',
-      status: 'completed',
-      terminalEventId: 'terminal-1',
-    },
-    activeAssistantStreams: [],
     maxBytes: 512 * 1024,
     projection: 'owner',
   });
@@ -461,7 +398,7 @@ test('pages through a terminal Turn longer than one page', async () => {
   assert.equal(bootstrap.durable.fragments.length, 256);
   assert.ok(bootstrap.durable.nextCursor);
 
-  const subscription = new ClientSessionSubscription(
+  const subscription = clientSubscription(
     {
       hostEpoch: 'host-1',
       subscriptionId: 'subscription-1',
@@ -512,7 +449,6 @@ test('pages through a terminal Turn longer than one page', async () => {
       state,
       request: {
         subscriptionId: 'subscription-1',
-        source: 'durable',
         direction: 'older',
         throughSequence: durable.length - 1,
         cursor: decoded.nextCursor,
@@ -549,8 +485,6 @@ test('shared paging skips a full hidden storage batch before a visible message',
     sessionId: 'session-1',
     subscriptionId: 'subscription-1',
     throughSequence: hidden.length,
-    rootTurn: null,
-    activeAssistantStreams: [],
     maxBytes: 16 * 1024,
     projection: 'shared',
   });
@@ -585,8 +519,6 @@ test('shared paging crosses a hidden storage batch between visible messages', as
     sessionId: 'session-1',
     subscriptionId: 'subscription-1',
     throughSequence: durable.length - 1,
-    rootTurn: null,
-    activeAssistantStreams: [],
     maxBytes: 16 * 1024,
     projection: 'shared',
   });
@@ -601,7 +533,6 @@ test('shared paging crosses a hidden storage batch between visible messages', as
     state,
     request: {
       subscriptionId: 'subscription-1',
-      source: 'durable',
       direction: 'newer',
       throughSequence: durable.length - 1,
       cursor: null,
@@ -623,75 +554,12 @@ test('shrinks the raw bootstrap until it fits its aggregate encoded budget', asy
     sessionId: 'session-1',
     subscriptionId: 'subscription-1',
     throughSequence: durable.length - 1,
-    rootTurn: null,
-    activeAssistantStreams: [],
     maxBytes: 16 * 1024,
     maxEncodedBytes: 4 * 1024,
     projection: 'owner',
   });
   assert.ok(Buffer.byteLength(JSON.stringify(bootstrap), 'utf8') <= 4 * 1024);
   assert.ok(bootstrap.durable.nextCursor);
-});
-
-test('rejects an active overlay that exceeds its retained message bound', async () => {
-  const overlay = Array.from({ length: 4_097 }, (_, index) => userMessage(index));
-  await assert.rejects(
-    prepareSessionTranscriptOverlay({
-      reader: transcriptReader([], overlay),
-      sessionId: 'session-1',
-      throughSequence: null,
-      rootTurn: null,
-      activeAssistantStreams: [],
-    }),
-    /overlay exceeds its message limit/,
-  );
-});
-
-test('delegates one deduplicated and bounded durable reconciliation request', async () => {
-  const messages = Array.from({ length: 257 }, (_, index) => assistantMessage(index));
-  const requests: Parameters<SessionTranscriptReader['readDurableMessagesById']>[1][] = [];
-  const base = transcriptReader(messages, messages);
-  const reader: SessionTranscriptReader = {
-    ...base,
-    readDurableMessagesById: async (_sessionId, request) => {
-      requests.push(request);
-      return messages.filter((message) => request.messageIds.includes(message.id));
-    },
-  };
-  const activeAssistantStreams = messages.flatMap((message, index) => [
-    {
-      turnId: message.turnId,
-      messageId: message.id,
-      kind: 'text' as const,
-      text: message.text,
-    },
-    ...(index === 0
-      ? [
-          {
-            turnId: message.turnId,
-            messageId: message.id,
-            kind: 'thinking' as const,
-            text: message.thinking!.text,
-          },
-        ]
-      : []),
-  ]);
-
-  const overlay = await prepareSessionTranscriptOverlay({
-    reader,
-    sessionId: 'session-1',
-    throughSequence: 256,
-    rootTurn: null,
-    activeAssistantStreams,
-  });
-
-  assert.equal(overlay.length, 257);
-  assert.equal(requests.length, 1);
-  assert.equal(requests[0]?.messageIds.length, 257);
-  assert.equal(new Set(requests[0]?.messageIds).size, 257);
-  assert.equal(requests[0]?.throughSequence, 256);
-  assert.equal(requests[0]?.maxMessages, 4_096);
-  assert.equal(requests[0]?.maxBytes, 16 * 1024 * 1024);
 });
 
 function userMessage(index: number, text = `message-${index}`): StoredMessage {
@@ -729,7 +597,7 @@ async function decodeSparseTranscriptPages(
   direction: 'older' | 'newer',
   projection: 'owner' | 'shared',
 ): Promise<Array<readonly { identity: number; message: StoredMessage }[]>> {
-  const reader = transcriptReader(durable, [], 8);
+  const reader = transcriptReader(durable, 8);
   const throughSequence = (durable.length - 1) * 8 + 7;
   const subscriptionId = `subscription-${projection}-${direction}`;
   const { bootstrap, state } = await createSessionTranscriptBootstrap({
@@ -737,12 +605,10 @@ async function decodeSparseTranscriptPages(
     sessionId: 'session-1',
     subscriptionId,
     throughSequence,
-    rootTurn: null,
-    activeAssistantStreams: [],
     maxBytes: 16 * 1024,
     projection,
   });
-  const subscription = new ClientSessionSubscription(
+  const subscription = clientSubscription(
     {
       hostEpoch: 'host-1',
       subscriptionId,
@@ -778,7 +644,6 @@ async function decodeSparseTranscriptPages(
       state,
       request: {
         subscriptionId,
-        source: 'durable',
         direction,
         throughSequence,
         cursor,

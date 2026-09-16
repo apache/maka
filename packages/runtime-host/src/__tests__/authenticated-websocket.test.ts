@@ -260,6 +260,7 @@ test('one Local IPC owner and one authenticated WebSocket Client control the sam
       sessionId: 'shared-session',
       transcript: { kind: 'none' },
     });
+    await guestSubscription.ready();
     const observationGrant = preparedGuest.grants.find(
       (grant) => grant.kind === 'session_observation',
     )!;
@@ -1439,7 +1440,6 @@ test('migrates the released transcript query grant when opening an existing acce
     assert.deepEqual(authority.authenticate(credential)?.operationGrants, [
       'host.status',
       'session.transcript.page',
-      'session.transcript.overlay.release',
     ]);
   } finally {
     await rm(directory, { recursive: true, force: true });

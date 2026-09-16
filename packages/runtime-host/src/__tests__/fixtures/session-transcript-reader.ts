@@ -24,11 +24,10 @@ import type { SessionTranscriptReader } from '../../server/session-transcript-re
 
 export function transcriptReader(
   durable: readonly StoredMessage[],
-  overlay: readonly StoredMessage[] = [],
   sequenceStride = 1,
 ): SessionTranscriptReader {
-  // The Host groups Turns whose ordinals overlap and hands them over together;
-  // here a run of rows with one turnId is that group.
+  // Here Turns do not interleave, so a run of rows with one turnId is a whole
+  // Turn and a page is between Turns wherever that run changes.
   const durableRecords = () => {
     let cluster = 0;
     let owner: string | undefined;
@@ -162,14 +161,6 @@ export function transcriptReader(
           records.length < candidates.length ? candidates[records.length]!.sequence : null,
       };
     },
-    readDurableMessagesById: async (_sessionId, request) =>
-      request.throughSequence === null
-        ? []
-        : durableRecords().flatMap(({ sequence, message }) =>
-            sequence <= request.throughSequence! && request.messageIds.includes(message.id)
-              ? [message]
-              : [],
-          ),
     readDurableTurnContributions: async (
       _sessionId,
       throughSequence,
@@ -198,6 +189,5 @@ export function transcriptReader(
         nextPosition: null,
       };
     },
-    readActiveOverlay: async () => overlay,
   };
 }

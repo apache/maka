@@ -18,16 +18,16 @@
  */
 
 import type { ArtifactBinaryReadResult } from '@maka/core/artifacts';
+import type { ChatModelChoice } from '@maka/core/chat-model-choice';
 import type { UiLocale } from '@maka/core/ui-locale';
 import type { StoredMessage, SessionSummary } from '@maka/core/session';
 import type { ComposerAttachmentService } from '@maka/ui/use-composer-attachments';
 import type { SessionEvent, AttachmentRef, MessageQueuePlacement } from '@maka/core/events';
-import type { ChatModelChoice } from '@maka/core/chat-model-choice';
 import type { OperationInput, OperationOutput } from '@maka/runtime-host/protocol';
 import type { WorkHubAnswerInput, WorkHubAnswerResult } from '../../../shared/workhub-conversation.js';
 import type { WorkHubControlBridge } from '../../../shared/workhub-control.js';
 import type { WorkHubPresentationBridge } from '../../../shared/workhub-presentation.js';
-import type { WorkHubCoordinationHostChange } from './controller/coordination-lifecycle.js';
+import type { WorkHubWorkspaceServices } from '../../application/contracts/workhub-workspace/use-workhub-workspace.js';
 import type {
   WorkHubDelegationFeedback,
   WorkHubDelegationReference,
@@ -43,19 +43,17 @@ export interface WorkHubTranscript {
   loadEarlier(): Promise<void>;
   close(): Promise<void>;
 }
-export interface WorkHubServices {
+export interface WorkHubServices extends WorkHubWorkspaceServices {
   readonly inspector: import('../../application/contracts/session-inspector/service.js').SessionInspectorService;
   readonly surface: 'main' | 'workhub';
   readonly initialLocale: UiLocale;
   subscribeAppearance(handler: (locale: UiLocale) => void): () => void;
   readonly presentation: WorkHubPresentationBridge;
   readonly control: WorkHubControlBridge;
-  resolve(): Promise<string>;
+  bindBrowserSession(sessionId: string | null): void;
   getSession(sessionId: string): Promise<SessionSummary & { revision: number }>;
-  subscribeHosts(handler: (event: WorkHubCoordinationHostChange) => void): () => void;
-  subscribeAvailability(handler: () => void): () => void;
-  listSessions(): Promise<(SessionSummary & { revision: number })[]>;
   subscribeSessions(handler: () => void): () => void;
+  listSessions(): Promise<(SessionSummary & { revision: number })[]>;
   delegationFeedback(
     references: readonly WorkHubDelegationReference[],
   ): Promise<readonly WorkHubDelegationFeedback[]>;

@@ -286,7 +286,7 @@ test('WorkHub loads earlier history through the preload with a fragmented answer
         assert.equal(args[3], 'history');
         for (const batch of encodeDesktopTranscriptSnapshot({
           beginsAtTurnBoundary: true,
-          ...identity, durableThrough: 8, overlay: [], hasOlder: true,
+          ...identity, durableThrough: 8, hasOlder: true,
           durable: [{ sequence: 8, message: tail }],
         })) deliver(batch);
         return { kind: 'ready', value: { ...identity, readThroughMessageId: null } };
@@ -299,7 +299,7 @@ test('WorkHub loads earlier history through the preload with a fragmented answer
         await new Promise<void>((resolve) => setImmediate(resolve));
         try {
           for (const batch of encodeDesktopTranscriptBatches(identity, {
-            durableThrough: 8, durable: [{ sequence: 7, message: earlier }], overlay: [],
+            durableThrough: 8, durable: [{ sequence: 7, message: earlier }],
             earlierThan: 8, hasOlder: false, reset: false, ready: true,
           })) {
             deliver(batch);
@@ -426,7 +426,7 @@ for (const initial of ['failure-before-ready', 'failure-after-ready', 'cached'] 
           };
           for (const batch of encodeDesktopTranscriptSnapshot({
             beginsAtTurnBoundary: true,
-            ...identity, durableThrough: 1, overlay: [], hasOlder: false,
+            ...identity, durableThrough: 1, hasOlder: false,
             durable: [{ sequence: 1, message: { type: 'user', id: cached ? 'cached-message' : 'live-message', turnId: 'turn-1', ts: 1, text: cached ? 'Cached history' : 'Live history' } }],
           })) onBatch({ ...batch, deliverySequence: 1 });
           const unavailable = async () => { throw new Error('Reconnect the Host to load uncached history'); };

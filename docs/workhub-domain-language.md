@@ -164,6 +164,13 @@ An empty dock exposes Retry so recovery does not depend on a layout change.
 The new view reconnects to the same Host-owned Session; unsent in-memory drafts
 are not crash-persistent.
 
+WorkHub uses the main window's shared Workbar. Floating moves only the conversation
+and composer; browser, usage and other panels remain in the main workspace. The
+floating composer's usage button reveals that workspace without docking or resizing
+the conversation. The browser page retains its coordination owner when Main presents
+it, and returns hidden to that owner's native container when Main closes or switches
+sessions. Browser and conversation WebContentsViews are siblings, never nested.
+
 The composer retains a Stop requested before admission for that exact Session/Turn.
 A lost dispatched response leaves admission unresolved; a later observation delivers
 the intent through the existing Stop owner. Rejection or terminal evidence retires

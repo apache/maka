@@ -222,9 +222,6 @@ export function createDesktopTranscriptRangeController(
 }
 
 interface PendingRecord {
-  readonly source: 'durable' | 'overlay';
-  readonly identity: number | string;
-  readonly order: number | null;
   readonly totalBytes: number;
   readonly bytes: Uint8Array;
   receivedBytes: number;
@@ -233,10 +230,6 @@ interface PendingRecord {
 interface StoredRecord {
   readonly message: StoredMessage;
   readonly encoded: string;
-}
-
-interface OverlayRecord extends StoredRecord {
-  readonly order: number;
 }
 
 export interface DesktopTranscriptRangeState {
@@ -258,15 +251,13 @@ export interface DesktopTranscriptRangeSnapshot extends DesktopTranscriptRangeSt
   readonly messages: readonly StoredMessage[];
 }
 
-/** An immutable transcript value: durable rows in sequence order, then the overlay. */
+/** An immutable transcript value: durable rows in sequence order. */
 interface TranscriptValue {
   readonly rows: ReadonlyMap<number, StoredRecord>;
   readonly order: readonly number[];
   readonly hasOlder: boolean;
   readonly beginsAtTurnBoundary: boolean;
   readonly through: number | null;
-  readonly overlay: ReadonlyMap<string, OverlayRecord>;
-  readonly overlayOrder: readonly string[];
 }
 
 /**
@@ -283,9 +274,8 @@ interface TranscriptAssembly {
   durableThrough: number | null;
   hasOlder: boolean | undefined;
   beginsAtTurnBoundary: boolean | undefined;
-  readonly fragments: Map<string, PendingRecord>;
+  readonly fragments: Map<number, PendingRecord>;
   readonly rows: Map<number, StoredRecord>;
-  readonly overlay: Map<string, OverlayRecord>;
 }
 
 const EMPTY_VALUE: TranscriptValue = {
@@ -294,8 +284,6 @@ const EMPTY_VALUE: TranscriptValue = {
   hasOlder: false,
   beginsAtTurnBoundary: true,
   through: null,
-  overlay: new Map(),
-  overlayOrder: [],
 };
 
 export class DesktopTranscriptRangeStore {
@@ -354,7 +342,6 @@ export class DesktopTranscriptRangeStore {
         beginsAtTurnBoundary: undefined,
         fragments: new Map(),
         rows: new Map(),
-        overlay: new Map(),
       };
       this.#assembly = assembly;
     }
@@ -398,7 +385,6 @@ export class DesktopTranscriptRangeStore {
         answer.hasOlder ?? false,
         answer.beginsAtTurnBoundary ?? true,
         answer.durableThrough,
-        answer.overlay,
       );
     }
     if (answer.kind === 'earlier') {
@@ -408,19 +394,14 @@ export class DesktopTranscriptRangeStore {
         answer.hasOlder ?? value.hasOlder,
         answer.beginsAtTurnBoundary ?? value.beginsAtTurnBoundary,
         value.through,
-        value.overlay,
       );
     }
     if (!this.#ready || answer.coversFrom !== value.through) return undefined;
-    // A durable row retires the overlay it settles.
-    const overlay = new Map(value.overlay);
-    for (const record of answer.rows.values()) overlay.delete(record.message.id);
     return makeValue(
       mergeRows(value.rows, answer.rows),
       value.hasOlder,
       value.beginsAtTurnBoundary,
       answer.durableThrough ?? value.through,
-      overlay.size === value.overlay.size ? value.overlay : overlay,
     );
   }
 
@@ -503,25 +484,17 @@ export class DesktopTranscriptRangeStore {
   }
 
   #acceptFragment(assembly: TranscriptAssembly, fragment: DesktopTranscriptFragment): void {
-    const key = `${fragment.source}:${typeof fragment.identity}:${fragment.identity}`;
-    let pending = assembly.fragments.get(key);
+    const sequence = fragment.sequence;
+    let pending = assembly.fragments.get(sequence);
     if (!pending) {
       pending = {
-        source: fragment.source,
-        identity: fragment.identity,
-        order: fragment.order,
         totalBytes: fragment.totalBytes,
         bytes: new Uint8Array(fragment.totalBytes),
         receivedBytes: 0,
       };
-      assembly.fragments.set(key, pending);
+      assembly.fragments.set(sequence, pending);
     }
-    if (
-      pending.source !== fragment.source ||
-      pending.identity !== fragment.identity ||
-      pending.order !== fragment.order ||
-      pending.totalBytes !== fragment.totalBytes
-    ) {
+    if (pending.totalBytes !== fragment.totalBytes) {
       throw new Error('Desktop transcript fragment identity changed');
     }
     const bytes = fragment.data;
@@ -537,36 +510,19 @@ export class DesktopTranscriptRangeStore {
     pending.bytes.set(bytes, fragment.byteOffset);
     pending.receivedBytes += bytes.byteLength;
     if (pending.receivedBytes < pending.totalBytes) return;
-    assembly.fragments.delete(key);
+    assembly.fragments.delete(sequence);
     const encoded = new TextDecoder('utf-8', { fatal: true }).decode(pending.bytes);
     const message = freezeTranscriptValue(projectDesktopStoredMessage(
       { hostId: this.#hostId },
       decodeStoredMessage(markPersisted<StoredMessage>(JSON.parse(encoded))),
     ));
-    const projected = JSON.stringify(message);
-    if (pending.source === 'durable') {
-      if (!Number.isSafeInteger(pending.identity) || (pending.identity as number) < 0) {
-        throw new Error('Invalid Desktop transcript durable identity');
-      }
-      assembly.rows.set(pending.identity as number, { message, encoded: projected });
-      return;
-    }
-    if (typeof pending.identity !== 'string' || message.id !== pending.identity) {
-      throw new Error('Desktop transcript overlay identity changed');
-    }
-    if (pending.order === null || !Number.isSafeInteger(pending.order) || pending.order < 0) {
-      throw new Error('Invalid Desktop transcript overlay order');
-    }
-    assembly.overlay.set(pending.identity, { message, encoded: projected, order: pending.order });
+    assembly.rows.set(sequence, { message, encoded: JSON.stringify(message) });
   }
 
   #createSnapshot(): DesktopTranscriptRangeSnapshot {
     const range = this.range();
     const value = this.#value;
-    const messages = Object.freeze([
-      ...value.order.map((sequence) => value.rows.get(sequence)!.message),
-      ...value.overlayOrder.map((messageId) => value.overlay.get(messageId)!.message),
-    ]);
+    const messages = Object.freeze(value.order.map((sequence) => value.rows.get(sequence)!.message));
     return Object.freeze({ ...range, messages });
   }
 }
@@ -591,7 +547,6 @@ function makeValue(
   hasOlder: boolean,
   beginsAtTurnBoundary: boolean,
   through: number | null,
-  overlay: ReadonlyMap<string, OverlayRecord>,
 ): TranscriptValue {
   return {
     rows,
@@ -599,11 +554,6 @@ function makeValue(
     hasOlder,
     beginsAtTurnBoundary,
     through,
-    overlay,
-    overlayOrder: [...overlay.keys()].sort((left, right) => {
-      const order = overlay.get(left)!.order - overlay.get(right)!.order;
-      return order === 0 ? left.localeCompare(right) : order;
-    }),
   };
 }
 

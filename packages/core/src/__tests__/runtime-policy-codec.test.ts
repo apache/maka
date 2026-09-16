@@ -506,8 +506,10 @@ test('normalizes exact bounded model discovery results', () => {
     },
   );
   for (const invalid of [
+    { models: [{ id: 'duplicate' }, { id: 'duplicate' }], source: 'fetched', fetchedAt: 42 },
+    { models: [{ id: 'invalid', contextWindow: 0 }], source: 'fetched', fetchedAt: 42 },
     {
-      models: [{ id: 'duplicate' }, { id: 'duplicate' }],
+      models: Array.from({ length: 2049 }, (_, i) => ({ id: `model-${i}` })),
       source: 'fetched',
       fetchedAt: 42,
     },
