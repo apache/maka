@@ -242,7 +242,8 @@ export function registerClientPluginIpc(input: {
       throw error;
     }
   });
-  input.ipcMain.handle('client-plugins:remote:stream:close', async (_event, request) => {
+  input.ipcMain.handle('client-plugins:remote:stream:close', async (event, request) => {
+    if (typeof request?.streamId === 'string' && !input.transport.ownsStream(input.client, event.sender.id, request.streamId)) return { streamId: request.streamId };
     const result = await input.client.request('plugin.client.remote.stream.close', request);
     input.transport.forgetStream(input.client, request.streamId);
     return result;

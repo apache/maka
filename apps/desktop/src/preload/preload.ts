@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { createClientPluginRouting } from './client-plugin-routing.js';
 import type {
   SessionBundleExportIpcResult,
   SessionBundleImportIpcResult,
@@ -1406,23 +1407,11 @@ const browserSelection = createBrowserSelectionCoordinator(runtimeHostSessionRef
 }, browserDocumentId);
 
 const makaBridge = {
-  clientPlugins: {
-    snapshot() {
-      return invokeActiveRuntimeHost('client-plugins:snapshot');
-    },
-    remoteCall(input) {
-      return invokeActiveRuntimeHost('client-plugins:remote:call', input);
-    },
-    remoteStreamOpen(input) {
-      return invokeActiveRuntimeHost('client-plugins:remote:stream:open', input);
-    },
-    remoteStreamNext(input) {
-      return invokeActiveRuntimeHost('client-plugins:remote:stream:next', input);
-    },
-    remoteStreamClose(input) {
-      return invokeActiveRuntimeHost('client-plugins:remote:stream:close', input);
-    },
-  },
+  clientPlugins: createClientPluginRouting({
+    activeScope: activeRuntimeHostRef,
+    sessionRef: runtimeHostSessionRef,
+    invoke: (channel, scope, input) => ipcRenderer.invoke(channel, scope, ...(input === undefined ? [] : [input])),
+  }),
   workHubControl: workHubControlBridge,
   workHubPresentation: workHubPresentationBridge,
   runtimeHost,
