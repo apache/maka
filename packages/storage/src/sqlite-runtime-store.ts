@@ -4110,7 +4110,11 @@ export class SqliteRuntimeStore
         VALUES (?, ?, ?)
       `)
       .run(canonicalEvent.sessionId, ordinal, canonicalEvent.id);
-    recordTranscriptTurnExtent(this.db, canonicalEvent, ordinal);
+    recordTranscriptTurnExtent(
+      this.db,
+      { ...canonicalEvent, kind: runtimeEventKind(canonicalEvent) },
+      ordinal,
+    );
     this.noteEventCommit(canonicalEvent.sessionId);
     this.deleteCompletedPartialSnapshot(canonicalEvent);
     return next;

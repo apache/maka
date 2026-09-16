@@ -118,15 +118,22 @@ export class RuntimeTranscriptOversizedTurnError extends Error {
  *
  * This is a fact about the invocation, not about any row it produces — which
  * rows it produces is the read model's question, and is not asked here.
+ *
+ * An opening that is not JSON is not shown. `json_extract` on it would fail the
+ * whole statement, and the extent backfill runs this over every row inside a
+ * migration; see `TERMINAL_RUNTIME_EVENT_SQL`.
  */
 const visibleOpening = (payload: string) => `
-  (${payload} IS NOT NULL
-    AND (json_extract(${payload}, '$.lineage.parentRunId') IS NULL
+  (CASE WHEN json_valid(${payload}) THEN
+    json_extract(${payload}, '$.lineage.parentRunId') IS NULL
       OR (json_extract(${payload}, '$.source.kind') <> 'fresh'
-        AND json_extract(${payload}, '$.lineage.agentId') IS NULL)))`;
+        AND json_extract(${payload}, '$.lineage.agentId') IS NULL)
+  ELSE 0 END)`;
+const eventOpening = (payloadJson: string) =>
+  `CASE WHEN json_valid(${payloadJson}) THEN json_extract(${payloadJson}, '$.content') END`;
 const openingContent = (invocation: string) => `
   COALESCE(
-    (SELECT json_extract(op.payload_json, '$.content') FROM runtime_events op
+    (SELECT ${eventOpening('op.payload_json')} FROM runtime_events op
      WHERE op.invocation_id = ${invocation} AND op.event_kind = 'invocation_opened'),
     (SELECT lg.opening_json FROM runtime_legacy_invocation_openings lg
      WHERE lg.invocation_id = ${invocation}))`;
@@ -177,7 +184,7 @@ const boundary = (direction: 'older' | 'newer') => `
 const VISIBLE_INVOCATIONS = `
   SELECT invocation_id FROM runtime_events
   WHERE event_kind = 'invocation_opened'
-    AND ${visibleOpening("json_extract(payload_json, '$.content')")}
+    AND ${visibleOpening(eventOpening('payload_json'))}
   UNION
   SELECT legacy.invocation_id FROM runtime_legacy_invocation_openings legacy
   WHERE ${visibleOpening('legacy.opening_json')}
@@ -191,16 +198,30 @@ const VISIBLE_INVOCATIONS = `
  * Widen a Turn's extent to cover one committed event, in the transaction that
  * gave the event its ordinal. Events of invocations the transcript does not
  * show leave no extent.
+ *
+ * Visibility is decided by the opening, so the opening covers every event its
+ * invocation already committed: the extent does not depend on the opening
+ * having been committed first.
  */
 export function recordTranscriptTurnExtent(
   db: DatabaseSync,
-  event: { readonly sessionId: string; readonly invocationId: string; readonly turnId: string },
+  event: {
+    readonly sessionId: string;
+    readonly invocationId: string;
+    readonly turnId: string;
+    readonly kind: string;
+  },
   ordinal: number,
 ): void {
   db.prepare(`
     INSERT INTO runtime_session_turn_extents(session_id, turn_id, first_ordinal, last_ordinal)
-    SELECT :sessionId, :turnId, :ordinal, :ordinal
-    WHERE ${visibleOpening(openingContent(':invocationId'))}
+    SELECT :sessionId, :turnId, MIN(o.ordinal), MAX(o.ordinal)
+    FROM runtime_events e
+    JOIN runtime_session_event_ordinals o ON o.event_id = e.event_id
+    WHERE e.invocation_id = :invocationId
+      AND ${event.kind === 'invocation_opened' ? '1' : 'o.ordinal = :ordinal'}
+      AND ${visibleOpening(openingContent(':invocationId'))}
+    HAVING COUNT(*) > 0
     ON CONFLICT(session_id, turn_id) DO UPDATE SET
       first_ordinal = MIN(first_ordinal, excluded.first_ordinal),
       last_ordinal = MAX(last_ordinal, excluded.last_ordinal)
@@ -208,7 +229,7 @@ export function recordTranscriptTurnExtent(
     sessionId: event.sessionId,
     turnId: event.turnId,
     invocationId: event.invocationId,
-    ordinal,
+    ...(event.kind === 'invocation_opened' ? {} : { ordinal }),
   });
 }
 

@@ -261,6 +261,64 @@ describe('SQLite runtime schema migration', () => {
     }
   });
 
+  it('backfills extents over a ledger holding an undecodable opening', () => {
+    const db = new DatabaseSync(':memory:');
+    try {
+      migrateSqliteRuntimeDatabase(db);
+      const insert = db.prepare(
+        'INSERT INTO runtime_events(event_id, session_id, invocation_id, run_id, turn_id, event_seq, event_kind, payload_json, committed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      );
+      insert.run(
+        'broken-opened',
+        'session',
+        'broken',
+        'broken',
+        'broken-turn',
+        1,
+        'invocation_opened',
+        '{',
+        1,
+      );
+      insert.run(
+        'shown-opened',
+        'session',
+        'shown',
+        'shown',
+        'shown-turn',
+        1,
+        'invocation_opened',
+        JSON.stringify({ content: { kind: 'invocation_opened', source: { kind: 'fresh' } } }),
+        1,
+      );
+      insert.run('legacy-text', 'session', 'legacy', 'legacy', 'legacy-turn', 1, 'text', '{}', 1);
+      db.prepare(
+        'INSERT INTO runtime_legacy_invocation_openings(invocation_id, session_id, run_id, turn_id, opened_at, opening_json, anchor_event_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      ).run('legacy', 'session', 'legacy', 'legacy-turn', 1, '{', 'legacy-text');
+      const ordinal = db.prepare(
+        'INSERT INTO runtime_session_event_ordinals(session_id, ordinal, event_id) VALUES (?, ?, ?)',
+      );
+      ordinal.run('session', 1, 'broken-opened');
+      ordinal.run('session', 2, 'shown-opened');
+      ordinal.run('session', 3, 'legacy-text');
+      db.exec('PRAGMA user_version = 18');
+      migrateSqliteRuntimeDatabase(db);
+
+      assert.equal(
+        (db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version,
+        SQLITE_RUNTIME_SCHEMA_VERSION,
+      );
+      assert.deepEqual(
+        db
+          .prepare('SELECT turn_id FROM runtime_session_turn_extents')
+          .all()
+          .map((row) => row.turn_id),
+        ['shown-turn'],
+      );
+    } finally {
+      db.close();
+    }
+  });
+
   it('builds the terminal index over a ledger holding an undecodable payload', () => {
     const db = new DatabaseSync(':memory:');
     try {

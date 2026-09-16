@@ -533,6 +533,25 @@ for (const backend of ['Local', 'Memory'] as const) {
           [moved?.firstOrdinal, moved?.lastOrdinal],
           [Math.min(...ordinalsOf(outer.turnId)), Math.max(...ordinalsOf(outer.turnId))],
         );
+
+        // The opening decides visibility, so events committed before it count.
+        const early = invocation('early');
+        await s.appendRuntimeEvent(sessionId, early.runId, text(early, 'early-prompt', 'user'));
+        await s.appendRuntimeEvent(sessionId, early.runId, opened(early));
+        const earlyOrdinals = (await s.readSessionRuntimeEventEntries(sessionId))
+          .filter((entry) => entry.event.turnId === early.turnId)
+          .map((entry) => entry.ordinal);
+        assert.deepEqual(
+          extents(await s.readTranscriptTurns(sessionId, { turnId: early.turnId })),
+          [
+            {
+              turnId: early.turnId,
+              firstOrdinal: Math.min(...earlyOrdinals),
+              lastOrdinal: Math.max(...earlyOrdinals),
+              prompt: 'early-prompt',
+            },
+          ],
+        );
       });
     },
   );
