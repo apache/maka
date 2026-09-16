@@ -210,7 +210,6 @@ import { HostPluginPlatform } from './plugin-platform.js';
 import { RootAdmissionOwner } from './root-admission-owner.js';
 import { RootTurnCoordinator } from './root-turn-coordinator.js';
 import { RuntimePolicyActivationGate } from './runtime-policy-activation-gate.js';
-import { resolveSandboxBoundaryRootSession } from './sandbox-boundary-graph-wake.js';
 import { HostRuntimePolicyCoordinator } from './runtime-policy-coordinator.js';
 import { startHostModelMetadataRefresh } from './model-metadata-refresh.js';
 import { HostRuntimeResourceCoordinator } from './runtime-resource-coordinator.js';
@@ -912,19 +911,6 @@ export async function createExecutionRuntimeHostComposition(
         // Route poison through the kernel; the composition drain entry detaches admission.
         context.requestDrain();
       },
-      resolveSandboxBoundaryRootSession: async (sessionId) => {
-        try {
-          return await resolveSandboxBoundaryRootSession(sessionId, stores.sessionStore, {
-            listGraphIds: (rootSessionId) =>
-              requireGraphCoordinator(graphCoordinator).listGraphIds(rootSessionId),
-          });
-        } catch (error) {
-          if (isSessionNotFoundError(error)) return undefined;
-          throw error;
-        }
-      },
-      onSandboxBoundaryGraphWake: (rootSessionId) =>
-        requireGraphSupervisorWake(graphSupervisorWake).notifyPermissionResponse(rootSessionId),
     });
     memory = new HostMemoryCoordinator({
       store: memoryStore,
@@ -2210,6 +2196,20 @@ export async function createExecutionRuntimeHostComposition(
                   input.attachments,
                 )
               : input.attachments;
+          const sourceAdmission = input.coordinationTurnId
+            ? await stores.agentRunStore.readRootTurnAdmission(
+                WORKHUB_COORDINATION_SESSION_ID,
+                input.coordinationTurnId,
+              )
+            : undefined;
+          const authenticatedUserRequests = sourceAdmission
+            ? [
+                ...(sourceAdmission.authenticatedUserRequests ?? []),
+                ...sourceAdmission.sourceMessages.flatMap(
+                  (source) => source.authenticatedUserRequests ?? [],
+                ),
+              ]
+            : undefined;
           const content = normalizeMessageContent({
             text: input.delegationText ?? input.userText,
             ...(targetAttachments ? { attachments: targetAttachments } : {}),
@@ -2292,6 +2292,7 @@ export async function createExecutionRuntimeHostComposition(
                     runId,
                     messageId,
                     content,
+                    authenticatedUserRequests,
                     submittedContentDigest: messageContentDigest(content),
                     submittedPlacement: 'current_turn',
                     placement: 'current_turn',

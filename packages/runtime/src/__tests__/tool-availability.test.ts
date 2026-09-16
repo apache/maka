@@ -140,13 +140,23 @@ describe('ToolAvailabilityRuntime — search activation', () => {
     assert.doesNotMatch(searchTool(plan).description, /update_plan|cancel_plan/);
   });
 
-  test('provider-routed apply_patch inherits direct editing visibility', () => {
-    const plan = new ToolAvailabilityRuntime(
-      [tool('apply_patch'), tool('custom')],
+  test('reviewed execution retains local ApplyPatch and omits provider-executed search', () => {
+    const runtime = new ToolAvailabilityRuntime(
+      [
+        { ...tool('apply_patch'), providerTool: { kind: 'openai-apply-patch' } },
+        { ...tool('WebSearch'), providerTool: { kind: 'openai-web-search' } },
+        tool('custom'),
+      ],
       {},
       invalid,
-    ).prepare(new Map());
-    assert.deepEqual(plan.activeTools, ['apply_patch', TOOL_SEARCH_NAME]);
+    );
+    const bypass = runtime.prepare(new Map());
+    assert.ok(bypass.providerTools.some((entry) => entry.name === 'WebSearch'));
+    const reviewed = runtime.prepare(new Map(), new Set(), false);
+    assert.ok(reviewed.activeTools.includes('apply_patch'));
+    assert.ok(!reviewed.providerTools.some((entry) => entry.name === 'WebSearch'));
+    assert.ok(!reviewed.activeTools.includes('WebSearch'));
+    assert.ok(!reviewed.projectActiveTools?.().activeTools.includes('WebSearch'));
   });
 
   test('inventory contains group and canonical names without tool descriptions', () => {

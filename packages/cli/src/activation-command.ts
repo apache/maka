@@ -103,10 +103,6 @@ export interface MakaActivationRuntime {
   listSessions?(): Promise<SessionSummary[]>;
   resumeLatest?(sessionId: string): Promise<AsyncIterable<SessionEvent> | null>;
   sendMessage(sessionId: string, input: UserMessageInput): AsyncIterable<SessionEvent>;
-  respondToSandboxBoundary(
-    sessionId: string,
-    response: { requestId: string; decision: 'deny' },
-  ): Promise<void>;
   stopSession(sessionId: string, input?: { source?: 'stop_button' }): Promise<void>;
 }
 
@@ -518,12 +514,6 @@ export async function runMakaActivationCli(
         for await (const event of stream) {
           if (sessionEventSandboxBoundaryFailureReason(event)) streamBoundaryFailure = true;
           writeRuntimeEvent(sessionEventToRuntimeEvent(event, session!.id));
-          if (event.type === 'sandbox_boundary_request') {
-            await context!.runtime.respondToSandboxBoundary(session!.id, {
-              requestId: event.requestId,
-              decision: 'deny',
-            });
-          }
         }
       })();
       if (timeoutSignal) await Promise.race([drain, timeoutSignal]);

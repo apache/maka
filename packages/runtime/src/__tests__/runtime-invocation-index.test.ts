@@ -59,7 +59,6 @@ test('the invocation index returns the same inventory as a rebuild from events a
         };
       },
       async stop() {},
-      async respondToSandboxBoundary() {},
       async dispose() {},
     }));
     let ids = 0;

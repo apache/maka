@@ -337,14 +337,6 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
     }
   }
 
-  async respondToSandboxBoundary(
-    sessionId: string,
-    response: { requestId: string; decision: 'deny' },
-  ): Promise<void> {
-    await this.#attach(sessionId);
-    await this.#driver.respondToSandboxBoundary(response);
-  }
-
   async resumeLatest(sessionId: string): Promise<AsyncIterable<SessionEvent> | null> {
     await this.#attach(sessionId);
     const plan = await this.#connection.request('turn.resume.query', { sessionId });
@@ -368,9 +360,9 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
     if (failure) throw failure.reason;
   }
 
-  async setExecutionBoundaryKind(sessionId: string, kind: 'managed' | 'bypass'): Promise<void> {
+  async setPermissionMode(sessionId: string, mode: 'auto_review' | 'bypass'): Promise<void> {
     await this.#attach(sessionId);
-    await this.#driver.setPermissionMode(kind === 'bypass' ? 'bypass' : 'auto_review');
+    await this.#driver.setPermissionMode(mode);
   }
 
   async waitForGraphCompletion(sessionId: string): Promise<void> {
@@ -453,11 +445,7 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
       const next = await this.#interactions.race(events.next());
       if (next.done) break;
       const event = next.value;
-      if (
-        event.type === 'user_question_request' ||
-        event.type === 'form_request' ||
-        event.type === 'sandbox_boundary_request'
-      ) {
+      if (event.type === 'user_question_request' || event.type === 'form_request') {
         continue;
       }
       active.outcome.accept(observationFromSessionEvent(event));
@@ -851,13 +839,6 @@ class NonInteractiveInteractionController {
   }
 
   async #handle(pending: InteractionPendingSnapshot): Promise<void> {
-    if (pending.request.kind === 'sandbox_boundary') {
-      await this.#driver.respondToSandboxBoundary({
-        requestId: pending.interactionId,
-        decision: 'deny',
-      });
-      return;
-    }
     await this.#stop(pending);
     throw new Error(
       pending.request.kind === 'question'

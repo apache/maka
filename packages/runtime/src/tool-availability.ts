@@ -311,9 +311,16 @@ export class ToolAvailabilityRuntime {
   prepare(
     activeTools: Map<string, string>,
     requiredToolNames: ReadonlySet<string> = new Set(),
+    allowProviderExecution = true,
   ): ToolAvailabilityPlan {
+    const tools = allowProviderExecution
+      ? this.tools
+      : this.tools.filter(
+          (tool) => !tool.providerTool || tool.providerTool.kind === 'openai-apply-patch',
+        );
+    const allowedNames = new Set(tools.map((tool) => tool.name));
     if (!this.searchIndex) {
-      const canonical = canonicalizeToolSet(this.tools, this.invalidTool);
+      const canonical = canonicalizeToolSet(tools, this.invalidTool);
       return {
         providerTools: canonical.providerTools,
         activeTools: canonical.activeTools,
@@ -322,8 +329,8 @@ export class ToolAvailabilityRuntime {
       };
     }
 
-    const connector = this.buildSearchConnector(activeTools);
-    const allTools = [...this.tools, connector];
+    const connector = this.buildSearchConnector(activeTools, allowedNames);
+    const allTools = [...tools, connector];
     const canonical = canonicalizeToolSet(allTools, this.invalidTool);
     const knownNames = new Set(canonical.providerTools.map((tool) => tool.name));
     // Activation belongs to a stable logical contribution, not a temporary
@@ -358,6 +365,7 @@ export class ToolAvailabilityRuntime {
 
   private buildSearchConnector(
     activeTools: Map<string, string>,
+    allowedNames: ReadonlySet<string>,
   ): MakaTool<{ query: string; limit?: number }, ToolSearchResult> {
     return {
       name: TOOL_SEARCH_NAME,
@@ -376,7 +384,7 @@ export class ToolAvailabilityRuntime {
         const normalizedQuery = query.trim();
         const ranked = this.searchIndex!.search(normalizedQuery)
           .map((result) => String(result.id))
-          .filter((name) => !activeTools.has(name))
+          .filter((name) => allowedNames.has(name) && !activeTools.has(name))
           .slice(0, TOOL_SEARCH_MAX_LIMIT)
           .filter((name) => this.searchableNames.has(name));
         const activated: string[] = [];

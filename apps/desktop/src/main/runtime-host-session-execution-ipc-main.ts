@@ -40,7 +40,6 @@ import {
 import { type ActiveInteractionRequestEvent, type AttachmentRef } from '@maka/core/events';
 import { type PermissionMode } from '@maka/core/permission';
 import { decodeInteractionFormResponse } from '@maka/core/interaction';
-import { type SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { AttachmentApprovalRegistry } from "./attachment-approval.js";
 import {
   resolveAttachmentRefs,
@@ -50,7 +49,6 @@ import {
   normalizeRuntimeHostBranchFromTurnInput,
   normalizeRegenerateTurnInput,
   normalizeRuntimeHostReviseBeforeTurnInput,
-  normalizeSandboxBoundaryResponse,
   normalizeClientCapabilityResponse,
   normalizeSessionSendCommand,
   normalizeStopSessionInput,
@@ -176,13 +174,6 @@ export interface RuntimeHostSessionExecutionIpcDeps {
   onBackgroundError(error: unknown): void;
   e2eInteractions?: {
     list(sessionId: string): readonly ActiveInteractionRequestEvent[];
-    respondToSandboxBoundary(
-      sessionId: string,
-      response: SandboxBoundaryResponse,
-    ): Promise<
-      | { readonly handled: false }
-      | { readonly handled: true; readonly permissionMode?: PermissionMode }
-    >;
   };
   newId?: () => string;
 }
@@ -667,39 +658,6 @@ export function registerRuntimeHostSessionExecutionIpc(
     },
   );
 
-  ipcMain.handle(
-    "sessions:respondToSandboxBoundary",
-    async (_event, sessionId: string, input: unknown) => {
-      const response = normalizeSandboxBoundaryResponse(input);
-      const fixtureResult = await deps.e2eInteractions?.respondToSandboxBoundary(
-        sessionId,
-        response,
-      );
-      if (fixtureResult?.handled) {
-        if (fixtureResult.permissionMode) {
-          await deps.client.updateSessionConfiguration(sessionId, {
-            permissionMode: fixtureResult.permissionMode,
-          });
-          deps.emitSessionsChanged("mode-change", sessionId);
-        }
-        return;
-      }
-      const pending = await requireInteraction(
-        deps.observer,
-        sessionId,
-        response.requestId,
-      );
-      if (pending.request.kind !== "sandbox_boundary") {
-        throw new Error("Interaction is not a sandbox boundary request");
-      }
-      const answered = await deps.client.answerInteraction({
-        sessionId,
-        interactionId: response.requestId,
-        answer: { kind: "sandbox_boundary", decision: response.decision },
-      });
-      deps.observer.publishInteractionAnswer(answered, pending);
-    },
-  );
   ipcMain.handle(
     "sessions:respondToUserQuestion",
     async (_event, sessionId: string, input: unknown) => {

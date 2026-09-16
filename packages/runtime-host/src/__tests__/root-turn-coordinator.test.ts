@@ -2975,8 +2975,6 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
       onPoison: () => {
         drainRequested = true;
       },
-      resolveSandboxBoundaryRootSession: async () => undefined,
-      onSandboxBoundaryGraphWake: async () => {},
     });
     const interactionAuthority: RuntimeInteractionAuthority = {
       bindRun: (identity) => {
@@ -6272,8 +6270,6 @@ async function createFailureFixture(options: {
         refreshCanonicalContinuity: (sessionId, admission) =>
           requireContinuity(continuity).refreshCanonical(sessionId, admission),
         onPoison: requestDrain,
-        resolveSandboxBoundaryRootSession: async () => undefined,
-        onSandboxBoundaryGraphWake: async () => {},
       })
     : undefined;
   const backends = new BackendRegistry();
@@ -6783,8 +6779,6 @@ class LinkedChildAuthorityBackend implements AgentBackend {
     this.releaseWait?.();
   }
 
-  async respondToSandboxBoundary(): Promise<void> {}
-
   async dispose(): Promise<void> {
     this.releaseWait?.();
   }
@@ -6832,7 +6826,6 @@ class StepCapProbeBackend implements AgentBackend {
   }
 
   async stop(): Promise<void> {}
-  async respondToSandboxBoundary(): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -6864,8 +6857,6 @@ class BlockingRootBackend implements AgentBackend {
   release(): void {
     this.#released.resolve();
   }
-
-  async respondToSandboxBoundary(): Promise<void> {}
 
   async dispose(): Promise<void> {
     this.release();
@@ -6907,7 +6898,6 @@ class ContextFailureBackend implements AgentBackend {
   }
 
   async stop(): Promise<void> {}
-  async respondToSandboxBoundary(): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -6945,7 +6935,6 @@ class BlockingContextRecoveryBackend implements AgentBackend {
     this.stopCount += 1;
     this.releaseCompact();
   }
-  async respondToSandboxBoundary(): Promise<void> {}
   async dispose(): Promise<void> {
     this.releaseCompact();
   }
@@ -7021,7 +7010,6 @@ class GraphFollowupRecoveryBackend implements AgentBackend {
     this.releaseFollowup();
   }
 
-  async respondToSandboxBoundary(): Promise<void> {}
   async dispose(): Promise<void> {
     this.releaseGraphTurn();
     this.releaseFollowup();
@@ -7104,8 +7092,6 @@ class QueuedAdmissionBackend implements AgentBackend {
     this.admissionTrigger.resolve();
   }
 
-  async respondToSandboxBoundary(): Promise<void> {}
-
   async dispose(): Promise<void> {
     this.admissionTrigger.resolve();
   }
@@ -7158,8 +7144,6 @@ class StopReleasedAdmissionBackend implements AgentBackend {
   async stop(): Promise<void> {
     this.stopped.resolve();
   }
-
-  async respondToSandboxBoundary(): Promise<void> {}
 
   async dispose(): Promise<void> {
     this.stopped.resolve();
@@ -7232,8 +7216,6 @@ class RunningAdmissionBackend implements AgentBackend {
     this.stopRequested.resolve();
   }
 
-  async respondToSandboxBoundary(): Promise<void> {}
-
   async dispose(): Promise<void> {
     this.settled.resolve();
   }
@@ -7288,8 +7270,6 @@ class AdmissionThenFailureBackend implements AgentBackend {
 
   async stop(): Promise<void> {}
 
-  async respondToSandboxBoundary(): Promise<void> {}
-
   async dispose(): Promise<void> {
     this.fail.resolve();
   }
@@ -7319,8 +7299,6 @@ class TerminalThenCleanupBackend implements AgentBackend {
   }
 
   async stop(): Promise<void> {}
-
-  async respondToSandboxBoundary(): Promise<void> {}
 
   async dispose(): Promise<void> {
     this.releaseCleanup();
@@ -7391,8 +7369,6 @@ class PendingQuestionBackend implements AgentBackend {
     this.settled.resolve();
   }
 
-  async respondToSandboxBoundary(): Promise<void> {}
-
   async dispose(): Promise<void> {
     this.settled.resolve();
   }
@@ -7440,8 +7416,6 @@ class TakeoverClosureBackend implements AgentBackend {
   async stop(): Promise<void> {
     this.stopStarted.resolve();
   }
-
-  async respondToSandboxBoundary(): Promise<void> {}
 
   async dispose(): Promise<void> {
     this.sendReleased.resolve();
@@ -7519,8 +7493,6 @@ class QuestionWaitingBackend implements AgentBackend {
     this.resolveAnswer?.(null);
     this.releaseAfterAnswer?.();
   }
-
-  async respondToSandboxBoundary(): Promise<void> {}
 
   async dispose(): Promise<void> {
     await this.stop();

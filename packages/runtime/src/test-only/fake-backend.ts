@@ -26,7 +26,6 @@ import type {
   HostedUserQuestionAnswer,
   HostedUserQuestionSettlement,
 } from '@maka/core/backend-types';
-import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import {
   RuntimeInteractionInvariantError,
@@ -308,8 +307,6 @@ export class FakeBackend implements AgentBackend {
       this.pendingQuestion = undefined;
     }
   }
-
-  async respondToSandboxBoundary(_response: SandboxBoundaryResponse): Promise<void> {}
 
   async respondToUserQuestion(response: UserQuestionResponse): Promise<void> {
     if (this.pendingQuestion?.requestId !== response.requestId) return;

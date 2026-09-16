@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { authenticatedUserRequests } from './authenticated-user-requests.js';
 import type { WorkHubActionReceipt } from '@maka/core/workhub-action-result';
 import type { WorkHubRoutingDecision } from '@maka/core/workhub-routing';
 import { createHash, randomUUID } from 'node:crypto';
@@ -265,6 +266,7 @@ export interface HostedExternalTurnTransitionInput {
 }
 
 interface RootTurnActivationInput {
+  readonly authenticatedUserRequests?: readonly string[];
   readonly sessionId: string;
   readonly turnId: string;
   readonly content: MessageContent | null;
@@ -2110,6 +2112,12 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
             request.execution.kind === 'external_message' ? request.turnId : randomUUID(),
           execution: freshExecution,
           normalizedInput: canonicalContent.content,
+          authenticatedUserRequests:
+            request.execution.kind === 'external_message' ||
+            (request.execution.kind === 'workhub_coordination' &&
+              request.execution.operation === undefined)
+              ? authenticatedUserRequests(canonicalContent.content, context)
+              : undefined,
           ...(request.turnOrchestration ? { turnOrchestration: request.turnOrchestration } : {}),
           ...(prepared.skillInvocation ? { skillInvocation: prepared.skillInvocation } : {}),
           ...(context.turnAdmissionAuthorization
@@ -2688,6 +2696,13 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
     rootReservation?: RootTurnReservation,
     continuation?: RuntimeContinuation,
   ): Promise<TurnStartDisposition> {
+    input = {
+      ...input,
+      authenticatedUserRequests: [
+        ...(admission.authenticatedUserRequests ?? []),
+        ...admission.sourceMessages.flatMap((source) => source.authenticatedUserRequests ?? []),
+      ],
+    };
     if (admission.sessionId !== input.sessionId || admission.turnId !== input.turnId) {
       throw new Error('Root Turn admission identity does not match its input');
     }
@@ -2882,6 +2897,9 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
       {
         turnId: input.turnId,
         ...content,
+        ...(input.authenticatedUserRequests !== undefined
+          ? { authenticatedUserRequests: input.authenticatedUserRequests }
+          : {}),
         ...(active.descriptor.kind === 'regenerate'
           ? {
               parentTurnId: active.descriptor.sourceTurnId,

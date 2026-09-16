@@ -958,171 +958,76 @@ test('production composition commits automatic titles through Host-owned Session
   });
 });
 
-test('default production WorkHub selects and delegates through its durable Host interaction', async () => {
-  await withCompositionRoot(async ({ root, owner }) => {
-    const connectionId = await configureFakeDefaultTarget(owner);
-    const { composition, manager } = await createCapturedExecutionComposition(owner, {
-      defaultWorkHubRouting: true,
-    });
-    const context: ConnectionContext = {
-      hostEpoch: 'execution-composition-test',
-      connectionId: 'selection-client',
-      principal: 'local_os_user',
-      acquireResidency: () => ({ release() {} }),
-    };
-    const desktop = composition.clientCapabilities!.attachConnection(
-      clientCapabilityConnectionIdentity(context.connectionId),
-      { send: async () => {} },
-    );
-    try {
-      const registered = await composition.handlers['client.capability.replace'](
-        {
-          registrationId: randomUUID(),
-          offers: workHubDesktopCapabilityOffers(),
-        },
-        context,
-      );
-      assert.ok(registered.ok, JSON.stringify(registered));
-      await composition.handlers['workhub.coordination.resolve']({}, context);
-      const alpha = await manager.createSession({
-        cwd: root,
-        name: 'Release',
-        llmConnectionId: connectionId,
-        llmConnectionSlug: 'fake',
-        model: 'fake-model',
-        permissionMode: 'bypass',
+for (const selection of ['accept', 'cancel', 'stale'] as const) {
+  test(`production WorkHub target selection handles ${selection} through its durable Host interaction`, async () => {
+    await withCompositionRoot(async ({ root, owner }) => {
+      const connectionId = await configureFakeDefaultTarget(owner);
+      const { composition, manager } = await createCapturedExecutionComposition(owner, {
+        defaultWorkHubRouting: true,
       });
-      const beta = await manager.createSession({
-        cwd: root,
-        name: 'Release',
-        llmConnectionId: connectionId,
-        llmConnectionSlug: 'fake',
-        model: 'fake-model',
-        permissionMode: 'bypass',
-      });
-      const page = await composition.handlers['workhub.coordination.candidates']({}, context);
-      assert.ok(page.ok);
-      if (!page.ok) return;
-      const turnId = randomUUID();
-      const started = await composition.handlers['workhub.coordination.answer'](
-        { turnId, text: 'Continue Release; let me choose which work.' },
-        context,
-      );
-      assert.ok(started.ok, JSON.stringify(started));
-      const input = {
-        turnId,
-        actionId: 'selected-release',
-        candidateSetId: page.result.candidateSetId,
-        candidateRefs: page.result.candidates.map((candidate) => candidate.candidateRef),
-        delegationText: 'Report release readiness',
+      const context: ConnectionContext = {
+        hostEpoch: 'execution-composition-test',
+        connectionId: 'selection-client',
+        principal: 'local_os_user',
+        acquireResidency: () => ({ release() {} }),
       };
-      let selectionOutcome: unknown;
-      const pending = composition.handlers['workhub.coordination.selectAndDelegate'](
-        input,
-        context,
-      ).then((result) => {
-        selectionOutcome = result;
-        return result;
-      });
-      const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
-      await waitFor(async () => {
-        assert.equal(selectionOutcome, undefined, JSON.stringify(selectionOutcome));
-        return (
-          (
-            await stores.interactionStore.listPending({
-              sessionId: WORKHUB_COORDINATION_SESSION_ID,
-            })
-          ).length === 1
-        );
-      });
-      const record = (
-        await stores.interactionStore.listPending({ sessionId: WORKHUB_COORDINATION_SESSION_ID })
-      )[0]!;
-      const query = () =>
-        composition.handlers['interaction.query'](
-          { sessionId: WORKHUB_COORDINATION_SESSION_ID, interactionId: record.requestId },
+      const desktop = composition.clientCapabilities!.attachConnection(
+        clientCapabilityConnectionIdentity(context.connectionId),
+        { send: async () => {} },
+      );
+      try {
+        const registered = await composition.handlers['client.capability.replace'](
+          {
+            registrationId: randomUUID(),
+            offers: workHubDesktopCapabilityOffers(),
+          },
           context,
         );
-      const offered = await query();
-      assert.ok(offered.ok);
-      if (!offered.ok) return;
-      const interaction = offered.result;
-      assert.equal(interaction.request.kind, 'form');
-      assert.equal(await stores.sessionStore.readWorkHubAssignment(input.actionId), undefined);
-      assert.equal(interaction.request.kind, 'form');
-      if (
-        interaction.request.kind !== 'form' ||
-        interaction.request.fields[0]?.kind !== 'single_select'
-      )
-        return;
-      const selected = interaction.request.fields[0].options.find(
-        (option) => JSON.parse(option.value)[1] === beta.id,
-      )!;
-      // Other candidates can change while the user chooses; identity remains the selected Session.
-      await manager.createSession({
-        cwd: root,
-        name: 'Unrelated work',
-        llmConnectionId: connectionId,
-        llmConnectionSlug: 'fake',
-        model: 'fake-model',
-        permissionMode: 'bypass',
-      });
-      const answered = await composition.handlers['interaction.answer'](
-        {
-          sessionId: WORKHUB_COORDINATION_SESSION_ID,
-          interactionId: interaction.interactionId,
-          answer: { kind: 'form', action: 'accept', values: { target: selected.value } },
-        },
-        context,
-      );
-      assert.ok(answered.ok, JSON.stringify(answered));
-      const delegated = await pending;
-      assert.ok(delegated.ok, JSON.stringify(delegated));
-      if (!delegated.ok || delegated.result.kind !== 'delegated') return;
-      assert.equal(
-        'targetSessionId' in delegated.result.result && delegated.result.result.targetSessionId,
-        beta.id,
-      );
-      assert.notEqual(beta.id, alpha.id);
-      assert.deepEqual(
-        await composition.handlers['workhub.coordination.selectAndDelegate'](input, context),
-        delegated,
-      );
-      const assignment = await stores.sessionStore.readWorkHubAssignment(input.actionId);
-      assert.equal(assignment?.targetSessionId, beta.id);
-      const targetTurnId =
-        'targetTurnId' in delegated.result.result
-          ? delegated.result.result.targetTurnId
-          : undefined;
-      assert.ok(targetTurnId);
-      await waitFor(async () => {
-        const turn = await composition.handlers['turn.query'](
-          { sessionId: beta.id, turnId: targetTurnId! },
+        assert.ok(registered.ok, JSON.stringify(registered));
+        await composition.handlers['workhub.coordination.resolve']({}, context);
+        const alpha = await manager.createSession({
+          cwd: root,
+          name: 'Release',
+          llmConnectionId: connectionId,
+          llmConnectionSlug: 'fake',
+          model: 'fake-model',
+          permissionMode: 'bypass',
+        });
+        const beta = await manager.createSession({
+          cwd: root,
+          name: 'Release',
+          llmConnectionId: connectionId,
+          llmConnectionSlug: 'fake',
+          model: 'fake-model',
+          permissionMode: 'bypass',
+        });
+        const page = await composition.handlers['workhub.coordination.candidates']({}, context);
+        assert.ok(page.ok);
+        if (!page.ok) return;
+        const turnId = randomUUID();
+        const started = await composition.handlers['workhub.coordination.answer'](
+          { turnId, text: 'Continue Release; let me choose which work.' },
           context,
         );
-        return turn.ok && turn.result.status === 'completed';
-      });
-      assert.equal((await query()).ok, true);
-      for (const cancel of [true, false]) {
-        const fresh = await composition.handlers['workhub.coordination.candidates']({}, context);
-        assert.ok(fresh.ok);
-        if (!fresh.ok) return;
-        const nextInput = {
-          ...input,
-          actionId: cancel ? 'cancelled-release' : 'stale-release',
-          candidateSetId: fresh.result.candidateSetId,
-          candidateRefs: fresh.result.candidates.map((candidate) => candidate.candidateRef),
+        assert.ok(started.ok, JSON.stringify(started));
+        const input = {
+          turnId,
+          actionId: 'selected-release',
+          candidateSetId: page.result.candidateSetId,
+          candidateRefs: page.result.candidates.map((candidate) => candidate.candidateRef),
+          delegationText: 'Report release readiness',
         };
-        let nextOutcome: unknown;
-        const next = composition.handlers['workhub.coordination.selectAndDelegate'](
-          nextInput,
+        let selectionOutcome: unknown;
+        const pending = composition.handlers['workhub.coordination.selectAndDelegate'](
+          input,
           context,
         ).then((result) => {
-          nextOutcome = result;
+          selectionOutcome = result;
           return result;
         });
+        const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
         await waitFor(async () => {
-          assert.equal(nextOutcome, undefined, JSON.stringify(nextOutcome));
+          assert.equal(selectionOutcome, undefined, JSON.stringify(selectionOutcome));
           return (
             (
               await stores.interactionStore.listPending({
@@ -1131,50 +1036,101 @@ test('default production WorkHub selects and delegates through its durable Host 
             ).length === 1
           );
         });
-        const offer = (
+        const record = (
           await stores.interactionStore.listPending({ sessionId: WORKHUB_COORDINATION_SESSION_ID })
         )[0]!;
-        assert.equal(offer.request.kind, 'form');
-        if (offer.request.kind !== 'form' || offer.request.fields[0]?.kind !== 'single_select')
+        const query = () =>
+          composition.handlers['interaction.query'](
+            { sessionId: WORKHUB_COORDINATION_SESSION_ID, interactionId: record.requestId },
+            context,
+          );
+        const offered = await query();
+        assert.ok(offered.ok);
+        if (!offered.ok) return;
+        const interaction = offered.result;
+        assert.equal(interaction.request.kind, 'form');
+        assert.equal(await stores.sessionStore.readWorkHubAssignment(input.actionId), undefined);
+        assert.equal(interaction.request.kind, 'form');
+        if (
+          interaction.request.kind !== 'form' ||
+          interaction.request.fields[0]?.kind !== 'single_select'
+        )
           return;
-        const option = offer.request.fields[0].options.find(
-          (item) => JSON.parse(item.value)[1] === alpha.id,
+        const selected = interaction.request.fields[0].options.find(
+          (option) => JSON.parse(option.value)[1] === beta.id,
         )!;
-        if (!cancel) {
-          const snapshot = await stores.sessionStore.readCatalogRecord(alpha.id);
+        // Other candidates can change while the user chooses; identity remains the selected Session.
+        await manager.createSession({
+          cwd: root,
+          name: 'Unrelated work',
+          llmConnectionId: connectionId,
+          llmConnectionSlug: 'fake',
+          model: 'fake-model',
+          permissionMode: 'bypass',
+        });
+        if (selection === 'stale') {
+          const snapshot = await stores.sessionStore.readCatalogRecord(beta.id);
           await stores.sessionStore.setSessionsArchivedVersioned(
-            [{ sessionId: alpha.id, expectedVersion: snapshot.revision }],
+            [{ sessionId: beta.id, expectedVersion: snapshot.revision }],
             true,
           );
         }
-        const answer = await composition.handlers['interaction.answer'](
+        const answered = await composition.handlers['interaction.answer'](
           {
             sessionId: WORKHUB_COORDINATION_SESSION_ID,
-            interactionId: offer.requestId,
-            answer: cancel
-              ? { kind: 'form', action: 'cancel' }
-              : { kind: 'form', action: 'accept', values: { target: option.value } },
+            interactionId: interaction.interactionId,
+            answer:
+              selection === 'cancel'
+                ? { kind: 'form', action: 'cancel' }
+                : { kind: 'form', action: 'accept', values: { target: selected.value } },
           },
           context,
         );
-        assert.ok(answer.ok, JSON.stringify(answer));
-        const result = await next;
-        if (cancel) assert.deepEqual(result, { ok: true, result: { kind: 'cancelled' } });
-        else {
-          assert.equal(result.ok, false);
-          if (!result.ok) assert.equal(result.error.code, 'candidate_set_stale');
+        assert.ok(answered.ok, JSON.stringify(answered));
+        const delegated = await pending;
+        if (selection !== 'accept') {
+          if (selection === 'cancel') {
+            assert.deepEqual(delegated, { ok: true, result: { kind: 'cancelled' } });
+          } else {
+            assert.equal(delegated.ok, false);
+            if (!delegated.ok) assert.equal(delegated.error.code, 'candidate_set_stale');
+          }
+          assert.equal(await stores.sessionStore.readWorkHubAssignment(input.actionId), undefined);
+          return;
         }
+        assert.ok(delegated.ok, JSON.stringify(delegated));
+        if (!delegated.ok || delegated.result.kind !== 'delegated') return;
         assert.equal(
-          await stores.sessionStore.readWorkHubAssignment(nextInput.actionId),
-          undefined,
+          'targetSessionId' in delegated.result.result && delegated.result.result.targetSessionId,
+          beta.id,
         );
+        assert.notEqual(beta.id, alpha.id);
+        assert.deepEqual(
+          await composition.handlers['workhub.coordination.selectAndDelegate'](input, context),
+          delegated,
+        );
+        const assignment = await stores.sessionStore.readWorkHubAssignment(input.actionId);
+        assert.equal(assignment?.targetSessionId, beta.id);
+        const targetTurnId =
+          'targetTurnId' in delegated.result.result
+            ? delegated.result.result.targetTurnId
+            : undefined;
+        assert.ok(targetTurnId);
+        await waitFor(async () => {
+          const turn = await composition.handlers['turn.query'](
+            { sessionId: beta.id, turnId: targetTurnId! },
+            context,
+          );
+          return turn.ok && turn.result.status === 'completed';
+        });
+        assert.equal((await query()).ok, true);
+      } finally {
+        await desktop.close();
+        await composition.close();
       }
-    } finally {
-      await desktop.close();
-      await composition.close();
-    }
+    });
   });
-});
+}
 
 test('WorkHub creates new work through the production assignment composition', async () => {
   await withCompositionRoot(async ({ root, owner }) => {

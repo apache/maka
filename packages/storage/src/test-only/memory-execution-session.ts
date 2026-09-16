@@ -107,44 +107,6 @@ function saveBoundary(s: MemoryState, id: string, value: ExecutionBoundary): voi
     value.kind === 'external' ? value : { kind: 'bypass', revision: value.revision },
   );
 }
-function setBoundaryKind(
-  s: MemoryState,
-  id: string,
-  kind: 'managed' | 'bypass',
-  projection?: { permissionMode: SessionHeader['permissionMode']; labels?: readonly string[] },
-  headerPatch: Partial<SessionHeader> = {},
-  expectedVersion?: number,
-): { boundary: ExecutionBoundary; record: Header } {
-  const record = requireHeader(s, id);
-  if (expectedVersion !== undefined && record.revision !== expectedVersion)
-    throw new SessionMetadataVersionConflictError(id, expectedVersion, record.revision);
-  const current = boundary(s, id);
-  if (current.kind === 'external')
-    conflict('An externally isolated session cannot enter Auto or Bypass');
-  const permissionMode =
-    projection?.permissionMode ??
-    (kind === 'bypass'
-      ? 'bypass'
-      : record.header.permissionMode === 'bypass'
-        ? 'auto_review'
-        : record.header.permissionMode);
-  const next: ExecutionBoundary = { kind: 'bypass', revision: current.revision };
-  saveBoundary(s, id, next);
-  return {
-    boundary: next,
-    record: update(
-      s,
-      id,
-      {
-        ...headerPatch,
-        permissionMode,
-        labels: projection?.labels ? [...projection.labels] : record.header.labels,
-      },
-      expectedVersion,
-      true,
-    ),
-  };
-}
 function insert(s: MemoryState, header: SessionHeader, initial?: ExecutionBoundary): Header {
   if (headers(s).has(header.id) || rows(s, 'tombstones').has(header.id))
     conflict('Session identity already used');
@@ -578,11 +540,11 @@ export function createMemorySessionStore(
           )
             throw new Error('Session connection unblock timestamp is invalid');
         }
-        return setBoundaryKind(
+        if (boundary(s, id).kind === 'external')
+          conflict('An externally isolated session cannot enter Auto review or Bypass');
+        return update(
           s,
           id,
-          input.configuration.permissionMode === 'bypass' ? 'bypass' : 'managed',
-          input.configuration,
           {
             ...input.configuration,
             labels: [...input.configuration.labels],
@@ -595,7 +557,8 @@ export function createMemorySessionStore(
               : {}),
           },
           input.expectedVersion,
-        ).record;
+          true,
+        );
       }),
     setFlagged: async (id, value) => {
       await store.updateHeader(id, { isFlagged: value });
@@ -1074,8 +1037,6 @@ export function createMemorySessionStore(
         return list.slice(0, request.limit);
       }),
     readExecutionBoundary: async (id) => read((s) => boundary(s, id)),
-    setExecutionBoundaryKind: async (id, kind, projection) =>
-      write('session.boundary', (s) => setBoundaryKind(s, id, kind, projection).boundary),
     readSandboxBoundaryRequest: async (id, requestId) =>
       read((s) => rows<SandboxBoundaryRequest>(s, 'boundaryRequests').get(key(id, requestId))),
     listPendingSandboxBoundaryRequests: async (id) =>

@@ -398,8 +398,21 @@ describe('Host WorkHub Coordination coordinator', () => {
         admission,
       );
       assert.equal((await workhub.handlers['workhub.coordination.resolve']({}, CONTEXT)).ok, true);
-      await store.setExecutionBoundaryKind(WORKHUB_COORDINATION_SESSION_ID, 'managed', {
-        permissionMode: 'auto_review',
+      const initial = await store.readHeaderRecordSnapshot(WORKHUB_COORDINATION_SESSION_ID);
+      await store.updateSessionConfiguration(WORKHUB_COORDINATION_SESSION_ID, {
+        expectedVersion: initial.revision,
+        lifecycle: { kind: 'preserve' },
+        configuration: {
+          backend: initial.header.backend,
+          llmConnectionSlug: initial.header.llmConnectionSlug,
+          connectionLocked: initial.header.connectionLocked,
+          model: initial.header.model,
+          thinkingLevel: initial.header.thinkingLevel,
+          permissionMode: 'auto_review',
+          collaborationMode: initial.header.collaborationMode ?? 'agent',
+          orchestrationMode: initial.header.orchestrationMode ?? 'default',
+          labels: initial.header.labels,
+        },
       });
       const record = await store.readHeaderRecordSnapshot(WORKHUB_COORDINATION_SESSION_ID);
       await store.updateHeaderVersioned(

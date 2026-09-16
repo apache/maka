@@ -1109,6 +1109,9 @@ export class AgentRun {
       content: {
         kind: 'text',
         text: input.text,
+        ...(input.authenticatedUserRequests !== undefined
+          ? { authenticatedUserRequests: input.authenticatedUserRequests }
+          : {}),
         ...(input.displayText !== undefined ? { displayText: input.displayText } : {}),
         ...(input.origin !== undefined ? { origin: input.origin } : {}),
         ...(input.attachments !== undefined && input.attachments.length > 0

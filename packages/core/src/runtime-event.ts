@@ -182,6 +182,8 @@ export function isTerminalRuntimeEventStatus(value: unknown): boolean {
 // ============================================================================
 
 export interface RuntimeEventTextContent extends MessageContent {
+  /** Authenticated human requests retained for review across turns and recovery. */
+  authenticatedUserRequests?: readonly string[];
   kind: 'text';
   /** Failed response fragment retained for display, never for model replay. */
   interrupted?: true;
@@ -735,6 +737,7 @@ const RUNTIME_EVENT_SHAPE = defineObjectShape<RuntimeEvent>()(
 const TEXT_CONTENT_SHAPE = defineObjectShape<RuntimeEventTextContent>()(
   ['kind', 'text'],
   [
+    'authenticatedUserRequests',
     'displayText',
     'interrupted',
     'origin',
@@ -1040,6 +1043,9 @@ export function decodeRuntimeEvent(value: unknown): RuntimeEvent {
       content: {
         kind: 'text',
         ...normalizeMessageContent(value.content as unknown as MessageContent),
+        ...(value.content.authenticatedUserRequests !== undefined
+          ? { authenticatedUserRequests: value.content.authenticatedUserRequests }
+          : {}),
         ...(value.content.origin !== undefined
           ? { origin: decodeTurnOrigin(value.content.origin) }
           : {}),
@@ -1070,6 +1076,8 @@ function isRuntimeEventContent(value: unknown): value is RuntimeEventContent {
     case 'text':
       if (
         !hasExactShape(value, TEXT_CONTENT_SHAPE) ||
+        (value.authenticatedUserRequests !== undefined &&
+          !isStringArray(value.authenticatedUserRequests)) ||
         (value.origin !== undefined && !isTurnOrigin(value.origin)) ||
         (value.steering !== undefined && value.steering !== true) ||
         (value.interrupted !== undefined && value.interrupted !== true) ||

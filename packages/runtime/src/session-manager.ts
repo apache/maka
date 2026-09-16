@@ -67,7 +67,6 @@ import type {
   UserMessageInput,
   SessionListFilter,
 } from '@maka/core/runtime-inputs';
-import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import type { PermissionMode } from '@maka/core/permission';
 import { DEFAULT_TOOL_MODE, type ToolMode } from '@maka/core/tool-mode';
@@ -611,14 +610,6 @@ export interface SessionStore {
   settleSandboxBoundaryRequest?(
     input: SettleSandboxBoundaryRequest,
   ): Promise<SandboxBoundarySettlement>;
-  setExecutionBoundaryKind(
-    sessionId: string,
-    kind: 'managed' | 'bypass',
-    projection?: {
-      permissionMode: SessionHeader['permissionMode'];
-      labels?: readonly string[];
-    },
-  ): Promise<ExecutionBoundary>;
   createAgentGraphOperator?(
     input: CreateSessionInput,
     request: AgentGraphOperatorProvisionRequest,
@@ -1661,15 +1652,9 @@ export class SessionManager {
   ): Promise<SessionSummary> {
     const previous = await this.deps.store.readHeader(sessionId);
     const boundary = await this.deps.store.readExecutionBoundary(sessionId);
-    if (
-      previous.permissionMode === mode &&
-      executionBoundaryMatchesPermissionMode(boundary, mode)
-    ) {
-      return headerToSummary(previous);
-    }
-
-    const labels = previous.labels;
-    const kind = 'bypass';
+    if (boundary.kind === 'external')
+      throw new Error('Externally isolated sessions cannot change review mode');
+    if (previous.permissionMode === mode) return headerToSummary(previous);
     await this.commitExecutionBoundaryTransition(
       sessionId,
       previous.permissionMode,
@@ -1682,53 +1667,12 @@ export class SessionManager {
             'Session has a pending Interaction',
           );
         }
-        return () =>
-          this.deps.store.setExecutionBoundaryKind(sessionId, kind, {
-            permissionMode: mode,
-            labels,
-          });
+        return () => this.deps.store.updateHeader(sessionId, { permissionMode: mode });
       },
     );
     const next = await this.deps.store.readHeader(sessionId);
     this.runtimeKernel.updateCachedHeader(sessionId, next);
     return headerToSummary(next);
-  }
-
-  async setExecutionBoundaryKind(
-    sessionId: string,
-    kind: 'managed' | 'bypass',
-  ): Promise<ExecutionBoundary> {
-    const current = await this.deps.store.readExecutionBoundary(sessionId);
-    const header = await this.deps.store.readHeader(sessionId);
-    // Managed includes Explore. Match Storage's default projection, then pass
-    // it explicitly so classification and commit describe the same transition.
-    const permissionMode =
-      kind === 'bypass'
-        ? 'bypass'
-        : header.permissionMode === 'bypass'
-          ? 'auto_review'
-          : header.permissionMode;
-    const narrows = narrowsExecutionAuthority(header.permissionMode, permissionMode);
-    if (narrows && this.runtimeKernel.hasActiveRuns(sessionId)) {
-      throw new SessionConfigurationTransitionError(
-        'session_busy',
-        'Execution boundary cannot change while a Turn is running',
-      );
-    }
-    if (header.status === 'waiting_for_user') {
-      throw new SessionConfigurationTransitionError(
-        'session_busy',
-        'Execution boundary cannot change while an Interaction is pending',
-      );
-    }
-    const boundary = await this.commitExecutionBoundaryTransition(
-      sessionId,
-      header.permissionMode,
-      permissionMode,
-      async () => () =>
-        this.deps.store.setExecutionBoundaryKind(sessionId, kind, { permissionMode }),
-    );
-    return boundary;
   }
 
   private async commitExecutionBoundaryTransition<T>(
@@ -4254,18 +4198,6 @@ export class SessionManager {
     return this.getSessionView(sessionId);
   }
 
-  async respondToSandboxBoundary(
-    sessionId: string,
-    response: SandboxBoundaryResponse,
-  ): Promise<void> {
-    if (this.deps.interactionAuthority) {
-      throw new RuntimeInteractionInvariantError(
-        'Hosted permission answers must use the captured continuation',
-      );
-    }
-    await this.runtimeKernel.respondToSandboxBoundary(sessionId, response);
-  }
-
   async respondToUserQuestion(sessionId: string, response: UserQuestionResponse): Promise<void> {
     if (this.deps.interactionAuthority) {
       throw new RuntimeInteractionInvariantError(
@@ -5333,13 +5265,6 @@ function sessionConfigurationMatches(
     header.permissionMode === configuration.permissionMode &&
     sessionConfigurationMatchesExceptPermissionMode(header, configuration)
   );
-}
-
-function executionBoundaryMatchesPermissionMode(
-  boundary: ExecutionBoundary,
-  mode: PermissionMode,
-): boolean {
-  return boundary.kind === 'bypass';
 }
 
 function narrowsExecutionAuthority(

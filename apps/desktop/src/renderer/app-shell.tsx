@@ -1388,7 +1388,6 @@ function AppShellContent({
   const {
     send,
     enqueueMessage,
-    respondToSandboxBoundary,
     respondToUserQuestion,
     respondToUserForm,
     refreshMessages,
@@ -2430,7 +2429,6 @@ function AppShellContent({
                   newTaskDraftKey={currentNewTaskDraftKey}
                   newTaskSendPending={newTaskSendPending}
                   stopPendingBySession={stopPendingBySession}
-                  respondToSandboxBoundary={respondToSandboxBoundary}
                   respondToClientCapability={commands.respondToClientCapability}
                   respondToUserQuestion={respondToUserQuestion}
                   respondToUserForm={respondToUserForm}

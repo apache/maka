@@ -231,9 +231,6 @@ describe('ToolRuntime form Interaction', () => {
           withdrawals.push(requestId);
           await admitted?.settlement.applyClosure('producer_cancelled');
         },
-        admitSandboxBoundaryRequest: async () => {
-          throw new Error('Unexpected sandbox boundary');
-        },
       },
     });
     const pending = toolRuntime.settleToolCall({
@@ -288,9 +285,6 @@ describe('ToolRuntime form Interaction', () => {
         withdrawFormRequest: async (requestId) => {
           withdrawals.push(requestId);
           await admitted?.settlement.applyClosure('producer_cancelled');
-        },
-        admitSandboxBoundaryRequest: async () => {
-          throw new Error('Unexpected sandbox boundary');
         },
       },
     });

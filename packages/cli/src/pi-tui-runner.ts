@@ -104,7 +104,6 @@ import {
   applyShellRunUpdateToTranscript,
   createMakaPiTranscriptState,
   hasRunningUserCommand,
-  activeSandboxBoundaryRequest,
   activeFormRequest,
   activeUserQuestionRequest,
   applyExpansionDefaultToAll,
@@ -568,7 +567,6 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   let busy = false;
   let closed = false;
   let currentActivityCompletion: Promise<void> | undefined;
-  let permissionResponseInFlightRequestId: string | null = null;
   // Session recap (issue #1055): an in-flight lock shared by manual and
   // automatic recap calls, an activity clock for idle-return detection, a
   // watermark so auto-recap fires at most once per newly reached main turn,
@@ -872,7 +870,6 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         resolvedInteractionIds.add(requestId);
         return;
       }
-      permissionResponseInFlightRequestId = null;
       syncInteractionOverlays();
       requestRender();
     }) ?? (() => {});
@@ -1191,27 +1188,6 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   process.once('SIGHUP', handleSighup);
   process.once('uncaughtException', handleUncaughtException);
   process.once('unhandledRejection', handleUnhandledRejection);
-
-  const respondToPendingSandboxBoundary = (decision: 'allow' | 'deny'): boolean => {
-    const request = activeSandboxBoundaryRequest(state);
-    if (!request || permissionResponseInFlightRequestId !== null) return false;
-    permissionResponseInFlightRequestId = request.requestId;
-    // Keep the prompt visible until the driver accepts the response. If it
-    // rejects, the user can retry with y/n instead of being stuck. A resolved
-    // call only means the response was submitted; the event stream owns dequeue.
-    void input.driver
-      .respondToSandboxBoundary({
-        requestId: request.requestId,
-        decision,
-      })
-      .catch((error) => {
-        if (permissionResponseInFlightRequestId === request.requestId) {
-          permissionResponseInFlightRequestId = null;
-        }
-        reportError(error);
-      });
-    return true;
-  };
 
   // Refill the editor from a retract result, prepended to any current draft.
   // Shared by the interrupt path and the alt+↑ path. The text always comes
@@ -1659,9 +1635,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         // not reach the adopted Session's transcript or overlays.
         if (superseded()) return;
         if (
-          (event.type === 'sandbox_boundary_request' ||
-            event.type === 'user_question_request' ||
-            event.type === 'form_request') &&
+          (event.type === 'user_question_request' || event.type === 'form_request') &&
           resolvedInteractionIds.delete(event.requestId)
         ) {
           return;
@@ -1669,12 +1643,6 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         applyMakaSessionEventToTranscript(state, event);
         ctxRefresher?.observe(event);
         if (event.type === 'error') attention.attentionNeeded();
-        if (
-          permissionResponseInFlightRequestId !== null &&
-          activeSandboxBoundaryRequest(state)?.requestId !== permissionResponseInFlightRequestId
-        ) {
-          permissionResponseInFlightRequestId = null;
-        }
         // A pending decision blocks the turn; ring an unfocused terminal once when
         // the prompt first appears (not on every render) so the user is not left
         // waiting on a prompt they cannot see.
@@ -4720,18 +4688,6 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     if (tui.hasOverlay()) return undefined;
     if (sideConversation && matchesSideConversationToggle(data)) {
       if (!isKeyRepeat(data)) void toggleSideConversation();
-      return { consume: true };
-    }
-    const pendingSandboxBoundary = activeSandboxBoundaryRequest(state);
-    if (pendingSandboxBoundary && !matchesKey(data, Key.ctrl('c'))) {
-      if (
-        !isKeyRepeat(data) &&
-        (matchesKey(data, 'y') || matchesKey(data, Key.enter) || matchesKey(data, Key.return))
-      ) {
-        respondToPendingSandboxBoundary('allow');
-      } else if (!isKeyRepeat(data) && (matchesKey(data, 'n') || matchesKey(data, Key.escape))) {
-        respondToPendingSandboxBoundary('deny');
-      }
       return { consume: true };
     }
     // Alt+Enter: queue a followup (during a turn) or submit (when idle). Alt+↑:

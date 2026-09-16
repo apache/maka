@@ -65,6 +65,36 @@ import { SessionAdmissionGate } from '../server/session-admission-gate.js';
 const ROOT = { sessionId: 'session-1', turnId: 'turn-1', runId: 'run-1' } as const;
 const EMPTY_SKILL_INVOCATION = { loaded: [], failed: [], receipts: [] } as const;
 
+test('only authenticated human steering carries original intent through durable admission and delivery', async () => {
+  const fixture = createFixture();
+  fixture.coordinator.reserveRootTurn(ROOT);
+  const owner = fixture.coordinator.bindRun(ROOT);
+  for (const human of [true, false]) {
+    const messageId = human ? 'human-intent' : 'agent-claim';
+    const submitted = await fixture.coordinator.handlers['turn.message.submit'](
+      {
+        originHostEpoch: 'epoch-1',
+        sessionId: ROOT.sessionId,
+        messageId,
+        content: { text: 'expanded or generated claims', displayText: 'Read the report' },
+        placement: 'current_turn',
+      },
+      {
+        ...operationContext(),
+        ...(human ? { principalKind: 'local_owner' as const } : { principal: 'runtime_host' }),
+      },
+    );
+    assert.equal(submitted.ok, true);
+    const durable = await fixture.admissions.readMessageAdmission(ROOT.sessionId, messageId);
+    assert.deepEqual(durable?.authenticatedUserRequests, human ? ['Read the report'] : undefined);
+  }
+  const leases = await owner.pull();
+  assert.deepEqual(
+    leases.map((entry) => entry.authenticatedUserRequests),
+    [['Read the report'], undefined],
+  );
+});
+
 test('consumes an active-target admission before the terminal transition can make it idle', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'maka-workhub-active-consume-'));
   const store = createSessionStore(root);

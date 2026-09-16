@@ -87,8 +87,7 @@ describe('maka run argument parsing', () => {
           runtime: {
             createSession: async () => sessionSummary(),
             readExecutionBoundary: async () => ({
-              kind: 'managed',
-              access: 'writable',
+              kind: 'bypass',
               revision: 0,
             }),
             sendMessage: async function* (_sessionId, message) {
@@ -100,9 +99,8 @@ describe('maka run argument parsing', () => {
                 sandboxBoundary: 'none',
               });
             },
-            respondToSandboxBoundary: async () => {},
             stopSession: async () => {},
-            setExecutionBoundaryKind: async () => {},
+            setPermissionMode: async () => {},
           },
           target: { connection: { slug: 'test' }, model: 'test' },
           agentGraph: {
@@ -154,14 +152,6 @@ describe('maka run process contract', () => {
     const result = await runFixture(['summarize'], { input: 'document body' });
     assert.equal(result.code, 0, result.stderr);
     assert.equal(result.stdout, 'prompt=summarize\n\ndocument body\n');
-  });
-
-  test('fails closed when a sandbox boundary request reaches non-interactive run', async () => {
-    const result = await runFixture(['hello'], { scenario: 'sandbox-boundary' });
-    assert.equal(result.code, 1);
-    assert.match(result.stderr, /sandbox boundary expansion is unavailable/);
-    assert.doesNotMatch(result.stderr, /not denied/);
-    assert.equal(result.stdout, '');
   });
 
   test('returns exit 130 on SIGINT', async () => {

@@ -112,8 +112,6 @@ function resolveBase(event: SessionEvent, ctx: RuntimeEventMapContext) {
  *   - tool_start (function call)   → role 'model',   author 'agent'
  *   - tool progress/output deltas  → role 'tool',    author 'tool' (partial)
  *   - tool_result (function resp)  → role 'tool',    author 'tool'
- *   - sandbox_boundary_request     → role 'system',  author 'system'
- *   - sandbox_boundary_decision_ack → role 'system', author 'user'
  *   - user_question_answer_ack     → role 'system',  author 'user'
  *   - form_request                 → role 'system',  author 'system'
  *   - form_answer_ack              → role 'system',  author 'user'
@@ -178,14 +176,18 @@ function isLegacyPermissionSessionEvent(event: SessionEvent): event is Extract<
       | 'permission_request'
       | 'permission_answer_ack'
       | 'permission_closure_ack'
-      | 'permission_decision_ack';
+      | 'permission_decision_ack'
+      | 'sandbox_boundary_request'
+      | 'sandbox_boundary_decision_ack';
   }
 > {
   return (
     event.type === 'permission_request' ||
     event.type === 'permission_answer_ack' ||
     event.type === 'permission_closure_ack' ||
-    event.type === 'permission_decision_ack'
+    event.type === 'permission_decision_ack' ||
+    event.type === 'sandbox_boundary_request' ||
+    event.type === 'sandbox_boundary_decision_ack'
   );
 }
 
@@ -402,41 +404,6 @@ function mapBackendSessionEvent(
       return ev;
     }
 
-    // ── Session sandbox boundary ──────────────────────────────────────────
-    case 'sandbox_boundary_request':
-      return {
-        ...base,
-        role: 'system',
-        author: 'system',
-        actions: {
-          stateDelta: {
-            sandboxBoundaryRequest: {
-              requestId: event.requestId,
-              toolUseId: event.toolUseId,
-              justification: event.justification,
-              expansion: event.expansion,
-            },
-          },
-        },
-        refs: { toolCallId: event.toolUseId },
-      };
-    case 'sandbox_boundary_decision_ack':
-      return {
-        ...base,
-        role: 'system',
-        author: 'user',
-        actions: {
-          stateDelta: {
-            sandboxBoundaryDecision: {
-              requestId: event.requestId,
-              decision: event.decision,
-              status: event.status,
-              revision: event.revision,
-            },
-          },
-        },
-        refs: { toolCallId: event.toolUseId },
-      };
     case 'user_question_request':
       return {
         ...base,
@@ -498,7 +465,14 @@ function mapBackendSessionEvent(
         author: 'user',
         // Canonical content + steering marker: read models may prefer
         // displayText, while model replay uses text and materializes attachments.
-        content: { kind: 'text', ...normalizeMessageContent(event.content), steering: true },
+        content: {
+          kind: 'text',
+          ...normalizeMessageContent(event.content),
+          steering: true,
+          ...(event.authenticatedUserRequests !== undefined
+            ? { authenticatedUserRequests: event.authenticatedUserRequests }
+            : {}),
+        },
         refs: {
           providerEventId: event.messageId,
           ...(event.submittedContentDigest

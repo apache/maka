@@ -45,7 +45,6 @@ import type {
 } from '@maka/core/session';
 import type { BackendSendInput } from '@maka/core/backend-types';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
-import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import { DEFAULT_TOOL_MODE, isToolMode, type ToolMode } from '@maka/core/tool-mode';
 import {
@@ -650,10 +649,6 @@ export class AiSdkTurn {
     await this.toolRuntime.endTurn('aborted');
   }
 
-  async respondToSandboxBoundary(decision: SandboxBoundaryResponse): Promise<boolean> {
-    return false;
-  }
-
   respondToUserQuestion(response: UserQuestionResponse): boolean {
     return this.toolRuntime.respondToUserQuestion(response);
   }
@@ -841,20 +836,14 @@ export class AiSdkTurn {
       ...(input.headAnchorRuntimeEvent ? [input.headAnchorRuntimeEvent] : []),
     ];
     const userRequests = [
-      ...new Map(
-        reviewEvents
-          .filter(
-            (event) =>
-              event.author === 'user' && event.role === 'user' && event.content?.kind === 'text',
-          )
-          .map((event) => [event.id, event.content?.kind === 'text' ? event.content.text : '']),
-      ).values(),
-    ];
-    // Invocation text can originate from another agent; only the ledger establishes user authority.
-    toolRuntime.setAutoReviewContext(
-      this.deps.backend.header.subagentParent ? [] : userRequests,
-      input.text,
+      ...new Map(reviewEvents.map((event) => [event.id, event])).values(),
+    ].flatMap((event) =>
+      event.author === 'user' && event.content?.kind === 'text'
+        ? (event.content.authenticatedUserRequests ?? [])
+        : [],
     );
+    // Conversation roles describe projection, not human authorization.
+    toolRuntime.setAutoReviewContext(userRequests, input.text);
 
     const turnAbortController = this.abortController;
 
@@ -1104,12 +1093,18 @@ export class AiSdkTurn {
       throw new Error(`Invalid tool mode: ${String(requestedToolMode)}`);
     }
     const toolMode = requestedToolMode;
-    const snapshotStepTools = () => {
+    const snapshotStepTools = async () => {
       const snapshot = this.deps.snapshotToolAvailability();
       if (toolMode === 'code_mode' && snapshot.hostTools.some((tool) => tool.name === 'exec')) {
         throw new Error('Tool name "exec" is reserved for Code Mode.');
       }
-      const basePlan = snapshot.runtime.prepare(this.activeTools, requiredOrchestrationTools);
+      // Provider-executed tools cannot be reviewed before their side effects.
+      const allowProviderExecution = (await this.deps.backend.readPermissionMode()) === 'bypass';
+      const basePlan = snapshot.runtime.prepare(
+        this.activeTools,
+        requiredOrchestrationTools,
+        allowProviderExecution,
+      );
       const nestedTools = nestableToolSnapshot(basePlan.providerTools, basePlan.activeTools);
       const plan = projectToolModePlan(basePlan, toolMode, codeModeExecTool);
       const modelTools: ModelToolSet = {};
@@ -1121,7 +1116,7 @@ export class AiSdkTurn {
       toolRuntime.setGating(plan.gating);
       return { plan, providerTools: plan.providerTools, modelTools, nestedTools };
     };
-    let { plan, providerTools, modelTools, nestedTools } = snapshotStepTools();
+    let { plan, providerTools, modelTools, nestedTools } = await snapshotStepTools();
     // Tool names the repair path matches a mis-cased call against — follows the
     // current step's snapshot so a tool activated mid-turn is repairable on the
     // step it becomes active, not routed to `invalid`.
@@ -1429,7 +1424,7 @@ export class AiSdkTurn {
         let finishReason: ModelFinishReason = 'stop';
         let terminalProviderError: unknown;
         agentLoop: for (;;) {
-          ({ plan, providerTools, modelTools, nestedTools } = snapshotStepTools());
+          ({ plan, providerTools, modelTools, nestedTools } = await snapshotStepTools());
           resolvedSystemPrompt = await this.resolveSystemPrompt();
           systemPrompt = joinPromptFragments([
             resolvedSystemPrompt.text,
@@ -2974,6 +2969,9 @@ export class AiSdkTurn {
           ts: this.deps.now(),
           messageId: lease.messageId,
           content: lease.content,
+          ...(lease.authenticatedUserRequests !== undefined
+            ? { authenticatedUserRequests: lease.authenticatedUserRequests }
+            : {}),
           ...(lease.submittedContentDigest
             ? { submittedContentDigest: lease.submittedContentDigest }
             : {}),
@@ -2981,7 +2979,8 @@ export class AiSdkTurn {
         // The mapped RuntimeEvent inherits this session event's id, so the
         // injected message and its future ledger replay share one identity.
         this.injectedSteeringMessages.push(steeringModelMessage(eventId, providerContent));
-        this.toolRuntime.addAutoReviewUserRequest(lease.content.text);
+        for (const text of lease.authenticatedUserRequests ?? [])
+          this.toolRuntime.addAutoReviewUserRequest(text);
         input.ackSteering?.([lease.id]);
         undelivered.shift();
         if (this.aborted || abortSignal?.aborted) {

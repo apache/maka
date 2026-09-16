@@ -26,7 +26,6 @@ import {
   ClientCapabilityPrompt,
   finalAssistantReplyText,
   FormInteractionPrompt,
-  SandboxBoundaryPrompt,
   UserQuestionPrompt,
   useToast,
   useUiLocale,
@@ -227,7 +226,6 @@ export function QuoteCompanionPanel(props: {
       : undefined) ?? activeModel?.model;
 
   const activeInteraction =
-    companion.activeSandboxBoundary ??
     companion.activeClientCapability ??
     companion.activeQuestion ??
     companion.activeForm;
@@ -265,17 +263,10 @@ export function QuoteCompanionPanel(props: {
             {companion.error && (
               <Banner status="error" role="alert" title={companion.error} />
             )}
-            {(companion.activeSandboxBoundary ||
-              companion.activeClientCapability ||
+            {(companion.activeClientCapability ||
               companion.activeQuestion ||
               companion.activeForm) && (
               <div className="maka-composer-interaction-slot">
-                {companion.activeSandboxBoundary && (
-                  <SandboxBoundaryPrompt
-                    request={companion.activeSandboxBoundary}
-                    onRespond={companion.respondToSandboxBoundary}
-                  />
-                )}
                 {companion.activeClientCapability && (
                   <ClientCapabilityPrompt
                     request={companion.activeClientCapability}

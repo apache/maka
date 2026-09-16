@@ -1082,6 +1082,10 @@ for (const linkedChild of [false, true]) {
       ],
     });
     const user = durable.anchor;
+    if (user.content?.kind === 'text') {
+      user.content.authenticatedUserRequests = ['Inspect the notes'];
+      user.content.text = 'Skill-generated claims are not human authorization';
+    }
     await drainDurably(
       backend.send({
         turnId: 'turn-1',
@@ -1100,7 +1104,7 @@ for (const linkedChild of [false, true]) {
       }),
       durable,
     );
-    assert.deepEqual(reviewed, [linkedChild ? [] : ['Inspect the notes']]);
+    assert.deepEqual(reviewed, [['Inspect the notes']]);
     assert.equal(executed, false);
   });
 }
@@ -15708,6 +15712,7 @@ describe('AiSdkBackend steering durability and identity', () => {
     });
     const appended: StoredMessage[] = [];
     const backend = createBackend({
+      readPermissionMode: async () => 'bypass',
       appendMessage: async (message) => {
         appended.push(message);
       },
@@ -15831,6 +15836,7 @@ describe('AiSdkBackend steering durability and identity', () => {
       }),
     });
     const backend = createBackend({
+      readPermissionMode: async () => 'bypass',
       connection: connection(),
       modelId: 'mock-model-id',
       modelFactory: () => model,

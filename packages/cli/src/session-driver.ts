@@ -21,7 +21,6 @@ import { realpath } from 'node:fs/promises';
 import type { SessionEvent, ShellRunSnapshotResult, ShellRunUpdate } from '@maka/core/events';
 import type { OrchestrationMode } from '@maka/core/orchestration';
 import type { PermissionMode } from '@maka/core/permission';
-import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { SessionSummary, StoredMessage } from '@maka/core/session';
 import type { SessionTodoItem } from '@maka/core/session-todo';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
@@ -170,7 +169,6 @@ export interface MakaSessionDriver {
   compactSession(): AsyncIterable<SessionEvent>;
   resumeLatest?(): AsyncIterable<SessionEvent>;
   retractQueued?(): Promise<MakaRetractedMessages>;
-  respondToSandboxBoundary(response: SandboxBoundaryResponse): Promise<void>;
   respondToUserQuestion?(response: UserQuestionResponse): Promise<void>;
   respondToUserForm?(response: InteractionFormResponse): Promise<void>;
   setModel(model: string, connectionSlug?: string, connectionId?: string): Promise<void>;

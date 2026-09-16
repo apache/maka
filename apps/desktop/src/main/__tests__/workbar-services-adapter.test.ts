@@ -266,7 +266,6 @@ describe('createDesktopWorkbarServices', () => {
       sourceTurnId: 'turn-2',
       turnId: 'turn-3',
     });
-    await services.sideChat.respondToSandboxBoundary('fork', {} as never);
     await services.sideChat.respondToClientCapability('fork', {} as never);
     await services.sideChat.respondToUserQuestion('fork', {} as never);
     await services.sideChat.respondToUserForm('fork', {} as never);
@@ -324,7 +323,6 @@ describe('createDesktopWorkbarServices', () => {
         'sessions.reorderQueueEntries',
         'sessions.setPermissionMode',
         'sessions.regenerateTurn',
-        'sessions.respondToSandboxBoundary',
         'sessions.respondToClientCapability',
         'sessions.respondToUserQuestion',
         'sessions.respondToUserForm',

@@ -24,7 +24,6 @@ import {
   type ComposerInteraction,
   ComposerGoalProjectionConsumer,
   FormInteractionPrompt,
-  SandboxBoundaryPrompt,
   UserQuestionPrompt,
 } from '@maka/ui';
 import type { ComposerHandle } from '@maka/ui';
@@ -92,7 +91,6 @@ interface ChatComposerRegionProps
   /** True from the moment a new-task send starts until it has settled. */
   newTaskSendPending: boolean;
   stopPendingBySession: Record<string, boolean>;
-  respondToSandboxBoundary: ComponentProps<typeof SandboxBoundaryPrompt>['onRespond'];
   respondToClientCapability: ComponentProps<typeof ClientCapabilityPrompt>['onRespond'];
   respondToUserQuestion: ComponentProps<typeof UserQuestionPrompt>['onRespond'];
   respondToUserForm: ComponentProps<typeof FormInteractionPrompt>['onRespond'];
@@ -146,7 +144,6 @@ export function ChatComposerRegion({
   newTaskDraftKey,
   newTaskSendPending,
   stopPendingBySession,
-  respondToSandboxBoundary,
   respondToClientCapability,
   respondToUserQuestion,
   respondToUserForm,
@@ -159,8 +156,6 @@ export function ChatComposerRegion({
   ...composerRest
 }: ChatComposerRegionProps) {
   const mentions = useComposerMentionsContext();
-  const activeSandboxBoundary =
-    activeInteraction?.type === 'sandbox_boundary_request' ? activeInteraction : undefined;
   const activeClientCapability =
     activeInteraction?.type === 'client_capability_request' ? activeInteraction : undefined;
   const activeQuestion = activeInteraction?.type === 'user_question_request' ? activeInteraction : undefined;
@@ -281,12 +276,6 @@ export function ChatComposerRegion({
   return (
     <>
       <div className="maka-composer-interaction-slot">
-        {activeSandboxBoundary && (
-          <SandboxBoundaryPrompt
-            request={activeSandboxBoundary}
-            onRespond={respondToSandboxBoundary}
-          />
-        )}
         {activeClientCapability && (
           <ClientCapabilityPrompt
             request={activeClientCapability}

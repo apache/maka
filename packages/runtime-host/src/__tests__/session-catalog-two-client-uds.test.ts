@@ -285,7 +285,7 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
           expectedRevision: configurationRevision,
           patch: {
             permissionMode: 'bypass',
-            orchestrationMode: 'default',
+            orchestrationMode: 'swarm',
           },
         }),
       ]);

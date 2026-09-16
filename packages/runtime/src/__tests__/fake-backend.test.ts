@@ -36,7 +36,6 @@ test('Fake question publication waits for exact hosted admission', async () => {
     {
       bindRun: (identity) => ({
         ...identity,
-        acceptSandboxBoundaryRequest: async () => {},
         acceptUserQuestionRequest: async ({ continuation: admitted }) => {
           continuation = admitted;
           admissionStarted.resolve();

@@ -106,11 +106,6 @@ export interface CreateSandboxBoundaryRequest {
 
 export type SandboxBoundaryDecision = 'allow' | 'deny';
 
-export interface SandboxBoundaryResponse {
-  readonly requestId: string;
-  readonly decision: SandboxBoundaryDecision;
-}
-
 export const SANDBOX_BOUNDARY_CLOSURE_REASONS = [
   'turn_stopped',
   'turn_terminal',

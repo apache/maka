@@ -30,7 +30,6 @@ import {
   type QuoteRef,
 } from '@maka/core/events';
 import type { UserQuestionResponse } from '@maka/core/user-question';
-import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { ClientCapabilityResponse } from '@maka/core/client-capability-grant';
 import { MAX_ATTACHMENT_COUNT } from '@maka/core/attachments';
 import { isAttachmentRef, isCanonicalStorageRef, type AttachmentRef } from '@maka/core/events';
@@ -75,27 +74,6 @@ type NormalizedStopSessionInput = {
   expectedTurnId?: string;
   expectedAdmissionId?: string;
 };
-
-export function normalizeSandboxBoundaryResponse(input: unknown): SandboxBoundaryResponse {
-  if (!input || typeof input !== 'object') {
-    throw new Error('Invalid sandbox boundary response');
-  }
-  const value = input as Record<string, unknown>;
-  if (
-    typeof value.requestId !== 'string' ||
-    value.requestId.length === 0 ||
-    value.requestId.length > MAX_PERMISSION_REQUEST_ID_LENGTH
-  ) {
-    throw new Error('Invalid sandbox boundary response requestId');
-  }
-  if (value.decision !== 'allow' && value.decision !== 'deny') {
-    throw new Error('Invalid sandbox boundary response decision');
-  }
-  return {
-    requestId: value.requestId,
-    decision: value.decision,
-  };
-}
 
 export function normalizeClientCapabilityResponse(input: unknown): ClientCapabilityResponse {
   if (!input || typeof input !== 'object') {

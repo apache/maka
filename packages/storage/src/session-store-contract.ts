@@ -440,14 +440,6 @@ export interface SessionAuthorityStore extends SessionStore, MessageAdmissionSto
   settleSandboxBoundaryRequest(
     input: SettleSandboxBoundaryRequest,
   ): Promise<SandboxBoundarySettlement>;
-  setExecutionBoundaryKind(
-    sessionId: string,
-    kind: 'managed' | 'bypass',
-    projection?: {
-      permissionMode: SessionHeader['permissionMode'];
-      labels?: readonly string[];
-    },
-  ): Promise<ExecutionBoundary>;
   probeStableSessionCreate(
     sessionId: string,
     requestFingerprint: string,

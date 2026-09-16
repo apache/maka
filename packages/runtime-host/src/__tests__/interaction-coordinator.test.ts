@@ -23,18 +23,12 @@ import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
-import type { SandboxBoundaryRequest } from '@maka/core/sandbox-boundary';
-import type {
-  FormRequestEvent,
-  SandboxBoundaryRequestEvent,
-  UserQuestionRequestEvent,
-} from '@maka/core/events';
+import type { FormRequestEvent, UserQuestionRequestEvent } from '@maka/core/events';
 import {
   RuntimeInteractionAdmissionRejectedError,
   RuntimeInteractionFailStopError,
   type RuntimeInteractionRunIdentity,
   type RuntimeFormContinuation,
-  type RuntimeSandboxBoundaryContinuation,
   type RuntimeUserQuestionContinuation,
 } from '@maka/runtime/interaction-authority';
 import {
@@ -639,8 +633,6 @@ function createCoordinator(
     preflightSessionSnapshot: () => true,
     refreshCanonicalContinuity: async () => {},
     onPoison: () => {},
-    resolveSandboxBoundaryRootSession: async () => undefined,
-    onSandboxBoundaryGraphWake: async () => {},
     ...overrides,
   });
 }
@@ -728,43 +720,6 @@ function questionContinuation(
     waitForPublication: async () => {},
     applyAnswer: async (answer) => {
       await callbacks.answer?.(answer.answers);
-    },
-    applyClosure: async (reason) => {
-      await callbacks.closure?.(reason);
-    },
-  };
-}
-
-function sandboxBoundaryEvent(request: SandboxBoundaryRequest): SandboxBoundaryRequestEvent {
-  assert.ok(request.turnId);
-  return {
-    id: `event_${request.requestId}`,
-    type: 'sandbox_boundary_request',
-    turnId: request.turnId,
-    ts: request.createdAt,
-    requestId: request.requestId,
-    toolUseId: `tool_${request.requestId}`,
-    expansion: request.expansion,
-    justification: request.justification,
-  };
-}
-
-function sandboxBoundaryContinuation(
-  identity: RuntimeInteractionRunIdentity,
-  requestId: string,
-  callbacks: {
-    decision?: (status: string) => unknown;
-    closure?: (
-      reason: Parameters<RuntimeSandboxBoundaryContinuation['applyClosure']>[0],
-    ) => unknown;
-  } = {},
-): RuntimeSandboxBoundaryContinuation {
-  return {
-    ...identity,
-    requestId,
-    waitForPublication: async () => {},
-    applyDecision: async (settlement) => {
-      await callbacks.decision?.(settlement.request.status);
     },
     applyClosure: async (reason) => {
       await callbacks.closure?.(reason);

@@ -913,7 +913,6 @@ function bridge(options: {
         permissionMode: mode,
       }),
       regenerateTurn: async () => undefined,
-      respondToSandboxBoundary: async () => undefined,
       respondToClientCapability: async () => undefined,
       respondToUserQuestion: async () => undefined,
       respondToUserForm: async () => undefined,

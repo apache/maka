@@ -312,7 +312,6 @@
         "bridgePaths": {
           "window.maka.newTasks.create": 1,
           "window.maka.sessions.remove": 1,
-          "window.maka.sessions.respondToSandboxBoundary": 1,
           "window.maka.sessions.respondToUserQuestion": 1,
           "window.maka.sessions.submitMessage": 1
         },
@@ -335,7 +334,7 @@
           "@maka/ui": 1
         },
         "importSpecifiers": 10,
-        "nonTriviaTokens": 3616
+        "nonTriviaTokens": 3574
       },
       "src/renderer/app-shell-chrome-actions.tsx": {
         "importDeclarations": 4,
@@ -856,7 +855,7 @@
           "react": 1
         },
         "importSpecifiers": 98,
-        "nonTriviaTokens": 13127
+        "nonTriviaTokens": 13120
       },
       "src/renderer/use-app-shell-composer-quotes.ts": {
         "importDeclarations": 2,

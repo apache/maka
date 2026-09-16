@@ -642,47 +642,6 @@ describe('single live-turn handoff', () => {
     assert.equal(liveTurns.get()['session-1']?.[0]?.steps[0]?.text?.complete, true);
   });
 
-  it('queues a sandbox boundary request without ending the live turn', () => {
-    const liveTurns = createStateSetter<Record<string, readonly LiveTurnProjection[]>>({
-      'session-1': [armLiveTurn('turn-1')],
-    });
-    const ref = { current: liveTurns.get() };
-    const interactions = createStateSetter<InteractionQueues>({});
-    const setLiveTurnBySession = (updater: (current: Record<string, readonly LiveTurnProjection[]>) => Record<string, readonly LiveTurnProjection[]>) => {
-      liveTurns.set(updater);
-      ref.current = liveTurns.get();
-    };
-    const handlers = createAppShellSessionEventHandlers({
-      uiLocale: 'zh-CN',
-      activeIdRef: { current: 'session-1' },
-      liveTurnBySessionRef: ref,
-      refreshMessages: async () => true,
-      refreshSessions: async () => [],
-      setLiveTurnBySession,
-      setInteractionBySession: interactions.set,
-      showModelSetupToast: () => {},
-      toastApi: { error: () => {} },
-    });
-
-    handlers.handleEvent('session-1', {
-      type: 'sandbox_boundary_request',
-      id: 'e1',
-      turnId: 'turn-1',
-      ts: 1,
-      requestId: 'request-1',
-      toolUseId: 'tool-1',
-      justification: 'Write the requested export.',
-      expansion: {
-        filesystem: {
-          entries: [{ path: '/tmp/export.txt', access: 'write', scope: 'exact' }],
-        },
-      },
-    });
-
-    assert.equal(liveTurns.get()['session-1']?.[0]?.terminal, undefined);
-    assert.equal(interactions.get()['session-1']?.[0]?.requestId, 'request-1');
-  });
-
   it('queues and retires a form at the Host answer acknowledgement', () => {
     const liveTurns = createStateSetter<Record<string, readonly LiveTurnProjection[]>>({
       'session-1': [armLiveTurn('turn-1')],

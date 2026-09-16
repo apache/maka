@@ -20,7 +20,6 @@
 import { randomUUID } from 'node:crypto';
 import type { SessionEvent } from '@maka/core/events';
 import type { AgentBackend, BackendSendInput } from '@maka/core/backend-types';
-import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import { AsyncEventQueue } from './async-queue.js';
 import type {
@@ -92,10 +91,6 @@ export class PluginExecutorBackend implements AgentBackend {
     const active = [...this.#active];
     for (const execution of active) execution.abort.abort(new Error(reason));
     await Promise.allSettled(active.map((execution) => execution.settled));
-  }
-
-  async respondToSandboxBoundary(_response: SandboxBoundaryResponse): Promise<void> {
-    throw new Error('Plugin executor does not expose Maka sandbox-boundary requests');
   }
 
   async respondToUserQuestion(_response: UserQuestionResponse): Promise<void> {

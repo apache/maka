@@ -33,7 +33,6 @@ import type {
   BackendSendInput,
   HostedInteractionBridge,
 } from '@maka/core/backend-types';
-import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import type { EffectiveOrchestration } from '@maka/core/orchestration';
 import type { AttachmentByteReader } from '@maka/core/attachments';
@@ -609,15 +608,6 @@ export class AiSdkBackend implements AgentBackend {
     );
     if (failures.length === 1) throw failures[0];
     if (failures.length > 1) throw new AggregateError(failures, 'Failed to stop every active turn');
-  }
-
-  async respondToSandboxBoundary(decision: SandboxBoundaryResponse): Promise<void> {
-    // Routed by request id, which is already the identity the registry matches
-    // on: at most one turn parked this request.
-    for (const turn of this.activeTurns) {
-      if (await turn.respondToSandboxBoundary(decision)) return;
-    }
-    throw new Error(`No pending sandbox boundary request ${decision.requestId}`);
   }
 
   async respondToUserQuestion(response: UserQuestionResponse): Promise<void> {

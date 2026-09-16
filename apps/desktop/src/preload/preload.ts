@@ -150,7 +150,7 @@ import {
   type RuntimeHostSessionCatalogCoverage,
 } from './runtime-host-session-catalog.js';
 import { collectAvailablePendingTurnRequests } from './runtime-host-turn-request-inbox.js';
-import type { ExecutionBoundaryReadModel, SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
+import type { ExecutionBoundaryReadModel } from '@maka/core/sandbox-boundary';
 import type { ClientCapabilityResponse } from '@maka/core/client-capability-grant';
 import type {
   ActiveInteractionRequestEvent,
@@ -2290,9 +2290,6 @@ const makaBridge = {
         'sessions:reviseBeforeTurn', ref.scope, ref.sessionId, input,
       ) as DesktopSessionSummaryInput;
       return projectCreatedSessionSummary(ref.scope, summary);
-    },
-    respondToSandboxBoundary(sessionId: string, response: SandboxBoundaryResponse): Promise<void> {
-      return invokeSessionRuntimeHost('sessions:respondToSandboxBoundary', sessionId, response);
     },
     respondToClientCapability(
       sessionId: string,

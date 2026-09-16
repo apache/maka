@@ -22,6 +22,9 @@ import { mkdtemp, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { messageContentDigest } from '@maka/core/events';
+import { createSqliteAgentRunStore } from '../agent-run-store.js';
+import { createSqliteRuntimeStore } from '../sqlite-runtime-store.js';
 import type { CreateSessionInput } from '@maka/core/runtime-inputs';
 import { createSessionStore } from '../session-store.js';
 import { SqliteContextOffloadStore } from '../sqlite-context-offload-store.js';
@@ -111,6 +114,100 @@ test('an import takes its turn in the target root context mutation queue', async
     const imported = await importing;
     assert.deepEqual([...imported.sessionIds], [sessionId]);
     assert.equal(imported.contextRefs, 1);
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+test('local review authorization survives reopen but is not trusted after a bundle import', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-bundle-review-authorization-'));
+  const source = join(base, 'source');
+  const target = join(base, 'target');
+  try {
+    const sessions = createSessionStore(source);
+    const sessionId = (await sessions.create(input('Authorization'))).id;
+    const content = { text: 'Expanded instructions', displayText: 'Inspect my notes' };
+    const authenticatedUserRequests = ['Inspect my notes'];
+    await sessions.commitMessageAdmission({
+      sessionId,
+      turnId: 'turn',
+      runId: 'run',
+      messageId: 'queued',
+      content,
+      authenticatedUserRequests,
+      submittedContentDigest: messageContentDigest(content),
+      submittedPlacement: 'next_turn',
+      placement: 'next_turn',
+      disposition: 'followup',
+      skillInvocation: { loaded: [], failed: [], receipts: [] },
+      admittedAt: 1,
+    });
+    await sessions.close?.();
+    const admissions = createSqliteAgentRunStore(source);
+    await admissions.admitRootTurn({
+      sessionId,
+      turnId: 'turn',
+      proposedRunId: 'run',
+      proposedUserMessageId: 'message',
+      execution: { kind: 'external_message' },
+      previousRootTurnId: null,
+      normalizedInput: content,
+      authenticatedUserRequests,
+      sourceMessages: [
+        {
+          messageId: 'message',
+          content,
+          authenticatedUserRequests,
+          placement: 'next_turn',
+          disposition: 'followup',
+        },
+      ],
+      admittedAt: 1,
+    });
+    admissions.close?.();
+    const runtime = createSqliteRuntimeStore(join(source, 'runtime.sqlite'));
+    await runtime.appendRuntimeEvent(sessionId, 'run', {
+      id: 'event',
+      sessionId,
+      runId: 'run',
+      turnId: 'turn',
+      invocationId: 'invocation',
+      ts: 1,
+      partial: false,
+      role: 'user',
+      author: 'user',
+      content: { kind: 'text', text: content.text, authenticatedUserRequests },
+    });
+    runtime.close();
+
+    const assertEvidence = async (root: string, expected: readonly string[] | undefined) => {
+      const store = createSessionStore(root);
+      const roots = createSqliteAgentRunStore(root);
+      const events = createSqliteRuntimeStore(join(root, 'runtime.sqlite'));
+      try {
+        const pending = await store.readMessageAdmission(sessionId, 'queued');
+        assert.deepEqual(pending?.authenticatedUserRequests, expected);
+        assert.deepEqual(pending?.content, content);
+        const admission = await roots.readRootTurnAdmission(sessionId, 'turn');
+        assert.deepEqual(admission?.authenticatedUserRequests, expected);
+        assert.deepEqual(admission?.sourceMessages[0]?.authenticatedUserRequests, expected);
+        assert.deepEqual(admission?.normalizedInput, content);
+        const event = (await events.readRuntimeEvents(sessionId, 'run'))[0];
+        assert.equal(event?.content?.kind, 'text');
+        if (event?.content?.kind === 'text') {
+          assert.deepEqual(event.content.authenticatedUserRequests, expected);
+          assert.equal(event.content.text, content.text);
+        }
+      } finally {
+        await store.close?.();
+        roots.close?.();
+        events.close();
+      }
+    };
+    await assertEvidence(source, authenticatedUserRequests);
+    await importSessionBundleState({ stateRoot: target, bundleStateRoot: source });
+    await assertEvidence(target, undefined);
+    await assertEvidence(source, authenticatedUserRequests);
   } finally {
     await rm(base, { recursive: true, force: true });
   }

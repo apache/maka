@@ -204,8 +204,6 @@ export function createDesktopWorkbarServices(
         expectSessionUpdate(await bridge.sessions.setPermissionMode(sessionId, mode)),
       regenerateTurn: (sessionId, input) =>
         bridge.sessions.regenerateTurn(sessionId, input),
-      respondToSandboxBoundary: (sessionId, response) =>
-        bridge.sessions.respondToSandboxBoundary(sessionId, response),
       respondToClientCapability: (sessionId, response) =>
         bridge.sessions.respondToClientCapability(sessionId, response),
       respondToUserQuestion: (sessionId, response) =>

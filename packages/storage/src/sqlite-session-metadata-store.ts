@@ -295,6 +295,7 @@ interface MessageAdmissionRow {
   readonly queue_order?: unknown;
   readonly admitted_at?: unknown;
   readonly submitted_intent_json?: unknown;
+  readonly authenticated_user_requests_json?: unknown;
   readonly skill_invocation_json?: unknown;
 }
 
@@ -325,6 +326,9 @@ function decodeMessageAdmissionRow(
     runId: row.run_id,
     messageId: row.message_id,
     content: JSON.parse(row.content_json) as PendingMessageAdmission['content'],
+    ...(row.authenticated_user_requests_json != null
+      ? { authenticatedUserRequests: JSON.parse(row.authenticated_user_requests_json as string) }
+      : {}),
     submittedContentDigest:
       row.submitted_content_digest as PendingMessageAdmission['submittedContentDigest'],
     submittedPlacement: row.submitted_placement,
@@ -665,21 +669,6 @@ export class SqliteSessionMetadataStore {
     });
   }
 
-  async setExecutionBoundaryKind(
-    sessionId: string,
-    kind: 'managed' | 'bypass',
-    projection?: {
-      permissionMode: SessionHeader['permissionMode'];
-      labels?: readonly string[];
-    },
-  ): Promise<ExecutionBoundary> {
-    this.assertOpen();
-    assertSafeSessionId(sessionId);
-    return this.transaction(
-      () => this.setExecutionBoundaryKindSync(sessionId, kind, projection).boundary,
-    );
-  }
-
   async updateSessionConfiguration(
     sessionId: string,
     input: SessionConfigurationMetadataUpdate,
@@ -687,7 +676,6 @@ export class SqliteSessionMetadataStore {
     this.assertOpen();
     assertSafeSessionId(sessionId);
     assertMetadataVersion(input.expectedVersion, 'Session configuration expected version');
-    const kind = input.configuration.permissionMode === 'bypass' ? 'bypass' : 'managed';
     return this.transaction(() => {
       const current = this.readRecordSync(sessionId);
       if (!current) throw new SessionNotFoundError(sessionId);
@@ -702,22 +690,21 @@ export class SqliteSessionMetadataStore {
         input.lifecycle.kind === 'preserve'
           ? {}
           : clearConnectionBlock(current, input.lifecycle.statusUpdatedAt);
-      return this.setExecutionBoundaryKindSync(
+      this.ensureGenesisExecutionBoundary(current.header);
+      if (this.readCurrentExecutionBoundarySync(sessionId).kind === 'external') {
+        throw new SessionMetadataConflictError(
+          'An externally isolated session cannot enter Auto review or Bypass',
+        );
+      }
+      return this.updateHeaderSync(
         sessionId,
-        kind,
         {
-          permissionMode: input.configuration.permissionMode,
-          labels: input.configuration.labels,
+          ...input.configuration,
+          labels: [...input.configuration.labels],
+          ...lifecyclePatch,
         },
-        {
-          expectedVersion: input.expectedVersion,
-          headerPatch: {
-            ...input.configuration,
-            labels: [...input.configuration.labels],
-            ...lifecyclePatch,
-          },
-        },
-      ).record;
+        { expectedVersion: input.expectedVersion, skipNoop: true },
+      );
     });
   }
 
@@ -1519,7 +1506,7 @@ export class SqliteSessionMetadataStore {
         `
         SELECT turn_id, run_id, message_id, content_json, submitted_content_digest,
           submitted_placement, placement, disposition, queue_order, admitted_at,
-          submitted_intent_json, skill_invocation_json
+          submitted_intent_json, skill_invocation_json, authenticated_user_requests_json
         FROM message_admissions
         WHERE session_id = ? AND message_id = ?
       `,
@@ -1555,8 +1542,8 @@ export class SqliteSessionMetadataStore {
           INSERT INTO message_admissions(
             session_id, turn_id, run_id, message_id, content_json, submitted_content_digest,
             submitted_placement, placement, disposition, queue_order, admitted_at,
-            submitted_intent_json, skill_invocation_json
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            submitted_intent_json, skill_invocation_json, authenticated_user_requests_json
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
       )
       .run(
@@ -1573,6 +1560,9 @@ export class SqliteSessionMetadataStore {
         stored.admittedAt,
         stored.submittedIntent ? JSON.stringify(stored.submittedIntent) : null,
         JSON.stringify(stored.skillInvocation),
+        stored.authenticatedUserRequests === undefined
+          ? null
+          : JSON.stringify(stored.authenticatedUserRequests),
       );
   }
 
@@ -1837,7 +1827,7 @@ export class SqliteSessionMetadataStore {
           `
           SELECT turn_id, run_id, message_id, content_json, submitted_content_digest,
             submitted_placement, placement, disposition, queue_order, admitted_at,
-            submitted_intent_json, skill_invocation_json
+            submitted_intent_json, skill_invocation_json, authenticated_user_requests_json
           FROM message_admissions
           WHERE session_id = ? AND message_id = ?
         `,
@@ -2001,7 +1991,7 @@ export class SqliteSessionMetadataStore {
           `
           SELECT turn_id, run_id, message_id, content_json, submitted_content_digest,
             submitted_placement, placement, disposition, queue_order, admitted_at,
-            submitted_intent_json, skill_invocation_json
+            submitted_intent_json, skill_invocation_json, authenticated_user_requests_json
           FROM message_admissions
           WHERE session_id = ?
           ORDER BY queue_order, sequence
@@ -2197,7 +2187,7 @@ export class SqliteSessionMetadataStore {
             `
             SELECT turn_id, run_id, message_id, content_json, submitted_content_digest,
               submitted_placement, placement, disposition, queue_order, admitted_at,
-            submitted_intent_json, skill_invocation_json
+            submitted_intent_json, skill_invocation_json, authenticated_user_requests_json
             FROM message_admissions
             WHERE session_id = ? AND message_id = ?
           `,
@@ -2297,7 +2287,7 @@ export class SqliteSessionMetadataStore {
           `
           SELECT turn_id, run_id, message_id, content_json, submitted_content_digest,
             submitted_placement, placement, disposition, queue_order, admitted_at,
-            submitted_intent_json, skill_invocation_json
+            submitted_intent_json, skill_invocation_json, authenticated_user_requests_json
           FROM message_admissions
           WHERE session_id = ? AND message_id = ?
         `,
@@ -2318,7 +2308,7 @@ export class SqliteSessionMetadataStore {
           `
           UPDATE message_admissions
           SET content_json = ?, submitted_content_digest = ?, placement = ?, disposition = ?,
-            skill_invocation_json = ?
+            skill_invocation_json = ?, authenticated_user_requests_json = ?
           WHERE session_id = ? AND message_id = ?
         `,
         )
@@ -2328,6 +2318,9 @@ export class SqliteSessionMetadataStore {
           stored.placement,
           stored.disposition,
           JSON.stringify(stored.skillInvocation),
+          stored.authenticatedUserRequests === undefined
+            ? null
+            : JSON.stringify(stored.authenticatedUserRequests),
           stored.sessionId,
           stored.messageId,
         );
@@ -4600,90 +4593,6 @@ export class SqliteSessionMetadataStore {
       }
     }
     return { header: next, metadataVersion, committedAt };
-  }
-
-  private setExecutionBoundaryKindSync(
-    sessionId: string,
-    kind: 'managed' | 'bypass',
-    projection?: {
-      permissionMode: SessionHeader['permissionMode'];
-      labels?: readonly string[];
-    },
-    options: {
-      expectedVersion?: number;
-      headerPatch?: SessionHeaderPatch;
-    } = {},
-  ): { boundary: ExecutionBoundary; record: SessionMetadataRecord } {
-    const record = this.readRecordSync(sessionId);
-    if (!record) throw new SessionNotFoundError(sessionId);
-    if (
-      options.expectedVersion !== undefined &&
-      options.expectedVersion !== record.metadataVersion
-    ) {
-      throw new SessionMetadataVersionConflictError(
-        sessionId,
-        options.expectedVersion,
-        record.metadataVersion,
-      );
-    }
-    this.ensureGenesisExecutionBoundary(record.header);
-    const current = this.readCurrentExecutionBoundarySync(sessionId);
-    if (current.kind === 'external') {
-      throw new SessionMetadataConflictError(
-        'An externally isolated session cannot enter Auto or Bypass',
-      );
-    }
-    const projectedMode =
-      projection?.permissionMode ??
-      (kind === 'bypass'
-        ? 'bypass'
-        : record.header.permissionMode === 'bypass'
-          ? 'auto_review'
-          : record.header.permissionMode);
-    let boundary: ExecutionBoundary = current;
-    if (current.kind !== 'bypass') {
-      const revision = current.revision + 1;
-      boundary = { kind: 'bypass', revision };
-      const committedAt = this.now();
-      this.db
-        .prepare(
-          `
-          INSERT INTO sandbox_boundary_log(
-            session_id,
-            entry_id,
-            entry_kind,
-            status,
-            applied_revision,
-            boundary_json,
-            created_at,
-            settled_at
-          ) VALUES (?, ?, 'user_change', 'applied', ?, ?, ?, ?)
-        `,
-        )
-        .run(
-          sessionId,
-          `change:${revision}`,
-          revision,
-          JSON.stringify(boundary),
-          committedAt,
-          committedAt,
-        );
-      this.options.failpoint?.('after_sandbox_boundary_write');
-    }
-
-    const projectedLabels = projection?.labels ? [...projection.labels] : record.header.labels;
-    const patch = {
-      ...options.headerPatch,
-      permissionMode: projectedMode,
-      labels: projectedLabels,
-    };
-    const updated = this.updateHeaderSync(sessionId, patch, {
-      ...(options.expectedVersion === undefined
-        ? {}
-        : { expectedVersion: options.expectedVersion }),
-      skipNoop: true,
-    });
-    return { boundary, record: updated };
   }
 
   private readRecordSync(sessionId: string): SessionMetadataRecord | undefined {

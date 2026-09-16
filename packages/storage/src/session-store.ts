@@ -550,18 +550,6 @@ class SqliteSessionStore implements SessionAuthorityStore {
     return this.metadata.settleSandboxBoundaryRequest(input);
   }
 
-  async setExecutionBoundaryKind(
-    sessionId: string,
-    kind: 'managed' | 'bypass',
-    projection?: {
-      permissionMode: SessionHeader['permissionMode'];
-      labels?: readonly string[];
-    },
-  ): Promise<ExecutionBoundary> {
-    await this.ensureReady();
-    return this.metadata.setExecutionBoundaryKind(sessionId, kind, projection);
-  }
-
   async list(filter?: SessionListFilter): Promise<SessionSummary[]> {
     await this.ensureReady();
     return (await this.metadata.list(filter, 'ordinary'))

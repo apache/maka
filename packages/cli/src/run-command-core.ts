@@ -58,12 +58,8 @@ export interface MakaRunRuntime {
   createSession(input: CreateSessionRequest): Promise<SessionSummary>;
   readExecutionBoundary(sessionId: string): Promise<ExecutionBoundaryReadModel>;
   sendMessage(sessionId: string, input: UserMessageInput): AsyncIterable<SessionEvent>;
-  respondToSandboxBoundary(
-    sessionId: string,
-    response: { requestId: string; decision: 'deny' },
-  ): Promise<void>;
   stopSession(sessionId: string, input?: { source?: 'stop_button' }): Promise<void>;
-  setExecutionBoundaryKind(sessionId: string, kind: 'managed' | 'bypass'): Promise<unknown>;
+  setPermissionMode(sessionId: string, mode: 'auto_review' | 'bypass'): Promise<unknown>;
   resumeLatest?(sessionId: string): Promise<AsyncIterable<SessionEvent> | null>;
 }
 
@@ -339,13 +335,11 @@ export async function runMakaTextCliCore(
           });
     if (selection.kind === 'existing') {
       const boundary = await context.runtime.readExecutionBoundary(session.id);
-      if (parsed.options.yolo) {
-        await context.runtime.setExecutionBoundaryKind(session.id, 'bypass');
-      } else if (boundary.kind === 'bypass') {
-        throw new Error(`resuming a full-access session ${session.id} requires --yolo`);
-      } else if (boundary.kind === 'external') {
+      if (boundary.kind === 'external') {
         throw new Error(`cannot resume externally isolated session ${session.id} from maka run`);
       }
+      // Resume the Session's chosen review mode; --yolo explicitly overrides it.
+      if (parsed.options.yolo) await context.runtime.setPermissionMode(session.id, 'bypass');
     }
   } catch (error) {
     await context.close();
@@ -395,16 +389,6 @@ export async function runMakaTextCliCore(
         ? { turnOrchestration: { mode: 'graph' as const, source: 'host_api' as const } }
         : {}),
     })) {
-      if (event.type === 'sandbox_boundary_request') {
-        boundaryFailure = true;
-        deps.writeStderr(
-          'maka run: sandbox boundary expansion is unavailable in non-interactive mode\n',
-        );
-        await context.runtime.respondToSandboxBoundary(session.id, {
-          requestId: event.requestId,
-          decision: 'deny',
-        });
-      }
       const sandboxFailureReason = sessionEventSandboxBoundaryFailureReason(event);
       if (sandboxFailureReason) {
         boundaryFailure = true;

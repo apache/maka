@@ -23,7 +23,6 @@ import type { CollaborationMode } from '@maka/core/collaboration';
 import type * as DesktopBridge from '../preload/bridge-contract.js';
 import type { QuoteRef } from '@maka/core/events';
 import type { OrchestrationMode } from '@maka/core/orchestration';
-import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { SkillInvocationResult } from '@maka/runtime/skill-invocation';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { TurnOrchestration } from '@maka/core/runtime-inputs';
@@ -133,7 +132,6 @@ export interface AppShellChatActions {
     pending?: readonly PendingAttachment[],
     options?: MessageContextOptions,
   ): Promise<boolean>;
-  respondToSandboxBoundary(response: SandboxBoundaryResponse): Promise<void>;
   respondToUserQuestion(response: UserQuestionResponse): Promise<void>;
   respondToUserForm(response: InteractionFormResponse): Promise<void>;
   refreshMessages(sessionId: string, options?: RefreshMessagesOptions): Promise<boolean>;
@@ -661,12 +659,6 @@ export function createAppShellChatActions(deps: {
   return {
     send,
     enqueueMessage,
-    respondToSandboxBoundary: (response) =>
-      respondToInteraction(
-        response,
-        window.maka.sessions.respondToSandboxBoundary,
-        onExecutionBoundaryChanged,
-      ),
     respondToUserQuestion: (response) =>
       respondToInteraction(response, window.maka.sessions.respondToUserQuestion),
     respondToUserForm: (response) => respondToInteraction(response, submitUserForm),

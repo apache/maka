@@ -99,6 +99,7 @@ describe('SqliteSessionMetadataStore', () => {
       const setup = createSqliteSessionMetadataStore(path);
       setup.close();
       const baseline = new DatabaseSync(path);
+      baseline.exec('ALTER TABLE message_admissions DROP COLUMN authenticated_user_requests_json');
       baseline.exec(
         "DROP TABLE coordination_transcript_index; UPDATE session_metadata_schema SET version = 38 WHERE scope = 'session_metadata'",
       );
@@ -166,6 +167,9 @@ describe('SqliteSessionMetadataStore', () => {
         setup.close();
 
         const version30 = new DatabaseSync(path);
+        version30.exec(
+          'ALTER TABLE message_admissions DROP COLUMN authenticated_user_requests_json',
+        );
         try {
           if (version30Shape === 'admissions-only') {
             version30.exec('DROP INDEX session_metadata_one_workhub_coordination_session');
@@ -259,6 +263,7 @@ describe('SqliteSessionMetadataStore', () => {
     // A subagent spawned before the route froze at creation, and abandoned
     // before its first Message, is the one shape nothing else can lock.
     const legacy = new DatabaseSync(path);
+    legacy.exec('ALTER TABLE message_admissions DROP COLUMN authenticated_user_requests_json');
     try {
       legacy.exec(`
         UPDATE session_metadata_schema SET version = 32 WHERE scope = 'session_metadata';
@@ -297,6 +302,7 @@ describe('SqliteSessionMetadataStore', () => {
       setup.close();
     }
     const legacy = new DatabaseSync(path);
+    legacy.exec('ALTER TABLE message_admissions DROP COLUMN authenticated_user_requests_json');
     try {
       legacy.exec(`
         DROP INDEX session_metadata_one_workhub_coordination_session;
@@ -479,6 +485,7 @@ describe('SqliteSessionMetadataStore', () => {
         runId: 'run-1',
         messageId: 'message-1',
         content: { text: 'submitted', displayText: 'submitted' },
+        authenticatedUserRequests: ['submitted'],
         submittedContentDigest: messageContentDigest({ text: 'submitted' }),
         submittedPlacement: 'current_turn',
         placement: 'current_turn',
@@ -560,6 +567,7 @@ describe('SqliteSessionMetadataStore', () => {
       }
 
       const legacy = new DatabaseSync(path);
+      legacy.exec('ALTER TABLE message_admissions DROP COLUMN authenticated_user_requests_json');
       try {
         legacy.exec(`
           ALTER TABLE message_admissions DROP COLUMN skill_invocation_json;
@@ -612,6 +620,7 @@ describe('SqliteSessionMetadataStore', () => {
       }
 
       const legacy = new DatabaseSync(path);
+      legacy.exec('ALTER TABLE message_admissions DROP COLUMN authenticated_user_requests_json');
       try {
         legacy.exec(`
           ALTER TABLE cancelled_message_admissions DROP COLUMN cancellation_claim_id;
@@ -1452,6 +1461,7 @@ describe('SqliteSessionMetadataStore', () => {
       setup.close();
 
       const legacy = new DatabaseSync(path);
+      legacy.exec('ALTER TABLE message_admissions DROP COLUMN authenticated_user_requests_json');
       try {
         legacy.exec(`
           DROP INDEX session_metadata_one_workhub_coordination_session;
@@ -1713,6 +1723,7 @@ describe('SqliteSessionMetadataStore', () => {
       setup.close();
 
       const legacy = new DatabaseSync(path);
+      legacy.exec('ALTER TABLE message_admissions DROP COLUMN authenticated_user_requests_json');
       try {
         legacy.exec(`
           DROP INDEX session_metadata_one_workhub_coordination_session;
@@ -2296,12 +2307,34 @@ describe('SqliteSessionMetadataStore', () => {
     }
   });
 
-  test('reads the header projection and execution boundary from one authority snapshot', async () => {
-    const store = createSqliteSessionMetadataStore(':memory:', { now: nextNow(275) });
+  test('configures a legacy Session without a boundary row and reads one authority snapshot', async (t) => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-legacy-boundary-'));
+    t.after(() => rm(root, { recursive: true, force: true }));
+    const path = join(root, 'state.sqlite');
+    const store = createSqliteSessionMetadataStore(path, { now: nextNow(275) });
     try {
-      await store.create(fullHeader());
-      await store.setExecutionBoundaryKind('session-1', 'bypass', {
-        permissionMode: 'bypass',
+      const header = fullHeader();
+      await store.create(header);
+      const legacy = new DatabaseSync(path);
+      try {
+        legacy.exec('DELETE FROM sandbox_boundary_log');
+      } finally {
+        legacy.close();
+      }
+      await store.updateSessionConfiguration('session-1', {
+        expectedVersion: 1,
+        lifecycle: { kind: 'preserve' },
+        configuration: {
+          backend: header.backend,
+          llmConnectionSlug: header.llmConnectionSlug,
+          connectionLocked: header.connectionLocked,
+          model: header.model,
+          thinkingLevel: header.thinkingLevel,
+          permissionMode: 'bypass',
+          collaborationMode: header.collaborationMode ?? 'agent',
+          orchestrationMode: header.orchestrationMode ?? 'default',
+          labels: header.labels,
+        },
       });
 
       const snapshot = await store.readSessionAuthoritySnapshot('session-1');

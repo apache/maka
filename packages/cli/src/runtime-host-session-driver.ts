@@ -47,7 +47,6 @@ import type { PermissionMode } from '@maka/core/permission';
 
 import { mergeShellRunUpdate } from '@maka/core/shell-run-result';
 import { isActiveShellRunStatus } from '@maka/core/shell-run';
-import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import type { InteractionFormResponse } from '@maka/core/interaction';
@@ -590,17 +589,6 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
       text: result.retracted.map((entry) => entry.content.text).join('\n\n'),
       messageIds: result.retracted.map((entry) => entry.messageId),
     };
-  }
-
-  async respondToSandboxBoundary(response: SandboxBoundaryResponse): Promise<void> {
-    const sessionId = this.#requireSession('respond to permission');
-    const pending = this.#channel?.pendingInteraction(response.requestId);
-    const answered = await this.#request('interaction.answer', {
-      sessionId,
-      interactionId: response.requestId,
-      answer: { kind: 'sandbox_boundary', decision: response.decision },
-    });
-    if (pending) this.#channel?.publishInteractionAnswer(answered, pending);
   }
 
   async respondToUserQuestion(response: UserQuestionResponse): Promise<void> {

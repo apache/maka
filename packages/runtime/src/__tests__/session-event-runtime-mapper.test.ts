@@ -519,33 +519,6 @@ const PROJECTION_SAMPLES: ProjectionSamples = {
       },
     ],
   },
-  sandbox_boundary_request: {
-    subject: {
-      type: 'sandbox_boundary_request',
-      id: 'e',
-      turnId: 'turn-1',
-      ts: 1,
-      requestId: 'boundary-1',
-      toolUseId: 'tool-1',
-      justification: 'read a file outside the workspace',
-      expansion: {
-        filesystem: { entries: [{ path: '/tmp/outside.txt', access: 'read', scope: 'exact' }] },
-      },
-    },
-  },
-  sandbox_boundary_decision_ack: {
-    subject: {
-      type: 'sandbox_boundary_decision_ack',
-      id: 'e',
-      turnId: 'turn-1',
-      ts: 1,
-      requestId: 'boundary-1',
-      toolUseId: 'tool-1',
-      decision: 'allow',
-      status: 'approved',
-      revision: 2,
-    },
-  },
   user_question_request: {
     subject: {
       type: 'user_question_request',

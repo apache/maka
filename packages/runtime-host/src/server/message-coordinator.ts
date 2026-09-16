@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { authenticatedUserRequests } from './authenticated-user-requests.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import type { SteeringLease } from '@maka/core/backend-types';
@@ -268,6 +269,7 @@ export type CandidateSnapshotPreflight = (
 ) => Promise<boolean> | boolean;
 
 interface LiveEntry {
+  authenticatedUserRequests?: readonly string[];
   readonly entryId: string;
   readonly messageId: string;
   readonly admissionTurnId: string;
@@ -394,7 +396,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     'queue.retract': (input) => this.retract(input),
     'queue.entry.retract': (input) => this.retractQueuedEntry(input),
     'queue.entry.promote': (input) => this.promoteQueuedEntry(input),
-    'queue.entry.update': (input) => this.updateQueuedEntry(input),
+    'queue.entry.update': (input, context) => this.updateQueuedEntry(input, context),
     'queue.entries.reorder': (input) => this.reorderQueuedEntries(input),
     'turn.interrupt': (input) => this.interrupt(input),
   };
@@ -1136,6 +1138,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
         admittedAt: admission.admittedAt,
         content: submittedProjectionContent(admission.content),
         modelContent: admission.content,
+        authenticatedUserRequests: admission.authenticatedUserRequests,
         submittedContentDigest: admission.submittedContentDigest,
         submittedPlacement: admission.submittedPlacement,
         skillInvocation: admission.skillInvocation,
@@ -1193,10 +1196,22 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
       return Promise.resolve(failure('host_draining', 'Runtime Host message authority has failed'));
     }
     if (!isCurrentEpoch) {
-      return this.#submitAdmitted(input, payload, context.connectionId, admission);
+      return this.#submitAdmitted(
+        input,
+        payload,
+        context.connectionId,
+        authenticatedUserRequests(input.content, context),
+        admission,
+      );
     }
     const key = operationKey(input.sessionId, input.messageId);
-    const result = this.#submitAdmitted(input, payload, context.connectionId, admission);
+    const result = this.#submitAdmitted(
+      input,
+      payload,
+      context.connectionId,
+      authenticatedUserRequests(input.content, context),
+      admission,
+    );
     this.#pendingSubmits.set(key, { payload, result });
     void result.then(
       () => this.#deletePendingSubmit(key, result),
@@ -1209,6 +1224,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     input: TurnMessageSubmitInput,
     payload: CanonicalSubmitPayload,
     initiatingConnectionId: string,
+    userRequests: readonly string[] | undefined,
     admittedLease?: SessionAdmissionLease,
   ): Promise<MessageOutcome<TurnMessageSubmitResult>> {
     const execute = async (
@@ -1277,6 +1293,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
           const intent = submittedTurnIntent(payload);
           const sourceMessage: RootTurnSourceMessage = {
             messageId: input.messageId,
+            ...(userRequests !== undefined ? { authenticatedUserRequests: userRequests } : {}),
             content: payload.content,
             submittedContentDigest: messageContentDigest(payload.content),
             submittedPlacement: input.placement,
@@ -1322,6 +1339,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
                 turnId,
                 runId,
                 messageId: input.messageId,
+                ...(userRequests !== undefined ? { authenticatedUserRequests: userRequests } : {}),
                 content: canonicalContent,
                 submittedContentDigest: messageContentDigest(payload.content),
                 submittedPlacement: input.placement,
@@ -1468,6 +1486,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
         }
         const candidateSource = {
           messageId: input.messageId,
+          ...(userRequests !== undefined ? { authenticatedUserRequests: userRequests } : {}),
           content: prepared.content,
           submittedContentDigest: messageContentDigest(payload.content),
           submittedPlacement: input.placement,
@@ -1513,6 +1532,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
           turnId: rootState.turnId,
           runId: rootState.runId,
           messageId: input.messageId,
+          ...(userRequests !== undefined ? { authenticatedUserRequests: userRequests } : {}),
           content: prepared.content,
           submittedContentDigest: messageContentDigest(payload.content),
           submittedPlacement: input.placement,
@@ -1531,6 +1551,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
           admittedAt: messageAdmission.admittedAt,
           content: payload.content,
           modelContent: prepared.content,
+          authenticatedUserRequests: userRequests,
           submittedContentDigest: messageAdmission.submittedContentDigest,
           submittedPlacement: messageAdmission.submittedPlacement,
           skillInvocation: messageAdmission.skillInvocation,
@@ -1637,6 +1658,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
 
   private updateQueuedEntry(
     input: QueueEntryUpdateInput,
+    context: ConnectionContext,
   ): Promise<MessageOutcome<QueueMutationResult>> {
     return this.#runQueuedMutation({
       spec: MESSAGE_OPERATION_SPECS['queue.entry.update'],
@@ -1644,7 +1666,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
       operationId: input.updateId,
       verb: 'Update',
       input,
-      execute: () => this.#updateQueuedEntryAdmitted(input),
+      execute: () => this.#updateQueuedEntryAdmitted(input, context),
     });
   }
 
@@ -1848,6 +1870,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
       runId: entry.admissionRunId,
       messageId: entry.messageId,
       content: entry.modelContent,
+      authenticatedUserRequests: entry.authenticatedUserRequests,
       submittedContentDigest: entry.submittedContentDigest,
       submittedPlacement: entry.submittedPlacement,
       placement: 'current_turn',
@@ -1865,6 +1888,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
 
   async #updateQueuedEntryAdmitted(
     input: QueueEntryUpdateInput,
+    context: ConnectionContext,
   ): Promise<MessageOutcome<QueueMutationResult>> {
     const header = await this.#root.readSessionHeader(input.sessionId);
     if (this.#failStopped) {
@@ -1904,6 +1928,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     });
     if (prepared.kind === 'rejected') return failure('operation_conflict', prepared.error);
     const modelContent = prepared.content;
+    const userRequests = authenticatedUserRequests(content, context);
     const candidate = this.#project(state);
     const updateSnapshot = <T extends SteeringMessageSnapshot | QueuedMessageSnapshot>(
       entry: T,
@@ -1923,6 +1948,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
         ? {
             ...sourceFromEntry(entry),
             content: modelContent,
+            authenticatedUserRequests: userRequests,
             submittedContentDigest: messageContentDigest(content),
             skillInvocation: prepared.skillInvocation,
           }
@@ -1958,6 +1984,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
       runId: queued.entry.admissionRunId,
       messageId: queued.entry.messageId,
       content: modelContent,
+      ...(userRequests !== undefined ? { authenticatedUserRequests: userRequests } : {}),
       submittedContentDigest: messageContentDigest(content),
       submittedPlacement: admission?.submittedPlacement ?? queued.entry.placement,
       placement: queued.entry.placement,
@@ -1967,6 +1994,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     });
     queued.entry.content = content;
     queued.entry.modelContent = modelContent;
+    queued.entry.authenticatedUserRequests = userRequests;
     queued.entry.submittedContentDigest = messageContentDigest(content);
     queued.entry.skillInvocation = prepared.skillInvocation;
     this.#mutated(state);
@@ -2360,6 +2388,9 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
         id: leaseId,
         messageId: entry.messageId,
         content: normalizeMessageContent(entry.modelContent),
+        ...(entry.authenticatedUserRequests !== undefined
+          ? { authenticatedUserRequests: entry.authenticatedUserRequests }
+          : {}),
         submittedContentDigest: entry.submittedContentDigest,
       };
     });
@@ -2721,6 +2752,9 @@ function sourceFromEntry(entry: LiveEntry): RootFollowupSource {
   return {
     messageId: entry.messageId,
     content: normalizeMessageContent(entry.modelContent),
+    ...(entry.authenticatedUserRequests !== undefined
+      ? { authenticatedUserRequests: entry.authenticatedUserRequests }
+      : {}),
     submittedContentDigest: entry.submittedContentDigest,
     submittedPlacement: entry.submittedPlacement,
     skillInvocation: entry.skillInvocation,
@@ -2733,6 +2767,9 @@ function pendingMessageSource(admission: PendingMessageAdmission): RootTurnSourc
   return {
     messageId: admission.messageId,
     content: normalizeMessageContent(admission.content),
+    ...(admission.authenticatedUserRequests !== undefined
+      ? { authenticatedUserRequests: admission.authenticatedUserRequests }
+      : {}),
     submittedContentDigest: admission.submittedContentDigest,
     submittedPlacement: admission.submittedPlacement,
     ...(admission.submittedIntent ? { submittedIntent: admission.submittedIntent } : {}),

@@ -19,7 +19,7 @@
 
 import type { DatabaseSync } from 'node:sqlite';
 
-export const SQLITE_SESSION_METADATA_SCHEMA_VERSION = 39;
+export const SQLITE_SESSION_METADATA_SCHEMA_VERSION = 40;
 export const SQLITE_SESSION_MESSAGE_CHUNK_BYTES = 64 * 1024;
 export const SQLITE_SESSION_MESSAGE_CHUNK_MARKER = '{"$maka":"session-message-chunks-v1"}';
 
@@ -1279,6 +1279,7 @@ const MIGRATIONS: ReadonlyMap<number, string> = new Map([
     );
   `,
   ],
+  [40, `ALTER TABLE message_admissions ADD COLUMN authenticated_user_requests_json TEXT;`],
 ]);
 
 if (MIGRATIONS.size !== SQLITE_SESSION_METADATA_SCHEMA_VERSION) {

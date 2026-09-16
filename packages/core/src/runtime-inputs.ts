@@ -104,6 +104,8 @@ export type CreateSessionRequestInput = Partial<CreateSessionInput> & {
 };
 
 export interface UserMessageInput extends MessageContent {
+  /** Host-owned provenance from durable admissions, never derived from model-role text. */
+  authenticatedUserRequests?: readonly string[];
   /** Caller-generated uuid. Same id used in the UserMessage.turnId and in
    *  every event emitted by this turn. */
   turnId: string;
