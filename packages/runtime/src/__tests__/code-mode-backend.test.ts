@@ -34,6 +34,16 @@ import { MockLanguageModelV4, convertArrayToReadableStream } from 'ai/test';
 import { z } from 'zod';
 import type { AiSdkBackendInput } from '../ai-sdk-backend.js';
 import { buildMcpTools } from '../mcp-tools.js';
+import { buildAskUserQuestionTool } from '../ask-user-question-tool.js';
+import type { RuntimeEvent } from '@maka/core/runtime-event';
+import {
+  createRequestCompositionSnapshot,
+  REQUEST_COMPOSITION_MAX_TOOL_DESCRIPTION_LENGTH,
+} from '@maka/core/run-composition';
+import {
+  createSessionEventMapMemory,
+  mapSessionEventToRuntimeEvent,
+} from '../session-event-runtime-mapper.js';
 import type { ToolArtifactRecorderInput } from '../tool-artifacts.js';
 import type { MakaTool } from '../tool-runtime.js';
 import type { RuntimeCommitSink, ToolPreparedCommit } from '../runtime-commit-sink.js';
@@ -44,7 +54,7 @@ const ZERO_USAGE: LanguageModelV4Usage = {
   outputTokens: { total: 0, text: 0, reasoning: 0 },
 };
 
-test('adds exec only for the explicit code_mode provider surface', async () => {
+test('replaces direct tool schemas with exec in code_mode', async () => {
   const directSurface: string[][] = [];
   const codeSurface: string[][] = [];
 
@@ -65,7 +75,242 @@ test('adds exec only for the explicit code_mode provider surface', async () => {
   );
 
   assert.deepEqual(directSurface[0], ['lookup']);
-  assert.deepEqual(codeSurface[0], ['exec', 'lookup']);
+  assert.deepEqual(codeSurface[0], ['exec']);
+});
+
+test('uses the persisted task mode without a per-turn override', async () => {
+  const surface: string[][] = [];
+  const calls: unknown[] = [];
+  await drain(
+    backend(capturingModel(surface), [], undefined, {
+      header: { ...header(), toolMode: 'code_mode' },
+    }).send({ turnId: 'persisted-mode', text: 'inspect', context: [] }),
+  );
+  assert.deepEqual(surface[0], ['exec']);
+  await drain(
+    backend(execThenStopModel(), calls, undefined, {
+      header: { ...header(), toolMode: 'code_mode' },
+    }).send({ turnId: 'persisted-execution', text: 'inspect', context: [] }),
+  );
+  assert.deepEqual(calls, [{ id: 'nested' }]);
+});
+
+test('tool search refreshes the catalog for the next code cell', async () => {
+  const ledger: RuntimeEvent[] = [
+    {
+      id: 'search-user',
+      sessionId: 'session-1',
+      turnId: 'search-code',
+      runId: 'run-1',
+      invocationId: 'invocation-1',
+      ts: 1,
+      partial: false,
+      role: 'user',
+      author: 'user',
+      content: { kind: 'text', text: 'inspect' },
+    },
+  ];
+  const memory = createSessionEventMapMemory();
+  let step = 0;
+  const catalogs: string[] = [];
+  const calls: unknown[] = [];
+  const model = new MockLanguageModelV4({
+    doStream: async ({ prompt }) => {
+      catalogs.push(JSON.stringify(prompt));
+      const code =
+        step++ === 0
+          ? 'return await tools.tool_search({ query: "lookup" })'
+          : 'return await tools.lookup({ id: "discovered" })';
+      return {
+        stream: convertArrayToReadableStream<LanguageModelV4StreamPart>([
+          { type: 'stream-start', warnings: [] },
+          {
+            type: 'tool-call',
+            toolCallId: `exec-${step}`,
+            toolName: 'exec',
+            input: JSON.stringify({ code }),
+          },
+          {
+            type: 'finish',
+            finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+            usage: ZERO_USAGE,
+          },
+        ]),
+      };
+    },
+  });
+  const events: SessionEvent[] = [];
+  for await (const event of backend(model, calls, undefined, {
+    maxSteps: 2,
+    toolAvailability: {},
+    loadTurnRuntimeEvents: async () => ledger,
+    header: { ...header(), toolMode: 'code_mode' },
+  }).send({ turnId: 'search-code', text: 'inspect', context: [] })) {
+    events.push(event);
+    const mapped = mapSessionEventToRuntimeEvent(
+      event,
+      {
+        sessionId: 'session-1',
+        turnId: 'search-code',
+        runId: 'run-1',
+        invocationId: 'invocation-1',
+        now: () => 1,
+      },
+      memory,
+    );
+    if (mapped.partial !== true && mapped.content?.kind !== 'error') ledger.push(mapped);
+  }
+  assert.deepEqual(calls, [{ id: 'discovered' }], JSON.stringify(events));
+  assert.match(catalogs[0]!, /tool_search/);
+  assert.match(catalogs[1]!, /Look up a node/);
+});
+
+test('keeps an aggregate Code Mode catalog out of the bounded exec schema', async () => {
+  const names = [
+    'mcp__desktop_workhub__control',
+    'mcp__desktop_workhub__tasks',
+    'mcp__desktop_browser__browser_navigate',
+    'mcp__desktop_browser__browser_snapshot',
+    'mcp__desktop_browser__browser_click',
+    'mcp__desktop_browser__browser_type',
+    'mcp__desktop_browser__browser_wait',
+    'mcp__desktop_browser__browser_extract',
+    'Read',
+    'AskUserQuestion',
+  ];
+  const fields = Object.fromEntries(
+    Array.from({ length: 40 }, (_, index) => [
+      `field_${index}`,
+      z.string().describe(`Visible input contract ${index}: ${'detail '.repeat(8)}`),
+    ]),
+  );
+  const tools: MakaTool[] = names.map((name) => ({
+    name,
+    description: `Production-sized nested tool ${name}`,
+    parameters: z.object(fields),
+    impl: async () => 'ok',
+  }));
+  let providerPrompt = '';
+  let providerExecDescription = '';
+  const snapshots: Parameters<NonNullable<AiSdkBackendInput['recordRequestComposition']>>[1][] = [];
+  const model = new MockLanguageModelV4({
+    doStream: async ({ prompt, tools: modelTools }) => {
+      providerPrompt = JSON.stringify(prompt);
+      const execTool = modelTools?.find((tool) => tool.name === 'exec');
+      providerExecDescription =
+        execTool && 'description' in execTool ? (execTool.description ?? '') : '';
+      return {
+        stream: convertArrayToReadableStream<LanguageModelV4StreamPart>([
+          { type: 'stream-start', warnings: [] },
+          { type: 'finish', finishReason: { unified: 'stop', raw: 'stop' }, usage: ZERO_USAGE },
+        ]),
+      };
+    },
+  });
+
+  await drain(
+    backend(model, [], undefined, {
+      tools,
+      recordRequestComposition: async (_runId, snapshot) => {
+        createRequestCompositionSnapshot(snapshot, 'initial');
+        snapshots.push(snapshot);
+        return snapshot.compositionId;
+      },
+    }).send({
+      turnId: 'large-catalog',
+      runId: 'run-large-catalog',
+      text: 'inspect',
+      context: [],
+      toolMode: 'code_mode',
+    }),
+  );
+
+  assert.ok(providerPrompt.length > REQUEST_COMPOSITION_MAX_TOOL_DESCRIPTION_LENGTH);
+  assert.match(providerPrompt, /mcp__desktop_workhub__control/u);
+  assert.match(providerPrompt, /mcp__desktop_browser__browser_extract/u);
+  assert.ok(providerExecDescription.length < REQUEST_COMPOSITION_MAX_TOOL_DESCRIPTION_LENGTH);
+  assert.equal(providerExecDescription.includes('mcp__desktop_workhub__control'), false);
+  assert.equal(snapshots.length, 1);
+  assert.deepEqual(snapshots[0]?.toolNames, ['exec']);
+  assert.equal(snapshots[0]?.toolSchemas[0]?.description, providerExecDescription);
+});
+
+test('a nested question can be answered and a parked question can be stopped', async () => {
+  for (const stop of [false, true]) {
+    const instance = backend(
+      execThenStopModel(
+        'return await tools.AskUserQuestion({ questions: [{ question: "Continue?", options: [{ label: "Yes" }, { label: "No" }] }] })',
+      ),
+      [],
+      undefined,
+      {
+        tools: [buildAskUserQuestionTool()],
+        header: { ...header(), toolMode: 'code_mode' },
+      },
+    );
+    const events: SessionEvent[] = [];
+    for await (const event of instance.send({
+      turnId: 'question-code',
+      text: 'ask',
+      context: [],
+    })) {
+      events.push(event);
+      if (event.type === 'user_question_request') {
+        if (stop) await instance.stop('user_stop');
+        else await instance.respondToUserQuestion({ requestId: event.requestId, answers: ['Yes'] });
+      }
+    }
+    assert.ok(events.some((event) => event.type === 'user_question_request'));
+    assert.ok(events.some((event) => event.type === 'tool_result'));
+    if (!stop)
+      assert.match(JSON.stringify(events.filter((event) => event.type === 'tool_result')), /Yes/);
+  }
+});
+
+test('nested plan submission hands off the turn and prevents subsequent calls', async () => {
+  let afterSubmit = false;
+  const events: SessionEvent[] = [];
+  const instance = backend(
+    execThenStopModel('await tools.SubmitPlan({}); return await tools.afterSubmit({})'),
+    [],
+    undefined,
+    {
+      header: { ...header(), toolMode: 'code_mode' },
+      tools: [
+        {
+          name: 'SubmitPlan',
+          description: 'Submit plan',
+          parameters: z.object({}),
+          impl: () => ({
+            kind: 'plan_submitted',
+            storeVersion: 1,
+            proposal: {
+              planId: 'plan-1',
+              proposalId: 'proposal-1',
+              revision: 1,
+              title: 'Test plan',
+              steps: [],
+            },
+          }),
+        },
+        {
+          name: 'afterSubmit',
+          description: 'Must not run',
+          parameters: z.object({}),
+          impl: () => {
+            afterSubmit = true;
+          },
+        },
+      ],
+    },
+  );
+  for await (const event of instance.send({ turnId: 'plan-code', text: 'plan', context: [] }))
+    events.push(event);
+  assert.equal(afterSubmit, false);
+  assert.ok(events.some((event) => event.type === 'plan_submitted' && event.title === 'Test plan'));
+  assert.ok(
+    events.some((event) => event.type === 'complete' && event.stopReason === 'plan_handoff'),
+  );
 });
 
 test('allows a custom exec tool in direct mode', async () => {
@@ -430,7 +675,7 @@ test('keeps direct-only tools out of the cell snapshot', async () => {
     (event): event is Extract<SessionEvent, { type: 'tool_result' }> =>
       event.type === 'tool_result' && event.toolUseId === 'exec-1',
   );
-  assert.match(JSON.stringify(execResult?.content), /unknown_tool/);
+  assert.match(JSON.stringify(execResult?.content), /execution_error/);
 });
 
 test('keeps provider-native tools out of the cell snapshot', async () => {
@@ -467,7 +712,7 @@ test('keeps provider-native tools out of the cell snapshot', async () => {
     (event): event is Extract<SessionEvent, { type: 'tool_result' }> =>
       event.type === 'tool_result' && event.toolUseId === 'exec-1',
   );
-  assert.match(JSON.stringify(execResult?.content), /unknown_tool/);
+  assert.match(JSON.stringify(execResult?.content), /execution_error/);
 });
 
 test('validates nested arguments before ToolRuntime implementation dispatch', async () => {
@@ -938,7 +1183,7 @@ test('admits exec exclusively while allowing its nested calls', async () => {
       event.type === 'tool_result' && event.toolUseId === 'lookup-direct',
   );
   assert.equal(directResult?.isError, true);
-  assert.match(JSON.stringify(directResult?.content), /cannot share an assistant step|exclusive/i);
+  assert.match(JSON.stringify(directResult?.content), /cannot share an assistant step/i);
 });
 
 function backend(
@@ -949,6 +1194,10 @@ function backend(
     Pick<
       AiSdkBackendInput,
       | 'tools'
+      | 'header'
+      | 'maxSteps'
+      | 'toolAvailability'
+      | 'loadTurnRuntimeEvents'
       | 'readExecutionBoundary'
       | 'createSandboxBoundaryRequest'
       | 'settleSandboxBoundaryRequest'
@@ -956,6 +1205,7 @@ function backend(
       | 'supportsVision'
       | 'readAttachmentBytes'
       | 'maxProviderImageRequestBytes'
+      | 'recordRequestComposition'
     >
   > = {},
 ) {

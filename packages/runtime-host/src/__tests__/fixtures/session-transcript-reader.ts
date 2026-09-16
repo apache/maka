@@ -25,25 +25,26 @@ import type { SessionTranscriptReader } from '../../server/session-transcript-re
 export function transcriptReader(
   durable: readonly StoredMessage[],
   overlay: readonly StoredMessage[] = [],
+  sequenceStride = 1,
 ): SessionTranscriptReader {
+  const durableRecords = () =>
+    durable.map((message, index) => ({ sequence: index * sequenceStride, message }));
+  const durableHighWater = () =>
+    durable.length === 0 ? null : (durable.length - 1) * sequenceStride + sequenceStride - 1;
   return {
-    readDurableHighWater: async () => (durable.length === 0 ? null : durable.length - 1),
+    readDurableHighWater: async () => durableHighWater(),
     readDurablePage: async (_sessionId, request) => {
       const throughSequence =
-        request.throughSequence === undefined
-          ? durable.length === 0
-            ? null
-            : durable.length - 1
-          : request.throughSequence;
+        request.throughSequence === undefined ? durableHighWater() : request.throughSequence;
       if (throughSequence === null) {
         return { throughSequence: null, fragments: [], rawBytes: 0, next: null };
       }
       const position = request.position ?? (request.direction === 'older' ? throughSequence : 0);
-      const candidates = durable
-        .map((message, sequence) => {
-          const data = Buffer.from(JSON.stringify(message), 'utf8');
-          return { sequence, data };
-        })
+      const candidates = durableRecords()
+        .map(({ sequence, message }) => ({
+          sequence,
+          data: Buffer.from(JSON.stringify(message), 'utf8'),
+        }))
         .filter(
           ({ sequence }) =>
             sequence <= throughSequence &&
@@ -97,7 +98,7 @@ export function transcriptReader(
       }
       if (next === null && fragments.length > 0 && fragments.length < candidates.length) {
         next = {
-          position: fragments.at(-1)!.sequence + (request.direction === 'older' ? -1 : 1),
+          position: candidates[fragments.length]!.sequence,
           byteOffset: null,
         };
       }
@@ -105,17 +106,12 @@ export function transcriptReader(
     },
     readDurableRecords: async (_sessionId, request) => {
       const throughSequence =
-        request.throughSequence === undefined
-          ? durable.length === 0
-            ? null
-            : durable.length - 1
-          : request.throughSequence;
+        request.throughSequence === undefined ? durableHighWater() : request.throughSequence;
       if (throughSequence === null) {
         return { throughSequence: null, records: [], nextPosition: null };
       }
       const position = request.position ?? (request.direction === 'older' ? throughSequence : 0);
-      const candidates = durable
-        .map((message, sequence) => ({ sequence, message }))
+      const candidates = durableRecords()
         .filter(
           ({ sequence }) =>
             sequence <= throughSequence &&
@@ -126,23 +122,27 @@ export function transcriptReader(
             ? right.sequence - left.sequence
             : left.sequence - right.sequence,
         );
-      const records = candidates.slice(0, request.maxMessages);
-      const last = records.at(-1);
+      const records: ReturnType<typeof durableRecords> = [];
+      let storedBytes = 0;
+      for (const candidate of candidates) {
+        if (records.length >= request.maxMessages || storedBytes >= request.maxStoredBytes) break;
+        records.push(candidate);
+        storedBytes += Buffer.byteLength(JSON.stringify(candidate.message), 'utf8');
+      }
       return {
         throughSequence,
         records,
         nextPosition:
-          last && records.length < candidates.length
-            ? last.sequence + (request.direction === 'older' ? -1 : 1)
-            : null,
+          records.length < candidates.length ? candidates[records.length]!.sequence : null,
       };
     },
     readDurableMessagesById: async (_sessionId, request) =>
       request.throughSequence === null
         ? []
-        : durable.filter(
-            (message, sequence) =>
-              sequence <= request.throughSequence! && request.messageIds.includes(message.id),
+        : durableRecords().flatMap(({ sequence, message }) =>
+            sequence <= request.throughSequence! && request.messageIds.includes(message.id)
+              ? [message]
+              : [],
           ),
     readDurableTurnContributions: async (
       _sessionId,
@@ -150,11 +150,11 @@ export function transcriptReader(
       position,
       maxContributions,
     ) => {
-      const watermark = throughSequence ?? (durable.length === 0 ? null : durable.length - 1);
+      const watermark = throughSequence ?? durableHighWater();
       if (watermark === null)
         return { throughSequence: null, contributions: [], nextPosition: null };
       const folded = new Map<string, SessionTurnContribution>();
-      for (const [sequence, message] of durable.entries()) {
+      for (const { sequence, message } of durableRecords()) {
         const turnId = message.turnId;
         if (turnId === undefined || sequence < position || sequence > watermark) continue;
         if (!folded.has(turnId) && folded.size >= maxContributions) {
@@ -173,11 +173,11 @@ export function transcriptReader(
       };
     },
     readDurableTurnLandmarks: async (_sessionId, maxLandmarks) => {
-      const watermark = durable.length === 0 ? null : durable.length - 1;
+      const watermark = durableHighWater();
       if (watermark === null) return { throughSequence: null, landmarks: [] };
       const seen = new Set<string>();
       const landmarks: SessionTurnLandmark[] = [];
-      for (const [sequence, message] of durable.entries()) {
+      for (const { sequence, message } of durableRecords()) {
         if (landmarks.length >= maxLandmarks) break;
         const turnId = message.turnId;
         if (message.type !== 'user' || turnId === undefined || seen.has(turnId)) continue;

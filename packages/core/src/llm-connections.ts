@@ -28,7 +28,7 @@
 // a catalog, so the projected-connection shape belongs here beside the stored
 // one rather than in the module that computes entries.
 import type { ModelCatalogEntry } from './model-catalog.js';
-import type { RelayModelProfiles } from './model-thinking.js';
+import type { ModelOverride, ModelOverrides } from './model-thinking.js';
 import type {
   JsonObject,
   RequestHeaderUpdate,
@@ -77,7 +77,7 @@ export type {
 export function isRelayProviderType(
   providerType: ProviderType,
 ): providerType is 'openai-compatible' | 'openai-responses-compatible' {
-  return PROVIDER_REGISTRY[providerType].relayModelProfiles === true;
+  return providerType === 'openai-compatible' || providerType === 'openai-responses-compatible';
 }
 
 export type ConnectionAuth =
@@ -133,26 +133,7 @@ export interface ModelInfo {
     input: ModelModality[];
     output: ModelModality[];
   };
-  /**
-   * Read-time provenance for values overlaid from model-facts.json. This is
-   * never persisted in a provider inventory; it lets catalog consumers show
-   * where a projected value came from.
-   */
-  factOverriddenFields?: readonly ModelFactField[];
 }
-
-export type ModelFactField =
-  | 'displayName'
-  | 'description'
-  | 'apiProtocol'
-  | 'contextWindow'
-  | 'inputLimit'
-  | 'maxOutputTokens'
-  | 'knowledgeCutoff'
-  | 'structuredOutput'
-  | 'lastUpdated'
-  | 'capabilities'
-  | 'modalities';
 
 export type ModelDiscoverySource = 'fetched' | 'fallback';
 
@@ -172,18 +153,8 @@ export interface RuntimeExecutionConnection {
   baseUrl?: string;
   defaultModel: string;
   models?: ModelInfo[];
-  /**
-   * Per-model user declarations for a custom OpenAI relay: the facts
-   * (offered thinking levels, vision enable/disable, context window) that
-   * neither the relay's /models report nor built-in metadata can decide
-   * (see `RelayModelProfile` in `model-thinking.ts`). First-class and typed —
-   * relay models are unknown to metadata and a catalog refresh rewrites
-   * `models[]` rows, so declarations live next to the user-edited fields.
-   * Invariants enforced at store boundaries: only custom OpenAI relay
-   * connections carry profiles, and only for ids in `enabledModelIds`
-   * (disabling a model deletes its profile).
-   */
-  relayModelProfiles?: RelayModelProfiles;
+  /** User model parameters, retained independently of the enabled selection. */
+  modelOverrides?: ModelOverrides;
   /** Additional top-level JSON properties added to model request bodies. */
   requestBodyOverlay?: JsonObject;
   /** Free-form, non-secret per-connection data; nothing reads a key unless it is shaped for the connection's provider type. */
@@ -788,7 +759,7 @@ export interface CreateConnectionInput {
   /** When omitted, falls back to the default model alone. */
   enabledModelIds?: string[];
   apiKey?: string;
-  relayModelProfiles?: RelayModelProfiles;
+  modelOverrides?: ModelOverrides;
   /** Sensitive values are accepted only for initial creation and stored in the credential vault. */
   requestHeaders?: Readonly<Record<string, string>>;
   requestBodyOverlay?: JsonObject;
@@ -796,6 +767,12 @@ export interface CreateConnectionInput {
 }
 
 export interface UpdateConnectionInput {
+  modelOverride?: {
+    modelId: string;
+    expected: ModelOverride | null;
+    value: ModelOverride;
+    enable?: boolean;
+  };
   name?: string;
   baseUrl?: string;
   defaultModel?: string;
@@ -807,12 +784,8 @@ export interface UpdateConnectionInput {
   lastTestStatus?: ConnectionLastTestStatus;
   lastTestAt?: string;
   lastTestMessage?: string;
-  /**
-   * Replace the whole relay profiles table: absent leaves it untouched,
-   * `null` clears it outright, a table replaces it (with the usual rules —
-   * only custom OpenAI relays, only for `enabledModelIds`).
-   */
-  relayModelProfiles?: RelayModelProfiles | null;
+  /** Full replacement for imports. Omitted leaves records intact; null clears them. */
+  modelOverrides?: ModelOverrides | null;
   requestBodyOverlay?: JsonObject | null;
   extras?: Record<string, unknown>;
 }

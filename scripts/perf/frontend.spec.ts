@@ -202,7 +202,6 @@ test('long session switch, older history and idle retention', {
             page.locator('.maka-prompt-rail-tick[data-prompt-turn-id="turn-prompt-rail-1"]'),
           );
           await expect(page.locator('[data-turn-id="turn-prompt-rail-1"]')).toHaveCount(1);
-          await expect(page.locator('[data-transcript-gap="newer"]')).toBeVisible();
           await activate(
             page.getByRole('button', {
               name: /^(滚动主对话到底部|Scroll main conversation to bottom)$/,

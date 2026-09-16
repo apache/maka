@@ -164,7 +164,7 @@ test('compaction notes fire for a fold made by the request hook, not only for a 
           stage: 'activeStep',
           sourceKind: 'runtimeEvents',
           decision: 'replaced',
-          boundaryKind: 'activeToolResultPrune',
+          boundaryKind: 'toolResultPrune',
         },
       ],
     } as never),

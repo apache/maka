@@ -29,8 +29,13 @@ import {
   Settings,
   Sparkles,
 } from '@maka/ui/icons';
-import { CommandPalette } from '../src/renderer/command-palette';
-import type { Command } from '../src/renderer/command-palette-types';
+import {
+  CommandPalette,
+  OverlaysRoot,
+  OverlaysServicesProvider,
+  type Command,
+} from '../src/renderer/features/overlays/index.js';
+import { createFakeOverlaysServices } from '../src/renderer/features/overlays/testing.js';
 
 // Fidelity convention (#1433): every story below names the real app path
 // that reaches it. See apps/desktop/stories/FIDELITY.md.
@@ -145,12 +150,19 @@ function searchModalDeps(response: SearchResponse): SearchModalDeps {
   };
 }
 
-function CommandPaletteFrame(props: { commands: Command[] }) {
-  const [isOpen, setIsOpen] = useState(false);
+const storyOverlayServices = createFakeOverlaysServices();
+
+/** Opens the palette the way the shell does: through the overlays owner. */
+function OpenPaletteOnMount(props: { openPalette(): void }) {
+  const { openPalette } = props;
   useEffect(() => {
-    const frame = window.requestAnimationFrame(() => setIsOpen(true));
+    const frame = window.requestAnimationFrame(openPalette);
     return () => window.cancelAnimationFrame(frame);
-  }, []);
+  }, [openPalette]);
+  return null;
+}
+
+function CommandPaletteFrame(props: { commands: Command[] }) {
   return (
     <div
       style={{
@@ -159,11 +171,16 @@ function CommandPaletteFrame(props: { commands: Command[] }) {
         position: 'relative',
       }}
     >
-      <CommandPalette
-        commands={props.commands}
-        isOpen={isOpen}
-        onOpenChange={setIsOpen}
-      />
+      <OverlaysServicesProvider services={storyOverlayServices}>
+        <OverlaysRoot>
+          {(overlays) => (
+            <>
+              <OpenPaletteOnMount openPalette={overlays.commands.openPalette} />
+              <CommandPalette commands={props.commands} />
+            </>
+          )}
+        </OverlaysRoot>
+      </OverlaysServicesProvider>
     </div>
   );
 }

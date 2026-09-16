@@ -20,6 +20,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { WORKHUB_COORDINATION_SESSION_ID } from '@maka/core/session';
+import { decodeWorkHubCoordinationActFromTurnInput, decodeWorkHubCoordinationSelectAndDelegateInput } from '@maka/runtime-host/protocol';
+import { workHubTasksSchema } from '../../shared/workhub-tool-schema.js';
 import { createWorkHubRuntime } from '../workhub-runtime.js';
 
 const scope = { hostId: 'host', targetEpoch: 'epoch' };
@@ -57,6 +59,100 @@ test('task delegation binds the tool action to the Host turn and trusted creatio
   assert.ok('actionId' in result);
   assert.equal(result.actionId, 'tool-call');
   assert.deepEqual(f.changes, [[scope, 'created', 'target']]);
+});
+
+test('nested tool calls produce stable task identities accepted by both Host action paths', async () => {
+  const f = fixture();
+  const toolCallId = `${'p'.repeat(128)}:nested:00000000-0000-4000-8000-000000000001`;
+  const actionIds: string[] = [];
+  const result = { disposition: 'create_new' as const, targetSessionId: 'target', targetTurnId: 'target-turn' };
+  f.client.actWorkHubCoordinationFromTurn = async (input) => {
+    actionIds.push(decodeWorkHubCoordinationActFromTurnInput(input).actionId);
+    return result;
+  };
+  f.client.selectAndDelegateWorkHubTarget = async (input) => {
+    actionIds.push(decodeWorkHubCoordinationSelectAndDelegateInput(input).actionId);
+    return { kind: 'delegated', result };
+  };
+
+  const create = { operation: 'create_new' as const, title: 'Work', text: 'Do work' };
+  const created = await f.runtime.actTasks(scope, 'turn', toolCallId, create);
+  const retried = await f.runtime.actTasks(scope, 'turn', toolCallId, create);
+  const selected = await f.runtime.actTasks(scope, 'turn', toolCallId, {
+    operation: 'select_and_delegate', candidateSetId: `sha256:${'a'.repeat(64)}`,
+    candidateRefs: ['candidate'], text: 'Do work',
+  });
+  for (const outcome of [created, retried, selected]) {
+    assert.ok('actionId' in outcome);
+    assert.equal(outcome.actionId, actionIds[0]);
+  }
+  assert.deepEqual(actionIds, [actionIds[0], actionIds[0], actionIds[0]]);
+  const next = await f.runtime.actTasks(scope, 'turn', toolCallId.replace(/1$/, '2'), create);
+  assert.ok('actionId' in next);
+  assert.equal(next.actionId, actionIds[3]);
+  assert.notEqual(next.actionId, actionIds[0]);
+});
+
+test('linked task operations remain operations at the Host protocol boundary', async () => {
+  const f = fixture();
+  await f.runtime.actTasks(scope, 'turn', 'correct-action', {
+    operation: 'correct',
+    replacesActionId: 'old-action',
+    candidateSetId: 'set',
+    target: { disposition: 'delegate_existing', candidateRef: 'candidate' },
+    text: 'Move the delegated work',
+  });
+  await f.runtime.actTasks(scope, 'turn', 'stop-action', {
+    operation: 'stop',
+    targetSessionId: 'target',
+  });
+  await f.runtime.actTasks(scope, 'turn', 'resume-action', {
+    operation: 'resume',
+    targetSessionId: 'target',
+    resumesActionId: 'stop-action',
+  });
+
+  assert.deepEqual(f.requests, [
+    {
+      turnId: 'turn',
+      actionId: 'correct-action',
+      proposal: {
+        operation: 'correct',
+        replacesActionId: 'old-action',
+        target: { disposition: 'delegate_existing', candidateRef: 'candidate' },
+      },
+      delegationText: 'Move the delegated work',
+      candidateSetId: 'set',
+    },
+    {
+      turnId: 'turn',
+      actionId: 'stop-action',
+      proposal: { operation: 'stop', expects: { targetSessionId: 'target' } },
+    },
+    {
+      turnId: 'turn',
+      actionId: 'resume-action',
+      proposal: {
+        operation: 'resume',
+        resumesActionId: 'stop-action',
+        expects: { targetSessionId: 'target' },
+      },
+    },
+  ]);
+});
+
+test('the task tool exposes correction as a linked operation, not a disposition', () => {
+  const correction = {
+    operation: 'correct',
+    replacesActionId: 'old-action',
+    target: { disposition: 'create_new', title: 'Replacement' },
+    text: 'Correct the earlier delegation',
+  };
+  assert.deepEqual(workHubTasksSchema.parse(correction), correction);
+  assert.equal(
+    workHubTasksSchema.safeParse({ ...correction, operation: 'replace' }).success,
+    false,
+  );
 });
 
 test('a Host switch while resolving the workspace prevents delegation', async () => {

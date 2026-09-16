@@ -950,7 +950,7 @@ export class ShellRunProcessManager
       sourceToolCallId: input.sourceToolCallId,
       ...(input.visibility === undefined ? {} : { visibility: input.visibility }),
       cwd: input.cwd,
-      command: redactSecrets(input.command),
+      command: input.command,
       status: 'starting',
       startedAt,
       updatedAt: startedAt,
@@ -972,6 +972,7 @@ export class ShellRunProcessManager
   private async markRunning(live: LiveShellRun): Promise<void> {
     live.record = await this.input.store.updateShellRun(live.sessionId, live.shellRunId, {
       status: 'running',
+      ...this.processPidPatch(live),
       output: (await this.snapshotAtCut(live, false)).output,
       updatedAt: this.input.now(),
     });
@@ -980,6 +981,11 @@ export class ShellRunProcessManager
     } else if (this.currentGeneration(live) > 0) {
       this.scheduleAutomaticFlush(live);
     }
+  }
+
+  private processPidPatch(live: LiveShellRun): Pick<ShellRunPatch, 'pid'> {
+    const pid = live.driver.pid;
+    return pid !== undefined && Number.isSafeInteger(pid) && pid > 0 ? { pid } : {};
   }
 
   private onPipeData(live: LivePipeShellRun, stream: 'stdout' | 'stderr', data: string): void {
@@ -1141,12 +1147,13 @@ export class ShellRunProcessManager
       failureStage = 'persist';
       if (live.persistFailure && !options.bestEffort) throw live.persistFailure;
       const current = live.record;
-      const candidate: ShellRunRecord = { ...current, ...patch, output: snapshot.output };
+      // ConPTY can publish its PID after admission, even without new output.
+      const update = { ...patch, ...this.processPidPatch(live), output: snapshot.output };
+      const candidate: ShellRunRecord = { ...current, ...update };
       let updated = current;
       if (!isDeepStrictEqual(candidate, current)) {
         updated = await this.input.store.updateShellRun(live.sessionId, live.shellRunId, {
-          ...patch,
-          output: snapshot.output,
+          ...update,
           updatedAt: this.input.now(),
         });
         live.record = updated;
@@ -2035,13 +2042,16 @@ function normalizeBackgroundTimeoutMs(value: number | undefined): number | undef
   return value;
 }
 
-function splitPtyData(data: string): string[] {
-  const codePoints = Array.from(data);
-  const chunks: string[] = [];
-  for (let offset = 0; offset < codePoints.length; offset += PTY_RAW_INPUT_CHUNK_CODE_POINTS) {
-    chunks.push(codePoints.slice(offset, offset + PTY_RAW_INPUT_CHUNK_CODE_POINTS).join(''));
+function* splitPtyData(data: string): Generator<string> {
+  // Bound each published piece without materializing the entire callback as code points.
+  let offset = 0;
+  while (offset < data.length) {
+    const start = offset;
+    for (let count = 0; count < PTY_RAW_INPUT_CHUNK_CODE_POINTS && offset < data.length; count++) {
+      offset += data.codePointAt(offset)! > 0xffff ? 2 : 1;
+    }
+    yield data.slice(start, offset);
   }
-  return chunks;
 }
 
 function encodedPtyDataBytes(data: string): number {

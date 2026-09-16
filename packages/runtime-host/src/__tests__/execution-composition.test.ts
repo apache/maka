@@ -20,6 +20,7 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { WORKHUB_COORDINATION_SESSION_ID } from '@maka/core/session';
+import type { WorkHubRoutingDecision } from '@maka/core/workhub-routing';
 import type { WorkHubAdmittedAction } from '../server/workhub-coordination-action-gate.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
 import { runtimeInvocationOutcome } from '@maka/core/runtime-invocation';
@@ -83,16 +84,23 @@ import {
   runtimeHostFilesystemWorkerRuntime,
   stopOwnedWorkHubRoot,
   stopReplacedWorkHubRoot,
+  type ExecutionRuntimeHostComposition,
 } from '../server/execution-composition.js';
 import { RuntimeHostKernel, type RuntimeHostCompositionContext } from '../server/host-kernel.js';
 import { defineInteractiveRuntimeHostComposition } from '../server/host-composition.js';
 import { connectRuntimeHost, RuntimeHostOperationError } from '../client/index.js';
 import { RUNTIME_HOST_PROTOCOL_VERSION } from '../protocol/index.js';
 import { readLedgerMessages } from './fixtures/ledger-transcript.js';
+import { clientCapabilityConnectionIdentity } from './fixtures/client-capability.js';
+import { workHubDesktopCapabilityOffers } from './fixtures/workhub-capabilities.js';
 
 const require = createRequire(import.meta.url);
 const FAKE_CONNECTION_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const CONTEXT_OFFLOAD_DATABASE_NAME = 'context-offload.sqlite';
+const workHubRoutingDecisions = new WeakMap<
+  ExecutionRuntimeHostComposition,
+  Map<string, WorkHubRoutingDecision>
+>();
 const HANDOFF_TEST_COMPOSITION = createRunCompositionSnapshot({
   composerId: 'test.handoff',
   composerRevision: '1',
@@ -956,6 +964,224 @@ test('production composition commits automatic titles through Host-owned Session
   });
 });
 
+test('default production WorkHub selects and delegates through its durable Host interaction', async () => {
+  await withCompositionRoot(async ({ root, owner }) => {
+    const connectionId = await configureFakeDefaultTarget(owner);
+    const { composition, manager } = await createCapturedExecutionComposition(owner, {
+      defaultWorkHubRouting: true,
+    });
+    const context: ConnectionContext = {
+      hostEpoch: 'execution-composition-test',
+      connectionId: 'selection-client',
+      principal: 'local_os_user',
+      acquireResidency: () => ({ release() {} }),
+    };
+    const desktop = composition.clientCapabilities!.attachConnection(
+      clientCapabilityConnectionIdentity(context.connectionId),
+      { send: async () => {} },
+    );
+    try {
+      const registered = await composition.handlers['client.capability.replace'](
+        {
+          registrationId: randomUUID(),
+          offers: workHubDesktopCapabilityOffers(),
+        },
+        context,
+      );
+      assert.ok(registered.ok, JSON.stringify(registered));
+      await composition.handlers['workhub.coordination.resolve']({}, context);
+      const alpha = await manager.createSession({
+        cwd: root,
+        name: 'Release',
+        llmConnectionId: connectionId,
+        llmConnectionSlug: 'fake',
+        model: 'fake-model',
+        permissionMode: 'bypass',
+      });
+      const beta = await manager.createSession({
+        cwd: root,
+        name: 'Release',
+        llmConnectionId: connectionId,
+        llmConnectionSlug: 'fake',
+        model: 'fake-model',
+        permissionMode: 'bypass',
+      });
+      const page = await composition.handlers['workhub.coordination.candidates']({}, context);
+      assert.ok(page.ok);
+      if (!page.ok) return;
+      const turnId = randomUUID();
+      const started = await composition.handlers['workhub.coordination.answer'](
+        { turnId, text: 'Continue Release; let me choose which work.' },
+        context,
+      );
+      assert.ok(started.ok, JSON.stringify(started));
+      const input = {
+        turnId,
+        actionId: 'selected-release',
+        candidateSetId: page.result.candidateSetId,
+        candidateRefs: page.result.candidates.map((candidate) => candidate.candidateRef),
+        delegationText: 'Report release readiness',
+      };
+      let selectionOutcome: unknown;
+      const pending = composition.handlers['workhub.coordination.selectAndDelegate'](
+        input,
+        context,
+      ).then((result) => {
+        selectionOutcome = result;
+        return result;
+      });
+      const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+      await waitFor(async () => {
+        assert.equal(selectionOutcome, undefined, JSON.stringify(selectionOutcome));
+        return (
+          (
+            await stores.interactionStore.listPending({
+              sessionId: WORKHUB_COORDINATION_SESSION_ID,
+            })
+          ).length === 1
+        );
+      });
+      const record = (
+        await stores.interactionStore.listPending({ sessionId: WORKHUB_COORDINATION_SESSION_ID })
+      )[0]!;
+      const query = () =>
+        composition.handlers['interaction.query'](
+          { sessionId: WORKHUB_COORDINATION_SESSION_ID, interactionId: record.requestId },
+          context,
+        );
+      const offered = await query();
+      assert.ok(offered.ok);
+      if (!offered.ok) return;
+      const interaction = offered.result;
+      assert.equal(interaction.request.kind, 'form');
+      assert.equal(await stores.sessionStore.readWorkHubAssignment(input.actionId), undefined);
+      assert.equal(interaction.request.kind, 'form');
+      if (
+        interaction.request.kind !== 'form' ||
+        interaction.request.fields[0]?.kind !== 'single_select'
+      )
+        return;
+      const selected = interaction.request.fields[0].options.find(
+        (option) => JSON.parse(option.value)[1] === beta.id,
+      )!;
+      // Other candidates can change while the user chooses; identity remains the selected Session.
+      await manager.createSession({
+        cwd: root,
+        name: 'Unrelated work',
+        llmConnectionId: connectionId,
+        llmConnectionSlug: 'fake',
+        model: 'fake-model',
+        permissionMode: 'bypass',
+      });
+      const answered = await composition.handlers['interaction.answer'](
+        {
+          sessionId: WORKHUB_COORDINATION_SESSION_ID,
+          interactionId: interaction.interactionId,
+          answer: { kind: 'form', action: 'accept', values: { target: selected.value } },
+        },
+        context,
+      );
+      assert.ok(answered.ok, JSON.stringify(answered));
+      const delegated = await pending;
+      assert.ok(delegated.ok, JSON.stringify(delegated));
+      if (!delegated.ok || delegated.result.kind !== 'delegated') return;
+      assert.equal(
+        'targetSessionId' in delegated.result.result && delegated.result.result.targetSessionId,
+        beta.id,
+      );
+      assert.notEqual(beta.id, alpha.id);
+      assert.deepEqual(
+        await composition.handlers['workhub.coordination.selectAndDelegate'](input, context),
+        delegated,
+      );
+      const assignment = await stores.sessionStore.readWorkHubAssignment(input.actionId);
+      assert.equal(assignment?.targetSessionId, beta.id);
+      const targetTurnId =
+        'targetTurnId' in delegated.result.result
+          ? delegated.result.result.targetTurnId
+          : undefined;
+      assert.ok(targetTurnId);
+      await waitFor(async () => {
+        const turn = await composition.handlers['turn.query'](
+          { sessionId: beta.id, turnId: targetTurnId! },
+          context,
+        );
+        return turn.ok && turn.result.status === 'completed';
+      });
+      assert.equal((await query()).ok, true);
+      for (const cancel of [true, false]) {
+        const fresh = await composition.handlers['workhub.coordination.candidates']({}, context);
+        assert.ok(fresh.ok);
+        if (!fresh.ok) return;
+        const nextInput = {
+          ...input,
+          actionId: cancel ? 'cancelled-release' : 'stale-release',
+          candidateSetId: fresh.result.candidateSetId,
+          candidateRefs: fresh.result.candidates.map((candidate) => candidate.candidateRef),
+        };
+        let nextOutcome: unknown;
+        const next = composition.handlers['workhub.coordination.selectAndDelegate'](
+          nextInput,
+          context,
+        ).then((result) => {
+          nextOutcome = result;
+          return result;
+        });
+        await waitFor(async () => {
+          assert.equal(nextOutcome, undefined, JSON.stringify(nextOutcome));
+          return (
+            (
+              await stores.interactionStore.listPending({
+                sessionId: WORKHUB_COORDINATION_SESSION_ID,
+              })
+            ).length === 1
+          );
+        });
+        const offer = (
+          await stores.interactionStore.listPending({ sessionId: WORKHUB_COORDINATION_SESSION_ID })
+        )[0]!;
+        assert.equal(offer.request.kind, 'form');
+        if (offer.request.kind !== 'form' || offer.request.fields[0]?.kind !== 'single_select')
+          return;
+        const option = offer.request.fields[0].options.find(
+          (item) => JSON.parse(item.value)[1] === alpha.id,
+        )!;
+        if (!cancel) {
+          const snapshot = await stores.sessionStore.readCatalogRecord(alpha.id);
+          await stores.sessionStore.setSessionsArchivedVersioned(
+            [{ sessionId: alpha.id, expectedVersion: snapshot.revision }],
+            true,
+          );
+        }
+        const answer = await composition.handlers['interaction.answer'](
+          {
+            sessionId: WORKHUB_COORDINATION_SESSION_ID,
+            interactionId: offer.requestId,
+            answer: cancel
+              ? { kind: 'form', action: 'cancel' }
+              : { kind: 'form', action: 'accept', values: { target: option.value } },
+          },
+          context,
+        );
+        assert.ok(answer.ok, JSON.stringify(answer));
+        const result = await next;
+        if (cancel) assert.deepEqual(result, { ok: true, result: { kind: 'cancelled' } });
+        else {
+          assert.equal(result.ok, false);
+          if (!result.ok) assert.equal(result.error.code, 'candidate_set_stale');
+        }
+        assert.equal(
+          await stores.sessionStore.readWorkHubAssignment(nextInput.actionId),
+          undefined,
+        );
+      }
+    } finally {
+      await desktop.close();
+      await composition.close();
+    }
+  });
+});
+
 test('WorkHub creates new work through the production assignment composition', async () => {
   await withCompositionRoot(async ({ root, owner }) => {
     const connectionId = await configureFakeDefaultTarget(owner);
@@ -1001,7 +1227,7 @@ test('WorkHub creates new work through the production assignment composition', a
           actionId: 'workhub-create-stop-action',
           userText: 'Stop Login stability',
           proposal: {
-            disposition: 'stop_work',
+            operation: 'stop',
             expects: { targetSessionId },
           },
         },
@@ -1141,7 +1367,7 @@ test('WorkHub Resume and Stop follow logical lineage across repeated physical ha
           actionId: 'workhub-resume-stop-resume',
           userText: 'Resume Payments',
           proposal: {
-            disposition: 'resume_work',
+            operation: 'resume',
             resumesActionId: 'workhub-resume-stop-delegation',
             expects: { targetSessionId: target.id },
           },
@@ -1178,6 +1404,14 @@ test('WorkHub Resume and Stop follow logical lineage across repeated physical ha
       owner = restartedOwner;
       ({ composition, manager } = await createCapturedExecutionComposition(owner, {
         safeBoundaryResume: true,
+        // Keep the resumed target alive until Stop; a normal fake response can
+        // finish between the running-state query and the stop admission.
+        primaryBackendFactory: (backendContext) =>
+          new (class extends FakeBackend {
+            override async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+              yield* super.send({ ...input, text: FAKE_HOLD_OPEN_PROMPT });
+            }
+          })(backendContext),
       }));
       closed = false;
       await manager.renameSession(target.id, 'Renamed Payments');
@@ -1185,7 +1419,7 @@ test('WorkHub Resume and Stop follow logical lineage across repeated physical ha
         actionId: 'workhub-resume-stop-resume',
         userText: 'Resume Payments',
         proposal: {
-          disposition: 'resume_work' as const,
+          operation: 'resume' as const,
           resumesActionId: 'workhub-resume-stop-delegation',
           expects: { targetSessionId: target.id },
         },
@@ -1243,7 +1477,7 @@ test('WorkHub Resume and Stop follow logical lineage across repeated physical ha
           actionId: 'workhub-resume-stop-stop',
           userText: 'Stop Payments',
           proposal: {
-            disposition: 'stop_work',
+            operation: 'stop',
             expects: { targetSessionId: target.id },
           },
         },
@@ -1340,7 +1574,7 @@ test('WorkHub does not record resume while safe-boundary resume is disabled', as
           actionId,
           userText: 'Resume Payments',
           proposal: {
-            disposition: 'resume_work',
+            operation: 'resume',
             resumesActionId: 'workhub-disabled-resume-delegation',
             expects: { targetSessionId: target.id },
           },
@@ -1459,7 +1693,7 @@ test('WorkHub correction replaces its link without stopping a shared manual Turn
           actionId: 'workhub-stop-shared-action',
           userText: `Stop ${sourceCandidate.sessionName}`,
           proposal: {
-            disposition: 'stop_work',
+            operation: 'stop',
             expects: { targetSessionId: source.id },
           },
         },
@@ -1510,7 +1744,7 @@ test('WorkHub correction replaces its link without stopping a shared manual Turn
         userText: `No, move this to ${correctionDestination.sessionName} instead`,
         candidateSetId: correctionCandidates.result.candidateSetId,
         proposal: {
-          disposition: 'replace',
+          operation: 'correct',
           replacesActionId: assignment.actionId,
           target: {
             disposition: 'delegate_existing',
@@ -1681,6 +1915,188 @@ test('production Skill catalog resolves a Graph child durable tool surface', asy
       assert.equal(outcome.ok, true);
       if (outcome.ok) assert.equal(outcome.result.kind, 'page');
     } finally {
+      await composition.close();
+    }
+  });
+});
+
+test('production Skill catalog reports an archived Session without resolving its live tool surface', async () => {
+  await withCompositionRoot(async ({ root, owner }) => {
+    const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+    const session = await stores.sessionStore.create({
+      cwd: root,
+      llmConnectionId: FAKE_CONNECTION_ID,
+      llmConnectionSlug: 'fake',
+      model: 'fake-model',
+      permissionMode: 'ask',
+    });
+    const snapshot = await stores.sessionStore.readHeaderRecordSnapshot(session.id);
+    await stores.sessionStore.setSessionsArchivedVersioned(
+      [{ sessionId: session.id, expectedVersion: snapshot.revision }],
+      true,
+    );
+
+    const composition = await createExecutionRuntimeHostComposition(compositionContext(owner));
+    try {
+      await composition.recover();
+      const outcome = await composition.handlers['skill.catalog.invocable.query'](
+        {
+          kind: 'start',
+          target: { kind: 'session', sessionId: session.id },
+        },
+        {
+          hostEpoch: 'execution-composition-test',
+          connectionId: 'archived-session-skill-client',
+          principal: 'local_os_user',
+          acquireResidency: () => ({ release() {} }),
+        },
+      );
+      assert.deepEqual(outcome, {
+        ok: false,
+        error: { code: 'session_archived', message: 'Session is archived' },
+      });
+    } finally {
+      await composition.close();
+    }
+  });
+});
+
+test('production Skill catalog reports a removed Session as not found', async () => {
+  await withCompositionRoot(async ({ root, owner }) => {
+    const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+    const session = await stores.sessionStore.create({
+      cwd: root,
+      llmConnectionId: FAKE_CONNECTION_ID,
+      llmConnectionSlug: 'fake',
+      model: 'fake-model',
+      permissionMode: 'ask',
+    });
+    const snapshot = await stores.sessionStore.readHeaderRecordSnapshot(session.id);
+    await stores.sessionStore.removeSessionsVersioned([
+      { sessionId: session.id, expectedVersion: snapshot.revision },
+    ]);
+
+    const composition = await createExecutionRuntimeHostComposition(compositionContext(owner));
+    try {
+      await composition.recover();
+      const outcome = await composition.handlers['skill.catalog.invocable.query'](
+        {
+          kind: 'start',
+          target: { kind: 'session', sessionId: session.id },
+        },
+        {
+          hostEpoch: 'execution-composition-test',
+          connectionId: 'removed-session-skill-client',
+          principal: 'local_os_user',
+          acquireResidency: () => ({ release() {} }),
+        },
+      );
+      assert.deepEqual(outcome, {
+        ok: false,
+        error: { code: 'not_found', message: 'Session does not exist' },
+      });
+    } finally {
+      await composition.close();
+    }
+  });
+});
+
+test('production Skill catalog preserves an archive race during live tool resolution', async () => {
+  await withCompositionRoot(async ({ root, owner }) => {
+    const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+    const session = await stores.sessionStore.create({
+      cwd: root,
+      llmConnectionId: FAKE_CONNECTION_ID,
+      llmConnectionSlug: 'fake',
+      model: 'fake-model',
+      permissionMode: 'ask',
+    });
+    const composition = await createExecutionRuntimeHostComposition(compositionContext(owner));
+    const originalToolsForSession = AgentGraphCoordinator.prototype.toolsForSession;
+    let archiveInjected = false;
+    try {
+      await composition.recover();
+      AgentGraphCoordinator.prototype.toolsForSession = async function (sessionId) {
+        if (sessionId === session.id && !archiveInjected) {
+          archiveInjected = true;
+          const snapshot = await stores.sessionStore.readHeaderRecordSnapshot(session.id);
+          await stores.sessionStore.setSessionsArchivedVersioned(
+            [{ sessionId: session.id, expectedVersion: snapshot.revision }],
+            true,
+          );
+        }
+        return originalToolsForSession.call(this, sessionId);
+      };
+
+      const outcome = await composition.handlers['skill.catalog.invocable.query'](
+        {
+          kind: 'start',
+          target: { kind: 'session', sessionId: session.id },
+        },
+        {
+          hostEpoch: 'execution-composition-test',
+          connectionId: 'archive-race-skill-client',
+          principal: 'local_os_user',
+          acquireResidency: () => ({ release() {} }),
+        },
+      );
+      assert.equal(archiveInjected, true);
+      assert.deepEqual(outcome, {
+        ok: false,
+        error: { code: 'session_archived', message: 'Session is archived' },
+      });
+    } finally {
+      AgentGraphCoordinator.prototype.toolsForSession = originalToolsForSession;
+      await composition.close();
+    }
+  });
+});
+
+test('production Skill catalog preserves a removal race during live tool resolution', async () => {
+  await withCompositionRoot(async ({ root, owner }) => {
+    const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+    const session = await stores.sessionStore.create({
+      cwd: root,
+      llmConnectionId: FAKE_CONNECTION_ID,
+      llmConnectionSlug: 'fake',
+      model: 'fake-model',
+      permissionMode: 'ask',
+    });
+    const composition = await createExecutionRuntimeHostComposition(compositionContext(owner));
+    const originalToolsForSession = AgentGraphCoordinator.prototype.toolsForSession;
+    let removalInjected = false;
+    try {
+      await composition.recover();
+      AgentGraphCoordinator.prototype.toolsForSession = async function (sessionId) {
+        if (sessionId === session.id && !removalInjected) {
+          removalInjected = true;
+          const snapshot = await stores.sessionStore.readHeaderRecordSnapshot(session.id);
+          await stores.sessionStore.removeSessionsVersioned([
+            { sessionId: session.id, expectedVersion: snapshot.revision },
+          ]);
+        }
+        return originalToolsForSession.call(this, sessionId);
+      };
+
+      const outcome = await composition.handlers['skill.catalog.invocable.query'](
+        {
+          kind: 'start',
+          target: { kind: 'session', sessionId: session.id },
+        },
+        {
+          hostEpoch: 'execution-composition-test',
+          connectionId: 'removal-race-skill-client',
+          principal: 'local_os_user',
+          acquireResidency: () => ({ release() {} }),
+        },
+      );
+      assert.equal(removalInjected, true);
+      assert.deepEqual(outcome, {
+        ok: false,
+        error: { code: 'not_found', message: 'Session does not exist' },
+      });
+    } finally {
+      AgentGraphCoordinator.prototype.toolsForSession = originalToolsForSession;
       await composition.close();
     }
   });
@@ -2432,6 +2848,7 @@ async function createCapturedExecutionComposition(
       'retainUntilProcessExit' | 'requestDrain'
     >;
     readonly safeBoundaryResume?: boolean;
+    readonly defaultWorkHubRouting?: boolean;
     readonly primaryBackendFactory?: BackendFactory;
     readonly residencies?: HostResidencyRegistry;
   } = {},
@@ -2444,6 +2861,7 @@ async function createCapturedExecutionComposition(
   const primaryBackendFactory =
     options.primaryBackendFactory ?? ((context) => new FakeBackend(context));
   const residencies = options.residencies;
+  const routingDecisions = new Map<string, WorkHubRoutingDecision>();
   let manager: SessionManager | undefined;
   SessionManager.prototype.recoverInterruptedSessionsStrict = async function (stores) {
     manager = this;
@@ -2476,10 +2894,21 @@ async function createCapturedExecutionComposition(
                 }
               })(context)
             : primaryBackendFactory(context),
+        workHubRoutingModel: options.defaultWorkHubRouting
+          ? undefined
+          : {
+              decide: async ({ turnId }) => {
+                const decision = routingDecisions.get(turnId);
+                if (!decision)
+                  throw new Error(`Missing fake WorkHub routing decision for ${turnId}`);
+                return decision;
+              },
+            },
       },
     );
     await composition.recover();
     if (!manager) throw new Error('Production execution composition did not construct Runtime');
+    workHubRoutingDecisions.set(composition, routingDecisions);
     return { composition, manager };
   } finally {
     if (originalSafeBoundaryResume === undefined) {
@@ -2671,27 +3100,64 @@ async function actWorkHub(
   input: WorkHubAdmittedAction,
   context: ConnectionContext,
 ) {
-  const { userText, attachments, ...action } = input;
-  const turnId = randomUUID();
-  const started = await composition.handlers['workhub.coordination.answer'](
-    { turnId, text: userText, ...(attachments ? { attachments } : {}) },
-    context,
+  const desktop = composition.clientCapabilities!.attachConnection(
+    clientCapabilityConnectionIdentity(context.connectionId),
+    { send: async () => {} },
   );
-  assert.ok(started.ok, JSON.stringify(started));
   try {
-    return await composition.handlers['workhub.coordination.actFromTurn'](
-      { ...action, turnId },
+    const registered = await composition.handlers['client.capability.replace'](
+      {
+        registrationId: randomUUID(),
+        offers: workHubDesktopCapabilityOffers(),
+      },
       context,
     );
+    assert.ok(registered.ok, JSON.stringify(registered));
+    const { userText, attachments, ...action } = input;
+    const turnId = randomUUID();
+    const decisions = workHubRoutingDecisions.get(composition);
+    assert.ok(decisions, 'Production composition is missing its fake WorkHub routing model');
+    decisions.set(turnId, routingDecisionForAction(action));
+    const started = await composition.handlers['workhub.coordination.answer'](
+      { turnId, text: userText, ...(attachments ? { attachments } : {}) },
+      context,
+    );
+    assert.ok(started.ok, JSON.stringify(started));
+    try {
+      return await composition.handlers['workhub.coordination.actFromTurn'](
+        { ...action, turnId },
+        context,
+      );
+    } finally {
+      const run = await composition.handlers['turn.query'](
+        { sessionId: WORKHUB_COORDINATION_SESSION_ID, turnId },
+        context,
+      );
+      assert.ok(run.ok, JSON.stringify(run));
+      await composition.handlers['turn.stop'](
+        { sessionId: WORKHUB_COORDINATION_SESSION_ID, turnId, runId: run.result.runId },
+        context,
+      );
+    }
   } finally {
-    const run = await composition.handlers['turn.query'](
-      { sessionId: WORKHUB_COORDINATION_SESSION_ID, turnId },
-      context,
-    );
-    assert.ok(run.ok, JSON.stringify(run));
-    await composition.handlers['turn.stop'](
-      { sessionId: WORKHUB_COORDINATION_SESSION_ID, turnId, runId: run.result.runId },
-      context,
-    );
+    await desktop.close();
   }
+}
+
+function routingDecisionForAction(
+  action: Omit<WorkHubAdmittedAction, 'userText' | 'attachments'>,
+): WorkHubRoutingDecision {
+  if ('operation' in action.proposal) {
+    return { kind: 'linked', operation: action.proposal.operation };
+  }
+  if (action.proposal.disposition === 'create_new') {
+    return { kind: 'routing', disposition: 'create_new' };
+  }
+  assert.ok(action.candidateSetId, 'Delegation requires a candidate set');
+  return {
+    kind: 'routing',
+    disposition: 'delegate_existing',
+    candidateSetId: action.candidateSetId,
+    candidateRef: action.proposal.candidateRef,
+  };
 }

@@ -42,9 +42,8 @@ export class AgentGraphProviderScenario {
 
   respond(body: Record<string, unknown>, reply: AgentGraphProviderReply): void {
     const names = toolNames(body);
-    // The graph child's exact surface: its read-only allowlist plus the archive
-    // decoder every session that archives now carries (#2026).
-    if (names.join(',') === 'ArchiveRead,Glob,Grep,Read') {
+    // Read covers both files and the child's Session-scoped tool results.
+    if (names.join(',') === 'Glob,Grep,Read') {
       assert.equal(this.#childCompleted, false, 'Graph child provider request was repeated');
       this.#childCompleted = true;
       reply.text(this.childResultText);

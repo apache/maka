@@ -213,7 +213,7 @@ test('shared comparison drives every diff gate on refreshed merges, pushes and d
           'npm',
           'run',
           'check:renderer-architecture',
-          ...(expectedBase ? ['--', '--base', expectedBase] : []),
+          ...(expectedBase ? ['--', '--base', expectedBase, '--strict-base'] : []),
         ],
       ],
     ];
@@ -913,8 +913,8 @@ test('Windows recovery executes the complete Skill catalog suite', () => {
   assert.match(recovery, /skill-catalog-repository\.test\.js/u);
   assert.match(recovery, /skill-catalog-transaction\.test\.js/u);
   assert.match(recovery, /skill-catalog-two-client-uds\.test\.js/u);
-  assert.match(recovery, /# tests 91/u);
-  assert.match(recovery, /# pass 91/u);
+  assert.match(recovery, /# tests 93/u);
+  assert.match(recovery, /# pass 93/u);
   assert.match(recovery, /# skipped 0/u);
 });
 
@@ -1030,6 +1030,21 @@ test('everything that runs before dependency setup imports only node builtins', 
       pending.push(resolved);
     }
   }
+});
+
+test('every CI run validates the real committed source archive without dependency installation', () => {
+  const workflow = readWorkflow('ci.yml');
+  const step = workflow
+    .split('      - name: Verify repository source archive\n')[1]
+    ?.split('\n      - ', 1)[0];
+  assert.ok(step, 'repository archive gate is missing');
+  assert.doesNotMatch(step, /\bif:/u);
+  assert.match(step, /node scripts\/asf-source-release\.mjs create --revision HEAD --version/u);
+  assert.match(step, /require\("\.\/package\.json"\)\.version/u);
+  assert.ok(
+    workflow.indexOf('name: Verify repository source archive') <
+      workflow.indexOf('uses: actions/setup-node'),
+  );
 });
 
 const WORKFLOW_DIR = new URL('../.github/workflows/', import.meta.url);

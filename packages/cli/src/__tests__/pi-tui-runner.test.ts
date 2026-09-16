@@ -76,6 +76,8 @@ import type {
   MakaOnboardingSurface,
   MakaPiTuiTurnActivitySurface,
   ModelChoice,
+  OnboardingOAuthInput,
+  OnboardingOAuthResult,
   OnboardingProviderEntry,
   OnboardingSaveInput,
   OnboardingSaveResult,
@@ -196,6 +198,7 @@ function defaultOnboardingProviders(): OnboardingProviderEntry[] {
 
 interface FakeOnboardingOpts {
   providers?: OnboardingProviderEntry[];
+  loginOAuth?: (input: OnboardingOAuthInput) => Promise<OnboardingOAuthResult>;
   verify?: (input: OnboardingVerifyInput) => Promise<OnboardingVerifyResult>;
   save?: (input: OnboardingSaveInput) => Promise<OnboardingSaveResult>;
 }
@@ -207,11 +210,24 @@ interface FakeOnboardingOpts {
 function fakeOnboardingSurface(opts: FakeOnboardingOpts = {}): MakaOnboardingSurface {
   return {
     listProviders: async () => opts.providers ?? defaultOnboardingProviders(),
+    ...(opts.loginOAuth ? { loginOAuth: opts.loginOAuth } : {}),
     verify:
       opts.verify ??
       (async () => ({ kind: 'ok', models: [{ id: 'gpt-5.5' }, { id: 'gpt-5.5-mini' }] })),
     save: opts.save ?? (async () => savedOnboardingResult()),
   };
+}
+
+function oauthCreateProvider(enabledModelIds: readonly string[]) {
+  return {
+    providerType: 'openai-codex',
+    label: 'OpenAI OAuth (ChatGPT / Codex)',
+    requiresBaseUrl: false,
+    setupMethod: 'oauth',
+    target: { kind: 'create', providerType: 'openai-codex' },
+    suggestedSlug: 'codex-subscription',
+    enabledModelIds,
+  } as const satisfies OnboardingProviderEntry;
 }
 
 function savedOnboardingResult(
@@ -873,6 +889,544 @@ describe('Maka Pi TUI runner', () => {
     }
   });
 
+  test('a new OAuth account flows from identity through authorization to model save', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new SlashCommandDriver();
+    const loginTargets: OnboardingProviderEntry['target'][] = [];
+    const verifyCalls: OnboardingVerifyInput[] = [];
+    const saveCalls: OnboardingSaveInput[] = [];
+    const authorization = deferred<{
+      readonly kind: 'authenticated';
+      readonly connection: {
+        readonly connectionId: string;
+        readonly slug: string;
+        readonly providerType: 'openai-codex';
+      };
+    }>();
+    const models = [
+      { id: 'gpt-5.6-sol' },
+      { id: 'gpt-5.5' },
+      { id: 'gpt-5.4' },
+      { id: 'gpt-5.4-mini' },
+      { id: 'gpt-5.3-codex-spark' },
+    ];
+    const provider = oauthCreateProvider(models.map(({ id }) => id));
+    const onboarding = fakeOnboardingSurface({
+      providers: [provider],
+      loginOAuth: async (input) => {
+        loginTargets.push(input.target);
+        input.onPresentation({
+          url: 'https://auth.openai.com/codex/device',
+          stateHint: 'ABCD-EFGH',
+        });
+        return authorization.promise;
+      },
+      verify: async (input) => {
+        verifyCalls.push(input);
+        return { kind: 'ok' as const, models };
+      },
+      save: async (input) => {
+        saveCalls.push(input);
+        return {
+          kind: 'ok' as const,
+          connection: {
+            connectionId: 'codex-id',
+            revision: 1,
+            slug: 'codex-subscription',
+            providerType: 'openai-codex' as const,
+          },
+          refresh: { kind: 'ok' as const, modelChoices: [], connectionIdentities: [] },
+        };
+      },
+    });
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'bypass',
+      terminal,
+      onboarding,
+    });
+
+    try {
+      await waitForTuiPaint(terminal);
+      terminal.input('/setup');
+      terminal.input('\r');
+      await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('Set Up Provider'));
+      assert.match(plainTerminalOutput(terminal.screenOutput()), /1\/4/);
+      terminal.input('\r');
+      await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('2/4'));
+      for (let index = 0; index < provider.label.length; index += 1) terminal.input('\x7f');
+      terminal.input('Work Codex');
+      terminal.input('\r');
+      for (let index = 0; index < provider.suggestedSlug.length; index += 1) {
+        terminal.input('\x7f');
+      }
+      terminal.input('codex-work');
+      terminal.input('\r');
+      await waitFor(() => {
+        const screen = plainTerminalOutput(terminal.screenOutput());
+        return (
+          screen.includes('3/4') &&
+          screen.includes('https://auth.openai.com/codex/device') &&
+          screen.includes('Sign-in code: ABCD-EFGH') &&
+          screen.includes('Waiting for browser authorization')
+        );
+      });
+      authorization.resolve({
+        kind: 'authenticated',
+        connection: {
+          connectionId: 'codex-id',
+          slug: 'codex-work',
+          providerType: 'openai-codex',
+        },
+      });
+      await waitFor(() => verifyCalls.length === 1);
+      await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('4/4'));
+      terminal.input('\r');
+      await waitFor(() => saveCalls.length === 1);
+
+      assert.deepEqual(loginTargets, [
+        {
+          kind: 'create',
+          providerType: 'openai-codex',
+          slug: 'codex-work',
+          name: 'Work Codex',
+        },
+      ]);
+      assert.deepEqual(verifyCalls[0]?.target, {
+        kind: 'existing',
+        connectionId: 'codex-id',
+      });
+      assert.deepEqual(saveCalls[0], {
+        target: { kind: 'existing', connectionId: 'codex-id' },
+        apiKey: '',
+        baseUrl: '',
+        enabledModelIds: models.map(({ id }) => id),
+      });
+    } finally {
+      process.emit('SIGTERM');
+      await run;
+    }
+  });
+
+  for (const [locale, cancellingText, unconfirmedText] of [
+    ['en', 'Cancelling sign-in', 'Sign-in result is not confirmed'],
+    ['zh-CN', '正在取消登录', '登录结果尚未确认'],
+    ['zh-TW', '正在取消登入', '登入結果尚未確認'],
+  ] as const) {
+    test(`an unconfirmed OAuth result stays on authorization and can resume model setup (${locale})`, async () => {
+      const terminal = new FakeTerminal();
+      const authorization = deferred<OnboardingOAuthResult>();
+      const loginInputs: OnboardingOAuthInput[] = [];
+      const verifyCalls: OnboardingVerifyInput[] = [];
+      const run = runMakaPiTui({
+        title: 'Maka',
+        driver: new SlashCommandDriver(),
+        cwd: '/repo',
+        model: 'm',
+        connectionSlug: 'c',
+        permissionMode: 'ask',
+        locale,
+        terminal,
+        onboarding: fakeOnboardingSurface({
+          providers: [oauthCreateProvider(['gpt-5.5'])],
+          loginOAuth: async (input) => {
+            loginInputs.push(input);
+            if (loginInputs.length === 1) return authorization.promise;
+            return {
+              kind: 'authenticated',
+              connection: {
+                connectionId: 'recovered-codex',
+                slug: 'codex-subscription',
+                providerType: 'openai-codex',
+              },
+            };
+          },
+          verify: async (input) => {
+            verifyCalls.push(input);
+            return { kind: 'ok', models: [{ id: 'gpt-5.5' }] };
+          },
+        }),
+      });
+      try {
+        await waitForTuiPaint(terminal);
+        terminal.input('/setup');
+        terminal.input('\r');
+        await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('1/4'));
+        terminal.input('\r');
+        await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('2/4'));
+        terminal.input('\r');
+        terminal.input('\r');
+        await waitFor(() => loginInputs.length === 1);
+        terminal.input('\x1b');
+        await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes(cancellingText));
+        assert.equal(loginInputs[0]?.signal.aborted, true);
+        loginInputs[0]!.onPresentation({
+          url: 'https://auth.openai.com/codex/device',
+          stateHint: 'LATE-CODE',
+        });
+        await waitForTuiPaint(terminal);
+        assert.match(plainTerminalOutput(terminal.screenOutput()), new RegExp(cancellingText));
+        authorization.resolve({ kind: 'unconfirmed' });
+        await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes(unconfirmedText));
+        const screen = plainTerminalOutput(terminal.screenOutput());
+        assert.match(screen, /3\/4/);
+        assert.doesNotMatch(screen, /LATE-CODE/);
+        assert.equal(verifyCalls.length, 0);
+        terminal.input('\r');
+        await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('4/4'));
+        assert.equal(loginInputs.length, 2);
+        assert.deepEqual(loginInputs[1]?.target, loginInputs[0]?.target);
+        assert.deepEqual(verifyCalls[0]?.target, {
+          kind: 'existing',
+          connectionId: 'recovered-codex',
+        });
+      } finally {
+        authorization.resolve({ kind: 'unconfirmed' });
+        process.emit('SIGTERM');
+        await run;
+      }
+    });
+  }
+
+  test('Esc closes unconfirmed OAuth setup without pretending to return to an uncreated identity', async () => {
+    const terminal = new FakeTerminal();
+    let logins = 0;
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver: new SlashCommandDriver(),
+      cwd: '/repo',
+      model: 'm',
+      connectionSlug: 'c',
+      permissionMode: 'ask',
+      terminal,
+      firstRun: true,
+      onboarding: fakeOnboardingSurface({
+        providers: [oauthCreateProvider(['gpt-5.5'])],
+        loginOAuth: async () => {
+          logins += 1;
+          return { kind: 'unconfirmed' };
+        },
+        verify: async () => assert.fail('Unconfirmed OAuth cannot enter Models'),
+      }),
+    });
+    try {
+      await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('1/4'));
+      terminal.input('\r');
+      await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('2/4'));
+      terminal.input('\r');
+      terminal.input('\r');
+      await waitFor(() =>
+        plainTerminalOutput(terminal.screenOutput()).includes('Sign-in result is not confirmed'),
+      );
+      terminal.input('\x1b');
+      await run;
+      assert.equal(terminal.stopCalls, 1);
+      assert.equal(logins, 1);
+    } finally {
+      if (terminal.stopCalls === 0) process.emit('SIGTERM');
+      await run;
+    }
+  });
+
+  test('an OAuth slug collision returns a new account to the identity step', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new SlashCommandDriver();
+    const provider = oauthCreateProvider(['gpt-5.5']);
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'bypass',
+      terminal,
+      onboarding: fakeOnboardingSurface({
+        providers: [provider],
+        loginOAuth: async () => ({ kind: 'failed', reason: 'slug_taken' }),
+      }),
+    });
+
+    try {
+      await waitForTuiPaint(terminal);
+      terminal.input('/setup');
+      terminal.input('\r');
+      await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('Set Up Provider'));
+      terminal.input('\r');
+      await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('2/4'));
+      terminal.input('\r');
+      terminal.input('\r');
+      await waitFor(() => {
+        const screen = plainTerminalOutput(terminal.screenOutput());
+        return screen.includes('2/4') && screen.includes('That slug is already taken');
+      });
+    } finally {
+      process.emit('SIGTERM');
+      await run;
+    }
+  });
+
+  test('an existing OAuth account skips identity and keeps its Connection identity', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new SlashCommandDriver();
+    const authorization = deferred<OnboardingOAuthResult>();
+    const loginTargets: OnboardingProviderEntry['target'][] = [];
+    const verifyCalls: OnboardingVerifyInput[] = [];
+    const provider: OnboardingProviderEntry = {
+      providerType: 'openai-codex',
+      label: 'Work Codex · codex-work',
+      requiresBaseUrl: false,
+      setupMethod: 'oauth',
+      target: { kind: 'existing', connectionId: 'codex-work-id' },
+      connectionSlug: 'codex-work',
+      enabledModelIds: ['gpt-5.5'],
+    };
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'bypass',
+      terminal,
+      onboarding: fakeOnboardingSurface({
+        providers: [provider],
+        loginOAuth: async (input) => {
+          loginTargets.push(input.target);
+          input.onPresentation({
+            url: 'https://auth.openai.com/codex/device',
+            stateHint: 'WXYZ-1234',
+          });
+          return authorization.promise;
+        },
+        verify: async (input) => {
+          verifyCalls.push(input);
+          return { kind: 'ok', models: [{ id: 'gpt-5.5' }] };
+        },
+      }),
+    });
+
+    try {
+      await waitForTuiPaint(terminal);
+      terminal.input('/setup');
+      terminal.input('\r');
+      await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('1/3'));
+      terminal.input('\r');
+      await waitFor(() => {
+        const screen = plainTerminalOutput(terminal.screenOutput());
+        return screen.includes('2/3') && screen.includes('WXYZ-1234');
+      });
+      authorization.resolve({
+        kind: 'authenticated',
+        connection: {
+          connectionId: 'codex-work-id',
+          slug: 'codex-work',
+          providerType: 'openai-codex',
+        },
+      });
+      await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('3/3'));
+
+      const target = { kind: 'existing' as const, connectionId: 'codex-work-id' };
+      assert.deepEqual(loginTargets, [target]);
+      assert.deepEqual(verifyCalls[0]?.target, target);
+    } finally {
+      process.emit('SIGTERM');
+      await run;
+    }
+  });
+
+  for (const modelState of ['loading', 'failed', 'models'] as const) {
+    test(`Esc returns authenticated OAuth to refreshed providers (${modelState})`, async () => {
+      const terminal = new FakeTerminal();
+      const discovery = deferred<OnboardingVerifyResult>();
+      const refresh = deferred<OnboardingProviderEntry[]>();
+      const finalRefresh = deferred<OnboardingProviderEntry[]>();
+      const reauthorization = deferred<OnboardingOAuthResult>();
+      const loginTargets: OnboardingProviderEntry['target'][] = [];
+      const connection = {
+        connectionId: 'codex-work-id',
+        slug: 'codex-work',
+        providerType: 'openai-codex' as const,
+      };
+      const existing: OnboardingProviderEntry = {
+        providerType: connection.providerType,
+        label: 'Work Codex · codex-work',
+        requiresBaseUrl: false,
+        setupMethod: 'oauth',
+        target: { kind: 'existing', connectionId: connection.connectionId },
+        connectionSlug: connection.slug,
+        enabledModelIds: [],
+      };
+      let listCalls = 0;
+      const firstRun = modelState === 'loading';
+      const run = runMakaPiTui({
+        title: 'Maka',
+        driver: new SlashCommandDriver(),
+        cwd: '/repo',
+        model: 'm',
+        connectionSlug: 'c',
+        permissionMode: 'ask',
+        terminal,
+        firstRun,
+        onboarding: {
+          ...fakeOnboardingSurface({
+            loginOAuth: async ({ target }) => {
+              loginTargets.push(target);
+              return loginTargets.length === 1
+                ? { kind: 'authenticated', connection }
+                : reauthorization.promise;
+            },
+            verify: async () => discovery.promise,
+            save: async () => assert.fail('Going back must not save model selection'),
+          }),
+          listProviders: async () => {
+            listCalls += 1;
+            if (listCalls === 1) return [oauthCreateProvider([])];
+            return listCalls === 2 ? refresh.promise : finalRefresh.promise;
+          },
+        },
+      });
+      const screen = () => plainTerminalOutput(terminal.screenOutput());
+
+      try {
+        if (!firstRun) {
+          await waitForTuiPaint(terminal);
+          terminal.input('/setup');
+          terminal.input('\r');
+        }
+        await waitFor(() => screen().includes('1/4'));
+        terminal.input('\r');
+        terminal.input('\r');
+        terminal.input('\r');
+        await waitFor(() => screen().includes('Signed in'));
+        if (modelState === 'failed') {
+          discovery.resolve({ kind: 'failed', errorClass: 'network' });
+          await waitFor(() => screen().includes('Enter retries model loading'));
+        } else if (modelState === 'models') {
+          discovery.resolve({ kind: 'ok', models: [{ id: 'gpt-5.5' }] });
+          await waitFor(() => screen().includes('4/4'));
+          terminal.input('\x1b');
+          await waitFor(() => screen().includes('Enter to continue to models'));
+        }
+
+        terminal.input('\x1b');
+        await waitFor(() => screen().includes('Search providers'), 'Esc returns before refresh');
+        assert.equal(terminal.stopCalls, 0);
+        assert.equal(loginTargets.length, 1);
+        assert.equal(listCalls, 2);
+        terminal.input('Work');
+        refresh.resolve([oauthCreateProvider([]), existing]);
+        await waitFor(() => screen().includes(existing.label));
+        assert.doesNotMatch(screen(), /OpenAI OAuth \(ChatGPT \/ Codex\)/);
+
+        terminal.input('\r');
+        await waitFor(() => screen().includes('Preparing sign-in'));
+        assert.deepEqual(loginTargets[1], existing.target);
+        assert.match(screen(), /2\/3/);
+        // An old discovery must not advance the newly selected account's login.
+        discovery.resolve({ kind: 'ok', models: [{ id: 'gpt-5.5' }] });
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        assert.match(screen(), /Preparing sign-in/);
+        reauthorization.resolve({ kind: 'authenticated', connection });
+        await waitFor(() => !screen().includes('Preparing sign-in'));
+        if (modelState !== 'failed') {
+          await waitFor(() => screen().includes('3/3'));
+          terminal.input('\x1b');
+        }
+        terminal.input('\x1b');
+        await waitFor(() => screen().includes('Search providers'));
+        if (modelState === 'failed') {
+          finalRefresh.reject(new Error('catalog unavailable'));
+          await new Promise<void>((resolve) => setImmediate(resolve));
+          assert.match(screen(), /Work Codex/);
+        }
+        terminal.input('\x1b');
+        if (firstRun) await run;
+        else await waitFor(() => !screen().includes('Set Up Provider'));
+        finalRefresh.resolve([existing]);
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        if (!firstRun) assert.doesNotMatch(screen(), /Set Up Provider/);
+      } finally {
+        discovery.resolve({ kind: 'ok', models: [] });
+        refresh.resolve([]);
+        finalRefresh.resolve([]);
+        reauthorization.resolve({ kind: 'cancelled' });
+        if (terminal.stopCalls === 0) exitMaka(terminal);
+        await run;
+      }
+    });
+  }
+
+  test('retries model discovery after OAuth without signing in again', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new SlashCommandDriver();
+    let loginCalls = 0;
+    let verifyCalls = 0;
+    const provider: OnboardingProviderEntry = {
+      providerType: 'openai-codex',
+      label: 'Work Codex · codex-work',
+      requiresBaseUrl: false,
+      setupMethod: 'oauth',
+      target: { kind: 'existing', connectionId: 'codex-work-id' },
+      connectionSlug: 'codex-work',
+      enabledModelIds: ['gpt-5.5'],
+    };
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'bypass',
+      terminal,
+      onboarding: fakeOnboardingSurface({
+        providers: [provider],
+        loginOAuth: async () => {
+          loginCalls += 1;
+          return {
+            kind: 'authenticated',
+            connection: {
+              connectionId: 'codex-work-id',
+              slug: 'codex-work',
+              providerType: 'openai-codex',
+            },
+          };
+        },
+        verify: async () => {
+          verifyCalls += 1;
+          return verifyCalls === 1
+            ? { kind: 'failed', errorClass: 'network' }
+            : { kind: 'ok', models: [{ id: 'gpt-5.5' }] };
+        },
+      }),
+    });
+
+    try {
+      await waitForTuiPaint(terminal);
+      terminal.input('/setup');
+      terminal.input('\r');
+      await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('1/3'));
+      terminal.input('\r');
+      await waitFor(() => {
+        const screen = plainTerminalOutput(terminal.screenOutput());
+        return screen.includes('Signed in') && screen.includes('Enter retries model loading');
+      });
+      assert.equal(loginCalls, 1);
+      assert.equal(verifyCalls, 1);
+
+      terminal.input('\r');
+      await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('3/3'));
+      assert.equal(loginCalls, 1);
+      assert.equal(verifyCalls, 2);
+    } finally {
+      process.emit('SIGTERM');
+      await run;
+    }
+  });
+
   test('verify failure re-arms the key prompt so the key can be retried', async () => {
     const terminal = new FakeTerminal();
     const driver = new SlashCommandDriver();
@@ -1214,7 +1768,7 @@ describe('Maka Pi TUI runner', () => {
     assert.doesNotMatch(plainTerminalOutput(terminal.screenOutput()), /storage read failed/);
     assert.doesNotMatch(
       plainTerminalOutput(terminal.screenOutput()),
-      /No configurable API key providers are available/,
+      /No configurable providers are available/,
     );
 
     process.emit('SIGTERM');
@@ -1288,7 +1842,7 @@ describe('Maka Pi TUI runner', () => {
     terminal.input('\x1b'); // identity name -> search
     await waitFor(() => {
       try {
-        return latestPlainLineContaining(terminal.writes.join(''), '1/3') !== null;
+        return latestPlainLineContaining(terminal.writes.join(''), '1/4') !== null;
       } catch {
         return false;
       }
@@ -1466,7 +2020,7 @@ describe('Maka Pi TUI runner', () => {
     terminal.input('\x1b'); // key -> identity (slug field)
     terminal.input('\x1b'); // identity slug -> name field
     terminal.input('\x1b'); // identity name -> provider search
-    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('1/3'));
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('1/4'));
     terminal.input('\r'); // reselect the same add-account row as a new intent
     terminal.input('\r'); // accept default name -> slug field
     terminal.input('\r'); // accept derived slug -> key phase
@@ -1795,6 +2349,7 @@ describe('Maka Pi TUI runner', () => {
             providerType: 'openai',
             label: 'OpenAI',
             requiresBaseUrl: false,
+            setupMethod: 'api_key',
             target: { kind: 'create', providerType: 'openai' },
             suggestedSlug: 'openai',
             enabledModelIds: [],
@@ -1915,6 +2470,7 @@ Slug openai-work<cursor>
             providerType: 'openai',
             label: 'OpenAI',
             requiresBaseUrl: false,
+            setupMethod: 'api_key',
             target: { kind: 'create', providerType: 'openai' },
             suggestedSlug: 'openai',
             enabledModelIds: [],
@@ -1971,6 +2527,7 @@ Slug openai-work<cursor>
             providerType: 'openai',
             label: 'OpenAI',
             requiresBaseUrl: false,
+            setupMethod: 'api_key',
             target: { kind: 'create', providerType: 'openai' },
             suggestedSlug: 'openai',
             enabledModelIds: [],
@@ -8919,7 +9476,7 @@ Slug openai-work<cursor>
     const output = plainTerminalOutput(terminal.screenOutput());
     assert.match(output, /one-time account confirmation/);
     assert.match(output, /Run \/model/);
-    assert.match(output, /run \/setup for API-key connections/);
+    assert.match(output, /run \/setup to add one/);
 
     exitMaka(terminal);
     await run;
@@ -8968,7 +9525,7 @@ Slug openai-work<cursor>
     );
     const recoveryNotice = plainTerminalOutput(terminal.screenOutput());
     assert.match(recoveryNotice, /Run \/model/);
-    assert.match(recoveryNotice, /run \/setup for API-key connections/);
+    assert.match(recoveryNotice, /run \/setup to add one/);
     terminal.input('/model');
     terminal.input('\r');
     await waitFor(() => terminal.output().includes('Replacement'));

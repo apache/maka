@@ -49,6 +49,7 @@ test("projects an empty Skill surface until a remote Project is selected", async
     getDefaultPermissionMode: async () => "ask",
     openPath: async () => "",
     allowLocalPaths: false,
+    resolveLocale: async () => 'en' as const,
   });
 
   for (const channel of [
@@ -68,6 +69,7 @@ test("binds new-session Skill discovery to its explicit Project", async () => {
   const resolvedProjectIds: Array<string | null | undefined> = [];
   let target: unknown;
   registerRuntimeHostSkillsIpc({
+    resolveLocale: async () => 'en' as const,
     ipcMain: {
       handle: (channel, listener) => handlers.set(channel, listener),
       handleReconnectableRead: (channel, listener) => handlers.set(channel, listener),

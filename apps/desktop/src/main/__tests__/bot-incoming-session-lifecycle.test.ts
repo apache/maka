@@ -86,4 +86,43 @@ describe('bot session lifecycle bindings', () => {
     assert.deepEqual(sent, ['bot-session-1', 'bot-session-2']);
     assert.deepEqual(replies, ['reply from bot-session-1', 'reply from bot-session-2']);
   });
+
+  test('keeps classified failure notices in the bot surface locale', async () => {
+    const replies: string[] = [];
+    const service = createBotIncomingMainService({
+      botRegistry: {
+        async sendMessage(_platform: string, _chatId: string, text: string) {
+          replies.push(text);
+          return 'message-id';
+        },
+        async sendTypingIndicator() {
+          return true;
+        },
+      } as unknown as BotRegistry,
+      sessions: {
+        async createSession() {
+          return 'bot-session';
+        },
+        async prepareSession() {
+          return 'ready' as const;
+        },
+        async runTurn() {
+          throw new Error('Request timeout');
+        },
+      },
+    });
+
+    await service.handleBotIncomingMessage({
+      platform: 'telegram',
+      userId: 'user',
+      userName: 'User',
+      chatId: 'chat',
+      isGroup: false,
+      text: 'hello',
+      sourceMessageId: 'source',
+      receivedAt: Date.now(),
+    } as BotIncomingMessage);
+
+    assert.deepEqual(replies, ['Maka 暂时无法处理这条消息：请求超时']);
+  });
 });

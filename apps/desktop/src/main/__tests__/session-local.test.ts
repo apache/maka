@@ -122,7 +122,10 @@ test('local acceptance survives restart with attachment bytes and an immutable d
   const db = await database(t);
   const record = db.store.enqueue('authority-1', intent());
   assert.equal(record.state, 'saved');
-  assert.equal((await stat(db.path)).mode & 0o777, 0o600);
+  // POSIX permission bits do not describe Windows ACLs.
+  if (process.platform !== 'win32') {
+    assert.equal((await stat(db.path)).mode & 0o777, 0o600);
+  }
   db.store.update({
     ...record,
     state: 'sending',
@@ -635,6 +638,47 @@ test('attachment retries across restart reuse committed uploads and release stag
   assert.deepEqual(db.store.stagedAttachments('authority', 'message-1'), []);
 });
 
+test('local creation preserves a plugin executor in the pending Session projection', async (t) => {
+  const { store, beforeClose } = await database(t);
+  const target: DesktopSessionLocalTarget = {
+    partition: 'authority',
+    profileId: 'profile',
+    scope: { hostId: 'root', targetEpoch: 'target' },
+  };
+  const service = new DesktopSessionLocalService(store, {
+    targets: () => [target],
+    changed() {},
+    onError: (error) => assert.fail(String(error)),
+  });
+  beforeClose.push(() => service.close());
+  type Ipc = Parameters<typeof registerDesktopSessionLocalIpc>[0]['ipcMain'];
+  let create!: Parameters<Ipc['handle']>[1];
+  registerDesktopSessionLocalIpc({
+    ipcMain: {
+      handle: (channel, handler) => {
+        if (channel === 'session-local:create') create = handler;
+      },
+    },
+    service,
+    approvals: createAttachmentApprovalRegistry(),
+    resizeImage: async (bytes) => bytes,
+    resolveWorkspace: async () => ({ kind: 'host_path', path: '/workspace' }),
+    changed() {},
+  });
+
+  const summary = (await create(
+    {} as IpcMainInvokeEvent,
+    target.scope,
+    { executorId: 'codex.app-server' },
+  )) as DesktopSessionSummaryInput;
+  assert.equal(summary.backend, 'plugin-executor');
+  assert.equal(summary.executorId, 'codex.app-server');
+  assert.equal(summary.llmConnectionId, undefined);
+  assert.equal(summary.llmConnectionSlug, 'executor:codex.app-server');
+  assert.equal(summary.model, 'codex.app-server');
+  assert.equal(store.creation(target.partition, summary.id)?.executorId, 'codex.app-server');
+});
+
 test('local submit preserves picked-file approvals until durable admission succeeds', async (t) => {
   const { store, path, beforeClose } = await database(t);
   const file = join(path, '..', 'picked.txt');
@@ -703,16 +747,15 @@ test('local submit preserves picked-file approvals until durable admission succe
     largeFiles.push({ path: imagePath, name, size: 33 * 1024 * 1024 });
   }
   const largePicked = approvals.issueApprovals(7, largeFiles);
-  await assert.rejects(
-    () =>
-      submit(
-        { sender: { id: 7 } } as IpcMainInvokeEvent,
-        target.scope,
-        'session-1',
-        'current_turn',
-        { ...draft, messageId: 'too-large', attachmentItems: largePicked },
-      ),
-    /attachment_ingest:total_size_exceeded/,
+  assert.deepEqual(
+    await submit(
+      { sender: { id: 7 } } as IpcMainInvokeEvent,
+      target.scope,
+      'session-1',
+      'current_turn',
+      { ...draft, messageId: 'too-large', attachmentItems: largePicked },
+    ),
+    { ok: false, reason: 'attachment_blocked', code: 'total_size_exceeded' },
   );
   assert.equal(resizeCalls, 0);
   assert.equal(store.get('authority', 'too-large'), undefined);

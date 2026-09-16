@@ -18,14 +18,13 @@
  */
 
 import { z } from 'zod';
+import { readContinuationSchema, readPageSchema } from '../read-page.js';
 import { validateSandboxBoundaryExpansion } from '@maka/core/sandbox-boundary';
+import { GREP_MAX_LINES, GREP_MAX_LINES_PER_FILE, GREP_MAX_MATCH_BYTES } from '../grep-search.js';
 
-// v6 adds the captured target identity (opaque decimal-string dev/ino) to
-// FilesystemWorkerTarget, so the worker can compare-and-swap against the
-// inode that was authorised at lock acquisition instead of only the path
-// string. The identity is carried as strings because bigint cannot cross the
-// JSON protocol boundary.
-export const FILESYSTEM_WORKER_PROTOCOL_VERSION = 7 as const;
+// v10 adds bounded Read pages to v9's exact Grep counts. Older workers cannot
+// satisfy the combined result contract and must be rejected at the handshake.
+export const FILESYSTEM_WORKER_PROTOCOL_VERSION = 10 as const;
 
 /** The single authority on which operation kinds are writes. Shared by the
  * client (permission/identity decisions) and the worker (operation guards) so
@@ -109,6 +108,7 @@ export const FilesystemWorkerOperationSchema = z.union([
       path,
       offset: z.number().int().nonnegative().optional(),
       limit: z.number().int().positive().optional(),
+      continuation: readContinuationSchema.optional(),
     })
     .strict(),
   z.object({ kind: z.literal('write'), cwd, path, content: z.string() }).strict(),
@@ -155,8 +155,8 @@ export const FilesystemWorkerOperationSchema = z.union([
       path,
       pattern: z.string(),
       glob: z.string().min(1).optional(),
-      maxCountPerFile: z.number().int().positive(),
-      limit: z.number().int().positive(),
+      maxCountPerFile: z.number().int().positive().max(GREP_MAX_LINES_PER_FILE),
+      limit: z.number().int().positive().max(GREP_MAX_LINES),
       timeoutMs: z.number().int().positive(),
     })
     .strict(),
@@ -173,7 +173,7 @@ export const FilesystemWorkerRequestSchema = z
   .strict();
 
 export const FilesystemWorkerResultSchema = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('read'), content: z.string() }).strict(),
+  readPageSchema.extend({ kind: z.literal('read') }).strict(),
   z
     .object({
       kind: z.literal('read_image'),
@@ -218,7 +218,25 @@ export const FilesystemWorkerResultSchema = z.discriminatedUnion('kind', [
     })
     .strict(),
   z.object({ kind: z.literal('glob'), files: z.array(z.string()) }).strict(),
-  z.object({ kind: z.literal('grep'), matches: z.array(z.string()) }).strict(),
+  z
+    .object({
+      kind: z.literal('grep'),
+      matchedLines: z.number().int().nonnegative(),
+      returnedLines: z.number().int().nonnegative(),
+      omittedLines: z.number().int().nonnegative(),
+      truncated: z.boolean(),
+      matches: z
+        .array(z.string())
+        .max(GREP_MAX_LINES)
+        .refine((matches) => Buffer.byteLength(JSON.stringify(matches)) <= GREP_MAX_MATCH_BYTES),
+    })
+    .strict()
+    .refine(
+      (result) =>
+        result.returnedLines === result.matches.length &&
+        result.matchedLines === result.returnedLines + result.omittedLines &&
+        result.truncated === result.omittedLines > 0,
+    ),
 ]);
 
 export const FilesystemWorkerErrorCodeSchema = z.enum([

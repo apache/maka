@@ -22,6 +22,10 @@ import { sectionedSummary } from './history-compact-test-fixtures.js';
 import { runtimeInvocationFailureClass } from '../runtime-event-read-model.js';
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createSessionStore } from '@maka/storage/session-store';
 import { DEFAULT_TOOL_MODE } from '@maka/core/tool-mode';
 import {
   buildInvocationOpenedEvent,
@@ -46,7 +50,12 @@ import {
   createGenesisExecutionBoundary,
   isSandboxBoundaryRestartClosure,
 } from '@maka/core/sandbox-boundary';
-import { createWorkspaceWritePermissionProfile } from '@maka/core/permission-profile';
+import {
+  canReadPath,
+  createReadOnlyPermissionProfile,
+  createWorkspaceWritePermissionProfile,
+  isReadOnlyPermissionProfile,
+} from '@maka/core/permission-profile';
 import { DEEP_RESEARCH_SESSION_LABEL } from '@maka/core/deep-research';
 import { RUNTIME_CONTINUATION_AUTHORITY_V1 } from '@maka/core/runtime-event-store';
 import { deriveTurnRecords } from '@maka/core/session';
@@ -96,6 +105,7 @@ import { assertDoubleRunNotSealed } from './runtime-event-store-seal.js';
 import type { LanguageModelV4StreamPart } from '@ai-sdk/provider';
 import { z } from 'zod';
 import { AiSdkBackend } from '../ai-sdk-backend.js';
+import { renderPlanModePrompt, selectCollaborationTools } from '../plan-mode.js';
 import {
   BackendRegistry,
   SessionConfigurationRevisionConflictError,
@@ -103,6 +113,7 @@ import {
   SessionManager,
   headerToSummary,
   type BackendFactoryContext,
+  type SessionConfigurationTransitionRequest,
   type SessionConfigurationStoreUpdate,
   type SessionStore,
   type VersionedSessionHeader,
@@ -485,6 +496,7 @@ describe('SessionManager Plan control boundaries', () => {
       manager.transitionSessionConfiguration(child.id, {
         expectedRevision: 1,
         clearConnectionBlock: false,
+        permissionModeOnly: false,
         configuration: {
           backend: child.backend,
           llmConnectionId: 'test-connection-id',
@@ -636,6 +648,7 @@ describe('SessionManager graph operator provisioning', () => {
       .transitionSessionConfiguration(parent.id, {
         expectedRevision: 1,
         clearConnectionBlock: false,
+        permissionModeOnly: false,
         configuration: {
           backend: parent.backend,
           llmConnectionId: 'test-connection-id',
@@ -732,6 +745,56 @@ describe('SessionManager graph operator provisioning', () => {
     assert.strictEqual(result.provision.initialTurnId, result.header.subagentSpawn?.initialTurnId);
     assert.strictEqual(result.provision.initialRunId, result.header.subagentSpawn?.initialRunId);
     assert.deepStrictEqual(await runStore.listSessionInvocations(result.header.id), []);
+  });
+
+  test('provisions a graph child on an explicit plugin executor without Maka tools', async () => {
+    const store = new MemorySessionStore();
+    const runStore = new MemoryAgentRunStore();
+    const checkedExecutors: string[] = [];
+    const manager = new SessionManager({
+      store,
+      runStore,
+      runtimeEventStore: runStore,
+      backends: new BackendRegistry(),
+      childTools: [],
+      assertChildExecutorAvailable: (parentSessionId, executorId) => {
+        checkedExecutors.push(`${parentSessionId}:${executorId}`);
+      },
+      newId: nextId(),
+      now: nextNow(40),
+    });
+    const parent = await manager.createSession(makeInput());
+    await seedInvocationFromHeader(
+      runStore,
+      makeRunHeader({
+        sessionId: parent.id,
+        runId: 'supervisor-run',
+        turnId: 'supervisor-turn',
+      }),
+    );
+
+    const result = await manager.provisionAgentGraphOperator({
+      graphId: 'graph-external',
+      workId: `graph_work_${'4'.repeat(32)}`,
+      agentId: LOCAL_READ_AGENT_ID,
+      executorId: 'codex',
+      operatorId: `graph_operator_${'5'.repeat(32)}`,
+      source: {
+        sessionId: parent.id,
+        runId: 'supervisor-run',
+        turnId: 'supervisor-turn',
+        toolCallId: 'schedule-tool',
+      },
+      edges: [],
+      expectedScheduleRevision: 1,
+    });
+
+    assert.strictEqual(result.header.backend, 'plugin-executor');
+    assert.strictEqual(result.header.executorId, 'codex');
+    assert.strictEqual(result.header.llmConnectionId, undefined);
+    assert.strictEqual(result.header.llmConnectionSlug, 'executor:codex');
+    assert.deepStrictEqual(result.header.subagentRuntime?.toolNames, []);
+    assert.deepStrictEqual(checkedExecutors, [`${parent.id}:codex`]);
   });
 
   test('keeps four large graph branches and a replacement off the supervisor data plane', async () => {
@@ -2260,6 +2323,87 @@ describe('SessionManager claimed graph intent execution', () => {
 });
 
 describe('SessionManager child-session runtime primitive', () => {
+  test('runs an explicitly delegated child through a plugin executor with no Maka tools', async () => {
+    const store = new MemorySessionStore();
+    const runStore = new MemoryAgentRunStore();
+    const backends = new BackendRegistry();
+    const parentGate = makeGate();
+    let childContext: BackendFactoryContext | undefined;
+    const checkedExecutors: string[] = [];
+    backends.register('ai-sdk', (ctx) => new TestBackend(ctx, parentGate));
+    backends.register('plugin-executor', (ctx) => {
+      childContext = ctx;
+      return {
+        kind: 'plugin-executor' as const,
+        sessionId: ctx.sessionId,
+        async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+          yield {
+            type: 'text_complete',
+            id: 'external-complete-text',
+            turnId: input.turnId,
+            ts: 1,
+            messageId: 'external-message',
+            text: 'external result',
+          };
+          yield {
+            type: 'complete',
+            id: 'external-complete',
+            turnId: input.turnId,
+            ts: 2,
+            stopReason: 'end_turn',
+          };
+        },
+        async stop() {},
+        async respondToSandboxBoundary() {},
+        async dispose() {},
+      };
+    });
+    const manager = new SessionManager({
+      store,
+      runStore,
+      runtimeEventStore: runStore,
+      backends,
+      childTools: [],
+      assertChildExecutorAvailable: (parentSessionId, executorId) => {
+        checkedExecutors.push(`${parentSessionId}:${executorId}`);
+      },
+      newId: nextId(),
+      now: nextNow(80),
+    });
+    const parent = await manager.createSession(makeInput());
+    const parentTurn = manager
+      .sendMessage(parent.id, { turnId: 'parent-turn', text: 'delegate externally' })
+      [Symbol.asyncIterator]();
+    await parentTurn.next();
+    const [parentRun] = await runStore.listSessionInvocations(parent.id);
+    if (!parentRun) throw new Error('parent run was not recorded');
+
+    const result = await manager.spawnChildSession(parent.id, {
+      spawnedBy: {
+        parentRunId: parentRun.runId,
+        parentTurnId: parentRun.turnId,
+        toolCallId: 'tool-call-external',
+      },
+      agentProfile: LOCAL_READ_AGENT_PROFILE,
+      executorId: 'codex',
+      prompt: 'inspect through codex',
+    });
+    const child = await store.readHeader(result.childSessionId);
+
+    assert.strictEqual(result.status, 'completed');
+    assert.strictEqual(result.summary, 'external result');
+    assert.strictEqual(child.backend, 'plugin-executor');
+    assert.strictEqual(child.executorId, 'codex');
+    assert.strictEqual(child.llmConnectionId, undefined);
+    assert.deepStrictEqual(child.subagentRuntime?.toolNames, []);
+    assert.deepStrictEqual(childContext?.tools, []);
+    assert.strictEqual(childContext?.systemPrompt, LOCAL_READ_AGENT_DEFINITION.systemPrompt);
+    assert.deepStrictEqual(checkedExecutors, [`${parent.id}:codex`]);
+
+    parentGate.release();
+    while (!(await parentTurn.next()).done) {}
+  });
+
   test('creates a fresh read-only child with a session-inline first run and no parent history', async () => {
     const store = new MemorySessionStore();
     const runStore = new MemoryAgentRunStore();
@@ -2408,8 +2552,6 @@ describe('SessionManager child-session runtime primitive', () => {
       ),
       true,
     );
-    await manager.setPermissionMode(result.childSessionId, 'bypass');
-    assert.strictEqual((await store.readHeader(result.childSessionId)).permissionMode, 'bypass');
     const projection = await manager.listChildAgents(parent.id);
     assert.deepStrictEqual(projection.runs, []);
     assert.strictEqual(projection.executions.length, 1);
@@ -3505,7 +3647,9 @@ describe('SessionManager manual compaction and quiescent session changes', () =>
           {
             runId: sourceRun.runId,
             connectionId:
-              sourceRoute.provenance === 'runtime' ? sourceRoute.llmConnectionId : undefined,
+              sourceRoute.provenance === 'runtime' && sourceRoute.backendKind !== 'plugin-executor'
+                ? sourceRoute.llmConnectionId
+                : undefined,
             modelId: sourceRoute.modelId,
           },
         ],
@@ -4086,6 +4230,7 @@ describe('SessionManager manual compaction and quiescent session changes', () =>
       manager.transitionSessionConfiguration(session.id, {
         expectedRevision: 1,
         clearConnectionBlock: false,
+        permissionModeOnly: false,
         configuration: baseConfiguration,
       }),
       (error: unknown) => {
@@ -4100,6 +4245,7 @@ describe('SessionManager manual compaction and quiescent session changes', () =>
     const committed = await manager.transitionSessionConfiguration(session.id, {
       expectedRevision: 1,
       clearConnectionBlock: false,
+      permissionModeOnly: false,
       configuration: baseConfiguration,
     });
     assert.equal(committed.revision, 2);
@@ -4108,8 +4254,24 @@ describe('SessionManager manual compaction and quiescent session changes', () =>
 
     await assert.rejects(
       manager.transitionSessionConfiguration(session.id, {
+        expectedRevision: 1,
+        clearConnectionBlock: false,
+        permissionModeOnly: false,
+        configuration: baseConfiguration,
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof SessionConfigurationRevisionConflictError);
+        assert.equal(error.expectedRevision, 1);
+        assert.equal(error.actualRevision, 2);
+        return true;
+      },
+    );
+
+    await assert.rejects(
+      manager.transitionSessionConfiguration(session.id, {
         expectedRevision: 2,
         clearConnectionBlock: false,
+        permissionModeOnly: true,
         configuration: {
           ...baseConfiguration,
           permissionMode: 'explore',
@@ -4152,6 +4314,7 @@ describe('SessionManager manual compaction and quiescent session changes', () =>
     const preserved = await manager.transitionSessionConfiguration(session.id, {
       expectedRevision: 1,
       clearConnectionBlock: false,
+      permissionModeOnly: false,
       configuration,
     });
     assert.equal(preserved.header.blockedReason, 'NO_REAL_CONNECTION');
@@ -4160,6 +4323,7 @@ describe('SessionManager manual compaction and quiescent session changes', () =>
     const recovered = await manager.transitionSessionConfiguration(session.id, {
       expectedRevision: 2,
       clearConnectionBlock: true,
+      permissionModeOnly: false,
       configuration,
     });
     assert.equal(recovered.header.blockedReason, undefined);
@@ -4254,6 +4418,7 @@ describe('SessionManager manual compaction and quiescent session changes', () =>
       .transitionSessionConfiguration(session.id, {
         expectedRevision: 1,
         clearConnectionBlock: false,
+        permissionModeOnly: false,
         configuration: {
           backend: session.backend,
           llmConnectionId: 'test-connection-id',
@@ -4307,6 +4472,7 @@ describe('SessionManager manual compaction and quiescent session changes', () =>
     const transition = manager.transitionSessionConfiguration(session.id, {
       expectedRevision: 1,
       clearConnectionBlock: false,
+      permissionModeOnly: false,
       configuration: {
         backend: session.backend,
         llmConnectionId: 'test-connection-id',
@@ -4531,8 +4697,412 @@ describe('SessionManager manual compaction and quiescent session changes', () =>
 });
 
 describe('SessionManager permission mode updates', () => {
+  for (const route of ['direct', 'legacy'] as const) {
+    test(`serializes concurrent ${route} boundary commits before they can become narrowing`, {
+      timeout: 10_000,
+    }, async (t) => {
+      const root = await mkdtemp(join(tmpdir(), 'maka-boundary-commit-race-'));
+      const store = createSessionStore(root);
+      // Hide optional capabilities from Runtime, without changing SQLite's own
+      // internal method calls, to exercise the legacy SessionStore contract.
+      const runtimeStore =
+        route === 'legacy'
+          ? new Proxy(store, {
+              get(target, key) {
+                if (key === 'readHeaderRecordSnapshot' || key === 'updateSessionConfiguration')
+                  return undefined;
+                const value = Reflect.get(target, key, target);
+                return typeof value === 'function' ? value.bind(target) : value;
+              },
+            })
+          : store;
+      const gate = makeGate();
+      t.after(async () => {
+        gate.release();
+        await store.close?.();
+        await rm(root, { recursive: true, force: true });
+      });
+      const calls: string[] = [];
+      const backends = new BackendRegistry();
+      let backend: TestBackend | undefined;
+      backends.register('ai-sdk', (ctx) => (backend = new TestBackend(ctx, gate)));
+      const manager = new SessionManager({
+        store: runtimeStore,
+        backends,
+        newId: nextId(),
+        now: nextNow(979),
+        shellRuns: {
+          async terminateSession(sessionId: string) {
+            calls.push(`terminate:${sessionId}`);
+            return { sessionId, token: Symbol('test') };
+          },
+          async commitSessionClose() {
+            calls.push('commit');
+          },
+          rollbackSessionClose() {
+            calls.push('rollback');
+          },
+          resumeSession(sessionId: string) {
+            calls.push(`resume:${sessionId}`);
+          },
+        } as never,
+      });
+      const session = await manager.createSession(makeInput({ permissionMode: 'explore' }));
+      const update = (bypass: boolean) =>
+        route === 'direct'
+          ? manager.setExecutionBoundaryKind(session.id, bypass ? 'bypass' : 'managed')
+          : manager.setPermissionMode(session.id, bypass ? 'bypass' : 'ask');
+      const turn = manager
+        .sendMessage(session.id, { turnId: 'turn-racing', text: 'keep running' })
+        [Symbol.asyncIterator]();
+      try {
+        await turn.next();
+        // Both requests initially observe Explore. The second must not reuse
+        // that classification after the first has committed Bypass.
+        const results = await Promise.allSettled([update(true), update(false)]);
+        assert.deepStrictEqual(
+          results.map((result) => result.status),
+          ['fulfilled', 'rejected'],
+        );
+        const conflict = results[1];
+        assert.ok(conflict?.status === 'rejected');
+        assert.ok(conflict.reason instanceof SessionConfigurationTransitionError);
+        assert.strictEqual(conflict.reason.code, 'operation_conflict');
+        assert.deepStrictEqual(await store.readExecutionBoundary(session.id), {
+          kind: 'bypass',
+          revision: 1,
+        });
+        assert.strictEqual((await store.readHeader(session.id)).permissionMode, 'bypass');
+        assert.deepStrictEqual(manager.runningTurnIds(session.id), ['turn-racing']);
+        assert.strictEqual(backend?.stopCalls, 0);
+        assert.deepStrictEqual(calls, []);
+        // A fresh retry is now correctly classified as narrowing.
+        await assert.rejects(update(false), (error: unknown) => {
+          assert.ok(error instanceof SessionConfigurationTransitionError);
+          assert.strictEqual(error.code, 'session_busy');
+          return true;
+        });
+      } finally {
+        gate.release();
+        while (!(await turn.next()).done) {}
+      }
+      // The conflict released the mutation lane; idle narrowing still revokes shells.
+      await update(false);
+      assert.strictEqual((await store.readHeader(session.id)).permissionMode, 'ask');
+      assert.deepStrictEqual(calls, [`terminate:${session.id}`, 'commit', `resume:${session.id}`]);
+    });
+  }
+
+  test('rejects unprotected boundary commits when admission mutation authority is unavailable', async () => {
+    const store = new MemorySessionStore();
+    const kernel = new DelegatingRuntimeKernel();
+    Object.defineProperty(kernel, 'runSessionAdmissionMutation', { value: undefined });
+    const manager = new SessionManager({
+      store,
+      backends: new BackendRegistry(),
+      runtimeKernel: kernel,
+      newId: nextId(),
+      now: nextNow(979),
+    });
+    const session = await manager.createSession(makeInput({ permissionMode: 'explore' }));
+    await assert.rejects(
+      manager.setExecutionBoundaryKind(session.id, 'bypass'),
+      (error: unknown) => {
+        assert.ok(error instanceof SessionConfigurationTransitionError);
+        assert.strictEqual(error.code, 'operation_unavailable');
+        return true;
+      },
+    );
+    assert.strictEqual((await store.readHeader(session.id)).permissionMode, 'explore');
+    assert.strictEqual((await store.readExecutionBoundary(session.id)).kind, 'managed');
+    assert.deepStrictEqual(kernel.disposed, []);
+  });
+
+  for (const checkpoint of [
+    'header',
+    'safety',
+    'admission',
+    'activation_gate',
+    'prepare',
+    'build',
+  ] as const) {
+    test(`retains a permission refresh during backend ${checkpoint} until the admitted turn exits`, {
+      timeout: 10_000,
+    }, async (t) => {
+      const store = new VersionedConfigurationMemorySessionStore();
+      const activationStarted = makeGate();
+      const releaseActivation = makeGate();
+      const sendGate = makeGate();
+      t.after(() => {
+        releaseActivation.release();
+        sendGate.release();
+      });
+      const pause = async () => {
+        activationStarted.release();
+        await releaseActivation.promise;
+      };
+      const builds: PermissionMode[] = [];
+      const dispatched: Array<{ tools: string[]; prompt: string }> = [];
+      const instances: TestBackend[] = [];
+      const backends = new BackendRegistry();
+      backends.register('ai-sdk', {
+        async prepare() {
+          if (checkpoint === 'prepare' && builds.length === 0) {
+            activationStarted.release();
+            await releaseActivation.promise;
+          }
+          return {
+            async build(ctx) {
+              builds.push(ctx.header.permissionMode);
+              if (checkpoint === 'build' && builds.length === 1) {
+                activationStarted.release();
+                await releaseActivation.promise;
+              }
+              const fullAccess = ctx.header.permissionMode === 'bypass';
+              const composition = {
+                tools: selectCollaborationTools({
+                  mode: 'plan',
+                  tools: [testTool('Read'), testTool('Write')],
+                  hasActiveExecution: false,
+                  fullAccess,
+                }).map((tool) => tool.name),
+                prompt: renderPlanModePrompt({ fullAccess }),
+              };
+              const backend = new (class extends TestBackend {
+                override async *send(input: BackendSendInput) {
+                  dispatched.push(composition);
+                  yield* super.send(input);
+                }
+              })(ctx, sendGate);
+              instances.push(backend);
+              return backend;
+            },
+          };
+        },
+      });
+      const manager = new SessionManager({
+        store,
+        backends,
+        newId: nextId(),
+        now: nextNow(980),
+        inspectContinuationSafety: async () => {
+          if (checkpoint === 'safety' && builds.length === 0) await pause();
+          return {
+            workspaceIdentity: 'workspace',
+            workspacePath: '/tmp/cwd',
+            backgroundOperationsSettled: true,
+            availableToolNames: [],
+          };
+        },
+        runBackendActivation: async (operation) => {
+          if (checkpoint === 'activation_gate' && builds.length === 0) await pause();
+          return operation();
+        },
+      });
+      const session = await manager.createSession(
+        makeInput({ permissionMode: 'ask', collaborationMode: 'plan' }),
+      );
+      if (checkpoint === 'header') {
+        const readHeader = store.readHeader.bind(store);
+        let firstRead = true;
+        store.readHeader = async (id) => {
+          const header = await readHeader(id);
+          if (firstRead) {
+            firstRead = false;
+            await pause();
+          }
+          return header;
+        };
+      }
+      const firstTurn = manager
+        .sendMessage(
+          session.id,
+          { turnId: 'turn-building', text: 'plan' },
+          {
+            admitTurn: async () => {
+              if (checkpoint === 'admission') await pause();
+              return 'admitted';
+            },
+          },
+        )
+        [Symbol.asyncIterator]();
+      const firstEvent = firstTurn.next();
+      await activationStarted.promise;
+      try {
+        const current = await store.readHeaderRecordSnapshot(session.id);
+        await manager.transitionSessionConfiguration(session.id, {
+          expectedRevision: current.revision,
+          clearConnectionBlock: false,
+          permissionModeOnly: true,
+          configuration: configurationForHeader(current.header, { permissionMode: 'bypass' }),
+        });
+        assert.strictEqual((await store.readHeader(session.id)).permissionMode, 'bypass');
+        assert.strictEqual(store.disposeCount, 0);
+        if (checkpoint === 'activation_gate') {
+          // A policy mutation owns the gate and refreshes before releasing it.
+          // Waiting for the queued activation here would deadlock that mutation.
+          await manager.refreshIdleBackends();
+        }
+      } finally {
+        releaseActivation.release();
+      }
+      try {
+        await firstEvent;
+        assert.strictEqual(store.disposeCount, 0);
+        assert.strictEqual(instances[0]?.stopCalls, 0);
+      } finally {
+        sendGate.release();
+        while (!(await firstTurn.next()).done) {}
+      }
+      assert.strictEqual(store.disposeCount, 1);
+
+      await drain(manager.sendMessage(session.id, { turnId: 'turn-fresh', text: 'write now' }));
+      assert.deepStrictEqual(builds, ['ask', 'bypass']);
+      assert.deepStrictEqual(
+        dispatched.map((input) => input.tools),
+        [['Read'], ['Read', 'Write']],
+      );
+      assert.strictEqual(dispatched[0]?.prompt, renderPlanModePrompt());
+      assert.strictEqual(dispatched[1]?.prompt, renderPlanModePrompt({ fullAccess: true }));
+    });
+  }
+
+  test('strict refresh marks cold snapshots without waiting for the policy gate', {
+    timeout: 10_000,
+  }, async (t) => {
+    const store = new MemorySessionStore();
+    const queued = makeGate();
+    const releasePolicyMutation = makeGate();
+    t.after(() => releasePolicyMutation.release());
+    let builds = 0;
+    const backends = new BackendRegistry();
+    backends.register('ai-sdk', (ctx) => {
+      builds += 1;
+      return new TestBackend(ctx);
+    });
+    const manager = new SessionManager({
+      store,
+      backends,
+      newId: nextId(),
+      now: nextNow(981),
+      runBackendActivation: async (operation) => {
+        queued.release();
+        await releasePolicyMutation.promise;
+        return operation();
+      },
+    });
+    const session = await manager.createSession(makeInput());
+    const firstTurn = drain(manager.sendMessage(session.id, { turnId: 'queued', text: 'start' }));
+    await queued.promise;
+    // This is the policy mutation's final step before opening its gate again.
+    // There is no cached generation and no previous per-session invalidation.
+    await manager.refreshIdleBackends();
+    assert.strictEqual(builds, 0);
+    releasePolicyMutation.release();
+    await firstTurn;
+    assert.strictEqual(store.disposeCount, 1);
+    await drain(manager.sendMessage(session.id, { turnId: 'next', text: 'fresh' }));
+    assert.strictEqual(builds, 2);
+  });
+
+  for (const outcome of ['cancelled', 'failed'] as const) {
+    test(`a pre-activation refresh does not retain a ${outcome} admission`, async () => {
+      const store = new VersionedConfigurationMemorySessionStore();
+      const admissionStarted = makeGate();
+      const releaseAdmission = makeGate();
+      const builds: PermissionMode[] = [];
+      const backends = new BackendRegistry();
+      backends.register('ai-sdk', (ctx) => {
+        builds.push(ctx.header.permissionMode);
+        return new TestBackend(ctx);
+      });
+      const manager = new SessionManager({ store, backends, newId: nextId(), now: nextNow(981) });
+      const session = await manager.createSession(makeInput());
+      const firstTurn = assert.rejects(
+        drain(
+          manager.sendMessage(
+            session.id,
+            { turnId: 'cancelled', text: 'start' },
+            {
+              admitTurn: async () => {
+                admissionStarted.release();
+                await releaseAdmission.promise;
+                if (outcome === 'failed') throw new Error('injected admission failure');
+                return 'cancelled';
+              },
+            },
+          ),
+        ),
+        /cancelled before runtime admission|injected admission failure/,
+      );
+      await admissionStarted.promise;
+      try {
+        const current = await store.readHeaderRecordSnapshot(session.id);
+        await manager.transitionSessionConfiguration(session.id, {
+          expectedRevision: current.revision,
+          clearConnectionBlock: false,
+          permissionModeOnly: true,
+          configuration: configurationForHeader(current.header, { permissionMode: 'bypass' }),
+        });
+      } finally {
+        releaseAdmission.release();
+      }
+      await firstTurn;
+      await manager.refreshIdleBackends();
+      await drain(manager.sendMessage(session.id, { turnId: 'retry', text: 'retry' }));
+      await drain(manager.sendMessage(session.id, { turnId: 'reuse', text: 'reuse' }));
+      assert.deepStrictEqual(builds, ['bypass']);
+      assert.strictEqual(store.disposeCount, 0);
+    });
+  }
+
+  test('settles a backend refresh when an in-flight build fails', async () => {
+    const store = new VersionedConfigurationMemorySessionStore();
+    const buildStarted = makeGate();
+    const releaseBuild = makeGate();
+    const builds: PermissionMode[] = [];
+    const backends = new BackendRegistry();
+    backends.register('ai-sdk', async (ctx) => {
+      builds.push(ctx.header.permissionMode);
+      if (builds.length === 1) {
+        buildStarted.release();
+        await releaseBuild.promise;
+        throw new Error('injected activation failure');
+      }
+      return new TestBackend(ctx);
+    });
+    const manager = new SessionManager({ store, backends, newId: nextId(), now: nextNow(982) });
+    const session = await manager.createSession(makeInput({ permissionMode: 'ask' }));
+    const firstTurn = assert.rejects(
+      drain(manager.sendMessage(session.id, { turnId: 'turn-failing', text: 'start' })),
+      /injected activation failure/,
+    );
+    await buildStarted.promise;
+    const current = await store.readHeaderRecordSnapshot(session.id);
+    await manager.transitionSessionConfiguration(session.id, {
+      expectedRevision: current.revision,
+      clearConnectionBlock: false,
+      permissionModeOnly: true,
+      configuration: configurationForHeader(current.header, { permissionMode: 'bypass' }),
+    });
+    let refreshed = false;
+    const refresh = manager.refreshIdleBackends().then(() => {
+      refreshed = true;
+    });
+    try {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.strictEqual(refreshed, false);
+    } finally {
+      releaseBuild.release();
+    }
+    await firstTurn;
+    await refresh;
+    await drain(manager.sendMessage(session.id, { turnId: 'turn-retry', text: 'retry' }));
+    assert.deepStrictEqual(builds, ['ask', 'bypass']);
+  });
+
   test('revokes background shell authority before narrowing Auto to Explore', async () => {
-    const store = new AtomicBoundaryMemorySessionStore();
+    const store = new VersionedConfigurationMemorySessionStore();
     const calls: string[] = [];
     const manager = new SessionManager({
       store,
@@ -4556,14 +5126,222 @@ describe('SessionManager permission mode updates', () => {
       } as never,
     });
     const session = await manager.createSession(makeInput({ permissionMode: 'ask' }));
+    const current = await store.readHeaderRecordSnapshot(session.id);
 
-    await manager.setPermissionMode(session.id, 'explore');
+    await manager.transitionSessionConfiguration(session.id, {
+      expectedRevision: current.revision,
+      clearConnectionBlock: false,
+      permissionModeOnly: true,
+      configuration: configurationForHeader(current.header, { permissionMode: 'explore' }),
+    });
 
     assert.deepStrictEqual(calls, [`terminate:${session.id}`, 'commit', `resume:${session.id}`]);
     const boundary = await store.readExecutionBoundary(session.id);
     assert.strictEqual(boundary.kind, 'managed');
     if (boundary.kind === 'managed') assert.strictEqual(boundary.profile.name, 'read-only');
   });
+
+  test('treats an expanded Explore profile as narrowing before restoring Explore', async () => {
+    const store = new VersionedConfigurationMemorySessionStore();
+    const gate = makeGate();
+    const calls: string[] = [];
+    const backends = new BackendRegistry();
+    const runStore = new MemoryAgentRunStore();
+    backends.register('ai-sdk', (ctx) => new TestBackend(ctx, gate));
+    const manager = new SessionManager({
+      store,
+      runStore,
+      runtimeEventStore: runStore,
+      backends,
+      newId: nextId(),
+      now: nextNow(987),
+      shellRuns: {
+        async terminateSession(sessionId: string) {
+          calls.push(`terminate:${sessionId}`);
+          return { sessionId, token: Symbol('test') };
+        },
+        async commitSessionClose() {
+          calls.push('commit');
+        },
+        rollbackSessionClose() {
+          calls.push('rollback');
+        },
+        resumeSession(sessionId: string) {
+          calls.push(`resume:${sessionId}`);
+        },
+      } as never,
+    });
+    const session = await manager.createSession(makeInput({ permissionMode: 'ask' }));
+    store.forceBoundary(session.id, {
+      kind: 'managed',
+      profile: applySandboxBoundaryExpansion(createReadOnlyPermissionProfile(), {
+        filesystem: {
+          entries: [{ path: '/approved/output', access: 'write', scope: 'subtree' }],
+        },
+      }),
+      revision: 1,
+    });
+    const activeTurn = manager
+      .sendMessage(session.id, { turnId: 'turn-expanded-explore', text: 'keep running' })
+      [Symbol.asyncIterator]();
+    await activeTurn.next();
+
+    const current = await store.readHeaderRecordSnapshot(session.id);
+    const narrowing = {
+      expectedRevision: current.revision,
+      clearConnectionBlock: false,
+      permissionModeOnly: true,
+      configuration: configurationForHeader(current.header, { permissionMode: 'explore' }),
+    } as const;
+    await expectRejects(
+      manager.transitionSessionConfiguration(session.id, narrowing),
+      /linked Turn is active/,
+    );
+    assert.deepStrictEqual(calls, []);
+    assert.strictEqual((await store.readHeader(session.id)).permissionMode, 'ask');
+
+    gate.release();
+    while (!(await activeTurn.next()).done) {}
+
+    await manager.transitionSessionConfiguration(session.id, narrowing);
+    assert.deepStrictEqual(calls, [`terminate:${session.id}`, 'commit', `resume:${session.id}`]);
+    assert.strictEqual((await store.readHeader(session.id)).permissionMode, 'explore');
+  });
+
+  for (const route of ['configuration', 'boundary'] as const) {
+    for (const grant of ['read', 'write', 'network'] as const) {
+      test(`restoring Explore revokes an approved ${grant} through the durable ${route} path`, async (t) => {
+        const root = await mkdtemp(join(tmpdir(), 'maka-explore-read-revocation-'));
+        const store = createSessionStore(root);
+        t.after(async () => {
+          await store.close?.();
+          await rm(root, { recursive: true, force: true });
+        });
+        const gate = makeGate();
+        const calls: string[] = [];
+        const backends = new BackendRegistry();
+        const runStore = new MemoryAgentRunStore();
+        backends.register('ai-sdk', (ctx) => new TestBackend(ctx, gate));
+        const manager = new SessionManager({
+          store,
+          runStore,
+          runtimeEventStore: runStore,
+          backends,
+          newId: nextId(),
+          now: nextNow(988),
+          shellRuns: {
+            async terminateSession(sessionId: string) {
+              calls.push(`terminate:${sessionId}`);
+              return { sessionId, token: Symbol('test') };
+            },
+            async commitSessionClose() {
+              calls.push('commit');
+            },
+            rollbackSessionClose() {
+              calls.push('rollback');
+            },
+            resumeSession(sessionId: string) {
+              calls.push(`resume:${sessionId}`);
+            },
+          } as never,
+        });
+        const workspaceRoot = join(root, 'workspace');
+        const outsidePath = join(root, 'approved', 'input.txt');
+        const session = await manager.createSession(
+          makeInput({ permissionMode: 'explore', cwd: workspaceRoot }),
+        );
+        const updatePermissionMode = async (permissionMode: PermissionMode) => {
+          const current = await store.readHeaderRecordSnapshot(session.id);
+          return manager.transitionSessionConfiguration(session.id, {
+            expectedRevision: current.revision,
+            clearConnectionBlock: false,
+            permissionModeOnly: true,
+            configuration: configurationForHeader(current.header, { permissionMode }),
+          });
+        };
+        await store.createSandboxBoundaryRequest({
+          sessionId: session.id,
+          requestId: 'approved-expansion',
+          turnId: 'turn-approval',
+          runId: 'run-approval',
+          expansion:
+            grant === 'network'
+              ? { network: { enabled: true } }
+              : {
+                  filesystem: { entries: [{ path: outsidePath, access: grant, scope: 'exact' }] },
+                },
+          justification: 'Approve one specific sandbox expansion.',
+        });
+        const settlement = await store.settleSandboxBoundaryRequest({
+          sessionId: session.id,
+          requestId: 'approved-expansion',
+          decision: 'allow',
+        });
+        assert.strictEqual(settlement.request.status, 'approved');
+        if (route === 'configuration') await updatePermissionMode('ask');
+        const restoreExplore = () =>
+          route === 'configuration'
+            ? updatePermissionMode('explore')
+            : manager.setExecutionBoundaryKind(session.id, 'managed');
+        const expanded = await store.readExecutionBoundary(session.id);
+        assert.strictEqual(expanded.kind, 'managed');
+        if (expanded.kind !== 'managed') throw new Error('Expected a managed boundary');
+        assert.strictEqual(expanded.profile.name, 'read-only');
+        assert.strictEqual(isReadOnlyPermissionProfile(expanded.profile), grant === 'read');
+        assert.strictEqual(
+          expanded.profile.network.kind,
+          grant === 'network' ? 'enabled' : 'restricted',
+        );
+        assert.strictEqual(
+          canReadPath(expanded.profile, outsidePath, { workspaceRoots: [workspaceRoot] }),
+          grant !== 'network',
+        );
+        assert.deepStrictEqual(calls, []);
+
+        const activeTurn = manager
+          .sendMessage(session.id, { turnId: 'turn-expanded-read', text: 'keep reading' })
+          [Symbol.asyncIterator]();
+        try {
+          await activeTurn.next();
+          await assert.rejects(restoreExplore(), (error: unknown) => {
+            if (route === 'boundary') {
+              assert.ok(error instanceof SessionConfigurationTransitionError);
+              assert.strictEqual(error.code, 'session_busy');
+              return true;
+            }
+            assert.ok(error instanceof SessionConfigurationTransitionError);
+            assert.strictEqual(error.code, 'session_busy');
+            return true;
+          });
+          assert.deepStrictEqual(await store.readExecutionBoundary(session.id), expanded);
+          assert.strictEqual(
+            (await store.readHeader(session.id)).permissionMode,
+            route === 'configuration' ? 'ask' : 'explore',
+          );
+          assert.deepStrictEqual(calls, []);
+        } finally {
+          gate.release();
+          while (!(await activeTurn.next()).done) {}
+        }
+
+        await restoreExplore();
+        assert.deepStrictEqual(calls, [
+          `terminate:${session.id}`,
+          'commit',
+          `resume:${session.id}`,
+        ]);
+        const narrowed = await store.readExecutionBoundary(session.id);
+        assert.strictEqual(narrowed.kind, 'managed');
+        if (narrowed.kind !== 'managed') throw new Error('Expected a managed boundary');
+        assert.deepStrictEqual(narrowed.profile, createReadOnlyPermissionProfile());
+        assert.strictEqual(
+          canReadPath(narrowed.profile, outsidePath, { workspaceRoots: [workspaceRoot] }),
+          false,
+        );
+        assert.strictEqual((await store.readHeader(session.id)).permissionMode, 'explore');
+      });
+    }
+  }
 
   test('revokes descendant background shell authority through the direct boundary API', async () => {
     const store = new AtomicBoundaryMemorySessionStore();
@@ -4676,8 +5454,8 @@ describe('SessionManager permission mode updates', () => {
     assert.strictEqual(store.disposeCount, 3);
   });
 
-  test('keeps mode changes blocked until all overlapping turns finish', async () => {
-    const store = new MemorySessionStore();
+  test('keeps narrowing blocked until all overlapping turns finish', async () => {
+    const store = new VersionedConfigurationMemorySessionStore();
     const runStore = new MemoryAgentRunStore();
     const backends = new BackendRegistry();
     const firstGate = makeGate();
@@ -4716,7 +5494,28 @@ describe('SessionManager permission mode updates', () => {
       ],
     );
 
-    await expectRejects(manager.setPermissionMode(session.id, 'bypass'), /当前任务正在运行/);
+    // Widening is a grant, so it commits against the live Turn instead of
+    // making the user wait for it out (#3349).
+    const current = await store.readHeaderRecordSnapshot(session.id);
+    const widened = await manager.transitionSessionConfiguration(session.id, {
+      expectedRevision: current.revision,
+      clearConnectionBlock: false,
+      permissionModeOnly: true,
+      configuration: configurationForHeader(current.header, { permissionMode: 'bypass' }),
+    });
+    assert.strictEqual(widened.header.permissionMode, 'bypass');
+    assert.strictEqual((await manager.readExecutionBoundary(session.id)).kind, 'bypass');
+    // Narrowing still requires quiescence: that is what lets it terminate the
+    // lineage's shells safely.
+    await expectRejects(
+      manager.transitionSessionConfiguration(session.id, {
+        expectedRevision: widened.revision,
+        clearConnectionBlock: false,
+        permissionModeOnly: true,
+        configuration: configurationForHeader(widened.header, { permissionMode: 'explore' }),
+      }),
+      /linked Turn is active/,
+    );
 
     secondGate.release();
     await second.next();
@@ -4730,13 +5529,12 @@ describe('SessionManager permission mode updates', () => {
         ['turn-2', 'completed'],
       ],
     );
-
     const summary = await manager.setPermissionMode(session.id, 'bypass');
     assert.strictEqual(summary.permissionMode, 'bypass');
   });
 
-  test('leaving explore clears the deep research label so visible read-only copy stays truthful', async () => {
-    const store = new MemorySessionStore();
+  test('the setPermissionMode wrapper delegates deep research cleanup to configuration authority', async () => {
+    const store = new VersionedConfigurationMemorySessionStore();
     const backends = new BackendRegistry();
     backends.register('ai-sdk', (ctx) => new TestBackend(ctx));
     const manager = new SessionManager({ store, backends, newId: nextId(), now: nextNow(6_000) });
@@ -4752,6 +5550,23 @@ describe('SessionManager permission mode updates', () => {
     assert.strictEqual(summary.permissionMode, 'ask');
     assert.deepStrictEqual(summary.labels, ['kept']);
     assert.deepStrictEqual((await store.readHeader(session.id)).labels, ['kept']);
+  });
+
+  test('temporarily preserves setPermissionMode for legacy SessionStore implementations', async () => {
+    const store = new MemorySessionStore();
+    const manager = new SessionManager({
+      store,
+      backends: new BackendRegistry(),
+      newId: nextId(),
+      now: nextNow(6_100),
+    });
+    const session = await manager.createSession(makeInput({ permissionMode: 'ask' }));
+
+    const summary = await manager.setPermissionMode(session.id, 'bypass');
+
+    assert.strictEqual(summary.permissionMode, 'bypass');
+    assert.strictEqual((await store.readHeader(session.id)).permissionMode, 'bypass');
+    assert.strictEqual((await store.readExecutionBoundary(session.id)).kind, 'bypass');
   });
 
   test('starts a new turn without workspace identity when safety inspection fails', async () => {
@@ -5074,6 +5889,59 @@ describe('SessionManager permission mode updates', () => {
 
     assert.strictEqual(plan.disposition, 'continue');
     assert.strictEqual(plan.continuation?.sourceRunId, 'source-run-newer');
+  });
+
+  test('fresh-turn tool policy changes only new runs and preserves Session defaults', async () => {
+    const store = new MemorySessionStore();
+    const runStore = new MemoryAgentRunStore();
+    const backends = new BackendRegistry();
+    const instances = new Map<string, TestBackend>();
+    const gate = makeGate();
+    let mode: ToolMode = 'code_mode';
+    let dynamicSessionId: string | undefined;
+    backends.register('ai-sdk', (ctx) => {
+      const backend = new TestBackend(ctx, gate);
+      instances.set(ctx.sessionId, backend);
+      return backend;
+    });
+    const manager = new SessionManager({
+      store,
+      runStore,
+      runtimeEventStore: runStore,
+      backends,
+      newId: nextId(),
+      now: nextNow(6_450),
+      resolveFreshTurnToolMode: async (header) =>
+        header.id === dynamicSessionId ? mode : undefined,
+    });
+    const dynamic = await manager.createSession({ ...makeInput(), toolMode: 'direct' });
+    const ordinary = await manager.createSession({ ...makeInput(), toolMode: 'code_mode' });
+    dynamicSessionId = dynamic.id;
+    const active = manager
+      .sendMessage(dynamic.id, { turnId: 'dynamic-1', text: 'first' })
+      [Symbol.asyncIterator]();
+    await active.next();
+    mode = 'direct';
+    assert.equal(instances.get(dynamic.id)?.sendInputs[0]?.toolMode, 'code_mode');
+    gate.release();
+    while (!(await active.next()).done) {
+      /* Drain the running turn. */
+    }
+    await drainAll(manager.sendMessage(dynamic.id, { turnId: 'dynamic-2', text: 'second' }));
+    await drainAll(manager.sendMessage(ordinary.id, { turnId: 'ordinary-1', text: 'ordinary' }));
+    assert.deepEqual(
+      instances.get(dynamic.id)?.sendInputs.map((input) => input.toolMode),
+      ['code_mode', 'direct'],
+    );
+    assert.equal(instances.get(ordinary.id)?.sendInputs[0]?.toolMode, 'code_mode');
+    assert.equal((await store.readHeader(dynamic.id)).toolMode, 'direct');
+    assert.equal((await store.readHeader(ordinary.id)).toolMode, 'code_mode');
+    assert.deepEqual(
+      (await runStore.listSessionInvocations(dynamic.id)).map(
+        (run) => run.opening.configuration.toolMode,
+      ),
+      ['code_mode', 'direct'],
+    );
   });
 
   test('RuntimeKernel drives the backend while preserving the SessionEvent stream', async () => {
@@ -5602,6 +6470,7 @@ describe('SessionManager permission mode updates', () => {
       runStore,
       runtimeEventStore: runStore,
       toolBoundaryProtocol: 't1_after_preflight_v1',
+      resolveFreshTurnToolMode: async () => 'direct',
       backends,
       childTools: [testTool('Read')],
       inspectContinuationSafety: async () => ({
@@ -5843,6 +6712,8 @@ describe('SessionManager permission mode updates', () => {
       provenance: 'runtime',
       providerStateIdentity,
     });
+    assert.equal(followUpRun?.opening.configuration.toolMode, 'direct');
+    assert.equal(backend?.sendInputs.at(-1)?.toolMode, 'direct');
   });
 
   test('authenticates the exact target-aware continuation projection that reaches the provider', async () => {
@@ -7764,7 +8635,7 @@ describe('SessionManager permission mode updates', () => {
     );
   });
 
-  test('RuntimeReadModel projects messages turns replay and terminal facts without SessionStore messages', async () => {
+  test('RuntimeReadModel projects messages turns and terminal facts without SessionStore messages', async () => {
     const store = new MemorySessionStore();
     const runStore = new MemoryAgentRunStore();
     const session = await store.create(makeInput());
@@ -7795,10 +8666,6 @@ describe('SessionManager permission mode updates', () => {
     assert.deepStrictEqual(
       view.terminalFacts.map((fact) => fact.runStatus),
       ['completed'],
-    );
-    assert.deepStrictEqual(
-      view.replayPlan.textMessages.map((message) => message.content),
-      ['runtime question', 'runtime answer'],
     );
   });
 
@@ -8076,10 +8943,6 @@ describe('SessionManager permission mode updates', () => {
     assert.deepStrictEqual(
       view.messages.map((message) => message.turnId),
       ['parent-turn', 'parent-turn', 'parent-turn'],
-    );
-    assert.deepStrictEqual(
-      view.replayPlan.textMessages.map((message) => message.content),
-      ['parent question', 'parent answer'],
     );
   });
 
@@ -10497,7 +11360,7 @@ describe('SessionManager permission mode updates', () => {
   });
 
   test('marks a sandbox boundary request waiting and blocks boundary mode changes', async () => {
-    const store = new MemorySessionStore();
+    const store = new VersionedConfigurationMemorySessionStore();
     const runStore = new MemoryAgentRunStore();
     const backends = new BackendRegistry();
     let backend: SandboxBoundaryWaitBackend | undefined;
@@ -10530,7 +11393,7 @@ describe('SessionManager permission mode updates', () => {
     assert.strictEqual((await store.readHeader(session.id)).status, 'waiting_for_user');
     const [run] = await runStore.listSessionInvocations(session.id);
     assert.strictEqual(run?.terminalEvent, undefined);
-    await expectRejects(manager.setPermissionMode(session.id, 'bypass'), /当前任务正在运行/);
+    await expectRejects(manager.setPermissionMode(session.id, 'bypass'), /pending Interaction/);
     assert.strictEqual((await store.readHeader(session.id)).permissionMode, 'ask');
 
     await manager.respondToSandboxBoundary(session.id, {
@@ -11937,7 +12800,7 @@ class GatedSteeringBackend implements AgentBackend {
     this.gates.set(input.turnId, gate);
     this.pullDone.set(input.turnId, afterPull);
     await gate.promise;
-    const leases = input.pullSteering?.() ?? [];
+    const leases = (await input.pullSteering?.()) ?? [];
     const record = this.pulls.get(input.turnId) ?? [];
     record.push(leases.map((lease) => lease.content.text));
     this.pulls.set(input.turnId, record);
@@ -12258,7 +13121,8 @@ class CompactingTestBackend extends TestBackend {
       runtimeContextCount: input.runtimeContext.length,
       sourceRoutes: (input.runtimeContextInvocations ?? []).map((run) => ({
         runId: run.runId,
-        ...(run.opening.route.provenance === 'runtime'
+        ...(run.opening.route.provenance === 'runtime' &&
+        run.opening.route.backendKind !== 'plugin-executor'
           ? { connectionId: run.opening.route.llmConnectionId }
           : {}),
         modelId: run.opening.route.modelId,
@@ -13074,13 +13938,15 @@ class MemorySessionStore implements SessionStore {
       ...(input.revisionIndex !== undefined ? { revisionIndex: input.revisionIndex } : {}),
       ...(input.revisionState ? { revisionState: input.revisionState } : {}),
       hasUnread: false,
-      backend: 'ai-sdk',
+      backend: input.executorId ? 'plugin-executor' : 'ai-sdk',
+      ...(input.executorId ? { executorId: input.executorId } : {}),
       ...(input.llmConnectionId === undefined ? {} : { llmConnectionId: input.llmConnectionId }),
       llmConnectionSlug: input.llmConnectionSlug,
       connectionLocked: input.subagentParent !== undefined,
       model: input.model ?? 'fake-model',
       ...(input.thinkingLevel !== undefined ? { thinkingLevel: input.thinkingLevel } : {}),
       permissionMode: input.permissionMode,
+      ...(input.toolMode !== undefined ? { toolMode: input.toolMode } : {}),
       collaborationMode: input.collaborationMode ?? 'agent',
       orchestrationMode: input.orchestrationMode ?? 'default',
       transcriptLedgerVersion: 1,
@@ -13283,7 +14149,16 @@ class MemorySessionStore implements SessionStore {
 
 class VersionedConfigurationMemorySessionStore extends MemorySessionStore {
   private readonly revisions = new Map<string, number>();
+  private readonly forcedBoundaries = new Map<string, ExecutionBoundary>();
   nextConfigurationUpdateGate: { started: Gate; release: Gate } | undefined;
+
+  forceBoundary(sessionId: string, boundary: ExecutionBoundary): void {
+    this.forcedBoundaries.set(sessionId, boundary);
+  }
+
+  override async readExecutionBoundary(sessionId: string): Promise<ExecutionBoundary> {
+    return this.forcedBoundaries.get(sessionId) ?? super.readExecutionBoundary(sessionId);
+  }
 
   override async create(
     input: CreateSessionInput,
@@ -13335,6 +14210,7 @@ class VersionedConfigurationMemorySessionStore extends MemorySessionStore {
           }
         : {}),
     });
+    this.forcedBoundaries.delete(sessionId);
     this.revisions.set(sessionId, revision + 1);
     return { header, revision: revision + 1, committedAt: revision + 1 };
   }
@@ -14033,7 +14909,7 @@ function hostedRootAuthority(): RuntimeHostedRootAuthority {
   return {
     bindRun: (identity) => ({
       ...identity,
-      pull: () => [],
+      pull: async () => [],
       ack: () => {},
       nack: () => {},
       release: () => {},
@@ -14060,6 +14936,24 @@ function makeInput(overrides: Partial<CreateSessionInput> = {}): CreateSessionIn
     permissionMode: 'ask',
     name: 'Session',
     labels: [],
+    ...overrides,
+  };
+}
+
+function configurationForHeader(
+  header: SessionHeader,
+  overrides: Partial<SessionConfigurationTransitionRequest['configuration']> = {},
+): SessionConfigurationTransitionRequest['configuration'] {
+  return {
+    backend: header.backend,
+    ...(header.llmConnectionId === undefined ? {} : { llmConnectionId: header.llmConnectionId }),
+    llmConnectionSlug: header.llmConnectionSlug,
+    connectionLocked: header.connectionLocked,
+    model: header.model,
+    thinkingLevel: header.thinkingLevel,
+    permissionMode: header.permissionMode,
+    collaborationMode: header.collaborationMode ?? 'agent',
+    orchestrationMode: header.orchestrationMode ?? 'default',
     ...overrides,
   };
 }
@@ -14383,7 +15277,7 @@ function testInvocationOpening(header: TestRunHeader): RuntimeEventInvocationOpe
     kind: 'invocation_opened',
     protocol: 'invocation_opened_v1',
     route:
-      header.llmConnectionId === undefined
+      header.llmConnectionId === undefined || header.backendKind === 'plugin-executor'
         ? {
             provenance: 'unknown',
             backendKind: header.backendKind,

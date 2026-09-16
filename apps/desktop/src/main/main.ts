@@ -43,7 +43,7 @@ import {
   type MainProcessRecoveryJournal,
 } from './main-process-recovery-journal.js';
 import { showFatalStartupError } from './native-diagnostic-dialog.js';
-import { isIsolatedE2e } from './startup-context.js';
+import { isIsolatedE2e, revealMode } from './startup-context.js';
 import { reportDevelopmentLaunchResult } from './dev-single-instance-result.js';
 import { registerPreviousMainProcessDiagnosticsIpc } from './desktop-diagnostics-ipc-main.js';
 import { showBrowserMessageBox } from './browser-message-box.js';
@@ -124,7 +124,7 @@ if (!app.requestSingleInstanceLock()) {
               cancelId: 0,
             },
             undefined,
-            { locale },
+            { locale, revealMode },
           );
         })
         .catch((error) => {
@@ -249,7 +249,10 @@ if (!app.requestSingleInstanceLock()) {
             mainLogs: () => mainProcessLogBuffer.snapshot(),
             writeClipboard: (report) => clipboard.writeText(report),
             showMessageBox: (options) =>
-              showBrowserMessageBox(options, desktopStartupProgressWindow(), { locale }),
+              showBrowserMessageBox(options, desktopStartupProgressWindow(), {
+                locale,
+                revealMode,
+              }),
           });
         }
       } finally {

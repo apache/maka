@@ -30,7 +30,9 @@ import {
 
 export type ExecutionRuntimeHostCandidateResult = InteractiveRuntimeHostCandidateResult;
 
-export type ExecutionRuntimeHostCandidateOptions = InteractiveRuntimeHostCandidateOptions;
+export type ExecutionRuntimeHostCandidateOptions = InteractiveRuntimeHostCandidateOptions & {
+  readonly initialization?: import('../client/connect-or-spawn.js').HostedRuntimeInitialization;
+};
 
 export interface ExecutionRuntimeHostCandidateDependencies
   extends ExecutionRuntimeHostCompositionDependencies,
@@ -44,7 +46,10 @@ export async function startExecutionRuntimeHostCandidate(
     options,
     (managedConfig) =>
       createExecutionRuntimeHostCompositionSource(
-        managedConfig ? { projectDirectoryRoots: managedConfig.projectDirectoryRoots } : {},
+        {
+          ...(managedConfig ? { projectDirectoryRoots: managedConfig.projectDirectoryRoots } : {}),
+          ...(options.initialization ? { initialization: options.initialization } : {}),
+        },
         dependencies,
       ),
     dependencies,

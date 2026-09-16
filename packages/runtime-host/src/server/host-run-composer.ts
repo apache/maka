@@ -32,6 +32,7 @@ export type HostModelPromptContext = SystemPromptContext;
 
 export interface ResolvedRunPrompt {
   readonly text: string | undefined;
+  readonly contexts?: readonly { readonly name: string; readonly text: string }[];
   readonly sourceRevisions: readonly RunCompositionSourceRevision[];
 }
 

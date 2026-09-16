@@ -84,6 +84,20 @@ export function requireEntityId(value: unknown, label: string): string {
   return id;
 }
 
+/** Correlation identities are preserved verbatim, not interpreted as entity paths. */
+export function requireOpaqueIdentity(value: unknown, label: string): string {
+  if (
+    typeof value !== 'string' ||
+    value.length === 0 ||
+    value.length > 256 ||
+    value.trim() !== value ||
+    /[\u0000-\u001f\u007f]/.test(value)
+  ) {
+    throw invalidProtocolFrame(`Invalid ${label}`);
+  }
+  return value;
+}
+
 export function requireCount(value: unknown, label: string): number {
   if (!Number.isSafeInteger(value) || (value as number) < 0) {
     throw invalidProtocolFrame(`Invalid ${label}`);

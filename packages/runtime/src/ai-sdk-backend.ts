@@ -124,6 +124,8 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
   providerStateIdentity?: `sha256:${string}`;
   /** Reads the authoritative session boundary immediately before every local tool invocation. */
   readExecutionBoundary: ToolRuntimeInput['readExecutionBoundary'];
+  /** Reads the user's current Session permission selection for each local tool invocation. */
+  readPermissionMode: ToolRuntimeInput['readPermissionMode'];
   createSandboxBoundaryRequest?: ToolRuntimeInput['createSandboxBoundaryRequest'];
   settleSandboxBoundaryRequest?: ToolRuntimeInput['settleSandboxBoundaryRequest'];
 
@@ -242,6 +244,8 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
 
 export interface ResolvedSystemPrompt {
   text?: string;
+  /** Per-step ephemeral user-role context, resolved once per logical request. */
+  contexts?: readonly { readonly name: string; readonly text: string }[];
   sourceRevisions: readonly RunCompositionSourceRevision[];
 }
 
@@ -391,7 +395,6 @@ export class AiSdkBackend implements AgentBackend {
       targetConnectionId: input.header.llmConnectionId,
       targetProviderStateIdentity: input.providerStateIdentity,
       now: this.now,
-      modelAdapter: this.modelAdapter,
       createProviderRequestTracker: (trackerInput) =>
         this.providerTelemetry.createTracker(trackerInput),
       materializeRuntimeReplayPlan: (
@@ -497,6 +500,7 @@ export class AiSdkBackend implements AgentBackend {
       connection: input.connection,
       modelId: input.modelId,
       readExecutionBoundary: input.readExecutionBoundary,
+      readPermissionMode: input.readPermissionMode,
       createSandboxBoundaryRequest: input.createSandboxBoundaryRequest,
       settleSandboxBoundaryRequest: input.settleSandboxBoundaryRequest,
       newId: this.newId,

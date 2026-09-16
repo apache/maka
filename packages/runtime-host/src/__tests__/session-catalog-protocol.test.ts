@@ -271,6 +271,50 @@ describe('Session catalog protocol', () => {
 
     assert.deepEqual(
       decodeClientFrame({
+        requestId: 'request-executor',
+        operation: 'session.create',
+        input: {
+          sessionId: 'session-executor',
+          workspace: { kind: 'project', projectId: 'project-1' },
+          executorId: 'codex.app-server',
+        },
+      }),
+      {
+        requestId: 'request-executor',
+        operation: 'session.create',
+        input: {
+          sessionId: 'session-executor',
+          workspace: { kind: 'project', projectId: 'project-1' },
+          executorId: 'codex.app-server',
+        },
+      },
+    );
+
+    for (const input of [
+      {
+        sessionId: 'session-missing-route',
+        workspace: { kind: 'project', projectId: 'project-1' },
+      },
+      {
+        sessionId: 'session-ambiguous-route',
+        workspace: { kind: 'project', projectId: 'project-1' },
+        executorId: 'codex',
+        modelTarget: { kind: 'default' },
+      },
+    ]) {
+      assert.throws(
+        () =>
+          decodeClientFrame({
+            requestId: 'request-invalid-executor',
+            operation: 'session.create',
+            input,
+          }),
+        isProtocolError,
+      );
+    }
+
+    assert.deepEqual(
+      decodeClientFrame({
         requestId: 'request-3',
         operation: 'session.workspace.relocate',
         input: {
