@@ -55,6 +55,10 @@ npm run build               # builds every workspace in dependency order
 npm --workspace @maka/core run test:dist
 ```
 
+A root install applies [`patches/`](./patches) during `postinstall`. `@maka/runtime` re-applies
+them before building. If patch-package is missing or a patch cannot be applied, the build stops
+and asks you to run `npm ci` from the repository root.
+
 ## Developing Maka
 
 ```sh
