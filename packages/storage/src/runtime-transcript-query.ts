@@ -55,6 +55,20 @@ export interface RuntimeTranscriptRun {
   readonly lastOrdinal: number;
 }
 
+/** One Turn of a Session transcript: every visible invocation carrying its turnId. */
+export interface RuntimeTranscriptTurn {
+  readonly turnId: string;
+  readonly firstOrdinal: number;
+  readonly lastOrdinal: number;
+  /** The Turn's first user text event, which labels it. */
+  readonly prompt?: { readonly ordinal: number; readonly event: RuntimeEvent };
+}
+
+export type RuntimeTranscriptTurnsRequest =
+  | { readonly turnId: string }
+  /** Evenly spaced Turns that start at or below `throughOrdinal`. */
+  | { readonly throughOrdinal: number; readonly limit: number };
+
 export interface RuntimeTranscriptRunRequest {
   readonly direction: 'older' | 'newer';
   readonly throughOrdinal: number;
@@ -86,6 +100,12 @@ export interface RuntimeTranscriptQueries {
       events: Iterable<{ readonly ordinal: number; readonly event: RuntimeEvent }>,
     ) => T,
   ): Promise<T | undefined>;
+  readTranscriptTurns(
+    sessionId: string,
+    request: RuntimeTranscriptTurnsRequest,
+  ): Promise<RuntimeTranscriptTurn[]>;
+  /** Whether some Turn has events both below `ordinal` and at or above it. */
+  readTranscriptTurnCrossing(sessionId: string, ordinal: number): Promise<boolean>;
 }
 
 export class RuntimeTranscriptOversizedTurnError extends Error {
@@ -149,6 +169,65 @@ const boundary = (direction: 'older' | 'newer') => `
     AND e.invocation_id <> :invocationId
   ORDER BY o.ordinal ${direction === 'older' ? 'DESC' : 'ASC'}
   LIMIT 1`;
+
+/**
+ * Invocations the transcript shows. The ledger opening wins over one parked
+ * beside it by the run-header migration.
+ */
+const VISIBLE_INVOCATIONS = `
+  SELECT invocation_id FROM runtime_events
+  WHERE event_kind = 'invocation_opened'
+    AND ${visibleOpening("json_extract(payload_json, '$.content')")}
+  UNION
+  SELECT legacy.invocation_id FROM runtime_legacy_invocation_openings legacy
+  WHERE ${visibleOpening('legacy.opening_json')}
+    AND NOT EXISTS (
+      SELECT 1 FROM runtime_events opened
+      WHERE opened.invocation_id = legacy.invocation_id
+        AND opened.event_kind = 'invocation_opened'
+    )`;
+
+/**
+ * Widen a Turn's extent to cover one committed event, in the transaction that
+ * gave the event its ordinal. Events of invocations the transcript does not
+ * show leave no extent.
+ */
+export function recordTranscriptTurnExtent(
+  db: DatabaseSync,
+  event: { readonly sessionId: string; readonly invocationId: string; readonly turnId: string },
+  ordinal: number,
+): void {
+  db.prepare(`
+    INSERT INTO runtime_session_turn_extents(session_id, turn_id, first_ordinal, last_ordinal)
+    SELECT :sessionId, :turnId, :ordinal, :ordinal
+    WHERE ${visibleOpening(openingContent(':invocationId'))}
+    ON CONFLICT(session_id, turn_id) DO UPDATE SET
+      first_ordinal = MIN(first_ordinal, excluded.first_ordinal),
+      last_ordinal = MAX(last_ordinal, excluded.last_ordinal)
+  `).run({
+    sessionId: event.sessionId,
+    turnId: event.turnId,
+    invocationId: event.invocationId,
+    ordinal,
+  });
+}
+
+/** Recompute extents from the ledger, for one Session or all of them. */
+export function rebuildTranscriptTurnExtents(db: DatabaseSync, sessionId?: string): void {
+  const bind = { sessionId: sessionId ?? null };
+  db.prepare(
+    'DELETE FROM runtime_session_turn_extents WHERE :sessionId IS NULL OR session_id = :sessionId',
+  ).run(bind);
+  db.prepare(`
+    INSERT INTO runtime_session_turn_extents(session_id, turn_id, first_ordinal, last_ordinal)
+    SELECT o.session_id, e.turn_id, MIN(o.ordinal), MAX(o.ordinal)
+    FROM runtime_session_event_ordinals o
+    JOIN runtime_events e ON e.event_id = o.event_id
+    WHERE e.invocation_id IN (${VISIBLE_INVOCATIONS})
+      AND (:sessionId IS NULL OR o.session_id = :sessionId)
+    GROUP BY o.session_id, e.turn_id
+  `).run(bind);
+}
 
 const RUN_QUERIES = {
   older: { seek: seek('older'), boundary: boundary('older') },
@@ -215,6 +294,87 @@ export class RuntimeTranscriptQuery {
       },
       this.events(seeked.invocation_id, request),
     );
+  }
+
+  turns(sessionId: string, request: RuntimeTranscriptTurnsRequest): RuntimeTranscriptTurn[] {
+    let rows: Array<{ turn_id: string; first_ordinal: number; last_ordinal: number }>;
+    if ('turnId' in request) {
+      rows = this.db
+        .prepare(`
+        SELECT turn_id, first_ordinal, last_ordinal FROM runtime_session_turn_extents
+        WHERE session_id = ? AND turn_id = ?
+      `)
+        .all(sessionId, request.turnId) as typeof rows;
+    } else {
+      assertOrdinal(request.throughOrdinal);
+      if (!Number.isSafeInteger(request.limit) || request.limit < 1) return [];
+      rows = this.db
+        .prepare(`
+        WITH candidates AS (
+          SELECT turn_id, first_ordinal, last_ordinal,
+            ROW_NUMBER() OVER (ORDER BY first_ordinal) - 1 AS rank, COUNT(*) OVER () AS total
+          FROM runtime_session_turn_extents
+          WHERE session_id = :sessionId AND first_ordinal <= :throughOrdinal
+        ), samples(n) AS (
+          SELECT 0 UNION ALL SELECT n + 1 FROM samples WHERE n + 1 < :limit
+        )
+        SELECT DISTINCT turn_id, first_ordinal, last_ordinal FROM candidates
+        JOIN samples ON rank = CASE WHEN :limit = 1 THEN total - 1
+          ELSE CAST(n * (total - 1) / (:limit - 1) AS INTEGER) END
+        ORDER BY first_ordinal
+      `)
+        .all({
+          sessionId,
+          throughOrdinal: request.throughOrdinal,
+          limit: request.limit,
+        }) as typeof rows;
+    }
+    return rows.map((row) => {
+      const prompt = this.db
+        .prepare(`
+        SELECT po.ordinal, pe.event_id
+        FROM runtime_session_event_ordinals o
+        JOIN runtime_events e ON e.event_id = o.event_id
+        JOIN runtime_events pe ON pe.invocation_id = e.invocation_id
+        JOIN runtime_session_event_ordinals po ON po.event_id = pe.event_id
+        WHERE o.session_id = ? AND o.ordinal = ?
+          AND pe.event_kind = 'text' AND json_extract(pe.payload_json, '$.role') = 'user'
+        ORDER BY pe.event_seq LIMIT 1
+      `)
+        .get(sessionId, row.first_ordinal) as { ordinal: number; event_id: string } | undefined;
+      return {
+        turnId: row.turn_id,
+        firstOrdinal: row.first_ordinal,
+        lastOrdinal: row.last_ordinal,
+        ...(prompt
+          ? { prompt: { ordinal: prompt.ordinal, event: this.event(prompt.event_id) } }
+          : {}),
+      };
+    });
+  }
+
+  crossing(sessionId: string, ordinal: number): boolean {
+    assertOrdinal(ordinal);
+    return (
+      this.db
+        .prepare(`
+        SELECT 1 FROM runtime_session_turn_extents
+        WHERE session_id = ? AND first_ordinal < ? AND last_ordinal >= ?
+        LIMIT 1
+      `)
+        .get(sessionId, ordinal, ordinal) !== undefined
+    );
+  }
+
+  private event(eventId: string): RuntimeEvent {
+    const row = this.db
+      .prepare(`
+      SELECT event_id, session_id, invocation_id, run_id, turn_id, payload_json
+      FROM runtime_events WHERE event_id = ?
+    `)
+      .get(eventId) as StoredEventRow | undefined;
+    if (!row) throw new Error(`Transcript RuntimeEvent ${eventId} is missing`);
+    return decodeStoredEvent(row);
   }
 
   private *events(

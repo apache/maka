@@ -154,7 +154,7 @@ export type {
 } from './session-store-contract.js';
 
 export type ExecutionSessionWriter = SessionAuthorityStore;
-export type { RuntimeTranscriptRun } from './runtime-transcript-query.js';
+export type { RuntimeTranscriptRun, RuntimeTranscriptTurn } from './runtime-transcript-query.js';
 export type ExecutionAgentRunWriter = DurableAgentRunStore;
 export type ExecutionRuntimeEventWriter = DurableRuntimeEventStore &
   RuntimeTranscriptQueries &
@@ -749,6 +749,10 @@ async function createExecutionStoresForWrite(
         run(() => runtimeEventStore.readTranscriptHighWater(sessionId)),
       readTranscriptRun: (sessionId, request, project) =>
         run(() => runtimeEventStore.readTranscriptRun(sessionId, request, project)),
+      readTranscriptTurns: (sessionId, request) =>
+        run(() => runtimeEventStore.readTranscriptTurns(sessionId, request)),
+      readTranscriptTurnCrossing: (sessionId, ordinal) =>
+        run(() => runtimeEventStore.readTranscriptTurnCrossing(sessionId, ordinal)),
       subscribeRuntimeEventCommits: (listener) => {
         if (closed) throw invalidExecutionStores(kind, 'write');
         assertStorageRootLeaseActive(lease, kind, 'write');
