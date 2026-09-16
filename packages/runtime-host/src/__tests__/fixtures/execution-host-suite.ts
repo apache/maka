@@ -738,6 +738,8 @@ export class ExecutionFixture {
             messageId: input.messageId,
             content,
             submittedContentDigest: contentDigest,
+            submittedPlacement: 'current_turn',
+            skillInvocation: { loaded: [], failed: [], receipts: [] },
             placement: 'current_turn',
             disposition: 'turn_started',
           },

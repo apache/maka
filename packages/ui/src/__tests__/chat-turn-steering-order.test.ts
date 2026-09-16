@@ -24,7 +24,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { parseHTML } from 'linkedom';
 import { TurnView } from '../chat-turn.js';
 import { LocaleProvider } from '../locale-context.js';
-import type { TurnViewModel } from '../materialize.js';
+import { materializeTurns, type TurnViewModel } from '../materialize.js';
 import { createTranscriptProjection } from '../transcript-projection.js';
 import { ChatView } from '../chat-view.js';
 import { Composer } from '../composer.js';
@@ -32,6 +32,22 @@ import { ChatSurfaceLayout } from '../chat-surface-layout.js';
 import { armLiveTurn } from '../live-turn-projection.js';
 import { applyLiveTurnEvent } from './live-turn-zh.js';
 import type { SessionSummary, StoredMessage } from '@maka/core/session';
+
+test('renders a thinking-only interruption as a divider without an empty answer bubble', () => {
+  const messages: StoredMessage[] = [
+    { type: 'user', id: 'user', turnId: 'turn', ts: 1, text: 'request' },
+    { type: 'assistant', id: 'partial', turnId: 'turn', ts: 2, modelId: 'mock', text: '', interrupted: true, thinking: { text: 'partial thought' } },
+  ];
+  const [turn] = materializeTurns(messages, 'en');
+  assert.ok(turn);
+  const markup = renderToStaticMarkup(createElement(LocaleProvider, {
+    locale: 'en', children: createElement(TurnView, { turn }),
+  }));
+  const { document } = parseHTML(`<html><body>${markup}</body></html>`);
+  assert.equal(document.querySelectorAll('.maka-chat-message-bubble-assistant').length, 0);
+  assert.match(document.body.textContent, /partial thought/);
+  assert.match(document.body.textContent, /Response stream ended before completion/);
+});
 
 test('renders steering where it arrived in the assistant timeline', () => {
   const turn: TurnViewModel = {
@@ -88,7 +104,7 @@ test('holds steering above the composer while old output continues, then renders
     createElement(LocaleProvider, { locale: 'en', children: createElement(ChatSurfaceLayout, {
       composer: createElement(Composer, { streaming: true, pendingMessages: transientMessages, onSend: () => undefined, onStop: () => undefined }),
       children: createElement(ChatView, {
-        messages: durable, liveTurn: live, transientMessages,
+        messages: durable, liveTurns: live ? [live] : undefined, transientMessages,
         initialLiveContentSnapshot: { turnId: 'turn-1', entries: new Map([['text:before', 'old answer continues'], ['text:after', 'reply to new instruction']]) }, onNew: () => undefined, scrollBehavior: 'auto',
         activeSession: { id: 'session', name: 'Session', status: 'running', labels: [] } as unknown as SessionSummary,
       }),
@@ -97,7 +113,7 @@ test('holds steering above the composer while old output continues, then renders
   const waiting = render();
   assert.equal(waiting.querySelector('.maka-composer-queue-text')?.textContent, pending.text);
   assert.equal(waiting.querySelectorAll('.maka-steering-message').length, 0);
-  const timeline = () => createTranscriptProjection().project({ messages, liveTurn: live, locale: 'en' })[0]!.timeline.map((item) => item.kind === 'user' ? item.message.text : item.kind === 'text' ? item.text : item.kind);
+  const timeline = () => createTranscriptProjection().project({ messages, liveTurns: live ? [live] : undefined, locale: 'en' })[0]!.timeline.map((item) => item.kind === 'user' ? item.message.text : item.kind === 'text' ? item.text : item.kind);
   assert.deepEqual(timeline(), ['old answer continues']);
   live = applyLiveTurnEvent(live, { type: 'text_complete', id: 'finished', turnId: 'turn-1', messageId: 'before', ts: 3, text: 'old answer continues' });
   live = applyLiveTurnEvent(live, { type: 'steering_message', id: 'accepted', turnId: 'turn-1', messageId: pending.id, ts: 4, content: { text: pending.text } });

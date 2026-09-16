@@ -20,7 +20,7 @@
 import { isThinkingLevel, type ThinkingLevel } from '../model-thinking.js';
 import type { ModelCatalogEntry } from '../model-catalog.js';
 import { decodeConnectionModel } from './connection-catalog-codec.js';
-import { booleanValue, domainError, exactRecord } from './domain-codec.js';
+import { booleanValue, domainError, exactRecord, integerValue } from './domain-codec.js';
 
 /**
  * A catalog entry as the Host resolved it. The entry is a projection, not
@@ -39,34 +39,55 @@ export function decodeModelCatalogEntry(value: unknown): ModelCatalogEntry {
       'canUseAsChatDefault',
       'isDefault',
       'supportsVision',
+      'defaultSupportsVision',
+      'compactionThreshold',
       'thinkingLevels',
       'contextWindow',
+      'inputLimit',
+      'defaultContextWindow',
+      'defaultInputLimit',
       'knowledgeCutoff',
-      'describedByMetadata',
     ],
-    [
-      'id',
-      'canUseAsChatDefault',
-      'isDefault',
-      'supportsVision',
-      'thinkingLevels',
-      'describedByMetadata',
-    ],
+    ['id', 'canUseAsChatDefault', 'isDefault', 'supportsVision', 'thinkingLevels'],
   );
   // The fields an entry shares with a stored model row keep one decoder, so a
   // bound that moves moves for both. `decodeConnectionModel` rejects unknown
   // fields, so it is handed exactly the subset it owns.
   const shared = decodeConnectionModel({
     id: item.id,
-    ...pick(item, ['displayName', 'description', 'contextWindow', 'knowledgeCutoff']),
+    ...pick(item, ['displayName', 'description', 'contextWindow', 'inputLimit', 'knowledgeCutoff']),
   });
   return {
     ...shared,
+    ...Object.fromEntries(
+      ['defaultContextWindow', 'defaultInputLimit'].flatMap((field) =>
+        item[field] === undefined
+          ? []
+          : [[field, integerValue(item[field], field, 1, Number.MAX_SAFE_INTEGER)]],
+      ),
+    ),
     canUseAsChatDefault: booleanValue(item.canUseAsChatDefault, 'entry chat default eligibility'),
     isDefault: booleanValue(item.isDefault, 'entry default flag'),
     supportsVision: booleanValue(item.supportsVision, 'entry vision support'),
+    ...(item.compactionThreshold === undefined
+      ? {}
+      : {
+          compactionThreshold: integerValue(
+            item.compactionThreshold,
+            'compaction threshold',
+            1,
+            Number.MAX_SAFE_INTEGER,
+          ),
+        }),
+    ...(item.defaultSupportsVision !== undefined
+      ? {
+          defaultSupportsVision: booleanValue(
+            item.defaultSupportsVision,
+            'entry default vision support',
+          ),
+        }
+      : {}),
     thinkingLevels: decodeThinkingLevels(item.thinkingLevels),
-    describedByMetadata: booleanValue(item.describedByMetadata, 'entry metadata coverage'),
   };
 }
 

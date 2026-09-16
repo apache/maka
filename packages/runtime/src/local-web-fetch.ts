@@ -132,7 +132,7 @@ function responseLimitError(): Error {
   return new Error('WebFetch response exceeds the 5 MB response limit.');
 }
 
-function assertAllowedTarget(url: URL): void {
+export function assertAllowedTarget(url: URL): void {
   if (url.protocol !== 'http:' && url.protocol !== 'https:') {
     throw new Error('WebFetch URL must use HTTP or HTTPS.');
   }

@@ -150,8 +150,6 @@ export interface ProviderDefaults {
    * registered so stored connections still decode; it just cannot be used.
    */
   retired?: true;
-  /** User-declared per-model capabilities are authoritative for this provider. */
-  relayModelProfiles?: boolean;
   /**
    * Models with dated evidence of persistent breakage whose failure shape the
    * send itself cannot surface (e.g. empty completions that still bill).
@@ -649,6 +647,13 @@ const moonshotModelIds = toolCallingModelIds('Moonshot', GENERATED_MODELS_DEV_ME
   'kimi-k2.6',
   'kimi-k2.7-code',
 ]).filter((id) => GENERATED_MODELS_DEV_METADATA.moonshot[id]?.lifecycle !== 'deprecated');
+const moonshotGlobal = GENERATED_MODELS_DEV_PROVIDER_FACTS['moonshot-global'];
+if (!moonshotGlobal.api) throw new Error('models.dev Moonshot Global provider is missing its API');
+const moonshotGlobalModelIds = toolCallingModelIds(
+  'Moonshot Global',
+  GENERATED_MODELS_DEV_METADATA['moonshot-global'],
+  ['kimi-k3'],
+).filter((id) => GENERATED_MODELS_DEV_METADATA['moonshot-global'][id]?.lifecycle !== 'deprecated');
 const cloudflareWorkersAi = GENERATED_MODELS_DEV_PROVIDER_FACTS['cloudflare-workers-ai'];
 if (cloudflareWorkersAi.id !== 'cloudflare-workers-ai') {
   throw new Error(
@@ -946,6 +951,19 @@ const providerRegistry = {
     catalogGroup: 'api',
     signupUrl: 'https://platform.kimi.com/console/api-keys',
     catalogOrder: 4,
+  },
+  'moonshot-global': {
+    label: 'Moonshot Global',
+    baseUrl: moonshotGlobal.api,
+    authKind: 'api_key',
+    fallbackModels: moonshotGlobalModelIds,
+    status: 'ready',
+    runtimeAdapter: { kind: 'openai', apiProtocol: 'openai-responses' },
+    modelDiscovery: { kind: 'protocol' },
+    category: 'overseas',
+    catalogGroup: 'api',
+    signupUrl: 'https://platform.kimi.ai/console/api-keys',
+    catalogOrder: 4.1,
   },
   'zai-coding-plan': {
     label: 'Z.AI Coding Plan',
@@ -1587,7 +1605,6 @@ const providerRegistry = {
     fallbackModels: [],
     status: 'ready',
     runtimeAdapter: { kind: 'openai-compatible', name: 'connection', requireBaseUrl: true },
-    relayModelProfiles: true,
     modelDiscovery: { kind: 'protocol' },
     category: 'custom',
     catalogGroup: 'aggregators',
@@ -1600,7 +1617,6 @@ const providerRegistry = {
     fallbackModels: [],
     status: 'ready',
     runtimeAdapter: { kind: 'openai', apiProtocol: 'openai-responses' },
-    relayModelProfiles: true,
     modelDiscovery: { kind: 'protocol' },
     category: 'custom',
     catalogGroup: 'aggregators',
@@ -1665,7 +1681,7 @@ const providerRegistry = {
     menuLabel: 'OpenAI OAuth',
     baseUrl: 'https://chatgpt.com/backend-api/codex',
     authKind: 'oauth_token',
-    fallbackModels: ['gpt-5.6-sol', 'gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex-spark'],
+    fallbackModels: ['gpt-6-astra', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'],
     status: 'phase3-experimental',
     runtimeAdapter: { kind: 'openai-codex' },
     modelDiscovery: { kind: 'protocol', auth: 'openai-codex' },

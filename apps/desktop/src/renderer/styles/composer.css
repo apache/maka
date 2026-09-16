@@ -40,6 +40,15 @@
   max-width: var(--maka-reading-measure);
 }
 
+.maka-return-workhub {
+  --_button-radius: var(--radius-chat);
+  display: flex;
+  width: min(var(--maka-reading-measure), calc(100% - 2 * var(--space-6)));
+  min-height: var(--space-10);
+  margin: 0 auto;
+  text-align: center;
+}
+
 /* Reaching the transcript tail fades the scroll-to-bottom control while the
    composer below it stays still. Both otherwise share the dock's filtered
    compositing surface, so Chromium may re-raster the thin context-gauge paths

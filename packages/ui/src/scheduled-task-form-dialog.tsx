@@ -38,7 +38,7 @@ import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { useMountedRef } from './use-mounted-ref.js';
 import { BotBrandLogo } from './bot-brand-logo.js';
 import type { BotProvider } from '@maka/core/bot-chat-settings';
-import type { ScheduledTask, ScheduledTaskSchedule } from '@maka/core/scheduled-task';
+import type { ScheduledTask } from '@maka/core/scheduled-task';
 import { BOT_DELIVERY_PROVIDERS } from '@maka/core/bot-chat-settings';
 import { botDisplayLabel } from '@maka/core/bot-events';
 import {
@@ -46,6 +46,7 @@ import {
   formatScheduledTaskDeliveryProviderList,
   scheduledTaskFormValidation,
   scheduledTaskPresetRunAt,
+  scheduledTaskScheduleFromForm,
   scheduledTaskTemplateSeed,
   toScheduledTaskLocalDateTimeValue,
 } from './scheduled-task-helpers.js';
@@ -179,22 +180,18 @@ export function ScheduledTaskFormDialog(props: {
     event.preventDefault();
     if (submitDisabled || submitPendingRef.current) return;
     if (!effect) return;
-    let schedule: ScheduledTaskSchedule;
-    if (recurrence === 'interval') {
-      if (!props.seed.lockedSchedule) return;
-      schedule = props.seed.lockedSchedule;
-    } else if (recurrence === 'none') {
-      schedule = { kind: 'once', runAt: parsedRunAt };
-    } else if (recurrence === 'cron') {
-      schedule = { kind: 'cron', expression: cronExpression.trim(), startAt: parsedRunAt };
-    } else {
-      schedule = { kind: 'calendar', recurrence, anchorAt: parsedRunAt };
-    }
+    const schedule = scheduledTaskScheduleFromForm(props.seed, {
+      runAtLocal,
+      parsedRunAt,
+      recurrence,
+      cronExpression,
+    });
+    if (schedule === null) return;
     submitPendingRef.current = true;
     const baseInput = {
       title: title.trim(),
       intentBody: note.trim(),
-      schedule,
+      ...(schedule ? { schedule } : {}),
     };
     // Preserve a pre-#3927 slug-only target without resubmitting it as a new
     // effect; title, intent, and schedule remain editable.
@@ -209,7 +206,9 @@ export function ScheduledTaskFormDialog(props: {
             editingId,
             preservesLegacyEffect ? baseInput : { ...baseInput, effect },
           )
-        : await props.onCreate?.({ ...baseInput, effect });
+        : schedule
+          ? await props.onCreate?.({ ...baseInput, schedule, effect })
+          : false;
       if (result !== false && scheduledTaskMountedRef.current) {
         resetForm();
         props.onOpenChange(false);

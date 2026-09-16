@@ -54,7 +54,8 @@
  * group label (InputGroup: `isGroupLabel`), which names a group via
  * `aria-labelledby` and forwards no click — the `label` selector misses it,
  * so it kept StyleX's hand cursor. Match the stable themeProps class to catch
- * that span too (real <label> field labels are already covered above). */
+ * that span too (real <label> field labels are already covered above).
+ * Disclosure <summary> controls set cursor:pointer in their own stylesheets. */
 :where(
   button,
   label,
@@ -69,7 +70,8 @@
   [role="combobox"],
   [role="radio"],
   [role="checkbox"],
-  [role="treeitem"]
+  [role="treeitem"],
+  summary
 ):not(:disabled):not([aria-disabled="true"]),
 :where(
   button,
@@ -82,7 +84,8 @@
   [role="option"],
   [role="switch"],
   [role="tab"],
-  [role="treeitem"]
+  [role="treeitem"],
+  summary
 ):not(:disabled):not([aria-disabled="true"])
   :where(svg, span, div, p, i, img, path) {
   cursor: default !important;

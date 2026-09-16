@@ -85,7 +85,6 @@ describe('settleModelStepOutcome', () => {
       sawFinish: true,
       finishReason: 'content-filter',
       finishDisposition: 'authoritative',
-      request: {},
       hasResponseEvidence: false,
     });
 
@@ -99,12 +98,11 @@ describe('settleModelStepOutcome', () => {
       sawFinish: false,
       finishReason: 'stop',
       finishDisposition: 'authoritative',
-      request: {},
       hasResponseEvidence: true,
     });
 
-    assert.equal(outcome.kind, 'truncated');
-    if (outcome.kind !== 'truncated') return;
+    assert.equal(outcome.kind, 'failed');
+    if (outcome.kind !== 'failed') return;
     assert.equal(outcome.failure.message, 'Provider stream ended without finishing (stop)');
   });
 
@@ -115,7 +113,6 @@ describe('settleModelStepOutcome', () => {
       finishReason: 'error',
       finishDisposition: 'authoritative',
       rawFinishReason: '503',
-      request: {},
       hasResponseEvidence: false,
     });
 
@@ -318,7 +315,6 @@ describe('ModelAdapter.startStream onError', () => {
     assert.deepEqual(await result.outcome, {
       kind: 'failed',
       failure: failures[0],
-      request: { messages: [{ role: 'user', content: 'hi' }] },
       continuation: 'none',
       hasResponseEvidence: false,
     });
@@ -401,7 +397,6 @@ describe('ModelAdapter.startStream onError', () => {
         totalTokens: 2,
         rawFinishReason: 'stop',
       },
-      request: { messages: [{ role: 'user', content: 'hi' }] },
       continuation: 'none',
       hasResponseEvidence: false,
     });
@@ -414,8 +409,10 @@ describe('ModelAdapter.startStream onError', () => {
       { type: 'text-delta', id: 'text-1', delta: 'partial' },
     ]);
 
-    assert.equal(outcome.kind, 'truncated');
-    if (outcome.kind !== 'truncated') return;
+    assert.equal(outcome.kind, 'failed');
+    if (outcome.kind !== 'failed') return;
+    assert.equal(outcome.failure.kind, 'stream_truncated');
+    assert.equal(outcome.failure.retryable, true);
     assert.equal(outcome.failure.message, 'Provider stream ended without finishing (other)');
     assert.equal(outcome.continuation, 'none');
   });
@@ -430,20 +427,17 @@ describe('ModelAdapter.startStream onError', () => {
       },
     ]);
 
-    assert.equal(outcome.kind, 'truncated');
-    if (outcome.kind !== 'truncated') return;
+    assert.equal(outcome.kind, 'failed');
+    if (outcome.kind !== 'failed') return;
     assert.deepEqual(outcome.failure, {
       type: 'model_failure',
       kind: 'stream_truncated',
       message: 'Provider returned an empty stop without output or usable usage',
-      retryable: false,
+      retryable: true,
     });
     assert.equal(outcome.continuation, 'none');
     assert.equal(outcome.hasResponseEvidence, false);
-    assert.deepEqual(boundaryDispositions(events), [
-      { kind: 'step-finish', disposition: 'incomplete' },
-      { kind: 'finish', disposition: 'incomplete' },
-    ]);
+    assert.deepEqual(finishBoundaryKinds(events), []);
   });
 
   test('keeps an empty stop with authoritative zero usage completed', async () => {
@@ -461,10 +455,7 @@ describe('ModelAdapter.startStream onError', () => {
     assert.equal(outcome.finishReason, 'stop');
     assert.equal(outcome.usage?.totalTokens, 0);
     assert.equal(outcome.hasResponseEvidence, false);
-    assert.deepEqual(boundaryDispositions(events), [
-      { kind: 'step-finish', disposition: 'authoritative' },
-      { kind: 'finish', disposition: 'authoritative' },
-    ]);
+    assert.deepEqual(finishBoundaryKinds(events), []);
   });
 
   test('keeps nonempty text completed when provider usage is unavailable', async () => {
@@ -485,10 +476,7 @@ describe('ModelAdapter.startStream onError', () => {
     assert.equal(outcome.finishReason, 'stop');
     assert.equal(outcome.usage, undefined);
     assert.equal(outcome.hasResponseEvidence, true);
-    assert.deepEqual(boundaryDispositions(events), [
-      { kind: 'step-finish', disposition: 'authoritative' },
-      { kind: 'finish', disposition: 'authoritative' },
-    ]);
+    assert.deepEqual(finishBoundaryKinds(events), []);
   });
 
   test('counts redacted thinking at its start boundary as response evidence', async () => {
@@ -509,10 +497,7 @@ describe('ModelAdapter.startStream onError', () => {
 
     assert.equal(outcome.kind, 'completed');
     assert.equal(outcome.hasResponseEvidence, true);
-    assert.deepEqual(boundaryDispositions(events), [
-      { kind: 'step-finish', disposition: 'authoritative' },
-      { kind: 'finish', disposition: 'authoritative' },
-    ]);
+    assert.deepEqual(finishBoundaryKinds(events), []);
   });
 
   test('settles an explicit provider network_error finish as retryable', async () => {
@@ -536,11 +521,7 @@ describe('ModelAdapter.startStream onError', () => {
     });
     assert.equal(outcome.continuation, 'none');
     assert.equal(outcome.hasResponseEvidence, false);
-    assert.equal(events.find((event) => event.kind === 'finish')?.finishReason, 'network-error');
-    assert.deepEqual(boundaryDispositions(events), [
-      { kind: 'step-finish', disposition: 'retryable-network-failure' },
-      { kind: 'finish', disposition: 'retryable-network-failure' },
-    ]);
+    assert.deepEqual(finishBoundaryKinds(events), []);
   });
 
   test('preserves a provider reason hidden by the SDK other bucket', async () => {
@@ -584,7 +565,6 @@ describe('ModelAdapter.startStream onError', () => {
       },
     ]);
 
-    assert.equal(events.find((event) => event.kind === 'finish')?.finishReason, 'error');
     assert.equal(outcome.kind, 'failed');
     if (outcome.kind !== 'failed') return;
     assert.equal(outcome.failure.kind, 'provider_unavailable');
@@ -607,7 +587,8 @@ describe('ModelAdapter.startStream onError', () => {
       controller.signal,
     );
 
-    assert.equal(outcome.kind, 'aborted');
+    assert.equal(outcome.kind, 'failed');
+    if (outcome.kind === 'failed') assert.equal(outcome.failure.kind, 'abort');
   });
 
   // streamText's default onError is `console.error(error)`, which dumps the
@@ -693,10 +674,10 @@ async function observe(
   return { events, outcome: await result.outcome };
 }
 
-function boundaryDispositions(events: readonly ModelStreamEvent[]) {
+function finishBoundaryKinds(events: readonly ModelStreamEvent[]) {
   return events
-    .filter((event) => event.kind === 'step-finish' || event.kind === 'finish')
-    .map(({ kind, disposition }) => ({ kind, disposition }));
+    .map((event) => event.kind)
+    .filter((kind) => ['step-finish', 'finish'].includes(kind));
 }
 
 async function requireAlreadySettled<T>(promise: Promise<T>): Promise<T> {

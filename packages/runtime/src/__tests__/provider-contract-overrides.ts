@@ -170,6 +170,24 @@ export const PROVIDER_CONTRACT_OVERRIDE_BINDINGS: readonly ProviderContractOverr
       }),
   },
   {
+    keys: [
+      'moonshot-global:exact-model-id',
+      'moonshot-global:tool-loop',
+      'moonshot-global:reasoning-replay',
+    ],
+    title: 'Moonshot Global preserves Kimi model ids and reasoning across a Responses tool loop',
+    run: () =>
+      runOpenAIResponsesWire({
+        providerType: 'moonshot-global',
+        slug: 'moonshot-global',
+        name: 'Moonshot Global',
+        basePath: '/v1',
+        modelId: 'kimi-k3',
+        apiKey: 'moonshot-global-test-key',
+        statelessReasoning: true,
+      }),
+  },
+  {
     keys: ['alibaba-token-plan-cn:reasoning-replay', 'alibaba-token-plan:reasoning-replay'],
     title: 'Alibaba Token Plan replays plaintext summary items on its Responses wire',
     run: runAlibabaTokenPlanResponsesWire,

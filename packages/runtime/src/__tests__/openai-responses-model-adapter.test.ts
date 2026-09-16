@@ -263,7 +263,8 @@ describe('OpenAI Responses ModelAdapter continuation', () => {
     assert.equal(calls[1]?.headers?.['x-maka-openai-responses-lane'], 'turn-1');
 
     const truncated = await drain(adapter, model, [user], ['shell']);
-    assert.equal(truncated.kind, 'truncated');
+    assert.equal(truncated.kind, 'failed');
+    if (truncated.kind === 'failed') assert.equal(truncated.failure.kind, 'stream_truncated');
     assert.equal(pending, undefined);
     assert.equal(baseline, undefined);
   });

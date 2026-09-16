@@ -62,9 +62,11 @@ interface BootstrapJournal {
 export async function ensureBootstrapRuntimePolicy(input: {
   readonly workspaceRoot: string;
   readonly stores: RuntimePolicyStoresWriter;
+  readonly initialization?: import('../client/connect-or-spawn.js').HostedRuntimeInitialization;
   readonly environment?: BootstrapEnvironment;
   readonly onDeferredError?: (error: unknown) => void;
 }): Promise<void> {
+  if (input.initialization) await initializeHostedPolicy(input.stores, input.initialization);
   const journalPath = join(input.workspaceRoot, JOURNAL_FILE);
   const resuming = await readJournal(journalPath);
   const initialCatalog = await input.stores.connectionCatalog.getSnapshot();
@@ -114,6 +116,70 @@ export async function ensureBootstrapRuntimePolicy(input: {
   } catch (error) {
     input.onDeferredError?.(error);
   }
+}
+
+async function initializeHostedPolicy(
+  stores: RuntimePolicyStoresWriter,
+  input: import('../client/connect-or-spawn.js').HostedRuntimeInitialization,
+): Promise<void> {
+  if (
+    input.incognito !== true ||
+    (input.proxyUrl !== undefined && typeof input.proxyUrl !== 'string')
+  ) {
+    throw new Error('Invalid hosted initialization');
+  }
+  let snapshot = await stores.runtimePolicy.getSnapshot();
+  if (!snapshot.policy.privacy.incognitoActive) {
+    const result = await stores.runtimePolicy.mutate({
+      expectedRevision: snapshot.revision,
+      operation: { kind: 'set_privacy', value: { incognitoActive: true } },
+    });
+    if (result.kind !== 'committed') throw new Error('Hosted privacy initialization failed');
+    snapshot = result.snapshot;
+  }
+  if (input.proxyUrl === undefined) return;
+  let proxy: URL;
+  let username: string;
+  let password: string;
+  try {
+    proxy = new URL(input.proxyUrl);
+    if (proxy.protocol !== 'http:' || !proxy.hostname) throw new Error();
+    username = decodeURIComponent(proxy.username);
+    password = decodeURIComponent(proxy.password);
+  } catch {
+    throw new Error('Invalid hosted HTTP proxy');
+  }
+  const status = await stores.credentialVault.getStatus({
+    scope: 'network_proxy',
+    kind: 'password',
+  });
+  if (status.kind === 'connection_not_found')
+    throw new Error('Hosted proxy credential unavailable');
+  const authenticated = Boolean(proxy.username || proxy.password);
+  const networkProxy = {
+    ...snapshot.policy.networkProxy,
+    enabled: true,
+    protocol: 'http' as const,
+    host: proxy.hostname,
+    port: Number(proxy.port || 80),
+    authEnabled: authenticated,
+    username,
+    bypassList: [],
+    autoBypassDomains: [],
+  };
+  const result = await stores.operations.updateNetworkProxy({
+    expectedPolicyRevision: snapshot.revision,
+    expectedCredential: status.status.configured
+      ? {
+          locator: status.status.locator,
+          credentialId: status.status.credentialId,
+          revision: status.status.revision,
+        }
+      : null,
+    networkProxy,
+    credential: authenticated ? { kind: 'replace', secret: password } : { kind: 'delete' },
+  });
+  if (result.kind !== 'committed') throw new Error('Hosted proxy initialization failed');
 }
 
 function bootstrapSeeds(environment: BootstrapEnvironment): readonly BootstrapSeed[] {

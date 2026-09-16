@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { isDeepStrictEqual } from 'node:util';
 import {
   buildSideConversationSystemPromptFragment,
   isSideConversationSession,
@@ -210,6 +211,9 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
   const childInstruction = input.childInstruction?.trim();
   const runProfile = hostedExecutionRunProfile(input.toolProfile);
   const resolvedBaseSystemPrompts = new Map<string, Promise<ResolvedRunPrompt>>();
+  let latestCompletedPromptText:
+    | { readonly key: string; readonly text: string | undefined }
+    | undefined;
   const resolveBaseSystemPrompt = (context: HostModelPromptContext): Promise<ResolvedRunPrompt> => {
     if (runProfile) {
       return (
@@ -261,8 +265,14 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
               input.deepResearch ? buildDeepResearchSystemPromptFragment() : undefined,
               input.sideConversation ? buildSideConversationSystemPromptFragment() : undefined,
             ]);
-        return Object.freeze({
-          text,
+        // Keep each turn's source revisions independent while sharing identical
+        // immutable text already retained by the turn cache.
+        const sharedText =
+          latestCompletedPromptText !== undefined && latestCompletedPromptText.text === text
+            ? latestCompletedPromptText.text
+            : text;
+        const resolvedPrompt = Object.freeze({
+          text: sharedText,
           sourceRevisions: interactiveSourceRevisions({
             runtimePolicyRevision: promptState.runtimePolicyRevision,
             memoryBundleRevision: promptState.memoryBundleRevision,
@@ -270,6 +280,10 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
             skillCatalogRevision: inventory.revision,
           }),
         });
+        if (resolvedBaseSystemPrompts.get(key) === pending) {
+          latestCompletedPromptText = { key, text: sharedText };
+        }
+        return resolvedPrompt;
       })
       .catch((error: unknown) => {
         if (resolvedBaseSystemPrompts.get(key) === pending) resolvedBaseSystemPrompts.delete(key);
@@ -278,7 +292,10 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
     resolvedBaseSystemPrompts.set(key, pending);
     if (resolvedBaseSystemPrompts.size > 100) {
       const oldest = resolvedBaseSystemPrompts.keys().next().value;
-      if (typeof oldest === 'string' && oldest !== key) resolvedBaseSystemPrompts.delete(oldest);
+      if (typeof oldest === 'string' && oldest !== key) {
+        resolvedBaseSystemPrompts.delete(oldest);
+        if (latestCompletedPromptText?.key === oldest) latestCompletedPromptText = undefined;
+      }
     }
     return pending;
   };
@@ -531,9 +548,14 @@ function buildDefaultHostTools(
   plan?: InteractiveRunComposerInput['plan'],
   deepResearchTools: readonly MakaTool[] = [],
 ): MakaTool[] {
-  const builtins = builtinOptions ? buildBuiltinTools(builtinOptions) : [];
+  // Full access has no boundary to widen, so neither the Bash declaration nor
+  // the widening tool is offered. An unknown mode is not Full access.
+  const fullAccess = plan?.permissionMode === 'bypass';
+  const builtins = builtinOptions
+    ? buildBuiltinTools({ ...builtinOptions, declareSandboxBoundary: !fullAccess })
+    : [];
   const question = buildAskUserQuestionTool();
-  const sandboxBoundary = buildRequestSandboxBoundaryTool();
+  const sandboxBoundary = fullAccess ? undefined : buildRequestSandboxBoundaryTool();
   const todoTools = buildSessionTodoTools(sessionTodo);
   const activeExecution = plan ? activePlanExecution(plan.state) : undefined;
   const interruptedExecution = plan
@@ -553,7 +575,7 @@ function buildDefaultHostTools(
     ...builtins.map((tool) => tool.name),
     ...hostTools.map((tool) => tool.name),
     question.name,
-    sandboxBoundary.name,
+    ...(sandboxBoundary ? [sandboxBoundary.name] : []),
     'Skill',
     'SkillSearch',
     ...todoTools.map((tool) => tool.name),
@@ -569,7 +591,7 @@ function buildDefaultHostTools(
     ...builtins,
     ...hostTools,
     question,
-    sandboxBoundary,
+    ...(sandboxBoundary ? [sandboxBoundary] : []),
     buildSkillAgentToolFromInventory(inventoryFor, skillHost, { shadowTracker }),
     buildSkillSearchAgentToolFromInventory(inventoryFor, skillHost, { shadowTracker }),
     ...todoTools,
@@ -629,6 +651,7 @@ function createTurnSkillInventorySnapshotResolver(
   context: Pick<HostModelPromptContext, 'sessionId' | 'turnId' | 'cwd'>,
 ) => Promise<CanonicalSkillInventorySnapshot> {
   const inventoryByTurn = new Map<string, Promise<CanonicalSkillInventorySnapshot>>();
+  let latestCompleted: { key: string; snapshot: CanonicalSkillInventorySnapshot } | undefined;
   return async (context) => {
     const key = `${context.sessionId}\u0000${context.turnId}`;
     const cached = inventoryByTurn.get(key);
@@ -668,11 +691,27 @@ function createTurnSkillInventorySnapshotResolver(
             .digest('hex') as typeof base.revision,
           inventory: Object.freeze([...additions, ...base.inventory]),
         });
+      })
+      .then((snapshot) => {
+        // An evicted late read still resolves its caller without acquiring another owner.
+        if (inventoryByTurn.get(key) !== pending) return snapshot;
+        // Revisions omit some raw paths and ordering, so sharing requires full equality.
+        const shared =
+          latestCompleted !== undefined &&
+          latestCompleted.snapshot.revision === snapshot.revision &&
+          isDeepStrictEqual(latestCompleted.snapshot, snapshot)
+            ? latestCompleted.snapshot
+            : snapshot;
+        latestCompleted = { key, snapshot: shared };
+        return shared;
       });
     inventoryByTurn.set(key, pending);
     if (inventoryByTurn.size > 100) {
       const oldest = inventoryByTurn.keys().next().value;
-      if (typeof oldest === 'string' && oldest !== key) inventoryByTurn.delete(oldest);
+      if (typeof oldest === 'string' && oldest !== key) {
+        inventoryByTurn.delete(oldest);
+        if (latestCompleted?.key === oldest) latestCompleted = undefined;
+      }
     }
     try {
       return await pending;

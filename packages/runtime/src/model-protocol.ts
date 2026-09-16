@@ -345,15 +345,6 @@ export interface ModelFailure {
   code?: string;
 }
 
-/**
- * Provider request metadata reduced to the Maka-owned message projection.
- * Headers and provider request bodies stay with ProviderRequestTracker, their
- * existing capture owner, instead of being retained again by the stream result.
- */
-export interface ModelRequestMetadata {
-  messages?: readonly ModelMessage[];
-}
-
 // ---------------------------------------------------------------------------
 // Stream-event / stream-result contract
 // ---------------------------------------------------------------------------
@@ -365,18 +356,13 @@ export interface ModelRequestMetadata {
  *
  * - `text` / `thinking`: incremental assistant content deltas for the current
  *   step. The backend accumulates them per step and flushes one
- *   `AssistantMessage` (+ terminal text/thinking `SessionEvent`s) at the
- *   next `step-finish`.
+ *   `AssistantMessage` (+ terminal text/thinking `SessionEvent`s) when the
+ *   request settles through `ModelStepOutcome`.
  * - `thinking-signature`: a provider-signed reasoning signature (Anthropic)
  *   delivered out-of-band from the thinking text.
- * - `step-finish`: a provider step boundary. Carries the step's normalized
- *   usage (already reduced to `NormalizedUsage`) and normalized finish
- *   reason plus the adapter's authoritative disposition. The backend owns
- *   step counting, the per-step `AssistantMessage` flush, and messageId
- *   rotation, but does not reclassify the boundary.
- * - `finish`: the terminal stream boundary, carrying the finish reason and
- *   the same adapter-owned disposition. Usage belongs to `step-finish` and
- *   the authoritative request outcome, not this terminal marker.
+ * The adapter consumes SDK finish boundaries internally. Terminal status,
+ * normalized usage, finish reason, and continuation belong to
+ * `ModelStepOutcome`; they are not incremental stream events.
  * - `error`: a request-level provider failure, already classified and scrubbed
  *   by the adapter. The backend uses its stable kind for overflow/transport
  *   recovery and terminal error emission.
@@ -411,8 +397,8 @@ export type ModelStreamEvent =
       providerOptionsOrigin?: 'maka_transport';
     }
   | { kind: 'thinking-signature'; signature: string; reasoningPartId?: string }
-  /** Provider-side tool execution has begun, but no replayable call exists yet. */
-  | { kind: 'provider-tool-input' }
+  /** Tool input was sampled; only providerExecuted also implies external activity. */
+  | { kind: 'tool-input'; providerExecuted: boolean }
   | { kind: 'tool-call'; toolCall: ToolCallPart }
   | {
       kind: 'provider-tool-result';
@@ -420,17 +406,6 @@ export type ModelStreamEvent =
       toolName: string;
       output: unknown;
       isError?: boolean;
-    }
-  | {
-      kind: 'step-finish';
-      usage?: NormalizedUsage;
-      finishReason?: ModelFinishReason;
-      disposition: ModelFinishDisposition;
-    }
-  | {
-      kind: 'finish';
-      finishReason?: ModelFinishReason;
-      disposition: ModelFinishDisposition;
     }
   | { kind: 'error'; failure: ModelFailure };
 
@@ -444,15 +419,13 @@ export type ModelStepOutcome =
       kind: 'completed';
       finishReason: ModelFinishReason;
       usage?: NormalizedUsage;
-      request: ModelRequestMetadata;
       continuation: 'none' | 'pending';
       hasResponseEvidence: boolean;
     }
   | {
-      kind: 'truncated' | 'failed' | 'aborted';
+      kind: 'failed';
       failure: ModelFailure;
       usage?: NormalizedUsage;
-      request: ModelRequestMetadata;
       continuation: 'none';
       hasResponseEvidence: boolean;
     };

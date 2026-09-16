@@ -70,7 +70,8 @@ import type {
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import type { PermissionMode } from '@maka/core/permission';
-import { DEFAULT_TOOL_MODE } from '@maka/core/tool-mode';
+import { isCanonicalReadOnlyPermissionProfile } from '@maka/core/permission-profile';
+import { DEFAULT_TOOL_MODE, type ToolMode } from '@maka/core/tool-mode';
 import type {
   CreateSandboxBoundaryRequest,
   ExecutionBoundary,
@@ -307,6 +308,8 @@ export interface SpawnChildSessionInput {
   agentProfile: AgentProfile;
   /** User-approved catalog selector. The runtime resolves its frozen model target. */
   subagentId?: string;
+  /** Optional plugin executor. Non-preset children inherit the parent's executor. */
+  executorId?: string;
   prompt: string;
   name?: string;
   turnId?: string;
@@ -352,6 +355,7 @@ export interface ProvisionAgentGraphOperatorInput {
   workId: string;
   agentId?: string;
   subagentId?: string;
+  executorId?: string;
   operatorId: string;
   source: AgentGraphScheduleUpdateSource;
   edges: AgentGraphProvisionedEdge[];
@@ -523,6 +527,7 @@ export interface SessionConfigurationStoreUpdate {
   readonly expectedVersion: number;
   readonly configuration: {
     readonly backend: SessionHeader['backend'];
+    readonly executorId?: string;
     readonly llmConnectionId?: string;
     readonly llmConnectionSlug: string;
     readonly connectionLocked: boolean;
@@ -541,6 +546,7 @@ export interface SessionConfigurationStoreUpdate {
 export interface SessionConfigurationTransitionRequest {
   readonly expectedRevision: number;
   readonly clearConnectionBlock: boolean;
+  readonly permissionModeOnly: boolean;
   readonly configuration: Omit<SessionConfigurationStoreUpdate['configuration'], 'labels'>;
 }
 
@@ -691,13 +697,9 @@ export interface BackendFactoryContext {
    * policy, but must never append, substitute, or otherwise expose an
    * agent-permission tool outside this exact set.
    *
-   * Runtime protocol tools are outside that ceiling by construction (#2026).
-   * `ArchiveRead` decodes a placeholder the runtime itself generated during
-   * pruning; it grants no reach the parent did not already exercise, and
-   * withholding it only strands content the model was explicitly told to
-   * retrieve. The backend therefore binds it from the archive capability, not
-   * from this set, which is why narrowing a child's allowlist can no longer
-   * silently strip the decoder for placeholders that child will still receive.
+   * Session tool-result reads remain available through Read when archiving is
+   * enabled. The backend wraps an existing Read or supplies a resource-only
+   * Read; it never adds filesystem access to a restricted tool set.
    */
   tools?: readonly MakaTool[];
   /** Turn-scoped shell plan captured with a bound child tool ceiling. */
@@ -822,6 +824,8 @@ interface SessionManagerBaseDeps {
     list(): Promise<SubagentPresetListItem[]>;
     resolve(id: string): Promise<ResolvedSubagentPreset>;
   };
+  /** Host gate for an executor that must remain visible in a newly created child Session. */
+  assertChildExecutorAvailable?: (parentSessionId: string, executorId: string) => void;
   /** Host-owned filesystem isolation for worktree-backed child Sessions. */
   worktreeChildExecutor?: SubagentWorktreeExecutor;
   listArtifactsForTurn?: (sessionId: string, turnId: string) => Promise<ArtifactRecord[]>;
@@ -842,6 +846,8 @@ interface SessionManagerBaseDeps {
   inspectContinuationSafety?: (sessionId: string) => Promise<RuntimeContinuationSafetyObservation>;
   continuationFailpoint?: (point: RuntimeContinuationFailpoint) => Promise<void>;
   runBackendActivation?: BackendActivationBoundary;
+  /** Host policy for a fresh turn; continuations retain their invocation snapshot. */
+  resolveFreshTurnToolMode?: (header: SessionHeader) => Promise<ToolMode | undefined>;
   safeBoundaryResumeEnabled?: boolean;
   /** Hosted composition capability. Omit for the production embedded queue. */
   messageAuthority?: RuntimeMessageAuthority;
@@ -1037,6 +1043,20 @@ export class SessionManager {
     });
   }
 
+  private async resolveChildToolNames(
+    parentSessionId: string,
+    parentHeader: SessionHeader,
+    definition: AgentDefinition,
+  ): Promise<string[]> {
+    const availableChildTools = await this.childToolsForSession(parentSessionId);
+    assertAgentDefinitionRunnable({
+      definition,
+      tools: availableChildTools,
+      worktreeChildExecutorAvailable: await this.isWorktreeChildExecutorAvailable(parentHeader),
+    });
+    return buildToolsForAgentDefinition(availableChildTools, definition).map((tool) => tool.name);
+  }
+
   private async finalizeAndListChildTurnArtifacts(
     sessionId: string,
     turnId: string,
@@ -1144,56 +1164,80 @@ export class SessionManager {
     input: SessionConfigurationTransitionRequest,
   ): Promise<VersionedSessionHeader> {
     const store = this.requireSessionConfigurationStore();
-    const next = await this.commitExecutionResourceTransition(
-      sessionId,
-      input.configuration.permissionMode,
-      async () => {
-        const current = await store.readHeaderRecordSnapshot(sessionId);
-        if (current.revision !== input.expectedRevision) {
-          throw new SessionConfigurationRevisionConflictError(
-            input.expectedRevision,
-            current.revision,
-          );
-        }
-        if (current.header.isArchived) {
-          throw new SessionConfigurationTransitionError(
-            'operation_conflict',
-            'Archived Session configuration cannot be changed',
-          );
-        }
-        if (current.header.status === 'waiting_for_user') {
-          throw new SessionConfigurationTransitionError(
-            'session_busy',
-            'Session has a pending Interaction',
-          );
-        }
-        await this.assertCollaborationTransition(
-          current.header,
-          input.configuration.collaborationMode,
+    const observed = await store.readHeaderRecordSnapshot(sessionId);
+    if (observed.revision !== input.expectedRevision) {
+      throw new SessionConfigurationRevisionConflictError(
+        input.expectedRevision,
+        observed.revision,
+      );
+    }
+    if (
+      !input.clearConnectionBlock &&
+      sessionConfigurationMatches(observed.header, input.configuration)
+    ) {
+      return observed;
+    }
+    const permissionModeOnly =
+      input.permissionModeOnly &&
+      sessionConfigurationMatchesExceptPermissionMode(observed.header, input.configuration);
+    const prepareCommit = async (): Promise<() => Promise<VersionedSessionHeader>> => {
+      const current = await store.readHeaderRecordSnapshot(sessionId);
+      if (current.revision !== input.expectedRevision) {
+        throw new SessionConfigurationRevisionConflictError(
+          input.expectedRevision,
+          current.revision,
         );
-        const leavingDeepResearch =
-          isDeepResearchSession(current.header.labels) &&
-          input.configuration.permissionMode !== 'explore';
-        const labels = leavingDeepResearch
-          ? current.header.labels.filter((label) => label !== DEEP_RESEARCH_SESSION_LABEL)
-          : current.header.labels;
-        return () =>
-          store.updateSessionConfiguration(sessionId, {
-            expectedVersion: input.expectedRevision,
-            configuration: {
-              ...input.configuration,
-              labels,
-            },
-            lifecycle:
-              input.clearConnectionBlock && current.header.blockedReason === 'NO_REAL_CONNECTION'
-                ? {
-                    kind: 'clear_connection_block',
-                    statusUpdatedAt: this.deps.now(),
-                  }
-                : { kind: 'preserve' },
-          });
-      },
-    );
+      }
+      if (current.header.isArchived) {
+        throw new SessionConfigurationTransitionError(
+          'operation_conflict',
+          'Archived Session configuration cannot be changed',
+        );
+      }
+      if (current.header.status === 'waiting_for_user') {
+        throw new SessionConfigurationTransitionError(
+          'session_busy',
+          'Session has a pending Interaction',
+        );
+      }
+      await this.assertCollaborationTransition(
+        current.header,
+        input.configuration.collaborationMode,
+      );
+      const leavingDeepResearch =
+        isDeepResearchSession(current.header.labels) &&
+        input.configuration.permissionMode !== 'explore';
+      const labels = leavingDeepResearch
+        ? current.header.labels.filter((label) => label !== DEEP_RESEARCH_SESSION_LABEL)
+        : current.header.labels;
+      return () =>
+        store.updateSessionConfiguration(sessionId, {
+          expectedVersion: input.expectedRevision,
+          configuration: {
+            ...input.configuration,
+            labels,
+          },
+          lifecycle:
+            input.clearConnectionBlock && current.header.blockedReason === 'NO_REAL_CONNECTION'
+              ? {
+                  kind: 'clear_connection_block',
+                  statusUpdatedAt: this.deps.now(),
+                }
+              : { kind: 'preserve' },
+        });
+    };
+    const next = permissionModeOnly
+      ? await this.commitExecutionBoundaryTransition(
+          sessionId,
+          await this.deps.store.readExecutionBoundary(sessionId),
+          input.configuration.permissionMode,
+          prepareCommit,
+        )
+      : await this.commitExecutionResourceTransition(
+          sessionId,
+          input.configuration.permissionMode,
+          prepareCommit,
+        );
     this.runtimeKernel.updateCachedHeader(sessionId, next.header);
     return next;
   }
@@ -1599,6 +1643,29 @@ export class SessionManager {
   }
 
   async setPermissionMode(sessionId: string, mode: PermissionMode): Promise<SessionSummary> {
+    const readHeaderRecordSnapshot = this.deps.store.readHeaderRecordSnapshot?.bind(
+      this.deps.store,
+    );
+    if (!readHeaderRecordSnapshot || !this.deps.store.updateSessionConfiguration) {
+      // Temporary compatibility bridge for SessionStore embeddings that predate
+      // versioned configuration authority. A follow-up PR will shortly remove
+      // setPermissionMode and this redundant fallback after callers migrate.
+      return this.setPermissionModeWithLegacyStore(sessionId, mode);
+    }
+    const current = await readHeaderRecordSnapshot(sessionId);
+    const next = await this.transitionSessionConfiguration(sessionId, {
+      expectedRevision: current.revision,
+      clearConnectionBlock: false,
+      permissionModeOnly: true,
+      configuration: sessionConfigurationWithPermissionMode(current.header, mode),
+    });
+    return headerToSummary(next.header);
+  }
+
+  private async setPermissionModeWithLegacyStore(
+    sessionId: string,
+    mode: PermissionMode,
+  ): Promise<SessionSummary> {
     const previous = await this.deps.store.readHeader(sessionId);
     const boundary = await this.deps.store.readExecutionBoundary(sessionId);
     const leavingDeepResearch = isDeepResearchSession(previous.labels) && mode !== 'explore';
@@ -1610,20 +1677,23 @@ export class SessionManager {
       return headerToSummary(previous);
     }
 
-    if (this.runtimeKernel.hasActiveRuns(sessionId)) {
-      throw new Error('当前任务正在运行，等结束后再切换权限模式。');
-    }
-    if (previous.status === 'waiting_for_user') {
-      throw new Error('当前有工具调用正在等待确认，处理后再切换权限模式。');
-    }
-
     const labels = leavingDeepResearch
       ? previous.labels.filter((label) => label !== DEEP_RESEARCH_SESSION_LABEL)
       : previous.labels;
-    const nextKind = mode === 'bypass' ? 'bypass' : 'managed';
-    await this.commitExecutionBoundaryTransition(sessionId, boundary, nextKind, {
-      permissionMode: mode,
-      labels,
+    const kind = mode === 'bypass' ? 'bypass' : 'managed';
+    await this.commitExecutionBoundaryTransition(sessionId, boundary, mode, async () => {
+      const current = await this.deps.store.readHeader(sessionId);
+      if (current.status === 'waiting_for_user') {
+        throw new SessionConfigurationTransitionError(
+          'session_busy',
+          'Session has a pending Interaction',
+        );
+      }
+      return () =>
+        this.deps.store.setExecutionBoundaryKind(sessionId, kind, {
+          permissionMode: mode,
+          labels,
+        });
     });
     const next = await this.deps.store.readHeader(sessionId);
     this.runtimeKernel.updateCachedHeader(sessionId, next);
@@ -1634,29 +1704,46 @@ export class SessionManager {
     sessionId: string,
     kind: 'managed' | 'bypass',
   ): Promise<ExecutionBoundary> {
-    if (this.runtimeKernel.hasActiveRuns(sessionId)) {
-      throw new Error('当前任务正在运行，等结束后再切换沙箱边界。');
-    }
-    const header = await this.deps.store.readHeader(sessionId);
-    if (header.status === 'waiting_for_user') {
-      throw new Error('当前有沙箱边界请求正在等待确认，处理后再切换。');
-    }
     const current = await this.deps.store.readExecutionBoundary(sessionId);
-    const boundary = await this.commitExecutionBoundaryTransition(sessionId, current, kind);
+    const header = await this.deps.store.readHeader(sessionId);
+    // Managed includes Explore. Match Storage's default projection, then pass
+    // it explicitly so classification and commit describe the same transition.
+    const permissionMode =
+      kind === 'bypass'
+        ? 'bypass'
+        : header.permissionMode === 'bypass'
+          ? 'ask'
+          : header.permissionMode;
+    const narrows = narrowsExecutionAuthority(current, permissionMode);
+    if (narrows && this.runtimeKernel.hasActiveRuns(sessionId)) {
+      throw new SessionConfigurationTransitionError(
+        'session_busy',
+        'Execution boundary cannot change while a Turn is running',
+      );
+    }
+    if (header.status === 'waiting_for_user') {
+      throw new SessionConfigurationTransitionError(
+        'session_busy',
+        'Execution boundary cannot change while an Interaction is pending',
+      );
+    }
+    const boundary = await this.commitExecutionBoundaryTransition(
+      sessionId,
+      current,
+      permissionMode,
+      async () => () =>
+        this.deps.store.setExecutionBoundaryKind(sessionId, kind, { permissionMode }),
+    );
     return boundary;
   }
 
-  private async commitExecutionBoundaryTransition(
+  private async commitExecutionBoundaryTransition<T>(
     sessionId: string,
     current: ExecutionBoundary,
-    kind: 'managed' | 'bypass',
-    projection?: {
-      permissionMode: SessionHeader['permissionMode'];
-      labels?: readonly string[];
-    },
-  ): Promise<ExecutionBoundary> {
-    const nextPermissionMode = projection?.permissionMode ?? (kind === 'bypass' ? 'bypass' : 'ask');
-    return this.commitExecutionResourceTransition(sessionId, nextPermissionMode, async () => {
+    nextPermissionMode: PermissionMode,
+    prepareCommit: () => Promise<() => Promise<T>>,
+  ): Promise<T> {
+    const prepareBoundaryCommit = async (): Promise<() => Promise<T>> => {
       const latest = await this.deps.store.readExecutionBoundary(sessionId);
       if (latest.revision !== current.revision) {
         throw new SessionConfigurationTransitionError(
@@ -1664,8 +1751,38 @@ export class SessionManager {
           'Session execution boundary changed before the transition',
         );
       }
-      return () => this.deps.store.setExecutionBoundaryKind(sessionId, kind, projection);
-    });
+      return prepareCommit();
+    };
+    if (!narrowsExecutionAuthority(current, nextPermissionMode)) {
+      // Widening needs no quiescence. Every consumer that froze the old, tighter
+      // boundary fails closed against a wider one, and a descendant's admission
+      // check only gets easier — so the grant is just written. Waiting for the
+      // Session to go idle is what let a running Turn, or a Goal's continuation
+      // holding a claim near-continuously, keep the user's own grant out.
+      if (!this.runtimeKernel.runSessionAdmissionMutation) {
+        throw new SessionConfigurationTransitionError(
+          'operation_unavailable',
+          'Session boundary changes require Runtime admission mutation authority',
+        );
+      }
+      // Serialize the revision check through commit without requiring an idle
+      // Turn. Otherwise two unversioned writes can both pass the check, then
+      // the later write can narrow the first grant using its stale classification.
+      const result = await this.runtimeKernel.runSessionAdmissionMutation([sessionId], async () => {
+        const commit = await prepareBoundaryCommit();
+        return commit();
+      });
+      // Not `disposeBackend`: disposing a live Turn's backend stops that Turn.
+      // Invalidation refreshes it now when the Session is idle, and otherwise
+      // defers to the next activation, which disposes before it starts.
+      await this.runtimeKernel.invalidateBackend(sessionId);
+      return result;
+    }
+    return this.commitExecutionResourceTransition(
+      sessionId,
+      nextPermissionMode,
+      prepareBoundaryCommit,
+    );
   }
 
   private async commitExecutionResourceTransition<T>(
@@ -1785,6 +1902,37 @@ export class SessionManager {
     }
   }
 
+  /**
+   * Fences a Session and every subagent Session under it for one operation.
+   *
+   * Preparing a bundle reads a Session's whole subtree, and a child holds the
+   * result of a tool call its parent made -- so a Turn starting anywhere in
+   * that tree while the read is in progress produces a bundle describing two
+   * moments. Refuses outright if any of them is already running.
+   */
+  async runSessionSubtreeQuiescentMutation<T>(
+    sessionId: string,
+    operation: (fencedSessionIds: readonly string[]) => Promise<T>,
+  ): Promise<T> {
+    const descendants = await this.listLinkedDescendantSessionIds(sessionId);
+    const fenced = [sessionId, ...descendants];
+    return this.runSessionQuiescentMutation(fenced, async () => {
+      // Discovered again, now that the fence is held. The first walk happened
+      // before it, so a child created in that gap is in the subtree and NOT in
+      // what was fenced -- the operation would read it without it being held
+      // still. Refusing is the only honest answer: fencing it now would be
+      // fencing a set this call never admitted.
+      const current = await this.listLinkedDescendantSessionIds(sessionId);
+      if (current.length !== descendants.length || current.some((id) => !fenced.includes(id))) {
+        throw new SessionConfigurationTransitionError(
+          'operation_conflict',
+          'Session lineage changed while the subtree was being fenced',
+        );
+      }
+      return operation(fenced);
+    });
+  }
+
   private async listLinkedDescendantSessionIds(sessionId: string): Promise<string[]> {
     const sessions = await this.deps.store.list();
     const childrenByParent = new Map<string, string[]>();
@@ -1824,20 +1972,32 @@ export class SessionManager {
       throw new PlanConflictError('Linked child Sessions cannot enter Plan mode');
     }
     if (this.runtimeKernel.hasActiveRuns(sessionId)) {
-      throw new Error('当前任务正在运行，等结束后再切换协作模式。');
+      throw new SessionConfigurationTransitionError(
+        'session_busy',
+        'Collaboration mode cannot change while a Turn is running',
+      );
     }
     if (previous.status === 'waiting_for_user') {
-      throw new Error('当前有工具调用正在等待确认，处理后再切换协作模式。');
+      throw new SessionConfigurationTransitionError(
+        'session_busy',
+        'Collaboration mode cannot change while an Interaction is pending',
+      );
     }
     const planState = await this.requirePlanStore().readState(sessionId);
     if (mode === 'plan' && planState.activeExecutionId) {
-      throw new Error('当前计划仍在执行，结束或中断后才能切换到 Plan Mode。');
+      throw new SessionConfigurationTransitionError(
+        'session_busy',
+        'An active Plan execution prevents entering Plan mode',
+      );
     }
     const latestProposal = planState.proposals.find(
       (proposal) => proposal.proposalId === planState.latestProposalId,
     );
     if (mode === 'agent' && latestProposal?.status === 'pending_approval') {
-      throw new Error('当前方案正在等待审批，请明确放弃方案后再退出 Plan Mode。');
+      throw new SessionConfigurationTransitionError(
+        'operation_conflict',
+        'A pending Plan proposal must be resolved before leaving Plan mode',
+      );
     }
 
     const next = await this.deps.store.updateHeader(sessionId, {
@@ -2472,15 +2632,13 @@ export class SessionManager {
     const definition = resolvedPreset
       ? requireBuiltinAgentDefinitionByProfile(resolvedPreset.profile)
       : requireBuiltinAgentDefinition(input.agentId!);
-    const availableChildTools = await this.childToolsForSession(input.source.sessionId);
-    assertAgentDefinitionRunnable({
-      definition,
-      tools: availableChildTools,
-      worktreeChildExecutorAvailable: await this.isWorktreeChildExecutorAvailable(parentHeader),
-    });
-    const resolvedToolNames = buildToolsForAgentDefinition(availableChildTools, definition).map(
-      (tool) => tool.name,
-    );
+    const executorId = input.executorId ?? (resolvedPreset ? undefined : parentHeader.executorId);
+    if (executorId) {
+      this.deps.assertChildExecutorAvailable?.(input.source.sessionId, executorId);
+    }
+    const resolvedToolNames = executorId
+      ? []
+      : await this.resolveChildToolNames(input.source.sessionId, parentHeader, definition);
     const childPermissionMode =
       parentHeader.permissionMode === 'bypass' ? 'bypass' : definition.permissionMode;
 
@@ -2508,6 +2666,7 @@ export class SessionManager {
         toolNames: resolvedToolNames,
         categoryPolicy: {},
         systemPrompt: definition.systemPrompt,
+        executorId: executorId ?? null,
         ...(resolvedPreset
           ? {
               preset: {
@@ -2544,23 +2703,32 @@ export class SessionManager {
         cwd: workspace?.worktreePath ?? parentHeader.cwd,
         ...(parentHeader.projectId !== undefined ? { projectId: parentHeader.projectId } : {}),
         name: resolvedPreset?.name ?? definition.name,
-        ...(resolvedPreset
-          ? { llmConnectionId: resolvedPreset.connectionId }
-          : parentHeader.llmConnectionId === undefined
-            ? {}
-            : { llmConnectionId: parentHeader.llmConnectionId }),
-        llmConnectionSlug: resolvedPreset?.connectionSlug ?? parentHeader.llmConnectionSlug,
-        model: resolvedPreset?.model ?? parentHeader.model,
-        ...(resolvedPreset
-          ? resolvedPreset.thinkingLevel !== undefined
-            ? { thinkingLevel: resolvedPreset.thinkingLevel }
-            : {}
-          : parentHeader.thinkingLevel !== undefined
-            ? { thinkingLevel: parentHeader.thinkingLevel }
-            : {}),
+        ...(executorId
+          ? {
+              executorId,
+              llmConnectionSlug: `executor:${executorId}`,
+              model: executorId,
+            }
+          : {
+              ...(resolvedPreset
+                ? { llmConnectionId: resolvedPreset.connectionId }
+                : parentHeader.llmConnectionId === undefined
+                  ? {}
+                  : { llmConnectionId: parentHeader.llmConnectionId }),
+              llmConnectionSlug: resolvedPreset?.connectionSlug ?? parentHeader.llmConnectionSlug,
+              model: resolvedPreset?.model ?? parentHeader.model,
+              ...(resolvedPreset
+                ? resolvedPreset.thinkingLevel !== undefined
+                  ? { thinkingLevel: resolvedPreset.thinkingLevel }
+                  : {}
+                : parentHeader.thinkingLevel !== undefined
+                  ? { thinkingLevel: parentHeader.thinkingLevel }
+                  : {}),
+            }),
         permissionMode: childPermissionMode,
         collaborationMode: 'agent',
         orchestrationMode: 'default',
+        toolMode: parentHeader.toolMode ?? DEFAULT_TOOL_MODE,
         subagentParent: {
           kind: 'subagent',
           parentSessionId: input.source.sessionId,
@@ -3064,15 +3232,12 @@ export class SessionManager {
     this.assertActiveParentRun(parentSessionId, parentRun, input.spawnedBy.parentTurnId);
 
     const definition = requireBuiltinAgentDefinitionByProfile(input.agentProfile);
-    const availableChildTools = await this.childToolsForSession(parentSessionId);
-    assertAgentDefinitionRunnable({
-      definition,
-      tools: availableChildTools,
-      worktreeChildExecutorAvailable: await this.isWorktreeChildExecutorAvailable(parentHeader),
-    });
-    const resolvedToolNames = buildToolsForAgentDefinition(availableChildTools, definition).map(
-      (tool) => tool.name,
-    );
+    const executorId =
+      input.executorId ?? (input.resolvedPreset ? undefined : parentHeader.executorId);
+    if (executorId) this.deps.assertChildExecutorAvailable?.(parentSessionId, executorId);
+    const resolvedToolNames = executorId
+      ? []
+      : await this.resolveChildToolNames(parentSessionId, parentHeader, definition);
 
     const proposedTurnId = input.turnId ?? this.deps.newId();
     const proposedRunId = input.runId ?? this.deps.newId();
@@ -3086,23 +3251,33 @@ export class SessionManager {
         cwd: workspace?.worktreePath ?? parentHeader.cwd,
         ...(parentHeader.projectId !== undefined ? { projectId: parentHeader.projectId } : {}),
         name: input.name ?? input.resolvedPreset?.name ?? definition.name,
-        ...(input.resolvedPreset
-          ? { llmConnectionId: input.resolvedPreset.connectionId }
-          : parentHeader.llmConnectionId === undefined
-            ? {}
-            : { llmConnectionId: parentHeader.llmConnectionId }),
-        llmConnectionSlug: input.resolvedPreset?.connectionSlug ?? parentHeader.llmConnectionSlug,
-        model: input.resolvedPreset?.model ?? parentHeader.model,
-        ...(input.resolvedPreset
-          ? input.resolvedPreset.thinkingLevel !== undefined
-            ? { thinkingLevel: input.resolvedPreset.thinkingLevel }
-            : {}
-          : parentHeader.thinkingLevel !== undefined
-            ? { thinkingLevel: parentHeader.thinkingLevel }
-            : {}),
+        ...(executorId
+          ? {
+              executorId,
+              llmConnectionSlug: `executor:${executorId}`,
+              model: executorId,
+            }
+          : {
+              ...(input.resolvedPreset
+                ? { llmConnectionId: input.resolvedPreset.connectionId }
+                : parentHeader.llmConnectionId === undefined
+                  ? {}
+                  : { llmConnectionId: parentHeader.llmConnectionId }),
+              llmConnectionSlug:
+                input.resolvedPreset?.connectionSlug ?? parentHeader.llmConnectionSlug,
+              model: input.resolvedPreset?.model ?? parentHeader.model,
+              ...(input.resolvedPreset
+                ? input.resolvedPreset.thinkingLevel !== undefined
+                  ? { thinkingLevel: input.resolvedPreset.thinkingLevel }
+                  : {}
+                : parentHeader.thinkingLevel !== undefined
+                  ? { thinkingLevel: parentHeader.thinkingLevel }
+                  : {}),
+            }),
         permissionMode: definition.permissionMode,
         collaborationMode: 'agent',
         orchestrationMode: 'default',
+        toolMode: parentHeader.toolMode ?? DEFAULT_TOOL_MODE,
         subagentParent: {
           kind: 'subagent',
           parentSessionId,
@@ -3816,7 +3991,7 @@ export class SessionManager {
       kind: 'invocation_opened',
       protocol: 'invocation_opened_v1',
       route:
-        session.llmConnectionId === undefined
+        session.llmConnectionId === undefined || session.backend === 'plugin-executor'
           ? {
               provenance: 'unknown',
               backendKind: session.backend,
@@ -3834,7 +4009,7 @@ export class SessionManager {
         cwd: session.cwd,
         permissionMode: session.permissionMode,
         collaborationMode: session.collaborationMode ?? 'agent',
-        toolMode: DEFAULT_TOOL_MODE,
+        toolMode: session.toolMode ?? DEFAULT_TOOL_MODE,
         ...orchestration,
         ...(workspaceIdentity !== undefined ? { workspaceIdentity } : {}),
       },
@@ -4889,6 +5064,7 @@ export function headerToSummary(h: SessionHeader): SessionSummary {
     ...(h.revisionIndex !== undefined ? { revisionIndex: h.revisionIndex } : {}),
     ...(h.revisionState ? { revisionState: h.revisionState } : {}),
     backend: h.backend,
+    ...(h.executorId ? { executorId: h.executorId } : {}),
     ...(h.llmConnectionId === undefined ? {} : { llmConnectionId: h.llmConnectionId }),
     llmConnectionSlug: h.llmConnectionSlug,
     connectionLocked: h.connectionLocked,
@@ -4984,33 +5160,47 @@ function childSessionRequestFingerprint(
   parentSessionId: string,
   input: Pick<
     ResolvedSpawnChildSessionInput,
-    'spawnedBy' | 'agentProfile' | 'prompt' | 'swarm' | 'resolvedPreset'
+    'spawnedBy' | 'agentProfile' | 'executorId' | 'prompt' | 'swarm' | 'resolvedPreset'
   >,
 ): string {
-  const payload = input.resolvedPreset
+  const payload = input.executorId
     ? [
-        2,
+        3,
         parentSessionId,
         input.spawnedBy.parentRunId,
         input.spawnedBy.parentTurnId,
         input.spawnedBy.toolCallId,
         input.agentProfile,
-        input.resolvedPreset,
+        input.executorId,
+        input.resolvedPreset ?? null,
         input.prompt,
         input.swarm?.swarmId ?? null,
         input.swarm?.itemId ?? null,
       ]
-    : [
-        1,
-        parentSessionId,
-        input.spawnedBy.parentRunId,
-        input.spawnedBy.parentTurnId,
-        input.spawnedBy.toolCallId,
-        input.agentProfile,
-        input.prompt,
-        input.swarm?.swarmId ?? null,
-        input.swarm?.itemId ?? null,
-      ];
+    : input.resolvedPreset
+      ? [
+          2,
+          parentSessionId,
+          input.spawnedBy.parentRunId,
+          input.spawnedBy.parentTurnId,
+          input.spawnedBy.toolCallId,
+          input.agentProfile,
+          input.resolvedPreset,
+          input.prompt,
+          input.swarm?.swarmId ?? null,
+          input.swarm?.itemId ?? null,
+        ]
+      : [
+          1,
+          parentSessionId,
+          input.spawnedBy.parentRunId,
+          input.spawnedBy.parentTurnId,
+          input.spawnedBy.toolCallId,
+          input.agentProfile,
+          input.prompt,
+          input.swarm?.swarmId ?? null,
+          input.swarm?.itemId ?? null,
+        ];
   return createHash('sha256').update(JSON.stringify(payload)).digest('hex');
 }
 
@@ -5055,6 +5245,51 @@ function claimedAgentGraphIntentResult(
   };
 }
 
+function sessionConfigurationWithPermissionMode(
+  header: SessionHeader,
+  permissionMode: PermissionMode,
+): SessionConfigurationTransitionRequest['configuration'] {
+  return {
+    backend: header.backend,
+    executorId: header.executorId,
+    llmConnectionId: header.llmConnectionId,
+    llmConnectionSlug: header.llmConnectionSlug,
+    connectionLocked: header.connectionLocked,
+    model: header.model,
+    thinkingLevel: header.thinkingLevel,
+    permissionMode,
+    collaborationMode: header.collaborationMode ?? 'agent',
+    orchestrationMode: header.orchestrationMode ?? 'default',
+  };
+}
+
+function sessionConfigurationMatchesExceptPermissionMode(
+  header: SessionHeader,
+  configuration: SessionConfigurationTransitionRequest['configuration'],
+): boolean {
+  return (
+    header.backend === configuration.backend &&
+    header.executorId === configuration.executorId &&
+    header.llmConnectionId === configuration.llmConnectionId &&
+    header.llmConnectionSlug === configuration.llmConnectionSlug &&
+    header.connectionLocked === configuration.connectionLocked &&
+    header.model === configuration.model &&
+    header.thinkingLevel === configuration.thinkingLevel &&
+    (header.collaborationMode ?? 'agent') === configuration.collaborationMode &&
+    (header.orchestrationMode ?? 'default') === configuration.orchestrationMode
+  );
+}
+
+function sessionConfigurationMatches(
+  header: SessionHeader,
+  configuration: SessionConfigurationTransitionRequest['configuration'],
+): boolean {
+  return (
+    header.permissionMode === configuration.permissionMode &&
+    sessionConfigurationMatchesExceptPermissionMode(header, configuration)
+  );
+}
+
 function executionBoundaryMatchesPermissionMode(
   boundary: ExecutionBoundary,
   mode: PermissionMode,
@@ -5072,7 +5307,9 @@ function narrowsExecutionAuthority(
 ): boolean {
   if (nextPermissionMode === 'bypass') return false;
   if (boundary.kind !== 'managed') return true;
-  return nextPermissionMode === 'explore' && boundary.profile.name !== 'read-only';
+  return (
+    nextPermissionMode === 'explore' && !isCanonicalReadOnlyPermissionProfile(boundary.profile)
+  );
 }
 
 function agentRunStatusForSpawnResult(
@@ -5299,7 +5536,11 @@ function buildAgentOutputCommittedResult(input: {
     };
   }
 
-  const codePoints = Array.from(text);
+  const codePoints: string[] = [];
+  for (const point of text) {
+    if (codePoints.length >= input.maxBytes) break;
+    codePoints.push(point);
+  }
   let low = 0;
   let high = codePoints.length;
   let best: AgentOutputCommittedResult = { ...withoutText, textTruncated: true };

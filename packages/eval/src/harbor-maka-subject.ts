@@ -17,12 +17,10 @@
  * under the License.
  */
 
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { runHostedExecution } from '@maka/runtime-host/client';
-import type { HostedExecutionStartInput } from '@maka/runtime-host/protocol';
+import { runHostedExecution, type RunHostedExecutionInput } from '@maka/runtime-host/client';
 import { captureMakaRuntimeArtifacts, writeMakaArtifactCollectionError } from './maka-artifacts.js';
-import { makaEvalRuntimePolicyDocument } from './maka-runtime-policy.js';
 import { takeRelayResultToken, writeRelayResult } from './relay-result-frame.js';
 
 const resultToken = takeRelayResultToken();
@@ -32,7 +30,11 @@ const payload = JSON.parse(Buffer.from(process.argv[2] ?? '', 'base64url').toStr
   artifactRoot: string;
   baseUrl: string;
   hostSettlementTimeoutMs: number;
-  execution: HostedExecutionStartInput;
+  execution: RunHostedExecutionInput['execution'];
+  connection?: {
+    providerType: NonNullable<RunHostedExecutionInput['connection']>['providerType'];
+    apiKeyEnvironment: string;
+  };
 };
 const abort = new AbortController();
 let artifactCapture = Promise.resolve();
@@ -59,16 +61,23 @@ process.once('SIGTERM', stop);
 const runtimeHome = join(dirname(payload.rootPath), `${process.pid}-home`);
 await mkdir(payload.rootPath, { recursive: true });
 await mkdir(runtimeHome, { recursive: true, mode: 0o700 });
-await writeFile(
-  join(payload.rootPath, 'runtime-policy.json'),
-  `${JSON.stringify(makaEvalRuntimePolicyDocument(process.env.HTTPS_PROXY))}\n`,
-  { flag: 'wx', mode: 0o600 },
-);
 process.env.HOME = runtimeHome;
 process.env.DEEPSEEK_BASE_URL = payload.baseUrl;
 let result: Awaited<ReturnType<typeof runHostedExecution>>;
 try {
   result = await runHostedExecution({
+    initialization: {
+      incognito: true,
+      ...(process.env.HTTPS_PROXY ? { proxyUrl: process.env.HTTPS_PROXY } : {}),
+    },
+    ...(payload.connection
+      ? {
+          connection: {
+            providerType: payload.connection.providerType,
+            apiKey: process.env[payload.connection.apiKeyEnvironment] ?? '',
+          },
+        }
+      : {}),
     rootPath: payload.rootPath,
     baseUrl: payload.baseUrl,
     execution: payload.execution,

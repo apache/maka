@@ -125,7 +125,7 @@ export async function verifyWindowsSandboxWorkerE2E(appDirectoryPath) {
       executable: appExecutable,
       resourceLocation: { kind: 'desktop-packaged', resourcesPath },
     });
-    const launchSpec = await getLaunchSpec();
+    const launchSpec = await getLaunchSpec({ kind: 'read' });
     assertCondition(launchSpec.ok, 'Windows filesystem-worker launch spec was unavailable.');
     assertCondition(
       launchSpec.ok && launchSpec.spec.program === (await realpath(appExecutable)),
@@ -399,7 +399,7 @@ async function runRuntimeHostMidLaunchChild({ appDirectory, workspace, targetPat
     executable: appExecutable,
     resourceLocation: { kind: 'desktop-packaged', resourcesPath },
   });
-  const packaged = await getPackagedLaunchSpec();
+  const packaged = await getPackagedLaunchSpec({ kind: 'read' });
   assertCondition(packaged.ok, 'Runtime Host fixture could not resolve the packaged launch spec.');
   const client = new FilesystemWorkerClient({
     sandboxManager: new SandboxManager([

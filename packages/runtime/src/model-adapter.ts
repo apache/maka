@@ -38,7 +38,6 @@ import type {
   ModelFinishReason,
   ModelFailure,
   ModelFailureKind,
-  ModelRequestMetadata,
   ModelToolSet,
   ToolCallPart,
 } from './model-protocol.js';
@@ -54,12 +53,6 @@ export type {
   ModelToolSet,
 } from './model-protocol.js';
 
-type ModelFinishBoundaryEvent = Extract<ModelStreamEvent, { kind: 'step-finish' | 'finish' }>;
-type UnclassifiedModelStreamEvent =
-  | Exclude<ModelStreamEvent, ModelFinishBoundaryEvent>
-  | Omit<Extract<ModelStreamEvent, { kind: 'step-finish' }>, 'disposition'>
-  | Omit<Extract<ModelStreamEvent, { kind: 'finish' }>, 'disposition'>;
-
 import { resolveModelRuntime, type ResolvedModelRuntime } from './model-runtime.js';
 import {
   plaintextResponsesReasoningProviderOptions,
@@ -69,6 +62,7 @@ import { classifyError, providerModelFailure } from './provider-error-classifica
 import {
   withProviderStreamTracking,
   type ProviderRequestTracker,
+  type ProviderStreamResult,
 } from './provider-request-telemetry.js';
 import type { ContextDiagnosticsCompaction } from './context-diagnostics.js';
 import {
@@ -244,17 +238,22 @@ export class ModelAdapter {
       this.input.providerOptions,
       this.runtime,
     );
+    let settleAccounting: ((outcome: ModelStepOutcome) => Promise<void>) | undefined;
+    const terminalModel = withProviderFinishBoundary(input.model, wrapLanguageModel);
     const trackedModel = input.providerRequestTracker
       ? withProviderStreamTracking({
-          model: input.model,
+          model: terminalModel,
           wrapLanguageModel,
           tracker: input.providerRequestTracker,
           abortSignal: input.abortSignal,
+          onAttempt: (settle) => {
+            settleAccounting = settle;
+          },
           ...(input.historyCompactBoundary
             ? { historyCompactBoundary: input.historyCompactBoundary }
             : {}),
         })
-      : input.model;
+      : terminalModel;
     const usesOpenAiResponsesAdapter = hasOpenAiResponsesAdapter(this.runtime);
     const providerToolName = (name: string): string =>
       usesOpenAiResponsesAdapter && name === TOOL_SEARCH_NAME ? TOOL_SEARCH_PROVIDER_NAME : name;
@@ -317,10 +316,6 @@ export class ModelAdapter {
       providerOptions,
       ...(responsesLane ? { headers: { [OPENAI_RESPONSES_LANE_HEADER]: responsesLane } } : {}),
       maxRetries: 0,
-      // Preserve the final request's Maka-owned message projection without
-      // retaining the provider request body. ProviderRequestTracker owns body
-      // capture; duplicating it here can retain large base64 image payloads.
-      include: { requestMessages: true },
       // With no continuation predicate, streamText performs one provider step.
       // Continuation belongs to the Runtime above this adapter.
       abortSignal: input.abortSignal,
@@ -335,6 +330,9 @@ export class ModelAdapter {
       requestMessages: fullMessages,
       abortSignal: input.abortSignal,
       runtimeToolName,
+      settleAccounting: async (outcome) => {
+        await settleAccounting?.(outcome);
+      },
     });
   }
 
@@ -352,6 +350,7 @@ export class ModelAdapter {
       requestMessages: ModelMessage[];
       abortSignal: AbortSignal;
       runtimeToolName?: (name: string) => string;
+      settleAccounting: (outcome: ModelStepOutcome) => Promise<void>;
     },
   ): ModelStreamResult {
     const openAiChatReasoningTransportState =
@@ -364,7 +363,6 @@ export class ModelAdapter {
     const outcome = new Promise<ModelStepOutcome>((resolve) => {
       settleOutcome = resolve;
     });
-    const request = { messages: continuation.requestMessages };
     const events: AsyncIterable<ModelStreamEvent> = {
       async *[Symbol.asyncIterator]() {
         let failure: ModelFailure | undefined;
@@ -393,6 +391,20 @@ export class ModelAdapter {
             ) {
               streamedRawFinishReason =
                 rawFinishReasonString(chunk.rawFinishReason) ?? streamedRawFinishReason;
+              streamedFinishReason = chunkFinishReason(chunk) ?? streamedFinishReason;
+              if (chunk.type !== 'finish') {
+                latestStepFinishHadUsableUsage =
+                  normalizeAiSdkUsage(chunk.usage as AiSdkUsageLike | undefined, {
+                    rawFinishReason: chunk.rawFinishReason,
+                  }) !== undefined;
+              }
+              streamedFinishDisposition = classifyModelFinishBoundary({
+                finishReason: streamedFinishReason,
+                hasResponseEvidence: stepHasResponseEvidence,
+                hasUsableStepUsage: latestStepFinishHadUsableUsage === true,
+              });
+              if (chunk.type === 'finish') sawFinish = true;
+              continue;
             }
             if (isUnfinalizedPlaintextSummaryReasoningEnd(chunk, resolvedRuntime)) {
               // The SDK emits this trailer from flush() when no
@@ -414,28 +426,7 @@ export class ModelAdapter {
                 stepHasResponseEvidence = true;
               }
               if (translated.kind === 'error') failure = translated.failure;
-              if (translated.kind !== 'finish' && translated.kind !== 'step-finish') {
-                yield translated;
-                continue;
-              }
-
-              const hasUsableStepUsage =
-                translated.kind === 'step-finish'
-                  ? translated.usage !== undefined
-                  : latestStepFinishHadUsableUsage === true;
-              const disposition = classifyModelFinishBoundary({
-                finishReason: translated.finishReason,
-                hasResponseEvidence: stepHasResponseEvidence,
-                hasUsableStepUsage,
-              });
-              const event: ModelFinishBoundaryEvent = { ...translated, disposition };
-              if (event.kind === 'finish') sawFinish = true;
-              if (event.kind === 'step-finish') {
-                latestStepFinishHadUsableUsage = event.usage !== undefined;
-              }
-              streamedFinishReason = event.finishReason ?? streamedFinishReason;
-              streamedFinishDisposition = disposition;
-              yield event;
+              yield translated;
             }
           }
         } catch (error) {
@@ -444,6 +435,9 @@ export class ModelAdapter {
             yield { kind: 'error', failure };
           }
         } finally {
+          if (continuation.abortSignal.aborted) {
+            failure = normalizeProviderFailure(continuation.abortSignal.reason);
+          }
           const [sdkUsage, sdkFinishReason] = await Promise.all([
             sdk.usage.catch(() => undefined),
             sdk.finishReason.catch(() => undefined),
@@ -471,7 +465,6 @@ export class ModelAdapter {
             finishDisposition: streamedFinishDisposition ?? 'incomplete',
             rawFinishReason,
             usage,
-            request,
             hasResponseEvidence: requestHasResponseEvidence,
           });
           let deferredFailure: ModelFailure | undefined;
@@ -489,7 +482,6 @@ export class ModelAdapter {
               finishDisposition: streamedFinishDisposition ?? 'incomplete',
               rawFinishReason,
               usage,
-              request,
               hasResponseEvidence: requestHasResponseEvidence,
             });
           }
@@ -515,7 +507,11 @@ export class ModelAdapter {
               }
             }
           } finally {
-            settleOutcome(settled);
+            try {
+              await continuation.settleAccounting(settled);
+            } finally {
+              settleOutcome(settled);
+            }
           }
           if (deferredFailure) {
             // Consumers may stop iterating at the first error. The outcome and
@@ -551,7 +547,7 @@ export class ModelAdapter {
    * evidence and is stamped by `toModelStreamResult`; this pure hook only
    * exposes raw-chunk lowering for focused adapter tests.
    */
-  translateChunk(chunk: AiSdkStreamChunk): UnclassifiedModelStreamEvent[] {
+  translateChunk(chunk: AiSdkStreamChunk): ModelStreamEvent[] {
     return translateChunk(
       chunk,
       this.runtime.reasoningReplay.kind === 'openai-chat-plaintext'
@@ -611,11 +607,10 @@ interface ModelStepSettlementEvidence {
   finishDisposition: ModelFinishDisposition;
   rawFinishReason?: string;
   usage?: NormalizedUsage;
-  request: ModelRequestMetadata;
   hasResponseEvidence: boolean;
 }
 
-function isModelResponseEvidence(event: UnclassifiedModelStreamEvent): boolean {
+function isModelResponseEvidence(event: ModelStreamEvent): boolean {
   switch (event.kind) {
     case 'text':
       return event.text.length > 0;
@@ -624,7 +619,7 @@ function isModelResponseEvidence(event: UnclassifiedModelStreamEvent): boolean {
     case 'thinking-start':
       return event.providerOptions !== undefined;
     case 'thinking-signature':
-    case 'provider-tool-input':
+    case 'tool-input':
     case 'tool-call':
     case 'provider-tool-result':
       return true;
@@ -666,25 +661,21 @@ export function settleModelStepOutcome(evidence: ModelStepSettlementEvidence): M
     finishDisposition,
     rawFinishReason,
     usage,
-    request,
     hasResponseEvidence,
   } = evidence;
   if (aborted || failure?.kind === 'abort') {
     return failedStepOutcome(
-      'aborted',
       failure ??
         normalizeProviderFailure(Object.assign(new Error('aborted'), { name: 'AbortError' })),
-      request,
       usage,
       hasResponseEvidence,
     );
   }
   if (failure) {
-    return failedStepOutcome('failed', failure, request, usage, hasResponseEvidence);
+    return failedStepOutcome(failure, usage, hasResponseEvidence);
   }
   if (finishDisposition === 'retryable-network-failure') {
     return failedStepOutcome(
-      'failed',
       {
         type: 'model_failure',
         kind: 'network',
@@ -692,21 +683,18 @@ export function settleModelStepOutcome(evidence: ModelStepSettlementEvidence): M
         message: 'Network error',
         retryable: true,
       },
-      request,
       usage,
       hasResponseEvidence,
     );
   }
   if (!sawFinish || finishDisposition === 'incomplete') {
     return failedStepOutcome(
-      'truncated',
       modelStepFailure(
         'stream_truncated',
         sawFinish && finishReason === 'stop'
           ? 'Provider returned an empty stop without output or usable usage'
           : `Provider stream ended without finishing (${finishReason})`,
       ),
-      request,
       usage,
       hasResponseEvidence,
     );
@@ -716,20 +704,19 @@ export function settleModelStepOutcome(evidence: ModelStepSettlementEvidence): M
       finishReason === 'error'
         ? providerFinishFailure(rawFinishReason)
         : modelStepFailure('unknown', 'Provider stopped the stream on a content filter');
-    return failedStepOutcome('failed', terminalFailure, request, usage, hasResponseEvidence);
+    return failedStepOutcome(terminalFailure, usage, hasResponseEvidence);
   }
   return {
     kind: 'completed',
     finishReason,
     ...(usage ? { usage } : {}),
-    request,
     continuation: 'none',
     hasResponseEvidence,
   };
 }
 
 function modelStepFailure(kind: ModelFailureKind, message: string): ModelFailure {
-  return { type: 'model_failure', kind, message, retryable: false };
+  return { type: 'model_failure', kind, message, retryable: kind === 'stream_truncated' };
 }
 
 function providerFinishFailure(rawFinishReason: string | undefined): ModelFailure {
@@ -751,17 +738,14 @@ function providerFinishFailure(rawFinishReason: string | undefined): ModelFailur
 }
 
 function failedStepOutcome(
-  kind: Exclude<ModelStepOutcome['kind'], 'completed'>,
   failure: ModelFailure,
-  request: ModelRequestMetadata,
   usage: NormalizedUsage | undefined,
   hasResponseEvidence: boolean,
 ): Exclude<ModelStepOutcome, { kind: 'completed' }> {
   return {
-    kind,
+    kind: 'failed',
     failure,
     ...(usage ? { usage } : {}),
-    request,
     continuation: 'none',
     hasResponseEvidence,
   };
@@ -776,14 +760,27 @@ function selectedModelMaxOutputTokens(
   const anthropicMessages = runtime.wire === 'anthropic-messages';
   const kimiOpenAiChat =
     connection.providerType === 'kimi-coding-plan' && runtime.wire === 'openai-chat';
-  if (!anthropicMessages && !kimiOpenAiChat) return undefined;
-  const wireOutputLimit =
+  const requestedBudget = connection.modelOverrides?.[modelId]?.maxOutputTokens;
+  if (requestedBudget === undefined && !anthropicMessages && !kimiOpenAiChat) return undefined;
+  const capacity =
     connection.models?.find((model) => model.id === modelId)?.maxOutputTokens ??
     lookupModelMetadata(connection.providerType, modelId).maxOutputTokens;
+  const wireOutputLimit =
+    requestedBudget === undefined
+      ? capacity
+      : capacity === undefined
+        ? requestedBudget
+        : Math.min(requestedBudget, capacity);
   if (wireOutputLimit === undefined) return undefined;
-  return anthropicMessages
+  const outputTokens = anthropicMessages
     ? wireOutputLimit - fixedAnthropicThinkingBudget(providerOptions)
     : wireOutputLimit;
+  if (outputTokens <= 0) {
+    throw new Error(
+      'Output budget must exceed the fixed thinking budget. Increase the output limit or reduce thinking.',
+    );
+  }
+  return outputTokens;
 }
 
 function usesNativeOpenAiResponses(
@@ -884,6 +881,47 @@ interface SdkStreamResult {
   response: PromiseLike<{
     id: string;
   }>;
+}
+
+/**
+ * A provider `finish` part is the LanguageModel stream's terminal semantic
+ * boundary. Expose EOF at that boundary so the SDK can flush its public
+ * finish/usage promises even when the transport keeps the connection open.
+ */
+function withProviderFinishBoundary(
+  model: unknown,
+  wrapLanguageModel: (input: Record<string, unknown>) => unknown,
+): unknown {
+  return wrapLanguageModel({
+    model,
+    middleware: {
+      wrapStream: async ({
+        doStream,
+      }: {
+        doStream: () => PromiseLike<ProviderStreamResult>;
+      }): Promise<ProviderStreamResult> => {
+        const result = await doStream();
+        return {
+          ...result,
+          stream: result.stream.pipeThrough(
+            new TransformStream<unknown, unknown>({
+              transform(part, controller) {
+                controller.enqueue(part);
+                if (
+                  part !== null &&
+                  typeof part === 'object' &&
+                  !Array.isArray(part) &&
+                  (part as { type?: unknown }).type === 'finish'
+                ) {
+                  controller.terminate();
+                }
+              },
+            }),
+          ),
+        };
+      },
+    },
+  });
 }
 
 /**
@@ -1063,7 +1101,7 @@ function translateChunk(
   openAiChatReasoningTransportState?: OpenAiChatReasoningTransportState,
   runtime?: ResolvedModelRuntime,
   runtimeToolName?: (name: string) => string,
-): UnclassifiedModelStreamEvent[] {
+): ModelStreamEvent[] {
   switch (chunk.type) {
     case 'reasoning-start': {
       const reasoningPartId = reasoningPartIdFromChunk(chunk);
@@ -1196,33 +1234,7 @@ function translateChunk(
     case 'tool-input-start':
     case 'tool-input-delta':
     case 'tool-input-end':
-      return chunk.providerExecuted === true ? [{ kind: 'provider-tool-input' }] : [];
-    // Step boundaries (`start-step` / `finish-step`) and the terminal `finish`
-    // carry no text/thinking to stream. The backend owns step accounting: it
-    // counts and flushes one AssistantMessage per step and rotates the
-    // messageId at each `finish-step`. `step-finish` is legacy replay fixture
-    // compatibility — handled as a step boundary, not a text carrier.
-    case 'finish-step':
-    case 'step-finish': {
-      const finishReason = chunkFinishReason(chunk);
-      const rawFinishReason = rawFinishReasonString(chunk.rawFinishReason);
-      // The same value the turn's outcome is decided from, so the record and
-      // the outcome cannot name different reasons for the same stream.
-      const usage = normalizeAiSdkUsage(chunk.usage, {
-        rawFinishReason: rawFinishReason ?? finishReason,
-      });
-      return [
-        {
-          kind: 'step-finish',
-          ...(usage ? { usage } : {}),
-          ...(finishReason ? { finishReason } : {}),
-        },
-      ];
-    }
-    case 'finish': {
-      const finishReason = chunkFinishReason(chunk);
-      return [{ kind: 'finish', ...(finishReason ? { finishReason } : {}) }];
-    }
+      return [{ kind: 'tool-input', providerExecuted: chunk.providerExecuted === true }];
     case 'start-step':
     case 'tool-result':
     case 'tool-error': {

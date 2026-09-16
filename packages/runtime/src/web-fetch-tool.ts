@@ -74,8 +74,10 @@ export function routeWebFetchTools(
 function truncateWebFetchOutput(content: string): string {
   if (Buffer.byteLength(content, 'utf8') <= WEB_FETCH_MODEL_OUTPUT_MAX_BYTES) return content;
   const markerBytes = Buffer.byteLength(WEB_FETCH_TRUNCATION_MARKER, 'utf8');
-  const kept = Buffer.from(content, 'utf8')
-    .subarray(0, WEB_FETCH_MODEL_OUTPUT_MAX_BYTES - markerBytes)
+  const contentBytes = WEB_FETCH_MODEL_OUTPUT_MAX_BYTES - markerBytes;
+  // The extra UTF-16 unit keeps a split surrogate outside the retained bytes.
+  const kept = Buffer.from(content.slice(0, contentBytes + 1), 'utf8')
+    .subarray(0, contentBytes)
     .toString('utf8')
     .replace(/�+$/, '');
   return kept + WEB_FETCH_TRUNCATION_MARKER;

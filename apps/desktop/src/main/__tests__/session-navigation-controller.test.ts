@@ -102,15 +102,13 @@ function controller(): SessionNavigationController {
 
 function ports(
   sessions: SessionNavigationSession[],
-  activeSessionId: string | undefined,
+  _activeSessionId: string | undefined,
   calls: string[] = [],
 ): SessionNavigationPorts {
   return {
-    activeIdRef: { current: activeSessionId },
     sessionsRef: { current: sessions },
     pendingSessionRowActionsRef: { current: new Set<string>() },
     activateSession: (sessionId) => calls.push(`activate:${sessionId ?? 'none'}`),
-    clearActiveMessages: () => calls.push('clear-messages'),
     clearSessionRendererState: (sessionId) => calls.push(`clear:${sessionId}`),
     refreshSessions: async () => sessions,
     toastApi: {
@@ -238,6 +236,20 @@ describe('useSessionNavigationReads', () => {
 });
 
 describe('createSessionOpenCommand', () => {
+  it('distinguishes successive jumps even when the clock does not advance', (t) => {
+    t.mock.method(Date, 'now', () => 1);
+    const targets: Array<{ nonce: number } | null> = [];
+    const deps = {
+      activateSession() {}, exitWorkHub() {}, selectSessionSurface() {},
+      setSearchTarget: (target: { nonce: number } | null) => targets.push(target),
+    };
+    const open = createSessionOpenCommand(deps);
+    open('a', 'turn-1', 1);
+    open('a', 'turn-1', 1);
+    createSessionOpenCommand(deps)('a', 'turn-1', 1);
+    assert.equal(new Set(targets.map((target) => target!.nonce)).size, 3);
+  });
+
   it('orders the jump and preserves turn-target clearing semantics', () => {
     const calls: string[] = [];
     const targets: unknown[] = [];

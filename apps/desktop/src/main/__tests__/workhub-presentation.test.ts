@@ -27,10 +27,11 @@ import { build } from 'esbuild';
 import { deferred } from '@maka/core/test-only/async-primitives';
 import type { createMainWindowController } from '../main-window.js';
 import type { createWorkHubPresentation } from '../workhub-presentation.js';
+import type { WindowRevealMode } from '../window-reveal.js';
 
 const source = fileURLToPath(new URL('../../../src/main/workhub-presentation.ts', import.meta.url));
 
-async function harness(animate = false, displayFrequency = 60) {
+async function harness(animate = false, displayFrequency = 60, revealMode: WindowRevealMode = 'active') {
   let enabled = true;
   let mainRequests = 0;
   let mainAvailable = true;
@@ -56,6 +57,7 @@ async function harness(animate = false, displayFrequency = 60) {
   let handler: ((event: unknown, command: string, payload?: unknown) => Promise<unknown>) | undefined;
   let unregistered = false;
   let shortcut: (() => void) | undefined;
+  let visibilityChanged: (() => void) | undefined;
   let registeredViews = 0;
   let releasedViews = 0;
   let pointerDisplay = { x: 0, y: 0, width: 1200, height: 900 };
@@ -105,9 +107,11 @@ async function harness(animate = false, displayFrequency = 60) {
     setBounds(bounds: typeof this.bounds) { this.bounds = bounds; this.emit('resize'); }
     setVisibleOnAllWorkspaces() {}
     setMaximizable() {}
-    show() { this.visible = true; this.emit('show'); }
-    showInactive() { this.visible = true; }
-    hide() { this.visible = false; }
+    shown = 0;
+    shownInactive = 0;
+    show() { this.shown++; this.visible = true; this.emit('show'); }
+    showInactive() { this.shownInactive++; this.visible = true; }
+    hide() { this.visible = false; this.emit('hide'); }
     resizable = true;
     setResizable(value: boolean) { this.resizable = value; }
     focused = 0;
@@ -147,15 +151,17 @@ async function harness(animate = false, displayFrequency = 60) {
   const controller = module.exports.createWorkHubPresentation({
     mainWindow: () => mainAvailable ? main as unknown as Electron.BrowserWindow : undefined,
     isEnabled: () => enabled,
+    revealMode,
     ensureMainWindow: async () => { mainRequests++; openingStarted.resolve(); await opening; mainAvailable = true; return main as unknown as Electron.BrowserWindow; },
     mainModuleDirectory: '/app/dist/main', preloadPath: '/app/dist/preload/preload.cjs',
     onError: (error) => errors.push(error),
+    onVisibilityChanged: () => visibilityChanged?.(),
     onViewCreated: () => { registeredViews++; return () => { releasedViews++; }; },
   });
   controller.attachMainWindow(main as unknown as Electron.BrowserWindow);
   controller.registerIpc();
   const command = (sender: Contents, name: string, payload?: unknown) => handler!({ sender, senderFrame: sender.mainFrame }, name, payload);
-  return { setMainAvailable: (value: boolean) => { mainAvailable = value; }, shortcut: () => shortcut!(), get mainRequests() { return mainRequests; }, controller, main, windows, views, errors, command, advance, setEnabled: (value: boolean) => { enabled = value; }, deferOpening: (value: Promise<void>) => { opening = value; return openingStarted.promise; }, movePointer: (display: typeof pointerDisplay) => { pointerDisplay = display; }, registrations: () => [registeredViews, releasedViews], handler: () => handler, unregistered: () => unregistered };
+  return { onVisibilityChanged: (listener: () => void) => { visibilityChanged = listener; }, setMainAvailable: (value: boolean) => { mainAvailable = value; }, shortcut: () => shortcut!(), get mainRequests() { return mainRequests; }, controller, main, windows, views, errors, command, advance, setEnabled: (value: boolean) => { enabled = value; }, deferOpening: (value: Promise<void>) => { opening = value; return openingStarted.promise; }, movePointer: (display: typeof pointerDisplay) => { pointerDisplay = display; }, registrations: () => [registeredViews, releasedViews], handler: () => handler, unregistered: () => unregistered };
 }
 
 test('yields the docked native view to main-window overlays without replacing the conversation', async () => {
@@ -166,8 +172,11 @@ test('yields the docked native view to main-window overlays without replacing th
   h.main.show();
   await h.command(view.webContents, 'ready');
   assert.equal(view.visible, true);
+  let leaseRevoked = false;
+  h.onVisibilityChanged(() => { if (!view.visible) leaseRevoked = true; });
   const backdrop = await h.command(h.main.webContents, 'host', { ...host, occluded: true });
   assert.equal(backdrop, 'data:image/png;base64,workhub-frame');
+  assert.equal(leaseRevoked, true, 'occlusion revokes browser actions after hiding the native view');
   assert.equal(view.visible, false);
   await h.command(h.main.webContents, 'host', { ...host, occluded: true });
   assert.equal(view.webContents.captures, 1);
@@ -276,6 +285,7 @@ test('animates from the current height, keeps the bottom anchored and survives r
   const h = await harness(true);
   await h.command(h.main.webContents, 'host', { visible: true, rect: { x: 0, y: 40, width: 1000, height: 760 } });
   const view = h.views[0]!;
+  await h.command(view.webContents, 'ready');
   await h.command(view.webContents, 'conversation-layout', { expanded: false, compactHeight: 110 });
   await h.command(view.webContents, 'detach');
   const floating = h.windows[1]!;
@@ -318,10 +328,13 @@ test('reparents one live conversation across docking, floating, hide and main-wi
   h.main.show();
   await h.command(h.main.webContents, 'host', { visible: true, rect: { x: 100, y: 40, width: 900, height: 760 } });
   const view = h.views[0]!;
+  await h.command(view.webContents, 'ready');
   await h.command(view.webContents, 'conversation-layout', { expanded: true, compactHeight: 96 });
   assert.ok(h.main.children.has(view));
   await h.command(view.webContents, 'detach');
   const floating = h.windows[1]!;
+  let leaseRevoked = false;
+  h.onVisibilityChanged(() => { if (!floating.visible) leaseRevoked = true; });
   assert.ok(!h.main.children.has(view) && floating.children.has(view));
   const expandedHeight = floating.bounds.height;
   const anchoredBottom = floating.bounds.y + floating.bounds.height;
@@ -337,11 +350,17 @@ test('reparents one live conversation across docking, floating, hide and main-wi
   await assert.rejects(h.command(view.webContents, 'conversation-layout', { expanded: false, compactHeight: Number.NaN }), /Invalid WorkHub conversation layout/);
   await h.command(view.webContents, 'hide');
   assert.equal(floating.visible, false);
+  assert.equal(leaseRevoked, true, 'hiding the floating container revokes browser actions');
   assert.equal(h.controller.getSnapshot().placement, 'docked');
   assert.ok(h.main.children.has(view));
   assert.equal(view.webContents.destroyed, false);
   await h.command(view.webContents, 'dock');
   assert.ok(h.main.children.has(view) && !floating.children.has(view));
+  let dockedLeaseRevoked = false;
+  h.onVisibilityChanged(() => { if (!h.main.visible) dockedLeaseRevoked = true; });
+  h.main.hide();
+  assert.equal(dockedLeaseRevoked, true, 'the current dock window revokes actions after reparenting');
+  h.main.show();
   await h.command(h.main.webContents, 'host', { visible: false, rect: { x: 0, y: 0, width: 0, height: 0 } });
   assert.equal(view.visible, false);
   h.main.emit('close');
@@ -417,14 +436,17 @@ test('application broadcasts reach registered auxiliaries once and stop after re
     isDestroyed: () => false,
     send: (channel: string) => { messages.push(channel); },
   }) as unknown as Electron.WebContents;
-  const release = controller.registerAuxiliaryRenderer(renderer);
+  const parent = {} as Electron.View;
+  const release = controller.registerAuxiliaryRenderer(renderer, parent);
   assert.equal(controller.ownsRenderer(renderer), true);
+  assert.equal(controller.browserParentForRenderer(renderer), parent);
   controller.send('settings:changed');
   assert.deepEqual(messages, ['settings:changed']);
   release();
   controller.send('settings:changed');
   assert.deepEqual(messages, ['settings:changed']);
   assert.equal(controller.ownsRenderer(renderer), false);
+  assert.equal(controller.browserParentForRenderer(renderer), undefined);
   controller.registerAuxiliaryRenderer(renderer);
   renderer.emit('destroyed');
   assert.equal(controller.ownsRenderer(renderer), false);
@@ -456,7 +478,7 @@ test('control shows a passive card only after it is painted and preserves manual
   assert.equal(h.main.visible, false, 'control does not reveal a hidden main window');
   assert.equal(view.webContents.sent.some(([channel]) => channel.endsWith('focus-composer')), false);
   await h.command(view.webContents, 'ready');
-  await h.command(view.webContents, 'show-conversation');
+  await h.command(view.webContents, 'show-conversation', request);
   assert.equal(h.controller.getSnapshot().progressRequest, undefined);
   assert.equal(floating.bounds.width, 520);
   assert.equal(floating.bounds.height, 720);
@@ -469,6 +491,34 @@ test('control shows a passive card only after it is painted and preserves manual
   assert.equal(floating.focused, focused, 'control leaves a manually opened chat alone');
   assert.equal(h.views.length, 1);
   h.controller.dispose();
+});
+
+test('interaction content upgrades native progress in either paint order without activation or reopening dismissal', async () => {
+  for (const paintFirst of [false, true]) {
+    const h = await harness();
+    await h.command(h.main.webContents, 'host', { visible: true, rect: { x: 0, y: 0, width: 1000, height: 800 } });
+    const view = h.views[0]!;
+    await h.controller.prepareControl('interaction-turn');
+    const request = h.controller.getSnapshot().progressRequest!;
+    const floating = h.windows[1]!;
+    if (paintFirst) await h.command(view.webContents, 'progress-ready', request);
+    const layout = { expanded: true, compactHeight: 250, interactionPending: true };
+    await h.command(view.webContents, 'conversation-layout', layout);
+    assert.equal(h.controller.getSnapshot().progressRequest, undefined);
+    assert.equal(floating.visible, true);
+    assert.equal(floating.resizable, true);
+    assert.equal(floating.bounds.width, 520);
+    assert.equal(floating.bounds.height, 720);
+    assert.equal(floating.focused, 0);
+    assert.equal(h.main.focused, 0);
+    await h.command(view.webContents, 'progress-ready', request);
+    assert.equal(floating.bounds.height, 720, 'stale paint cannot restore progress');
+    await h.command(view.webContents, 'hide');
+    await h.command(view.webContents, 'conversation-layout', layout);
+    await h.controller.prepareControl('interaction-turn');
+    assert.equal(floating.visible, false, 'content cannot override dismissal of this Turn');
+    h.controller.dispose();
+  }
 });
 
 test('control preparation refuses disabled presentation before opening and rechecks a pending open', async () => {
@@ -515,6 +565,7 @@ test('all WorkHub entries obey the client enable setting and disabling retains t
   await h.controller.show();
   const view = h.views[0]!;
   const floating = h.windows[1]!;
+  await h.command(view.webContents, 'ready');
   assert.equal(floating.visible, true);
   const opened = deferred<void>();
   const opening = h.deferOpening(opened.promise);
@@ -550,13 +601,21 @@ test('all WorkHub entries obey the client enable setting and disabling retains t
 });
 
 
-test('prewarms once and the shortcut shows and hides synchronously', async () => {
+test('creates on first shortcut, then shows and hides synchronously', async () => {
   const h = await harness();
   await h.controller.refreshSettings();
+  assert.equal(h.views.length, 0, 'enabling alone must not create the renderer');
+  h.shortcut();
+  assert.equal(h.windows[1]!.visible, false, 'a cold summon waits for the composer to mount');
+  assert.equal(h.windows[1]!.focused, 0, 'loading must not steal keyboard input');
+  await h.command(h.views[0]!.webContents, 'ready');
+  assert.equal(h.windows[1]!.visible, true);
+  assert.equal(h.views[0]!.webContents.sent.some(([channel]) => channel === 'workhub-presentation:focus-composer'), true);
+  h.shortcut();
   const floating = h.windows[1]!;
   const view = h.views[0]!;
   assert.equal(floating.visible, false);
-  assert.equal(view.visible, false);
+  assert.equal(view.visible, true);
   assert.ok(floating.children.has(view));
   await h.controller.refreshSettings();
   assert.equal(h.windows.length, 2);
@@ -568,6 +627,26 @@ test('prewarms once and the shortcut shows and hides synchronously', async () =>
   assert.equal(h.mainRequests, 0);
   assert.equal(h.main.focused, 0);
   h.controller.dispose();
+});
+
+test('a second shortcut or disabling cancels a cold summon before ready', async () => {
+  for (const cancel of ['shortcut', 'disable'] as const) {
+    const h = await harness();
+    await h.controller.refreshSettings();
+    h.shortcut();
+    const view = h.views[0]!;
+    const floating = h.windows[1]!;
+    if (cancel === 'shortcut') h.shortcut();
+    else {
+      h.setEnabled(false);
+      await h.controller.refreshSettings();
+    }
+    await h.command(view.webContents, 'ready');
+    assert.equal(floating.visible, false, cancel);
+    assert.equal(floating.focused, 0, cancel);
+    assert.equal(view.webContents.sent.some(([channel]) => channel === 'workhub-presentation:focus-composer'), false, cancel);
+    h.controller.dispose();
+  }
 });
 
 test('a pending backdrop capture and older hide cannot delay or undo the shortcut', async () => {
@@ -600,6 +679,7 @@ test('the shortcut supersedes a pending dock without waiting for the main window
   await h.controller.refreshSettings();
   h.shortcut();
   const view = h.views[0]!;
+  await h.command(view.webContents, 'ready');
   const floating = h.windows[1]!;
   await h.command(view.webContents, 'conversation-layout', { expanded: true, compactHeight: 96 });
   h.advance(80);
@@ -627,6 +707,7 @@ test('native resize callbacks do not submit duplicate view bounds and follow dis
   const h = await harness(true, 120);
   await h.controller.show();
   const view = h.views[0]!;
+  await h.command(view.webContents, 'ready');
   view.webContents.getZoomFactor = () => 2;
   await h.command(view.webContents, 'conversation-layout', { expanded: true, compactHeight: 96 });
   const before = view.boundsUpdates.length;
@@ -654,6 +735,7 @@ test('hiding returns the live view to Desktop and preserves floating geometry fo
   h.shortcut();
   const floating = h.windows[1]!;
   const view = h.views[0]!;
+  await h.command(view.webContents, 'ready');
   await h.command(view.webContents, 'conversation-layout', { expanded: false, compactHeight: 144 });
   h.shortcut();
   assert.equal(floating.visible, false);
@@ -676,6 +758,7 @@ test('hiding with Desktop closed keeps the conversation alive without reopening 
   const h = await harness();
   await h.controller.show();
   const view = h.views[0]!;
+  await h.command(view.webContents, 'ready');
   h.main.destroy();
   await h.controller.toggle();
   assert.equal(h.controller.getSnapshot().placement, 'docked');
@@ -768,6 +851,7 @@ test('closing progress suppresses the current turn and old paint acknowledgement
 test('the shortcut opens the normal composer from progress without waiting for its paint', async () => {
   const h = await harness();
   await h.controller.prepareControl('turn');
+  await h.command(h.views[0]!.webContents, 'ready');
   const request = h.controller.getSnapshot().progressRequest!;
   await h.controller.toggle(true);
   const floating = h.windows[1]!;
@@ -842,4 +926,74 @@ test('late progress measurements and send acknowledgements cannot revive a dismi
   assert.equal(h.windows[1]!.bounds.height, 180, 'reduced motion applies the final layout immediately');
   assert.equal(h.controller.getSnapshot().progressRequest, second);
   h.controller.dispose();
+});
+
+const REVEALS = {
+  hidden: { shown: 0, shownInactive: 0, focused: 0 },
+  inactive: { shown: 0, shownInactive: 1, focused: 0 },
+  active: { shown: 1, shownInactive: 0, focused: 1 },
+} as const;
+const reveals = (win: { shown: number; shownInactive: number; focused: number }) =>
+  ({ shown: win.shown, shownInactive: win.shownInactive, focused: win.focused });
+
+test('summoning and docking honor the run reveal mode', async () => {
+  for (const mode of ['hidden', 'inactive', 'active'] as const) {
+    const h = await harness(false, 60, mode);
+    await h.controller.show();
+    assert.deepEqual(reveals(h.windows[1]!), REVEALS.hidden, `a cold summon reveals nothing in ${mode}`);
+    await h.command(h.views[0]!.webContents, 'ready');
+    assert.deepEqual(reveals(h.windows[1]!), REVEALS[mode], `detach in ${mode}`);
+    await h.command(h.views[0]!.webContents, 'dock');
+    assert.deepEqual(reveals(h.main), REVEALS[mode], `dock in ${mode}`);
+    h.controller.dispose();
+  }
+});
+
+test('the progress card stays hidden in a hidden run and inactive everywhere else', async () => {
+  for (const mode of ['hidden', 'inactive', 'active'] as const) {
+    const h = await harness(false, 60, mode);
+    await h.controller.prepareControl('turn');
+    await h.command(h.views[0]!.webContents, 'progress-ready', h.controller.getSnapshot().progressRequest);
+    assert.deepEqual(reveals(h.windows[1]!), mode === 'hidden' ? REVEALS.hidden : REVEALS.inactive, mode);
+    h.controller.dispose();
+  }
+});
+
+
+test('revealing an interaction cannot detach a docked WorkHub without a current progress request', async () => {
+  const h = await harness();
+  await h.command(h.main.webContents, 'host', { visible: true, rect: { x: 0, y: 0, width: 1000, height: 800 } });
+  const view = h.views[0]!;
+  for (const request of [undefined, 1, NaN]) {
+    if (request === undefined || Number.isNaN(request)) await assert.rejects(h.command(view.webContents, 'show-conversation', request), /Invalid progress request/);
+    else await h.command(view.webContents, 'show-conversation', request);
+    assert.equal(h.controller.getSnapshot().placement, 'docked');
+    assert.equal(h.controller.getSnapshot().floatingVisible, false);
+  }
+});
+
+
+test('expanding progress before its first paint reveals the conversation without taking focus', async () => {
+  for (const mode of ['active', 'hidden'] as const) {
+    const h = await harness(false, 60, mode);
+    await h.controller.prepareControl('turn-early');
+    const view = h.views[0]!;
+    const floating = h.windows[1]!;
+    floating.isFocused = () => false;
+    const request = h.controller.getSnapshot().progressRequest!;
+    await h.command(view.webContents, 'ready');
+    assert.equal(floating.visible, false);
+    const focusMessages = view.webContents.sent.filter(([channel]) => channel.endsWith('focus-composer')).length;
+    await h.command(view.webContents, 'show-conversation', request);
+    assert.equal(floating.visible, mode !== 'hidden', 'expansion must finish the native reveal without waiting for the unmounted progress card');
+    assert.equal(h.controller.getSnapshot().progressRequest, undefined);
+    assert.equal(floating.focused, 0);
+    assert.equal(view.webContents.sent.filter(([channel]) => channel.endsWith('focus-composer')).length, focusMessages);
+    assert.equal(view.webContents.backgroundThrottling, true);
+    await h.command(view.webContents, 'hide');
+    await h.command(view.webContents, 'progress-ready', request);
+    await h.command(view.webContents, 'show-conversation', request);
+    assert.equal(floating.visible, false, 'late acknowledgements and stale expansions cannot reopen a dismissed window');
+    h.controller.dispose();
+  }
 });

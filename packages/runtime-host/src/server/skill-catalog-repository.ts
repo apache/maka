@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import { JsonArrayPageBudget } from './json-array-page-budget.js';
+
 import { createHash, randomUUID } from 'node:crypto';
 import { lstat, mkdir, open, readdir, realpath, rename, rm, stat, unlink } from 'node:fs/promises';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
@@ -1414,18 +1416,17 @@ function createPage(
   offset: number,
 ): SkillCatalogQueryProjection {
   const pageItems: SkillCatalogPageItem[] = [];
+  const budget = new JsonArrayPageBudget(SKILL_CATALOG_PAGE_MAX_BYTES, {
+    kind: 'page',
+    view,
+    revision,
+    items: [],
+    nextCursor: null,
+  });
   let cursor = offset;
   while (cursor < items.length && pageItems.length < SKILL_CATALOG_PAGE_MAX_ITEMS) {
-    const candidate = [...pageItems, items[cursor]];
     const hasMore = cursor + 1 < items.length;
-    const result = {
-      kind: 'page' as const,
-      view,
-      revision,
-      items: candidate,
-      nextCursor: hasMore ? encodeCursor(view, cursor + 1) : null,
-    };
-    if (jsonBytes(result) > SKILL_CATALOG_PAGE_MAX_BYTES) {
+    if (!budget.tryAppend(items[cursor], hasMore ? encodeCursor(view, cursor + 1) : null)) {
       if (pageItems.length === 0) {
         throw new SkillCatalogRepositoryError(
           'persistence_failed',
@@ -1494,17 +1495,16 @@ function createInvocablePage(
   offset: number,
 ): SkillCatalogInvocableQueryResult {
   const pageItems: SkillCatalogInvocableItem[] = [];
+  const budget = new JsonArrayPageBudget(SKILL_CATALOG_PAGE_MAX_BYTES, {
+    kind: 'page',
+    revision,
+    items: [],
+    nextCursor: null,
+  });
   let cursor = offset;
   while (cursor < items.length && pageItems.length < SKILL_CATALOG_PAGE_MAX_ITEMS) {
-    const candidate = [...pageItems, items[cursor]];
     const hasMore = cursor + 1 < items.length;
-    const result = {
-      kind: 'page' as const,
-      revision,
-      items: candidate,
-      nextCursor: hasMore ? encodeInvocableCursor(cursor + 1) : null,
-    };
-    if (jsonBytes(result) > SKILL_CATALOG_PAGE_MAX_BYTES) {
+    if (!budget.tryAppend(items[cursor], hasMore ? encodeInvocableCursor(cursor + 1) : null)) {
       if (pageItems.length === 0) {
         throw new SkillCatalogRepositoryError(
           'persistence_failed',

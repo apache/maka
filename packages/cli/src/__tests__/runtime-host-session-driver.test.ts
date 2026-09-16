@@ -2122,6 +2122,94 @@ describe('Runtime Host Maka Session driver', () => {
     );
   });
 
+  test('fails rewind closed when the selected turn carries structured content', async () => {
+    // A rewind that refills only the human-facing text would silently drop
+    // the selected turn's quotes/attachments from the replacement submit —
+    // fail closed with a precise notice instead until the TUI can carry
+    // them (#5109).
+    const attachment = {
+      kind: 'image',
+      name: 'chart.png',
+      mimeType: 'image/png',
+      bytes: 10,
+      ref: { kind: 'session_file', sessionId: 'session-1', relativePath: 'a.png' },
+    } as const;
+    const messages: StoredMessage[] = [
+      userMessage('turn-plain', 'Plain prompt'),
+      {
+        ...userMessage('turn-quoted', 'Quoted prompt'),
+        quotes: [{ text: 'a large pasted excerpt' }],
+      },
+      {
+        ...userMessage('turn-attached', 'Attached prompt'),
+        attachments: [attachment],
+      },
+      {
+        ...userMessage('turn-directory', 'Directory prompt'),
+        directoryReferences: [{ hostId: 'host-1', path: tmpdir() }],
+      },
+    ];
+    const attached = new FakeSubscription(continuitySnapshot(), Promise.resolve(messages));
+    const current = new FakeSubscription(
+      continuitySnapshot(),
+      Promise.resolve(messages),
+      'subscription-2',
+    );
+    const direct = new FakeSubscription(
+      continuitySnapshot(),
+      Promise.resolve(messages),
+      'subscription-3',
+    );
+    const fourth = new FakeSubscription(
+      continuitySnapshot(),
+      Promise.resolve(messages),
+      'subscription-4',
+    );
+    const connection = new FakeConnection([attached, current, direct, fourth]);
+    // A directory that exists on every platform: the driver rejects a session
+    // whose cwd has disappeared, and the catalog projection's default `/tmp`
+    // only exists on POSIX.
+    const existingCwd = tmpdir();
+    connection.sessionQueries.push(
+      sessionProjection({
+        workspace: { target: { kind: 'host_path', path: existingCwd }, hostCwd: existingCwd },
+      }),
+    );
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: existingCwd,
+      llmConnectionId: 'connection-1',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+    });
+    await driver.switchSession('session-1');
+
+    await assert.rejects(
+      driver.rewindToTurn('turn-quoted'),
+      /carries structured context the TUI cannot restore/,
+    );
+    await assert.rejects(
+      driver.rewindToTurn('turn-attached'),
+      /carries structured context the TUI cannot restore/,
+    );
+    await assert.rejects(
+      driver.rewindToTurn('turn-directory'),
+      /carries structured context the TUI cannot restore/,
+    );
+    await assert.rejects(
+      driver.rewindToTurn('turn-directory').catch((error: unknown) => {
+        const code = (error as { code?: unknown }).code;
+        assert.equal(code, 'rewind_unsupported_directory_references');
+        throw error;
+      }),
+    );
+    assert.equal(
+      connection.requests.some(({ operation }) => operation === 'session.revision.create'),
+      false,
+      'no revision is created for content the TUI cannot carry',
+    );
+  });
+
   test('opens a hidden side copy at the latest completed Turn and removes it on close', async (t) => {
     const cleanupRoot = await mkdtemp(join(tmpdir(), 'maka-tui-side-'));
     t.after(() => rm(cleanupRoot, { recursive: true, force: true }));
