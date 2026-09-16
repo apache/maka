@@ -83,6 +83,26 @@ test('local WebFetch rejects pathologically deep HTML before DOM parsing', async
   );
 });
 
+test('local WebFetch skips tag-like text inside script and style content', async () => {
+  // Raw-text elements are skipped to their real closing tag, so tag-shaped
+  // strings inside them must not count toward nesting. Six hundred fake
+  // `<div>`s in a style rule would trip the depth limit if the scanner
+  // believed them.
+  const html =
+    '<html><head><style>p::before { content: "</p>" } ' +
+    `${'<div>'.repeat(600)}</style>` +
+    '<script>const s = "</div>";</script></head><body><article>' +
+    '<h1>Raw text title</h1><p>A body long enough for extraction.</p>' +
+    '</article></body></html>';
+  const executor = createLocalWebFetchExecutor({
+    fetch: async () => new Response(html, { headers: { 'content-type': 'text/html' } }),
+  });
+
+  const result = await executor.fetch({ url: 'https://example.com/raw-text', sessionId: 's1' });
+
+  assert.match(result, /Raw text title/);
+});
+
 test('local WebFetch rejects explicit cloud metadata targets before connecting', async () => {
   let requests = 0;
   const executor = createLocalWebFetchExecutor({
