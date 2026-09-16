@@ -240,6 +240,11 @@ test('Client Remote is generation-fenced and streams are connection-owned', asyn
       { ...context, connectionId: 'renderer-b' },
     );
     assert.equal(denied.ok ? undefined : denied.error.code, 'not_found');
+    const foreignClose = await coordinator.handlers['plugin.client.remote.stream.close'](
+      { streamId: opened.result.streamId },
+      { ...context, connectionId: 'renderer-b' },
+    );
+    assert.equal(foreignClose.ok ? undefined : foreignClose.error.code, 'not_found');
     assert.deepEqual(
       await coordinator.handlers['plugin.client.remote.stream.next'](
         { streamId: opened.result.streamId },
@@ -247,6 +252,26 @@ test('Client Remote is generation-fenced and streams are connection-owned', asyn
       ),
       { ok: true, result: { done: false, value: 1 } },
     );
+    await coordinator.handlers['plugin.client.remote.stream.next'](
+      { streamId: opened.result.streamId },
+      context,
+    );
+    assert.deepEqual(
+      await coordinator.handlers['plugin.client.remote.stream.next'](
+        { streamId: opened.result.streamId },
+        context,
+      ),
+      { ok: true, result: { done: true } },
+    );
+    for (let i = 0; i < 2; i++) {
+      assert.deepEqual(
+        await coordinator.handlers['plugin.client.remote.stream.close'](
+          { streamId: opened.result.streamId },
+          context,
+        ),
+        { ok: true, result: { streamId: opened.result.streamId } },
+      );
+    }
     coordinator.releaseConnection(context.connectionId);
   } finally {
     await platform.close();

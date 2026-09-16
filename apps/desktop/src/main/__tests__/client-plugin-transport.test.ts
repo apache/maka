@@ -18,10 +18,11 @@
  */
 
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import { createHash } from 'node:crypto';
 import { test } from 'node:test';
 import type { PluginClientQueryInput, PluginClientQueryResult } from '@maka/runtime-host/protocol';
-import { ClientPluginTransport, type ClientPluginQueryClient } from '../client-plugin-transport.js';
+import { ClientPluginTransport, type ClientPluginQueryClient, type ClientPluginRemoteClient } from '../client-plugin-transport.js';
 
 test('Client Plugin transport serves only the exact Host-projected bundle generation', async () => {
   const content = Buffer.from('window.__MakaModuleLoader__.load({id:"fixture",factory:()=>({apply(){}})})');
@@ -73,4 +74,38 @@ test('Client Plugin transport serves only the exact Host-projected bundle genera
 
   transport.release(client);
   assert.equal((await transport.serve(snapshot.plugins[0]!.url)).status, 404);
+});
+
+
+test('Client Plugin streams belong to their renderer document, including late opens', async () => {
+  const target = Object.assign(new EventEmitter(), { id: 42 });
+  const closed: string[] = [];
+  let finishOpen!: (value: { streamId: string }) => void;
+  const client = {
+    async request(operation: string, input: { streamId: string }) {
+      if (operation === 'plugin.client.remote.stream.open') return new Promise(resolve => { finishOpen = resolve; });
+      closed.push(input.streamId);
+      return input;
+    },
+  } as unknown as ClientPluginRemoteClient;
+  const transport = new ClientPluginTransport();
+  const opening = transport.openStream(client, target as never, {} as never);
+  target.emit('did-start-navigation', {}, 'file:///new', false, true);
+  finishOpen({ streamId: 'late' });
+  assert.deepEqual(await opening, { streamId: 'late' });
+  assert.equal(transport.ownsStream(client, target.id, 'late'), false);
+  assert.deepEqual(closed, ['late']);
+  for (let i = 0; i < 20; i++) {
+    const next = transport.openStream(client, target as never, {} as never);
+    finishOpen({ streamId: `stream-${i}` });
+    await next;
+    assert.equal(target.listenerCount('destroyed'), 1);
+    target.emit('did-start-navigation', {}, 'file:///new#hash', true, true);
+    assert.equal(closed.length, i + 1);
+    target.emit('did-start-navigation', {}, 'file:///new', false, true);
+    assert.equal(closed.length, i + 2);
+  }
+  transport.release(client);
+  assert.equal(target.listenerCount('destroyed'), 0);
+  assert.equal(target.listenerCount('did-start-navigation'), 0);
 });

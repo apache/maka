@@ -30,6 +30,7 @@ import type {
   MakaClientRemoteStreamInput,
   MakaClientRemoteStreamItem,
   MakaClientRemoteStreamName,
+  MakaClientRemoteStreamOptions,
 } from '@maka/core/client-plugin-bridge';
 import {
   MakaClientSlotCore,
@@ -37,6 +38,7 @@ import {
   type MakaClientLiveSlotNode,
   type MakaClientSlotRegistrar,
 } from './client-plugin-slots.js';
+import { remoteStream } from './client-plugin-remote-stream.js';
 
 export interface MakaClientPluginDescriptor {
   readonly entryId: string;
@@ -104,7 +106,7 @@ export interface MakaClientPluginContext {
     stream<const Name extends MakaClientRemoteStreamName>(
       name: Name,
       input: MakaClientRemoteStreamInput<Name>,
-      options?: MakaClientRemoteOptions,
+      options?: MakaClientRemoteStreamOptions,
     ): AsyncIterable<MakaClientRemoteStreamItem<Name>>;
   };
   readonly events: {
@@ -152,6 +154,7 @@ interface PluginInstance {
   readonly roots: StagedRootRegistration[];
   readonly slotDisposers: Array<() => void>;
   readonly effects: StagedEffect[];
+  readonly lifetime: AbortController;
 }
 
 interface MakaClientRootSnapshot {
@@ -432,13 +435,19 @@ export class ClientPluginRuntime {
       roots: [],
       slotDisposers: [],
       effects: [],
+      lifetime: new AbortController(),
     };
     const context = this.#context(instance, slots, snapshot);
-    const cleanup = await (apply as MakaClientPluginApply)(context, descriptor.config ?? {});
-    if (typeof cleanup === 'function') {
-      instance.effects.push({ setup: () => cleanup, cancelled: false });
+    try {
+      const cleanup = await (apply as MakaClientPluginApply)(context, descriptor.config ?? {});
+      if (typeof cleanup === 'function') {
+        instance.effects.push({ setup: () => cleanup, cancelled: false });
+      }
+      return instance;
+    } catch (error) {
+      await disposeInstances([instance]);
+      throw error;
     }
-    return instance;
   }
 
   #context(
@@ -493,12 +502,12 @@ export class ClientPluginRuntime {
         stream: <Name extends MakaClientRemoteStreamName>(
           name: Name,
           input: MakaClientRemoteStreamInput<Name>,
-          options?: MakaClientRemoteOptions,
+          options?: MakaClientRemoteStreamOptions,
         ): AsyncIterable<MakaClientRemoteStreamItem<Name>> => {
           const remote = this.#remote;
           if (!remote) throw new Error('Client Plugin Remote transport is unavailable');
           const request = remoteRequest(snapshot, instance.descriptor, name, input, options);
-          return remoteStream(remote, request) as AsyncIterable<MakaClientRemoteStreamItem<Name>>;
+          return remoteStream(remote, request, [instance.lifetime.signal, ...(options?.signal ? [options.signal] : [])]) as AsyncIterable<MakaClientRemoteStreamItem<Name>>;
         },
       }),
       events: Object.freeze({
@@ -681,30 +690,6 @@ function remoteRequest(
   });
 }
 
-function remoteStream(
-  transport: MakaClientRemoteTransport,
-  request: MakaClientRemoteRequest,
-): AsyncIterable<unknown> {
-  let consumed = false;
-  return Object.freeze({
-    async *[Symbol.asyncIterator]() {
-      if (consumed) throw new Error('Client Plugin Remote stream can only be consumed once');
-      consumed = true;
-      let streamId: string | undefined;
-      try {
-        streamId = (await transport.open(request)).streamId;
-        while (true) {
-          const result = await transport.next({ streamId });
-          if (result.done) return;
-          yield result.value;
-        }
-      } finally {
-        if (streamId) await transport.close({ streamId }).catch(() => undefined);
-      }
-    },
-  });
-}
-
 function validateProductEventOptions<Name extends MakaClientProductEventName>(
   name: Name,
   options: MakaClientProductEventOptions<Name>,
@@ -744,6 +729,7 @@ async function commitEffects(instance: PluginInstance): Promise<void> {
 
 async function disposeInstances(instances: readonly PluginInstance[]): Promise<void> {
   for (const instance of [...instances].reverse()) {
+    instance.lifetime.abort();
     for (const effect of [...instance.effects].reverse()) {
       const cleanup = effect.cleanup;
       effect.cleanup = undefined;

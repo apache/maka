@@ -204,22 +204,42 @@ export class PluginClientBridgeService extends Service {
       }
       const iterator = iterable[Symbol.asyncIterator]();
       let closed = false;
+      const pending = new Set<() => void>();
       const close = async (): Promise<void> => {
         if (closed) return;
         closed = true;
+        active.abort.signal.removeEventListener('abort', onAbort);
         active.abort.abort();
-        try {
-          await iterator.return?.();
-        } finally {
-          finish(entry, active);
-        }
+        for (const settle of pending) settle();
+        pending.clear();
+        // A generator's return queues behind its pending next. Do not let a
+        // non-cooperative producer block connection cleanup or Fiber retirement.
+        void Promise.resolve()
+          .then(() => iterator.return?.())
+          .catch(() => undefined);
+        finish(entry, active);
       };
+      const onAbort = () => {
+        void close();
+      };
+      active.abort.signal.addEventListener('abort', onAbort, { once: true });
+      if (active.abort.signal.aborted) await close();
       return Object.freeze({
         identity: freezeIdentity(entry),
         next: async () => {
           if (closed || entry.retired) throw retiredError(name);
-          const result = await iterator.next();
-          if (result.done) {
+          let settle!: () => void;
+          const stopped = new Promise<IteratorReturnResult<undefined>>((resolve) => {
+            settle = () => resolve({ done: true, value: undefined });
+          });
+          pending.add(settle);
+          let result: IteratorResult<unknown>;
+          try {
+            result = await Promise.race([iterator.next(), stopped]);
+          } finally {
+            pending.delete(settle);
+          }
+          if (closed || result.done) {
             await close();
             return Object.freeze({ done: true, value: undefined });
           }
@@ -228,6 +248,7 @@ export class PluginClientBridgeService extends Service {
             result.value,
             `Client Stream ${name} item`,
           );
+          if (closed) return Object.freeze({ done: true, value: undefined });
           return Object.freeze({ done: false, value });
         },
         close,

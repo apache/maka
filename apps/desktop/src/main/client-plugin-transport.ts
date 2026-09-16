@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import type { WebContents } from 'electron';
 import { createHash, randomUUID } from 'node:crypto';
 import type {
   OperationInput,
@@ -52,6 +53,13 @@ export interface ClientPluginRemoteClient {
   ): Promise<OperationOutput<K>>;
 }
 
+type StreamRenderer = Pick<WebContents, 'id' | 'on' | 'once' | 'off'>;
+interface StreamOwner {
+  epoch: number;
+  readonly ids: Set<string>;
+  release(): void;
+}
+
 interface BundleRoute {
   readonly client: ClientPluginQueryClient;
   readonly entry: PluginClientCompositionEntry;
@@ -59,8 +67,61 @@ interface BundleRoute {
 
 /** Bridges Host-owned, content-addressed Client generations into Electron. */
 export class ClientPluginTransport {
+  readonly #streamOwners = new Map<ClientPluginRemoteClient, Map<number, StreamOwner>>();
   readonly #routes = new Map<string, BundleRoute>();
   readonly #tokens = new Map<ClientPluginQueryClient, Map<string, string>>();
+
+  async openStream(client: ClientPluginRemoteClient, target: StreamRenderer, input: OperationInput<'plugin.client.remote.stream.open'>) {
+    let owners = this.#streamOwners.get(client);
+    if (!owners) this.#streamOwners.set(client, owners = new Map());
+    let owner = owners.get(target.id);
+    if (!owner) {
+      const close = () => {
+        binding.epoch++;
+        for (const streamId of binding.ids) {
+          void client.request('plugin.client.remote.stream.close', { streamId }).catch(() => undefined);
+        }
+        binding.ids.clear();
+      };
+      const navigate = (_event: unknown, _url: string, inPlace: boolean, mainFrame: boolean) => {
+        if (mainFrame && !inPlace) close();
+      };
+      const binding: StreamOwner = {
+        epoch: 0,
+        ids: new Set(),
+        release: () => {
+          close();
+          target.off('did-start-navigation', navigate);
+          target.off('render-process-gone', close);
+          target.off('destroyed', binding.release);
+          owners.delete(target.id);
+        },
+      };
+      owner = binding;
+      owners.set(target.id, owner);
+      target.on('did-start-navigation', navigate);
+      target.on('render-process-gone', close);
+      target.once('destroyed', binding.release);
+    }
+    const epoch = owner.epoch;
+    const result = await client.request('plugin.client.remote.stream.open', input);
+    if (owner.epoch !== epoch) {
+      await client.request('plugin.client.remote.stream.close', result).catch(() => undefined);
+      // The old document cannot consume this reply. Preserve the wire shape;
+      // a late pull is handled as exhausted by the document ownership check.
+      return result;
+    }
+    owner.ids.add(result.streamId);
+    return result;
+  }
+
+  ownsStream(client: ClientPluginRemoteClient, targetId: number, streamId: string): boolean {
+    return this.#streamOwners.get(client)?.get(targetId)?.ids.has(streamId) ?? false;
+  }
+
+  forgetStream(client: ClientPluginRemoteClient, streamId: string): void {
+    for (const owner of this.#streamOwners.get(client)?.values() ?? []) owner.ids.delete(streamId);
+  }
 
   async snapshot(client: ClientPluginQueryClient): Promise<MakaClientPluginSnapshot> {
     const result = await client.request('plugin.client.query', { kind: 'snapshot' });
@@ -93,6 +154,9 @@ export class ClientPluginTransport {
   }
 
   release(client: ClientPluginQueryClient): void {
+    const remote = client as ClientPluginRemoteClient;
+    for (const owner of this.#streamOwners.get(remote)?.values() ?? []) owner.release();
+    this.#streamOwners.delete(remote);
     for (const token of this.#tokens.get(client)?.values() ?? []) this.#routes.delete(token);
     this.#tokens.delete(client);
   }
@@ -162,15 +226,27 @@ export function registerClientPluginIpc(input: {
   input.ipcMain.handle('client-plugins:remote:call', (_event, request) =>
     input.client.request('plugin.client.remote.call', request),
   );
-  input.ipcMain.handle('client-plugins:remote:stream:open', (_event, request) =>
-    input.client.request('plugin.client.remote.stream.open', request),
+  input.ipcMain.handle('client-plugins:remote:stream:open', (event, request) =>
+    input.transport.openStream(input.client, event.sender, request),
   );
-  input.ipcMain.handle('client-plugins:remote:stream:next', (_event, request) =>
-    input.client.request('plugin.client.remote.stream.next', request),
-  );
-  input.ipcMain.handle('client-plugins:remote:stream:close', (_event, request) =>
-    input.client.request('plugin.client.remote.stream.close', request),
-  );
+  input.ipcMain.handle('client-plugins:remote:stream:next', async (event, request) => {
+    const current = () => input.transport.ownsStream(input.client, event.sender.id, request.streamId);
+    if (typeof request?.streamId === 'string' && !current()) return { done: true };
+    try {
+      const result = await input.client.request('plugin.client.remote.stream.next', request);
+      if (result.done) input.transport.forgetStream(input.client, request.streamId);
+      return result;
+    } catch (error) {
+      if (!current()) return { done: true };
+      input.transport.forgetStream(input.client, request.streamId);
+      throw error;
+    }
+  });
+  input.ipcMain.handle('client-plugins:remote:stream:close', async (_event, request) => {
+    const result = await input.client.request('plugin.client.remote.stream.close', request);
+    input.transport.forgetStream(input.client, request.streamId);
+    return result;
+  });
 }
 
 function bundleKey(entry: PluginClientCompositionEntry): string {

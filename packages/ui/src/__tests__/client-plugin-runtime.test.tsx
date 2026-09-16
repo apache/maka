@@ -33,6 +33,9 @@ import {
 } from '../client-plugin-runtime.js';
 
 declare module '@maka/core/client-plugin-bridge' {
+  interface MakaClientRemoteStreamMap {
+    readonly 'fixture.watch': import('@maka/core/client-plugin-bridge').MakaClientRemoteStream<object, unknown>;
+  }
   interface MakaClientRemoteMethodMap {
     readonly 'fixture.echo': import('@maka/core/client-plugin-bridge').MakaClientRemoteMethod<
       { readonly text: string },
@@ -281,4 +284,59 @@ test('Client Runtime binds Remote identity and owns product-event subscriptions'
   });
   await runtime.close();
   assert.deepEqual(subscriptions, ['open:session.changed', 'close:session.changed']);
+});
+
+test('Client Runtime retirement aborts streams opened after activation', { timeout: 1000 }, async () => {
+  let context!: MakaClientPluginContext;
+  let started!: () => void;
+  const pulling = new Promise<void>(resolve => { started = resolve; });
+  const closed: string[] = [];
+  let runtime!: ClientPluginRuntime;
+  runtime = new ClientPluginRuntime({
+    root: new MakaClientRoot(), staticModules: {},
+    remote: {
+      call: async () => ({ value: null }), open: async () => ({ streamId: 'owned' }),
+      next: () => { started(); return new Promise(() => {}); },
+      close: async ({ streamId }) => { closed.push(streamId); },
+    },
+    loadBundle: async plugin => { runtime.registerBundle({
+      id: plugin.extensionId, factory: () => ({ apply(ctx: MakaClientPluginContext) { context = ctx; } }),
+    }); },
+  });
+  await runtime.reconcile(snapshot(1, descriptor('streams', 1)));
+  const iterator = context.remote.stream('fixture.watch', {})[Symbol.asyncIterator]();
+  const rejected = assert.rejects(iterator.next(), { name: 'AbortError' });
+  await pulling;
+  await runtime.close();
+  await rejected;
+  assert.deepEqual(closed, ['owned']);
+});
+
+
+test('failed Client Plugin apply aborts streams before the instance is staged', { timeout: 1000 }, async () => {
+  let started!: () => void;
+  const pulling = new Promise<void>(resolve => { started = resolve; });
+  const closed: string[] = [];
+  let rejected!: Promise<void>;
+  let runtime!: ClientPluginRuntime;
+  runtime = new ClientPluginRuntime({
+    root: new MakaClientRoot(), staticModules: {},
+    remote: {
+      call: async () => ({ value: null }), open: async () => ({ streamId: 'failed-apply' }),
+      next: () => { started(); return new Promise(() => {}); },
+      close: async ({ streamId }) => { closed.push(streamId); },
+    },
+    loadBundle: async plugin => { runtime.registerBundle({
+      id: plugin.extensionId, factory: () => ({ async apply(ctx: MakaClientPluginContext) {
+        rejected = assert.rejects(ctx.remote.stream('fixture.watch', {})[Symbol.asyncIterator]().next(), { name: 'AbortError' });
+        await pulling;
+        throw new Error('apply failed after opening stream');
+      } }),
+    }); },
+  });
+  await runtime.reconcile(snapshot(1, descriptor('streams', 1)));
+  await rejected;
+  assert.match(runtime.inspect().failure?.diagnostic ?? '', /apply failed/);
+  assert.deepEqual(closed, ['failed-apply']);
+  await runtime.close();
 });

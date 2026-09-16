@@ -234,6 +234,7 @@ export interface RuntimeHostSessionObservationIpcDeps {
     | 'loadTranscriptAfter'
     | 'loadTranscriptLatest'
     | 'observe'
+    | 'trackRenderer'
     | 'openTranscript'
   >;
   resolveSideConversation(sessionId: string): Promise<boolean>;
@@ -249,26 +250,31 @@ export function registerRuntimeHostSessionObservationIpc(
     'sessions:observe',
     async (event, sessionId: unknown, observerId: unknown) => {
       const normalizedSessionId = requiredId(sessionId, 'Session');
+      const current = deps.observations.trackRenderer(event.sender);
+      const sideConversation = await deps.resolveSideConversation(normalizedSessionId);
+      if (!current()) return { kind: 'cancelled' };
       return observationIpcResult(
         deps.observations.observe(
           normalizedSessionId,
           requiredId(observerId, 'Session observer'),
           event.sender as RuntimeHostSessionObserverTarget,
-          await deps.resolveSideConversation(normalizedSessionId),
+          sideConversation,
         ),
       );
     },
   );
   ipcMain.handle(
     'sessions:transcript:open',
-    async (event, sessionId: unknown, consumerId: unknown) =>
-      observationIpcResult(
+    async (event, sessionId: unknown, consumerId: unknown) => {
+      deps.observations.trackRenderer(event.sender);
+      return observationIpcResult(
         deps.observations.openTranscript(
           requiredId(sessionId, 'Session'),
           requiredId(consumerId, 'Transcript consumer'),
           event.sender as RuntimeHostTranscriptTarget,
         ),
-      ),
+      );
+    },
   );
   ipcMain.handle('sessions:transcript:load-before', async (event, input: unknown) => {
     await deps.observations.loadTranscriptBefore(

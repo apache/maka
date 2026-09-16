@@ -158,8 +158,12 @@ export class HostPluginPlatformCoordinator {
     input: PluginClientRemoteStreamNextInput,
     context: ConnectionContext,
   ): Promise<OperationOutcome<'plugin.client.remote.stream.close'>> {
-    const stream = this.#ownedStream(input.streamId, context.connectionId);
-    if (!stream) return failed('not_found', 'Plugin Client Remote stream is unavailable');
+    // End-of-stream and generation retirement may have already released it.
+    // An existing stream remains strictly owned by its connection.
+    const stream = this.#streams.get(input.streamId);
+    if (!stream) return { ok: true, result: { streamId: input.streamId } };
+    if (stream.connectionId !== context.connectionId)
+      return failed('not_found', 'Plugin Client Remote stream is unavailable');
     this.#streams.delete(input.streamId);
     try {
       await stream.binding.close();

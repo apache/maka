@@ -99,6 +99,11 @@ export interface MakaClientRemoteOptions {
   readonly sessionId?: string;
 }
 
+/** Cancellation stays in the Client runtime; it is never serialized into an RPC. */
+export interface MakaClientRemoteStreamOptions extends MakaClientRemoteOptions {
+  readonly signal?: AbortSignal;
+}
+
 /** Session identity is statically required exactly where the event source needs one. */
 export type MakaClientProductEventOptions<Name extends MakaClientProductEventName> =
   Name extends 'session.changed' ? { readonly sessionId?: never } : { readonly sessionId: string };

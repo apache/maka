@@ -53,7 +53,8 @@ The public Client context adds:
 
 ```ts
 await ctx.remote.call('weather.refresh', input, { sessionId });
-for await (const item of ctx.remote.stream('weather.observe', input, { sessionId })) {
+const abort = new AbortController();
+for await (const item of ctx.remote.stream('weather.observe', input, { sessionId, signal: abort.signal })) {
   // render the newest item
 }
 
@@ -77,3 +78,20 @@ commits and are removed on reload, uninstall, rollback, or Renderer shutdown.
 
 The allowlist is a public compatibility surface. New product events require an explicit typed
 addition rather than exposing arbitrary IPC channels or DOM observation.
+
+## Stream cancellation and renderer lifetime
+
+Stream options accept a Client-local `AbortSignal`. Aborting rejects a pending
+pull with the signal's reason without waiting for the producer to yield; calling
+an iterator's `return()` instead finishes the pending pull. If cancellation wins
+a race with opening the remote stream, the late handle is immediately closed.
+Plugin retirement cancels its Client streams. Host retirement aborts the handler
+signal and retires the binding even when a producer ignores cancellation; Host
+plugins must still use that signal to stop their own external work.
+
+Stream close is idempotent after exhaustion or retirement. A live stream can
+still only be closed by its owning connection. Desktop additionally closes
+streams and Session observation/transcript registrations when their renderer
+document navigates or crashes; reloading a WebContents cannot accumulate the
+previous document's listeners and read replicas. Same-document and child-frame
+navigation preserve the current subscriptions.

@@ -106,3 +106,48 @@ function plugin(
     maka: { rootId, packageId: 'fixture', entryId, generation },
   });
 }
+
+test('retiring an idle stream does not wait for another pull', { timeout: 1000 }, async () => {
+  const root = new Context();
+  const service = new PluginClientBridgeService(root);
+  const dispose = plugin(root, 'profile', 'idle', 1).clientBridge.stream({
+    name: 'fixture.idle',
+    open: async function* () {
+      yield 1;
+      yield 2;
+    },
+  });
+  const stream = await service.open({ extensionId: 'fixture' }, 'fixture.idle', null);
+  assert.equal((await stream.next()).value, 1);
+  await dispose();
+  await assert.rejects(stream.next(), PluginClientBridgeError);
+  await root.fiber.dispose();
+});
+
+test('closing a non-cooperative producer releases an outstanding pull', {
+  timeout: 1000,
+}, async () => {
+  const root = new Context();
+  const service = new PluginClientBridgeService(root);
+  let aborted = false;
+  plugin(root, 'profile', 'quiet', 1).clientBridge.stream({
+    name: 'fixture.quiet',
+    open: (_input, { signal }) => {
+      signal.addEventListener('abort', () => {
+        aborted = true;
+      });
+      return {
+        async *[Symbol.asyncIterator]() {
+          await new Promise(() => {});
+          yield 'stale';
+        },
+      };
+    },
+  });
+  const stream = await service.open({ extensionId: 'fixture' }, 'fixture.quiet', null);
+  const pending = stream.next();
+  await stream.close();
+  assert.equal(aborted, true);
+  assert.equal((await pending).done, true);
+  await root.fiber.dispose();
+});
