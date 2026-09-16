@@ -547,10 +547,16 @@ for (const succeeds of [true, false]) {
 }
 
 test('source validation rejects invalid native IDs and URL syntax before any save', () => {
-  for (const value of ['unknown', 'com..App', 'com.-App', 'com._App', 'com.' + 'a'.repeat(253)]) {
+  for (const value of [
+    'unknown', 'com..App', 'com.-App', 'com._App', 'com.' + 'a'.repeat(253),
+    'win32.editor.exe', 'Win32.editor', 'winapp.invalid', 'winapp.Package_8wekyb3d8bbwe!App/escape',
+  ]) {
     assert.equal(normalizeHistoryExclusion(value, 'applications'), null);
   }
   assert.equal(normalizeHistoryExclusion(' com.apple.Safari ', 'applications'), 'com.apple.Safari');
+  for (const id of ['win32._fixture_app', 'winapp.Microsoft.WindowsNotepad_8wekyb3d8bbwe!App']) {
+    assert.equal(normalizeHistoryExclusion(` ${id} `, 'applications'), id);
+  }
   for (const value of ['', 'https://example.com', '*.example.com', 'example.com/a', 'example.com:443', 'a@b.com', 'example.com?x=1']) {
     assert.equal(normalizeHistoryExclusion(value, 'websites'), null);
   }
@@ -576,7 +582,11 @@ test('recent application discovery is optional, filters native IDs and fences st
   await act(async () => pending.resolve({ status: STATUS, entries: [] }));
   assert.equal(recent.error, 'archive damaged');
   assert.equal(settings.statusError, null);
-  const sourceIDs = ['unknown', 'com.example.App', 'com.example.App', 'com..App', 'com.example.Browser'];
+  const windows = ['win32._fixture_app', 'winapp.Microsoft.WindowsNotepad_8wekyb3d8bbwe!App'];
+  const sourceIDs = [
+    'unknown', 'com.example.App', 'com.example.App', 'com..App', 'com.example.Browser',
+    ...windows, 'winapp.invalid', 'win32.editor.exe',
+  ];
   await render(services({
     timeline: async () => ({
       status: STATUS,
@@ -587,7 +597,7 @@ test('recent application discovery is optional, filters native IDs and fences st
       }],
     }),
   }));
-  assert.deepEqual(recent.applications, ['com.example.App', 'com.example.Browser']);
+  assert.deepEqual(recent.applications, ['com.example.App', 'com.example.Browser', ...windows]);
   assert.equal(recent.error, null);
   assert.equal(settings.statusError, null);
 });

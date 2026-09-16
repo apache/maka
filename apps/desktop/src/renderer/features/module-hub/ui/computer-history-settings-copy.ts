@@ -18,7 +18,7 @@
  */
 
 import type { UiLocale } from '@maka/core/ui-locale';
-import type { ComputerHistoryClearScope, ComputerHistoryStatus } from '@maka/core/computer-history';
+import { historyApplicationId, type ComputerHistoryClearScope, type ComputerHistoryStatus } from '@maka/core/computer-history';
 
 const EN = {
   title: 'Computer history',
@@ -204,7 +204,7 @@ export const computerHistorySettingsCopy = (locale: UiLocale) => COPY[locale];
 export function normalizeHistoryExclusion(input: string, kind: 'applications' | 'websites'): string | null {
   const value = input.trim();
   if (kind === 'applications') {
-    return value.length <= 256 && /^[A-Za-z0-9][A-Za-z0-9-]*(?:\.[A-Za-z0-9][A-Za-z0-9-]*)+$/u.test(value) ? value : null;
+    return historyApplicationId({ bundleIdentifier: value });
   }
   if (!value || /[/\\:@?#*%\s]/u.test(value)) return null;
   try {

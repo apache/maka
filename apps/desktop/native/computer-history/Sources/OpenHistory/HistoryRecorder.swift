@@ -30,11 +30,10 @@ private let accessibilityCallback: AXObserverCallback = { observer, element, not
 
 final class HistoryRecorder {
     private struct MouseDownState {
-        let point: CGPoint
-        let button: String
+        var gesture: MouseGesture
         let clickCount: Int
         let modifiers: [String]
-        let snapshot: AccessibilitySnapshot?
+        let snapshot: AccessibilitySnapshot
     }
 
     private var store: SegmentStore
@@ -42,6 +41,7 @@ final class HistoryRecorder {
     private let recorderStartedAt: Date
     private let segmentDurationSeconds: TimeInterval
     private let parent: RecorderParent
+    private let snapshotReader: ((CGPoint?, AXNode?, AXNode?, Bool, Bool) -> AccessibilitySnapshot?)?
     private var policy: ObservationPolicy
     private var sequence = 0
     private var currentProcessIdentifier: pid_t?
@@ -50,22 +50,27 @@ final class HistoryRecorder {
     private var eventTap: CFMachPort?
     private var eventTapSource: CFRunLoopSource?
     private var mouseDown: MouseDownState?
+    private var mouseButtons = MouseButtonState()
     private var textBuffer = TextInputBuffer()
     private var textSourceSnapshot: AccessibilitySnapshot?
     private var textFlushTask: DispatchWorkItem?
     private struct CallbackSource: Hashable {
         let origin: AXNode
         let window: AXNode
+        let items: Bool
     }
     private var callbacks = ObservationCallbacks<CallbackSource>()
     private var sampling = ObservationSampling()
     private var pendingWindow: AXNode?
     private var pendingValueChange = false
-    private var registeredNodes: [AXNode] = []
+    private var registeredNodes: [(node: AXNode, next: Int)] = []
     private static let notifications = [
         kAXFocusedWindowChangedNotification, kAXFocusedUIElementChangedNotification,
         kAXTitleChangedNotification, kAXValueChangedNotification, kAXSelectedTextChangedNotification,
         kAXUIElementDestroyedNotification, "AXLayoutChanged", "AXLoadComplete", "AXRowCountChanged",
+    ] + itemSelectionNotifications
+    private static let itemSelectionNotifications = [
+        "AXSelectedChildrenChanged", "AXSelectedRowsChanged", "AXSelectedChildrenMoved",
     ]
     private let sources = WindowSources()
     private var delivery = ObservationDelivery()
@@ -81,7 +86,11 @@ final class HistoryRecorder {
     private var lifecycle: RecorderLifecycle
     private(set) var failure: Error?
 
-    init(store: SegmentStore, policy: ObservationPolicy, parent: RecorderParent) {
+    init(
+        store: SegmentStore, policy: ObservationPolicy, parent: RecorderParent,
+        snapshotReader: ((CGPoint?, AXNode?, AXNode?, Bool, Bool) -> AccessibilitySnapshot?)? = nil,
+        initialProcessIdentifier: pid_t? = nil
+    ) {
         self.store = store
         self.runtimeControl = RuntimeControlStore(homeURL: store.homeURL)
         self.recorderStartedAt = store.startedAt
@@ -90,6 +99,8 @@ final class HistoryRecorder {
         ].flatMap(Double.init) ?? 600
         self.policy = policy
         self.parent = parent
+        self.snapshotReader = snapshotReader
+        self.currentProcessIdentifier = initialProcessIdentifier
         self.lifecycle = RecorderLifecycle(
             control: RuntimeControlStore(homeURL: store.homeURL).readControl()
         )
@@ -122,6 +133,7 @@ final class HistoryRecorder {
             self?.rotateSegment()
         }
         observationTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
+            self?.resumeNotificationRegistrations()
             self?.samplePendingObservation()
         }
     }
@@ -138,6 +150,7 @@ final class HistoryRecorder {
         segmentTimer?.invalidate()
         segmentTimer = nil
         discardPendingWork()
+        mouseButtons = MouseButtonState()
         do {
             sequence += 1
             try store.stop(event: HistoryEvent(id: sequence, timestamp: Date(), kind: .sessionEnded),
@@ -170,7 +183,18 @@ final class HistoryRecorder {
         }
     }
 
+    func complete() {
+        // Timed completion may retain the final burst only through the normal
+        // source/control revalidation. Cancellation paths still discard it.
+        flushTextBuffer()
+        stop(reason: "duration_elapsed")
+    }
+
     func handleEventTap(type: CGEventType, event: CGEvent) {
+        // A cancelled snapshot is not evidence that the physical buttons were released.
+        if [.leftMouseUp, .rightMouseUp, .otherMouseUp].contains(type) {
+            mouseButtons.release(type: type, number: event.getIntegerValueField(.mouseEventButtonNumber))
+        }
         guard observationAllowed() else {
             return
         }
@@ -178,6 +202,7 @@ final class HistoryRecorder {
             lifecycle.invalidatePendingWork()
             discardPendingWork()
             if let eventTap {
+                mouseButtons = MouseButtonState(heldButtons: UInt64(NSEvent.pressedMouseButtons))
                 CGEvent.tapEnable(tap: eventTap, enable: true)
             }
             return
@@ -187,15 +212,31 @@ final class HistoryRecorder {
         case .keyDown:
             handleKeyDown(event)
         case .leftMouseDown, .rightMouseDown, .otherMouseDown:
+            guard mouseButtons.press(type: type,
+                    number: event.getIntegerValueField(.mouseEventButtonNumber),
+                    hasPendingGesture: mouseDown != nil),
+                  let gesture = MouseGesture(type: type,
+                    number: event.getIntegerValueField(.mouseEventButtonNumber), point: event.location)
+            else {
+                mouseDown = nil
+                return
+            }
+            let generation = lifecycle.generation
+            guard let snapshot = currentSnapshot(at: event.location, includeTree: false),
+                  observationAllowed(generation: generation) else { return }
             mouseDown = MouseDownState(
-                point: event.location,
-                button: mouseButton(for: type),
+                gesture: gesture,
                 clickCount: Int(event.getIntegerValueField(.mouseEventClickState)),
                 modifiers: modifierNames(event.flags),
-                snapshot: currentSnapshot(at: event.location, includeTree: false)
+                snapshot: snapshot
             )
+        case .leftMouseDragged, .rightMouseDragged, .otherMouseDragged:
+            if mouseDown?.gesture.dragged(type: type,
+                number: event.getIntegerValueField(.mouseEventButtonNumber), point: event.location) == false {
+                mouseDown = nil
+            }
         case .leftMouseUp, .rightMouseUp, .otherMouseUp:
-            handleMouseUp(event: event)
+            handleMouseUp(type: type, event: event)
         default:
             break
         }
@@ -233,7 +274,8 @@ final class HistoryRecorder {
             }
         }
         guard let window = capture.window(for: origin) else { return }
-        if notification != kAXSelectedTextChangedNotification {
+        let items = Self.itemSelectionNotifications.contains(notification)
+        if notification != kAXSelectedTextChangedNotification && !items {
             // Generic UI records describe a current window snapshot, not the
             // notifying control. Selection/input keep their exact origin path.
             if pendingWindow != window { pendingValueChange = false }
@@ -242,20 +284,38 @@ final class HistoryRecorder {
             sampling.request(now: ProcessInfo.processInfo.systemUptime)
             return
         }
-        let source = CallbackSource(origin: origin, window: window)
+        queueSelection(origin: origin, window: window, items: items, isCurrentObserver: { [weak self] in
+            guard let current = self?.accessibilityObserver else { return false }
+            return CFEqual(current, observer)
+        })
+    }
+
+    // Native receipt resolves ownership before this boundary. Tests replace
+    // only the observer identity and dispatch clock, not cancellation/storage.
+    func queueSelection(
+        origin: AXNode, window: AXNode, items: Bool, isCurrentObserver: @escaping () -> Bool,
+        schedule: (@escaping () -> Void) -> Void = {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: $0)
+        }
+    ) {
+        guard observationAllowed(), let pid = currentProcessIdentifier else { return }
+        let source = CallbackSource(origin: origin, window: window, items: items)
         guard let token = callbacks.admit(source) else { return }
         let generation = lifecycle.generation
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+        schedule { [weak self] in
             guard let self, self.observationAllowed(generation: generation),
                   self.currentProcessIdentifier == pid,
-                  let current = self.accessibilityObserver, CFEqual(current, observer),
+                  isCurrentObserver(),
                   self.callbacks.take(token) else { return }
-            self.processAccessibilityNotification(source)
+            self.processAccessibilityNotification(source, generation: generation)
         }
     }
 
-    private func processAccessibilityNotification(_ source: CallbackSource) {
-        appendSelection(currentSnapshot(origin: source.origin, expectedWindow: source.window, includeTree: false))
+    private func processAccessibilityNotification(_ source: CallbackSource, generation: UInt64) {
+        let snapshot = currentSnapshot(origin: source.origin, expectedWindow: source.window,
+            includeTree: false, includeSelectionItems: source.items)
+        guard observationAllowed(generation: generation) else { return }
+        appendSelection(snapshot)
     }
 
     private func samplePendingObservation() {
@@ -323,25 +383,50 @@ final class HistoryRecorder {
         )
     }
 
-    private func registerNotifications(
-        on node: AXNode, deadline: TimeInterval = ProcessInfo.processInfo.systemUptime + 0.1
+    func registerNotifications(
+        on node: AXNode, deadline: TimeInterval = ProcessInfo.processInfo.systemUptime + 0.1,
+        now: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
+        addNotification: ((AXNode, String) -> AXError)? = nil
     ) {
-        guard !registeredNodes.contains(node),
-              ProcessInfo.processInfo.systemUptime < deadline,
-              let observer = accessibilityObserver else { return }
-        if registeredNodes.count >= 16 {
-            // Replacing the observer drops all old registrations without a
-            // synchronous remove call for every notification on every control.
-            if let pid = currentProcessIdentifier { installAccessibilityObserver(processIdentifier: pid) }
-            return
+        guard !lifecycle.stopped, lifecycle.state == .running,
+              addNotification != nil || accessibilityObserver != nil else { return }
+        let index: Int
+        if let existing = registeredNodes.firstIndex(where: { $0.node == node }) {
+            index = existing
+        } else {
+            if registeredNodes.count >= 16 {
+                // Replacing the observer drops all old registrations without a
+                // synchronous remove call for every notification on every control.
+                if let pid = currentProcessIdentifier { installAccessibilityObserver(processIdentifier: pid) }
+                return
+            }
+            index = registeredNodes.count
+            registeredNodes.append((node, 0))
         }
-        registeredNodes.append(node)
         let pointer = Unmanaged.passUnretained(self).toOpaque()
-        for notification in Self.notifications {
-            guard ProcessInfo.processInfo.systemUptime < deadline else { break }
-            // Unsupported notifications are covered by the bounded foreground
-            // sampler; never pretend registration implies complete delivery.
-            AXObserverAddNotification(observer, node.element, notification as CFString, pointer)
+        while registeredNodes[index].next < Self.notifications.count, now() < deadline {
+            let notification = Self.notifications[registeredNodes[index].next]
+            // Attempt unsupported notifications once, but resume unattempted
+            // ones after budget expiry. The sampler does not collect item selection.
+            if let addNotification {
+                _ = addNotification(node, notification)
+            } else if let observer = accessibilityObserver {
+                AXObserverAddNotification(observer, node.element, notification as CFString, pointer)
+            }
+            registeredNodes[index].next += 1
+        }
+    }
+
+    func resumeNotificationRegistrations(
+        now: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
+        addNotification: ((AXNode, String) -> AXError)? = nil
+    ) {
+        guard registeredNodes.contains(where: { $0.next < Self.notifications.count }),
+              observationAllowed() else { return }
+        let deadline = now() + 0.1
+        for entry in registeredNodes where entry.next < Self.notifications.count {
+            registerNotifications(on: entry.node, deadline: deadline, now: now, addNotification: addNotification)
+            if now() >= deadline { break }
         }
     }
 
@@ -371,6 +456,7 @@ final class HistoryRecorder {
         if let eventTapSource {
             CFRunLoopAddSource(CFRunLoopGetCurrent(), eventTapSource, .commonModes)
         }
+        mouseButtons = MouseButtonState(heldButtons: UInt64(NSEvent.pressedMouseButtons))
         CGEvent.tapEnable(tap: eventTap, enable: true)
     }
 
@@ -468,28 +554,30 @@ final class HistoryRecorder {
         _ = try? persist(input.event(id: sequence, timestamp: Date()), generation: generation)
     }
 
-    private func handleMouseUp(event: CGEvent) {
-        guard let down = mouseDown else {
+    private func handleMouseUp(type: CGEventType, event: CGEvent) {
+        guard var down = mouseDown else {
             return
         }
+        let generation = lifecycle.generation
         mouseDown = nil
-        guard let original = down.snapshot, let origin = original.targetNode, let window = original.windowNode,
+        guard let kind = down.gesture.finish(type: type,
+            number: event.getIntegerValueField(.mouseEventButtonNumber), point: event.location) else { return }
+        let original = down.snapshot
+        guard let origin = original.targetNode, let window = original.windowNode,
               let verified = currentSnapshot(origin: origin, expectedWindow: window, includeTree: false),
               verified.sourceId == original.sourceId, verified.window == original.window,
               verified.contentState == original.contentState,
               verified.sourcePath == original.sourcePath, verified.documentURLs == original.documentURLs,
-              verified.contentDomains == original.contentDomains else { return }
+              verified.contentDomains == original.contentDomains,
+              observationAllowed(generation: generation) else { return }
         let destinationSnapshot = currentSnapshot(at: event.location)
-        guard let destinationSnapshot else { return }
+        guard let destinationSnapshot, observationAllowed(generation: generation) else { return }
         let domains = Set((original.contentDomains ?? []) + (destinationSnapshot.contentDomains ?? []))
         guard domains.count <= 64 else { return }
-        let distance = hypot(event.location.x - down.point.x, event.location.y - down.point.y)
         let mouse: EventStreamMouseInteraction
-        let kind: HistoryEventKind
-        if distance > 6 {
-            kind = .mouseDrag
+        if kind == .mouseDrag {
             mouse = EventStreamMouseInteraction(
-                button: down.button,
+                button: down.gesture.button,
                 clickCount: down.clickCount,
                 modifiers: down.modifiers,
                 target: nil,
@@ -497,9 +585,8 @@ final class HistoryRecorder {
                 destination: destinationSnapshot.dragEndpoint
             )
         } else {
-            kind = down.button == "right" ? .mouseContextMenu : .mouseClick
             mouse = EventStreamMouseInteraction(
-                button: down.button,
+                button: down.gesture.button,
                 clickCount: down.clickCount,
                 modifiers: down.modifiers,
                 target: minimalMouseTarget(destinationSnapshot.element),
@@ -507,7 +594,8 @@ final class HistoryRecorder {
                 destination: nil
             )
         }
-        _ = try? append(kind: kind, snapshot: destinationSnapshot, mouse: mouse, contentDomains: domains.sorted())
+        _ = try? append(kind: kind, snapshot: destinationSnapshot, mouse: mouse,
+            contentDomains: domains.sorted(), generation: generation)
     }
 
     @discardableResult
@@ -518,11 +606,12 @@ final class HistoryRecorder {
         keyboard: EventStreamKeyboardInteraction? = nil,
         selection: EventStreamSelection? = nil,
         diagnostic: EventStreamDiagnostic? = nil,
-        contentDomains: [String]? = nil
+        contentDomains: [String]? = nil,
+        generation expectedGeneration: UInt64? = nil
     ) throws -> Bool {
-        let generation = lifecycle.generation
+        let generation = expectedGeneration ?? lifecycle.generation
         let isBoundary = kind == .sessionStarted || kind == .sessionEnded
-        guard isBoundary || observationAllowed() else { return false }
+        guard isBoundary || observationAllowed(generation: generation) else { return false }
         sequence += 1
         if isBoundary {
             return try persist(HistoryEvent(id: sequence, timestamp: Date(), kind: kind))
@@ -566,27 +655,50 @@ final class HistoryRecorder {
 
     private func currentSnapshot(
         at point: CGPoint? = nil, origin: AXNode? = nil,
-        expectedWindow: AXNode? = nil, includeTree: Bool = true
+        expectedWindow: AXNode? = nil, includeTree: Bool = true,
+        includeSelectionItems: Bool = false
     ) -> AccessibilitySnapshot? {
         defer {
             if includeTree {
                 sampling.observed(now: ProcessInfo.processInfo.systemUptime)
             }
         }
-        guard observationAllowed(), let currentProcessIdentifier,
-              NSWorkspace.shared.frontmostApplication?.processIdentifier == currentProcessIdentifier else {
+        // Replace only native acquisition in permission-free recorder tests.
+        // Pending state, lifecycle invalidation and persistence remain owned here.
+        let snapshot: AccessibilitySnapshot?
+        if let snapshotReader {
+            snapshot = snapshotReader(point, origin, expectedWindow, includeTree, includeSelectionItems)
+        } else {
+            snapshot = nativeSnapshot(at: point, origin: origin, expectedWindow: expectedWindow,
+                includeTree: includeTree, includeSelectionItems: includeSelectionItems)
+        }
+        guard let snapshot else {
             lifecycle.invalidatePendingWork()
             discardPendingWork()
+            return nil
+        }
+        if snapshot.contentState == .unavailable {
+            lifecycle.invalidatePendingWork()
+            discardPendingContent()
+        }
+        return snapshot
+    }
+
+    private func nativeSnapshot(
+        at point: CGPoint?, origin: AXNode?, expectedWindow: AXNode?, includeTree: Bool,
+        includeSelectionItems: Bool
+    ) -> AccessibilitySnapshot? {
+        guard observationAllowed(), let currentProcessIdentifier,
+              NSWorkspace.shared.frontmostApplication?.processIdentifier == currentProcessIdentifier else {
             return nil
         }
         let generation = lifecycle.generation
         guard let snapshot = AccessibilityReader.snapshot(
             processIdentifier: currentProcessIdentifier,
             policy: policy, sources: sources, at: point, origin: origin,
-            expectedWindow: expectedWindow, includeTree: includeTree
+            expectedWindow: expectedWindow, includeTree: includeTree,
+            includeSelectionItems: includeSelectionItems
         ) else {
-            lifecycle.invalidatePendingWork()
-            discardPendingWork()
             return nil
         }
         // AX can block long enough for pause or parent exit to occur.
@@ -595,17 +707,11 @@ final class HistoryRecorder {
               policy.allowsObservation(
             app: snapshot.app, window: snapshot.window, element: snapshot.element
         ) else {
-            lifecycle.invalidatePendingWork()
-            discardPendingWork()
             return nil
         }
         let registrationDeadline = ProcessInfo.processInfo.systemUptime + 0.1
         for node in [snapshot.windowNode, snapshot.targetNode, snapshot.contentRoot].compactMap({ $0 }) {
             registerNotifications(on: node, deadline: registrationDeadline)
-        }
-        if snapshot.contentState == .unavailable {
-            lifecycle.invalidatePendingWork()
-            discardPendingContent()
         }
         return snapshot
     }
@@ -672,17 +778,6 @@ final class HistoryRecorder {
         return result
     }
 
-    private func mouseButton(for type: CGEventType) -> String {
-        switch type {
-        case .rightMouseDown, .rightMouseUp:
-            return "right"
-        case .otherMouseDown, .otherMouseUp:
-            return "other"
-        default:
-            return "left"
-        }
-    }
-
     private func isTerminal(_ bundleIdentifier: String?) -> Bool {
         guard let bundleIdentifier else {
             return false
@@ -703,11 +798,13 @@ final class HistoryRecorder {
             target: snapshot.element,
             selectedText: policy.captureText ? snapshot.selectedText : nil,
             selectedRange: snapshot.selectedRange,
-            selectedItems: []
+            selectedItems: snapshot.selectedItems,
+            truncated: policy.captureText ? snapshot.selectedTextTruncated : nil
         )
         let generation = lifecycle.generation
         var next = selectionDelivery
-        _ = try? next.deliver(source: source, selection: selection) {
+        _ = try? next.deliver(source: source, selection: selection,
+            itemIdentities: snapshot.selectedItemNodes.map(AnyHashable.init)) {
             try append(kind: .selectionChanged, snapshot: snapshot, selection: selection)
         }
         if observationAllowed(generation: generation) { selectionDelivery = next }
@@ -749,8 +846,10 @@ final class HistoryRecorder {
             CFRunLoopStop(CFRunLoopGetMain())
             return
         }
-        if lifecycle.state == .running, let app = NSWorkspace.shared.frontmostApplication {
+        if lifecycle.state == .running, workspaceObserver != nil,
+           let app = NSWorkspace.shared.frontmostApplication {
             if let eventTap {
+                mouseButtons = MouseButtonState(heldButtons: UInt64(NSEvent.pressedMouseButtons))
                 CGEvent.tapEnable(tap: eventTap, enable: true)
             } else {
                 installEventTap()
@@ -813,12 +912,13 @@ final class HistoryRecorder {
         )
     }
 
-    private func rotateSegment() {
+    func rotateSegment() {
         guard observationAllowed() else {
             return
         }
         flushTextBuffer()
         guard observationAllowed() else { return }
+        mouseDown = nil
         do {
             store = try store.rotated()
             delivery.reset()

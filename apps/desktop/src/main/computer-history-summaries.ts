@@ -31,6 +31,7 @@ import {
   decodeComputerHistorySummaryContent,
   decodeComputerHistorySummaryInput,
 } from '@maka/runtime-host/protocol';
+import { historyApplicationId } from '@maka/core/computer-history';
 
 export interface ComputerHistorySummaryEvent {
   readonly timestamp: string;
@@ -67,6 +68,8 @@ export interface StoredComputerHistorySummary {
     readonly priorContextIds?: readonly string[];
     /** Required from v4: immutable transitive raw-window coverage, including this summary's inputs. */
     readonly rawEvidenceRanges?: readonly EvidenceRange[];
+    /** Leaf-only all-event identity, independent of prior context; absent means unknown for legacy archives. */
+    readonly rawSourceRevision?: string;
   };
 }
 
@@ -122,6 +125,7 @@ export class ComputerHistorySummarySnapshotError extends Error {
 
 const TEN_MINUTES = 10 * 60_000;
 const SIX_HOURS = 6 * 60 * 60_000;
+const PRIOR_HORIZON = 31 * 24 * 60 * 60_000;
 const RAW_HORIZON = 48 * 60 * 60_000;
 const MAX_PER_RUN = 6;
 const MAX_EVIDENCE = 256;
@@ -387,6 +391,7 @@ export class ComputerHistorySummaries {
       throw error;
     }
     if (!current()) return;
+    const olderContext = olderContextIndex(stored, now, includeText, scopeKey);
     const optionsKey = JSON.stringify([locale, includeText, scopeKey]);
     if (this.#providerFailure?.optionsKey === optionsKey &&
         this.#providerFailure.failure.nextRetryAt > now && !options.retryFailed) {
@@ -415,7 +420,7 @@ export class ComputerHistorySummaries {
       return Boolean(options.retryFailed) || failed.nextRetryAt <= now;
     };
     while (attempted < MAX_PER_RUN && current()) {
-      const pending = nextSummary(windows, stored, now, { locale, includeText, scopeKey }, eligible);
+      const pending = nextSummary(windows, stored, now, { locale, includeText, scopeKey }, eligible, olderContext);
       if (!pending) break;
       const input = decodeComputerHistorySummaryInput({
         level: pending.level,
@@ -483,6 +488,7 @@ export class ComputerHistorySummaries {
       if (!current()) return;
       if (invalidatedParent) stored.delete(invalidatedParent);
       stored.set(summary.id, summary);
+      olderContext.add(summary);
       this.#failures.delete(summary.id);
       failures.delete(summary.id);
       generated++;
@@ -697,7 +703,7 @@ async function rawWindows(
     const observation = projectObservation(event, includeText);
     if (!observation) continue;
     const name = observedText(event.app?.name, 128);
-    const bundleIdentifier = observedText(event.app?.bundleIdentifier, 128);
+    const bundleIdentifier = historyApplicationId(event.app ?? {}) ?? '';
     const { id, source, content, ...withoutContent } = observation;
     let window = windows.get(start);
     if (!window) {
@@ -771,12 +777,44 @@ function retainObservation(window: Window, item: Observation): void {
   }
 }
 
+function rawSourceRevision(window: Window): string {
+  return hash(`${window.eventCount}:${window.revision.toString(16)}`);
+}
+
+/** Raw freshness bookkeeping does not change the evidence supplied to dependents. */
+function contextGeneration(generation: StoredComputerHistorySummary['generation']) {
+  if (!generation) return undefined;
+  const { rawSourceRevision: _rawSourceRevision, ...context } = generation;
+  return context;
+}
+
+function leafGeneration(
+  window: Window,
+  selected: readonly Observation[],
+  previous: PriorContext,
+  { locale, scopeKey }: RunOptions,
+): NonNullable<StoredComputerHistorySummary['generation']> {
+  return {
+    version: GENERATION_VERSION,
+    ...(locale ? { locale } : {}),
+    sourceRevision: hash(`${window.eventCount}:${window.revision.toString(16)}:${previous.revision}`),
+    includesText: selected.some(({ content }) => Boolean(content)) || previous.includesText,
+    ...(scopeKey !== undefined ? { scopeKey } : {}),
+    priorContextIds: previous.evidence.map(({ id }) => id),
+    rawEvidenceRanges: mergeEvidenceRanges([
+      [window.start, window.start + TEN_MINUTES], ...previous.rawEvidenceRanges,
+    ]),
+    rawSourceRevision: rawSourceRevision(window),
+  };
+}
+
 function nextSummary(
   windows: readonly Window[],
   stored: ReadonlyMap<string, StoredComputerHistorySummary>,
   now: number,
   { locale, includeText = false, scopeKey }: RunOptions,
   eligible: (candidate: PendingSummary) => boolean,
+  olderContext: ReturnType<typeof olderContextIndex>,
 ): PendingSummary | undefined {
   const incompleteGroups = new Set<number>();
   for (const window of windows) {
@@ -785,19 +823,22 @@ function nextSummary(
     // Retention can leave only the tail of this window; never replace its complete saved summary.
     if (existing && window.start < now - RAW_HORIZON) continue;
     const selected = sampleObservations(window);
-    const previous = priorContext(stored, window.start, includeText, scopeKey);
-    const generation = {
-      version: GENERATION_VERSION,
-      ...(locale ? { locale } : {}),
-      sourceRevision: hash(`${window.eventCount}:${window.revision.toString(16)}:${previous.revision}`),
-      includesText: selected.some(({ content }) => Boolean(content)) || previous.includesText,
-      ...(scopeKey !== undefined ? { scopeKey } : {}),
-      priorContextIds: previous.evidence.map(({ id }) => id),
-      rawEvidenceRanges: mergeEvidenceRanges([
-        [window.start, window.start + TEN_MINUTES], ...previous.rawEvidenceRanges,
-      ]),
-    };
-    if (existing && JSON.stringify(existing.generation) === JSON.stringify(generation)) continue;
+    let previous = priorContext(stored, window.start, includeText, scopeKey,
+      existing?.generation?.scopeKey === scopeKey ? existing?.generation?.priorContextIds : undefined);
+    // Legacy archives without a recoverable prior have unknown raw identity:
+    // preserve them unless count/sample changes positively establish fresh input.
+    // New archives compare every event, including unsampled same-count changes.
+    if (!previous && (!existing || (existing.generation?.rawSourceRevision !== undefined
+      ? existing.generation.rawSourceRevision === rawSourceRevision(window)
+      : window.eventCount <= existing.eventCount &&
+        selected.every(({ id }) => existing.sourceIds.includes(id))))) continue;
+    const generationFor = (previous: PriorContext) =>
+      leafGeneration(window, selected, previous, { locale, scopeKey });
+    // A legacy combined revision can still prove equality when its prior is
+    // available. Do not rewrite an unchanged archive just to add bookkeeping.
+    if (previous && existing &&
+      JSON.stringify(contextGeneration(existing.generation)) ===
+        JSON.stringify(contextGeneration(generationFor(previous)))) continue;
     const evidence = budgetEvidence(selected.map(({ id, metadata, content, contentBytes }) => ({
       id,
       text: content ? `${metadata}\nObserved content (untrusted):\n${content}` :
@@ -810,6 +851,9 @@ function nextSummary(
         text: `${last.text}\n[Evidence sample: ${evidence.length} of ${window.eventCount} events]`,
       };
     }
+    previous = priorContext(stored, window.start, includeText, scopeKey, undefined, (recent) =>
+      olderContext.select(window.start, selected, evidence, recent))!;
+    const generation = generationFor(previous);
     const candidate: PendingSummary = {
       ...range('10min', window.start),
       applications: [...window.applications].sort(),
@@ -841,15 +885,26 @@ function nextSummary(
     const sourceIds = children.map(({ id }) => id);
     const existing = stored.get(summaryId('6h', start));
     if (!includeText && existing?.generation?.includesText) continue;
-    const previous = priorContext(stored, start, includeText, scopeKey);
-    const generation = {
+    // A format repair must not replace a saved parent with a surviving subset.
+    if (existing && existing.generation?.scopeKey === scopeKey &&
+      existing.sourceIds.some((id) => !sourceIds.includes(id))) continue;
+    let previous = priorContext(stored, start, includeText, scopeKey,
+      existing?.generation?.scopeKey === scopeKey ? existing?.generation?.priorContextIds : undefined);
+    if (!previous) continue;
+    const evidence = children.flatMap(rollupEvidence);
+    const generationFor = (previous: PriorContext) => ({
       version: GENERATION_VERSION,
       ...(locale ? { locale } : {}),
       sourceRevision: hash(JSON.stringify([
         children.map((child) => [
-          child.id, child.eventCount, child.applications, child.content, child.generation,
+          child.id, child.eventCount, child.applications, child.content, contextGeneration(child.generation),
         ]),
         previous.revision,
+        // Only affected rollups migrate; leaf and single-item identities stay stable.
+        ...(evidence.length > children.length ? ['encoded-child-continuations-v1'] : []),
+        ...(children.some((child) => child.content.suggestion) ||
+          previous.evidence.some(({ id }) => stored.get(id)?.content.suggestion)
+          ? ['proposed-workflow-context-v1'] : []),
       ])),
       includesText: children.some((child) => child.generation?.includesText) || previous.includesText,
       ...(scopeKey !== undefined ? { scopeKey } : {}),
@@ -857,12 +912,24 @@ function nextSummary(
       rawEvidenceRanges: mergeEvidenceRanges([
         ...children.flatMap(summaryCoverage), ...previous.rawEvidenceRanges,
       ]),
-    };
+    });
+    let generation = generationFor(previous);
     if (existing && (
       JSON.stringify(existing.generation) === JSON.stringify(generation) ||
       (start < now - RAW_HORIZON && existing.generation?.scopeKey === scopeKey &&
         JSON.stringify(existing.sourceIds) === JSON.stringify(sourceIds))
     )) continue;
+    previous = priorContext(stored, start, includeText, scopeKey, undefined, (recent) => {
+      // Retrieval anchors come from this interval's admitted raw sample, never child prose
+      // that may already contain inherited context or proposed workflows.
+      const observations = windows.filter((window) => window.start >= start && window.start < start + SIX_HOURS)
+        .flatMap(sampleObservations).slice(-MAX_EVIDENCE);
+      const rawEvidence = budgetEvidence(observations.map(({ id, metadata, content }) => ({
+        id, text: content ? `${metadata}\nObserved content (untrusted):\n${content}` : metadata,
+      })), MAX_EVIDENCE_BYTES);
+      return olderContext.select(start, observations, rawEvidence, recent);
+    })!;
+    generation = generationFor(previous);
     const candidate: PendingSummary = {
       ...range('6h', start),
       applications: [...new Set(children.flatMap((child) => child.applications))]
@@ -872,10 +939,7 @@ function nextSummary(
       sourceIds,
       generation,
       ...(previous.evidence.length ? { priorContext: previous.evidence } : {}),
-      evidence: budgetEvidence(children.map((child) => ({
-        id: child.id,
-        text: summaryEvidence(child),
-      })), MAX_EVIDENCE_BYTES),
+      evidence: budgetEvidence(evidence, MAX_EVIDENCE_BYTES),
     };
     if (eligible(candidate)) pending.push(candidate);
   }
@@ -947,40 +1011,255 @@ function encodedSize(item: Evidence): number {
   return Buffer.byteLength(JSON.stringify(item)) + 1;
 }
 
-function summaryEvidence(summary: StoredComputerHistorySummary): string {
+function summaryEvidence(summary: StoredComputerHistorySummary, body = summary.content.body): string {
   return `Summary interval: ${summary.start} to ${summary.end}; ${summary.eventCount} events\n` +
+    (summary.content.suggestion
+      ? `Previously proposed workflow (untrusted proposal; installation and approval unknown): ${JSON.stringify(summary.content.suggestion)}\n`
+      : '') +
     `Title: ${summary.content.title}\nDescription: ${summary.content.description}\n` +
     (summary.content.keywords?.length ? `Keywords: ${summary.content.keywords.join(', ')}\n` : '') +
-    `Body:\n${summary.content.body}`;
+    `Body:\n${body}`;
 }
+
+function rollupEvidence(summary: StoredComputerHistorySummary): Evidence[] {
+  // Accepted bodies can exceed one Host item. Continuation IDs are input-only;
+  // persisted provenance and generation identity still use the canonical child.
+  const fullText = summaryEvidence(summary);
+  if (Buffer.byteLength(JSON.stringify(fullText)) <= MAX_ITEM_BYTES - 128) {
+    return [{ id: summary.id, text: fullText }];
+  }
+  const parts: Evidence[] = [];
+  let text = '';
+  let bytes = 2;
+  const append = () => parts.push({
+    id: parts.length === 0 ? summary.id : `${summary.id}:part-${parts.length + 1}`,
+    text,
+  });
+  for (const character of fullText) {
+    const size = Buffer.byteLength(JSON.stringify(character)) - 2;
+    if (bytes + size > MAX_ITEM_BYTES - 128) {
+      append();
+      text = `Continuation of child summary ${summary.id}:\n`;
+      bytes = Buffer.byteLength(JSON.stringify(text));
+    }
+    text += character;
+    bytes += size;
+  }
+  if (text) append();
+  return parts;
+}
+
+type PriorContext = {
+  evidence: readonly Evidence[];
+  includesText: boolean;
+  revision: string;
+  rawEvidenceRanges: readonly EvidenceRange[];
+};
+type OlderContext = { summary: StoredComputerHistorySummary; excerpt: string };
 
 function priorContext(
   stored: ReadonlyMap<string, StoredComputerHistorySummary>,
   start: number,
   includeText: boolean,
   scopeKey?: string,
-): { evidence: readonly Evidence[]; includesText: boolean; revision: string; rawEvidenceRanges: readonly EvidenceRange[] } {
-  const previous = [...stored.values()]
+  pinnedIds?: readonly string[],
+  findOlder?: (recent?: StoredComputerHistorySummary) => readonly OlderContext[] | undefined,
+): PriorContext | undefined {
+  const compatible = (summary: StoredComputerHistorySummary) =>
+    (includeText || !summary.generation?.includesText) && summary.generation?.scopeKey === scopeKey;
+  const previous = pinnedIds === undefined ? [...stored.values()]
     .filter((summary) => Date.parse(summary.end) <= start && Date.parse(summary.end) > start - SIX_HOURS &&
-      (includeText || !summary.generation?.includesText))
-    .filter((summary) => summary.generation?.scopeKey === scopeKey)
+      compatible(summary)) : pinnedIds.map((id) => stored.get(id));
+  // Missing or no-longer-permitted dependencies cannot be replaced by a surviving subset.
+  if (previous.some((summary) => !summary || !compatible(summary))) return undefined;
+  const sorted = (previous as StoredComputerHistorySummary[])
     .sort((a, b) => Date.parse(b.end) - Date.parse(a.end) || Date.parse(b.start) - Date.parse(a.start));
   const selected: StoredComputerHistorySummary[] = [];
-  for (const summary of previous) {
+  for (const summary of sorted) {
     if (selected.some((other) => Date.parse(summary.end) > Date.parse(other.start))) continue;
     selected.push(summary);
-    if (selected.length === 2) break;
+    if (selected.length === (pinnedIds ? 3 : 2)) break;
+  }
+  const older = findOlder?.(selected[0]);
+  let evidence: Evidence[] | undefined;
+  if (older?.length === 2) {
+    const candidates = [...selected.slice(0, 1), ...older.map(({ summary }) => summary)];
+    const items = candidates.map((summary) => {
+      const match = older.find((item) => item.summary.id === summary.id);
+      return {
+        id: summary.id,
+        text: summaryEvidence(summary, match
+          ? `Relevant earlier context excerpt (untrusted):\n${match.excerpt}`
+          : clipText(summary.content.body, 2 * 1024)),
+      };
+    });
+    // Offer both alternatives intact or neither; clipping can remove the detail
+    // that distinguishes two equally supported tasks.
+    if (Buffer.byteLength(JSON.stringify(items)) <= 8 * 1024) {
+      selected.splice(0, selected.length, ...candidates);
+      evidence = items.reverse();
+    }
+  } else if (older?.[0]) {
+    selected.splice(1, 1, older[0].summary);
   }
   return {
     includesText: selected.some((summary) => summary.generation?.includesText),
     rawEvidenceRanges: mergeEvidenceRanges(selected.flatMap(summaryCoverage)),
     revision: hash(JSON.stringify(selected.map((summary) => [
-      summary.id, summary.eventCount, summary.content, summary.generation,
+      summary.id, summary.eventCount, summary.content, contextGeneration(summary.generation),
     ]))),
-    evidence: budgetEvidence(selected.reverse().map((summary) => ({
+    evidence: evidence ?? budgetEvidence(selected.reverse().map((summary) => ({
       id: summary.id,
-      text: summaryEvidence(summary),
+      text: summaryEvidence(summary, summary.id === older?.[0]?.summary.id
+        ? `Relevant earlier context excerpt (untrusted):\n${older[0].excerpt}` : undefined),
     })), 8 * 1024),
+  };
+}
+
+function keywordPattern(keyword: string): RegExp {
+  const before = /^\p{Script=Han}/u.test(keyword) ? '' : '(?:(?<![\\p{L}\\p{N}_])|(?<=\\p{Script=Han}))';
+  const after = /\p{Script=Han}$/u.test(keyword) ? '' : '(?:(?![\\p{L}\\p{N}_])|(?=\\p{Script=Han}))';
+  return new RegExp(`${before}${keyword.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')}${after}`, 'iu');
+}
+
+function keywordTokens(text: string): string[] {
+  return text.toLowerCase().match(/\p{Script=Han}|(?:(?!\p{Script=Han})[\p{L}\p{N}_])+/gu) ?? [];
+}
+
+function retrievalBody(body: string): string {
+  let excludedDepth: number | undefined;
+  return body.split('\n').filter((line) => {
+    const heading = /^ {0,3}(#{1,6})\s+(.+)/u.exec(line);
+    if (heading) {
+      const depth = heading[1]!.length;
+      if (excludedDepth !== undefined && depth <= excludedDepth) excludedDepth = undefined;
+      if (/prior context|earlier context|previously proposed|suggestion|建议|历史上下文|先前上下文/iu.test(heading[2]!)) {
+        excludedDepth ??= depth;
+      }
+    }
+    return excludedDepth === undefined &&
+      !/^(?:Previously proposed workflow|Prior context|Earlier context)\s*[:(]/iu.test(line);
+  }).join('\n');
+}
+
+/** Index metadata once per run; inspect a body only after independent current-text matches. */
+function olderContextIndex(
+  stored: ReadonlyMap<string, StoredComputerHistorySummary>,
+  now: number,
+  includeText: boolean,
+  scopeKey?: string,
+) {
+  type Candidate = {
+    summary: StoredComputerHistorySummary;
+    keywords: string[];
+    identifiers: Set<string>;
+    excerpts?: Map<string, string>;
+  };
+  const terms = new Map<string, Map<string, Set<Candidate>>>();
+  const add = (summary: StoredComputerHistorySummary) => {
+    const end = Date.parse(summary.end);
+    if (!includeText || summary.generation?.scopeKey !== scopeKey ||
+        end < now - RAW_HORIZON - SIX_HOURS - PRIOR_HORIZON || end >= now - SIX_HOURS) return;
+    const applications = new Set(summary.applications.map((app) => app.toLowerCase()));
+    const keywords = [...new Set((summary.content.keywords ?? []).map((keyword) => keyword.toLowerCase()))]
+      .filter((keyword) => !applications.has(keyword) && [...keyword].length >= 3);
+    if (keywords.length < 2) return;
+    // Require a code-like identifier or an explicitly named Han project, not two
+    // ordinary task words. This deliberately abstains on plain-language-only matches.
+    const identifiers = new Set((summary.content.keywords ?? []).filter((keyword) =>
+      /[a-z][A-Z]|[\p{L}\p{N}][_./-][\p{L}\p{N}]|\p{L}\d|\d\p{L}|^\p{Script=Han}{2,}(?:项目|工程|仓库)$/u.test(keyword),
+    ).map((keyword) => keyword.toLowerCase()));
+    if (!keywords.some((keyword) => identifiers.has(keyword))) return;
+    const candidate: Candidate = { summary, keywords, identifiers };
+    for (const keyword of keywords) {
+      const firstWord = keywordTokens(keyword)[0];
+      if (!firstWord) continue;
+      let bucket = terms.get(firstWord);
+      if (!bucket) { bucket = new Map(); terms.set(firstWord, bucket); }
+      let candidates = bucket.get(keyword);
+      if (!candidates) { candidates = new Set(); bucket.set(keyword, candidates); }
+      candidates.add(candidate);
+    }
+  };
+  for (const summary of stored.values()) add(summary);
+  return {
+    add,
+    select(
+      start: number,
+      observations: readonly Observation[],
+      evidence: readonly Evidence[],
+      recent?: StoredComputerHistorySummary,
+    ): readonly OlderContext[] | undefined {
+      if (!terms.size) return undefined;
+      const texts: string[] = [];
+      const applications = new Set<string>();
+      const byId = new Map(evidence.map((item) => [item.id, item.text]));
+      for (const observation of observations) {
+        const app = JSON.parse(observation.metadata).app;
+        for (const name of [app?.name, app?.bundleIdentifier]) {
+          if (name) applications.add(name.toLowerCase());
+        }
+        if (!observation.content) continue;
+        const prefix = `${observation.metadata}\nObserved content (untrusted):\n`;
+        const text = byId.get(observation.id);
+        if (text?.startsWith(prefix)) texts.push(text.slice(prefix.length, prefix.length + observation.content.length));
+      }
+      const matches = new Map<Candidate, Set<string>>();
+      const words = new Set(texts.flatMap(keywordTokens));
+      for (const word of words) {
+        for (const [keyword, candidates] of terms.get(word) ?? []) {
+          if (applications.has(keyword) || !texts.some((text) => keywordPattern(keyword).test(text))) continue;
+          for (const candidate of candidates) {
+            const { summary } = candidate;
+            const end = Date.parse(summary.end);
+            if (stored.get(summary.id) !== summary || end >= start - SIX_HOURS || end < start - PRIOR_HORIZON ||
+                (recent && end > Date.parse(recent.start))) continue;
+            let found = matches.get(candidate);
+            if (!found) { found = new Set(); matches.set(candidate, found); }
+            found.add(keyword);
+          }
+        }
+      }
+      let best: OlderContext[] = [];
+      let score = 1;
+      let count = 0;
+      for (const [candidate, found] of matches) {
+        // Nested phrases provide only one independent anchor.
+        const independent = [...found].filter((term) => ![...found].some((other) => other !== term && other.includes(term)));
+        if (independent.length < 2 || !independent.some((term) => candidate.identifiers.has(term))) continue;
+        if (!candidate.excerpts) {
+          candidate.excerpts = new Map();
+          const body = retrievalBody(candidate.summary.content.body);
+          for (const term of candidate.keywords) {
+            const match = keywordPattern(term).exec(body);
+            if (!match) continue;
+            // Code-point iteration avoids splitting surrogate pairs at either excerpt edge.
+            const prefix = [...body.slice(0, match.index)].slice(-160).join('');
+            candidate.excerpts.set(term, clipText(
+              prefix + body.slice(match.index), 768,
+            ));
+          }
+        }
+        const supported = independent.filter((term) => candidate.excerpts!.has(term));
+        if (!supported.some((term) => candidate.identifiers.has(term))) continue;
+        if (supported.length < 2 || supported.length < score) continue;
+        if (supported.length > score) {
+          score = supported.length;
+          count = 0;
+          best = [];
+        }
+        count++;
+        if (count <= 2) {
+          best.push({ summary: candidate.summary, excerpt: clipText(
+            [...new Set(supported.map((term) => candidate.excerpts!.get(term)!))].join('\n[...]\n'), 2 * 1024,
+          ) });
+        }
+      }
+      if (count === 0 || count > 2) return undefined;
+      best.sort((a, b) => Date.parse(b.summary.end) - Date.parse(a.summary.end));
+      if (best[1] && Date.parse(best[1].summary.end) > Date.parse(best[0]!.summary.start)) return undefined;
+      return best;
+    },
   };
 }
 
@@ -1002,7 +1281,7 @@ function projectObservation(event: ComputerHistorySummaryEvent, includeText: boo
   if (!Number.isFinite(time) || !kind) return null;
   const timestamp = new Date(time).toISOString();
   const name = observedText(event.app?.name, 128);
-  const bundleIdentifier = observedText(event.app?.bundleIdentifier, 128);
+  const bundleIdentifier = historyApplicationId(event.app ?? {}) ?? '';
   const title = observedText(event.window?.title, 256);
   const urlDomain = observedText(event.window?.urlDomain, 256);
   // Content is an explicit caller projection, never a traversal of raw keyboard/AX objects.
@@ -1186,7 +1465,7 @@ function decodeSummary(text: string, filename: string): StoredComputerHistorySum
   ) {
     throw invalidSummary();
   }
-  const applications = stringArray(data.applications, MAX_APPLICATIONS, 128);
+  const applications = stringArray(data.applications, MAX_APPLICATIONS, 256);
   const sourceIds = stringArray(data.sourceIds, data.level === '10min' ? MAX_EVIDENCE : 36, 80);
   if (
     sourceIds.length === 0 ||
@@ -1214,17 +1493,22 @@ function decodeSummary(text: string, filename: string): StoredComputerHistorySum
   const headerContent = record(data.content, ['title', 'description', 'keywords', 'suggestion']);
   let generation: StoredComputerHistorySummary['generation'];
   if (data.generation !== undefined) {
-    const value = record(data.generation, ['version', 'locale', 'sourceRevision', 'includesText', 'scopeKey', 'priorContextIds', 'rawEvidenceRanges']);
+    const value = record(data.generation, ['version', 'locale', 'sourceRevision', 'includesText', 'scopeKey', 'priorContextIds', 'rawEvidenceRanges', 'rawSourceRevision']);
     if (!Number.isSafeInteger(value.version) || (value.version as number) < 1 ||
         (value.locale !== undefined && !isUiLocale(value.locale)) ||
         typeof value.includesText !== 'boolean' ||
         typeof value.sourceRevision !== 'string' || !/^[a-f0-9]{64}$/u.test(value.sourceRevision)) throw invalidSummary();
+    if (value.rawSourceRevision !== undefined &&
+        (data.level !== '10min' || (value.version as number) < 5 ||
+          typeof value.rawSourceRevision !== 'string' || !/^[a-f0-9]{64}$/u.test(value.rawSourceRevision))) {
+      throw invalidSummary();
+    }
     let priorContextIds: string[] | undefined;
     if ((value.version as number) >= 3 || value.priorContextIds !== undefined) {
-      priorContextIds = stringArray(value.priorContextIds, 2, 23);
+      priorContextIds = stringArray(value.priorContextIds, 3, 23);
       for (const id of priorContextIds) {
         const priorEnd = Date.parse(summaryRange(id).end);
-        if (priorEnd > start || priorEnd <= start - SIX_HOURS) throw invalidSummary();
+        if (priorEnd > start || priorEnd < start - PRIOR_HORIZON) throw invalidSummary();
       }
     }
     let rawEvidenceRanges: EvidenceRange[] | undefined;
@@ -1262,6 +1546,7 @@ function decodeSummary(text: string, filename: string): StoredComputerHistorySum
       ...(value.scopeKey !== undefined ? { scopeKey: validText(value.scopeKey, 256) } : {}),
       ...(priorContextIds !== undefined ? { priorContextIds } : {}),
       ...(rawEvidenceRanges !== undefined ? { rawEvidenceRanges } : {}),
+      ...(value.rawSourceRevision !== undefined ? { rawSourceRevision: value.rawSourceRevision as string } : {}),
     };
   }
   return {

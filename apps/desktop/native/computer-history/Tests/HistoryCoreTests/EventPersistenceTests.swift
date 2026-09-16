@@ -23,6 +23,45 @@ import XCTest
 final class EventPersistenceTests: XCTestCase {
     private let timestamp = Date(timeIntervalSince1970: 1_700_000_000)
 
+    func testDefaultDeniedWebsitesDoNotSuppressAdmittedLocalAppCapture() throws {
+        for text in [false, true] {
+            let policy = ObservationPolicy(observation: .init(
+                defaultApplicationBehavior: .doNotObserve,
+                defaultURLBehavior: .doNotObserve,
+                allowlist: [.init(scope: .application, bundleID: "test.editor")]), captureText: text)
+            let app = EventStreamApp(name: "Editor", secureInput: false,
+                processIdentifier: nil, bundleIdentifier: "test.editor")
+            let window = EventStreamWindow(title: "Local table", url: nil, windowID: nil)
+            let item = EventStreamAXElement(role: "AXRow", subrole: nil, title: nil,
+                description: nil, value: "CONTENT_SELECTED_ROW", placeholder: nil, identifier: nil)
+            XCTAssertTrue(policy.allowsObservation(app: app, window: window, element: item))
+            let selection = EventStreamSelection(target: nil, selectedText: nil,
+                selectedRange: nil, selectedItems: [item])
+            let event = HistoryEvent(id: 1, timestamp: timestamp, kind: .selectionChanged,
+                app: app, window: window, selection: selection,
+                ax: .init(mode: .fullTree, text: "CONTENT_LOCAL_BODY", truncated: false),
+                sourceId: "local-window", contentState: text ? .available : .metadataOnly,
+                contentDomains: [])
+            let retained = try persist([event], policy: policy)
+            XCTAssertEqual(retained.events.count, 1)
+            XCTAssertEqual(retained.events.first?.selection?.selectedItems.map(\.role), ["AXRow"])
+            XCTAssertEqual(retained.jsonl.contains("CONTENT_"), text)
+            XCTAssertTrue(retained.suppressed.isEmpty)
+
+            let remote = HistoryEvent(id: 2, timestamp: timestamp, kind: .uiChanged,
+                app: app, window: window, ax: event.ax,
+                sourceId: "local-window", contentState: .available,
+                contentDomains: ["denied.example"])
+            let blocked = try persist([remote], policy: policy)
+            XCTAssertTrue(blocked.events.isEmpty)
+            XCTAssertFalse(blocked.jsonl.contains("CONTENT_"))
+            assertOnlyIdentity(blocked.suppressed, from: [remote])
+            XCTAssertFalse(policy.allowsObservation(app: app,
+                window: .init(title: "Remote table", url: "https://denied.example", windowID: nil),
+                element: item))
+        }
+    }
+
     func testTextOffRemovesEveryContentSurfaceForEveryKindAndAXMode() throws {
         for mode in [EventStreamAXTree.Mode.fullTree, .diffFromPrevious] {
             let events = HistoryEventKind.allCases.map { fixture(kind: $0, mode: mode) }
@@ -45,6 +84,7 @@ final class EventPersistenceTests: XCTestCase {
                 XCTAssertNil(stored.keyboard?.text)
                 XCTAssertNil(stored.keyboard?.keyEquivalent)
                 XCTAssertNil(stored.selection?.selectedText)
+                XCTAssertNil(stored.selection?.truncated)
                 XCTAssertEqual(stored.selection?.selectedRange, event.selection?.selectedRange)
                 XCTAssertNil(stored.ax)
                 XCTAssertNil(stored.diagnostic)
@@ -293,7 +333,8 @@ final class EventPersistenceTests: XCTestCase {
                 target: element("selection"),
                 selectedText: "CONTENT_selected",
                 selectedRange: EventStreamTextRange(location: 4, length: 20),
-                selectedItems: [element("item"), element("otherItem")]
+                selectedItems: [element("item"), element("otherItem")],
+                truncated: true
             ),
             ax: EventStreamAXTree(
                 mode: mode,

@@ -20,11 +20,12 @@
 import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { closeSync, openSync, writeSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
+import { closeSync, openSync, writeFileSync, writeSync } from 'node:fs';
+import { mkdir, mkdtemp, readFile, readdir, rename, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join } from 'node:path';
+import { createInterface } from 'node:readline';
 import test from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
@@ -37,8 +38,10 @@ const edge = process.env.MAKA_HISTORY_WINDOWS_EDGE
   ?? String.raw`C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe`;
 const fixture = fileURLToPath(new URL('./computer-history-windows-browser.fixture.ps1', import.meta.url));
 const optedIn = process.env.MAKA_HISTORY_WINDOWS_BROWSER_TEST === '1';
+const physicalMode = process.env.MAKA_HISTORY_WINDOWS_BROWSER_INPUT_TEST === '1';
+const inputRequestPath = process.env.MAKA_HISTORY_WINDOWS_INPUT_REQUEST;
 
-async function until(check, label, timeout = 10_000) {
+async function pollUntil(check, label, timeout = 10_000) {
   const deadline = performance.now() + timeout;
   while (performance.now() < deadline) {
     const value = await check();
@@ -47,6 +50,131 @@ async function until(check, label, timeout = 10_000) {
   }
   assert.fail(`Timed out waiting for ${label}`);
 }
+
+async function cleanupAll(steps) {
+  const errors = [];
+  for (const step of steps) {
+    try { await step(); }
+    catch (error) { errors.push(error); }
+  }
+  if (errors.length) throw new AggregateError(errors, 'Browser fixture cleanup failed');
+}
+
+function isKeyboard(event) {
+  return event.kind.startsWith('keyboard.');
+}
+
+function verifyPhysicalAction(event, request) {
+  const { name, metadata, sourceId, issuedAt, receipt } = request;
+  const timestamp = Date.parse(event.timestamp);
+  assert.ok(timestamp >= issuedAt && timestamp <= receipt.keyDownAt,
+    'native action timestamp must belong to this physical request');
+  assert.equal(event.kind, name === 'return' ? 'keyboard.submit' : 'keyboard.shortcut');
+  assert.deepEqual(event.keyboard?.target, { role: 'AXTextField' });
+  assert.deepEqual(event.keyboard.modifiers, name === 'shortcut' ? ['control'] : []);
+  assert.equal(event.keyboard.keyEquivalent, metadata ? undefined : name === 'return' ? 'return' : 'a');
+  assert.equal(event.contentState, metadata ? 'metadataOnly' : 'available');
+  assert.equal(event.sourceId, sourceId);
+  assert.equal(event.ax, undefined);
+  assert.equal(event.selection, undefined);
+}
+
+function reconcilePhysicalActions(events, accepted) {
+  const actions = events.filter(isKeyboard);
+  assert.equal(actions.length, accepted.length, 'sealed store must contain exactly one action per accepted request');
+  for (const [index, request] of accepted.entries()) {
+    verifyPhysicalAction(actions[index], request);
+    assert.deepEqual(actions[index], request.event, 'sealed action must equal the witnessed action');
+  }
+}
+
+test('physical action timestamps belong to the current request and receipt', () => {
+  const issuedAt = Date.parse('2026-09-16T00:00:00Z');
+  const request = {
+    name: 'return', metadata: false, sourceId: 'source-one', issuedAt,
+    receipt: { keyDownAt: issuedAt + 50 },
+  };
+  const event = {
+    kind: 'keyboard.submit', contentState: 'available', sourceId: request.sourceId,
+    timestamp: new Date(issuedAt + 20).toISOString(),
+    keyboard: { target: { role: 'AXTextField' }, modifiers: [], keyEquivalent: 'return' },
+  };
+  for (const time of [issuedAt, issuedAt + 20, request.receipt.keyDownAt]) {
+    verifyPhysicalAction({ ...event, timestamp: new Date(time).toISOString() }, request);
+  }
+  for (const timestamp of [
+    new Date(issuedAt - 1).toISOString(),
+    new Date(request.receipt.keyDownAt + 1).toISOString(),
+    'invalid',
+  ]) {
+    assert.throws(() => verifyPhysicalAction({ ...event, timestamp }, request), /timestamp/);
+  }
+  assert.throws(() => verifyPhysicalAction(event, {
+    ...request, receipt: { keyDownAt: issuedAt - 1 },
+  }), /timestamp/);
+});
+
+test('sealed physical ledger rejects stale, duplicate, missing, reordered and denied actions', () => {
+  const issuedAt = Date.parse('2026-09-16T00:00:00Z');
+  const first = {
+    id: 1, kind: 'keyboard.submit', contentState: 'available', sourceId: 'source-one',
+    timestamp: new Date(issuedAt + 20).toISOString(),
+    keyboard: { target: { role: 'AXTextField' }, modifiers: [], keyEquivalent: 'return' },
+  };
+  const second = {
+    id: 3, kind: 'keyboard.shortcut', contentState: 'metadataOnly', sourceId: 'source-two',
+    timestamp: new Date(issuedAt + 220).toISOString(),
+    keyboard: { target: { role: 'AXTextField' }, modifiers: ['control'] },
+  };
+  const accepted = [
+    { name: 'return', metadata: false, sourceId: first.sourceId, issuedAt,
+      receipt: { keyDownAt: issuedAt + 50 }, event: first },
+    { name: 'shortcut', metadata: true, sourceId: second.sourceId, issuedAt: issuedAt + 200,
+      receipt: { keyDownAt: issuedAt + 250 }, event: second },
+  ];
+  reconcilePhysicalActions([
+    first, { id: 2, kind: 'ui.changed' }, second,
+  ], accepted);
+  const denied = { ...second, id: 4, timestamp: new Date(issuedAt + 120).toISOString() };
+  for (const [label, rows] of [
+    ['stale', [{ ...first, timestamp: new Date(issuedAt - 1).toISOString() }, second]],
+    ['fresh-ID duplicate', [first, second, { ...second, id: 4 }]],
+    ['missing', [first]],
+    ['reordered', [second, first]],
+    ['denied extra', [first, denied, second]],
+    ['denied replacement', [first, denied]],
+    ['changed sealed identity', [first, { ...second, id: 4 }]],
+    ['metadata text leak', [first, { ...second, keyboard: { ...second.keyboard, keyEquivalent: 'a' } }]],
+  ]) {
+    assert.throws(() => reconcilePhysicalActions(rows, accepted), assert.AssertionError, label);
+  }
+});
+
+test('cleanup attempts every step in order before reporting all failures', async () => {
+  const markerError = new Error('marker write failed');
+  const closeError = new Error('browser close failed');
+  const attempted = [];
+  await assert.rejects(cleanupAll([
+    () => { attempted.push('marker'); throw markerError; },
+    async () => {
+      attempted.push('browser-close');
+      await Promise.resolve();
+      attempted.push('browser-settled');
+      throw closeError;
+    },
+    () => { attempted.push('server-close'); },
+    async () => { await Promise.resolve(); attempted.push('evidence-close'); },
+  ]), (error) => {
+    assert.ok(error instanceof AggregateError);
+    assert.deepEqual(error.errors, [markerError, closeError]);
+    assert.deepEqual(attempted, [
+      'marker', 'browser-close', 'browser-settled', 'server-close', 'evidence-close',
+    ]);
+    return true;
+  });
+  await cleanupAll([() => { attempted.push('finished'); }]);
+  assert.equal(attempted.at(-1), 'finished');
+});
 
 // CDP drives only the fixture. It never supplies text or accessibility data to
 // native capture, and does not enable Chromium's accessibility implementation.
@@ -106,7 +234,8 @@ async function connect(url, port) {
   };
 }
 
-test('real Edge snapshots preserve useful bodies and reject denied synthetic contexts', {
+test(physicalMode ? 'real Edge recorder accepts only admitted physical keyboard evidence' :
+  'real Edge snapshots preserve useful bodies and reject denied synthetic contexts', {
   skip: optedIn ? false : 'requires MAKA_HISTORY_WINDOWS_BROWSER_TEST=1',
   timeout: 240_000,
 }, async (t) => {
@@ -115,19 +244,32 @@ test('real Edge snapshots preserve useful bodies and reject denied synthetic con
   for (const path of [helper, edge]) assert.ok(isAbsolute(path), 'executable paths must be absolute');
   const parent = process.env.MAKA_HISTORY_WINDOWS_TEST_ROOT ?? tmpdir();
   assert.match(parent, /^[a-z]:\\/i, 'test root must be on a local drive');
+  if (physicalMode) {
+    assert.ok(inputRequestPath && /^[a-z]:\\/i.test(inputRequestPath), 'physical mode requires a local absolute driver request path');
+    closeSync(openSync(inputRequestPath, 'wx'));
+  }
   const root = await mkdtemp(join(parent, 'maka-history-browser-'));
   const evidencePath = join(root, 'evidence.jsonl');
   const fd = openSync(evidencePath, 'wx');
   const started = performance.now();
+  const workDeadline = physicalMode ? started + 200_000 : Infinity;
   const token = randomUUID().replaceAll('-', '');
   const home = join(root, 'history');
   let browser;
   let server;
   let port;
   let usefulBaseline = false;
+  const lifecycleErrors = [];
   const pages = new Map();
   const deniedMarkers = new Set();
   const prefix = `/${token}/`;
+
+  async function until(check, label, timeout) {
+    return pollUntil(async () => {
+      assert.ok(performance.now() < workDeadline, '200-second browser physical work budget exhausted');
+      return check();
+    }, label, timeout);
+  }
 
   function evidence(type, values = {}) {
     writeSync(fd, `${JSON.stringify({
@@ -139,39 +281,46 @@ test('real Edge snapshots preserve useful bodies and reject denied synthetic con
     if (!browser) return;
     const owned = browser;
     browser = undefined;
-    if (owned.control && owned.child.exitCode === null) {
-      try { await owned.control.call('Browser.close'); }
-      catch (error) { evidence('browser.close-response', { message: error.message }); }
-    }
-    owned.page?.close();
-    owned.control?.close();
-    if (owned.child.exitCode === null && !owned.error) {
-      try { await until(() => owned.exited, 'isolated Edge exit', 5_000); }
-      catch {
-        // Only the still-owned fresh-profile process tree, never all Edge PIDs.
-        await run('taskkill.exe', ['/PID', String(owned.child.pid), '/T', '/F'], {
-          windowsHide: true, timeout: 5_000,
-        });
-        await until(() => owned.exited, 'terminated fixture exit', 3_000);
-        throw new Error('Isolated Edge required forced termination');
-      }
-    }
-    evidence('browser.closed', { pid: owned.child.pid, code: owned.child.exitCode });
+    await cleanupAll([
+      async () => {
+        if (owned.control && owned.child.exitCode === null) {
+          try { await owned.control.call('Browser.close'); }
+          catch (error) { evidence('browser.close-response', { message: error.message }); }
+        }
+      },
+      () => owned.page?.close(),
+      () => owned.control?.close(),
+      async () => {
+        if (owned.child.exitCode === null && !owned.error) {
+          try { await pollUntil(() => owned.exited, 'isolated Edge exit', 5_000); }
+          catch {
+            // Only the still-owned fresh-profile process tree, never all Edge PIDs.
+            await run('taskkill.exe', ['/PID', String(owned.child.pid), '/T', '/F'], {
+              windowsHide: true, timeout: 5_000,
+            });
+            await pollUntil(() => owned.exited, 'terminated fixture exit', 3_000);
+            throw new Error('Isolated Edge required forced termination');
+          }
+        }
+      },
+      () => evidence('browser.closed', { pid: owned.child.pid, code: owned.child.exitCode }),
+    ]);
   }
 
   t.after(async () => {
-    try {
-      await writeFile(join(home, 'control.json'), `${JSON.stringify({ state: 'stopped', revision: token })}\n`);
-      await stopBrowser();
-    } finally {
-      server?.closeAllConnections();
-      if (server?.listening) await new Promise((resolve) => server.close(resolve));
-      evidence('suite.finished', { usefulBaseline, root });
-      closeSync(fd);
-      t.diagnostic(`Synthetic evidence and isolated profiles retained at ${root}`);
-    }
+    await cleanupAll([
+      () => { if (physicalMode) writeFileSync(inputRequestPath, JSON.stringify({ done: true })); },
+      () => writeFile(join(home, 'control.json'), `${JSON.stringify({ state: 'stopped', revision: token })}\n`),
+      stopBrowser,
+      () => server?.closeAllConnections(),
+      async () => { if (server?.listening) await new Promise((resolve) => server.close(resolve)); },
+      () => evidence('suite.finished', { usefulBaseline, root }),
+      () => closeSync(fd),
+      () => t.diagnostic(`Synthetic evidence and isolated profiles retained at ${root}`),
+      () => { if (lifecycleErrors.length) throw new AggregateError(lifecycleErrors, 'Fixture lifecycle errors'); },
+    ]);
   });
-  evidence('suite.started', { root, helper, edge, node: process.version, forcedAccessibility: false });
+  evidence('suite.started', { root, helper, edge, node: process.version, forcedAccessibility: false, physicalMode });
   t.diagnostic(`Evidence: ${evidencePath}`);
   await mkdir(home);
   await writeFile(join(home, 'maka-settings.json'), '{"enabled":true}\n', { flag: 'wx' });
@@ -197,7 +346,11 @@ test('real Edge snapshots preserve useful bodies and reject denied synthetic con
         blocklist: blocked.map((urlDomain) => ({ scope: 'url', urlDomain })),
       },
     };
-    await writeFile(join(home, 'config.json'), `${JSON.stringify(value)}\n`);
+    if (physicalMode) {
+      const path = join(home, `config-${randomUUID()}.tmp`);
+      await writeFile(path, `${JSON.stringify(value)}\n`, { flag: 'wx' });
+      await rename(path, join(home, 'config.json'));
+    } else await writeFile(join(home, 'config.json'), `${JSON.stringify(value)}\n`);
     evidence('policy', value);
   }
   await policy();
@@ -218,6 +371,9 @@ test('real Edge snapshots preserve useful bodies and reject denied synthetic con
   const password = definePage('password', `<label>Synthetic input <input id="editor" type="text" value="BEFORE_PASSWORD_${token}"></label>`);
   const privateTitle = definePage('title-state');
   const actualPrivate = definePage('isolated-session');
+  const physicalPage = physicalMode ? definePage('physical', `
+    <label>Synthetic editor one <input aria-label="Synthetic editor one" id="one" value="FIELD_ONE_${token}"></label>
+    <label>Synthetic editor two <input aria-label="Synthetic editor two" id="two" value="FIELD_TWO_${token}"></label>`) : undefined;
   const plainUrl = (page, host = '127.0.0.1') => `http://${host}:${port}${page.path}`;
 
   server = createServer((request, response) => {
@@ -236,7 +392,23 @@ test('real Edge snapshots preserve useful bodies and reject denied synthetic con
     const embeddedUrl = plainUrl(embedded, 'localhost');
     const iframe = page === frame
       ? `<iframe title="Synthetic embedded document" src="${embeddedUrl}" width="640" height="180"></iframe>` : '';
-    const script = page === embedded
+    const script = page === physicalPage ? `
+      window.fixtureInput={arm:null,receipt:null};
+      addEventListener('keydown',e=>{
+        const arm=window.fixtureInput.arm;
+        if(!arm||!e.isTrusted||e.target.id!==arm.field||e.altKey||e.metaKey||e.shiftKey||
+           (arm.name==='return'?(e.key!=='Enter'||e.ctrlKey):(e.key.toLowerCase()!=='a'||!e.ctrlKey)))return;
+        const keyDownAt=Date.now();
+        window.fixtureInput.arm=null;
+        const field=e.target;
+        if(arm.switchTo)document.getElementById(arm.switchTo).focus();
+        setTimeout(()=>{window.fixtureInput.receipt={
+          id:arm.id,name:arm.name,trusted:e.isTrusted,keyDownAt,settledAt:Date.now(),
+          field:field.id,fieldAfter:document.activeElement.id,
+          control:e.ctrlKey,password:field.type==='password',
+          selectionStart:field.selectionStart,selectionEnd:field.selectionEnd,length:field.value.length
+        };},0);
+      },true);` : page === embedded
       ? `parent.postMessage({fixture:${JSON.stringify(token)}}, 'http://127.0.0.1:${port}');`
       : `window.fixtureFrameLoaded=false;addEventListener('message',e=>{
           if(e.origin==='http://localhost:${port}'&&e.data?.fixture===${JSON.stringify(token)})
@@ -274,7 +446,8 @@ test('real Edge snapshots preserve useful bodies and reject denied synthetic con
     child.once('error', (error) => { owned.error = error; });
     child.once('exit', (code, signal) => {
       owned.exited = true;
-      evidence('browser.exit', { pid: child.pid, code, signal });
+      try { evidence('browser.exit', { pid: child.pid, code, signal }); }
+      catch (error) { lifecycleErrors.push(error); }
     });
     evidence('browser.spawn', { pid: child.pid, profile, args });
     const endpoint = await until(async () => {
@@ -412,6 +585,10 @@ test('real Edge snapshots preserve useful bodies and reject denied synthetic con
     });
   }
 
+  if (physicalMode) {
+    await scenario('physical browser keys, revocation, privacy and sealed recovery', recorderCase);
+    return;
+  }
   await startBrowser(allowed);
   await scenario('allowed document exposes useful body without forcing accessibility', async () => {
     const target = await navigate(allowed);
@@ -577,11 +754,14 @@ test('real Edge snapshots preserve useful bodies and reject denied synthetic con
   });
   await stopBrowser();
 
-  await scenario('cold unchanged page reaches the recorder and same-window edits refresh', async () => {
+  await scenario('cold unchanged page reaches the recorder and same-window edits refresh', recorderCase);
+
+  async function recorderCase() {
     await policy();
-    const recorded = definePage('recorded');
+    const recorded = physicalMode ? physicalPage : definePage('recorded');
     await startBrowser(recorded);
     const target = await navigate(recorded);
+    if (physicalMode) await evaluate("document.getElementById('one').focus()");
     const recorder = spawn(helper, ['record', '--no-prompt', '--parent-pid', String(process.pid)], {
       env: { ...process.env, OPEN_COMPUTER_HISTORY_HOME: home },
       windowsHide: true, detached: true, stdio: ['pipe', 'pipe', 'pipe'],
@@ -590,7 +770,7 @@ test('real Edge snapshots preserve useful bodies and reject denied synthetic con
     let stdout = '';
     recorder.stdout.on('data', (chunk) => { stdout += chunk; });
     recorder.stderr.on('data', (chunk) => { stderr += chunk; });
-    recorder.stdin.on('error', (error) => evidence('recorder.stdin-error', { message: error.message }));
+    recorder.stdin.on('error', (error) => { lifecycleErrors.push(error); });
     const exited = new Promise((resolve, reject) => {
       recorder.once('error', reject);
       recorder.once('close', (code, signal) => resolve({ code, signal }));
@@ -598,19 +778,63 @@ test('real Edge snapshots preserve useful bodies and reject denied synthetic con
     let result;
     exited.then((value) => { result = value; }, () => {});
     const captureStarted = performance.now();
+    let witness;
+    let witnessResult;
+    let witnessError;
+    let witnessState;
+    let witnessAt = 0;
+    let witnessStderr = '';
+    let inputRequest;
+    let modePassed = false;
+    const acceptedActions = [];
+    let safetyCleanup;
+    const physicalSafety = physicalMode ? setTimeout(() => {
+      inputRequest = undefined;
+      safetyCleanup = cleanupAll([
+        () => writeFileSync(inputRequestPath, JSON.stringify({ done: true })),
+        () => recorder.stdin.end(),
+        () => witness?.stdin.end(),
+      ]).catch((error) => { lifecycleErrors.push(error); });
+    }, Math.max(1, workDeadline - performance.now())) : undefined;
+
+    async function invoke(args) {
+      const value = await run(helper, args, {
+        env: { ...process.env, OPEN_COMPUTER_HISTORY_HOME: home },
+        windowsHide: true, encoding: 'utf8', timeout: 5_000,
+      });
+      assert.equal(value.stderr, '');
+      return value.stdout;
+    }
+
     async function events(sealed = false) {
       const paths = await readdir(join(home, 'segments'), { recursive: true }).catch((error) => {
         if (error.code === 'ENOENT' && !sealed) return [];
         throw error;
       });
       const values = [];
-      for (const path of paths.filter((path) => path.endsWith('.jsonl'))) {
+      let files = paths.filter((path) => path.endsWith('.jsonl'));
+      if (physicalMode) {
+        const dated = await Promise.all(files.map(async (path) => {
+          try {
+            return { path, metadata: JSON.parse(await readFile(
+              join(home, 'segments', dirname(path), 'metadata.json'), 'utf8',
+            )) };
+          } catch (error) {
+            if (error.code === 'ENOENT' && !sealed) return undefined;
+            throw error;
+          }
+        }));
+        files = dated.filter(Boolean).sort((a, b) => Date.parse(a.metadata.startedAt) - Date.parse(b.metadata.startedAt) ||
+          a.path.localeCompare(b.path)).map(({ path }) => path);
+      }
+      for (const path of files) {
         const text = await readFile(join(home, 'segments', path), 'utf8');
         if (sealed) assert.ok(text.endsWith('\n'), 'sealed JSONL must not have a partial tail');
         const records = [];
         for (const line of text.split('\n').slice(0, -1)) {
           if (line) records.push(JSON.parse(line));
         }
+        if (physicalMode) assert.equal(new Set(records.map(({ id }) => id)).size, records.length);
         if (sealed) {
           const metadata = JSON.parse(await readFile(
             join(home, 'segments', dirname(path), 'metadata.json'), 'utf8',
@@ -618,57 +842,391 @@ test('real Edge snapshots preserve useful bodies and reject denied synthetic con
           assert.equal(metadata.eventCount, records.length);
           assert.equal(metadata.endReason, 'finished');
           assert.ok(Number.isFinite(Date.parse(metadata.endedAt)));
+          if (physicalMode) evidence('recorder.segment', { path, metadata, events: records });
         }
         for (const event of records) {
           assert.equal(event.app.bundleIdentifier, 'win32.msedge');
           assert.equal(event.app.processIdentifier, target.processIdentifier);
           assert.equal(event.window.windowID, target.windowID);
           assert.equal(event.window.url, 'http://127.0.0.1');
-          assert.deepEqual(event.contentDomains, ['127.0.0.1']);
-          assert.equal(event.contentState, 'available');
-          assert.equal(event.ax?.mode, 'fullTree');
+          if (!physicalMode || event.contentState === 'available') {
+            assert.deepEqual(event.contentDomains, ['127.0.0.1']);
+            assert.equal(event.contentState, 'available');
+            if (!physicalMode || event.ax) assert.equal(event.ax?.mode, 'fullTree');
+          } else {
+            assert.equal(event.contentState, 'metadataOnly');
+            assert.equal(event.contentDomains, undefined);
+            assert.equal(event.ax, undefined);
+            assert.equal(event.selection?.selectedText, undefined);
+            assert.equal(event.keyboard?.keyEquivalent, undefined);
+          }
           assert.match(event.sourceId, /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i);
           assert.ok(Number.isSafeInteger(event.id) && event.id > 0);
           assert.ok(Number.isFinite(Date.parse(event.timestamp)));
           for (const marker of deniedMarkers) assert.ok(!JSON.stringify(event).includes(marker));
+          if (physicalMode) assert.doesNotMatch(JSON.stringify(event), /"(?:runtimeId|documentRuntimeId|inputTarget|uia)"/u);
         }
         values.push(...records);
       }
       return values;
     }
+
+    async function health(state = 'running') {
+      assert.equal(result, undefined, `recorder exited: ${stderr}`);
+      const value = JSON.parse(await readFile(join(home, 'runtime.json'), 'utf8'));
+      assert.equal(value.processIdentifier, recorder.pid);
+      assert.equal(value.captureFailures, 0, 'provider failure cannot prove suppression');
+      assert.ok(!value.lastError && !value.captureError, 'recorder must remain healthy');
+      return value.state === state ? value : undefined;
+    }
+
+    async function suppressions() {
+      let count = 0;
+      for (const name of await readdir(join(home, 'segments'))) {
+        const metadata = JSON.parse(await readFile(join(home, 'segments', name, 'metadata.json'), 'utf8'));
+        count += metadata.suppressedEventCount ?? 0;
+      }
+      return count;
+    }
+
+    async function ownedField(field, password = false) {
+      return until(() => {
+        if (witnessError) throw witnessError;
+        assert.equal(witnessResult, undefined, `witness exited: ${witnessStderr}`);
+        if (!witnessState?.valid || Date.now() - witnessAt > 750 ||
+            witnessState.field !== field || witnessState.password !== password) return undefined;
+        return witnessState;
+      }, `fresh owned ${field} browser field`, 5_000);
+    }
+
+    async function startWitness() {
+      witness = spawn('powershell.exe', [
+        '-NoLogo', '-NoProfile', '-NonInteractive', '-Mta', '-ExecutionPolicy', 'Bypass', '-File', fixture,
+        '-BrowserProcessId', String(browser.child.pid), '-ParentProcessId', String(process.pid),
+        '-Profile', browser.profile, '-Executable', edge, '-Title', recorded.title,
+        '-WitnessUrl', plainUrl(recorded),
+      ], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+      witness.on('error', (error) => { witnessError = error; });
+      witness.stdin.on('error', (error) => { witnessError = error; });
+      witness.stderr.setEncoding('utf8').on('data', (data) => { witnessStderr += data; });
+      witness.on('close', (code, signal) => { witnessResult = { code, signal }; });
+      const lines = createInterface({ input: witness.stdout });
+      lines.on('line', (line) => {
+        try {
+          const value = JSON.parse(line);
+          witnessState = value;
+          witnessAt = value.witnessedAt ?? 0;
+          if (!value.valid) {
+            evidence('fixture.witness-unavailable', { message: value.error });
+            return;
+          }
+          assert.ok(Number.isSafeInteger(witnessAt) && witnessAt <= Date.now() + 100);
+          assert.equal(value.processIdentifier, target.processIdentifier);
+          assert.equal(value.windowID, target.windowID);
+          assert.equal(value.documentUrl, plainUrl(recorded));
+          assert.ok(Number.isSafeInteger(value.inputWindowID) && value.inputWindowID > 0);
+          for (const id of [value.runtimeId, value.documentRuntimeId, value.rootRuntimeId]) {
+            assert.ok(Array.isArray(id) && id.length > 0 && id.length <= 32 && id.every(Number.isInteger));
+          }
+          if (inputRequest && Date.now() - witnessAt <= 750 &&
+              value.field === inputRequest.field && value.password === inputRequest.password) {
+            assert.deepEqual(value.runtimeId, inputRequest.runtimeId);
+            assert.deepEqual(value.documentRuntimeId, inputRequest.documentRuntimeId);
+            assert.deepEqual(value.rootRuntimeId, inputRequest.rootRuntimeId);
+            assert.equal(value.inputWindowID, inputRequest.inputWindowID);
+            writeFileSync(inputRequestPath, JSON.stringify({
+              ...inputRequest, foreground: {
+                processIdentifier: value.processIdentifier, windowID: value.windowID,
+              }, witnessedAt: witnessAt,
+            }));
+          }
+        } catch (error) { witnessError = error; }
+      });
+      await ownedField('one');
+    }
+
+    async function leaseIdentity(expected) {
+      const source = randomUUID();
+      const child = spawn(helper, [
+        'snapshot-lease', '--parent-pid', String(process.pid), '--window', String(target.windowID),
+        '--pid', String(target.processIdentifier), '--source', source,
+      ], { env: { ...process.env, OPEN_COMPUTER_HISTORY_HOME: home },
+        windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+      let frame;
+      let error;
+      let closed;
+      let errors = '';
+      child.on('error', (value) => { error = value; });
+      child.stdin.on('error', (value) => { error = value; });
+      child.stderr.setEncoding('utf8').on('data', (data) => { errors += data; });
+      child.on('close', (code, signal) => { closed = { code, signal }; });
+      const lines = createInterface({ input: child.stdout });
+      lines.on('line', (line) => {
+        try {
+          const value = JSON.parse(line);
+          evidence('identity-lease.frame', { value });
+          if (value.type === 'snapshot') frame = value;
+        } catch (value) { error = value; }
+      });
+      try {
+        await until(() => {
+          if (error) throw error;
+          assert.equal(closed, undefined, `identity lease exited: ${errors}`);
+          return frame;
+        }, 'native browser field identity frame', 3_000);
+        assert.equal(frame.snapshot?.sourceId, source);
+        assert.equal(frame.snapshot?.inputTarget?.hwnd, expected.inputWindowID);
+        assert.equal(frame.snapshot.inputTarget.role, 'AXTextField');
+        assert.deepEqual(frame.snapshot.inputTarget.uia?.runtimeId, expected.runtimeId);
+        assert.deepEqual(frame.snapshot.inputTarget.uia?.documentRuntimeId, expected.documentRuntimeId);
+        const current = await ownedField(expected.field);
+        assert.equal(current.inputWindowID, expected.inputWindowID);
+        assert.deepEqual(current.runtimeId, expected.runtimeId);
+        assert.deepEqual(current.documentRuntimeId, expected.documentRuntimeId);
+        evidence('identity-lease.matched', { authority: 'standalone-identity-only', expected });
+      } finally {
+        child.stdin.end();
+        try { await pollUntil(() => closed, 'identity lease EOF', 3_000); }
+        catch {
+          child.kill();
+          await pollUntil(() => closed, 'identity lease termination', 2_000);
+          throw new Error('Identity lease required termination');
+        } finally { lines.close(); }
+        assert.deepEqual(closed, { code: 0, signal: null });
+        assert.equal(errors, '');
+      }
+    }
+
+    async function bodyMarker(marker) {
+      const count = (await events()).length;
+      await evaluate(`document.getElementById('body').textContent=${JSON.stringify(marker)}`);
+      const value = await until(async () => {
+        await health();
+        return (await events()).slice(count).find((event) => event.ax?.text?.includes(marker));
+      }, 'fresh browser recorder body', 9_000);
+      evidence('recorder.body', { event: value });
+      return value;
+    }
+
+    async function physical(name, field, { reject = false, password = false, switchTo, metadata = false, sourceId } = {}) {
+      const identity = await ownedField(field, password);
+      const since = (await events()).length;
+      const suppressedBefore = reject && !switchTo ? await suppressions() : undefined;
+      const id = randomUUID();
+      await evaluate(`window.fixtureInput.receipt=null;window.fixtureInput.arm=${JSON.stringify({ id, name, field, switchTo })}`);
+      const issuedAt = Date.now();
+      const request = {
+        id, name, field, password, issuedAt, deadline: issuedAt + 12_000,
+        processIdentifier: target.processIdentifier, windowID: target.windowID,
+        inputWindowID: identity.inputWindowID, runtimeId: identity.runtimeId,
+        documentRuntimeId: identity.documentRuntimeId, rootRuntimeId: identity.rootRuntimeId,
+      };
+      inputRequest = request;
+      evidence('driver.request', { request: inputRequest, reject, metadata });
+      try {
+        const receipt = await until(async () => {
+          if (witnessError) throw witnessError;
+          await health();
+          const value = await evaluate('window.fixtureInput.receipt');
+          return value?.id === id && value;
+        }, `physical browser ${name} receipt`, 12_000);
+        inputRequest = undefined;
+        writeFileSync(inputRequestPath, JSON.stringify({ id, completed: true }));
+        assert.equal(receipt.trusted, true);
+        assert.equal(receipt.field, field);
+        assert.equal(receipt.fieldAfter, switchTo ?? field);
+        assert.equal(receipt.name, name);
+        assert.equal(receipt.control, name === 'shortcut');
+        assert.equal(receipt.password, password);
+        assert.ok(Number.isSafeInteger(receipt.keyDownAt) && Number.isSafeInteger(receipt.settledAt));
+        assert.ok(receipt.keyDownAt >= issuedAt && receipt.settledAt >= receipt.keyDownAt &&
+          receipt.settledAt <= Date.now() && receipt.settledAt <= request.deadline,
+        'receipt must belong to the current request interval');
+        if (name === 'shortcut') {
+          assert.equal(receipt.selectionStart, 0);
+          assert.equal(receipt.selectionEnd, receipt.length);
+          assert.ok(receipt.length > 0);
+        }
+        if (reject) {
+          const end = performance.now() + 6_000;
+          while (performance.now() < end) {
+            assert.ok(await health(), 'rejection window requires a running recorder');
+            const fresh = (await events()).slice(since);
+            assert.ok(!fresh.some(isKeyboard), 'revoked physical browser key persisted');
+            if (!switchTo) assert.equal(fresh.length, 0, 'denied browser context persisted');
+            assert.ok(performance.now() < workDeadline);
+            await delay(100);
+          }
+          if (!switchTo) assert.ok(await suppressions() > suppressedBefore, 'denial must show actual native suppression');
+        } else {
+          const event = await until(async () => {
+            await health();
+            const actions = (await events()).slice(since).filter(isKeyboard);
+            assert.ok(actions.length <= 1, 'one physical request produced multiple keyboard actions');
+            return actions[0];
+          }, `persisted physical browser ${name}`, 9_000);
+          const accepted = { ...request, metadata, sourceId, receipt, event };
+          verifyPhysicalAction(event, accepted);
+          acceptedActions.push(accepted);
+          evidence('recorder.action', { id, receipt, event });
+        }
+        evidence('physical.passed', { id, name, field, reject, metadata, receipt });
+      } finally {
+        inputRequest = undefined;
+        await cleanupAll([
+          () => writeFileSync(inputRequestPath, JSON.stringify({ id, completed: true })),
+          () => evaluate('window.fixtureInput.arm=null'),
+        ]);
+      }
+    }
+
+    async function physicalAcceptance(initial) {
+      await startWitness();
+      const one = await ownedField('one');
+      await leaseIdentity(one);
+      await physical('return', 'one', { sourceId: initial.sourceId });
+      await physical('shortcut', 'one', { sourceId: initial.sourceId });
+      await physical('return', 'one', { reject: true, switchTo: 'two' });
+      const two = await ownedField('two');
+      assert.notDeepEqual(one.runtimeId, two.runtimeId);
+      assert.deepEqual(one.documentRuntimeId, two.documentRuntimeId);
+      assert.deepEqual(one.rootRuntimeId, two.rootRuntimeId);
+      assert.equal(one.inputWindowID, two.inputWindowID);
+      const recovered = await bodyMarker(`SECOND_${token}`);
+      await leaseIdentity(two);
+      await physical('return', 'two', { sourceId: recovered.sourceId });
+      await physical('shortcut', 'two', { sourceId: recovered.sourceId });
+      const secret = `PASSWORD_ONLY_${token}`;
+      const passwordBody = `PASSWORD_BODY_${token}`;
+      deniedMarkers.add(secret);
+      deniedMarkers.add(passwordBody);
+      await evaluate(`document.getElementById('two').type='password';
+        document.getElementById('two').value=${JSON.stringify(secret)};
+        document.getElementById('body').textContent=${JSON.stringify(passwordBody)}`);
+      assert.equal(await snapshot(recorded, target), null);
+      await physical('return', 'two', { reject: true, password: true });
+      await evaluate(`document.getElementById('two').value='RECOVERED_FIELD';
+        document.getElementById('two').type='text';
+        document.getElementById('body').textContent='Recovered synthetic document'`);
+      const passwordRecovery = await bodyMarker(`PASSWORD_RECOVERED_${token}`);
+      await physical('return', 'two', { sourceId: passwordRecovery.sourceId });
+      await policy({ blocked: ['127.0.0.1'] });
+      assert.equal(await snapshot(recorded, target), null);
+      const blockedBody = `DOMAIN_ONLY_${token}`;
+      deniedMarkers.add(blockedBody);
+      await evaluate(`document.getElementById('body').textContent=${JSON.stringify(blockedBody)}`);
+      await physical('return', 'two', { reject: true });
+      await evaluate("document.getElementById('body').textContent='Allowed synthetic document'");
+      await policy();
+      const domainRecovery = await bodyMarker(`DOMAIN_RECOVERED_${token}`);
+      await physical('return', 'two', { sourceId: domainRecovery.sourceId });
+      await invoke(['pause']);
+      await until(() => health('paused'), 'paused browser recorder', 9_000);
+      await policy({ captureText: false });
+      const off = `TEXT_OFF_ONLY_${token}`;
+      deniedMarkers.add(off);
+      await evaluate(`document.getElementById('body').textContent=${JSON.stringify(off)};
+        document.getElementById('two').value=${JSON.stringify(off)}`);
+      const metadataSince = (await events()).length;
+      await invoke(['resume']);
+      await until(() => health(), 'metadata browser recorder', 9_000);
+      const metadataObservation = await until(async () => {
+        await health();
+        return (await events()).slice(metadataSince).find((event) =>
+          event.contentState === 'metadataOnly' &&
+          ['window.changed', 'ui.changed', 'selection.changed'].includes(event.kind));
+      }, 'fresh persisted metadata-only browser observation', 9_000);
+      evidence('recorder.metadata-ready', { event: metadataObservation });
+      await physical('return', 'two', { metadata: true, sourceId: metadataObservation.sourceId });
+      await physical('shortcut', 'two', { metadata: true, sourceId: metadataObservation.sourceId });
+      await invoke(['pause']);
+      await until(() => health('paused'), 'paused before text restoration', 9_000);
+      const metadataEvents = (await events()).slice(metadataSince);
+      for (const event of metadataEvents) {
+        assert.equal(event.contentState, 'metadataOnly');
+        assert.equal(event.ax, undefined);
+        assert.equal(event.contentDomains, undefined);
+        assert.equal(event.selection?.selectedText, undefined);
+        assert.equal(event.keyboard?.keyEquivalent, undefined);
+      }
+      evidence('recorder.metadata-only', { events: metadataEvents });
+      await evaluate("document.getElementById('two').value='Restored field';document.getElementById('body').textContent='Restored body'");
+      await policy();
+      await invoke(['resume']);
+      await until(() => health(), 'restored browser recorder', 9_000);
+      const consentRecovery = await bodyMarker(`CONSENT_RECOVERED_${token}`);
+      await physical('return', 'two', { sourceId: consentRecovery.sourceId });
+      modePassed = true;
+    }
     try {
       const initial = await until(async () => {
         assert.equal(result, undefined, `recorder exited: ${stderr}`);
-        return (await events()).find((value) => value.ax.text.includes(recorded.body));
+        return (await events()).find((value) => value.ax?.text?.includes(recorded.body));
       }, 'recorder cold body', 25_000);
       evidence('recorder.cold-body', { durationMs: performance.now() - captureStarted, event: initial });
-      const changed = `RECORDED_EDIT_${token}`;
-      const editStarted = performance.now();
-      await evaluate(`document.querySelector('#body').textContent=${JSON.stringify(changed)}`);
-      const fresh = await until(async () => {
-        assert.equal(result, undefined, `recorder exited: ${stderr}`);
-        return (await events()).find((value) => value.ax.text.includes(changed));
-      }, 'recorder same-window edit', 9_000);
-      assert.equal(fresh.sourceId, initial.sourceId);
-      assert.ok(!fresh.ax.text.includes(recorded.body), 'updated body must not retain replaced text');
-      assert.ok(Date.parse(fresh.timestamp) > Date.parse(initial.timestamp));
-      assert.equal((await window(recorded)).windowID, target.windowID);
-      evidence('recorder.edited-body', { durationMs: performance.now() - editStarted, event: fresh });
-    } finally {
-      recorder.stdin.end();
-      try {
-        await until(() => result, 'recorder graceful exit', 5_000);
-      } catch {
-        recorder.kill();
-        await until(() => result, 'terminated recorder exit', 1_000);
-        throw new Error('Recorder needed forced termination');
+      if (physicalMode) {
+        assert.equal(initial.contentState, 'available');
+        assert.equal(initial.ax?.mode, 'fullTree');
+        assert.ok(!initial.window.title.includes(recorded.body));
+        usefulBaseline = true;
+        await physicalAcceptance(initial);
+      } else {
+        const changed = `RECORDED_EDIT_${token}`;
+        const editStarted = performance.now();
+        await evaluate(`document.querySelector('#body').textContent=${JSON.stringify(changed)}`);
+        const fresh = await until(async () => {
+          assert.equal(result, undefined, `recorder exited: ${stderr}`);
+          return (await events()).find((value) => value.ax.text.includes(changed));
+        }, 'recorder same-window edit', 9_000);
+        assert.equal(fresh.sourceId, initial.sourceId);
+        assert.ok(!fresh.ax.text.includes(recorded.body), 'updated body must not retain replaced text');
+        assert.ok(Date.parse(fresh.timestamp) > Date.parse(initial.timestamp));
+        assert.equal((await window(recorded)).windowID, target.windowID);
+        evidence('recorder.edited-body', { durationMs: performance.now() - editStarted, event: fresh });
       }
-      assert.deepEqual(result, { code: 0, signal: null });
-      assert.equal(stdout, '');
-      assert.equal(stderr, '');
-      evidence('recorder.closed', { ...result, stdout, stderr });
+    } finally {
+      clearTimeout(physicalSafety);
+      inputRequest = undefined;
+      await cleanupAll([
+        () => safetyCleanup,
+        () => { if (physicalMode) writeFileSync(inputRequestPath, JSON.stringify({ done: true })); },
+        () => witness?.stdin.end(),
+        () => recorder.stdin.end(),
+        async () => {
+          try { await pollUntil(() => result, 'recorder graceful exit', 5_000); }
+          catch {
+            recorder.kill();
+            await pollUntil(() => result, 'terminated recorder exit', 1_000);
+            throw new Error('Recorder needed forced termination');
+          }
+        },
+        async () => {
+          if (witness) {
+            try { await pollUntil(() => witnessResult, 'browser witness EOF', 3_000); }
+            catch {
+              witness.kill();
+              await pollUntil(() => witnessResult, 'browser witness termination', 2_000);
+              throw new Error('Browser witness required termination');
+            }
+            assert.deepEqual(witnessResult, { code: 0, signal: null });
+            assert.equal(witnessStderr, '');
+          }
+        },
+        () => {
+          assert.deepEqual(result, { code: 0, signal: null });
+          assert.equal(stdout, '');
+          assert.equal(stderr, '');
+          if (lifecycleErrors.length) throw new AggregateError(lifecycleErrors, 'Fixture lifecycle errors');
+          evidence('recorder.closed', { ...result, stdout, stderr });
+        },
+      ]);
     }
-    assert.ok((await events(true)).length >= 2, 'sealed store must retain both observed bodies');
+    const sealedEvents = await events(true);
+    assert.ok(sealedEvents.length >= 2, 'sealed store must retain both observed bodies');
+    if (physicalMode) {
+      reconcilePhysicalActions(sealedEvents, acceptedActions);
+      evidence('recorder.actions-reconciled', { accepted: acceptedActions.map(({ id }) => id) });
+    }
     const runtime = JSON.parse(await readFile(join(home, 'runtime.json'), 'utf8'));
     assert.equal(runtime.state, 'stopped');
     assert.equal(runtime.captureFailures, 0);
@@ -680,5 +1238,6 @@ test('real Edge snapshots preserve useful bodies and reject denied synthetic con
     assert.equal(closed.stderr, '');
     assert.equal(JSON.parse(closed.stdout).recorderActive, false);
     evidence('recorder.sealed', { runtime, status: JSON.parse(closed.stdout) });
-  });
+    if (physicalMode) evidence('physical.acceptance', { passed: modePassed, sealed: true, cleanupVerified: true });
+  }
 });

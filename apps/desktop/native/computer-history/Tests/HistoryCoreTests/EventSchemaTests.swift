@@ -9,6 +9,23 @@ import XCTest
 @testable import HistoryCore
 
 final class EventSchemaTests: XCTestCase {
+    func testSelectionTruncationIsOptionalAndRoundTripsWithoutChangingLegacyRecords() throws {
+        let legacy = Data(#"{"selectedText":"hello","selectedRange":{"location":7,"length":5}}"#.utf8)
+        let decoder = JSONDecoder()
+        let encoder = JSONEncoder()
+        let decoded = try decoder.decode(EventStreamSelection.self, from: legacy)
+        XCTAssertNil(decoded.truncated)
+        XCTAssertNil((try JSONSerialization.jsonObject(with: encoder.encode(decoded)) as? [String: Any])?["truncated"])
+        for truncated in [nil, false, true] as [Bool?] {
+            let selection = EventStreamSelection(target: nil, selectedText: "hello",
+                selectedRange: .init(location: 7, length: 5), selectedItems: [], truncated: truncated)
+            let data = try encoder.encode(selection)
+            XCTAssertEqual(try decoder.decode(EventStreamSelection.self, from: data), selection)
+            let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+            XCTAssertEqual(object["truncated"] as? Bool, truncated)
+        }
+    }
+
     func testEventUsesRecoveredNestedSchema() throws {
         let event = HistoryEvent(
             id: 7,

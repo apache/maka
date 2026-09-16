@@ -23,8 +23,15 @@ on:
       - 'apps/desktop/native/computer-history-windows/**'
       - 'apps/desktop/scripts/build-computer-history-helper*.mjs'
       - 'apps/desktop/scripts/computer-history-windows-native.test.mjs'
+      - 'apps/desktop/scripts/computer-history-windows-browser.*'
+      - 'apps/desktop/scripts/computer-history-windows-interactive.*'
+      - 'apps/desktop/scripts/computer-history-windows-wpf.*'
       - 'apps/desktop/src/main/computer-history-main.ts'
       - 'apps/desktop/src/main/__tests__/computer-history-main.test.ts'
+      - 'apps/desktop/src/main/computer-history-applications.ts'
+      - 'apps/desktop/src/main/__tests__/computer-history-applications.test.ts'
+      - 'packages/core/src/computer-history.ts'
+      - 'packages/core/src/__tests__/computer-history.test.ts'
       - 'apps/desktop/src/main/runtime-host-boot.ts'
       - 'apps/desktop/src/main/computer-history-windows-ownership.ts'
       - 'apps/desktop/src/main/__tests__/computer-history-windows-ownership.test.ts'
@@ -42,8 +49,15 @@ on:
       - 'apps/desktop/native/computer-history-windows/**'
       - 'apps/desktop/scripts/build-computer-history-helper*.mjs'
       - 'apps/desktop/scripts/computer-history-windows-native.test.mjs'
+      - 'apps/desktop/scripts/computer-history-windows-browser.*'
+      - 'apps/desktop/scripts/computer-history-windows-interactive.*'
+      - 'apps/desktop/scripts/computer-history-windows-wpf.*'
       - 'apps/desktop/src/main/computer-history-main.ts'
       - 'apps/desktop/src/main/__tests__/computer-history-main.test.ts'
+      - 'apps/desktop/src/main/computer-history-applications.ts'
+      - 'apps/desktop/src/main/__tests__/computer-history-applications.test.ts'
+      - 'packages/core/src/computer-history.ts'
+      - 'packages/core/src/__tests__/computer-history.test.ts'
       - 'apps/desktop/src/main/runtime-host-boot.ts'
       - 'apps/desktop/src/main/computer-history-windows-ownership.ts'
       - 'apps/desktop/src/main/__tests__/computer-history-windows-ownership.test.ts'
@@ -100,6 +114,12 @@ jobs:
         run: npm ci --ignore-scripts
       - name: Test build and platform packaging contracts
         run: node --test apps/desktop/scripts/build-computer-history-helper.test.mjs scripts/generate-computer-history-windows-notices.test.mjs
+      - name: Test interactive harness contracts without desktop capture
+        env:
+          MAKA_HISTORY_WINDOWS_BROWSER_TEST: '0'
+          MAKA_HISTORY_WINDOWS_INTERACTIVE_TEST: '0'
+          MAKA_HISTORY_WINDOWS_WPF_TEST: '0'
+        run: node --test apps/desktop/scripts/computer-history-windows-browser.test.mjs apps/desktop/scripts/computer-history-windows-interactive.test.mjs apps/desktop/scripts/computer-history-windows-wpf.test.mjs
       - name: Check Windows Cargo dependency notices
         env:
           RUSTUP_TOOLCHAIN: stable

@@ -141,7 +141,7 @@ func runAdmittedRecorder(arguments: [String], homeURL: URL, parent: RecorderPare
 
     if let duration = optionValue("--duration", in: arguments).flatMap(Double.init) {
         DispatchQueue.main.asyncAfter(deadline: .now() + duration) {
-            recorder.stop(reason: "duration_elapsed")
+            recorder.complete()
             CFRunLoopStop(CFRunLoopGetMain())
         }
     }

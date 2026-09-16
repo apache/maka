@@ -33,6 +33,7 @@ const MAX_CONFIG_BYTES: u64 = 256 * 1024;
 const MAX_RULES: usize = 512;
 const MAX_DOMAINS: usize = 64;
 const MAX_TEXT_BYTES: usize = 28 * 1024;
+pub const MAX_SELECTION_BYTES: usize = 8 * 1024;
 const MAX_URL_BYTES: usize = 8192;
 const MAX_EVENT_ID: u64 = (1_u64 << 53) - 1;
 
@@ -41,6 +42,8 @@ const MAX_EVENT_ID: u64 = (1_u64 << 53) - 1;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Snapshot {
     pub app_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub application_user_model_id: Option<String>,
     pub app_name: String,
     pub pid: u32,
     pub window_id: u64,
@@ -51,6 +54,12 @@ pub struct Snapshot {
     pub text_truncated: bool,
     #[serde(default)]
     pub selection: Option<Selection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item_selection: Option<ItemSelection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_target: Option<InputTarget>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<Action>,
     pub source_id: String,
     pub domains: Vec<String>,
     pub secure: bool,
@@ -58,12 +67,199 @@ pub struct Snapshot {
     pub source_known: bool,
 }
 
+impl Snapshot {
+    /// Retain source admission facts without carrying an older body observation.
+    pub fn without_content(&self) -> Self {
+        Self {
+            text: None,
+            selection: None,
+            item_selection: None,
+            action: None,
+            text_truncated: false,
+            app_id: self.app_id.clone(),
+            application_user_model_id: self.application_user_model_id.clone(),
+            app_name: self.app_name.clone(),
+            pid: self.pid,
+            window_id: self.window_id,
+            title: self.title.clone(),
+            url: self.url.clone(),
+            input_target: self.input_target.clone(),
+            source_id: self.source_id.clone(),
+            domains: self.domains.clone(),
+            secure: self.secure,
+            private: self.private,
+            source_known: self.source_known,
+        }
+    }
+}
+
+/// Worker-only identity. UIA targets use their real native focus host, which
+/// can equal the top-level window; admission additionally requires a live lease.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct InputTarget {
+    pub hwnd: u64,
+    pub role: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uia: Option<UiaTarget>,
+}
+
+/// Opaque comparison-only identities, never persisted or interpreted as text.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UiaTarget {
+    #[serde(deserialize_with = "runtime_id")]
+    pub runtime_id: Vec<i32>,
+    /// Empty only when the admitted native tree has no owning web Document.
+    #[serde(deserialize_with = "runtime_id")]
+    pub document_runtime_id: Vec<i32>,
+}
+
+impl UiaTarget {
+    pub fn is_valid(&self) -> bool {
+        !self.runtime_id.is_empty()
+            && self.runtime_id.len() <= 32
+            && self.document_runtime_id.len() <= 32
+    }
+}
+
+fn runtime_id<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Vec<i32>, D::Error> {
+    struct RuntimeId;
+    impl<'de> serde::de::Visitor<'de> for RuntimeId {
+        type Value = Vec<i32>;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("at most 32 opaque runtime ID integers")
+        }
+
+        fn visit_seq<A: serde::de::SeqAccess<'de>>(
+            self,
+            mut sequence: A,
+        ) -> std::result::Result<Self::Value, A::Error> {
+            let mut values = Vec::new();
+            while let Some(value) = sequence.next_element::<i32>()? {
+                if values.len() == 32 {
+                    return Err(serde::de::Error::custom(
+                        "UIA runtime ID exceeds 32 integers",
+                    ));
+                }
+                values.push(value);
+            }
+            Ok(values)
+        }
+    }
+    deserializer.deserialize_seq(RuntimeId)
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
+pub enum Action {
+    Keyboard {
+        key: String,
+        modifiers: Vec<String>,
+    },
+    Mouse {
+        button: String,
+        modifiers: Vec<String>,
+    },
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Selection {
-    pub selected_text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected_text: Option<String>,
+    #[serde(default)]
     pub truncated: bool,
+    /// Offset and optional original length in UTF-16 units, independent of text clipping.
     pub start: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub length: Option<u32>,
+}
+
+/// Worker-only selection membership. Acquisition must admit the complete
+/// selected subtrees and revalidate their source before supplying sampled values.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ItemSelection {
+    #[serde(deserialize_with = "runtime_id")]
+    pub owner_runtime_id: Vec<i32>,
+    /// Empty only for a native tree without an owning remote document.
+    #[serde(deserialize_with = "runtime_id")]
+    pub document_runtime_id: Vec<i32>,
+    pub items: Vec<SelectedItem>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SelectedItem {
+    #[serde(deserialize_with = "runtime_id")]
+    pub runtime_id: Vec<i32>,
+    pub role: String,
+    /// Bounded sampled content from admitted leaves, never a container aggregate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
+}
+
+impl ItemSelection {
+    fn project(&self, capture_text: bool, remote: bool) -> Option<(Value, usize)> {
+        if self.owner_runtime_id.is_empty()
+            || self.owner_runtime_id.len() > 32
+            || self.document_runtime_id.len() > 32
+            || (remote && self.document_runtime_id.is_empty())
+            || self.items.len() > 32
+        {
+            return None;
+        }
+        let mut items = Vec::with_capacity(self.items.len());
+        for (index, item) in self.items.iter().enumerate() {
+            if item.runtime_id.is_empty()
+                || item.runtime_id.len() > 32
+                || item.runtime_id == self.owner_runtime_id
+                || item.runtime_id == self.document_runtime_id
+                || self.items[..index]
+                    .iter()
+                    .any(|previous| previous.runtime_id == item.runtime_id)
+                || !matches!(
+                    item.role.as_str(),
+                    "AXRow"
+                        | "AXCell"
+                        | "AXGroup"
+                        | "AXStaticText"
+                        | "AXTextField"
+                        | "AXTextArea"
+                        | "AXButton"
+                        | "AXCheckBox"
+                        | "AXRadioButton"
+                        | "AXMenuItem"
+                        | "AXImage"
+                        | "AXLink"
+                        | "AXList"
+                        | "AXOutline"
+                        | "AXTable"
+                        | "AXScrollArea"
+                        | "AXTabGroup"
+                        | "AXComboBox"
+                )
+            {
+                return None;
+            }
+            let mut projected = json!({ "role": item.role });
+            if capture_text && let Some(value) = &item.value {
+                if value.len() > MAX_SELECTION_BYTES {
+                    return None;
+                }
+                projected["value"] = json!(bounded(value, MAX_SELECTION_BYTES, true).0);
+            }
+            items.push(projected);
+        }
+        // Reject overflow instead of silently dropping later selection members.
+        let items = Value::Array(items);
+        let bytes = serde_json::to_vec(&items).ok()?.len();
+        (bytes <= MAX_SELECTION_BYTES).then_some((items, bytes))
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -156,14 +352,30 @@ impl Policy {
         Ok(policy)
     }
 
+    #[cfg(test)]
     pub fn permits_app(&self, app_id: &str) -> bool {
+        self.permits_application(app_id, None)
+    }
+
+    /// Either identity can exclude a process; an allow rule cannot override a block.
+    pub fn permits_application(&self, app_id: &str, aumid: Option<&str>) -> bool {
         let Some(app_id) = windows_application_id(app_id) else {
             return false;
+        };
+        let packaged = match aumid {
+            Some(value) => match packaged_application_id(value) {
+                Some(value) => Some(format!("winapp.{value}")),
+                None => return false,
+            },
+            None => None,
         };
         let matches = |rules: &[Rule]| {
             rules.iter().any(|rule| {
                 if let Rule::Application { app_id: candidate } = rule {
-                    *candidate == app_id
+                    candidate.eq_ignore_ascii_case(&app_id)
+                        || packaged
+                            .as_ref()
+                            .is_some_and(|id| candidate.eq_ignore_ascii_case(id))
                 } else {
                     false
                 }
@@ -218,6 +430,11 @@ impl Policy {
                     | "ui.changed"
                     | "selection.changed"
                     | "terminal.value_changed"
+                    | "keyboard.submit"
+                    | "keyboard.shortcut"
+                    | "mouse.click"
+                    | "mouse.contextMenu"
+                    | "mouse.drag"
             )
         {
             return None;
@@ -233,7 +450,7 @@ impl Policy {
         let app_id = windows_application_id(&snapshot.app_id)?;
         if snapshot.secure
             || snapshot.private
-            || !self.permits_app(&app_id)
+            || !self.permits_application(&app_id, snapshot.application_user_model_id.as_deref())
             || private_title(&snapshot.title)
             || snapshot.domains.len() > MAX_DOMAINS
             || snapshot.source_id.len() != 36
@@ -278,6 +495,9 @@ impl Policy {
             "bundleIdentifier": app_id,
             "processIdentifier": snapshot.pid,
         });
+        if let Some(identity) = &snapshot.application_user_model_id {
+            event["app"]["applicationUserModelId"] = json!(identity);
+        }
         event["window"] = json!({
             "title": bounded(&snapshot.title, 1024, false).0,
             "windowID": snapshot.window_id,
@@ -291,10 +511,28 @@ impl Policy {
         } else {
             "metadataOnly"
         });
-        if self.capture_text
+        let is_input = kind.starts_with("keyboard.") || kind.starts_with("mouse.");
+        let (selected_items, item_bytes) =
+            if !is_input && let Some(selection) = &snapshot.item_selection {
+                let (items, bytes) = selection.project(self.capture_text, !domains.is_empty())?;
+                (Some(items), bytes)
+            } else {
+                (None, 0)
+            };
+        if !is_input
+            && self.capture_text
             && let Some(text) = snapshot.text.as_deref()
         {
-            let (text, truncated) = bounded(text, MAX_TEXT_BYTES, true);
+            let selection_bytes = snapshot
+                .selection
+                .as_ref()
+                .and_then(|selection| selection.selected_text.as_deref())
+                .map_or(0, |text| bounded(text, MAX_SELECTION_BYTES, true).0.len());
+            let (text, truncated) = bounded(
+                text,
+                MAX_TEXT_BYTES.saturating_sub(selection_bytes + item_bytes),
+                true,
+            );
             if !text.trim().is_empty() {
                 event["ax"] = json!({ "mode": "fullTree", "text": text,
                     "truncated": truncated || snapshot.text_truncated });
@@ -302,23 +540,130 @@ impl Policy {
                 event["contentDomains"] = json!(domains);
             }
         }
-        if self.capture_text
-            && let Some(selection) = &snapshot.selection
-            && !selection.selected_text.is_empty()
-        {
-            let (text, truncated) = bounded(&selection.selected_text, 4096, true);
-            event["selection"] = json!({
-                "selectedText": text, "start": selection.start,
-                "truncated": truncated || selection.truncated,
-            });
-            event["contentState"] = json!("available");
-            event["contentDomains"] = json!(domains);
+        if !is_input && let Some(selection) = &snapshot.selection {
+            event["selection"] = if let Some(length) = selection.length {
+                selection.start.checked_add(length)?;
+                json!({ "selectedRange": { "location": selection.start, "length": length } })
+            } else {
+                json!({ "start": selection.start })
+            };
+            if self.capture_text
+                && let Some(text) = selection.selected_text.as_deref()
+                && !text.is_empty()
+            {
+                let (text, truncated) = bounded(text, MAX_SELECTION_BYTES, true);
+                event["selection"]["selectedText"] = json!(text);
+                event["selection"]["truncated"] = json!(truncated || selection.truncated);
+                event["contentState"] = json!("available");
+                event["contentDomains"] = json!(domains);
+            }
+        }
+        if let Some(items) = selected_items {
+            if event.get("selection").is_none() {
+                event["selection"] = json!({});
+            }
+            if items.as_array()?.iter().any(|item| {
+                item.get("value")
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| !value.is_empty())
+            }) {
+                event["contentState"] = json!("available");
+                event["contentDomains"] = json!(domains);
+            }
+            event["selection"]["selectedItems"] = items;
+        }
+        if is_input {
+            let input_target = snapshot.input_target.as_ref()?;
+            if input_target.hwnd == 0
+                || (input_target.uia.is_none() && input_target.hwnd == snapshot.window_id)
+                || !matches!(
+                    input_target.role.as_str(),
+                    "AXTextField" | "AXGroup" | "AXDocument"
+                )
+                || input_target.uia.as_ref().is_some_and(|uia| {
+                    !uia.is_valid()
+                        || ((snapshot.url.is_some() || !snapshot.domains.is_empty())
+                            && uia.document_runtime_id.is_empty())
+                })
+            {
+                return None;
+            }
+            let mut target = json!({ "role": input_target.role });
+            if self.capture_text && input_target.uia.is_none() {
+                target["identifier"] = json!(format!("hwnd:{}", input_target.hwnd));
+            }
+            let (modifiers, payload) = match snapshot.action.as_ref()? {
+                Action::Keyboard { key, modifiers } => {
+                    if !matches!(kind, "keyboard.submit" | "keyboard.shortcut")
+                        || (kind == "keyboard.submit" && key != "return")
+                        || key.is_empty()
+                        || key.len() > 32
+                        || !key.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_')
+                        || (kind == "keyboard.shortcut"
+                            && !modifiers
+                                .iter()
+                                .any(|m| matches!(m.as_str(), "control" | "alt" | "meta")))
+                    {
+                        return None;
+                    }
+                    let mut keyboard = json!({ "modifiers": modifiers, "target": target });
+                    if self.capture_text {
+                        keyboard["keyEquivalent"] = json!(key);
+                    }
+                    (modifiers, keyboard)
+                }
+                Action::Mouse { button, modifiers } => {
+                    if input_target.uia.is_some()
+                        || !matches!(button.as_str(), "left" | "right" | "middle" | "other")
+                        || (kind != "mouse.drag"
+                            && kind
+                                != if button == "right" {
+                                    "mouse.contextMenu"
+                                } else {
+                                    "mouse.click"
+                                })
+                    {
+                        return None;
+                    }
+                    let mut mouse =
+                        json!({ "button": button, "modifiers": modifiers, "target": target });
+                    if kind == "mouse.drag" {
+                        // Both endpoints belong to the same observed native
+                        // control. This records movement, not an operation result.
+                        let endpoint = json!({ "app": event["app"], "window": event["window"], "element": target });
+                        mouse["origin"] = endpoint.clone();
+                        mouse["destination"] = endpoint;
+                    } else {
+                        mouse["clickCount"] = json!(1);
+                    }
+                    (modifiers, mouse)
+                }
+            };
+            if modifiers.len() > 4
+                || modifiers
+                    .iter()
+                    .any(|m| !matches!(m.as_str(), "control" | "shift" | "alt" | "meta"))
+            {
+                return None;
+            }
+            event[if kind.starts_with("keyboard.") {
+                "keyboard"
+            } else {
+                "mouse"
+            }] = payload;
+            if self.capture_text {
+                event["contentState"] = json!("available");
+                event["contentDomains"] = json!(domains);
+            }
         }
         Some(event)
     }
 }
 
 fn application_id(value: &str) -> Option<String> {
+    if let Some(aumid) = value.strip_prefix("winapp.") {
+        return packaged_application_id(aumid).map(|id| format!("winapp.{id}"));
+    }
     if value.is_empty()
         || value.len() > 256
         || value.starts_with('.')
@@ -337,6 +682,30 @@ pub(crate) fn windows_application_id(value: &str) -> Option<String> {
     let value = application_id(value)?;
     let executable = value.strip_prefix("win32.")?;
     if executable.is_empty() || executable.starts_with('.') || executable.ends_with(".exe") {
+        return None;
+    }
+    Some(value)
+}
+
+/// Packaged identity envelope, preserved exactly. The native process/metadata reader
+/// also asks Windows to verify the identity before using it as an OS lookup key.
+pub(crate) fn packaged_application_id(value: &str) -> Option<&str> {
+    let (family, relative) = value.split_once('!')?;
+    let (name, publisher) = family.split_once('_')?;
+    let package_character = |c: u8| c.is_ascii_alphanumeric() || b".-".contains(&c);
+    if value.len() > 129
+        || !(3..=50).contains(&name.len())
+        || !name.bytes().all(package_character)
+        || publisher.len() != 13
+        || !publisher
+            .bytes()
+            .all(|c| b"0123456789abcdefghjkmnpqrstvwxyz".contains(&c.to_ascii_lowercase()))
+        || relative.is_empty()
+        || relative.len() > 64
+        || !relative
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'.')
+    {
         return None;
     }
     Some(value)
@@ -654,7 +1023,11 @@ pub(crate) mod tests {
         Snapshot {
             text_truncated: false,
             selection: None,
+            item_selection: None,
+            input_target: None,
+            action: None,
             app_id: "win32.chrome".into(),
+            application_user_model_id: None,
             app_name: "Chrome".into(),
             pid: 42,
             window_id: 99,
@@ -681,6 +1054,72 @@ pub(crate) mod tests {
         assert_eq!(decoded.text, original.text);
         value.as_object_mut().unwrap().remove("sourceKnown");
         assert!(serde_json::from_value::<Snapshot>(value).is_err());
+    }
+
+    #[test]
+    fn packaged_identity_survives_projection_and_either_alias_denies() {
+        let home = Home::new();
+        let aumid = "Microsoft.WindowsNotepad_8wekyb3d8bbwe!App";
+        let mut original = snapshot();
+        original.application_user_model_id = Some(aumid.into());
+        let source_only = original.without_content();
+        assert_eq!(
+            source_only.application_user_model_id.as_deref(),
+            Some(aumid)
+        );
+        let policy = home.policy(true);
+        let event = policy.project(&original, "ui.changed", 1, now()).unwrap();
+        assert_eq!(event["app"]["bundleIdentifier"], "win32.chrome");
+        assert_eq!(event["app"]["applicationUserModelId"], aumid);
+        for blocked in [
+            "win32.chrome".into(),
+            format!("winapp.{aumid}")
+                .to_ascii_uppercase()
+                .replacen("WINAPP.", "winapp.", 1),
+        ] {
+            let mut value = config(true);
+            value["observation"]["blocklist"] = json!([{"scope":"application","bundleID":blocked}]);
+            value["observation"]["allowlist"] = json!([
+                {"scope":"application","bundleID":"win32.chrome"},
+                {"scope":"application","bundleID":format!("winapp.{aumid}")},
+            ]);
+            home.config(value);
+            assert!(
+                Policy::load(&home.0)
+                    .unwrap()
+                    .project(&original, "ui.changed", 1, now())
+                    .is_none()
+            );
+        }
+        let policy = home.policy(true);
+        for invalid in [
+            "",
+            "notpackaged",
+            "name_publisher!App",
+            "Microsoft.WindowsNotepad_8wekyb3d8bbwe!App/other",
+        ] {
+            original.application_user_model_id = Some(invalid.into());
+            assert!(policy.project(&original, "ui.changed", 1, now()).is_none());
+        }
+    }
+
+    #[test]
+    fn packaged_identity_keeps_long_tail_and_rejects_non_identity_inputs() {
+        let longest = format!("{}_8wekyb3d8bbwe!{}", "N".repeat(50), "A".repeat(64));
+        assert_eq!(longest.len(), 129);
+        assert_eq!(packaged_application_id(&longest), Some(longest.as_str()));
+        assert_eq!(
+            application_id(&format!("winapp.{longest}")),
+            Some(format!("winapp.{longest}"))
+        );
+        for invalid in [
+            format!("{longest}x"),
+            longest.replace('!', "!!"),
+            longest.replace('!', "_"),
+            longest.replace("!A", "!/"),
+        ] {
+            assert!(packaged_application_id(&invalid).is_none());
+        }
     }
 
     #[test]
@@ -1036,9 +1475,10 @@ pub(crate) mod tests {
         let policy = home.policy(true);
         let mut original = snapshot();
         original.selection = Some(Selection {
-            selected_text: "  selected\ttext\r\n".into(),
+            selected_text: Some("  selected\ttext\r\n".into()),
             truncated: true,
             start: 7,
+            length: None,
         });
         let event = policy
             .project(&original, "selection.changed", 1, now())
@@ -1057,7 +1497,7 @@ pub(crate) mod tests {
             .policy(false)
             .project(&original, "selection.changed", 1, now())
             .unwrap();
-        assert!(metadata.get("selection").is_none());
+        assert_eq!(metadata["selection"], json!({ "start": 7 }));
         assert_eq!(metadata["contentState"], "metadataOnly");
         for flag in ["secure", "private", "sourceKnown"] {
             let mut wire = serde_json::to_value(&original).unwrap();
@@ -1081,15 +1521,156 @@ pub(crate) mod tests {
                 .is_none()
         );
         original.domains = vec!["example.com".into()];
-        original.selection.as_mut().unwrap().selected_text = "\u{4e2d}".repeat(4096);
+        original.selection.as_mut().unwrap().selected_text =
+            Some(format!("{}VISIBLE_SELECTION_TAIL", "x".repeat(5000)));
+        let event = policy
+            .project(&original, "selection.changed", 1, now())
+            .unwrap();
+        assert!(
+            event["selection"]["selectedText"]
+                .as_str()
+                .unwrap()
+                .ends_with("VISIBLE_SELECTION_TAIL")
+        );
+        original.selection.as_mut().unwrap().selected_text =
+            Some("\u{4e2d}".repeat(MAX_SELECTION_BYTES));
         let event = policy
             .project(&original, "selection.changed", 1, now())
             .unwrap();
         assert_eq!(
             event["selection"]["selectedText"].as_str().unwrap().len(),
-            4095
+            MAX_SELECTION_BYTES - 2
         );
         assert_eq!(event["selection"]["truncated"], true);
+    }
+
+    #[test]
+    fn selection_numeric_survives_absent_or_clipped_text() {
+        let home = Home::new();
+        let mut original = snapshot();
+        original.text = None;
+        for (start, length, text, clipped) in [
+            (70_000, Some(4), None, false),
+            (u32::MAX, Some(0), None, false),
+            (0, Some(0), Some(String::new()), false),
+            (4, Some(2), Some("\u{1f4bb}".into()), false),
+            (7, Some(20_000), Some("s".repeat(9000)), false),
+            (9, Some(20_000), Some("retained prefix".into()), true),
+            (11, None, None, false),
+        ] {
+            original.selection = Some(
+                serde_json::from_value(json!({
+                    "start": start, "length": length,
+                    "selectedText": text, "truncated": clipped,
+                }))
+                .unwrap(),
+            );
+            for capture_text in [true, false] {
+                let event = home
+                    .policy(capture_text)
+                    .project(&original, "selection.changed", 1, now())
+                    .unwrap();
+                let selection = &event["selection"];
+                if let Some(length) = length {
+                    assert_eq!(
+                        selection["selectedRange"],
+                        json!({ "location": start, "length": length })
+                    );
+                    assert!(selection.get("start").is_none());
+                } else {
+                    assert_eq!(selection["start"], start);
+                    assert!(selection.get("selectedRange").is_none());
+                }
+                if capture_text
+                    && let Some(text) = &text
+                    && !text.is_empty()
+                {
+                    let (expected, truncated) = bounded(text, MAX_SELECTION_BYTES, true);
+                    assert_eq!(selection["selectedText"], expected);
+                    assert_eq!(selection["truncated"], truncated || clipped);
+                    assert_eq!(event["contentState"], "available");
+                } else {
+                    assert!(selection.get("selectedText").is_none());
+                    assert!(selection.get("truncated").is_none());
+                    assert!(event.get("contentDomains").is_none());
+                    assert_eq!(
+                        event["contentState"],
+                        if capture_text {
+                            "unavailable"
+                        } else {
+                            "metadataOnly"
+                        }
+                    );
+                }
+                assert!(event.get("ax").is_none());
+            }
+        }
+        let selection: Selection =
+            serde_json::from_value(json!({ "start": 17, "length": 0 })).unwrap();
+        let wire = serde_json::to_value(selection).unwrap();
+        assert!(wire.get("selectedText").is_none());
+        assert_eq!(wire["length"], 0);
+        let legacy = json!({ "start": 4, "selectedText": "old", "truncated": true });
+        let selection: Selection = serde_json::from_value(legacy.clone()).unwrap();
+        assert!(selection.length.is_none());
+        assert_eq!(serde_json::to_value(selection).unwrap(), legacy);
+    }
+
+    #[test]
+    fn selection_numeric_rejects_invalid_ranges_and_preserves_denials() {
+        let home = Home::new();
+        let mut original = snapshot();
+        original.text = None;
+        original.selection =
+            Some(serde_json::from_value(json!({ "start": 7, "length": 4 })).unwrap());
+        for capture_text in [true, false] {
+            let policy = home.policy(capture_text);
+            assert!(
+                policy
+                    .project(&original, "selection.changed", 1, now())
+                    .is_some()
+            );
+            for flag in ["secure", "private", "sourceKnown"] {
+                let mut wire = serde_json::to_value(&original).unwrap();
+                wire[flag] = json!(flag != "sourceKnown");
+                let denied = serde_json::from_value(wire).unwrap();
+                assert!(
+                    policy
+                        .project(&denied, "selection.changed", 1, now())
+                        .is_none()
+                );
+            }
+            let mut overflow = original.clone();
+            overflow.selection = Some(
+                serde_json::from_value(json!({
+                    "start": u32::MAX, "length": 1,
+                }))
+                .unwrap(),
+            );
+            assert!(
+                policy
+                    .project(&overflow, "selection.changed", 1, now())
+                    .is_none()
+            );
+            let mut blocked = config(capture_text);
+            blocked["observation"]["blocklist"] =
+                json!([{"scope":"url","urlDomain":"frame.example"}]);
+            home.config(blocked);
+            assert!(
+                Policy::load(&home.0)
+                    .unwrap()
+                    .project(&original, "selection.changed", 1, now())
+                    .is_none()
+            );
+        }
+        for invalid in [
+            json!({ "start": -1, "length": 1 }),
+            json!({ "start": 0, "length": -1 }),
+            json!({ "start": 0, "length": 1.5 }),
+            json!({ "start": 0, "length": u64::from(u32::MAX) + 1 }),
+        ] {
+            assert!(serde_json::from_value::<Selection>(invalid).is_err());
+        }
     }
 
     #[test]
@@ -1123,5 +1704,833 @@ pub(crate) mod tests {
                 .project(&original, "session.started", u64::MAX, now())
                 .is_none()
         );
+    }
+
+    #[test]
+    fn input_source_retains_admission_without_copying_observed_content() {
+        let home = Home::new();
+        let policy = home.policy(true);
+        let mut original = snapshot();
+        original.input_target = Some(InputTarget {
+            hwnd: 100,
+            role: "AXTextField".into(),
+            uia: None,
+        });
+        original.text = Some("x".repeat(MAX_TEXT_BYTES));
+        original.text_truncated = true;
+        original.selection = Some(Selection {
+            selected_text: Some("old selection".into()),
+            start: 4,
+            truncated: true,
+            length: Some(40),
+        });
+        original.action = Some(Action::Keyboard {
+            key: "return".into(),
+            modifiers: vec![],
+        });
+        let source = original.without_content();
+        assert!(source.text.is_none() && source.selection.is_none() && source.action.is_none());
+        assert!(!source.text_truncated);
+        assert!(crate::input_actions::same_input_source(&source, &original));
+        let projected = policy.project(&source, "ui.changed", 1, now()).unwrap();
+        assert!(projected.get("ax").is_none() && projected.get("selection").is_none());
+        assert_eq!(projected["sourceId"], original.source_id);
+        for denial in 0..6 {
+            let mut denied = original.clone();
+            match denial {
+                0 => denied.secure = true,
+                1 => denied.private = true,
+                2 => denied.source_known = false,
+                3 => denied.app_id = "invalid".into(),
+                4 => denied.source_id.clear(),
+                _ => denied.domains.push("invalid domain".into()),
+            }
+            assert!(policy.project(&denied, "ui.changed", 1, now()).is_none());
+            assert!(
+                policy
+                    .project(&denied.without_content(), "ui.changed", 1, now())
+                    .is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn input_records_project_text_and_metadata_without_observed_content() {
+        let home = Home::new();
+        let mut original = snapshot();
+        let aumid = "Microsoft.WindowsNotepad_8wekyb3d8bbwe!App";
+        original.application_user_model_id = Some(aumid.into());
+        original.input_target = Some(InputTarget {
+            hwnd: 100,
+            role: "AXTextField".into(),
+            uia: None,
+        });
+        original.text = Some("body from a different observation time".into());
+        original.selection = Some(Selection {
+            selected_text: Some("old selected text".into()),
+            start: 7,
+            truncated: false,
+            length: Some(17),
+        });
+        let modifiers = vec!["control".into(), "shift".into()];
+        let cases = [
+            (
+                "keyboard.submit",
+                Action::Keyboard {
+                    key: "return".into(),
+                    modifiers: vec![],
+                },
+            ),
+            (
+                "keyboard.shortcut",
+                Action::Keyboard {
+                    key: "a".into(),
+                    modifiers: modifiers.clone(),
+                },
+            ),
+            (
+                "mouse.click",
+                Action::Mouse {
+                    button: "left".into(),
+                    modifiers: modifiers.clone(),
+                },
+            ),
+            (
+                "mouse.contextMenu",
+                Action::Mouse {
+                    button: "right".into(),
+                    modifiers: modifiers.clone(),
+                },
+            ),
+            (
+                "mouse.drag",
+                Action::Mouse {
+                    button: "other".into(),
+                    modifiers,
+                },
+            ),
+        ];
+        for capture_text in [true, false] {
+            let policy = home.policy(capture_text);
+            for role in ["AXTextField", "AXGroup", "AXDocument"] {
+                original.input_target.as_mut().unwrap().role = role.into();
+                for (kind, action) in &cases {
+                    original.action = Some(action.clone());
+                    let event = policy
+                        .project(&original, kind, 1, now())
+                        .unwrap_or_else(|| {
+                            panic!(
+                                "admitted {kind} on {role} missing with capture_text={capture_text}"
+                            )
+                        });
+                    assert_eq!(event["kind"], *kind);
+                    assert_eq!(event["sourceId"], original.source_id);
+                    assert_eq!(event["app"]["bundleIdentifier"], original.app_id);
+                    assert_eq!(event["app"]["applicationUserModelId"], aumid);
+                    assert_eq!(event["window"]["windowID"], original.window_id);
+                    assert_eq!(event["window"]["title"], original.title);
+                    assert_eq!(
+                        event["contentState"],
+                        if capture_text {
+                            "available"
+                        } else {
+                            "metadataOnly"
+                        }
+                    );
+                    if capture_text {
+                        assert_eq!(
+                            event["contentDomains"],
+                            json!(["example.com", "frame.example"])
+                        );
+                    } else {
+                        assert!(event.get("contentDomains").is_none());
+                    }
+                    for field in ["ax", "selection", "inputTarget", "action"] {
+                        assert!(event.get(field).is_none(), "{field}");
+                    }
+                    let target = if capture_text {
+                        json!({ "role": role, "identifier": "hwnd:100" })
+                    } else {
+                        json!({ "role": role })
+                    };
+                    match action {
+                        Action::Keyboard { key, modifiers } => {
+                            let mut expected = json!({ "modifiers": modifiers, "target": target });
+                            if capture_text {
+                                expected["keyEquivalent"] = json!(key);
+                            }
+                            assert_eq!(event["keyboard"], expected);
+                            assert!(event.get("mouse").is_none());
+                        }
+                        Action::Mouse { button, modifiers } => {
+                            let mut expected = json!({
+                                "button": button, "modifiers": modifiers, "target": target,
+                            });
+                            if *kind == "mouse.drag" {
+                                let endpoint = json!({
+                                    "app": event["app"], "window": event["window"], "element": target,
+                                });
+                                expected["origin"] = endpoint.clone();
+                                expected["destination"] = endpoint;
+                            } else {
+                                expected["clickCount"] = json!(1);
+                            }
+                            assert_eq!(event["mouse"], expected);
+                            assert!(event.get("keyboard").is_none());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn observed_uia_keyboard_uses_real_host_without_persisting_runtime_identity() {
+        let home = Home::new();
+        for capture_text in [false, true] {
+            let policy = home.policy(capture_text);
+            let mut original = snapshot();
+            original.input_target = Some(InputTarget {
+                hwnd: original.window_id,
+                role: "AXTextField".into(),
+                uia: Some(UiaTarget {
+                    runtime_id: vec![42, 812, -5],
+                    document_runtime_id: vec![42, 901],
+                }),
+            });
+            original.text = Some("stale unrelated body".into());
+            original.action = Some(Action::Keyboard {
+                key: "return".into(),
+                modifiers: vec![],
+            });
+            let event = policy
+                .project(&original, "keyboard.submit", 1, now())
+                .unwrap();
+            assert_eq!(event["keyboard"]["target"], json!({"role": "AXTextField"}));
+            assert_eq!(event["window"]["windowID"], original.window_id);
+            assert_eq!(event["sourceId"], original.source_id);
+            assert!(event.get("ax").is_none());
+            assert_eq!(
+                event["contentState"],
+                if capture_text {
+                    "available"
+                } else {
+                    "metadataOnly"
+                }
+            );
+            assert_eq!(
+                event["keyboard"].get("keyEquivalent"),
+                capture_text.then_some(&json!("return"))
+            );
+            assert!(!event.to_string().contains("runtime"));
+            let mut changed = original.clone();
+            changed
+                .input_target
+                .as_mut()
+                .unwrap()
+                .uia
+                .as_mut()
+                .unwrap()
+                .runtime_id[2] = -6;
+            assert!(!crate::input_actions::same_input_source(
+                &original, &changed
+            ));
+            changed = original.clone();
+            changed
+                .input_target
+                .as_mut()
+                .unwrap()
+                .uia
+                .as_mut()
+                .unwrap()
+                .document_runtime_id[1] = 902;
+            assert!(!crate::input_actions::same_input_source(
+                &original, &changed
+            ));
+
+            for kind in ["mouse.click", "mouse.contextMenu", "mouse.drag"] {
+                original.action = Some(Action::Mouse {
+                    button: if kind == "mouse.contextMenu" {
+                        "right"
+                    } else {
+                        "left"
+                    }
+                    .into(),
+                    modifiers: vec![],
+                });
+                assert!(policy.project(&original, kind, 1, now()).is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn observed_uia_identity_bounds_and_document_provenance_fail_closed() {
+        let home = Home::new();
+        let mut original = snapshot();
+        original.input_target = Some(InputTarget {
+            hwnd: original.window_id,
+            role: "AXTextField".into(),
+            uia: Some(UiaTarget {
+                runtime_id: vec![i32::MIN, i32::MAX],
+                document_runtime_id: vec![3],
+            }),
+        });
+        original.action = Some(Action::Keyboard {
+            key: "return".into(),
+            modifiers: vec![],
+        });
+        for capture_text in [false, true] {
+            let policy = home.policy(capture_text);
+            assert!(
+                policy
+                    .project(&original, "keyboard.submit", 1, now())
+                    .is_some()
+            );
+            for invalid in 0..9 {
+                let mut denied = original.clone();
+                let target = denied.input_target.as_mut().unwrap();
+                let uia = target.uia.as_mut().unwrap();
+                match invalid {
+                    0 => uia.runtime_id.clear(),
+                    1 => uia.runtime_id = vec![1; 33],
+                    2 => uia.document_runtime_id = vec![1; 33],
+                    3 => uia.document_runtime_id.clear(),
+                    4 => target.role = "AXSecureTextField".into(),
+                    5 => target.hwnd = 0,
+                    6 => denied.secure = true,
+                    7 => denied.private = true,
+                    _ => denied.source_known = false,
+                }
+                assert!(
+                    policy
+                        .project(&denied, "keyboard.submit", 1, now())
+                        .is_none(),
+                    "{invalid}"
+                );
+            }
+            let mut native = original.clone();
+            native.url = None;
+            native.domains.clear();
+            native
+                .input_target
+                .as_mut()
+                .unwrap()
+                .uia
+                .as_mut()
+                .unwrap()
+                .document_runtime_id
+                .clear();
+            assert!(
+                policy
+                    .project(&native, "keyboard.submit", 1, now())
+                    .is_some()
+            );
+        }
+        let legacy: InputTarget = serde_json::from_value(json!({
+            "hwnd": 100, "role": "AXTextField",
+        }))
+        .unwrap();
+        assert!(legacy.uia.is_none());
+        assert_eq!(
+            serde_json::to_value(legacy).unwrap(),
+            json!({
+                "hwnd": 100, "role": "AXTextField",
+            })
+        );
+        for (field, value) in [
+            ("runtimeId", json!(vec![1; 33])),
+            ("documentRuntimeId", json!(vec![1; 33])),
+            ("runtimeId", json!([2_147_483_648_i64])),
+            ("runtimeId", json!(["untrusted value"])),
+            ("documentRuntimeId", Value::Null),
+        ] {
+            let mut wire = json!({"runtimeId": [1], "documentRuntimeId": [2]});
+            wire[field] = value;
+            assert!(
+                serde_json::from_value::<UiaTarget>(wire).is_err(),
+                "{field}"
+            );
+        }
+        assert!(
+            serde_json::from_value::<UiaTarget>(json!({
+                "runtimeId": vec![i32::MIN; 32], "documentRuntimeId": vec![i32::MAX; 32],
+            }))
+            .unwrap()
+            .is_valid()
+        );
+    }
+
+    #[test]
+    fn input_metadata_preserves_source_and_action_rejection() {
+        let home = Home::new();
+        let aumid = "Microsoft.WindowsNotepad_8wekyb3d8bbwe!App";
+        let mut original = snapshot();
+        original.application_user_model_id = Some(aumid.into());
+        original.input_target = Some(InputTarget {
+            hwnd: 100,
+            role: "AXTextField".into(),
+            uia: None,
+        });
+        original.action = Some(Action::Keyboard {
+            key: "return".into(),
+            modifiers: vec![],
+        });
+        for capture_text in [true, false] {
+            let policy = home.policy(capture_text);
+            assert!(
+                policy
+                    .project(&original, "keyboard.submit", 1, now())
+                    .is_some()
+            );
+            for (field, value) in [
+                ("secure", json!(true)),
+                ("private", json!(true)),
+                ("sourceKnown", json!(false)),
+                ("sourceId", json!("invalid")),
+                ("appId", json!("invalid")),
+                ("applicationUserModelId", json!("invalid")),
+                ("title", json!("InPrivate")),
+                ("domains", json!(["invalid domain"])),
+                ("inputTarget", Value::Null),
+                ("inputTarget", json!({ "hwnd": 0, "role": "AXTextField" })),
+                (
+                    "inputTarget",
+                    json!({ "hwnd": original.window_id, "role": "AXTextField" }),
+                ),
+                ("inputTarget", json!({ "hwnd": 100, "role": "AXWebArea" })),
+                (
+                    "inputTarget",
+                    json!({ "hwnd": 100, "role": "AXSecureTextField" }),
+                ),
+                ("action", Value::Null),
+            ] {
+                let mut wire = serde_json::to_value(&original).unwrap();
+                wire[field] = value;
+                let denied = serde_json::from_value(wire).unwrap();
+                assert!(
+                    policy
+                        .project(&denied, "keyboard.submit", 1, now())
+                        .is_none(),
+                    "{field}"
+                );
+            }
+            for (kind, action) in [
+                (
+                    "keyboard.submit",
+                    json!({ "type": "keyboard", "key": "a", "modifiers": [] }),
+                ),
+                (
+                    "keyboard.shortcut",
+                    json!({ "type": "keyboard", "key": "a", "modifiers": [] }),
+                ),
+                (
+                    "keyboard.shortcut",
+                    json!({ "type": "keyboard", "key": "", "modifiers": ["control"] }),
+                ),
+                (
+                    "keyboard.shortcut",
+                    json!({ "type": "keyboard", "key": "secret value", "modifiers": ["control"] }),
+                ),
+                (
+                    "keyboard.shortcut",
+                    json!({ "type": "keyboard", "key": "a".repeat(33), "modifiers": ["control"] }),
+                ),
+                (
+                    "keyboard.submit",
+                    json!({ "type": "keyboard", "key": "return", "modifiers": ["unknown"] }),
+                ),
+                (
+                    "mouse.click",
+                    json!({ "type": "mouse", "button": "unknown", "modifiers": [] }),
+                ),
+                (
+                    "mouse.click",
+                    json!({ "type": "mouse", "button": "right", "modifiers": [] }),
+                ),
+                (
+                    "mouse.contextMenu",
+                    json!({ "type": "mouse", "button": "left", "modifiers": [] }),
+                ),
+                (
+                    "mouse.drag",
+                    json!({ "type": "mouse", "button": "left", "modifiers": vec!["control"; 5] }),
+                ),
+                (
+                    "keyboard.submit",
+                    json!({ "type": "mouse", "button": "left", "modifiers": [] }),
+                ),
+                (
+                    "mouse.click",
+                    json!({ "type": "keyboard", "key": "return", "modifiers": [] }),
+                ),
+            ] {
+                let mut denied = original.clone();
+                denied.action = Some(serde_json::from_value(action).unwrap());
+                assert!(policy.project(&denied, kind, 1, now()).is_none(), "{kind}");
+            }
+            for block in [
+                json!({ "scope": "application", "bundleID": original.app_id }),
+                json!({ "scope": "application", "bundleID": format!("winapp.{aumid}") }),
+                json!({ "scope": "url", "urlDomain": "example.com" }),
+                json!({ "scope": "url", "urlDomain": "frame.example" }),
+            ] {
+                let mut value = config(capture_text);
+                value["observation"]["blocklist"] = json!([block]);
+                home.config(value);
+                assert!(
+                    Policy::load(&home.0)
+                        .unwrap()
+                        .project(&original, "keyboard.submit", 1, now())
+                        .is_none()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn selection_reserves_space_inside_the_total_event_text_budget() {
+        let home = Home::new();
+        let mut original = snapshot();
+        original.text = Some("b".repeat(MAX_TEXT_BYTES));
+        original.selection = Some(Selection {
+            selected_text: Some("s".repeat(MAX_SELECTION_BYTES)),
+            start: 0,
+            truncated: false,
+            length: Some(20_000),
+        });
+        let event = home
+            .policy(true)
+            .project(&original, "selection.changed", 1, now())
+            .unwrap();
+        let body = event["ax"]["text"].as_str().unwrap();
+        let selection = event["selection"]["selectedText"].as_str().unwrap();
+        assert_eq!(selection.len(), MAX_SELECTION_BYTES);
+        assert_eq!(body.len() + selection.len(), MAX_TEXT_BYTES);
+        assert_eq!(event["ax"]["truncated"], true);
+        assert_eq!(event["selection"]["selectedRange"]["length"], 20_000);
+        original.selection.as_mut().unwrap().selected_text = None;
+        let numeric_only = home
+            .policy(true)
+            .project(&original, "selection.changed", 1, now())
+            .unwrap();
+        assert_eq!(
+            numeric_only["ax"]["text"].as_str().unwrap().len(),
+            MAX_TEXT_BYTES
+        );
+        assert_eq!(numeric_only["ax"]["truncated"], false);
+        assert_eq!(
+            numeric_only["selection"],
+            json!({ "selectedRange": { "location": 0, "length": 20_000 } })
+        );
+    }
+
+    fn item_selection() -> ItemSelection {
+        ItemSelection {
+            owner_runtime_id: vec![42, 710],
+            document_runtime_id: vec![42, 709],
+            items: vec![SelectedItem {
+                runtime_id: vec![42, 711],
+                role: "AXRow".into(),
+                value: Some("Sampled selected-item content:\nAXStaticText: synthetic leaf".into()),
+            }],
+        }
+    }
+
+    #[test]
+    fn item_selection_transport_preserves_identity_but_contentless_source_drops_it() {
+        let mut original = snapshot();
+        let legacy = serde_json::to_value(&original).unwrap();
+        assert!(legacy.get("itemSelection").is_none());
+        assert!(
+            serde_json::from_value::<Snapshot>(legacy)
+                .unwrap()
+                .item_selection
+                .is_none()
+        );
+        original.item_selection = Some(item_selection());
+        let wire = serde_json::to_value(&original).unwrap();
+        assert_eq!(wire["itemSelection"]["ownerRuntimeId"], json!([42, 710]));
+        let decoded: Snapshot = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(decoded.item_selection, original.item_selection);
+        let mut replacement = item_selection();
+        replacement.items[0].runtime_id[1] += 1;
+        assert_ne!(Some(replacement), original.item_selection);
+        let mut cleared = item_selection();
+        cleared.items.clear();
+        assert_ne!(Some(cleared), None);
+        assert!(original.without_content().item_selection.is_none());
+        for path in ["ownerRuntimeId", "documentRuntimeId", "runtimeId"] {
+            let mut invalid = wire.clone();
+            let target = if path == "runtimeId" {
+                &mut invalid["itemSelection"]["items"][0]
+            } else {
+                &mut invalid["itemSelection"]
+            };
+            target[path] = json!(vec![1; 33]);
+            assert!(
+                serde_json::from_value::<Snapshot>(invalid).is_err(),
+                "{path}"
+            );
+        }
+        let mut unsupported = wire;
+        unsupported["itemSelection"]["items"][0]["subrole"] = json!("invented");
+        assert!(serde_json::from_value::<Snapshot>(unsupported).is_err());
+    }
+
+    #[test]
+    fn item_selection_projects_only_roles_and_consented_samples_without_fabricated_range() {
+        let home = Home::new();
+        let mut original = snapshot();
+        original.text = None;
+        original.item_selection = Some(item_selection());
+        for capture_text in [true, false] {
+            let event = home
+                .policy(capture_text)
+                .project(&original, "selection.changed", 1, now())
+                .unwrap();
+            let selection = &event["selection"];
+            assert!(selection.get("selectedRange").is_none() && selection.get("start").is_none());
+            let item = &selection["selectedItems"][0];
+            assert_eq!(item["role"], "AXRow");
+            assert_eq!(
+                item.as_object().unwrap().len(),
+                if capture_text { 2 } else { 1 }
+            );
+            assert_eq!(item.get("value").is_some(), capture_text);
+            if capture_text {
+                assert_eq!(
+                    item["value"],
+                    item_selection().items[0].value.clone().unwrap()
+                );
+                assert_eq!(event["contentState"], "available");
+                assert_eq!(
+                    event["contentDomains"],
+                    json!(["example.com", "frame.example"])
+                );
+            } else {
+                assert_eq!(event["contentState"], "metadataOnly");
+                assert!(event.get("contentDomains").is_none());
+            }
+            let encoded = serde_json::to_string(&event).unwrap();
+            for private in ["runtimeId", "RuntimeId", "[42,710]", "[42,709]", "[42,711]"] {
+                assert!(!encoded.contains(private), "{private}");
+            }
+        }
+        original.item_selection.as_mut().unwrap().items.clear();
+        let cleared = home
+            .policy(true)
+            .project(&original, "selection.changed", 1, now())
+            .unwrap();
+        assert_eq!(cleared["selection"], json!({ "selectedItems": [] }));
+        assert_eq!(cleared["contentState"], "unavailable");
+    }
+
+    #[test]
+    fn item_selection_rejects_invalid_membership_and_roles_in_both_modes() {
+        let home = Home::new();
+        for case in 0..12 {
+            let mut original = snapshot();
+            let mut selection = item_selection();
+            match case {
+                0 => selection.owner_runtime_id.clear(),
+                1 => selection.owner_runtime_id = vec![1; 33],
+                2 => selection.document_runtime_id = vec![1; 33],
+                3 => selection.document_runtime_id.clear(),
+                4 => selection.items[0].runtime_id.clear(),
+                5 => selection.items[0].runtime_id = vec![1; 33],
+                6 => selection.items[0].runtime_id = selection.owner_runtime_id.clone(),
+                7 => selection.items[0].runtime_id = selection.document_runtime_id.clone(),
+                8 => selection.items.push(selection.items[0].clone()),
+                9 => {
+                    selection.items = (0..33)
+                        .map(|id| SelectedItem {
+                            runtime_id: vec![43, id],
+                            ..selection.items[0].clone()
+                        })
+                        .collect()
+                }
+                10 => selection.items[0].role = "AXSecureTextField".into(),
+                _ => selection.items[0].role = "AXWindow".into(),
+            }
+            original.item_selection = Some(selection);
+            for capture_text in [true, false] {
+                assert!(
+                    home.policy(capture_text)
+                        .project(&original, "selection.changed", 1, now())
+                        .is_none(),
+                    "case={case}, capture_text={capture_text}"
+                );
+            }
+        }
+        let mut native = snapshot();
+        native.url = None;
+        native.domains.clear();
+        let mut selection = item_selection();
+        selection.document_runtime_id.clear();
+        native.item_selection = Some(selection);
+        assert!(
+            home.policy(true)
+                .project(&native, "selection.changed", 1, now())
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn item_selection_obeys_source_security_and_application_domain_denials() {
+        let home = Home::new();
+        let mut original = snapshot();
+        original.item_selection = Some(item_selection());
+        for capture_text in [true, false] {
+            let policy = home.policy(capture_text);
+            for flag in ["secure", "private", "sourceKnown"] {
+                let mut wire = serde_json::to_value(&original).unwrap();
+                wire[flag] = json!(flag != "sourceKnown");
+                let denied = serde_json::from_value(wire).unwrap();
+                assert!(
+                    policy
+                        .project(&denied, "selection.changed", 1, now())
+                        .is_none()
+                );
+            }
+            for block in [
+                json!({ "scope": "application", "bundleID": "win32.chrome" }),
+                json!({ "scope": "url", "urlDomain": "frame.example" }),
+            ] {
+                let mut value = config(capture_text);
+                value["observation"]["blocklist"] = json!([block]);
+                home.config(value);
+                assert!(
+                    Policy::load(&home.0)
+                        .unwrap()
+                        .project(&original, "selection.changed", 1, now())
+                        .is_none()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn item_selection_encoded_budget_retains_all_members_or_rejects() {
+        let home = Home::new();
+        let policy = home.policy(true);
+        let mut original = snapshot();
+        let mut selection = item_selection();
+        selection.items = (0..32)
+            .map(|id| SelectedItem {
+                runtime_id: vec![43, id],
+                role: "AXRow".into(),
+                value: Some("\u{4e2d}\"\\\n".repeat(8)),
+            })
+            .collect();
+        original.item_selection = Some(selection);
+        let event = policy
+            .project(&original, "selection.changed", 1, now())
+            .unwrap();
+        let items = &event["selection"]["selectedItems"];
+        assert_eq!(items.as_array().unwrap().len(), 32);
+        assert!(serde_json::to_vec(items).unwrap().len() <= MAX_SELECTION_BYTES);
+        // Raw UTF-8 fits, but JSON escaping makes the complete membership too large.
+        for item in &mut original.item_selection.as_mut().unwrap().items {
+            item.value = Some("\"".repeat(128));
+        }
+        assert!(
+            policy
+                .project(&original, "selection.changed", 1, now())
+                .is_none()
+        );
+        let metadata = home
+            .policy(false)
+            .project(&original, "selection.changed", 1, now())
+            .unwrap();
+        assert_eq!(
+            metadata["selection"]["selectedItems"]
+                .as_array()
+                .unwrap()
+                .len(),
+            32
+        );
+        original.item_selection = Some(item_selection());
+        original.item_selection.as_mut().unwrap().items[0].value =
+            Some("x".repeat(MAX_SELECTION_BYTES + 1));
+        assert!(
+            policy
+                .project(&original, "selection.changed", 1, now())
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn item_selection_and_selected_text_share_the_total_body_allocation() {
+        let home = Home::new();
+        let mut original = snapshot();
+        original.text = Some("b".repeat(MAX_TEXT_BYTES));
+        original.selection = Some(Selection {
+            selected_text: Some("s".repeat(MAX_SELECTION_BYTES + 1)),
+            start: 17,
+            length: Some(20_000),
+            truncated: false,
+        });
+        original.item_selection = Some(item_selection());
+        let event = home
+            .policy(true)
+            .project(&original, "selection.changed", 1, now())
+            .unwrap();
+        let selection = &event["selection"];
+        let items_bytes = serde_json::to_vec(&selection["selectedItems"])
+            .unwrap()
+            .len();
+        assert!(items_bytes > 0);
+        assert_eq!(
+            event["ax"]["text"].as_str().unwrap().len()
+                + selection["selectedText"].as_str().unwrap().len()
+                + items_bytes,
+            MAX_TEXT_BYTES,
+        );
+        assert_eq!(
+            selection["selectedRange"],
+            json!({ "location": 17, "length": 20_000 })
+        );
+        assert_eq!(selection["truncated"], true);
+        assert_eq!(event["ax"]["truncated"], true);
+    }
+
+    #[test]
+    fn item_selection_does_not_attach_old_content_to_input_or_session_events() {
+        let home = Home::new();
+        let mut original = snapshot();
+        original.item_selection = Some(item_selection());
+        original.input_target = Some(InputTarget {
+            hwnd: 100,
+            role: "AXTextField".into(),
+            uia: None,
+        });
+        for capture_text in [true, false] {
+            let policy = home.policy(capture_text);
+            for kind in [
+                "session.started",
+                "session.ended",
+                "keyboard.submit",
+                "mouse.click",
+            ] {
+                original.action = Some(if kind == "mouse.click" {
+                    Action::Mouse {
+                        button: "left".into(),
+                        modifiers: vec![],
+                    }
+                } else {
+                    Action::Keyboard {
+                        key: "return".into(),
+                        modifiers: vec![],
+                    }
+                });
+                let event = policy.project(&original, kind, 1, now()).unwrap();
+                assert!(event.get("selection").is_none(), "{kind}");
+                assert!(
+                    !serde_json::to_string(&event)
+                        .unwrap()
+                        .contains("synthetic leaf")
+                );
+            }
+        }
     }
 }

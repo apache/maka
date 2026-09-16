@@ -278,17 +278,21 @@ public struct EventStreamSelection: Codable, Equatable, Sendable {
     public let selectedText: String?
     public let selectedRange: EventStreamTextRange?
     public let selectedItems: [EventStreamAXElement]
+    /// Nil means unknown (including legacy events); false means no collector clipping.
+    public let truncated: Bool?
 
     public init(
         target: EventStreamAXElement?,
         selectedText: String?,
         selectedRange: EventStreamTextRange?,
-        selectedItems: [EventStreamAXElement]
+        selectedItems: [EventStreamAXElement],
+        truncated: Bool? = nil
     ) {
         self.target = target
         self.selectedText = selectedText
         self.selectedRange = selectedRange
         self.selectedItems = selectedItems
+        self.truncated = truncated
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -296,6 +300,7 @@ public struct EventStreamSelection: Codable, Equatable, Sendable {
         case selectedText
         case selectedRange
         case selectedItems
+        case truncated
     }
 
     public init(from decoder: Decoder) throws {
@@ -316,6 +321,7 @@ public struct EventStreamSelection: Codable, Equatable, Sendable {
             [EventStreamAXElement].self,
             forKey: .selectedItems
         ) ?? []
+        truncated = try container.decodeIfPresent(Bool.self, forKey: .truncated)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -323,6 +329,7 @@ public struct EventStreamSelection: Codable, Equatable, Sendable {
         try container.encodeIfPresent(target, forKey: .target)
         try container.encodeIfPresent(selectedText, forKey: .selectedText)
         try container.encodeIfPresent(selectedRange, forKey: .selectedRange)
+        try container.encodeIfPresent(truncated, forKey: .truncated)
         if !selectedItems.isEmpty {
             try container.encode(selectedItems, forKey: .selectedItems)
         }

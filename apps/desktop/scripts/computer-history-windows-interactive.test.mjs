@@ -20,7 +20,7 @@
 import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { closeSync, openSync, writeSync } from 'node:fs';
+import { closeSync, openSync, writeFileSync, writeSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, isAbsolute, join } from 'node:path';
@@ -32,9 +32,147 @@ import { promisify } from 'node:util';
 
 const run = promisify(execFile);
 const optedIn = process.env.MAKA_HISTORY_WINDOWS_INTERACTIVE_TEST === '1';
+const inputRequestPath = process.env.MAKA_HISTORY_WINDOWS_INPUT_REQUEST;
+const inputOnly = process.env.MAKA_HISTORY_WINDOWS_INPUT_ONLY === '1';
+const richEdit = process.env.MAKA_HISTORY_WINDOWS_RICH_EDIT_TEST === '1';
+const metadataInput = process.env.MAKA_HISTORY_WINDOWS_METADATA_INPUT_TEST === '1';
 const helper = process.env.MAKA_HISTORY_WINDOWS_HELPER
   ?? fileURLToPath(new URL('../resources/bin/open-history.exe', import.meta.url));
 const fixtureSource = fileURLToPath(new URL('./computer-history-windows-interactive.fixture.ps1', import.meta.url));
+
+function retainPhysicalReceipt(trial, value) {
+  assert.ok(trial && !trial.retired && trial.request.publishedAt, 'receipt outside a published request');
+  const request = trial.request;
+  assert.equal(value.requestId, request.id, 'late receipt belongs to another request');
+  assert.equal(value.phase, trial.receipts.length === 0 ? 'press' : 'release');
+  assert.ok(trial.receipts.length < 2, 'duplicate physical receipt');
+  assert.ok(Number.isSafeInteger(value.at) && value.at >= request.publishedAt && value.at <= request.deadline);
+  assert.ok(!trial.receipts.length || value.at >= trial.receipts[0].at);
+  assert.equal(value.processIdentifier, request.processIdentifier);
+  assert.equal(value.windowID, request.windowID);
+  assert.equal(value.inputWindowID, request.inputWindowID);
+  assert.deepEqual(value.foreground, {
+    windowID: request.windowID, processIdentifier: request.processIdentifier,
+  });
+  assert.equal(value.contextPreserved, true);
+  assert.equal(value.hiddenPresent, trial.rich);
+  if (request.name === 'return' || request.name === 'shortcut') {
+    assert.equal(value.key, request.name === 'return' ? 'Enter' : 'A');
+    if (value.phase === 'press') assert.equal(value.control, request.name === 'shortcut');
+    assert.equal(value.button, null);
+  } else {
+    assert.equal(value.key, null);
+    assert.equal(value.button, 'Left');
+  }
+  trial.receipts.push(value);
+}
+
+function validatePhysicalActions(rows, trials, complete = false) {
+  const matched = trials.map(() => []);
+  for (const event of rows.filter(row => /^(keyboard|mouse)\./.test(row.kind))) {
+    const time = Date.parse(event.timestamp);
+    const index = trials.findIndex(trial => time >= trial.request.publishedAt
+      && time <= (trial.receipts[1]?.at ?? trial.request.deadline));
+    assert.ok(index >= 0, 'action outside its physical receipt lifetime');
+    const trial = trials[index];
+    assert.equal(event.kind, trial.kind, 'unexpected physical action kind');
+    assert.equal(event.sourceId, trial.sourceId, 'physical action changed source');
+    assert.equal(event.window.windowID, trial.request.windowID);
+    assert.equal(event.app.processIdentifier, trial.request.processIdentifier);
+    assert.equal(event.ax, undefined);
+    assert.equal(event.selection, undefined);
+    const target = event.keyboard?.target ?? event.mouse?.target;
+    assert.equal(target?.identifier, trial.metadata ? undefined : `hwnd:${trial.request.inputWindowID}`);
+    assert.equal(target?.role, trial.rich ? 'AXDocument' : 'AXTextField');
+    assert.equal(event.contentState, trial.metadata ? 'metadataOnly' : 'available');
+    if (event.keyboard) {
+      assert.equal(event.keyboard.keyEquivalent, trial.metadata ? undefined : trial.key);
+      assert.deepEqual(event.keyboard.modifiers, trial.request.name === 'shortcut' ? ['control'] : []);
+    } else {
+      assert.equal(event.mouse.button, 'left');
+    }
+    matched[index].push(event);
+    assert.equal(matched[index].length, 1, 'duplicate or delayed physical action');
+  }
+  if (complete) {
+    for (const [index, trial] of trials.entries()) {
+      assert.equal(trial.receipts.length, 2, 'press and release receipts are required');
+      assert.equal(trial.retired, true, 'request must be explicitly retired');
+      assert.equal(matched[index].length, 1, 'physical request must persist exactly once');
+    }
+  }
+  return matched;
+}
+
+test('physical receipts reject missing, stale, duplicate and retired delivery', () => {
+  const trial = {
+    request: { id: 'request-one', name: 'return', publishedAt: 100, deadline: 1000,
+      processIdentifier: 10, windowID: 20, inputWindowID: 30 },
+    rich: true, receipts: [], retired: false,
+  };
+  const receipt = {
+    requestId: 'request-one', phase: 'press', at: 120, key: 'Enter', control: false, button: null,
+    processIdentifier: 10, windowID: 20, inputWindowID: 30,
+    foreground: { windowID: 20, processIdentifier: 10 },
+    contextPreserved: true, hiddenPresent: true,
+  };
+  assert.throws(() => retainPhysicalReceipt(undefined, receipt));
+  for (const delta of [
+    { requestId: 'previous' }, { at: 99 }, { at: 1001 }, { phase: 'release' },
+    { inputWindowID: 31 }, { contextPreserved: false }, { hiddenPresent: false },
+  ]) {
+    assert.throws(() => retainPhysicalReceipt(structuredClone(trial), { ...receipt, ...delta }));
+  }
+  retainPhysicalReceipt(trial, receipt);
+  assert.throws(() => retainPhysicalReceipt(trial, receipt));
+  retainPhysicalReceipt(trial, { ...receipt, phase: 'release', at: 150 });
+  assert.equal(trial.receipts.length, 2);
+  assert.throws(() => retainPhysicalReceipt(trial, { ...receipt, phase: 'release', at: 160 }));
+  trial.retired = true;
+  assert.throws(() => retainPhysicalReceipt(trial, receipt));
+});
+
+test('physical action ledger catches delayed duplicates through sealed readback', () => {
+  const trial = {
+    request: { id: 'first', name: 'return', publishedAt: 100, deadline: 1000,
+      processIdentifier: 10, windowID: 20, inputWindowID: 30 },
+    kind: 'keyboard.submit', key: 'return', sourceId: 'source-one',
+    rich: true, metadata: false, receipts: [{ at: 120 }, { at: 150 }], retired: true,
+  };
+  const event = {
+    id: 1, timestamp: new Date(120).toISOString(), kind: 'keyboard.submit', sourceId: 'source-one',
+    app: { processIdentifier: 10 }, window: { windowID: 20 }, contentState: 'available',
+    keyboard: { keyEquivalent: 'return', modifiers: [], target: { identifier: 'hwnd:30', role: 'AXDocument' } },
+  };
+  assert.equal(validatePhysicalActions([event], [trial], true)[0].length, 1);
+  assert.throws(() => validatePhysicalActions([], [trial], true));
+  assert.throws(() => validatePhysicalActions([event], [{ ...trial, receipts: [] }], true));
+  assert.throws(() => validatePhysicalActions([event], [{ ...trial, retired: false }], true));
+  for (const delta of [
+    { id: 99, timestamp: new Date(99).toISOString() }, { timestamp: new Date(151).toISOString() },
+    { sourceId: 'new-source' }, { kind: 'mouse.click' }, { ax: { text: 'unexpected' } },
+  ]) {
+    assert.throws(() => validatePhysicalActions([{ ...event, ...delta }], [trial], true));
+  }
+  const next = { ...structuredClone(trial),
+    request: { ...trial.request, id: 'next', publishedAt: 500, deadline: 1500 },
+    receipts: [{ at: 520 }, { at: 550 }],
+  };
+  const nextEvent = { ...event, id: 2, timestamp: new Date(520).toISOString() };
+  assert.equal(validatePhysicalActions([event, nextEvent], [trial, next], true).length, 2);
+  assert.throws(() => validatePhysicalActions([event, nextEvent, { ...event, id: 3 }], [trial, next], true));
+  const metadata = { ...trial, metadata: true };
+  const metadataEvent = { ...event, contentState: 'metadataOnly',
+    keyboard: { modifiers: [], target: { role: 'AXDocument' } } };
+  assert.equal(validatePhysicalActions([metadataEvent], [metadata], true)[0].length, 1);
+  assert.throws(() => validatePhysicalActions([event], [metadata], true));
+  const drag = { ...trial, kind: 'mouse.drag', key: undefined,
+    request: { ...trial.request, name: 'drag' } };
+  const mouse = { ...event, kind: 'mouse.drag', keyboard: undefined,
+    mouse: { button: 'left', target: { identifier: 'hwnd:30', role: 'AXDocument' } } };
+  assert.equal(validatePhysicalActions([mouse], [drag], true)[0].length, 1);
+  assert.throws(() => validatePhysicalActions([mouse, { ...mouse, id: 2, kind: 'mouse.click' }], [drag], true));
+});
 
 test('real Windows recorder accepts only controlled synthetic WinForms evidence', {
   skip: !optedIn ? 'requires MAKA_HISTORY_WINDOWS_INTERACTIVE_TEST=1' : false,
@@ -42,6 +180,9 @@ test('real Windows recorder accepts only controlled synthetic WinForms evidence'
 }, async (t) => {
   assert.equal(process.platform, 'win32', 'interactive acceptance must run on Windows');
   assert.equal(Number(process.versions.node.split('.')[0]), 24, 'use Node 24');
+  if (richEdit) {
+    assert.ok(inputOnly && inputRequestPath, 'Rich Edit acceptance requires the isolated input-only driver');
+  }
   assert.ok(isAbsolute(helper), 'helper override must be absolute');
   const parent = process.env.MAKA_HISTORY_WINDOWS_TEST_ROOT ?? tmpdir();
   assert.ok(isAbsolute(parent), 'test root must be an existing absolute local NTFS directory');
@@ -53,6 +194,7 @@ test('real Windows recorder accepts only controlled synthetic WinForms evidence'
   const deadline = started + 160_000; // Reserve time for EOF, evidence and fixture cleanup.
   const token = randomUUID().replaceAll('-', '');
   const executable = join(root, `maka-history-fixture-${token}.exe`);
+  const powershell = join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
   const appId = `win32.${basename(executable, '.exe')}`;
   const homes = [];
   let fixture;
@@ -62,6 +204,11 @@ test('real Windows recorder accepts only controlled synthetic WinForms evidence'
   let latestForeground;
   let ready;
   let sequence = 0;
+  let inputRequest;
+  let physicalTrial;
+  let physicalBaseline;
+  let physicalComplete = false;
+  const physicalTrials = [];
   const replies = new Map();
   const safetyTimer = setTimeout(() => {
     fixtureError = new Error('interactive acceptance safety deadline reached');
@@ -114,6 +261,46 @@ test('real Windows recorder accepts only controlled synthetic WinForms evidence'
       });
       throw error;
     }
+  }
+
+  async function measureIdleRecorder(milliseconds) {
+    const pid = active.child.pid;
+    const { stdout, stderr } = await run(powershell, [
+      '-NoProfile', '-NonInteractive', '-Command', `
+        $ErrorActionPreference = 'Stop'
+        $source = 'maka-idle-${randomUUID()}'
+        $watcher = Register-WmiEvent -Query 'SELECT * FROM Win32_ProcessStartTrace WHERE ParentProcessID = ${pid}' -SourceIdentifier $source
+        try {
+          $recorder = [Diagnostics.Process]::GetProcessById(${pid})
+          $cpu = $recorder.TotalProcessorTime.TotalMilliseconds
+          $clock = [Diagnostics.Stopwatch]::StartNew()
+          Start-Sleep -Milliseconds ${milliseconds}
+          $recorder.Refresh()
+          $cpuMs = $recorder.TotalProcessorTime.TotalMilliseconds - $cpu
+          $elapsedMs = $clock.Elapsed.TotalMilliseconds
+          $workers = @(Get-Event -SourceIdentifier $source -ErrorAction SilentlyContinue |
+            ForEach-Object { $_.SourceEventArgs.NewEvent } |
+            Where-Object { $_.ProcessName -eq 'open-history.exe' } |
+            ForEach-Object { [int]$_.ProcessID })
+          [ordered]@{ processId = ${pid}; elapsedMs = $elapsedMs; cpuMs = $cpuMs
+            oneCorePercent = 100 * $cpuMs / $elapsedMs; workerProcessIds = $workers } |
+            ConvertTo-Json -Compress
+        } finally {
+          Unregister-Event -SourceIdentifier $source -ErrorAction SilentlyContinue
+          Get-Event -SourceIdentifier $source -ErrorAction SilentlyContinue | Remove-Event
+          if ($watcher -is [System.Management.Automation.Job]) { Remove-Job $watcher -Force }
+        }
+      `,
+    ], { windowsHide: true, encoding: 'utf8', timeout: milliseconds + 5_000, maxBuffer: 16 * 1024 });
+    assert.equal(stderr, '');
+    healthy();
+    const metric = JSON.parse(stdout);
+    assert.equal(metric.processId, pid);
+    assert.ok(metric.elapsedMs >= milliseconds && metric.elapsedMs < milliseconds + 2_000);
+    assert.ok(metric.cpuMs >= 0);
+    assert.ok(metric.workerProcessIds.length <= 4, 'idle admission started workers faster than the rate gate');
+    const { elapsedMs, ...rest } = metric;
+    evidence('input.idle-metrics', { ...rest, sampleElapsedMs: elapsedMs });
   }
 
   function track(child, label) {
@@ -177,10 +364,34 @@ test('real Windows recorder accepts only controlled synthetic WinForms evidence'
     assert.equal(reply.processIdentifier, ready.processIdentifier);
     assert.equal(reply.foreground.windowID, reply.windowID);
     assert.equal(reply.foreground.processIdentifier, ready.processIdentifier);
-    assert.equal(reply.text, text);
+    if (action !== 'privacy') assert.equal(reply.text, text + (extra.hidden ?? ''));
     assert.equal(reply.password, password);
     latestForeground = reply.foreground;
     return reply;
+  }
+
+  async function inputCommand(action, request) {
+    const id = ++sequence;
+    fixture.child.stdin.write(`${JSON.stringify({
+      id, action, window: 'one', requestId: request.id, name: request.name, deadline: request.deadline,
+    })}\n`);
+    const reply = await until(() => replies.get(id), `${action} acknowledgement`, 3_000);
+    replies.delete(id);
+    assert.equal(reply.action, action);
+    assert.equal(reply.requestId, request.id);
+    assert.equal(reply.contextPreserved, true);
+    assert.equal(reply.hiddenPresent, richEdit);
+    assert.deepEqual(reply.foreground, {
+      windowID: request.windowID, processIdentifier: request.processIdentifier,
+    });
+    return reply;
+  }
+
+  function retireInputRequest(request, done = false) {
+    inputRequest = undefined;
+    // Keep the ID so existing drivers that sent it wait for the next request.
+    // A driver that has not sent it sees the expired deadline and must stop.
+    writeFileSync(inputRequestPath, JSON.stringify({ ...request, retired: true, deadline: 0, done }));
   }
 
   async function json(path) {
@@ -234,11 +445,15 @@ test('real Windows recorder accepts only controlled synthetic WinForms evidence'
     for (const event of values) {
       assert.ok(Number.isSafeInteger(event.id) && event.id > 0);
       assert.ok(Number.isFinite(Date.parse(event.timestamp)));
-      assert.ok(['window.changed', 'ui.changed', 'selection.changed'].includes(event.kind));
+      assert.ok(['window.changed', 'ui.changed', 'selection.changed',
+        'keyboard.submit', 'keyboard.shortcut', 'mouse.click', 'mouse.contextMenu', 'mouse.drag'].includes(event.kind));
       assert.equal(event.app.bundleIdentifier, appId, 'non-synthetic app persisted');
       assert.equal(event.app.processIdentifier, ready.processIdentifier, 'non-synthetic PID persisted');
       assert.ok(Object.values(ready.windows).includes(event.window.windowID), 'non-synthetic HWND persisted');
       assert.match(event.sourceId, /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i);
+    }
+    if (physicalBaseline?.home === home) {
+      validatePhysicalActions(values.slice(physicalBaseline.index), physicalTrials, physicalComplete);
     }
     return values;
   }
@@ -296,6 +511,10 @@ test('real Windows recorder accepts only controlled synthetic WinForms evidence'
 
   async function captured(home, window, text, after = 0, textEnabled = true) {
     const event = await until(async () => {
+      if (richEdit) {
+        const health = await json(join(home, 'runtime.json'));
+        assert.equal(health?.captureFailures, 0, 'Rich recorder failed before body acceptance');
+      }
       const found = (await events(home)).slice(after).find((event) =>
         event.window.windowID === ready.windows[window]
         && (textEnabled ? event.ax?.text?.includes(text) : event.contentState === 'metadataOnly'));
@@ -316,6 +535,10 @@ test('real Windows recorder accepts only controlled synthetic WinForms evidence'
 
   async function suppressed(home, window, text) {
     await show(window, text);
+    return assertSuppressed(home, window);
+  }
+
+  async function assertSuppressed(home, window) {
     // This direct, real worker proof prevents old, not-yet-flushed suppression
     // counts from making an unexercised privacy case pass.
     const snapshot = await invoke(home, [
@@ -388,7 +611,6 @@ test('real Windows recorder accepts only controlled synthetic WinForms evidence'
   try {
     assert.equal((await invoke(root, ['validate-home'])).trim(), 'history-home-valid');
     evidence('helper.path', { path: helper });
-    const powershell = join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
     const built = await run(powershell, [
       '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', fixtureSource,
       '-OutputAssembly', executable, '-TestOnly',
@@ -406,8 +628,20 @@ test('real Windows recorder accepts only controlled synthetic WinForms evidence'
         if (value.type === 'error') throw new Error(value.message);
         if (value.type === 'ready') ready = value;
         if (value.type === 'ack' || value.type === 'unblocked') replies.set(value.id, value);
+        if (value.type === 'input.received') retainPhysicalReceipt(physicalTrial, value);
         if (value.foreground) {
           latestForeground = value.foreground;
+          if (inputRequest && inputRequestPath && value.type === 'heartbeat') {
+            assert.deepEqual(value.foreground, {
+              windowID: inputRequest.windowID, processIdentifier: inputRequest.processIdentifier,
+            });
+            assert.ok(Number.isSafeInteger(value.at) && Date.now() - value.at <= 750);
+            inputRequest.publishedAt ??= Date.now();
+            writeFileSync(inputRequestPath, JSON.stringify({
+              ...inputRequest, foreground: value.foreground, witnessedAt: value.at,
+              pointer: value.pointer, pointerWindowID: value.pointerWindowID,
+            }));
+          }
           if (foregroundRequired) {
             assert.equal(value.foreground.processIdentifier, ready.processIdentifier, 'synthetic foreground was lost');
             assert.ok(Object.values(ready.windows).includes(value.foreground.windowID), 'unexpected fixture HWND');
@@ -425,27 +659,181 @@ test('real Windows recorder accepts only controlled synthetic WinForms evidence'
     for (const hwnd of Object.values(ready.windows)) assert.ok(Number.isSafeInteger(hwnd) && hwnd > 0);
 
     const marker = (name) => `SYNTHETIC_${token}_${name}`;
-    await show('one', marker('BODY_A'));
+    const initial = await show('one', marker('BODY_A'), false, 'show',
+      richEdit ? { hidden: marker('HIDDEN_RICH_RUN') } : {});
     const textHome = await startRecorder('text-on', true);
-    const captureStarted = performance.now();
-    const direct = JSON.parse(await invoke(textHome, [
+    let directHome = textHome;
+    const directArgs = [
       'snapshot', '--parent-pid', String(process.pid),
       '--window', String(ready.windows.one), '--pid', String(ready.processIdentifier),
       '--source', randomUUID(),
-    ]));
-    assert.ok(direct?.text?.includes(marker('BODY_A')), 'direct worker omitted synthetic body');
+    ];
+    let coldRichBody;
+    let probeControl;
+    let resumeBoundary = 0;
+    if (richEdit) {
+      assert.match(initial.inputClass,
+        /^(?:RichEdit20W|RICHEDIT50W|WindowsForms10\.(?:RichEdit20W|RICHEDIT50W)\..+)$/);
+      assert.ok(initial.siblingWindowID > 0 && initial.siblingWindowID !== initial.inputWindowID);
+      assert.equal(initial.siblingVisible, true);
+      assert.equal(initial.siblingFocused, false);
+      assert.equal(initial.privacyVisible, false);
+      // The recorder must prove cold capture before any auxiliary UIA client.
+      coldRichBody = await captured(textHome, 'one', marker('BODY_A'));
+      assert.equal(coldRichBody.ax.truncated, true);
+      assert.ok(coldRichBody.ax.text.includes(marker('RICH_SIBLING_BODY')));
+      assert.ok(!JSON.stringify(coldRichBody).includes(marker('HIDDEN_RICH_RUN')));
+      evidence('assertion.pass', { assertion: 'rich-cold-recorder-body', event: coldRichBody });
+      await invoke(textHome, ['pause']);
+      const paused = await runtime(textHome, 'paused');
+      assert.equal(paused.captureFailures, 0);
+      // Published paused state follows pending-worker retirement and sealing.
+      resumeBoundary = (await events(textHome, true)).length;
+      await assert.rejects(invoke(textHome, directArgs), (error) => {
+        assert.equal(error.code, 1);
+        assert.equal(error.stdout, '');
+        assert.match(error.stderr, /^capture_not_admitted\r?\n?$/);
+        return true;
+      });
+      // Snapshot admission needs running control without restarting the recorder.
+      directHome = join(root, 'rich-direct-probe');
+      await mkdir(directHome);
+      homes.push(directHome);
+      assert.equal((await invoke(directHome, ['validate-home'])).trim(), 'history-home-valid');
+      assert.deepEqual(await readdir(directHome), []);
+      for (const name of ['config.json', 'maka-settings.json']) {
+        const contents = await readFile(join(textHome, name));
+        await writeFile(join(directHome, name), contents, { flag: 'wx' });
+        assert.deepEqual(await readFile(join(directHome, name)), contents);
+      }
+      probeControl = { state: 'running', resumeAt: null, revision: randomUUID() };
+      await writeFile(join(directHome, 'control.json'), `${JSON.stringify(probeControl)}\n`, { flag: 'wx' });
+      evidence('assertion.pass', {
+        assertion: 'rich-direct-probe-isolated-control',
+        recorderHome: textHome, directHome, probeControl, resumeBoundary,
+      });
+      // Legacy UIA metadata is diagnostic only: CUIAutomation8 can expose a
+      // different provider type for this same native HWND.
+      const { stdout, stderr } = await run(powershell, [
+        '-NoProfile', '-NonInteractive', '-Mta', '-Command', `
+          $ErrorActionPreference = 'Stop'
+          Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+          $element = [System.Windows.Automation.AutomationElement]::FocusedElement
+          $current = $element.Current
+          $children = @()
+          $child = [System.Windows.Automation.TreeWalker]::RawViewWalker.GetFirstChild($element)
+          while ($null -ne $child -and $children.Count -lt 16) {
+            $state = $child.Current
+            $children += [ordered]@{
+              controlTypeId = $state.ControlType.Id
+              className = $state.ClassName
+              frameworkId = $state.FrameworkId
+              nativeWindowHandle = $state.NativeWindowHandle
+              processId = $state.ProcessId
+              isPassword = $state.IsPassword
+              isOffscreen = $state.IsOffscreen
+            }
+            $child = [System.Windows.Automation.TreeWalker]::RawViewWalker.GetNextSibling($child)
+          }
+          [ordered]@{
+            controlTypeId = $current.ControlType.Id
+            controlType = $current.ControlType.ProgrammaticName
+            className = $current.ClassName
+            frameworkId = $current.FrameworkId
+            nativeWindowHandle = $current.NativeWindowHandle
+            processId = $current.ProcessId
+            isPassword = $current.IsPassword
+            isOffscreen = $current.IsOffscreen
+            patterns = @($element.GetSupportedPatterns() | ForEach-Object { $_.ProgrammaticName })
+            children = $children
+            childrenOverflow = $null -ne $child
+          } | ConvertTo-Json -Depth 5 -Compress
+        `,
+      ], { windowsHide: true, encoding: 'utf8', timeout: 5_000, maxBuffer: 64 * 1024 });
+      assert.equal(stderr, '');
+      const provider = JSON.parse(stdout);
+      evidence('rich-edit.provider', { provider, fixture: initial });
+      assert.equal(provider.processId, ready.processIdentifier);
+      assert.equal(provider.nativeWindowHandle, initial.inputWindowID);
+      assert.equal(provider.isPassword, false);
+      assert.equal(provider.isOffscreen, false);
+      assert.ok(['Win32', 'WinForm'].includes(provider.frameworkId));
+      assert.equal(provider.childrenOverflow, false);
+      const visibleProbe = process.env.MAKA_HISTORY_WINDOWS_RICH_VISIBLE_PROBE;
+      if (visibleProbe) {
+        assert.ok(isAbsolute(visibleProbe));
+        assert.equal(basename(visibleProbe), 'maka-rich-visible-probe.exe');
+        try {
+          const { stdout, stderr } = await run(visibleProbe, [
+            String(ready.processIdentifier), String(initial.windowID),
+            String(initial.inputWindowID), token,
+          ], {
+            env: { ...process.env, MAKA_RICH_PROBE_TEST_ONLY: '1', OPEN_COMPUTER_HISTORY_HOME: directHome },
+            windowsHide: true, encoding: 'utf8', timeout: 5_000, maxBuffer: 16 * 1024,
+          });
+          evidence('rich-edit.visible-probe', { code: 0, result: JSON.parse(stdout), stderr });
+        } catch (error) {
+          evidence('rich-edit.visible-probe', {
+            code: error.code, signal: error.signal,
+            stdout: error.stdout, stderr: error.stderr, message: error.message,
+          });
+        }
+      }
+    }
+    const captureStarted = performance.now();
+    const direct = JSON.parse(await invoke(directHome, directArgs));
+    if (richEdit) {
+      assert.ok(direct, 'native RichEdit target requires an admitted snapshot');
+      assert.deepEqual(direct.inputTarget, { hwnd: initial.inputWindowID, role: 'AXDocument' });
+      assert.ok(direct.text?.includes(marker('BODY_A')), 'RichEdit visible body was omitted');
+      assert.equal(direct.textTruncated, true, 'partial visible runs must not claim complete text');
+      assert.ok(!JSON.stringify(direct).includes(marker('HIDDEN_RICH_RUN')));
+      assert.ok(direct.text.includes(marker('RICH_SIBLING_BODY')), 'visible sibling body was omitted');
+      assert.equal(direct.selection, null);
+      evidence('assertion.pass', {
+        assertion: 'rich-edit-focused-target-with-unfocused-sibling',
+        target: direct.inputTarget, siblingWindowID: initial.siblingWindowID,
+      });
+    } else {
+      assert.ok(direct?.text?.includes(marker('BODY_A')), 'direct worker omitted synthetic body');
+    }
     evidence('assertion.pass', {
-      assertion: 'direct-worker-body', durationMs: Math.round(performance.now() - captureStarted), direct,
+      assertion: richEdit ? 'rich-edit-visible-body-hidden-run-omitted' : 'direct-worker-body',
+      durationMs: Math.round(performance.now() - captureStarted), direct,
     });
-    const a = await captured(textHome, 'one', marker('BODY_A'));
+    if (richEdit) {
+      const paused = await json(join(textHome, 'runtime.json'));
+      assert.equal(paused.state, 'paused', 'auxiliary probes require an isolated recorder');
+      assert.equal(paused.captureFailures, 0);
+      assert.equal((await events(textHome, true)).length, resumeBoundary, 'paused probes recorded events');
+      assert.deepEqual((await readdir(directHome)).sort(), [
+        'config.json', 'control.json', 'maka-settings.json',
+      ], 'direct probe must not create recorder state or segments');
+      for (const name of ['config.json', 'maka-settings.json']) {
+        assert.deepEqual(await readFile(join(directHome, name)), await readFile(join(textHome, name)));
+      }
+      assert.deepEqual(await json(join(directHome, 'control.json')), probeControl);
+      await invoke(textHome, ['resume']);
+      await runtime(textHome, 'running');
+    }
+    const a = await captured(textHome, 'one', marker('BODY_A'), resumeBoundary);
+    if (richEdit) {
+      assert.equal(a.ax.truncated, true);
+      assert.ok(a.ax.text.includes(marker('RICH_SIBLING_BODY')));
+      assert.ok(!JSON.stringify(a).includes(marker('HIDDEN_RICH_RUN')));
+      assert.notEqual(a.sourceId, coldRichBody.sourceId, 'resume must establish a fresh input source');
+      evidence('assertion.pass', { assertion: 'rich-resumed-recorder-body', event: a, resumeBoundary });
+    }
     const appId = a.app.bundleIdentifier;
     const applications = JSON.parse(await invoke(textHome, ['applications', appId, 'win32.maka-history-missing']));
     assert.equal(applications.length, 2);
-    assert.deepEqual(Object.keys(applications[0]).sort(), ['bundleIdentifier', 'iconDataUrl', 'name']);
+    assert.deepEqual(Object.keys(applications[0]).sort(), ['bundleIdentifier', 'iconDataUrl', 'name', 'resolution']);
+    assert.equal(applications[0].resolution, 'resolved');
     assert.equal(applications[0].bundleIdentifier, appId);
     assert.equal(applications[0].name, 'Maka synthetic history fixture');
     assert.deepEqual(applications[1], {
       bundleIdentifier: 'win32.maka-history-missing', name: 'win32.maka-history-missing', iconDataUrl: null,
+      resolution: 'not_running',
     });
     {
       assert.equal(typeof applications[0].iconDataUrl, 'string', 'synthetic executable icon was not extracted');
@@ -458,6 +846,242 @@ test('real Windows recorder accepts only controlled synthetic WinForms evidence'
       assert.equal(png[25], 6);
     }
     evidence('assertion.pass', { assertion: 'application-metadata', applications });
+    async function setCaptureText(enabled) {
+      const path = join(textHome, 'config.json');
+      const config = await json(path);
+      config.captureText = enabled;
+      await writeFile(path, `${JSON.stringify(config)}\n`);
+    }
+    let metadataObserved;
+    if (metadataInput) {
+      assert.ok(inputOnly && inputRequestPath && !richEdit);
+      await invoke(textHome, ['pause']);
+      await runtime(textHome, 'paused');
+      await setCaptureText(false);
+      const content = `HEAD\u4e2d\ud83d\udcbb\r\n${'x'.repeat(70000)}${marker('NUMERIC_ONLY')}`;
+      await show('one', content, false, 'edit');
+      async function counts() {
+        const id = ++sequence;
+        fixture.child.stdin.write(`${JSON.stringify({ id, action: 'readCounts', window: 'one' })}\n`);
+        return until(() => replies.get(id), 'fixture body-read counters', 3000);
+      }
+      for (const [start, length] of [[70000, 0], [70001, 9], [5, 2]]) {
+        await show('one', content, false, 'select', { start, length });
+        const before = await counts();
+        // Both recorder and one-shot worker observe only numeric metadata.
+        await invoke(textHome, ['resume']);
+        const value = JSON.parse(await invoke(textHome, [
+          'snapshot', '--parent-pid', String(process.pid),
+          '--window', String(ready.windows.one), '--pid', String(ready.processIdentifier),
+          '--source', randomUUID(),
+        ]));
+        const after = await counts();
+        assert.equal(value?.text, null);
+        assert.equal(value?.selection?.start, start);
+        assert.equal(value?.selection?.length, length);
+        assert.equal(value.selection.selectedText, undefined);
+        assert.equal(after.bodyReads, before.bodyReads, 'metadata capture called WM_GETTEXT on Edit');
+        assert.ok(after.selectionReads >= before.selectionReads + 2, 'numeric range was not rechecked');
+        const event = await until(async () => (await events(textHome)).find(event =>
+          event.selection?.selectedRange?.location === start &&
+          event.selection.selectedRange.length === length), 'numeric range in real JSONL');
+        assert.equal(event.contentState, 'metadataOnly');
+        assert.equal(event.selection.selectedText, undefined);
+        assert.equal(event.ax, undefined);
+        evidence('assertion.pass', { assertion: 'numeric-selection-no-body-read', start, length, before, after, event });
+        await invoke(textHome, ['pause']);
+        await runtime(textHome, 'paused');
+      }
+      await show('one', marker('METADATA_ACTION_BODY'), false, 'edit');
+      const since = (await events(textHome)).length;
+      await invoke(textHome, ['resume']);
+      metadataObserved = await captured(textHome, 'one', '', since, false);
+    }
+    if (inputRequestPath) {
+      assert.ok(isAbsolute(inputRequestPath));
+      // Keep the hidden-run Rich document throughout its physical action cases.
+      const reply = richEdit ? initial : await show('one', marker('INPUT_BODY'), false, 'edit');
+      const observed = metadataInput ? metadataObserved : richEdit ? a :
+        await captured(textHome, 'one', marker('INPUT_BODY'));
+      physicalBaseline = { home: textHome, index: (await events(textHome)).length };
+      const cases = [
+        { name: 'return', kind: 'keyboard.submit', key: 'return' },
+        { name: 'shortcut', kind: 'keyboard.shortcut', key: 'a' },
+        { name: 'return', kind: 'keyboard.submit', key: 'return', idleMs: 6_000 },
+        { name: 'drag', kind: 'mouse.drag' },
+        { name: 'click', kind: 'mouse.click' },
+      ];
+      for (const item of cases) {
+        if (item.idleMs) {
+          await measureIdleRecorder(item.idleMs);
+        }
+        await events(textHome); // Recheck earlier requests for delayed duplicates.
+        const request = {
+          id: randomUUID(), name: item.name, deadline: Date.now() + 12_000,
+          processIdentifier: ready.processIdentifier, windowID: ready.windows.one,
+          inputWindowID: reply.inputWindowID, point: reply.inputPoint,
+        };
+        physicalTrial = {
+          request, kind: item.kind, key: item.key, sourceId: observed.sourceId,
+          metadata: metadataInput, rich: richEdit, receipts: [], retired: false,
+        };
+        physicalTrials.push(physicalTrial);
+        const armed = await inputCommand('inputArm', request);
+        assert.equal(armed.inputWindowID, reply.inputWindowID);
+        inputRequest = request;
+        await until(() => physicalTrial.receipts.length === 2, `physical ${item.name} press/release`, 12_000);
+        retireInputRequest(request);
+        const retired = await inputCommand('inputRetire', request);
+        assert.equal(retired.released, true);
+        physicalTrial.retired = true;
+        const action = await until(async () => {
+          const rows = (await events(textHome)).slice(physicalBaseline.index);
+          return validatePhysicalActions(rows, physicalTrials).at(-1)[0];
+        }, `virtual-device ${item.name}`, Math.max(1, request.deadline + 2_000 - Date.now()));
+        assert.equal(action.sourceId, observed.sourceId);
+        assert.equal(action.ax, undefined, 'action cannot relabel a body observation');
+        assert.equal(action.selection, undefined);
+        const target = action.keyboard?.target ?? action.mouse?.target;
+        assert.equal(target.identifier, metadataInput ? undefined : `hwnd:${reply.inputWindowID}`);
+        if (metadataInput) {
+          assert.equal(action.contentState, 'metadataOnly');
+          assert.equal(action.keyboard?.keyEquivalent, undefined);
+          assert.equal(action.contentDomains, undefined);
+        }
+        assert.equal(target.role, richEdit ? 'AXDocument' : 'AXTextField');
+        if (item.name === 'shortcut') assert.ok(action.keyboard.modifiers.includes('control'));
+        if (item.name === 'drag') {
+          assert.deepEqual(action.mouse.origin, action.mouse.destination);
+          assert.equal(action.mouse.origin.element.identifier, metadataInput ? undefined : `hwnd:${reply.inputWindowID}`);
+          assert.equal(action.mouse.origin.window.windowID, ready.windows.one);
+          assert.equal(action.mouse.clickCount, undefined);
+        }
+        evidence('assertion.pass', {
+          assertion: `${richEdit ? 'rich-edit-' : ''}native-input-${item.name}${item.idleMs ? '-after-idle' : ''}`,
+          request, receipts: physicalTrial.receipts, retired, action,
+        });
+        physicalTrial = undefined;
+      }
+      physicalComplete = true;
+      await events(textHome);
+      await writeFile(inputRequestPath, JSON.stringify({ done: true }));
+      if (inputOnly) {
+        if (metadataInput) {
+          const since = (await events(textHome)).length;
+          await setCaptureText(true);
+          await show('one', marker('TEXT_MODE_RECOVERED'), false, 'edit');
+          await captured(textHome, 'one', marker('TEXT_MODE_RECOVERED'), since);
+          const disabledSince = (await events(textHome)).length;
+          await setCaptureText(false);
+          await show('one', marker('TEXT_MODE_DISABLED'), false, 'edit');
+          await captured(textHome, 'one', '', disabledSince, false);
+          evidence('assertion.pass', { assertion: 'both-text-mode-transitions-recover' });
+        }
+        if (richEdit) {
+          const mixedText = marker('MIXED_EDIT_SELECTION');
+          const mixedSince = (await events(textHome)).length;
+          const mixed = await show('two', mixedText);
+          assert.equal(mixed.siblingVisible, true);
+          assert.equal(mixed.siblingFocused, false);
+          await show('two', mixedText, false, 'select', { start: 0, length: mixedText.length });
+          const mixedSnapshot = JSON.parse(await invoke(textHome, [
+            'snapshot', '--parent-pid', String(process.pid),
+            '--window', String(ready.windows.two), '--pid', String(ready.processIdentifier),
+            '--source', randomUUID(),
+          ]));
+          assert.equal(mixedSnapshot?.selection?.selectedText, mixedText);
+          assert.equal(mixedSnapshot.selection.truncated, false);
+          assert.ok(mixedSnapshot.text.includes(mixedText));
+          assert.ok(mixedSnapshot.text.includes(marker('RICH_SIBLING_BODY')));
+          assert.equal(mixedSnapshot.textTruncated, true);
+          const mixedEvent = await captured(textHome, 'two', mixedText, mixedSince);
+          assert.equal(mixedEvent.window.title, a.window.title);
+          assert.notEqual(mixedEvent.sourceId, a.sourceId);
+          evidence('assertion.pass', { assertion: 'ordinary-edit-selection-beside-rich-sibling' });
+          const hidden = marker('HIDDEN_RICH_RUN');
+          const returnedSince = (await events(textHome)).length;
+          await show('one', marker('BODY_A'), false, 'show', { hidden });
+          const returned = await captured(textHome, 'one', marker('BODY_A'), returnedSince);
+          assert.notEqual(returned.sourceId, a.sourceId);
+          assert.notEqual(returned.sourceId, mixedEvent.sourceId);
+          evidence('assertion.pass', { assertion: 'rich-same-title-hwnd-focus-return', a, mixedEvent, returned });
+          const editedSince = (await events(textHome)).length;
+          await show('one', marker('RICH_EDITED'), false, 'edit',
+            { hidden: marker('HIDDEN_RICH_EDITED') });
+          const edited = await captured(textHome, 'one', marker('RICH_EDITED'), editedSince);
+          assert.equal(edited.sourceId, returned.sourceId);
+          assert.notEqual(edited.kind, 'window.changed');
+          assert.equal(edited.ax.truncated, true);
+          assert.ok(!JSON.stringify(edited).includes(marker('HIDDEN_RICH_EDITED')));
+          evidence('assertion.pass', { assertion: 'rich-visible-body-edit', event: edited });
+          const visible = await show('one', marker('BODY_A'), false, 'privacy',
+            { hidden, visible: true });
+          assert.equal(visible.privacyVisible, true);
+          await show('one', marker('RICH_PRIVACY_ONLY'), false, 'edit', { hidden });
+          await assertSuppressed(textHome, 'one');
+          await show('one', marker('RICH_RECOVERED'), false, 'edit', { hidden });
+          const recoverySince = (await events(textHome)).length;
+          const restored = await show('one', marker('RICH_RECOVERED'), false, 'privacy',
+            { hidden, visible: false });
+          assert.equal(restored.privacyVisible, false);
+          const recovered = JSON.parse(await invoke(textHome, [
+            'snapshot', '--parent-pid', String(process.pid),
+            '--window', String(ready.windows.one), '--pid', String(ready.processIdentifier),
+            '--source', randomUUID(),
+          ]));
+          assert.deepEqual(recovered?.inputTarget, direct.inputTarget);
+          assert.equal(recovered.selection, null);
+          assert.ok(recovered.text?.includes(marker('RICH_RECOVERED')));
+          assert.equal(recovered.textTruncated, true);
+          for (const value of [hidden, marker('RICH_PRIVACY_ONLY'), marker('RICH_PASSWORD')]) {
+            assert.ok(!JSON.stringify(recovered).includes(value));
+          }
+          await captured(textHome, 'one', marker('RICH_RECOVERED'), recoverySince);
+          evidence('assertion.pass', { assertion: 'rich-sibling-password-suppression-and-recovery' });
+          await invoke(textHome, ['pause']);
+          await runtime(textHome, 'paused');
+          await setCaptureText(false);
+          await show('one', marker('RICH_METADATA_ONLY'), false, 'edit',
+            { hidden: marker('HIDDEN_RICH_METADATA') });
+          const metadataSince = (await events(textHome)).length;
+          await invoke(textHome, ['resume']);
+          await captured(textHome, 'one', '', metadataSince, false);
+          const metadataSnapshot = JSON.parse(await invoke(textHome, [
+            'snapshot', '--parent-pid', String(process.pid),
+            '--window', String(ready.windows.one), '--pid', String(ready.processIdentifier),
+            '--source', randomUUID(),
+          ]));
+          assert.ok(metadataSnapshot);
+          assert.equal(metadataSnapshot.text, null);
+          assert.equal(metadataSnapshot.selection, null);
+          for (const event of (await events(textHome)).slice(metadataSince)) {
+            assert.equal(event.contentState, 'metadataOnly');
+            assert.equal(event.ax, undefined);
+            assert.equal(event.selection, undefined);
+          }
+          await invoke(textHome, ['pause']);
+          await runtime(textHome, 'paused');
+          await show('one', marker('RICH_TEXT_RESTORED'), false, 'edit', { hidden });
+          await setCaptureText(true);
+          const textSince = (await events(textHome)).length;
+          await invoke(textHome, ['resume']);
+          const textRestored = await captured(textHome, 'one', marker('RICH_TEXT_RESTORED'), textSince);
+          assert.equal(textRestored.ax.truncated, true);
+          evidence('assertion.pass', { assertion: 'rich-both-text-mode-transitions-recover' });
+        }
+        const records = await stopRecorder(textHome);
+        if (richEdit) {
+          assert.ok(records.some(event => event.ax?.text?.includes(marker('BODY_A'))));
+          assert.ok(records.some(event => event.ax?.text?.includes(marker('RICH_TEXT_RESTORED'))));
+          for (const value of [marker('HIDDEN_RICH_RUN'), marker('HIDDEN_RICH_EDITED'),
+            marker('HIDDEN_RICH_METADATA'), marker('RICH_METADATA_ONLY'),
+            marker('RICH_PRIVACY_ONLY'), marker('RICH_PASSWORD')]) {
+            assert.ok(!JSON.stringify(records).includes(value), 'excluded RichEdit content persisted');
+          }
+        }
+        return;
+      }
+    }
     let count = (await events(textHome)).length;
     await show('one', marker('BODY_EDIT'), false, 'edit');
     const edited = await captured(textHome, 'one', marker('BODY_EDIT'), count);
@@ -474,12 +1098,107 @@ test('real Windows recorder accepts only controlled synthetic WinForms evidence'
       assert.equal(reply.selectionStart, start);
       assert.equal(reply.selectedText, marker('BODY_EDIT').slice(start, start + 5));
       const selected = await until(async () => (await events(textHome)).slice(count).find((event) =>
-        event.selection?.selectedText === reply.selectedText && event.selection.start === start),
+        event.selection?.selectedText === reply.selectedText
+        && event.selection.selectedRange?.location === start),
       'source-admitted selection event');
       assert.equal(selected.kind, 'selection.changed');
       assert.equal(selected.sourceId, edited.sourceId);
       assert.equal(selected.selection.truncated, false);
       evidence('assertion.pass', { assertion: 'selection-retains-source-and-position', selected });
+    }
+    {
+      const selectedText = `${'a'.repeat(5000)}${marker('SELECTION_TAIL')}\u4e2d\u6587\ud83d\udcbb`;
+      count = (await events(textHome)).length;
+      await show('one', `HEAD${selectedText}END`, false, 'edit');
+      const clearId = ++sequence;
+      fixture.child.stdin.write(`${JSON.stringify({
+        id: clearId, action: 'select', window: 'one', start: 0, length: 0,
+      })}\n`);
+      const cleared = await until(() => replies.get(clearId), 'clear long body selection', 3_000);
+      replies.delete(clearId);
+      assert.equal(cleared.selectedText, '');
+      const bodySnapshot = JSON.parse(await invoke(textHome, [
+        'snapshot', '--parent-pid', String(process.pid),
+        '--window', String(ready.windows.one), '--pid', String(ready.processIdentifier),
+        '--source', edited.sourceId,
+      ]));
+      assert.equal(bodySnapshot?.selection?.selectedText, undefined);
+      assert.equal(bodySnapshot.selection.start, 0);
+      assert.equal(bodySnapshot.selection.length, 0);
+      assert.ok(bodySnapshot.text.includes(`HEAD${selectedText}END`),
+        'plain native Edit body must retain its tail beyond the UIA 4096-unit scalar cap');
+      const bodyEvent = await captured(textHome, 'one', marker('SELECTION_TAIL'), count);
+      assert.equal(bodyEvent.sourceId, edited.sourceId);
+      assert.equal(bodyEvent.selection?.selectedText, undefined);
+      evidence('assertion.pass', { assertion: 'plain-edit-body-tail-without-selection', bodySnapshot, bodyEvent });
+      count = (await events(textHome)).length;
+      const id = ++sequence;
+      fixture.child.stdin.write(`${JSON.stringify({
+        id, action: 'select', window: 'one', start: 4, length: selectedText.length,
+      })}\n`);
+      const reply = await until(() => replies.get(id), 'long fixture selection', 3_000);
+      replies.delete(id);
+      assert.equal(reply.selectedText, selectedText);
+      const selectionSnapshot = JSON.parse(await invoke(textHome, [
+        'snapshot', '--parent-pid', String(process.pid),
+        '--window', String(ready.windows.one), '--pid', String(ready.processIdentifier),
+        '--source', edited.sourceId,
+      ]));
+      evidence('selection.direct', {
+        snapshot: selectionSnapshot,
+        runtime: JSON.parse(await readFile(join(textHome, 'runtime.json'), 'utf8')),
+      });
+      assert.equal(selectionSnapshot?.selection?.selectedText, selectedText,
+        'direct worker must preserve the admitted long selection');
+      assert.equal(selectionSnapshot.selection.start, 4);
+      const selected = await until(async () => (await events(textHome)).slice(count).find((event) =>
+        event.selection?.selectedText === selectedText && event.selection.selectedRange?.location === 4),
+      'selection witness beyond 4 KiB');
+      assert.equal(selected.sourceId, edited.sourceId);
+      assert.equal(selected.selection.truncated, false);
+      assert.ok(Buffer.byteLength(selected.selection.selectedText) > 4096);
+      assert.ok(Buffer.byteLength(selected.selection.selectedText) <= 8192);
+      assert.ok(Buffer.byteLength(selected.ax.text) + Buffer.byteLength(selected.selection.selectedText) <= 28 * 1024);
+      evidence('assertion.pass', { assertion: 'selection-eight-kib-tail', selected });
+    }
+    for (const testCase of [
+      {
+        name: 'selection-utf8-budget', prefix: 'HEAD',
+        selection: `${'a'.repeat(8190)}\ud83d\udcbb${marker('OVER_SELECTION_BUDGET')}`,
+        expected: 'a'.repeat(8190),
+      },
+      {
+        name: 'selection-offset-budget', prefix: `${marker('OFFSET_BODY')}${'a'.repeat(33 * 1024)}`,
+        selection: marker('OFFSET_SELECTION'),
+      },
+    ]) {
+      await show('one', `${testCase.prefix}${testCase.selection}END`, false, 'edit');
+      const id = ++sequence;
+      fixture.child.stdin.write(`${JSON.stringify({
+        id, action: 'select', window: 'one',
+        start: testCase.prefix.length, length: testCase.selection.length,
+      })}\n`);
+      const reply = await until(() => replies.get(id), testCase.name, 3_000);
+      replies.delete(id);
+      assert.equal(reply.selectionStart, testCase.prefix.length);
+      assert.equal(reply.selectedText, testCase.selection);
+      const snapshot = JSON.parse(await invoke(textHome, [
+        'snapshot', '--parent-pid', String(process.pid),
+        '--window', String(ready.windows.one), '--pid', String(ready.processIdentifier),
+        '--source', edited.sourceId,
+      ]));
+      assert.ok(snapshot?.text?.length, 'optional selection budget must preserve admitted body');
+      if (testCase.expected) {
+        assert.equal(snapshot.selection.selectedText, testCase.expected);
+        assert.equal(snapshot.selection.start, 4);
+        assert.equal(snapshot.selection.truncated, true);
+        assert.ok(Buffer.byteLength(snapshot.text) + Buffer.byteLength(snapshot.selection.selectedText) <= 28 * 1024);
+      } else {
+        assert.equal(snapshot.selection?.selectedText, undefined);
+        assert.equal(snapshot.selection.start, testCase.prefix.length);
+        assert.equal(snapshot.selection.length, testCase.selection.length);
+      }
+      evidence('assertion.pass', { assertion: testCase.name, snapshot });
     }
     count = (await events(textHome)).length;
     await show('two', marker('BODY_B'));
@@ -661,6 +1380,11 @@ test('real Windows recorder accepts only controlled synthetic WinForms evidence'
   } finally {
     foregroundRequired = false;
     const cleanupErrors = [];
+    inputRequest = undefined;
+    if (inputRequestPath) {
+      try { await writeFile(inputRequestPath, JSON.stringify({ done: true })); }
+      catch (error) { cleanupErrors.push(error); }
+    }
     if (active) {
       try { await closeProcess(active, 'recorder-cleanup'); }
       catch (error) { cleanupErrors.push(error); }
@@ -673,6 +1397,7 @@ test('real Windows recorder accepts only controlled synthetic WinForms evidence'
       }
       catch (error) { cleanupErrors.push(error); }
     }
+    if (fixtureError) cleanupErrors.push(fixtureError);
     for (const home of homes) {
       try { await dumpHome(home); }
       catch (error) { cleanupErrors.push(error); }

@@ -19,6 +19,13 @@
 
 mod control;
 mod health;
+#[cfg(any(windows, test))]
+mod input;
+#[cfg(any(windows, test))]
+mod input_actions;
+#[cfg(all(test, not(windows)))]
+#[path = "platform/input_lease.rs"]
+mod input_lease_tests;
 mod model;
 #[cfg(windows)]
 mod platform;

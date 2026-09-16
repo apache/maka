@@ -104,20 +104,22 @@ public struct ObservationDelivery {
 /// Selection identity includes the actual control/document path. Clearing a
 /// selection ends deduplication even though no empty event needs to be stored.
 public struct SelectionDelivery {
-    private var last: (source: TextInputSource, selection: EventStreamSelection)?
+    private var last: (source: TextInputSource, selection: EventStreamSelection, items: [AnyHashable])?
     public init() {}
 
     @discardableResult
     public mutating func deliver(
-        source: TextInputSource, selection: EventStreamSelection, write: () throws -> Bool
+        source: TextInputSource, selection: EventStreamSelection,
+        itemIdentities: [AnyHashable] = [], write: () throws -> Bool
     ) rethrows -> Bool {
-        guard selection.selectedText?.isEmpty == false || (selection.selectedRange?.length ?? 0) > 0 else {
+        guard selection.selectedText?.isEmpty == false || (selection.selectedRange?.length ?? 0) > 0 ||
+                !selection.selectedItems.isEmpty else {
             reset()
             return false
         }
-        if let last, last.source.matches(source), last.selection == selection { return false }
+        if let last, last.source.matches(source), last.selection == selection, last.items == itemIdentities { return false }
         guard try write() else { return false }
-        last = (source, selection)
+        last = (source, selection, itemIdentities)
         return true
     }
 

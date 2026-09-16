@@ -38,6 +38,48 @@ const event = {
   privateField: 'unexpected-native-data',
 };
 
+test('packaged process identities stay exact and either alias excludes owner or drag endpoints', () => {
+  const aumid = `${'N'.repeat(50)}_8wekyb3d8bbwe!${'A'.repeat(63)}X`;
+  const app = { name: 'Packaged editor', bundleIdentifier: 'win32.notepad', applicationUserModelId: aumid };
+  const raw = { ...event, app };
+  const projected = projectHistorySummaryEvent(JSON.stringify(raw), settings)!;
+  assert.equal(projected.app?.bundleIdentifier, `winapp.${aumid}`);
+  const different = projectHistorySummaryEvent(JSON.stringify({
+    ...raw, app: { ...app, applicationUserModelId: aumid.slice(0, -1) + 'Y' },
+  }), settings)!;
+  assert.notEqual(projected.sourceKey, different.sourceKey);
+  assert.notEqual(projected.app?.bundleIdentifier, different.app?.bundleIdentifier);
+  for (const blocked of ['WIN32.NOTEPAD', `winapp.${aumid.toLowerCase()}`]) {
+    const denied = { ...settings, blockedApplications: [blocked] };
+    assert.equal(projectHistorySummaryEvent(JSON.stringify(raw), denied), null);
+    for (const endpoint of ['origin', 'destination']) {
+      assert.equal(projectHistorySummaryEvent(JSON.stringify({
+        ...event, kind: 'mouse.drag', mouse: { [endpoint]: { app } },
+      }), denied), null);
+    }
+    assert.notEqual(summaryScopeKey(settings), summaryScopeKey(denied));
+  }
+  for (const invalid of [null, '', 42, aumid + 'x', aumid.replace('!', '/'), aumid.replace('!', '!é')]) {
+    assert.equal(projectHistorySummaryEvent(JSON.stringify({
+      ...raw, app: { ...app, applicationUserModelId: invalid },
+    }), settings), null);
+  }
+  assert.equal(projectHistorySummaryEvent(JSON.stringify({
+    ...raw, app: { ...app, bundleIdentifier: 'org.example.editor' },
+  }), settings), null);
+  for (const bundleIdentifier of ['winapp.invalid', `winapp.${aumid}x`, 'win32.notepad.exe',
+    'org.example.<script>', 'org.example.app/path', 'org.example.app --flag', 'org.example.app\u0000', null]) {
+    assert.equal(projectHistorySummaryEvent(JSON.stringify({
+      ...event, app: { name: 'Cannot bypass via display name', bundleIdentifier },
+    }), settings), null);
+  }
+  const generic = `org.${'a'.repeat(233)}.App`;
+  assert.equal(generic.length, 241);
+  assert.equal(projectHistorySummaryEvent(JSON.stringify({
+    ...event, app: { ...event.app, bundleIdentifier: generic },
+  }), settings)!.app!.bundleIdentifier, generic);
+});
+
 test('text consent controls retained content independently of collection and local text capture', () => {
   for (const captureText of [true, false]) {
     const metadata = projectHistorySummaryEvent(JSON.stringify(event), { ...settings, captureText, summaryTextEnabled: false })!;
@@ -86,6 +128,61 @@ test('current exclusions cover owner, contributing frame and secure fields befor
   }), settings), null);
 });
 
+test('selected rows retain their observed labels through the shared content gate', () => {
+  const rowSelection = {
+    ...event, kind: 'selection.changed', keyboard: undefined, ax: undefined,
+    selection: { selectedItems: [
+      { role: 'AXRow', title: 'Capture completeness', value: 'First input still missing' },
+      { role: 'AXCell', description: 'Next check', value: 'Replay the cold-start scenario' },
+    ] },
+  };
+  const line = JSON.stringify(rowSelection);
+  const projected = projectHistorySummaryEvent(line, settings)!;
+  assert.match(projected.content!, /Selected item 1:[\s\S]*Capture completeness[\s\S]*First input still missing/u);
+  assert.match(projected.content!, /Selected item 2:[\s\S]*Next check[\s\S]*Replay the cold-start scenario/u);
+  assert.doesNotMatch(projected.content!, /Selected text|Selection range|Keyboard target|accessibility content/u);
+  assert.equal(projectHistorySummaryEvent(line, { ...settings, summaryTextEnabled: false })!.content, undefined);
+  for (const patch of [{ sourceId: undefined }, { contentState: 'metadataOnly' }, { contentDomains: undefined }]) {
+    assert.equal(projectHistorySummaryEvent(JSON.stringify({ ...rowSelection, ...patch }), settings)!.content, undefined);
+  }
+  assert.equal(projectHistorySummaryEvent(line, { ...settings, blockedDomains: ['work.example'] }), null);
+  const legacy = projectHistorySummaryEvent(JSON.stringify({
+    ...rowSelection, selection: { selectedText: 'Legacy selection' },
+  }), settings)!;
+  assert.match(legacy.content!, /Legacy selection/u);
+});
+
+test('selected item validation rejects unsafe or malformed items before all content projection', () => {
+  const allowed = { role: 'AXRow', title: 'Allowed row' };
+  for (const selectedItems of [
+    null, {}, 'not-an-array', [null], [[]], [1], Array.from({ length: 33 }, () => allowed),
+    [allowed, { role: 'AXSecureTextField', value: 'omit' }],
+    [allowed, { role: 'AXRow', subrole: 'AXPasswordField' }],
+    [allowed, { role: ['AXRow'] }], [allowed, { role: 'AXRow', subrole: 42 }],
+  ]) {
+    for (const summaryTextEnabled of [false, true]) {
+      assert.equal(projectHistorySummaryEvent(JSON.stringify({
+        ...event, selection: { selectedItems },
+      }), { ...settings, summaryTextEnabled }), null);
+    }
+  }
+});
+
+test('selected item evidence redacts secrets and keeps Unicode clipping within the shared byte limit', () => {
+  const secret = 'sk-syntheticSelectionSecret123456789';
+  const selectedItems = Array.from({ length: 32 }, (_, index) => ({
+    role: 'AXRow', title: `Row ${index + 1}`,
+    value: index === 0 ? `token=${secret}` : '内容\n'.repeat(3_000),
+  }));
+  const projected = projectHistorySummaryEvent(JSON.stringify({
+    ...event, keyboard: undefined, ax: undefined, selection: { selectedItems },
+  }), settings)!;
+  assert.doesNotMatch(projected.content!, /syntheticSelectionSecret|\ufffd/u);
+  assert.match(projected.content!, /\[redacted\]/u);
+  assert.match(projected.content!, /\[truncated\]$/u);
+  assert.ok(Buffer.byteLength(projected.content!) <= 28 * 1024);
+});
+
 test('opaque window identity distinguishes same-title windows without leaking process identifiers', () => {
   const first = projectHistorySummaryEvent(JSON.stringify(event), settings)!;
   const second = projectHistorySummaryEvent(JSON.stringify({
@@ -132,4 +229,185 @@ test('derived context scopes use exclusions independent of ordering or collectio
   const scoped = { ...settings, blockedDomains: ['b.example', 'a.example'] };
   assert.equal(summaryScopeKey(scoped), summaryScopeKey({ ...scoped, enabled: false, blockedDomains: ['a.example', 'b.example'] }));
   assert.notEqual(summaryScopeKey(settings), summaryScopeKey({ ...settings, blockedDomains: [] }));
+});
+
+test('recorded actions retain shortcut and drag context without claiming successful outcomes', () => {
+  const shortcut = {
+    ...event, kind: 'keyboard.shortcut', ax: undefined, selection: undefined,
+    keyboard: { keyEquivalent: 's', modifiers: ['command', 'shift', 'command', 'untrusted-modifier'] },
+  };
+  const projected = projectHistorySummaryEvent(JSON.stringify(shortcut), settings)!;
+  assert.match(projected.content!, /Keyboard shortcut.*not proof of completion/u);
+  assert.match(projected.content!, /command\+shift\+s/u);
+  assert.doesNotMatch(projected.content!, /untrusted-modifier|command\+command/u);
+  const functionShortcut = projectHistorySummaryEvent(JSON.stringify({
+    ...shortcut, keyboard: { keyEquivalent: 'delete', modifiers: ['command', 'fn'] },
+  }), settings)!;
+  assert.match(functionShortcut.content!, /command\+fn\+delete/u);
+  const submitted = projectHistorySummaryEvent(JSON.stringify({
+    ...shortcut, kind: 'keyboard.submit', keyboard: { keyEquivalent: 'return', modifiers: [] },
+  }), settings)!;
+  assert.match(submitted.content!, /Submit key.*not proof of success.*return/u);
+
+  const drag = {
+    ...event, kind: 'mouse.drag', keyboard: undefined, selection: undefined, ax: undefined,
+    mouse: {
+      button: 'left', clickCount: 1, modifiers: ['option'],
+      origin: {
+        app: event.app, window: event.window,
+        element: { role: 'AXRow', title: 'Draft section' },
+      },
+      destination: {
+        app: { name: 'Notes', bundleIdentifier: 'org.example.notes' },
+        window: { title: 'Final outline', url: 'https://notes.example/private-path?token=omit' },
+        element: { role: 'AXTextArea', description: 'Review section' },
+      },
+    },
+  };
+  const moved = projectHistorySummaryEvent(JSON.stringify(drag), settings)!;
+  assert.match(moved.content!, /Mouse input.*left.*count=1.*option/u);
+  assert.match(moved.content!, /Drag origin[\s\S]*Draft section/u);
+  assert.match(moved.content!, /Drag destination[\s\S]*Notes[\s\S]*Review section/u);
+  assert.doesNotMatch(moved.content!, /private-path|token=omit|successfully moved/u);
+  for (const button of [{ toString: null }, ['left'], null, 1]) {
+    const malformed = projectHistorySummaryEvent(JSON.stringify({
+      ...drag, mouse: { ...drag.mouse, button },
+    }), settings)!;
+    assert.match(malformed.content!, /Draft section/u);
+    assert.doesNotMatch(malformed.content!, /Mouse input.*left/u);
+  }
+  for (const input of [shortcut, drag]) {
+    assert.equal(projectHistorySummaryEvent(JSON.stringify(input), { ...settings, summaryTextEnabled: false })!.content, undefined);
+    assert.equal(projectHistorySummaryEvent(JSON.stringify({ ...input, contentState: 'unavailable' }), settings)!.content, undefined);
+  }
+});
+
+test('Mac input characters remain observations rather than committed application text', () => {
+  // Synthetic composition-like input: event characters do not match the observed control value.
+  const input = {
+    ...event, kind: 'keyboard.text_input', ax: undefined, selection: undefined,
+    keyboard: {
+      text: 'nihao', keyEquivalent: null, modifiers: [],
+      target: { role: 'AXTextArea', value: 'Existing draft' },
+    },
+  };
+  for (const target of [input.keyboard.target, undefined]) {
+    const line = JSON.stringify({
+      ...input, keyboard: { ...input.keyboard, target },
+    });
+    const projected = projectHistorySummaryEvent(line, settings)!;
+    assert.match(projected.content!, /\bnihao\b/u);
+    assert.match(projected.content!, /observed input characters/iu);
+    assert.match(projected.content!, /not proof of committed text.*submission/iu);
+    assert.doesNotMatch(projected.content!, /Entered text|你好|successfully|value:.*nihao/iu);
+    if (target) {
+      assert.match(projected.content!, /Keyboard target:[\s\S]*value:\s*Existing draft/u);
+    } else {
+      assert.doesNotMatch(projected.content!, /Keyboard target|Existing draft/u);
+    }
+    assert.equal(projected.kind, 'keyboard.text_input');
+    const metadata = projectHistorySummaryEvent(line, { ...settings, summaryTextEnabled: false })!;
+    assert.equal(metadata.content, undefined);
+    assert.doesNotMatch(JSON.stringify(metadata), /nihao|Existing draft/u);
+  }
+  const withoutCharacters = projectHistorySummaryEvent(JSON.stringify({
+    ...input, keyboard: { ...input.keyboard, text: undefined },
+  }), settings)!;
+  assert.match(withoutCharacters.content!, /value:\s*Existing draft/u);
+  assert.doesNotMatch(withoutCharacters.content!, /input characters|nihao|你好/iu);
+});
+
+test('selection coordinates retain the native UTF-16 contract across platforms', () => {
+  const base = { ...event, kind: 'selection.changed', keyboard: undefined, ax: undefined };
+  const mac = projectHistorySummaryEvent(JSON.stringify({
+    ...base, selection: { selectedText: 'A😀B', selectedRange: { location: 10000, length: 4 } },
+  }), settings)!;
+  assert.match(mac.content!, /UTF-16.*start=10000, length=4/u);
+  assert.match(mac.content!, /Selected text:\nA😀B/u);
+  const win = projectHistorySummaryEvent(JSON.stringify({
+    ...base, selection: { selectedText: 'A😀B', start: 10000, truncated: true },
+  }), settings)!;
+  assert.match(win.content!, /UTF-16.*start=10000/u);
+  assert.match(win.content!, /Selected text \(partial\):\nA😀B/u);
+  assert.doesNotMatch(win.content!, /length=/u);
+  const partialMac = projectHistorySummaryEvent(JSON.stringify({
+    ...base, selection: { selectedText: 'A😀B', selectedRange: { location: 10000, length: 9000 }, truncated: true },
+  }), settings)!;
+  assert.match(partialMac.content!, /UTF-16.*start=10000, length=9000/u);
+  assert.match(partialMac.content!, /Selected text \(partial\):\nA😀B/u);
+  assert.equal(projectHistorySummaryEvent(JSON.stringify({
+    ...base, selection: { selectedText: 'A😀B', selectedRange: { location: 10000, length: 9000 }, truncated: true },
+  }), { ...settings, summaryTextEnabled: false })!.content, undefined);
+  for (const selection of [
+    { start: -1 }, { start: 2.5 }, { start: Number.MAX_SAFE_INTEGER + 1 },
+    { selectedRange: { location: 3, length: -1 } },
+    { selectedRange: { location: 3, length: Number.MAX_SAFE_INTEGER } },
+  ]) {
+    assert.equal(projectHistorySummaryEvent(JSON.stringify({ ...base, selection }), settings)!.content, undefined);
+  }
+});
+
+test('admitted input and selection preserve native-sized tails before the shared event budget', () => {
+  const text = 'Observed paragraph.\n'.repeat(280) + 'FINAL_ACTION_DETAIL';
+  assert.ok(Buffer.byteLength(text) > 4096 && Buffer.byteLength(text) < 8192);
+  for (const details of [
+    { kind: 'keyboard.text_input', keyboard: { text } },
+    { kind: 'selection.changed', selection: { selectedText: text } },
+    { kind: 'keyboard.submit', keyboard: { keyEquivalent: 'return', target: { role: 'AXTextArea', value: text } } },
+    { kind: 'mouse.drag', mouse: { origin: { element: { role: 'AXTextArea', value: text } } } },
+  ]) {
+    const projected = projectHistorySummaryEvent(JSON.stringify({
+      ...event, ax: undefined, selection: undefined, keyboard: undefined, ...details,
+    }), settings)!;
+    assert.match(projected.content!, /FINAL_ACTION_DETAIL$/u);
+    assert.doesNotMatch(projected.content!, /\[truncated\]/u);
+    assert.ok(Buffer.byteLength(projected.content!) <= 28 * 1024);
+  }
+});
+
+test('malformed native security roles suppress evidence instead of interrupting summary enumeration', () => {
+  for (const value of [{ toString: null }, ['AXSecureTextField'], 42]) {
+    for (const key of ['role', 'subrole']) {
+      for (const details of [
+        { keyboard: { target: { [key]: value } } },
+        { selection: { target: { [key]: value } } },
+        { mouse: { target: { [key]: value } } },
+        { mouse: { origin: { element: { [key]: value } } } },
+        { mouse: { destination: { element: { [key]: value } } } },
+      ]) {
+        for (const summaryTextEnabled of [false, true]) {
+          assert.equal(projectHistorySummaryEvent(JSON.stringify({
+            ...event, ...details,
+          }), { ...settings, summaryTextEnabled }), null);
+        }
+      }
+    }
+  }
+});
+
+test('drag endpoints recheck current exclusions and secure controls before any metadata is returned', () => {
+  const base = { ...event, kind: 'mouse.drag' };
+  for (const endpoint of [
+    { app: { bundleIdentifier: 'com.apple.keychainaccess' } },
+    { app: { secureInput: true } },
+    { window: { url: 'https://sub.private.example/file' } },
+    { window: { privateBrowsing: true } },
+    { element: { role: 'AXSecureTextField' } },
+  ]) {
+    for (const side of ['origin', 'destination']) {
+      for (const summaryTextEnabled of [false, true]) {
+        assert.equal(projectHistorySummaryEvent(JSON.stringify({
+          ...base, mouse: { [side]: endpoint },
+        }), { ...settings, summaryTextEnabled }), null);
+      }
+    }
+  }
+  const clean = projectHistorySummaryEvent(JSON.stringify({
+    ...base, mouse: { origin: {
+      app: event.app, window: event.window,
+      element: { role: 'AXRow', title: 'password=sk-syntheticSecretNeverTransmit123456' },
+    } },
+  }), settings)!;
+  assert.match(clean.content!, /\[redacted\]/u);
+  assert.doesNotMatch(JSON.stringify(clean), /syntheticSecret/u);
 });

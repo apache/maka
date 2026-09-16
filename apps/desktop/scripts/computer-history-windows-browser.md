@@ -45,6 +45,105 @@ PowerShell 5.1 and its bundled C# compiler for window identity/focus checks.
 Startup retries missing or temporarily locked (`EBUSY`) `DevToolsActivePort`
 reads within the same 20-second deadline. Other read errors fail immediately.
 
+## Physical Keyboard Mode
+
+This separate opt-in mode replaces the ordinary eleven-case matrix. It reuses
+the isolated browser, synthetic server, recorder and sealing checks, and never
+injects positive keys through CDP or `SendInput`.
+
+```powershell
+$env:MAKA_HISTORY_WINDOWS_BROWSER_TEST = '1'
+$env:MAKA_HISTORY_WINDOWS_BROWSER_INPUT_TEST = '1'
+$env:MAKA_HISTORY_WINDOWS_TEST_ROOT = 'C:\maka-history-lab'
+$env:MAKA_HISTORY_WINDOWS_INPUT_REQUEST = 'C:\maka-history-lab\fresh-edge-input-request.json'
+node --test apps/desktop/scripts/computer-history-windows-browser.test.mjs
+```
+
+The request parent must exist and the request file must not. The external
+owner runs the existing QMP driver against that exact path, sequentially with
+all other foreground tests. The mode has a 200-second work budget within the
+240-second Node timeout. Give the driver enough total time to cover that work
+budget instead of its older 100-second default.
+
+| Gate | Actual acceptance |
+| --- | --- |
+| Cold field document | Persisted body before auxiliary UIA inspection; actual owned field, document and root identities |
+| Physical Return and Ctrl+A | Trusted page key receipt plus recorder action, exact app/PID/window/source and role-only field target |
+| Same-host field switch | Physical Return synchronously changes fields; pending key is absent for six seconds; a fresh second-field body and keys recover |
+| Password transition | Same focused field becomes password; one-shot capture is null, physical key is witnessed, recorder adds no context and suppression increases; plaintext recovery succeeds |
+| Domain block/unblock | Same allowed document becomes blocked; matched one-shot null and physically witnessed key suppression, healthy recorder and increased suppression; useful body/key recovery |
+| Text-off/on | Pause before changing consent; a fresh persisted metadata-only observation precedes either key request, and both actions must share its source; no key text, AX body, selected text or content domains; text-on body/key recovery |
+| Shutdown | Graceful EOF, complete sealed JSONL, exact metadata counts, stopped healthy runtime and released recorder admission |
+
+All physical-mode gates are mandatory. Missing useful body, runtime identity,
+key receipt, persisted action, suppression/recovery or sealing is a failure,
+not TODO, skipped coverage or a successful negative. The mode does not add an
+exact numeric text-off selection requirement or claim that unavailable browser
+selection coordinates are implemented.
+
+### Identity And Driver
+
+The synthetic page has two labelled inputs in one document. It records only
+trusted matching keydown receipts, correlated with the request ID and exact
+field, and observes selection/focus after normal handling. The field-switch
+handler changes focus synchronously; it does not prevent the key's default
+action or fabricate a native receipt.
+The receipt retains the guest wall-clock keydown and post-dispatch times.
+Each native action's hook timestamp must fall between issuance of its request
+and that request's page keydown receipt. No clock tolerance is added. Clock
+regression or an out-of-interval action fails rather than accepting stale input.
+At final sealing, all keyboard records must match the accepted requests
+one-for-one, in order, including their original event contents. Extra actions
+with fresh IDs, delayed duplicates and records from rejected requests fail.
+
+After the first real recorded body, the existing PowerShell fixture starts
+one bounded MTA UIA witness. PID, parent, executable, fresh profile, synthetic
+title and foreground checks remain mandatory. The witness reads only the
+focused field and bounded same-PID ancestors, verifies its owning Document's
+own ValuePattern URL against the exact synthetic page, and returns separate
+field, Document and top-level root runtime IDs. `GetGUIThreadInfo` supplies the
+actual input-host HWND, checked against its root and PID. Browser input host
+is not assumed to equal the top-level HWND. No field ValuePattern text,
+clipboard or address-bar origin is read.
+
+A separate native `snapshot-lease` frame must agree with the witness's field
+and Document IDs and input host before each field's positive keys. This is
+logged as `standalone-identity-only`; it does not prove the recorder uses that
+particular worker or confer native admission. Actual recorder JSONL must
+contain the subsequent physical actions and never persist private runtime IDs.
+
+Requests reuse `id`, `name` (`return` or `shortcut`), `deadline`,
+`processIdentifier`, `windowID`, `inputWindowID`, `foreground`, and
+`witnessedAt`; additional field/runtime IDs are diagnostics. Witness sampling
+must finish within 500 ms and uses its start time, so slow UIA work cannot be
+retimestamped as fresh. The existing 750 ms driver freshness bound and
+12-second per-request deadline are unchanged. A lost witness stops request
+publication. Each ID is serviced once; completed requests retain the serviced
+ID and teardown publishes `{ "done": true }`. Driver ownership stays external.
+
+Denied-only password, blocked-state body and text-off markers are checked
+against all persisted records, including subsequent recovery. Diagnostic
+fixture commands intentionally contain synthetic inputs. Physical-mode event
+files are ordered by segment start time through pause/resume and exported
+with metadata at final sealing. During active recording, an event file whose
+segment metadata does not exist yet is deferred to the next poll; missing
+metadata at sealing, malformed metadata and other read failures remain errors.
+`recorder.metadata-ready` records the fresh native observation after text-off
+resume. Running health alone never triggers the first metadata-mode key.
+`physical.acceptance` is emitted only after
+all gates and recorder cleanup succeed; the enclosing suite also requires
+the isolated browser to close cleanly.
+Cleanup attempts request/control writes, recorder and witness EOF/termination,
+browser closure, server shutdown and evidence-file closure independently.
+Write failures are reported after cleanup attempts, not allowed to bypass them;
+forced termination remains a failure. The 200-second safety timer likewise
+closes recorder/witness stdin even if publishing `done` fails.
+
+This mode is prepared for staged Windows execution, not a reported native
+pass. Local Node checks cannot establish PowerShell/Windows UIA interoperation,
+Edge provider timing or physical recorder authority. Report the actual
+evidence path, failure phase and cleanup outcome from the owner's run.
+
 ## Cases
 
 | Case | Required result |

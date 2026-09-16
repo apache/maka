@@ -21,7 +21,7 @@ import assert from 'node:assert/strict';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { existsSync, readFileSync } from 'node:fs';
-import { appendFile, mkdtemp, mkdir, open, readFile, readdir, rename, rm, stat, utimes, watch, writeFile } from 'node:fs/promises';
+import { appendFile, mkdtemp, mkdir, open, readFile, readdir, rename, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -165,11 +165,11 @@ test('model raw reads expose bounded partial evidence, redact before clipping an
   await service.updateSettings({ summariesEnabled: true, summaryTextEnabled: true });
   const input = { start: '2026-08-15T10:00:00Z', end: '2026-08-15T10:10:00Z', limit: 50 };
   const result = await service.modelQuery({ kind: 'events', input }, async () => {}) as any;
-  assert.ok(result.events.length > 1 && result.events.length < 8);
+  assert.ok(result.events.length >= 1 && result.events.length < 8);
   assert.equal(result.truncated, true);
   assert.ok(Buffer.byteLength(JSON.stringify(result)) < 41 * 1024);
   assert.doesNotMatch(JSON.stringify(result), /syntheticSecret|\uFFFD/u);
-  assert.ok(result.events.every((entry: any) => entry.contentTruncated));
+  assert.ok(result.events.every((entry: any) => entry.contentTruncated === false));
   assert.match(result.events[0].content, /Selected text \(partial\)/);
   assert.match(result.events[0].content, /\[redacted\]/);
   const narrow = await service.modelQuery({
@@ -183,6 +183,99 @@ test('model raw reads expose bounded partial evidence, redact before clipping an
   await assert.rejects(service.modelQuery({
     kind: 'events', input: { ...input, start: '2026-08-12T10:00:00Z', end: '2026-08-12T10:10:00Z' },
   }, async () => {}), /48 hours/);
+});
+
+test('model raw reads preserve long facts and page encoded observations by exact content identity', async (t) => {
+  const { service, segment } = await fixture(t, { generateSummary: async () => SUMMARY });
+  const path = join(segment, 'events.jsonl');
+  const observation = (text: string) => JSON.stringify({
+    timestamp: '2026-08-15T10:01:00.000Z', kind: 'ui.changed',
+    sourceId: '250ed63d-f651-440c-85c7-9b9fb72b553a',
+    contentState: 'available', contentDomains: [],
+    app: { name: 'Fixture', bundleIdentifier: 'com.maka.fixture' },
+    window: { title: 'Task' }, ax: { mode: 'fullTree', text },
+  });
+  const long = `${'Observed details. '.repeat(700)}FINAL_DECISION_RETAINED`;
+  await writeFile(path, `${observation(long)}\n`);
+  await service.updateSettings({ summariesEnabled: true, summaryTextEnabled: true });
+  const input = { start: '2026-08-15T10:00:00Z', end: '2026-08-15T10:10:00Z', limit: 20 };
+  const read = (extra = {}) => service.modelQuery({ kind: 'events', input: { ...input, ...extra } }, async () => {}) as Promise<any>;
+  const complete = await read();
+  assert.match(complete.events[0].content, /FINAL_DECISION_RETAINED$/u);
+  assert.equal(complete.events[0].contentTruncated, false);
+
+  const escaped = `"\\`.repeat(11_000) + '中文🧪FINAL_ESCAPED_DETAIL';
+  await writeFile(path, `${observation(escaped)}\n${observation('Other event at the same timestamp')}\n`);
+  const first = await read();
+  const selected = first.events[0];
+  assert.equal(selected.offset, 0);
+  assert.equal(selected.contentTruncated, true);
+  assert.ok(selected.nextOffset > 0);
+  assert.ok(Buffer.byteLength(JSON.stringify(first)) < 41 * 1024);
+  const second = await read({ eventId: selected.id, offset: selected.nextOffset });
+  assert.equal(second.events.length, 1);
+  assert.equal(second.events[0].id, selected.id);
+  assert.equal(second.events[0].offset, selected.nextOffset);
+  assert.equal(second.events[0].contentTruncated, false);
+  assert.equal(selected.content + second.events[0].content, `Visible accessibility content:\n${escaped}`);
+  assert.doesNotMatch(JSON.stringify(second), /\uFFFD|Other event/u);
+  await assert.rejects(read({ offset: selected.nextOffset }), /exact event ID/);
+  await assert.rejects(read({ eventId: selected.id, offset: 100_000 }), /offset/);
+  await writeFile(path, `${observation('Replaced source')}\n`);
+  await assert.rejects(read({ eventId: selected.id, offset: selected.nextOffset }), /changed or is unavailable/);
+  await writeFile(path, `${observation(escaped)}\n`);
+  await service.updateSettings({ blockedApplications: ['com.maka.fixture'] });
+  await assert.rejects(read({ eventId: selected.id, offset: selected.nextOffset }), /unavailable/);
+});
+
+test('raw list continuation retains same-time duplicates and rejects changed prefixes or scope', async (t) => {
+  const { service, segment } = await fixture(t, { generateSummary: async () => SUMMARY });
+  const path = join(segment, 'events.jsonl');
+  const observation = (title: string) => JSON.stringify({
+    timestamp: '2026-08-15T10:01:00.000Z', kind: 'ui.changed',
+    sourceId: '250ed63d-f651-440c-85c7-9b9fb72b553a',
+    contentState: 'available', contentDomains: [],
+    app: { name: 'Fixture', bundleIdentifier: 'com.maka.fixture' },
+    window: { title }, ax: { mode: 'fullTree', text: 'Same observed body' },
+  });
+  const titles = ['Repeated', 'Repeated', `${'x'.repeat(300)}First`, `${'x'.repeat(300)}Second`];
+  await writeFile(path, titles.map(observation).join('\n') + '\n');
+  await service.updateSettings({ summariesEnabled: true, summaryTextEnabled: true });
+  const input = { start: '2026-08-15T10:00:00Z', end: '2026-08-15T10:10:00Z', limit: 1 };
+  const read = (extra = {}) => service.modelQuery({ kind: 'events', input: { ...input, ...extra } }, async () => {}) as Promise<any>;
+  const pages: any[] = [];
+  let after: string | undefined;
+  do {
+    const page = await read({ after });
+    pages.push(page);
+    after = page.nextAfter;
+    assert.ok(pages.length <= titles.length, 'duplicate observations must still advance the cursor');
+  } while (after);
+  assert.deepEqual(pages.flatMap((page) => page.events.map((entry: any) => entry.windowTitle)), titles);
+  assert.equal(pages[0].events[0].id, pages[1].events[0].id);
+  assert.notEqual(pages[0].nextAfter, pages[1].nextAfter);
+  assert.notEqual(pages[2].events[0].id, pages[3].events[0].id, 'raw identity includes the full returned title');
+  assert.equal(pages[3].truncated, false);
+  assert.equal((await read({ after: pages[1].nextAfter, limit: 2 })).events.length, 2);
+  await assert.rejects(read({ after: pages[0].nextAfter, eventId: pages[0].events[0].id }), /cannot be combined/);
+  await assert.rejects(read({ after: pages[0].nextAfter, offset: 0 }), /cannot be combined/);
+  await assert.rejects(read({ after: pages[0].nextAfter, end: '2026-08-15T10:09:00Z' }), /list changed/);
+  await service.updateSettings({ blockedApplications: ['com.maka.other'] });
+  await assert.rejects(read({ after: pages[0].nextAfter }), /list changed/);
+  await service.updateSettings({ blockedApplications: [] });
+  await writeFile(path, titles.slice(1).map(observation).join('\n') + '\n');
+  await assert.rejects(read({ after: pages[1].nextAfter }), /list changed/);
+  const fresh = await read();
+  await appendFile(path, observation('New tail') + '\n');
+  assert.equal((await read({ after: fresh.nextAfter, limit: 50 })).events.length, 3);
+  await writeFile(path, JSON.stringify({
+    ...JSON.parse(observation('Invalid archive URL')),
+    window: { title: 'Invalid archive URL', url: `https://${'a.'.repeat(3900)}invalid` },
+    ax: { mode: 'fullTree', text: '"\\'.repeat(14_000) },
+  }) + '\n' + observation('Valid following event') + '\n');
+  const malformed = await read();
+  assert.deepEqual(malformed.events.map((entry: any) => entry.windowTitle), ['Valid following event']);
+  assert.equal(malformed.truncated, false, 'invalid oversized domains cannot strand pagination');
 });
 
 test('model search redacts a complete credential before extracting the nearby public match', async (t) => {
@@ -1374,6 +1467,7 @@ test('eligible text crosses only the explicitly consented summary boundary with 
     app: { name: 'Fixture', bundleIdentifier: 'org.example.fixture' },
     window: { title: 'Task' },
     ax: { mode: 'fullTree', text: 'TASK_CONTENT_CANARY: endpoint fix verified' },
+    selection: { selectedItems: [{ role: 'AXRow', value: 'SELECTED_ROW_CANARY: cold-start regression' }] },
   };
   await writeFile(join(segment, 'events.jsonl'), `${JSON.stringify(raw)}\n`);
   await service.initialize();
@@ -1381,23 +1475,30 @@ test('eligible text crosses only the explicitly consented summary boundary with 
   assert.equal((await service.settings()).summaryTextEnabled, false);
   await service.summarize();
   assert.equal(inputs[0]!.locale, 'zh-CN');
-  assert.doesNotMatch(JSON.stringify(inputs), /TASK_CONTENT_CANARY/);
-  assert.doesNotMatch(JSON.stringify(await service.timeline()), /TASK_CONTENT_CANARY/);
+  assert.doesNotMatch(JSON.stringify(inputs), /TASK_CONTENT_CANARY|SELECTED_ROW_CANARY/);
+  assert.doesNotMatch(JSON.stringify(await service.timeline()), /TASK_CONTENT_CANARY|SELECTED_ROW_CANARY/);
 
   await service.updateSettings({ summaryTextEnabled: true });
   const metadataDetail = await service.detail((await service.timeline()).entries[0]!.id);
   assert.equal(metadataDetail!.events[0]!.usedInSummary, true, 'stored metadata sample remains resolvable when text is now enabled');
   await service.summarize();
   assert.match(JSON.stringify(inputs.at(-1)), /TASK_CONTENT_CANARY/);
+  assert.match(JSON.stringify(inputs.at(-1)), /Selected item 1:[\s\S]*SELECTED_ROW_CANARY/);
   const detail = await service.detail((await service.timeline()).entries[0]!.id);
   assert.equal(detail!.events[0]!.usedInSummary, true);
-  assert.doesNotMatch(JSON.stringify(detail!.events), /TASK_CONTENT_CANARY/);
+  assert.doesNotMatch(JSON.stringify(detail!.events), /TASK_CONTENT_CANARY|SELECTED_ROW_CANARY/);
   assert.equal(detail!.document!.body, SUMMARY.body);
+  const rawQuery = {
+    kind: 'events',
+    input: { start: '2026-08-15T10:00:00Z', end: '2026-08-15T10:10:00Z', limit: 20 },
+  } as const;
+  assert.match(JSON.stringify(await service.modelQuery(rawQuery, async () => {})), /SELECTED_ROW_CANARY/);
 
   const stored = JSON.parse(await readFile(join(home, 'maka-settings.json'), 'utf8'));
   assert.equal(stored.captureText, true);
   assert.equal(stored.summaryTextEnabled, true);
   await service.updateSettings({ summaryTextEnabled: false });
+  await assert.rejects(service.modelQuery(rawQuery, async () => {}), /recorded-text transmission/);
   const count = inputs.length;
   await service.summarize();
   assert.equal(inputs.length, count, 'revoking content consent preserves the saved rich document');
@@ -1823,6 +1924,63 @@ test('raw point detail and deletion isolate same-named applications and windows 
   assert.equal(await readFile(file, 'utf8'), remaining);
   assert.ok(remaining.includes('com.other.app'));
   assert.ok(remaining.includes('"title":"B"'));
+});
+
+test('packaged Windows identities stay exact across raw grouping, detail, settings and deletion', async (t) => {
+  const { service, home, segment } = await fixture(t, { generateSummary: async () => SUMMARY });
+  const family = `${'SyntheticPackage'.padEnd(50, 'x')}_8wekyb3d8bbwe`;
+  const firstAumid = `${family}!${'App'.padEnd(63, 'a')}A`;
+  const secondAumid = `${family}!${'App'.padEnd(63, 'a')}B`;
+  const firstId = `winapp.${firstAumid}`;
+  const secondId = `winapp.${secondAumid}`;
+  assert.ok(firstId.length > 128);
+  const file = join(segment, 'events.jsonl');
+  const observation = (applicationUserModelId?: unknown) => ({
+    timestamp: new Date(NOW - 1_000).toISOString(),
+    kind: 'mouse.click',
+    sourceId: '250ed63d-f651-440c-85c7-9b9fb72b553a',
+    app: {
+      name: 'Synthetic package', bundleIdentifier: 'win32.sharedhost',
+      ...(applicationUserModelId === undefined ? {} : { applicationUserModelId }),
+    },
+    window: { title: 'Same window' },
+  });
+  await writeFile(file, [
+    observation(firstAumid), observation(secondAumid), observation(),
+    observation(`${firstAumid}/invalid`), observation(null),
+    ...['winapp.invalid', 'Win32.sharedhost', 'com.example.<x>', 'path/to/app', null].map((bundleIdentifier) => ({
+      ...observation(), app: { name: 'Synthetic package', bundleIdentifier },
+    })),
+  ].map((value) => JSON.stringify(value)).join('\n') + '\n');
+  const entries = (await service.timeline()).entries;
+  assert.equal(entries.length, 3);
+  assert.equal(new Set(entries.map(({ id }) => id)).size, 3);
+  assert.deepEqual(new Set(entries.flatMap(({ applications }) => applications)),
+    new Set([firstId, secondId, 'win32.sharedhost']));
+  const selected = entries.find(({ applications }) => applications.includes(firstId))!;
+  const detail = await service.detail(selected.id);
+  assert.equal(detail!.eventTotal, 1);
+  assert.equal(detail!.events[0]!.application, firstId);
+  assert.doesNotMatch(JSON.stringify(detail), /applicationUserModelId|invalid/);
+  await service.updateSettings({ summariesEnabled: true, summaryTextEnabled: true });
+  const read = () => service.modelQuery({
+    kind: 'events',
+    input: { start: new Date(NOW - 60_000).toISOString(), end: new Date(NOW).toISOString(), limit: 20 },
+  }, async () => {}) as Promise<{ events: { id: string }[] }>;
+  const permitted = (await read()).events;
+  assert.equal(permitted.length, 3);
+  assert.equal(new Set(permitted.map(({ id }) => id)).size, 3);
+  await service.updateSettings({ blockedApplications: [firstId.toLowerCase()] });
+  assert.deepEqual((await read()).events.map(({ id }) => id), permitted.slice(1).map(({ id }) => id));
+  await service.updateSettings({ blockedApplications: ['win32.sharedhost'] });
+  assert.equal((await read()).events.length, 0, 'the executable exclusion applies to both packages and legacy records');
+  await service.updateSettings({ blockedApplications: [firstId, 'win32.sharedhost'] });
+  assert.deepEqual((await service.settings()).blockedApplications, [firstId, 'win32.sharedhost']);
+  const config = JSON.parse(await readFile(join(home, 'config.json'), 'utf8'));
+  assert.ok(config.observation.blocklist.some((rule: { bundleID?: string }) => rule.bundleID === firstId));
+  await service.deleteEntry(selected.id);
+  assert.deepEqual(new Set((await service.timeline()).entries.flatMap(({ applications }) => applications)),
+    new Set([secondId, 'win32.sharedhost']));
 });
 
 test('raw identity distinguishes full window titles and application IDs before display clipping', async (t) => {
@@ -2772,15 +2930,22 @@ test('queued retry observes revoked consent and closed services without starting
 for (const key of ['summariesEnabled', 'summaryTextEnabled'] as const) {
 test(`${key} revocation persists before provider drain without stopping collection or admitting another request`, { timeout: 5_000 }, async (t) => {
   let tick: (() => Promise<unknown> | undefined) | undefined;
-  let trackReschedule = false;
-  const rescheduled = deferred<void>();
+  let summaryTimer: ReturnType<typeof setInterval> | undefined;
+  let trackReconciliation = false;
+  const reconciled = deferred<void>();
   const schedule = globalThis.setInterval;
+  const unschedule = globalThis.clearInterval;
   t.mock.method(globalThis, 'setInterval', (callback: () => Promise<unknown> | undefined, delay: number) => {
+    const timer = schedule(callback, delay);
     if (delay === 60_000) {
       tick = callback;
-      if (trackReschedule) rescheduled.resolve();
+      summaryTimer = timer;
     }
-    return schedule(callback, delay);
+    return timer;
+  });
+  t.mock.method(globalThis, 'clearInterval', (timer: Parameters<typeof clearInterval>[0]) => {
+    unschedule(timer);
+    if (trackReconciliation && timer === summaryTimer) reconciled.resolve();
   });
   const collector = fakeCollector();
   const entered = deferred<AbortSignal>();
@@ -2800,21 +2965,15 @@ test(`${key} revocation persists before provider drain without stopping collecti
   signal.addEventListener('abort', () => {
     consentAtAbort = JSON.parse(readFileSync(settingsPath, 'utf8'))[key];
   }, { once: true });
-  const watcher = new AbortController();
-  const persisted = (async () => {
-    for await (const change of watch(home, { signal: watcher.signal })) {
-      if (change.filename === 'maka-settings.json') return JSON.parse(await readFile(settingsPath, 'utf8'));
-    }
-    assert.fail('Settings watcher stopped before persistence');
-  })();
   const calls = [...collector.calls];
   const config = await readFile(join(home, 'config.json'), 'utf8');
   let settled = false;
-  trackReschedule = true;
+  trackReconciliation = true;
   const disabling = service.updateSettings({ [key]: false }).finally(() => { settled = true; });
   try {
-    assert.equal((await persisted)[key], false);
-    if (key === 'summaryTextEnabled') await rescheduled.promise;
+    // Timer reconciliation follows the actual atomic settings write.
+    await reconciled.promise;
+    assert.equal(JSON.parse(await readFile(settingsPath, 'utf8'))[key], false);
     await tick!();
     assert.equal(modelCalls, 1, 'neither a queued nor a rescheduled tick admits work during cancellation');
     assert.equal(signal.aborted, true);
@@ -2824,7 +2983,6 @@ test(`${key} revocation persists before provider drain without stopping collecti
     assert.deepEqual(collector.calls, calls);
     assert.equal(await readFile(join(home, 'config.json'), 'utf8'), config);
   } finally {
-    watcher.abort();
     result.reject(new Error('late provider-private failure'));
     await Promise.all([retry, disabling]);
   }

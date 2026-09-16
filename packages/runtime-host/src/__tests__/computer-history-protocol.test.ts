@@ -180,10 +180,15 @@ test('Computer History wire keeps optional locale and bounded prior context sepa
     priorContext: [],
   });
   const context = { id: 'prior-1', text: 'Prior summary' };
+  const shortlist = [context, { ...context, id: 'prior-2' }, { ...context, id: 'prior-3' }];
+  assert.deepEqual(decodeComputerHistorySummaryInput({ ...INPUT, priorContext: shortlist }), {
+    ...INPUT,
+    priorContext: shortlist,
+  });
   for (const priorContext of [
     null,
     {},
-    [context, { ...context, id: 'prior-2' }, { ...context, id: 'prior-3' }],
+    [...shortlist, { ...context, id: 'prior-4' }],
     [context, context],
     [INPUT.evidence[0]],
     [{ ...context, text: '' }],

@@ -38,6 +38,7 @@ const LEGACY_CONTENT_SHA256_BY_ID = {
   'computer-history': [
     'sha256:bf62abc274b5716470c5db7eae36b7efe514018ace429578cf343af62aac3eca',
     'sha256:d95ee146afe4e7893f73ba5a6cbebbc2a753ea47e85018f787df886cec7d2927',
+    'sha256:54337de254fb052a7ddab752cbbdbf92c7f2e3c6bf003d340a739658037f3979',
   ],
   'computer-use': [
     'sha256:419088b2f8a0b12061b4811323abc381869ebe8fccbfc8f2bdfc96ff37a1e45b',

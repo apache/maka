@@ -179,6 +179,22 @@ for (const [label, hostId] of [
     });
     assert.deepEqual(received, { kind: 'search', input: { query: '', level: 'auto', limit: 10 } });
     assert.match(JSON.stringify(result), /untrusted-observed-ui/);
+    const continuation = {
+      start: '2026-09-15T10:00:00Z', end: '2026-09-15T10:10:00Z',
+      eventId: `event-${'a'.repeat(64)}`, offset: 16384,
+    };
+    await call(provider, { ...frame, toolName: 'ComputerHistoryReadEvents', arguments: continuation });
+    assert.deepEqual(received, { kind: 'events', input: { ...continuation, limit: 20 } });
+    await assert.rejects(() => call(provider, {
+      ...frame, toolName: 'ComputerHistoryReadEvents',
+      arguments: { ...continuation, eventId: '/private/events.jsonl' },
+    }));
+    assert.deepEqual(received, { kind: 'events', input: { ...continuation, limit: 20 } });
+    const listPage = {
+      start: continuation.start, end: continuation.end, after: `events-${'b'.repeat(64)}`,
+    };
+    await call(provider, { ...frame, toolName: 'ComputerHistoryReadEvents', arguments: listPage });
+    assert.deepEqual(received, { kind: 'events', input: { ...listPage, limit: 20 } });
   });
 }
 

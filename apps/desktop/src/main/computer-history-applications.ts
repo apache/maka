@@ -21,6 +21,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { constants } from 'node:fs';
 import { access } from 'node:fs/promises';
 import type { ComputerHistoryApplication } from '@maka/core/computer-history';
+import { historyApplicationId, isWindowsExecutableId, isWindowsPackagedId } from '@maka/core/computer-history';
 
 const MAX_BATCH = 32;
 const MAX_CACHE = 256;
@@ -30,12 +31,16 @@ const POSITIVE_TTL_MS = 5 * 60_000;
 const NEGATIVE_TTL_MS = 30_000;
 const TIMEOUT_MS = 5_000;
 const PNG_PREFIX = 'data:image/png;base64,';
-const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9-]*(?:\.[A-Za-z0-9][A-Za-z0-9-]*)+$/u;
 
 type Pending = {
   promise: Promise<ComputerHistoryApplication>;
   resolve(value: ComputerHistoryApplication): void;
   reject(error: unknown): void;
+};
+
+// Helper-only status. A complete Windows enumeration must distinguish absence from uncertainty.
+type ApplicationLookup = ComputerHistoryApplication & {
+  resolution?: 'resolved' | 'registered' | 'not_running' | 'unavailable';
 };
 
 /** Local, permission-free, memory-only lookup. One helper batch at a time, coalesced per ID. */
@@ -44,7 +49,11 @@ export class ComputerHistoryApplications {
   readonly #platform: NodeJS.Platform;
   readonly #spawn: typeof spawn;
   readonly #now: () => number;
-  readonly #cache = new Map<string, { value: ComputerHistoryApplication; expires: number }>();
+  readonly #cache = new Map<string, {
+    value: ComputerHistoryApplication;
+    expires: number;
+    retainWhenClosed: boolean;
+  }>();
   readonly #pending = new Map<string, Pending>();
   readonly #queued = new Set<string>();
   #scheduled = false;
@@ -112,9 +121,10 @@ export class ComputerHistoryApplications {
 
   #cached(id: string): ComputerHistoryApplication | undefined {
     const cached = this.#cache.get(id);
-    if (!cached) return undefined;
+    // An expired icon is retained only as a candidate for explicit native not_running.
+    // It is never returned before revalidation and remains inside the same bounded LRU.
+    if (!cached || cached.expires <= this.#now()) return undefined;
     this.#cache.delete(id);
-    if (cached.expires <= this.#now()) return undefined;
     this.#cache.set(id, cached);
     return cached.value;
   }
@@ -129,11 +139,16 @@ export class ComputerHistoryApplications {
         try {
           const values = await this.#lookup(ids);
           if (this.#closed) return;
-          for (const value of values) {
+          for (const { resolution, ...result } of values) {
+            const previous = this.#cache.get(result.bundleIdentifier);
+            const retain = this.#platform === 'win32' && resolution === 'not_running' &&
+              previous?.retainWhenClosed === true && Boolean(previous.value.iconDataUrl);
+            const value = retain ? previous!.value : result;
             this.#cache.delete(value.bundleIdentifier);
             this.#cache.set(value.bundleIdentifier, {
               value,
-              expires: this.#now() + (value.iconDataUrl ? POSITIVE_TTL_MS : NEGATIVE_TTL_MS),
+              expires: this.#now() + (value.iconDataUrl && !retain ? POSITIVE_TTL_MS : NEGATIVE_TTL_MS),
+              retainWhenClosed: retain || resolution === 'resolved',
             });
             if (this.#cache.size > MAX_CACHE) this.#cache.delete(this.#cache.keys().next().value!);
             this.#pending.get(value.bundleIdentifier)!.resolve(value);
@@ -141,6 +156,7 @@ export class ComputerHistoryApplications {
           }
         } catch (error) {
           for (const id of ids) {
+            this.#cache.delete(id);
             this.#pending.get(id)?.reject(error);
             this.#pending.delete(id);
           }
@@ -151,7 +167,7 @@ export class ComputerHistoryApplications {
     }
   }
 
-  async #lookup(ids: readonly string[]): Promise<readonly ComputerHistoryApplication[]> {
+  async #lookup(ids: readonly string[]): Promise<readonly ApplicationLookup[]> {
     const fallback = () => ids.map((bundleIdentifier) => ({
       bundleIdentifier, name: bundleIdentifier, iconDataUrl: null,
     }));
@@ -173,7 +189,7 @@ export class ComputerHistoryApplications {
     return fallback().map((value) => values.get(value.bundleIdentifier) ?? value);
   }
 
-  #runHelper(ids: readonly string[]): Promise<readonly ComputerHistoryApplication[]> {
+  #runHelper(ids: readonly string[]): Promise<readonly ApplicationLookup[]> {
     return new Promise((resolve, reject) => {
       let child: ChildProcess;
       try {
@@ -187,7 +203,7 @@ export class ComputerHistoryApplications {
       const chunks: Buffer[] = [];
       let bytes = 0;
       let settled = false;
-      const finish = (error?: Error, values?: readonly ComputerHistoryApplication[]) => {
+      const finish = (error?: Error, values?: readonly ApplicationLookup[]) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
@@ -222,7 +238,7 @@ export class ComputerHistoryApplications {
           return;
         }
         try {
-          finish(undefined, decodeApplications(Buffer.concat(chunks, bytes), ids));
+          finish(undefined, decodeApplications(Buffer.concat(chunks, bytes), ids, this.#platform === 'win32'));
         } catch {
           finish(new Error('Invalid Computer History application response'));
         }
@@ -232,28 +248,30 @@ export class ComputerHistoryApplications {
 }
 
 function isWindowsApplicationId(id: string): boolean {
-  return /^win32\.[a-z0-9_-][a-z0-9._-]*$/u.test(id) &&
-    !id.endsWith('.') && !id.endsWith('.exe') && !id.includes('..');
+  return isWindowsExecutableId(id) || isWindowsPackagedId(id);
 }
 
 function requestedIds(value: unknown): string[] {
   if (!Array.isArray(value) || value.length > MAX_BATCH || Array.from(value).some((id) =>
-    typeof id !== 'string' || id.length > 256 ||
-      (!ID_PATTERN.test(id) && !isWindowsApplicationId(id)),
+    historyApplicationId({ bundleIdentifier: id }) === null,
   )) {
     throw new Error('Invalid Computer History application identifiers');
   }
   return [...new Set(value)] as string[];
 }
 
-function decodeApplications(bytes: Buffer, ids: readonly string[]): ComputerHistoryApplication[] {
+function decodeApplications(bytes: Buffer, ids: readonly string[], windows: boolean): ApplicationLookup[] {
   const value: unknown = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
   if (!Array.isArray(value) || value.length !== ids.length) throw new Error('Invalid applications');
   const remaining = new Set(ids);
-  const values = new Map<string, ComputerHistoryApplication>();
+  const values = new Map<string, ApplicationLookup>();
   for (const item of value) {
+    const hasResolution = item && Object.hasOwn(item, 'resolution');
     if (!item || typeof item !== 'object' || Array.isArray(item) ||
-      Object.keys(item).sort().join(',') !== 'bundleIdentifier,iconDataUrl,name' ||
+      Object.keys(item).sort().join(',') !==
+        `bundleIdentifier,iconDataUrl,name${hasResolution ? ',resolution' : ''}` ||
+      (hasResolution && (!windows || !['resolved', 'registered', 'not_running', 'unavailable'].includes(item.resolution) ||
+        (!['resolved', 'registered'].includes(item.resolution) && (item.iconDataUrl !== null || item.name !== item.bundleIdentifier)))) ||
       !remaining.delete(item.bundleIdentifier) ||
       typeof item.name !== 'string' || !item.name.trim() || Buffer.byteLength(item.name) > 512 ||
       /[\u0000-\u001f\u007f]/u.test(item.name) ||
@@ -261,6 +279,7 @@ function decodeApplications(bytes: Buffer, ids: readonly string[]): ComputerHist
     ) throw new Error('Invalid application');
     values.set(item.bundleIdentifier, {
       bundleIdentifier: item.bundleIdentifier, name: item.name, iconDataUrl: item.iconDataUrl,
+      ...(hasResolution ? { resolution: item.resolution } : {}),
     });
   }
   return ids.map((id) => values.get(id)!);

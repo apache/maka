@@ -87,7 +87,8 @@ extension ObservationPolicy {
                     target: $0.target.map(Self.metadataElement),
                     selectedText: nil,
                     selectedRange: $0.selectedRange,
-                    selectedItems: $0.selectedItems.map(Self.metadataElement)
+                    selectedItems: $0.selectedItems.map(Self.metadataElement),
+                    truncated: nil
                 )
             },
             sourceId: event.sourceId,

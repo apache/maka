@@ -19,6 +19,36 @@
 
 # Computer History UI Evidence
 
+## Windows Application Identity
+
+Captured September 16, 2026 using the actual `ComputerHistorySettingsPage`,
+application hooks, exclusion normalizer, icon component and production styles.
+Before substitutes only the three application-ID validators from
+`c73755700805efddce0411f2fdd92f7994e327b6`; after uses the current validators.
+The remaining components and shared core source are identical in both builds.
+
+Pairs use 1280 x 900 and 430 x 900, English, light mode, DPR 1, 100% zoom, a
+fixed displayed event time and the same exclusion-heading scroll anchor.
+`before-*` and `after-*` files cover `recent`, `manual-add`, and
+`seeded-exclusions` for both `desktop` and `narrow`.
+
+The exact packaged Notepad ID is absent from recent choices before the repair
+and present afterward. Manual entry changes from a validation error to an exact
+saved exclusion. The seeded pair starts with the same two exclusions and
+demonstrates resolved packaged metadata while preserving the standard Edit ID.
+The narrow ID wraps without hiding its Remove control.
+
+Playwright verified all 12 captures and 56 behavior/asset checks, including
+exact add/readback/removal, preserved standard exclusions, decoded PNGs, no
+horizontal overflow, no page/asset errors and no external requests.
+Names and 48px PNG icons are synthetic and explicitly labelled in each image.
+These test real renderer behavior, not native icon lookup, full settings-modal
+navigation or Windows recording. Existing platform-specific copy is unchanged.
+The screenshots contain no private history or real settings writes.
+
+The installed CLI has no native attachment option. These unchanged PNGs use
+this PR's existing feature-branch asset directory, not a separate image branch.
+
 ## Approved Conversation Retrieval
 
 The `retrieval-permission-*.png` screenshots were captured September 15, 2026

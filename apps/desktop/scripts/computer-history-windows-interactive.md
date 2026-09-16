@@ -41,18 +41,91 @@ try {
 }
 ```
 
-Without the opt-in, Node reports a skipped test and launches nothing. Opting in
-on a non-Windows host fails. Optional environment variables:
+Without the opt-in, Node runs the deterministic receipt/action checks, skips
+native acceptance and launches nothing. Opting in on a non-Windows host fails.
+Optional environment variables:
 
 | Variable | Purpose |
 | --- | --- |
 | `MAKA_HISTORY_WINDOWS_TEST_ROOT` | Existing absolute local NTFS parent directory; defaults to the OS temporary directory. Each run creates a new child. |
 | `MAKA_HISTORY_WINDOWS_HELPER` | Absolute path to an actual built helper; defaults to `apps/desktop/resources/bin/open-history.exe`. |
+| `MAKA_HISTORY_WINDOWS_INPUT_REQUEST` | Opt-in absolute synthetic request file for an external virtual-device input driver; not needed for ordinary body tests. |
+| `MAKA_HISTORY_WINDOWS_INPUT_ONLY` | Set to `1` with the request file to stop after action acceptance and normal recorder cleanup. |
+| `MAKA_HISTORY_WINDOWS_RICH_EDIT_TEST` | Set to `1` with input-only mode to exercise partial RichEdit body, hidden runs, physical input, privacy and text-policy recovery. |
+| `MAKA_HISTORY_WINDOWS_METADATA_INPUT_TEST` | Set to `1` with input-only mode to exercise standard Edit numeric selection without body reads and metadata-only physical actions. |
 
 UNC, network drives, non-NTFS storage and reparse-point homes are rejected by the
 actual helper's `validate-home`, before recording. Do not point the helper
 override at a mock. No dependencies, elevation, services or scheduled tasks are
 installed by the harness.
+
+The optional input sequence requests Return, Ctrl+A, Return after six idle
+seconds, an out-and-back drag, and a click. The request file carries a unique request ID, deadline,
+fixture PID, window/child HWND, point, and refreshed foreground/pointer witness.
+An external lab driver must verify the fresh fixture identity and, before
+mouse-down, the exact child under the pointer. It must stop on stale witnesses,
+expired requests, unexpected foreground or `{ "done": true }`. A retired
+request keeps its ID with `deadline: 0` and `retired: true`: a driver that
+already sent it waits for the next ID; an unsent expired request must fail.
+Only fresh fixture heartbeats publish foreground/pointer witnesses. The driver is
+responsible for its own bounded cleanup; the harness never injects input.
+Use a VM keyboard/mouse or manually operated test device. Windows `SendInput`
+is deliberately rejected by the recorder and cannot establish positive
+physical-input acceptance. Before publishing a request, the harness arms its
+ID and original deadline in the focused fixture. The fixture emits exactly one
+press and one release receipt with that ID, timestamp and exact target; stale,
+unarmed, duplicate or wrong-target receipts fail. Retirement acknowledges that
+all modifiers and buttons are released before the next request can arm.
+Passing additionally requires exactly one action-only JSONL event within that
+request's original publication/release interval, with the original source and
+exact child target. Every later poll and sealed readback checks the complete
+action sequence for delayed duplicates or unrequested events, without a new
+fixed sleep. These receipts witness delivery, not editor operation success.
+This contract is limited to isolated
+synthetic desktops and does not authorize operating personal applications.
+
+RichEdit mode keeps a hidden formatted run beside a visible body marker and
+an independently visible, unfocused RichEdit sibling. Both visible bodies
+must reach the direct snapshot and actual recorder with truncation set;
+neither the hidden run nor Rich selection may be retained. The cold recorder
+must first persist the body and sibling with the hidden marker excluded, before
+any auxiliary provider or direct snapshot probe. An observed recorder capture
+failure aborts body acceptance; no auxiliary warm-up or harness retry follows.
+The harness then pauses and waits for published paused state, after pending
+workers are retired, before running the existing probes and direct assertions.
+The paused recorder home must reject a direct snapshot with
+`capture_not_admitted`. The positive direct snapshot uses a separate validated
+synthetic home with byte-for-byte copies of the recorder's configuration and
+consent files, its own running control, and no recorder. The optional visible
+probe receives that same isolated home. Readback verifies unchanged policy and
+consent, and no runtime state or segments in the probe home.
+The native capture budget is unchanged. Paused probes must leave sealed event
+counts unchanged. Resume must persist a new body event beyond that boundary
+with a different source ID before physical requests; that resumed source starts
+the uninterrupted A-to-B-to-A checks below.
+Only in the synthetic
+Rich editor, Enter/Ctrl+A handlers prevent their destructive default behavior
+while retaining KeyDown/KeyUp receipts; no low-level hook is suppressed. Exact
+text/RTF equality and hidden-marker presence are checked at arm, receipt and
+retirement, so later mouse cases still exercise the hidden context.
+The same-title A-to-B-to-A transition requires fresh recorder events with three
+distinct source IDs; an old A marker cannot satisfy the return. A subsequent body
+edit must appear in a new recorder event while retaining the returned source ID.
+A visible password sibling must
+cause actual worker suppression, increasing recorder suppression counts and
+zero provider failures; removing it must restore useful body capture.
+Both text-policy transitions are exercised through pause/resume, with
+metadata-only events while text is disabled and new body after re-enabling.
+Sealed JSONL must contain the useful markers and none of the hidden, password,
+denied-only or text-disabled markers. This tests bounded visible runs, not
+complete RichEdit text or selection support.
+
+The input driver receives `done` after the physical sequence. The recorder
+test continues its privacy, consent and sealing checks; driver completion
+alone is not acceptance. The optional standalone visible-range probe is only
+diagnostic and never substitutes for these production-helper assertions.
+Rich metadata-only checks exercise body omission and policy recovery; they do
+not claim metadata-only physical input or zero provider-read instrumentation.
 
 ## Isolation And Assertions
 

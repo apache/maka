@@ -18,18 +18,14 @@
  */
 
 import { useCallback, useEffect, useState } from 'react';
-import type { ComputerHistoryApplication } from '@maka/core/computer-history';
+import { historyApplicationId, type ComputerHistoryApplication } from '@maka/core/computer-history';
 import { useModuleHubServices } from '../services-context.js';
-
-const BUNDLE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9-]*(?:\.[A-Za-z0-9][A-Za-z0-9-]*)+$/u;
-const WINDOWS_ID_PATTERN = /^win32\.[a-z0-9_-][a-z0-9._-]*$/u;
 
 export function useComputerHistoryApplications(bundleIds: readonly string[]) {
   const { computerHistory: service } = useModuleHubServices();
   // Historical sources can lack a bundle ID; keep those on the initial fallback.
   const key = JSON.stringify([...new Set(bundleIds.filter((id) =>
-    id.length <= 256 && (BUNDLE_ID_PATTERN.test(id) ||
-      (WINDOWS_ID_PATTERN.test(id) && !id.endsWith('.') && !id.endsWith('.exe') && !id.includes('..'))),
+    historyApplicationId({ bundleIdentifier: id }) !== null,
   ))].sort());
   const [applications, setApplications] = useState<ReadonlyMap<string, ComputerHistoryApplication>>(new Map());
   const [error, setError] = useState<string | null>(null);

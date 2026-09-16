@@ -122,6 +122,42 @@ and rejected/unavailable snapshots discard pending content. A missing URL never
 reuses a previous tab's URL. AX metadata acquisition can still read into memory;
 the persistence contract below determines what is stored.
 
+Input events describe observations, not completed application operations.
+Typing stores admitted key-event characters in bounded bursts, not the final
+edited field value or an IME commit transcript; deletion/control characters
+are not applied to reconstruct a document. AX snapshots independently describe
+later observed UI state. Return and shortcut events do not prove submission
+or command success.
+Normal `--duration` completion flushes the final pending burst through the same
+source, control and privacy revalidation before sealing. Explicit cancellation,
+pause, source loss and stop still discard pending input; they cannot flush it
+under a later control revision. Permission-free tests drive the actual recorder
+with synthetic snapshots and inspect its sealed JSONL without posting events.
+
+Mouse gestures retain any observed excursion more than six points from the
+press location: moving away and back before release remains `mouse.drag`.
+Stationary/sub-threshold gestures remain clicks (or right-button context-menu
+events). Overlapping/duplicate presses and mismatched button sequences cancel.
+A bounded held-button mask (buttons 0 through 63) prevents rearming until every
+observed held button is released, even after content/focus invalidation.
+Tap installation/re-enable seeds current system button state because releases
+can be missed while disabled; stop clears it. Pause, source/focus changes,
+event-tap loss, stop and segment rotation discard pending gestures. Motion
+adds no AX/body reads, and the original source and both endpoints must still
+pass admission. A drag is not proof of a completed drop; lost/coalesced motion
+cannot establish an excursion the collector never observed.
+
+Gesture verification on September 16, 2026 passed 10 focused tests and the
+94-test Swift suite, with ARM64 and Intel release builds. One synthetic
+AppKit acceptance on the existing Intel macOS 26.3 VM passed eight cases in
+each of text and metadata-only modes (27 events each): out-and-back and
+stationary gestures, overlapping buttons, secure endpoints, and actual
+pause/focus cancellation, with successful recovery after every rejection.
+Local JSONL readback confirmed endpoint attribution, text omission, sealed
+segments and stopped runtime; process cleanup and restoration of the original
+VM pause were verified. This covers synthetic event-tap delivery, not physical
+devices, packaged Desktop permission attribution, or complete platform parity.
+
 Run `swift test --quiet` here and
 `npm --workspace @maka/desktop run build:computer-history` from the repository
 root. Synthetic tests cover policy transitions, pause/start/stop persistence,
@@ -213,6 +249,16 @@ rechecked before final source/security validation. Ranged samples set
 `truncated`, since they do not claim the complete document. Only an explicitly
 unsupported visible-range attribute uses the existing value-prefix path;
 failed or changing range reads never fall back to unrestricted values.
+Selection text and its UTF-16 range are read separately. The collector rechecks
+the original selected range after content collection; a changed, cleared or
+newly unavailable range invalidates that capture, including metadata-only
+offsets. This detects observed range changes, not a change that reverted between
+reads. Selected text retains up to 8 KiB and carries optional
+`selection.truncated`: `true` when the collector clipped it, `false` when it
+did not, and absent for legacy events or unavailable text. The original range
+is not shortened to fit clipped text. Text-disabled persistence removes both
+selected text and its truncation flag. Provider-side shortening without a
+signal remains unknown.
 The serialized byte budget includes JSON escaping; an oversized attribute
 retains a valid JSON-encoded prefix instead of dropping its entire leaf.
 With text enabled the producer omits secure nodes and descendants before

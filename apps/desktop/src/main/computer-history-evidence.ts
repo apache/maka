@@ -21,6 +21,7 @@ import { createHash } from 'node:crypto';
 import { redactSecrets } from '@maka/core/redaction';
 import type { ComputerHistorySettings } from '@maka/core/computer-history';
 import type { ComputerHistorySummaryEvent } from './computer-history-summaries.js';
+import { historyApplicationBlocked, historyApplicationId } from '@maka/core/computer-history';
 
 const MAX_CONTENT_BYTES = 28 * 1024;
 const SOURCE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
@@ -50,7 +51,7 @@ export function projectHistorySummaryEvent(
   if (typeof event.timestamp !== 'string' || !Number.isFinite(Date.parse(event.timestamp))) return null;
   const app = record(event.app);
   const window = record(event.window);
-  const bundleIdentifier = plain(app.bundleIdentifier, 256);
+  const bundleIdentifier = historyApplicationId(app) ?? '';
   const name = plain(app.name, 256);
   const domain = httpDomain(window.url);
   const domains = Array.isArray(event.contentDomains)
@@ -59,14 +60,20 @@ export function projectHistorySummaryEvent(
       return host ? [host] : [];
     })
     : [];
-  if (settings.blockedApplications.includes(bundleIdentifier) ||
-      [domain, ...domains].some((host) => host && blockedDomain(host, settings.blockedDomains)) ||
-      app.secureInput === true || window.isPrivate === true || window.privateBrowsing === true) return null;
+  if (suppressedContext(app, window, settings) ||
+      domains.some((host) => blockedDomain(host, settings.blockedDomains))) return null;
   const keyboard = record(event.keyboard);
   const selection = record(event.selection);
+  const selectedItems = selection.selectedItems ?? [];
+  if (selection.selectedItems === null || !Array.isArray(selectedItems) || selectedItems.length > 32 ||
+      selectedItems.some((item) => item === null || typeof item !== 'object' || Array.isArray(item))) return null;
   const mouse = record(event.mouse);
+  const endpoints = [record(mouse.origin), record(mouse.destination)];
   const elements = [record(keyboard.target), record(selection.target), record(mouse.target)];
-  if (elements.some((element) => SECURE_ROLE.test(`${element.role ?? ''} ${element.subrole ?? ''}`))) return null;
+  if (endpoints.some((endpoint) => suppressedContext(record(endpoint.app), record(endpoint.window), settings)) ||
+      [...elements, ...selectedItems.map(record), ...endpoints.map((endpoint) => record(endpoint.element))]
+        .some((element) => ['role', 'subrole'].some((key) => element[key] != null &&
+          (typeof element[key] !== 'string' || SECURE_ROLE.test(element[key]))))) return null;
   const kind = plain(event.kind, 80);
   if (!kind) return null;
   const sourceId = typeof event.sourceId === 'string' && SOURCE_ID.test(event.sourceId) ? event.sourceId : undefined;
@@ -76,14 +83,49 @@ export function projectHistorySummaryEvent(
   const ax = record(event.ax);
   const pieces: string[] = [];
   if (contentAllowed) {
-    const selected = observedText(selection.selectedText, 4 * 1024);
-    const typed = observedText(keyboard.text, 4 * 1024);
-    if (typed) pieces.push(`Entered text (not proof of submission):\n${typed}`);
+    if (kind === 'keyboard.shortcut' || kind === 'keyboard.submit') {
+      const key = plain(observedText(keyboard.keyEquivalent, 64), 64);
+      const combination = [...modifiers(keyboard.modifiers), ...(key ? [key] : [])].join('+');
+      if (combination) pieces.push(`${kind === 'keyboard.submit'
+        ? 'Submit key (not proof of success)' : 'Keyboard shortcut (not proof of completion)'}: ${combination}`);
+    }
+    if (kind.startsWith('mouse.')) {
+      const button = typeof mouse.button === 'string' && ['left', 'right', 'middle', 'other'].includes(mouse.button)
+        ? mouse.button : undefined;
+      const count = nonnegativeInteger(mouse.clickCount);
+      const input = [
+        button, ...(count !== undefined && count > 0 ? [`count=${count}`] : []), ...modifiers(mouse.modifiers),
+      ].filter(Boolean);
+      if (input.length) pieces.push(`Mouse input (not proof of completion): ${input.join(', ')}`);
+      for (const [index, endpoint] of endpoints.entries()) {
+        const endpointApp = record(endpoint.app);
+        const endpointWindow = record(endpoint.window);
+        const label = index === 0 ? 'Drag origin' : 'Drag destination';
+        const context = [
+          observedText(endpointApp.name, 256), observedText(endpointWindow.title, 1024),
+          httpDomain(endpointWindow.url), elementDescription(record(endpoint.element)),
+        ].filter(Boolean);
+        if (context.length) pieces.push(`${label}:\n${context.join('\n')}`);
+      }
+    }
+    const range = record(selection.selectedRange);
+    const start = nonnegativeInteger(selection.selectedRange === undefined ? selection.start : range.location);
+    const length = nonnegativeInteger(range.length);
+    if (start !== undefined && (selection.selectedRange === undefined ||
+        (length !== undefined && Number.isSafeInteger(start + length)))) {
+      pieces.push(`Selection range (UTF-16): start=${start}${length === undefined ? '' : `, length=${length}`}`);
+    }
+    const selected = observedText(selection.selectedText, 8 * 1024);
+    const characters = observedText(keyboard.text, 8 * 1024);
+    if (characters) pieces.push(`Observed input characters (not proof of committed text or submission):\n${characters}`);
     if (selected) pieces.push(`Selected text${selection.truncated === true ? ' (partial)' : ''}:\n${selected}`);
     for (const [label, element] of [['Keyboard target', elements[0]], ['Selection target', elements[1]], ['Mouse target', elements[2]]] as const) {
-      const description = ['role', 'title', 'description', 'value', 'placeholder']
-        .flatMap((key) => typeof element[key] === 'string' ? [`${key}: ${observedText(element[key], 1024)}`] : []);
-      if (description.length) pieces.push(`${label}:\n${description.join('\n')}`);
+      const description = elementDescription(element);
+      if (description) pieces.push(`${label}:\n${description}`);
+    }
+    for (const [index, item] of selectedItems.entries()) {
+      const description = elementDescription(record(item));
+      if (description) pieces.push(`Selected item ${index + 1}:\n${description}`);
     }
     // Legacy deltas cannot establish a self-contained permitted document.
     if (ax.mode === 'fullTree' && typeof ax.text === 'string') {
@@ -99,6 +141,32 @@ export function projectHistorySummaryEvent(
     window: { title: plain(observedText(window.title, 1024), 1024), ...(domain ? { urlDomain: domain } : {}) },
     ...(content ? { content } : {}),
   };
+}
+
+function suppressedContext(
+  app: Record<string, unknown>,
+  window: Record<string, unknown>,
+  settings: ComputerHistorySettings,
+): boolean {
+  const domain = httpDomain(window.url);
+  return domain === null || historyApplicationBlocked(app, settings.blockedApplications) ||
+    Boolean(domain && blockedDomain(domain, settings.blockedDomains)) ||
+    app.secureInput === true || window.isPrivate === true || window.privateBrowsing === true;
+}
+
+function elementDescription(element: Record<string, unknown>): string {
+  return ['role', 'title', 'description', 'value', 'placeholder']
+    .flatMap((key) => typeof element[key] === 'string'
+      ? [`${key}: ${observedText(element[key], key === 'value' ? 8 * 1024 : 1024)}`] : []).join('\n');
+}
+
+function modifiers(value: unknown): string[] {
+  const allowed = ['command', 'control', 'option', 'shift', 'fn', 'alt', 'meta'];
+  return Array.isArray(value) ? allowed.filter((modifier) => value.includes(modifier)) : [];
+}
+
+function nonnegativeInteger(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
 }
 
 function blockedDomain(host: string, blocked: readonly string[]): boolean {
@@ -121,13 +189,13 @@ function canonicalDomain(value: unknown): string | undefined {
   }
 }
 
-function httpDomain(value: unknown): string | undefined {
+function httpDomain(value: unknown): string | null | undefined {
   if (typeof value !== 'string') return undefined;
   try {
     const url = new URL(value);
-    return ['http:', 'https:'].includes(url.protocol) ? url.hostname.toLowerCase() : undefined;
+    return ['http:', 'https:'].includes(url.protocol) ? canonicalDomain(url.hostname) ?? null : undefined;
   } catch {
-    return undefined;
+    return null;
   }
 }
 

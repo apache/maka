@@ -84,4 +84,16 @@ final class PolicyTests: XCTestCase {
         XCTAssertTrue(policy.allowsDomain("docs.example.com"))
         XCTAssertFalse(policy.allowsDomain("example.org"))
     }
+
+    func testWebsiteDefaultDenialStillCoversUnknownBrowsersAndExplicitWebAreas() {
+        let policy = ObservationPolicy(observation: .init(defaultURLBehavior: .doNotObserve))
+        for (bundle, role) in [("com.google.Chrome", "AXTextField"),
+                               ("test.editor", "AXWebArea")] {
+            XCTAssertEqual(policy.shouldSuppress(bundleIdentifier: bundle, windowTitle: "Unknown",
+                urlDomain: nil, role: role, subrole: nil), "url_policy")
+        }
+        XCTAssertFalse(policy.allowsDomain(nil), "Unknown web domains remain denied")
+        XCTAssertEqual(policy.shouldSuppress(bundleIdentifier: "test.editor", windowTitle: "Local",
+            urlDomain: nil, role: "AXSecureTextField", subrole: nil), "secure_input")
+    }
 }

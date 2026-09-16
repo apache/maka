@@ -64,12 +64,32 @@ internal static class HistoryFixture
     private static extern bool ShowWindow(IntPtr window, int command);
     [DllImport("user32.dll")]
     private static extern bool IsWindowVisible(IntPtr window);
+    [DllImport("user32.dll")]
+    private static extern bool GetCursorPos(out Point point);
+    [DllImport("user32.dll")]
+    private static extern IntPtr WindowFromPoint(Point point);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetClassName(IntPtr window, StringBuilder name, int capacity);
 
     private sealed class Document
     {
         internal Form Form;
-        internal TextBox Text;
+        internal TextBoxBase Text;
+        internal RichTextBox Sibling;
+        internal TextBox PrivacyControl;
         internal List<Label> BudgetLabels = new List<Label>();
+    }
+
+    private sealed class CountedEdit : TextBox
+    {
+        internal int BodyReads;
+        internal int SelectionReads;
+        protected override void WndProc(ref Message message)
+        {
+            if (message.Msg == 0x000D) BodyReads++;
+            if (message.Msg == 0x00B0) SelectionReads++;
+            base.WndProc(ref message);
+        }
     }
 
     private static readonly Dictionary<string, Document> Documents = new Dictionary<string, Document>();
@@ -84,6 +104,64 @@ internal static class HistoryFixture
     private static long ActivationStarted;
     private static long LastHeartbeat;
     private static string Token;
+    private sealed class InputTrial
+    {
+        internal string Id;
+        internal string Name;
+        internal Document Document;
+        internal long Deadline;
+        internal string Text;
+        internal string Rtf;
+        internal bool Pressed;
+        internal bool Released;
+    }
+    private static InputTrial Trial;
+    private static bool InputWitnessing;
+
+    private static long Now() { return DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(); }
+
+    private static void InputContext(InputTrial trial)
+    {
+        Document document = trial.Document;
+        RichTextBox rich = document.Text as RichTextBox;
+        if (GetForegroundWindow() != document.Form.Handle || !document.Text.Focused ||
+            !IsWindowVisible(document.Form.Handle) || !IsWindowVisible(document.Text.Handle))
+            throw new InvalidOperationException("Physical input lost its exact focused source.");
+        if (rich != null && (rich.Text != trial.Text || rich.Rtf != trial.Rtf))
+            throw new InvalidOperationException("Physical input changed the hidden Rich context.");
+    }
+
+    private static void InputReceipt(Form form, TextBoxBase text, string phase,
+        string key, bool control, string button)
+    {
+        if (!InputWitnessing) return;
+        try
+        {
+            InputTrial trial = Trial;
+            if (trial == null || trial.Document.Text != text ||
+                Now() > trial.Deadline || trial.Released)
+                throw new InvalidOperationException("Unexpected, late or duplicate physical receipt.");
+            InputContext(trial);
+            bool expected = trial.Name == "return" ? key == "Enter" && !control :
+                trial.Name == "shortcut" ? key == "A" && (phase == "release" || control) :
+                key == null && button == "Left";
+            if (!expected || (phase == "press" ? trial.Pressed : !trial.Pressed))
+                throw new InvalidOperationException("Physical receipt does not match the armed request.");
+            if (phase == "press") trial.Pressed = true;
+            else trial.Released = true;
+            Emit(new { type = "input.received", requestId = trial.Id, phase = phase,
+                at = Now(), key = key, control = control, button = button,
+                processIdentifier = Process.GetCurrentProcess().Id,
+                windowID = form.Handle.ToInt64(), inputWindowID = text.Handle.ToInt64(),
+                contextPreserved = true, hiddenPresent = trial.Rtf != null,
+                foreground = Foreground() });
+        }
+        catch (Exception error)
+        {
+            Emit(new { type = "error", message = error.Message });
+            Environment.Exit(1);
+        }
+    }
 
     private static void Emit(object value)
     {
@@ -117,18 +195,65 @@ internal static class HistoryFixture
         label.Text = "Synthetic acceptance notes";
         label.Location = new Point(16, 16);
         label.AutoSize = true;
-        TextBox text = new TextBox();
+        bool richTest = Environment.GetEnvironmentVariable("MAKA_HISTORY_WINDOWS_RICH_EDIT_TEST") == "1";
+        bool rich = key == "one" && richTest;
+        TextBoxBase text = rich ? (TextBoxBase)new RichTextBox() : new CountedEdit();
+        text.MaxLength = 200000;
         text.Location = new Point(16, 50);
         text.Size = new Size(425, password ? 30 : 150);
         text.Multiline = !password;
-        text.UseSystemPasswordChar = password;
+        if (text is TextBox) ((TextBox)text).UseSystemPasswordChar = password;
         text.AccessibleName = "Synthetic note body";
+        text.KeyDown += delegate(object sender, KeyEventArgs args) {
+            if (args.KeyCode == Keys.Enter || (args.Control && args.KeyCode == Keys.A))
+            {
+                InputReceipt(form, text, "press", args.KeyCode.ToString(), args.Control, null);
+                // Keep KeyUp observable; SuppressKeyPress would suppress it too.
+                if (rich && InputWitnessing) args.Handled = true;
+            }
+        };
+        text.KeyPress += delegate(object sender, KeyPressEventArgs args) {
+            if (rich && InputWitnessing && (args.KeyChar == '\r' || args.KeyChar == '\n' || args.KeyChar == '\x01'))
+                args.Handled = true;
+        };
+        text.KeyUp += delegate(object sender, KeyEventArgs args) {
+            if (args.KeyCode == Keys.Enter || args.KeyCode == Keys.A)
+                InputReceipt(form, text, "release", args.KeyCode.ToString(), args.Control, null);
+        };
+        text.MouseDown += delegate(object sender, MouseEventArgs args) {
+            InputReceipt(form, text, "press", null, false, args.Button.ToString());
+        };
+        text.MouseUp += delegate(object sender, MouseEventArgs args) {
+            InputReceipt(form, text, "release", null, false, args.Button.ToString());
+        };
         form.Controls.Add(label);
         form.Controls.Add(text);
+        RichTextBox sibling = null;
+        TextBox privacyControl = null;
+        if (rich || (key == "two" && richTest))
+        {
+            text.Size = new Size(425, 65);
+            sibling = new RichTextBox();
+            sibling.Location = new Point(16, 125);
+            sibling.Size = new Size(425, 65);
+            sibling.AccessibleName = "Synthetic sibling editor";
+            sibling.Text = "SYNTHETIC_" + Token + "_RICH_SIBLING_BODY";
+            form.Controls.Add(sibling);
+            if (rich)
+            {
+                privacyControl = new TextBox();
+                privacyControl.Location = new Point(16, 200);
+                privacyControl.Size = new Size(425, 24);
+                privacyControl.UseSystemPasswordChar = true;
+                privacyControl.Text = "SYNTHETIC_" + Token + "_RICH_PASSWORD";
+                privacyControl.Visible = false;
+                form.Controls.Add(privacyControl);
+            }
+        }
         // Materialize every HWND before recording so creation is not confused
         // with the A -> B -> A foreground transition under test.
         IntPtr handle = form.Handle;
-        return new Document { Form = form, Text = text };
+        return new Document { Form = form, Text = text, Sibling = sibling, PrivacyControl = privacyControl };
     }
 
     private static void Tick(object sender, EventArgs args)
@@ -151,6 +276,41 @@ internal static class HistoryFixture
                     Application.Exit();
                     return;
                 }
+                if (action == "inputArm")
+                {
+                    string name = (string)command["name"];
+                    if (Trial != null || Control.ModifierKeys != Keys.None ||
+                        Control.MouseButtons != MouseButtons.None ||
+                        (name != "return" && name != "shortcut" && name != "drag" && name != "click"))
+                        throw new InvalidOperationException("Physical request cannot be armed.");
+                    Document armDocument = Documents[(string)command["window"]];
+                    RichTextBox armRich = armDocument.Text as RichTextBox;
+                    Trial = new InputTrial { Id = (string)command["requestId"], Name = name,
+                        Document = armDocument, Deadline = Convert.ToInt64(command["deadline"]),
+                        Text = armDocument.Text.Text, Rtf = armRich == null ? null : armRich.Rtf };
+                    if (Trial.Deadline <= Now() || Trial.Deadline - Now() > 12000 ||
+                        (armRich != null && (!Trial.Rtf.Contains(@"\v") ||
+                            !Trial.Text.Contains("SYNTHETIC_" + Token + "_HIDDEN_RICH_RUN") ||
+                            !Trial.Text.Contains("SYNTHETIC_" + Token + "_BODY_A"))))
+                        throw new InvalidOperationException("Physical request lacks a live hidden-context witness.");
+                    InputContext(Trial);
+                    InputWitnessing = true;
+                    Emit(new { type = "ack", id = command["id"], action = action,
+                        requestId = Trial.Id, at = Now(), contextPreserved = true,
+                        hiddenPresent = Trial.Rtf != null,
+                        inputWindowID = armDocument.Text.Handle.ToInt64(), foreground = Foreground() });
+                    return;
+                }
+                if (action == "inputRetire")
+                {
+                    if (Trial == null || Trial.Id != (string)command["requestId"] || !Trial.Released)
+                        throw new InvalidOperationException("Cannot retire an unmatched physical request.");
+                    Pending = command;
+                    ActivationStarted = Lifetime.ElapsedMilliseconds;
+                    return;
+                }
+                if (Trial != null)
+                    throw new InvalidOperationException("Retire physical input before changing its source.");
                 if (action == "block")
                 {
                     BlockId = Convert.ToInt32(command["id"]);
@@ -173,7 +333,16 @@ internal static class HistoryFixture
                     Emit(new { type = "unblocked", id = command["id"], foreground = Foreground() });
                     return;
                 }
-                if (action != "show" && action != "edit" && action != "select")
+                if (action == "readCounts")
+                {
+                    Document countedDocument = Documents[(string)command["window"]];
+                    CountedEdit counted = countedDocument.Text as CountedEdit;
+                    if (counted == null) throw new InvalidOperationException("Expected standard Edit counter.");
+                    Emit(new { type = "ack", id = command["id"], bodyReads = counted.BodyReads,
+                        selectionReads = counted.SelectionReads, foreground = Foreground() });
+                    return;
+                }
+                if (action != "show" && action != "edit" && action != "select" && action != "privacy")
                     throw new InvalidOperationException("Unknown fixture action.");
                 string key = (string)command["window"];
                 Document document = Documents[key];
@@ -203,17 +372,37 @@ internal static class HistoryFixture
                 if (command.ContainsKey("password"))
                 {
                     if (key != "password") throw new InvalidOperationException("Only the password fixture can toggle secrecy.");
-                    document.Text.UseSystemPasswordChar = (bool)command["password"];
+                    ((TextBox)document.Text).UseSystemPasswordChar = (bool)command["password"];
                 }
-                if (action == "select")
+                if (action == "privacy")
+                {
+                    if (document.PrivacyControl == null)
+                        throw new InvalidOperationException("Privacy action requires the Rich sibling fixture.");
+                    document.PrivacyControl.Visible = (bool)command["visible"];
+                }
+                else if (action == "select")
                     document.Text.Select(Convert.ToInt32(command["start"]), Convert.ToInt32(command["length"]));
                 else
                     document.Text.Text = (string)command["text"];
+                if (action != "privacy" && command.ContainsKey("hidden"))
+                {
+                    RichTextBox rich = document.Text as RichTextBox;
+                    string hidden = (string)command["hidden"];
+                    string visible = (string)command["text"];
+                    if (rich == null || !System.Text.RegularExpressions.Regex.IsMatch(
+                        hidden + visible, @"^[A-Z0-9_a-f]+$"))
+                        throw new InvalidOperationException("Hidden run requires synthetic RichTextBox markers.");
+                    rich.Rtf = @"{\rtf1\ansi " + visible + @"{\v " + hidden + "}}";
+                    if (!rich.Rtf.Contains(@"\v"))
+                        throw new InvalidOperationException("Synthetic hidden run was not retained.");
+                }
                 if (action == "show")
                 {
                     document.Form.Show();
                     ShowWindow(document.Form.Handle, 5);
-                    foreach (Control control in document.Form.Controls) ShowWindow(control.Handle, 5);
+                    foreach (Control control in document.Form.Controls)
+                        if (control != document.PrivacyControl || control.Visible)
+                            ShowWindow(control.Handle, 5);
                     document.Form.BringToFront();
                     document.Form.Activate();
                     document.Text.Focus();
@@ -222,19 +411,43 @@ internal static class HistoryFixture
                 Pending = command;
                 ActivationStarted = Lifetime.ElapsedMilliseconds;
             }
-            if (Pending != null)
+            if (Pending != null && (string)Pending["action"] == "inputRetire")
+            {
+                InputContext(Trial);
+                if (Control.ModifierKeys == Keys.None && Control.MouseButtons == MouseButtons.None)
+                {
+                    Emit(new { type = "ack", id = Pending["id"], action = "inputRetire",
+                        requestId = Trial.Id, at = Now(), released = true, contextPreserved = true,
+                        hiddenPresent = Trial.Rtf != null, foreground = Foreground() });
+                    Trial = null;
+                    Pending = null;
+                }
+                else if (Lifetime.ElapsedMilliseconds - ActivationStarted >= 2000)
+                    throw new InvalidOperationException("Physical input did not release all keys/buttons.");
+            }
+            else if (Pending != null)
             {
                 Document document = Documents[(string)Pending["window"]];
                 if (GetForegroundWindow() == document.Form.Handle && document.Text.Focused &&
                     IsWindowVisible(document.Form.Handle) && IsWindowVisible(document.Text.Handle))
                 {
+                    StringBuilder nativeClass = new StringBuilder(128);
+                    if (GetClassName(document.Text.Handle, nativeClass, nativeClass.Capacity) <= 0)
+                        throw new InvalidOperationException("Synthetic input class lookup failed.");
                     Emit(new {
                         type = "ack", id = Pending["id"], action = Pending["action"],
                         window = Pending["window"], windowID = document.Form.Handle.ToInt64(),
                         processIdentifier = Process.GetCurrentProcess().Id,
                         title = document.Form.Text, text = document.Text.Text,
+                        inputWindowID = document.Text.Handle.ToInt64(),
+                        inputClass = nativeClass.ToString(),
+                        inputPoint = document.Text.PointToScreen(new Point(20, 20)),
                         selectedText = document.Text.SelectedText, selectionStart = document.Text.SelectionStart,
-                        password = document.Text.UseSystemPasswordChar,
+                        password = document.Text is TextBox && ((TextBox)document.Text).UseSystemPasswordChar,
+                        siblingWindowID = document.Sibling == null ? 0 : document.Sibling.Handle.ToInt64(),
+                        siblingVisible = document.Sibling != null && IsWindowVisible(document.Sibling.Handle),
+                        siblingFocused = document.Sibling != null && document.Sibling.Focused,
+                        privacyVisible = document.PrivacyControl != null && document.PrivacyControl.Visible,
                         foreground = Foreground()
                     });
                     Pending = null;
@@ -246,7 +459,10 @@ internal static class HistoryFixture
             }
             if (Lifetime.ElapsedMilliseconds - LastHeartbeat >= 250)
             {
-                Emit(new { type = "heartbeat", foreground = Foreground() });
+                Point pointer;
+                GetCursorPos(out pointer);
+                Emit(new { type = "heartbeat", at = Now(), foreground = Foreground(), pointer = pointer,
+                    pointerWindowID = WindowFromPoint(pointer).ToInt64() });
                 LastHeartbeat = Lifetime.ElapsedMilliseconds;
             }
         }

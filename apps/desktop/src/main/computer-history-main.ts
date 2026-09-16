@@ -49,6 +49,7 @@ import {
   computerHistorySearchExcerpt,
   computerHistorySearchNormalize,
   computerHistorySearchTerms,
+  historyApplicationId,
 } from '@maka/core/computer-history';
 import type { UiLocale } from '@maka/core/ui-locale';
 import { ComputerHistoryApplications } from './computer-history-applications.js';
@@ -546,30 +547,58 @@ export class ComputerHistoryService {
           if (Date.parse(interval.start) < this.#now() - RAW_HORIZON_MS || Date.parse(interval.end) > this.#now()) {
             throw new Error('Raw Computer History is limited to the last 48 hours');
           }
+          const offset = request.input.offset ?? 0;
+          if (offset > 0 && !request.input.eventId) throw new Error('An exact event ID is required to read further content');
+          if (request.input.after && (request.input.eventId || request.input.offset !== undefined)) {
+            throw new Error('List continuation cannot be combined with an event content read');
+          }
           const events: Record<string, unknown>[] = [];
           let bytes = 0;
           let truncated = false;
+          let cursorFound = !request.input.after;
+          let lastAfter: string | undefined;
+          // A prefix token distinguishes identical observations and rejects changed or deleted pages.
+          const prefix = createHash('sha256').update(JSON.stringify([interval, summaryScopeKey(settings)]));
           for await (const event of this.#summaryEvents(settings, interval)) {
             signal?.throwIfAborted();
-            const content = historyTextPage(redactSecrets(event.content ?? ''), 0, 8 * 1024);
+            const id = `event-${createHash('sha256').update(JSON.stringify(event)).digest('hex')}`;
+            prefix.update(id);
+            const after = `events-${prefix.copy().digest('hex')}`;
+            if (!cursorFound) {
+              if (after === request.input.after) cursorFound = true;
+              continue;
+            }
+            if (request.input.eventId && request.input.eventId !== id) continue;
+            const content = historyTextPage(redactSecrets(event.content ?? ''), offset, 32 * 1024);
             const projected = {
-              id: summaryEventId(event, { includeText: true }),
+              id,
               timestamp: event.timestamp,
               kind: event.kind,
               application: redactSecrets(event.app?.name || event.app?.bundleIdentifier || ''),
               windowTitle: redactSecrets(event.window?.title ?? ''),
               domain: event.window?.urlDomain,
-              ...(event.content ? { content: content.text, contentTruncated: content.nextOffset !== undefined } : {}),
+              ...(event.content ? {
+                content: content.text, offset, contentTruncated: content.nextOffset !== undefined,
+                ...(content.nextOffset === undefined ? {} : { nextOffset: content.nextOffset }),
+              } : {}),
             };
             const size = Buffer.byteLength(JSON.stringify(projected));
             if (events.length >= request.input.limit || bytes + size > 40 * 1024) {
+              if (!events.length) throw new Error('Computer History event exceeds the read budget');
               truncated = true;
               break;
             }
             events.push(projected);
             bytes += size;
+            lastAfter = after;
+            if (request.input.eventId) break;
           }
-          return { ...interval, events, truncated, rawRetentionHours: 48 };
+          if (!cursorFound) throw new Error('Computer History list changed; restart the interval read');
+          if (request.input.eventId && !events.length) throw new Error('Computer History event changed or is unavailable under current permissions');
+          return {
+            ...interval, events, truncated, rawRetentionHours: 48,
+            ...(truncated && lastAfter ? { nextAfter: lastAfter } : {}),
+          };
         }
         if (!this.#summaries) throw new Error('Computer History summary storage is unavailable');
         if (request.kind === 'read') {
@@ -1446,9 +1475,7 @@ function timelineEntry(events: readonly HistoryEvent[]): ComputerHistoryTimeline
   const last = events.at(-1)!;
   const app = observedText(first.app?.name || first.app?.bundleIdentifier, 120) || 'Desktop activity';
   const window = windowTitle(first);
-  const applications = [
-    ...new Set(events.map((event) => observedText(appKey(event), 160)).filter(Boolean)),
-  ];
+  const applications = [...new Set(events.map(appKey).filter(Boolean))];
   const counts = new Map<string, number>();
   for (const event of events) {
     const kind = event.kind || 'activity';
@@ -1512,7 +1539,7 @@ async function segmentFiles(root: string, names: readonly string[]): Promise<str
       }
     }
   }
-  return output;
+  return output.sort();
 }
 
 async function* readEventLines(path: string): AsyncGenerator<string> {
@@ -1577,11 +1604,12 @@ function parseEvent(line: string): HistoryEvent | null {
     }
     const app = isRecord(candidate.app) ? candidate.app : {};
     const window = isRecord(candidate.window) ? candidate.window : {};
+    const bundleIdentifier = historyApplicationId(app);
+    if (bundleIdentifier === null &&
+      (app.applicationUserModelId !== undefined || app.bundleIdentifier !== undefined)) return null;
     return {
       sourceKey: createHash('sha256').update(JSON.stringify([
-        typeof app.bundleIdentifier === 'string' && app.bundleIdentifier
-          ? app.bundleIdentifier
-          : typeof app.name === 'string' ? app.name : '',
+        bundleIdentifier ?? (typeof app.name === 'string' ? app.name : ''),
         typeof candidate.sourceId === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(candidate.sourceId)
           ? candidate.sourceId : typeof window.title === 'string' ? window.title : '',
       ])).digest('hex'),
@@ -1589,7 +1617,7 @@ function parseEvent(line: string): HistoryEvent | null {
       kind: observedText(candidate.kind, 80),
       app: {
         name: observedText(app.name, 120),
-        bundleIdentifier: observedText(app.bundleIdentifier, 160),
+        ...(bundleIdentifier ? { bundleIdentifier } : {}),
       },
       window: { title: observedText(window.title, 180) },
     };

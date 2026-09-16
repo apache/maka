@@ -25,6 +25,8 @@ import Foundation
 public enum AXChildrenReader {
     public static func read(
         _ element: AXUIElement,
+        attribute: CFString = kAXChildrenAttribute as CFString,
+        limit: Int = 257,
         withinBudget: () -> Bool,
         copyValues: (AXUIElement, CFString, CFIndex, CFIndex, UnsafeMutablePointer<CFArray?>) -> AXError = {
             AXUIElementCopyAttributeValues($0, $1, $2, $3, $4)
@@ -35,12 +37,12 @@ public enum AXChildrenReader {
     ) -> [AXUIElement]? {
         guard withinBudget() else { return nil }
         var values: CFArray?
-        let result = copyValues(element, kAXChildrenAttribute as CFString, 0, 257, &values)
+        let result = copyValues(element, attribute, 0, limit, &values)
         guard withinBudget() else { return nil }
         if result == .attributeUnsupported || result == .noValue { return [] }
         if result == .illegalArgument {
             var count: CFIndex = -1
-            guard valueCount(element, kAXChildrenAttribute as CFString, &count) == .success,
+            guard valueCount(element, attribute, &count) == .success,
                   withinBudget(), count == 0 else { return nil }
             return []
         }
@@ -62,6 +64,8 @@ public protocol ObservationAccessibility {
     func children(_ node: Node) -> [Node]?
     func owns(_ node: Node) -> Bool
     func selectedRange(_ node: Node) -> EventStreamTextRange?
+    /// Empty means unsupported or no selection; nil means unreadable/oversized.
+    func selectedNodes(_ node: Node, _ attribute: String) -> [Node]?
     func visibleRange(_ node: Node) -> ObservationVisibleRange
     func text(_ node: Node, in range: EventStreamTextRange) -> String?
 }
@@ -113,12 +117,16 @@ public struct CapturedObservation<Node: Hashable> {
     public let element: EventStreamAXElement?
     public let selectedText: String?
     public let selectedRange: EventStreamTextRange?
+    public let selectedTextTruncated: Bool?
     public let ax: EventStreamAXTree?
     public let contentState: HistoryEvent.ContentState
     public let contentDomains: [String]?
     /// In-memory attribution only; never serialized into event payloads.
     public let sourcePath: [Node]
     public let documentURLs: [String]
+    public var selectedItems: [EventStreamAXElement] = []
+    /// Exact membership is used for deduplication, never persisted.
+    public var selectedItemNodes: [Node] = []
 
     public func hasSameSource(as other: Self) -> Bool {
         windowNode == other.windowNode && targetNode == other.targetNode &&
@@ -163,7 +171,7 @@ public struct ObservationCapture<Access: ObservationAccessibility> {
 
     public func capture(
         app: EventStreamApp, window: Access.Node?, target: Access.Node?,
-        browser: Bool, includeTree: Bool
+        browser: Bool, includeTree: Bool, includeSelectionItems: Bool = false
     ) -> CapturedObservation<Access.Node>? {
         let deadline = now() + 0.75
         guard !app.secureInput, policy.allowsApplication(app.bundleIdentifier ?? "") else { return nil }
@@ -226,7 +234,7 @@ public struct ObservationCapture<Access: ObservationAccessibility> {
         let content = state == .available
         // Container values/labels/selection can aggregate denied descendant
         // documents. Only leaf controls contribute these independent fields.
-        let leaf = content && (target.map {
+        let leaf = !includeSelectionItems && content && (target.map {
             access.children($0)?.isEmpty == true &&
                 !["AXWebArea", "AXWindow", "AXGroup", "AXScrollArea"].contains(roles[$0]?.name ?? "")
         } ?? false)
@@ -235,19 +243,60 @@ public struct ObservationCapture<Access: ObservationAccessibility> {
         let element = target.flatMap { contentAllowed ? self.element($0, role: roles[$0], content: content && leaf,
             visibleRanges: &visibleRanges, valid: &valid) : nil }
         let range = target.flatMap { contentAllowed ? access.selectedRange($0) : nil }
-        let selectedText = target.flatMap { content && leaf ? boundedText(access.string($0, "AXSelectedText"), bytes: 8_192) : nil }
+        let rawSelectedText = target.flatMap { content && leaf ? access.string($0, "AXSelectedText") : nil }
+        let selectedText = boundedText(rawSelectedText, bytes: 8_192)
+        let selectedTextTruncated = rawSelectedText.map { $0.utf8.count > 8_192 }
         guard now() < deadline else {
             return unavailable(window: window, target: target, appWindow: nil)
         }
         var reads: [(node: Access.Node, parent: Access.Node?, role: ObservationRole, leaf: Bool)] = []
+        var selectedItems: [EventStreamAXElement] = []
+        var selectedItemNodes: [Access.Node] = []
+        var selectedMembership: [String: [Access.Node]] = [:]
+        var selectionChildren: [Access.Node: [Access.Node]] = [:]
+        if includeSelectionItems, contentAllowed, let target {
+            if let selection = selectionItems(target, deadline: deadline, app: app,
+                allowLocal: localDocumentsAllowed, content: content,
+                sourceCurrent: {
+                    for (index, ancestor) in ancestors.enumerated() {
+                        guard now() < deadline, access.owns(ancestor),
+                              access.role(ancestor) == roles[ancestor] else { return false }
+                        if index + 1 < ancestors.count,
+                           access.node(ancestor, "AXParent") != ancestors[index + 1] { return false }
+                    }
+                    guard let window, access.string(window, "AXTitle") == title else { return false }
+                    return now() < deadline
+                },
+                documents: &documents, domains: &domains, reads: &reads,
+                membership: &selectedMembership, children: &selectionChildren,
+                visibleRanges: &visibleRanges, valid: &valid) {
+                selectedItems = selection.items
+                selectedItemNodes = selection.nodes
+            } else {
+                return unavailable(window: window, target: target, appWindow: nil)
+            }
+        }
         let tree = content && includeTree ? root.map {
             self.tree($0, deadline: min(deadline, now() + 0.2),
                 app: app, allowLocal: !browser,
                 documents: &documents, domains: &domains, reads: &reads,
                 visibleRanges: &visibleRanges, valid: &valid)
         } : nil
+        // Selection text and UTF-16 offsets come from separate AX reads. The
+        // control remaining safe does not prove they still describe one selection.
+        if contentAllowed, let target {
+            if now() >= deadline || access.selectedRange(target) != range { valid = false }
+        }
         for (node, range) in visibleRanges {
             if now() >= deadline || access.visibleRange(node) != .range(range) { valid = false }
+        }
+        for (node, children) in selectionChildren {
+            if now() >= deadline || access.children(node) != children { valid = false }
+        }
+        if let target {
+            for (attribute, nodes) in selectedMembership {
+                if now() >= deadline || access.selectedNodes(target, attribute) != nodes { valid = false }
+            }
         }
         // A later sibling can mutate an earlier node after its local reads.
         // Validate every contributing path together after collection.
@@ -283,11 +332,171 @@ public struct ObservationCapture<Access: ObservationAccessibility> {
         }
         return CapturedObservation(
             windowNode: window, targetNode: target, contentRoot: root, window: visibleWindow,
-            element: element, selectedText: selectedText, selectedRange: range, ax: tree, contentState: state,
+            element: element, selectedText: selectedText, selectedRange: range,
+            selectedTextTruncated: selectedTextTruncated, ax: tree, contentState: state,
             contentDomains: content ? domains.sorted() : nil,
             sourcePath: contentAllowed ? ancestors : [],
-            documentURLs: contentAllowed ? ancestorDocuments.compactMap { documents[$0]?.identity } : []
+            documentURLs: contentAllowed ? ancestorDocuments.compactMap { documents[$0]?.identity } : [],
+            selectedItems: selectedItems, selectedItemNodes: selectedItemNodes
         )
+    }
+
+    private func selectionItems(
+        _ owner: Access.Node, deadline: TimeInterval, app: EventStreamApp,
+        allowLocal: Bool, content: Bool,
+        sourceCurrent: () -> Bool,
+        documents: inout [Access.Node: Document], domains: inout Set<String>,
+        reads: inout [(node: Access.Node, parent: Access.Node?, role: ObservationRole, leaf: Bool)],
+        membership: inout [String: [Access.Node]], children: inout [Access.Node: [Access.Node]],
+        visibleRanges: inout [Access.Node: EventStreamTextRange], valid: inout Bool
+    ) -> (items: [EventStreamAXElement], nodes: [Access.Node])? {
+        var selected: [Access.Node] = []
+        for attribute in ["AXSelectedChildren", "AXSelectedRows"] {
+            guard now() < deadline, let nodes = access.selectedNodes(owner, attribute),
+                  nodes.count <= 32, Set(nodes).count == nodes.count else { return nil }
+            membership[attribute] = nodes
+            for node in nodes where !selected.contains(node) { selected.append(node) }
+        }
+        guard selected.count <= 32 else { return nil }
+        var roles: [Access.Node: ObservationRole] = [:]
+        var parents: [Access.Node: Access.Node] = [:]
+        var itemLeaves: [[Access.Node]] = []
+        let containers = ["AXWebArea", "AXWindow", "AXGroup", "AXScrollArea", "AXRow", "AXCell",
+            "AXList", "AXTable", "AXOutline"]
+
+        func admit(_ node: Access.Node, parent: Access.Node, local: Bool) -> Bool? {
+            guard now() < deadline, access.owns(node), access.node(node, "AXParent") == parent,
+                  let role = access.role(node), !role.secure,
+                  !["AXWindow", "AXApplication"].contains(role.name) else { return nil }
+            if let previous = roles[node] {
+                guard previous == role, parents[node] == parent else { return nil }
+            } else {
+                guard roles.count < 128 else { return nil }
+                roles[node] = role
+                parents[node] = parent
+                reads.append((node, parent, role, false))
+            }
+            var local = local
+            if role.name == "AXWebArea" {
+                guard let document = document(node, app: app, allowLocal: local),
+                      documents[node] == nil || documents[node] == document else { return nil }
+                if let domain = document.domain {
+                    guard policy.allowsDomain(domain), domains.contains(domain) || domains.count < 64 else { return nil }
+                    domains.insert(domain)
+                    local = false
+                }
+                documents[node] = document
+            }
+            return local
+        }
+
+        // Admit all selected subtrees before labels. Container values can
+        // aggregate secure fields or denied embedded documents.
+        for item in selected {
+            guard item != owner else { return nil }
+            var path: [Access.Node] = []
+            var current = item
+            var pathSet = Set<Access.Node>()
+            while current != owner {
+                guard now() < deadline, path.count < 48, access.owns(current),
+                      pathSet.insert(current).inserted, let parent = access.node(current, "AXParent") else { return nil }
+                path.append(current)
+                current = parent
+            }
+            if membership["AXSelectedChildren"]?.contains(item) == true, path.count != 1 { return nil }
+            var parent = owner
+            var local = allowLocal
+            for node in path.reversed() {
+                guard let next = admit(node, parent: parent, local: local) else { return nil }
+                parent = node
+                local = next
+            }
+            var leaves: [Access.Node] = []
+            var visited = Set<Access.Node>()
+            func visit(_ node: Access.Node, depth: Int, local: Bool) -> Bool {
+                guard now() < deadline, depth <= 14, visited.insert(node).inserted,
+                      let values = access.children(node), values.count <= 128,
+                      Set(values).count == values.count,
+                      children[node] == nil || children[node] == values else { return false }
+                children[node] = values
+                if values.isEmpty, !containers.contains(roles[node]?.name ?? "") { leaves.append(node) }
+                for child in values {
+                    guard let next = admit(child, parent: node, local: local),
+                          visit(child, depth: depth + 1, local: next) else { return false }
+                }
+                return true
+            }
+            guard visit(item, depth: 0, local: local) else { return nil }
+            itemLeaves.append(leaves)
+        }
+
+        // Admission is not a lease. Recheck the exact source around each
+        // sensitive read so a changed provider cannot feed subsequent fields.
+        func current(_ leaf: Access.Node) -> Bool {
+            guard sourceCurrent() else { return false }
+            for (attribute, nodes) in membership {
+                guard now() < deadline, access.selectedNodes(owner, attribute) == nodes else { return false }
+            }
+            var node = leaf
+            for _ in 0..<128 {
+                guard now() < deadline else { return false }
+                if node == owner { break }
+                guard access.owns(node), access.role(node) == roles[node],
+                      let parent = parents[node], access.node(node, "AXParent") == parent else { return false }
+                if let expected = children[node], access.children(node) != expected { return false }
+                node = parent
+            }
+            guard node == owner else { return false }
+            for (document, before) in documents {
+                guard now() < deadline, access.owns(document),
+                      access.role(document)?.name == "AXWebArea",
+                      documentIdentity(document) == before.identity else { return false }
+            }
+            return now() < deadline
+        }
+
+        var items: [EventStreamAXElement] = []
+        let encoder = JSONEncoder()
+        // Reserve space per item so a large label cannot remove later membership.
+        let itemBudget = selected.isEmpty ? 0 : (8_192 - 2 - selected.count) / selected.count
+        for (index, item) in selected.enumerated() {
+            guard now() < deadline, let role = roles[item] else { return nil }
+            let metadata = EventStreamAXElement(role: role.name, subrole: role.subrole,
+                title: nil, description: nil, value: nil, placeholder: nil, identifier: nil)
+            guard let metadataBytes = try? encoder.encode(metadata), metadataBytes.count + 10 <= itemBudget else { return nil }
+            var parts: [String] = []
+            if content {
+                for leaf in itemLeaves[index] {
+                    for attribute in ["AXTitle", "AXDescription", "AXValue"] {
+                        guard current(leaf) else { return nil }
+                        let observed = attribute == "AXValue"
+                            ? value(leaf, role: roles[leaf], visibleRanges: &visibleRanges, valid: &valid,
+                                isCurrent: { current(leaf) })
+                            : (text: access.string(leaf, attribute), clipped: false)
+                        guard valid, current(leaf) else { return nil }
+                        if let raw = observed.text, !raw.isEmpty {
+                            let sample = boundedText(raw, bytes: 512) ?? ""
+                            parts.append("\(roles[leaf]?.name ?? "") \(attribute): \(sample)\(observed.clipped || raw.utf8.count > 512 ? " [partial]" : "")")
+                        }
+                    }
+                    if parts.joined(separator: "\n").utf8.count >= itemBudget { break }
+                }
+            }
+            let text = parts.isEmpty ? "" : "Sampled selected-item content:\n" + parts.joined(separator: "\n")
+            let value: String?
+            if text.isEmpty {
+                value = nil
+            } else {
+                guard let encoded = boundedJSON(text, bytes: itemBudget - metadataBytes.count - 9),
+                      let data = encoded.text.data(using: .utf8),
+                      let retained = try? JSONDecoder().decode(String.self, from: data) else { return nil }
+                value = retained
+            }
+            items.append(.init(role: role.name, subrole: role.subrole, title: nil,
+                description: nil, value: value, placeholder: nil, identifier: nil))
+        }
+        guard let encoded = try? encoder.encode(items), encoded.count <= 8_192 else { return nil }
+        return (items, selected)
     }
 
     private func documentIdentity(_ node: Access.Node) -> String? {
@@ -323,7 +532,7 @@ public struct ObservationCapture<Access: ObservationAccessibility> {
         window: Access.Node?, target: Access.Node?, appWindow: EventStreamWindow?
     ) -> CapturedObservation<Access.Node> {
         CapturedObservation(windowNode: window, targetNode: target, contentRoot: nil,
-            window: appWindow, element: nil, selectedText: nil, selectedRange: nil, ax: nil,
+            window: appWindow, element: nil, selectedText: nil, selectedRange: nil, selectedTextTruncated: nil, ax: nil,
             contentState: .unavailable, contentDomains: nil, sourcePath: [], documentURLs: [])
     }
 
@@ -344,11 +553,13 @@ public struct ObservationCapture<Access: ObservationAccessibility> {
 
     private func value(
         _ node: Access.Node, role: ObservationRole?,
-        visibleRanges: inout [Access.Node: EventStreamTextRange], valid: inout Bool
+        visibleRanges: inout [Access.Node: EventStreamTextRange], valid: inout Bool,
+        isCurrent: () -> Bool = { true }
     ) -> (text: String?, clipped: Bool) {
         if role?.name == "AXTextArea" {
             switch access.visibleRange(node) {
             case .unsupported:
+                guard isCurrent() else { valid = false; return (nil, true) }
                 break
             case .unavailable:
                 valid = false
@@ -362,7 +573,8 @@ public struct ObservationCapture<Access: ObservationAccessibility> {
                 if let previous = visibleRanges[node], previous != range { valid = false }
                 visibleRanges[node] = range
                 guard request.length > 0 else { return ("", true) }
-                guard let text = access.text(node, in: request), text.utf16.count <= request.length else {
+                guard isCurrent(), let text = access.text(node, in: request),
+                      text.utf16.count <= request.length else {
                     valid = false
                     return (nil, true)
                 }

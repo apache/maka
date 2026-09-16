@@ -18,6 +18,7 @@
  */
 
 mod applications;
+mod input_lease;
 mod ownership;
 mod recorder;
 mod snapshot;
@@ -71,7 +72,7 @@ pub fn run() -> Result<()> {
             }
             recorder::record(&home, parent)?;
         }
-        Some("snapshot") => {
+        Some(command @ ("snapshot" | "snapshot-lease")) => {
             if args.len() != 9
                 || args[1] != "--parent-pid"
                 || args[3] != "--window"
@@ -89,6 +90,15 @@ pub fn run() -> Result<()> {
                 || !interactive_desktop()
             {
                 return Err("capture_not_admitted".into());
+            }
+            if command == "snapshot-lease" {
+                return input_lease::run(
+                    &home,
+                    args[4].parse()?,
+                    args[6].parse()?,
+                    args[8].clone(),
+                    parent,
+                );
             }
             let expected_parent = parent_argument(&args)?;
             let watched_home = home.clone();

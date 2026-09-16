@@ -24,7 +24,57 @@ import {
   computerHistorySearchExcerpt,
   computerHistorySearchNormalize,
   computerHistorySearchTerms,
+  historyApplicationBlocked,
+  historyApplicationId,
 } from '../computer-history.js';
+
+test('application identities remain exact across platforms and reject malformed explicit sources', () => {
+  const aumid = `${'Package'.padEnd(50, 'x')}_8wekyb3d8bbwe!${'App'.padEnd(64, 'a')}`;
+  const app = { bundleIdentifier: 'win32.sharedhost', applicationUserModelId: aumid };
+  assert.equal(historyApplicationId(app), `winapp.${aumid}`);
+  for (const id of [
+    `winapp.${aumid}`,
+    'win32._fixture_app',
+    'com.apple.Safari',
+    'com.' + 'a'.repeat(252),
+  ]) {
+    assert.equal(historyApplicationId({ bundleIdentifier: id }), id);
+  }
+  for (const id of [
+    null,
+    '',
+    'Safari',
+    'Winapp.Package_8wekyb3d8bbwe!App',
+    'winapp.invalid',
+    `winapp.${aumid}x`,
+    'Win32.editor',
+    'win32.editor.exe',
+    'win32.editor..tail',
+    'com.example.<x>',
+    'com.example/path',
+    'com.example.\u4e2d\u6587',
+    'com.example.App\n',
+    'com.' + 'a'.repeat(253),
+  ]) {
+    assert.equal(historyApplicationId({ bundleIdentifier: id }), null);
+    assert.equal(historyApplicationBlocked({ bundleIdentifier: id }, []), true);
+  }
+  for (const applicationUserModelId of [null, '', aumid + 'x', 'invalid']) {
+    assert.equal(historyApplicationId({ ...app, applicationUserModelId }), null);
+  }
+  assert.equal(
+    historyApplicationBlocked({}, []),
+    false,
+    'legacy name-only evidence remains readable',
+  );
+  assert.equal(historyApplicationBlocked(app, [`winapp.${aumid.toLowerCase()}`]), true);
+  assert.equal(historyApplicationBlocked(app, ['WIN32.SHAREDHOST']), true);
+  assert.equal(historyApplicationBlocked(app, ['win32.otherhost']), false);
+  assert.equal(
+    historyApplicationBlocked({ bundleIdentifier: 'com.apple.Safari' }, ['com.apple.safari']),
+    false,
+  );
+});
 
 test('history search shares width, composition and case normalization with deduplicated terms', () => {
   assert.deepEqual(

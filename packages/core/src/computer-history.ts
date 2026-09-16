@@ -19,6 +19,68 @@
 
 import type { UiLocale } from './ui-locale.js';
 
+const BUNDLE_ID = /^[A-Za-z0-9][A-Za-z0-9-]*(?:\.[A-Za-z0-9][A-Za-z0-9-]*)+$/u;
+
+export function isWindowsExecutableId(id: string): boolean {
+  return (
+    /^win32\.[a-z0-9_-][a-z0-9._-]*$/u.test(id) &&
+    !id.endsWith('.') &&
+    !id.endsWith('.exe') &&
+    !id.includes('..')
+  );
+}
+
+/** Exact packaged AUMID envelope. Native additionally verifies it with Windows. */
+export function packagedApplicationId(value: unknown): string | null {
+  return typeof value === 'string' &&
+    value.length <= 129 &&
+    /^[A-Za-z0-9.-]{3,50}_[0-9A-HJKMNP-TV-Za-hjkmnp-tv-z]{13}![A-Za-z0-9.]{1,64}$/u.test(value)
+    ? value
+    : null;
+}
+
+export function isWindowsPackagedId(id: string): boolean {
+  return id.startsWith('winapp.') && packagedApplicationId(id.slice(7)) !== null;
+}
+
+/** Never clip, redact or normalize identifiers used for grouping or authority. */
+export function historyApplicationId(app: {
+  bundleIdentifier?: unknown;
+  applicationUserModelId?: unknown;
+}): string | null {
+  const id = app.bundleIdentifier;
+  if (typeof id !== 'string' || !id || id.length > 256) return null;
+  if (app.applicationUserModelId !== undefined) {
+    const packaged = packagedApplicationId(app.applicationUserModelId);
+    return isWindowsExecutableId(id) && packaged ? `winapp.${packaged}` : null;
+  }
+  if (/^winapp\./iu.test(id)) return isWindowsPackagedId(id) ? id : null;
+  if (/^win32\./iu.test(id)) return isWindowsExecutableId(id) ? id : null;
+  return BUNDLE_ID.test(id) ? id : null;
+}
+
+export function historyApplicationBlocked(
+  app: { bundleIdentifier?: unknown; applicationUserModelId?: unknown },
+  blocked: readonly string[],
+): boolean {
+  const id = historyApplicationId(app);
+  if (
+    id === null &&
+    (app.applicationUserModelId !== undefined || app.bundleIdentifier !== undefined)
+  )
+    return true;
+  const aliases = [id, typeof app.bundleIdentifier === 'string' ? app.bundleIdentifier : null];
+  return aliases.some(
+    (alias) =>
+      alias !== null &&
+      blocked.some((entry) =>
+        alias.startsWith('win32.') || alias.startsWith('winapp.')
+          ? entry.toLowerCase() === alias.toLowerCase()
+          : entry === alias,
+      ),
+  );
+}
+
 export type ComputerHistoryRuntimeState =
   | 'unsupported'
   | 'stopped'
@@ -138,7 +200,7 @@ export interface ComputerHistorySummaryInput {
   readonly start: string;
   readonly end: string;
   readonly evidence: readonly { readonly id: string; readonly text: string }[];
-  /** At most two earlier summaries, untrusted context rather than evidence of current actions. */
+  /** At most three earlier summaries, untrusted context rather than evidence of current actions. */
   readonly priorContext?: readonly { readonly id: string; readonly text: string }[];
 }
 

@@ -125,7 +125,11 @@ public struct ObservationPolicy: Codable, Equatable, Sendable {
         guard allowsApplication(bundleIdentifier) else {
             return "application_policy"
         }
-        guard allowsDomain(urlDomain) else {
+        // A website default must not exclude app-owned native controls with no
+        // URL. Unknown browser/web-area domains still require website admission.
+        let webContext = urlDomain != nil || role == "AXWebArea"
+            || Self.browserBundleIdentifiers.contains(bundleIdentifier)
+        if webContext && !allowsDomain(urlDomain) {
             return "url_policy"
         }
         if Self.isPrivateBrowsing(

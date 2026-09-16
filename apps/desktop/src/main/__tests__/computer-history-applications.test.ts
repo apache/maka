@@ -33,6 +33,27 @@ const metadata = (bundleIdentifier: string, iconDataUrl: string | null = PNG) =>
   bundleIdentifier, name: iconDataUrl ? `App ${bundleIdentifier}` : bundleIdentifier, iconDataUrl,
 });
 
+test('packaged IDs stay exact through helper/cache and registration never seeds closed retention', async (t) => {
+  let now = 0;
+  const { resolver, helper } = fixture(t, { platform: 'win32', now: () => now });
+  const prefix = `winapp.${'N'.repeat(50)}_8wekyb3d8bbwe!${'A'.repeat(63)}`;
+  const ids = [prefix + 'X', prefix + 'Y'];
+  const request = resolver.applications(ids);
+  const call = await helper.next();
+  assert.deepEqual(call.ids, ids);
+  call.reply(ids.map((id) => ({ ...metadata(id), resolution: 'registered' })));
+  assert.deepEqual(await request, ids.map((id) => metadata(id)));
+  now += 300_001;
+  const closed = resolver.applications(ids);
+  (await helper.next()).reply(ids.map((id) => ({ ...metadata(id, null), resolution: 'not_running' })));
+  assert.deepEqual(await closed, ids.map((id) => metadata(id, null)));
+  for (const id of ['winapp.anything', ids[0] + 'x', ids[0].replace('!', '/'),
+    ids[0].replace('!', '!!'), ids[0].replace('!', '!é'), 'winapp.X_8wekyb3d8bbwe!App']) {
+    await assert.rejects(resolver.applications([id]), /Invalid.*identifiers/);
+  }
+  assert.equal(helper.calls.length, 2);
+});
+
 test('validates request limits and exact bundle identifiers before spawning', async (t) => {
   const { resolver, helper } = fixture(t);
   for (const ids of [
@@ -141,14 +162,16 @@ test('unsupported platforms, foreign-platform IDs and unavailable helpers return
 test('Windows resolves only canonical executable IDs and coalesces native icon requests', async (t) => {
   const { resolver, helper } = fixture(t, { platform: 'win32' });
   const id = 'win32.msedge';
-  const pending = resolver.applications([id, A, 'win32.msedge.exe']);
+  await assert.rejects(resolver.applications(['win32.msedge.exe']), /Invalid.*identifiers/);
+  assert.equal(helper.calls.length, 0);
+  const pending = resolver.applications([id, A]);
   const joined = resolver.applications([id]);
   const call = await helper.next();
   assert.deepEqual(call.ids, [id]);
   call.reply([{ ...metadata(id), name: 'Microsoft Edge' }]);
   const [values, same] = await Promise.all([pending, joined]);
   assert.deepEqual(values, [
-    { ...metadata(id), name: 'Microsoft Edge' }, metadata(A, null), metadata('win32.msedge.exe', null),
+    { ...metadata(id), name: 'Microsoft Edge' }, metadata(A, null),
   ]);
   assert.deepEqual(same, [values[0]]);
   assert.deepEqual(await resolver.applications([id]), same);
@@ -163,6 +186,182 @@ test('Windows resolves only canonical executable IDs and coalesces native icon r
   assert.deepEqual(await mac.applications(nativeIds), nativeIds.map((id) => metadata(id, null)));
   assert.equal(macHelper.calls.length, 0);
   await assert.rejects(mac.applications(['com._fixture']), /Invalid.*identifiers/);
+});
+
+test('Windows retains a known icon only on explicit absence and rechecks closed applications', async (t) => {
+  let now = 0;
+  const { resolver, helper } = fixture(t, { platform: 'win32', now: () => now });
+  const id = 'win32.editor';
+  const initial = resolver.applications([id]);
+  (await helper.next()).reply([{ ...metadata(id), resolution: 'resolved' }]);
+  assert.deepEqual(await initial, [metadata(id)]);
+  now = 5 * 60_000;
+  const closed = resolver.applications([id]);
+  const joined = resolver.applications([id]);
+  (await helper.next()).reply([{ ...metadata(id, null), resolution: 'not_running' }]);
+  assert.deepEqual(await closed, [metadata(id)]);
+  assert.deepEqual(await joined, [metadata(id)]);
+  now += 29_999;
+  assert.deepEqual(await resolver.applications([id]), [metadata(id)]);
+  assert.equal(helper.calls.length, 2);
+  now++;
+  const stillClosed = resolver.applications([id]);
+  (await helper.next()).reply([{ ...metadata(id, null), resolution: 'not_running' }]);
+  assert.deepEqual(await stillClosed, [metadata(id)]);
+  now += 30_000;
+  const reopened = resolver.applications([id]);
+  const updated = { ...metadata(id), name: 'Updated Editor' };
+  (await helper.next()).reply([{ ...updated, resolution: 'resolved' }]);
+  assert.deepEqual(await reopened, [updated]);
+  assert.equal(helper.calls.length, 4);
+
+  const { resolver: fresh, helper: freshHelper } = fixture(t, { platform: 'win32' });
+  const cold = fresh.applications([id]);
+  (await freshHelper.next()).reply([{ ...metadata(id, null), resolution: 'not_running' }]);
+  assert.deepEqual(await cold, [metadata(id, null)], 'session cache is not installed-app or cold-start resolution');
+});
+
+test('Windows unavailable, legacy null and icon failure invalidate closed-app retention', async (t) => {
+  for (const response of [
+    { ...metadata('win32.editor', null), resolution: 'unavailable' },
+    metadata('win32.editor', null),
+    { ...metadata('win32.editor', null), name: 'Editor without icon', resolution: 'resolved' },
+  ]) {
+    let now = 0;
+    const { resolver, helper } = fixture(t, { platform: 'win32', now: () => now });
+    const id = 'win32.editor';
+    const initial = resolver.applications([id]);
+    (await helper.next()).reply([{ ...metadata(id), resolution: 'resolved' }]);
+    await initial;
+    now = 5 * 60_000;
+    const uncertain = resolver.applications([id]);
+    (await helper.next()).reply([response]);
+    const { resolution: _resolution, ...expected } = response as typeof response & { resolution?: string };
+    assert.deepEqual(await uncertain, [expected]);
+    now += 30_000;
+    const closed = resolver.applications([id]);
+    (await helper.next()).reply([{ ...metadata(id, null), resolution: 'not_running' }]);
+    assert.deepEqual(await closed, [metadata(id, null)], 'uncertainty must not resurrect old identity');
+  }
+});
+
+test('Windows current registration supports cold lookup but never seeds closed-session retention', async (t) => {
+  for (const previouslyRunning of [false, true]) {
+    let now = 0;
+    const { resolver, helper } = fixture(t, { platform: 'win32', now: () => now });
+    const id = 'win32.editor';
+    if (previouslyRunning) {
+      const running = resolver.applications([id]);
+      (await helper.next()).reply([{ ...metadata(id), resolution: 'resolved' }]);
+      await running;
+      now += 5 * 60_000;
+    }
+    const current = { ...metadata(id), name: 'Current registered editor' };
+    const closed = resolver.applications([id]);
+    (await helper.next()).reply([{ ...current, resolution: 'registered' }]);
+    assert.deepEqual(await closed, [current], 'helper-only status does not reach renderer');
+    now += 5 * 60_000 - 1;
+    assert.deepEqual(await resolver.applications([id]), [current]);
+    now++;
+    const removed = resolver.applications([id]);
+    (await helper.next()).reply([{ ...metadata(id, null), resolution: 'not_running' }]);
+    assert.deepEqual(await removed, [metadata(id, null)], 'current registration is not historical executable identity');
+  }
+});
+
+test('Windows failed revalidation clears the old icon before a later not-running result', async (t) => {
+  for (const failure of ['process', 'timeout', 'invalid']) {
+    let now = 0;
+    const { resolver, helper } = fixture(t, { platform: 'win32', now: () => now });
+    if (failure === 'timeout') t.mock.timers.enable({ apis: ['setTimeout'] });
+    const id = 'win32.editor';
+    const initial = resolver.applications([id]);
+    (await helper.next()).reply([{ ...metadata(id), resolution: 'resolved' }]);
+    await initial;
+    now = 5 * 60_000;
+    const refresh = resolver.applications([id]);
+    const rejected = assert.rejects(refresh, /helper failed|timed out|Invalid.*response/);
+    const call = await helper.next();
+    if (failure === 'process') call.child.emit('error', new Error('/private/path'));
+    else if (failure === 'invalid') call.reply([{ ...metadata(id, null), resolution: 'unknown' }]);
+    else t.mock.timers.tick(5_000);
+    await rejected;
+    const closed = resolver.applications([id]);
+    (await helper.next()).reply([{ ...metadata(id, null), resolution: 'not_running' }]);
+    assert.deepEqual(await closed, [metadata(id, null)]);
+    if (failure === 'timeout') t.mock.timers.reset();
+  }
+});
+
+test('expired Windows icons share the bounded cache and cannot survive eviction or disposal', async (t) => {
+  let now = 0;
+  const { resolver, helper } = fixture(t, { platform: 'win32', now: () => now });
+  const ids = Array.from({ length: 256 }, (_, index) => `win32.app${index}`);
+  for (let offset = 0; offset < ids.length; offset += 32) {
+    const request = resolver.applications(ids.slice(offset, offset + 32));
+    const call = await helper.next();
+    call.reply(call.ids.map((id) => ({ ...metadata(id), resolution: 'resolved' })));
+    await request;
+  }
+  now = 5 * 60_000;
+  const recent = resolver.applications([ids[0]!]);
+  (await helper.next()).reply([{ ...metadata(ids[0]!, null), resolution: 'not_running' }]);
+  assert.deepEqual(await recent, [metadata(ids[0]!)]);
+  const extra = resolver.applications(['win32.extra']);
+  (await helper.next()).reply([metadata('win32.extra')]);
+  await extra;
+  const evicted = resolver.applications([ids[1]!]);
+  (await helper.next()).reply([{ ...metadata(ids[1]!, null), resolution: 'not_running' }]);
+  assert.deepEqual(await evicted, [metadata(ids[1]!, null)]);
+  assert.deepEqual(await resolver.applications([ids[0]!]), [metadata(ids[0]!)]);
+  now += 30_000;
+  const pending = resolver.applications([ids[0]!]);
+  const rejected = assert.rejects(pending, /closed/);
+  const active = await helper.next();
+  resolver.dispose();
+  active.reply([{ ...metadata(ids[0]!, null), resolution: 'not_running' }]);
+  await rejected;
+  assert.deepEqual(active.killed, ['SIGKILL']);
+  await assert.rejects(resolver.applications([ids[0]!]), /closed/);
+});
+
+test('helper resolution status is strict and cannot grant retention on Mac or carry paths', async (t) => {
+  const id = 'win32.editor';
+  const { resolver, helper } = fixture(t, { platform: 'win32' });
+  for (const response of [
+    { ...metadata(id), resolution: 'not_running' },
+    { ...metadata(id, null), name: 'Unverified name', resolution: 'not_running' },
+    { ...metadata(id), resolution: 'unavailable' },
+    { ...metadata(id, null), resolution: null },
+    { ...metadata(id, null), resolution: 'unknown' },
+    { ...metadata(id, null), resolution: 'not_running', path: 'C:\\private\\editor.exe' },
+    { ...metadata(id), resolution: 'registered', path: 'C:\\private\\editor.exe' },
+  ]) {
+    const request = resolver.applications([id]);
+    const rejected = assert.rejects(request, /Invalid.*response/);
+    (await helper.next()).reply([response]);
+    await rejected;
+  }
+  const { resolver: mac, helper: macHelper } = fixture(t);
+  for (const resolution of ['not_running', 'registered']) {
+    const request = mac.applications([A]);
+    const rejected = assert.rejects(request, /Invalid.*response/);
+    (await macHelper.next()).reply([{ ...metadata(A, null), resolution }]);
+    await rejected;
+  }
+});
+
+test('legacy Windows positive results cannot authorize extended closed-app retention', async (t) => {
+  let now = 0;
+  const { resolver, helper } = fixture(t, { platform: 'win32', now: () => now });
+  const id = 'win32.editor';
+  const initial = resolver.applications([id]);
+  (await helper.next()).reply([metadata(id)]);
+  assert.deepEqual(await initial, [metadata(id)]);
+  now = 5 * 60_000;
+  const closed = resolver.applications([id]);
+  (await helper.next()).reply([{ ...metadata(id, null), resolution: 'not_running' }]);
+  assert.deepEqual(await closed, [metadata(id, null)]);
 });
 
 test('rejects missing, duplicate, unsolicited and path-bearing helper records without caching them', async (t) => {

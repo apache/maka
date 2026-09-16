@@ -18,7 +18,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { ComputerHistoryClearScope, ComputerHistorySettings, ComputerHistoryStatus } from '@maka/core/computer-history';
+import { historyApplicationId, type ComputerHistoryClearScope, type ComputerHistorySettings, type ComputerHistoryStatus } from '@maka/core/computer-history';
 import type { ComputerHistoryAnalysisModel } from '../ports.js';
 import { useModuleHubServices } from '../services-context.js';
 
@@ -186,7 +186,7 @@ export function useRecentHistoryApplications() {
         if (!current) return;
         const ids = [...new Set(timeline.entries.flatMap((entry) => entry.applications))];
         setApplications(ids.filter((id) =>
-          id.length <= 256 && /^[A-Za-z0-9][A-Za-z0-9-]*(?:\.[A-Za-z0-9][A-Za-z0-9-]*)+$/u.test(id),
+          historyApplicationId({ bundleIdentifier: id }) !== null,
         ).slice(0, 256));
         setError(timeline.status.error ?? null);
       },

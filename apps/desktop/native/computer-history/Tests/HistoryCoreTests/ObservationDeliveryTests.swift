@@ -296,4 +296,57 @@ final class ObservationDeliveryTests: XCTestCase {
         XCTAssertTrue(delivery.deliver(source: source(document: "https://frame.example/second", field: "replacement"), selection: selection, write: write))
         XCTAssertEqual(writes, 5)
     }
+
+    func testItemOnlySelectionRetainsChangesRetriesFailureAndResetsAfterClearing() throws {
+        enum WriteFailure: Error { case failed }
+        let source = TextInputSource(
+            app: .init(name: "List", secureInput: false, processIdentifier: nil, bundleIdentifier: "test.list"),
+            window: nil, element: nil, processIdentifier: 1, windowIdentifier: nil, focusIdentifier: 1,
+            sourceId: "window", contentState: .available, contentDomains: [])
+        func selection(_ value: String?) -> EventStreamSelection {
+            .init(target: nil, selectedText: nil, selectedRange: nil,
+                selectedItems: value.map { [.init(role: "AXRow", subrole: nil, title: nil,
+                    description: nil, value: $0, placeholder: nil, identifier: nil)] } ?? [])
+        }
+        var delivery = SelectionDelivery()
+        var retained: [EventStreamSelection] = []
+        let first = selection("Build failed")
+        XCTAssertThrowsError(try delivery.deliver(source: source, selection: first) { throw WriteFailure.failed })
+        XCTAssertFalse(delivery.deliver(source: source, selection: first) { false })
+        func retain(_ value: EventStreamSelection) -> Bool {
+            delivery.deliver(source: source, selection: value) { retained.append(value); return true }
+        }
+        XCTAssertTrue(retain(first))
+        XCTAssertFalse(retain(first))
+        XCTAssertTrue(retain(selection("Build repaired")))
+        XCTAssertFalse(retain(selection(nil)))
+        XCTAssertTrue(retain(selection("Build repaired")))
+        XCTAssertEqual(retained.compactMap { $0.selectedItems.first?.value },
+            ["Build failed", "Build repaired", "Build repaired"])
+    }
+
+    func testIdenticallyLabelledSelectedItemReplacementIsNotDeduplicatedEvenWithoutText() {
+        for text in [false, true] {
+            let source = TextInputSource(
+                app: .init(name: "List", secureInput: false, processIdentifier: nil, bundleIdentifier: "test.list"),
+                window: nil, element: nil, processIdentifier: 1, windowIdentifier: nil, focusIdentifier: 1,
+                sourceId: "window", contentState: text ? .available : .metadataOnly, contentDomains: text ? [] : nil)
+            let selection = EventStreamSelection(target: nil, selectedText: nil, selectedRange: nil,
+                selectedItems: [.init(role: "AXRow", subrole: nil, title: nil,
+                    description: nil, value: text ? "same label" : nil, placeholder: nil, identifier: nil)])
+            var delivery = SelectionDelivery()
+            var writes = 0
+            func retain(_ identity: String) -> Bool {
+                delivery.deliver(source: source, selection: selection, itemIdentities: [AnyHashable(identity)]) {
+                    writes += 1
+                    return true
+                }
+            }
+            XCTAssertTrue(retain("first-row"))
+            XCTAssertFalse(retain("first-row"))
+            XCTAssertTrue(retain("replacement-row"))
+            XCTAssertFalse(retain("replacement-row"))
+            XCTAssertEqual(writes, 2)
+        }
+    }
 }

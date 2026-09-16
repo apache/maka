@@ -22,6 +22,658 @@ import XCTest
 @testable import HistoryCore
 
 final class ObservationCaptureTests: XCTestCase {
+    func testDefaultDeniedWebsitesPersistAdmittedLocalTableWithoutUnsafeSiblingContent() throws {
+        for text in [false, true] {
+            let policy = localOnlyPolicy(captureText: text)
+            let app = EventStreamApp(name: "Local app", secureInput: false,
+                processIdentifier: nil, bundleIdentifier: "test.native")
+            let ax = fixture(web: false)
+            ax.add("table", role: "AXTable", parent: "window", value: "CANARY_AGGREGATE")
+            ax.add("row", role: "AXRow", parent: "table", value: "CANARY_AGGREGATE")
+            ax.add("label", role: "AXStaticText", parent: "row", value: "LOCAL_SELECTED_FACT")
+            ax.selections["table"] = ["AXSelectedRows": ["row"]]
+            ax.add("denied", role: "AXWebArea", parent: "window", url: "https://denied.example/private")
+            ax.add("deniedText", role: "AXTextArea", parent: "denied", value: "CANARY_DENIED")
+            ax.add("unknown", role: "AXWebArea", parent: "window")
+            ax.add("unknownText", role: "AXTextArea", parent: "unknown", value: "CANARY_UNKNOWN")
+            ax.add("protected", role: "AXGroup", parent: "window", value: "CANARY_PROTECTED")
+            ax.roles["protected"] = .init("AXGroup", subrole: "AXSecureTextField")
+            ax.add("protectedText", role: "AXTextArea", parent: "protected", value: "CANARY_PROTECTED_CHILD")
+            ax.add("password", role: "AXTextField", parent: "window", value: "CANARY_PASSWORD")
+            ax.roles["password"] = .init("AXTextField", subrole: "AXPasswordField")
+            for node in ["deniedText", "unknownText", "protectedText"] {
+                ax.visibleRanges[node] = .range(.init(location: 0, length: 6))
+            }
+            let observation = try XCTUnwrap(ObservationCapture(access: ax, policy: policy, now: { 0 })
+                .capture(app: app, window: "window", target: "table", browser: false,
+                    includeTree: true, includeSelectionItems: true))
+            XCTAssertEqual(observation.contentState, text ? .available : .metadataOnly)
+            XCTAssertEqual(observation.window?.title, "Ordinary document")
+            XCTAssertNil(observation.window?.url)
+            XCTAssertEqual(observation.selectedItemNodes, ["row"])
+            XCTAssertEqual(observation.contentDomains, text ? [] : nil)
+            let permittedReads: Set<String> = text ? ["window", "field", "label"] : ["window"]
+            XCTAssertTrue(ax.contentReads.allSatisfy { permittedReads.contains($0.node) })
+            XCTAssertTrue(ax.rangeReads.isEmpty)
+
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            defer { try? FileManager.default.removeItem(at: root) }
+            let timestamp = Date(timeIntervalSince1970: 1_700_000_000)
+            let store = try SegmentStore(homeURL: root, now: timestamp, persistSuppressedEvents: true)
+            XCTAssertTrue(try appendCapturedSelection(observation, app: app, policy: policy,
+                store: store, id: 1, timestamp: timestamp))
+            try store.finish(reason: "test", now: timestamp)
+            let jsonl = try String(contentsOf: store.eventsURL)
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            let events = try jsonl.split(whereSeparator: \.isNewline).map {
+                try decoder.decode(HistoryEvent.self, from: Data($0.utf8))
+            }
+            XCTAssertEqual(events.count, 1)
+            let stored = try XCTUnwrap(events.first)
+            XCTAssertEqual(stored.contentState, text ? .available : .metadataOnly)
+            XCTAssertEqual(stored.selection?.target?.role, "AXTable")
+            XCTAssertEqual(stored.selection?.selectedItems.map(\.role), ["AXRow"])
+            XCTAssertEqual(stored.selection?.selectedItems.first?.value?.contains("LOCAL_SELECTED_FACT") == true, text)
+            XCTAssertEqual(stored.ax?.text.contains("safe field") == true, text)
+            XCTAssertEqual(stored.ax?.truncated, text ? true : nil)
+            XCTAssertFalse(jsonl.contains("CANARY"))
+            XCTAssertFalse(jsonl.contains("denied.example"))
+            XCTAssertEqual(try String(contentsOf: XCTUnwrap(store.suppressedEventsURL)), "")
+        }
+    }
+
+    func testDefaultDeniedLocalAppUnsafeFocusCannotPersistContentAndSafeFocusRecovers() throws {
+        for text in [false, true] {
+            for condition in ["deniedWebsite", "unknownWebsite", "protectedAncestor", "password", "secureInput"] {
+                let policy = localOnlyPolicy(captureText: text)
+                let app = EventStreamApp(name: "Local app", secureInput: condition == "secureInput",
+                    processIdentifier: nil, bundleIdentifier: "test.native")
+                let ax = fixture(web: false)
+                ax.attributes["field"]?["AXValue"] = "CANARY_VALUE"
+                ax.attributes["field"]?["AXSelectedText"] = "CANARY_SELECTION"
+                ax.roles["field"] = .init("AXTextArea")
+                ax.visibleRanges["field"] = .range(.init(location: 0, length: 6))
+                switch condition {
+                case "deniedWebsite", "unknownWebsite":
+                    ax.add("frame", role: "AXWebArea", parent: "window",
+                        url: condition == "deniedWebsite" ? "https://denied.example/private" : nil)
+                    ax.parents["field"] = "frame"
+                    ax.childrenByNode["window"] = ["frame"]
+                    ax.childrenByNode["frame"] = ["field"]
+                case "protectedAncestor":
+                    ax.add("protected", role: "AXGroup", parent: "window")
+                    ax.roles["protected"] = .init("AXGroup", subrole: "AXSecureTextField")
+                    ax.parents["field"] = "protected"
+                    ax.childrenByNode["window"] = ["protected"]
+                    ax.childrenByNode["protected"] = ["field"]
+                case "password": ax.roles["field"] = .init("AXTextArea", subrole: "AXPasswordField")
+                default: break
+                }
+                let observation = ObservationCapture(access: ax, policy: policy, now: { 0 })
+                    .capture(app: app, window: "window", target: "field", browser: false, includeTree: true)
+                if condition == "unknownWebsite" {
+                    XCTAssertEqual(observation?.contentState, .unavailable)
+                    XCTAssertNil(observation?.window)
+                    XCTAssertNil(observation?.element)
+                    XCTAssertNil(observation?.ax)
+                    XCTAssertNil(observation?.selectedText)
+                    XCTAssertNil(observation?.contentDomains)
+                } else {
+                    XCTAssertNil(observation, condition)
+                }
+                XCTAssertTrue(ax.contentReads.allSatisfy { $0.node == "window" }, condition)
+                XCTAssertTrue(ax.rangeReads.isEmpty, condition)
+
+                let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+                defer { try? FileManager.default.removeItem(at: root) }
+                let timestamp = Date(timeIntervalSince1970: 1_700_000_000)
+                let store = try SegmentStore(homeURL: root, now: timestamp, persistSuppressedEvents: true)
+                // Unknown ownership may retain an unavailable event, never the
+                // target or window content. Explicitly denied capture is nil.
+                XCTAssertEqual(try appendCapturedSelection(observation, app: app, policy: policy,
+                    store: store, id: 1, timestamp: timestamp), condition == "unknownWebsite", condition)
+                let safeApp = EventStreamApp(name: "Local app", secureInput: false,
+                    processIdentifier: nil, bundleIdentifier: "test.native")
+                let safe = try XCTUnwrap(ObservationCapture(access: fixture(web: false), policy: policy, now: { 0 })
+                    .capture(app: safeApp, window: "window", target: "field", browser: false, includeTree: true))
+                XCTAssertTrue(try appendCapturedSelection(safe, app: safeApp, policy: policy,
+                    store: store, id: 2, timestamp: timestamp), condition)
+                try store.finish(reason: "test", now: timestamp)
+                let jsonl = try String(contentsOf: store.eventsURL)
+                let decoder = JSONDecoder()
+                decoder.dateDecodingStrategy = .iso8601
+                let events = try jsonl.split(whereSeparator: \.isNewline).map {
+                    try decoder.decode(HistoryEvent.self, from: Data($0.utf8))
+                }
+                XCTAssertEqual(events.map(\.id), condition == "unknownWebsite" ? [1, 2] : [2], condition)
+                if condition == "unknownWebsite" {
+                    XCTAssertEqual(events.first?.contentState, .unavailable)
+                    XCTAssertNil(events.first?.window)
+                    XCTAssertNil(events.first?.selection?.target)
+                    XCTAssertNil(events.first?.ax)
+                }
+                XCTAssertEqual(events.last?.selection?.target?.role, "AXTextField")
+                XCTAssertEqual(events.last?.contentState, text ? .available : .metadataOnly)
+                XCTAssertEqual(jsonl.contains("safe field"), text)
+                XCTAssertFalse(jsonl.contains("CANARY"), condition)
+                XCTAssertFalse(jsonl.contains("denied.example"), condition)
+                XCTAssertEqual(try String(contentsOf: XCTUnwrap(store.suppressedEventsURL)), "")
+            }
+        }
+    }
+
+    private func localOnlyPolicy(captureText: Bool) -> ObservationPolicy {
+        ObservationPolicy(observation: .init(
+            defaultApplicationBehavior: .doNotObserve,
+            defaultURLBehavior: .doNotObserve,
+            allowlist: [.init(scope: .application, bundleID: "test.native")]),
+            captureText: captureText)
+    }
+
+    private func appendCapturedSelection(
+        _ observation: CapturedObservation<String>?, app: EventStreamApp, policy: ObservationPolicy,
+        store: SegmentStore, id: Int, timestamp: Date
+    ) throws -> Bool {
+        // Match HistoryRecorder's post-capture admission before real store projection.
+        guard let observation, policy.allowsObservation(
+            app: app, window: observation.window, element: observation.element
+        ) else { return false }
+        return try store.append(HistoryEvent(id: id, timestamp: timestamp, kind: .selectionChanged,
+            app: app, window: observation.window,
+            selection: .init(target: observation.element, selectedText: observation.selectedText,
+                selectedRange: observation.selectedRange, selectedItems: observation.selectedItems,
+                truncated: observation.selectedTextTruncated),
+            ax: observation.ax, sourceId: "synthetic-local-window",
+            contentState: observation.contentState, contentDomains: observation.contentDomains), policy: policy)
+    }
+
+    func testSelectedTextAreaRechecksSourceBetweenVisibleRangeAndTextRead() throws {
+        for range in [ObservationVisibleRange.unsupported, .range(.init(location: 4, length: 6))] {
+            let ax = itemFixture()
+            ax.roles["label"] = .init("AXTextArea")
+            ax.visibleRanges["label"] = range
+            var changed = false
+            ax.onVisibleRangeRead = { node in
+                guard node == "label" else { return }
+                changed = true
+                ax.attributes["document"]?["AXURL"] = "https://blocked.example/private"
+            }
+            let result = try XCTUnwrap(capture(ax, target: "list",
+                includeTree: false, includeSelectionItems: true))
+            XCTAssertTrue(changed)
+            XCTAssertEqual(result.contentState, .unavailable)
+            XCTAssertTrue(result.selectedItems.isEmpty)
+            XCTAssertTrue(ax.rangeReads.isEmpty, "Changed source must not reach AXStringForRange")
+            XCTAssertFalse(ax.contentReads.contains { $0.node == "label" && $0.attribute == "AXValue" },
+                "Unsupported visible range cannot bypass the new source check")
+        }
+    }
+
+    func testSelectedLeafReadsStopWhenSourceChangesBeforeOrBetweenAttributes() throws {
+        for boundary in ["before", "title", "description", "value"] {
+            for mutation in ["document", "embeddedDocument", "parent", "secure", "foreign", "membership", "title"] {
+                let ax = itemFixture()
+                ax.add("frame", role: "AXWebArea", parent: "cell", url: "https://frame.example/item")
+                ax.parents["label"] = "frame"
+                ax.childrenByNode["cell"] = ["frame"]
+                ax.childrenByNode["frame"] = ["label"]
+                ax.add("later", role: "AXStaticText", parent: "row", value: "LATER_SECRET")
+                ax.attributes["label"]?["AXTitle"] = "EARLY_TITLE"
+                ax.attributes["label"]?["AXDescription"] = "EARLY_DESCRIPTION"
+                var changed = false
+                var readsAtChange = 0
+                let change = {
+                    guard !changed else { return }
+                    changed = true
+                    readsAtChange = ax.contentReads.count
+                    switch mutation {
+                    case "document": ax.attributes["document"]?["AXURL"] = "https://blocked.example/private"
+                    case "embeddedDocument": ax.attributes["frame"]?["AXURL"] = "https://blocked.example/private"
+                    case "parent": ax.parents["list"] = "otherWindow"
+                    case "secure": ax.roles["document"] = .init("AXWebArea", subrole: "AXSecureTextField")
+                    case "foreign": ax.foreign.insert("list")
+                    case "membership": ax.selections["list"] = [:]
+                    default: ax.attributes["window"]?["AXTitle"] = "Incognito"
+                    }
+                }
+                if boundary == "before" {
+                    ax.onChildren = { node in
+                        if node == "later" { change() }
+                    }
+                } else {
+                    let attribute = ["title": "AXTitle", "description": "AXDescription", "value": "AXValue"][boundary]
+                    ax.onRead = { node, key in
+                        if node == "label", key == attribute { change() }
+                    }
+                }
+                let result = try XCTUnwrap(capture(ax, target: "list",
+                    includeTree: false, includeSelectionItems: true))
+                let context = "\(boundary):\(mutation)"
+                XCTAssertTrue(changed, context)
+                XCTAssertEqual(result.contentState, .unavailable, context)
+                XCTAssertTrue(result.selectedItems.isEmpty, context)
+                XCTAssertFalse(ax.contentReads.dropFirst(readsAtChange).contains {
+                    ["label", "later"].contains($0.node)
+                }, "No subsequent content API call after a changed source: \(context)")
+            }
+        }
+        let recovered = try XCTUnwrap(capture(itemFixture(), target: "list",
+            includeTree: false, includeSelectionItems: true))
+        XCTAssertTrue(recovered.selectedItems.first?.value?.contains("EACCES") == true)
+    }
+
+    func testSelectedTextAreaUsesVisibleUTF16SliceWithoutReadingOffscreenValue() throws {
+        let ax = itemFixture()
+        let prefix = "OFFSCREEN_SECRET" + String(repeating: "\u{1F600}", count: 5_000)
+        let tail = "VISIBLE_DECISION \u{1F680} e\u{301}" + String(repeating: "v", count: 600)
+        ax.roles["label"] = .init("AXTextArea")
+        ax.attributes["label"]?["AXValue"] = prefix + tail
+        let visible = EventStreamTextRange(location: prefix.utf16.count, length: tail.utf16.count)
+        ax.visibleRanges["label"] = .range(visible)
+        let result = try XCTUnwrap(capture(ax, target: "list", includeTree: false, includeSelectionItems: true))
+        XCTAssertEqual(result.contentState, .available)
+        let value = try XCTUnwrap(result.selectedItems.first?.value)
+        XCTAssertTrue(value.contains("VISIBLE_DECISION \u{1F680} e\u{301}"))
+        XCTAssertFalse(value.contains("OFFSCREEN_SECRET"))
+        XCTAssertFalse(value.contains(String(repeating: "v", count: 513)))
+        XCTAssertTrue(value.contains("[partial]"))
+        XCTAssertEqual(ax.rangeReads.first?.range, visible)
+        XCTAssertFalse(ax.contentReads.contains { $0.node == "label" && $0.attribute == "AXValue" })
+        XCTAssertLessThanOrEqual(try JSONEncoder().encode(result.selectedItems).count, 8_192)
+
+        ax.rangeReads.removeAll()
+        ax.contentReads.removeAll()
+        let metadata = try XCTUnwrap(capture(ax, text: false, target: "list",
+            includeTree: false, includeSelectionItems: true))
+        XCTAssertEqual(metadata.contentState, .metadataOnly)
+        XCTAssertEqual(metadata.selectedItems.map(\.role), ["AXRow"])
+        XCTAssertNil(metadata.selectedItems.first?.value)
+        XCTAssertTrue(ax.rangeReads.isEmpty)
+        XCTAssertTrue(ax.contentReads.allSatisfy { $0.node == "window" })
+    }
+
+    func testSelectedTextAreaRejectsUnavailableOrChangedVisibleRangeWithoutFallback() throws {
+        for mutation in ["unavailable", "duringRead", "laterSibling"] {
+            let ax = itemFixture()
+            ax.roles["label"] = .init("AXTextArea")
+            ax.attributes["label"]?["AXValue"] = "SECRET_PREFIX_VISIBLE"
+            ax.visibleRanges["label"] = mutation == "unavailable" ? .unavailable
+                : .range(.init(location: 14, length: 7))
+            var changed = false
+            let change = {
+                changed = true
+                ax.visibleRanges["label"] = .range(.init(location: 0, length: 7))
+            }
+            if mutation == "duringRead" { ax.onRangeRead = { _ in change() } }
+            if mutation == "laterSibling" {
+                ax.add("later", role: "AXStaticText", parent: "row", value: "LATER")
+                ax.onRead = { node, attribute in
+                    if node == "later", attribute == "AXValue" { change() }
+                }
+            }
+            let result = try XCTUnwrap(capture(ax, target: "list",
+                includeTree: false, includeSelectionItems: true))
+            XCTAssertEqual(changed, mutation != "unavailable", mutation)
+            XCTAssertEqual(result.contentState, .unavailable, mutation)
+            XCTAssertTrue(result.selectedItems.isEmpty, mutation)
+            XCTAssertNil(result.element, mutation)
+            XCTAssertNil(result.contentDomains, mutation)
+            XCTAssertFalse(ax.contentReads.contains { $0.node == "label" && $0.attribute == "AXValue" }, mutation)
+        }
+    }
+
+    func testSelectedRowsRetainOwnedLeafFactsWithoutAggregateParentReads() throws {
+        let ax = itemFixture()
+        let result = try XCTUnwrap(capture(ax, target: "list", includeTree: false, includeSelectionItems: true))
+        XCTAssertEqual(result.contentState, .available)
+        XCTAssertEqual(result.selectedItemNodes, ["row"])
+        XCTAssertEqual(result.selectedItems.count, 1)
+        XCTAssertTrue(result.selectedItems.first?.value?.contains("build-42 failed EACCES") == true)
+        XCTAssertFalse(result.selectedItems.first?.value?.contains("UNSELECTED") == true)
+        XCTAssertFalse(ax.contentReads.contains { ["list", "row", "cell", "unselected"].contains($0.node) })
+        XCTAssertEqual(result.contentDomains, ["owner.example"])
+        XCTAssertNil(result.selectedText)
+        XCTAssertNil(result.selectedRange)
+    }
+
+    func testSelectedChildrenMetadataKeepsMembershipWithoutReadingLabels() throws {
+        let ax = itemFixture()
+        ax.selections["list"] = ["AXSelectedChildren": ["row"], "AXSelectedRows": ["row"]]
+        let result = try XCTUnwrap(capture(ax, text: false, target: "list",
+            includeTree: false, includeSelectionItems: true))
+        XCTAssertEqual(result.contentState, .metadataOnly)
+        XCTAssertEqual(result.selectedItemNodes, ["row"])
+        XCTAssertEqual(result.selectedItems.map(\.role), ["AXRow"])
+        XCTAssertNil(result.selectedItems.first?.value)
+        XCTAssertNil(result.contentDomains)
+        XCTAssertTrue(ax.contentReads.allSatisfy { $0.node == "window" })
+        ax.selectionReads.removeAll()
+        _ = capture(ax, target: "list", includeTree: false)
+        XCTAssertTrue(ax.selectionReads.isEmpty, "Ordinary snapshots must not enumerate selected items")
+    }
+
+    func testSelectedArrayReadRequiresConfirmedEmptyAndUsesBoundedRequestedAttribute() {
+        let node = AXUIElementCreateSystemWide()
+        for attribute in ["AXSelectedRows", "AXSelectedChildren"] {
+            for count in [0, 1, 33] {
+                var countRead = false
+                let values = AXChildrenReader.read(node, attribute: attribute as CFString,
+                    limit: 33, withinBudget: { true }, copyValues: { _, key, start, limit, _ in
+                        XCTAssertEqual(key as String, attribute)
+                        XCTAssertEqual(start, 0)
+                        XCTAssertEqual(limit, 33)
+                        return .illegalArgument
+                    }, valueCount: { _, key, output in
+                        XCTAssertEqual(key as String, attribute)
+                        countRead = true
+                        output.pointee = count
+                        return .success
+                    })
+                XCTAssertTrue(countRead)
+                XCTAssertEqual(values?.count, count == 0 ? 0 : nil)
+            }
+            for failure in [AXError.cannotComplete, .invalidUIElement, .failure] {
+                XCTAssertNil(AXChildrenReader.read(node, attribute: attribute as CFString,
+                    limit: 33, withinBudget: { true }, copyValues: { _, _, _, _, _ in failure }))
+            }
+        }
+    }
+
+    func testSelectedItemAdmissionRejectsForeignSecureUnknownAndDeniedSourcesBeforeLabels() {
+        for text in [false, true] {
+            for condition in ["foreign", "otherWindow", "nestedWindow", "secure", "secureChild", "blocked",
+                "unknownDocument", "unreadable", "duplicate", "tooMany", "notImmediateChild"] {
+                let ax = itemFixture()
+                switch condition {
+                case "foreign": ax.foreign.insert("label")
+                case "otherWindow": ax.parents["row"] = "otherWindow"
+                case "nestedWindow": ax.roles["cell"] = .init("AXWindow")
+                case "secure": ax.roles["row"] = .init("AXRow", subrole: "AXSecureTextField")
+                case "secureChild": ax.add("password", role: "AXSecureTextField", parent: "row", value: "SECRET")
+                case "blocked", "unknownDocument":
+                    ax.add("frame", role: "AXWebArea", parent: "row",
+                        url: condition == "blocked" ? "https://blocked.example" : nil)
+                    ax.add("secret", role: "AXStaticText", parent: "frame", value: "SECRET")
+                case "unreadable": ax.unreadableSelection.insert("list")
+                case "duplicate": ax.selections["list"] = ["AXSelectedRows": ["row", "row"]]
+                case "tooMany": ax.selections["list"] = ["AXSelectedRows": (0..<33).map { "row\($0)" }]
+                default: ax.selections["list"] = ["AXSelectedChildren": ["label"]]
+                }
+                let result = capture(ax, text: text, target: "list", includeTree: false, includeSelectionItems: true)
+                XCTAssertEqual(result?.contentState, .unavailable, condition)
+                XCTAssertTrue(result?.selectedItems.isEmpty == true, condition)
+                XCTAssertTrue(result?.selectedItemNodes.isEmpty == true, condition)
+                XCTAssertTrue(ax.contentReads.allSatisfy { $0.node == "window" }, condition)
+            }
+        }
+    }
+
+    func testSelectedItemFinalRevalidationRejectsMutationAfterLeafReadAndRecovers() throws {
+        for mutation in ["membership", "parent", "secure", "foreign", "newChild", "document", "title"] {
+            let ax = itemFixture()
+            ax.add("frame", role: "AXWebArea", parent: "row", url: "https://frame.example/item")
+            ax.add("frameLabel", role: "AXStaticText", parent: "frame", value: "FRAME_SELECTED")
+            var changed = false
+            ax.onRead = { node, attribute in
+                guard node == "label", attribute == "AXValue", !changed else { return }
+                changed = true
+                switch mutation {
+                case "membership": ax.selections["list"] = [:]
+                case "parent": ax.parents["cell"] = "unselected"
+                case "secure": ax.roles["row"] = .init("AXRow", subrole: "AXSecureTextField")
+                case "foreign": ax.foreign.insert("row")
+                case "newChild": ax.add("laterPassword", role: "AXSecureTextField", parent: "row", value: "SECRET")
+                case "document": ax.attributes["frame"]?["AXURL"] = "https://blocked.example"
+                default: ax.attributes["window"]?["AXTitle"] = "Changed window"
+                }
+            }
+            let result = try XCTUnwrap(capture(ax, target: "list", includeTree: false, includeSelectionItems: true))
+            XCTAssertTrue(changed, mutation)
+            XCTAssertEqual(result.contentState, .unavailable, mutation)
+            XCTAssertTrue(result.selectedItems.isEmpty, mutation)
+            XCTAssertNil(result.contentDomains, mutation)
+            XCTAssertNil(result.element, mutation)
+            let restored = try XCTUnwrap(capture(itemFixture(), target: "list", includeTree: false, includeSelectionItems: true))
+            XCTAssertEqual(restored.selectedItemNodes, ["row"])
+            XCTAssertTrue(restored.selectedItems.first?.value?.contains("EACCES") == true)
+        }
+    }
+
+    func testSelectedMembershipAndMetadataCannotChangeDuringRead() {
+        for mutation in ["membership", "secure", "parent", "unreadable"] {
+            let ax = itemFixture()
+            var changed = false
+            ax.onSelectionRead = { node, attribute in
+                guard attribute == "AXSelectedRows", !changed else { return }
+                changed = true
+                switch mutation {
+                case "membership": ax.selections[node] = [:]
+                case "secure": ax.roles["row"] = .init("AXSecureTextField")
+                case "parent": ax.parents["row"] = "otherWindow"
+                default: ax.unreadableSelection.insert(node)
+                }
+            }
+            let result = capture(ax, text: false, target: "list", includeTree: false, includeSelectionItems: true)
+            XCTAssertTrue(changed)
+            XCTAssertEqual(result?.contentState, .unavailable, mutation)
+            XCTAssertTrue(result?.selectedItems.isEmpty == true)
+            XCTAssertTrue(ax.contentReads.allSatisfy { $0.node == "window" })
+        }
+    }
+
+    func testSelectedItemsKeepAllMembershipWithinEncodedBudgetAndBoundTraversal() throws {
+        let ax = itemFixture()
+        var selected: [String] = []
+        for index in 0..<32 {
+            let row = "selected\(index)"
+            selected.append(row)
+            ax.add(row, role: "AXRow", parent: "list")
+            ax.add("label\(index)", role: "AXStaticText", parent: row,
+                value: "TASK\(index) " + String(repeating: "\"\\\n\u{1F680}", count: 1_000))
+        }
+        ax.selections["list"] = ["AXSelectedRows": selected]
+        let result = try XCTUnwrap(capture(ax, target: "list", includeTree: false, includeSelectionItems: true))
+        XCTAssertEqual(result.contentState, .available)
+        XCTAssertEqual(result.selectedItemNodes, selected)
+        XCTAssertEqual(result.selectedItems.count, 32)
+        XCTAssertLessThanOrEqual(try JSONEncoder().encode(result.selectedItems).count, 8_192)
+        for index in 0..<32 {
+            XCTAssertTrue(result.selectedItems[index].value?.contains("TASK\(index) ") == true)
+            XCTAssertFalse(result.selectedItems[index].value?.contains("\u{FFFD}") == true)
+        }
+        for index in 0..<129 {
+            ax.add("wide\(index)", role: "AXStaticText", parent: "row", value: "DO_NOT_READ")
+        }
+        ax.selections["list"] = ["AXSelectedRows": ["row"]]
+        ax.contentReads.removeAll()
+        let oversized = capture(ax, target: "list", includeTree: false, includeSelectionItems: true)
+        XCTAssertEqual(oversized?.contentState, .unavailable)
+        XCTAssertTrue(ax.contentReads.allSatisfy { $0.node == "window" })
+        var clock = 0.0
+        let timed = itemFixture()
+        timed.onSelectionRead = { _, _ in clock = 1 }
+        let expired = capture(timed, target: "list", includeTree: false,
+            includeSelectionItems: true, now: { clock })
+        XCTAssertEqual(expired?.contentState, .unavailable)
+        XCTAssertTrue(timed.contentReads.allSatisfy { $0.node == "window" })
+    }
+
+    func testSelectedItemDomainUnionAndMetadataAreEnforcedAtPersistence() throws {
+        let ax = itemFixture()
+        ax.add("frame", role: "AXWebArea", parent: "row", url: "https://frame.example/item")
+        ax.add("frameLabel", role: "AXStaticText", parent: "frame", value: "FRAME_SELECTED")
+        let result = try XCTUnwrap(capture(ax, target: "list", includeTree: false, includeSelectionItems: true))
+        XCTAssertEqual(result.contentDomains, ["frame.example", "owner.example"])
+        XCTAssertTrue(result.selectedItems.first?.value?.contains("FRAME_SELECTED") == true)
+        let event = HistoryEvent(id: 1, timestamp: Date(), kind: .selectionChanged,
+            app: .init(name: "Browser", secureInput: false, processIdentifier: nil, bundleIdentifier: "com.google.Chrome"),
+            window: result.window,
+            selection: .init(target: result.element, selectedText: nil, selectedRange: nil, selectedItems: result.selectedItems),
+            sourceId: "synthetic-window", contentState: result.contentState, contentDomains: result.contentDomains)
+        let permitted = try XCTUnwrap(ObservationPolicy().eventForPersistence(event))
+        XCTAssertEqual(permitted.selection?.selectedItems, result.selectedItems)
+        let blocked = ObservationPolicy(observation: .init(blocklist: [.init(scope: .url, urlDomain: "frame.example")]))
+        XCTAssertNil(blocked.eventForPersistence(event))
+        let metadata = try XCTUnwrap(ObservationPolicy(captureText: false).eventForPersistence(event))
+        XCTAssertEqual(metadata.selection?.selectedItems.map(\.role), ["AXRow"])
+        XCTAssertNil(metadata.selection?.selectedItems.first?.value)
+        XCTAssertNil(metadata.contentDomains)
+    }
+
+    func testSelectionRangeMutationCannotRetainMismatchedTextOrOffsets() {
+        for includeTree in [false, true] {
+            for text in [false, true] {
+                for mutation in ["move", "clear", "unavailable", "becomesAvailable"] {
+                    let ax = fixture()
+                    let original = EventStreamTextRange(location: 4, length: 8)
+                    ax.selectedRanges["field"] = mutation == "becomesAvailable" ? nil : original
+                    var changed = false
+                    ax.onSelectedRangeRead = { node in
+                        guard node == "field", !changed else { return }
+                        changed = true
+                        switch mutation {
+                        case "move": ax.selectedRanges[node] = .init(location: 20, length: 3)
+                        case "clear": ax.selectedRanges[node] = .init(location: 4, length: 0)
+                        case "unavailable": ax.selectedRanges[node] = nil
+                        default: ax.selectedRanges[node] = original
+                        }
+                        ax.attributes[node]?["AXSelectedText"] = "NEW"
+                    }
+                    let result = capture(ax, text: text, includeTree: includeTree)
+                    XCTAssertTrue(changed)
+                    XCTAssertEqual(result?.contentState, .unavailable, mutation)
+                    XCTAssertNil(result?.selectedRange, mutation)
+                    XCTAssertNil(result?.selectedText, mutation)
+                    XCTAssertNil(result?.selectedTextTruncated, mutation)
+                    XCTAssertNil(result?.element, mutation)
+                    XCTAssertNil(result?.ax, mutation)
+                    XCTAssertNil(result?.contentDomains, mutation)
+                }
+            }
+        }
+    }
+
+    func testLaterTreeReadCannotInvalidateAnEarlierSelectionRange() {
+        let ax = fixture()
+        ax.selectedRanges["field"] = .init(location: 4, length: 8)
+        ax.add("later", role: "AXStaticText", parent: "document", value: "later")
+        var changed = false
+        ax.onRead = { node, attribute in
+            guard node == "later", attribute == "AXValue" else { return }
+            changed = true
+            ax.selectedRanges["field"] = .init(location: 30, length: 8)
+        }
+        let result = capture(ax)
+        XCTAssertTrue(changed)
+        XCTAssertEqual(result?.contentState, .unavailable)
+        XCTAssertNil(result?.selectedRange)
+        XCTAssertNil(result?.selectedText)
+        XCTAssertNil(result?.selectedTextTruncated)
+        XCTAssertNil(result?.ax)
+    }
+
+    func testClippedSelectionPersistsItsOriginalRangeAndPartialProvenance() throws {
+        let ax = fixture()
+        let selected = String(repeating: "\u{1F680}", count: 2_049)
+        let range = EventStreamTextRange(location: 7, length: selected.utf16.count)
+        ax.selectedRanges["field"] = range
+        ax.attributes["field"]?["AXSelectedText"] = selected
+        let result = try XCTUnwrap(capture(ax, includeTree: false))
+        XCTAssertEqual(result.contentState, .available)
+        XCTAssertEqual(result.selectedRange, range)
+        XCTAssertEqual(result.selectedText?.utf8.count, 8_192)
+        XCTAssertEqual(result.selectedTextTruncated, true)
+        let selection = EventStreamSelection(target: result.element, selectedText: result.selectedText,
+            selectedRange: result.selectedRange, selectedItems: [], truncated: result.selectedTextTruncated)
+        let event = HistoryEvent(id: 1, timestamp: Date(timeIntervalSince1970: 1_700_000_000),
+            kind: .selectionChanged,
+            app: .init(name: "Browser", secureInput: false, processIdentifier: nil, bundleIdentifier: "com.google.Chrome"),
+            window: result.window, selection: selection, sourceId: UUID().uuidString.lowercased(),
+            contentState: result.contentState, contentDomains: result.contentDomains)
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try SegmentStore(homeURL: root)
+        XCTAssertTrue(try store.append(event, policy: .init()))
+        let data = try Data(contentsOf: store.eventsURL)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        XCTAssertEqual(try decoder.decode(HistoryEvent.self, from: data), event)
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual((json["selection"] as? [String: Any])?["truncated"] as? Bool, true)
+    }
+
+    func testStableSelectionPreservesUTF16OffsetsAndDistinguishesMissingTextFromUnclippedText() throws {
+        for selected in [nil, "", "\u{1F680}e\u{301}", String(repeating: "x", count: 8_192)] as [String?] {
+            for range in [nil, EventStreamTextRange(location: 7, length: selected?.utf16.count ?? 0)] {
+                let ax = fixture()
+                ax.selectedRanges["field"] = range
+                ax.attributes["field"]?["AXSelectedText"] = selected
+                let result = try XCTUnwrap(capture(ax, includeTree: false))
+                XCTAssertEqual(result.contentState, .available)
+                XCTAssertEqual(result.selectedRange, range)
+                XCTAssertEqual(result.selectedText, selected)
+                XCTAssertEqual(result.selectedTextTruncated, selected == nil ? nil : false)
+                let metadata = try XCTUnwrap(capture(ax, text: false, includeTree: false))
+                XCTAssertEqual(metadata.contentState, .metadataOnly)
+                XCTAssertEqual(metadata.selectedRange, range)
+                XCTAssertNil(metadata.selectedText)
+                XCTAssertNil(metadata.selectedTextTruncated)
+            }
+        }
+    }
+
+    func testDragUnavailableOriginCannotGainTextFromAvailableDestinationAndNestedDomainsStillFencePersistence() throws {
+        let app = EventStreamApp(name: "Browser", secureInput: false, processIdentifier: nil,
+            bundleIdentifier: "com.google.Chrome")
+        let destinationAX = fixture()
+        destinationAX.attributes["field"]?["AXValue"] = "DESTINATION_BODY"
+        destinationAX.add("frame", role: "AXWebArea", parent: "document", url: "https://embedded.example/page")
+        destinationAX.add("frameBody", role: "AXStaticText", parent: "frame", value: "EMBEDDED_BODY")
+        let destination = try XCTUnwrap(capture(destinationAX))
+        XCTAssertEqual(destination.contentState, .available)
+        for condition in ["unknown", "changedDuringRead", "metadataOnly", "available"] {
+            let originAX = fixture()
+            originAX.attributes["field"]?["AXValue"] = "ORIGIN_BODY"
+            if condition == "unknown" { originAX.attributes["document"]?["AXURL"] = nil }
+            if condition == "changedDuringRead" {
+                originAX.onRead = { node, attribute in
+                    if node == "field", attribute == "AXValue" {
+                        originAX.attributes["document"]?["AXURL"] = "https://changed.example"
+                    }
+                }
+            }
+            let origin = try XCTUnwrap(capture(originAX, text: condition != "metadataOnly", includeTree: false))
+            if condition == "unknown" || condition == "changedDuringRead" {
+                XCTAssertEqual(origin.contentState, .unavailable)
+                XCTAssertNil(origin.element)
+            }
+            let event = HistoryEvent(id: 1, timestamp: Date(), kind: .mouseDrag,
+                app: app, window: destination.window,
+                mouse: EventStreamMouseInteraction(button: "left", clickCount: 1, modifiers: [],
+                    target: nil,
+                    origin: .init(app: app, window: origin.window, element: origin.element),
+                    destination: .init(app: app, window: destination.window, element: destination.element)),
+                ax: destination.ax, sourceId: "destination", contentState: destination.contentState,
+                contentDomains: Array(Set((origin.contentDomains ?? []) + (destination.contentDomains ?? []))).sorted())
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            defer { try? FileManager.default.removeItem(at: root) }
+            let store = try SegmentStore(homeURL: root)
+            XCTAssertTrue(try store.append(event, policy: .init()))
+            let output = try String(contentsOf: store.eventsURL)
+            XCTAssertEqual(output.contains("ORIGIN_BODY"), condition == "available")
+            XCTAssertTrue(output.contains("DESTINATION_BODY"))
+            XCTAssertTrue(output.contains("EMBEDDED_BODY"))
+            XCTAssertEqual(store.eventCount, 1)
+            let blocked = ObservationPolicy(observation: .init(blocklist: [
+                .init(scope: .url, urlDomain: "embedded.example"),
+            ]))
+            XCTAssertFalse(try store.append(event, policy: blocked))
+            XCTAssertEqual(store.eventCount, 1)
+            XCTAssertEqual(try String(contentsOf: store.eventsURL), output)
+        }
+    }
+
     func testVisibleRangeReadsRetainScrolledUTF16TailWithoutFetchingWholeLeafValue() throws {
         let ax = fixture(web: false)
         let prefix = String(repeating: "\u{1F600}", count: 5_000)
@@ -757,6 +1409,7 @@ final class ObservationCaptureTests: XCTestCase {
         _ ax: SyntheticAX, browser: Bool = true, text: Bool = true,
         window: String? = "window", target: String? = "field",
         includeTree: Bool = true,
+        includeSelectionItems: Bool = false,
         now: @escaping () -> TimeInterval = { 0 },
         bundleIdentifier: String? = nil
     ) -> CapturedObservation<String>? {
@@ -768,7 +1421,8 @@ final class ObservationCaptureTests: XCTestCase {
         ).capture(
             app: EventStreamApp(name: "App", secureInput: false, processIdentifier: nil,
                 bundleIdentifier: bundleIdentifier ?? (browser ? "com.google.Chrome" : "test.native")),
-            window: window, target: target, browser: browser, includeTree: includeTree
+            window: window, target: target, browser: browser, includeTree: includeTree,
+            includeSelectionItems: includeSelectionItems
         )
     }
 
@@ -778,6 +1432,17 @@ final class ObservationCaptureTests: XCTestCase {
         if web { ax.add("document", role: "AXWebArea", parent: "window", url: "https://owner.example/page") }
         ax.add("field", role: "AXTextField", parent: web ? "document" : "window", value: "safe field")
         ax.attributes["field"]?["AXSelectedText"] = "selected"
+        return ax
+    }
+
+    private func itemFixture() -> SyntheticAX {
+        let ax = fixture()
+        ax.add("list", role: "AXTable", parent: "document", value: "AGGREGATE_SECRET")
+        ax.add("row", role: "AXRow", parent: "list", value: "AGGREGATE_SECRET")
+        ax.add("cell", role: "AXCell", parent: "row", value: "AGGREGATE_SECRET")
+        ax.add("label", role: "AXStaticText", parent: "cell", value: "build-42 failed EACCES")
+        ax.add("unselected", role: "AXStaticText", parent: "list", value: "UNSELECTED")
+        ax.selections["list"] = ["AXSelectedRows": ["row"]]
         return ax
     }
 }
@@ -793,8 +1458,15 @@ private final class SyntheticAX: ObservationAccessibility {
     var onChildren: ((String) -> Void)?
     var leafChildren: (() -> [String]?)?
     var visibleRanges: [String: ObservationVisibleRange] = [:]
+    var onVisibleRangeRead: ((String) -> Void)?
     var rangeReads: [(node: String, range: EventStreamTextRange)] = []
     var onRangeRead: ((String) -> Void)?
+    var selectedRanges: [String: EventStreamTextRange] = [:]
+    var onSelectedRangeRead: ((String) -> Void)?
+    var selections: [String: [String: [String]]] = [:]
+    var selectionReads: [(String, String)] = []
+    var unreadableSelection = Set<String>()
+    var onSelectionRead: ((String, String) -> Void)?
 
     func add(_ node: String, role: String?, parent: String? = nil,
              title: String? = nil, url: String? = nil, value: String? = nil) {
@@ -828,8 +1500,22 @@ private final class SyntheticAX: ObservationAccessibility {
         return childrenByNode[node]
     }
     func owns(_ node: String) -> Bool { !foreign.contains(node) }
-    func selectedRange(_ node: String) -> EventStreamTextRange? { nil }
-    func visibleRange(_ node: String) -> ObservationVisibleRange { visibleRanges[node] ?? .unsupported }
+    func selectedRange(_ node: String) -> EventStreamTextRange? {
+        let range = selectedRanges[node]
+        onSelectedRangeRead?(node)
+        return range
+    }
+    func selectedNodes(_ node: String, _ attribute: String) -> [String]? {
+        selectionReads.append((node, attribute))
+        let value = unreadableSelection.contains(node) ? nil : selections[node]?[attribute] ?? []
+        onSelectionRead?(node, attribute)
+        return value
+    }
+    func visibleRange(_ node: String) -> ObservationVisibleRange {
+        let range = visibleRanges[node] ?? .unsupported
+        onVisibleRangeRead?(node)
+        return range
+    }
     func text(_ node: String, in range: EventStreamTextRange) -> String? {
         rangeReads.append((node, range))
         defer { onRangeRead?(node) }

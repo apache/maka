@@ -18,6 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import fs, { chmod, mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
@@ -27,6 +28,7 @@ import type {
   ComputerHistorySummaryContent,
   ComputerHistorySummaryInput,
 } from '@maka/core/computer-history';
+import { decodeComputerHistorySummaryInput } from '@maka/runtime-host/protocol';
 import {
   ComputerHistorySummaries,
   ComputerHistorySummaryProviderError,
@@ -35,12 +37,14 @@ import {
   serializeComputerHistorySummary,
   summaryEventId,
   type ComputerHistorySummaryEvent,
+  type StoredComputerHistorySummary,
 } from '../computer-history-summaries.js';
 
 const BASE = Date.parse('2026-09-12T00:00:00.000Z');
 const MINUTE = 60_000;
 const TEN_MINUTES = 10 * MINUTE;
 const SIX_HOURS = 6 * 60 * MINUTE;
+const DAY = 24 * 60 * MINUTE;
 const CONTENT: ComputerHistorySummaryContent = {
   title: 'Review work',
   description: 'Reviewed the implementation in the editor.',
@@ -72,6 +76,383 @@ function deferred<T>() {
   });
   return { promise, resolve, reject };
 }
+
+async function seedContextSummary(
+  home: string,
+  start: number,
+  level: '10min' | '6h',
+  content: ComputerHistorySummaryContent,
+  scopeKey = 'allowed',
+): Promise<StoredComputerHistorySummary> {
+  const duration = level === '6h' ? SIX_HOURS : TEN_MINUTES;
+  const summary: StoredComputerHistorySummary = {
+    id: `${level}-${start}`, level, start: new Date(start).toISOString(),
+    end: new Date(start + duration).toISOString(), content, applications: ['com.example.editor'],
+    eventCount: 1,
+    sourceIds: level === '6h' ? [`10min-${start}`] : [summaryEventId(event(start + MINUTE))!],
+    generation: {
+      version: 5, sourceRevision: '0'.repeat(64), includesText: true, scopeKey,
+      priorContextIds: [], rawEvidenceRanges: [[start, start + TEN_MINUTES]],
+    },
+  };
+  await mkdir(join(home, 'summaries'), { recursive: true });
+  await writeFile(join(home, 'summaries', `${summary.id}.md`), serializeComputerHistorySummary(summary));
+  return summary;
+}
+
+for (const scenario of [
+  'next-day', 'body-tail', 'different-task', 'generic-single', 'app-keyword',
+  'nested-keywords', 'proposal-only', 'prior-only', 'tied', 'overlapping',
+  'different-scope', 'text-off', 'day-31', 'expired', 'chinese', 'body-prior-only',
+  'body-proposal-only', 'metadata-only', 'source-id-only', 'two-generic', 'body-one-anchor',
+] as const) test(`older context relevance: ${scenario}`, async (t) => {
+  const home = await fixture(t);
+  const start = BASE + DAY + 3 * 60 * MINUTE;
+  const { suggestion: _suggestion, ...plain } = CONTENT;
+  const query = 'ProjectQuartz E_CONNRESET';
+  const oldBody = scenario === 'body-tail'
+    ? `${'Unrelated earlier details.\n'.repeat(1500)}ProjectQuartz E_CONNRESET: RETRY_DECISION use a smaller batch.`
+    : `${query}: RETRY_DECISION use a smaller batch.`;
+  const oldContent = {
+    ...plain, keywords: ['ProjectQuartz', 'E_CONNRESET'], body: oldBody,
+  };
+  if (scenario === 'generic-single') oldContent.keywords = ['review'];
+  if (scenario === 'two-generic') {
+    oldContent.keywords = ['review', 'tests'];
+    oldContent.body = 'Review the tests for an unrelated task.';
+  }
+  if (scenario === 'app-keyword') oldContent.keywords = ['Editor', 'E_CONNRESET'];
+  if (scenario === 'nested-keywords') oldContent.keywords = ['ProjectQuartz', 'ProjectQuartz API'];
+  if (scenario === 'proposal-only') oldContent.body = 'An unrelated task was observed.';
+  if (scenario === 'body-one-anchor') oldContent.body = 'ProjectQuartz: a review with no observed connection error.';
+  if (scenario === 'body-prior-only') oldContent.body = `## Prior Context\n${query}\n## Current Work\nA different task.`;
+  if (scenario === 'body-proposal-only') oldContent.body = `## Suggestion\n${query}\n## Current Work\nA different task.`;
+  if (scenario === 'chinese') {
+    oldContent.keywords = ['星河项目', '连接重置'];
+    oldContent.body = '昨天排查星河项目遇到的连接重置故障，决定减小批次再试。';
+  }
+  let oldStart = BASE;
+  if (scenario === 'day-31' || scenario === 'expired') oldStart = BASE - 30 * DAY - SIX_HOURS;
+  const old = await seedContextSummary(home, oldStart, '6h', {
+    ...oldContent,
+    ...(scenario === 'proposal-only' ? { suggestion: { type: 'skill', name: query, description: query } } : {}),
+  }, scenario === 'different-scope' ? 'excluded' : 'allowed');
+  const recent = [];
+  for (const minutes of [20, 10]) {
+    recent.push(await seedContextSummary(home, start - minutes * MINUTE, '10min', {
+      ...plain, body: scenario === 'prior-only' ? query : 'Different recent task.',
+    }));
+  }
+  const tied = scenario === 'tied'
+    ? await seedContextSummary(home, BASE - SIX_HOURS, '6h', oldContent) : undefined;
+  if (scenario === 'overlapping') await seedContextSummary(home, BASE + TEN_MINUTES, '10min', oldContent);
+  const currentStart = scenario === 'day-31' ? Date.parse(old.end) + 31 * DAY :
+    scenario === 'expired' ? Date.parse(old.end) + 31 * DAY + TEN_MINUTES : start;
+  const inputs: ComputerHistorySummaryInput[] = [];
+  const summaries = new ComputerHistorySummaries({
+    home, now: () => currentStart + TEN_MINUTES,
+    generate: async (input) => { inputs.push(input); return plain; },
+  });
+  t.after(() => summaries.close());
+  const content = ['different-task', 'prior-only', 'metadata-only', 'source-id-only'].includes(scenario) ? 'ProjectHelios E_TIMEOUT' :
+    scenario === 'generic-single' ? 'Review the next item.' :
+      scenario === 'app-keyword' ? 'Editor E_CONNRESET' :
+        scenario === 'nested-keywords' ? 'ProjectQuartz API' :
+          scenario === 'chinese' ? '今天继续排查星河项目的连接重置问题。' :
+            scenario === 'two-generic' ? 'Review the tests for current work.' : query;
+  await summaries.run([{
+    ...event(currentStart + MINUTE, scenario === 'metadata-only' ? query : undefined), content,
+    ...(scenario === 'source-id-only' ? { sourceKey: query } : {}),
+  }], {
+    includeText: scenario !== 'text-off', scopeKey: 'allowed',
+  });
+  const input = inputs.find((input) => input.start === new Date(currentStart).toISOString() && input.level === '10min')!;
+  assert.ok(input);
+  const expected = ['next-day', 'body-tail', 'day-31', 'chinese', 'tied'].includes(scenario);
+  assert.equal(input.priorContext?.some(({ id }) => id === old.id) ?? false, expected);
+  assert.ok((input.priorContext?.length ?? 0) <= (tied ? 3 : 2));
+  assert.ok(Buffer.byteLength(JSON.stringify(input.priorContext ?? [])) <= 8 * 1024);
+  assert.deepEqual(decodeComputerHistorySummaryInput(input), input);
+  if (expected) {
+    const text = input.priorContext!.find(({ id }) => id === old.id)!.text;
+    assert.match(text, scenario === 'chinese' ? /星河项目遇到的连接重置故障，决定减小批次/ :
+      /ProjectQuartz E_CONNRESET: RETRY_DECISION use a smaller batch/);
+    if (scenario !== 'day-31') assert.deepEqual(input.priorContext!.map(({ id }) => id),
+      [...(tied ? [tied.id] : []), old.id, recent[1]!.id]);
+  } else if (!['text-off', 'expired'].includes(scenario)) {
+    assert.deepEqual(input.priorContext!.map(({ id }) => id), recent.map(({ id }) => id));
+  }
+});
+
+test('two tied older tasks and the latest recent context reach one request with useful tail excerpts', async (t) => {
+  const home = await fixture(t);
+  const start = BASE + DAY + 3 * 60 * MINUTE;
+  const { suggestion: _suggestion, ...plain } = CONTENT;
+  const old = [];
+  for (const [index, decision] of [
+    'ProjectQuartz E_CONNRESET: upload retry uses SMALLER_BATCH; the upload remains blocked.',
+    'ProjectQuartz E_CONNRESET: live stream uses RECONNECT_SOCKET; no upload was attempted.',
+  ].entries()) {
+    old.push(await seedContextSummary(home, BASE + index * SIX_HOURS, '6h', {
+      ...plain, keywords: ['ProjectQuartz', 'E_CONNRESET'],
+      body: `${'Unrelated earlier detail.\n'.repeat(1500)}${decision}`,
+    }));
+  }
+  const recent = await seedContextSummary(home, start - TEN_MINUTES, '10min', {
+    ...plain, body: 'The upload was selected again. LATEST_UPLOAD_STATE is awaiting retry.',
+  });
+  const inputs: ComputerHistorySummaryInput[] = [];
+  const summaries = new ComputerHistorySummaries({
+    home, now: () => start + TEN_MINUTES,
+    generate: async (input) => { inputs.push(input); return plain; },
+  });
+  t.after(() => summaries.close());
+  await summaries.run([{
+    ...event(start + MINUTE), content: 'ProjectQuartz E_CONNRESET: retrying the upload, not the live stream.',
+  }], { includeText: true, scopeKey: 'allowed' });
+  assert.equal(inputs.length, 1, 'the shortlist uses the existing single generation call');
+  const input = inputs[0]!;
+  assert.deepEqual(input.priorContext?.map(({ id }) => id), [...old.map(({ id }) => id), recent.id]);
+  assert.match(input.priorContext![0]!.text, /SMALLER_BATCH; the upload remains blocked/);
+  assert.match(input.priorContext![1]!.text, /RECONNECT_SOCKET; no upload was attempted/);
+  assert.match(input.priorContext![2]!.text, /LATEST_UPLOAD_STATE is awaiting retry/);
+  assert.ok(Buffer.byteLength(JSON.stringify(input.priorContext)) <= 8 * 1024);
+  assert.deepEqual(decodeComputerHistorySummaryInput(input), input);
+  const saved = (await summaries.get(`10min-${start}`))!;
+  assert.deepEqual(saved.generation!.priorContextIds, input.priorContext!.map(({ id }) => id));
+  for (const source of [...old, recent]) {
+    assert.ok(saved.generation!.rawEvidenceRanges!.some(([from, to]) =>
+      from <= Date.parse(source.start) && to >= Date.parse(source.start) + TEN_MINUTES));
+  }
+});
+
+for (const scenario of [
+  'three-ties', 'overlap', 'scope', 'text-off', 'escaped-fit', 'near-budget', 'escaped-overflow', 'no-recent',
+] as const) test(`older shortlist admission: ${scenario}`, async (t) => {
+  const home = await fixture(t);
+  const start = BASE + DAY + 3 * 60 * MINUTE;
+  const { suggestion: _suggestion, ...plain } = CONTENT;
+  const old: StoredComputerHistorySummary[] = [];
+  const padding = scenario === 'escaped-fit' ? '"\\\t'.repeat(20) :
+    scenario === 'escaped-overflow' ? '"\\\t'.repeat(170) : '';
+  for (let index = 0; index < (scenario === 'three-ties' ? 3 : 2); index++) {
+    const body = `${'Earlier background.\n'.repeat(1000)}${padding}ProjectQuartz E_CONNRESET: TASK_${index}_TAIL keeps its distinct decision.`;
+    const suggestion = scenario === 'near-budget'
+      ? { type: 'skill' as const, name: 'Proposed review', description: '"'.repeat(750) }
+      : scenario === 'escaped-overflow'
+        ? { type: 'skill' as const, name: 'Unapproved proposal', description: '"\\'.repeat(950) }
+        : undefined;
+    old.push(await seedContextSummary(home,
+      scenario === 'overlap' ? BASE + index * TEN_MINUTES : BASE + index * SIX_HOURS,
+      scenario === 'overlap' && index === 1 ? '10min' : '6h', {
+        ...plain, keywords: ['ProjectQuartz', 'E_CONNRESET'],
+        body, ...(suggestion ? { suggestion } : {}),
+      }, scenario === 'scope' && index === 1 ? 'excluded' : 'allowed'));
+  }
+  const recent: StoredComputerHistorySummary[] = [];
+  if (scenario !== 'no-recent') {
+    for (const minutes of [20, 10]) recent.push(await seedContextSummary(home, start - minutes * MINUTE, '10min', {
+      ...plain, body: `Recent task ${minutes}: RECENT_${minutes}_STATE is still pending.`,
+    }));
+  }
+  const inputs: ComputerHistorySummaryInput[] = [];
+  const summaries = new ComputerHistorySummaries({
+    home, now: () => start + TEN_MINUTES,
+    generate: async (input) => { inputs.push(input); return plain; },
+  });
+  t.after(() => summaries.close());
+  await summaries.run([{ ...event(start + MINUTE), content: 'ProjectQuartz E_CONNRESET: resume TASK_0.' }],
+    { includeText: scenario !== 'text-off', scopeKey: 'allowed' });
+  assert.equal(inputs.length, 1);
+  const input = inputs[0]!;
+  const expected = scenario === 'text-off' ? [] :
+    scenario === 'scope' ? [old[0]!.id, recent[1]!.id] :
+      ['escaped-fit', 'near-budget'].includes(scenario) ? [...old.map(({ id }) => id), recent[1]!.id] :
+        scenario === 'no-recent' ? old.map(({ id }) => id) : recent.map(({ id }) => id);
+  assert.deepEqual(input.priorContext?.map(({ id }) => id) ?? [], expected);
+  assert.ok(Buffer.byteLength(JSON.stringify(input.priorContext ?? [])) <= 8 * 1024);
+  assert.deepEqual(decodeComputerHistorySummaryInput(input), input);
+  for (const [index, source] of old.entries()) {
+    const item = input.priorContext?.find(({ id }) => id === source.id);
+    if (item) assert.ok(item.text.includes(`TASK_${index}_TAIL keeps its distinct decision.`));
+  }
+  if (recent.length && scenario !== 'text-off') {
+    assert.match(input.priorContext!.at(-1)!.text, /RECENT_10_STATE is still pending/);
+  }
+  const saved = (await summaries.get(`10min-${start}`))!;
+  assert.deepEqual(saved.generation!.priorContextIds, expected);
+  if (scenario === 'near-budget') {
+    const bytes = Buffer.byteLength(JSON.stringify(input.priorContext));
+    assert.ok(bytes >= 7800, `exercise three-source provenance near 8 KiB, received ${bytes} bytes`);
+    assert.deepEqual(saved.generation!.rawEvidenceRanges, [
+      [BASE, BASE + TEN_MINUTES],
+      [BASE + SIX_HOURS, BASE + SIX_HOURS + TEN_MINUTES],
+      [start - TEN_MINUTES, start + TEN_MINUTES],
+    ]);
+    await summaries.close();
+    const reopened = new ComputerHistorySummaries({
+      home, now: () => start + TEN_MINUTES,
+      generate: async () => assert.fail('near-budget pinned context must not regenerate on restart'),
+    });
+    t.after(() => reopened.close());
+    await reopened.run([{ ...event(start + MINUTE), content: 'ProjectQuartz E_CONNRESET: resume TASK_0.' }],
+      { includeText: true, scopeKey: 'allowed' });
+    assert.deepEqual(await reopened.get(saved.id), saved);
+  }
+  if (['three-ties', 'overlap', 'escaped-overflow', 'text-off'].includes(scenario)) {
+    assert.ok(saved.generation!.rawEvidenceRanges!.every(([from]) => from > BASE + SIX_HOURS * 3),
+      'unexposed alternatives must not become phantom dependencies');
+  }
+});
+
+for (const removed of [0, 1, 2]) test(`shortlist pins every exposure through restart and deletion: source ${removed}`, async (t) => {
+  const home = await fixture(t);
+  const start = BASE + DAY + 3 * 60 * MINUTE;
+  let now = start + TEN_MINUTES;
+  const { suggestion: _suggestion, ...plain } = CONTENT;
+  const old = [];
+  for (let index = 0; index < 2; index++) old.push(await seedContextSummary(home, BASE + index * SIX_HOURS, '6h', {
+    ...plain, keywords: ['ProjectQuartz', 'E_CONNRESET'],
+    body: `ProjectQuartz E_CONNRESET: ${index === 0 ? 'SMALLER_BATCH upload' : 'RECONNECT_SOCKET stream'}.`,
+  }));
+  const recent = await seedContextSummary(home, start - TEN_MINUTES, '10min', plain);
+  const unusedRecent = await seedContextSummary(home, start - 2 * TEN_MINUTES, '10min', plain);
+  const exposed = [...old, recent];
+  const inputs: ComputerHistorySummaryInput[] = [];
+  const create = () => new ComputerHistorySummaries({
+    home, now: () => now, generate: async (input) => {
+      inputs.push(input);
+      // The deterministic consumer uses only the upload alternative. This does
+      // not make the other offered task cease to be a deletion dependency.
+      return { ...plain, body: 'The upload still needs SMALLER_BATCH.' };
+    },
+  });
+  const events = [{ ...event(start + MINUTE), content: 'ProjectQuartz E_CONNRESET: upload retry.' }];
+  const summaries = create();
+  await summaries.run(events, { includeText: true, scopeKey: 'allowed' });
+  const saved = (await summaries.get(`10min-${start}`))!;
+  assert.deepEqual(saved.generation!.priorContextIds, exposed.map(({ id }) => id));
+  assert.doesNotMatch(saved.content.body, /RECONNECT_SOCKET/);
+  await summaries.close();
+  const reopened = create();
+  t.after(() => reopened.close());
+  await reopened.run(events, { includeText: true, scopeKey: 'allowed' });
+  assert.equal(inputs.length, 1, 'all three stored IDs must resolve to the same generation after restart');
+  assert.deepEqual(await reopened.get(saved.id), saved);
+  await seedContextSummary(home, BASE - SIX_HOURS, '6h', old[0]!.content);
+  await reopened.run(events, { includeText: true, scopeKey: 'allowed' });
+  assert.equal(inputs.length, 1, 'archive arrival does not replace a pinned shortlist or make a new call');
+  now += TEN_MINUTES;
+  await reopened.run([{ ...event(start + TEN_MINUTES + MINUTE), content: 'Checking the upload outcome.' }],
+    { includeText: true, scopeKey: 'allowed' });
+  const descendant = (await reopened.get(`10min-${start + TEN_MINUTES}`))!;
+  for (const source of exposed) assert.ok(descendant.generation!.rawEvidenceRanges!.some(([from, to]) =>
+    from <= Date.parse(source.start) && to >= Date.parse(source.start) + TEN_MINUTES));
+  const source = exposed[removed]!;
+  await rm(join(home, 'summaries', `${source.id}.md`));
+  now = start + 3 * DAY;
+  await reopened.clearInterval(Date.parse(source.start) + MINUTE, Date.parse(source.start) + MINUTE);
+  assert.equal(await reopened.get(saved.id), null);
+  assert.equal(await reopened.get(descendant.id), null);
+  assert.ok(await reopened.get(unusedRecent.id), 'unrelated recent context survives transitive deletion');
+});
+
+test('older context pins saved choices across archive arrivals and restart, then preserves immutable deletion coverage', async (t) => {
+  const home = await fixture(t);
+  const start = BASE + DAY + 3 * 60 * MINUTE;
+  let now = start + TEN_MINUTES;
+  const { suggestion: _suggestion, ...plain } = CONTENT;
+  const query = 'ProjectQuartz E_CONNRESET';
+  const recent = [];
+  for (const minutes of [20, 10]) recent.push(await seedContextSummary(home, start - minutes * MINUTE, '10min', plain));
+  const events = [{ ...event(start + MINUTE), content: query }];
+  const inputs: ComputerHistorySummaryInput[] = [];
+  const create = () => new ComputerHistorySummaries({
+    home, now: () => now, generate: async (input) => { inputs.push(input); return plain; },
+  });
+  const summaries = create();
+  await summaries.run(events, { includeText: true, scopeKey: 'allowed' });
+  const original = (await summaries.get(`10min-${start}`))!;
+  const old = await seedContextSummary(home, BASE, '6h', {
+    ...plain, keywords: ['ProjectQuartz', 'E_CONNRESET'], body: `${query}: historic diagnosis.`,
+  });
+  await summaries.run(events, { includeText: true, scopeKey: 'allowed' });
+  assert.equal(inputs.length, 1, 'archive arrival must not regenerate an unchanged saved leaf');
+  assert.deepEqual(await summaries.get(original.id), original);
+  await summaries.close();
+  const reopened = create();
+  t.after(() => reopened.close());
+  await reopened.run(events, { includeText: true, scopeKey: 'allowed' });
+  assert.equal(inputs.length, 1);
+  events.push({ ...event(start + 2 * MINUTE), content: `${query}: another retry was observed.` });
+  await reopened.run(events, { includeText: true, scopeKey: 'allowed' });
+  assert.equal(inputs.length, 2, 'changed current evidence may select older relevant context');
+  const updated = (await reopened.get(original.id))!;
+  assert.deepEqual(updated.generation!.priorContextIds, [old.id, recent[1]!.id]);
+  assert.equal(updated.generation!.version, original.generation!.version);
+  const coverage = updated.generation!.rawEvidenceRanges!;
+  assert.ok(coverage.some(([from, to]) => from <= BASE && to >= BASE + TEN_MINUTES));
+  await seedContextSummary(home, BASE - SIX_HOURS, '6h', old.content);
+  await reopened.run(events, { includeText: true, scopeKey: 'allowed' });
+  assert.equal(inputs.length, 2, 'a later tied candidate must not displace pinned evidence');
+  assert.deepEqual(await reopened.get(updated.id), updated);
+  now += TEN_MINUTES;
+  await reopened.run([{ ...event(start + TEN_MINUTES + MINUTE), content: query }], { includeText: true, scopeKey: 'allowed' });
+  const descendant = (await reopened.get(`10min-${start + TEN_MINUTES}`))!;
+  assert.ok(descendant.generation!.rawEvidenceRanges!.some(([from, to]) => from <= BASE && to >= BASE + TEN_MINUTES));
+  await rm(join(home, 'summaries', `${old.id}.md`));
+  now = start + 3 * DAY;
+  await reopened.clearInterval(BASE + MINUTE, BASE + MINUTE);
+  assert.equal(await reopened.get(updated.id), null);
+  assert.equal(await reopened.get(descendant.id), null);
+  for (const item of recent) assert.ok(await reopened.get(item.id), 'unrelated recent context must survive deletion');
+});
+
+test('older context indexes a 48-hour catch-up without rescanning archive bodies per window', async (t) => {
+  const home = await fixture(t);
+  const { suggestion: _suggestion, ...plain } = CONTENT;
+  const query = 'ProjectQuartz E_CONNRESET';
+  const events = Array.from({ length: 288 }, (_, index) => ({
+    ...event(BASE + index * TEN_MINUTES + MINUTE), content: query,
+  }));
+  let calls = 0;
+  let lastInput: ComputerHistorySummaryInput | undefined;
+  const summaries = new ComputerHistorySummaries({
+    home, now: () => BASE + 2 * DAY,
+    generate: async (input) => { calls++; lastInput = input; return plain; },
+  });
+  t.after(() => summaries.close());
+  for (let run = 0; run < 50; run++) await summaries.run(events, { includeText: true, scopeKey: 'allowed' });
+  assert.equal((await summaries.list()).filter(({ level }) => level === '10min').length, 288);
+  assert.equal(calls, 296, '288 leaves and eight rollups, without archive-driven regeneration');
+  const bodies = new Set<string>();
+  for (let index = 0; index < 64; index++) {
+    const body = `${'Archived details.\n'.repeat(2700)}${index ? `UnrelatedProject${index} E_OTHER` : query}: TAIL_DECISION`;
+    bodies.add(body);
+    await seedContextSummary(home, BASE - (index + 2) * SIX_HOURS, '6h', {
+      ...plain, keywords: index ? [`UnrelatedProject${index}`, 'E_OTHER'] : ['ProjectQuartz', 'E_CONNRESET'], body,
+    });
+  }
+  const originalExec = RegExp.prototype.exec;
+  const inspected: string[] = [];
+  RegExp.prototype.exec = function (text: string) {
+    if (bodies.has(text)) inspected.push(text);
+    return originalExec.call(this, text);
+  };
+  t.after(() => { RegExp.prototype.exec = originalExec; });
+  await summaries.run(events, { includeText: true, scopeKey: 'allowed' });
+  assert.equal(calls, 296);
+  assert.equal(inspected.length, 0, 'unchanged pinned generations do not inspect candidate bodies');
+  const changed = [...events, ...Array.from({ length: 6 }, (_, index) => ({
+    ...event(BASE + index * TEN_MINUTES + 2 * MINUTE), content: `${query}: another retry.`,
+  }))];
+  await summaries.run(changed, { includeText: true, scopeKey: 'allowed' });
+  assert.equal(calls, 302);
+  assert.equal(new Set(inspected).size, 1, 'unmatched archives are not inspected');
+  assert.equal(inspected.length, 2, 'two anchors inspect the matched body once per run, not once per window');
+  assert.match(lastInput!.priorContext!.find(({ id }) => id === `6h-${BASE - 2 * SIX_HOURS}`)!.text,
+    /ProjectQuartz E_CONNRESET: TAIL_DECISION/);
+});
 
 test('closed UTC windows use allowlisted evidence and survive restart without regeneration', async (t) => {
   const home = await fixture(t);
@@ -162,6 +543,38 @@ test('application provenance prefers native bundle IDs and preserves name-only f
       await readFile(join(home, 'summaries', summary.filename!), 'utf8'),
     );
   }
+});
+
+test('long packaged application IDs remain exact through evidence, rollup and restart', async (t) => {
+  const home = await fixture(t);
+  const prefix = `winapp.${'A'.repeat(50)}_123456789abcd!${'B'.repeat(63)}`;
+  const applications = [`${prefix}C`, `${prefix}D`];
+  assert.equal(applications[0]!.length, 136);
+  assert.equal(applications[0]!.slice(0, 128), applications[1]!.slice(0, 128));
+  const events = applications.map((bundleIdentifier, index) => ({
+    ...event(BASE + (index + 1) * MINUTE),
+    app: { name: 'Shared packaged executable', bundleIdentifier },
+  }));
+  const inputs: ComputerHistorySummaryInput[] = [];
+  const summaries = new ComputerHistorySummaries({
+    home, now: () => BASE + SIX_HOURS,
+    generate: async (input) => { inputs.push(input); return CONTENT; },
+  });
+  t.after(() => summaries.close());
+  await summaries.run(events);
+  const leaf = inputs.find((input) => input.level === '10min')!;
+  assert.deepEqual(leaf.evidence.map((sample) => JSON.parse(sample.text).app.bundleIdentifier).sort(), applications);
+  const stored = await summaries.list();
+  assert.deepEqual(stored.map(({ level }) => level).sort(), ['10min', '6h']);
+  for (const summary of stored) assert.deepEqual(summary.applications, applications);
+  await summaries.close();
+  const reopened = new ComputerHistorySummaries({
+    home, now: () => BASE + SIX_HOURS,
+    generate: async () => assert.fail('exact persisted application identities must not regenerate'),
+  });
+  t.after(() => reopened.close());
+  await reopened.run(events);
+  assert.deepEqual(await reopened.list(), stored);
 });
 
 test('readable filenames and keywords survive title changes, restart, reveal and interval deletion', async (t) => {
@@ -729,7 +1142,8 @@ for (const includeText of [false, true]) test(`scope changes preserve a rich par
   assert.equal(parent.eventCount, 2);
   assert.deepEqual(parent.sourceIds, [`10min-${BASE}`, `10min-${BASE + TEN_MINUTES}`]);
   const descendant = (await reopened.get(`10min-${BASE + SIX_HOURS}`))!;
-  assert.deepEqual(descendant.generation!.priorContextIds, [parentId]);
+  assert.deepEqual(descendant.generation!.priorContextIds, parent.sourceIds,
+    'rebuilding the parent does not replace already admitted leaf dependencies');
   assert.match(descendant.content.body, /OLD_SCOPE_CANARY/);
   const afterRestore = inputs.length;
   await create().run([...events].reverse(), { includeText: true, scopeKey: 'a' });
@@ -853,6 +1267,209 @@ for (const lateMinute of [2, 21]) test(`a late event at minute ${lateMinute} inv
   assert.equal((await reopened.list()).find(({ level }) => level === '6h')!.eventCount, 2);
   await reopened.run(events);
   assert.equal(rebuilt.length, 1);
+});
+
+for (const change of ['append', 'replace'] as const) test(`fresh ${change} evidence progresses while a saved prior rollup is missing`, async (t) => {
+  const home = await fixture(t);
+  const options = { includeText: true, scopeKey: 'allowed' };
+  const parentId = `6h-${BASE}`;
+  const start = BASE + SIX_HOURS;
+  const leafId = `10min-${start}`;
+  let now = start;
+  let failParent = false;
+  const inputs: ComputerHistorySummaryInput[] = [];
+  const generate = async (input: ComputerHistorySummaryInput) => {
+    inputs.push(input);
+    if (failParent && input.level === '6h' && Date.parse(input.start) === BASE) {
+      return { ...CONTENT, body: '' };
+    }
+    return { ...CONTENT, body: `Observed ${input.evidence.map(({ text }) => text).join('\n')}` };
+  };
+  const summaries = new ComputerHistorySummaries({ home, now: () => now, generate });
+  t.after(() => summaries.close());
+  const events = [{ ...event(BASE + MINUTE), content: 'EARLIER_FACT' }];
+  await summaries.run(events, options);
+  now = start + TEN_MINUTES;
+  events.push({ ...event(start + MINUTE), content: 'CURRENT_INITIAL_FACT' });
+  await summaries.run(events, options);
+  const original = (await summaries.get(leafId))!;
+  assert.deepEqual(original.generation!.priorContextIds, [parentId]);
+  const path = join(home, 'summaries', original.filename!);
+  const originalBytes = await readFile(path);
+
+  failParent = true;
+  events.push({ ...event(BASE + 2 * MINUTE), content: 'EARLIER_CORRECTION' });
+  await assert.rejects(summaries.run(events, options), ComputerHistorySummaryRunError);
+  assert.equal(await summaries.get(parentId), null);
+  assert.deepEqual(await readFile(path), originalBytes, 'prior disappearance alone must preserve the saved leaf');
+  await summaries.close();
+
+  const reopened = new ComputerHistorySummaries({ home, now: () => now, generate });
+  t.after(() => reopened.close());
+  await assert.rejects(reopened.run(events, { ...options, retryFailed: true }), ComputerHistorySummaryRunError);
+  assert.deepEqual(await readFile(path), originalBytes, 'unchanged raw evidence stays pinned after restart');
+  const fresh = { ...event(start + (change === 'append' ? 2 : 1) * MINUTE), content: 'FRESH_CURRENT_FACT' };
+  if (change === 'append') events.push(fresh);
+  else events[1] = fresh;
+  const before = inputs.length;
+  await reopened.run(events, { ...options, includeText: false });
+  assert.equal(inputs.length, before, 'text revocation must not use rich saved dependencies');
+  assert.deepEqual(await readFile(path), originalBytes);
+  await assert.rejects(reopened.run(events, { ...options, retryFailed: true }), ComputerHistorySummaryRunError);
+  const updated = (await reopened.get(leafId))!;
+  assert.match(updated.content.body, /FRESH_CURRENT_FACT/, 'missing prior must not starve admitted current evidence');
+  assert.equal(updated.eventCount, change === 'append' ? 2 : 1);
+  const freshInput = inputs.slice(before).find((input) => input.level === '10min' &&
+    Date.parse(input.start) === start)!;
+  assert.ok(freshInput);
+  assert.ok(freshInput.evidence.some(({ id }) => id === summaryEventId(fresh, { includeText: true })));
+  assert.ok(!freshInput.priorContext?.some(({ id }) => id === parentId), 'an absent parent cannot be reused');
+  assert.ok(updated.generation!.rawEvidenceRanges!.some(([from, to]) =>
+    from <= BASE && to >= BASE + TEN_MINUTES), 'newly exposed prior evidence keeps deletion coverage');
+  assert.equal(await reopened.get(parentId), null);
+  const updatedBytes = await readFile(path);
+  const unchangedCalls = inputs.length;
+  await assert.rejects(reopened.run(events, { ...options, retryFailed: true }), ComputerHistorySummaryRunError);
+  assert.equal(inputs.slice(unchangedCalls).filter((input) => input.level === '10min').length, 0);
+  assert.deepEqual(await readFile(path), updatedBytes, 'repeated parent failure must not spin leaf regeneration');
+  failParent = false;
+  await reopened.run(events, { ...options, retryFailed: true });
+  assert.ok(await reopened.get(parentId));
+  assert.deepEqual(await readFile(path), updatedBytes, 'parent recovery alone does not replace new pinned evidence');
+  await reopened.close();
+
+  const converged = new ComputerHistorySummaries({
+    home, now: () => now, generate: async () => assert.fail('saved generations must converge after restart'),
+  });
+  t.after(() => converged.close());
+  await converged.run(events, options);
+  now = BASE + 72 * 60 * MINUTE;
+  await converged.clearInterval(BASE + MINUTE, BASE + MINUTE);
+  assert.equal(await converged.get(leafId), null, 'prior deletion still removes the consumer after raw expiry');
+});
+
+for (const legacy of [false, true]) for (const missingPrior of [false, true]) test(`unsampled raw replacement with ${legacy ? 'legacy' : 'durable'} identity after restart and prior ${missingPrior ? 'missing' : 'present'}`, async (t) => {
+  const home = await fixture(t);
+  const options = { includeText: true, scopeKey: 'allowed' };
+  const start = BASE + SIX_HOURS;
+  const leafId = `10min-${start}`;
+  const parentId = `6h-${BASE}`;
+  let now = start;
+  let failParent = false;
+  const inputs: ComputerHistorySummaryInput[] = [];
+  const generate = async (input: ComputerHistorySummaryInput) => {
+    inputs.push(input);
+    return { ...CONTENT, body: failParent && input.level === '6h' &&
+      Date.parse(input.start) === BASE ? '' : CONTENT.body };
+  };
+  const summaries = new ComputerHistorySummaries({ home, now: () => now, generate });
+  t.after(() => summaries.close());
+  const earlier = [{ ...event(BASE + MINUTE), content: 'EARLIER_FACT' }];
+  await summaries.run(earlier, options);
+  now = start + TEN_MINUTES;
+  const dense = Array.from({ length: 1000 }, (_, index) => ({
+    ...event(start + MINUTE + index), content: index % 2 ? 'FACT_B' : 'FACT_A',
+  }));
+  await summaries.run([...earlier, ...dense], options);
+  if (legacy) {
+    for (const saved of await summaries.list()) {
+      const { rawSourceRevision: _raw, ...generation } = saved.generation!;
+      await writeFile(join(home, 'summaries', saved.filename!),
+        serializeComputerHistorySummary({ ...saved, generation }));
+    }
+  }
+  const original = (await summaries.get(leafId))!;
+  assert.deepEqual(original.generation!.priorContextIds, [parentId]);
+  const path = join(home, 'summaries', original.filename!);
+  const originalBytes = await readFile(path);
+  const sampledIds = inputs.find((input) => input.level === '10min' &&
+    Date.parse(input.start) === start)!.evidence.map(({ id }) => id);
+  assert.equal(sampledIds.length, 3);
+  const replacement = { ...dense[500]!, content: 'FACT_B' };
+  const oldId = summaryEventId(dense[500]!, options);
+  const newId = summaryEventId(replacement, options);
+  assert.ok(oldId);
+  assert.ok(newId);
+  assert.notEqual(oldId, newId);
+  assert.ok(!sampledIds.includes(oldId));
+  assert.ok(!sampledIds.includes(newId));
+  if (!legacy) assert.match(original.generation!.rawSourceRevision!, /^[a-f0-9]{64}$/u);
+  const archivePaths = (await summaries.list()).map(({ filename }) => join(home, 'summaries', filename!));
+  const archiveBytes = await Promise.all(archivePaths.map((file) => readFile(file)));
+  const unchangedCalls = inputs.length;
+  await summaries.run([...earlier, ...dense], options);
+  assert.equal(inputs.length, unchangedCalls);
+  assert.deepEqual(await Promise.all(archivePaths.map((file) => readFile(file))), archiveBytes,
+    'new bookkeeping alone must not rewrite leaves, prior context or rollups');
+  if (missingPrior) {
+    failParent = true;
+    earlier.push({ ...event(BASE + 2 * MINUTE), content: 'EARLIER_CORRECTION' });
+    await assert.rejects(summaries.run([...earlier, ...dense], options), ComputerHistorySummaryRunError);
+    assert.equal(await summaries.get(parentId), null);
+  }
+  await summaries.close();
+  const reopened = new ComputerHistorySummaries({ home, now: () => now, generate });
+  t.after(() => reopened.close());
+  const run = async () => {
+    const pending = reopened.run([...earlier, ...dense], { ...options, retryFailed: true });
+    if (missingPrior) await assert.rejects(pending, ComputerHistorySummaryRunError);
+    else await pending;
+  };
+  await run();
+  assert.deepEqual(await readFile(path), originalBytes, 'unchanged raw preserves saved bytes after restart');
+  const before = inputs.length;
+  dense[500] = replacement;
+  await run();
+  const refreshed = inputs.slice(before).filter((input) => input.level === '10min' &&
+    Date.parse(input.start) === start);
+  if (legacy && missingPrior) {
+    assert.equal(refreshed.length, 0, 'missing prior and identical samples leave legacy raw identity unknown');
+    assert.deepEqual(await readFile(path), originalBytes, 'unknown legacy input must not be backfilled as equality');
+    dense.push({ ...event(start + 2 * MINUTE), content: 'KNOWN_NEW_FACT' });
+    await run();
+    const updated = (await reopened.get(leafId))!;
+    assert.equal(updated.eventCount, 1001, 'positive fresh evidence permits ordinary legacy regeneration');
+    assert.match(updated.generation!.rawSourceRevision!, /^[a-f0-9]{64}$/u);
+    assert.ok(!updated.generation!.priorContextIds!.includes(parentId));
+  } else {
+    assert.equal(refreshed.length, 1, 'all-event identity must detect an unsampled same-count replacement');
+    assert.deepEqual(refreshed[0]!.evidence.map(({ id }) => id), sampledIds);
+    const updated = (await reopened.get(leafId))!;
+    assert.equal(updated.eventCount, 1000);
+    assert.notEqual(updated.generation!.sourceRevision, original.generation!.sourceRevision);
+    assert.notEqual(updated.generation!.rawSourceRevision, original.generation!.rawSourceRevision);
+  }
+  const updatedBytes = await readFile(path);
+  const after = inputs.length;
+  await run();
+  assert.equal(inputs.slice(after).filter((input) => input.level === '10min').length, 0);
+  assert.deepEqual(await readFile(path), updatedBytes);
+});
+
+test('raw revision is leaf-only metadata and legacy documents remain readable without it', async (t) => {
+  const home = await fixture(t);
+  const summaries = new ComputerHistorySummaries({
+    home, now: () => BASE + SIX_HOURS, generate: async () => CONTENT,
+  });
+  t.after(() => summaries.close());
+  await summaries.run([event(BASE + MINUTE)]);
+  const leaf = (await summaries.get(`10min-${BASE}`))!;
+  const parent = (await summaries.get(`6h-${BASE}`))!;
+  assert.match(leaf.generation!.rawSourceRevision!, /^[a-f0-9]{64}$/u);
+  assert.equal(parent.generation!.rawSourceRevision, undefined);
+  const parentPath = join(home, 'summaries', parent.filename!);
+  const parentBytes = await readFile(parentPath);
+  await writeFile(parentPath, serializeComputerHistorySummary({
+    ...parent, generation: { ...parent.generation!, rawSourceRevision: leaf.generation!.rawSourceRevision },
+  }));
+  await assert.rejects(summaries.get(parent.id), /Invalid computer history summary/);
+  await writeFile(parentPath, parentBytes);
+  const { rawSourceRevision: _raw, ...generation } = leaf.generation!;
+  const leafPath = join(home, 'summaries', leaf.filename!);
+  for (const version of [4, 5]) {
+    await writeFile(leafPath, serializeComputerHistorySummary({ ...leaf, generation: { ...generation, version } }));
+    assert.equal((await summaries.get(leaf.id))!.generation!.rawSourceRevision, undefined);
+  }
 });
 
 test('failed, invalid and cancelled leaf refreshes preserve saved leaf and rollup bytes', async (t) => {
@@ -1106,13 +1723,13 @@ test('clear removes overlapping windows and enclosing rollups while preserving t
     event(BASE + SIX_HOURS + 11 * MINUTE),
   ];
   await summaries.run(events);
-  assert.equal(calls, 6);
-  // Publishing the first rollup refreshes later prior context within the same run cap.
+  assert.equal(calls, 5);
+  // Publishing the earlier rollup does not replace pinned context in unchanged leaves.
   await summaries.run(events);
-  assert.equal(calls, 7);
+  assert.equal(calls, 5);
   assert.equal((await summaries.list()).length, 5);
   await summaries.run(events);
-  assert.equal(calls, 7);
+  assert.equal(calls, 5);
   await summaries.clear(BASE + SIX_HOURS + TEN_MINUTES);
   const remaining = await summaries.list();
   assert.equal(remaining.length, 3);
@@ -1322,7 +1939,7 @@ for (const version of [1, 2, 3]) test(`v${version} unknown ancestry propagates t
   });
   await summaries.run([event(BASE + MINUTE)], { scopeKey: 'a' });
   const original = (await summaries.list())[0]!;
-  const { priorContextIds: _prior, rawEvidenceRanges: _ranges, ...generation } = original.generation!;
+  const { priorContextIds: _prior, rawEvidenceRanges: _ranges, rawSourceRevision: _raw, ...generation } = original.generation!;
   const legacy = (start: number) => ({
     ...original,
     filename: undefined,
@@ -1443,7 +2060,7 @@ test('generation failure propagates and leaves the window available for retry', 
   assert.equal((await summaries.list()).length, 1);
 });
 
-test('invalid old leaf isolates retries, advances fresh windows and converges prior context after recovery', async (t) => {
+test('invalid old leaf isolates retries and recovery supplies new windows without changing pinned context', async (t) => {
   const home = await fixture(t);
   let now = BASE + 21 * MINUTE;
   let invalid = true;
@@ -1484,15 +2101,18 @@ test('invalid old leaf isolates retries, advances fresh windows and converges pr
   await summaries.run(events);
   const leaves = await summaries.list();
   assert.equal(leaves.length, 3);
-  assert.deepEqual(leaves[1]!.generation!.priorContextIds, [leaves[0]!.id]);
-  assert.deepEqual(leaves[2]!.generation!.priorContextIds, [leaves[0]!.id, leaves[1]!.id]);
-  assert.match(inputs.at(-1)!.priorContext![0]!.text, /Recovered summary/);
+  assert.deepEqual(leaves[1]!.generation!.priorContextIds, []);
+  assert.deepEqual(leaves[2]!.generation!.priorContextIds, [leaves[1]!.id]);
   const count = inputs.length;
   await summaries.run(events);
   assert.equal(inputs.length, count);
+  events.push(event(BASE + 31 * MINUTE));
+  await summaries.run(events);
+  assert.match(JSON.stringify(inputs.at(-1)!.priorContext), /Recovered summary/);
+  assert.ok(inputs.at(-1)!.priorContext!.some(({ id }) => id === leaves[2]!.id));
   now = BASE + SIX_HOURS;
   await summaries.run(events);
-  assert.deepEqual((await summaries.get(`6h-${BASE}`))!.sourceIds, leaves.map(({ id }) => id));
+  assert.deepEqual((await summaries.get(`6h-${BASE}`))!.sourceIds, [...leaves.map(({ id }) => id), `10min-${BASE + 3 * TEN_MINUTES}`]);
 });
 
 test('evidence and privacy revisions reset only applicable retries, manual retry remains bounded', async (t) => {
@@ -1680,18 +2300,310 @@ test('cancel after an isolated failure drains the current model and clears retry
   assert.equal((await summaries.list()).length, 2);
 });
 
-test('maximal accepted multilingual content stays within the 6h input budget', async (t) => {
+test('rollups preserve full accepted child bodies within Host limits without changing archive generations', async (t) => {
   const home = await fixture(t);
   const inputs: ComputerHistorySummaryInput[] = [];
-  const content: ComputerHistorySummaryContent = {
+  const options = { includeText: true, scopeKey: 'allowed' };
+  let now = BASE + 3 * TEN_MINUTES;
+  const bodies = ['Observed context. ', '\u4e2d\ud83d\ude80 "\\\n'].map((sample, index) => {
+    const heading = `## Task ${index}\n`;
+    const tail = `\nFINAL_DECISION_${index}: load testing remains required.`;
+    const prefix = heading + sample.repeat(Math.floor(
+      (48 * 1024 - Buffer.byteLength(heading + tail)) / Buffer.byteLength(sample),
+    ));
+    return prefix + 'x'.repeat(48 * 1024 - Buffer.byteLength(prefix + tail)) + tail;
+  });
+  const escapedSample = '"\\\n\t\u0001';
+  const escapedTail = '\nFINAL_ESCAPED_DECISION: approval remains pending.';
+  const available = 64 * 1024 - Buffer.byteLength(JSON.stringify({ ...CONTENT, body: escapedTail }));
+  const escaped = escapedSample.repeat(Math.floor(available / (Buffer.byteLength(JSON.stringify(escapedSample)) - 2)));
+  const padding = 64 * 1024 - Buffer.byteLength(JSON.stringify({ ...CONTENT, body: escaped + escapedTail }));
+  bodies.push(escaped + 'x'.repeat(padding) + escapedTail);
+  const summaries = new ComputerHistorySummaries({
+    home, now: () => now,
+    generate: async (input) => {
+      inputs.push(input);
+      return input.level === '10min'
+        ? { ...CONTENT, body: bodies[(Date.parse(input.start) - BASE) / TEN_MINUTES]! }
+        : CONTENT;
+    },
+  });
+  const events = bodies.map((_, index) => ({
+    ...event(BASE + index * TEN_MINUTES + MINUTE), content: `Observed task ${index}`,
+  }));
+  await summaries.run(events, options);
+  const children = await summaries.list();
+  assert.equal(children.length, 3);
+  assert.ok(children.slice(0, 2).every((child) => Buffer.byteLength(child.content.body) === 48 * 1024));
+  assert.equal(Buffer.byteLength(JSON.stringify(children[2]!.content)), 64 * 1024);
+  now = BASE + SIX_HOURS;
+  await summaries.run(events, { ...options, includeText: false });
+  await summaries.run([], { ...options, scopeKey: 'excluded' });
+  assert.equal(inputs.length, 3, 'text opt-out and a different scope must not admit rich children');
+  await summaries.run(events, options);
+  assert.equal(inputs.length, 4);
+  const rollup = inputs[3]!;
+  assert.equal(rollup.level, '6h');
+  assert.deepEqual(decodeComputerHistorySummaryInput(rollup), rollup);
+  for (const child of children) {
+    const pieces = rollup.evidence.filter(({ id }) => id === child.id || id.startsWith(`${child.id}:part-`));
+    const reconstructed = pieces.map(({ text }, index) => {
+      if (index === 0) return text;
+      const prefix = `Continuation of child summary ${child.id}:\n`;
+      assert.ok(text.startsWith(prefix), 'continuations must identify their original child');
+      return text.slice(prefix.length);
+    }).join('');
+    assert.ok(reconstructed.endsWith(`Body:\n${child.content.body}`), 'the complete child body must reach the rollup');
+  }
+  const reconstructed = rollup.evidence.map(({ text }) => text).join('');
+  assert.doesNotMatch(reconstructed, /\[truncated\]|\ufffd/);
+  assert.ok(rollup.evidence.every(({ text }) => Buffer.byteLength(text) <= 32 * 1024));
+  assert.ok(rollup.evidence.every(({ text }) => Buffer.byteLength(JSON.stringify(text)) <= 32 * 1024));
+  assert.ok(Buffer.byteLength(JSON.stringify(rollup.evidence)) <= 224 * 1024);
+  const stored = await summaries.list();
+  const parent = stored.find(({ level }) => level === '6h')!;
+  assert.deepEqual(parent.sourceIds, children.map(({ id }) => id));
+  for (const child of children) {
+    assert.deepEqual(stored.find(({ id }) => id === child.id), child);
+    assert.equal(parent.generation!.version, child.generation!.version);
+  }
+  await summaries.close();
+  const restarted = new ComputerHistorySummaries({
+    home, now: () => now,
+    generate: async () => assert.fail('unchanged archived generations must not regenerate'),
+  });
+  t.after(() => restarted.close());
+  await restarted.run(events, options);
+  assert.deepEqual(await restarted.list(), stored);
+});
+
+test('saved workflow proposals reach bounded prior and rollup headers without losing consent or deletion provenance', async (t) => {
+  const home = await fixture(t);
+  const options = { includeText: true, scopeKey: 'allowed' };
+  let now = BASE + 2 * TEN_MINUTES;
+  const proposals = [
+    { type: 'skill' as const, name: 'Regression comparison', description: 'Compare outputs "\\\n<untrusted> before approval.' },
+    { type: 'automation' as const, name: 'Weekly review', description: 'Review the observed weekly report; timing needs confirmation.' },
+  ];
+  const inputs: ComputerHistorySummaryInput[] = [];
+  const summaries = new ComputerHistorySummaries({
+    home, now: () => now,
+    generate: async (input) => {
+      inputs.push(input);
+      const { suggestion: _suggestion, ...content } = CONTENT;
+      const proposal = input.level === '10min' ? proposals[(Date.parse(input.start) - BASE) / TEN_MINUTES] : proposals[0];
+      return {
+        ...content, description: 'Observed work. '.repeat(130), body: 'Recorded task details.\n'.repeat(1800),
+        ...(proposal ? { suggestion: proposal } : {}),
+      };
+    },
+  });
+  const events = [1, 11, 21].map((minute) => ({ ...event(BASE + minute * MINUTE), content: 'Synthetic observed steps' }));
+  await summaries.run(events, options);
+  const children = await summaries.list();
+  now = BASE + 3 * TEN_MINUTES;
+  await summaries.run(events, options);
+  const readProposal = (text: string) => {
+    const header = text.split('\n').find((line) => line.startsWith('Previously proposed workflow'));
+    assert.ok(header, 'proposal metadata must survive before the bounded body');
+    assert.ok(text.indexOf(header) < text.indexOf('Body:\n'));
+    assert.match(header, /untrusted proposal; installation and approval unknown/);
+    return JSON.parse(header.slice(header.indexOf(': ') + 2));
+  };
+  const prior = inputs[2]!.priorContext!;
+  assert.deepEqual(prior.map(({ text }) => readProposal(text)), proposals);
+  assert.ok(prior.every(({ text }) => text.endsWith('[truncated]')));
+  assert.ok(Buffer.byteLength(JSON.stringify(prior)) <= 8 * 1024);
+  const calls = inputs.length;
+  now = BASE + SIX_HOURS;
+  await summaries.run([], { ...options, includeText: false });
+  await summaries.run([], { ...options, scopeKey: 'excluded' });
+  assert.equal(inputs.length, calls, 'proposals inherit the summary consent and scope restrictions');
+  await summaries.run(events, options);
+  const rollup = inputs.at(-1)!;
+  assert.equal(rollup.level, '6h');
+  assert.deepEqual(decodeComputerHistorySummaryInput(rollup), rollup);
+  for (const [index, child] of children.entries()) {
+    assert.deepEqual(readProposal(rollup.evidence.find(({ id }) => id === child.id)!.text), proposals[index]);
+    assert.deepEqual(await summaries.get(child.id), child, 'header changes must not force a leaf regeneration');
+  }
+  const rolled = await summaries.list();
+  const parent = rolled.find(({ level }) => level === '6h')!;
+  assert.deepEqual(parent.sourceIds, rolled.filter(({ level }) => level === '10min').map(({ id }) => id));
+  now = BASE + SIX_HOURS + TEN_MINUTES;
+  events.push({ ...event(BASE + SIX_HOURS + MINUTE), content: 'Continued synthetic work' });
+  await summaries.run(events, options);
+  const next = inputs.at(-1)!;
+  assert.equal(next.level, '10min');
+  assert.deepEqual(next.priorContext!.map(({ id }) => id), [parent.id]);
+  assert.deepEqual(readProposal(next.priorContext![0]!.text), proposals[0]);
+  const stored = await summaries.list();
+  await summaries.close();
+  const reopened = new ComputerHistorySummaries({
+    home, now: () => now, generate: async () => assert.fail('saved proposal inputs must converge'),
+  });
+  t.after(() => reopened.close());
+  await reopened.run(events, options);
+  assert.deepEqual(await reopened.list(), stored);
+  now = BASE + 72 * 60 * MINUTE;
+  await reopened.clearInterval(BASE + MINUTE, BASE + MINUTE);
+  assert.deepEqual(await reopened.list(), [], 'proposal consumers keep transitive deletion coverage after expiry');
+});
+
+for (const changedInput of ['continuation', 'child-suggestion', 'prior-suggestion', 'unchanged'] as const) test(`saved rollup ${changedInput} inputs preserve archives and migrate only when needed`, async (t) => {
+  const home = await fixture(t);
+  const options = { includeText: true, scopeKey: 'allowed' };
+  const tail = 'FINAL_DECISION: approval remains pending.';
+  let now = BASE;
+  const inputs: ComputerHistorySummaryInput[] = [];
+  const { suggestion, ...withoutSuggestion } = CONTENT;
+  const summaries = new ComputerHistorySummaries({
+    home, now: () => now,
+    generate: async (input) => {
+      inputs.push(input);
+      return {
+        ...withoutSuggestion,
+        ...((changedInput === 'child-suggestion' && input.level === '10min' &&
+          Date.parse(input.start) >= BASE) || (changedInput === 'prior-suggestion' &&
+          Date.parse(input.start) < BASE) ? { suggestion } : {}),
+        body: changedInput === 'continuation' && input.level === '10min' &&
+          input.start === new Date(BASE).toISOString()
+          ? `${'Observed context. '.repeat(2700)}${tail}` : CONTENT.body,
+      };
+    },
+  });
+  const priorEvent = { ...event(BASE - MINUTE), content: 'Earlier work' };
+  await summaries.run([priorEvent], options);
+  const priorSummaries = await summaries.list();
+  now = BASE + 2 * TEN_MINUTES;
+  const events = [priorEvent, ...[1, 11].map((minute) => ({
+    ...event(BASE + minute * MINUTE), content: 'Current work',
+  }))];
+  await summaries.run(events, options);
+  const leaves = (await summaries.list()).filter((summary) => summary.level === '10min' &&
+    Date.parse(summary.start) >= BASE);
+  now = BASE + SIX_HOURS;
+  await summaries.run(events, options);
+  const parent = (await summaries.get(`6h-${BASE}`))!;
+  const parentInput = inputs.find((input) => input.level === '6h' && input.start === parent.start)!;
+  const previous = [...parentInput.priorContext!].reverse().map(({ id }) =>
+    priorSummaries.find((summary) => summary.id === id)!);
+  assert.ok(previous.length > 0 && previous.every(Boolean));
+  const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+  const legacyGeneration = (summary: StoredComputerHistorySummary) => {
+    const { rawSourceRevision: _raw, ...generation } = summary.generation!;
+    return generation;
+  };
+  // Legacy identity included full saved content even when model inputs omitted
+  // suggestion metadata or clipped a child to a single evidence item.
+  const sourceRevision = digest([
+    leaves.map((child) => [child.id, child.eventCount, child.applications, child.content, legacyGeneration(child)]),
+    digest(previous.map((summary) => [summary.id, summary.eventCount, summary.content, legacyGeneration(summary)])),
+  ]);
+  const legacy = {
+    ...parent,
+    content: { ...CONTENT, body: 'Reviewed work; the final decision was absent from the supplied sample.' },
+    generation: { ...parent.generation!, sourceRevision },
+  };
+  const parentPath = join(home, 'summaries', parent.filename!);
+  const legacyBytes = serializeComputerHistorySummary(legacy);
+  await writeFile(parentPath, legacyBytes);
+  await summaries.close();
+  const denied = new ComputerHistorySummaries({
+    home, now: () => now,
+    generate: async () => assert.fail('incomplete, expired or ineligible archives must not regenerate'),
+  });
+  const unchanged = async () => assert.equal(await readFile(parentPath, 'utf8'), legacyBytes);
+  now = BASE + 72 * 60 * MINUTE;
+  await denied.run([], options);
+  await unchanged();
+  now = BASE + SIX_HOURS;
+  for (const missing of [[leaves[1]!], priorSummaries]) {
+    const files = await Promise.all(missing.map(async (summary) => ({
+      path: join(home, 'summaries', summary.filename!),
+      bytes: await readFile(join(home, 'summaries', summary.filename!)),
+    })));
+    for (const file of files) await rm(file.path);
+    await denied.run([], options);
+    await unchanged();
+    for (const file of files) await writeFile(file.path, file.bytes);
+  }
+  await denied.run([], { ...options, includeText: false });
+  await denied.run([], { ...options, scopeKey: 'excluded' });
+  await unchanged();
+  if (changedInput === 'unchanged') {
+    await denied.run(events, options);
+    await unchanged();
+    await denied.close();
+    return;
+  }
+  await denied.close();
+
+  let mode: 'failure' | 'held' | 'success' = 'failure';
+  const started = deferred<void>();
+  const released = deferred<ComputerHistorySummaryContent>();
+  const repairedInputs: ComputerHistorySummaryInput[] = [];
+  const repair = new ComputerHistorySummaries({
+    home, now: () => now,
+    generate: async (input) => {
+      repairedInputs.push(input);
+      assert.equal(input.level, '6h');
+      assert.equal(input.start, parent.start);
+      if (changedInput === 'continuation') {
+        assert.ok(input.evidence.some(({ text }) => text.includes(tail)), 'repair must deliver the omitted decision');
+      } else {
+        const evidence = changedInput === 'child-suggestion' ? input.evidence : input.priorContext!;
+        assert.ok(evidence.some(({ text }) => text.includes(JSON.stringify(suggestion))),
+          'repair must deliver previously omitted workflow metadata');
+      }
+      if (mode === 'failure') throw new Error('Synthetic repair failure');
+      if (mode === 'held') { started.resolve(); return released.promise; }
+      return { ...CONTENT, body: tail };
+    },
+  });
+  const unchangedSummaries = (await repair.list()).filter((summary) => summary.id !== parent.id);
+  await assert.rejects(repair.run(events, options), /Synthetic repair failure/);
+  await unchanged();
+  mode = 'held';
+  const pending = repair.run(events, options);
+  await started.promise;
+  const cancelling = repair.cancel();
+  released.resolve(CONTENT);
+  await Promise.all([pending, cancelling]);
+  await unchanged();
+  mode = 'success';
+  await repair.run(events, options);
+  assert.equal(repairedInputs.length, 3);
+  const updated = (await repair.get(parent.id))!;
+  assert.equal(updated.content.body, tail);
+  assert.notEqual(updated.generation!.sourceRevision, sourceRevision);
+  assert.equal(updated.generation!.version, parent.generation!.version);
+  assert.deepEqual(updated.sourceIds, parent.sourceIds);
+  for (const summary of unchangedSummaries) assert.deepEqual(await repair.get(summary.id), summary);
+  await repair.close();
+  const reopened = new ComputerHistorySummaries({
+    home, now: () => now,
+    generate: async () => assert.fail('repaired rollups must converge across restart'),
+  });
+  t.after(() => reopened.close());
+  await reopened.run(events, options);
+  assert.deepEqual(await reopened.get(parent.id), updated);
+});
+
+test('maximal escaped multilingual children stay within the 6h item and encoded input budgets', async (t) => {
+  const home = await fixture(t);
+  const inputs: ComputerHistorySummaryInput[] = [];
+  const header = {
     title: '\u4e2d'.repeat(170),
     description: '\u4e2d'.repeat(682),
-    body: `BODY_START\n${'\u4e2d'.repeat(16_000)}`,
-    suggestion: {
-      type: 'automation',
-      name: '\u4e2d'.repeat(85),
-      description: '\u4e2d'.repeat(682),
-    },
+    body: 'BODY_START\n',
+  };
+  const sample = '\u4e2d\ud83d\ude80"\\\n\u0001';
+  const available = 64 * 1024 - Buffer.byteLength(JSON.stringify(header));
+  const body = header.body + sample.repeat(Math.floor(available / (Buffer.byteLength(JSON.stringify(sample)) - 2)));
+  const content: ComputerHistorySummaryContent = {
+    ...header,
+    body: body + 'x'.repeat(64 * 1024 - Buffer.byteLength(JSON.stringify({ ...header, body }))),
   };
   const summaries = new ComputerHistorySummaries({
     home,
@@ -1705,10 +2617,17 @@ test('maximal accepted multilingual content stays within the 6h input budget', a
   for (let i = 0; i < 7; i++) await summaries.run(events);
   const rollup = inputs.at(-1)!;
   assert.equal(rollup.level, '6h');
-  assert.equal(rollup.evidence.length, 36);
+  assert.deepEqual(decodeComputerHistorySummaryInput(rollup), rollup);
+  assert.ok(rollup.evidence.length <= 108);
+  assert.ok(Buffer.byteLength(JSON.stringify(rollup.evidence)) <= 224 * 1024);
   assert.ok(Buffer.byteLength(JSON.stringify(rollup)) < 256 * 1024);
-  assert.ok(rollup.evidence.every(({ text }) => text.endsWith('[truncated]')));
-  assert.ok(rollup.evidence.every(({ text }) => text.includes('BODY_START')));
+  for (const index of events.keys()) {
+    const child = rollup.evidence.find(({ id }) => id === `10min-${BASE + index * TEN_MINUTES}`);
+    assert.ok(child, 'each canonical child remains represented');
+    assert.ok(child.text.includes('BODY_START'), 'each canonical child retains its body introduction');
+    assert.ok(child.text.endsWith('[truncated]'), 'over-budget child introductions must disclose omitted text');
+  }
+  assert.doesNotMatch(JSON.stringify(rollup.evidence), /\ufffd/);
   assert.ok(rollup.evidence.every(({ text }) => Buffer.byteLength(text) <= 32 * 1024));
   assert.equal((await summaries.list()).length, 37);
 });
@@ -1954,6 +2873,10 @@ test('interval clear rejects corrupt summaries but all-clear deletes them withou
       { ...metadata, sourceIds: [] },
       { ...metadata, eventCount: 0 },
       { ...metadata, content: { ...metadata.content, path: '/raw.jsonl' } },
+      ...[null, false, 0, '', 'a'.repeat(63), 'A'.repeat(64), 'g'.repeat(64), `${'a'.repeat(64)}\n`].map((rawSourceRevision) => ({
+        ...metadata, generation: { ...metadata.generation, rawSourceRevision },
+      })),
+      { ...metadata, generation: { ...metadata.generation, version: 4 } },
       ...[undefined, null, 'false', 0].map((includesText) => ({
         ...metadata, generation: { ...metadata.generation, includesText },
       })),
@@ -1961,7 +2884,7 @@ test('interval clear rejects corrupt summaries but all-clear deletes them withou
       ...[
         undefined, null, ['../private'], [`10min-${BASE}`], [`6h-${BASE}`],
         [`10min-${BASE - TEN_MINUTES}`, `10min-${BASE - TEN_MINUTES}`],
-        [`10min-${BASE - SIX_HOURS - TEN_MINUTES}`],
+        [`10min-${BASE - 31 * DAY - 2 * TEN_MINUTES}`],
       ].map((priorContextIds) => ({
         ...metadata, generation: { ...metadata.generation, priorContextIds },
       })),

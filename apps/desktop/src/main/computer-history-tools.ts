@@ -47,6 +47,12 @@ const eventsSchema = z.object({
   start: timestamp,
   end: timestamp,
   limit: z.number().int().min(1).max(50).default(20),
+  after: z.string().regex(/^events-[0-9a-f]{64}$/u).nullable().optional()
+    .describe('For another list page, copy nextAfter exactly and preserve start and end. Omit or use null initially. Cannot combine with eventId or offset.'),
+  eventId: z.string().regex(/^event-[0-9a-f]{64}$/u).optional()
+    .describe('Exact event ID from a previous result when reading one observation or its remaining content.'),
+  offset: z.number().int().min(0).max(128 * 1024).optional()
+    .describe('Copy nextOffset from the selected event and supply its eventId, start and end. Omit for the first page.'),
 }).strict();
 
 export type HistorySearch = z.infer<typeof searchSchema>;
@@ -139,7 +145,7 @@ export function buildComputerHistoryTools(authority: ComputerHistoryToolAuthorit
     {
       name: 'ComputerHistoryReadEvents',
       displayName: 'Read recent activity evidence',
-      description: 'Read bounded observed activity for a precise interval of at most ten minutes within the last 48 hours. Use only when a summary cannot answer the user, including activity not yet summarized. Requires separate recorded-text transmission consent. Results may be partial; never interpret missing records as inactivity.',
+      description: 'Read bounded observed activity for a precise interval of at most ten minutes within the last 48 hours. Use only when a summary cannot answer the user, including activity not yet summarized. Requires separate recorded-text transmission consent. For a truncated event, copy its id to eventId and nextOffset to offset, preserving start and end and omitting after. For another list page, copy nextAfter to after with the same interval and omit eventId and offset. Results may be partial; never interpret missing records as inactivity.',
       parameters: eventsSchema,
       categoryHint: 'read',
       recoveryMode: 'replay_safe',

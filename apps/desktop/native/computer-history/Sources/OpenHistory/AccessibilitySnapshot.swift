@@ -58,6 +58,11 @@ struct NativeAccessibility: ObservationAccessibility {
         guard AXValueGetValue(value as! AXValue, .cfRange, &range), range.location >= 0, range.length >= 0 else { return nil }
         return EventStreamTextRange(location: range.location, length: range.length)
     }
+    func selectedNodes(_ node: AXNode, _ attribute: String) -> [AXNode]? {
+        guard let values = AXChildrenReader.read(node.element, attribute: attribute as CFString,
+            limit: 33, withinBudget: { withinBudget }), values.count <= 32 else { return nil }
+        return values.map { AXNode(element: $0) }
+    }
     func visibleRange(_ node: AXNode) -> ObservationVisibleRange {
         guard withinBudget else { return .unavailable }
         var value: CFTypeRef?
@@ -121,11 +126,14 @@ struct AccessibilitySnapshot {
     let element: EventStreamAXElement?
     let selectedText: String?
     let selectedRange: EventStreamTextRange?
+    let selectedTextTruncated: Bool?
     let ax: EventStreamAXTree?
     let contentState: HistoryEvent.ContentState
     let contentDomains: [String]?
     let sourcePath: [AXNode]
     let documentURLs: [String]
+    var selectedItems: [EventStreamAXElement] = []
+    var selectedItemNodes: [AXNode] = []
 
     var focusIdentifier: UInt? { targetNode.map { UInt(CFHash($0.element)) } }
     var dragEndpoint: EventStreamMouseDragEndpoint {
@@ -137,7 +145,8 @@ enum AccessibilityReader {
     static func snapshot(
         processIdentifier: pid_t, policy: ObservationPolicy, sources: WindowSources,
         at point: CGPoint? = nil, origin: AXNode? = nil,
-        expectedWindow: AXNode? = nil, includeTree: Bool = true
+        expectedWindow: AXNode? = nil, includeTree: Bool = true,
+        includeSelectionItems: Bool = false
     ) -> AccessibilitySnapshot? {
         guard !IsSecureEventInputEnabled(),
               let processIdentity = ObservationProcessIdentity.read(processIdentifier),
@@ -181,7 +190,8 @@ enum AccessibilityReader {
         }
         guard let observation = capture.capture(
             app: app, window: window, target: target,
-            browser: ObservationPolicy.browserBundleIdentifiers.contains(running.bundleIdentifier ?? ""), includeTree: includeTree
+            browser: ObservationPolicy.browserBundleIdentifiers.contains(running.bundleIdentifier ?? ""), includeTree: includeTree,
+            includeSelectionItems: includeSelectionItems
         ) else { return nil }
         guard !IsSecureEventInputEnabled(), access.node(application, "AXFocusedUIElement") == focused,
               focused.map({ access.role($0)?.secure == false }) ?? true else { return nil }
@@ -204,10 +214,14 @@ enum AccessibilityReader {
             sourceId: sourceId,
             windowNode: observation.windowNode, targetNode: observation.targetNode, contentRoot: observation.contentRoot,
             element: sourceId != nil ? observation.element : nil, selectedText: available ? observation.selectedText : nil,
-            selectedRange: observation.selectedRange, ax: available ? observation.ax : nil,
+            selectedRange: observation.selectedRange,
+            selectedTextTruncated: available ? observation.selectedTextTruncated : nil,
+            ax: available ? observation.ax : nil,
             contentState: sourceId == nil ? .unavailable : observation.contentState,
             contentDomains: available ? observation.contentDomains : nil,
-            sourcePath: observation.sourcePath, documentURLs: observation.documentURLs
+            sourcePath: observation.sourcePath, documentURLs: observation.documentURLs,
+            selectedItems: sourceId != nil ? observation.selectedItems : [],
+            selectedItemNodes: sourceId != nil ? observation.selectedItemNodes : []
         )
     }
 }
