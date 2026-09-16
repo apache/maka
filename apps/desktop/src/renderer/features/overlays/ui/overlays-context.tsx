@@ -17,14 +17,21 @@
  * under the License.
  */
 
-import type { MakaBridge } from '../../../preload/bridge-contract.js';
-import type { SearchServices } from '../../features/search/index.js';
+import { createContext, useContext, type ReactNode } from 'react';
+import type { OverlaysShellProjection } from '../model/overlays-projection.js';
 
-export function createDesktopSearchServices(
-  bridge: Pick<MakaBridge, 'search'> = window.maka,
-): SearchServices {
-  return {
-    searchThread: (...args: Parameters<MakaBridge['search']['thread']>) => bridge.search.thread(...args),
-    cancelThread: (requestId: string) => bridge.search.cancelThread(requestId),
-  };
+export const OverlaysContext = createContext<OverlaysShellProjection | null>(null);
+
+/** Reads the overlays; a mount outside `OverlaysRoot` is a bug, not a quiet idle. */
+export function useOverlays(): OverlaysShellProjection {
+  const overlays = useContext(OverlaysContext);
+  if (!overlays) throw new Error('OverlaysRoot is missing');
+  return overlays;
+}
+
+/** The overlay layer's read of the overlays, as a component so it owns no hook of its own. */
+export function OverlaysConsumer(props: {
+  readonly children: (overlays: OverlaysShellProjection) => ReactNode;
+}): ReactNode {
+  return props.children(useOverlays());
 }

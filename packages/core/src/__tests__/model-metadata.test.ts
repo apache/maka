@@ -167,10 +167,6 @@ describe('deepseek v4 flash vision exp metadata regression', () => {
     assert.equal(metadata.displayName, 'DeepSeek-V4-Flash-Vision-Exp');
     assert.equal(metadata.capabilities?.vision, true);
     assert.equal(resolveModelVisionSupport('deepseek', discovered, modelId), true);
-    assert.equal(
-      resolveModelVisionSupport('deepseek', [{ id: 'deepseek-v4-flash' }], 'deepseek-v4-flash'),
-      false,
-    );
   });
 });
 

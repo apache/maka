@@ -125,3 +125,19 @@ test('only the latest assistant segment owns live activity after a user instruct
   assert.match(summaries[1]?.textContent ?? '', /Pondering/);
   assert.equal(document.querySelectorAll('.maka-turn-processing').length, 1);
 });
+
+test('states the elapsed once, in the process header rather than the footer meta', () => {
+  const tool = { toolUseId: 'read', toolName: 'Read', status: 'completed' as const, args: {} };
+  const turn: TurnViewModel = {
+    turnId: 'turn-1', status: 'completed', modelId: 'fixture-model', tools: [tool], notes: [], startedAt: 1,
+    durationMs: 213_000,
+    timeline: [{ kind: 'tools', items: [tool] }, { kind: 'text', messageId: 'answer', text: 'the answer' }],
+  };
+  const { document } = parseHTML(renderToStaticMarkup(
+    <LocaleProvider locale="en">
+      <TurnView turn={turn} footerActions={[{ id: 'copy', label: 'Copy', enabled: true }]} />
+    </LocaleProvider>,
+  ));
+  assert.match(document.querySelector('.maka-processing-summary')?.textContent ?? '', /Worked for 3m 33s/);
+  assert.equal(document.querySelector('.maka-turn-footer-meta')?.textContent, 'fixture-model');
+});

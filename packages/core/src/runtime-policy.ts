@@ -70,6 +70,7 @@ export {
   decodeConnectionCredentialTarget,
   decodeModelOverridesTable,
   decodeConnectionModel,
+  decodeConnectionModels,
   decodeConnectionName,
   decodeConnectionSlug,
   decodeConnectionTarget,

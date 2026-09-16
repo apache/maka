@@ -50,9 +50,10 @@ test('WorkHub Coordination resolve has a closed empty input and bounded identity
   );
 });
 
-test('WorkHub model configuration only accepts a revision and explicit model identity', () => {
+test('WorkHub model configuration accepts thinking levels without widening its authority', () => {
   const input = {
     expectedRevision: 3,
+    thinkingLevel: null,
     modelTarget: {
       kind: 'explicit',
       connectionId: 'connection-1',
@@ -61,9 +62,18 @@ test('WorkHub model configuration only accepts a revision and explicit model ide
     },
   };
   assert.deepEqual(decodeWorkHubCoordinationConfigureModelInput(input), input);
+  for (const thinkingLevel of ['high', null]) {
+    assert.deepEqual(decodeWorkHubCoordinationConfigureModelInput({ ...input, thinkingLevel }), {
+      ...input,
+      thinkingLevel,
+    });
+  }
   for (const invalid of [
+    { expectedRevision: input.expectedRevision, modelTarget: input.modelTarget },
+    { ...input, thinkingLevel: undefined },
     { ...input, sessionId: 'another-session' },
     { ...input, permissionMode: 'bypass' },
+    { ...input, thinkingLevel: 'extreme' },
     { ...input, expectedRevision: -1 },
     { ...input, modelTarget: { kind: 'default' } },
   ])

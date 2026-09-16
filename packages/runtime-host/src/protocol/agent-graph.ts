@@ -22,6 +22,7 @@ import {
   requireEncodedByteLimit,
   requireEntityId,
   requireExactRecord,
+  requireOpaqueIdentity,
   requireShapedRecord,
   requireUtf8String,
 } from './codec.js';
@@ -1417,19 +1418,6 @@ function requireBoolean(value: unknown, label: string): boolean {
 
 function requireNonNegativeFiniteNumber(value: unknown, label: string): number {
   if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
-    throw invalidProtocolFrame(`Invalid ${label}`);
-  }
-  return value;
-}
-
-function requireOpaqueIdentity(value: unknown, label: string): string {
-  if (
-    typeof value !== 'string' ||
-    value.length === 0 ||
-    value.length > 256 ||
-    value.trim() !== value ||
-    /[\u0000-\u001f\u007f]/.test(value)
-  ) {
     throw invalidProtocolFrame(`Invalid ${label}`);
   }
   return value;

@@ -17,17 +17,22 @@
  * under the License.
  */
 
-import type { SearchError, SearchRequest, SearchResult } from '@maka/core/search';
-import { createServicesContext } from '../../application/contracts/feature-services.js';
+import type { ComponentType, ReactNode, RefObject } from 'react';
+import type { SessionSummary } from '@maka/core/session';
+import type { ChatModelChoice, ComposerHandle } from '@maka/ui';
 
-export interface SearchServices {
-  searchThread(request: SearchRequest, requestId?: string): Promise<SearchResult[] | SearchError>;
-  cancelThread(requestId: string): Promise<void>;
+/** Composition supplies the same session workspace used by ordinary conversations. */
+export interface SessionWorkspaceProps {
+  className?: string;
+  layoutScope?: string;
+  session?: SessionSummary;
+  sessionIds: ReadonlySet<string> | undefined;
+  modelChoices: readonly ChatModelChoice[];
+  visible: boolean;
+  composerRef: RefObject<ComposerHandle | null>;
+  onShowConversation(): void;
+  onOpenSession(sessionId: string): void;
+  children(workbar: { openUsage(): void; toggle: ReactNode }): ReactNode;
 }
 
-const { Provider, useServices } = createServicesContext<SearchServices>('SearchServicesProvider');
-
-export const SearchServicesProvider = Provider;
-export function useSearchServices(): SearchServices {
-  return useServices();
-}
+export type SessionWorkspaceComponent = ComponentType<SessionWorkspaceProps>;

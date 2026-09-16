@@ -12,7 +12,7 @@ index b317e9d..5beb1c2 100644
    timeoutMs?: number;
    /** @defaultValue `64 * 1024 * 1024` */
 diff --git a/node_modules/@maka/runtime/node_modules/@ai-sdk/code-mode/src/run-code-mode.ts b/node_modules/@maka/runtime/node_modules/@ai-sdk/code-mode/src/run-code-mode.ts
-index 95435bd..fb7ba60 100644
+index 95435bd..d69b159 100644
 --- a/node_modules/@maka/runtime/node_modules/@ai-sdk/code-mode/src/run-code-mode.ts
 +++ b/node_modules/@maka/runtime/node_modules/@ai-sdk/code-mode/src/run-code-mode.ts
 @@ -159,6 +159,7 @@
@@ -31,7 +31,41 @@ index 95435bd..fb7ba60 100644
      memoryLimitBytes: policy.memoryLimitBytes ?? DEFAULT_MEMORY_LIMIT_BYTES,
      maxStackSizeBytes: policy.maxStackSizeBytes ?? DEFAULT_STACK_LIMIT_BYTES,
      maxResultBytes: policy.maxResultBytes ?? DEFAULT_MAX_RESULT_BYTES,
-@@ -363,6 +365,7 @@
+@@ -202,13 +204,11 @@
+ }
+ 
+ function createCodeModeSource(js: string, toolNames: string[]): string {
+-  const bindings = Object.fromEntries(
+-    toolNames.map((toolName, index) => [toolName, `__codeMode.tool${index}`]),
+-  );
+-  const bindingSource = Object.entries(bindings)
+-    .map(([name, reference]) => `${JSON.stringify(name)}:${reference}`)
++  // Expose only the active catalog: unknown names must not look callable.
++  const bindingSource = toolNames
++    .map((name, index) => `[${JSON.stringify(name)}]:(input)=>__codeMode.tool${index}(input)`)
+     .join(',');
+-  return `const __codeModeBindings={${bindingSource}};const tools=new Proxy(Object.create(null),{get(_target,name){const binding=__codeModeBindings[name];return typeof binding==="function"?(input)=>binding(input):(input)=>__codeMode.missing(String(name),input);}});const __codeModeResult=await(async()=>{\n${js}\n})();if(__codeModeResult===undefined)return undefined;return JSON.parse(JSON.stringify(__codeModeResult));`;
++  return `const tools=Object.freeze({__proto__:null,${bindingSource}});const __codeModeResult=await(async()=>{\n${js}\n})();if(__codeModeResult===undefined)return undefined;return JSON.parse(JSON.stringify(__codeModeResult));`;
+ }
+ 
+ function createHostFunctions({
+@@ -236,15 +236,6 @@
+         toolName,
+       });
+   }
+-  group.missing = async (toolName: unknown, toolInput: unknown) =>
+-    await invokeCodeModeTool({
+-      codeModeErrors,
+-      input,
+-      outerToolCallId,
+-      policy,
+-      toolInput,
+-      toolName: String(toolName),
+-    });
+   return { __codeMode: group } as HostFunctions;
+ }
+ 
+@@ -363,6 +354,7 @@
  ): RunLimits {
    return {
      timeoutMs: policy.timeoutMs,
@@ -39,6 +73,28 @@ index 95435bd..fb7ba60 100644
      memoryLimitBytes: policy.memoryLimitBytes,
      maxStackSizeBytes: policy.maxStackSizeBytes,
      maxResultBytes: expandedSerializationLimit(policy.maxResultBytes),
+@@ -545,10 +537,7 @@
+       interruptId: `${toolCallId}:interrupt`,
+       toolName,
+       toolCallId,
+-      input:
+-        interruption.hostFunctionName === '__codeMode.missing'
+-          ? interruption.arguments[1]
+-          : interruption.arguments[0],
++      input: interruption.arguments[0],
+       payload: assertInterruptPayload(interruption.payload),
+     };
+   });
+@@ -568,9 +557,6 @@
+   interruption: RunInterruption,
+   toolNames: string[],
+ ): string {
+-  if (interruption.hostFunctionName === '__codeMode.missing') {
+-    return String(interruption.arguments[0]);
+-  }
+   const match = /^__codeMode\.tool(\d+)$/u.exec(interruption.hostFunctionName);
+   const toolName = match === null ? undefined : toolNames[Number(match[1])];
+   if (toolName === undefined) {
 diff --git a/node_modules/@maka/runtime/node_modules/@ai-sdk/code-mode/dist/index.d.ts b/node_modules/@maka/runtime/node_modules/@ai-sdk/code-mode/dist/index.d.ts
 index 9cafdbb..3c924f1 100644
 --- a/node_modules/@maka/runtime/node_modules/@ai-sdk/code-mode/dist/index.d.ts
@@ -53,7 +109,7 @@ index 9cafdbb..3c924f1 100644
      timeoutMs?: number;
      /** @defaultValue `64 * 1024 * 1024` */
 diff --git a/node_modules/@maka/runtime/node_modules/@ai-sdk/code-mode/dist/run-code-mode.js b/node_modules/@maka/runtime/node_modules/@ai-sdk/code-mode/dist/run-code-mode.js
-index 257b976..8095276 100644
+index 257b976..67d8409 100644
 --- a/node_modules/@maka/runtime/node_modules/@ai-sdk/code-mode/dist/run-code-mode.js
 +++ b/node_modules/@maka/runtime/node_modules/@ai-sdk/code-mode/dist/run-code-mode.js
 @@ -117,6 +117,7 @@
@@ -64,7 +120,41 @@ index 257b976..8095276 100644
      memoryLimitBytes: policy.memoryLimitBytes ?? DEFAULT_MEMORY_LIMIT_BYTES,
      maxStackSizeBytes: policy.maxStackSizeBytes ?? DEFAULT_STACK_LIMIT_BYTES,
      maxResultBytes: policy.maxResultBytes ?? DEFAULT_MAX_RESULT_BYTES,
-@@ -260,6 +261,7 @@
+@@ -138,13 +139,11 @@
+   }
+ }
+ function createCodeModeSource(js, toolNames) {
+-  const bindings = Object.fromEntries(
+-    toolNames.map((toolName, index) => [toolName, `__codeMode.tool${index}`])
+-  );
+-  const bindingSource = Object.entries(bindings).map(([name, reference]) => `${JSON.stringify(name)}:${reference}`).join(",");
+-  return `const __codeModeBindings={${bindingSource}};const tools=new Proxy(Object.create(null),{get(_target,name){const binding=__codeModeBindings[name];return typeof binding==="function"?(input)=>binding(input):(input)=>__codeMode.missing(String(name),input);}});const __codeModeResult=await(async()=>{
+-${js}
+-})();if(__codeModeResult===undefined)return undefined;return JSON.parse(JSON.stringify(__codeModeResult));`;
++  // Expose only the active catalog: unknown names must not look callable.
++  const bindingSource = toolNames
++    .map((name, index) => `[${JSON.stringify(name)}]:(input)=>__codeMode.tool${index}(input)`)
++    .join(",");
++  return `const tools=Object.freeze({__proto__:null,${bindingSource}});const __codeModeResult=await(async()=>{\n${js}\n})();if(__codeModeResult===undefined)return undefined;return JSON.parse(JSON.stringify(__codeModeResult));`;
+ }
+ function createHostFunctions({
+   codeModeErrors,
+@@ -164,14 +163,6 @@
+       toolName
+     });
+   }
+-  group.missing = async (toolName, toolInput) => await invokeCodeModeTool({
+-    codeModeErrors,
+-    input,
+-    outerToolCallId,
+-    policy,
+-    toolInput,
+-    toolName: String(toolName)
+-  });
+   return { __codeMode: group };
+ }
+ async function invokeCodeModeTool({
+@@ -260,6 +251,7 @@
  function toRunLimits(policy, source, userSource) {
    return {
      timeoutMs: policy.timeoutMs,
@@ -72,3 +162,22 @@ index 257b976..8095276 100644
      memoryLimitBytes: policy.memoryLimitBytes,
      maxStackSizeBytes: policy.maxStackSizeBytes,
      maxResultBytes: expandedSerializationLimit(policy.maxResultBytes),
+@@ -402,7 +394,7 @@
+       interruptId: `${toolCallId}:interrupt`,
+       toolName,
+       toolCallId,
+-      input: interruption.hostFunctionName === "__codeMode.missing" ? interruption.arguments[1] : interruption.arguments[0],
++      input: interruption.arguments[0],
+       payload: assertInterruptPayload(interruption.payload)
+     };
+   });
+@@ -417,9 +409,6 @@
+   return Number(match[1]);
+ }
+ function toolNameForInterruption(interruption, toolNames) {
+-  if (interruption.hostFunctionName === "__codeMode.missing") {
+-    return String(interruption.arguments[0]);
+-  }
+   const match = /^__codeMode\.tool(\d+)$/u.exec(interruption.hostFunctionName);
+   const toolName = match === null ? void 0 : toolNames[Number(match[1])];
+   if (toolName === void 0) {

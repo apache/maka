@@ -28,7 +28,7 @@ import {
   isSessionWorkbarCollapsed,
   persistWorkbarLayout,
   persistableSessionWorkbarPanels,
-  readSessionWorkbarPanels,
+  parseSessionWorkbarPanels,
   reduceWorkbarLayout,
   reduceWorkbarPanels,
   SESSION_BOTTOM_PANEL_MAX_HEIGHT,
@@ -183,7 +183,7 @@ describe('Workbar topology', () => {
         'maka-session-workbar-tab-v1': 'browser',
       }),
     );
-    assert.deepEqual(readSessionWorkbarPanels(), createSessionWorkbarPanelsState());
+    assert.deepEqual(parseSessionWorkbarPanels(localStorage.getItem('maka-session-workbar-panels-v3')), createSessionWorkbarPanelsState());
   });
 
   it('drops a retired tool kind left in v3 storage', () => {
@@ -208,7 +208,7 @@ describe('Workbar topology', () => {
         }),
       }),
     );
-    const state = readSessionWorkbarPanels();
+    const state = parseSessionWorkbarPanels(localStorage.getItem('maka-session-workbar-panels-v3'));
     assert.deepEqual(
       state.right.tabs.map((tab) => tab.id),
       ['workbar:review'],
@@ -266,6 +266,23 @@ describe('Workbar topology', () => {
       rightWidth: 544,
       bottomHeight: 388,
     });
+  });
+
+  it('keeps ordinary and WorkHub renderer layouts independent across interleaved writes', () => {
+    cleanups.push(installMemoryLocalStorage());
+    let main = loadWorkbarLayout('session-a');
+    let workhub = loadWorkbarLayout('coordination', 'workhub');
+    main = reduceWorkbarLayout(main, { type: 'open', placement: 'right', tab: { id: 'workbar:review', kind: 'review' } });
+    main = reduceWorkbarLayout(main, { type: 'collapse', placement: 'right', collapsed: false });
+    workhub = reduceWorkbarLayout(workhub, { type: 'open', placement: 'bottom', tab: { id: 'workbar:inspector', kind: 'inspector' } });
+    workhub = reduceWorkbarLayout(workhub, { type: 'collapse', placement: 'bottom', collapsed: false });
+    workhub = reduceWorkbarLayout(workhub, { type: 'resize', placement: 'right', size: 560 });
+    persistWorkbarLayout(main);
+    persistWorkbarLayout(workhub, 'all', 'workhub');
+    assert.deepEqual(loadWorkbarLayout('session-a'), main);
+    main = reduceWorkbarLayout(main, { type: 'resize', placement: 'bottom', size: 420 });
+    persistWorkbarLayout(main);
+    assert.deepEqual(loadWorkbarLayout('coordination', 'workhub'), workhub);
   });
 
   it('persists per-Session collapse and retires the ownerless global preference', () => {
@@ -326,6 +343,6 @@ describe('Workbar topology', () => {
         'maka-session-workbar-panels-v3': '{not-json',
       }),
     );
-    assert.deepEqual(readSessionWorkbarPanels(), createSessionWorkbarPanelsState());
+    assert.deepEqual(parseSessionWorkbarPanels(localStorage.getItem('maka-session-workbar-panels-v3')), createSessionWorkbarPanelsState());
   });
 });
