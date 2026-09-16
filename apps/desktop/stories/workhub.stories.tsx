@@ -350,13 +350,18 @@ async function expectPromptRailClearance(canvasElement: HTMLElement) {
     }
     const body = canvasElement.querySelector('.workhub-body')!;
     expect(body.scrollWidth - body.clientWidth).toBeLessThanOrEqual(1);
-    // At full desktop width, WorkHub must reach the same shared reading measure
-    // as Sessions; applying transcript gutters twice makes this narrower.
-    if (window.innerWidth >= 1600) {
-      const turn = canvasElement.querySelector('.maka-turn')!;
-      expect(Math.abs(turn.getBoundingClientRect().width - Number.parseFloat(getComputedStyle(turn).getPropertyValue('--maka-reading-measure')))).toBeLessThanOrEqual(1);
-    }
   });
+  // At full desktop width, WorkHub must reach the same shared reading measure
+  // as Sessions; applying transcript gutters twice makes this narrower.
+  if (window.innerWidth >= 1600) {
+    const turn = canvasElement.querySelector('.maka-turn')!;
+    const measure = document.createElement('div');
+    measure.style.cssText = 'position: absolute; visibility: hidden; height: 0; width: var(--maka-reading-measure)';
+    turn.append(measure);
+    const readingWidth = measure.getBoundingClientRect().width;
+    measure.remove();
+    expect(Math.abs(turn.getBoundingClientRect().width - readingWidth)).toBeLessThanOrEqual(1);
+  }
 }
 
 // Real path: WorkHub with delegated Turns from two ordinary Sessions and asynchronously read execution feedback.
