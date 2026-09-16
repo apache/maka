@@ -21,6 +21,7 @@ apps/desktop/src/renderer/error-boundary.tsx
 apps/desktop/src/renderer/features/app-update/services-context.tsx
 apps/desktop/src/renderer/features/app-update/ui/app-update-provider.tsx
 apps/desktop/src/renderer/features/connection-settings/generic-provider-mark.tsx
+apps/desktop/src/renderer/features/connection-settings/model-context-target-boundary.tsx
 apps/desktop/src/renderer/features/connection-settings/onboarding-step-form.tsx
 apps/desktop/src/renderer/features/connection-settings/provider-add-model-dialog.tsx
 apps/desktop/src/renderer/features/connection-settings/provider-capability-editor.tsx

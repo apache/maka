@@ -37,6 +37,10 @@ export {
   providerPanelActionErrorMessage,
 } from './provider-panel-shared.js';
 export { OnboardingStepForm } from './onboarding-step-form.js';
+export {
+  ModelContextTargetBoundary,
+  type ModelContextTargetControl,
+} from './model-context-target-boundary.js';
 export { getProviderSettingsCopy, subscriptionActionErrorMessage, subscriptionResultMessage } from './settings-provider-copy.js';
 export type { ProviderSettingsCopy } from './settings-provider-copy.js';
 export type {
