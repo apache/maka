@@ -22,7 +22,11 @@ import type {
   SessionBundleImportIpcResult,
 } from './bridge-contract.js';
 
-import type { WorkHubAnswerInput, WorkHubAnswerResult } from '../shared/workhub-conversation.js';
+import type {
+  WorkHubAnswerInput,
+  WorkHubAnswerResult,
+  WorkHubPrepareAttachmentsResult,
+} from '../shared/workhub-conversation.js';
 import type { SessionObservationMessage } from '../shared/session-execution-projection.js';
 import { contextBridge, ipcRenderer } from 'electron';
 import { workHubControlBridge } from './workhub-control.js';
@@ -31,8 +35,9 @@ import {
   isRuntimeHostProfileKind,
   type RuntimeHostProfileKind,
 } from '@maka/runtime-host/profile-kind';
+import { AttachmentIngestBlockedError } from '@maka/core/attachments';
 import { encodeIngestItems } from './attachment-ingest-payload.js';
-import { collectThreadSearchResponses } from './multi-host-thread-search.js';
+import { createThreadSearchClient } from './multi-host-thread-search.js';
 import { releaseSessionObservation } from './session-observation-release.js';
 import {
   resolveDesktopWorkHubCoordinationCreateScope,
@@ -157,7 +162,7 @@ import type { OrchestrationMode } from '@maka/core/orchestration';
 
 import type { TurnOrchestration, SessionListFilter, RegenerateTurnInput } from '@maka/core/runtime-inputs';
 import type { PlanSessionState } from '@maka/core/plan';
-import type { SearchErrorReason, SearchRequest, SearchResult } from '@maka/core/search';
+import type { SearchErrorReason, SearchResult } from '@maka/core/search';
 import type {
   SessionCatalogSummary,
   SessionChangedEvent,
@@ -265,6 +270,7 @@ import {
   projectDesktopUsageStats,
   type DesktopSessionSummary,
   type DesktopSessionSummaryInput,
+  type DesktopSessionUpdateResult,
 } from '../shared/desktop-session-projection.js';
 import { projectDesktopSharedSessionSummary } from '../shared/shared-session-catalog-projection.js';
 
@@ -732,19 +738,21 @@ async function invokeProjectedSessionRuntimeHost<T>(
   );
 }
 
-async function invokeSessionSummary(
+async function invokeSessionUpdate(
   channel: string,
   sessionId: string,
   ...args: unknown[]
-): Promise<DesktopSessionSummary> {
+): Promise<DesktopSessionUpdateResult<DesktopSessionSummary>> {
   const session = await runtimeHostSessionRef(sessionId);
-  const summary = await ipcRenderer.invoke(
+  const result = (await ipcRenderer.invoke(
     channel,
     session.scope,
     session.sessionId,
     ...args,
-  ) as DesktopSessionSummaryInput;
-  return projectSessionSummary(session.scope, summary);
+  )) as DesktopSessionUpdateResult<DesktopSessionSummaryInput>;
+  return result.ok
+    ? { ok: true, session: projectSessionSummary(session.scope, result.session) }
+    : result;
 }
 
 async function invokeBranchFromTurn(
@@ -1939,6 +1947,9 @@ const makaBridge = {
     remove(id, options) {
       return ipcRenderer.invoke('workBoard:remove', id, options);
     },
+    linkSession(id, link, options) {
+      return ipcRenderer.invoke('workBoard:linkSession', id, link, options);
+    },
     subscribeChanges(handler: (event: WorkBoardChangedEvent) => void): () => void {
       const listener = (_event: Electron.IpcRendererEvent, payload: WorkBoardChangedEvent) =>
         handler(payload);
@@ -2044,15 +2055,29 @@ const makaBridge = {
     },
     async prepareAttachments(coordinationSessionId: string, items: Parameters<MakaBridge['workHub']['prepareAttachments']>[1]) {
       const scope = await resolveDesktopWorkHubCoordinationCreateScope(coordinationSessionId, runtimeHostSessionRef);
-      const attachments = await ipcRenderer.invoke('workhub:prepareAttachments', scope, await encodeIngestItems(items)) as AttachmentRef[];
-      return projectDesktopAttachmentRefs(scope, attachments);
+      let encoded: Awaited<ReturnType<typeof encodeIngestItems>>;
+      try {
+        encoded = await encodeIngestItems(items);
+      } catch (error) {
+        if (error instanceof AttachmentIngestBlockedError) return { ok: false, code: error.code };
+        throw error;
+      }
+      const result = await ipcRenderer.invoke(
+        'workhub:prepareAttachments',
+        scope,
+        encoded,
+      ) as WorkHubPrepareAttachmentsResult;
+      return result.ok
+        ? { ok: true, attachments: projectDesktopAttachmentRefs(scope, result.attachments) }
+        : result;
     },
     async answer(coordinationSessionId: string, input: WorkHubAnswerInput) {
       const scope = await resolveDesktopWorkHubCoordinationCreateScope(coordinationSessionId, runtimeHostSessionRef);
-      return ipcRenderer.invoke('workhub:answer', scope, {
+      const result = await ipcRenderer.invoke('workhub:answer', scope, {
         ...input,
         ...(input.attachments ? { attachments: hostAttachmentRefs({ scope, sessionId: parseDesktopSessionKey(coordinationSessionId).sessionId }, input.attachments) } : {}),
-      }) as Promise<WorkHubAnswerResult>;
+      }) as WorkHubAnswerResult;
+      return result;
     },
     async configureModel(coordinationSessionId: string, input: OperationInput<'workhub.coordination.configureModel'>) {
       const scope = await resolveDesktopWorkHubCoordinationCreateScope(coordinationSessionId, runtimeHostSessionRef);
@@ -2112,10 +2137,19 @@ const makaBridge = {
       if (command.directoryReferences?.some((ref) => ref.hostId !== session.scope.hostId)) {
         throw new Error('Directory references belong to a different Runtime Host. Select the folder on the target Host.');
       }
-      const encoded =
-        'attachmentItems' in command && command.attachmentItems
-          ? { ...command, attachmentItems: await encodeIngestItems(command.attachmentItems) }
-          : command;
+      let attachmentItems: Awaited<ReturnType<typeof encodeIngestItems>> | undefined;
+      try {
+        attachmentItems =
+          'attachmentItems' in command && command.attachmentItems
+            ? await encodeIngestItems(command.attachmentItems)
+            : undefined;
+      } catch (error) {
+        if (error instanceof AttachmentIngestBlockedError) {
+          return { ok: false, reason: 'attachment_blocked', code: error.code };
+        }
+        throw error;
+      }
+      const encoded = attachmentItems ? { ...command, attachmentItems } : command;
       const result = (await ipcRenderer.invoke(
         'sessions:send',
         session.scope,
@@ -2150,9 +2184,17 @@ const makaBridge = {
       if (command.directoryReferences?.some((ref) => ref.hostId !== session.scope.hostId)) {
         throw new Error('Directory references belong to a different Runtime Host. Select the folder on the target Host.');
       }
-      const attachmentItems = command.attachmentItems
-        ? await encodeIngestItems(command.attachmentItems)
-        : undefined;
+      let attachmentItems: Awaited<ReturnType<typeof encodeIngestItems>> | undefined;
+      try {
+        attachmentItems = command.attachmentItems
+          ? await encodeIngestItems(command.attachmentItems)
+          : undefined;
+      } catch (error) {
+        if (error instanceof AttachmentIngestBlockedError) {
+          return { ok: false, reason: 'attachment_blocked', code: error.code };
+        }
+        throw error;
+      }
       const result = (await ipcRenderer.invoke(
         options?.waitForHostAdmission ? 'sessions:submitMessage' : 'session-local:submit',
         session.scope,
@@ -2398,14 +2440,14 @@ const makaBridge = {
     rename(sessionId: string, name: string, options?: { revisionFamily?: boolean }): Promise<void> {
       return invokeSessionRuntimeHost('sessions:rename', sessionId, name, options);
     },
-    setPermissionMode(sessionId: string, mode: PermissionMode): Promise<DesktopSessionSummary> {
-      return invokeSessionSummary('sessions:setPermissionMode', sessionId, mode);
+    setPermissionMode(sessionId: string, mode: PermissionMode): Promise<DesktopSessionUpdateResult<DesktopSessionSummary>> {
+      return invokeSessionUpdate('sessions:setPermissionMode', sessionId, mode);
     },
-    setCollaborationMode(sessionId: string, mode: CollaborationMode): Promise<DesktopSessionSummary> {
-      return invokeSessionSummary('sessions:setCollaborationMode', sessionId, mode);
+    setCollaborationMode(sessionId: string, mode: CollaborationMode): Promise<DesktopSessionUpdateResult<DesktopSessionSummary>> {
+      return invokeSessionUpdate('sessions:setCollaborationMode', sessionId, mode);
     },
-    setOrchestrationMode(sessionId: string, mode: OrchestrationMode): Promise<DesktopSessionSummary> {
-      return invokeSessionSummary('sessions:setOrchestrationMode', sessionId, mode);
+    setOrchestrationMode(sessionId: string, mode: OrchestrationMode): Promise<DesktopSessionUpdateResult<DesktopSessionSummary>> {
+      return invokeSessionUpdate('sessions:setOrchestrationMode', sessionId, mode);
     },
     getPlanState(sessionId: string): Promise<PlanSessionState> {
       return invokeProjectedSessionRuntimeHost('plan-mode:getState', sessionId);
@@ -2436,8 +2478,8 @@ const makaBridge = {
     abandonPlanProposal(
       sessionId: string,
       proposalId: string,
-    ): Promise<PlanSessionState> {
-      return invokeProjectedSessionRuntimeHost<PlanSessionState>('plan-mode:abandon', sessionId, proposalId);
+    ): Promise<PlanControlIpcResult<PlanSessionState>> {
+      return invokeProjectedSessionRuntimeHost('plan-mode:abandon', sessionId, proposalId);
     },
     approvePlan(sessionId: string, input: {
       proposalId: string;
@@ -2461,11 +2503,11 @@ const makaBridge = {
       llmConnectionSlug: string;
       model: string;
       thinkingLevel: ThinkingLevel | null;
-    }): Promise<DesktopSessionSummary> {
-      return invokeSessionSummary('sessions:setModelConfiguration', sessionId, input);
+    }): Promise<DesktopSessionUpdateResult<DesktopSessionSummary>> {
+      return invokeSessionUpdate('sessions:setModelConfiguration', sessionId, input);
     },
-    setThinkingLevel(sessionId: string, level: ThinkingLevel | undefined | null): Promise<DesktopSessionSummary> {
-      return invokeSessionSummary('sessions:setThinkingLevel', sessionId, level ?? undefined);
+    setThinkingLevel(sessionId: string, level: ThinkingLevel | undefined | null): Promise<DesktopSessionUpdateResult<DesktopSessionSummary>> {
+      return invokeSessionUpdate('sessions:setThinkingLevel', sessionId, level ?? undefined);
     },
     async remove(
       sessionId: string,
@@ -2814,6 +2856,22 @@ const makaBridge = {
     },
   },
   shellRuns: {
+    async recover(sessionId: string) {
+      const session = await runtimeHostSessionRef(sessionId);
+      const result = await ipcRenderer.invoke('shell-runs:recover', session.scope, session.sessionId) as
+        import('../shared/runtime-host-identity.js').TerminalRecovery;
+      return {
+        resources: result.resources.map((update) => projectShellRunUpdate(session.scope, update)),
+        closes: result.closes.map((change) => ({ ...change,
+          sessionId: recordRuntimeHostSessionScope(session.scope, change.sessionId),
+        })),
+      };
+    },
+    subscribeCloseChanges(handler: (change: import('../shared/runtime-host-identity.js').TerminalCloseChange) => void) {
+      return subscribeEveryRuntimeHostEvent('shell-runs:close-changed', (scope, change: import('../shared/runtime-host-identity.js').TerminalCloseChange) =>
+        handler({ ...change, sessionId: recordRuntimeHostSessionScope(scope, change.sessionId) }),
+      );
+    },
     async list(sessionId: string): Promise<ShellRunUpdate[]> {
       const session = await runtimeHostSessionRef(sessionId);
       const updates = await ipcRenderer.invoke(
@@ -2847,29 +2905,19 @@ const makaBridge = {
       ) as ShellRunUpdate;
       return projectShellRunUpdate(session.scope, update);
     },
-    async write(input: {
+    write(input: {
       sessionId: string;
       ref: string;
       input?: string;
       size?: { cols: number; rows: number };
-    }): Promise<ShellRunUpdate | null> {
-      const session = await runtimeHostSessionRef(input.sessionId);
-      const update = await ipcRenderer.invoke('shell-runs:write', session.scope, {
-        ...input,
-        sessionId: session.sessionId,
-      }) as ShellRunUpdate | null;
-      return update ? projectShellRunUpdate(session.scope, update) : null;
+    }): Promise<void> {
+      return invokeSessionInput('shell-runs:write', input);
     },
-    async stop(input: {
+    stop(input: {
       sessionId: string;
       ref: string;
-    }): Promise<ShellRunUpdate | null> {
-      const session = await runtimeHostSessionRef(input.sessionId);
-      const update = await ipcRenderer.invoke('shell-runs:stop', session.scope, {
-        ...input,
-        sessionId: session.sessionId,
-      }) as ShellRunUpdate | null;
-      return update ? projectShellRunUpdate(session.scope, update) : null;
+    }): Promise<void> {
+      return invokeSessionInput('shell-runs:stop', input);
     },
     subscribeUpdates(handler: (update: ShellRunUpdate) => void): () => void {
       return subscribeEveryRuntimeHostEvent('shell-runs:update', (scope, update: ShellRunUpdate) =>
@@ -3141,34 +3189,29 @@ const makaBridge = {
       return invokeSessionRuntimeHost('attachments:readBytes', sessionId, artifactId);
     },
   },
-  search: {
+  search: createThreadSearchClient({
     // Search each ready Owner Host independently; Guests cannot search a workspace.
-    // Remote queries use that Host's authenticated connection, never telemetry.
-    async thread(request: SearchRequest): Promise<SearchResult[] | { ok: false; reason: SearchErrorReason; message: string }> {
-      const scopes = await readyOwnerRuntimeHostScopes();
-      return collectThreadSearchResponses(
-        scopes.map(async (scope) => {
-          const result = await ipcRenderer.invoke('search:thread', scope, request) as
-            | SearchResult[]
-            | { ok: false; reason: SearchErrorReason; message: string };
-          return Array.isArray(result)
-            ? result.map((entry) =>
-                entry.target?.kind === 'thread'
-                  ? {
-                      ...entry,
-                      target: {
-                        ...entry.target,
-                        sessionId: recordRuntimeHostSessionScope(scope, entry.target.sessionId),
-                      },
-                    }
-                  : entry,
-              )
-            : result;
-        }),
-        request.limit,
-      );
+    scopes: readyOwnerRuntimeHostScopes,
+    async search(scope, request, requestId) {
+      const result = await ipcRenderer.invoke('search:thread', scope, request, requestId) as
+        | SearchResult[]
+        | { ok: false; reason: SearchErrorReason; message: string };
+      return Array.isArray(result)
+        ? result.map((entry) =>
+            entry.target?.kind === 'thread'
+              ? {
+                  ...entry,
+                  target: {
+                    ...entry.target,
+                    sessionId: recordRuntimeHostSessionScope(scope, entry.target.sessionId),
+                  },
+                }
+              : entry,
+          )
+        : result;
     },
-  },
+    cancel: (scope, requestId) => ipcRenderer.invoke('search:thread:cancel', scope, requestId),
+  }),
   // Browser-assisted Codex account bridge. NEVER returns raw OAuth
   // credentials; the renderer only sees account state and action results.
   //
@@ -3658,6 +3701,18 @@ const makaBridge = {
         }
     > {
       return invokeSessionRuntimeHost('app:openArtifactPath', sessionId, artifactId);
+    },
+    showArtifactInFolder(
+      sessionId: string,
+      artifactId: string,
+    ): Promise<
+      | { ok: true; opened: string }
+      | {
+          ok: false;
+          reason: 'unknown-key' | 'not-allowed' | 'missing' | 'not-a-directory' | 'open-failed';
+        }
+    > {
+      return invokeSessionRuntimeHost('app:showArtifactInFolder', sessionId, artifactId);
     },
     saveArtifactAs(sessionId: string, artifactId: string): Promise<ArtifactSaveResult> {
       return invokeSessionRuntimeHost('app:saveArtifactAs', sessionId, artifactId);

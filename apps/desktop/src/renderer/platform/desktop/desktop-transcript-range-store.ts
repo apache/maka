@@ -31,6 +31,11 @@ import { TranscriptReadSupersededError } from '../../features/conversation/index
 import { projectDesktopStoredMessage } from '../../../shared/desktop-session-projection.js';
 import { parseDesktopSessionKey } from '../../../shared/runtime-host-identity.js';
 
+// Interactive reads render real rows. Keep a page smaller than the IPC fragment
+// ceiling so short replies cannot turn one read into dozens of mounted Turns.
+// The Host still completes a boundary Turn that exceeds this page budget.
+const TRANSCRIPT_READING_PAGE_BYTES = 16 * 1024;
+
 /**
  * The Renderer's window onto one Session transcript. `loadAround` and
  * `loadLatest` replace the window and mint a navigation number; `loadBefore`
@@ -331,9 +336,9 @@ export function createRecoveringDesktopTranscriptRangeController(
   void controller.ready().then(requireLive).catch(recovery.transcriptFailed);
   return {
     ...controller,
-    loadBefore: (maxBytes) => superseding(() => controller.loadBefore(maxBytes)),
-    loadAfter: (maxBytes) => superseding(() => controller.loadAfter(maxBytes)),
-    loadAround: (sequence, maxBytes) => superseding(() => controller.loadAround(sequence, maxBytes)),
+    loadBefore: (maxBytes = TRANSCRIPT_READING_PAGE_BYTES) => superseding(() => controller.loadBefore(maxBytes)),
+    loadAfter: (maxBytes = TRANSCRIPT_READING_PAGE_BYTES) => superseding(() => controller.loadAfter(maxBytes)),
+    loadAround: (sequence, maxBytes = TRANSCRIPT_READING_PAGE_BYTES) => superseding(() => controller.loadAround(sequence, maxBytes)),
     loadLatest: () => superseding(() => controller.loadLatest()),
     observationChanged: recovery.observationChanged,
     async close() {

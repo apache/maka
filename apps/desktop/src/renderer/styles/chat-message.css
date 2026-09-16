@@ -127,13 +127,6 @@
   border-radius: 0;
 }
 
-.maka-processing-sequence {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: var(--space-1);
-}
-
 /* Keep containment without skipping layout: first visibility must not replace
    an estimate and change the scroll range. Window membership bounds residency. */
 .maka-chat-message-list [data-maka-transcript-boundary] {

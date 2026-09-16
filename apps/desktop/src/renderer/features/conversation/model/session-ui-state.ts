@@ -190,6 +190,9 @@ export function createAppShellSessionUiStateController(
     transcriptReadingAnchorBySessionRef: transcriptReadingAnchors.ref,
     transcriptViewportNavigation,
     setMessageLoadErrorBySession: createMapSetter('messageLoadErrorBySession'),
+    clearMessageLoadError: (sessionId: string) => updateMap(
+      'messageLoadErrorBySession', (current) => omitSessionKey(current, sessionId),
+    ),
     messageRetryPending: createPendingClaim('messageRetryPendingBySession'),
     stopPending: createPendingClaim('stopPendingBySession'),
     setLiveTurnBySession: createMapSetter('liveTurnBySession'),

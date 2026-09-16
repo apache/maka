@@ -20,6 +20,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { WORKHUB_COORDINATION_SESSION_ID } from '@maka/core/session';
+import { decodeWorkHubCoordinationActFromTurnInput, decodeWorkHubCoordinationSelectAndDelegateInput } from '@maka/runtime-host/protocol';
 import { workHubTasksSchema } from '../../shared/workhub-tool-schema.js';
 import { createWorkHubRuntime } from '../workhub-runtime.js';
 
@@ -58,6 +59,38 @@ test('task delegation binds the tool action to the Host turn and trusted creatio
   assert.ok('actionId' in result);
   assert.equal(result.actionId, 'tool-call');
   assert.deepEqual(f.changes, [[scope, 'created', 'target']]);
+});
+
+test('nested tool calls produce stable task identities accepted by both Host action paths', async () => {
+  const f = fixture();
+  const toolCallId = `${'p'.repeat(128)}:nested:00000000-0000-4000-8000-000000000001`;
+  const actionIds: string[] = [];
+  const result = { disposition: 'create_new' as const, targetSessionId: 'target', targetTurnId: 'target-turn' };
+  f.client.actWorkHubCoordinationFromTurn = async (input) => {
+    actionIds.push(decodeWorkHubCoordinationActFromTurnInput(input).actionId);
+    return result;
+  };
+  f.client.selectAndDelegateWorkHubTarget = async (input) => {
+    actionIds.push(decodeWorkHubCoordinationSelectAndDelegateInput(input).actionId);
+    return { kind: 'delegated', result };
+  };
+
+  const create = { operation: 'create_new' as const, title: 'Work', text: 'Do work' };
+  const created = await f.runtime.actTasks(scope, 'turn', toolCallId, create);
+  const retried = await f.runtime.actTasks(scope, 'turn', toolCallId, create);
+  const selected = await f.runtime.actTasks(scope, 'turn', toolCallId, {
+    operation: 'select_and_delegate', candidateSetId: `sha256:${'a'.repeat(64)}`,
+    candidateRefs: ['candidate'], text: 'Do work',
+  });
+  for (const outcome of [created, retried, selected]) {
+    assert.ok('actionId' in outcome);
+    assert.equal(outcome.actionId, actionIds[0]);
+  }
+  assert.deepEqual(actionIds, [actionIds[0], actionIds[0], actionIds[0]]);
+  const next = await f.runtime.actTasks(scope, 'turn', toolCallId.replace(/1$/, '2'), create);
+  assert.ok('actionId' in next);
+  assert.equal(next.actionId, actionIds[3]);
+  assert.notEqual(next.actionId, actionIds[0]);
 });
 
 test('linked task operations remain operations at the Host protocol boundary', async () => {

@@ -47,7 +47,7 @@ export interface ModelChoice {
   contextWindow?: number;
   /**
    * Thinking levels this model exposes, as the Host resolved them — a relay's
-   * declared `relayModelProfiles[model].thinkingLevels` included. Empty for a
+   * declared `modelOverrides[model].thinkingLevels` included. Empty for a
    * model that offers none; never absent, so no caller has to guess from a
    * bundled metadata copy of its own.
    */

@@ -21,6 +21,7 @@ import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import type { SessionEvent, ShellRunUpdate } from '@maka/core/events';
 import { projectToolArgsPreview } from '@maka/core/tool-quiet-preview';
+import { resolveReadInput } from '@maka/runtime/read-page';
 import {
   decodeRuntimeResourceRef,
   encodeProtocolMessage,
@@ -774,7 +775,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
 
         const textKey = assistantStreamKey('text', event.messageId);
         const text = state.assistantStreams.get(textKey);
-        if (text || event.text.length > 0) {
+        if (text || event.text.length > 0 || event.interrupted) {
           const current =
             text ??
             ({
@@ -791,6 +792,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
               current,
               'text',
               event.text,
+              event.interrupted,
             );
           }
           state.assistantStreams.delete(textKey);
@@ -1630,6 +1632,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
     current: Pick<ActiveAssistantStream, 'turnId' | 'messageId' | 'text'>,
     kind: SessionAssistantDelta['kind'],
     finalText: string,
+    interrupted?: true,
   ): void {
     const extendsPrefix = finalText.startsWith(current.text);
     const suffix = extendsPrefix ? finalText.slice(current.text.length) : finalText;
@@ -1661,6 +1664,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
         text: '',
         ...(!extendsPrefix && finalText.length === 0 ? { reset: true as const } : {}),
         complete: true,
+        ...(interrupted ? { interrupted: true } : {}),
       },
     });
   }
@@ -2251,11 +2255,13 @@ function toolStartShellRunRef(
   if (event.toolName !== 'Read' && event.toolName !== 'StopBackgroundTask') return undefined;
   const ref =
     event.args !== null && typeof event.args === 'object'
-      ? (event.args as { ref?: unknown }).ref
+      ? event.toolName === 'Read'
+        ? (event.args as { path?: unknown }).path
+        : (event.args as { ref?: unknown }).ref
       : undefined;
   if (typeof ref !== 'string') return undefined;
   try {
-    return decodeRuntimeResourceRef(ref);
+    return decodeRuntimeResourceRef(resolveReadInput({ path: ref }).path);
   } catch {
     return undefined;
   }

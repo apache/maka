@@ -37,6 +37,10 @@ import { buildMcpTools } from '../mcp-tools.js';
 import { buildAskUserQuestionTool } from '../ask-user-question-tool.js';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import {
+  createRequestCompositionSnapshot,
+  REQUEST_COMPOSITION_MAX_TOOL_DESCRIPTION_LENGTH,
+} from '@maka/core/run-composition';
+import {
   createSessionEventMapMemory,
   mapSessionEventToRuntimeEvent,
 } from '../session-event-runtime-mapper.js';
@@ -111,8 +115,8 @@ test('tool search refreshes the catalog for the next code cell', async () => {
   const catalogs: string[] = [];
   const calls: unknown[] = [];
   const model = new MockLanguageModelV4({
-    doStream: async ({ tools }) => {
-      catalogs.push(JSON.stringify(tools));
+    doStream: async ({ prompt }) => {
+      catalogs.push(JSON.stringify(prompt));
       const code =
         step++ === 0
           ? 'return await tools.tool_search({ query: "lookup" })'
@@ -159,6 +163,76 @@ test('tool search refreshes the catalog for the next code cell', async () => {
   assert.deepEqual(calls, [{ id: 'discovered' }], JSON.stringify(events));
   assert.match(catalogs[0]!, /tool_search/);
   assert.match(catalogs[1]!, /Look up a node/);
+});
+
+test('keeps an aggregate Code Mode catalog out of the bounded exec schema', async () => {
+  const names = [
+    'mcp__desktop_workhub__control',
+    'mcp__desktop_workhub__tasks',
+    'mcp__desktop_browser__browser_navigate',
+    'mcp__desktop_browser__browser_snapshot',
+    'mcp__desktop_browser__browser_click',
+    'mcp__desktop_browser__browser_type',
+    'mcp__desktop_browser__browser_wait',
+    'mcp__desktop_browser__browser_extract',
+    'Read',
+    'AskUserQuestion',
+  ];
+  const fields = Object.fromEntries(
+    Array.from({ length: 40 }, (_, index) => [
+      `field_${index}`,
+      z.string().describe(`Visible input contract ${index}: ${'detail '.repeat(8)}`),
+    ]),
+  );
+  const tools: MakaTool[] = names.map((name) => ({
+    name,
+    description: `Production-sized nested tool ${name}`,
+    parameters: z.object(fields),
+    impl: async () => 'ok',
+  }));
+  let providerPrompt = '';
+  let providerExecDescription = '';
+  const snapshots: Parameters<NonNullable<AiSdkBackendInput['recordRequestComposition']>>[1][] = [];
+  const model = new MockLanguageModelV4({
+    doStream: async ({ prompt, tools: modelTools }) => {
+      providerPrompt = JSON.stringify(prompt);
+      const execTool = modelTools?.find((tool) => tool.name === 'exec');
+      providerExecDescription =
+        execTool && 'description' in execTool ? (execTool.description ?? '') : '';
+      return {
+        stream: convertArrayToReadableStream<LanguageModelV4StreamPart>([
+          { type: 'stream-start', warnings: [] },
+          { type: 'finish', finishReason: { unified: 'stop', raw: 'stop' }, usage: ZERO_USAGE },
+        ]),
+      };
+    },
+  });
+
+  await drain(
+    backend(model, [], undefined, {
+      tools,
+      recordRequestComposition: async (_runId, snapshot) => {
+        createRequestCompositionSnapshot(snapshot, 'initial');
+        snapshots.push(snapshot);
+        return snapshot.compositionId;
+      },
+    }).send({
+      turnId: 'large-catalog',
+      runId: 'run-large-catalog',
+      text: 'inspect',
+      context: [],
+      toolMode: 'code_mode',
+    }),
+  );
+
+  assert.ok(providerPrompt.length > REQUEST_COMPOSITION_MAX_TOOL_DESCRIPTION_LENGTH);
+  assert.match(providerPrompt, /mcp__desktop_workhub__control/u);
+  assert.match(providerPrompt, /mcp__desktop_browser__browser_extract/u);
+  assert.ok(providerExecDescription.length < REQUEST_COMPOSITION_MAX_TOOL_DESCRIPTION_LENGTH);
+  assert.equal(providerExecDescription.includes('mcp__desktop_workhub__control'), false);
+  assert.equal(snapshots.length, 1);
+  assert.deepEqual(snapshots[0]?.toolNames, ['exec']);
+  assert.equal(snapshots[0]?.toolSchemas[0]?.description, providerExecDescription);
 });
 
 test('a nested question can be answered and a parked question can be stopped', async () => {
@@ -601,7 +675,7 @@ test('keeps direct-only tools out of the cell snapshot', async () => {
     (event): event is Extract<SessionEvent, { type: 'tool_result' }> =>
       event.type === 'tool_result' && event.toolUseId === 'exec-1',
   );
-  assert.match(JSON.stringify(execResult?.content), /unknown_tool/);
+  assert.match(JSON.stringify(execResult?.content), /execution_error/);
 });
 
 test('keeps provider-native tools out of the cell snapshot', async () => {
@@ -638,7 +712,7 @@ test('keeps provider-native tools out of the cell snapshot', async () => {
     (event): event is Extract<SessionEvent, { type: 'tool_result' }> =>
       event.type === 'tool_result' && event.toolUseId === 'exec-1',
   );
-  assert.match(JSON.stringify(execResult?.content), /unknown_tool/);
+  assert.match(JSON.stringify(execResult?.content), /execution_error/);
 });
 
 test('validates nested arguments before ToolRuntime implementation dispatch', async () => {
@@ -1131,6 +1205,7 @@ function backend(
       | 'supportsVision'
       | 'readAttachmentBytes'
       | 'maxProviderImageRequestBytes'
+      | 'recordRequestComposition'
     >
   > = {},
 ) {

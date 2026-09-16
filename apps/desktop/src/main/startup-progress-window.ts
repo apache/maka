@@ -19,7 +19,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { MAKA_WORDMARK_PATH } from '@maka/core/maka-wordmark';
-import type { UiLocale } from '@maka/core/ui-locale';
+import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 import { formatHostHandoff, type HostHandoffView, type HostHandoffAction } from '@maka/runtime-host/client';
 import type { BrowserWindow, BrowserWindowConstructorOptions } from 'electron';
 import { focusWindow, showWindowInactive, type WindowRevealMode } from './window-reveal.js';
@@ -28,6 +28,17 @@ export type StartupPhase =
   | 'prepare' | 'storage' | 'connect' | 'package'
   | 'checking' | 'staging' | 'retiring' | 'replacing' | 'restart'
   | 'attention' | 'renderer';
+
+interface StartupProgressCopy {
+  readonly title: string;
+  readonly detail: string;
+  readonly slow: string;
+  readonly copy: string;
+  readonly copied: string;
+  readonly copyFailed: string;
+  readonly elapsed: string;
+  readonly phases: Record<StartupPhase, string>;
+}
 
 const COPY = {
   en: {
@@ -68,7 +79,7 @@ const COPY = {
       attention: '等待你的確認', renderer: '正在開啟工作區',
     },
   },
-} as const;
+} satisfies UiCatalog<StartupProgressCopy>;
 
 export interface StartupProgressWindow {
   update(phase: StartupPhase): void;

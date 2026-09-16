@@ -99,7 +99,7 @@ export function ThinkingLevelSelector(props: {
     <DropdownMenu
       placement="above"
       hasChevron={false}
-      className="maka-composer-quiet-menu"
+      className="maka-composer-quiet-menu maka-thinking-level-menu"
       button={{
         label: currentLabel,
         variant: 'ghost',

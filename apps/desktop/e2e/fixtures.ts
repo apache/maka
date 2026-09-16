@@ -18,7 +18,7 @@
  */
 
 import { _electron as electron, test as base, expect } from '@playwright/test';
-import type { ElectronApplication, Page } from '@playwright/test';
+import type { ElectronApplication, Locator, Page } from '@playwright/test';
 import { execFile } from 'node:child_process';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -80,7 +80,7 @@ export async function ensureSidebarExpanded(page: Page): Promise<void> {
  * The control reflects local admission readiness, not Host connectivity.
  * Merely mounting the editor does not mean target selection has finished.
  */
-export async function awaitSendReady(page: Page): Promise<void> {
+export async function awaitSendReady(page: Page | Locator): Promise<void> {
   await expect(page.locator('.maka-composer button[type="submit"]')).toBeEnabled({
     timeout: 20_000,
   });
@@ -532,7 +532,6 @@ type E2eTestFixtures = {
   railRenderWindow: Page;
   promptRailWindow: Page;
   partialHistoryWindow: Page;
-  requestHeaderRowWindow: Page;
   newTaskTargetWindow: Page;
   directoryReferenceWindow: { page: Page; folder: string };
   accessibilityNarrativeWindow: Page;
@@ -673,19 +672,6 @@ export const test = base.extend<E2eTestFixtures>({
       seed: false,
       readinessSelector: '[data-turn-id]',
       e2eFixtureScenario: 'chat-partial-history',
-      locale: 'zh-CN',
-      showWindow: true,
-    }, use);
-  },
-  // Settings → 模型, where `no-models` is the seeded openai-compatible relay —
-  // the connection type whose detail page owns the custom request headers
-  // editor. Shown, because what this window is for is a rendered box
-  // measurement and a throttled compositor is not a layout the user has.
-  requestHeaderRowWindow: async ({}, use) => {
-    await withE2eWindow({
-      seed: false,
-      readinessSelector: '.settingsSurface',
-      e2eFixtureScenario: 'settings-models',
       locale: 'zh-CN',
       showWindow: true,
     }, use);

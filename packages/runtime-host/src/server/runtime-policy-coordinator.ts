@@ -476,18 +476,14 @@ function connectionBasis(connection: ConnectionCatalogEntry): ConnectionVersionB
 function projectCatalogItems(snapshot: ConnectionCatalogSnapshot): ConnectionCatalogPageItem[] {
   const items: ConnectionCatalogPageItem[] = [];
   for (const [connectionIndex, connection] of snapshot.connections.entries()) {
-    // Profiles ride on their enabled_model_id item, never in one header
-    // table: a header item is atomic to the paginator, so a long declaration
-    // list would make the whole connection unreadable.
     const {
       enabledModelIds,
       models,
-      relayModelProfiles,
+      modelOverrides,
       // When the Host last ran discovery, and the marker that invalidates a
       // test when model facts change: both are the Host's own bookkeeping,
       // not part of the client-visible catalog protocol.
       modelsFetchedAt: _modelsFetchedAt,
-      lastTestModelFactsFingerprint: _lastTestModelFactsFingerprint,
       ...header
     } = connection;
     // The Host resolves the catalog because it owns the model metadata the
@@ -504,7 +500,7 @@ function projectCatalogItems(snapshot: ConnectionCatalogSnapshot): ConnectionCat
       enabledModelIds: [...enabledModelIds],
       models: [...models],
       ...(connection.modelSource === undefined ? {} : { modelSource: connection.modelSource }),
-      ...(relayModelProfiles === undefined ? {} : { relayModelProfiles }),
+      ...(modelOverrides === undefined ? {} : { modelOverrides }),
     });
     items.push({
       kind: 'connection',
@@ -515,24 +511,25 @@ function projectCatalogItems(snapshot: ConnectionCatalogSnapshot): ConnectionCat
       catalogEntryCount: catalogEntries.length,
     });
     for (const [itemIndex, modelId] of enabledModelIds.entries()) {
-      const relayProfile = relayModelProfiles?.[modelId];
       items.push({
         kind: 'enabled_model_id',
         connectionIndex,
         itemIndex,
         modelId,
-        ...(relayProfile === undefined ? {} : { relayProfile }),
       });
     }
     for (const [itemIndex, model] of models.entries()) {
-      // The override's effect travels; which fields it touched does not. That
-      // provenance answers one Host-side question — whether a context window
-      // was set by hand — and this page is not where it gets asked.
-      const { factOverriddenFields: _factOverriddenFields, ...projected } = model;
-      items.push({ kind: 'model', connectionIndex, itemIndex, model: projected });
+      items.push({ kind: 'model', connectionIndex, itemIndex, model });
     }
     for (const [itemIndex, entry] of catalogEntries.entries()) {
-      items.push({ kind: 'catalog_entry', connectionIndex, itemIndex, entry });
+      const modelOverride = modelOverrides?.[entry.id];
+      items.push({
+        kind: 'catalog_entry',
+        connectionIndex,
+        itemIndex,
+        entry,
+        ...(modelOverride === undefined ? {} : { modelOverride }),
+      });
     }
   }
   return items;

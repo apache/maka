@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   connectionNameDraftChanged,
   connectionNameDraftReseed,
@@ -26,19 +26,14 @@ import {
 } from './connection-name-draft.js';
 import {
   type ConnectionTestResult,
-  type IdentifiedLlmConnection,
-  type ModelInfo,
   type ProjectedLlmConnection,
   type ProviderType,
 } from '@maka/core/llm-connections';
 import { PROVIDER_REGISTRY, connectionEnabledModelIds } from '@maka/core/llm-connections';
-import { modelRowsEqual, resolveDraftConnectionModelCatalog } from '@maka/core/model-catalog';
 import { isRetiredProvider } from '@maka/core/provider-registry';
 import {
-  normalizeRelayModelProfiles,
-  pruneRelayModelProfiles,
-  type RelayModelProfile,
-  type ThinkingLevel,
+  normalizeModelOverrides,
+  type ModelOverride,
 } from '@maka/core/model-thinking';
 import {
   providerAuthRequiresSecret,
@@ -47,8 +42,6 @@ import {
 } from '@maka/core/llm-connections';
 import { useMountedRef, useToast, useUiLocale } from '@maka/ui';
 import { connectionChipStatus } from './provider-connection-status';
-import { relayProfileDraftReseedPlan, relayProfileDraftSeed } from './relay-profile-draft';
-import { applyBulkThinkingLevel, relayProfileWithThinkingLevels } from './relay-thinking-bulk';
 import { useKeyedActionGuard } from './use-action-guard';
 import type {
   OAuthAccountFlowBridge,
@@ -169,23 +162,16 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
   );
   const [name, setName] = useState(connection.name);
   const [baseUrl, setBaseUrl] = useState(connection.baseUrl ?? defaults.baseUrl ?? '');
-  const [models, setModels] = useState<ModelInfo[]>(connection.models ?? []);
+  const models = connection.models ?? [];
   const [enabledModelIds, setEnabledModelIds] = useState(() => connectionEnabledModelIds(connection));
-  // Backend persists the model-list source alongside the model cache, so a
-  // Settings restart no longer has to infer "fetched" from a non-empty array.
-  // Discovery rejects empty catalogs before persistence, while source remains
-  // explicit for compatibility with already-persisted connection records.
-  const [modelSource, setModelSource] = useState<'fetched' | 'fallback'>(
-    connection.modelSource ?? 'fallback',
-  );
-  const syncedConnectionSnapshotRef = useRef(connectionDetailSnapshot(connection, defaults.baseUrl));
+  const endpointOwnerRef = useRef({ connectionId: connection.connectionId, saved: baseUrl });
   const [busy, setBusy] = useState(false);
   const [testing, setTesting] = useState(false);
   const [fetchingModels, setFetchingModels] = useState(false);
   const [savingEnabledModels, setSavingEnabledModels] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const connectionDetailActionGuard = useKeyedActionGuard<
-    'save' | 'test' | 'fetch-models' | 'save-enabled-models' | 'save-relay-profiles' | 'delete'
+    'save' | 'test' | 'fetch-models' | 'save-enabled-models' | 'save-model-parameters' | 'delete'
   >();
   const connectionDetailMountedRef = useMountedRef();
   const connectionDetailLifecycleRef = useRef(0);
@@ -258,7 +244,7 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
       connectionDetailLifecycleRef.current += 1;
       connectionDetailActionGuard.reset();
     };
-  }, [connection.slug]);
+  }, [connection.connectionId]);
 
   function isConnectionDetailCurrent(lifecycle: number): boolean {
     return connectionDetailMountedRef.current && connectionDetailLifecycleRef.current === lifecycle;
@@ -287,58 +273,18 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
   }, [props.bridge, connection.connectionId, connection.slug, probesCredential, reportHostError]);
 
   useEffect(() => {
-    const nextSnapshot = connectionDetailSnapshot(connection, defaults.baseUrl);
-    const previousSnapshot = syncedConnectionSnapshotRef.current;
-    const localStillSynced = connectionDetailDraftMatchesSnapshot(
-      { baseUrl, models, modelSource },
-      previousSnapshot,
-    );
-    const localAlreadyMatchesNext = connectionDetailDraftMatchesSnapshot(
-      { baseUrl, models, modelSource },
-      nextSnapshot,
-    );
-
-    if (connection.slug !== previousSnapshot.slug || (apiKey.length === 0 && localStillSynced)) {
-      // Only when the draft actually differs. `connectionDetailSnapshot` builds
-      // `connection.models ?? []` fresh every call, so for a connection with no
-      // models array this wrote a new-but-equal array on every pass — a new
-      // identity for the `models` dep, which re-ran the effect, which wrote
-      // another one. The page never settled; React cut it off at the update
-      // depth limit and the whole panel unmounted.
-      if (!localAlreadyMatchesNext) {
-        setBaseUrl(nextSnapshot.baseUrl);
-        setModels(nextSnapshot.models);
-        setModelSource(nextSnapshot.modelSource);
-      }
-      syncedConnectionSnapshotRef.current = nextSnapshot;
-      return;
+    const previous = endpointOwnerRef.current;
+    if (previous.connectionId !== connection.connectionId || baseUrl === previous.saved) {
+      setBaseUrl(savedBaseUrl);
     }
-
-    if (localAlreadyMatchesNext) {
-      syncedConnectionSnapshotRef.current = nextSnapshot;
-    }
-  }, [
-    apiKey.length,
-    baseUrl,
-    connection,
-    defaults.baseUrl,
-    modelSource,
-    models,
-  ]);
+    endpointOwnerRef.current = { connectionId: connection.connectionId, saved: savedBaseUrl };
+  }, [connection.connectionId, savedBaseUrl]);
 
   useEffect(() => {
     setEnabledModelIds(connectionEnabledModelIds(connection));
-  }, [connection.defaultModel, connection.enabledModelIds, connection.slug]);
+  }, [connection.defaultModel, connection.enabledModelIds, connection.connectionId]);
 
-  // Reads `connection.catalogEntries` while the editor still shows what was
-  // committed, and resolves locally only once the draft diverges — the one
-  // client-side resolution left on a saved connection. The rule itself lives
-  // beside the resolver it guards, in `@maka/core/model-catalog`.
-  const modelChoices = resolveDraftConnectionModelCatalog(connection, {
-    models,
-    modelSource,
-    enabledModelIds,
-  });
+  const modelChoices = connection.catalogEntries;
 
   /**
    * Save ONE row. The patch used to carry both fields whichever row asked for
@@ -436,144 +382,45 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     }
   }
 
-  // Per-model profile declarations for custom OpenAI relays, edited as a
-  // LOCAL DRAFT and committed by an explicit 保存 button — never keystroke by
-  // keystroke. A draft is `Record<modelId, RelayModelProfile>` seeded from the
-  // saved table; entries a user empties fully drop out of the map, and the
-  // ≥1-enabled-model invariant is honored live: the draft is pruned against
-  // `enabledModelIds` on every read, so disabling a model in the section above
-  // removes its unsaved declaration too (the store prunes the SAVED table the
-  // same way on write).
-  const [relayProfileDrafts, setRelayProfileDrafts] = useState<Record<string, RelayModelProfile>>(
-    () => relayProfileDraftSeed(connection.relayModelProfiles),
-  );
-  const [relayProfilesDirty, setRelayProfilesDirty] = useState(false);
-  // The dirty flag names a slug: the same instance continues across the
-  // connection switcher, and draft state is owned by one connection at a
-  // time (see relayProfileDraftReseedPlan).
-  const relayProfileDraftOwnerRef = useRef(connection.slug);
+  const [modelDraft, setModelDraft] = useState<{
+    connectionId: string;
+    modelId: string;
+    expected: ModelOverride | null;
+    value: ModelOverride;
+  } | null>(null);
+  const activeDraft = modelDraft?.connectionId === connection.connectionId ? modelDraft : null;
+  const modelParameters = {
+    ...connection.modelOverrides,
+    ...(activeDraft ? { [activeDraft.modelId]: activeDraft.value } : {}),
+  };
 
-  function updateRelayProfileDraft(
+  function updateModelDraft(
     modelId: string,
-    next: (current: RelayModelProfile | undefined) => RelayModelProfile | undefined,
+    next: (current: ModelOverride | undefined) => ModelOverride | undefined,
   ): void {
-    setRelayProfilesDirty(true);
-    setRelayProfileDrafts((current) => {
-      const updated = next(current[modelId]);
-      if (updated === undefined) {
-        if (!(modelId in current)) return current;
-        const { [modelId]: _dropped, ...rest } = current;
-        return rest;
-      }
-      return { ...current, [modelId]: updated };
+    setModelDraft((current) => {
+      const previous = current?.connectionId === connection.connectionId && current.modelId === modelId ? current : null;
+      return {
+      connectionId: connection.connectionId,
+      modelId,
+      expected: previous ? previous.expected : connection.modelOverrides?.[modelId] ?? null,
+      value: next(previous ? previous.value : connection.modelOverrides?.[modelId]) ?? {},
+      };
     });
   }
 
-  // One shape for all three fields: the field setter pins or removes its key,
-  // and an entry with no keys left IS the undeclared state — storing it would
-  // keep the row looking edited after the user emptied every field. The rule
-  // lives in relay-thinking-bulk so the row setter and the bulk control
-  // cannot drift on what an emptied declaration collapses to.
-  function setDraftThinkingLevels(modelId: string, levels: ThinkingLevel[] | undefined): void {
-    updateRelayProfileDraft(modelId, (current) => relayProfileWithThinkingLevels(current, levels));
+  function resetDraftProfile(_modelId: string): void {
+    setModelDraft(null);
   }
 
-  // The same edit across every enabled model, applied and saved as ONE gesture:
-  // the bulk menu has no Save of its own, so a tick there is a commit. The
-  // table is computed once and handed straight to the save so the write cannot
-  // race a re-render of the draft state.
-  async function saveThinkingLevelForAll(
-    modelIds: readonly string[],
-    level: ThinkingLevel,
-    checked: boolean,
-  ): Promise<boolean> {
-    const next = applyBulkThinkingLevel(modelIds, relayProfileDrafts, level, checked);
-    setRelayProfilesDirty(true);
-    setRelayProfileDrafts(next);
-    return saveRelayProfiles(next);
+  function setDraftParameters(modelId: string, patch: Partial<ModelOverride>): void {
+    updateModelDraft(modelId, (current) => ({ ...current, ...patch }));
   }
 
-  // Put one model's draft back to what is saved — a per-row Cancel. The other
-  // rows keep their drafts; only the row the user abandoned is discarded.
-  function resetDraftProfile(modelId: string): void {
-    const saved = relayProfileDraftSeed(connection.relayModelProfiles)[modelId];
-    updateRelayProfileDraft(modelId, () => saved);
-  }
+  const savedModelOverrides = normalizeModelOverrides(connection.modelOverrides ?? {});
+  const hasModelChanges = activeDraft !== null && JSON.stringify(normalizeModelOverrides({ model: activeDraft.value })?.model) !==
+    JSON.stringify(savedModelOverrides?.[activeDraft.modelId] ?? {});
 
-  // Tri-state vision: undefined = Auto (relay/metadata decides), true/false
-  // pin the declaration. The Selector's three options map straight onto this.
-  function setDraftVision(modelId: string, vision: boolean | undefined): void {
-    updateRelayProfileDraft(modelId, (current) => {
-      if (vision === undefined) {
-        if (!current) return current;
-        const { vision: _dropped, ...rest } = current;
-        return Object.keys(rest).length > 0 ? rest : undefined;
-      }
-      return { ...(current ?? {}), vision };
-    });
-  }
-
-  function setDraftContextWindow(modelId: string, contextWindow: number | undefined): void {
-    updateRelayProfileDraft(modelId, (current) => {
-      if (contextWindow === undefined) {
-        if (!current) return current;
-        const { contextWindow: _dropped, ...rest } = current;
-        return Object.keys(rest).length > 0 ? rest : undefined;
-      }
-      return { ...(current ?? {}), contextWindow };
-    });
-  }
-
-  function setDraftServiceTier(modelId: string, serviceTier: 'fast' | undefined): void {
-    updateRelayProfileDraft(modelId, (current) => {
-      if (serviceTier === undefined) {
-        if (!current) return current;
-        const { serviceTier: _dropped, ...rest } = current;
-        return Object.keys(rest).length > 0 ? rest : undefined;
-      }
-      return { ...(current ?? {}), serviceTier };
-    });
-  }
-
-  // Compare against what persistence would store: drafts pruned to the
-  // current selection and order-normalized by the same sanitizer the write
-  // path applies, so a reordered-but-equal draft doesn't keep 保存 lit.
-  const savedRelayProfiles = normalizeRelayModelProfiles(
-    pruneRelayModelProfiles(connection.relayModelProfiles, enabledModelIds) ?? {},
-  );
-  const draftedRelayProfiles = normalizeRelayModelProfiles(
-    pruneRelayModelProfiles(relayProfileDrafts, enabledModelIds) ?? {},
-  );
-  const hasRelayProfileChanges = !relayProfilesEqual(draftedRelayProfiles, savedRelayProfiles);
-
-  useEffect(() => {
-    // Slug switch always reseeds AND clears dirty — carrying A's unsaved
-    // declarations onto B would let one save write them into B's document.
-    // A same-slug reload reseeds only while the draft is clean: mid-edit
-    // reloads (another action's props.onChanged) keep the user's typed work.
-    const plan = relayProfileDraftReseedPlan(
-      { slug: relayProfileDraftOwnerRef.current, dirty: relayProfilesDirty },
-      connection.slug,
-    );
-    relayProfileDraftOwnerRef.current = connection.slug;
-    if (plan.reseed) {
-      setRelayProfileDrafts(relayProfileDraftSeed(connection.relayModelProfiles));
-    }
-    if (plan.clearDirty) {
-      setRelayProfilesDirty(false);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [connection.slug, connection.relayModelProfiles, relayProfilesDirty]);
-
-  // The name draft is reseeded on its own rather than through
-  // `connectionDetailSnapshot`: that snapshot's dependency identity is
-  // load-bearing (see the update-depth note above), and a name needs none of
-  // its machinery.
-  //
-  // A slug switch always reseeds — carrying A's typed name onto B would let
-  // one save rename the wrong connection. A same-slug change reseeds only
-  // while the draft still matches what was saved, so a rename landing from
-  // this page (or another client) does not overwrite work in progress.
   const nameDraftOwnerRef = useRef<{ slug: string; savedName: string }>({
     slug: connection.slug,
     savedName: connection.name,
@@ -586,62 +433,37 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connection.slug, connection.name]);
 
-  async function saveRelayProfiles(
-    drafts: Readonly<Record<string, RelayModelProfile>> = relayProfileDrafts,
-  ): Promise<boolean> {
-    // Refuse while the draft still belongs to the previous connection: in the
-    // window between the slug switch rendering and the reseed effect
-    // flushing, 保存 must not hand B this draft.
-    if (relayProfileDraftOwnerRef.current !== connection.slug) return false;
-    const releaseSave = connectionDetailActionGuard.beginExclusive('save-relay-profiles');
+  async function saveModelParameters(): Promise<boolean> {
+    if (!activeDraft) return false;
+    const releaseSave = connectionDetailActionGuard.beginExclusive('save-model-parameters');
     if (!releaseSave) return false;
     const lifecycle = connectionDetailLifecycleRef.current;
     setBusy(true);
+    let saved = false;
     try {
-      // Send the whole table — the update contract is whole-table replace —
-      // after the write-path sanitizer so a hand-assembled draft degrades the
-      // same way a saved document would.
       await props.bridge.update(connectionIdentity, {
-        relayModelProfiles:
-          normalizeRelayModelProfiles(pruneRelayModelProfiles(drafts, enabledModelIds) ?? {}) ?? null,
+        modelOverride: { modelId: activeDraft.modelId, expected: activeDraft.expected, value: activeDraft.value },
       });
+      saved = true;
       if (!isConnectionDetailCurrent(lifecycle)) return true;
-      setRelayProfilesDirty(false);
+      setModelDraft(null);
       await props.onChanged();
       return true;
     } catch (error) {
-      if (!isConnectionDetailCurrent(lifecycle)) return false;
+      if (!isConnectionDetailCurrent(lifecycle)) return saved;
       reportHostError(
-        copy.saveFailed,
+        saved ? copy.refreshFailed : copy.saveFailed,
         providerPanelActionErrorMessage(error, locale),
       );
-      return false;
+      return saved;
     } finally {
       releaseSave();
       if (isConnectionDetailCurrent(lifecycle)) setBusy(false);
     }
   }
 
-  /**
-   * Introduce a model the provider's catalog does not list.
-   *
-   * Only offered where refresh cannot help: a provider with no model-list
-   * endpoint replays the array this build shipped, so a model the user's plan
-   * serves but Maka has never heard of has no other way in (#1584).
-   *
-   * The id enters `enabledModelIds` — the same user-selection authority a
-   * catalogued model uses, so nothing here pretends the provider advertised
-   * it — and the context window enters `relayModelProfiles`, which is where a
-   * user states a fact no other source knows. Both go in ONE write: the store
-   * requires every declaration to key an enabled model, so a table written
-   * ahead of its id would be rejected.
-   *
-   * The saved table is the base, not the unsaved draft: adding a model must
-   * not silently commit edits the user has open in the capability section.
-   * The draft is then caught up by hand, because a dirty draft deliberately
-   * does not reseed from props — see `relayProfileDraftReseedPlan`.
-   */
-  async function addDeclaredModel(id: string, contextWindow: number): Promise<boolean> {
+  // Add the selection and parameters together, without saving another row's draft.
+  async function addDeclaredModel(id: string, profile: ModelOverride): Promise<boolean> {
     const modelId = id.trim();
     if (!modelId || enabledModelIds.includes(modelId)) return false;
     if (connectionDetailActionGuard.has('save-enabled-models') || detailActionBusy) return false;
@@ -655,19 +477,10 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     let saved = false;
     try {
       await props.bridge.update(connectionIdentity, {
-        enabledModelIds: next,
-        relayModelProfiles: { ...(savedRelayProfiles ?? {}), [modelId]: { contextWindow } },
+        modelOverride: { modelId, expected: null, value: profile, enable: true },
       });
       saved = true;
       if (!isConnectionDetailCurrent(lifecycle)) return saved;
-      // The editor's draft is a second copy of this table, and while it is
-      // dirty it does not reseed from props — that is what keeps an unrelated
-      // reload from discarding typed work. So the declaration just written has
-      // to be merged in here. Without it the draft is a table that no longer
-      // contains this model, the capability-save button lights up on that
-      // difference, and its whole-table replace drops the context window the
-      // user just declared — silently, back to the unknown-model default.
-      setRelayProfileDrafts((current) => ({ ...current, [modelId]: { contextWindow } }));
       await props.onChanged();
     } catch (error) {
       if (!isConnectionDetailCurrent(lifecycle)) return saved;
@@ -770,8 +583,6 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
       const result = await props.bridge.fetchModels(connectionIdentity);
       fetched = true;
       if (!isConnectionDetailCurrent(lifecycle)) return;
-      setModels(result.models);
-      setModelSource(result.source);
       await props.onChanged();
       if (!isConnectionDetailCurrent(lifecycle)) return;
       if (!opts.silent) {
@@ -780,11 +591,6 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     } catch (error) {
       if (!isConnectionDetailCurrent(lifecycle)) return;
       const message = providerPanelActionErrorMessage(error, locale);
-      // Leave the previously-known source / models intact (so the dropdown
-      // doesn't suddenly empty out), but downgrade the source label back to
-      // 'fallback' if we have nothing fresh to show — the failed fetch
-      // means whatever's on screen is not from the latest probe.
-      if (!fetched && models.length === 0) setModelSource('fallback');
       if (fetched) {
         reportHostError(
           copy.refreshFailed,
@@ -893,16 +699,11 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     save,
     updateEnabledModels,
     addDeclaredModel,
-    relayProfileDraft: relayProfileDrafts,
-    relayProfilesDirty,
-    hasRelayProfileChanges,
-    setDraftThinkingLevels,
-    saveThinkingLevelForAll,
-    setDraftVision,
-    setDraftContextWindow,
-    setDraftServiceTier,
+    modelParameters,
+    hasModelChanges,
     resetDraftProfile,
-    saveRelayProfiles,
+    setDraftParameters,
+    saveModelParameters,
     runTest,
     refreshModels,
     remove,
@@ -910,61 +711,6 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
   };
 }
 
-type ConnectionDetailSnapshot = {
-  slug: string;
-  baseUrl: string;
-  models: ModelInfo[];
-  modelSource: 'fetched' | 'fallback';
-};
-
-function connectionDetailSnapshot(
-  connection: IdentifiedLlmConnection,
-  defaultBaseUrl: string | undefined,
-): ConnectionDetailSnapshot {
-  return {
-    slug: connection.slug,
-    baseUrl: connection.baseUrl ?? defaultBaseUrl ?? '',
-    models: connection.models ?? [],
-    modelSource: connection.modelSource ?? 'fallback',
-  };
-}
-
-function connectionDetailDraftMatchesSnapshot(
-  draft: {
-    baseUrl: string;
-    models: ModelInfo[];
-    modelSource: 'fetched' | 'fallback';
-  },
-  snapshot: ConnectionDetailSnapshot,
-): boolean {
-  // Core's comparison, not a second one: the two answers drive the same
-  // editor, and the local copy compared a different field set — a refetch that
-  // changed only a display name read as "in sync" here and "diverged" there.
-  return draft.baseUrl === snapshot.baseUrl &&
-    draft.modelSource === snapshot.modelSource &&
-    modelRowsEqual(draft.models, snapshot.models);
-}
-
 function modelIdListsEqual(left: string[], right: string[]): boolean {
   return left.length === right.length && left.every((id, index) => id === right[index]);
-}
-
-function relayProfilesEqual(
-  left: ReturnType<typeof normalizeRelayModelProfiles>,
-  right: ReturnType<typeof normalizeRelayModelProfiles>,
-): boolean {
-  if (left === undefined || right === undefined) return left === right;
-  const leftIds = Object.keys(left);
-  const rightIds = Object.keys(right);
-  if (leftIds.length !== rightIds.length) return false;
-  for (const id of leftIds) {
-    const a = left[id];
-    const b = right[id];
-    if (!a || !b) return false;
-    if (a.vision !== b.vision || a.contextWindow !== b.contextWindow) return false;
-    const al = a.thinkingLevels ?? [];
-    const bl = b.thinkingLevels ?? [];
-    if (al.length !== bl.length || al.some((level, index) => level !== bl[index])) return false;
-  }
-  return true;
 }

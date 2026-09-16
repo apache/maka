@@ -262,6 +262,7 @@ describe('app shell session UI state controller', () => {
         store: {
           sessionId: 'session',
           range: () => ({ sessionId: 'session' }),
+          pendingNavigation: () => undefined,
           sequenceForTurn: () => 17,
           newestDurableUserSequence: () => 17,
           snapshot: () => ({ messages: [] }),
@@ -291,6 +292,7 @@ describe('app shell session UI state controller', () => {
         store: {
           sessionId: 'stale',
           range: () => ({ sessionId: 'stale' }),
+          pendingNavigation: () => undefined,
           sequenceForTurn: () => {
             sequenceReads += 1;
             return 17;
@@ -322,6 +324,7 @@ describe('app shell session UI state controller', () => {
         store: {
           sessionId: 'session',
           range: () => ({ sessionId: 'session' }),
+          pendingNavigation: () => undefined,
           sequenceForTurn: () => null,
           newestDurableUserSequence: () => null,
           snapshot: () => ({ messages: [] }),
@@ -357,6 +360,7 @@ describe('app shell session UI state controller', () => {
         store: {
           sessionId: 'session',
           range: () => ({ sessionId: 'session' }),
+          pendingNavigation: () => undefined,
           sequenceForTurn: () => null,
           newestDurableUserSequence: () => 29,
           snapshot: () => ({ messages: [{ id: 'latest' }] }),

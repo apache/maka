@@ -164,7 +164,14 @@ const CHILD_RESULT_OUTPUT_SOURCES = new Set<ArtifactSource>([
   'deep_research',
 ]);
 
-export function isArtifactUserVisible(record: Pick<ArtifactRecord, 'source'>): boolean {
+export function isArtifactUserVisible(
+  record: Pick<ArtifactRecord, 'source'> & Partial<Pick<ArtifactRecord, 'kind'>>,
+): boolean {
+  // A directly written HTML file is an intentional user-facing deliverable:
+  // the Artifact Pane must be able to preview and open it without requiring a
+  // child-workspace writeback. Other tool results remain internal to avoid
+  // flooding the Generated Files tab with command output and diffs.
+  if (record.source === 'tool_result' && record.kind === 'html') return true;
   return ARTIFACT_SOURCE_POLICIES[record.source].userVisible;
 }
 

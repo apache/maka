@@ -51,11 +51,12 @@ const LAYOUT_PERSIST_DEBOUNCE_MS = 200;
 export function useWorkbarLayoutState(
   activeSessionId: string | undefined,
   authoritativeSessionIds: ReadonlySet<string> | undefined,
+  scope?: string,
 ) {
   const [state, dispatch] = useReducer(
     reduceWorkbarLayout,
     activeSessionId,
-    loadWorkbarLayout,
+    (sessionId) => loadWorkbarLayout(sessionId, scope),
   );
   // Bind the owner before this render commits. An effect-based mirror would
   // briefly show the previous Session's panel and could overwrite an open
@@ -67,7 +68,7 @@ export function useWorkbarLayoutState(
     if (authoritativeSessionIds) {
       dispatch({ type: 'retain-sessions', sessionIds: authoritativeSessionIds });
     }
-  }, [authoritativeSessionIds, activeSessionId]);
+  }, [authoritativeSessionIds, activeSessionId, state.panels]);
   const stateRef = useRef(state);
   stateRef.current = state;
   const rightDragStartRef = useRef(state.rightWidth);
@@ -141,6 +142,14 @@ export function useWorkbarLayoutState(
       dispatch({ type: 'open', placement, tab }),
     [],
   );
+  const restoreTerminals = useCallback(
+    (tabs: readonly SessionWorkbarTab[]) => dispatch({ type: 'restore-terminals', tabs }),
+    [],
+  );
+  const closeTerminal = useCallback(
+    (sessionId: string, ref: string) => dispatch({ type: 'close-terminal', sessionId, ref }),
+    [],
+  );
   const activateWorkbarTab = useCallback(
     (placement: SessionWorkbarPlacement, tabId: string) =>
       dispatch({ type: 'activate', placement, tabId }),
@@ -180,25 +189,25 @@ export function useWorkbarLayoutState(
 
   useEffect(() => {
     const handle = window.setTimeout(() => {
-      persistWorkbarLayout(stateRef.current, 'right-size');
+      persistWorkbarLayout(stateRef.current, 'right-size', scope);
     }, LAYOUT_PERSIST_DEBOUNCE_MS);
     return () => window.clearTimeout(handle);
-  }, [state.rightWidth]);
+  }, [state.rightWidth, scope]);
   useEffect(() => {
-    persistWorkbarLayout(stateRef.current, 'right-visibility');
-  }, [state.collapsedBySession]);
+    persistWorkbarLayout(stateRef.current, 'right-visibility', scope);
+  }, [state.collapsedBySession, scope]);
   useEffect(() => {
     const handle = window.setTimeout(() => {
-      persistWorkbarLayout(stateRef.current, 'bottom-size');
+      persistWorkbarLayout(stateRef.current, 'bottom-size', scope);
     }, LAYOUT_PERSIST_DEBOUNCE_MS);
     return () => window.clearTimeout(handle);
-  }, [state.bottomHeight]);
+  }, [state.bottomHeight, scope]);
   useEffect(() => {
-    persistWorkbarLayout(stateRef.current, 'bottom-visibility');
-  }, [state.bottomOpen]);
+    persistWorkbarLayout(stateRef.current, 'bottom-visibility', scope);
+  }, [state.bottomOpen, scope]);
   useEffect(() => {
-    persistWorkbarLayout(stateRef.current, 'topology');
-  }, [state.panels]);
+    persistWorkbarLayout(stateRef.current, 'topology', scope);
+  }, [state.panels, scope]);
 
   const setWorkbarCollapsed = useCallback(
     (next: SetStateAction<boolean>) => {
@@ -235,9 +244,11 @@ export function useWorkbarLayoutState(
     workbarPanelsState: state.panels,
     openWorkbarTab,
     openDynamicWorkbarTab,
+    restoreTerminals,
     activateWorkbarTab,
     closeWorkbarTab,
     closeWorkbarTabs,
+    closeTerminal,
     moveWorkbarTabToPanel,
     titleWorkbarTab,
     openWorkbarLauncher,

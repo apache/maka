@@ -466,12 +466,13 @@ function readInputRef(entry: MakaPiToolEntry): string | undefined {
 
 /** A Read using the filesystem branch. */
 function isFilesystemReadPath(entry: MakaPiToolEntry): boolean {
-  return readInputPath(entry) !== undefined;
+  const path = readInputPath(entry);
+  return path !== undefined && !path.startsWith('maka:');
 }
 
 /** A Read using the runtime-resource branch (background-task output, etc.). */
 function isRuntimeResourceRead(entry: MakaPiToolEntry): boolean {
-  return readInputRef(entry)?.startsWith('maka://runtime/') ?? false;
+  return (readInputPath(entry) ?? readInputRef(entry))?.startsWith('maka:') ?? false;
 }
 
 /**

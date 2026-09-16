@@ -9,9 +9,9 @@
       "tests": 1,
       "electron": "the folder reference has to survive a renderer reload and still agree with the Host's session record"
     },
-    "context-window-save.spec.ts": {
-      "tests": 1,
-      "electron": "the saved window is read back from the Host's connection snapshot, not from renderer state"
+    "expected-failure-feedback.spec.ts": {
+      "tests": 2,
+      "electron": "WorkHub attachment rejection crosses a native file dialog, preload and main; Session settings and Plan failures must preserve their codes through a real contextBridge IPC round trip"
     },
     "new-task-reload.spec.ts": {
       "tests": 2,
@@ -43,7 +43,7 @@
     },
     "session-workbar.spec.ts": {
       "tests": 5,
-      "electron": "Git changes re-read on native window focus; terminal PTY ownership changes across Sessions; Side Chat owns a Host fork lifecycle; first send reaches the Host; the composer usage entry opens a workbar whose per-Session visibility survives renderer reload."
+      "electron": "Git changes re-read on native window focus; native PTY ownership survives Session navigation and renderer replacement, while Stop/exit cross preload/main into the terminal view; Side Chat owns a Host fork lifecycle; first send reaches the Host; the composer usage entry opens a workbar whose per-Session visibility survives renderer reload."
     },
     "settings.spec.ts": {
       "tests": 2,
@@ -73,21 +73,17 @@
       "tests": 1,
       "electron": "One traversal exercises real Host transcript paging through preload/IPC, bounded retained ranges, reader displacement when pages install, and a return-to-tail Host read. Fixture motion runs in the TranscriptRenderCost story."
     },
-    "scroll-geometry.spec.ts": {
-      "tests": 1,
-      "electron": "a real Host history batch arrives during a held native scrollbar drag; release must publish that range while preserving the reading Turn and allow return to latest"
-    },
     "workhub-layout.spec.ts": {
-      "tests": 2,
-      "electron": "WorkHub model configuration and attachment sending cross the Host boundary; native floating preserves macOS Dock visibility and pointer dragging verifies model-wheel scrolling and release snapping; a held-open Host Turn verifies immediate prompt visibility, durable transcript handoff and persistence after renderer reload"
+      "tests": 3,
+      "electron": "WorkHub model configuration and attachment sending cross the Host boundary; the Project New task action must dismiss the native dock owned by a separate WebContentsView; the compact native window grows only with the inline composer wheel and keeps its bottom anchor; opening context details expands the native window, while the thinking menu stays within the compact bounds, and pointer dragging scrolls the no-drag wheel instead of moving the frameless window; native floating preserves macOS Dock visibility; a held-open Host Turn verifies immediate prompt visibility, durable transcript handoff and persistence after renderer reload"
     },
     "workhub-reconstruction.spec.ts": {
       "tests": 1,
       "electron": "the same WebContentsView and unsent draft survive reparenting between native main and floating windows, shared appearance changes and the explicit return-from-picture-in-picture button"
     },
     "workhub-return-rail.spec.ts": {
-      "tests": 2,
-      "electron": "WorkHub lives in a separate native WebContentsView: compare its scrollport with the main Session after Host-backed sends, then open that Session and return through the shell while retaining the same WorkHub draft"
+      "tests": 3,
+      "electron": "WorkHub lives in a separate native WebContentsView: compare its scrollport with the main Session after Host-backed sends, then open that Session and return through the shell while retaining the same WorkHub draft; a Host-backed pending question survives renderer reload and native detach/dock with its selection and focus"
     },
     "zh-tw-locale.spec.ts": {
       "tests": 1,

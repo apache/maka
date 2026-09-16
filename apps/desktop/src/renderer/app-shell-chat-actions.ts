@@ -105,7 +105,7 @@ type SendOptions = MessageContextOptions & {
   waitForHostAdmission?: boolean;
   turnOrchestration?: TurnOrchestration;
   displayText?: string;
-  onSessionResolved?: (sessionId: string) => void;
+  onSessionResolved?: (sessionId: string, newTaskDraftKey?: string) => void;
 };
 
 function copiedArray<K extends string, T>(
@@ -145,6 +145,7 @@ export function createAppShellChatActions(deps: {
   getRunningTurnId?: (sessionId: string) => string | undefined;
   activeIdRef: RefBox<string | undefined>;
   captureComposerImportOwner: () => ComposerImportOwner;
+  captureSelection: () => () => boolean;
   checkTaskSubmissionReadiness: () => Promise<boolean>;
   isNewChatSendSurfaceActive: (owner: ComposerImportOwner) => boolean;
   /** The shell's one answer to "is this owner still the surface the user is
@@ -154,7 +155,7 @@ export function createAppShellChatActions(deps: {
   messageRetryPending: SessionPendingClaim;
   refreshSessions: () => Promise<DesktopSessionSummary[]>;
   activateSessionForFirstSend: (sessionId: string) => Promise<void>;
-  setActiveId: (sessionId: string | undefined) => void;
+  retireSession: (sessionId: string) => void;
   setMessageLoadErrorBySession: MessageLoadErrorUpdater;
   addTransientMessage: (
     sessionId: string,
@@ -203,13 +204,14 @@ export function createAppShellChatActions(deps: {
     uiLocale,
     activeIdRef,
     captureComposerImportOwner,
+    captureSelection,
     checkTaskSubmissionReadiness,
     isNewChatSendSurfaceActive,
     isShellSurfaceOwnerActive,
     messageRetryPending,
     refreshSessions,
     activateSessionForFirstSend,
-    setActiveId,
+    retireSession,
     setMessageLoadErrorBySession,
     removeTransientMessage,
     transcriptRangeRef,
@@ -230,22 +232,11 @@ export function createAppShellChatActions(deps: {
   } = deps;
   const copy = getShellCopy(uiLocale).chatActions;
 
-  function removeOptimisticUserMessage(sessionId: string, turnId: string): void {
-    removeTransientMessage(sessionId, turnId);
-  }
-
-  /**
-   * What a submitted Message became, as far as this client can tell.
-   *
-   * `unreconciled` is the only outcome that leaves the transient row in place:
-   * the answer was lost, so Runtime Host may well have acted on the Message and
-   * canonical transcript is what settles it. A `refused` Message opened no Turn
-   * and will never be replaced by a canonical one, so its row is already gone.
-   */
+  /** Only an unreconciled submission keeps its row because Host admission may have succeeded. */
   type SubmittedMessage =
     | { kind: 'projected'; skillInvocation: SkillInvocationResult; turnId?: string }
     | { kind: 'unreconciled' }
-    | { kind: 'refused'; skillInvocation: SkillInvocationResult };
+    | { kind: 'refused' };
 
   /**
    * The one place a submitted Message's outcome becomes UI. Every submission —
@@ -281,18 +272,14 @@ export function createAppShellChatActions(deps: {
         // canonical transcript to settle.
         return { kind: 'unreconciled' };
       }
-      removeOptimisticUserMessage(sessionId, messageId);
-      if (surfaceVisible) {
-        skillFeedback.showSkillInvocationFeedback(uiLocale, toastApi, result.skillInvocation, sessionId);
-      }
-      return { kind: 'refused', skillInvocation: result.skillInvocation };
+      removeTransientMessage(sessionId, messageId);
+      if (surfaceVisible) skillFeedback.showSubmissionFeedback(uiLocale, toastApi, result, sessionId);
+      return { kind: 'refused' };
     }
     if (result.disposition === 'locally_saved') {
       return { kind: 'projected', skillInvocation: result.skillInvocation };
     }
-    if (surfaceVisible) {
-      skillFeedback.showSkillInvocationFeedback(uiLocale, toastApi, result.skillInvocation, sessionId);
-    }
+    if (surfaceVisible) skillFeedback.showSubmissionFeedback(uiLocale, toastApi, result, sessionId);
     // The row is updated whether or not the surface is on screen: attachments,
     // inline references and the Host Turn grouping are what the user finds when
     // they come back to it.
@@ -319,18 +306,15 @@ export function createAppShellChatActions(deps: {
     pending?: readonly PendingAttachment[],
     options: SendOptions = {},
   ): Promise<boolean> {
-    const directoryReferences = options.directoryReferences;
-    const quotes = options.quotes;
-    const exactTurn = options.turnOrchestration !== undefined;
+    const { directoryReferences, quotes } = options;
     const initialSessionId = activeIdRef.current;
-    const initialNewTaskTarget = initialSessionId ? undefined : newTaskTarget;
     const sendOwner = captureComposerImportOwner();
-    const newChatOwner = initialSessionId ? null : sendOwner;
-    if (!initialSessionId && !initialNewTaskTarget) return false;
-    if (!(await checkTaskSubmissionReadiness())) return false;
+    const selectionIsCurrent = captureSelection();
+    if (!initialSessionId && !newTaskTarget) return false;
     if (
+      !(await checkTaskSubmissionReadiness()) || !selectionIsCurrent() ||
       (initialSessionId && !isShellSurfaceOwnerActive(sendOwner)) ||
-      (newChatOwner && !isNewChatSendSurfaceActive(newChatOwner))
+      (!initialSessionId && !isNewChatSendSurfaceActive(sendOwner))
     ) {
       return false;
     }
@@ -351,7 +335,7 @@ export function createAppShellChatActions(deps: {
       unsentSessionId = undefined;
       try {
         await window.maka.sessions.remove(sessionId);
-        if (activeIdRef.current === sessionId) setActiveId(undefined);
+        retireSession(sessionId);
         await refreshSessions();
       } catch {
         // Best-effort: a failed cleanup must not replace the real error.
@@ -380,7 +364,7 @@ export function createAppShellChatActions(deps: {
         return submitAndProject({
           sessionId,
           messageId,
-          placement: exactTurn ? 'current_turn' : 'next_turn',
+          placement: options.turnOrchestration !== undefined ? 'current_turn' : 'next_turn',
           command: {
             ...sendCommand,
             ...(options.turnOrchestration ? { turnOrchestration: options.turnOrchestration } : {}),
@@ -393,9 +377,9 @@ export function createAppShellChatActions(deps: {
         });
       }
       if (!initialSessionId) {
-        if (!initialNewTaskTarget) return false;
+        if (!newTaskTarget) return false;
         if (pending?.length) preflightAttachmentItems(pending);
-        const session = await window.maka.newTasks.create(initialNewTaskTarget, {
+        const session = await window.maka.newTasks.create(newTaskTarget, {
           name: DEFAULT_SESSION_NAME,
           ...(newChatModel
             ? {
@@ -410,6 +394,12 @@ export function createAppShellChatActions(deps: {
           orchestrationMode: newChatOrchestrationMode,
         });
         unsentSessionId = session.id;
+        // Creation can also yield while a same-target New Task is reopened.
+        // Retire this unsent Session without activating the abandoned surface.
+        if (!selectionIsCurrent() || !isNewChatSendSurfaceActive(sendOwner)) {
+          await discardUnsentSession();
+          return false;
+        }
         optimisticSessionId = session.id;
         optimisticMessageId = messageId;
         // Stage the first row before activation. `setActiveId` projects this
@@ -429,7 +419,7 @@ export function createAppShellChatActions(deps: {
         // surface; saving a draft never waits for the Host's event stream.
         await activateSessionForFirstSend(session.id);
         if (activeIdRef.current !== session.id) {
-          removeOptimisticUserMessage(session.id, messageId);
+          removeTransientMessage(session.id, messageId);
           await discardUnsentSession();
           return false;
         }
@@ -441,21 +431,21 @@ export function createAppShellChatActions(deps: {
         unsentSessionId = undefined;
         // The callback fires only when this send's first message projected;
         // an unreconciled first message stays unreported.
-        if (submitted.kind === 'projected') options.onSessionResolved?.(session.id);
+        if (submitted.kind === 'projected')
+          options.onSessionResolved?.(session.id, sendOwner.newTaskDraftKey);
         void refreshSessions().catch(() => undefined);
         return true;
       }
-      const sessionId = initialSessionId;
-      if (!await onFollowLatest(sessionId)) return false;
-      optimisticSessionId = sessionId;
+      if (!await onFollowLatest(initialSessionId)) return false;
+      optimisticSessionId = initialSessionId;
       optimisticMessageId = messageId;
-      publishTransientUserMessage(sessionId, {
+      publishTransientUserMessage(initialSessionId, {
         id: messageId, text: options.displayText ?? text, transientPlacement: 'current_turn',
         ...copiedArray('directoryReferences', directoryReferences),
         ...copiedArray('quotes', quotes),
         inlineReferences: [],
       });
-      const submitted = await submitIntoSession(sessionId, messageId);
+      const submitted = await submitIntoSession(initialSessionId, messageId);
       // An existing-Session send never reports a resolved Session.
       return submitted.kind !== 'refused';
     } catch (error) {
@@ -465,8 +455,8 @@ export function createAppShellChatActions(deps: {
       const feedbackSessionId = optimisticSessionId ?? initialSessionId;
       const diagnosticTarget = feedbackSessionId
         ? { sessionId: feedbackSessionId }
-        : initialNewTaskTarget
-          ? { profileId: initialNewTaskTarget.profileId }
+        : newTaskTarget
+          ? { profileId: newTaskTarget.profileId }
           : undefined;
       const sendStillOwnsCurrentSurface =
         (feedbackSessionId !== undefined &&
@@ -474,10 +464,10 @@ export function createAppShellChatActions(deps: {
             ...sendOwner,
             sessionId: feedbackSessionId,
           })) ||
-        (newChatOwner !== null && isNewChatSendSurfaceActive(newChatOwner));
+        (!initialSessionId && isNewChatSendSurfaceActive(sendOwner));
       await discardUnsentSession();
       if (optimisticSessionId && optimisticMessageId) {
-        removeOptimisticUserMessage(optimisticSessionId, optimisticMessageId);
+        removeTransientMessage(optimisticSessionId, optimisticMessageId);
       }
       // Which surface is allowed to hear about this failure. The id alone is
       // not it: `selectNavigation` never clears `activeId` (nav-selection.ts),
@@ -556,7 +546,7 @@ export function createAppShellChatActions(deps: {
       // would clear the composer draft the user has to retry from.
       return submitted.kind !== 'refused';
     } catch (error) {
-      removeOptimisticUserMessage(sessionId, messageId);
+      removeTransientMessage(sessionId, messageId);
       throw error;
     }
   }

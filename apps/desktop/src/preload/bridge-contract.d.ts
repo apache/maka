@@ -17,7 +17,11 @@
  * under the License.
  */
 
-import type { WorkHubAnswerInput, WorkHubAnswerResult } from '../shared/workhub-conversation.js';
+import type {
+  WorkHubAnswerInput,
+  WorkHubAnswerResult,
+  WorkHubPrepareAttachmentsResult,
+} from '../shared/workhub-conversation.js';
 import type { ConnectionEvent } from '@maka/core/connections';
 import type {
   ConnectionTestResult,
@@ -111,7 +115,12 @@ import type {
   DesktopTranscriptHandle,
 } from './transcript-contract.js';
 import type { PetPackManifestV1 } from '@maka/core/pet';
-import type { WorkBoardItem, WorkBoardListQuery, WorkBoardPage } from '@maka/core/work-board';
+import type {
+  WorkBoardItem,
+  WorkBoardLinkedSession,
+  WorkBoardListQuery,
+  WorkBoardPage,
+} from '@maka/core/work-board';
 import type { WorkBoardMutationOptions } from '@maka/storage/work-board-store';
 import type {
   OperationInput,
@@ -177,7 +186,10 @@ export type SessionBundleExportIpcResult =
 export type SessionBundleImportIpcResult =
   | { readonly ok: true; readonly sessionCount: number }
   | SessionBundleFailure;
-import type { DesktopSessionSummary } from '../shared/desktop-session-projection.js';
+import type {
+  DesktopSessionSummary,
+  DesktopSessionUpdateResult,
+} from '../shared/desktop-session-projection.js';
 import type {
   SessionCollaborationCancelResult,
   SessionCollaborationImportPhase,
@@ -1020,6 +1032,11 @@ export interface MakaBridge {
       options?: WorkBoardMutationOptions,
     ): Promise<WorkBoardIpcResult<WorkBoardItem>>;
     remove(id: string, options?: WorkBoardMutationOptions): Promise<WorkBoardIpcResult<null>>;
+    linkSession(
+      id: string,
+      link: WorkBoardLinkedSession,
+      options?: WorkBoardMutationOptions,
+    ): Promise<WorkBoardIpcResult<WorkBoardItem>>;
     subscribeChanges(handler: (event: WorkBoardChangedEvent) => void): () => void;
   };
 
@@ -1051,7 +1068,7 @@ export interface MakaBridge {
   };
   workHub: {
     getSession(coordinationSessionId: string): Promise<DesktopSessionSummary>;
-    prepareAttachments(coordinationSessionId: string, items: RendererIngestInput[]): Promise<AttachmentRef[]>;
+    prepareAttachments(coordinationSessionId: string, items: RendererIngestInput[]): Promise<WorkHubPrepareAttachmentsResult>;
     answer(coordinationSessionId: string, input: WorkHubAnswerInput): Promise<WorkHubAnswerResult>;
     configureModel(coordinationSessionId: string, input: OperationInput<'workhub.coordination.configureModel'>): Promise<OperationOutput<'workhub.coordination.configureModel'>>;
     /** Resolve the active Runtime Host's stable coordination conversation. */
@@ -1118,6 +1135,11 @@ export interface MakaBridge {
         }
       | {
           ok: false;
+          reason: 'attachment_blocked';
+          code: import('@maka/core/attachments').AttachmentIngestBlockedCode;
+        }
+      | {
+          ok: false;
           reason: 'outcome_unknown';
           messageId: string;
           skillInvocation: import('@maka/runtime/skill-invocation').SkillInvocationResult;
@@ -1168,6 +1190,11 @@ export interface MakaBridge {
           ok: false;
           reason: 'skill_invocation_failed';
           skillInvocation: import('@maka/runtime/skill-invocation').SkillInvocationResult;
+        }
+      | {
+          ok: false;
+          reason: 'attachment_blocked';
+          code: import('@maka/core/attachments').AttachmentIngestBlockedCode;
         }
       | { ok: false; reason: 'outcome_unknown' }
     >;
@@ -1238,22 +1265,22 @@ export interface MakaBridge {
     unarchive(sessionId: string, options?: { revisionFamily?: boolean }): Promise<void>;
     setFlagged(sessionId: string, isFlagged: boolean, options?: { revisionFamily?: boolean }): Promise<void>;
     rename(sessionId: string, name: string, options?: { revisionFamily?: boolean }): Promise<void>;
-    setPermissionMode(sessionId: string, mode: PermissionMode): Promise<DesktopSessionSummary>;
+    setPermissionMode(sessionId: string, mode: PermissionMode): Promise<DesktopSessionUpdateResult<DesktopSessionSummary>>;
     /**
      * Enter or leave Plan — a temporary collaboration excursion Runtime ends
      * by itself once a proposal is approved or abandoned.
      */
-    setCollaborationMode(sessionId: string, mode: CollaborationMode): Promise<DesktopSessionSummary>;
+    setCollaborationMode(sessionId: string, mode: CollaborationMode): Promise<DesktopSessionUpdateResult<DesktopSessionSummary>>;
     /**
      * The Session's standing default for how a turn fans out. Independent of
      * Plan: different field, different lifetime, and Runtime resolves the
      * overlap by stripping the tools Swarm and Graph need while planning.
      */
-    setOrchestrationMode(sessionId: string, mode: OrchestrationMode): Promise<DesktopSessionSummary>;
+    setOrchestrationMode(sessionId: string, mode: OrchestrationMode): Promise<DesktopSessionUpdateResult<DesktopSessionSummary>>;
     getPlanState(sessionId: string): Promise<PlanSessionState>;
     subscribePlanChanges(sessionId: string, handler: () => void): () => void;
     requestPlanRevision(sessionId: string, proposalId: string): Promise<PlanControlIpcResult<PlanSessionState>>;
-    abandonPlanProposal(sessionId: string, proposalId: string): Promise<PlanSessionState>;
+    abandonPlanProposal(sessionId: string, proposalId: string): Promise<PlanControlIpcResult<PlanSessionState>>;
     approvePlan(sessionId: string, input: {
       proposalId: string;
       expectedRevision: number;
@@ -1270,8 +1297,8 @@ export interface MakaBridge {
       llmConnectionSlug: string;
       model: string;
       thinkingLevel: ThinkingLevel | null;
-    }): Promise<DesktopSessionSummary>;
-    setThinkingLevel(sessionId: string, level: ThinkingLevel | undefined | null): Promise<DesktopSessionSummary>;
+    }): Promise<DesktopSessionUpdateResult<DesktopSessionSummary>>;
+    setThinkingLevel(sessionId: string, level: ThinkingLevel | undefined | null): Promise<DesktopSessionUpdateResult<DesktopSessionSummary>>;
     /**
      * `requireArchived` holds the caller's premise through the deletion: a task
      * restored meanwhile answers `restored` and is kept. `archivedSubtaskCount`
@@ -1365,6 +1392,8 @@ export interface MakaBridge {
     restore(projectId: string, host?: DesktopRuntimeHostRef): Promise<ProjectRecord>;
   };
   shellRuns: {
+    recover(sessionId: string): Promise<import('../shared/runtime-host-identity.js').TerminalRecovery>;
+    subscribeCloseChanges(handler: (change: import('../shared/runtime-host-identity.js').TerminalCloseChange) => void): () => void;
     list(sessionId: string): Promise<ShellRunUpdate[]>;
     attach(input: {
       sessionId: string;
@@ -1377,11 +1406,11 @@ export interface MakaBridge {
       ref: string;
       input?: string;
       size?: { cols: number; rows: number };
-    }): Promise<ShellRunUpdate | null>;
+    }): Promise<void>;
     stop(input: {
       sessionId: string;
       ref: string;
-    }): Promise<ShellRunUpdate | null>;
+    }): Promise<void>;
     subscribeUpdates(handler: (update: ShellRunUpdate) => void): () => void;
     subscribePtyData(handler: (event: ShellRunPtyDataEvent) => void): () => void;
     subscribeResync(handler: (event: { sessionId: string }) => void): () => void;
@@ -1568,10 +1597,12 @@ export interface MakaBridge {
   search: {
     thread(
       request: SearchRequest,
+      requestId?: string,
     ): Promise<
       | SearchResult[]
       | { ok: false; reason: SearchErrorReason; message: string }
     >;
+    cancelThread(requestId: string): Promise<void>;
   };
   openAiCodex: {
     getAuthUrl(host: DesktopRuntimeHostRef | undefined, target: DesktopOAuthLoginTarget): Promise<DesktopOAuthAuthorizationStartResult>;
@@ -1805,6 +1836,21 @@ export interface MakaBridge {
       | { ok: false; reason: 'invalid-path' | 'not-found' }
     >;
     openArtifactPath(
+      sessionId: string,
+      artifactId: string,
+    ): Promise<
+      | { ok: true; opened: string }
+      | {
+          ok: false;
+          reason:
+            | 'unknown-key'
+            | 'not-allowed'
+            | 'missing'
+            | 'not-a-directory'
+            | 'open-failed';
+        }
+    >;
+    showArtifactInFolder(
       sessionId: string,
       artifactId: string,
     ): Promise<

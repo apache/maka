@@ -39,7 +39,9 @@
  *  5. **Copy/export policy**: only the text-based kinds (`file`, `diff`,
  *     `html`) expose a Copy button. `image` / `pdf` rows do NOT — those are
  *     binary, and silently base64-stuffing a multi-MB PDF into the clipboard
- *     is a footgun. Both kinds still get「在 Finder 中打开」and「另存为」.
+ *     is a footgun. HTML rows explicitly offer View in Maka; their preview
+ *     menu offers Open in Default App and Show in Finder separately.
+ *     All kinds still get Save As.
  *
  * Layout: fills the Generated files tab and switches between a list and one
  * full-panel preview while reporting its authoritative filtered count.
@@ -258,10 +260,34 @@ export function ArtifactPane(props: {
     }
   }
 
-  async function openInFinder(artifactId: string) {
+  async function openArtifact(artifactId: string) {
     const actionSessionId = sessionId;
     try {
       const result = await artifacts.openPath(sessionId, artifactId);
+      if (!isArtifactActionSurfaceActive(actionSessionId)) return;
+      if (!result.ok) {
+        toast.error(
+          copy.pane.openFailed,
+          openPathFailureCopy(result.reason, locale),
+          undefined,
+          { sessionId: actionSessionId },
+        );
+      }
+    } catch (error) {
+      if (!isArtifactActionSurfaceActive(actionSessionId)) return;
+      toast.error(
+        copy.pane.openFailed,
+        artifactActionErrorMessage(error, locale, copy),
+        undefined,
+        { sessionId: actionSessionId },
+      );
+    }
+  }
+
+  async function showInFinder(artifactId: string) {
+    const actionSessionId = sessionId;
+    try {
+      const result = await artifacts.showInFolder(sessionId, artifactId);
       if (!isArtifactActionSurfaceActive(actionSessionId)) return;
       if (!result.ok) {
         toast.error(
@@ -493,7 +519,7 @@ export function ArtifactPane(props: {
                   tabIndex={-1}
                   data-selected={record.id === selectedId ? 'true' : 'false'}
                   onClick={() => openPreview(record.id)}
-                  label={record.name}
+                  label={record.kind === 'html' ? `${record.name} · ${copy.pane.viewInMaka}` : record.name}
                   icon={(
                     <span className="maka-artifact-row-icon" aria-hidden="true">
                       <KindIcon kind={record.kind} />
@@ -501,6 +527,7 @@ export function ArtifactPane(props: {
                   )}
                   endContent={(
                     <span className="maka-artifact-row-meta">
+                      {record.kind === 'html' && <span>{copy.pane.viewInMaka}</span>}
                       <span className="maka-artifact-row-size">{formatBytes(record.sizeBytes)}</span>
                       <span className="maka-artifact-row-time">
                         {formatRelativeTimestamp(record.createdAt, Date.now(), locale)}
@@ -532,6 +559,7 @@ export function ArtifactPane(props: {
             <div className="maka-artifact-preview-heading">
               <strong title={previewRecord.name}>{previewRecord.name}</strong>
               <span>
+                {previewRecord.kind === 'html' && `${copy.pane.viewInMaka} · `}
                 {formatBytes(previewRecord.sizeBytes)} · {formatRelativeTimestamp(previewRecord.createdAt, Date.now(), locale)}
               </span>
             </div>
@@ -544,10 +572,23 @@ export function ArtifactPane(props: {
               onOpenChange={setMoreMenuOpen}
               items={[
                 {
+                  label: previewRecord.kind === 'html' ? copy.pane.openInDefaultApp : copy.pane.openInFinder,
+                  icon: <FolderOpen size={ICON_SIZE.control} aria-hidden="true" />,
+                  onClick: () => void runArtifactAction(
+                    `${previewRecord.id}:open`,
+                    () => previewRecord.kind === 'html'
+                      ? openArtifact(previewRecord.id)
+                      : showInFinder(previewRecord.id),
+                  ),
+                },
+                ...(previewRecord.kind === 'html' ? [{
                   label: copy.pane.openInFinder,
                   icon: <FolderOpen size={ICON_SIZE.control} aria-hidden="true" />,
-                  onClick: () => void runArtifactAction(`${previewRecord.id}:open`, () => openInFinder(previewRecord.id)),
-                },
+                  onClick: () => void runArtifactAction(
+                    `${previewRecord.id}:reveal`,
+                    () => showInFinder(previewRecord.id),
+                  ),
+                }] : []),
                 {
                   label: copy.pane.saveAs,
                   icon: <Save size={ICON_SIZE.control} aria-hidden="true" />,
@@ -582,8 +623,8 @@ export function ArtifactPane(props: {
               key={previewRecord.id}
               record={previewRecord}
               onShowInFolder={() => void runArtifactAction(
-                `${previewRecord.id}:open`,
-                () => openInFinder(previewRecord.id),
+                `${previewRecord.id}:reveal`,
+                () => showInFinder(previewRecord.id),
               )}
             />
           </div>

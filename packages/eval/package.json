@@ -33,7 +33,11 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test:dist": "node --test \"dist/**/*.test.js\" && python3 -m unittest discover --start-directory harbor --pattern 'test_*.py'",
+    "simulate:fleet": "npm run build && node dist/fleet-simulation.js",
     "test:egress-proxy:live": "python3 harbor/test_egress_filter_live.py"
+  },
+  "devDependencies": {
+    "@maka/storage": "0.1.0"
   },
   "dependencies": {
     "@maka/core": "0.1.0",

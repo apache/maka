@@ -31,6 +31,7 @@ import {
 } from '@maka/runtime-host/protocol';
 import { z } from 'zod';
 import { buildClientSettingsTools } from '../client-settings-tools.js';
+import { buildManagedArtifactPreviewTools } from '../managed-artifact-preview-tools.js';
 import { browserOriginAdmission } from '../browser/browser-origin-admission.js';
 import { buildRiveWorkflowTool } from '../rive-workflow-tool.js';
 import { createDesktopNativeCapabilityProvider } from '../runtime-host-native-capabilities.js';
@@ -40,6 +41,32 @@ function jsonSchema(schema: Record<string, unknown>): {
 } {
   return { jsonSchema: schema };
 }
+
+test('Artifact preview is discoverable and admitted without a pre-existing browser origin', async () => {
+  let invoked = false;
+  const provider = createDesktopNativeCapabilityProvider({
+    browserTools: [],
+    resolveBrowserUrl: () => { throw new Error('No browser page exists'); },
+    releaseBrowserSession() {},
+    computerUseTools: computerTools(),
+    releaseDesktopInteractionSession() {},
+    additionalGroups: () => [{
+      offerId: 'desktop_artifact_preview', label: 'HTML preview', description: 'Prepare HTML preview',
+      tools: buildManagedArtifactPreviewTools(async (sessionId, artifactId, signal) => {
+        assert.equal(sessionId, 'session-1');
+        assert.equal(artifactId, 'artifact-1');
+        signal.throwIfAborted();
+        invoked = true;
+        return { url: 'http://127.0.0.1:12345/token/index.html', expiresAt: 123456, reachable: true, loaded: false };
+      }),
+    }],
+  }, { nativeSessionId: (sessionId) => `native:${sessionId}` });
+  assert.doesNotThrow(() => decodeClientCapabilityReplaceInput({ registrationId: 'registration-1', offers: provider.offers() }));
+  assert.ok(provider.offers().some((offer) => offer.offerId === 'desktop_artifact_preview' && offer.tools.some((tool) => tool.name === 'ArtifactPreview')));
+  const result = await call(provider, capabilityFrame({ offerId: 'desktop_artifact_preview', serverId: 'desktop_artifact_preview', toolName: 'ArtifactPreview', arguments: { artifactId: 'artifact-1' } }));
+  assert.equal(invoked, true);
+  assert.deepEqual(result.structuredContent, { url: 'http://127.0.0.1:12345/token/index.html', expiresAt: 123456, reachable: true, loaded: false });
+});
 
 test('publishes self-described session-affine Browser and Computer Use offers', () => {
   const provider = createDesktopNativeCapabilityProvider({

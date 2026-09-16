@@ -23,7 +23,13 @@
 // filesystem, shell, and network effects.
 
 import { z } from 'zod';
-import { jsonSchema, zodSchema } from 'ai';
+import {
+  READ_DESCRIPTION,
+  readParameters,
+  readToolResultPage,
+  resolveReadInput,
+  type ReadInput,
+} from './read-page.js';
 import {
   closeSync,
   constants,
@@ -43,6 +49,8 @@ import { isStorageRef, type StorageRef, type ToolResultContent } from '@maka/cor
 import { type PermissionProfile } from '@maka/core/permission-profile';
 import { bashToolResultToModelOutput } from './bash-model-output.js';
 import { fileWriteToolResultToModelOutput } from './file-tool-model-output.js';
+import { toolResultOutput } from './tool-result-output.js';
+import { GREP_MAX_LINES, GREP_MAX_LINES_PER_FILE, GREP_MAX_MATCH_BYTES } from './grep-search.js';
 import { openAiApplyPatchInputSchema } from './openai-apply-patch.js';
 import { parseCodexV4aPatch } from './codex-v4a-patch.js';
 import { executeApplyPatchOperations } from './apply-patch-batch.js';
@@ -180,6 +188,12 @@ export interface BuildBuiltinToolsOptions {
   shellEnvironment?: Readonly<Record<string, string>>;
   permissionProfile?: PermissionProfile;
   sandboxManager?: SandboxManager;
+  /**
+   * Whether Bash advertises `boundary_intent` / `required_boundary`. False for
+   * a session whose boundary cannot be widened (Full access); a declaration no
+   * host enforces is noise in the model's tool selection. Defaults to true.
+   */
+  declareSandboxBoundary?: boolean;
   /** Sandboxed worker used for all local filesystem tools. */
   filesystemWorker?: Pick<FilesystemWorkerClient, 'execute'>;
   /** Test/embedding override. Production callers use the current process platform. */
@@ -201,97 +215,6 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
     ...(options.permissionProfile ? { permissionProfile: options.permissionProfile } : {}),
   });
   const executionFacts = executor.facts;
-  const acceptsResourceRefs = Boolean(options.runtimeResources || options.attachmentResources);
-  const readDescription = `Read a text file${options.snapshotImage ? ' or supported image' : ''} from disk${acceptsResourceRefs ? ', or read a whole runtime resource using ref' : ''}.`;
-  const pathField = z
-    .string()
-    .describe('A file path; relative paths are resolved from the session cwd');
-  const offsetField = z
-    .number()
-    .int()
-    .nonnegative()
-    .describe('Zero-based text file line offset')
-    .optional();
-  const limitField = z
-    .number()
-    .int()
-    .positive()
-    .describe('Maximum text file lines to read')
-    .optional();
-  const refField = z
-    .string()
-    .describe('A runtime resource ref provided in the conversation or returned by another tool');
-  const fileReadParameters = z
-    .object({
-      path: pathField,
-      offset: offsetField,
-      limit: limitField,
-    })
-    .strict();
-  const runtimeResourceReadParameters = z
-    .object({
-      ref: refField,
-    })
-    .strict();
-  // Some providers serialize every optional field with a default. Normalize
-  // only empty fields that cannot carry intent, then let the strict union keep
-  // rejecting genuinely ambiguous file-and-resource requests.
-  const normalizeProviderReadInput = (value: unknown): unknown => {
-    if (typeof value !== 'object' || value === null || Array.isArray(value)) return value;
-    const input = value as Record<string, unknown>;
-    const ref = input.ref;
-    const path = input.path;
-    if (typeof ref === 'string' && ref.trim() !== '') {
-      if (typeof path !== 'string' || path.trim() !== '') return value;
-      return Object.fromEntries(
-        Object.entries(input).filter(
-          ([key]) => key !== 'path' && key !== 'offset' && key !== 'limit',
-        ),
-      );
-    }
-    if (typeof ref !== 'string' || ref.trim() !== '') return value;
-    return Object.fromEntries(Object.entries(input).filter(([key]) => key !== 'ref'));
-  };
-  const strictReadParameters = z.preprocess(
-    normalizeProviderReadInput,
-    z
-      .union([fileReadParameters, runtimeResourceReadParameters])
-      .describe('Read a file with path, or a whole runtime resource with ref; provide exactly one'),
-  );
-  // Provider-facing schema: a single top-level object with every field optional.
-  // Anthropic rejects a tool definition whose input schema carries a top-level
-  // `anyOf`, so the file-vs-ref exclusivity is stated in the field descriptions
-  // here and enforced authoritatively by the strict union in `validate` below
-  // (see #1228 — a union-generated `anyOf` had been leaking onto the wire).
-  const providerReadParameters = z
-    .object({
-      path: pathField
-        .describe(
-          'A file path; relative paths are resolved from the session cwd. Provide either path (optionally with offset/limit) or ref, never both.',
-        )
-        .optional(),
-      offset: offsetField,
-      limit: limitField,
-      ref: refField
-        .describe(
-          'A runtime resource ref provided in the conversation or returned by another tool. Provide ref on its own, without path/offset/limit; omit it (or leave it empty) when reading a file.',
-        )
-        .optional(),
-    })
-    .describe(
-      'Read a file with path (optionally offset/limit), or a whole runtime resource with ref; provide exactly one of path or ref.',
-    );
-  const providerReadSchema = zodSchema(providerReadParameters);
-  const readParameters = acceptsResourceRefs
-    ? jsonSchema(async () => await providerReadSchema.jsonSchema, {
-        validate: async (value) => {
-          const result = await strictReadParameters.safeParseAsync(value);
-          return result.success
-            ? { success: true, value: result.data }
-            : { success: false, error: result.error };
-        },
-      })
-    : fileReadParameters;
   const shell = options.shell ?? { plan: defaultShellPlan() };
   const sandboxPlatform = options.sandboxPlatform ?? process.platform;
   const bashTools = options.shellRuns
@@ -299,6 +222,7 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
         buildManagedBashTool(options.shellRuns, {
           executionFacts,
           shell,
+          declareSandboxBoundary: options.declareSandboxBoundary !== false,
           ...(options.sandboxManager
             ? {
                 transformCommand: ({ command, pty, requiredBoundary, ctx }) => {
@@ -337,6 +261,7 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
         buildExecutorBashTool(executor, shell, {
           ...(options.permissionProfile ? { permissionProfile: options.permissionProfile } : {}),
           ...(options.sandboxManager ? { sandboxManager: options.sandboxManager } : {}),
+          declareSandboxBoundary: options.declareSandboxBoundary !== false,
           sandboxPlatform,
         }),
       ];
@@ -372,9 +297,31 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
     {
       name: 'Read',
       activityKind: 'read',
-      description: readDescription,
+      description: READ_DESCRIPTION,
       parameters: readParameters,
       executionFacts,
+      toModelOutput: ({ input, output }) => {
+        const args = input as ReadInput;
+        const { path } = resolveReadInput(args);
+        if (
+          classifyRuntimeResourceRef(path) !== 'runtime' ||
+          path.startsWith('maka://runtime/tool-results/')
+        )
+          return undefined;
+        if (output && typeof output === 'object' && 'kind' in output && output.kind === 'image')
+          return undefined;
+        try {
+          return toolResultOutput(readToolResultPage(JSON.stringify(output), args), false);
+        } catch (error) {
+          return {
+            type: 'error-text',
+            value:
+              error instanceof Error
+                ? error.message
+                : 'This Read page could not be generated. Read the original path again.',
+          };
+        }
+      },
       ...(options.releaseImageSnapshot
         ? {
             compensateDurableOutcomeCommitFailure: async (input: {
@@ -406,40 +353,43 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
         : {}),
       impl: async (input, ctx) => {
         const { cwd, sessionId, abortSignal } = ctx;
-        if ('ref' in input) {
-          const { ref } = input;
-          if (classifyRuntimeResourceRef(ref) !== 'runtime') {
-            throw new Error(`Unsupported runtime resource ref: ${ref}`);
-          }
-          const attachment = parseAttachmentResourceRef(ref);
+        const resolved = resolveReadInput(input);
+        const path = resolved.path;
+        const runtimeRef = classifyRuntimeResourceRef(path);
+        if (runtimeRef === 'unsupported')
+          throw new Error(`Unsupported Maka address: ${path}. Use a path returned by a tool.`);
+        if (runtimeRef === 'runtime') {
+          const attachment = parseAttachmentResourceRef(path);
           if (attachment) {
-            if (!options.attachmentResources) {
+            if (!options.attachmentResources)
               throw new Error('Attachment resources are not available in this toolset');
-            }
-            return await options.attachmentResources.readAttachmentResource(
+            const result = await options.attachmentResources.readAttachmentResource(
               sessionId,
               attachment.artifactId,
               abortSignal,
             );
+            return result;
           }
           if (!options.runtimeResources)
             throw new Error('Runtime resources are not available in this toolset');
-          return await options.runtimeResources.readRuntimeResource(sessionId, ref, abortSignal);
-        }
-
-        const { path, offset, limit } = input;
-        const runtimeRef = classifyRuntimeResourceRef(path);
-        if (runtimeRef === 'unsupported')
-          throw new Error(`Unsupported runtime resource ref: ${path}`);
-        if (runtimeRef === 'runtime') {
-          throw new Error('Runtime resources must be read with the ref parameter, not path');
+          const result = await options.runtimeResources.readRuntimeResource(
+            sessionId,
+            path,
+            abortSignal,
+          );
+          return result;
         }
         const result = await filesystem.execute({
           operation: {
             kind: 'read',
             path,
-            ...(offset !== undefined ? { offset } : {}),
-            ...(limit !== undefined ? { limit } : {}),
+            ...(input.offset === undefined ? {} : { offset: input.offset }),
+            ...(input.limit === undefined ? {} : { limit: input.limit }),
+            ...(resolved.position === undefined
+              ? {}
+              : {
+                  continuation: { position: resolved.position, digest: resolved.digest! },
+                }),
           },
           ...filesystemCall(ctx),
         });
@@ -463,7 +413,8 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
             'no file content came back',
             'the file is empty or missing',
           );
-        return { content: result.content };
+        const { kind: _kind, ...page } = result;
+        return page;
       },
     },
     ...(executor.applyPatch ? [applyPatchTool] : []),
@@ -614,11 +565,16 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
     {
       name: 'Grep',
       activityKind: 'search',
-      description: 'Search file contents with a regex via ripgrep.',
+      description: `Search file contents with a ripgrep regex. Scans files as text, including binary files; directory traversal respects ripgrep ignore rules and glob filters. Returns path:line:content matches and exact matchedLines, returnedLines, omittedLines, and truncated from one completed search. Keeps at most ${GREP_MAX_LINES_PER_FILE} lines per file, ${GREP_MAX_LINES} total, and ${GREP_MAX_MATCH_BYTES / 1024} KiB of JSON matches; oversized or non-UTF8 lines/paths may be omitted. Narrow path, glob, or pattern for more matches, or use Read to inspect a file. Failed searches have unknown totals.`,
       parameters: z.object({
-        pattern: z.string(),
-        path: z.string().optional(),
-        glob: z.string().optional(),
+        pattern: z
+          .string()
+          .describe('Ripgrep regular expression; use an empty pattern to match every line.'),
+        path: z
+          .string()
+          .optional()
+          .describe('File or directory to search; defaults to the session working directory.'),
+        glob: z.string().optional().describe('Optional ripgrep file glob, for example **/*.ts.'),
       }),
       executionFacts,
       impl: async ({ pattern, path, glob }, ctx) => {
@@ -629,11 +585,11 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
         const result = await filesystem.execute({
           operation: {
             kind: 'grep',
-            path: path ?? '.',
+            path: path || '.',
             pattern,
             ...(glob ? { glob } : {}),
-            maxCountPerFile: 50,
-            limit: 200,
+            maxCountPerFile: GREP_MAX_LINES_PER_FILE,
+            limit: GREP_MAX_LINES,
             timeoutMs: GREP_TIMEOUT_MS,
           },
           ...filesystemCall(ctx),
@@ -644,7 +600,8 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
             'no search result came back',
             'the pattern is absent',
           );
-        return { matches: result.matches };
+        const { kind: _kind, ...searchResult } = result;
+        return searchResult;
       },
     },
   ];
@@ -667,6 +624,7 @@ interface ExecutorBashSandboxOptions {
   permissionProfile?: PermissionProfile;
   sandboxManager?: SandboxManager;
   sandboxPlatform: SandboxPlatform;
+  declareSandboxBoundary?: boolean;
 }
 
 function buildExecutorBashTool(
@@ -674,25 +632,31 @@ function buildExecutorBashTool(
   shell: TurnShellPlan,
   sandboxOptions: ExecutorBashSandboxOptions,
 ): MakaTool {
+  const declareSandboxBoundary = sandboxOptions.declareSandboxBoundary !== false;
+  const executorBashFields = {
+    command: z.string().describe('The shell command to execute'),
+    timeout_ms: z.number().int().positive().max(600_000).optional(),
+  };
   return {
     name: 'Bash',
     activityKind: 'command',
     description:
       withTurnShellGuidance('Run a shell command in the session cwd.', shell) +
-      ' Enforced by the current session sandbox boundary.',
-    parameters: preprocessBashBoundaryDeclaration(
-      z
-        .object({
-          command: z.string().describe('The shell command to execute'),
-          timeout_ms: z.number().int().positive().max(600_000).optional(),
-          boundary_intent: bashBoundaryIntentSchema,
-          required_boundary: sandboxBoundaryExpansionSchema
-            .optional()
-            .describe(BASH_REQUIRED_BOUNDARY_DESCRIPTION),
-        })
-        .strict()
-        .superRefine(refineBashBoundaryDeclaration),
-    ),
+      (declareSandboxBoundary ? ' Enforced by the current session sandbox boundary.' : ''),
+    parameters: declareSandboxBoundary
+      ? preprocessBashBoundaryDeclaration(
+          z
+            .object({
+              ...executorBashFields,
+              boundary_intent: bashBoundaryIntentSchema,
+              required_boundary: sandboxBoundaryExpansionSchema
+                .optional()
+                .describe(BASH_REQUIRED_BOUNDARY_DESCRIPTION),
+            })
+            .strict()
+            .superRefine(refineBashBoundaryDeclaration),
+        )
+      : z.object(executorBashFields).strict(),
     toModelOutput: ({ output }) => bashToolResultToModelOutput(output),
     executionFacts: executor.facts,
     impl: async (input, ctx) => {

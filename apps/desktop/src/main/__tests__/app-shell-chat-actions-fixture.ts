@@ -82,6 +82,7 @@ export function createActionsDeps() {
       sessionId: undefined,
       navSection: 'sessions' as const,
     }),
+    captureSelection: () => () => true,
     checkTaskSubmissionReadiness: async () => true,
     isNewChatSendSurfaceActive: () => true,
     isShellSurfaceOwnerActive: () => true,
@@ -91,7 +92,7 @@ export function createActionsDeps() {
     activateSessionForFirstSend: async (sessionId: string) => {
       activeIdRef.current = sessionId;
     },
-    setActiveId: () => undefined,
+    retireSession: (_sessionId: string) => undefined,
     setMessageLoadErrorBySession: () => undefined,
     addTransientMessage: () => undefined,
     updateTransientMessage: () => undefined,

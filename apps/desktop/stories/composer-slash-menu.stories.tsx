@@ -303,6 +303,44 @@ export const PickingACommandWritesItsInvocation: Story = {
   },
 };
 
+// Real path: select a Skill with `/`, reopen the picker, then delete the chip
+// and select it again. The live selection and token deletion need Chromium.
+export const SelectedSkillsLeaveThePickerUntilRemoved: Story = {
+  play: async ({ canvasElement }) => {
+    const composer = editor(canvasElement);
+    const menu = await openMenu(canvasElement);
+    await userEvent.click(within(menu).getByRole('option', { name: /Project Only/ }));
+    const chips = () => composer.querySelectorAll('[data-astryx-token-value="/skill:project-only"]');
+    await waitFor(() => expect(chips()).toHaveLength(1));
+
+    await userEvent.keyboard(' /');
+    const remaining = await overlay().findByRole('listbox', { name: MENU_LABEL });
+    await expect(within(remaining).queryByRole('option', { name: /Project Only/ })).toBeNull();
+    await expect(within(remaining).getByRole('option', { name: /Workspace Only/ })).toBeVisible();
+
+    // An explicit query must not offer the already-staged Skill either.
+    await userEvent.keyboard('skill:project-only');
+    await waitFor(() => expect(overlay().queryByRole('option', { name: /Project Only/ })).toBeNull());
+    await userEvent.keyboard('{Escape}');
+    await userEvent.clear(composer);
+    await waitFor(() => expect(chips()).toHaveLength(0));
+
+    // With the previous chip removed, the query itself is not a selection.
+    await userEvent.keyboard('/skill:project-only');
+    const restored = await overlay().findByRole('option', { name: /Project Only/ });
+    await userEvent.click(restored);
+    await waitFor(() => expect(chips()).toHaveLength(1));
+
+    // Reopen through the other entry point; it shares the same filtered list.
+    await userEvent.click(overlay().getByRole('button', { name: '添加上下文' }));
+    const contextMenu = overlay().getByRole('menu', { name: '添加上下文' });
+    await userEvent.click(within(contextMenu).getByRole('menuitem', { name: /选择技能/ }));
+    const reopened = await overlay().findByRole('listbox', { name: MENU_LABEL });
+    await expect(within(reopened).queryByRole('option', { name: /Project Only/ })).toBeNull();
+    await expect(within(reopened).getByRole('option', { name: /Workspace Only/ })).toBeVisible();
+  },
+};
+
 // Real path: 在 composer 里写一个路径，例如「帮我整理到/Users/」。
 // #3849: a `/` that separates path segments is text. The positive control runs
 // first — the same editor, the same synthetic input shape, opening the menu

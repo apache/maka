@@ -67,7 +67,7 @@ export function terminalContent(record: ShellRunRecord): TerminalToolResult {
     status: terminalResultStatus(record.status),
     ...(record.exitCode !== undefined ? { exitCode: record.exitCode } : {}),
     ...(record.failureMessage !== undefined ? { failureMessage: record.failureMessage } : {}),
-    output: projectShellOutputForModel(record.output),
+    output: record.output,
     ...(sandboxDenialForRecord(record) ? { sandboxDenial: sandboxDenialForRecord(record) } : {}),
   };
 }
@@ -146,6 +146,7 @@ function shellRunStateContent(record: ShellRunRecord): ShellRunCompactResult {
     cmd: record.command,
     startedAt: record.startedAt,
     updatedAt: record.updatedAt,
+    ...(record.pid !== undefined ? { pid: record.pid } : {}),
     ...(record.completedAt !== undefined ? { completedAt: record.completedAt } : {}),
     ...(record.timeoutMs !== undefined ? { timeoutMs: record.timeoutMs } : {}),
     ...(record.exitCode !== undefined ? { exitCode: record.exitCode } : {}),

@@ -18,8 +18,12 @@
  */
 
 import type { MakaBridge } from '../../../preload/bridge-contract.js';
+import type { ShellRunUpdate } from '@maka/core/events';
+import { isTerminalShellRunStatus } from '@maka/core/shell-run';
+import { DESKTOP_TERMINAL_LAUNCH_PREFIX } from '../../../shared/runtime-host-identity.js';
 import type { WorkbarServices } from '../../features/workbar';
 import { readSettledMessagesFrom } from './session-message-settlement.js';
+import { expectSessionUpdate } from './create-session-settings-services.js';
 
 export type DesktopWorkbarBridge = Pick<
   MakaBridge,
@@ -32,7 +36,8 @@ export type DesktopWorkbarBridge = Pick<
   | 'sessions'
   | 'shellRuns'
   | 'transcripts'
->;
+> &
+  Partial<Pick<MakaBridge, 'workBoard'>>;
 
 export interface DesktopWorkbarServiceDependencies {
   readSettledMessages: typeof readSettledMessagesFrom;
@@ -42,7 +47,24 @@ const DEFAULT_DEPENDENCIES: DesktopWorkbarServiceDependencies = {
   readSettledMessages: readSettledMessagesFrom,
 };
 
+function isDesktopTerminal(update: ShellRunUpdate): boolean {
+  return update.ownership.kind === 'local' &&
+    update.sourceTurnId.startsWith(DESKTOP_TERMINAL_LAUNCH_PREFIX) &&
+    update.sourceTurnId === update.sourceToolCallId &&
+    update.result.mode === 'pty';
+}
+
 /** The only Desktop-to-Workbar adapter. It narrows the preload bridge by tool. */
+export function createDesktopInspectorService(bridge: Pick<MakaBridge, 'inspector' | 'sessions'>) {
+  return {
+    trace: (sessionId: string, cursor?: string) => bridge.inspector.trace(sessionId, cursor),
+    summary: (sessionId: string) => bridge.inspector.summary(sessionId),
+    context: (sessionId: string) => bridge.inspector.context(sessionId),
+    subscribeSessionEvents: (sessionId: string, handler: Parameters<MakaBridge['sessions']['subscribeEvents']>[1]) => bridge.sessions.subscribeEvents(sessionId, handler),
+    subscribeUsageChanges: (sessionId: string, handler: () => void) => bridge.inspector.subscribeUsageChanges(sessionId, handler),
+  };
+}
+
 export function createDesktopWorkbarServices(
   bridge: DesktopWorkbarBridge = window.maka,
   dependencies: DesktopWorkbarServiceDependencies = DEFAULT_DEPENDENCIES,
@@ -52,6 +74,7 @@ export function createDesktopWorkbarServices(
     placement,
     text,
     admissionId,
+    content,
   ) => {
     const result = await bridge.sessions.submitMessage(
       sessionId,
@@ -59,6 +82,11 @@ export function createDesktopWorkbarServices(
       {
         messageId: admissionId,
         text,
+        // A structured-only follow-up (a staged quote or a submitted
+        // attachment with no text) rides the one Message admission channel
+        // with its structured content (#4804).
+        ...(content?.quotes ? { quotes: content.quotes } : {}),
+        ...(content?.attachmentItems ? { attachmentItems: content.attachmentItems } : {}),
       },
       { waitForHostAdmission: true },
     );
@@ -79,7 +107,25 @@ export function createDesktopWorkbarServices(
       subscribeSessionEvents: (sessionId, handler) =>
         bridge.sessions.subscribeEvents(sessionId, handler),
     },
-    terminal: bridge.shellRuns,
+    terminal: {
+      start: (sessionId) => bridge.shellRuns.start(sessionId),
+      stop: (input) => bridge.shellRuns.stop(input),
+      attach: (input) => bridge.shellRuns.attach(input),
+      detach: (input) => bridge.shellRuns.detach(input),
+      write: (input) => bridge.shellRuns.write(input),
+      subscribePtyData: (handler) => bridge.shellRuns.subscribePtyData(handler),
+      subscribeResync: (handler) => bridge.shellRuns.subscribeResync(handler),
+      recover: async (sessionId) => {
+        const recovery = await bridge.shellRuns.recover(sessionId);
+        return { ...recovery, resources: recovery.resources.filter((update) =>
+          isDesktopTerminal(update) && !isTerminalShellRunStatus(update.result.status)),
+        };
+      },
+      subscribeCloseChanges: (handler) => bridge.shellRuns.subscribeCloseChanges(handler),
+      subscribeUpdates: (handler) => bridge.shellRuns.subscribeUpdates((update) => {
+        if (isDesktopTerminal(update)) handler(update);
+      }),
+    },
     browser: {
       setActiveSession: (sessionId) => bridge.browser.setActiveSession(sessionId),
       setViewport: (input) => bridge.browser.setViewport(input),
@@ -91,7 +137,6 @@ export function createDesktopWorkbarServices(
       close: (sessionId) => bridge.browser.close(sessionId),
       getState: (sessionId) => bridge.browser.getState(sessionId),
       subscribeState: (handler) => bridge.browser.onState(handler),
-      subscribeLive: (handler) => bridge.browser.onLive(handler),
     },
     artifacts: {
       list: (sessionId) => bridge.artifacts.list(sessionId),
@@ -103,19 +148,20 @@ export function createDesktopWorkbarServices(
         bridge.artifacts.delete(sessionId, artifactId),
       openPath: (sessionId, artifactId) =>
         bridge.app.openArtifactPath(sessionId, artifactId),
+      showInFolder: (sessionId, artifactId) =>
+        bridge.app.showArtifactInFolder(sessionId, artifactId),
       saveAs: (sessionId, artifactId) =>
         bridge.app.saveArtifactAs(sessionId, artifactId),
     },
-    inspector: {
-      trace: (sessionId, cursor) => bridge.inspector.trace(sessionId, cursor),
-      summary: (sessionId) => bridge.inspector.summary(sessionId),
-      context: (sessionId) => bridge.inspector.context(sessionId),
-      subscribeSessionEvents: (sessionId, handler) =>
-        bridge.sessions.subscribeEvents(sessionId, handler),
-      subscribeUsageChanges: (sessionId, handler) =>
-        bridge.inspector.subscribeUsageChanges(sessionId, handler),
-    },
+    inspector: createDesktopInspectorService(bridge),
     attachments: bridge.attachments,
+    ...(bridge.workBoard
+      ? {
+          workBoard: {
+            linkSession: (id, link) => bridge.workBoard!.linkSession(id, link),
+          },
+        }
+      : {}),
     sideChat: {
       listSessions: () => bridge.sessions.list(),
       listTurns: (sessionId) => bridge.sessions.listTurns(sessionId),
@@ -151,8 +197,8 @@ export function createDesktopWorkbarServices(
         bridge.sessions.updateQueueEntry(sessionId, entryId, expectedQueueRevision, text),
       reorderQueueEntries: (sessionId, entryIds) =>
         bridge.sessions.reorderQueueEntries(sessionId, entryIds),
-      setPermissionMode: (sessionId, mode) =>
-        bridge.sessions.setPermissionMode(sessionId, mode),
+      setPermissionMode: async (sessionId, mode) =>
+        expectSessionUpdate(await bridge.sessions.setPermissionMode(sessionId, mode)),
       regenerateTurn: (sessionId, input) =>
         bridge.sessions.regenerateTurn(sessionId, input),
       respondToSandboxBoundary: (sessionId, response) =>

@@ -27,6 +27,7 @@ import { ExpectedOperationError, unexpectedErrorFallback } from './application/c
 import type {
   CreateWorkBoardItemInput,
   WorkBoardItem,
+  WorkBoardLinkedSession,
   WorkBoardListQuery,
   WorkBoardScope,
 } from '@maka/core/work-board';
@@ -58,6 +59,11 @@ interface ActiveWorkBoardRowActions {
   onReopen(): void;
   onMove(): void;
   onArchive(): void;
+  canStart: boolean;
+  startReason?: string;
+  onStartTask(): void;
+  onOpenSession(link: WorkBoardLinkedSession): void;
+  startTaskEnabled: boolean;
 }
 
 interface ArchivedWorkBoardRowActions {
@@ -97,7 +103,7 @@ function WorkBoardRow(props: {
               }
             }}
           />
-        ) : (
+          ) : (
           <span className="maka-work-board-title">{item.title}</span>
         )}
         {item.archived && <span className="maka-work-board-archived-tag">{copy.archived}</span>}
@@ -108,8 +114,25 @@ function WorkBoardRow(props: {
             <Button size="sm" variant="ghost" label={copy.unarchive} onClick={actions.onUnarchive} />
             <Button size="sm" variant="ghost" label={copy.delete} onClick={actions.onRemove} />
           </>
-        ) : (
+          ) : (
           <>
+            {actions.startTaskEnabled && <Button
+              size="sm"
+              variant="primary"
+              label={copy.startTask}
+              onClick={actions.onStartTask}
+              isDisabled={!actions.canStart}
+              tooltip={actions.canStart ? undefined : actions.startReason}
+            />}
+            {actions.startTaskEnabled && item.linkedSessions?.map((link) => (
+              <Button
+                key={`${link.profileId}:${link.hostId}:${link.sessionId}`}
+                size="sm"
+                variant="ghost"
+                label={copy.openSession}
+                onClick={() => actions.onOpenSession(link)}
+              />
+            ))}
             {item.state === 'done' ? (
               <Button size="sm" variant="ghost" label={copy.reopen} onClick={actions.onReopen} />
             ) : (
@@ -143,6 +166,10 @@ function WorkBoardRow(props: {
 export function WorkBoardPanel(props: {
   projectId: string | null;
   projectAliases?: readonly string[];
+  onStartTask?: (item: WorkBoardItem) => void;
+  resolveStartTask?: (item: WorkBoardItem) => { ok: boolean; message?: string };
+  onOpenLinkedSession?: (link: WorkBoardLinkedSession) => void;
+  startTaskEnabled?: boolean;
 }) {
   const locale = useUiLocale();
   const copy = getDesktopConversationCopy(locale).workBoardPanel;
@@ -258,18 +285,17 @@ export function WorkBoardPanel(props: {
         />
       </div>
       <div className="maka-work-board-create">
-        <TextInput
+        <textarea
           className="maka-work-board-create-input"
-          size="sm"
-          label={copy.createPlaceholder}
-          isLabelHidden
+          aria-label={copy.createPlaceholder}
+          rows={2}
           value={newTitle}
-          onChange={setNewTitle}
-          isDisabled={createPending}
+          disabled={createPending}
+          onChange={(event) => setNewTitle(event.target.value)}
           onKeyDown={(event) => {
             event.stopPropagation();
             if (event.nativeEvent.isComposing || event.key === 'Process') return;
-            if (event.key === 'Enter') {
+            if (event.key === 'Enter' && !event.shiftKey) {
               event.preventDefault();
               void create();
             }
@@ -277,7 +303,9 @@ export function WorkBoardPanel(props: {
           placeholder={copy.createPlaceholder}
         />
         <Button
+          className="maka-work-board-create-button"
           size="sm"
+          variant="primary"
           label={copy.create}
           onClick={() => void create()}
           isDisabled={createPending || newTitle.trim().length === 0}
@@ -326,7 +354,9 @@ export function WorkBoardPanel(props: {
                 />
               ) : (
                 <ul className="maka-work-board-list">
-              {activeItems.map((item) => (
+              {activeItems.map((item) => {
+                const resolution = props.resolveStartTask?.(item);
+                return (
                 <WorkBoardRow
                   key={item.id}
                   item={item}
@@ -357,9 +387,15 @@ export function WorkBoardPanel(props: {
                       ),
                     onArchive: () =>
                       void runAction(() => board.archive(item.id, { expectedRevision: item.revision })),
+                    canStart: resolution?.ok ?? false,
+                    startReason: resolution?.message,
+                    onStartTask: () => props.onStartTask?.(item),
+                    onOpenSession: (link) => props.onOpenLinkedSession?.(link),
+                    startTaskEnabled: props.startTaskEnabled ?? false,
                   }}
                 />
-              ))}
+                );
+              })}
               {archivedItems.map((item) => (
                 <WorkBoardRow
                   key={item.id}

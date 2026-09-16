@@ -19,6 +19,7 @@
 
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
+import type { ShellRunUpdate } from '@maka/core/events';
 import type { MakaBridge } from '../../preload/bridge-contract.js';
 import { createDesktopWorkbarServices } from '../../renderer/platform/desktop/create-workbar-services.js';
 
@@ -36,11 +37,11 @@ function createBridgeRecorder(): {
     'browser.setActiveSession',
     'browser.setViewport',
     'browser.onState',
-    'browser.onLive',
     'inspector.subscribeUsageChanges',
   ]);
   // Adapters that reshape a bridge answer need one to reshape.
   const answers = new Map<string, unknown>([
+    ['sessions.setPermissionMode', { ok: true, session: {} }],
     [
       'sessions.submitMessage',
       {
@@ -79,6 +80,35 @@ function createBridgeRecorder(): {
 }
 
 describe('createDesktopWorkbarServices', () => {
+  it('recovers only live local desktop PTYs from the Host inventory and updates', async () => {
+    const { bridge } = createBridgeRecorder();
+    const manual = {
+      sessionId: 's', ownership: { kind: 'local' },
+      sourceTurnId: 'desktop-terminal-one', sourceToolCallId: 'desktop-terminal-one',
+      result: { ref: 'manual', mode: 'pty', status: 'running' },
+    } as ShellRunUpdate;
+    const updates = [
+      manual,
+      { ...manual, sourceTurnId: 'agent-turn' },
+      { ...manual, result: { ...manual.result, mode: 'pipes' } },
+      { ...manual, result: { ...manual.result, status: 'completed' } },
+      { ...manual, ownership: { kind: 'source_unavailable', sourceSessionId: 'source' } },
+    ] as ShellRunUpdate[];
+    let listener: ((update: ShellRunUpdate) => void) | undefined;
+    bridge.shellRuns = {
+      ...bridge.shellRuns,
+      recover: async () => ({ resources: updates, closes: [] }),
+      subscribeUpdates: (handler) => { listener = handler; return () => { listener = undefined; }; },
+    };
+    const services = createDesktopWorkbarServices(bridge);
+    assert.deepEqual(await services.terminal.recover('s'), { resources: [manual], closes: [] });
+    const received: ShellRunUpdate[] = [];
+    const dispose = services.terminal.subscribeUpdates((update) => received.push(update));
+    for (const update of updates) listener?.(update);
+    assert.deepEqual(received, [manual, updates[3]]);
+    dispose();
+    assert.equal(listener, undefined);
+  });
   it('waits for Host admission before accepting a Side Conversation follow-up', async () => {
     const { bridge, calls } = createBridgeRecorder();
     const services = createDesktopWorkbarServices(bridge, {
@@ -177,7 +207,6 @@ describe('createDesktopWorkbarServices', () => {
     await services.browser.close('s');
     await services.browser.getState('s');
     services.browser.subscribeState(eventHandler)();
-    services.browser.subscribeLive(eventHandler)();
 
     await services.artifacts.list('s');
     await services.artifacts.readText('s', 'a');
@@ -265,7 +294,6 @@ describe('createDesktopWorkbarServices', () => {
         'browser.close',
         'browser.getState',
         'browser.onState',
-        'browser.onLive',
         'artifacts.list',
         'artifacts.readText',
         'artifacts.readBinary',

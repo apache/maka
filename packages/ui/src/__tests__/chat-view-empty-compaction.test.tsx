@@ -89,7 +89,7 @@ test('shows one waiting indicator before a named live Turn reaches the transcrip
   for (const messages of [[], [{ type: 'user' as const, id: 'old-user', turnId: 'old-turn', text: 'Earlier request', ts: 1 }]]) {
     const markup = renderChat(liveTurn, { messages, transientMessages: [pending], activeTurn: { turnId: liveTurn.turnId! } });
     assert.equal((markup.match(/class="maka-turn-processing"/g) ?? []).length, 1);
-    assert.match(markup, /Waiting for model output/);
+    assert.match(markup, /Pondering/);
     assert.match(markup, /Please help/);
     assert.doesNotMatch(markup, /data-transcript-turn-id="pending-turn"/);
   }
@@ -126,7 +126,7 @@ test('renders the empty hero when an empty session has no live compaction row', 
   assert.doesNotMatch(markup, /Compacting context/);
 });
 
-test('the pending Turn clock ticks from send time and hands over without a duplicate status', async (t) => {
+test('the pending Turn waits without a clock until the Turn start time reaches the client', async (t) => {
   const now = 1_700_000_000_000;
   t.mock.timers.enable({ apis: ['Date', 'setInterval'], now });
   const original = {
@@ -164,14 +164,16 @@ test('the pending Turn clock ticks from send time and hands over without a dupli
   };
   await render({});
   assert.equal(container.querySelectorAll('.maka-turn-processing').length, 1);
-  assert.match(container.querySelector('.maka-turn-elapsed')?.textContent ?? '', /0s/);
+  // No Turn start yet, so no clock.
+  assert.equal(container.querySelector('.maka-turn-elapsed'), null);
   await act(() => t.mock.timers.tick(2_000));
-  assert.match(container.querySelector('.maka-turn-elapsed')?.textContent ?? '', /2s/);
+  assert.equal(container.querySelector('.maka-turn-elapsed'), null);
   await render({
     transientMessages: [],
     messages: [{ type: 'user', id: 'durable-user', turnId: liveTurn.turnId, text: pending.text, ts: pending.ts }],
   });
   assert.equal(container.querySelectorAll('.maka-turn-processing').length, 1);
+  // The Turn's own start drives the clock.
   assert.match(container.querySelector('.maka-turn-elapsed')?.textContent ?? '', /2s/);
   await render({ liveTurns: undefined, activeTurn: undefined, transientMessages: [] });
   assert.equal(container.querySelectorAll('.maka-turn-processing').length, 0);
@@ -186,4 +188,31 @@ test('ChatSurfaceLayout preserves the public emptyState for absent children', ()
     assert.match(markup, /Empty layout/);
     assert.doesNotMatch(markup, /maka-prompt-rail-host/);
   }
+});
+
+
+test('turn identity stays on its exact durable anchor and is absent from ordinary transcripts', () => {
+  const messages = ['one', 'two'].map((turnId) => ({ type: 'user' as const, id: `user-${turnId}`, turnId, text: turnId, ts: 1 }));
+  const { document } = parseHTML(renderChat(undefined, {
+    messages,
+    turnDecorations: new Map([['one', { header: <span>Workspace / Work</span>, accentColor: 'red', promptStatus: <span data-test-status>Running work</span> }]]),
+  }));
+  const one = document.querySelector('[data-transcript-turn-id="one"]')!;
+  assert.equal(one.getAttribute('data-turn-accent'), 'true');
+  assert.match(one.textContent!, /Workspace \/ Work/);
+  assert.equal(one.querySelectorAll('.maka-user-message [data-test-status]').length, 1);
+  assert.equal(document.querySelector('[data-transcript-turn-id="two"] [data-test-status]'), null);
+  assert.match(one.querySelector('.maka-message-meta')!.textContent!, /Running work/);
+  assert.equal(document.querySelector('[data-transcript-turn-id="two"]')!.getAttribute('data-turn-accent'), null);
+  assert.doesNotMatch(renderChat(undefined, { messages }), /data-turn-accent|Workspace \/ Work/);
+});
+
+
+test('an initial optimistic prompt uses the same status projection as a durable prompt', () => {
+  const { document } = parseHTML(renderChat(undefined, {
+    messages: [], transientMessages: [{ id: 'pending', hostTurnId: 'choosing', text: 'Choose work', ts: 1, transientPlacement: 'current_turn' }],
+    turnDecorations: new Map([['choosing', { header: <></>, promptStatus: <span data-test-status>Waiting for user</span> }]]),
+  }));
+  assert.equal(document.querySelectorAll('[data-test-status]').length, 1);
+  assert.match(document.querySelector('.maka-message-meta')!.textContent!, /Waiting for user/);
 });

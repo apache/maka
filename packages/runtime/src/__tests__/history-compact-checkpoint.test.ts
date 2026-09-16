@@ -950,6 +950,41 @@ describe('history compact checkpoint', () => {
     );
     assert.equal(replay.diagnosticPatch.compactionDecisions?.[0]?.decision, 'replaced');
   });
+
+  test('replay keeps a directory-only successor the checkpoint does not cover (#4804)', () => {
+    const events = Array.from({ length: 5 }, (_, index) => textEvent(index));
+    // A directory-only user message is model-visible (#4804) and reaches the
+    // provider through the shared directory envelope, so the compact gate must
+    // not estimate it to zero and silently drop it from the successor tail —
+    // later provider requests would lose its directory context (#4815 review).
+    const directoryOnly: RuntimeEvent = {
+      ...textEvent(5),
+      id: 'event-directory-only',
+      role: 'user',
+      author: 'user',
+      content: {
+        kind: 'text',
+        text: '',
+        directoryReferences: [{ hostId: 'host-1', path: '/workspace/example' }],
+      },
+    };
+    const checkpoint = buildHistoryCompactCheckpoint({
+      sessionId: 'session-1',
+      coveredRuntimeEvents: events.slice(0, 4),
+      summary: sectionedSummary('checkpoint summary'),
+    });
+
+    const replay = applyRuntimeEventHistoryCompact([...events, directoryOnly], {
+      enabled: true,
+      checkpoint,
+    });
+
+    assert.equal(replay.checkpoint?.checkpointId, checkpoint.checkpointId);
+    assert.deepEqual(
+      replay.events.map((event) => event.id),
+      [`history-compact:${checkpoint.checkpointId}`, 'event-4', 'event-directory-only'],
+    );
+  });
 });
 
 function textEvent(index: number): RuntimeEvent {

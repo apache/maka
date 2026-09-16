@@ -17,8 +17,7 @@
  * under the License.
  */
 
-import { useRef, useState } from 'react';
-import type { TransientUserMessageProjection } from '@maka/ui';
+import { useRef } from 'react';
 import * as Conversation from './features/conversation/index.js';
 import {
   selectActiveSessionId,
@@ -38,41 +37,43 @@ type ToastApi = {
   error(title: string, description?: string): void;
 };
 
-type TransientUserMessage = TransientUserMessageProjection;
-
 export function useAppShellSessionWorkspace(toastApi: ToastApi) {
   // The catalog and the selection are one authority, and it is a store: the
   // Session rail subscribes to it directly instead of receiving it from the
   // shell's render (#4109).
   const catalog = useSessionCatalogController();
-  const activeId = useExternalStoreSelector(catalog, selectActiveSessionId);
+  const requestedSessionId = useExternalStoreSelector(catalog, selectActiveSessionId);
   const activeIdRef = useRef<string | undefined>(undefined);
   const actionsRef = useRef<SessionWorkspaceActions | null>(null);
-  const { controller: sessionUiController, publication } = Conversation.useAppShellSessionUiState<DesktopTranscriptRangeController>(
+  const sessionList = useAppShellSessionList(toastApi, { catalog });
+  const { controller: sessionUiController, publication, display } = Conversation.useAppShellSessionUiState(
+    sessionList.sessions,
+    requestedSessionId,
     activeIdRef,
-    (messages) => actionsRef.current!.setMessages(messages),
+    (sessionId, messages, controller: DesktopTranscriptRangeController) =>
+      actionsRef.current!.commitTranscript(sessionId, messages, controller),
   );
-  const sessionList = useAppShellSessionList(toastApi, {
-    catalog,
-  });
   const selectionRevisionRef = useRef(0);
   const bootstrapSelectionLeaseRef = useRef<ReturnType<typeof createBootstrapSelectionLease> | null>(null);
   const {
     messagesRef, transcriptRangeRef, setMessagesState,
     messages, publishedTranscriptRange, publishTranscript, isMessagePublished,
   } = publication;
-  const [transientMessages, setTransientMessages] = useState<TransientUserMessage[]>([]);
-  const transientMessagesBySessionRef = useRef(
-    new Map<string, Map<string, TransientUserMessage>>(),
-  );
-  const [messageLoadPending, setMessageLoadPending] = useState(false);
+  const {
+    transientMessagesBySessionRef,
+    setTransientMessagesState, setMessageLoadPending,
+  } = display;
 
   // The captured publication setter only reads stable refs and writes React
   // state. Along with the controller methods and other refs, it lets one
   // actions instance serve the renderer's lifetime without defeating the
   // Session rail's memo with new action identities on every render.
-  actionsRef.current ??= createSessionWorkspaceActions({
+  const actions = actionsRef.current ??= createSessionWorkspaceActions({
     activeIdRef,
+    readRequestedSessionId: () => catalog.getState().activeSessionId,
+    isReadableSession: (id) => catalog.getState().sessions.some(
+      (session) => session.id === id && session.localState !== 'pending',
+    ),
     messagesRef,
     transientMessagesBySessionRef,
     transcriptRangeRef,
@@ -83,12 +84,10 @@ export function useAppShellSessionWorkspace(toastApi: ToastApi) {
     // the once-created factory may capture it.
     setActiveIdState: catalog.setActiveSessionId,
     setMessagesState,
-    setTransientMessagesState: setTransientMessages,
+    setTransientMessagesState,
     setMessageLoadPending,
     clearSessionUiState: sessionUiController.clearSessionUiState,
   });
-  const actions = actionsRef.current;
-
   if (!bootstrapSelectionLeaseRef.current) {
     bootstrapSelectionLeaseRef.current = createBootstrapSelectionLease({
       readActiveId: () => activeIdRef.current,
@@ -101,7 +100,7 @@ export function useAppShellSessionWorkspace(toastApi: ToastApi) {
   return {
     ...sessionList,
     sessionCatalogController: catalog,
-    activeId,
+    requestedSessionId,
     activeIdRef,
     bootstrapSelectionLease: bootstrapSelectionLeaseRef.current,
     ...actions,
@@ -109,10 +108,8 @@ export function useAppShellSessionWorkspace(toastApi: ToastApi) {
     publishedTranscriptRange,
     publishTranscript,
     isMessagePublished,
-    transientMessages,
     transcriptRangeRef,
-    messageLoadPending,
-    setMessageLoadPending,
+    ...display,
     // The store's own surface, not a copy of it. Consumers reach setters and
     // claims through the controller.
     sessionUiController,

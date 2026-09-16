@@ -37,6 +37,16 @@ export const WORKHUB_COORDINATION_TARGET_UNAVAILABLE_REASON =
   'WorkHub Coordination execution requires the reserved Coordination Session';
 export const LEGACY_CONNECTION_IDENTITY_EXECUTION_UNAVAILABLE_REASON =
   'This Session requires an explicit account selection before it can run.';
+export const PLUGIN_EXECUTOR_CONTINUATION_UNAVAILABLE_REASON =
+  'Plugin executor Sessions cannot resume without provider-owned durable continuation support.';
+export const PLUGIN_EXECUTOR_COPY_UNAVAILABLE_REASON =
+  'Plugin executor Sessions cannot be copied without provider-owned conversation cloning';
+
+export function runtimeHostConversationCopyUnavailableReason(
+  header: Pick<SessionHeader, 'backend'>,
+): string | undefined {
+  return header.backend === 'plugin-executor' ? PLUGIN_EXECUTOR_COPY_UNAVAILABLE_REASON : undefined;
+}
 
 export function runtimeHostExternalTurnUnavailableReason(
   header: Pick<
@@ -64,8 +74,11 @@ export function runtimeHostSafeBoundaryContinuationUnavailableReason(
       ? WORKHUB_COORDINATION_EXECUTION_UNAVAILABLE_REASON
       : undefined) ??
     (header.transcriptLedgerVersion === 0 ? IMPORT_STAGING_UNAVAILABLE_REASON : undefined) ??
-    (header.llmConnectionId === undefined && header.backend !== 'fake'
+    (header.llmConnectionId === undefined && header.backend === 'ai-sdk'
       ? LEGACY_CONNECTION_IDENTITY_EXECUTION_UNAVAILABLE_REASON
+      : undefined) ??
+    (header.backend === 'plugin-executor'
+      ? PLUGIN_EXECUTOR_CONTINUATION_UNAVAILABLE_REASON
       : undefined) ??
     (header.subagentParent ? CHILD_CONTINUATION_UNAVAILABLE_REASON : undefined)
   );
@@ -111,7 +124,7 @@ export function runtimeHostExecutionUnavailableReason(
       ? WORKHUB_COORDINATION_EXECUTION_UNAVAILABLE_REASON
       : undefined) ??
     (header.transcriptLedgerVersion === 0 ? IMPORT_STAGING_UNAVAILABLE_REASON : undefined) ??
-    (header.llmConnectionId === undefined && header.backend !== 'fake'
+    (header.llmConnectionId === undefined && header.backend === 'ai-sdk'
       ? LEGACY_CONNECTION_IDENTITY_EXECUTION_UNAVAILABLE_REASON
       : undefined) ??
     (header.collaborationMode === 'plan' &&

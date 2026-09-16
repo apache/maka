@@ -17,8 +17,8 @@
  * under the License.
  */
 
-import { type ReactNode, useId, useLayoutEffect, useRef, useState } from 'react';
-import { Button } from '@astryxdesign/core';
+import { type CSSProperties, type ReactNode, useCallback, useId, useLayoutEffect, useRef, useState } from 'react';
+import { Button, useLayer } from '@astryxdesign/core';
 import { Check, ICON_SIZE } from './icons.js';
 
 export interface ModelWheelOption {
@@ -29,7 +29,7 @@ export interface ModelWheelOption {
   disabled?: boolean;
 }
 
-/** Shared inline picker: the model at the settled snap position takes effect. */
+/** The trigger becomes a wheel in place; the settled model takes effect. */
 export function ModelWheelPicker(props: {
   options: readonly ModelWheelOption[];
   value?: string;
@@ -46,25 +46,57 @@ export function ModelWheelPicker(props: {
 }) {
   const [internalOpen, setInternalOpen] = useState(false);
   const trigger = useRef<HTMLButtonElement>(null);
+  const anchor = useRef<HTMLSpanElement>(null);
   const open = props.open ?? internalOpen;
+  const height = ROW_HEIGHT * (props.options.length > 1 ? 3 : 1);
   const setOpen = (next: boolean) => {
     if (props.open === undefined) setInternalOpen(next);
     props.onOpenChange?.(next);
   };
-  return open ? <ModelWheel {...props} onClose={(restoreFocus) => {
+  const close = (restoreFocus: boolean) => {
     setOpen(false);
     if (restoreFocus) requestAnimationFrame(() => trigger.current?.focus({ preventScroll: true }));
-  }} /> : <Button ref={trigger} type="button" variant="ghost" size={props.size ?? 'sm'}
-    label={props.label} icon={props.icon} tooltip={props.tooltip}
+  };
+  const layer = useLayer({ mode: 'context', lazyMount: true, lightDismiss: true,
+    onHide: () => setOpen(false) });
+  const positionRef = useRef(layer.ref).current;
+  const anchorRef = useCallback((element: HTMLSpanElement | null) => {
+    anchor.current = element;
+    positionRef(element);
+  }, [positionRef]);
+  useLayoutEffect(() => {
+    if (open) layer.show();
+    else layer.hide();
+  }, [open, layer.show, layer.hide]);
+  useLayoutEffect(() => {
+    const element = anchor.current;
+    if (!open || !element) return;
+    // Saving another model can change the label while the wheel is open.
+    // Keep its anchor's footprint stable throughout that interaction.
+    element.style.width = `${element.getBoundingClientRect().width}px`;
+    return () => { element.style.removeProperty('width'); };
+  }, [open]);
+  return <span ref={anchorRef}
+    className="maka-model-wheel-anchor" data-open={open}
+    style={{ '--maka-model-wheel-height': `${height}px` } as CSSProperties}>
+    <Button ref={trigger} type="button" variant="ghost" size={props.size ?? 'sm'}
+    label={props.label} icon={props.icon} tooltip={open ? undefined : props.tooltip}
     isDisabled={props.disabled || props.options.length === 0}
     className={props.triggerClassName} aria-label={props.ariaLabel}
-    aria-haspopup="listbox" aria-expanded={false}
+    aria-haspopup="listbox" aria-expanded={open} aria-controls={open ? layer.id : undefined}
     onClick={() => setOpen(true)}
     onKeyDown={(event) => {
       if (!props.disabled && props.options.length > 0 && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
         event.preventDefault(); event.stopPropagation(); setOpen(true);
       }
-    }} />;
+    }} />
+    {layer.render(open && layer.isOpen ? <ModelWheel {...props} onClose={close} /> : null,
+      { positioning: 'custom', className: 'maka-model-wheel-expanded', style: {
+        position: 'fixed', inset: 'auto',
+        top: `clamp(0px, calc(anchor(center) - ${height / 2}px), calc(100dvh - ${height}px))`,
+        left: 'clamp(0px, anchor(left), calc(100vw - min(264px, 55vw)))',
+      } })}
+  </span>;
 }
 
 const ROW_HEIGHT = 44;
@@ -80,12 +112,20 @@ function ModelWheel(props: Parameters<typeof ModelWheelPicker>[0] & {
   const saving = useRef(false);
   const [pending, setPending] = useState<string | null>(null);
   const currentValue = pending ?? props.value;
+  const count = props.options.length;
+  const height = ROW_HEIGHT * (count > 1 ? 3 : 1);
+  const inset = (height - ROW_HEIGHT) / 2;
+  // Neighboring copies let the first and last models have real neighbors,
+  // rather than empty padding. Only the middle copy is exposed to assistive technology.
+  const copies = count > 1 ? [0, 1, 2] : [1];
+  const centeredTop = (index: number) => (count > 1 ? count + index : 0) * ROW_HEIGHT - inset;
   const selectedIndex = Math.max(0, props.options.findIndex((option) => option.value === currentValue));
   const [preview, setPreview] = useState(selectedIndex);
   const latest = useRef(props);
   latest.current = props;
   const disabled = props.disabled || pending !== null;
-  const indexAt = (element: HTMLDivElement) => Math.max(0, Math.min(latest.current.options.length - 1, Math.round(element.scrollTop / ROW_HEIGHT)));
+  const rowAt = (element: HTMLDivElement) => Math.round((element.scrollTop + inset) / ROW_HEIGHT);
+  const indexAt = (element: HTMLDivElement) => count ? ((rowAt(element) % count) + count) % count : 0;
   const clearTimer = () => clearTimeout(timer.current);
   const pick = async (index: number) => {
     const option = latest.current.options[index];
@@ -101,15 +141,16 @@ function ModelWheel(props: Parameters<typeof ModelWheelPicker>[0] & {
     clearTimer();
     if (!interacted.current || element.dataset.dragging || saving.current) return;
     const index = indexAt(element);
-    if (Math.abs(element.scrollTop - index * ROW_HEIGHT) > 1) return;
+    if (Math.abs(element.scrollTop - (rowAt(element) * ROW_HEIGHT - inset)) > 1) return;
     interacted.current = false;
+    element.scrollTop = centeredTop(index);
     void pick(index);
   };
   const moveTo = (element: HTMLDivElement, index: number) => {
     clearTimer();
     interacted.current = false;
-    const next = Math.max(0, Math.min(latest.current.options.length - 1, index));
-    element.scrollTop = next * ROW_HEIGHT;
+    const next = count ? ((index % count) + count) % count : 0;
+    element.scrollTop = centeredTop(next);
     setPreview(next);
     void pick(next);
   };
@@ -117,8 +158,8 @@ function ModelWheel(props: Parameters<typeof ModelWheelPicker>[0] & {
     if (!element.dataset.dragging) return;
     delete element.dataset.dragging;
     // Keep `moved` until the synthetic click has been suppressed.
-    const next = indexAt(element);
-    element.scrollTo({ top: next * ROW_HEIGHT, behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth' });
+    const next = rowAt(element);
+    element.scrollTo({ top: next * ROW_HEIGHT - inset, behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth' });
     clearTimer();
     timer.current = setTimeout(() => settle(element), 180);
   };
@@ -126,7 +167,7 @@ function ModelWheel(props: Parameters<typeof ModelWheelPicker>[0] & {
     if (!viewport.current) return;
     interacted.current = false;
     clearTimer();
-    viewport.current.scrollTop = selectedIndex * ROW_HEIGHT;
+    viewport.current.scrollTop = centeredTop(selectedIndex);
     setPreview(selectedIndex);
   }, [selectedIndex, pending, props.value, props.options.length]);
   useLayoutEffect(() => {
@@ -138,7 +179,7 @@ function ModelWheel(props: Parameters<typeof ModelWheelPicker>[0] & {
     <div ref={viewport} className="maka-model-wheel-viewport" role="listbox" tabIndex={0}
       aria-label={props.ariaLabel} aria-disabled={disabled} aria-busy={pending !== null}
       aria-activedescendant={props.options.length ? `${id}-${preview}` : undefined}
-      style={{ height: ROW_HEIGHT * 3, paddingBlock: ROW_HEIGHT }}
+      style={{ height }}
       onBlur={(event) => {
         if (event.currentTarget.contains(event.relatedTarget)) return;
         if (interacted.current) void pick(indexAt(event.currentTarget));
@@ -192,8 +233,9 @@ function ModelWheel(props: Parameters<typeof ModelWheelPicker>[0] & {
         if (next === undefined) return;
         event.preventDefault(); event.stopPropagation(); moveTo(event.currentTarget, next);
       }}>
-      {props.options.map((option, index) => <div key={option.value} id={`${id}-${index}`}
-        className="maka-model-wheel-option" role="option" aria-selected={option.value === currentValue}
+      {copies.flatMap((copy) => props.options.map((option, index) => <div key={`${copy}-${option.value}`} id={copy === 1 ? `${id}-${index}` : undefined}
+        className="maka-model-wheel-option" role={copy === 1 ? 'option' : undefined} aria-hidden={copy !== 1 || undefined}
+        aria-selected={copy === 1 ? option.value === currentValue : undefined}
         data-active={index === preview} aria-disabled={disabled || option.disabled}
         style={{ height: ROW_HEIGHT }} title={[option.label, option.heading, option.description].filter(Boolean).join(' · ')}
         onMouseDown={(event) => event.preventDefault()}
@@ -201,7 +243,7 @@ function ModelWheel(props: Parameters<typeof ModelWheelPicker>[0] & {
         <span className="maka-model-wheel-label">{option.label}</span>
         {option.heading && <span className="maka-model-wheel-provider">{option.heading}</span>}
         {option.value === currentValue && <span className="maka-model-wheel-check"><Check size={ICON_SIZE.control} aria-hidden="true" /></span>}
-      </div>)}
+      </div>))}
     </div>
   </div>;
 }

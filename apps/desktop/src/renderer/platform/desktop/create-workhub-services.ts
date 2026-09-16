@@ -17,8 +17,10 @@
  * under the License.
  */
 
+import { createDesktopInspectorService } from './create-workbar-services.js';
 import { resolveSystemUiLocale, resolveUiLocale } from '@maka/core/ui-locale';
 import { DEFAULT_UI_FONT_SIZE } from '@maka/core/settings';
+import { AttachmentIngestBlockedError } from '@maka/core/attachments';
 import { applyDocumentThemeMode, applyDocumentThemePalette, applyDocumentUiFontSize } from './document-appearance.js';
 import type { MakaBridge } from '../../../preload/bridge-contract.js';
 import {
@@ -99,6 +101,7 @@ async function readDelegatedTurnResult(
 export function createDesktopWorkHubServices(
   bridge: Pick<
     MakaBridge,
+    | 'inspector'
     | 'workHub'
     | 'workHubControl'
     | 'workHubPresentation'
@@ -112,6 +115,7 @@ export function createDesktopWorkHubServices(
 ): WorkHubServices {
   const delegatedResultCache = new Map<string, string>();
   return {
+    inspector: createDesktopInspectorService(bridge),
     surface: new URLSearchParams(window.location.search).get('surface') === 'workhub' ? 'workhub' : 'main',
     initialLocale: resolveSystemUiLocale(navigator.languages),
     subscribeAppearance(handler) {
@@ -220,7 +224,15 @@ export function createDesktopWorkHubServices(
       (await bridge.connections.getSnapshot(sessionId)).chatModelChoices,
     attachments: bridge.attachments,
     readAttachmentBytes: bridge.attachments.readBytes,
-    prepareAttachments: (sessionId, items) => bridge.workHub.prepareAttachments(sessionId, items),
+    prepareAttachments: async (sessionId, items) => {
+      const result = await bridge.workHub.prepareAttachments(sessionId, items);
+      if (!result.ok) throw new AttachmentIngestBlockedError(result.code);
+      return result.attachments;
+    },
+    listActiveInteractions: (sessionId) => bridge.sessions.listActiveInteractions(sessionId),
+    subscribeActiveInteractions: (handler) => bridge.sessions.subscribeActiveInteractions(handler),
+    respondToUserForm: (sessionId, response) => bridge.sessions.respondToUserForm(sessionId, response),
+    respondToUserQuestion: (sessionId, response) => bridge.sessions.respondToUserQuestion(sessionId, response),
     answer: (sessionId, input) => bridge.workHub.answer(sessionId, input),
     enqueueMessage: async (sessionId, messageId, text, attachments, placement) => {
       const result = await bridge.sessions.submitMessage(sessionId, placement, {
