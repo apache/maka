@@ -17,10 +17,6 @@
       "tests": 2,
       "electron": "renderer reload must preserve an explicit new task and rebuild archived-only Host history as an empty, usable new-task surface"
     },
-    "transcript-memory.spec.ts": {
-      "tests": 1,
-      "electron": "what a held transcript costs is a renderer-process measurement of a real Host read: the bytes cross storage, main and preload, and only a real window can be asked for its heap and resident size, or be watched giving them back when the Session is released"
-    },
     "partial-history-notice.spec.ts": {
       "tests": 1,
       "electron": "bounded paging crosses renderer, preload and Host transcript storage; the return-to-tail assertion also uses a real pointer hit-test"

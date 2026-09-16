@@ -20,7 +20,7 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { CDPSession, ElectronApplication, Page } from '@playwright/test';
-import { expect, test } from './fixtures';
+import { expect, test } from '../e2e/fixtures';
 
 const TICK = '.maka-prompt-rail-tick';
 interface SessionUnderTest {
@@ -126,11 +126,6 @@ async function openSession(page: Page, { name, turnPrefix, offersMoreHistory }: 
   }
   return Date.now() - started;
 }
-
-// File scope rather than `test.setTimeout`: seeding hundreds of MiB of durable
-// transcript happens while the window fixture is still being set up, which a
-// timeout raised inside the body is too late to cover.
-test.describe.configure({ timeout: 2_400_000 });
 
 test('transcripts past the history budget give their memory back when the reader leaves', async ({
   largeHistoryWindow: { page, app },
