@@ -54,9 +54,6 @@ test('keeps both Turns reachable when an oversized ledger Turn is followed by a 
     assert.equal(replica.snapshot().hasOlder, false, 'sparse first-row sequence does not imply older history');
     assert.equal(replica.snapshot().hasNewer, false, 'unused low watermark bits do not imply a newer row');
 
-    // RuntimeEvent transcripts publish a Turn durably only after it ends. The
-    // running checkpoints below stay in the overlay, then this terminal event
-    // advances the actual Host watermark and exercises live-to-durable eviction.
     const completeThrough = await ledger.appendThrough('completed-b');
     assert.ok(completeThrough !== null);
     const complete = await ledger.durableRecords();
@@ -106,26 +103,23 @@ test('keeps both Turns reachable when an oversized ledger Turn is followed by a 
 });
 
 for (const checkpoint of ['running-b', 'result-b'] as const) {
-  test(`retains the full oversized durable Turn while the running second Turn reaches ${checkpoint}`, async () => {
+  test(`serves the running second Turn through durable pages at ${checkpoint}`, async () => {
     const source = transcriptFixture();
     const ledger = await openTranscriptNavigationLedger([...source.first, ...source.second]);
     let opened: Awaited<ReturnType<typeof openReplica>> | undefined;
     try {
       const firstThrough = await ledger.appendThrough('completed-a');
-      const first = await ledger.durableRecords();
-      assert.equal(await ledger.appendThrough(checkpoint), firstThrough,
-        'a running invocation changes its overlay, not the durable watermark');
-      const rootTurn = {
-        sessionId: ledger.sessionId, turnId: 'b',
-        runId: 'run-b', status: 'running' as const,
-      };
-      opened = await openReplica(ledger, firstThrough, rootTurn);
+      const runningThrough = await ledger.appendThrough(checkpoint);
+      assert.ok(firstThrough !== null && runningThrough !== null && runningThrough > firstThrough,
+        'each committed RuntimeEvent of a running Turn advances the watermark');
+      opened = await openReplica(ledger, runningThrough);
       const { replica } = opened;
-      assertRecords(replica, first);
       const expected = source.second.slice(0, source.second.findIndex(({ id }) => id === checkpoint) + 1)
         .filter((message) => message.type !== 'turn_state').map(({ id }) => id);
-      assert.deepEqual(replica.snapshot().overlay.map(({ id }) => id), expected);
-      assert.ok(replica.messages().some(({ id }) => id === expected.at(-1)), 'the running Turn remains reachable');
+      assert.deepEqual(
+        replica.snapshot().durable.filter(({ message }) => message.turnId === 'b').map(({ message }) => message.id),
+        expected,
+      );
 
       const throughSequence = await ledger.appendThrough('completed-b');
       assert.ok(throughSequence !== null);
@@ -137,8 +131,7 @@ for (const checkpoint of ['running-b', 'result-b'] as const) {
       });
       assert.equal((await opened.subscription.next()).value?.kind, 'subscription.transcript_advanced');
       await replica.advance(throughSequence);
-      assert.deepEqual(replica.snapshot().overlay, []);
-      const second = (await ledger.durableRecords()).filter(({ message }) => message.turnId === rootTurn.turnId);
+      const second = (await ledger.durableRecords()).filter(({ message }) => message.turnId === 'b');
       assertRecords(replica, second);
       assert.equal(replica.snapshot().hasNewer, false);
     } finally {
@@ -150,15 +143,11 @@ for (const checkpoint of ['running-b', 'result-b'] as const) {
 }
 
 type Ledger = Awaited<ReturnType<typeof openTranscriptNavigationLedger>>;
-async function openReplica(
-  ledger: Ledger,
-  throughSequence: number | null,
-  rootTurn: { sessionId: string; turnId: string; runId: string; status: 'running' } | null = null,
-) {
+async function openReplica(ledger: Ledger, throughSequence: number | null) {
   const { reader, sessionId } = ledger;
   const opened = await createSessionTranscriptBootstrap({
-    reader, sessionId, subscriptionId: SUBSCRIPTION_ID, throughSequence, rootTurn,
-    activeAssistantStreams: [], maxBytes: 16 * 1024, projection: 'owner',
+    reader, sessionId, subscriptionId: SUBSCRIPTION_ID, throughSequence,
+    maxBytes: 16 * 1024, projection: 'owner',
   });
   const subscription = new ClientSessionSubscription({
     hostEpoch: HOST_EPOCH, subscriptionId: SUBSCRIPTION_ID, nextSequence: 1,
@@ -166,16 +155,15 @@ async function openReplica(
     snapshot: {
       schemaVersion: SESSION_CONTINUITY_SCHEMA_VERSION,
       session: { sessionId, metadataRevision: 1, status: 'active', createdAt: 1, isArchived: false },
-      projectionRevision: 1, rootTurn, goal: null,
+      projectionRevision: 1, rootTurn: null, goal: null,
       queue: { hostEpoch: HOST_EPOCH, queueRevision: 0, steering: [], followup: [] },
       interactions: { pending: [] },
     },
-  }, async () => undefined, (request) => readSessionTranscriptPage({ reader, state: opened.state, request }));
+  }, async () => undefined, (request) => readSessionTranscriptPage({ reader, state: opened.state, request }), async () => undefined);
   const decodeMessage = (value: unknown) => decodeStoredMessage(markPersisted<StoredMessage>(value));
   const replica = await DesktopTranscriptReplica.prepare(runtimeHostSessionFixture({
     snapshot: subscription.snapshot, transcript: Promise.resolve([]), events: subscription,
     transcriptBootstrap: opened.bootstrap,
-    loadTranscriptOverlay: (maxBytes, accountBytes) => subscription.loadTranscriptOverlay(decodeMessage, maxBytes, accountBytes),
     decodeTranscriptPage: (page, maxBytes, accountBytes) => subscription.decodeTranscriptPage(page, decodeMessage, maxBytes, accountBytes),
     loadTranscriptPage: (request) => subscription.loadTranscriptPage(request),
     close: () => subscription.close(),

@@ -727,7 +727,6 @@ test('fences transcript range failures across same-source replica recovery', asy
         const bootstrap: SessionTranscriptPage = {
           kind: 'page',
           sessionId: 'session-1',
-          source: 'durable',
           direction: 'older',
           throughSequence: 1,
           rawBytes: 1,
@@ -740,12 +739,7 @@ test('fences transcript range failures across same-source replica recovery', asy
           snapshot: continuitySnapshot(),
           transcript: Promise.resolve([]),
           events,
-          transcriptBootstrap: {
-            throughSequence: 1,
-            overlayMessageCount: 0,
-            durable: bootstrap,
-            overlay: { ...bootstrap, source: 'overlay', nextCursor: null },
-          },
+          transcriptBootstrap: { durable: bootstrap },
           decodeTranscriptPage: async (page) => ({
             messages: page === bootstrap ? [{ identity: 1, message }] : [],
             nextCursor: page === bootstrap ? 'older' : null,
@@ -873,7 +867,6 @@ test('broadcasts durable admission and transcript changes from the same message'
           loadTranscriptPage: async () => ({
             kind: 'page',
             sessionId: 'session-1',
-            source: 'durable',
             direction: 'newer',
             throughSequence: 0,
             rawBytes: 1,
@@ -1036,7 +1029,6 @@ test('moves the read marker only as far as the Renderer window reports reaching'
           loadTranscriptPage: async (input) => ({
             kind: 'page',
             sessionId: 'session-1',
-            source: 'durable',
             direction: 'newer',
             throughSequence: input.throughSequence ?? null,
             rawBytes: 1,
@@ -1132,6 +1124,19 @@ test('keeps a bounded transcript batch window in flight until the renderer ackno
           snapshot: continuitySnapshot(),
           transcript: Promise.resolve([message]),
           events,
+          transcriptBootstrap: {
+            durable: {
+              kind: 'page',
+              sessionId: 'session-1',
+              direction: 'older',
+              throughSequence: 0,
+              rawBytes: 1,
+              fragments: [],
+              rangeBoundarySequence: 0,
+              protectedTurnSequence: 0,
+              nextCursor: null,
+            },
+          },
           async close() {
             events.end();
           },
@@ -1212,12 +1217,9 @@ test('finishes transcript open and replays a stale range request after replaceme
           transcript: Promise.resolve([message]),
           events,
           transcriptBootstrap: {
-            throughSequence: 0,
-            overlayMessageCount: 0,
             durable: {
               kind: 'page',
               sessionId: 'session-1',
-              source: 'durable',
               direction: 'older',
               throughSequence: 0,
               rawBytes: 1,
@@ -1226,20 +1228,7 @@ test('finishes transcript open and replays a stale range request after replaceme
               protectedTurnSequence: null,
               nextCursor: 'older',
             },
-            overlay: {
-              kind: 'page',
-              sessionId: 'session-1',
-              source: 'overlay',
-              direction: 'older',
-              throughSequence: null,
-              rawBytes: 0,
-              fragments: [],
-              rangeBoundarySequence: null,
-              protectedTurnSequence: null,
-              nextCursor: null,
-            },
           },
-          loadTranscriptOverlay: async () => [],
           decodeTranscriptPage: async (page) => ({
             messages: page.rawBytes === 1 ? [{ identity: 0, message }] : [],
             nextCursor: page.nextCursor,
@@ -1250,7 +1239,6 @@ test('finishes transcript open and replays a stale range request after replaceme
             return {
               kind: 'page',
               sessionId: 'session-1',
-              source: input.source,
               direction: input.direction,
               throughSequence: input.throughSequence,
               rawBytes: 0,
@@ -1398,7 +1386,6 @@ test('coalesces transcript changes into one bounded delta while renderer deliver
           loadTranscriptPage: async (input) => ({
             kind: 'page',
             sessionId: 'session-1',
-            source: 'durable',
             direction: 'newer',
             throughSequence: input.throughSequence,
             rawBytes: 1,
@@ -1506,7 +1493,6 @@ test('answers a window page read on its own navigation version and drops a stale
   const durablePage = (nextCursor: string | null): SessionTranscriptPage => ({
     kind: 'page',
     sessionId: 'session-1',
-    source: 'durable',
     direction: 'older',
     throughSequence: 2,
     rawBytes: 1,
@@ -1527,13 +1513,7 @@ test('answers a window page read on its own navigation version and drops a stale
           snapshot: continuitySnapshot(),
           transcript: Promise.resolve([]),
           events,
-          transcriptBootstrap: {
-            throughSequence: 2,
-            overlayMessageCount: 0,
-            durable: bootstrap,
-            overlay: { ...bootstrap, source: 'overlay' },
-          },
-          loadTranscriptOverlay: async () => [],
+          transcriptBootstrap: { durable: bootstrap },
           loadTranscriptPage: async (request) => {
             // `loadAround` probes one row older than its anchor to learn
             // whether history precedes it; that probe stays empty here.
@@ -1618,7 +1598,6 @@ test('does not let one backpressured transcript consumer block another', async (
           loadTranscriptPage: async (input) => ({
             kind: 'page',
             sessionId: 'session-1',
-            source: 'durable',
             direction: 'newer',
             throughSequence: input.throughSequence,
             rawBytes: 1,
@@ -1719,13 +1698,12 @@ test('keeps a transcript consumer available after a delivery fails', async () =>
     client: {
       openSession: async () =>
         runtimeHostSessionFixture({
-          snapshot: continuitySnapshot(),
+          snapshot: settledSnapshot(),
           transcript: Promise.resolve([]),
           events,
           loadTranscriptPage: async (input) => ({
             kind: 'page',
             sessionId: 'session-1',
-            source: 'durable',
             direction: 'newer',
             throughSequence: input.throughSequence,
             rawBytes: 1,
@@ -2242,7 +2220,6 @@ test("recovers when transcript paging loses the active subscription", async () =
             return {
               kind: "page",
               sessionId: "session-1",
-              source: "durable",
               direction: "newer",
               throughSequence: 0,
               rawBytes: 0,
@@ -2285,7 +2262,6 @@ test('does not activate a refresh candidate that fails during commit preparation
   const accepted: SubscriptionFrame[] = [];
   let opens = 0;
   let preparations = 0;
-  let activated = false;
   let firstCloses = 0;
   const owner = new RuntimeHostSessionSubscriptionOwner({
     client: {
@@ -2325,20 +2301,11 @@ test('does not activate a refresh candidate that fails during commit preparation
 
   const refresh = owner.refresh();
   await waitFor(() => preparations === 2);
-  secondEvents.push({
-    kind: 'subscription.closed',
-    hostEpoch: 'host-1',
-    subscriptionId: 'subscription-2',
-    sequence: 1,
-    reason: 'slow_consumer',
-  });
-  await assert.rejects(refresh, /slow consumer/);
-  activation.resolve(() => {
-    activated = true;
-  });
-  await new Promise((resolve) => setImmediate(resolve));
+  activation.reject(new Error('commit preparation failed'));
+  await assert.rejects(refresh, /commit preparation failed/);
 
-  assert.equal(activated, false);
+  // Retiring the previous subscription is the first thing activation does, so
+  // it still being open is how a skipped activation shows.
   assert.equal(firstCloses, 0);
   firstEvents.push(deltaFrame(1, 0, 'still live'));
   await waitFor(() => accepted.length === 1);
@@ -2422,10 +2389,9 @@ test('lets an active recovery supersede a concurrent cold refresh', async () => 
   await owner.close();
 });
 
-test("retries an initial subscription closed before commit and resyncs once", async () => {
+test("retries an initial subscription evicted before readiness and resyncs once", async () => {
   const firstEvents = new AsyncFrameQueue();
   const secondEvents = new AsyncFrameQueue();
-  const firstTranscript = deferred<StoredMessage[]>();
   const secondTranscript = deferred<StoredMessage[]>();
   const recoveredSessions: string[] = [];
   let openCount = 0;
@@ -2437,7 +2403,7 @@ test("retries an initial subscription closed before commit and resyncs once", as
         return runtimeHostSessionFixture({
           snapshot: continuitySnapshot(),
           activeAssistantStreams: [],
-          transcript: first ? firstTranscript.promise : secondTranscript.promise,
+          transcript: first ? Promise.resolve([]) : secondTranscript.promise,
           events: first ? firstEvents : secondEvents,
           async close() {
             (first ? firstEvents : secondEvents).end();
@@ -2450,16 +2416,8 @@ test("retries an initial subscription closed before commit and resyncs once", as
       recoveredSessions.push(sessionId);
     },
   });
-  let observingSettled = false;
-  const observing = observer.observe("session-1", "observer-1", eventTarget(16));
-  void observing.then(
-    () => {
-      observingSettled = true;
-    },
-    () => {
-      observingSettled = true;
-    },
-  );
+  // The Host evicts a subscriber that has not declared readiness by queueing
+  // this frame; it is released the moment readiness arrives.
   firstEvents.push({
     kind: "subscription.closed",
     hostEpoch: "host-1",
@@ -2467,14 +2425,15 @@ test("retries an initial subscription closed before commit and resyncs once", as
     sequence: 1,
     reason: "slow_consumer",
   });
-  firstTranscript.resolve([]);
+  const observing = observer.observe("session-1", "observer-1", eventTarget(16));
   await waitFor(() => openCount === 2);
-  assert.equal(observingSettled, false);
   assert.deepEqual(recoveredSessions, []);
 
   secondTranscript.resolve([]);
+  await waitFor(() => recoveredSessions.length === 1);
   await observing;
   assert.deepEqual(recoveredSessions, ["session-1"]);
+  assert.equal(openCount, 2);
   await observer.close();
 });
 
@@ -2543,13 +2502,15 @@ test("finishes a watched predecessor after initial catch-up recovery", async () 
   });
   firstTranscript.resolve([]);
   await watching;
-  await waitFor(() => replacementCloseCount === 1);
+  await waitFor(() => finishedTurns.length === 1);
 
   assert.deepEqual(finishedTurns, [["session-1", "completed"]]);
+  // turn-2 is still running on the Host, so the replacement subscription stays.
+  assert.equal(replacementCloseCount, 0);
   await observer.close();
 });
 
-test("keeps a joining observer pending across repeated catch-up eviction", async () => {
+test("seeds a joining observer from the attempt that survives repeated catch-up eviction", async () => {
   const firstEvents = new AsyncFrameQueue();
   const replacementEvents = new AsyncFrameQueue();
   const finalEvents = new AsyncFrameQueue();
@@ -2613,15 +2574,8 @@ test("keeps a joining observer pending across repeated catch-up eviction", async
     "observer-2",
     joiningTarget,
   );
-  let joiningSettled = false;
-  void joining.then(
-    () => {
-      joiningSettled = true;
-    },
-    () => {
-      joiningSettled = true;
-    },
-  );
+  // Held until the replacement declares readiness, which it only does once its
+  // transcript lands — so the observer joins an attempt already evicted.
   replacementEvents.push({
     kind: "subscription.closed",
     hostEpoch: "host-1",
@@ -2631,8 +2585,6 @@ test("keeps a joining observer pending across repeated catch-up eviction", async
   });
   replacementTranscript.resolve([]);
   await waitFor(() => openCount === 3);
-  await Promise.resolve();
-  assert.equal(joiningSettled, false);
   finalTranscript.resolve([
     {
       type: "assistant" as const,
@@ -2644,6 +2596,11 @@ test("keeps a joining observer pending across repeated catch-up eviction", async
     },
   ]);
   await joining;
+  await waitFor(() =>
+    joiningTarget.events.some(
+      (event) => event.type === "text_delta" && event.text === "Hello",
+    ),
+  );
 
   assert.equal(firstTarget.events.some((event) => event.type === "error"), false);
   assert.equal(joiningTarget.events.some((event) => event.type === "error"), false);
@@ -2844,7 +2801,6 @@ test('replays durable admission before a terminal successor on subscription reco
             },
           }),
           transcript: Promise.resolve(terminalTranscript),
-          loadTranscriptOverlay: async () => terminalTranscript,
           events: secondEvents,
           async close() {
             secondEvents.end();
@@ -2896,7 +2852,9 @@ test("shares one Host subscription and one delivery per renderer target", async 
       openSession: async () => {
         openCount += 1;
         return runtimeHostSessionFixture({
-          snapshot: continuitySnapshot(),
+          // Settled: releasing an idle subscription is only correct once the
+          // Host has nothing left to send.
+          snapshot: settledSnapshot(),
           activeAssistantStreams: [],
           transcript: Promise.resolve([]),
           events,
@@ -3316,6 +3274,19 @@ function activeText(messageId: string, turnId = 'turn-1') {
   return { kind: 'text' as const, turnId, messageId };
 }
 
+/** A Session whose root Turn has ended, so nothing holds the subscription open. */
+function settledSnapshot(): SessionContinuitySnapshot {
+  return continuitySnapshot({
+    rootTurn: {
+      sessionId: 'session-1',
+      turnId: 'turn-1',
+      runId: 'run-1',
+      status: 'completed',
+      terminalEventId: 'terminal-1',
+    },
+  });
+}
+
 function activeGoal() {
   return {
     goalId: "goal-1",
@@ -3439,6 +3410,78 @@ class AsyncFrameQueue implements AsyncIterable<SubscriptionFrame> {
 async function waitFor(predicate: () => boolean): Promise<void> {
   await pollFor(predicate, { attempts: 100, message: 'Timed out waiting for observer state' });
 }
+
+// #5365: leaving the conversation used to drop the subscription to a Turn the
+// Host was still running, so coming back made it stream the whole answer again.
+test('a running Turn keeps its subscription after the last viewer leaves', async () => {
+  const events = new AsyncFrameQueue();
+  let opens = 0;
+  const handle = runtimeHostSessionFixture({
+    snapshot: continuitySnapshot(),
+    activeAssistantStreams: [activeText('message-1')],
+    transcript: Promise.resolve([]),
+    events,
+    async close() { events.end(); },
+  });
+  const observer = new RuntimeHostSessionObserver({
+    client: { openSession: async () => { opens += 1; return handle; } },
+    emitSessionsChanged() {},
+  });
+  const target = eventTarget(1);
+  await observer.observe('session-1', 'conversation', target);
+  assert.equal(opens, 1);
+
+  await observer.unobserve('conversation');
+  // The Host keeps producing while nobody looks; the subscription has to be
+  // there to receive it, or the text below is lost and must be re-sent.
+  events.push(deltaFrame(1, 0, 'Written while away'));
+  await observer.observe('session-1', 'conversation-again', target);
+
+  assert.equal(opens, 1);
+  const seed = target.observations.at(-1);
+  assert.equal(seed?.type, 'host_observation_seed');
+  if (seed?.type === 'host_observation_seed') {
+    assert.ok(seed.events.some((event) =>
+      event.type === 'text_delta' && event.text === 'Written while away'));
+  }
+  await observer.close();
+});
+
+test('the subscription is released once the running Turn ends with no viewer', async () => {
+  const events = new AsyncFrameQueue();
+  let closed = false;
+  const handle = runtimeHostSessionFixture({
+    snapshot: continuitySnapshot(),
+    transcript: Promise.resolve([]),
+    events,
+    async close() { closed = true; events.end(); },
+  });
+  const observer = new RuntimeHostSessionObserver({
+    client: { openSession: async () => handle },
+    emitSessionsChanged() {},
+  });
+  await observer.observe('session-1', 'conversation', eventTarget(1));
+  await observer.unobserve('conversation');
+  assert.equal(closed, false);
+
+  events.push({
+    kind: 'subscription.session_projection',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-1',
+    sequence: 1,
+    snapshot: continuitySnapshot({
+      rootTurn: {
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+        runId: 'run-1',
+        status: 'completed',
+        terminalEventId: 'terminal-1',
+      },
+    }),
+  });
+  await waitFor(() => closed);
+  await observer.close();
+});
 
 test('a later observer in the same renderer receives the accumulated active stream', async () => {
   const events = new AsyncFrameQueue();

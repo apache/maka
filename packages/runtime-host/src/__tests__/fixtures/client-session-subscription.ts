@@ -17,22 +17,26 @@
  * under the License.
  */
 
-import type { SubscriptionFrame } from '../protocol/index.js';
-import type { SessionContinuityOperationHandlerMap } from './operation-dispatcher.js';
+import { ClientSessionSubscription } from '../../client/session-subscription.js';
 
-export interface SessionContinuityFrameSink {
-  send(frame: SubscriptionFrame): Promise<void>;
-}
+type Args = ConstructorParameters<typeof ClientSessionSubscription>;
 
-export interface SessionContinuityConnection {
-  abort(subscriptionId: string): void;
-  close(): void;
-}
-
-export interface SessionContinuityService {
-  readonly handlers: SessionContinuityOperationHandlerMap;
-  attachConnection(
-    connectionId: string,
-    sink: SessionContinuityFrameSink,
-  ): SessionContinuityConnection;
+/**
+ * A subscription whose subject is what it decodes, not when it starts.
+ *
+ * Declaring readiness reaches the Host over the connection these subjects do
+ * not have, so it is a no-op here. A test about when frames start builds its
+ * subscription against a real coordinator instead.
+ */
+export function clientSubscription(
+  result: Args[0],
+  requestClose: Args[1],
+  readTranscriptPage: Args[2],
+): ClientSessionSubscription {
+  return new ClientSessionSubscription(
+    result,
+    requestClose,
+    readTranscriptPage,
+    async () => undefined,
+  );
 }

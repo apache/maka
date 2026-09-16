@@ -233,7 +233,6 @@ for (const backend of ['Local', 'Memory'] as const) {
         direction: 'older' as const,
         throughOrdinal,
         position: throughOrdinal,
-        limit: 1,
         maxEvents: 10,
         maxBytes: 64 * 1024,
         maxRecordBytes: 16 * 1024,
@@ -246,22 +245,19 @@ for (const backend of ['Local', 'Memory'] as const) {
         last: header.lastOrdinal,
         entries: [...entries].map(({ ordinal, event }) => ({ ordinal, id: event.id })),
       });
-      const expected = await s.readTranscriptInvocations(run.sessionId, request, project);
-      assert.equal(expected.length, 1);
+      const expected = await s.readTranscriptRun(run.sessionId, request, project);
+      assert.ok(expected);
       assert.deepEqual(
-        expected[0]!.entries.map((e) => e.id),
+        expected.entries.map((e) => e.id),
         [opening.id, body.id, ending.id],
       );
-      assert.equal(expected[0]!.last, throughOrdinal);
-      await s.readTranscriptInvocations(run.sessionId, request, (header, entries) => {
+      assert.equal(expected.last, throughOrdinal);
+      await s.readTranscriptRun(run.sessionId, request, (header, entries) => {
         header.invocation.opening.route.modelId = 'mutated';
         for (const entry of entries) entry.event.author = 'user';
         return null;
       });
-      assert.deepEqual(
-        await s.readTranscriptInvocations(run.sessionId, request, project),
-        expected,
-      );
+      assert.deepEqual(await s.readTranscriptRun(run.sessionId, request, project), expected);
       assert.equal(
         (await s.readRunInvocation(run.sessionId, run.runId))!.opening.route.modelId,
         'fake-model',
@@ -272,33 +268,168 @@ for (const backend of ['Local', 'Memory'] as const) {
       );
       for (const field of ['maxEvents', 'maxBytes', 'maxRecordBytes'] as const) {
         await assert.rejects(
-          s.readTranscriptInvocations(run.sessionId, { ...request, [field]: 1 }, project),
+          s.readTranscriptRun(run.sessionId, { ...request, [field]: 1 }, project),
           RuntimeTranscriptOversizedTurnError,
         );
         await assert.rejects(
-          s.readTranscriptInvocations(run.sessionId, { ...request, [field]: 0 }, project),
+          s.readTranscriptRun(run.sessionId, { ...request, [field]: 0 }, project),
           /Invalid/,
         );
       }
-      const firstOnly = await s.readTranscriptInvocations(
+      const firstOnly = await s.readTranscriptRun(
         run.sessionId,
         { ...request, maxEvents: 1 },
         (_header, entries) => entries[Symbol.iterator]().next().value?.event.id,
       );
-      assert.deepEqual(firstOnly, [opening.id]);
+      assert.equal(firstOnly, opening.id);
       // Projectors own their results, which can contain live methods (the
       // production transcript reader returns a fold), not just cloneable data.
       const projected = { read: () => 'caller-owned projection' };
-      const results = await s.readTranscriptInvocations(
-        run.sessionId,
-        request,
-        (_header, entries) => {
-          assert.equal([...entries].length, 3);
-          return projected;
-        },
+      const result = await s.readTranscriptRun(run.sessionId, request, (_header, entries) => {
+        assert.equal([...entries].length, 3);
+        return projected;
+      });
+      assert.equal(result, projected);
+      assert.equal(result!.read(), 'caller-owned projection');
+    });
+  });
+  test(backend + ': transcript serves a running Turn up to the watermark', async () => {
+    await withProvider(make(), async ({ runtimeEventStore: s }) => {
+      const sessionId = 'watermark-session';
+      const turn = (name: string) => ({
+        sessionId,
+        runId: `${name}-run`,
+        turnId: `${name}-turn`,
+        invocationId: `${name}-invocation`,
+      });
+      const settled = turn('settled');
+      const running = turn('running');
+      const opened = (run: typeof settled) =>
+        buildInvocationOpenedEvent({
+          id: `${run.invocationId}-opened`,
+          run,
+          openedAt: 1,
+          opening: invocationOpening(),
+        });
+      const text = (run: typeof settled, id: string, role: 'user' | 'model'): RuntimeEvent => ({
+        ...run,
+        id,
+        ts: 2,
+        partial: false,
+        role,
+        author: role === 'user' ? 'user' : 'agent',
+        content: { kind: 'text', text: id },
+      });
+      const ending = (run: typeof settled): RuntimeEvent => ({
+        ...run,
+        id: `${run.invocationId}-ended`,
+        ts: 3,
+        partial: false,
+        role: 'system',
+        author: 'system',
+        actions: { endInvocation: true },
+        status: 'completed',
+      });
+      const commits: string[] = [];
+      const unsubscribe = s.subscribeRuntimeEventCommits((id) => commits.push(id));
+      const highWaters: Array<number | null> = [await s.readTranscriptHighWater(sessionId)];
+      for (const event of [
+        opened(settled),
+        text(settled, 'settled-prompt', 'user'),
+        ending(settled),
+        opened(running),
+        text(running, 'running-prompt', 'user'),
+        text(running, 'running-answer', 'model'),
+      ]) {
+        await s.appendRuntimeEvent(sessionId, event.runId, event);
+        highWaters.push(await s.readTranscriptHighWater(sessionId));
+      }
+      assert.deepEqual(highWaters, [null, 1, 2, 3, 4, 5, 6]);
+      assert.deepEqual(commits, Array(6).fill(sessionId));
+      await assert.rejects(
+        s.appendRuntimeEvent(sessionId, settled.runId, text(settled, 'late', 'model')),
       );
-      assert.equal(results[0], projected);
-      assert.equal(results[0]!.read(), 'caller-owned projection');
+      assert.equal(commits.length, 6);
+
+      // One call answers with one run, so a walk is the whole sweep: step past
+      // the run until nothing is left. A run reaches the walk's own bound when
+      // no other Turn stops it, which is why the outermost run of each
+      // direction ends at 0 or at the watermark rather than at a Turn's edge.
+      const read = async (
+        direction: 'older' | 'newer',
+        position: number,
+        throughOrdinal: number,
+      ) => {
+        const seen: Array<{
+          invocationId: string;
+          first: number;
+          last: number;
+          ordinals: number[];
+        }> = [];
+        for (let at = Math.min(position, throughOrdinal); at >= 0 && at <= throughOrdinal; ) {
+          const run = await s.readTranscriptRun(
+            sessionId,
+            {
+              direction,
+              position: at,
+              throughOrdinal,
+              maxEvents: 16,
+              maxBytes: 64 * 1024,
+              maxRecordBytes: 16 * 1024,
+            },
+            (header, entries) => ({
+              invocationId: header.invocation.invocationId,
+              first: header.firstOrdinal,
+              last: header.lastOrdinal,
+              ordinals: [...entries].map((entry) => entry.ordinal),
+            }),
+          );
+          if (!run) break;
+          seen.push(run);
+          at = direction === 'older' ? run.first - 1 : run.last + 1;
+        }
+        return seen.sort((a, b) => a.first - b.first);
+      };
+      assert.deepEqual(await read('older', 6, 6), [
+        { invocationId: settled.invocationId, first: 0, last: 3, ordinals: [1, 2, 3] },
+        { invocationId: running.invocationId, first: 4, last: 6, ordinals: [4, 5, 6] },
+      ]);
+      assert.deepEqual(await read('newer', 1, 6), [
+        { invocationId: settled.invocationId, first: 1, last: 3, ordinals: [1, 2, 3] },
+        { invocationId: running.invocationId, first: 4, last: 6, ordinals: [4, 5, 6] },
+      ]);
+      assert.deepEqual(await read('newer', 5, 6), [
+        { invocationId: running.invocationId, first: 5, last: 6, ordinals: [4, 5, 6] },
+      ]);
+      assert.deepEqual(await read('older', 6, 5), [
+        { invocationId: settled.invocationId, first: 0, last: 3, ordinals: [1, 2, 3] },
+        { invocationId: running.invocationId, first: 4, last: 5, ordinals: [4, 5] },
+      ]);
+      assert.deepEqual(await read('newer', 1, 2), [
+        { invocationId: settled.invocationId, first: 1, last: 2, ordinals: [1, 2] },
+      ]);
+      assert.deepEqual(
+        (await s.readTranscriptLandmarks(sessionId, 6, 8)).map((landmark) => ({
+          invocationId: landmark.invocation.invocationId,
+          first: landmark.firstOrdinal,
+          prompt: landmark.prompt?.event.id,
+        })),
+        [
+          { invocationId: settled.invocationId, first: 1, prompt: 'settled-prompt' },
+          { invocationId: running.invocationId, first: 4, prompt: 'running-prompt' },
+        ],
+      );
+
+      await s.importConversationCopyRuntimeEvents(sessionId, [
+        {
+          runId: 'copied-run',
+          events: [opened(turn('copied')), text(turn('copied'), 'copied-prompt', 'user')],
+        },
+      ]);
+      assert.equal(commits.length, 7);
+      unsubscribe();
+      await s.appendRuntimeEvent(sessionId, running.runId, ending(running));
+      assert.equal(commits.length, 7);
     });
   });
   test(backend + ': steering reorder preserves unselected and followup queue slots', async () => {

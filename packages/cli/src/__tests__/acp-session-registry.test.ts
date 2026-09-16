@@ -2786,6 +2786,11 @@ class FakeSubscription implements RuntimeHostSessionSubscription, AsyncIterator<
     resolve(result: IteratorResult<SubscriptionFrame>): void;
     reject(error: Error): void;
   }> = [];
+  #readied = false;
+  #openGate: () => void = () => undefined;
+  readonly #readyGate = new Promise<void>((resolve) => {
+    this.#openGate = resolve;
+  });
   #sequence = 0;
   #closed = false;
   #failure: Error | undefined;
@@ -2811,8 +2816,19 @@ class FakeSubscription implements RuntimeHostSessionSubscription, AsyncIterator<
     return this;
   }
 
+  async ready(): Promise<void> {
+    this.#readied = true;
+    this.#openGate();
+  }
+
   next(): Promise<IteratorResult<SubscriptionFrame>> {
     this.nextCalls += 1;
+    // The Host holds frames until the subscriber declares readiness, so a fake
+    // that hands them over earlier would let an ordering bug pass.
+    return this.#readied ? this.#deliver() : this.#readyGate.then(() => this.#deliver());
+  }
+
+  #deliver(): Promise<IteratorResult<SubscriptionFrame>> {
     const frame = this.#frames.shift();
     if (frame) return Promise.resolve({ done: false, value: frame });
     if (this.#failure) return Promise.reject(this.#failure);
@@ -2883,10 +2899,6 @@ class FakeSubscription implements RuntimeHostSessionSubscription, AsyncIterator<
 
   async loadTranscript<T>(decodeMessage: (value: unknown) => T): Promise<T[]> {
     return (await this.transcript).map(decodeMessage);
-  }
-
-  async loadTranscriptOverlay<T>(_decodeMessage: (value: unknown) => T): Promise<T[]> {
-    return [];
   }
 
   async decodeTranscriptPage(): Promise<never> {

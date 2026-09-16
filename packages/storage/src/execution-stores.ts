@@ -157,8 +157,8 @@ export type {
 
 export type ExecutionSessionWriter = SessionAuthorityStore;
 export type {
-  RuntimeTranscriptInvocationHeader,
   RuntimeTranscriptLandmark,
+  RuntimeTranscriptRun,
 } from './runtime-transcript-query.js';
 export type ExecutionAgentRunWriter = DurableAgentRunStore;
 export type ExecutionRuntimeEventWriter = DurableRuntimeEventStore &
@@ -178,6 +178,8 @@ export type ExecutionRuntimeEventWriter = DurableRuntimeEventStore &
       events: readonly RuntimeEvent[],
     ): Promise<void>;
     readSessionRuntimeEventEntries(sessionId: string): Promise<SessionRuntimeEventEntry[]>;
+    /** Called once per Session after each write that committed RuntimeEvents to it. */
+    subscribeRuntimeEventCommits(listener: (sessionId: string) => void): () => void;
   };
 interface ExecutionStoresWriterBase<K extends StorageRootKind> {
   readonly kind: K;
@@ -735,10 +737,22 @@ async function createExecutionStoresForWrite(
         run(() => runtimeEventStore.resequenceSessionEventOrdinals(sessionId)),
       readTranscriptHighWater: (sessionId) =>
         run(() => runtimeEventStore.readTranscriptHighWater(sessionId)),
-      readTranscriptInvocations: (sessionId, request, project) =>
-        run(() => runtimeEventStore.readTranscriptInvocations(sessionId, request, project)),
+      readTranscriptRun: (sessionId, request, project) =>
+        run(() => runtimeEventStore.readTranscriptRun(sessionId, request, project)),
       readTranscriptLandmarks: (sessionId, throughOrdinal, limit) =>
         run(() => runtimeEventStore.readTranscriptLandmarks(sessionId, throughOrdinal, limit)),
+      subscribeRuntimeEventCommits: (listener) => {
+        if (closed) throw invalidExecutionStores(kind, 'write');
+        assertStorageRootLeaseActive(lease, kind, 'write');
+        const unsubscribe = runtimeEventStore.subscribeRuntimeEventCommits((sessionId) => {
+          if (!closed) listener(sessionId);
+        });
+        subscriptions.add(unsubscribe);
+        return () => {
+          subscriptions.delete(unsubscribe);
+          unsubscribe();
+        };
+      },
       claimContinuation: (input) => run(() => runtimeEventStore.claimContinuation(input)),
       readContinuationClaimByBoundary: (boundaryDigest) =>
         run(() => runtimeEventStore.readContinuationClaimByBoundary(boundaryDigest)),

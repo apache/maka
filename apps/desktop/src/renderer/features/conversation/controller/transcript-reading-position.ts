@@ -306,8 +306,9 @@ export function restoreSessionTranscriptRange<Message>(options: {
         message !== null && typeof message === 'object' &&
         'turnId' in message && message.turnId === target.turnId,
       )) {
-        // Active Turns are overlay-only in the RuntimeEvent projection. Their
-        // bookmark is already visible even though no durable sequence exists.
+        // A live row can be on screen before the transcript assigns it a
+        // sequence. Its bookmark is already visible, so there is nothing to
+        // page in.
         return false;
       }
       return restoringReadingAnchor;

@@ -396,7 +396,7 @@ export class RuntimeHostSessionObserver {
       );
       return snapshot && {
         batches: encodeDesktopTranscriptSnapshot(snapshot, request.navigation),
-        bytes: [...snapshot.durable, ...snapshot.overlay.map((message) => ({ message }))],
+        bytes: snapshot.durable,
       };
     });
   }
@@ -1212,21 +1212,27 @@ export class RuntimeHostSessionObserver {
   }
 
   async #closeIfIdle(state: ObservedSessionState): Promise<void> {
-    if (
+    if (this.#isRetained(state)) return;
+    await Promise.resolve();
+    if (!this.#isRetained(state)) {
+      await this.#closeState(state);
+    }
+  }
+
+  /**
+   * A running root Turn keeps the subscription whether or not anyone is
+   * looking: the Host goes on producing either way, and letting go here only
+   * makes the next viewer ask it to send everything a second time.
+   */
+  #isRetained(state: ObservedSessionState): boolean {
+    const root = state.snapshot?.rootTurn;
+    return (
       state.targets.size > 0 ||
       state.watchedTurnIds.size > 0 ||
       state.transcriptConsumers.size > 0 ||
-      state.pendingTranscriptConsumers > 0
-    ) return;
-    await Promise.resolve();
-    if (
-      state.targets.size === 0 &&
-      state.watchedTurnIds.size === 0 &&
-      state.transcriptConsumers.size === 0 &&
-      state.pendingTranscriptConsumers === 0
-    ) {
-      await this.#closeState(state);
-    }
+      state.pendingTranscriptConsumers > 0 ||
+      (root !== null && root !== undefined && !isTerminalTurn(root))
+    );
   }
 
   #finishWatchedTurn(

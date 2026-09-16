@@ -163,9 +163,9 @@ import { assertNoReservedWorkspaceAuthorityAppend } from './runtime-event-author
 import {
   RuntimeTranscriptQuery,
   TERMINAL_RUNTIME_EVENT_SQL,
-  type RuntimeTranscriptInvocationHeader,
-  type RuntimeTranscriptInvocationRequest,
   type RuntimeTranscriptLandmark,
+  type RuntimeTranscriptRun,
+  type RuntimeTranscriptRunRequest,
 } from './runtime-transcript-query.js';
 
 export { SQLITE_RUNTIME_SCHEMA_VERSION } from './sqlite-runtime-schema.js';
@@ -290,6 +290,8 @@ export class SqliteRuntimeStore
   private readonly databaseLease?: OperationalStateDatabaseLease;
   private toolLedgerHealth: ToolLedgerHealth | undefined;
   private closed = false;
+  private readonly uncommittedEventSessions = new Set<string>();
+  private readonly eventCommitListeners = new Set<(sessionId: string) => void>();
 
   constructor(
     path: string,
@@ -555,19 +557,16 @@ export class SqliteRuntimeStore
     return this.readTransaction(() => this.transcriptQuery().highWater(sessionId));
   }
 
-  async readTranscriptInvocations<T>(
+  async readTranscriptRun<T>(
     sessionId: string,
-    request: RuntimeTranscriptInvocationRequest,
+    request: RuntimeTranscriptRunRequest,
     project: (
-      turn: RuntimeTranscriptInvocationHeader,
+      run: RuntimeTranscriptRun,
       events: Iterable<{ readonly ordinal: number; readonly event: RuntimeEvent }>,
     ) => T,
-  ): Promise<T[]> {
+  ): Promise<T | undefined> {
     assertRuntimeStorageSafeId(sessionId, 'Invalid session id');
-    assertInvocationSearchLimit(request.limit);
-    return this.readTransaction(() =>
-      this.transcriptQuery().invocations(sessionId, request, project),
-    );
+    return this.readTransaction(() => this.transcriptQuery().run(sessionId, request, project));
   }
 
   async readTranscriptLandmarks(
@@ -3393,18 +3392,42 @@ export class SqliteRuntimeStore
   private transaction<T>(operation: () => T): T {
     if (this.databaseLease) return this.databaseLease.transaction('write', operation);
     this.db.exec('BEGIN IMMEDIATE');
+    let result: T;
     try {
-      const result = operation();
+      result = operation();
       this.db.exec('COMMIT');
-      return result;
     } catch (error) {
       try {
         this.db.exec('ROLLBACK');
       } catch {
         // Preserve the protocol failure that caused rollback.
       }
+      this.settleEventCommits(false);
       throw error;
     }
+    this.settleEventCommits(true);
+    return result;
+  }
+
+  private noteEventCommit(sessionId: string): void {
+    if (this.uncommittedEventSessions.size === 0 && this.databaseLease) {
+      this.databaseLease.onTransactionSettled((committed) => this.settleEventCommits(committed));
+    }
+    this.uncommittedEventSessions.add(sessionId);
+  }
+
+  private settleEventCommits(committed: boolean): void {
+    const sessionIds = [...this.uncommittedEventSessions];
+    this.uncommittedEventSessions.clear();
+    if (!committed) return;
+    for (const sessionId of sessionIds) {
+      for (const listener of this.eventCommitListeners) listener(sessionId);
+    }
+  }
+
+  subscribeRuntimeEventCommits(listener: (sessionId: string) => void): () => void {
+    this.eventCommitListeners.add(listener);
+    return () => this.eventCommitListeners.delete(listener);
   }
 
   private readTransaction<T>(operation: () => T): T {
@@ -4008,6 +4031,7 @@ export class SqliteRuntimeStore
         VALUES (?, ?, ?)
       `)
       .run(canonicalEvent.sessionId, ordinal, canonicalEvent.id);
+    this.noteEventCommit(canonicalEvent.sessionId);
     this.deleteCompletedPartialSnapshot(canonicalEvent);
     return next;
   }

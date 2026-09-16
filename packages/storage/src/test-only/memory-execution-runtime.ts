@@ -67,7 +67,7 @@ import { assertNoReservedWorkspaceAuthorityAppend } from '../runtime-event-autho
 import { immutableSteeringMessageId } from '../runtime-event-invariants.js';
 import {
   RuntimeTranscriptOversizedTurnError,
-  type RuntimeTranscriptInvocationHeader,
+  type RuntimeTranscriptRun,
 } from '../runtime-transcript-query.js';
 import {
   partialRuntimeStream,
@@ -433,24 +433,30 @@ function transcript(
   s: MemoryState,
   sessionId: string,
   throughOrdinal = Number.MAX_SAFE_INTEGER,
-): Array<RuntimeTranscriptInvocationHeader & { events: SessionRuntimeEventEntry[] }> {
+): Array<RuntimeTranscriptRun & { events: SessionRuntimeEventEntry[] }> {
   check(sessionId);
   const entries = ordinals(s).get(sessionId) ?? [];
   return runtimeInvocationsFromSessionEvents(
     sessionId,
     entries.map((e) => e.event),
   )
-    .filter((i) => isSessionInlineInvocation(i.opening) && i.terminalEvent)
+    .filter((i) => isSessionInlineInvocation(i.opening))
     .map((invocation) => {
-      const own = entries.filter((e) => e.event.invocationId === invocation.invocationId);
+      const events = entries.filter(
+        (e) => e.event.invocationId === invocation.invocationId && e.ordinal <= throughOrdinal,
+      );
+      const ending = events.find((e) => e.event.id === invocation.terminalEvent?.id);
       return {
         invocation,
-        firstOrdinal: own.find((e) => e.event.content?.kind === 'invocation_opened')!.ordinal,
-        lastOrdinal: own.find((e) => e.event.id === invocation.terminalEvent!.id)!.ordinal,
-        events: own.filter((e) => e.ordinal <= throughOrdinal),
+        firstOrdinal: events.find((e) => e.event.content?.kind === 'invocation_opened')?.ordinal,
+        lastOrdinal: ending?.ordinal ?? events.at(-1)?.ordinal,
+        events,
       };
     })
-    .filter((i) => i.lastOrdinal <= throughOrdinal)
+    .filter(
+      (i): i is typeof i & { firstOrdinal: number; lastOrdinal: number } =>
+        i.firstOrdinal !== undefined,
+    )
     .sort((x, y) => x.firstOrdinal - y.firstOrdinal);
 }
 function limit(value: number) {
@@ -867,58 +873,71 @@ export function createMemoryRuntimeStore(a: MemoryExecutionAuthority): Execution
       ),
     readTranscriptHighWater: async (sessionId) =>
       a.read((s) => {
-        const all = transcript(s, sessionId);
-        return all.length ? Math.max(...all.map((i) => i.lastOrdinal)) : null;
+        check(sessionId);
+        return ordinals(s).get(sessionId)?.at(-1)?.ordinal ?? null;
       }),
-    readTranscriptInvocations: async (sessionId, request, project) => {
+    subscribeRuntimeEventCommits: (listener) => {
+      a.runtimeEventListeners.add(listener);
+      return () => {
+        a.runtimeEventListeners.delete(listener);
+      };
+    },
+    readTranscriptRun: async (sessionId, request, project) => {
       const { maxEvents, maxBytes, maxRecordBytes } = request;
       // Detach the selected storage facts before handing them to the caller.
       // The caller owns its projection result; it may contain live methods and
       // must not pass back through the authority's structured-clone boundary.
       const selected = a.read((s) => {
-        const {
-          direction,
-          throughOrdinal,
-          position,
-          limit: n,
-          maxEvents,
-          maxBytes,
-          maxRecordBytes,
-        } = request;
+        const { direction, throughOrdinal, position, maxEvents, maxBytes, maxRecordBytes } =
+          request;
         for (const value of [throughOrdinal, position])
           if (!Number.isSafeInteger(value) || value < 0)
             throw new RangeError('Invalid transcript bound');
-        limit(n);
         for (const value of [maxEvents, maxBytes, maxRecordBytes])
           if (!Number.isSafeInteger(value) || value < 1)
             throw new RangeError('Invalid transcript read limit');
         if (direction !== 'older' && direction !== 'newer')
           throw new Error('Invalid transcript direction');
-        const all = transcript(s, sessionId, throughOrdinal);
-        const selected = (
-          direction === 'older'
-            ? all
-                .filter((i) => i.firstOrdinal <= position)
-                .sort((x, y) => y.firstOrdinal - x.firstOrdinal)
-            : all
-                .filter((i) => i.lastOrdinal >= position)
-                .sort((x, y) => x.lastOrdinal - y.lastOrdinal)
-        ).slice(0, n);
-        return selected.sort((x, y) => x.firstOrdinal - y.firstOrdinal);
+        const older = direction === 'older';
+        const visible = new Map(
+          transcript(s, sessionId, throughOrdinal).map((i) => [i.invocation.invocationId, i]),
+        );
+        const walked = (ordinals(s).get(sessionId) ?? []).filter(
+          (e) => e.ordinal <= throughOrdinal,
+        );
+        if (older) walked.reverse();
+        const seeked = walked.find(
+          (e) =>
+            (older ? e.ordinal <= position : e.ordinal >= position) &&
+            visible.has(e.event.invocationId),
+        );
+        if (!seeked) return undefined;
+        // Where the run stops: an ordinal some other invocation owns. Whether
+        // that one is visible does not matter — it breaks the stretch either way.
+        const stop = walked.find(
+          (e) =>
+            (older ? e.ordinal < seeked.ordinal : e.ordinal > seeked.ordinal) &&
+            e.event.invocationId !== seeked.event.invocationId,
+        );
+        return {
+          ...visible.get(seeked.event.invocationId)!,
+          firstOrdinal: older ? (stop ? stop.ordinal + 1 : 0) : seeked.ordinal,
+          lastOrdinal: older ? seeked.ordinal : stop ? stop.ordinal - 1 : throughOrdinal,
+        };
       });
-      return selected.map(({ events, ...header }) => {
-        function* read(): Iterable<SessionRuntimeEventEntry> {
-          let count = 0;
-          let bytes = 0;
-          for (const entry of events) {
-            const size = Buffer.byteLength(JSON.stringify(entry.event), 'utf8');
-            if (++count > maxEvents || size > maxRecordBytes || (bytes += size) > maxBytes)
-              throw new RuntimeTranscriptOversizedTurnError('Transcript Turn exceeds budget');
-            yield copy(entry);
-          }
+      if (!selected) return undefined;
+      const { events, ...header } = selected;
+      function* read(): Iterable<SessionRuntimeEventEntry> {
+        let count = 0;
+        let bytes = 0;
+        for (const entry of events) {
+          const size = Buffer.byteLength(JSON.stringify(entry.event), 'utf8');
+          if (++count > maxEvents || size > maxRecordBytes || (bytes += size) > maxBytes)
+            throw new RuntimeTranscriptOversizedTurnError('Transcript Turn exceeds budget');
+          yield copy(entry);
         }
-        return project(header, read());
-      });
+      }
+      return project(header, read());
     },
     readTranscriptLandmarks: async (sessionId, throughOrdinal, n) =>
       a.read((s) => {
@@ -926,8 +945,9 @@ export function createMemoryRuntimeStore(a: MemoryExecutionAuthority): Execution
           throw new RangeError('Invalid landmark bounds');
         if (n < 1) return [];
         const all = transcript(s, sessionId, throughOrdinal);
+        if (all.length === 0) return [];
         const positions = new Set(
-          Array.from({ length: Math.min(n, all.length) }, (_, i) =>
+          Array.from({ length: n }, (_, i) =>
             n === 1 ? all.length - 1 : Math.floor((i * (all.length - 1)) / (n - 1)),
           ),
         );

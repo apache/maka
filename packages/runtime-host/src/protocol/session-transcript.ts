@@ -23,7 +23,6 @@ import {
   requireEntityId,
   requireExactRecord,
   requireId,
-  requireRecord,
   requireUtf8String,
 } from './codec.js';
 import { invalidProtocolFrame } from './errors.js';
@@ -34,34 +33,22 @@ export const SESSION_TRANSCRIPT_PAGE_MAX_BYTES = 512 * 1024;
 export const SESSION_TRANSCRIPT_PAGE_MAX_MESSAGES = 256;
 export const SESSION_TRANSCRIPT_RANGE_MAX_BYTES = 16 * 1024 * 1024;
 export const SESSION_TRANSCRIPT_RANGE_MAX_MESSAGES = SESSION_TRANSCRIPT_PAGE_MAX_MESSAGES;
-export const SESSION_TRANSCRIPT_OVERLAY_MAX_MESSAGES = 4_096;
 export const SESSION_TRANSCRIPT_PAGE_RESULT_MAX_BYTES = 744 * 1024;
 export const SESSION_TRANSCRIPT_CURSOR_MAX_BYTES = 1024;
 
-export type SessionTranscriptPageSource = 'durable' | 'overlay';
 export type SessionTranscriptPageDirection = 'older' | 'newer';
 
-export type SessionTranscriptFragment =
-  | {
-      readonly kind: 'durable';
-      readonly sequence: number;
-      readonly byteOffset: number;
-      readonly totalBytes: number;
-      readonly payloadDigest: `sha256:${string}` | null;
-      readonly data: string;
-    }
-  | {
-      readonly kind: 'overlay';
-      readonly messageIndex: number;
-      readonly byteOffset: number;
-      readonly totalBytes: number;
-      readonly data: string;
-    };
+export interface SessionTranscriptFragment {
+  readonly sequence: number;
+  readonly byteOffset: number;
+  readonly totalBytes: number;
+  readonly payloadDigest: `sha256:${string}` | null;
+  readonly data: string;
+}
 
 export interface SessionTranscriptPage {
   readonly kind: 'page';
   readonly sessionId: string;
-  readonly source: SessionTranscriptPageSource;
   readonly direction: SessionTranscriptPageDirection;
   readonly throughSequence: number | null;
   readonly rawBytes: number;
@@ -74,28 +61,16 @@ export interface SessionTranscriptPage {
 }
 
 export interface SessionTranscriptBootstrap {
-  readonly throughSequence: number | null;
-  readonly overlayMessageCount: number;
   readonly durable: SessionTranscriptPage;
-  readonly overlay: SessionTranscriptPage;
 }
 
 export interface SessionTranscriptPageInput {
   readonly subscriptionId: string;
-  readonly source: SessionTranscriptPageSource;
   readonly direction: SessionTranscriptPageDirection;
   readonly throughSequence: number | null;
   readonly cursor: string | null;
   readonly anchorSequence: number | null;
   readonly maxBytes: number;
-}
-
-export interface SessionTranscriptOverlayReleaseInput {
-  readonly subscriptionId: string;
-}
-
-export interface SessionTranscriptOverlayReleaseResult {
-  readonly subscriptionId: string;
 }
 
 const QUERY_ERRORS = [
@@ -118,42 +93,11 @@ export const SESSION_TRANSCRIPT_OPERATION_SPECS = {
     decodeOutput: decodeSessionTranscriptPage,
     assertOutputForInput: assertSessionTranscriptPageOutput,
   }),
-  'session.transcript.overlay.release': defineOperation({
-    mode: 'control',
-    availability: 'ready',
-    errors: QUERY_ERRORS,
-    decodeInput: decodeSessionTranscriptOverlayReleaseInput,
-    decodeOutput: decodeSessionTranscriptOverlayReleaseResult,
-    assertOutputForInput: (input, output) => {
-      if (input.subscriptionId !== output.subscriptionId) {
-        throw invalidProtocolFrame('Session transcript overlay release identity changed');
-      }
-    },
-  }),
 } as const;
-
-function decodeSessionTranscriptOverlayReleaseInput(
-  value: unknown,
-): SessionTranscriptOverlayReleaseInput {
-  const input = requireExactRecord(value, 'Session transcript overlay release input', [
-    'subscriptionId',
-  ]);
-  return { subscriptionId: requireId(input.subscriptionId, 'subscriptionId') };
-}
-
-function decodeSessionTranscriptOverlayReleaseResult(
-  value: unknown,
-): SessionTranscriptOverlayReleaseResult {
-  const result = requireExactRecord(value, 'Session transcript overlay release result', [
-    'subscriptionId',
-  ]);
-  return { subscriptionId: requireId(result.subscriptionId, 'subscriptionId') };
-}
 
 export function decodeSessionTranscriptPageInput(value: unknown): SessionTranscriptPageInput {
   const input = requireExactRecord(value, 'Session transcript page input', [
     'subscriptionId',
-    'source',
     'direction',
     'throughSequence',
     'cursor',
@@ -177,7 +121,6 @@ export function decodeSessionTranscriptPageInput(value: unknown): SessionTranscr
   }
   return {
     subscriptionId: requireId(input.subscriptionId, 'subscriptionId'),
-    source: decodeSource(input.source),
     direction: decodeDirection(input.direction),
     throughSequence:
       input.throughSequence === null
@@ -190,44 +133,15 @@ export function decodeSessionTranscriptPageInput(value: unknown): SessionTranscr
 }
 
 export function decodeSessionTranscriptBootstrap(value: unknown): SessionTranscriptBootstrap {
-  const bootstrap = requireExactRecord(value, 'Session transcript bootstrap', [
-    'throughSequence',
-    'overlayMessageCount',
-    'durable',
-    'overlay',
-  ]);
-  const throughSequence =
-    bootstrap.throughSequence === null
-      ? null
-      : requireCount(bootstrap.throughSequence, 'Session transcript watermark');
-  const overlayMessageCount = requireCount(
-    bootstrap.overlayMessageCount,
-    'Session transcript overlay message count',
-  );
-  if (overlayMessageCount > SESSION_TRANSCRIPT_OVERLAY_MAX_MESSAGES) {
-    throw invalidProtocolFrame('Session transcript overlay exceeds its message limit');
-  }
+  const bootstrap = requireExactRecord(value, 'Session transcript bootstrap', ['durable']);
   const durable = decodeSessionTranscriptPage(bootstrap.durable);
-  const overlay = decodeSessionTranscriptPage(bootstrap.overlay);
-  if (
-    durable.source !== 'durable' ||
-    durable.direction !== 'older' ||
-    overlay.source !== 'overlay' ||
-    overlay.direction !== 'older' ||
-    durable.throughSequence !== throughSequence ||
-    overlay.throughSequence !== throughSequence
-  ) {
+  if (durable.direction !== 'older') {
     throw invalidProtocolFrame('Invalid Session transcript bootstrap correlation');
   }
-  if (durable.rawBytes + overlay.rawBytes > SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES) {
+  if (durable.rawBytes > SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES) {
     throw invalidProtocolFrame('Session transcript bootstrap exceeds byte limit');
   }
-  return {
-    throughSequence,
-    overlayMessageCount,
-    durable,
-    overlay,
-  };
+  return { durable };
 }
 
 export function decodeSessionTranscriptPage(value: unknown): SessionTranscriptPage {
@@ -239,7 +153,6 @@ export function decodeSessionTranscriptPage(value: unknown): SessionTranscriptPa
   const result = requireExactRecord(value, 'Session transcript page result', [
     'kind',
     'sessionId',
-    'source',
     'direction',
     'throughSequence',
     'rawBytes',
@@ -249,7 +162,6 @@ export function decodeSessionTranscriptPage(value: unknown): SessionTranscriptPa
     'nextCursor',
   ]);
   if (result.kind !== 'page') throw invalidProtocolFrame('Invalid Session transcript page kind');
-  const source = decodeSource(result.source);
   const direction = decodeDirection(result.direction);
   const throughSequence =
     result.throughSequence === null
@@ -262,7 +174,7 @@ export function decodeSessionTranscriptPage(value: unknown): SessionTranscriptPa
     throw invalidProtocolFrame('Invalid Session transcript page fragments');
   }
   const fragments = result.fragments.map((fragment) =>
-    decodeSessionTranscriptFragment(fragment, source, throughSequence),
+    decodeSessionTranscriptFragment(fragment, throughSequence),
   );
   assertFragmentOrder(fragments, direction);
   const rawBytes = requireCount(result.rawBytes, 'Session transcript page bytes');
@@ -290,16 +202,14 @@ export function decodeSessionTranscriptPage(value: unknown): SessionTranscriptPa
       ? null
       : requireCount(result.protectedTurnSequence, 'Session transcript protected Turn sequence');
   if (
-    (rangeBoundarySequence !== null && source !== 'durable') ||
-    (rangeBoundarySequence !== null &&
-      (throughSequence === null || rangeBoundarySequence > throughSequence))
+    rangeBoundarySequence !== null &&
+    (throughSequence === null || rangeBoundarySequence > throughSequence)
   ) {
     throw invalidProtocolFrame('Invalid Session transcript range boundary');
   }
   if (
-    (protectedTurnSequence !== null && source !== 'durable') ||
-    (protectedTurnSequence !== null &&
-      (throughSequence === null || protectedTurnSequence > throughSequence))
+    protectedTurnSequence !== null &&
+    (throughSequence === null || protectedTurnSequence > throughSequence)
   ) {
     throw invalidProtocolFrame('Invalid Session transcript protected Turn sequence');
   }
@@ -309,7 +219,6 @@ export function decodeSessionTranscriptPage(value: unknown): SessionTranscriptPa
   return {
     kind: 'page',
     sessionId: requireEntityId(result.sessionId, 'sessionId'),
-    source,
     direction,
     throughSequence,
     rawBytes,
@@ -325,36 +234,28 @@ function assertFragmentOrder(
   direction: SessionTranscriptPageDirection,
 ): void {
   let previous: number | undefined;
-  for (const fragment of fragments) {
-    const identity = fragment.kind === 'durable' ? fragment.sequence : fragment.messageIndex;
+  for (const { sequence } of fragments) {
     if (
       previous !== undefined &&
-      (direction === 'older' ? identity >= previous : identity <= previous)
+      (direction === 'older' ? sequence >= previous : sequence <= previous)
     ) {
       throw invalidProtocolFrame('Session transcript page fragment order changed');
     }
-    previous = identity;
+    previous = sequence;
   }
 }
 
 function decodeSessionTranscriptFragment(
   value: unknown,
-  source: SessionTranscriptPageSource,
   throughSequence: number | null,
 ): SessionTranscriptFragment {
-  const fragment = requireRecord(value, 'Session transcript fragment');
-  const identityKey = source === 'durable' ? 'sequence' : 'messageIndex';
-  const exact = requireExactRecord(fragment, 'Session transcript fragment', [
-    'kind',
-    identityKey,
+  const exact = requireExactRecord(value, 'Session transcript fragment', [
+    'sequence',
     'byteOffset',
     'totalBytes',
-    ...(source === 'durable' ? ['payloadDigest'] : []),
+    'payloadDigest',
     'data',
   ]);
-  if (exact.kind !== source) {
-    throw invalidProtocolFrame('Session transcript fragment source changed');
-  }
   const byteOffset = requireCount(exact.byteOffset, 'Session transcript fragment byte offset');
   const totalBytes = requireCount(exact.totalBytes, 'Session transcript fragment total bytes');
   const data = requireBase64Fragment(exact.data);
@@ -367,24 +268,15 @@ function decodeSessionTranscriptFragment(
   ) {
     throw invalidProtocolFrame('Invalid Session transcript fragment bounds');
   }
-  if (source === 'durable') {
-    const sequence = requireCount(exact.sequence, 'Session transcript message sequence');
-    if (throughSequence === null || sequence > throughSequence) {
-      throw invalidProtocolFrame('Session transcript fragment exceeds watermark');
-    }
-    const payloadDigest =
-      exact.payloadDigest === null
-        ? null
-        : requirePayloadDigest(exact.payloadDigest, 'Session transcript payload digest');
-    return { kind: 'durable', sequence, byteOffset, totalBytes, payloadDigest, data };
+  const sequence = requireCount(exact.sequence, 'Session transcript message sequence');
+  if (throughSequence === null || sequence > throughSequence) {
+    throw invalidProtocolFrame('Session transcript fragment exceeds watermark');
   }
-  return {
-    kind: 'overlay',
-    messageIndex: requireCount(exact.messageIndex, 'Session transcript overlay index'),
-    byteOffset,
-    totalBytes,
-    data,
-  };
+  const payloadDigest =
+    exact.payloadDigest === null
+      ? null
+      : requirePayloadDigest(exact.payloadDigest, 'Session transcript payload digest');
+  return { sequence, byteOffset, totalBytes, payloadDigest, data };
 }
 
 function requirePayloadDigest(value: unknown, label: string): `sha256:${string}` {
@@ -414,20 +306,12 @@ function assertSessionTranscriptPageOutput(
   output: SessionTranscriptPage,
 ): void {
   if (
-    output.source !== input.source ||
     output.direction !== input.direction ||
     output.throughSequence !== input.throughSequence ||
     output.rawBytes > input.maxBytes
   ) {
     throw invalidProtocolFrame('Session transcript page does not match request');
   }
-}
-
-function decodeSource(value: unknown): SessionTranscriptPageSource {
-  if (value !== 'durable' && value !== 'overlay') {
-    throw invalidProtocolFrame('Invalid Session transcript page source');
-  }
-  return value;
 }
 
 function decodeDirection(value: unknown): SessionTranscriptPageDirection {

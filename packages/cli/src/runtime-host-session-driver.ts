@@ -1482,11 +1482,6 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
       sessionId,
       transcript: { kind: 'none' },
     });
-    const draining = (async () => {
-      for await (const _frame of subscription) {
-        // Keep the bounded subscription healthy until turn.stop settles.
-      }
-    })();
     try {
       const turn = subscription.snapshot.rootTurn;
       if (!turn || isTerminalTurn(turn)) return;
@@ -1497,7 +1492,6 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
       });
     } finally {
       await subscription.close().catch(() => undefined);
-      await draining.catch(() => undefined);
     }
   }
 
@@ -1864,16 +1858,11 @@ async function loadCurrentMessages(
     sessionId,
     transcript: { kind: 'tail', maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES },
   });
-  const draining = (async () => {
-    for await (const _frame of subscription) {
-      // The transcript is pinned to the subscription snapshot. Drain newer
-      // frames only to preserve the bounded transport while the read runs.
-    }
-  })();
+  // This read never declares readiness, so the Host holds every frame instead
+  // of queueing them against a consumer that will not take them.
   try {
     return await subscription.loadTranscript(decodeStoredMessage);
   } finally {
     await subscription.close().catch(() => undefined);
-    await draining.catch(() => undefined);
   }
 }

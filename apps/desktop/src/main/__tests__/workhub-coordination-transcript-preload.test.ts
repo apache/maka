@@ -157,7 +157,7 @@ test('WorkHub projects the exact delegated Turn status and bounded assistant res
       async open(_sessionId: string, onBatch: (batch: DesktopTranscriptBatch) => void) {
         const snapshot = {
           sessionId: 'target-session', generation: 'generation-1', hostEpoch: 'epoch-1',
-          durableThrough: 1, overlay: [], hasOlder: false, hasNewer: false,
+          durableThrough: 1, hasOlder: false, hasNewer: false,
         };
         for (const batch of encodeDesktopTranscriptSnapshot({
           ...snapshot, durable: [{ sequence: 1, message: result }],
@@ -219,7 +219,7 @@ test('delegation feedback does not advance the target Session read marker', asyn
         await Promise.resolve();
         const snapshot = {
           sessionId: 'target-session', generation: 'generation-1', hostEpoch: 'epoch-1',
-          durableThrough: 2, overlay: [], hasOlder: false, hasNewer: false,
+          durableThrough: 2, hasOlder: false, hasNewer: false,
         };
         for (const batch of encodeDesktopTranscriptSnapshot({
           ...snapshot,
@@ -292,7 +292,7 @@ test('WorkHub proves a long historical Turn tail before caching its final result
         ) => {
           for (const batch of encodeDesktopTranscriptSnapshot({
             sessionId: 'target-session', generation: 'generation-1', hostEpoch: 'epoch-1',
-            durableThrough: 4, overlay: [], hasOlder, hasNewer, durable,
+            durableThrough: 4, hasOlder, hasNewer, durable,
           }, navigation)) onBatch({ ...batch, deliverySequence: ++deliverySequence });
         };
         emit(undefined, [{ sequence: 4, message: { ...next, id: 'tail', ts: 4 } }], true, false);
@@ -407,7 +407,7 @@ test('WorkHub tail navigation converges through the preload with a fragmented sp
   const sessionId = desktopSessionKey({ hostId: owner.hostId, sessionId: 'coordination' });
   const snapshot = {
     sessionId: 'coordination', generation: 'generation-1', hostEpoch: 'epoch-1',
-    durableThrough: 8, overlay: [], hasOlder: true, hasNewer: false,
+    durableThrough: 8, hasOlder: true, hasNewer: false,
   };
   const message: StoredMessage = {
     type: 'user', id: 'latest-message', turnId: 'latest-turn', ts: 7,
@@ -566,7 +566,7 @@ for (const initial of ['failure-before-ready', 'failure-after-ready', 'cached'] 
           const cached = attempt === 1;
           const snapshot = {
             sessionId: 'coordination', generation: cached ? 'cached:epoch-1' : `live-${attempt}`,
-            hostEpoch: 'epoch-1', durableThrough: 1, overlay: [], hasOlder: false, hasNewer: false,
+            hostEpoch: 'epoch-1', durableThrough: 1, hasOlder: false, hasNewer: false,
           };
           const deliver = (navigation?: number) => {
             for (const batch of encodeDesktopTranscriptSnapshot({
@@ -627,7 +627,7 @@ test('WorkHub fills and trims its transcript window through the reader band', as
     transcripts: {
       async open(_sessionId: string, onBatch: (batch: DesktopTranscriptBatch) => void) {
         for (const batch of encodeDesktopTranscriptSnapshot({
-          ...identity, durableThrough: 4, overlay: [], hasOlder: true, hasNewer: true,
+          ...identity, durableThrough: 4, hasOlder: true, hasNewer: true,
           durable: [row(2, 'turn-a'), row(3, 'turn-b')],
         })) onBatch({ ...batch, deliverySequence: ++deliverySequence });
         return {
