@@ -40,6 +40,10 @@ TUI 和 Desktop 通过同一 Runtime Host catalog/import 路径选择并导入 C
 
 catalog 列出外部来源会话，Maka 任务列表列出已发布的原生 Session。一个刚导入的旧会话未必排在任务列表顶部，因为任务按对话活动时间排序。重复导入既不覆盖旧副本，也不合并历史；不同 Host/Profile 的来源和 Maka Session 空间互不共享，远程 Host 只读自己的来源文件。
 
+## 非目标与取舍
+
+不追踪来源更新或给已导入 Session 增量同步，不增加 freshness 状态机；不迁移旧 digest handoff 产生的普通 Session；不发布被截断的部分历史，也不把来源工具记录当作 Maka 当前运行时的执行事实。结果未知时不增加跨客户端的尝试 ID 或自动对账：用户可以查看已发布副本，也可以明确创建另一份独立副本。
+
 ## Authority 与接缝
 
 | 义务 | 唯一 authority | 对外接缝 |

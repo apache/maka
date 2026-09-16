@@ -40,6 +40,10 @@ TUI and Desktop select one Claude Code, Codex, or OpenCode Session through the s
 
 The external catalog lists source conversations; the Maka task list lists published native Sessions. A newly imported old conversation need not be first in the task list because that list follows conversation activity. Reimport neither overwrites nor merges a previous copy. Different Host/Profile spaces do not share sources or Maka Sessions; a remote Host reads its own source files, never the TUI client's local files.
 
+## Non-goals and tradeoffs
+
+The design does not track source updates or incrementally synchronize an imported Session, add a freshness state machine, migrate ordinary Sessions made by the old digest handoff, publish truncated history, or replay source tool records as Maka runtime facts. An unknown outcome does not introduce a cross-client attempt ID or automatic reconciliation: the user can inspect published copies or explicitly create another independent copy.
+
 ## Authority and seams
 
 | Obligation | Single authority | Public seam |
