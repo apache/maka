@@ -1251,7 +1251,7 @@ export const TUI_COPY_RESOURCES = {
       commands: {
         compact: '세션 컨텍스트 압축',
         context: '최근 요청의 컨텍스트 사용량 보기',
-        exit: 'Maka 종료',
+        exit: '이 TUI 연결 해제, 연결된 Host는 계속 실행',
         goal: '자율 목표 상태 보기',
         graph: 'Graph 모드 보기, 활성화/비활성화 또는 Graph 작업 실행',
         help: '명령어와 단축키 보기',
@@ -1277,7 +1277,7 @@ export const TUI_COPY_RESOURCES = {
         userCommand: '  !<command> — 사용자만 볼 수 있는 셸 명령어 한 번 실행',
         keybindingsHeading: '단축키',
         keybindings: [
-          '  Ctrl+O — 모든 도구 출력 펼치기/접기',
+          '  Ctrl+O — 상세 기록 열기 (안에서 Ctrl+E로 상세 전환)',
           '  Ctrl+T — 보기의 모든 사고 블록 펼치기/접기',
           '  터미널이나 트랙패드로 대화 기록 스크롤',
           '  Enter (턴 실행 중) — 실행 중인 턴에 메시지 주입',

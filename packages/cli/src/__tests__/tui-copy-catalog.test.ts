@@ -21,6 +21,8 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { formatUiMessage, UI_LOCALES, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 import { getTuiPickerCopy, onboardingFailureMessage } from '../pi-tui-pickers.js';
+import { getTuiPrimaryGuidance } from '../tui-primary-guidance.js';
+import { sessionStatusBadge } from '../tui-session-status.js';
 import { TUI_COPY_RESOURCES } from '../tui-copy-catalog.js';
 
 const MESSAGE_VALUES = {
@@ -54,13 +56,43 @@ const MESSAGE_VALUES = {
 } as const;
 
 describe('TUI copy resources', () => {
+  const KO_DIRECT_DOMAINS = ['mcp-status', 'pickers', 'primary-guidance', 'session-status'];
+
   test('registers every domain without a locale-specific getter branch', () => {
     for (const [domain, catalog] of Object.entries(TUI_COPY_RESOURCES)) {
       for (const locale of ['en', 'zh-CN', 'zh-TW'] as const) {
         assert.ok(catalog[locale], `${domain}/${locale}`);
       }
+      if (KO_DIRECT_DOMAINS.includes(domain)) {
+        assert.ok((catalog as Record<string, unknown>).ko, `${domain}/ko direct entry`);
+      }
       assert.ok(resolveUiMessageCatalog(catalog as never).ko, `${domain}/ko`);
     }
+  });
+
+  test('ships direct Korean copy for its four domains, not English fallback', () => {
+    const mcpKo = (TUI_COPY_RESOURCES['mcp-status'] as { ko?: { title?: string } }).ko;
+    assert.equal(mcpKo?.title, 'MCP 서버');
+
+    assert.equal(getTuiPickerCopy('ko').modelPickerTitle, '모델 선택');
+    assert.equal(getTuiPickerCopy('ko').searchLabel, '검색');
+
+    const guidanceKo = getTuiPrimaryGuidance('ko');
+    assert.equal(guidanceKo.commands.exit, '이 TUI 연결 해제, 연결된 Host는 계속 실행');
+    assert.ok(
+      guidanceKo.help.keybindings.some((line) => line.includes('Ctrl+O — 상세 기록 열기')),
+      'ko keybindings describe the Ctrl+O transcript reader contract',
+    );
+
+    assert.equal(
+      sessionStatusBadge({ status: 'running', runningTurnIds: ['turn-1'] }, 'ko'),
+      '실행 중',
+    );
+    assert.equal(
+      sessionStatusBadge({ status: 'blocked', blockedReason: 'NO_REAL_CONNECTION' }, 'ko'),
+      '연결 필요',
+    );
+    assert.equal(sessionStatusBadge({ status: 'aborted' }, 'ko'), '중지됨');
   });
 
   test('keeps translated coverage, variables, and ICU formatting aligned with English', () => {
