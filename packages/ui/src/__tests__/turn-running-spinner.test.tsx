@@ -141,3 +141,49 @@ test('states the elapsed once, in the process header rather than the footer meta
   assert.match(document.querySelector('.maka-processing-summary')?.textContent ?? '', /Worked for 3m 33s/);
   assert.equal(document.querySelector('.maka-turn-footer-meta')?.textContent, 'fixture-model');
 });
+
+test('does not render a live running status beside a recorded failed outcome', () => {
+  const turn: TurnViewModel = {
+    turnId: 'turn-1',
+    status: 'failed',
+    statusSource: 'recorded',
+    tools: [],
+    notes: [],
+    startedAt: 1,
+    timeline: [],
+  };
+  const markup = renderToStaticMarkup(
+    <LocaleProvider locale="en">
+      <TurnView
+        turn={turn}
+        failedReasonLabel="The turn failed"
+        liveStreaming={{ runningStatus: true }}
+      />
+    </LocaleProvider>,
+  );
+  const { document } = parseHTML(markup);
+
+  assert.ok(document.querySelector('.maka-turn-failed-banner'));
+  assert.equal(document.querySelector('.maka-turn-processing'), null);
+});
+
+test('keeps live running status for an inferred completed turn', () => {
+  // Active legacy turns without a durable turn_state are materialized as
+  // inferred completed, so status alone cannot be used as the terminal fence.
+  const turn: TurnViewModel = {
+    turnId: 'turn-1',
+    status: 'completed',
+    statusSource: 'inferred',
+    tools: [],
+    notes: [],
+    startedAt: 1,
+    timeline: [],
+  };
+  const markup = renderToStaticMarkup(
+    <LocaleProvider locale="en">
+      <TurnView turn={turn} liveStreaming={{ runningStatus: true }} />
+    </LocaleProvider>,
+  );
+
+  assert.ok(parseHTML(markup).document.querySelector('.maka-turn-processing'));
+});

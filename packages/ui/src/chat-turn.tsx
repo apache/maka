@@ -381,7 +381,7 @@ function MessageCopyButton(props: {
  * "message stack + tools panel at end" layout so the user sees the
  * narrative of "ask → tools fired → answer" as one work unit.
  */
-export const TurnView = memo(function TurnView(props: {
+export const TurnView = memo(function TurnView(inputProps: {
   turn: TurnViewModel;
   /** Optional identity repeated beside each prompt and answer in this turn. */
   messageHeader?: ReactNode;
@@ -476,7 +476,15 @@ export const TurnView = memo(function TurnView(props: {
 }) {
   const locale = useUiLocale();
   const copy = getConversationCopy(locale).messages;
-  const { turn } = props;
+  const { turn } = inputProps;
+  // Live state is a separate projection and may lag the durable transcript.
+  // Once that transcript records a terminal outcome, normalize the input so
+  // every downstream surface uses the durable state. Inferred `completed`
+  // remains eligible because active legacy turns use it.
+  const props =
+    turn.statusSource === 'recorded' && turn.status !== 'running'
+      ? { ...inputProps, liveStreaming: undefined }
+      : inputProps;
   // Derive disclosure entries and reply identity together, only when this
   // turn's timeline changes. Rendering and copy share the original reply item.
   const { entries: foldedTimeline, finalReply } = useMemo(() => foldTimeline(turn.timeline), [turn.timeline]);
@@ -493,7 +501,7 @@ export const TurnView = memo(function TurnView(props: {
   // internal operations do not carry enough evidence for a recovery action.
   const showAssistantMessage =
     turn.timeline.length > 0 ||
-    !!props.liveStreaming ||
+    !!inputProps.liveStreaming ||
     (turn.user !== undefined && turn.statusSource === 'recorded' && turn.status !== 'running');
   const runningToolLabel = computerRunningLabel(turn.tools, locale);
   const conversationSegments = useMemo(
