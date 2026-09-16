@@ -21,6 +21,10 @@
       "tests": 1,
       "electron": "bounded paging crosses renderer, preload and Host transcript storage; the return-to-tail assertion also uses a real pointer hit-test"
     },
+    "plan-execution-lifecycle.spec.ts": {
+      "tests": 1,
+      "electron": "a Plan execution's progress is written by a live backend Turn and Stop settles it through the real Host turn lifecycle; the interrupted execution must then be read back by a fresh renderer over preload/IPC after a complete Electron restart, with its per-step statuses intact, before the resumed Turn can finish it"
+    },
     "proxy-password-editing.spec.ts": {
       "tests": 1,
       "electron": "the password never reaches the renderer; only the Host can report passwordConfigured and authenticate offline"
