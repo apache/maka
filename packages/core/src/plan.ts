@@ -37,7 +37,28 @@ export const PLAN_STEP_TITLE_MAX_CHARS = 30;
 
 const PLAN_ENTITY_ID_PATTERN = new RegExp(`^[A-Za-z0-9_-]{1,${PLAN_ENTITY_ID_MAX_CHARS}}$`);
 const PLAN_TEXT_ENCODER = new TextEncoder();
-const PLAN_LINE_BREAK_PATTERN = /[\r\n\u0085\u2028\u2029]/;
+
+/**
+ * Every character that ends a line for a reader or a renderer: LINE TABULATION
+ * (`\u000b`), FORM FEED (`\u000c`), `\r`, `\n`, NEL (`\u0085`), LINE SEPARATOR
+ * (`\u2028`) and PARAGRAPH SEPARATOR (`\u2029`). Unicode assigns the vertical
+ * tab and the form feed the mandatory-break class (`Line_Break=BK`) that `\n`
+ * carries, and CSS treats a form feed as a segment break, so a title holding
+ * one splits in the execution request exactly as a `\n` title does.
+ *
+ * The detector and the normalizer are built from this one list: a break they
+ * disagreed about would be a title that passes validation and then renders on
+ * two lines.
+ */
+const PLAN_LINE_BREAK_CHARS = '\u000b\u000c\r\n\u0085\u2028\u2029';
+const PLAN_LINE_BREAK_PATTERN = new RegExp(`[${PLAN_LINE_BREAK_CHARS}]`);
+// A `\r\n` pair is one break, not two: matching the pair first, before the
+// single-character alternative, is what keeps the flattened text from gaining a
+// double space at every CRLF.
+const PLAN_LINE_BREAK_RUN_PATTERN = new RegExp(
+  `\\s*(?:\\r\\n|[${PLAN_LINE_BREAK_CHARS}])\\s*`,
+  'g',
+);
 
 export function isCanonicalPlanEntityId(value: string): boolean {
   return PLAN_ENTITY_ID_PATTERN.test(value);
@@ -54,8 +75,7 @@ export function isPlanTextWithinLimit(value: string, maxBytes = PLAN_TEXT_MAX_BY
 /**
  * A Plan step title is rendered on one line — in the execution request the model
  * receives, and in the panel — so a break inside it splits one step into two
- * lines. `\r`, NEL, LINE SEPARATOR and PARAGRAPH SEPARATOR end a line for a
- * reader or a renderer exactly as `\n` does, so they count as a break too.
+ * lines. See `PLAN_LINE_BREAK_CHARS` for what counts as a break.
  */
 export function planTextHasLineBreak(value: string): boolean {
   return PLAN_LINE_BREAK_PATTERN.test(value);
@@ -66,7 +86,7 @@ export function planTextHasLineBreak(value: string): boolean {
  * whitespace around it, into a single space.
  */
 export function singleLinePlanText(value: string): string {
-  return value.replace(/\s*(?:\r\n|[\r\n\u0085\u2028\u2029])\s*/g, ' ').trim();
+  return value.replace(PLAN_LINE_BREAK_RUN_PATTERN, ' ').trim();
 }
 
 export interface PlanStepDefinition {

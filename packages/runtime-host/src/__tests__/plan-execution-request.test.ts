@@ -128,9 +128,11 @@ test('a step title persisted before the single-line rule is rendered on one line
     assert.equal(submitted.event.type, 'plan_submitted');
     if (submitted.event.type !== 'plan_submitted') throw new Error('Plan was not submitted');
 
-    // A row the current write layer cannot produce any more: the store reads the
-    // persisted envelope, so only the title carries the line break.
+    // Rows the current write layer cannot produce any more: the store reads the
+    // persisted envelope, so only the titles carry the breaks — one `\n`, and one
+    // form feed, which splits a line for a renderer without being a newline.
     rewritePersistedStepTitle(fixture, session.id, 'inspect', 'Inspect\nthe caller');
+    rewritePersistedStepTitle(fixture, session.id, 'patch', 'Land\u000cthe fix');
 
     const approved = await transition.coordinator.handlers['plan.turn.start'](
       {
@@ -148,6 +150,7 @@ test('a step title persisted before the single-line rule is rendered on one line
     const request = transition.requests[0];
     assert.ok(request);
     assert.match(request.text, /^- inspect \[pending\] Inspect the caller$/m);
+    assert.match(request.text, /^- patch \[pending\] Land the fix$/m);
     // One line per step: a break inside a title must not read as a second step.
     assert.deepEqual(
       request.text.split('\n').filter((line) => line.startsWith('- ')),

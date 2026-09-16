@@ -62,6 +62,21 @@ describe('Plan Mode tool surface', () => {
       }).success,
       false,
     );
+    // A vertical tab and a form feed split a line without being `\n`.
+    for (const lineBreak of ['\u000b', '\u000c']) {
+      const controlBreak = schema.safeParse({
+        title: 'Plan',
+        steps: [
+          { id: 'inspect', title: `Inspect${lineBreak}the code`, description: 'Read files.' },
+        ],
+      }) as { success: boolean; error?: { issues: Array<{ message: string }> } };
+      assert.equal(
+        controlBreak.success,
+        false,
+        `${JSON.stringify(lineBreak)} in a title is refused`,
+      );
+      assert.match(controlBreak.error?.issues[0]?.message ?? '', /must be a single line/);
+    }
     // Only the title is held to one line: a description may carry a break.
     assert.equal(
       schema.safeParse({
