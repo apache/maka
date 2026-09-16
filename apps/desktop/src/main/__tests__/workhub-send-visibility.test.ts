@@ -658,9 +658,57 @@ test('WorkHub defaults to follow-up and moves each message into its admitted suc
     steering: [], followup: entries.map((entry) => entry.content.text), followupEntries: entries }));
   await act(() => h.emit({ type: 'message_admission', id: 'first-admission', turnId: 'successor', messageId: first, ts: 2, outcome: 'admitted' }));
   assert.deepEqual(h.controller.messageQueue.entries.map((entry) => entry.messageId), [second]);
+  await act(() => {
+    h.admit('successor');
+    h.emit({ type: 'text_delta', id: 'successor-output', turnId: 'successor', messageId: 'successor-answer', ts: 3, text: 'Responding to first follow-up' });
+  });
+  assert.equal(h.controller.liveTurn?.steps[0]?.text?.text, 'Responding to first follow-up');
+  assert.deepEqual(h.controller.transientMessages.map(({ id, text, attachments, hostTurnId, transientPlacement, pendingSteering }) =>
+    ({ id, text, attachments, hostTurnId, transientPlacement, pendingSteering })), [{
+    id: first, text: 'first follow-up', attachments, hostTurnId: 'successor', transientPlacement: 'current_turn', pendingSteering: false,
+  }], 'the admitted prompt must accompany its live answer before transcript publication');
+  await act(() => h.emit({ type: 'queue_update', id: 'remaining', turnId: 'successor', ts: 3,
+    steering: [], followup: ['second follow-up'], followupEntries: entries.slice(1) }));
+  assert.equal(h.controller.transientMessages[0]?.id, first, 'later queue snapshots cannot retire an admitted prompt');
   await act(() => h.publish([{ type: 'user', id: first, turnId: 'successor', text: 'first follow-up', attachments, ts: 2 }]));
   assert.deepEqual(h.controller.transientMessages, []);
   assert.deepEqual(h.controller.messageQueue.entries.map((entry) => entry.messageId), [second]);
+  h.latestRead.resolve();
+});
+
+test('restored follow-ups transfer edited Host content once, regardless of transcript arrival order', async () => {
+  for (const transcriptFirst of [false, true]) {
+    const h = await mountController();
+    const attachments: AttachmentRef[] = [{ kind: 'doc', name: 'brief.txt', mimeType: 'text/plain', bytes: 4, ref: { kind: 'workspace_file', relativePath: 'brief.txt' } }];
+    const entry = { entryId: 'restored-entry', messageId: 'restored-message', placement: 'next_turn' as const, state: 'queued' as const,
+      content: { text: 'model-facing envelope', displayText: 'edited follow-up', attachments } };
+    await act(() => {
+      h.emit({ type: 'queue_update', id: 'restored', turnId: 'predecessor', ts: 1, steering: [], followup: ['old follow-up'],
+        followupEntries: [{ ...entry, content: { text: 'old follow-up' } }] });
+      h.emit({ type: 'queue_update', id: 'edited', turnId: 'predecessor', ts: 2, steering: [], followup: [entry.content.text], followupEntries: [entry] });
+    });
+    const publish = () => h.publish([{ type: 'user', id: entry.messageId, turnId: 'successor', ts: 3, ...entry.content }]);
+    const admit = () => h.emit({ type: 'message_admission', id: 'admitted', turnId: 'successor', messageId: entry.messageId, ts: 3, outcome: 'admitted' });
+    if (transcriptFirst) await act(publish);
+    await act(() => { admit(); admit(); });
+    assert.deepEqual(h.controller.messageQueue.entries, []);
+    assert.deepEqual(h.controller.transientMessages.map(({ id, text, attachments, hostTurnId }) => ({ id, text, attachments, hostTurnId })),
+      transcriptFirst ? [] : [{ id: entry.messageId, text: 'edited follow-up', attachments, hostTurnId: 'successor' }]);
+    if (!transcriptFirst) await act(publish);
+    await act(admit);
+    assert.deepEqual(h.controller.transientMessages, [], 'late admission cannot recreate a published user row');
+    h.latestRead.resolve();
+    cleanupFakeDom();
+  }
+});
+
+test('withdrawing a queued follow-up never transfers it into the conversation', async () => {
+  const h = await mountController();
+  const entry = { entryId: 'queued-entry', messageId: 'queued-message', placement: 'next_turn' as const, state: 'queued' as const, content: { text: 'withdraw me' } };
+  await act(() => h.emit({ type: 'queue_update', id: 'queued', turnId: 'active', ts: 1, steering: [], followup: ['withdraw me'], followupEntries: [entry] }));
+  await act(() => h.emit({ type: 'message_admission', id: 'retracted', turnId: 'active', messageId: entry.messageId, ts: 2, outcome: 'retracted' }));
+  assert.deepEqual(h.controller.messageQueue.entries, []);
+  assert.deepEqual(h.controller.transientMessages, []);
   h.latestRead.resolve();
 });
 
