@@ -780,6 +780,148 @@ describe('CodexSessionAdapter', () => {
     });
   });
 
+  test('an unreadable newest generation falls through to the rollout scan', async () => {
+    await withCodexHome(async (codexHome) => {
+      // The last bump froze `state_5.sqlite`; `state_6.sqlite` is the live one,
+      // so a read can fail while Codex is rewriting it. `codex-new` was created
+      // after the bump, so it exists only in the unreadable generation and in
+      // its own rollout.
+      const staleRollout = await seedMinimalRollout(
+        codexHome,
+        'codex-stale',
+        false,
+        '/workspace',
+        'stale rollout title',
+      );
+      await seedMinimalRollout(codexHome, 'codex-new', false, '/workspace', 'new rollout title');
+      await seedStateDatabase(codexHome, [
+        {
+          id: 'codex-stale',
+          rolloutPath: staleRollout,
+          cwd: '/workspace',
+          name: 'stale row title',
+          createdAtMs: 1000,
+          updatedAtMs: 1000,
+          archived: false,
+          source: 'cli',
+        },
+      ]);
+      await writeFile(join(codexHome, 'state_6.sqlite'), 'not a sqlite database');
+
+      const adapter = new CodexSessionAdapter({ codexHome });
+      const page = await adapter.listSessionPage({ limit: 10 });
+      // Settling for the older generation would answer with `codex-stale`
+      // alone and drop `codex-new` without a word. Only the rollout scan is
+      // still known to cover both.
+      assert.deepEqual(page.items.map(({ summary }) => summary.id).sort(), [
+        'codex-new',
+        'codex-stale',
+      ]);
+      // The titles come off the rollout heads, which is what proves the
+      // `state_5.sqlite` page — whose row says "stale row title" — did not
+      // answer this call.
+      assert.deepEqual(page.items.map(({ summary }) => summary.name).sort(), [
+        'new rollout title',
+        'stale rollout title',
+      ]);
+    });
+  });
+
+  test('an unreadable older generation leaves the newest one in charge', async () => {
+    await withCodexHome(async (codexHome) => {
+      const rolloutPath = await seedMinimalRollout(
+        codexHome,
+        'codex-live',
+        false,
+        '/workspace',
+        'rollout title',
+      );
+      await seedStateDatabase(
+        codexHome,
+        [
+          {
+            id: 'codex-live',
+            rolloutPath,
+            cwd: '/workspace',
+            name: 'live row title',
+            createdAtMs: 2000,
+            updatedAtMs: 2000,
+            archived: false,
+            source: 'cli',
+          },
+        ],
+        'state_6.sqlite',
+      );
+      await writeFile(join(codexHome, 'state_5.sqlite'), 'not a sqlite database');
+
+      const adapter = new CodexSessionAdapter({ codexHome });
+      const page = await adapter.listSessionPage({ limit: 10 });
+      // A stale generation is never consulted once a newer one answers, so its
+      // read failure must not push this call onto the coarser rollout scan.
+      assert.deepEqual(
+        page.items.map(({ summary }) => summary.name),
+        ['live row title'],
+      );
+    });
+  });
+
+  test('a text-shaped ordering value cannot strand the rest of the catalog', async () => {
+    await withCodexHome(async (codexHome) => {
+      const rows: StateRow[] = [];
+      // The healthy rows were updated well after `codex-text` was created, so
+      // the JS fallback chain below (which skips the unparseable `updated_at_ms`
+      // and lands on `created_at_ms`) computes a key far below theirs.
+      for (const [id, updatedAtMs] of [
+        ['codex-text', 1000],
+        ['codex-a', 5_000_000],
+        ['codex-b', 4_000_000],
+      ] as const) {
+        rows.push({
+          id,
+          rolloutPath: await seedMinimalRollout(codexHome, id, false, '/workspace', id),
+          cwd: '/workspace',
+          name: id,
+          createdAtMs: 1000,
+          updatedAtMs,
+          archived: false,
+          source: 'cli',
+        });
+      }
+      await seedStateDatabase(codexHome, rows);
+      // `updated_at_ms` is declared INTEGER, but SQLite keeps a value it cannot
+      // convert losslessly with its original type, so anything Codex writes that
+      // does not parse as a number lands as TEXT. SQLite then orders that key
+      // above every number and never applies the `* 1000` branch to it.
+      const { DatabaseSync } = await import('node:sqlite');
+      const database = new DatabaseSync(join(codexHome, 'state_5.sqlite'));
+      try {
+        database
+          .prepare('UPDATE threads SET updated_at_ms = ? WHERE id = ?')
+          .run('2026-08-08T00:00:00Z', 'codex-text');
+      } finally {
+        database.close();
+      }
+
+      const adapter = new CodexSessionAdapter({ codexHome });
+      const seen: string[] = [];
+      let cursor: string | undefined;
+      // Bounded, so a page that fails to advance fails here instead of hanging.
+      for (let page = 0; page < 8; page += 1) {
+        const result = await adapter.listSessionPage({ limit: 1, ...(cursor ? { cursor } : {}) });
+        seen.push(...result.items.map(({ summary }) => summary.id));
+        if (!result.hasMore) break;
+        cursor = result.items.at(-1)?.nextCursor;
+        assert.ok(cursor, 'a page that reports hasMore must carry a next cursor');
+      }
+      // The cursor has to name the position the query ordered by. Recomputing
+      // the key in JS put `codex-text` at 1000 while the SQL key it was ordered
+      // by is text, so the next page asked for `key < 1000`, matched nothing,
+      // and reported the catalog exhausted — the other two Conversations were
+      // dropped without an error.
+      assert.deepEqual(seen.sort(), ['codex-a', 'codex-b', 'codex-text']);
+    });
+  });
+
   test('rejects corrupt interior records, tolerates a torn tail, and bounds scanned bytes', async () => {
     await withCodexHome(async (codexHome) => {
       const fixture = await readFile(CURRENT_FIXTURE, 'utf8');

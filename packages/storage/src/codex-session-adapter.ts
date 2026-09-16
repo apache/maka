@@ -86,6 +86,7 @@ interface CodexThreadRow {
   updated_at?: unknown;
   archived?: unknown;
   source?: unknown;
+  sort_key?: unknown;
 }
 
 interface CodexThreadQuery {
@@ -226,7 +227,21 @@ export class CodexSessionAdapter implements ExternalSessionAdapter {
     }
     if (!keyset) {
       for (const dbPath of await codexStateDbsNewestFirst(this.codexHome)) {
-        const page = await this.readStateCatalogKeysetPage(dbPath, query, keyset, limit);
+        let page: ExternalSessionCatalogPage | undefined;
+        try {
+          page = await this.readStateCatalogKeysetPage(dbPath, query, keyset, limit);
+        } catch {
+          // Stop the whole ladder, not just this generation. A `state_*.sqlite`
+          // Codex is rewriting can be unreadable this instant, and the answer
+          // is not to settle for an older one: a lower generation is the
+          // snapshot frozen at the last bump, so everything created since is
+          // missing from it. Continuing would turn a transient read failure
+          // into a quietly truncated list. The rollout scan below is the one
+          // source still known to be complete, so the page belongs to it.
+          // The `d:` cursor branch above stays loud — a cursor names its
+          // generation and must fail rather than switch corpora.
+          break;
+        }
         if (page !== undefined) return page;
       }
     }
@@ -906,11 +921,22 @@ function codexThreadQuery(
   const orderColumns = ['updated_at_ms', 'updated_at', 'created_at_ms', 'created_at'].filter(
     (column) => columns.has(column),
   );
-  const orderValues = orderColumns.map((column) =>
-    column.endsWith('_ms')
-      ? column
-      : `(CASE WHEN ${column} >= 1000000000000 THEN ${column} ELSE ${column} * 1000 END)`,
-  );
+  // One authority for the ordering key. It is computed here, selected as
+  // `sort_key`, and read straight back off the row to build the cursor, so the
+  // position a cursor names is by construction the position the query ordered
+  // by. Recomputing it in JS let the two drift on a stored TEXT value: SQL
+  // keeps the text as the key and orders it above every number, while the JS
+  // fallback chain skips that column and lands on a different one. A TEXT key
+  // never satisfies a numeric comparison, so the disagreement did not surface
+  // as a duplicate — it ended the traversal at that page and dropped every
+  // Conversation after it without an error. Casting first also keeps the key
+  // numeric, which is what the cursor's 8-byte encoding requires.
+  const orderValues = orderColumns.map((column) => {
+    const numeric = `CAST(${column} AS REAL)`;
+    return column.endsWith('_ms')
+      ? numeric
+      : `(CASE WHEN ${numeric} >= 1000000000000 THEN ${numeric} ELSE ${numeric} * 1000 END)`;
+  });
   const orderExpression = orderValues.length > 0 ? `coalesce(${orderValues.join(', ')}, 0)` : '0';
   if (keyset) {
     where.push(`(${orderExpression} < ? OR (${orderExpression} = ? AND id < ?))`);
@@ -918,7 +944,7 @@ function codexThreadQuery(
   }
   return {
     sql:
-      `SELECT ${wanted.join(', ')} FROM threads` +
+      `SELECT ${[...wanted, `${orderExpression} AS sort_key`].join(', ')} FROM threads` +
       (where.length > 0 ? ` WHERE ${where.join(' AND ')}` : '') +
       ` ORDER BY ${orderExpression} DESC, id DESC`,
     params,
@@ -926,13 +952,10 @@ function codexThreadQuery(
 }
 
 function codexRowSortTimestamp(row: CodexThreadRow): number {
-  return (
-    finiteNumber(row.updated_at_ms) ??
-    normalizeEpochMs(row.updated_at) ??
-    finiteNumber(row.created_at_ms) ??
-    normalizeEpochMs(row.created_at) ??
-    0
-  );
+  // Reads the key the query ordered by rather than recomputing it. The SQL
+  // expression is the single authority; `sort_key` is coalesced, so the only
+  // way to land on the fallback is a row shape the query cannot produce.
+  return finiteNumber(row.sort_key) ?? 0;
 }
 
 function finiteNumber(value: unknown): number | undefined {
