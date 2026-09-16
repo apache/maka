@@ -23,16 +23,27 @@
 // these tests prove it by swapping the path between validation and the write
 // and asserting the bytes landed on the original inode, never the replacement.
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, realpath, rename, rm, symlink, writeFile } from 'node:fs/promises';
+import {
+  mkdtemp,
+  open,
+  readFile,
+  realpath,
+  rename,
+  rm,
+  symlink,
+  writeFile,
+  type FileHandle,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, test } from 'node:test';
+import { afterEach, describe, test, type TestContext } from 'node:test';
 
 import {
   compareAndDeleteEntry,
   deleteCapturedTombstone,
   hostVisibilityAfterWrite,
   openStableTarget,
+  readModifyWriteThroughHandle,
   restoreTombstoneNoReplace,
   writeThroughHandle,
   type StableWriteFailure,
@@ -54,6 +65,108 @@ async function captureIdentity(path: string): Promise<{ dev: string; ino: string
   const s = await stat(path, { bigint: true });
   return { dev: String(s.dev), ino: String(s.ino) };
 }
+
+/** Limit actual descriptor writes, including the old string overload. */
+function limitWriteSize(t: TestContext, handle: FileHandle, maxBytes: number): void {
+  const write = handle.write.bind(handle);
+  t.mock.method(
+    handle,
+    'write',
+    async (
+      data: string | Uint8Array,
+      offsetOrPosition: number,
+      lengthOrEncoding: number | BufferEncoding,
+      position?: number,
+    ) => {
+      if (typeof data === 'string') {
+        const bytes = Buffer.from(data, lengthOrEncoding as BufferEncoding);
+        return write(bytes, 0, Math.min(bytes.length, maxBytes), offsetOrPosition);
+      }
+      return write(
+        data,
+        offsetOrPosition,
+        Math.min(lengthOrEncoding as number, maxBytes),
+        position,
+      );
+    },
+  );
+}
+
+describe('complete descriptor writes', () => {
+  test('short writes preserve every UTF-8 byte after reading an existing file', async (t) => {
+    const cwd = await temporaryDirectory('maka-short-write-');
+    const path = join(cwd, 'file.txt');
+    const original = 'original content longer than replacement';
+    const replacement = 'A中🦊éZ';
+    await writeFile(path, original);
+    const handle = await open(path, 'r+');
+    try {
+      limitWriteSize(t, handle, 2);
+      await readModifyWriteThroughHandle(handle, (content) => {
+        assert.equal(content, original);
+        return replacement;
+      });
+    } finally {
+      await handle.close();
+    }
+    assert.deepEqual(await readFile(path), Buffer.from(replacement));
+  });
+
+  test('a zero-byte write fails with an unknown outcome instead of reporting success', async (t) => {
+    const cwd = await temporaryDirectory('maka-zero-write-');
+    const path = join(cwd, 'file.txt');
+    const handle = await open(path, 'w+');
+    try {
+      limitWriteSize(t, handle, 0);
+      await assert.rejects(
+        writeThroughHandle(handle, 'content'),
+        (error: StableWriteFailure) => error.code === 'outcome_unknown',
+      );
+    } finally {
+      await handle.close();
+    }
+    assert.equal((await readFile(path)).length, 0);
+  });
+
+  test('a disk error after a short write reports the partial mutation as unknown', async (t) => {
+    const cwd = await temporaryDirectory('maka-short-write-error-');
+    const path = join(cwd, 'file.txt');
+    const handle = await open(path, 'w+');
+    try {
+      limitWriteSize(t, handle, 2);
+      const write = handle.write.bind(handle);
+      let calls = 0;
+      t.mock.method(handle, 'write', (...args: Parameters<typeof handle.write>) => {
+        calls += 1;
+        if (calls > 1) throw Object.assign(new Error('Disk full'), { code: 'ENOSPC' });
+        return write(...args);
+      });
+      await assert.rejects(
+        writeThroughHandle(handle, 'abcdef'),
+        (error: StableWriteFailure) => error.code === 'outcome_unknown',
+      );
+    } finally {
+      await handle.close();
+    }
+    assert.equal(await readFile(path, 'utf8'), 'ab');
+  });
+
+  test('an empty replacement truncates an existing file without writing', async (t) => {
+    const cwd = await temporaryDirectory('maka-empty-write-');
+    const path = join(cwd, 'file.txt');
+    await writeFile(path, 'original');
+    const handle = await open(path, 'r+');
+    try {
+      t.mock.method(handle, 'write', () => {
+        throw new Error('Empty content needs no write');
+      });
+      await writeThroughHandle(handle, '');
+    } finally {
+      await handle.close();
+    }
+    assert.equal(await readFile(path, 'utf8'), '');
+  });
+});
 
 describe('fd-pinned mutation primitive', () => {
   test('a write survives a path swap between validation and the write', async () => {

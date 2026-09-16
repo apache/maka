@@ -164,11 +164,25 @@ async function openExistingNoTruncate(path: string): Promise<FileHandle> {
  * they surface as `outcome_unknown` — the file's state is genuinely unknown.
  */
 export async function writeThroughHandle(handle: FileHandle, content: string): Promise<void> {
+  const bytes = Buffer.from(content, 'utf8');
   try {
     await handle.truncate(0);
     // Position 0 explicitly: a prior readFile leaves the fd position at EOF,
     // and a positionless write would create a NUL-prefixed sparse file.
-    await handle.write(content, 0, 'utf8');
+    // A successful write may consume only part of the buffer. Keep byte
+    // offsets (not string indices) so a short write inside UTF-8 is lossless.
+    let offset = 0;
+    while (offset < bytes.length) {
+      const { bytesWritten } = await handle.write(bytes, offset, bytes.length - offset, offset);
+      if (bytesWritten === 0) {
+        throw new StableWriteFailure(
+          'outcome_unknown',
+          'The write stopped making progress; the file may be truncated. ' +
+            'Re-read the file before writing to it again.',
+        );
+      }
+      offset += bytesWritten;
+    }
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     if (code === 'ENOSPC' || code === 'EIO' || code === 'EDQUOT' || code === 'EFBIG') {
