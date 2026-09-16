@@ -442,20 +442,25 @@ export function createMemorySessionStore(
     },
     lookupExternalSessionImports: async (adapterId, sourceIds, limit) =>
       read((s) =>
-        sourceIds.map((sourceSessionId) => {
+        sourceIds.flatMap((sourceSessionId) => {
           const matches = [...headers(s).values()].filter(
             (h) =>
+              h.header.transcriptLedgerVersion === 1 &&
               h.header.externalOrigin?.adapterId === adapterId &&
               h.header.externalOrigin.sourceSessionId === sourceSessionId,
           );
-          return {
-            sourceSessionId,
-            livePublishedImportCount: matches.length,
-            recentSessionIds: matches
-              .sort((x, y) => y.header.createdAt - x.header.createdAt)
-              .slice(0, limit)
-              .map((h) => h.header.id),
-          };
+          return matches.length === 0
+            ? []
+            : [
+                {
+                  sourceSessionId,
+                  livePublishedImportCount: matches.length,
+                  recentSessionIds: matches
+                    .sort((x, y) => y.header.createdAt - x.header.createdAt)
+                    .slice(0, limit)
+                    .map((h) => h.header.id),
+                },
+              ];
         }),
       ),
     createSubagent: async (input, initial) =>

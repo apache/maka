@@ -659,6 +659,34 @@ for (const backend of ['Local', 'Memory'] as const) {
       }
     });
   });
+  test(backend + ': external import lookup excludes staged Sessions', async () => {
+    await withProvider(make(), async ({ sessionStore: s }, root) => {
+      const createImport = (sourceSessionId: string) =>
+        s.createImportedSession(sessionInput(root), [], {
+          adapterId: 'fake',
+          sourceSessionId,
+        });
+      const published = await createImport('shared-source');
+      await createImport('shared-source');
+      await createImport('staged-only');
+      await s.updateHeader(published.id, { transcriptLedgerVersion: 1 });
+
+      assert.deepEqual(
+        await s.lookupExternalSessionImports(
+          'fake',
+          ['shared-source', 'staged-only', 'missing'],
+          8,
+        ),
+        [
+          {
+            sourceSessionId: 'shared-source',
+            livePublishedImportCount: 1,
+            recentSessionIds: [published.id],
+          },
+        ],
+      );
+    });
+  });
   test(
     backend + ': catalog pagination visits mixed-case tied IDs exactly once in Local order',
     async () => {
