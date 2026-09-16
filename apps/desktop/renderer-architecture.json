@@ -590,7 +590,7 @@
         "nonTriviaTokens": 2155
       },
       "src/renderer/app-shell-session-events.ts": {
-        "importDeclarations": 2,
+        "importDeclarations": 3,
         "bridgePaths": {},
         "environmentCapabilities": {
           "window.setTimeout": 1
@@ -603,14 +603,15 @@
           "createAppShellSessionEventHandlers"
         ],
         "dependencyPaths": {
+          "../shared/runtime-host-identity.js": 1,
           "./application/contracts/message-queue-projection.js": 1,
           "./features/conversation/index.js": 1,
           "./locales/conversation-copy.js": 1,
           "./model-connection-errors.js": 1,
           "@maka/ui": 1
         },
-        "importSpecifiers": 7,
-        "nonTriviaTokens": 2687
+        "importSpecifiers": 8,
+        "nonTriviaTokens": 2726
       },
       "src/renderer/app-shell-session-start-actions.ts": {
         "importDeclarations": 2,
@@ -860,8 +861,8 @@
           "@maka/ui": 1,
           "react": 1
         },
-        "importSpecifiers": 100,
-        "nonTriviaTokens": 13279
+        "importSpecifiers": 101,
+        "nonTriviaTokens": 13303
       },
       "src/renderer/use-app-shell-composer-quotes.ts": {
         "importDeclarations": 2,

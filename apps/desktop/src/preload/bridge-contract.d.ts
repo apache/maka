@@ -1557,6 +1557,8 @@ export interface MakaBridge {
       kind: 'completed' | 'errored';
       title?: string;
       body?: string;
+      /** Originating host that authorizes the banner content (#4981). */
+      hostId?: string;
     }): Promise<void>;
   };
   onboarding: {
