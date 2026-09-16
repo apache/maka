@@ -1170,3 +1170,61 @@ test('converts a legacy transcript larger than one page without reading it whole
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test('keeps every open turn when an older terminal row crosses a page boundary', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-interleaved-turn-repair-'));
+  const sessions = createSessionStore(root);
+  const runtimeEvents = createSqliteRuntimeStore(join(root, 'runtime.sqlite'));
+
+  try {
+    const ts = Date.now();
+    const session = await sessions.create({
+      cwd: '/repo',
+      llmConnectionSlug: 'openai',
+      model: 'gpt-5',
+      permissionMode: 'ask',
+    });
+    await sessions.appendMessages(session.id, [
+      { type: 'user', id: 'a-user', turnId: 'turn-a', ts, text: 'first' },
+      { type: 'user', id: 'b-user', turnId: 'turn-b', ts: ts + 1, text: 'second' },
+      ...Array.from({ length: 254 }, (_, index) => ({
+        type: 'assistant' as const,
+        id: `b-assistant-${index}`,
+        turnId: 'turn-b',
+        ts: ts + 2 + index,
+        text: `fragment ${index}`,
+        modelId: 'gpt-5',
+      })),
+      {
+        type: 'turn_state',
+        id: 'a-state',
+        turnId: 'turn-a',
+        ts: ts + 256,
+        status: 'completed',
+      },
+      {
+        type: 'turn_state',
+        id: 'b-state',
+        turnId: 'turn-b',
+        ts: ts + 257,
+        status: 'completed',
+      },
+    ]);
+
+    await new RuntimeLedgerRepair({
+      runtimeEventStore: runtimeEvents,
+      readMessagesAfter: (sessionId, request) => sessions.readMessagesAfter(sessionId, request),
+    }).materializeTranscriptLedger(await sessions.readHeader(session.id));
+
+    const invocations = await runtimeEvents.listSessionInvocations(session.id);
+    assert.equal(invocations.length, 2);
+    assert.ok(invocations.every((run) => runtimeInvocationOutcome(run) === 'completed'));
+    assert.ok(
+      invocations.every((run) => runtimeInvocationFailureClass(run) !== 'missing_terminal_event'),
+    );
+  } finally {
+    runtimeEvents.close();
+    await sessions.close?.();
+    await rm(root, { recursive: true, force: true });
+  }
+});

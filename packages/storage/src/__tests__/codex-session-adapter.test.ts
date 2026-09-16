@@ -494,6 +494,24 @@ describe('CodexSessionAdapter', () => {
     });
   });
 
+  test('preserves a terminal row that closes an older interleaved turn', async () => {
+    await withCodexHome(async (codexHome) => {
+      const sessionId = 'codex-interleaved-terminal';
+      await seedRawRollout(codexHome, sessionId, interleavedTerminalRollout(sessionId));
+
+      const session = await new CodexSessionAdapter({ codexHome }).readSession(sessionId);
+      assert.deepEqual(
+        session.messages.map((message) => [message.turnId, message.type]),
+        [
+          ['turn-a', 'user'],
+          ['turn-b', 'user'],
+          ['turn-a', 'turn_state'],
+          ['turn-b', 'turn_state'],
+        ],
+      );
+    });
+  });
+
   test('filesystem fallback excludes internal subagent rollouts', async () => {
     await withCodexHome(async (codexHome) => {
       await seedMinimalRollout(
@@ -1162,6 +1180,29 @@ function errorSemanticsRollout(sessionId: string): string {
       codex_error_info: { active_turn_not_steerable: { turn_kind: 'review' } },
     }),
     event(11, { type: 'task_complete', turn_id: 'turn-not-steerable' }),
+    '',
+  ].join('\n');
+}
+
+function interleavedTerminalRollout(sessionId: string): string {
+  const event = (second: number, payload: Record<string, unknown>): string =>
+    JSON.stringify({
+      timestamp: `2026-08-08T00:00:${String(second).padStart(2, '0')}.000Z`,
+      type: 'event_msg',
+      payload,
+    });
+  return [
+    JSON.stringify({
+      timestamp: '2026-08-08T00:00:00.000Z',
+      type: 'session_meta',
+      payload: { session_id: sessionId, id: sessionId, cwd: '/workspace', source: 'cli' },
+    }),
+    event(1, { type: 'task_started', turn_id: 'turn-a' }),
+    event(2, { type: 'user_message', message: 'first' }),
+    event(3, { type: 'task_started', turn_id: 'turn-b' }),
+    event(4, { type: 'user_message', message: 'second' }),
+    event(5, { type: 'task_complete', turn_id: 'turn-a' }),
+    event(6, { type: 'task_complete', turn_id: 'turn-b' }),
     '',
   ].join('\n');
 }

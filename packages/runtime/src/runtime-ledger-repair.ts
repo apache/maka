@@ -158,15 +158,16 @@ export class RuntimeLedgerRepair {
   /**
    * The Session's legacy rows, one turn at a time, read a page at a time.
    *
-   * A turn is only complete once a row of another turn follows it, so the rows
-   * of the page's last turn are carried into the next page rather than
-   * converted early. Peak memory is therefore one page plus one turn — the same
-   * bound the transcript reader keeps, and not the Session's whole history.
+   * A turn is complete when its terminal row arrives. Codex can write a
+   * terminal row for an older turn after rows from a newer turn, so every open
+   * group crosses page boundaries; insertion order is not a closure signal.
+   * Turns with no terminal row stay open until EOF and are then repaired with
+   * the explicit missing-terminal outcome.
    */
   private async *readTurnsInPages(
     sessionId: string,
   ): AsyncGenerator<{ messages: StoredMessage[]; firstSequence: number; highWater: number }> {
-    let carried: { messages: StoredMessage[]; firstSequence: number } | undefined;
+    const openTurns = new Map<string, { messages: StoredMessage[]; firstSequence: number }>();
     let afterSequence: number | undefined;
     while (true) {
       const page = await this.deps.readMessagesAfter(sessionId, {
@@ -179,23 +180,23 @@ export class RuntimeLedgerRepair {
       const scanned = page.records.filter(
         ({ message }) => message.type !== 'user' || message.steeringEventId === undefined,
       );
-      const grouped = new Map<string, { messages: StoredMessage[]; firstSequence: number }>();
-      if (carried) grouped.set(turnIdOf(carried.messages[0]) ?? '', carried);
       for (const { sequence, message } of scanned) {
         const turnId = turnIdOf(message);
         if (!turnId) continue;
-        const bucket = grouped.get(turnId);
+        const bucket = openTurns.get(turnId);
         if (bucket) bucket.messages.push(message);
-        else grouped.set(turnId, { messages: [message], firstSequence: sequence });
+        else openTurns.set(turnId, { messages: [message], firstSequence: sequence });
+        if (message.type === 'turn_state') {
+          const closed = openTurns.get(turnId);
+          openTurns.delete(turnId);
+          if (closed) yield { ...closed, highWater };
+        }
       }
-      const turns = [...grouped.values()];
       const lastSequence = page.records.at(-1)?.sequence;
-      // The last turn of a page may continue into the next one, so it is held
-      // back rather than converted from a prefix of its own rows. A page with
-      // nothing left to read ends the scan, and what was held back is whole.
-      carried = lastSequence === undefined ? undefined : turns.pop();
-      for (const turn of turns) yield { ...turn, highWater };
-      if (lastSequence === undefined) return;
+      if (lastSequence === undefined) {
+        for (const turn of openTurns.values()) yield { ...turn, highWater };
+        return;
+      }
       afterSequence = lastSequence;
     }
   }
