@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { ipcMain } from 'electron';
+import { BrowserWindow, ipcMain } from 'electron';
 import { createBrowserViewHost } from './browser/automation-host.js';
 import { provideBrowserViewHost } from './browser/browser-host.js';
 import { releaseBrowserSession, revokeHiddenBrowserActions } from './browser/session.js';
@@ -36,6 +36,7 @@ interface BrowserIpcDeps {
 }
 
 export interface BrowserIpcController {
+  refreshVisibility(): void;
   retireTarget(scope: DesktopTargetScope): Promise<void>;
 }
 
@@ -62,7 +63,11 @@ export function registerBrowserIpc(deps: BrowserIpcDeps): BrowserIpcController {
 
   const isSessionShown = (sessionId: string): boolean => {
     const owner = ownerForSession(sessionId);
-    return !!owner && !!deps.mainWindowController.browserParentForRenderer(owner);
+    if (!owner) return false;
+    const parent = deps.mainWindowController.browserParentForRenderer(owner);
+    const window = BrowserWindow.fromWebContents(owner);
+    return !!parent?.getVisible() && !!window && !window.isDestroyed() &&
+      window.isVisible() && !window.isMinimized();
   };
   const revokeHiddenActions = (): void => revokeHiddenBrowserActions(isSessionShown);
 
@@ -84,8 +89,13 @@ export function registerBrowserIpc(deps: BrowserIpcDeps): BrowserIpcController {
     if (observedRenderers.has(contents)) return;
     observedRenderers.add(contents);
     const parent = deps.mainWindowController.browserParentForRenderer(contents);
+    const window = BrowserWindow.fromWebContents(contents);
+    window?.on('hide', revokeHiddenActions);
+    window?.on('minimize', revokeHiddenActions);
     contents.on('render-process-gone', () => clearRendererSelection(contents));
     contents.once('destroyed', () => {
+      window?.removeListener('hide', revokeHiddenActions);
+      window?.removeListener('minimize', revokeHiddenActions);
       clearRendererSelection(contents);
       if (!parent) return;
       const owned = views.sessionIds().filter((sessionId) =>
@@ -257,6 +267,7 @@ export function registerBrowserIpc(deps: BrowserIpcDeps): BrowserIpcController {
   });
 
   return {
+    refreshVisibility: revokeHiddenActions,
     async retireTarget(scope) {
       for (const selection of selections.values()) {
         const sessionId = selection.sessionId;

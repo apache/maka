@@ -916,6 +916,10 @@ const workHubControl = createWorkHubControl({
   isCurrent: isCurrentWorkHubTarget,
   ...workHubRuntime,
 });
+const browserIpc = registerBrowserIpc({
+  mainWindowController,
+  isHostActive: (scope) => runtimeHostManager?.ownsScope(scope) === true,
+});
 let workHubEnabled = false;
 const workHubPresentation = createWorkHubPresentation({
   isEnabled: () => workHubEnabled,
@@ -931,6 +935,7 @@ const workHubPresentation = createWorkHubPresentation({
   viteDevServerUrl: process.env.VITE_DEV_SERVER_URL,
   preloadPath: join(import.meta.dirname, '..', 'preload', 'preload.cjs'),
   onViewCreated: (contents, view) => mainWindowController.registerAuxiliaryRenderer(contents, view),
+  onVisibilityChanged: () => browserIpc.refreshVisibility(),
 });
 workHubPresentation.registerIpc();
 const windowsAppTray = createWindowsAppTray({
@@ -1100,10 +1105,6 @@ registerPetPackIpc({
   mainWindowController,
   settingsStore,
   resolveLocale: () => desktopLocale.resolve(),
-});
-const browserIpc = registerBrowserIpc({
-  mainWindowController,
-  isHostActive: (scope) => runtimeHostManager?.ownsScope(scope) === true,
 });
 registerNotificationsIpc({
   ipcMain,

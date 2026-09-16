@@ -23,6 +23,8 @@ import { registerHooks } from 'node:module';
 import test from 'node:test';
 import { desktopSessionResourceKey, type DesktopTargetScope } from '../../shared/runtime-host-identity.js';
 import type { BrowserViewRect } from '../browser/logic.js';
+import { browserViewHost, provideBrowserViewHost } from '../browser/browser-host.js';
+import { BrowserActionRevokedError, setBridgeFactoryForTest, withBrowserPage } from '../browser/session.js';
 
 type IpcListener = (event: Electron.IpcMainEvent, ...args: unknown[]) => void;
 type IpcHandler = (event: Electron.IpcMainInvokeEvent, ...args: unknown[]) => unknown;
@@ -45,7 +47,7 @@ class FakeController {
   hasLiveViewport(): boolean { return this.viewports.at(-1) !== null; }
   waitForLiveViewport(): Promise<boolean> { return Promise.resolve(this.hasLiveViewport()); }
   openOriginLease(): never { throw new Error('unused'); }
-  attachAutomation(): never { throw new Error('unused'); }
+  attachAutomation(): Promise<{ cdpEndpoint: string }> { return Promise.resolve({ cdpEndpoint: 'ws://test' }); }
   detachAutomation(): Promise<void> { return Promise.resolve(); }
   dispose(): Promise<void> { this.disposed = true; return Promise.resolve(); }
 }
@@ -73,9 +75,22 @@ test('browser IPC isolates owned renderer documents and their native parents', a
     on(channel: string, listener: IpcListener) { listeners.set(channel, listener); return this; },
     handle(channel: string, handler: IpcHandler) { handlers.set(channel, handler); },
   };
-  const testGlobal = globalThis as typeof globalThis & { __makaBrowserIpcMain?: typeof ipcMain };
+  class FakeWindow extends EventEmitter {
+    visible = true;
+    minimized = false;
+    isVisible(): boolean { return this.visible; }
+    isMinimized(): boolean { return this.minimized; }
+    isDestroyed(): boolean { return false; }
+  }
+  const windows = new Map<unknown, FakeWindow>();
+  const BrowserWindow = { fromWebContents: (contents: unknown) => windows.get(contents) ?? null };
+  const testGlobal = globalThis as typeof globalThis & {
+    __makaBrowserIpcMain?: typeof ipcMain;
+    __makaBrowserWindow?: typeof BrowserWindow;
+  };
   testGlobal.__makaBrowserIpcMain = ipcMain;
-  const electronUrl = `data:text/javascript,export const ipcMain=globalThis.__makaBrowserIpcMain`;
+  testGlobal.__makaBrowserWindow = BrowserWindow;
+  const electronUrl = `data:text/javascript,export const ipcMain=globalThis.__makaBrowserIpcMain;export const BrowserWindow=globalThis.__makaBrowserWindow`;
   const hooks = registerHooks({
     resolve(specifier, context, nextResolve) {
       return specifier === 'electron'
@@ -88,8 +103,13 @@ test('browser IPC isolates owned renderer documents and their native parents', a
     const { registerBrowserIpc } = await import('../browser-ipc-main.js');
     const main = new FakeRenderer('main-document-frame');
     const workHub = new FakeRenderer('workhub-document-frame');
-    const mainParent = { name: 'main-parent' } as unknown as Electron.View;
-    const workHubParent = { name: 'workhub-parent' } as unknown as Electron.View;
+    const mainWindow = new FakeWindow();
+    const floatingWindow = new FakeWindow();
+    windows.set(main, mainWindow);
+    windows.set(workHub, mainWindow);
+    let workHubVisible = true;
+    const mainParent = { getVisible: () => true } as unknown as Electron.View;
+    const workHubParent = { getVisible: () => workHubVisible } as unknown as Electron.View;
     const owned = new Map<Electron.WebContents, Electron.View>([
       [main as unknown as Electron.WebContents, mainParent],
       [workHub as unknown as Electron.WebContents, workHubParent],
@@ -126,7 +146,7 @@ test('browser IPC isolates owned renderer documents and their native parents', a
       browserParentForRenderer: (contents: Electron.WebContents) => owned.get(contents),
       setBrowserViewParentResolver: (resolve: typeof parentResolver) => { parentResolver = resolve; },
     };
-    registerBrowserIpc({
+    const browserIpc = registerBrowserIpc({
       mainWindowController: mainWindowController as never,
       isHostActive: (candidate) => candidate.hostId === scope.hostId && candidate.targetEpoch === scope.targetEpoch,
     });
@@ -174,6 +194,41 @@ test('browser IPC isolates owned renderer documents and their native parents', a
     assert.deepEqual(mainController.navigations, ['https://main.example/']);
     assert.deepEqual(workHubController.navigations, ['https://workhub.example/']);
 
+    // A persistent WorkHub selection grants no authority while its presentation
+    // is hidden. Hiding also revokes a read already waiting on the page.
+    setBridgeFactoryForTest(() => ({
+      connect: async () => ({ getCurrentUrl: async () => 'https://workhub.example/' }) as never,
+      close: async () => undefined,
+      send: async () => undefined,
+      waitForEvent: async () => undefined,
+    }));
+    let reading!: () => void;
+    const started = new Promise<void>((resolve) => { reading = resolve; });
+    const pendingRead = withBrowserPage(workHubKey, 'snapshot', async () => {
+      reading();
+      return new Promise<never>(() => {});
+    });
+    const revoked = assert.rejects(pendingRead, BrowserActionRevokedError);
+    await started;
+    workHubVisible = false;
+    browserIpc.refreshVisibility();
+    await revoked;
+    for (const kind of ['observe', 'navigate', 'mutate'] as const) {
+      assert.equal(await browserViewHost().canDrive(workHubKey, kind), false);
+    }
+    assert.equal(await browserViewHost().canDrive(mainKey, 'observe'), true);
+    workHubVisible = true;
+    assert.equal(await browserViewHost().canDrive(workHubKey, 'observe'), true);
+    // Reparenting follows the current native window, not the initial dock.
+    windows.set(workHub, floatingWindow);
+    floatingWindow.visible = false;
+    assert.equal(await browserViewHost().canDrive(workHubKey, 'navigate'), false);
+    floatingWindow.visible = true;
+    floatingWindow.minimized = true;
+    assert.equal(await browserViewHost().canDrive(workHubKey, 'observe'), false);
+    floatingWindow.minimized = false;
+    assert.equal(await browserViewHost().canDrive(workHubKey, 'navigate'), true);
+
     // Neither a stale document/generation nor another renderer's selected
     // session can move or navigate the current native view.
     emit('browser:setViewport', main, scope, { sessionId: 'main-session', rect: workHubRect }, 'old-document', 1);
@@ -206,6 +261,9 @@ test('browser IPC isolates owned renderer documents and their native parents', a
     assert.equal(mainController.disposed, false);
   } finally {
     hooks.deregister();
+    setBridgeFactoryForTest(null);
+    provideBrowserViewHost(null);
     delete testGlobal.__makaBrowserIpcMain;
+    delete testGlobal.__makaBrowserWindow;
   }
 });

@@ -57,6 +57,7 @@ async function harness(animate = false, displayFrequency = 60, revealMode: Windo
   let handler: ((event: unknown, command: string, payload?: unknown) => Promise<unknown>) | undefined;
   let unregistered = false;
   let shortcut: (() => void) | undefined;
+  let visibilityChanged: (() => void) | undefined;
   let registeredViews = 0;
   let releasedViews = 0;
   let pointerDisplay = { x: 0, y: 0, width: 1200, height: 900 };
@@ -110,7 +111,7 @@ async function harness(animate = false, displayFrequency = 60, revealMode: Windo
     shownInactive = 0;
     show() { this.shown++; this.visible = true; this.emit('show'); }
     showInactive() { this.shownInactive++; this.visible = true; }
-    hide() { this.visible = false; }
+    hide() { this.visible = false; this.emit('hide'); }
     resizable = true;
     setResizable(value: boolean) { this.resizable = value; }
     focused = 0;
@@ -154,12 +155,13 @@ async function harness(animate = false, displayFrequency = 60, revealMode: Windo
     ensureMainWindow: async () => { mainRequests++; openingStarted.resolve(); await opening; mainAvailable = true; return main as unknown as Electron.BrowserWindow; },
     mainModuleDirectory: '/app/dist/main', preloadPath: '/app/dist/preload/preload.cjs',
     onError: (error) => errors.push(error),
+    onVisibilityChanged: () => visibilityChanged?.(),
     onViewCreated: () => { registeredViews++; return () => { releasedViews++; }; },
   });
   controller.attachMainWindow(main as unknown as Electron.BrowserWindow);
   controller.registerIpc();
   const command = (sender: Contents, name: string, payload?: unknown) => handler!({ sender, senderFrame: sender.mainFrame }, name, payload);
-  return { setMainAvailable: (value: boolean) => { mainAvailable = value; }, shortcut: () => shortcut!(), get mainRequests() { return mainRequests; }, controller, main, windows, views, errors, command, advance, setEnabled: (value: boolean) => { enabled = value; }, deferOpening: (value: Promise<void>) => { opening = value; return openingStarted.promise; }, movePointer: (display: typeof pointerDisplay) => { pointerDisplay = display; }, registrations: () => [registeredViews, releasedViews], handler: () => handler, unregistered: () => unregistered };
+  return { onVisibilityChanged: (listener: () => void) => { visibilityChanged = listener; }, setMainAvailable: (value: boolean) => { mainAvailable = value; }, shortcut: () => shortcut!(), get mainRequests() { return mainRequests; }, controller, main, windows, views, errors, command, advance, setEnabled: (value: boolean) => { enabled = value; }, deferOpening: (value: Promise<void>) => { opening = value; return openingStarted.promise; }, movePointer: (display: typeof pointerDisplay) => { pointerDisplay = display; }, registrations: () => [registeredViews, releasedViews], handler: () => handler, unregistered: () => unregistered };
 }
 
 test('yields the docked native view to main-window overlays without replacing the conversation', async () => {
@@ -170,8 +172,11 @@ test('yields the docked native view to main-window overlays without replacing th
   h.main.show();
   await h.command(view.webContents, 'ready');
   assert.equal(view.visible, true);
+  let leaseRevoked = false;
+  h.onVisibilityChanged(() => { if (!view.visible) leaseRevoked = true; });
   const backdrop = await h.command(h.main.webContents, 'host', { ...host, occluded: true });
   assert.equal(backdrop, 'data:image/png;base64,workhub-frame');
+  assert.equal(leaseRevoked, true, 'occlusion revokes browser actions after hiding the native view');
   assert.equal(view.visible, false);
   await h.command(h.main.webContents, 'host', { ...host, occluded: true });
   assert.equal(view.webContents.captures, 1);
@@ -328,6 +333,8 @@ test('reparents one live conversation across docking, floating, hide and main-wi
   assert.ok(h.main.children.has(view));
   await h.command(view.webContents, 'detach');
   const floating = h.windows[1]!;
+  let leaseRevoked = false;
+  h.onVisibilityChanged(() => { if (!floating.visible) leaseRevoked = true; });
   assert.ok(!h.main.children.has(view) && floating.children.has(view));
   const expandedHeight = floating.bounds.height;
   const anchoredBottom = floating.bounds.y + floating.bounds.height;
@@ -343,11 +350,17 @@ test('reparents one live conversation across docking, floating, hide and main-wi
   await assert.rejects(h.command(view.webContents, 'conversation-layout', { expanded: false, compactHeight: Number.NaN }), /Invalid WorkHub conversation layout/);
   await h.command(view.webContents, 'hide');
   assert.equal(floating.visible, false);
+  assert.equal(leaseRevoked, true, 'hiding the floating container revokes browser actions');
   assert.equal(h.controller.getSnapshot().placement, 'docked');
   assert.ok(h.main.children.has(view));
   assert.equal(view.webContents.destroyed, false);
   await h.command(view.webContents, 'dock');
   assert.ok(h.main.children.has(view) && !floating.children.has(view));
+  let dockedLeaseRevoked = false;
+  h.onVisibilityChanged(() => { if (!h.main.visible) dockedLeaseRevoked = true; });
+  h.main.hide();
+  assert.equal(dockedLeaseRevoked, true, 'the current dock window revokes actions after reparenting');
+  h.main.show();
   await h.command(h.main.webContents, 'host', { visible: false, rect: { x: 0, y: 0, width: 0, height: 0 } });
   assert.equal(view.visible, false);
   h.main.emit('close');
