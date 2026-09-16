@@ -80,6 +80,19 @@ import {
   type ReadAttachmentBytes,
 } from './attachment-image.js';
 
+/**
+ * How far outside the viewport, in pixels, rows are mounted.
+ *
+ * virtua only corrects `scrollTop` for a row whose measurement lands while the
+ * row is entirely above the viewport; a row still straddling the top edge is
+ * left to push the reader. virtua's default is 200px and a wheel notch travels
+ * 600, so a row went from unmounted to straddling within one notch and was
+ * always measured too late: reading upwards through the 24-Turn geometry scene
+ * jumped 13 times, by 5 to 194px. Mounting 2000px ahead leaves the measurement
+ * room to land before the row reaches the reader.
+ */
+const MEASURE_AHEAD_MARGIN = 2000;
+
 export interface LiveContentActivationSnapshot {
   turnId: string;
   entries: ReadonlyMap<string, string>;
@@ -767,6 +780,7 @@ export function ChatView(props: {
                   scrollRef={scrollRef as RefObject<HTMLElement | null>}
                   data={turns}
                   startMargin={startMargin}
+                  bufferSize={MEASURE_AHEAD_MARGIN}
                   keepMounted={[...keepMountedIndexes]}
                 >
                   {(turn, index) => {
