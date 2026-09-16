@@ -32,7 +32,11 @@ import {
   type ShellRunStateResult,
   type ShellRunUpdate,
 } from '@maka/core/events';
-import type { ShellRunBashInput, ShellRunWriteInput } from '@maka/runtime/shell-run-contract';
+import type {
+  ShellRunBashInput,
+  ShellRunPtySnapshot,
+  ShellRunWriteInput,
+} from '@maka/runtime/shell-run-contract';
 import { ShellPreferenceError } from '@maka/runtime/shell-detect';
 import { SessionNotFoundError } from '@maka/storage/session-store';
 import { RUNTIME_RESOURCE_RESULT_MAX_BYTES } from '../protocol/runtime-resource.js';
@@ -373,6 +377,39 @@ describe('Host Runtime Resource coordinator', () => {
     assert.equal(harness.writeCount, 2);
   });
 
+  test('repairs a stale active record through the manager when no live PTY exists', async () => {
+    const harness = createHarness();
+    harness.livePty = null;
+
+    const acquired = await harness.coordinator.handlers['runtime.resource.controller.acquire'](
+      { sessionId: SESSION_ID, ref: RUNTIME_REF, controllerId: 'controller-1' },
+      connection('connection-1'),
+    );
+
+    assert.equal(acquired.ok, false);
+    assert.equal(!acquired.ok && acquired.error.code, 'operation_conflict');
+    assert.deepEqual(harness.inspectCalls, [{ sessionId: SESSION_ID, ref: RUNTIME_REF }]);
+  });
+
+  test('maps a missing durable record to not_found without draining on acquire', async () => {
+    const harness = createHarness();
+    harness.livePty = null;
+    const missing = new Error(
+      'Runtime background task not found in this session',
+    ) as NodeJS.ErrnoException;
+    missing.code = 'ENOENT';
+    harness.inspectFailure = missing;
+
+    const acquired = await harness.coordinator.handlers['runtime.resource.controller.acquire'](
+      { sessionId: SESSION_ID, ref: RUNTIME_REF, controllerId: 'controller-1' },
+      connection('connection-1'),
+    );
+
+    assert.equal(acquired.ok, false);
+    assert.equal(!acquired.ok && acquired.error.code, 'not_found');
+    assert.equal(harness.drainCount, 0);
+  });
+
   test('starts an interactive login shell inside the canonical Session workspace', async () => {
     const harness = createHarness();
     const started = await harness.coordinator.handlers['runtime.resource.start'](
@@ -442,6 +479,48 @@ describe('Host Runtime Resource coordinator', () => {
     assert.equal(harness.stopCount, 1);
     assert.equal(harness.drainCount, 1);
     harness.finishBackground({ successful: false });
+  });
+
+  test('bounds the start reply when a one-shot command finishes inside the launch', async () => {
+    // A one-shot that reaches terminal status inside runBackgroundBash comes
+    // back as a full pipes snapshot; the reply must still fit the wire limit.
+    const harness = createHarness();
+    const terminalResult: ShellRunSnapshotResult = {
+      ...pipeSnapshot(0),
+      mode: 'pipes',
+      status: 'completed',
+      exitCode: 0,
+      completedAt: 2,
+      output: {
+        mode: 'pipes',
+        stdout: 'x'.repeat(50 * 1024),
+        stderr: 'y'.repeat(50 * 1024),
+        stdoutTruncated: false,
+        stderrTruncated: false,
+        redacted: false,
+      },
+    };
+    harness.backgroundResult = terminalResult;
+
+    const started = await harness.coordinator.handlers['runtime.resource.start'](
+      { sessionId: SESSION_ID, launchId: 'user-command-big', command: 'printf big' },
+      connection('connection-1'),
+    );
+
+    assert.equal(started.ok, true);
+    if (!started.ok) return;
+    assert.ok(started.result.resource.output !== undefined);
+    assert.equal(
+      started.result.resource.output?.mode === 'pipes' &&
+        started.result.resource.output.stdoutTruncated,
+      true,
+    );
+    assert.ok(
+      Buffer.byteLength(JSON.stringify(started.result), 'utf8') <=
+        RUNTIME_RESOURCE_RESULT_MAX_BYTES,
+    );
+    assert.equal(harness.stopCount, 0);
+    assert.equal(harness.drainCount, 0);
   });
 
   test('starts the legacy WSL shim with a Linux-visible login shell', async () => {
@@ -811,6 +890,12 @@ function createHarness(
     pointReadStarted: undefined as (() => void) | undefined,
     stateReadFailure: undefined as Error | undefined,
     malformedStartResult: false as boolean,
+    backgroundResult: undefined as
+      | Awaited<ReturnType<HostRuntimeResourceCoordinatorInput['manager']['runBackgroundBash']>>
+      | undefined,
+    livePty: undefined as ShellRunPtySnapshot | null | undefined,
+    inspectCalls: [] as { sessionId: string; ref: string }[],
+    inspectFailure: undefined as Error | undefined,
     activeResidencies: 0,
     lastBackgroundInput: undefined as ShellRunBashInput | undefined,
     lastForegroundInput: undefined as ShellRunBashInput | undefined,
@@ -835,7 +920,7 @@ function createHarness(
         // process so a client retry cannot double-execute.
         return {} as never;
       }
-      return compactState(0);
+      return state.backgroundResult ?? compactState(0);
     },
     readRuntimeResource: async () => currentSnapshot,
     stopBackgroundTask: async () => {
@@ -883,13 +968,21 @@ function createHarness(
         },
       };
     },
-    getLivePtySnapshot: (sessionId, ref) => ({
-      sessionId,
-      ref,
-      sequence: 0,
-      buffer: '',
-      size: { cols: currentSnapshot.output.cols, rows: currentSnapshot.output.rows },
-    }),
+    getLivePtySnapshot: (sessionId, ref) =>
+      state.livePty !== undefined
+        ? state.livePty
+        : {
+            sessionId,
+            ref,
+            sequence: 0,
+            buffer: '',
+            size: { cols: currentSnapshot.output.cols, rows: currentSnapshot.output.rows },
+          },
+    inspectResource: async (sessionId, ref) => {
+      state.inspectCalls.push({ sessionId, ref });
+      if (state.inspectFailure) throw state.inspectFailure;
+      return currentSnapshot;
+    },
     terminateAll: async () => {
       state.terminateCount += 1;
     },

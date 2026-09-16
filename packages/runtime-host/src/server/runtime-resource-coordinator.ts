@@ -19,7 +19,7 @@
 
 import { createHash } from 'node:crypto';
 import { userInfo } from 'node:os';
-import type { ShellRunUpdate, ToolResultContent } from '@maka/core/events';
+import type { ShellRunSnapshotResult, ShellRunUpdate, ToolResultContent } from '@maka/core/events';
 import { isActiveShellRunStatus } from '@maka/core/shell-run';
 import { shellRunStateProjection } from '@maka/core/shell-run-result';
 import {
@@ -64,6 +64,7 @@ import type { RuntimeHostAccessAuthority } from './access-authority.js';
 import { boundedFailureDiagnostic } from './failure-diagnostic.js';
 import { SessionAdmissionGate } from './session-admission-gate.js';
 import {
+  boundedRuntimeResourceState,
   canonicalRuntimeResources,
   createRuntimeResourcePage,
   runtimeResourceRevision,
@@ -89,6 +90,7 @@ interface RuntimeResourceManager
     BackgroundTaskStopper,
     PtyControlWriter {
   getLivePtySnapshot(sessionId: string, ref: string): ShellRunPtySnapshot | null;
+  inspectResource(sessionId: string, ref: string): Promise<ShellRunSnapshotResult>;
   terminateAll(): Promise<void>;
 }
 
@@ -473,7 +475,7 @@ export class HostRuntimeResourceCoordinator
           return {
             ok: true as const,
             result: decodeRuntimeResourceStartResult({
-              resource: shellRunStateProjection(launched),
+              resource: boundedRuntimeResourceState(shellRunStateProjection(launched)),
             }),
           };
         } catch (replyError) {
@@ -523,17 +525,11 @@ export class HostRuntimeResourceCoordinator
         if (sessionFailure)
           return mutationFailure('runtime.resource.controller.acquire', sessionFailure);
         try {
-          // Acquire only needs the durable status; a live-snapshot persist
-          // here would put a full screen capture on every terminal attach.
-          const update = await this.#sessions.getShellRunUpdate(input.sessionId, input.ref);
-          if (!update) {
-            return mutationFailure('runtime.resource.controller.acquire', {
-              code: 'not_found',
-              message: 'Runtime Resource was not found',
-            });
-          }
-          const snapshot = update.result;
-          if (snapshot.mode !== 'pty' || !isActiveShellRunStatus(snapshot.status)) {
+          const pty = this.#manager.getLivePtySnapshot(input.sessionId, input.ref);
+          if (!pty) {
+            // No live handle: read through the manager so a stale active record
+            // is repaired to orphaned; the reply is a conflict either way.
+            await this.#manager.inspectResource(input.sessionId, input.ref);
             return mutationFailure('runtime.resource.controller.acquire', {
               code: 'operation_conflict',
               message: 'Only an active PTY Runtime Resource can be controlled',
@@ -566,14 +562,6 @@ export class HostRuntimeResourceCoordinator
           };
           this.#controllers.set(key, controller);
           this.#controllerResources.set(identity, key);
-          const pty = this.#manager.getLivePtySnapshot(input.sessionId, input.ref);
-          if (!pty) {
-            this.#releaseController(key);
-            return mutationFailure('runtime.resource.controller.acquire', {
-              code: 'operation_conflict',
-              message: 'Runtime Resource PTY is no longer available',
-            });
-          }
           return {
             ok: true,
             result: boundedControllerAcquireResult(

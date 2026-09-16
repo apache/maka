@@ -43,8 +43,12 @@ export function canonicalRuntimeResources(resources: readonly ShellRunUpdate[]):
 }
 
 function boundedRuntimeResourceUpdate(update: ShellRunUpdate): ShellRunUpdate {
-  const bounded = structuredClone(update);
-  shrinkStateToFit(bounded.result);
+  return { ...update, result: boundedRuntimeResourceState(update.result) };
+}
+
+export function boundedRuntimeResourceState(state: ShellRunStateResult): ShellRunStateResult {
+  const bounded = structuredClone(state);
+  shrinkStateToFit(bounded);
   return bounded;
 }
 

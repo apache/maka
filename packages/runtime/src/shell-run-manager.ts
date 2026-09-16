@@ -607,6 +607,10 @@ export class ShellRunProcessManager
     if (!target) return null;
     const live = this.live.get(target.shellRunId);
     if (!live || live.sessionId !== sessionId || live.mode !== 'pty') return null;
+    if (live.driverExit || live.finalizeOnce) return null;
+    // Flush pending bytes first so the snapshot sequence always names the last
+    // published event the buffer already contains.
+    this.publishPtyData(live);
     return {
       sessionId,
       ref,
@@ -1024,7 +1028,6 @@ export class ShellRunProcessManager
       if (live.pendingRawData && encodedPtyDataBytes(combined) > PTY_RAW_PUBLISH_MAX_BYTES) {
         this.publishPtyData(live);
       }
-      live.rawSequence += 1;
       live.pendingRawData += chunk;
       if (encodedPtyDataBytes(live.pendingRawData) >= PTY_RAW_PUBLISH_TARGET_BYTES) {
         this.publishPtyData(live);
@@ -1045,6 +1048,7 @@ export class ShellRunProcessManager
     const data = live.pendingRawData;
     if (!data) return;
     live.pendingRawData = '';
+    live.rawSequence += 1;
     const event: ShellRunPtyDataEvent = {
       sessionId: live.sessionId,
       ref: shellRunResourceRef(live.shellRunId),

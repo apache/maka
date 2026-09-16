@@ -1874,6 +1874,47 @@ describe('ShellRunProcessManager', () => {
     await manager.stopBackgroundTask('session-1', run.ref, NO_ABORT);
   });
 
+  test('sequences each published PTY delta and keeps snapshots on publish boundaries', async () => {
+    const cwd = await workspace();
+    const events: ShellRunPtyDataEvent[] = [];
+    const manager = createManager(sqliteShellRunStore(cwd), undefined, {
+      onPtyData: (event) => events.push(event),
+    });
+    const run = await manager.runBackgroundBash(
+      shellInput({
+        cwd,
+        command: nodeCommand(`
+        process.stdout.write('x'.repeat(20000) + '\\nBURST-DONE\\n');
+        process.stdin.on('data', (chunk) => {
+          process.stdout.write('ECHO:' + String(chunk).replace(/\\r|\\n/g, '') + '\\n');
+        });
+      `),
+        pty: true,
+        timeoutMs: 10_000,
+      }),
+    );
+    assert.equal(run.kind, 'shell_run');
+    await waitUntil(() => events.some((event) => event.data.includes('BURST-DONE')));
+    // A 20KB burst spans several 4096-code-point chunks, so at least one
+    // publish must carry a multi-chunk payload.
+    assert.ok(events.some((event) => event.data.length > 4_096));
+
+    const snapshot = manager.getLivePtySnapshot('session-1', run.ref);
+    assert.ok(snapshot);
+    const publishedAtSnapshot = events.length;
+    await manager.writeStdin({
+      sessionId: 'session-1',
+      ref: run.ref,
+      input: 'ping\n',
+    });
+    await waitUntil(() => events.length > publishedAtSnapshot);
+    assert.equal(events[publishedAtSnapshot]!.sequence, snapshot.sequence + 1);
+    for (let index = 1; index < events.length; index += 1) {
+      assert.equal(events[index]!.sequence, events[index - 1]!.sequence + 1);
+    }
+    await manager.stopBackgroundTask('session-1', run.ref, NO_ABORT);
+  });
+
   test('keeps concurrent PTY control and Read persistence in parser-cut order', async () => {
     const updates: ShellRunUpdate[] = [];
     const store = sqliteShellRunStore(await workspace());

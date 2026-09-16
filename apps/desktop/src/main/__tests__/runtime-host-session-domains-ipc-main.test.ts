@@ -595,7 +595,7 @@ test('keeps a failed Close across connection replacement and acknowledges Stop w
     client: domainClient({
       listRuntimeResources: async () => [],
       getRuntimeResource: async () => { throw new Error('must not reread after Stop'); },
-      stopRuntimeResource: async () => { attempts += 1; return { resource: shellRunUpdate().result as never }; },
+      stopRuntimeResource: async () => { attempts += 1; return {}; },
     }),
   }, second);
   const recovering = await second.invoke('shell-runs:recover', identity.sessionId) as TerminalRecovery;
@@ -656,7 +656,7 @@ test('adapts interactive terminal ownership to one Host controller lease', async
       client: domainClient({
         startRuntimeResource: async (input) => {
           calls.push({ operation: 'start', input });
-          return { resource: update.result as never };
+          return { resource: update.result };
         },
         getRuntimeResource: async (sessionId, ref) => {
           calls.push({ operation: 'get', input: { sessionId, ref } });
@@ -668,7 +668,7 @@ test('adapts interactive terminal ownership to one Host controller lease', async
         },
         controlRuntimeResource: async (input) => {
           calls.push({ operation: 'control', input });
-          return { controllerId: input.controllerId, sequence: input.sequence, resource: update.result as never };
+          return { controllerId: input.controllerId, sequence: input.sequence };
         },
         releaseRuntimeResourceController: async (input) => {
           calls.push({ operation: 'release', input });
@@ -676,7 +676,7 @@ test('adapts interactive terminal ownership to one Host controller lease', async
         },
         stopRuntimeResource: async (input) => {
           calls.push({ operation: 'stop', input });
-          return { resource: update.result as never };
+          return {};
         },
       }),
       sessionObserver: {
@@ -853,7 +853,6 @@ test('reacquires a missing terminal controller with protocol-exact identity fiel
         controlRuntimeResource: async (input) => ({
           controllerId: input.controllerId,
           sequence: input.sequence,
-          resource: shellRunUpdate().result as never,
         }),
         getRuntimeResource: async () => shellRunUpdate(),
       }),
