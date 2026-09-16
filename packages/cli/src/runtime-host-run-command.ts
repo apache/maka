@@ -565,7 +565,7 @@ function runtimeHostSessionSummaries(items: readonly SessionCatalogItem[]): Sess
 }
 
 type TurnOutcomeObservation =
-  | { readonly kind: 'output'; readonly text: string; readonly ts: number }
+  | { readonly kind: 'output'; readonly text: string; readonly source: 'live' | 'stored' }
   | {
       readonly kind: 'terminal';
       readonly update: 'replace' | 'if_unset';
@@ -589,7 +589,7 @@ class TurnOutcomeClassifier {
   readonly #outcomeId: string;
   readonly #unresolvedSandboxFailures = new Set<string>();
   #finalOutput: string | undefined;
-  #finalOutputTs = Number.NEGATIVE_INFINITY;
+  #finalOutputFromLive = false;
   #terminal: TerminalOutcomeObservation | undefined;
 
   constructor(outcomeId: string) {
@@ -601,12 +601,13 @@ class TurnOutcomeClassifier {
       case undefined:
         return;
       case 'output':
-        // The live stream and a transcript read describe the same answers at
-        // their own pace, so the later answer wins rather than the later
-        // observation.
-        if (observation.ts < this.#finalOutputTs) return;
+        // A subscriber is delivered in Host order, so the stream's last answer
+        // is the Turn's last answer. A transcript read stops wherever the Host
+        // had committed, so it can supply an answer the stream never carried
+        // but can never overrule one it did.
+        if (observation.source === 'stored' && this.#finalOutputFromLive) return;
         this.#finalOutput = observation.text;
-        this.#finalOutputTs = observation.ts;
+        this.#finalOutputFromLive = observation.source === 'live';
         return;
       case 'terminal':
         if (observation.update === 'replace' || this.#terminal === undefined) {
@@ -651,7 +652,7 @@ class TurnOutcomeClassifier {
 
 function observationFromSessionEvent(event: SessionEvent): TurnOutcomeObservation | undefined {
   if (event.type === 'text_complete' && event.text.trim().length > 0) {
-    return { kind: 'output', text: event.text, ts: event.ts };
+    return { kind: 'output', text: event.text, source: 'live' };
   }
   if (event.type === 'error') {
     return {
@@ -677,7 +678,7 @@ function observationFromSessionEvent(event: SessionEvent): TurnOutcomeObservatio
 
 function observationFromStoredMessage(message: StoredMessage): TurnOutcomeObservation | undefined {
   if (message.type === 'assistant' && message.text.trim().length > 0) {
-    return { kind: 'output', text: message.text, ts: message.ts };
+    return { kind: 'output', text: message.text, source: 'stored' };
   }
   if (message.type === 'turn_state' && message.status === 'completed') {
     return { kind: 'terminal', update: 'replace', status: 'completed' };

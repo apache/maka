@@ -374,6 +374,34 @@ describe('Runtime Host maka run adapter', () => {
     assert.equal(exitCode, 1);
   });
 
+  test('prints the transcript answer when the live stream never carried one', async () => {
+    const stdout: string[] = [];
+    let publishReplacement = () => {};
+    const fixture = runFixture({
+      turnEvents: eventsWithoutStreamedAnswer(() => publishReplacement()),
+    });
+    publishReplacement = () =>
+      fixture.publishTranscriptReplacement(
+        'turn-1',
+        [
+          {
+            type: 'assistant',
+            id: 'assistant-1',
+            turnId: 'turn-1',
+            ts: 1,
+            text: 'Answer only the transcript saw',
+            modelId: 'gpt-5',
+          },
+        ],
+        'reconnect',
+      );
+
+    const exitCode = await runFixtureCommand(fixture, ['reattach'], (text) => stdout.push(text));
+
+    assert.equal(exitCode, 0);
+    assert.equal(stdout.join(''), 'Answer only the transcript saw\n');
+  });
+
   test('prints the answer when a durable transcript read lands after it', async () => {
     const stdout: string[] = [];
     let publishReplacement = () => {};
@@ -1643,6 +1671,22 @@ async function* eventsWithLateTranscriptRead(publish: () => void): AsyncIterable
     id: 'turn-1-complete',
     turnId: 'turn-1',
     ts: 4,
+    stopReason: 'end_turn',
+  };
+}
+
+// Reattaching to a Turn whose answer was produced before this client arrived:
+// only the transcript can supply it, so a stored answer has to be able to set
+// the final output when the stream never delivered one.
+async function* eventsWithoutStreamedAnswer(publish: () => void): AsyncIterable<SessionEvent> {
+  yield toolStart('turn-1', 'tool-1', 'step-1', 1);
+  yield successfulToolResult('turn-1', 2);
+  publish();
+  yield {
+    type: 'complete',
+    id: 'turn-1-complete',
+    turnId: 'turn-1',
+    ts: 3,
     stopReason: 'end_turn',
   };
 }
