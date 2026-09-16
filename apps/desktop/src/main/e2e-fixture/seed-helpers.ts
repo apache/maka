@@ -37,15 +37,26 @@ export const PROMPT_RAIL_SESSION_ID = 'e2e-fixture-prompt-rail';
 export const PARTIAL_HISTORY_SESSION_ID = 'e2e-fixture-partial-history';
 /** The transcript history budget the partial-history fixture runs with, so its Session loads in chunks. */
 export const PARTIAL_HISTORY_TRANSCRIPT_BYTES = 1024 * 1024;
-export const LARGE_HISTORY_SESSION_ID = 'e2e-fixture-large-history';
+export const LARGE_HISTORY_SESSION_PREFIX = 'e2e-fixture-large-history-';
 /**
- * Turns in the large-history fixture, and the size of each assistant reply.
- * The product is ~72 MiB, comfortably past the real 64 MiB read budget, so the
- * first open stops short and the rest is reached through load-earlier. The
- * shape is many moderate Turns rather than a few enormous ones, because that
- * is where per-message object and index overhead dominates the byte count.
+ * The large-history fixture is three Sessions, each past the real 64 MiB read
+ * budget, so every open stops short and the rest is reached through
+ * load-earlier. Each Turn is moderate rather than enormous, because that is
+ * where per-message object and index overhead dominates the byte count.
+ *
+ * The first is deep enough to need several rounds of load-earlier — one round
+ * cannot show whether repeated loading stays linear, and repeated loading is
+ * what searching back to an early Turn does. The other two are there to be
+ * different Sessions: a renderer that kept one transcript per Session visited
+ * would survive any number of returns to the same one.
  */
+export const LARGE_HISTORY_DEEP_TURN_COUNT = 12_000;
 export const LARGE_HISTORY_TURN_COUNT = 4_000;
+export const LARGE_HISTORY_TURN_COUNTS = [
+  LARGE_HISTORY_DEEP_TURN_COUNT,
+  LARGE_HISTORY_TURN_COUNT,
+  LARGE_HISTORY_TURN_COUNT,
+] as const;
 export const LARGE_HISTORY_REPLY_BYTES = 18 * 1024;
 export const PROMPT_RAIL_PROMPT_COUNT = 500;
 export const LONG_SIDEBAR_SESSION_PREFIX = 'e2e-fixture-sidebar-long-';

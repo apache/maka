@@ -30,11 +30,25 @@ interface SessionUnderTest {
   offersMoreHistory?: boolean;
 }
 
-const LARGE_SESSION: SessionUnderTest = {
-  name: '大历史内存基准会话',
-  turnPrefix: 'turn-large-history-',
+/** The deep one: several rounds of load-earlier, which is what search back does. */
+const DEEP_SESSION: SessionUnderTest = {
+  name: '大历史内存基准会话 1',
+  turnPrefix: 'turn-e2e-fixture-large-history-1-',
   offersMoreHistory: true,
 };
+/** Two more past the budget, so the rotation visits distinct transcripts. */
+const OTHER_LARGE_SESSIONS: SessionUnderTest[] = [
+  {
+    name: '大历史内存基准会话 2',
+    turnPrefix: 'turn-e2e-fixture-large-history-2-',
+    offersMoreHistory: true,
+  },
+  {
+    name: '大历史内存基准会话 3',
+    turnPrefix: 'turn-e2e-fixture-large-history-3-',
+    offersMoreHistory: true,
+  },
+];
 const SMALL_SESSION: SessionUnderTest = {
   name: '模型管理与工具调用示例',
   turnPrefix: 'turn-fixture-',
@@ -113,10 +127,14 @@ async function openSession(page: Page, { name, turnPrefix, offersMoreHistory }: 
   return Date.now() - started;
 }
 
-test('a transcript past the history budget gives its memory back when the reader leaves', async ({
+// File scope rather than `test.setTimeout`: seeding hundreds of MiB of durable
+// transcript happens while the window fixture is still being set up, which a
+// timeout raised inside the body is too late to cover.
+test.describe.configure({ timeout: 2_400_000 });
+
+test('transcripts past the history budget give their memory back when the reader leaves', async ({
   largeHistoryWindow: { page, app },
 }) => {
-  test.setTimeout(900_000);
   await page.setViewportSize({ width: 1_400, height: 800 });
   const cdp = await page.context().newCDPSession(page);
   await cdp.send('Performance.enable');
@@ -143,7 +161,7 @@ test('a transcript past the history budget gives its memory back when the reader
   await openSession(page, SMALL_SESSION);
   const baseline = await sample('baseline (small session)');
 
-  const openMs = await openSession(page, LARGE_SESSION);
+  const openMs = await openSession(page, DEEP_SESSION);
   const opened = await sample('opened at the budget', { openMs });
   // The read stops at the budget, so the control is on offer rather than the
   // whole transcript being resident.
@@ -164,12 +182,18 @@ test('a transcript past the history budget gives its memory back when the reader
 
   await openSession(page, SMALL_SESSION);
   const released = await sample('reader moved to another session');
-  // Once more, to tell a cache of the Session just left — which costs a fixed
-  // amount — from a renderer that keeps every transcript it has ever opened.
-  const reopenMs = await openSession(page, LARGE_SESSION);
-  await sample('reopened at the budget', { reopenMs });
-  await openSession(page, SMALL_SESSION);
-  const releasedAgain = await sample('moved away a second time');
+
+  // Two more transcripts, each as large, each a different Session, then the
+  // first again. A renderer that kept one per Session visited would show it
+  // across this rotation and nowhere else: returning to the same Session
+  // forever costs the same whether or not anything is being kept.
+  const releases: number[] = [];
+  for (const visit of [...OTHER_LARGE_SESSIONS, DEEP_SESSION]) {
+    const visitMs = await openSession(page, visit);
+    await sample(`opened ${visit.name}`, { visitMs });
+    await openSession(page, SMALL_SESSION);
+    releases.push(await sample(`moved away from ${visit.name}`));
+  }
 
   const output = path.resolve('perf-results/transcript-memory.json');
   await mkdir(path.dirname(output), { recursive: true });
@@ -188,10 +212,20 @@ test('a transcript past the history budget gives its memory back when the reader
 
   expect(full, 'loading earlier history has to cost something to be worth measuring')
     .toBeGreaterThan(opened);
-  // Reading the same Session twice must not cost twice. What survives a switch
-  // is the Session just left; it is replaced, not added to.
-  expect(
-    (releasedAgain - released) / MIB,
-    `a second visit left ${((releasedAgain - released) / MIB).toFixed(1)} MiB more behind`,
-  ).toBeLessThanOrEqual(RETAINED_GROWTH_MIB);
+  // One round of load-earlier cannot show whether repeated loading stays
+  // linear, so the fixture has to stay deep enough to need several.
+  expect(loads, 'the deep fixture no longer needs repeated loads').toBeGreaterThanOrEqual(2);
+  // What survives a switch is the Session just left; it is replaced, not added
+  // to — whether the reader returns to a transcript or moves on to another
+  // one. Each departure is compared with the first departure of the same
+  // shape, so the deep Session's fully loaded remnant is not the yardstick.
+  const [firstRelease, ...laterReleases] = releases;
+  expect(released, 'the deep session should still be resident right after it was left')
+    .toBeGreaterThan(firstRelease);
+  for (const [visit, release] of laterReleases.entries()) {
+    expect(
+      (release - firstRelease) / MIB,
+      `visit ${visit + 2} left ${((release - firstRelease) / MIB).toFixed(1)} MiB more behind than the first`,
+    ).toBeLessThanOrEqual(RETAINED_GROWTH_MIB);
+  }
 });
