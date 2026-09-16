@@ -359,10 +359,14 @@ test('WorkHub uses its coordination model and shared attachment composer', async
     }));
     expect(motion.every(({ bottom, left }) => bottom >= -0.5 && bottom <= 12.5 && left >= -0.5 && left <= 12.5)).toBe(true);
     expect(motion.some(({ bottom }) => bottom > 0.5 && bottom < 11.5)).toBe(true);
-    expect(motion.at(-1)!.bottom).toBeCloseTo(expanded ? 12 : 0);
     expect(new Set(motion.map(({ height }) => height)).size).toBeLessThanOrEqual(2);
     expect(motion.some(({ inset }) => inset > 0)).toBe(true);
-    expect(motion.at(-1)!.inset).toBe(0);
+    // The native resize and renderer animation start in separate processes.
+    // The sampling window is not their completion signal under contention.
+    await expect.poll(() => workhub.evaluate(() => ({
+      bottom: innerHeight - document.querySelector('.workHubComposerSurface')!.getBoundingClientRect().bottom,
+      inset: parseFloat(getComputedStyle(document.querySelector('.workHubLive')!).getPropertyValue('--workhub-viewport-inset')),
+    }))).toEqual({ bottom: expanded ? 12 : 0, inset: 0 });
   }
   const keptEditor = await workhub.evaluate(async () => {
     const editor = document.querySelector('.maka-composer-editor [contenteditable]');
