@@ -201,6 +201,32 @@ test('captured reading anchors belong to the current Session and preparing a sen
   assert.equal(anchors.current['session-1'], undefined, 'a superseded Session cannot capture an anchor');
 });
 
+test('a Turn index read that failed is read again when the transcript reopens', async () => {
+  const fixture = controllerFixture();
+  let generation = 'generation-1';
+  fixture.controller.store.range = () => ({ sessionId: 'session-1', hasOlder: true, ready: true, generation });
+  let reads = 0;
+  const indexes: unknown[] = [];
+  fixture.props.listTurnLandmarks = async () => {
+    reads += 1;
+    if (reads === 1) throw new Error('Host reconnecting');
+    return { landmarks: [{ turnId: 'turn-1', sequence: 10, lastSequence: 19, label: 'First' }] };
+  };
+  fixture.props.setTurnIndex = (index) => { indexes.push(index); };
+  await fixture.render();
+  await act(settle);
+  assert.deepEqual(indexes, []);
+
+  generation = 'generation-2';
+  await fixture.render();
+  await act(settle);
+  assert.equal(reads, 2);
+  assert.deepEqual(indexes, [{
+    sessionId: 'session-1',
+    turns: [{ turnId: 'turn-1', sequence: 10, lastSequence: 19, label: 'First' }],
+  }]);
+});
+
 function controllerFixture() {
   const { root } = installReactRenderer();
   const commands = createRef<TranscriptReadingPositionCommands>();

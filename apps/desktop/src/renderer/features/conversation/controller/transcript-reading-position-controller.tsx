@@ -104,10 +104,17 @@ export function TranscriptReadingPositionController(props: {
   const landmarkSessionId = props.landmarkSessionId === props.sessionId ? props.landmarkSessionId : null;
   // New Turns land in the resident tail, so the index is read once per Session
   // and only once some history lies outside the resident range.
-  const hasOlder = currentTranscriptRange(props.rangeController.current, props.sessionId)?.hasOlder ?? false;
+  const range = currentTranscriptRange(props.rangeController.current, props.sessionId);
+  const hasOlder = range?.hasOlder ?? false;
+  // A reopen reads the index again, so a lookup that failed does not stay failed.
+  const generation = range?.ready ? range.generation : undefined;
   useEffect(() => {
-    props.setTurnIndex(undefined);
-    if (!landmarkSessionId || !hasOlder) return;
+    // The shell shows an index only for the Session it names, so a reread keeps
+    // the previous one on screen until it answers.
+    if (!landmarkSessionId || !hasOlder) {
+      props.setTurnIndex(undefined);
+      return;
+    }
     let disposed = false;
     void props.listTurnLandmarks(landmarkSessionId, null).then(
       (snapshot) => {
@@ -116,7 +123,7 @@ export function TranscriptReadingPositionController(props: {
       () => undefined,
     );
     return () => { disposed = true; };
-  }, [landmarkSessionId, hasOlder]);
+  }, [landmarkSessionId, hasOlder, generation]);
   useEffect(() => restoreSessionTranscriptRange({
     lifecycle,
     sessionId: props.sessionId,

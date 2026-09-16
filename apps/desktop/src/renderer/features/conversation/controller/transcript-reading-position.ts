@@ -21,7 +21,12 @@ import type { TranscriptReadingAnchor } from '../model/session-ui-state.js';
 
 interface TranscriptRangeController<Message> {
   readonly store: {
-    range(): { readonly sessionId: string; readonly hasOlder: boolean; readonly ready: boolean };
+    range(): {
+      readonly sessionId: string;
+      readonly hasOlder: boolean;
+      readonly ready: boolean;
+      readonly generation?: string;
+    };
     snapshot(): { readonly messages: readonly Message[] };
   };
   loadEarlier(throughSequence?: number): Promise<void>;
@@ -188,7 +193,11 @@ export function restoreSessionTranscriptRange<Message>(options: {
       })
       .then(
         () => {
-          command.loaded = true;
+          // A range that reopened meanwhile dropped the answer, so it says
+          // nothing about whether the Turn can be reached.
+          if (currentTranscriptRange(controller, sessionId)?.generation === range.generation) {
+            command.loaded = true;
+          }
           if (settle()) restoreSessionTranscriptRange(options);
         },
         (error: unknown) => {

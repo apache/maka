@@ -201,6 +201,34 @@ test('effect teardown followed by setup lets only the replacement restore settle
   assert.equal(unavailable, 'turn-a', 'only the replacement restore settles its unavailable target');
 });
 
+test('a bookmark read down to across a reopen is looked up again rather than declared unavailable', async () => {
+  const lifecycle = createTranscriptRestoreLifecycle();
+  let anchor: { turnId: string } | undefined = { turnId: 'turn-a' };
+  let unavailable: string | undefined;
+  const history = restoreHistory([], async () => {
+    // The first answer lands on a range that reopened, which drops it.
+    if (history.loads === 1) history.generation = 'generation-2';
+    else history.messages = [{ turnId: 'turn-a' }];
+  });
+  restoreSessionTranscriptRange({
+    lifecycle,
+    sessionId: 'session-1',
+    readingAnchor: { turnId: 'turn-a' },
+    controller: history.controller,
+    isCurrent: () => true,
+    lookupTurn: history.lookupTurn,
+    setReadingAnchor: (_sessionId, next) => { anchor = next; },
+    onRestoreUnavailable: (_sessionId, turnId) => { unavailable = turnId; },
+    onError: (error) => assert.fail(String(error)),
+  });
+  await settleRestore();
+  await settleRestore();
+
+  assert.equal(history.loads, 2);
+  assert.equal(unavailable, undefined);
+  assert.deepEqual(anchor, { turnId: 'turn-a' });
+});
+
 test('a second Turn reached by advancing evicts the oversized first Turn', async () => {
   const fixture = await oversizedHistoryFixture({ live: true });
   try {
@@ -228,12 +256,18 @@ function restoreHistory(initial: Array<{ turnId: string }>, load: () => Promise<
   const history = {
     loads: 0,
     hasOlder: true,
+    generation: 'generation-1',
     lookupTurn: async () => 0,
     get messages() { return snapshot.messages; },
     set messages(messages: Array<{ turnId: string }>) { snapshot = { messages }; },
     controller: {
       store: {
-        range: () => ({ sessionId: 'session-1', hasOlder: history.hasOlder, ready: true }),
+        range: () => ({
+          sessionId: 'session-1',
+          hasOlder: history.hasOlder,
+          ready: true,
+          generation: history.generation,
+        }),
         snapshot: () => snapshot,
       },
       loadEarlier: async () => {
