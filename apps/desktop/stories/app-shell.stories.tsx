@@ -2366,15 +2366,11 @@ function SettledTranscriptHarness({
  * `HISTORY_BATCH` Turns. The loader settles a frame later, the way an answer
  * delivered over IPC does.
  */
-/** Set while a gated harness is waiting; the play function decides when the history arrives. */
-let deliverHistory: (() => void) | undefined;
-
 function HistoryHarness({
   turns,
   olderTurns = 0,
   mixed = false,
-  gated = false,
-}: { turns: number; olderTurns?: number; mixed?: boolean; gated?: boolean }) {
+}: { turns: number; olderTurns?: number; mixed?: boolean }) {
   const [from, setFrom] = useState(0);
   useEffect(() => {
     historyLoads.length = 0;
@@ -2386,9 +2382,6 @@ function HistoryHarness({
         hasEarlierHistory: from > -olderTurns,
         onLoadEarlierHistory: async () => {
           historyLoads.push(firstResidentTurnId() ?? '(none)');
-          // A real read crosses IPC and storage. Holding it open is how a
-          // reader gets the chance to do something else while it is in flight.
-          if (gated) await new Promise<void>((resolve) => { deliverHistory = resolve; });
           setFrom((current) => Math.max(-olderTurns, current - HISTORY_BATCH));
           await painted(2);
         },
@@ -2980,44 +2973,6 @@ export const PrependedHistoryKeepsMeasuredHeights: Story = {
     const warmDrift = await traverseToTop(300);
 
     expect(warmDrift, 'a measured row moved the reader').toBeLessThanOrEqual(1);
-  },
-};
-
-/**
- * A reader who goes somewhere else while earlier history is still being read
- * stays where they went. The hold that lands the prepend is taken when the
- * control is pressed, and a read crosses IPC and storage, so the reader has
- * that whole window in which to change their mind — the hold follows them
- * rather than carrying them back, and the arriving rows still must not move
- * them from where they went.
- */
-export const NavigatingDuringAHistoryLoadOutranksTheHold: Story = {
-  render: () => <HistoryHarness turns={24} olderTurns={HISTORY_BATCH} mixed gated />,
-  play: async () => {
-    const root = tailScroller();
-    await document.fonts.ready;
-    await tailSettled();
-    await waitFor(() => expect(document.querySelector('.maka-markdown-pending')).toBeNull());
-
-    scrollAsReader(root, 0);
-    await painted(4);
-    within(document.body).getByRole('button', { name: '载入更早的记录' }).click();
-    await waitFor(() => expect(deliverHistory).toBeDefined());
-
-    // The reader changes their mind while the read is in flight.
-    scrollAsReader(root, 1_800);
-    await painted(4);
-    const chosen = anchorInView();
-
-    deliverHistory?.();
-    deliverHistory = undefined;
-    await waitFor(() => expect(document.querySelector('.maka-markdown-pending')).toBeNull());
-    await painted(8);
-
-    expect(
-      Math.abs(turnTop(chosen.turnId) - chosen.top),
-      'the pending load carried the reader back to where they pressed it',
-    ).toBeLessThanOrEqual(2);
   },
 };
 

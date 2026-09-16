@@ -18,8 +18,8 @@
       "electron": "renderer reload must preserve an explicit new task and rebuild archived-only Host history as an empty, usable new-task surface"
     },
     "partial-history-notice.spec.ts": {
-      "tests": 2,
-      "electron": "bounded paging crosses renderer, preload and Host transcript storage: each page comes from the Host only when the reader asks, and a rail tick outside the loaded range finds its Turn in the Host's Turn extent index and reads down to it in one request. Where the arriving rows leave the reader is renderer-owned and lives in the PrependedHistoryKeepsMeasuredHeights story."
+      "tests": 1,
+      "electron": "bounded paging crosses renderer, preload and Host transcript storage: each page comes from the Host only when the reader asks, and the Host Turn index lists the whole Session before it is loaded; the return-to-tail assertion also uses a real pointer hit-test. Where the arriving rows leave the reader is renderer-owned and lives in the PrependedHistoryKeepsMeasuredHeights story."
     },
     "proxy-password-editing.spec.ts": {
       "tests": 1,

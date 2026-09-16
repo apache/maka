@@ -363,3 +363,17 @@ test('returning to the tail during a prepend landing is not undone by it', async
   await env.flushFrames();
   assert.equal(env.scroller.scrollTop, tail, 'the landing took the reader back off the tail');
 });
+
+test('a reader who moves while earlier history is on its way stays where they went', async () => {
+  const env = setup(turns(6));
+  const hook = mountHook(env);
+  await hook.render({ sessionId: 's' });
+  // Earlier history is asked for from the top, and the reader moves on before it arrives.
+  await act(() => { env.readerScrollTo(0); });
+  await act(() => { env.readerScrollTo(3 * TURN_HEIGHT + 100); });
+
+  env.transcript.turnIds = [...turns(2, 'earlier'), ...env.transcript.turnIds];
+  await hook.render({ sessionId: 's' });
+  await env.flushFrames(4);
+  assert.equal(env.scroller.scrollTop, 5 * TURN_HEIGHT + 100, 'the arriving history carried the reader back to the top');
+});
