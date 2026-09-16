@@ -38,33 +38,8 @@ const STEPS = [
 test('an approved Plan starts its Turn with the approved steps and the progress instruction', async () => {
   const fixture = await openFixture();
   try {
-    const session = await fixture.createSession();
-    const submitted = await fixture.store.submitProposal({
-      operationId: 'submit-1',
-      sessionId: session.id,
-      turnId: 'turn-1',
-      title: 'Ship the plan request',
-      steps: STEPS,
-    });
-    assert.equal(submitted.event.type, 'plan_submitted');
-    if (submitted.event.type !== 'plan_submitted') return;
-
     const transition = captureTransitionRequest(fixture);
-    const approval = {
-      kind: 'approve_proposal' as const,
-      sessionId: session.id,
-      proposalId: submitted.event.proposal.proposalId,
-      expectedRevision: submitted.event.proposal.revision,
-      expectedStoreVersion: submitted.state.storeVersion,
-      turnId: 'approve-turn',
-    };
-    const outcome = await transition.coordinator.handlers['plan.turn.start'](
-      approval,
-      null as never,
-    );
-    assert.ok(outcome.ok);
-    const executionId = outcome.result.plan.executionId;
-    assert.ok(executionId);
+    const { executionId } = await approveFirstProposal(fixture, transition);
 
     const request = transition.requests[0];
     assert.ok(request);
@@ -74,23 +49,14 @@ test('an approved Plan starts its Turn with the approved steps and the progress 
       request.text,
       new RegExp(`^Execute the approved plan execution ${executionId}\\.\n`),
     );
-    assert.match(request.text, /^Plan: Ship the plan request \(revision 1\)$/m);
+    assert.match(request.text, /^Steps:$/m);
     assert.match(request.text, /^- inspect \[pending\] Inspect the caller$/m);
     assert.match(request.text, /^- patch \[pending\] Land the fix$/m);
-    assert.match(request.text, /update_plan/);
-    assert.match(request.text, /cancel_plan/);
+    assert.match(request.text, /^Use update_plan to keep every step status current\.$/m);
+    assert.doesNotMatch(request.text, /cancel_plan/);
+    assert.doesNotMatch(request.text, /Plan: Ship the plan request/);
     // The transcript keeps the approval the user performed, not the request.
     assert.equal(request.displayText, `Execute the approved plan execution ${executionId}.`);
-
-    // A repeated command for the same Turn must reproduce the same content: the
-    // request is persisted as the Turn's user content, so a replay cannot
-    // re-derive it from live Plan state.
-    const replayed = await transition.coordinator.handlers['plan.turn.start'](
-      approval,
-      null as never,
-    );
-    assert.ok(replayed.ok);
-    assert.deepEqual(transition.requests[1], request);
   } finally {
     await fixture.close();
   }
@@ -99,37 +65,12 @@ test('an approved Plan starts its Turn with the approved steps and the progress 
 test('a resumed Plan reports the progress reached before the interruption', async () => {
   const fixture = await openFixture();
   try {
-    const session = await fixture.createSession();
-    const submitted = await fixture.store.submitProposal({
-      operationId: 'submit-1',
-      sessionId: session.id,
-      turnId: 'turn-1',
-      title: 'Ship the plan request',
-      steps: STEPS,
-    });
-    assert.equal(submitted.event.type, 'plan_submitted');
-    if (submitted.event.type !== 'plan_submitted') return;
-
     const transition = captureTransitionRequest(fixture);
-    const approval = {
-      kind: 'approve_proposal' as const,
-      sessionId: session.id,
-      proposalId: submitted.event.proposal.proposalId,
-      expectedRevision: submitted.event.proposal.revision,
-      expectedStoreVersion: submitted.state.storeVersion,
-      turnId: 'approve-turn',
-    };
-    const approved = await transition.coordinator.handlers['plan.turn.start'](
-      approval,
-      null as never,
-    );
-    assert.ok(approved.ok);
-    const executionId = approved.result.plan.executionId;
-    assert.ok(executionId);
+    const { sessionId, executionId } = await approveFirstProposal(fixture, transition);
 
     await fixture.store.updateExecution({
       operationId: 'update-1',
-      sessionId: session.id,
+      sessionId,
       executionId,
       steps: [
         { id: 'inspect', status: 'completed' },
@@ -137,7 +78,7 @@ test('a resumed Plan reports the progress reached before the interruption', asyn
       ],
     });
     const interrupted = await fixture.store.interruptActiveExecution(
-      session.id,
+      sessionId,
       'Test interruption',
       'interrupt-1',
     );
@@ -146,7 +87,7 @@ test('a resumed Plan reports the progress reached before the interruption', asyn
     const resumed = await transition.coordinator.handlers['plan.turn.start'](
       {
         kind: 'resume_execution',
-        sessionId: session.id,
+        sessionId,
         executionId,
         turnId: 'resume-turn',
       },
@@ -160,9 +101,10 @@ test('a resumed Plan reports the progress reached before the interruption', asyn
       request.text,
       new RegExp(`^Resume the approved plan execution ${executionId}\\.\n`),
     );
+    assert.match(request.text, /^Steps:$/m);
     assert.match(request.text, /^- inspect \[completed\] Inspect the caller$/m);
     assert.match(request.text, /^- patch \[in_progress\] Land the fix$/m);
-    assert.match(request.text, /update_plan/);
+    assert.match(request.text, /^Use update_plan to keep every step status current\.$/m);
     assert.equal(request.displayText, `Resume the approved plan execution ${executionId}.`);
   } finally {
     await fixture.close();
@@ -174,6 +116,39 @@ interface Fixture {
   sessions: Awaited<ReturnType<typeof openInteractiveExecutionStoresForWrite>>;
   createSession(): Promise<{ id: string }>;
   close(): Promise<void>;
+}
+
+/** Submits the Plan and approves it through the coordinator, as a Client would. */
+async function approveFirstProposal(
+  fixture: Fixture,
+  transition: ReturnType<typeof captureTransitionRequest>,
+): Promise<{ sessionId: string; executionId: string }> {
+  const session = await fixture.createSession();
+  const submitted = await fixture.store.submitProposal({
+    operationId: 'submit-1',
+    sessionId: session.id,
+    turnId: 'turn-1',
+    title: 'Ship the plan request',
+    steps: STEPS,
+  });
+  assert.equal(submitted.event.type, 'plan_submitted');
+  if (submitted.event.type !== 'plan_submitted') throw new Error('Plan was not submitted');
+
+  const approved = await transition.coordinator.handlers['plan.turn.start'](
+    {
+      kind: 'approve_proposal',
+      sessionId: session.id,
+      proposalId: submitted.event.proposal.proposalId,
+      expectedRevision: submitted.event.proposal.revision,
+      expectedStoreVersion: submitted.state.storeVersion,
+      turnId: 'approve-turn',
+    },
+    null as never,
+  );
+  assert.ok(approved.ok);
+  const executionId = approved.result.plan.executionId;
+  assert.ok(executionId);
+  return { sessionId: session.id, executionId };
 }
 
 async function openFixture(): Promise<Fixture> {
@@ -237,7 +212,6 @@ function captureTransitionRequest(fixture: Fixture): {
     sessionAdmission: new SessionAdmissionGate(),
     isSessionActive: () => false,
     refreshContinuity: async () => {},
-    onProjectionChanged: () => {},
     requestDrain: () => {},
     root: {
       startHostedExternalTransition: async (request) => {

@@ -21,17 +21,15 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   emptyPlanSessionState,
-  type PlanEvent,
   type PlanExecution,
   type PlanExecutionStep,
-  type PlanMutationResult,
   type PlanSessionState,
   type PlanStore,
 } from '@maka/core/plan';
 import { createDefaultRuntimePolicy } from '@maka/core/runtime-policy';
 import type { SessionTodoToolStore } from '@maka/runtime/session-todo-tools';
 import { z } from 'zod';
-import type { MakaTool, MakaToolContext } from '@maka/runtime/tool-runtime';
+import type { MakaTool } from '@maka/runtime/tool-runtime';
 import { createInteractiveRunComposer } from '../server/interactive-run-composer.js';
 import type { HostMemoryCoordinator } from '../server/memory-coordinator.js';
 import type { HostSkillCatalogCoordinator } from '../server/skill-catalog-coordinator.js';
@@ -312,49 +310,39 @@ test('WorkHub v2 binds control, tasks, attachment reading and user questions whi
   );
 });
 
-test('a committed Plan execution tool publishes the plan invalidation for its Session', async () => {
-  const notifications: string[] = [];
-  const composer = createFixtureComposer({
+test('Plan execution tools are bound only for active agent executions', () => {
+  const activeAgentTools = createFixtureComposer({
     plan: {
-      store: planStoreStub(),
+      store: {} as PlanStore,
       state: activePlanState(),
       mode: 'agent',
-      onExecutionChanged: (sessionId) => notifications.push(sessionId),
     },
-  });
-  const update = composer.tools.find(({ name }) => name === 'update_plan');
-  const cancel = composer.tools.find(({ name }) => name === 'cancel_plan');
-  assert.ok(update);
-  assert.ok(cancel);
+  }).tools.map(({ name }) => name);
+  assert.equal(activeAgentTools.includes('update_plan'), true);
+  assert.equal(activeAgentTools.includes('cancel_plan'), true);
+  assert.equal(activeAgentTools.includes('SubmitPlan'), false);
 
-  await update.impl({ steps: [{ id: 'step-1', status: 'in_progress' }] }, toolContext());
-  await cancel.impl({ reason: 'User abandoned the plan.' }, toolContext());
-
-  // One invalidation per committed write: the Desktop panel refreshes from this
-  // frame instead of waiting for the end of the Turn.
-  assert.deepEqual(notifications, ['session-1', 'session-1']);
-});
-
-test('a rejected Plan execution write publishes no invalidation', async () => {
-  const notifications: string[] = [];
-  const composer = createFixtureComposer({
+  const idleAgentTools = createFixtureComposer({
     plan: {
-      store: planStoreStub(
-        new Error('PlanConflictError: update_plan must include every execution step'),
-      ),
-      state: activePlanState(),
+      store: {} as PlanStore,
+      state: emptyPlanSessionState('session-1'),
       mode: 'agent',
-      onExecutionChanged: (sessionId) => notifications.push(sessionId),
     },
-  });
-  const update = composer.tools.find(({ name }) => name === 'update_plan');
-  assert.ok(update);
+  }).tools.map(({ name }) => name);
+  assert.equal(idleAgentTools.includes('update_plan'), false);
+  assert.equal(idleAgentTools.includes('cancel_plan'), false);
+  assert.equal(idleAgentTools.includes('SubmitPlan'), false);
 
-  await assert.rejects(
-    async () => await update.impl({ steps: [] }, toolContext()),
-    /must include every execution step/,
-  );
-  assert.deepEqual(notifications, []);
+  const planModeTools = createFixtureComposer({
+    plan: {
+      store: {} as PlanStore,
+      state: emptyPlanSessionState('session-1'),
+      mode: 'plan',
+    },
+  }).tools.map(({ name }) => name);
+  assert.equal(planModeTools.includes('SubmitPlan'), true);
+  assert.equal(planModeTools.includes('update_plan'), false);
+  assert.equal(planModeTools.includes('cancel_plan'), false);
 });
 
 function planStep(status: PlanExecutionStep['status']): PlanExecutionStep {
@@ -409,60 +397,6 @@ function activePlanState(
     // Only an active execution is the Session's current one; a cancelled or
     // completed execution must not stay selected.
     ...(status === 'active' ? { activeExecutionId: 'execution-1' } : {}),
-  };
-}
-
-/**
- * Mirrors the store's own contract: the returned event type matches the
- * mutation, the event and state agree on one storeVersion, and the state carries
- * the steps the mutation asked for. A stub that drifts from those invariants
- * would let the invalidation wiring pass while the store contract is broken.
- */
-function planStoreStub(failure?: Error): PlanStore {
-  const updateExecution = async (input: {
-    steps: Array<{ id: string; status: PlanExecutionStep['status'] }>;
-  }): Promise<PlanMutationResult> => {
-    if (failure) throw failure;
-    const requested = input.steps[0];
-    const steps = [planStep(requested?.status ?? 'in_progress')];
-    const event: PlanEvent = {
-      id: 'event-1',
-      sessionId: 'session-1',
-      ts: 3,
-      storeVersion: 3,
-      type: 'plan_progress_updated',
-      executionId: 'execution-1',
-      steps,
-    };
-    return { event, state: activePlanState({ storeVersion: 3, step: steps[0] }) };
-  };
-  const cancelExecution = async (): Promise<PlanMutationResult> => {
-    if (failure) throw failure;
-    const event: PlanEvent = {
-      id: 'event-2',
-      sessionId: 'session-1',
-      ts: 4,
-      storeVersion: 4,
-      type: 'plan_execution_cancelled',
-      executionId: 'execution-1',
-      reason: 'User abandoned the plan.',
-    };
-    return {
-      event,
-      state: activePlanState({ storeVersion: 4, status: 'cancelled' }),
-    };
-  };
-  return { updateExecution, cancelExecution } as unknown as PlanStore;
-}
-
-function toolContext(): MakaToolContext {
-  return {
-    sessionId: 'session-1',
-    turnId: 'turn-1',
-    toolCallId: 'call-1',
-    cwd: '/workspace',
-    abortSignal: new AbortController().signal,
-    emitOutput: () => {},
   };
 }
 

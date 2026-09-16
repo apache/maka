@@ -20,14 +20,8 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
-import type { PlanExecution, PlanExecutionStep, PlanProposal } from '@maka/core/plan';
-
-import {
-  renderPlanExecutionRequest,
-  renderPlanModePrompt,
-  selectCollaborationTools,
-} from '../plan-mode.js';
-import { buildCancelPlanTool, buildSubmitPlanTool, buildUpdatePlanTool } from '../plan-tools.js';
+import { renderPlanModePrompt, selectCollaborationTools } from '../plan-mode.js';
+import { buildSubmitPlanTool } from '../plan-tools.js';
 import type { MakaTool } from '../tool-runtime.js';
 
 describe('Plan Mode tool surface', () => {
@@ -104,7 +98,7 @@ describe('Plan Mode tool surface', () => {
     assert.match(renderPlanModePrompt(), /plain text without Markdown formatting/);
   });
 
-  test('keeps read tools and plan controls while removing writes and subagents', () => {
+  test('keeps read tools and plan controls while removing writes and execution tools', () => {
     const selected = selectCollaborationTools({
       mode: 'plan',
       hasActiveExecution: false,
@@ -116,6 +110,7 @@ describe('Plan Mode tool surface', () => {
         tool('AskUserQuestion'),
         tool('SubmitPlan'),
         tool('update_plan'),
+        tool('cancel_plan'),
       ],
     });
     assert.deepEqual(
@@ -172,106 +167,6 @@ describe('Plan Mode tool surface', () => {
     );
   });
 });
-
-describe('Plan execution request', () => {
-  test('approval carries every step id, title and status plus the progress instruction', () => {
-    const request = renderPlanExecutionRequest({
-      kind: 'approve_proposal',
-      proposal: proposal(),
-      execution: execution([
-        step('inspect', 'Inspect the caller', 'pending'),
-        step('patch', 'Land the fix', 'pending'),
-      ]),
-    });
-
-    assert.match(request, /^Execute the approved plan execution execution-1\.\n/);
-    assert.match(request, /^Plan: Ship the plan request \(revision 2\)$/m);
-    assert.match(request, /^- inspect \[pending\] Inspect the caller$/m);
-    assert.match(request, /^- patch \[pending\] Land the fix$/m);
-    assert.match(request, /update_plan/);
-    assert.match(request, /first actionable step in_progress/);
-    assert.match(request, /cancel_plan/);
-    assert.match(request, /Do not delegate to subagents while this execution is active\./);
-    // The last update closes the execution, and a further call would be rejected
-    // as a stale execution, so the request has to forbid it explicitly.
-    assert.match(request, /do not call update_plan again after the execution has closed/);
-    // Descriptions stay in the Plan proposal: the request stays bounded by the
-    // step list, not by PLAN_TEXT_MAX_BYTES-sized prose.
-    assert.doesNotMatch(request, /Read the relevant files\./);
-  });
-
-  test('resume reports the progress reached before the interruption', () => {
-    const request = renderPlanExecutionRequest({
-      kind: 'resume_execution',
-      proposal: proposal(),
-      execution: execution([
-        step('inspect', 'Inspect the caller', 'completed'),
-        step('patch', 'Land the fix', 'in_progress'),
-      ]),
-    });
-
-    assert.match(request, /^Resume the approved plan execution execution-1\.\n/);
-    assert.match(request, /^- inspect \[completed\] Inspect the caller$/m);
-    assert.match(request, /^- patch \[in_progress\] Land the fix$/m);
-    assert.match(request, /resuming in_progress/);
-  });
-
-  test('is a pure function of the execution it is given', () => {
-    const input = {
-      kind: 'approve_proposal' as const,
-      proposal: proposal(),
-      execution: execution([
-        step('inspect', 'Inspect the caller', 'completed'),
-        step('patch', 'Land the fix', 'in_progress'),
-      ]),
-    };
-
-    // The request is persisted as the Turn's own user message, so a replay must
-    // reproduce the same bytes rather than re-deriving them from live state.
-    assert.equal(renderPlanExecutionRequest(input), renderPlanExecutionRequest(input));
-  });
-});
-
-function proposal(): PlanProposal {
-  const steps = [
-    { id: 'inspect', title: 'Inspect the caller', description: 'Read the relevant files.' },
-    { id: 'patch', title: 'Land the fix', description: 'Update the Host request.' },
-  ];
-  return {
-    planId: 'plan-1',
-    proposalId: 'proposal-1',
-    sessionId: 'session-1',
-    turnId: 'turn-1',
-    revision: 2,
-    title: 'Ship the plan request',
-    steps,
-    status: 'approved',
-    submittedAt: 1,
-  };
-}
-
-function execution(steps: PlanExecutionStep[]): PlanExecution {
-  return {
-    executionId: 'execution-1',
-    planId: 'plan-1',
-    proposalId: 'proposal-1',
-    sessionId: 'session-1',
-    status: 'active',
-    steps,
-    startedAt: 1,
-    updatedAt: 2,
-  };
-}
-
-function step(id: string, title: string, status: PlanExecutionStep['status']): PlanExecutionStep {
-  return {
-    id,
-    title,
-    description: 'Read the relevant files.',
-    status,
-    updatedAt: 2,
-  };
-}
 
 function tool(name: string, categoryHint?: MakaTool['categoryHint']): MakaTool {
   return {

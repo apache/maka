@@ -26,6 +26,11 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createSessionStore } from '@maka/storage/session-store';
+import {
+  openInteractivePlanStoreForWrite,
+  type InteractivePlanStoreWriter,
+} from '@maka/storage/plan-authority';
+import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
 import { DEFAULT_TOOL_MODE } from '@maka/core/tool-mode';
 import {
   buildInvocationOpenedEvent,
@@ -98,7 +103,15 @@ import type {
   BackendSendInput,
   BackendStopMode,
 } from '@maka/core/backend-types';
-import { PlanConflictError, emptyPlanSessionState, type PlanStore } from '@maka/core/plan';
+import {
+  PlanConflictError,
+  emptyPlanSessionState,
+  type PlanEvent,
+  type PlanSessionState,
+  type PlanStepStatus,
+  type PlanStore,
+  type UpdatePlanExecutionInput,
+} from '@maka/core/plan';
 import { MockLanguageModelV4, simulateReadableStream } from 'ai/test';
 import { createTestAiSdkBackend } from './execution-boundary-test-helpers.js';
 import { assertDoubleRunNotSealed } from './runtime-event-store-seal.js';
@@ -516,6 +529,156 @@ describe('SessionManager Plan control boundaries', () => {
       },
     );
     assert.equal((await store.readHeader(child.id)).collaborationMode, 'agent');
+  });
+});
+
+describe('SessionManager Plan terminal settlement', () => {
+  test('a completed root Turn commits the terminal steps the model already reported', async () => {
+    const harness = await mountPlanSettlement('session-1', [
+      ['step-1', 'completed'],
+      ['step-2', 'skipped'],
+    ]);
+
+    const result = await harness.manager.settleActivePlanExecutionAfterRootTurn(
+      harness.sessionId,
+      'completed',
+      'plan_root_terminal_run-1',
+    );
+
+    assert.equal(result?.event.type, 'plan_execution_completed');
+    assert.deepEqual(harness.updates, [
+      {
+        operationId: 'plan_root_terminal_run-1',
+        sessionId: harness.sessionId,
+        executionId: 'execution-1',
+        steps: [
+          { id: 'step-1', status: 'completed' },
+          { id: 'step-2', status: 'skipped' },
+        ],
+      },
+    ]);
+    // Every step is already terminal, so there is nothing to interrupt: the
+    // settlement keeps the running backend instead of disposing it.
+    assert.deepEqual(harness.runtimeKernel.disposed, []);
+  });
+
+  test('a completed root Turn interrupts an execution that never reached a terminal step', async () => {
+    const harness = await mountPlanSettlement('session-1', [
+      ['step-1', 'in_progress'],
+      ['step-2', 'pending'],
+    ]);
+
+    const result = await harness.manager.settleActivePlanExecutionAfterRootTurn(
+      harness.sessionId,
+      'completed',
+      'plan_root_terminal_run-1',
+    );
+
+    assert.equal(result?.event.type, 'plan_execution_interrupted');
+    assert.deepEqual(harness.updates, []);
+    assert.deepEqual(harness.runtimeKernel.disposed, [harness.sessionId]);
+    assert.match(harness.interrupts[0]?.reason ?? '', /completed before all Plan steps/);
+  });
+
+  test('a failed or cancelled root Turn interrupts the active execution', async () => {
+    for (const [status, expected] of [
+      ['failed', /root Turn failed/],
+      ['cancelled', /root Turn was cancelled/],
+    ] as const) {
+      const harness = await mountPlanSettlement('session-1', [['step-1', 'in_progress']]);
+
+      const result = await harness.manager.settleActivePlanExecutionAfterRootTurn(
+        harness.sessionId,
+        status,
+        `plan_root_terminal_${status}`,
+      );
+
+      assert.equal(result?.event.type, 'plan_execution_interrupted');
+      assert.deepEqual(harness.updates, []);
+      assert.deepEqual(harness.runtimeKernel.disposed, [harness.sessionId]);
+      assert.match(harness.interrupts[0]?.reason ?? '', expected);
+    }
+  });
+
+  // The retry guarantee is the Plan store's operation receipt, so it is asserted
+  // on the production store rather than a stub: a stub that hands back a receipt
+  // it was told to hand back states the stub, not the store.
+  test('a repeated settlement replays the recorded receipt without a second write', async (t) => {
+    const harness = await mountRealPlanSettlement();
+    t.after(harness.close);
+    const settle = () =>
+      harness.manager.settleActivePlanExecutionAfterRootTurn(
+        harness.sessionId,
+        'failed',
+        'plan_root_terminal_run-1',
+      );
+
+    const first = await settle();
+    assert.equal(first?.event.type, 'plan_execution_interrupted');
+    assert.deepEqual(harness.runtimeKernel.disposed, [harness.sessionId]);
+
+    const replay = await settle();
+
+    assert.deepEqual(replay?.event, first?.event, 'a replay must return the recorded event');
+    assert.equal(replay?.state.storeVersion, first?.state.storeVersion, 'a replay must not write');
+    assert.equal(replay?.state.activeExecutionId, undefined);
+    assert.equal(
+      (await harness.store.readState(harness.sessionId)).storeVersion,
+      first?.state.storeVersion,
+    );
+    assert.deepEqual(
+      harness.runtimeKernel.disposed,
+      [harness.sessionId],
+      'a replay must not dispose the Plan backend a second time',
+    );
+  });
+
+  test('settling an execution that already finished writes nothing', async (t) => {
+    const harness = await mountRealPlanSettlement();
+    t.after(harness.close);
+    // The Turn that ran the plan already reported every step through the store.
+    await harness.store.updateExecution({
+      sessionId: harness.sessionId,
+      executionId: harness.executionId,
+      steps: [
+        { id: 'step-1', status: 'completed' },
+        { id: 'step-2', status: 'completed' },
+      ],
+    });
+    const completed = await harness.store.readState(harness.sessionId);
+    assert.equal(completed.activeExecutionId, undefined);
+
+    assert.equal(
+      await harness.manager.settleActivePlanExecutionAfterRootTurn(
+        harness.sessionId,
+        'completed',
+        'plan_root_terminal_run-2',
+      ),
+      null,
+    );
+
+    assert.equal(
+      (await harness.store.readState(harness.sessionId)).storeVersion,
+      completed.storeVersion,
+    );
+  });
+
+  test('a Session without Plan authority settles nothing', async () => {
+    const manager = new SessionManager({
+      store: new MemorySessionStore(),
+      backends: new BackendRegistry(),
+      newId: nextId(),
+      now: nextNow(1),
+    });
+
+    assert.equal(
+      await manager.settleActivePlanExecutionAfterRootTurn(
+        'session-without-plan-authority',
+        'completed',
+        'plan_root_terminal_run-1',
+      ),
+      null,
+    );
   });
 });
 
@@ -12849,6 +13012,160 @@ class GatedSteeringBackend implements AgentBackend {
   async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
 
   async dispose(): Promise<void> {}
+}
+
+/**
+ * A Session with Plan authority whose active execution carries the given step
+ * statuses, plus the two writes the terminal settlement can make. Operation
+ * receipts stay empty here: the store that records them is exercised on its
+ * production implementation below.
+ */
+async function mountPlanSettlement(
+  sessionId: string,
+  steps: ReadonlyArray<readonly [string, PlanStepStatus]>,
+): Promise<{
+  manager: SessionManager;
+  sessionId: string;
+  updates: UpdatePlanExecutionInput[];
+  interrupts: Array<{ sessionId: string; reason: string; operationId: string | undefined }>;
+  runtimeKernel: DelegatingRuntimeKernel;
+}> {
+  const store = new MemorySessionStore();
+  const runtimeKernel = new DelegatingRuntimeKernel();
+  const updates: UpdatePlanExecutionInput[] = [];
+  const interrupts: Array<{
+    sessionId: string;
+    reason: string;
+    operationId: string | undefined;
+  }> = [];
+  const planState: PlanSessionState = {
+    ...emptyPlanSessionState(sessionId),
+    storeVersion: 2,
+    activeExecutionId: 'execution-1',
+    executions: [
+      {
+        executionId: 'execution-1',
+        planId: 'plan-1',
+        proposalId: 'proposal-1',
+        sessionId,
+        status: 'active',
+        steps: steps.map(([id, status], index) => ({
+          id,
+          title: `Step ${index + 1}`,
+          description: `Do step ${index + 1}.`,
+          status,
+          updatedAt: 2,
+        })),
+        startedAt: 1,
+        updatedAt: 2,
+      },
+    ],
+  };
+  const manager = new SessionManager({
+    store,
+    backends: new BackendRegistry(),
+    newId: nextId(),
+    now: nextNow(1),
+    runtimeKernel,
+    planStore: {
+      readState: async () => structuredClone(planState),
+      readOperationReceipt: async () => undefined,
+      interruptActiveExecution: async (target: string, reason: string, operationId?: string) => {
+        interrupts.push({ sessionId: target, reason, operationId });
+        return {
+          event: {
+            id: operationId ?? 'interrupt-operation',
+            sessionId: target,
+            ts: 3,
+            storeVersion: 3,
+            type: 'plan_execution_interrupted',
+            executionId: 'execution-1',
+            reason,
+          } satisfies PlanEvent,
+          state: { ...structuredClone(planState), activeExecutionId: undefined, storeVersion: 3 },
+        };
+      },
+      updateExecution: async (input: UpdatePlanExecutionInput) => {
+        updates.push(input);
+        return {
+          event: {
+            id: input.operationId ?? 'update-operation',
+            sessionId: input.sessionId,
+            ts: 3,
+            storeVersion: 3,
+            type: 'plan_execution_completed',
+            executionId: input.executionId,
+            steps: structuredClone(planState.executions[0]!.steps),
+          } satisfies PlanEvent,
+          state: { ...structuredClone(planState), activeExecutionId: undefined, storeVersion: 3 },
+        };
+      },
+    } as unknown as PlanStore,
+  });
+  await manager.createSession(makeInput());
+  return { manager, sessionId, updates, interrupts, runtimeKernel };
+}
+
+/**
+ * A production Plan store on a temporary storage root holding one approved
+ * proposal and the execution it started, plus the Session Manager that settles
+ * it. The settlement retry is keyed by the store's own operation receipt, so the
+ * cases that assert it run against the real store rather than a stub.
+ */
+async function mountRealPlanSettlement(): Promise<{
+  manager: SessionManager;
+  store: InteractivePlanStoreWriter;
+  sessionId: string;
+  executionId: string;
+  runtimeKernel: DelegatingRuntimeKernel;
+  close(): Promise<void>;
+}> {
+  const root = await mkdtemp(join(tmpdir(), 'maka-plan-settlement-'));
+  const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(owner, 'Unable to acquire the interactive storage root');
+  if (!owner) throw new Error('Unable to acquire the interactive storage root');
+  const store = await openInteractivePlanStoreForWrite(owner.lease);
+  const runtimeKernel = new DelegatingRuntimeKernel();
+  const manager = new SessionManager({
+    store: new MemorySessionStore(),
+    backends: new BackendRegistry(),
+    newId: nextId(),
+    now: nextNow(1),
+    runtimeKernel,
+    planStore: store,
+  });
+  const session = await manager.createSession(makeInput());
+  const submitted = await store.submitProposal({
+    sessionId: session.id,
+    turnId: 'turn-plan-1',
+    title: 'Ship the plan request',
+    steps: [
+      { id: 'step-1', title: 'Step 1', description: 'Do step 1.' },
+      { id: 'step-2', title: 'Step 2', description: 'Do step 2.' },
+    ],
+  });
+  assert.equal(submitted.event.type, 'plan_submitted');
+  const approved = await store.approveProposal({
+    sessionId: session.id,
+    proposalId: submitted.event.proposal.proposalId,
+    expectedRevision: submitted.event.proposal.revision,
+    expectedStoreVersion: submitted.state.storeVersion,
+    operationId: 'turn-plan-1',
+  });
+  assert.equal(approved.event.type, 'plan_approved');
+  return {
+    manager,
+    store,
+    sessionId: session.id,
+    executionId: approved.event.execution.executionId,
+    runtimeKernel,
+    close: async () => {
+      store.close();
+      await owner.close();
+      await rm(root, { recursive: true, force: true });
+    },
+  };
 }
 
 class DelegatingRuntimeKernel implements RuntimeKernelLike {

@@ -128,12 +128,6 @@ export interface InteractiveRunComposerInput {
     readonly state: PlanSessionState;
     readonly mode: 'agent' | 'plan';
     readonly permissionMode?: PermissionMode;
-    /**
-     * Publishes the `plan` Session-domain invalidation after a Plan execution
-     * tool commits, so a subscribed Client re-reads the projection while the
-     * Turn is still running.
-     */
-    readonly onExecutionChanged?: (sessionId: string) => void;
   };
   readonly deepResearch?: {
     readonly tools: readonly MakaTool[];
@@ -350,8 +344,6 @@ export interface InteractiveRunComposerFactoryInput
   readonly childTools?: readonly MakaTool[];
   readonly worktreePatchWriteBackAvailable?: boolean;
   readonly planStore?: PlanStore;
-  /** Publishes a Plan projection invalidation after a Plan execution tool commits. */
-  readonly onPlanExecutionChanged?: (sessionId: string) => void;
   readonly deepResearchTools?: readonly MakaTool[];
   /** Internal dependency seam for deterministic Host shell-resolution tests. */
   readonly resolveTurnShellPlan?: typeof resolveTurnShellPlan;
@@ -504,9 +496,6 @@ export function createInteractiveRunComposerFactory(
                 state: planState,
                 mode: backendContext.header.collaborationMode ?? 'agent',
                 permissionMode: backendContext.header.permissionMode,
-                ...(input.onPlanExecutionChanged
-                  ? { onExecutionChanged: input.onPlanExecutionChanged }
-                  : {}),
               },
             }
           : {}),
@@ -578,14 +567,8 @@ function buildDefaultHostTools(
       ? [buildSubmitPlanTool(plan.store, interruptedExecution?.executionId)]
       : activeExecution
         ? [
-            notifyPlanExecutionChanged(
-              buildUpdatePlanTool(plan.store, activeExecution.executionId),
-              plan.onExecutionChanged,
-            ),
-            notifyPlanExecutionChanged(
-              buildCancelPlanTool(plan.store, activeExecution.executionId),
-              plan.onExecutionChanged,
-            ),
+            buildUpdatePlanTool(plan.store, activeExecution.executionId),
+            buildCancelPlanTool(plan.store, activeExecution.executionId),
           ]
         : [];
   const toolNames = [
@@ -623,27 +606,6 @@ function buildDefaultHostTools(
 function requireDeepResearchTools(tools: readonly MakaTool[] | undefined): readonly MakaTool[] {
   if (!tools) throw new Error('Runtime Host Deep Research tools are not composed');
   return tools;
-}
-
-/**
- * Publishes a Plan projection invalidation once a Plan execution tool has
- * committed. Without it a subscribed Client keeps the projection it read when
- * the execution started and only refreshes at the end of the Turn, so the
- * Desktop Plan panel shows `0/N` while steps are already completing.
- */
-function notifyPlanExecutionChanged(
-  tool: MakaTool,
-  notify: ((sessionId: string) => void) | undefined,
-): MakaTool {
-  if (!notify) return tool;
-  return {
-    ...tool,
-    impl: async (input, context) => {
-      const result = await tool.impl(input, context);
-      notify(context.sessionId);
-      return result;
-    },
-  };
 }
 
 function filterToolGroups(groups: readonly ToolGroup[], names: ReadonlySet<string>): ToolGroup[] {

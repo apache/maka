@@ -25,10 +25,10 @@ import {
   PlanConflictError,
   planUserControlMutationInput,
   type PlanEvent,
+  type PlanExecution,
   type PlanMutationResult,
   type PlanSessionState,
 } from '@maka/core/plan';
-import { renderPlanExecutionRequest } from '@maka/runtime/plan-mode';
 import type { SessionManager } from '@maka/runtime/session-manager';
 import {
   isSessionNotFoundError,
@@ -74,7 +74,6 @@ export interface HostPlanCoordinatorInput {
   readonly sessionAdmission: SessionAdmissionGate;
   readonly isSessionActive: (sessionId: string) => boolean;
   readonly refreshContinuity: (sessionId: string, lease: SessionAdmissionLease) => Promise<void>;
-  readonly onProjectionChanged: (sessionId: string) => void;
   readonly requestDrain: () => void;
   readonly root: Pick<RootTurnCoordinator, 'startHostedExternalTransition'>;
 }
@@ -96,7 +95,6 @@ export class HostPlanCoordinator {
   readonly #sessionAdmission: SessionAdmissionGate;
   readonly #isSessionActive: (sessionId: string) => boolean;
   readonly #refreshContinuity: HostPlanCoordinatorInput['refreshContinuity'];
-  readonly #onProjectionChanged: HostPlanCoordinatorInput['onProjectionChanged'];
   readonly #requestDrain: () => void;
   readonly #root: HostPlanCoordinatorInput['root'];
 
@@ -107,7 +105,6 @@ export class HostPlanCoordinator {
     this.#sessionAdmission = input.sessionAdmission;
     this.#isSessionActive = input.isSessionActive;
     this.#refreshContinuity = input.refreshContinuity;
-    this.#onProjectionChanged = input.onProjectionChanged;
     this.#requestDrain = input.requestDrain;
     this.#root = input.root;
   }
@@ -231,7 +228,6 @@ export class HostPlanCoordinator {
     }
     try {
       const result = await this.#applyControl(input);
-      this.#onProjectionChanged(input.sessionId);
       await this.#refreshContinuity(input.sessionId, lease);
       return { ok: true, result: projectControlResult(result) };
     } catch (error) {
@@ -454,11 +450,20 @@ function planExecutionRequest(
   executionId: string,
 ): string {
   const execution = state.executions.find((candidate) => candidate.executionId === executionId);
-  const proposal = execution
-    ? state.proposals.find((candidate) => candidate.proposalId === execution.proposalId)
-    : undefined;
-  // A missing projection must not block the Turn the user already approved, so
-  // the request degrades to the execution identity alone.
-  if (!execution || !proposal) return planTurnLine(kind, executionId);
-  return renderPlanExecutionRequest({ kind, proposal, execution });
+  if (!execution) return planTurnLine(kind, executionId);
+  return renderExecutionRequest(kind, execution);
+}
+
+function renderExecutionRequest(
+  kind: PlanTurnStartInput['kind'],
+  execution: PlanExecution,
+): string {
+  return [
+    planTurnLine(kind, execution.executionId),
+    '',
+    'Steps:',
+    ...execution.steps.map((step) => `- ${step.id} [${step.status}] ${step.title}`),
+    '',
+    'Use update_plan to keep every step status current.',
+  ].join('\n');
 }
