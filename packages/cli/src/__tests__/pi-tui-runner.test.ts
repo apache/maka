@@ -5898,6 +5898,7 @@ Slug openai-work<cursor>
     const driver = new SlashCommandDriver([]);
     let imports = 0;
     const externalSessions = {
+      listScopes: () => ['current_workspace', 'all'] as const,
       listSources: async () => ['claude-code'],
       listSessions: async () => ({
         sessions: [
@@ -5965,6 +5966,7 @@ Slug openai-work<cursor>
       const terminal = new FakeTerminal();
       const driver = new SlashCommandDriver([]);
       const externalSessions = {
+        listScopes: () => ['current_workspace', 'all'] as const,
         listSources: async () => ['opencode'],
         listSessions: async () => ({
           sessions: [
@@ -6012,14 +6014,12 @@ Slug openai-work<cursor>
     }
   });
 
-  test('derives external catalog scope from the Host workspace, not the Session picker tab', async () => {
+  test('takes external catalog scope from its surface, not the Session driver', async () => {
     const terminal = new FakeTerminal();
     const driver = new SlashCommandDriver([]);
-    Object.assign(driver, {
-      getWorkspaceTarget: () => ({ kind: 'host_path' as const, path: '/repo' }),
-    });
     const scopes: string[] = [];
     const externalSessions = {
+      listScopes: () => ['current_workspace', 'all'] as const,
       listSources: async () => ['opencode'],
       listSessions: async ({ scope }: { scope: string }) => {
         scopes.push(scope);
@@ -6059,6 +6059,7 @@ Slug openai-work<cursor>
     let catalogReads = 0;
     let importCalls = 0;
     const externalSessions = {
+      listScopes: () => ['current_workspace', 'all'] as const,
       listSources: async () => ['opencode'],
       listSessions: async () => {
         catalogReads += 1;
@@ -6142,6 +6143,7 @@ Slug openai-work<cursor>
     let catalogReads = 0;
     let importCalls = 0;
     const externalSessions = {
+      listScopes: () => ['current_workspace', 'all'] as const,
       listSources: async () => ['opencode'],
       listSessions: async () => {
         catalogReads += 1;
@@ -6201,6 +6203,7 @@ Slug openai-work<cursor>
     const driver = new SlashCommandDriver([]);
     const cursors: Array<string | undefined> = [];
     const externalSessions = {
+      listScopes: () => ['current_workspace', 'all'] as const,
       listSources: async () => ['opencode'],
       listSessions: async ({ cursor }: { cursor?: string }) => {
         cursors.push(cursor);
@@ -6252,6 +6255,7 @@ Slug openai-work<cursor>
     const driver = new FailingSwitchSessionDriver([]);
     let imports = 0;
     const externalSessions = {
+      listScopes: () => ['current_workspace', 'all'] as const,
       listSources: async () => ['opencode'],
       listSessions: async () => ({
         sessions: [
@@ -6300,6 +6304,7 @@ Slug openai-work<cursor>
     const terminal = new FakeTerminal();
     const driver = new FailingDiscardSideConversationDriver([]);
     const externalSessions = {
+      listScopes: () => ['current_workspace', 'all'] as const,
       listSources: async () => ['opencode'],
       listSessions: async () => ({
         sessions: [
@@ -6354,6 +6359,7 @@ Slug openai-work<cursor>
     const terminal = new FakeTerminal();
     const driver = new SlashCommandDriver([fakeSessionSummary('session-2', '/repo')]);
     const externalSessions = {
+      listScopes: () => ['current_workspace', 'all'] as const,
       listSources: async (): Promise<readonly string[]> => {
         throw new Error('unavailable');
       },

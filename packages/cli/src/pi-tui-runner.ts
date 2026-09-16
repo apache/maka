@@ -66,6 +66,7 @@ import { listApiKeyOnboardableProviders } from './onboarding-catalog.js';
 import type {
   ConnectionIdentity,
   MakaExternalSessionSurface,
+  ExternalSessionCatalogScope,
   MakaOnboardingSurface,
   MakaPiTuiTurnActivitySurface,
   MakaPiTuiHostControl,
@@ -3095,7 +3096,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
 
   const showExternalSessionPage = async (
     adapterId: string,
-    scope: 'current_workspace' | 'all',
+    scope: ExternalSessionCatalogScope,
     loaded: readonly ExternalSessionCatalogItem[] = [],
     cursor?: string,
   ): Promise<void> => {
@@ -3142,11 +3143,16 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     if (page.nextCursor) {
       items.push({ value: 'external:load-more', label: copy.externalLoadMore });
     }
-    items.push({
-      value: 'external:toggle-workspace',
-      label:
-        scope === 'current_workspace' ? copy.externalAllWorkspaces : copy.externalCurrentWorkspace,
-    });
+    const alternateScope = input.externalSessions
+      .listScopes()
+      .find((candidate) => candidate !== scope);
+    if (alternateScope) {
+      items.push({
+        value: 'external:toggle-workspace',
+        label:
+          alternateScope === 'all' ? copy.externalAllWorkspaces : copy.externalCurrentWorkspace,
+      });
+    }
     showSelectPicker(
       formatUiMessage(
         copy.externalSessionTitle,
@@ -3160,11 +3166,8 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
           void showExternalSessionPage(adapterId, scope, sessions, page.nextCursor);
           return;
         }
-        if (item.value === 'external:toggle-workspace') {
-          void showExternalSessionPage(
-            adapterId,
-            scope === 'current_workspace' ? 'all' : 'current_workspace',
-          );
+        if (item.value === 'external:toggle-workspace' && alternateScope) {
+          void showExternalSessionPage(adapterId, alternateScope);
           return;
         }
         const source = byValue.get(item.value);
@@ -3188,13 +3191,11 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     );
   };
 
-  /** External catalogs follow the Host attachment, not the Maka picker tab. */
-  const externalCatalogScope = (): 'current_workspace' | 'all' =>
-    input.driver.getWorkspaceTarget() === undefined ? 'all' : 'current_workspace';
-
   const showExternalSourcePicker = (adapterIds: readonly string[]): void => {
+    if (!input.externalSessions) return;
+    const initialScope = input.externalSessions.listScopes()[0];
     if (adapterIds.length === 1) {
-      void showExternalSessionPage(adapterIds[0]!, externalCatalogScope());
+      void showExternalSessionPage(adapterIds[0]!, initialScope);
       return;
     }
     const copy = TUI_SESSION_ACTIONS_COPY[locale];
@@ -3205,7 +3206,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         value: adapterId,
         label: externalSourceLabel(adapterId),
       })),
-      (item) => void showExternalSessionPage(item.value, externalCatalogScope()),
+      (item) => void showExternalSessionPage(item.value, initialScope),
       { minPrimaryColumnWidth: 20, maxPrimaryColumnWidth: 40 },
     );
   };

@@ -198,11 +198,15 @@ export interface SessionRecapGenerator {
   ): Promise<{ ok: true; text: string; raw: string } | { ok: false; error: string }>;
 }
 
+export type ExternalSessionCatalogScope = 'current_workspace' | 'all';
+
 export interface MakaExternalSessionSurface {
+  /** Available catalog scopes in initial-display order. */
+  listScopes(): readonly [ExternalSessionCatalogScope, ...ExternalSessionCatalogScope[]];
   listSources(): Promise<readonly string[]>;
   listSessions(input: {
     readonly adapterId: string;
-    readonly scope: 'current_workspace' | 'all';
+    readonly scope: ExternalSessionCatalogScope;
     readonly cursor?: string;
   }): Promise<{
     readonly sessions: readonly ExternalSessionCatalogItem[];
