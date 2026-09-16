@@ -21,9 +21,11 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
 
 import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-stores';
+import { OPERATIONAL_STATE_DATABASE_NAME } from '@maka/storage/operational-state-store';
 import { openInteractivePlanStoreForWrite } from '@maka/storage/plan-authority';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
 
@@ -111,9 +113,88 @@ test('a resumed Plan reports the progress reached before the interruption', asyn
   }
 });
 
+test('a step title persisted before the single-line rule is rendered on one line', async () => {
+  const fixture = await openFixture();
+  try {
+    const transition = captureTransitionRequest(fixture);
+    const session = await fixture.createSession();
+    const submitted = await fixture.store.submitProposal({
+      operationId: 'submit-1',
+      sessionId: session.id,
+      turnId: 'turn-1',
+      title: 'Ship the plan request',
+      steps: STEPS,
+    });
+    assert.equal(submitted.event.type, 'plan_submitted');
+    if (submitted.event.type !== 'plan_submitted') throw new Error('Plan was not submitted');
+
+    // A row the current write layer cannot produce any more: the store reads the
+    // persisted envelope, so only the title carries the line break.
+    rewritePersistedStepTitle(fixture, session.id, 'inspect', 'Inspect\nthe caller');
+
+    const approved = await transition.coordinator.handlers['plan.turn.start'](
+      {
+        kind: 'approve_proposal',
+        sessionId: session.id,
+        proposalId: submitted.event.proposal.proposalId,
+        expectedRevision: submitted.event.proposal.revision,
+        expectedStoreVersion: submitted.state.storeVersion,
+        turnId: 'approve-turn',
+      },
+      null as never,
+    );
+    assert.ok(approved.ok);
+
+    const request = transition.requests[0];
+    assert.ok(request);
+    assert.match(request.text, /^- inspect \[pending\] Inspect the caller$/m);
+    // One line per step: a break inside a title must not read as a second step.
+    assert.deepEqual(
+      request.text.split('\n').filter((line) => line.startsWith('- ')),
+      ['- inspect [pending] Inspect the caller', '- patch [pending] Land the fix'],
+    );
+  } finally {
+    await fixture.close();
+  }
+});
+
+/** Rewrites one persisted step title, leaving the stored event envelope intact. */
+function rewritePersistedStepTitle(
+  fixture: Fixture,
+  sessionId: string,
+  stepId: string,
+  title: string,
+): void {
+  const database = new DatabaseSync(join(fixture.root, OPERATIONAL_STATE_DATABASE_NAME));
+  try {
+    const row = database
+      .prepare(
+        'SELECT sequence, record_json FROM workflow_plan_events WHERE session_id = ? ORDER BY sequence LIMIT 1',
+      )
+      .get(sessionId) as { sequence?: unknown; record_json?: unknown } | undefined;
+    if (typeof row?.sequence !== 'number' || typeof row.record_json !== 'string') {
+      throw new Error('Persisted Plan event was not found');
+    }
+    const event = JSON.parse(row.record_json) as {
+      proposal?: { steps?: Array<{ id: string; title: string }> };
+    };
+    const step = event.proposal?.steps?.find((candidate) => candidate.id === stepId);
+    if (!step) throw new Error(`Persisted Plan step ${stepId} was not found`);
+    step.title = title;
+    database
+      .prepare(
+        'UPDATE workflow_plan_events SET record_json = ? WHERE session_id = ? AND sequence = ?',
+      )
+      .run(JSON.stringify(event), sessionId, row.sequence);
+  } finally {
+    database.close();
+  }
+}
+
 interface Fixture {
   store: HostPlanCoordinatorInput['store'];
   sessions: Awaited<ReturnType<typeof openInteractiveExecutionStoresForWrite>>;
+  root: string;
   createSession(): Promise<{ id: string }>;
   close(): Promise<void>;
 }
@@ -170,6 +251,7 @@ async function openFixture(): Promise<Fixture> {
   return {
     store,
     sessions,
+    root,
     createSession: () =>
       sessions.sessionStore.create({
         cwd: root,

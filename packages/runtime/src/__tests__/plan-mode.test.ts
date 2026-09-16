@@ -49,6 +49,29 @@ describe('Plan Mode tool surface', () => {
       }).success,
       false,
     );
+    const multiLineTitle = schema.safeParse({
+      title: 'Plan',
+      steps: [{ id: 'inspect', title: 'Inspect\nthe code', description: 'Read files.' }],
+    }) as { success: boolean; error?: { issues: Array<{ message: string }> } };
+    assert.equal(multiLineTitle.success, false);
+    assert.match(multiLineTitle.error?.issues[0]?.message ?? '', /must be a single line/);
+    assert.equal(
+      schema.safeParse({
+        title: 'Plan',
+        steps: [{ id: 'inspect', title: 'Inspect\u2028the code', description: 'Read files.' }],
+      }).success,
+      false,
+    );
+    // Only the title is held to one line: a description may carry a break.
+    assert.equal(
+      schema.safeParse({
+        title: 'Plan',
+        steps: [
+          { id: 'inspect', title: 'Inspect code', description: 'Read the files.\nThen report.' },
+        ],
+      }).success,
+      true,
+    );
     assert.equal(
       schema.safeParse({
         title: 'Plan',

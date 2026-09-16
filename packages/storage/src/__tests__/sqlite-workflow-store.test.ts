@@ -571,6 +571,15 @@ describe('SQLite workflow stores', () => {
           }),
           /projection item limit/,
         );
+        await assert.rejects(
+          store.submitProposal({
+            sessionId: SESSION_ID,
+            turnId: 'turn-4',
+            title: 'Multi-line step title',
+            steps: [{ id: 'step-1', title: 'Reject\nthe input', description: 'Multi-line title' }],
+          }),
+          /Plan step title must be a single line/,
+        );
         assert.equal((await store.readState(SESSION_ID)).storeVersion, 0);
       } finally {
         store.close();

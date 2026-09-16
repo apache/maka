@@ -37,6 +37,7 @@ export const PLAN_STEP_TITLE_MAX_CHARS = 30;
 
 const PLAN_ENTITY_ID_PATTERN = new RegExp(`^[A-Za-z0-9_-]{1,${PLAN_ENTITY_ID_MAX_CHARS}}$`);
 const PLAN_TEXT_ENCODER = new TextEncoder();
+const PLAN_LINE_BREAK_PATTERN = /[\r\n\u0085\u2028\u2029]/;
 
 export function isCanonicalPlanEntityId(value: string): boolean {
   return PLAN_ENTITY_ID_PATTERN.test(value);
@@ -48,6 +49,24 @@ export function planEncodedByteLength(value: unknown): number {
 
 export function isPlanTextWithinLimit(value: string, maxBytes = PLAN_TEXT_MAX_BYTES): boolean {
   return PLAN_TEXT_ENCODER.encode(value).byteLength <= maxBytes;
+}
+
+/**
+ * A Plan step title is rendered on one line — in the execution request the model
+ * receives, and in the panel — so a break inside it splits one step into two
+ * lines. `\r`, NEL, LINE SEPARATOR and PARAGRAPH SEPARATOR end a line for a
+ * reader or a renderer exactly as `\n` does, so they count as a break too.
+ */
+export function planTextHasLineBreak(value: string): boolean {
+  return PLAN_LINE_BREAK_PATTERN.test(value);
+}
+
+/**
+ * Flattens text onto one line by collapsing each line break, together with the
+ * whitespace around it, into a single space.
+ */
+export function singleLinePlanText(value: string): string {
+  return value.replace(/\s*(?:\r\n|[\r\n\u0085\u2028\u2029])\s*/g, ' ').trim();
 }
 
 export interface PlanStepDefinition {
