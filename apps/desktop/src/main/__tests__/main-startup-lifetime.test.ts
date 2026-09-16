@@ -103,7 +103,7 @@ test('mounts the handoff overlay inside the locale providers', () => {
 });
 
 test('creates the main window before starting Local Host reconciliation', () => {
-  const managerCreate = bootSource.indexOf('runtimeHostManager = createLocalRuntimeHostManager()');
+  const managerCreate = bootSource.indexOf("runtimeHostManager = startupTasks.runTaskSync(\n  'connect-runtime-host'");
   const lifecycleWire = bootSource.indexOf('wireLifecycle();', managerCreate);
   const hostStart = bootSource.indexOf('runtimeHostManager?.start()', managerCreate);
   assert.ok(managerCreate >= 0);
@@ -115,9 +115,9 @@ test('creates the main window before starting Local Host reconciliation', () => 
 test('does not release renderer IPC before persistent handlers are registered', () => {
   assert.match(mainSource, /await boot\.runtimeHostBootReady;/u);
   assert.ok(mainSource.indexOf('await boot.runtimeHostBootReady;') < mainSource.indexOf('bootContext.markIpcReady();'));
-  assert.match(bootSource, /export const runtimeHostBootReady = \(async \(\) => \{/u);
+  assert.match(bootSource, /export const runtimeHostBootReady = Promise\.resolve\(/u);
   const readyStart = bootSource.indexOf('export const runtimeHostBootReady');
-  const readyEnd = bootSource.indexOf('})();', readyStart) + '})();'.length;
+  const readyEnd = bootSource.indexOf('\n);', readyStart) + '\n);'.length;
   const readyBody = bootSource.slice(readyStart, readyEnd);
   assert.match(readyBody, /registerDesktopWorkBoard\(\)/u);
   assert.match(bootSource, /if \(!registerDesktopWorkBoard\(\)\) \{/u);
