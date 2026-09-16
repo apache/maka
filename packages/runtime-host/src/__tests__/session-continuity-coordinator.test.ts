@@ -1357,6 +1357,95 @@ test('opening mid-stream pays out the streamed prefix before live deltas without
   coordinator.close();
 });
 
+// #5365: a subscriber has one delivery order. A message that needs no catch-up
+// used to be delivered and completed while an earlier message was still being
+// paid out, so the answers arrived in the opposite order to the one the Host
+// produced and a reader picking "the last answer" picked the earlier one.
+test('a later message cannot complete ahead of the prefix a subscriber is still being paid', async () => {
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => canonical(),
+    new SessionAdmissionGate(),
+  );
+  let first = '';
+  for (let index = 0; index < 24; index += 1) {
+    const text = `${index}:${'x'.repeat(8 * 1024)}`;
+    first += text;
+    await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', { ...textEvent(index), text });
+  }
+  const sink = new GatedSink();
+  const connection = coordinator.attachConnection('connection-order', sink);
+  const opened = await open(coordinator, 'connection-order');
+  connection.activate(opened.subscriptionId);
+
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', textCompleteEvent('message-1', first));
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', {
+    ...textEvent(0, 'message-2'),
+    text: 'FINAL ANSWER',
+  });
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', {
+    ...textCompleteEvent('message-2', 'FINAL ANSWER'),
+    messageId: 'message-2',
+  });
+  sink.release();
+  await waitFor(() => completionOrder(sink).length === 2);
+
+  assert.deepEqual(completionOrder(sink), ['message-1', 'message-2']);
+  coordinator.close();
+});
+
+// #5365: the Turn ending does not unsay what the Host already streamed. The
+// terminal publication used to drop every unpaid backlog, so a subscriber was
+// left holding a truncated answer that the client then reported as complete.
+test('a terminal publication finishes the prefix it found unpaid instead of dropping it', async () => {
+  let projection = canonical({
+    rootTurn: { sessionId: SESSION_ID, turnId: 'turn-1', runId: 'run-1', status: 'running' },
+  });
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => projection,
+    new SessionAdmissionGate(),
+  );
+  let streamed = '';
+  for (let index = 0; index < 24; index += 1) {
+    const text = `${index}:${'x'.repeat(8 * 1024)}`;
+    streamed += text;
+    await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', { ...textEvent(index), text });
+  }
+  const sink = new GatedSink();
+  const connection = coordinator.attachConnection('connection-terminal', sink);
+  const opened = await open(coordinator, 'connection-terminal');
+  connection.activate(opened.subscriptionId);
+  await coordinator.acceptRuntimeEvent(
+    SESSION_ID,
+    'run-1',
+    textCompleteEvent('message-1', streamed),
+  );
+
+  await coordinator.holdTerminalPublication(SESSION_ID, 'turn-1', 'run-1');
+  projection = canonical({
+    rootTurn: {
+      sessionId: SESSION_ID,
+      turnId: 'turn-1',
+      runId: 'run-1',
+      status: 'completed',
+      terminalEventId: 'event-terminal',
+    },
+  });
+  await coordinator.publishTerminalProjection(SESSION_ID, 'turn-1', 'run-1');
+  sink.release();
+  await waitFor(() => completionOrder(sink).length === 1);
+
+  let received = '';
+  for (const frame of sink.frames) {
+    if (frame.kind !== 'subscription.session_delta') continue;
+    assert.equal(frame.delta.startOffset, received.length);
+    received += frame.delta.text;
+  }
+  assert.equal(received, streamed);
+  coordinator.close();
+});
+
 test('a stream completing before a mid-stream subscriber catches up is still paid out in full', async () => {
   const coordinator = new SessionContinuityCoordinator(
     HOST_EPOCH,
@@ -2001,6 +2090,34 @@ class RecordingSink implements SessionContinuityFrameSink {
   async send(frame: SubscriptionFrame): Promise<void> {
     this.frames.push(frame);
   }
+}
+
+/** Records frames but holds each send until released, so a backlog stays unpaid. */
+class GatedSink implements SessionContinuityFrameSink {
+  readonly frames: SubscriptionFrame[] = [];
+  #held: Array<() => void> = [];
+  #open = false;
+
+  async send(frame: SubscriptionFrame): Promise<void> {
+    this.frames.push(frame);
+    if (this.#open) return;
+    await new Promise<void>((resolve) => this.#held.push(resolve));
+  }
+
+  release(): void {
+    this.#open = true;
+    const held = this.#held;
+    this.#held = [];
+    for (const resume of held) resume();
+  }
+}
+
+function completionOrder(sink: { frames: SubscriptionFrame[] }): string[] {
+  return sink.frames.flatMap((frame) =>
+    frame.kind === 'subscription.session_delta' && frame.delta.complete
+      ? [frame.delta.messageId]
+      : [],
+  );
 }
 
 function textCompleteEvent(messageId: string, text: string) {

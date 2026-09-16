@@ -176,6 +176,12 @@ interface Subscriber {
    * is paid out as the queue drains, so a long stream cannot overflow the queue.
    */
   assistantBacklog: Map<string, AssistantBacklog>;
+  /**
+   * Work that arrived while a backlog was still unpaid. A subscriber has one
+   * delivery order, so anything produced after the text it is catching up on
+   * waits here instead of overtaking it.
+   */
+  deferred: Array<() => void>;
 }
 
 interface AssistantBacklog {
@@ -654,10 +660,27 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
         state.canonical = canonical;
         state.revision = nextRevision;
         delete state.terminalPublicationFence;
+        // A subscriber still being paid a stream's prefix has not seen the end
+        // of it. The Turn ending does not make that text untrue, so each
+        // backlog keeps its own copy of the stream and finishes paying it; the
+        // terminal projection queues behind that, never over it.
+        for (const subscriber of state.subscribers.values()) {
+          for (const [key, backlog] of subscriber.assistantBacklog) {
+            if (backlog.completion) continue;
+            const stream = state.assistantStreams.get(key);
+            if (!stream) {
+              subscriber.assistantBacklog.delete(key);
+              continue;
+            }
+            backlog.completion = { runId: rootTurn.runId, stream: { ...stream } };
+          }
+        }
         state.assistantStreams.clear();
         state.toolResultPreviews.clear();
-        for (const subscriber of state.subscribers.values()) subscriber.assistantBacklog.clear();
         this.#broadcastProjection(state, snapshot);
+        for (const subscriber of state.subscribers.values()) {
+          this.#payAssistantBacklog(subscriber, state);
+        }
         if (state.subscribers.size === 0) this.#sessions.delete(sessionId);
       },
       admission,
@@ -719,9 +742,13 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
         });
         for (const subscriber of state.subscribers.values()) {
           if (subscriber.assistantBacklog.has(prefixKey)) {
+            // This text is part of the prefix still being paid out; the payout
+            // reads the accumulated stream, so it carries this delta already.
             this.#payAssistantBacklog(subscriber, state);
           } else {
-            this.#enqueueAssistantDelta(subscriber, sessionId, runId, event, kind, startOffset);
+            this.#deliverInOrder(subscriber, () =>
+              this.#enqueueAssistantDelta(subscriber, sessionId, runId, event, kind, startOffset),
+            );
           }
         }
         return;
@@ -994,6 +1021,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
           assistantBacklog: new Map(
             [...committed.state.assistantStreams.keys()].map((key) => [key, { sent: 0 }]),
           ),
+          deferred: [],
           ...(transcript ? { transcript } : {}),
         };
         committed.state.subscribers.set(subscriptionId, subscriber);
@@ -1486,6 +1514,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
       .get(subscriber.connectionId)
       ?.subscriptionIds.delete(subscriber.subscriptionId);
     subscriber.assistantBacklog.clear();
+    subscriber.deferred = [];
     if (!this.#closed && state && removed && state.subscribers.size === 0) {
       this.#scheduleInactiveStateCleanup(subscriber.sessionId, state);
     }
@@ -1542,6 +1571,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
         );
       }
     }
+    this.#drainDeferred(subscriber);
   }
 
   #completeAssistantStream(
@@ -1565,14 +1595,16 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
       return;
     }
     subscriber.assistantBacklog.delete(key);
-    this.#enqueueAssistantCompletion(
-      subscriber,
-      subscriber.sessionId,
-      runId,
-      { ...stream, text: held },
-      stream.kind,
-      finalText,
-      interrupted,
+    this.#deliverInOrder(subscriber, () =>
+      this.#enqueueAssistantCompletion(
+        subscriber,
+        subscriber.sessionId,
+        runId,
+        { ...stream, text: held },
+        stream.kind,
+        finalText,
+        interrupted,
+      ),
     );
   }
 
@@ -1664,13 +1696,38 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
 
   #broadcastProjection(state: SessionProjectionState, snapshot: SessionContinuitySnapshot): void {
     for (const subscriber of state.subscribers.values()) {
-      this.#enqueue(subscriber, {
-        kind: 'subscription.session_projection',
-        hostEpoch: this.#hostEpoch,
-        subscriptionId: subscriber.subscriptionId,
-        sequence: subscriber.nextSequence,
-        snapshot: projectSessionSnapshot(snapshot, subscriber.principalKind),
+      this.#deliverInOrder(subscriber, () => {
+        this.#enqueue(subscriber, {
+          kind: 'subscription.session_projection',
+          hostEpoch: this.#hostEpoch,
+          subscriptionId: subscriber.subscriptionId,
+          sequence: subscriber.nextSequence,
+          snapshot: projectSessionSnapshot(snapshot, subscriber.principalKind),
+        });
       });
+    }
+  }
+
+  /**
+   * Runs `work` now, or behind whatever this subscriber is still catching up
+   * on. Every assistant frame and projection goes through here, so the order a
+   * subscriber sees is the order the Host produced.
+   */
+  #deliverInOrder(subscriber: Subscriber, work: () => void): void {
+    if (subscriber.assistantBacklog.size === 0 && subscriber.deferred.length === 0) {
+      work();
+      return;
+    }
+    subscriber.deferred.push(work);
+  }
+
+  #drainDeferred(subscriber: Subscriber): void {
+    while (
+      subscriber.assistantBacklog.size === 0 &&
+      subscriber.deferred.length > 0 &&
+      subscriber.phase === 'open'
+    ) {
+      subscriber.deferred.shift()?.();
     }
   }
 
