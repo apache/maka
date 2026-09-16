@@ -952,12 +952,10 @@ describe('CodexSessionAdapter', () => {
         cursor = result.items.at(-1)?.nextCursor;
         assert.ok(cursor, 'a page that reports hasMore must carry a next cursor');
       }
-      // The cursor has to name the position the query ordered by. Recomputing
-      // the key in JS put `codex-text` at 1000 while the SQL key it was ordered
-      // by is text, so the next page asked for `key < 1000`, matched nothing,
-      // and reported the catalog exhausted — the other two Conversations were
-      // dropped without an error.
-      assert.deepEqual(seen.sort(), ['codex-a', 'codex-b', 'codex-text']);
+      // The same normalization must determine display time, SQL order, and
+      // cursor position. The ISO value is in 2026, so it precedes the small
+      // numeric fixtures instead of being cast to the number 2026.
+      assert.deepEqual(seen, ['codex-text', 'codex-a', 'codex-b']);
     });
   });
 

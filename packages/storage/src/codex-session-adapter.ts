@@ -49,6 +49,7 @@ const CODEX_ROLLOUT_READ_BYTES = 64 * 1024;
 const CODEX_ROLLOUT_MAX_RECORD_BYTES = 64 * 1024 * 1024;
 const CODEX_ROLLOUT_MAX_CONVERTED_BYTES = 256 * 1024 * 1024;
 const CODEX_ROLLOUT_MAX_MESSAGES = 250_000;
+const CODEX_EPOCH_MS_SQL_FUNCTION = 'maka_codex_epoch_ms';
 const CODEX_SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 const CODEX_SUPPORTED_THREAD_SOURCES = ['cli', 'exec', 'vscode', 'atlas', 'chatgpt'] as const;
 const CODEX_UNSAFE_PATH_CHARS =
@@ -273,6 +274,7 @@ export class CodexSessionAdapter implements ExternalSessionAdapter {
     try {
       const sqlite = await import('node:sqlite');
       db = new sqlite.DatabaseSync(dbPath, { readOnly: true });
+      registerCodexEpochNormalization(db);
       const spec = codexThreadQuery(db, query, undefined, keyset);
       if (!spec) return undefined;
       const items: ExternalSessionCatalogPage['items'][number][] = [];
@@ -870,6 +872,7 @@ async function readCodexThreadRows(
     const sqlite = await import('node:sqlite');
     const db = new sqlite.DatabaseSync(dbPath, { readOnly: true });
     try {
+      registerCodexEpochNormalization(db);
       const spec = codexThreadQuery(db, query, exactId);
       if (!spec) return undefined;
       return db.prepare(spec.sql).all(...spec.params) as CodexThreadRow[];
@@ -922,22 +925,11 @@ function codexThreadQuery(
   const orderColumns = ['updated_at_ms', 'updated_at', 'created_at_ms', 'created_at'].filter(
     (column) => columns.has(column),
   );
-  // One authority for the ordering key. It is computed here, selected as
-  // `sort_key`, and read straight back off the row to build the cursor, so the
-  // position a cursor names is by construction the position the query ordered
-  // by. Recomputing it in JS let the two drift on a stored TEXT value: SQL
-  // keeps the text as the key and orders it above every number, while the JS
-  // fallback chain skips that column and lands on a different one. A TEXT key
-  // never satisfies a numeric comparison, so the disagreement did not surface
-  // as a duplicate — it ended the traversal at that page and dropped every
-  // Conversation after it without an error. Casting first also keeps the key
-  // numeric, which is what the cursor's 8-byte encoding requires.
-  const orderValues = orderColumns.map((column) => {
-    const numeric = `CAST(${column} AS REAL)`;
-    return column.endsWith('_ms')
-      ? numeric
-      : `(CASE WHEN ${numeric} >= 1000000000000 THEN ${numeric} ELSE ${numeric} * 1000 END)`;
-  });
+  // The same normalizer owns displayed timestamps and this SQL ordering key.
+  // Selecting the key with the row then makes the cursor name exactly the
+  // position the query used, including ISO text stored in an INTEGER-affinity
+  // column.
+  const orderValues = orderColumns.map((column) => `${CODEX_EPOCH_MS_SQL_FUNCTION}(${column})`);
   const orderExpression = orderValues.length > 0 ? `coalesce(${orderValues.join(', ')}, 0)` : '0';
   if (keyset) {
     where.push(`(${orderExpression} < ? OR (${orderExpression} = ? AND id < ?))`);
@@ -966,6 +958,14 @@ function finiteNumber(value: unknown): number | undefined {
     if (Number.isFinite(numeric)) return numeric;
   }
   return undefined;
+}
+
+function registerCodexEpochNormalization(db: DatabaseSync): void {
+  db.function(
+    CODEX_EPOCH_MS_SQL_FUNCTION,
+    { deterministic: true, directOnly: true },
+    (value) => normalizeEpochMs(value) ?? null,
+  );
 }
 
 async function codexStateDbsNewestFirst(codexHome: string): Promise<string[]> {
