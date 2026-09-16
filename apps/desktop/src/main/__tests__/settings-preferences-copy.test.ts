@@ -53,6 +53,21 @@ test('Traditional Chinese settings copy uses Taiwan terminology', () => {
   assert.equal(copy.about.clipboardUnavailable, '剪貼簿不可用或被系統拒絕。');
 });
 
+test('workHubHelp agrees that WorkHub is still unavailable', () => {
+  assert.equal(
+    getSettingsPreferencesCopy('en').general.workHubHelp,
+    'WorkHub is not available yet. This toggle is for development testing and does not enable a usable feature.',
+  );
+  assert.equal(
+    getSettingsPreferencesCopy('zh-CN').general.workHubHelp,
+    'WorkHub 目前仍不可用。此开关仅供开发测试，开启后也不能保证正常使用。',
+  );
+  assert.equal(
+    getSettingsPreferencesCopy('zh-TW').general.workHubHelp,
+    'WorkHub 目前仍不可用。此開關僅供開發測試，開啟後也不能保證正常使用。',
+  );
+});
+
 test('Traditional Chinese MCP catalog does not fall back to Simplified Chinese', () => {
   const catalog = getMcpCatalog('zh-TW');
   assert.equal(catalog.find((entry) => entry.id === 'filesystem')?.name, '本機檔案');
