@@ -360,6 +360,34 @@ export function ChatView(props: {
     liveTurns: props.liveTurns,
     shellRunUpdates: props.shellRunUpdates,
   });
+  /**
+   * `virtua` indexes measured heights by position and grows that cache at the
+   * end, so a batch of earlier history arriving at the front leaves every
+   * height one batch away from the Turn it was measured on: the document's
+   * extent goes wrong and rows the reader has already been past push them when
+   * they come back. `shift` grows the cache at the front instead.
+   *
+   * It has to be read on the render that grows the list, so the previous head
+   * is kept in a ref rather than an effect, and the answer is remembered per
+   * projection identity so a repeated render of the same turns does not hand
+   * back a different one. Only growth at the front shifts: a Turn arriving at
+   * the tail must leave every measurement where it is.
+   */
+  const measurementShift = useRef<{
+    turns?: readonly unknown[];
+    head?: string;
+    count: number;
+    shift: boolean;
+  }>({ count: 0, shift: false });
+  if (measurementShift.current.turns !== turns) {
+    const previous = measurementShift.current;
+    measurementShift.current = {
+      turns,
+      head: turns[0]?.turnId,
+      count: turns.length,
+      shift: turns.length > previous.count && turns[0]?.turnId !== previous.head,
+    };
+  }
   // Derived FROM the projected turns, not beside them: the consumer keys its
   // cache on the turn objects above, so a turn the projection kept hands back
   // the same footer/badge objects and the memoized TurnView skips on every
@@ -781,6 +809,7 @@ export function ChatView(props: {
                   data={turns}
                   startMargin={startMargin}
                   bufferSize={MEASURE_AHEAD_MARGIN}
+                  shift={measurementShift.current.shift}
                   keepMounted={[...keepMountedIndexes]}
                 >
                   {(turn, index) => {

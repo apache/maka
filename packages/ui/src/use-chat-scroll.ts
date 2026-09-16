@@ -268,6 +268,8 @@ export function useChatScroll(input: {
    */
   const measureStartMargin = input.measureStartMargin;
   const hold = useRef<{ turnId: string; gap: number; firstTurnId?: string } | undefined>(undefined);
+  /** Stops watching for the input that would abandon a hold; set while one is open. */
+  const holdWatch = useRef<(() => void) | undefined>(undefined);
   const holdReader = useCallback((): void => {
     const root = input.scrollRef.current;
     const handle = input.virtualizerRef.current;
@@ -282,6 +284,19 @@ export function useChatScroll(input: {
       gap: measureStartMargin() + handle.getItemOffset(index) - root.scrollTop,
       firstTurnId: turnIds[0],
     };
+    // The read crosses IPC and storage, and the reader can change their mind
+    // for that whole window. What they do then is newer than this hold, so the
+    // watch starts here rather than when the prepend finally lands.
+    holdWatch.current?.();
+    const abandon = (): void => {
+      hold.current = undefined;
+      holdWatch.current?.();
+    };
+    holdWatch.current = (): void => {
+      holdWatch.current = undefined;
+      for (const event of READER_INPUT_EVENTS) root.removeEventListener(event, abandon);
+    };
+    for (const event of READER_INPUT_EVENTS) root.addEventListener(event, abandon, { passive: true });
   }, [input.scrollRef, input.virtualizerRef, measureStartMargin]);
   useLayoutEffect(() => {
     const held = hold.current;
@@ -289,6 +304,7 @@ export function useChatScroll(input: {
     // tail meanwhile must not move a reader who is reading history.
     if (!held || input.turnIds[0] === held.firstTurnId) return;
     hold.current = undefined;
+    holdWatch.current?.();
     const index = input.turnIds.indexOf(held.turnId);
     const root = input.scrollRef.current;
     const handle = input.virtualizerRef.current;

@@ -2372,7 +2372,15 @@ function SettledTranscriptHarness({
  * `HISTORY_BATCH` Turns. The loader settles a frame later, the way an answer
  * delivered over IPC does.
  */
-function HistoryHarness({ turns, olderTurns = 0, mixed = false }: { turns: number; olderTurns?: number; mixed?: boolean }) {
+/** Set while a gated harness is waiting; the play function decides when the history arrives. */
+let deliverHistory: (() => void) | undefined;
+
+function HistoryHarness({
+  turns,
+  olderTurns = 0,
+  mixed = false,
+  gated = false,
+}: { turns: number; olderTurns?: number; mixed?: boolean; gated?: boolean }) {
   const [from, setFrom] = useState(0);
   useEffect(() => {
     historyLoads.length = 0;
@@ -2384,6 +2392,9 @@ function HistoryHarness({ turns, olderTurns = 0, mixed = false }: { turns: numbe
         hasEarlierHistory: from > -olderTurns,
         onLoadEarlierHistory: async () => {
           historyLoads.push(firstResidentTurnId() ?? '(none)');
+          // A real read crosses IPC and storage. Holding it open is how a
+          // reader gets the chance to do something else while it is in flight.
+          if (gated) await new Promise<void>((resolve) => { deliverHistory = resolve; });
           setFrom((current) => Math.max(-olderTurns, current - HISTORY_BATCH));
           await painted(2);
         },
@@ -2893,6 +2904,96 @@ export const HistoryAtTheTopStillLandsAboveTheReader: Story = {
     expect(historyLoads).toEqual([before]);
     expect(Math.abs(turnTop(reading.turnId) - reading.top)).toBeLessThanOrEqual(1);
     expect(within(document.body).queryByRole('button', { name: '载入更早的记录' })).toBeNull();
+  },
+};
+
+/** Walk the reader to the top of the transcript, returning the worst per-step drift. */
+async function traverseToTop(): Promise<number> {
+  const root = tailScroller();
+  let worst = 0;
+  let steps = 0;
+  while (root.scrollTop > 0 && steps < 200) {
+    const anchor = anchorInView();
+    const travelled = scrollAsReader(root, Math.max(0, root.scrollTop - TRAVERSAL_STEP));
+    await painted(4);
+    worst = Math.max(worst, Math.abs(Math.round(turnTop(anchor.turnId) - (anchor.top + travelled))));
+    steps += 1;
+  }
+  return worst;
+}
+
+/**
+ * Earlier history arriving must not detach the heights already measured from
+ * the Turns they were measured on. The virtualizer indexes its measurement
+ * cache by position and grows it at the end unless told the growth is at the
+ * front, so a prepend that does not say so slides every measured height one
+ * batch along: the document's extent goes wrong, and rows the reader has
+ * already been past push them when they come back.
+ */
+export const PrependedHistoryKeepsMeasuredHeights: Story = {
+  render: () => <HistoryHarness turns={24} olderTurns={HISTORY_BATCH} mixed />,
+  play: async () => {
+    const root = tailScroller();
+    await document.fonts.ready;
+    await tailSettled();
+    await waitFor(() => expect(document.querySelector('.maka-markdown-pending')).toBeNull());
+
+    // Measure every row once, so what follows is about heights the virtualizer
+    // already holds and not about rows whose height was never known.
+    const coldDrift = await traverseToTop();
+    const before = firstResidentTurnId();
+
+    within(document.body).getByRole('button', { name: '载入更早的记录' }).click();
+    await waitFor(() => expect(firstResidentTurnId()).not.toBe(before));
+    await waitFor(() => expect(document.querySelector('.maka-markdown-pending')).toBeNull());
+    await painted(6);
+
+    // Walk back down to the tail and up again over the same rows. Their
+    // heights are known, so nothing here may move the reader; a measurement
+    // that has slid onto the wrong Turn does exactly that.
+    scrollAsReader(root, root.scrollHeight);
+    await painted(6);
+    const warmDrift = await traverseToTop();
+
+    expect(warmDrift, `a measured row moved the reader (cold traversal: ${coldDrift}px)`)
+      .toBeLessThanOrEqual(1);
+  },
+};
+
+/**
+ * A reader who goes somewhere else while earlier history is still being read
+ * stays where they went. The hold that lands the prepend is taken when the
+ * control is pressed, and a read crosses IPC and storage, so the reader has
+ * that whole window in which to change their mind — and what they do then is
+ * newer than the hold.
+ */
+export const NavigatingDuringAHistoryLoadOutranksTheHold: Story = {
+  render: () => <HistoryHarness turns={24} olderTurns={HISTORY_BATCH} mixed gated />,
+  play: async () => {
+    const root = tailScroller();
+    await document.fonts.ready;
+    await tailSettled();
+    await waitFor(() => expect(document.querySelector('.maka-markdown-pending')).toBeNull());
+
+    scrollAsReader(root, 0);
+    await painted(4);
+    within(document.body).getByRole('button', { name: '载入更早的记录' }).click();
+    await waitFor(() => expect(deliverHistory).toBeDefined());
+
+    // The reader changes their mind while the read is in flight.
+    scrollAsReader(root, 1_800);
+    await painted(4);
+    const chosen = anchorInView();
+
+    deliverHistory?.();
+    deliverHistory = undefined;
+    await waitFor(() => expect(document.querySelector('.maka-markdown-pending')).toBeNull());
+    await painted(8);
+
+    expect(
+      Math.abs(turnTop(chosen.turnId) - chosen.top),
+      'the pending load carried the reader back to where they pressed it',
+    ).toBeLessThanOrEqual(2);
   },
 };
 
