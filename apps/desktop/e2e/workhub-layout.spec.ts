@@ -308,6 +308,8 @@ test('WorkHub uses its coordination model and shared attachment composer', async
   await expect.poll(() => workhub.evaluate(() => innerHeight)).toBe(compactHeight);
   // Sample the real native resize, including repeated folds. The composer
   // must stay inside the window while its original 12px gutter interpolates.
+  const composerGutter = () => workhub.evaluate(() => innerHeight - document.querySelector('.workHubComposerSurface')!.getBoundingClientRect().bottom);
+  const viewportInset = () => workhub.evaluate(() => parseFloat(getComputedStyle(document.querySelector('.workHubLive')!).getPropertyValue('--workhub-viewport-inset')));
   for (const expanded of [true, false, true]) {
     const motion = await workhub.getByRole('button', { name: expanded ? /展开对话|Expand conversation/ : /收起对话|Collapse conversation/ }).evaluate((button) => new Promise<{ bottom: number; left: number; height: number; inset: number }[]>((resolve) => {
       const frames: { bottom: number; left: number; height: number; inset: number }[] = [];
@@ -324,10 +326,11 @@ test('WorkHub uses its coordination model and shared attachment composer', async
     }));
     expect(motion.every(({ bottom, left }) => bottom >= -0.5 && bottom <= 12.5 && left >= -0.5 && left <= 12.5)).toBe(true);
     expect(motion.some(({ bottom }) => bottom > 0.5 && bottom < 11.5)).toBe(true);
-    expect(motion.at(-1)!.bottom).toBeCloseTo(expanded ? 12 : 0);
     expect(new Set(motion.map(({ height }) => height)).size).toBeLessThanOrEqual(2);
     expect(motion.some(({ inset }) => inset > 0)).toBe(true);
-    expect(motion.at(-1)!.inset).toBe(0);
+    // A loaded runner starts the dock animation late, so the resting position is polled.
+    await expect.poll(composerGutter).toBeCloseTo(expanded ? 12 : 0);
+    await expect.poll(viewportInset).toBe(0);
   }
   const keptEditor = await workhub.evaluate(async () => {
     const editor = document.querySelector('.maka-composer-editor [contenteditable]');
