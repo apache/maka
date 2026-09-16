@@ -150,6 +150,44 @@ const STATIC_COMMAND_KEYWORDS: Record<StaticCommandId, readonly string[]> = {
   'diag:open-local-memory': ['memory', 'md', 'open', '记忆', '本地', '编辑', 'edit'],
 };
 
+const ZH_TW_STATIC_COMMAND_ALIASES: Record<StaticCommandId, readonly string[]> = {
+  'action:new-chat': ['任務'],
+  'action:side-chat': ['側邊', '側聊', '任務', '追問'],
+  'action:new-deep-research': ['唯讀', '只讀'],
+  'action:new-scheduled-task': ['計畫', '建立'],
+  'action:open-settings': ['設定', '偏好'],
+  'action:keyboard-help': ['快捷鍵', '說明'],
+  'theme:light': ['淺色', '主題'],
+  'theme:dark': ['主題'],
+  'theme:auto': ['跟隨', '系統', '主題'],
+  'nav:sessions': ['任務', '會話', '對話'],
+  'nav:automations': ['定時任務', '計畫'],
+  'nav:skills': [],
+  'nav:mcp': ['擴充'],
+  'nav:daily-review': ['回顧'],
+  'diag:open-workspace': ['工作區', '資料夾', '目錄'],
+  'diag:open-project-folder': ['專案', '目錄', '資料夾'],
+  'diag:open-skills': ['資料夾'],
+  'diag:export-conversation': ['匯出', '任務', '剪貼簿'],
+  'diag:save-conversation-file': ['儲存', '檔案', '任務', '匯出'],
+  'diag:copy-today-daily-review': ['回顧', '複製', '剪貼簿'],
+  'diag:paste-today-daily-review': ['回顧', '貼上', '輸入框'],
+  'diag:save-today-daily-review': ['回顧', '儲存', '檔案', '匯出'],
+  'diag:copy-diagnostics': ['環境', '日誌', '關於', '診斷', '回報'],
+  'diag:test-network-proxy': ['網路', '測試', '連線', '診斷'],
+  'diag:open-local-memory': ['記憶', '本機', '編輯'],
+};
+
+const ZH_TW_STATIC_COMMAND_KEYWORDS: Record<StaticCommandId, readonly string[]> = {
+  ...STATIC_COMMAND_KEYWORDS,
+};
+for (const id of STATIC_COMMAND_IDS) {
+  ZH_TW_STATIC_COMMAND_KEYWORDS[id] = [
+    ...STATIC_COMMAND_KEYWORDS[id],
+    ...ZH_TW_STATIC_COMMAND_ALIASES[id],
+  ];
+}
+
 type ShellCopy = {
   navigation: {
     settings: string;
@@ -415,7 +453,6 @@ type ShellCopy = {
     };
     staticKeywords: Record<StaticCommandId, readonly string[]>;
     commands: Record<StaticCommandId, CommandCopy>;
-    settingsSections: Record<SettingsSection, string>;
     permissionModes: Record<PermissionMode, { label: string; hint: string }>;
     settingsCommand(section: string): string;
     testDefaultConnection(name: string): string;
@@ -809,66 +846,6 @@ const EN_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
   },
 };
 
-const ZH_SETTINGS_SECTIONS: Record<SettingsSection, string> = {
-  general: '通用',
-  appearance: '外观',
-  projects: '工作区',
-  models: '模型',
-  'external-agents': '外部 Agent',
-  subagents: '子 Agent',
-  usage: '使用统计',
-  'archived-tasks': '已归档任务',
-  'import-tasks': '导入/导出任务',
-  memory: '记忆',
-  'daily-review': '每日回顾',
-  'bot-chat': '远程接入',
-  search: '联网搜索',
-  data: '数据',
-  permissions: '权限与能力',
-  health: '健康',
-  about: '关于',
-};
-
-const ZH_TW_SETTINGS_SECTIONS: Record<SettingsSection, string> = {
-  general: '通用',
-  appearance: '外觀',
-  projects: '工作區',
-  models: '模型',
-  'external-agents': '外部 Agent',
-  subagents: '子 Agent',
-  usage: '使用統計',
-  'archived-tasks': '已歸檔任務',
-  'import-tasks': '匯入/匯出任務',
-  memory: '記憶',
-  'daily-review': '每日回顧',
-  'bot-chat': '遠端存取',
-  search: '網路搜尋',
-  data: '資料',
-  permissions: '權限與能力',
-  health: '健康',
-  about: '關於',
-};
-
-const EN_SETTINGS_SECTIONS: Record<SettingsSection, string> = {
-  general: 'General',
-  appearance: 'Appearance',
-  projects: 'Workspace',
-  models: 'Models',
-  'external-agents': 'External Agents',
-  subagents: 'Subagents',
-  usage: 'Usage',
-  'archived-tasks': 'Archived tasks',
-  'import-tasks': 'Import/export tasks',
-  memory: 'Memory',
-  'daily-review': 'Daily Review',
-  'bot-chat': 'Remote Access',
-  search: 'Web Search',
-  data: 'Data',
-  permissions: 'Permissions & Capabilities',
-  health: 'Health',
-  about: 'About',
-};
-
 const SHELL_COPY_BY_LOCALE = {
   'zh-CN': {
     navigation: { settings: '设置', backToWorkHub: '返回 WorkHub' },
@@ -1202,7 +1179,6 @@ const SHELL_COPY_BY_LOCALE = {
       },
       staticKeywords: STATIC_COMMAND_KEYWORDS,
       commands: ZH_STATIC_COMMANDS,
-      settingsSections: ZH_SETTINGS_SECTIONS,
       permissionModes: {
         explore: { label: '权限 · 只读', hint: '读取和搜索直通，写入和网络仍需确认' },
         ask: { label: '权限 · 自动', hint: '在 Maka 的保护层内运行；需要超出当前权限范围时再询问' },
@@ -1707,9 +1683,8 @@ const SHELL_COPY_BY_LOCALE = {
         connections: '連線',
         conversations: '任務',
       },
-      staticKeywords: STATIC_COMMAND_KEYWORDS,
+      staticKeywords: ZH_TW_STATIC_COMMAND_KEYWORDS,
       commands: ZH_TW_STATIC_COMMANDS,
-      settingsSections: ZH_TW_SETTINGS_SECTIONS,
       permissionModes: {
         explore: { label: '權限 · 只讀', hint: '讀取和搜尋直通，寫入和網路仍需確認' },
         ask: { label: '權限 · 自動', hint: '在 Maka 的保護層內執行；需要超出目前權限範圍時再詢問' },
@@ -2222,7 +2197,6 @@ const SHELL_COPY_BY_LOCALE = {
       },
       staticKeywords: STATIC_COMMAND_KEYWORDS,
       commands: EN_STATIC_COMMANDS,
-      settingsSections: EN_SETTINGS_SECTIONS,
       permissionModes: {
         explore: {
           label: 'Permissions · Read only',

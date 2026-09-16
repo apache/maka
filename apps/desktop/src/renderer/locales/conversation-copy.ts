@@ -283,6 +283,18 @@ const ZH_CALL_KIND: CallKindCopy = {
   workhub_recall: 'WorkHub 任务召回',
 };
 
+const ZH_TW_CALL_KIND: CallKindCopy = {
+  memory_extraction: '記憶提取',
+  semantic_compact: '語義壓縮',
+  history_compact: '歷史壓縮',
+  goal_evaluation: '目標評估',
+  session_title: '生成任務標題',
+  session_recap: '任務回顧',
+  daily_review: '每日回顧',
+  workhub_intent: 'WorkHub 意圖識別',
+  workhub_recall: 'WorkHub 任務召回',
+};
+
 const EN_CALL_KIND: CallKindCopy = {
   memory_extraction: 'Memory extraction',
   semantic_compact: 'Semantic compaction',
@@ -296,9 +308,11 @@ const EN_CALL_KIND: CallKindCopy = {
 };
 
 const ZH_PERMISSION_DECISION: Record<string, string> = { allow: '已允许', deny: '已拒绝' };
+const ZH_TW_PERMISSION_DECISION: Record<string, string> = { allow: '已允許', deny: '已拒絕' };
 const EN_PERMISSION_DECISION: Record<string, string> = { allow: 'Allowed', deny: 'Denied' };
 
 const ZH_RECOVERED: Record<string, string> = { completed: '已完成', parked: '已搁置' };
+const ZH_TW_RECOVERED: Record<string, string> = { completed: '已完成', parked: '已擱置' };
 
 // `turn_failed` and `error` are the codes the projection falls back to when it
 // cannot attribute the failure to a step; both reach this panel, so both are
@@ -310,6 +324,15 @@ const ZH_TURN_FAILURE: Record<string, string> = {
   turn_cancelled: '本轮取消',
   turn_failed: '本轮失败',
   error: '运行出错',
+};
+
+const ZH_TW_TURN_FAILURE: Record<string, string> = {
+  tool_failed: '工具失敗',
+  model_call_failed: '模型呼叫失敗',
+  turn_aborted: '本輪中止',
+  turn_cancelled: '本輪取消',
+  turn_failed: '本輪失敗',
+  error: '執行出錯',
 };
 
 const EN_TURN_FAILURE: Record<string, string> = {
@@ -730,11 +753,11 @@ const COPY = {
       turnsMissing: (count) => `${count} 輪沒有呼叫記錄`,
       turnsShort: (count) => `${count} 輪的呼叫記錄不全`,
       stepKind: { permission: '權限', compaction: '上下文壓縮', error: '錯誤' },
-      callKind: (kind) => ZH_CALL_KIND[kind as keyof CallKindCopy] ?? kind,
-      permissionDecision: (decision) => ZH_PERMISSION_DECISION[decision] ?? decision,
-      recoveredAs: (disposition) => `已恢復：${ZH_RECOVERED[disposition] ?? disposition}`,
+      callKind: (kind) => ZH_TW_CALL_KIND[kind as keyof CallKindCopy] ?? kind,
+      permissionDecision: (decision) => ZH_TW_PERMISSION_DECISION[decision] ?? decision,
+      recoveredAs: (disposition) => `已恢復：${ZH_TW_RECOVERED[disposition] ?? disposition}`,
       retries: (count) => `重試 ${count} 次`,
-      turnFailure: (code) => ZH_TURN_FAILURE[code] ?? '本輪失敗',
+      turnFailure: (code) => ZH_TW_TURN_FAILURE[code] ?? '本輪失敗',
       turnLabel: (startedAt) => `輪次 · ${startedAt}`,
       overview: {
         context: '上下文視窗',
