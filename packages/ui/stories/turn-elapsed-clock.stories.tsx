@@ -20,10 +20,11 @@
 import { useState } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { expect, userEvent, waitFor, within } from 'storybook/test';
+import type { StoredMessage } from '@maka/core/session';
 import { ProcessingBlock, TurnView } from '../src/chat-turn.js';
 import { useUiLocale } from '../src/locale-context.js';
 import { applyLiveTurnEvent, armLiveTurn } from '../src/live-turn-projection.js';
-import { overlayLiveTurn } from '../src/materialize.js';
+import { materializeTurns, overlayLiveTurn } from '../src/materialize.js';
 
 // Fidelity convention (#1433): the desktop transcript reaches this path
 // through app-shell live events → overlayLiveTurn → TurnView, which is what
@@ -31,6 +32,9 @@ import { overlayLiveTurn } from '../src/materialize.js';
 
 const TURN_ID = 'turn-elapsed-clock';
 const RUNNING_FOR_MS = 213_000;
+// The Turn really started earlier than the client's first live event: only a
+// gap between the two can tell a stable stand-in start from the recorded one.
+const DURABLE_RUNNING_FOR_MS = 333_000;
 // Each tool reads a different file: two identical rows would be ambiguous to a
 // screen reader.
 function toolAt(index: number) {
@@ -39,6 +43,15 @@ function toolAt(index: number) {
     toolName: index % 2 === 0 ? 'Read' : 'Grep',
     path: `docs/step-${index}.md`,
   };
+}
+
+// What the transcript carries once it reaches this running Turn: the Host's
+// own record of when it started.
+function durableTurnMessages(startedAt: number): StoredMessage[] {
+  return [
+    { type: 'user', id: 'durable-user', turnId: TURN_ID, ts: startedAt, text: '查一下仓库里的用法' },
+    { type: 'turn_state', id: 'durable-state', turnId: TURN_ID, ts: startedAt, status: 'running' },
+  ];
 }
 
 function RunningTurn() {
@@ -57,10 +70,17 @@ function RunningTurn() {
     }, locale),
   );
   const [started, setStarted] = useState(0);
-  const turn = overlayLiveTurn([], projection, locale)[0];
+  const [durable, setDurable] = useState<readonly StoredMessage[]>([]);
+  const turn = overlayLiveTurn(materializeTurns(durable, locale), projection, locale)[0];
 
   return (
     <section style={{ display: 'grid', gap: 16, maxWidth: 760 }}>
+      <button
+        type="button"
+        onClick={() => setDurable(durableTurnMessages(Date.now() - DURABLE_RUNNING_FOR_MS))}
+      >
+        持久化记录到达 / durable record arrives
+      </button>
       <button
         type="button"
         onClick={() => {
@@ -115,6 +135,27 @@ export const KeepsRunningAcrossTools: Story = {
       await userEvent.click(canvas.getByRole('button', { name: /next tool event/ }));
       await canvas.findAllByText(new RegExp(toolAt(index).path));
       await expect(elapsedSeconds(canvasElement)).toBeGreaterThanOrEqual(213);
+    }
+  },
+};
+
+// #5365: the live start is only a stand-in until the transcript reaches the
+// Turn. Once the Host's own record arrives the clock has to adopt its start —
+// correcting upward for the time that ran before the client subscribed — and
+// keep it across later events rather than falling back to the stand-in.
+export const AdoptsTheRecordedStart: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(elapsedSeconds(canvasElement)).toBeGreaterThanOrEqual(213));
+    await expect(elapsedSeconds(canvasElement)).toBeLessThan(333);
+
+    await userEvent.click(canvas.getByRole('button', { name: /durable record arrives/ }));
+    await waitFor(() => expect(elapsedSeconds(canvasElement)).toBeGreaterThanOrEqual(333));
+
+    for (const index of [0, 1]) {
+      await userEvent.click(canvas.getByRole('button', { name: /next tool event/ }));
+      await canvas.findAllByText(new RegExp(toolAt(index).path));
+      await expect(elapsedSeconds(canvasElement)).toBeGreaterThanOrEqual(333);
     }
   },
 };
