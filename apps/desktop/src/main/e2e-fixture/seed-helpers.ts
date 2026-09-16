@@ -37,6 +37,16 @@ export const PROMPT_RAIL_SESSION_ID = 'e2e-fixture-prompt-rail';
 export const PARTIAL_HISTORY_SESSION_ID = 'e2e-fixture-partial-history';
 /** The transcript history budget the partial-history fixture runs with, so its Session loads in chunks. */
 export const PARTIAL_HISTORY_TRANSCRIPT_BYTES = 1024 * 1024;
+export const LARGE_HISTORY_SESSION_ID = 'e2e-fixture-large-history';
+/**
+ * Turns in the large-history fixture, and the size of each assistant reply.
+ * The product is ~72 MiB, comfortably past the real 64 MiB read budget, so the
+ * first open stops short and the rest is reached through load-earlier. The
+ * shape is many moderate Turns rather than a few enormous ones, because that
+ * is where per-message object and index overhead dominates the byte count.
+ */
+export const LARGE_HISTORY_TURN_COUNT = 4_000;
+export const LARGE_HISTORY_REPLY_BYTES = 18 * 1024;
 export const PROMPT_RAIL_PROMPT_COUNT = 500;
 export const LONG_SIDEBAR_SESSION_PREFIX = 'e2e-fixture-sidebar-long-';
 export const LONG_SIDEBAR_SESSION_COUNT = 60;

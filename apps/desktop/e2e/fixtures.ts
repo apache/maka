@@ -532,6 +532,7 @@ type E2eTestFixtures = {
   railRenderWindow: Page;
   promptRailWindow: Page;
   partialHistoryWindow: Page;
+  largeHistoryWindow: { page: Page; app: ElectronApplication };
   newTaskTargetWindow: Page;
   directoryReferenceWindow: { page: Page; folder: string };
   accessibilityNarrativeWindow: Page;
@@ -675,6 +676,20 @@ export const test = base.extend<E2eTestFixtures>({
       locale: 'zh-CN',
       showWindow: true,
     }, use);
+  },
+  // A transcript past the real 64 MiB history budget, for weighing what
+  // holding the loaded history costs the renderer.
+  largeHistoryWindow: async ({}, use) => {
+    await withE2eWindow(
+      {
+        seed: false,
+        readinessSelector: '[data-turn-id]',
+        e2eFixtureScenario: 'chat-large-history',
+        locale: 'zh-CN',
+        showWindow: true,
+      },
+      async (page, { app }) => use({ page, app }),
+    );
   },
   // A data-backed conversation with settled tool evidence and the workbar open
   // beside it. Shown because the accessibility journey follows real native

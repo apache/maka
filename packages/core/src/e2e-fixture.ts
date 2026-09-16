@@ -28,6 +28,7 @@ export type E2eFixtureScenario =
   | 'turn-narrative-browser'
   | 'chat-prompt-rail'
   | 'chat-partial-history'
+  | 'chat-large-history'
   | 'settings-data'
   | 'settings-bots-onboarding'
   | 'settings-general'
