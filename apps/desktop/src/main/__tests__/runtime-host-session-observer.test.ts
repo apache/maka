@@ -1698,7 +1698,7 @@ test('keeps a transcript consumer available after a delivery fails', async () =>
     client: {
       openSession: async () =>
         runtimeHostSessionFixture({
-          snapshot: continuitySnapshot(),
+          snapshot: settledSnapshot(),
           transcript: Promise.resolve([]),
           events,
           loadTranscriptPage: async (input) => ({
@@ -2520,9 +2520,11 @@ test("finishes a watched predecessor after initial catch-up recovery", async () 
   });
   firstTranscript.resolve([]);
   await watching;
-  await waitFor(() => replacementCloseCount === 1);
+  await waitFor(() => finishedTurns.length === 1);
 
   assert.deepEqual(finishedTurns, [["session-1", "completed"]]);
+  // turn-2 is still running on the Host, so the replacement subscription stays.
+  assert.equal(replacementCloseCount, 0);
   await observer.close();
 });
 
@@ -2872,7 +2874,9 @@ test("shares one Host subscription and one delivery per renderer target", async 
       openSession: async () => {
         openCount += 1;
         return runtimeHostSessionFixture({
-          snapshot: continuitySnapshot(),
+          // Settled: releasing an idle subscription is only correct once the
+          // Host has nothing left to send.
+          snapshot: settledSnapshot(),
           activeAssistantStreams: [],
           transcript: Promise.resolve([]),
           events,
@@ -3292,6 +3296,19 @@ function activeText(messageId: string, turnId = 'turn-1') {
   return { kind: 'text' as const, turnId, messageId };
 }
 
+/** A Session whose root Turn has ended, so nothing holds the subscription open. */
+function settledSnapshot(): SessionContinuitySnapshot {
+  return continuitySnapshot({
+    rootTurn: {
+      sessionId: 'session-1',
+      turnId: 'turn-1',
+      runId: 'run-1',
+      status: 'completed',
+      terminalEventId: 'terminal-1',
+    },
+  });
+}
+
 function activeGoal() {
   return {
     goalId: "goal-1",
@@ -3415,6 +3432,78 @@ class AsyncFrameQueue implements AsyncIterable<SubscriptionFrame> {
 async function waitFor(predicate: () => boolean): Promise<void> {
   await pollFor(predicate, { attempts: 100, message: 'Timed out waiting for observer state' });
 }
+
+// #5365: leaving the conversation used to drop the subscription to a Turn the
+// Host was still running, so coming back made it stream the whole answer again.
+test('a running Turn keeps its subscription after the last viewer leaves', async () => {
+  const events = new AsyncFrameQueue();
+  let opens = 0;
+  const handle = runtimeHostSessionFixture({
+    snapshot: continuitySnapshot(),
+    activeAssistantStreams: [activeText('message-1')],
+    transcript: Promise.resolve([]),
+    events,
+    async close() { events.end(); },
+  });
+  const observer = new RuntimeHostSessionObserver({
+    client: { openSession: async () => { opens += 1; return handle; } },
+    emitSessionsChanged() {},
+  });
+  const target = eventTarget(1);
+  await observer.observe('session-1', 'conversation', target);
+  assert.equal(opens, 1);
+
+  await observer.unobserve('conversation');
+  // The Host keeps producing while nobody looks; the subscription has to be
+  // there to receive it, or the text below is lost and must be re-sent.
+  events.push(deltaFrame(1, 0, 'Written while away'));
+  await observer.observe('session-1', 'conversation-again', target);
+
+  assert.equal(opens, 1);
+  const seed = target.observations.at(-1);
+  assert.equal(seed?.type, 'host_observation_seed');
+  if (seed?.type === 'host_observation_seed') {
+    assert.ok(seed.events.some((event) =>
+      event.type === 'text_delta' && event.text === 'Written while away'));
+  }
+  await observer.close();
+});
+
+test('the subscription is released once the running Turn ends with no viewer', async () => {
+  const events = new AsyncFrameQueue();
+  let closed = false;
+  const handle = runtimeHostSessionFixture({
+    snapshot: continuitySnapshot(),
+    transcript: Promise.resolve([]),
+    events,
+    async close() { closed = true; events.end(); },
+  });
+  const observer = new RuntimeHostSessionObserver({
+    client: { openSession: async () => handle },
+    emitSessionsChanged() {},
+  });
+  await observer.observe('session-1', 'conversation', eventTarget(1));
+  await observer.unobserve('conversation');
+  assert.equal(closed, false);
+
+  events.push({
+    kind: 'subscription.session_projection',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-1',
+    sequence: 1,
+    snapshot: continuitySnapshot({
+      rootTurn: {
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+        runId: 'run-1',
+        status: 'completed',
+        terminalEventId: 'terminal-1',
+      },
+    }),
+  });
+  await waitFor(() => closed);
+  await observer.close();
+});
 
 test('a later observer in the same renderer receives the accumulated active stream', async () => {
   const events = new AsyncFrameQueue();
