@@ -275,28 +275,29 @@ export function useChatScroll(input: {
     const handle = input.virtualizerRef.current;
     const turnIds = turnIdsRef.current;
     if (!root || !handle || turnIds.length === 0) return;
-    const index = Math.min(handle.findItemIndex(root.scrollTop), turnIds.length - 1);
-    hold.current = {
-      turnId: turnIds[index]!,
-      // Where this Turn's top sits in the scrollport. The margin belongs in it
-      // because the load also retires the control the reader pressed, which
-      // sits above the virtualizer and takes its own height with it.
-      gap: measureStartMargin() + handle.getItemOffset(index) - root.scrollTop,
-      firstTurnId: turnIds[0],
+    const capture = (): void => {
+      const ids = turnIdsRef.current;
+      if (ids.length === 0) return;
+      const index = Math.min(handle.findItemIndex(root.scrollTop), ids.length - 1);
+      hold.current = {
+        turnId: ids[index]!,
+        // Where this Turn's top sits in the scrollport. The margin belongs in it
+        // because the load also retires the control the reader pressed, which
+        // sits above the virtualizer and takes its own height with it.
+        gap: measureStartMargin() + handle.getItemOffset(index) - root.scrollTop,
+        firstTurnId: ids[0],
+      };
     };
+    capture();
     // The read crosses IPC and storage, and the reader can change their mind
-    // for that whole window. What they do then is newer than this hold, so the
-    // watch starts here rather than when the prepend finally lands.
+    // for that whole window. Moving does not release them to be carried by the
+    // prepend — it moves the hold, so what lands is wherever they went last.
     holdWatch.current?.();
-    const abandon = (): void => {
-      hold.current = undefined;
-      holdWatch.current?.();
-    };
     holdWatch.current = (): void => {
       holdWatch.current = undefined;
-      for (const event of READER_INPUT_EVENTS) root.removeEventListener(event, abandon);
+      root.removeEventListener('scroll', capture);
     };
-    for (const event of READER_INPUT_EVENTS) root.addEventListener(event, abandon, { passive: true });
+    root.addEventListener('scroll', capture, { passive: true });
   }, [input.scrollRef, input.virtualizerRef, measureStartMargin]);
   useLayoutEffect(() => {
     const held = hold.current;

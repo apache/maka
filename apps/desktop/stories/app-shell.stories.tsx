@@ -2914,19 +2914,39 @@ export const HistoryAtTheTopStillLandsAboveTheReader: Story = {
   },
 };
 
-/** Walk the reader to the top of the transcript, returning the worst per-step drift. */
-async function traverseToTop(): Promise<number> {
+/**
+ * Walk the reader to the top of the transcript, returning the worst per-step
+ * drift. The step stays well inside the measure-ahead margin: the Turn being
+ * tracked has to survive from one measurement to the next.
+ */
+async function traverseToTop(step = TRAVERSAL_STEP): Promise<number> {
   const root = tailScroller();
   let worst = 0;
   let steps = 0;
   while (root.scrollTop > 0 && steps < 200) {
     const anchor = anchorInView();
-    const travelled = scrollAsReader(root, Math.max(0, root.scrollTop - TRAVERSAL_STEP));
+    const travelled = scrollAsReader(root, Math.max(0, root.scrollTop - step));
     await painted(4);
     worst = Math.max(worst, Math.abs(Math.round(turnTop(anchor.turnId) - (anchor.top + travelled))));
     steps += 1;
   }
   return worst;
+}
+
+/**
+ * Mount and measure every row, without tracking anyone: a pass that asserts
+ * nothing can take a scrollport-sized step, where the asserted pass cannot —
+ * the reader-sized step is what keeps the tracked Turn mounted from one
+ * measurement to the next.
+ */
+async function measureEveryRow(): Promise<void> {
+  const root = tailScroller();
+  let steps = 0;
+  while (root.scrollTop > 0 && steps < 200) {
+    scrollAsReader(root, Math.max(0, root.scrollTop - root.clientHeight));
+    await painted(2);
+    steps += 1;
+  }
 }
 
 /**
@@ -2938,7 +2958,10 @@ async function traverseToTop(): Promise<number> {
  * already been past push them when they come back.
  */
 export const PrependedHistoryKeepsMeasuredHeights: Story = {
-  render: () => <HistoryHarness turns={24} olderTurns={HISTORY_BATCH} mixed />,
+  // Shallower than the other history stories: this one walks the whole
+  // transcript twice, and a slid measurement shows on the first row past the
+  // prepend as well as on the hundredth.
+  render: () => <HistoryHarness turns={10} olderTurns={HISTORY_BATCH} mixed />,
   play: async () => {
     const root = tailScroller();
     await document.fonts.ready;
@@ -2947,7 +2970,7 @@ export const PrependedHistoryKeepsMeasuredHeights: Story = {
 
     // Measure every row once, so what follows is about heights the virtualizer
     // already holds and not about rows whose height was never known.
-    const coldDrift = await traverseToTop();
+    await measureEveryRow();
     const before = firstResidentTurnId();
 
     within(document.body).getByRole('button', { name: '载入更早的记录' }).click();
@@ -2960,10 +2983,9 @@ export const PrependedHistoryKeepsMeasuredHeights: Story = {
     // that has slid onto the wrong Turn does exactly that.
     scrollAsReader(root, root.scrollHeight);
     await painted(6);
-    const warmDrift = await traverseToTop();
+    const warmDrift = await traverseToTop(300);
 
-    expect(warmDrift, `a measured row moved the reader (cold traversal: ${coldDrift}px)`)
-      .toBeLessThanOrEqual(1);
+    expect(warmDrift, 'a measured row moved the reader').toBeLessThanOrEqual(1);
   },
 };
 
@@ -2971,8 +2993,9 @@ export const PrependedHistoryKeepsMeasuredHeights: Story = {
  * A reader who goes somewhere else while earlier history is still being read
  * stays where they went. The hold that lands the prepend is taken when the
  * control is pressed, and a read crosses IPC and storage, so the reader has
- * that whole window in which to change their mind — and what they do then is
- * newer than the hold.
+ * that whole window in which to change their mind — the hold follows them
+ * rather than carrying them back, and the arriving rows still must not move
+ * them from where they went.
  */
 export const NavigatingDuringAHistoryLoadOutranksTheHold: Story = {
   render: () => <HistoryHarness turns={24} olderTurns={HISTORY_BATCH} mixed gated />,
