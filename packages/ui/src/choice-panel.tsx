@@ -18,9 +18,7 @@
  */
 
 import { useEffect, useRef, type ReactNode, type CSSProperties, type KeyboardEvent } from 'react';
-import { useUiLocale } from './locale-context.js';
-import { getConversationCopy } from './conversation-copy.js';
-import { Badge, Item, Text } from '@astryxdesign/core';
+import { Badge, Item } from '@astryxdesign/core';
 
 export interface ChoicePanelOption {
   readonly value: string;
@@ -32,7 +30,6 @@ export interface ChoicePanelOption {
 /** Shared single-choice interaction for questions and explicit target selection. */
 export function ChoicePanel(props: {
   label: string;
-  keyboardHint?: string;
   options: readonly ChoicePanelOption[];
   value: string;
   disabled?: boolean;
@@ -41,8 +38,6 @@ export function ChoicePanel(props: {
   onEscape(): void;
   children?: ReactNode;
 }) {
-  const locale = useUiLocale();
-  const hint = props.keyboardHint ?? getConversationCopy(locale).questions.keyboardHint;
   const root = useRef<HTMLDivElement>(null);
   useEffect(() => { root.current?.focus(); }, []);
   function onKeyDown(event: KeyboardEvent<HTMLDivElement>) {
@@ -78,7 +73,6 @@ export function ChoicePanel(props: {
         startContent={<Badge variant={selected ? 'info' : 'neutral'} label={index + 1} aria-hidden="true" />}
         style={option.accentColor ? { '--_item-label-color': option.accentColor } as CSSProperties : undefined} />;
     })}
-    <Text as="p" type="supporting" color="secondary" className="maka-choice-hint">{hint}</Text>
     {props.children}
   </div>;
 }

@@ -139,7 +139,7 @@ function ActiveFormInteractionPrompt(props: {
                   />
                 ) : null}
                 {props.request.fields.length === 1 && field.kind === 'single_select' && field.required ? (
-                  <ChoicePanel label={field.label} options={field.options} keyboardHint={copy.keyboardHint}
+                  <ChoicePanel label={field.label} options={field.options}
                     value={typeof draft.value === 'string' ? draft.value : ''}
                     disabled={responsePending || props.stopPending}
                     onChange={(value) => updateDraft(index, { ...draft, value })}

@@ -256,7 +256,7 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `packages/ui/src/chat-surface-layout.tsx` | shell-chrome-or-panel | ChatLayout | aligned — uses Astryx (ChatLayout) | aligned |
 | `packages/ui/src/chat-turn.tsx` | shell-chrome-or-panel | Badge, Banner, Button, ChatMessage, ChatMessageBubble, ChatMessageMetadata, ChatSystemMessage, ChatTokenizedText, HStack, Icon, IconButton, Spinner, Thumbnail, Timestamp, Token, Tooltip | aligned — uses Astryx (Badge, Banner, Button, ChatMessage, ChatMessageBubble, ChatMessageMetadata, ChatSystemMessage, ChatTokenizedText) | aligned |
 | `packages/ui/src/chat-view.tsx` | shell-chrome-or-panel | Button, ButtonGroup, ChatMessageList, EmptyState, HStack, Spinner | aligned — uses Astryx (Button, ButtonGroup, ChatMessageList, EmptyState, HStack, Spinner) | aligned |
-| `packages/ui/src/choice-panel.tsx` | shell-chrome-or-panel | Kbd, RadioList, RadioListItem, Text | aligned — uses Astryx (Kbd, RadioList, RadioListItem, Text) | aligned |
+| `packages/ui/src/choice-panel.tsx` | shell-chrome-or-panel | Badge, Item | aligned — uses Astryx (Badge, Item) | aligned |
 | `packages/ui/src/client-capability-prompt.tsx` | ui-composition | Button | aligned — uses Astryx (Button) | aligned |
 | `packages/ui/src/components.tsx` | ui-composition | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `packages/ui/src/composer-message-queue.tsx` | shell-chrome-or-panel | Button, IconButton, List, ListItem, Tooltip | raw `<textarea` (API Use-the-System) | polish |
@@ -307,7 +307,7 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `packages/ui/src/tool-activity/tool-result-preview.tsx` | ui-composition | Button, Link | aligned — uses Astryx (Button, Link) | aligned |
 | `packages/ui/src/transcript-scroll-authority.tsx` | ui-composition | ChatLayoutScrollButton | aligned — uses Astryx (ChatLayoutScrollButton) | aligned |
 | `packages/ui/src/ui.tsx` | ui-composition | none | aligned — no raw controls; no Astryx JSX usage | aligned |
-| `packages/ui/src/user-question-prompt.tsx` | ui-composition | Button, TextInput | aligned — uses Astryx (Button, TextInput) | aligned |
+| `packages/ui/src/user-question-prompt.tsx` | ui-composition | Button, ChatComposer, ChatComposerInput | aligned — uses Astryx (Button, ChatComposer, ChatComposerInput) | aligned |
 | `packages/ui/src/workspace-picker.tsx` | ui-composition | DropdownMenu, DropdownMenuItem | aligned — uses Astryx (DropdownMenu, DropdownMenuItem) | aligned |
 
 ## Severity legend
