@@ -1956,8 +1956,9 @@ export const Composer = forwardRef<
                         size="md"
                         className="maka-composer-session-token"
                         icon={<MessagesSquare size={16} aria-hidden="true" />}
-                        label={session.name}
-                        description={getConversationCopy(locale).messages.sessionSnapshotPending}
+                        label={`${getConversationCopy(locale).messages.sessionSnapshotLabel(session.name)} · ${getConversationCopy(locale).messages.sessionSnapshotPending}`}
+                        isLabelHidden
+                        endContent={<span className="maka-composer-session-token-name">{session.name}</span>}
                         onRemove={props.onRemovePendingSessionReference
                           ? () => props.onRemovePendingSessionReference?.(session.id)
                           : undefined}

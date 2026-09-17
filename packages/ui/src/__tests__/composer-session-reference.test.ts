@@ -21,7 +21,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { parseHTML } from 'linkedom';
 import type { UiLocale } from '@maka/core/ui-locale';
+import { Composer } from '../composer.js';
 import { QuoteRefChip, quoteProvenanceSummary } from '../quote-ref-chip.js';
 import { LocaleProvider } from '../locale-context.js';
 import { getConversationCopy } from '../conversation-copy.js';
@@ -65,3 +67,25 @@ test('quote provenance omits invalid dates and does not call complete content tr
   assert.equal(quoteProvenanceSummary({ ...quote, sourceTruncated: false }, 'en'), 'captured 1970-01-01T00:00:00.000Z');
   assert.equal(quoteProvenanceSummary({ text: 'ordinary quote' }, 'en'), undefined);
 });
+
+for (const locale of ['en', 'zh-CN', 'zh-TW'] as const) {
+  test(`pending Session remove control names the type and capture state in ${locale}`, () => {
+    const messages = getConversationCopy(locale).messages;
+    const markup = renderToStaticMarkup(createElement(LocaleProvider, {
+      locale,
+      children: createElement(Composer, {
+        pendingSessionReferences: [{ id: 'source-id', name: 'Reference source' }],
+        onRemovePendingSessionReference: () => undefined,
+        onSend: () => undefined,
+        onStop: () => undefined,
+      }),
+    }));
+    const document = parseHTML(`<html><body>${markup}</body></html>`).document;
+    const token = document.querySelector('.maka-composer-session-token');
+    const removeName = token?.querySelector('button')?.getAttribute('aria-label');
+    assert.ok(removeName);
+    assert.ok(removeName.includes(messages.sessionSnapshotLabel('Reference source')));
+    assert.ok(removeName.includes(messages.sessionSnapshotPending));
+    assert.equal(token?.querySelector('.maka-composer-session-token-name')?.textContent, 'Reference source');
+  });
+}

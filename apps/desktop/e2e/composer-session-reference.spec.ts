@@ -65,6 +65,11 @@ test('references another Session from @, including a trailing-space browse', asy
   const chip = page.locator('.maka-composer-session-token');
   await expect(chip).toContainText(sourceName);
   await expect(chip.locator('svg.lucide-messages-square')).toHaveCount(1);
+  await expect(chip.locator('button')).toHaveAttribute(
+    'aria-label',
+    /会话：Reference source.*发送时截取快照/,
+  );
+  await expect(chip.locator('.maka-composer-session-token-name')).toHaveText(sourceName);
   await page.screenshot({ path: testInfo.outputPath('session-reference-staged.png') });
 
   const followUp = 'continue from the referenced session';

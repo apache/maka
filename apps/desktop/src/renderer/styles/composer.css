@@ -175,6 +175,13 @@
   background: var(--muted);
 }
 
+.maka-composer-session-token-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* Astryx ChatComposerDrawer wraps its content in a display:grid whose single
    implicit column sizes to the content's max-content contribution — with a
    long chip row that resolves WIDER than the grid (measured: 896px column in
