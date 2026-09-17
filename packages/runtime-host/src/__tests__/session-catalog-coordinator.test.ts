@@ -1151,6 +1151,34 @@ test('creation rejects explore permission without a declared mode', async () => 
   assert.equal(fixture.drainRequests(), 0);
 });
 
+test('new tasks inherit bypass unless creation explicitly selects sandbox permissions', async () => {
+  const modes: unknown[] = [];
+  const fixture = createFixture({
+    stores: {
+      createStableSession: async (request) => {
+        modes.push(request.input.permissionMode);
+        return {
+          kind: 'existing',
+          record: headerSnapshot(sessionHeader(request.sessionId, []), 3),
+        };
+      },
+    },
+  });
+  for (const permissionMode of [undefined, 'ask'] as const) {
+    const outcome = await fixture.coordinator.handlers['session.create'](
+      {
+        sessionId: fixture.sessionId,
+        workspace: { kind: 'host_path', path: process.cwd() },
+        modelTarget: { kind: 'default' },
+        ...(permissionMode ? { permissionMode } : {}),
+      },
+      context,
+    );
+    assert.equal(outcome.ok, true, JSON.stringify(outcome));
+  }
+  assert.deepEqual(modes, ['bypass', 'ask']);
+});
+
 test('new tasks snapshot the current global Code Mode setting', async () => {
   let enabled = true;
   const runtimePolicy: RuntimePolicy = {
