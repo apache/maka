@@ -616,6 +616,10 @@ function asFiniteNumber(value: unknown): number | null {
   return null;
 }
 
+/**
+ * 日历重复保留 Date 的本地时间规则：夏令时缺失时间向后平移，重复时间取首次。
+ * 每次仍从锚点重建，平移不延续到下一周期；cron 则跳过不存在的本地时间。
+ */
 function nextCalendarFireAt(
   schedule: Extract<ScheduledTaskSchedule, { kind: 'calendar' }>,
   after: number,

@@ -238,6 +238,39 @@ describe('scheduled-task catalog', () => {
     }
   });
 
+  it('returns to the anchor wall time after firing on a DST gap day', () => {
+    const moduleUrl = new URL('../scheduled-task.js', import.meta.url).href;
+    const script = `
+      import { computeNextFireAt } from ${JSON.stringify(moduleUrl)};
+      const anchors = {
+        daily: '2026-03-01T02:30:15.125-05:00',
+        weekly: '2026-03-01T02:30:15.125-05:00',
+        monthly: '2026-01-08T02:30:15.125-05:00',
+      };
+      const result = Object.entries(anchors).map(([recurrence, anchor]) => {
+        const schedule = { kind: 'calendar', recurrence, anchorAt: Date.parse(anchor) };
+        let after = Date.parse('2026-03-08T00:00:00-05:00');
+        return Array.from({length: 2}, () => {
+          after = computeNextFireAt(schedule, after);
+          return after;
+        });
+      });
+      process.stdout.write(JSON.stringify(result));
+    `;
+    const actual = JSON.parse(
+      execFileSync(process.execPath, ['--input-type=module', '-e', script], {
+        env: { ...process.env, TZ: 'America/New_York' },
+        encoding: 'utf8',
+      }),
+    );
+    const gap = Date.parse('2026-03-08T03:30:15.125-04:00');
+    assert.deepEqual(actual, [
+      [gap, Date.parse('2026-03-09T02:30:15.125-04:00')],
+      [gap, Date.parse('2026-03-15T02:30:15.125-04:00')],
+      [gap, Date.parse('2026-04-08T02:30:15.125-04:00')],
+    ]);
+  });
+
   it('rejects tasks whose first fire is not before expiration', () => {
     const now = Date.UTC(2026, 0, 5, 8, 0, 0);
     const result = normalizeCreateScheduledTaskInput(
