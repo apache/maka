@@ -26,6 +26,46 @@ const desktop = join(__dirname, '..', 'apps', 'desktop');
 app.setAppPath(desktop);
 app.setPath('userData', join(root, 'user-data'));
 process.chdir(desktop);
+// Test launcher only. The product launcher and Host do not expose this switch.
+if (process.env.MAKA_MANAGED_SMOKE_DEBUG_HOST === '1') {
+  const childProcess = require('node:child_process');
+  const { syncBuiltinESMExports } = require('node:module');
+  const { writeFileSync, renameSync } = require('node:fs');
+  const spawn = childProcess.spawn;
+  childProcess.spawn = function (executable, args, options) {
+    const isHost =
+      Array.isArray(args) &&
+      args.includes('--expected-root-id') &&
+      args.includes(join(root, 'user-data', 'workspaces', 'default'));
+    const child = spawn.call(
+      this,
+      executable,
+      isHost ? ['--inspect=127.0.0.1:0', ...args] : args,
+      options,
+    );
+    if (isHost) {
+      let output = '';
+      let published = false;
+      child.stderr?.on('data', (chunk) => {
+        if (published) return;
+        output = (output + chunk.toString()).slice(-8192);
+        const endpoint = output.match(
+          /Debugger listening on (ws:\/\/127\.0\.0\.1:\d+\/[^\s]+)/,
+        )?.[1];
+        if (endpoint) {
+          writeFileSync(
+            join(root, 'host-debugger.tmp'),
+            JSON.stringify({ pid: child.pid, endpoint }),
+          );
+          renameSync(join(root, 'host-debugger.tmp'), join(root, 'host-debugger.json'));
+          published = true;
+        }
+      });
+    }
+    return child;
+  };
+  syncBuiltinESMExports();
+}
 import(pathToFileURL(join(desktop, 'dist/main/main.js')).href).catch((error) => {
   console.error(error);
   app.exit(1);

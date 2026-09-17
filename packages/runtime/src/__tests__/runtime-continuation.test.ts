@@ -43,6 +43,11 @@ import {
 import { testInvocationRecord } from './invocation-fixture.js';
 
 test('local continuation safety inspector returns current authoritative workspace facts', async () => {
+  const source = Object.freeze({
+    sourceRunId: 'interrupted-run',
+    expectedRuntimeEventHighWater: 7,
+  });
+  const checkpoints: unknown[] = [];
   const inspect = createLocalContinuationSafetyInspector({
     readSessionCwd: async () => '/workspace/repo-link',
     resolveWorkspaceIdentity: async () => ({
@@ -51,6 +56,10 @@ test('local continuation safety inspector returns current authoritative workspac
     }),
     listAvailableToolNames: async () => ['Write', 'Read', 'Read'],
     hasPendingBackgroundOperations: async () => false,
+    readWorkspaceCheckpoint: async (sessionId, boundary) => {
+      checkpoints.push([sessionId, boundary]);
+      return undefined;
+    },
   });
 
   assert.deepEqual(await inspect('session-1'), {
@@ -59,6 +68,11 @@ test('local continuation safety inspector returns current authoritative workspac
     backgroundOperationsSettled: true,
     availableToolNames: ['Read', 'Write'],
   });
+  await inspect('session-1', source);
+  assert.deepEqual(checkpoints, [
+    ['session-1', undefined],
+    ['session-1', source],
+  ]);
 });
 
 test('RuntimeContinuationPlanner reads the durable source boundary and allocates fresh identities', async () => {

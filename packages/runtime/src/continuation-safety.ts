@@ -17,7 +17,11 @@
  * under the License.
  */
 
-import type { RuntimeContinuationSafetyObservation } from './runtime-resume.js';
+import type {
+  RuntimeContinuationSafetyObservation,
+  RuntimeContinuationSafetyInspector,
+  RuntimeContinuationSafetySource,
+} from './runtime-resume.js';
 
 export interface ResolvedWorkspaceIdentity {
   workspaceIdentity: string;
@@ -31,20 +35,21 @@ export interface LocalContinuationSafetyInspectorDeps {
   hasPendingBackgroundOperations(sessionId: string): Promise<boolean>;
   readWorkspaceCheckpoint?: (
     sessionId: string,
+    source?: RuntimeContinuationSafetySource,
   ) => Promise<RuntimeContinuationSafetyObservation['workspaceCheckpoint']>;
 }
 
 export function createLocalContinuationSafetyInspector(
   deps: LocalContinuationSafetyInspectorDeps,
-): (sessionId: string) => Promise<RuntimeContinuationSafetyObservation> {
-  return async (sessionId) => {
+): RuntimeContinuationSafetyInspector {
+  return async (sessionId, source) => {
     const cwd = await deps.readSessionCwd(sessionId);
     const [workspace, availableToolNames, hasPendingBackgroundOperations, workspaceCheckpoint] =
       await Promise.all([
         deps.resolveWorkspaceIdentity(cwd),
         deps.listAvailableToolNames(sessionId),
         deps.hasPendingBackgroundOperations(sessionId),
-        deps.readWorkspaceCheckpoint?.(sessionId),
+        deps.readWorkspaceCheckpoint?.(sessionId, source),
       ]);
     return {
       workspaceIdentity: workspace.workspaceIdentity,

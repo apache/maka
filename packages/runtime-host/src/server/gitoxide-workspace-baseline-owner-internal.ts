@@ -18,6 +18,16 @@
  */
 
 import { createHash } from 'node:crypto';
+import { scanToolLedger } from '@maka/core/tool-ledger-scanner';
+import {
+  MANAGED_MUTATION_EXECUTION_PROFILE_V1_DIGEST,
+  type RuntimeEvent,
+} from '@maka/core/runtime-event';
+import {
+  prepareGitoxideCandidateRecoveryInternal,
+  type GitoxideCandidateRecoveryInput,
+} from './gitoxide-candidate-recovery-internal.js';
+import { continuationStartEventMatchesClaim } from '@maka/core/runtime-boundary';
 import {
   prepareGitoxideMutationInternal,
   type GitoxideMutationAdmissionInput,
@@ -86,6 +96,30 @@ function createOwner(stores: InteractiveExecutionStoresWriter) {
     },
   });
   return Object.freeze({
+    async recoverCandidate(input: GitoxideCandidateRecoveryInput) {
+      const prepared = await prepareGitoxideCandidateRecoveryInternal(
+        stores,
+        () => openExecutionWorkspaceAuthority(stores, verifiers),
+        input,
+      );
+      if (prepared.kind === 'already_committed') return { created: false, event: prepared.event };
+      const { verified } = prepared;
+      const proof = Object.freeze({});
+      if (verified.kind === 'successor') {
+        successors.set(proof, verified.successor);
+        const committed = await verified.authority.commitSuccessor({
+          candidateOutcome: proof,
+          toolOutcome: verified.toolOutcome,
+        });
+        return { created: committed.created, event: prepared.event };
+      }
+      noEffects.set(proof, verified.noEffect);
+      const committed = await verified.authority.commitNoEffect({
+        noEffectOutcome: proof,
+        toolOutcome: verified.toolOutcome,
+      });
+      return { created: committed.created, event: prepared.event };
+    },
     prepareMutation(input: GitoxideMutationAdmissionInput) {
       return prepareGitoxideMutationInternal(
         () => openExecutionWorkspaceAuthority(stores, verifiers),
@@ -138,6 +172,196 @@ function createOwner(stores: InteractiveExecutionStoresWriter) {
       return verified.authority.commitSuccessor({
         candidateOutcome: proof,
         toolOutcome: verified.toolOutcome,
+      });
+    },
+    async inspectContinuation(input: {
+      workspaceKey: string;
+      repositoryPath: string;
+      invocationOwnerToken: object;
+      helperCapability: GitoxideHelperInvocationCapability;
+      acceptedRepositoryOwnerToken: object;
+      sessionId: string;
+      sourceRunId: string;
+      expectedRuntimeEventHighWater?: number;
+      abortSignal?: AbortSignal;
+    }): Promise<{ ref: string; restored: true; runtimeEventHighWater: number }> {
+      input = { ...input };
+      const authority = await openExecutionWorkspaceAuthority(stores, verifiers);
+      const id = hash(`maka-managed-files-workspace-v1\0${input.workspaceKey}`).slice(7, 39);
+      const workspaceId = `workspace_${id}`;
+      const epochId = `epoch_${id}`;
+      const head = await authority.readHead(workspaceId, epochId);
+      const epoch = await authority.readEpoch(workspaceId, epochId);
+      if (!head || !epoch || (await authority.readReservation(epoch.workspaceInstanceId)))
+        throw new Error('Managed continuation has no settled workspace head');
+      const version = await authority.readVersion(head.workspaceVersionId);
+      if (!version || version.acceptedEventId !== head.acceptedEventId)
+        throw new Error('Managed continuation has no source-bound accepted mutation');
+      const prefixInput = { sessionId: input.sessionId, runId: input.sourceRunId };
+      const budget = {
+        maxEvents: 16384,
+        maxBytes: 32 * 1024 * 1024,
+        maxRecordBytes: 8 * 1024 * 1024,
+      };
+      const proof = await stores.runtimeEventStore.readImmutableRuntimePrefixProof(
+        prefixInput,
+        budget,
+      );
+      if (
+        input.expectedRuntimeEventHighWater !== undefined &&
+        proof.position.lastEventSeq !== input.expectedRuntimeEventHighWater
+      )
+        throw new Error('Managed continuation source high-water changed');
+      const prefix = await stores.runtimeEventStore.readImmutableRuntimePrefix({
+        ...prefixInput,
+        upToEventSeq: proof.position.lastEventSeq,
+      });
+      if (prefix.prefixDigest !== proof.prefixDigest)
+        throw new Error('Managed continuation source prefix changed');
+      // A committed no-effect terminal binds an unchanged baseline to this Run.
+      // Success and failure keep distinct outcome semantics; neither needs a successor.
+      const representsHead = (events: readonly RuntimeEvent[]) => {
+        if (version.protocol === 'workspace_version_accepted_v1')
+          return events.some((event) => event.id === version.origin.outcomeEventId);
+        const scan = scanToolLedger(events);
+        if (scan.hasCorruption) throw new Error('Corrupt baseline continuation ledger');
+        return scan.operations.some((operation) => {
+          const dispatch = operation.dispatchEvent;
+          const mutation = dispatch?.actions?.toolDispatch?.managedMutation;
+          const response = operation.responseEvent;
+          const terminal = response?.actions?.managedMutationTerminal;
+          return (
+            operation.callEvent?.content?.kind === 'function_call' &&
+            ['Write', 'Edit'].includes(operation.callEvent.content.name) &&
+            dispatch?.sessionId === input.sessionId &&
+            response?.sessionId === input.sessionId &&
+            response.runId === dispatch.runId &&
+            response.content?.kind === 'function_response' &&
+            ((terminal?.terminalKind === 'no_workspace_change' && !response.content.isError) ||
+              (terminal?.terminalKind === 'operation_failed_no_effect' &&
+                response.content.isError === true)) &&
+            response.refs?.operationId === operation.operationId &&
+            terminal.operationId === operation.operationId &&
+            terminal.dispatchEventId === dispatch.id &&
+            terminal.workspaceInstanceId === epoch.workspaceInstanceId &&
+            mutation?.workspaceInstanceId === epoch.workspaceInstanceId &&
+            mutation.workspaceId === workspaceId &&
+            mutation.workspaceEpochId === epochId &&
+            mutation.repositoryId === head.repositoryId &&
+            mutation.baseAcceptedEventId === head.acceptedEventId &&
+            mutation.baseWorkspaceVersionId === head.workspaceVersionId &&
+            mutation.baseHeadRevision === head.revision &&
+            mutation.baseCommitOid === head.commitOid &&
+            mutation.baseTreeOid === head.treeOid &&
+            mutation.executionProfileDigest === MANAGED_MUTATION_EXECUTION_PROFILE_V1_DIGEST
+          );
+        });
+      };
+      let evidence = prefix;
+      if (!representsHead(evidence.events)) {
+        // Only a store-authenticated continuation may inherit accepted evidence.
+        // A caller-supplied parent ID (or today's latest head) is not lineage.
+        const opening = prefix.events[0];
+        const source =
+          opening?.content?.kind === 'invocation_opened' ? opening.content.source : undefined;
+        const state =
+          source?.kind === 'continuation' && source.boundaryDigest
+            ? await stores.runtimeEventStore.readContinuationClaimStateByBoundary(
+                source.boundaryDigest,
+              )
+            : undefined;
+        if (
+          !state ||
+          state.startEventId !== opening?.id ||
+          !continuationStartEventMatchesClaim(opening, state.claim, state.startKind) ||
+          state.claim.target.sessionId !== input.sessionId ||
+          state.claim.target.runId !== input.sourceRunId ||
+          state.claim.boundary.segments.length > 32
+        ) {
+          throw new Error(
+            'Managed accepted head does not belong to the source Run: no authenticated lineage',
+          );
+        }
+        // At most 32 ancestors, each bounded to 1 MiB / 1,024 events. Do not
+        // recursively follow arbitrary parent links or load unlimited history.
+        for (const segment of [...state.claim.boundary.segments].reverse()) {
+          input.abortSignal?.throwIfAborted();
+          if (
+            segment.identity.sessionId !== input.sessionId ||
+            segment.identity.runId === input.sourceRunId
+          )
+            throw new Error('Invalid managed continuation ancestor');
+          const ancestorInput = {
+            sessionId: input.sessionId,
+            runId: segment.identity.runId,
+            upToEventSeq: segment.position.lastEventSeq,
+          };
+          const ancestorProof = await stores.runtimeEventStore.readImmutableRuntimePrefixProof(
+            ancestorInput,
+            { maxEvents: 1024, maxBytes: 1024 * 1024, maxRecordBytes: 1024 * 1024 },
+          );
+          if (
+            ancestorProof.prefixDigest !== segment.prefixDigest ||
+            ancestorProof.position.lastEventSeq !== segment.position.lastEventSeq
+          )
+            throw new Error('Managed continuation ancestor prefix changed');
+          const ancestor = await stores.runtimeEventStore.readImmutableRuntimePrefix(ancestorInput);
+          if (ancestor.prefixDigest !== ancestorProof.prefixDigest)
+            throw new Error('Managed continuation ancestor changed during verification');
+          if (representsHead(ancestor.events)) {
+            evidence = ancestor;
+            break;
+          }
+        }
+      }
+      if (version.protocol === 'workspace_version_accepted_v1') {
+        const outcome = evidence.events.find((event) => event.id === version.origin.outcomeEventId);
+        const dispatch = evidence.events.find(
+          (event) => event.id === version.origin.dispatchEventId,
+        );
+        const mutation = dispatch?.actions?.toolDispatch?.managedMutation;
+        if (
+          !outcome ||
+          outcome.sessionId !== input.sessionId ||
+          outcome.runId !== evidence.identity.runId ||
+          outcome.content?.kind !== 'function_response' ||
+          outcome.content.isError === true ||
+          outcome.refs?.operationId !== version.origin.operationId ||
+          dispatch?.actions?.toolDispatch?.operationId !== version.origin.operationId ||
+          !mutation ||
+          mutation.workspaceId !== workspaceId ||
+          mutation.workspaceEpochId !== epochId ||
+          mutation.repositoryId !== head.repositoryId ||
+          mutation.baseAcceptedEventId !== version.baseAcceptedEventId ||
+          mutation.executionProfileDigest !== version.executionProfileDigest
+        )
+          throw new Error('Managed accepted head does not belong to the source Run');
+      } else if (!representsHead(evidence.events)) {
+        throw new Error('Baseline continuation has no source-bound no-effect terminal');
+      }
+      // Reuse the artifact owner: it verifies objects and reconciles only the accepted ref.
+      await this.reopen(input);
+      const current = await authority.readHead(workspaceId, epochId);
+      const finalProof = await stores.runtimeEventStore.readImmutableRuntimePrefixProof(
+        prefixInput,
+        budget,
+      );
+      input.abortSignal?.throwIfAborted();
+      if (
+        !current ||
+        current.acceptedEventId !== head.acceptedEventId ||
+        current.revision !== head.revision ||
+        current.commitOid !== head.commitOid ||
+        current.treeOid !== head.treeOid ||
+        (await authority.readReservation(epoch.workspaceInstanceId)) ||
+        finalProof.prefixDigest !== proof.prefixDigest ||
+        finalProof.position.lastEventSeq !== proof.position.lastEventSeq
+      )
+        throw new Error('Managed continuation boundary changed during verification');
+      return Object.freeze({
+        ref: `managed-accepted:${head.acceptedEventId}`,
+        restored: true as const,
+        runtimeEventHighWater: proof.position.lastEventSeq,
       });
     },
     async reopen(input: {

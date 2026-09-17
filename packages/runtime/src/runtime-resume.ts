@@ -388,6 +388,17 @@ export function preserveHandoffOpening(
   };
 }
 
+/** Runtime-selected source, not a caller-supplied workspace safety assertion. */
+export interface RuntimeContinuationSafetySource {
+  readonly sourceRunId: string;
+  readonly expectedRuntimeEventHighWater?: number;
+}
+
+export type RuntimeContinuationSafetyInspector = (
+  sessionId: string,
+  source?: RuntimeContinuationSafetySource,
+) => Promise<RuntimeContinuationSafetyObservation>;
+
 export interface RuntimeContinuationSafetyObservation {
   workspaceIdentity: string;
   /** Current location is diagnostic only and never participates in identity. */

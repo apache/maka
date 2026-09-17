@@ -966,6 +966,41 @@ fn rejects_an_existing_candidate_receipt_with_a_target_mode_flip() {
 }
 
 #[test]
+fn existing_candidate_verification_never_creates_a_missing_candidate() {
+    let fixture = RepositoryFixture::sha1_with_commit();
+    let source_head = fixture.git_output(["rev-parse", "HEAD"]);
+    let destination = fixture.root.join("verify-existing.git");
+    let imported = invoke_import(&fixture.root, &source_head, &destination);
+    let imported: serde_json::Value = serde_json::from_slice(&imported.stdout).unwrap();
+    let candidate_ref =
+        "refs/maka/candidates/1212121212121212121212121212121212121212121212121212121212121212";
+    let request = serde_json::json!({
+        "protocolVersion": 1, "operation": "create_candidate", "repositoryPath": destination,
+        "acceptedRef": "refs/maka/baseline",
+        "expectedBaseCommitOid": imported["baselineCommitOid"],
+        "expectedBaseTreeOid": imported["baselineTreeOid"],
+        "candidateRef": candidate_ref, "path": "docs/result.txt",
+        "contentBase64": "cmVzdWx0Cg==", "managedTreePolicyVersion": 3,
+        "requireExisting": true,
+    });
+    assert_helper_error(&invoke_request(request.clone()), "candidate_missing");
+    assert!(!destination.join(candidate_ref).exists());
+    let mut create = request.clone();
+    create.as_object_mut().unwrap().remove("requireExisting");
+    let created = invoke_request(create);
+    assert!(created.status.success());
+    let before = fs::read(destination.join(candidate_ref)).unwrap();
+    let verified = invoke_request(request.clone());
+    assert!(verified.status.success());
+    assert_eq!(created.stdout, verified.stdout);
+    assert_eq!(fs::read(destination.join(candidate_ref)).unwrap(), before);
+    let mut wrong = request;
+    wrong["contentBase64"] = serde_json::json!("b3RoZXIK");
+    assert!(!invoke_request(wrong).status.success());
+    assert_eq!(fs::read(destination.join(candidate_ref)).unwrap(), before);
+}
+
+#[test]
 fn rejects_an_exact_candidate_retry_when_the_result_blob_is_missing() {
     let fixture = RepositoryFixture::sha1_with_commit();
     let source_head = fixture.git_output(["rev-parse", "HEAD"]);

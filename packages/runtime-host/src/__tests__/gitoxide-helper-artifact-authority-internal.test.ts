@@ -29,6 +29,7 @@ import {
   issueGitoxideHelperReleaseArtifactClaimInternal,
   type GitoxideHelperReleaseArtifactClaim,
   verifyGitoxideHelperArtifactForInvocationInternal,
+  requireGitoxideHelperOperationsInternal,
 } from '../server/gitoxide-helper-artifact-authority-internal.js';
 
 test('rejects a caller-forged Gitoxide helper release claim', async () => {
@@ -120,6 +121,15 @@ test('keeps an admitted helper artifact opaque and bound to its invocation owner
   });
 
   assert.deepEqual(capability, { kind: 'gitoxide_helper_invocation_capability_v1' });
+  assert.throws(
+    () =>
+      requireGitoxideHelperOperationsInternal(invocationOwnerToken, capability, [
+        'verify_source_import',
+      ]),
+    (error) =>
+      error instanceof GitoxideHelperArtifactAuthorityError &&
+      error.code === 'gitoxide_helper_release_claim_unsupported',
+  );
   await assert.rejects(
     verifyGitoxideHelperArtifactForInvocationInternal({}, capability),
     (error) =>

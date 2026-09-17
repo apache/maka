@@ -39,7 +39,13 @@ on:
       - 'packages/runtime/src/edit-replace.ts'
       - 'packages/runtime/src/unified-diff.ts'
       - 'packages/runtime/package.json'
-      - 'packages/runtime-host/src/__tests__/fixtures/gitoxide-file-execution-child.ts'
+      - 'packages/runtime-host/src/__tests__/fixtures/gitoxide-baseline-reopen-child.ts'
+      - 'packages/runtime/src/continuation-safety.ts'
+      - 'packages/runtime/src/runtime-kernel.ts'
+      - 'packages/runtime/src/runtime-resume.ts'
+      - 'packages/runtime/src/session-manager.ts'
+      - 'packages/runtime/src/__tests__/runtime-continuation.test.ts'
+      - 'packages/runtime/src/__tests__/session-manager.test.ts'
       - 'packages/storage/src/**'
       - 'packages/runtime-host/src/__tests__/gitoxide-repository-admission-authority-internal.test.ts'
       - 'docs/architecture/gitoxide-*.md'
@@ -66,7 +72,13 @@ on:
       - 'packages/runtime/src/edit-replace.ts'
       - 'packages/runtime/src/unified-diff.ts'
       - 'packages/runtime/package.json'
-      - 'packages/runtime-host/src/__tests__/fixtures/gitoxide-file-execution-child.ts'
+      - 'packages/runtime-host/src/__tests__/fixtures/gitoxide-baseline-reopen-child.ts'
+      - 'packages/runtime/src/continuation-safety.ts'
+      - 'packages/runtime/src/runtime-kernel.ts'
+      - 'packages/runtime/src/runtime-resume.ts'
+      - 'packages/runtime/src/session-manager.ts'
+      - 'packages/runtime/src/__tests__/runtime-continuation.test.ts'
+      - 'packages/runtime/src/__tests__/session-manager.test.ts'
       - 'packages/storage/src/**'
       - 'packages/runtime-host/src/__tests__/gitoxide-repository-admission-authority-internal.test.ts'
       - 'docs/architecture/gitoxide-*.md'
@@ -152,6 +164,8 @@ jobs:
         run: >-
           node --test
           packages/runtime/dist/__tests__/tool-runtime-durable-boundary.test.js
+          packages/runtime/dist/__tests__/runtime-continuation.test.js
+          packages/runtime/dist/__tests__/session-manager.test.js
           packages/runtime-host/dist/__tests__/gitoxide-helper-artifact-authority-internal.test.js
           packages/runtime-host/dist/__tests__/gitoxide-helper-invocation-internal.test.js
           packages/runtime-host/dist/__tests__/gitoxide-repository-admission-authority-internal.test.js

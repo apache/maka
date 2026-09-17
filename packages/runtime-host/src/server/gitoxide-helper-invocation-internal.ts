@@ -111,6 +111,7 @@ export const GITOXIDE_HELPER_ERROR_REASONS_V1 = Object.freeze([
   'accepted_ref_target_invalid',
   'candidate_ref_not_direct',
   'candidate_ref_target_invalid',
+  'candidate_missing',
   'candidate_request_conflict',
   'candidate_publication_indeterminate',
   'target_ref_outside_maka_namespace',
@@ -496,6 +497,7 @@ export async function createCandidateWithGitoxideHelperInternal(input: {
   readonly path: string;
   readonly content: string;
   readonly managedTreePolicyVersion: 3;
+  readonly requireExisting?: true;
   readonly abortSignal?: AbortSignal;
 }): Promise<GitoxideCandidateResultV1> {
   const deadlineAt =
@@ -549,6 +551,7 @@ export async function createCandidateWithGitoxideHelperInternal(input: {
       path: input.path,
       contentBase64: Buffer.from(input.content, 'utf8').toString('base64'),
       managedTreePolicyVersion: input.managedTreePolicyVersion,
+      ...(input.requireExisting === true ? { requireExisting: true } : {}),
     }),
   );
   if (request.length > MAX_REQUEST_BYTES) {

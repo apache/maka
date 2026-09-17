@@ -8,12 +8,12 @@
 | 1 | managed T1 后只经限定 authority 结算 | 已提取，Windows 独立构建和定向测试通过 |
 | 2 | accepted Git 内容、candidate 与接受证明一致 | 已提取，独立构建和定向验证通过；完整 CI 未宣称通过 |
 | 3 | 创建前固定 managed intent 与 Host capability | 已提取；Windows 开发态真实 Electron smoke 通过，保持 Draft 候选 |
-| 4 | 同一 causal boundary 恢复且不重跑已完成 mutation | 待提取 |
+| 4 | 同一 causal boundary 恢复且不重跑已完成 mutation | 已提取；Runtime 213/213、Rust 77/77、Host 59 passed/6 skip、四项 Windows Electron 重启通过 |
 
 ## 文件与测试归属
 
 以下覆盖来源增量全部 94 个路径。多编号表示必须按功能块提取，不允许整文件或跨边界
-commit 搬运；原表是分配计划，PR2/3 的实际提取见文末，PR4 尚未提取。
+commit 搬运；原表是分配计划，PR2/3/4 的实际提取见各节。
 
 | 来源路径 | 交付 |
 | --- | --- |
@@ -174,3 +174,19 @@ commit 搬运；原表是分配计划，PR2/3 的实际提取见文末，PR4 尚
 - 验证：Rust 76 passed；Host 45 passed/6 Windows skip；Runtime/Storage 121 passed；
   新 workflow filter 两项 passed。完整 workflow policy 的 Windows shared-comparison
   fixture 仍非绿，详见交付合同。
+
+## 交付 4 的实际提取
+
+- 分支 `codex/managed-files-recovery-delivery`，堆叠在交付 3 `9691730f4`。
+- 迁移 `7f534eeff..87a9c7765` 的恢复功能块，不携带历史 merge。
+- 将交付 2 缩小版 child fixture 扩展为完整的 baseline/recovery fixture；
+  同时补回先前未迁移的 catalog/backend 真实进程证明，不保留未使用的双份 fixture。
+- 迁移 existing candidate verify、candidate recovery、source-bound continuation、
+  启动 reconciliation 和 Electron kill/restart 场景。
+- 94 个来源路径做逐文件 hash 对比；两个旧文档由四片合同替代，
+  main 的 UI/Host/依赖变更、新 conformance 测试和 CI 组织差异有意保留。
+- 路径审计另补回一条 helper capability 缺少 verify_source_import 权限时拒绝的测试；
+  4/4 artifact authority 测试通过，未修改生产权限。
+- Runtime/Host/Rust 恢复生产代码与冻结来源完全相同。
+- 本片不更改 Storage schema、不增加 release helper、不引入 Bash/npm 或自动恢复产品。
+- 本机证据、平台限制和执行命令见 `managed-files-recovery-delivery.zh-CN.md`。

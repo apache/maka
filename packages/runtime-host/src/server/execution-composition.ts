@@ -225,7 +225,12 @@ import { startHostModelMetadataRefresh } from './model-metadata-refresh.js';
 import { HostRuntimeResourceCoordinator } from './runtime-resource-coordinator.js';
 import { SessionAdmissionGate } from './session-admission-gate.js';
 import { HostSessionCatalogCoordinator } from './session-catalog-coordinator.js';
-import { publishPreparedGitoxideManagedTaskInternal } from './gitoxide-managed-session-internal.js';
+import {
+  publishPreparedGitoxideManagedTaskInternal,
+  reopenGitoxideManagedTaskInternal,
+  recoverGitoxideManagedTaskCandidatesInternal,
+  requireGitoxideManagedSessionInternal,
+} from './gitoxide-managed-session-internal.js';
 import { HostWorkspaceResolver } from './workspace-resolver.js';
 import { HostSessionRetirementCoordinator } from './session-retirement-coordinator.js';
 import { HostStorageMaintenance } from './storage-maintenance.js';
@@ -1401,12 +1406,33 @@ export async function createExecutionRuntimeHostComposition(
       },
       newId: randomUUID,
       now: Date.now,
-      safeBoundaryResumeEnabled: process.env.MAKA_RUNTIME_SAFE_BOUNDARY_RESUME === '1',
+      safeBoundaryResumeEnabled: async (sessionId) => {
+        if (process.env.MAKA_RUNTIME_SAFE_BOUNDARY_RESUME === '1') return true;
+        if (!dependencies.managedFilesHelper) return false;
+        const header = await stores.sessionStore.readHeaderSnapshot(sessionId);
+        return header.toolProfile === 'managed-files-v1' && !header.executorId;
+      },
       inspectContinuationSafety: createLocalContinuationSafetyInspector({
         readSessionCwd: async (sessionId) =>
           (await stores.sessionStore.readHeaderSnapshot(sessionId)).cwd,
         resolveWorkspaceIdentity: async (cwd) => resolveWorkspaceIdentity({ path: cwd }),
         listAvailableToolNames: resolveAvailableToolNames,
+        readWorkspaceCheckpoint: async (sessionId, source) => {
+          if (!source) return undefined;
+          const header = await stores.sessionStore.readHeaderSnapshot(sessionId);
+          if (header.toolProfile !== 'managed-files-v1') return undefined;
+          if (!dependencies.managedFilesHelper)
+            throw new Error('Managed continuation requires the admitted helper');
+          const capability = await reopenGitoxideManagedTaskInternal(context.owner.lease, {
+            sessionId,
+            ...dependencies.managedFilesHelper,
+          });
+          return requireGitoxideManagedSessionInternal(
+            capability,
+            sessionId,
+            stores.runtimeEventStore,
+          ).inspectContinuation(source);
+        },
         hasPendingBackgroundOperations: async (sessionId) => {
           const graph = requireGraphCoordinator(graphCoordinator);
           const graphWake = requireGraphSupervisorWake(graphSupervisorWake);
@@ -2767,7 +2793,25 @@ export async function createExecutionRuntimeHostComposition(
           executions: async () => {
             await coordinator.prepareRecovery();
             await interactions.recoverPendingAfterHostRestart();
-            await requireSessionManager(manager).recoverInterruptedSessionsStrict(stores);
+            if (dependencies.managedFilesHelper) {
+              for (const session of recoverySessions) {
+                if (session.toolProfile !== 'managed-files-v1' || session.executorId) continue;
+                const results = await recoverGitoxideManagedTaskCandidatesInternal(
+                  context.owner.lease,
+                  {
+                    sessionId: session.id,
+                    ...dependencies.managedFilesHelper,
+                  },
+                );
+                for (const result of results) {
+                  if (result.state === 'parked')
+                    console.warn(
+                      `[startup] managed mutation requires ledger reconciliation: ${result.operationId}`,
+                    );
+                }
+              }
+            }
+            await requireSessionManager(manager).recoverInterruptedSessionsAfterHostRestart(stores);
             await requireSessionManager(manager).recoverChildWorkspacePatches(
               recoverySessions.flatMap((session) =>
                 session.subagentWorkspace ? [session.id] : [],

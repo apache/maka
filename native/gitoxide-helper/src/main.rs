@@ -137,6 +137,7 @@ const HELPER_ERROR_REASONS_V1: &[&str] = &[
     "accepted_ref_target_invalid",
     "candidate_ref_not_direct",
     "candidate_ref_target_invalid",
+    "candidate_missing",
     "candidate_request_conflict",
     "candidate_publication_indeterminate",
     "target_ref_outside_maka_namespace",
@@ -216,6 +217,8 @@ enum Request {
         path: String,
         content_base64: String,
         managed_tree_policy_version: u8,
+        #[serde(default)]
+        require_existing: bool,
     },
     ReadTreeFile {
         protocol_version: u8,
@@ -454,6 +457,7 @@ fn run() -> Result<ExitCode, &'static str> {
             path,
             content_base64,
             managed_tree_policy_version,
+            require_existing,
         } => {
             assert_protocol_version(protocol_version)?;
             create_candidate(
@@ -465,6 +469,7 @@ fn run() -> Result<ExitCode, &'static str> {
                 path,
                 content_base64,
                 managed_tree_policy_version,
+                require_existing,
             )
         }
         Request::ReadTreeFile {
@@ -1131,6 +1136,7 @@ fn create_candidate(
     path: String,
     content_base64: String,
     managed_tree_policy_version: u8,
+    require_existing: bool,
 ) -> Result<ExitCode, &'static str> {
     use gix::bstr::ByteSlice;
 
@@ -1288,6 +1294,12 @@ fn create_candidate(
             &path,
         );
         return Ok(ExitCode::SUCCESS);
+    }
+
+    // Recovery may authenticate an existing publication, never manufacture one.
+    // Keep this decision inside the artifact owner, before any object/ref writes.
+    if require_existing {
+        return Err("candidate_missing");
     }
 
     let mut base_stats = ManagedTreeStats::default();

@@ -303,7 +303,7 @@ export async function reopenGitoxideRepositoryInternal(input: {
   });
 }
 
-export async function createGitoxideCandidateInternal(input: {
+interface GitoxideCandidateInput {
   readonly acceptedRepositoryOwnerToken: object;
   readonly acceptedRepositoryCapability: GitoxideAcceptedRepositoryCapability;
   readonly candidateOwnerToken: object;
@@ -311,7 +311,21 @@ export async function createGitoxideCandidateInternal(input: {
   readonly path: string;
   readonly content: string;
   readonly abortSignal?: AbortSignal;
-}): Promise<
+}
+
+export function createGitoxideCandidateInternal(input: GitoxideCandidateInput) {
+  return obtainGitoxideCandidateInternal(input, false);
+}
+
+/** Recovery may reissue a proof, but must not create missing publication evidence. */
+export function verifyExistingGitoxideCandidateInternal(input: GitoxideCandidateInput) {
+  return obtainGitoxideCandidateInternal(input, true);
+}
+
+async function obtainGitoxideCandidateInternal(
+  original: GitoxideCandidateInput,
+  requireExisting: boolean,
+): Promise<
   | (GitoxideCandidatePublishedV1 & {
       readonly candidateOutcomeCapability: GitoxideCandidateOutcomeCapability;
     })
@@ -319,6 +333,7 @@ export async function createGitoxideCandidateInternal(input: {
       readonly candidateOutcomeCapability: GitoxideCandidateOutcomeCapability;
     })
 > {
+  const input = { ...original };
   const managed = requireAcceptedRepositoryRecord(
     input.acceptedRepositoryOwnerToken,
     input.acceptedRepositoryCapability,
@@ -345,6 +360,7 @@ export async function createGitoxideCandidateInternal(input: {
     content: input.content,
     managedTreePolicyVersion: managed.managedTreePolicyVersion,
     abortSignal: input.abortSignal,
+    ...(requireExisting ? { requireExisting: true as const } : {}),
   });
   if (result.kind === 'candidate_rejected') {
     throw new GitoxideRepositoryAdmissionAuthorityError(

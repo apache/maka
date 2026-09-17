@@ -5847,21 +5847,34 @@ describe('SessionManager permission mode updates', () => {
     backends.register('ai-sdk', () => {
       throw new Error('continuation planning must not build a backend');
     });
+    const inspected: unknown[][] = [];
     const manager = new SessionManager({
       store,
       runStore,
       runtimeEventStore: runStore,
       backends,
-      safeBoundaryResumeEnabled: true,
-      inspectContinuationSafety: async () => ({
-        workspaceIdentity: 'workspace-authoritative',
-        backgroundOperationsSettled: true,
-        availableToolNames: [],
-      }),
+      safeBoundaryResumeEnabled: async (sessionId) => sessionId === 'session-1',
+      inspectContinuationSafety: async (...args) => {
+        inspected.push(args);
+        return {
+          workspaceIdentity: 'workspace-authoritative',
+          backgroundOperationsSettled: true,
+          availableToolNames: [],
+        };
+      },
       newId: nextId(),
       now: nextNow(6_530),
     });
     const session = await manager.createSession(makeInput());
+    await assert.rejects(
+      manager.recoverInterruptedSessionsAfterHostRestart({
+        kind: 'interactive',
+        sessionStore: store,
+        agentRunStore: runStore,
+        runtimeEventStore: runStore,
+      } as unknown as Parameters<SessionManager['recoverInterruptedSessionsAfterHostRestart']>[0]),
+      /execution.*stores/i,
+    );
     const header = await store.readHeader(session.id);
     const sourceRunId = 'source-run-authoritative-plan';
     const sourceTurnId = 'source-turn-authoritative-plan';
@@ -5909,6 +5922,17 @@ describe('SessionManager permission mode updates', () => {
     });
 
     assert.strictEqual(plan.disposition, 'continue');
+    assert.deepStrictEqual(inspected, [[session.id, { sourceRunId }]]);
+    assert.deepEqual(
+      (await manager.planLatestAuthoritativeSafeBoundaryContinuation('not-enabled'))
+        .rejectionReasons,
+      ['resume_feature_disabled'],
+    );
+    assert.deepEqual(
+      (await manager.planAuthoritativeSafeBoundaryContinuation('not-enabled', { sourceRunId }))
+        .rejectionReasons,
+      ['resume_feature_disabled'],
+    );
     assert.deepStrictEqual(plan.continuation?.safetySnapshot, {
       workspaceIdentity: 'workspace-authoritative',
       backgroundOperationsSettled: true,
@@ -8388,6 +8412,7 @@ describe('SessionManager permission mode updates', () => {
   });
 
   test('revalidates continuation safety inside the backend activation barrier', async () => {
+    const safetySources: unknown[] = [];
     const store = new MemorySessionStore();
     const runStore = new MemoryAgentRunStore();
     const backends = new BackendRegistry();
@@ -8407,11 +8432,17 @@ describe('SessionManager permission mode updates', () => {
       runStore,
       runtimeEventStore: runStore,
       backends,
-      inspectContinuationSafety: async () => ({
-        workspaceIdentity: 'workspace-1',
-        backgroundOperationsSettled: true,
-        availableToolNames,
-      }),
+      inspectContinuationSafety: async (_sessionId, source) => {
+        if (source) {
+          assert.ok(Object.isFrozen(source));
+          safetySources.push(source);
+        }
+        return {
+          workspaceIdentity: 'workspace-1',
+          backgroundOperationsSettled: true,
+          availableToolNames,
+        };
+      },
       runBackendActivation: async (operation) => {
         availableToolNames = ['Read', 'Write'];
         return operation();
@@ -8491,6 +8522,13 @@ describe('SessionManager permission mode updates', () => {
     );
 
     assert.strictEqual(backendCalls, 0);
+    assert.ok(safetySources.length >= 2, 'source is rechecked before claim and during activation');
+    for (const source of safetySources) {
+      assert.deepStrictEqual(source, {
+        sourceRunId,
+        expectedRuntimeEventHighWater: plan.continuation.sourceRuntimeEventHighWater,
+      });
+    }
     await expectRejects(
       readInvocation(runStore, session.id, plan.continuation.runId),
       /Unknown run/,

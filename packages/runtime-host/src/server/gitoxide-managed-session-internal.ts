@@ -23,6 +23,7 @@ import {
 import { requireEntityId } from '../protocol/codec.js';
 import type { MakaTool, ToolRuntimeInput } from '@maka/runtime/tool-runtime';
 import type { RuntimeCommitSink } from '@maka/runtime/runtime-commit-sink';
+import type { RuntimeContinuationSafetySource } from '@maka/runtime/runtime-resume';
 import { readPage, readParameters, resolveReadInput } from '@maka/runtime/read-page';
 import {
   openInteractiveExecutionStoresForWrite,
@@ -47,6 +48,10 @@ type ReopenInput = Parameters<
 >[0];
 type Prepare = NonNullable<ToolRuntimeInput['prepareManagedMutation']>;
 interface SessionExecution {
+  readonly inspectContinuation: (
+    source: RuntimeContinuationSafetySource,
+    abortSignal?: AbortSignal,
+  ) => Promise<{ ref: string; restored: true; runtimeEventHighWater: number }>;
   readonly projectTools: (tools: readonly MakaTool[]) => readonly MakaTool[];
   readonly sessionId: string;
   readonly runtimeCommitSink: RuntimeCommitSink;
@@ -100,6 +105,61 @@ function managedTaskRepositoryPath(root: string, sessionId: string): string {
   )
     throw new Error('Invalid managed session identity');
   return join(root, `managed-files-${createHash('sha256').update(sessionId).digest('hex')}.git`);
+}
+
+/** Only the Host startup phase, before task admission, may consume this entry. */
+export async function recoverGitoxideManagedTaskCandidatesInternal(
+  lease: StorageRootLease<'interactive', 'write'>,
+  original: Pick<
+    ManagedSessionCreateInput,
+    'sessionId' | 'invocationOwnerToken' | 'helperCapability'
+  >,
+): Promise<readonly { operationId: string; state: 'settled' | 'parked' }[]> {
+  const input = { ...original };
+  return runWithStorageRootLease(lease, 'interactive', 'write', async (root) => {
+    const stores = await openInteractiveExecutionStoresForWrite(lease);
+    const header = await stores.sessionStore.readHeader(input.sessionId);
+    if (
+      header.id !== input.sessionId ||
+      header.toolProfile !== 'managed-files-v1' ||
+      header.executorId
+    )
+      throw new Error('Startup candidate recovery requires a managed files task');
+    const pending = await stores.runtimeEventStore.listUnsettledToolOperations(input.sessionId);
+    const owner = createGitoxideWorkspaceBaselineOwnerInternal(stores);
+    const results: { operationId: string; state: 'settled' | 'parked' }[] = [];
+    for (const operation of pending) {
+      if (operation.recoveryMode !== 'reconcile' || !['Write', 'Edit'].includes(operation.toolName))
+        continue;
+      try {
+        const acceptedRepositoryOwnerToken = {};
+        const acceptedRepositoryCapability = await owner.reopen({
+          workspaceKey: input.sessionId,
+          repositoryPath: managedTaskRepositoryPath(root, input.sessionId),
+          invocationOwnerToken: input.invocationOwnerToken,
+          helperCapability: input.helperCapability,
+          acceptedRepositoryOwnerToken,
+        });
+        const current = await stores.sessionStore.readHeader(input.sessionId);
+        if (current.toolProfile !== header.toolProfile || current.executorId !== header.executorId)
+          throw new Error('Managed task mode changed during recovery');
+        await owner.recoverCandidate({
+          workspaceKey: input.sessionId,
+          sessionId: input.sessionId,
+          runId: operation.runId,
+          operationId: operation.operationId,
+          acceptedRepositoryOwnerToken,
+          acceptedRepositoryCapability,
+        });
+        results.push({ operationId: operation.operationId, state: 'settled' });
+      } catch {
+        // No fallback, reservation release, candidate creation or tool retry.
+        // The ledger remains the authority even if a commit response was lost.
+        results.push({ operationId: operation.operationId, state: 'parked' });
+      }
+    }
+    return results;
+  });
 }
 
 export function createGitoxideManagedTaskInternal(
@@ -474,6 +534,16 @@ export async function openGitoxideManagedSessionInternal(
           .map((tool) => (tool.name === 'Read' ? readTool : tool)),
       sessionId,
       runtimeCommitSink: stores.runtimeEventStore,
+      inspectContinuation(source, signal) {
+        return owner.inspectContinuation({
+          ...binding,
+          acceptedRepositoryOwnerToken,
+          sessionId,
+          sourceRunId: source.sourceRunId,
+          expectedRuntimeEventHighWater: source.expectedRuntimeEventHighWater,
+          abortSignal: signal,
+        });
+      },
       async prepareManagedMutation(request) {
         if (request.sessionId !== sessionId)
           throw new Error('Managed mutation does not belong to this session');
