@@ -160,7 +160,16 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
       event.preventDefault();
       if (isExternalUrl(url)) void shell.openExternal(url).catch(() => {});
     });
-    contents.on('will-frame-navigate', (event) => event.preventDefault());
+    contents.on('will-frame-navigate', (event) => {
+      if (!event.isMainFrame) {
+        event.preventDefault();
+        return;
+      }
+      const current = contents.getURL();
+      if (current === event.url) return;
+      event.preventDefault();
+      if (isExternalUrl(event.url)) void shell.openExternal(event.url).catch(() => {});
+    });
     contents.on('will-attach-webview', (event) => event.preventDefault());
     contents.once('render-process-gone', (_event, details) => {
       if (!ownsWebContents(contents)) return;

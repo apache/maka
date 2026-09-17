@@ -191,19 +191,39 @@ test('hands safe WorkHub links to the OS while keeping the view local', async ()
   assert.deepEqual(h.externalUrls, ['https://example.com/']);
 
   contents.currentUrl = 'http://localhost:5173/';
-  let navigationPrevented = false;
-  contents.emit('will-navigate', { preventDefault: () => { navigationPrevented = true; } }, contents.currentUrl);
-  assert.equal(navigationPrevented, false);
+  const navigate = (url: string, isMainFrame = true) => {
+    let navigationPrevented = false;
+    contents.emit('will-frame-navigate', {
+      preventDefault: () => { navigationPrevented = true; },
+      isMainFrame,
+      url,
+    });
+    // Electron can stop after will-frame-navigate, so will-navigate is only
+    // reached when the frame handler lets the navigation continue.
+    if (!navigationPrevented) {
+      contents.emit('will-navigate', { preventDefault: () => { navigationPrevented = true; } }, url);
+    }
+    return navigationPrevented;
+  };
+
+  assert.equal(navigate(contents.currentUrl), false);
   assert.deepEqual(h.externalUrls, ['https://example.com/']);
 
+  assert.equal(navigate('https://example.org/'), true);
+  assert.deepEqual(h.externalUrls, ['https://example.com/', 'https://example.org/']);
+
+  assert.equal(navigate('https://subframe.example/', false), true);
+  assert.deepEqual(h.externalUrls, ['https://example.com/', 'https://example.org/']);
+
+  let navigationPrevented = false;
   contents.emit('will-navigate', { preventDefault: () => { navigationPrevented = true; } }, 'https://example.org/');
   assert.equal(navigationPrevented, true);
-  assert.deepEqual(h.externalUrls, ['https://example.com/', 'https://example.org/']);
+  assert.deepEqual(h.externalUrls, ['https://example.com/', 'https://example.org/', 'https://example.org/']);
 
   navigationPrevented = false;
   contents.emit('will-navigate', { preventDefault: () => { navigationPrevented = true; } }, 'javascript:alert(1)');
   assert.equal(navigationPrevented, true);
-  assert.deepEqual(h.externalUrls, ['https://example.com/', 'https://example.org/']);
+  assert.deepEqual(h.externalUrls, ['https://example.com/', 'https://example.org/', 'https://example.org/']);
   h.controller.dispose();
 });
 
