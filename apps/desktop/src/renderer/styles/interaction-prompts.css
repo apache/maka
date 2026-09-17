@@ -102,7 +102,7 @@
   container-type: inline-size;
 }
 
-.maka-question-drawer {
+.maka-question-body {
   display: grid;
   gap: var(--space-1-5);
 }

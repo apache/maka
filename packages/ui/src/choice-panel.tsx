@@ -70,7 +70,11 @@ export function ChoicePanel(props: {
       const selected = option.value === props.value;
       return <Item key={option.value} role="option" label={option.label} description={option.description}
         isSelected={selected} isDisabled={props.disabled}
-        onClick={props.disabled ? undefined : () => { props.onChange(option.value); root.current?.focus(); }}
+        onClick={props.disabled ? undefined : (event) => {
+          event.stopPropagation();
+          props.onChange(option.value);
+          root.current?.focus();
+        }}
         startContent={<Badge variant={selected ? 'info' : 'neutral'} label={index + 1} aria-hidden="true" />}
         style={option.accentColor ? { '--_item-label-color': option.accentColor } as CSSProperties : undefined} />;
     })}

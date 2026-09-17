@@ -23,7 +23,6 @@ import type { UserQuestionResponse } from '@maka/core/user-question';
 import {
   Button,
   ChatComposer,
-  ChatComposerDrawer,
   ChatComposerInput,
   type ChatComposerInputHandle,
 } from '@astryxdesign/core';
@@ -165,34 +164,30 @@ export function UserQuestionPrompt(props: {
         isDisabled={interactionDisabled}
         placeholder={copy.otherPlaceholder}
         status={responseError ? { type: 'error', message: responseError } : undefined}
-        drawer={
-          <ChatComposerDrawer>
-            <div className="maka-question-drawer">
-              <div className="maka-interaction-title-row">
-                <h2 className="maka-interaction-title" id={titleId}>{question.question}</h2>
-                {props.request.questions.length > 1 ? <span className="maka-question-progress">{questionIndex + 1} / {props.request.questions.length}</span> : null}
-              </div>
-              <ChoicePanel
-                key={questionIndex}
-                label={question.question}
-                value={selectedValue}
-                disabled={interactionDisabled}
-                onChange={select}
-                onConfirm={confirm}
-                onEscape={() => inputRef.current?.focus()}
-                options={question.options.map((option, index) => ({ value: `option:${index}`, label: option.label, description: option.description }))}
-              />
-            </div>
-          </ChatComposerDrawer>
-        }
         input={
-          <ChatComposerInput
-            handleRef={inputRef}
-            value={answerText}
-            onChange={onAnswerChange}
-            onSubmit={onInputSubmit}
-            label={copy.otherAriaLabel}
-          />
+          <div className="maka-question-body">
+            <div className="maka-interaction-title-row">
+              <h2 className="maka-interaction-title" id={titleId}>{question.question}</h2>
+              {props.request.questions.length > 1 ? <span className="maka-question-progress">{questionIndex + 1} / {props.request.questions.length}</span> : null}
+            </div>
+            <ChoicePanel
+              key={questionIndex}
+              label={question.question}
+              value={selectedValue}
+              disabled={interactionDisabled}
+              onChange={select}
+              onConfirm={confirm}
+              onEscape={() => inputRef.current?.focus()}
+              options={question.options.map((option, index) => ({ value: `option:${index}`, label: option.label, description: option.description }))}
+            />
+            <ChatComposerInput
+              handleRef={inputRef}
+              value={answerText}
+              onChange={onAnswerChange}
+              onSubmit={onInputSubmit}
+              label={copy.otherAriaLabel}
+            />
+          </div>
         }
         footerActions={<>
           <Button
