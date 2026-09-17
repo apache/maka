@@ -18,7 +18,7 @@
  */
 
 import { promises as fs } from 'node:fs';
-import { resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { realpathAllowMissing } from './path-containment.js';
 import {
   MAX_SANDBOX_BOUNDARY_PATH_CHARS,
@@ -94,8 +94,12 @@ export async function normalizeSandboxBoundaryExpansion(
           'An exact sandbox boundary cannot target a directory; use subtree for directory access.',
         );
       }
+      const linkedWorktreeCommonDir =
+        normalized.access === 'read' && normalized.scope === 'subtree'
+          ? await linkedWorktreeCommonDirForBoundary(normalized.enforcementPath)
+          : undefined;
       return {
-        path: normalized.enforcementPath,
+        path: linkedWorktreeCommonDir ?? normalized.enforcementPath,
         access: normalized.access,
         scope: normalized.scope,
       };
@@ -107,6 +111,43 @@ export async function normalizeSandboxBoundaryExpansion(
   });
   if (!normalized.ok) throw new SandboxBoundaryDeclarationError(normalized.message);
   return normalized.expansion;
+}
+
+/**
+ * A linked worktree's admin directory is only the worktree-specific half of
+ * Git's metadata authority. Git reads refs, objects, config, and hooks through
+ * the sibling `commondir`; approving only `.git/worktrees/<name>` can therefore
+ * make `git status` report a false unborn tree and make `git log` call the
+ * branch broken. Normalize a read-scoped linked-worktree admin shape to the
+ * common metadata root before the user sees and approves the expansion. Write
+ * requests retain their exact path so shared metadata writes require their own
+ * approval.
+ *
+ * The structural check keeps an unrelated directory containing a file named
+ * `commondir` from widening its boundary. Any unreadable or malformed marker
+ * stays on the ordinary path-normalization route.
+ */
+async function linkedWorktreeCommonDirForBoundary(path: string): Promise<string | undefined> {
+  const worktreesDir = dirname(path);
+  if (basename(worktreesDir) !== 'worktrees') return undefined;
+  const expectedCommonDir = dirname(worktreesDir);
+
+  let declaration: string;
+  try {
+    declaration = (await fs.readFile(join(path, 'commondir'), 'utf8')).trim();
+  } catch {
+    return undefined;
+  }
+  if (!declaration || declaration.includes('\0') || declaration.includes('\n')) return undefined;
+
+  try {
+    const commonDir = await fs.realpath(resolve(path, declaration));
+    if (commonDir !== expectedCommonDir) return undefined;
+    if (!(await fs.stat(commonDir)).isDirectory()) return undefined;
+    return commonDir;
+  } catch {
+    return undefined;
+  }
 }
 
 async function targetTypeFor(path: string): Promise<NormalizedSandboxBoundaryPath['targetType']> {
