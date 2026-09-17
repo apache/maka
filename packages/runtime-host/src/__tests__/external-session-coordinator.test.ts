@@ -1033,9 +1033,13 @@ test('recovers or discards staged imported Sessions after restart', async () => 
   assert.equal(discarded.drainRequests(), 0);
 });
 
-test('isolates a staged Session prepare and discard failure during recovery', async () => {
+test('isolates a staged Session prepare and discard failure during recovery', async (t) => {
   const prepareAttempts: string[] = [];
   const discardAttempts: string[] = [];
+  const logs: string[] = [];
+  t.mock.method(console, 'error', (...args: unknown[]) => {
+    logs.push(args.map(String).join(' '));
+  });
   let fixture!: ReturnType<typeof coordinatorFixture>;
   fixture = coordinatorFixture([adapterFixture()], {
     prepareImportedSessionHistory: async (sessionId) => {
@@ -1057,7 +1061,40 @@ test('isolates a staged Session prepare and discard failure during recovery', as
   assert.deepEqual(discardAttempts, ['imported-1']);
   assert.equal(fixture.readHeader('imported-1')?.transcriptLedgerVersion, 0);
   assert.equal(fixture.readHeader('imported-2')?.transcriptLedgerVersion, 1);
+  assert.deepEqual(logs, [
+    '[runtime-host] staged import recovery deferred (imported-1): discard failed',
+  ]);
   assert.equal(fixture.drainRequests(), 0);
+});
+
+test('retries a retained staged Session during a later recovery', async (t) => {
+  t.mock.method(console, 'error', () => {});
+  const prepareAttempts: string[] = [];
+  let failPreparation = true;
+  let fixture!: ReturnType<typeof coordinatorFixture>;
+  fixture = coordinatorFixture([adapterFixture()], {
+    prepareImportedSessionHistory: async (sessionId) => {
+      prepareAttempts.push(sessionId);
+      if (sessionId === 'imported-1' && failPreparation) {
+        failPreparation = false;
+        throw new Error('ledger repair failed');
+      }
+      fixture.publishStagingSession(sessionId);
+    },
+    discardImportedSession: async () => {
+      throw new Error('discard failed');
+    },
+  });
+  await fixture.seedStagingSession();
+
+  await fixture.coordinator.recover();
+
+  assert.equal(fixture.readHeader('imported-1')?.transcriptLedgerVersion, 0);
+
+  await fixture.coordinator.recover();
+
+  assert.deepEqual(prepareAttempts, ['imported-1', 'imported-1']);
+  assert.equal(fixture.readHeader('imported-1')?.transcriptLedgerVersion, 1);
 });
 
 function coordinatorFixture(

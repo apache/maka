@@ -27,6 +27,7 @@ import {
   type ExternalSessionAdapterRegistry,
   type ExternalSessionSummary,
 } from '@maka/core/external-session';
+import { redactSecrets } from '@maka/core/redaction';
 import type { CreateSessionInput } from '@maka/core/runtime-inputs';
 import type { SessionExternalOrigin, SessionHeader, StoredMessage } from '@maka/core/session';
 import type { ExternalSessionImportLookupResult } from '@maka/storage/execution-stores';
@@ -139,9 +140,12 @@ export class HostExternalSessionCoordinator {
       if (header.transcriptLedgerVersion === 0) {
         try {
           await this.#prepareStagedSession(header.id);
-        } catch {
+        } catch (error) {
           // One staged Session can remain unpublished for a later recovery
           // attempt without preventing unrelated Sessions or Host startup.
+          console.error(
+            `[runtime-host] staged import recovery deferred (${header.id}): ${redactSecrets(error instanceof Error ? error.message : String(error))}`,
+          );
         }
       }
     }
