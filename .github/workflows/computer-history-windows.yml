@@ -23,6 +23,8 @@ on:
       - 'apps/desktop/native/computer-history-windows/**'
       - 'apps/desktop/scripts/build-computer-history-helper*.mjs'
       - 'apps/desktop/scripts/computer-history-windows-native.test.mjs'
+      - 'apps/desktop/scripts/computer-history-windows-rich-segmentation.test.mjs'
+      - 'apps/desktop/scripts/fixtures/computer-history-windows-rich-segmentation.rs'
       - 'apps/desktop/scripts/computer-history-windows-browser.*'
       - 'apps/desktop/scripts/computer-history-windows-interactive.*'
       - 'apps/desktop/scripts/computer-history-windows-wpf.*'
@@ -49,6 +51,8 @@ on:
       - 'apps/desktop/native/computer-history-windows/**'
       - 'apps/desktop/scripts/build-computer-history-helper*.mjs'
       - 'apps/desktop/scripts/computer-history-windows-native.test.mjs'
+      - 'apps/desktop/scripts/computer-history-windows-rich-segmentation.test.mjs'
+      - 'apps/desktop/scripts/fixtures/computer-history-windows-rich-segmentation.rs'
       - 'apps/desktop/scripts/computer-history-windows-browser.*'
       - 'apps/desktop/scripts/computer-history-windows-interactive.*'
       - 'apps/desktop/scripts/computer-history-windows-wpf.*'
@@ -110,6 +114,10 @@ jobs:
       # The native tests use synthetic events and stores, never a live desktop recorder.
       - name: Run synthetic native tests
         run: cargo +stable test --manifest-path apps/desktop/native/computer-history-windows/Cargo.toml --locked --all-targets --target x86_64-pc-windows-msvc
+      - name: Replay Rich segmentation against scripted providers
+        env:
+          RUSTUP_TOOLCHAIN: stable
+        run: node --test apps/desktop/scripts/computer-history-windows-rich-segmentation.test.mjs
       - name: Install build-test dependencies without application hooks
         run: npm ci --ignore-scripts
       - name: Test build and platform packaging contracts

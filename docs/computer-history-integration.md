@@ -748,6 +748,21 @@ both empty segments were sealed, scoped cleanup passed and all three protected
 helpers remained unchanged. Cold body acceptance remains open; no production
 fix, deadline extension or automatic retry follows from this diagnostic.
 
+A September 16-17 structural follow-up changes RichEdit candidate selection to
+search forward for hidden delimiters and read whole explicitly nonhidden
+prefixes. A deterministic provider that fragments nonhidden matches made the
+previous actual loop retain sixteen fragments, truncate useful text and insert
+internal newlines; the corrected loop retains one complete prefix in that case.
+Ownership, pre/post-read visibility, final text/viewport checks and the 700 ms
+budget remain unchanged. Hidden-only skips consume a separate bounded scan
+counter. The permanent source replay covers ten composed scenarios and is
+wired into Windows CI; 186 host Rust tests and strict Windows GNU all-target
+Clippy passed. Scripted behavior does not establish native provider fragmentation
+or latency. The new clean build packet was byte-verified and transferred, but
+execution was interrupted before stage/start. On September 17, SSH recovery
+failed during banner exchange before reaching the guest. This revision has no
+native build or cold acceptance result yet; the prior failure remains open.
+
 A separate single traced WPF attempt on the clean fixture-timing generation captured
 and sealed its initial useful body with zero capture failures, but failed the
 first Return receipt. Complete CPU, guest-reader and publication traces show

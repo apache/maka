@@ -247,8 +247,15 @@ are partial document evidence. This does not enable browser/container ranges.
 Childless, admitted Win32/WinForm RichEdit Documents use a separate bounded
 visible-run path. Each noncollapsed run must remain inside its visible range,
 belong to the exact source element and report `IsHidden` as explicit boolean
-false before and after reading. The reader admits at most eight visible
-ranges, sixteen runs and 8 KiB of body per leaf, with at most 8193 UTF-16 units
+false before and after reading. A forward search for hidden text delimits each
+candidate prefix; a successful null match still requires explicit nonhidden
+admission of the entire candidate. This avoids making reads and retained
+witnesses depend on how a provider fragments nonhidden attribute matches.
+Hidden delimiters are never read. Their ownership, containment and hidden
+attribute are rechecked before advancing an independent cursor, whose endpoint
+equality and strict progress are verified. The reader admits at most eight visible
+ranges, sixteen search iterations (including hidden-only skips), sixteen runs
+and 8 KiB of body per leaf, with at most 8193 UTF-16 units
 of retained comparison text. A contained collapsed search result stops
 enumeration without reading or advancing the unchecked tail. Final checks
 revalidate native ownership, text equality, visible endpoints, tree, policy

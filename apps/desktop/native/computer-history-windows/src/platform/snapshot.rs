@@ -1356,7 +1356,7 @@ mod native {
             Some(())
         }
 
-        fn rich_run_current(
+        fn rich_range_current(
             &self,
             element: &IUIAutomationElement,
             witness: &NonhiddenText,
@@ -1396,7 +1396,17 @@ mod native {
                 )?;
                 Ok((start, end, extent))
             })?;
-            if !rich_range_readable(start, end, extent)? {
+            rich_range_readable(start, end, extent)
+        }
+
+        fn rich_run_current(
+            &self,
+            element: &IUIAutomationElement,
+            witness: &NonhiddenText,
+            outer: &IUIAutomationTextRange,
+            range: &IUIAutomationTextRange,
+        ) -> Option<bool> {
+            if !self.rich_range_current(element, witness, outer, range)? {
                 return Some(false);
             }
             let hidden =
@@ -1453,13 +1463,15 @@ mod native {
             let mut remaining = limit + 1;
             let mut text = String::new();
             let mut witnesses = Vec::new();
+            let mut scans = 0;
             for index in 0..count {
                 let outer = self.read(|| unsafe { ranges.GetElement(index) })?;
                 let enclosing = self.read(|| unsafe { outer.GetEnclosingElement() })?;
                 self.same_element(Some(element), Some(&enclosing))?;
-                let search = self.read(|| unsafe { outer.Clone() })?;
+                let mut search = self.read(|| unsafe { outer.Clone() })?;
                 witnesses.push(outer);
-                while nonhidden.runs.len() < 16 && text.len() < limit && remaining > 0 {
+                // Hidden-only skips consume the same bounded search budget.
+                while scans < 16 && text.len() < limit && remaining > 0 {
                     let extent = self.read(|| unsafe {
                         search.CompareEndpoints(
                             TextPatternRangeEndpoint_Start,
@@ -1470,9 +1482,10 @@ mod native {
                     if !rich_range_readable(0, 0, extent)? {
                         break;
                     }
-                    let found = self.read(|| unsafe {
+                    scans += 1;
+                    let hidden = self.read(|| unsafe {
                         // Preserve S_OK/null as no matching run, not a provider failure.
-                        let value = VARIANT::from(false);
+                        let value = VARIANT::from(true);
                         let mut pointer = std::ptr::null_mut();
                         (Interface::vtable(&search).FindAttribute)(
                             search.as_raw(),
@@ -1484,9 +1497,39 @@ mod native {
                         .ok()?;
                         Ok((!pointer.is_null()).then(|| IUIAutomationTextRange::from_raw(pointer)))
                     })?;
-                    let Some(found) = found else {
-                        break;
-                    };
+                    let found = self.read(|| unsafe { search.Clone() })?;
+                    if let Some(hidden) = &hidden {
+                        if !self.rich_range_current(element, &nonhidden, &search, hidden)? {
+                            // A collapsed delimiter cannot establish progress.
+                            // Leave this visible range's remaining tail unchecked.
+                            break;
+                        }
+                        self.read(|| unsafe {
+                            found.MoveEndpointByRange(
+                                TextPatternRangeEndpoint_End,
+                                hidden,
+                                TextPatternRangeEndpoint_Start,
+                            )
+                        })?;
+                        // Do not trust a provider move to preserve either boundary.
+                        if self.read(|| unsafe {
+                            found.CompareEndpoints(
+                                TextPatternRangeEndpoint_Start,
+                                &search,
+                                TextPatternRangeEndpoint_Start,
+                            )
+                        })? != 0
+                            || self.read(|| unsafe {
+                                found.CompareEndpoints(
+                                    TextPatternRangeEndpoint_End,
+                                    hidden,
+                                    TextPatternRangeEndpoint_Start,
+                                )
+                            })? != 0
+                        {
+                            return None;
+                        }
+                    }
                     let maximum = remaining.min(limit - text.len() + 1) as i32;
                     let value = read_nonhidden_run(
                         || self.rich_run_current(element, &nonhidden, &search, &found),
@@ -1497,26 +1540,67 @@ mod native {
                         },
                         None,
                     )?;
-                    // The native provider can return a contained collapsed match.
-                    // Never read or advance it: the remaining tail stays unchecked.
-                    let Some(value) = value else {
+                    // A hidden-leading range has an empty prefix: skip without
+                    // reading text, but still validate strict cursor progress.
+                    if let Some(value) = value {
+                        remaining -= value.len();
+                        append_text(&mut text, &text_prefix(&value), limit);
+                        nonhidden.runs.push(NonhiddenRun {
+                            visible_index: index as usize,
+                            range: found,
+                            text: value,
+                            maximum,
+                        });
+                    }
+                    let Some(hidden) = hidden else {
                         break;
                     };
-                    remaining -= value.len();
-                    append_text(&mut text, &text_prefix(&value), limit);
-                    nonhidden.runs.push(NonhiddenRun {
-                        visible_index: index as usize,
-                        range: found.clone(),
-                        text: value,
-                        maximum,
-                    });
+                    // Text reads can mutate ranges. Revalidate the skip boundary
+                    // and advance a separate cursor, never a retained witness.
+                    if !self.rich_range_current(element, &nonhidden, &search, &hidden)? {
+                        break;
+                    }
+                    let attribute =
+                        self.read(|| unsafe { hidden.GetAttributeValue(UIA_IsHiddenAttributeId) })?;
+                    if attribute.vt() != VT_BOOL
+                        || unsafe { attribute.Anonymous.Anonymous.Anonymous.boolVal.0 } == 0
+                    {
+                        return None;
+                    }
+                    let next = self.read(|| unsafe { search.Clone() })?;
                     self.read(|| unsafe {
-                        search.MoveEndpointByRange(
+                        next.MoveEndpointByRange(
                             TextPatternRangeEndpoint_Start,
-                            &found,
+                            &hidden,
                             TextPatternRangeEndpoint_End,
                         )
                     })?;
+                    if self.read(|| unsafe {
+                        next.CompareEndpoints(
+                            TextPatternRangeEndpoint_Start,
+                            &hidden,
+                            TextPatternRangeEndpoint_End,
+                        )
+                    })? != 0
+                        || self.read(|| unsafe {
+                            next.CompareEndpoints(
+                                TextPatternRangeEndpoint_End,
+                                &search,
+                                TextPatternRangeEndpoint_End,
+                            )
+                        })? != 0
+                        || self.read(|| unsafe {
+                            next.CompareEndpoints(
+                                TextPatternRangeEndpoint_Start,
+                                &search,
+                                TextPatternRangeEndpoint_Start,
+                            )
+                        })? <= 0
+                    {
+                        return None;
+                    }
+                    self.rich_range_current(element, &nonhidden, &search, &next)?;
+                    search = next;
                 }
             }
             self.visible_text.push(VisibleText {
