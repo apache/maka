@@ -53,7 +53,8 @@ import {
   type BackendPreparationContext,
 } from '@maka/runtime/session-manager';
 import { buildToolsForAgentDefinition } from '@maka/runtime/agent-catalog';
-import { buildHistoryTools } from '@maka/runtime/history-tools';
+import { buildRecallTools } from '@maka/runtime/recall-tools';
+import { RECALL_SYNTHETIC_TEXT_PATTERNS } from '@maka/runtime/recall-candidates';
 import { buildBuiltinTools } from '@maka/runtime/builtin-tools';
 import { createLocalContinuationSafetyInspector } from '@maka/runtime/continuation-safety';
 import { createConfiguredSubagentCatalog } from '@maka/runtime/configured-subagent-catalog';
@@ -84,7 +85,7 @@ import {
   resolveTurnShellPlan,
   validateShellPreference,
 } from '@maka/runtime/shell-detect';
-import { type MakaTool } from '@maka/runtime/tool-runtime';
+import type { MakaTool } from '@maka/runtime/tool-runtime';
 import { Context } from '@maka/runtime/plugin-kernel';
 import { PluginAgentService } from '@maka/runtime/plugin-agent-service';
 import { PluginAttachmentService } from '@maka/runtime/plugin-attachment-service';
@@ -111,9 +112,12 @@ import { PluginLspService } from '@maka/runtime/plugin-lsp-service';
 import { PluginSessionQueryService } from '@maka/runtime/plugin-session-query-service';
 import { PluginShellEnvService } from '@maka/runtime/plugin-shell-env-service';
 import { PluginSkillService } from '@maka/runtime/plugin-skill-service';
-import { type RuntimeHostedRootAuthority } from '@maka/runtime/message-authority';
+import type { RuntimeHostedRootAuthority } from '@maka/runtime/message-authority';
 import { isHostedExecutionTerminal } from './hosted-execution-authority.js';
-import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
+import type {
+  ExecutionPersistenceProvider,
+  ExecutionGraphStore,
+} from '@maka/storage/execution-persistence-provider';
 import { createArtifactAttachmentResourceReader } from '@maka/storage/artifact-stores';
 import { createReadImageSnapshotStore } from '@maka/storage/read-image-snapshot-store';
 import { isSessionNotFoundError } from '@maka/storage/execution-stores';
@@ -121,6 +125,7 @@ import { createExternalSessionAdapterRegistry } from '@maka/storage/external-ses
 import { createGitWorktreeChildExecutor } from '@maka/storage/git-worktree-child-executor';
 import { runWithStorageRootLease } from '@maka/storage/root-authority';
 import { createInteractiveContextOffloadReader } from '@maka/storage/context-offload-store';
+import { observeInteractivePlanStoreWriter } from '@maka/storage/plan-authority';
 import { openStorageWriterComposition } from '@maka/storage/storage-writer-composition';
 import type { RuntimePolicyStoresWriter } from '@maka/storage/runtime-policy-stores';
 import { resolveWorkspaceIdentity } from '@maka/storage/workspace-identity';
@@ -211,7 +216,7 @@ import { HostPluginPlatform } from './plugin-platform.js';
 import { RootAdmissionOwner } from './root-admission-owner.js';
 import { RootTurnCoordinator } from './root-turn-coordinator.js';
 import { RuntimePolicyActivationGate } from './runtime-policy-activation-gate.js';
-import { notifySandboxBoundaryGraphWake } from './sandbox-boundary-graph-wake.js';
+import { resolveSandboxBoundaryRootSession } from './sandbox-boundary-graph-wake.js';
 import { HostRuntimePolicyCoordinator } from './runtime-policy-coordinator.js';
 import { startHostModelMetadataRefresh } from './model-metadata-refresh.js';
 import { HostRuntimeResourceCoordinator } from './runtime-resource-coordinator.js';
@@ -281,12 +286,14 @@ const CONTEXT_OFFLOAD_LIMITS: ContextOffloadLimits = Object.freeze({
 });
 
 export interface CreateExecutionRuntimeHostCompositionOptions {
+  readonly initialization?: import('../client/connect-or-spawn.js').HostedRuntimeInitialization;
   readonly bootstrapRuntimePolicy?: boolean;
   readonly skillHomeDirectory?: string;
   readonly projectDirectoryRoots?: readonly PublishedProjectDirectoryRoot[];
 }
 
 export interface ExecutionRuntimeHostCompositionDependencies {
+  readonly executionPersistenceProvider?: ExecutionPersistenceProvider;
   readonly primaryBackendFactory?: BackendFactory;
   readonly workHubRoutingModel?: HostWorkHubRoutingModel;
   readonly oauthAuthorization?: Pick<
@@ -307,12 +314,14 @@ export async function createExecutionRuntimeHostComposition(
   dependencies: ExecutionRuntimeHostCompositionDependencies = {},
 ): Promise<ExecutionRuntimeHostComposition> {
   const storage = await openStorageWriterComposition(context.owner.lease, {
+    executionProvider: dependencies.executionPersistenceProvider,
     contextOffloadLimits: CONTEXT_OFFLOAD_LIMITS,
     afterRuntimePolicyOpened: async (stores) => {
       if (options.bootstrapRuntimePolicy !== false) {
         await ensureBootstrapRuntimePolicy({
           workspaceRoot: context.owner.capability.canonicalPath,
           stores,
+          initialization: options.initialization,
           onDeferredError: (error) =>
             console.error(
               `[runtime-host] optional bootstrap target could not be configured: ${generalizedErrorMessage(error)}`,
@@ -327,11 +336,12 @@ export async function createExecutionRuntimeHostComposition(
     );
   }
   const stores = storage.execution;
-  let graphControlStore: ReturnType<typeof createAgentGraphControlStore> | undefined;
+  let graphControlStore: ExecutionGraphStore | undefined;
   let graphClient: HostAgentGraphCoordinator | undefined;
   let sessionEffects: HostSessionEffectCoordinator | undefined;
   let memoryExtraction: HostMemoryExtractionCoordinator | undefined;
   let unsubscribeTranscriptChanges: (() => void) | undefined;
+  let unsubscribeRuntimeEventCommits: (() => void) | undefined;
   let transcriptReader: SessionTranscriptReader | undefined;
   let unsubscribeUsageChanges: (() => void) | undefined;
   let workspaceExecution: RuntimeHostWorkspaceExecutionComposition | undefined;
@@ -672,7 +682,7 @@ export async function createExecutionRuntimeHostComposition(
         webSearchService.search({ query, limit, ...(abortSignal ? { abortSignal } : {}) }),
       fetch: (input) => webFetchService.fetch(input),
     });
-    const historyTools = buildHistoryTools({
+    const recallTools = buildRecallTools({
       listSessions: () => requireSessionManager(manager).listSessions(),
       readMessages: async (sessionId, abortSignal) => {
         if (abortSignal?.aborted) return null;
@@ -680,6 +690,42 @@ export async function createExecutionRuntimeHostComposition(
           .getMessages(sessionId)
           .catch(() => null);
         return abortSignal?.aborted ? null : messages;
+      },
+      listCandidateSessions: async ({ terms, sessionIds, abortSignal }) => {
+        if (abortSignal?.aborted) return null;
+        // A storage failure only costs speed here: declining the fast path
+        // sends recall back to reading transcripts, which yields the same
+        // answer. Returning a partial candidate set instead would break the
+        // superset contract and silently drop matches.
+        const candidates = await requireSessionManager(manager)
+          .listRecallCandidateSessions(sessionIds, terms)
+          .catch(() => undefined);
+        if (abortSignal?.aborted || !candidates) return null;
+        return candidates;
+      },
+      countSearchableMessages: async ({ sessionIds }) =>
+        (await requireSessionManager(manager)
+          .countRecallSearchableMessages(sessionIds)
+          .catch(() => undefined)) ?? null,
+      syntheticTextPatterns: RECALL_SYNTHETIC_TEXT_PATTERNS,
+      searchFacts: async ({ sessionId, terms, limit }) => {
+        const workspaceKey = sessionId
+          ? await stores.sessionStore
+              .readHeaderSnapshot(sessionId)
+              .then((header) => header.workspaceRoot)
+              .catch(() => undefined)
+          : undefined;
+        const records = await longTermMemoryStore.searchByKeys({
+          terms,
+          match: 'prefix',
+          ...(workspaceKey ? { workspaceKey } : {}),
+          limit,
+        });
+        return records.map((record) => ({
+          content: record.item.content,
+          kind: record.item.kind,
+          observedAt: record.item.observedAt,
+        }));
       },
       getPrivacyContext: async () => ({
         incognitoActive: (await runtimePolicyStores.runtimePolicy.getSnapshot()).policy.privacy
@@ -692,15 +738,13 @@ export async function createExecutionRuntimeHostComposition(
       backgroundTaskHealthTool,
       ...runtimePolicy.modelTools,
     ];
-    const hostTools = [...childHostTools, ...historyTools];
+    const hostTools = [...childHostTools, ...recallTools];
     const childAgentTools = createHostChildAgentToolComposition({
       builtinTools,
       hostTools: childHostTools,
       worktreePatchWriteBackAvailable: true,
     });
-    const openedGraphControlStore = createAgentGraphControlStore(
-      context.owner.capability.canonicalPath,
-    );
+    const openedGraphControlStore = stores.graphControlStore;
     graphControlStore = openedGraphControlStore;
     let resolveAvailableToolNames: ((sessionId: string) => Promise<string[]>) | undefined;
     let resolveNewSessionToolNames:
@@ -875,8 +919,16 @@ export async function createExecutionRuntimeHostComposition(
       context.sessionAccessAuthority,
     );
     const continuityCoordinator = continuity;
+    const planStore = observeInteractivePlanStoreWriter(
+      openedPlanStore,
+      (sessionId) => continuityCoordinator.enqueueSessionDomainChanged(sessionId, 'plan'),
+      context.requestDrain,
+    );
     unsubscribeTranscriptChanges = stores.sessionStore.subscribeTranscriptChanges((sessionId) =>
       continuityCoordinator.enqueueCanonicalRefresh(sessionId),
+    );
+    unsubscribeRuntimeEventCommits = stores.runtimeEventStore.subscribeRuntimeEventCommits(
+      (sessionId) => continuityCoordinator.enqueueTranscriptAdvanced(sessionId),
     );
     unsubscribeUsageChanges = openedUsageStores.subscribeSessionUsageChanges((sessionId) =>
       continuityCoordinator.enqueueSessionDomainChanged(sessionId, 'usage'),
@@ -936,17 +988,19 @@ export async function createExecutionRuntimeHostComposition(
         // Route poison through the kernel; the composition drain entry detaches admission.
         context.requestDrain();
       },
-      onSandboxBoundarySettled: (sessionId) =>
-        notifySandboxBoundaryGraphWake(
-          sessionId,
-          stores.sessionStore,
-          {
+      resolveSandboxBoundaryRootSession: async (sessionId) => {
+        try {
+          return await resolveSandboxBoundaryRootSession(sessionId, stores.sessionStore, {
             listGraphIds: (rootSessionId) =>
               requireGraphCoordinator(graphCoordinator).listGraphIds(rootSessionId),
-          },
-          (rootSessionId) =>
-            requireGraphSupervisorWake(graphSupervisorWake).notifyPermissionResponse(rootSessionId),
-        ),
+          });
+        } catch (error) {
+          if (isSessionNotFoundError(error)) return undefined;
+          throw error;
+        }
+      },
+      onSandboxBoundaryGraphWake: (rootSessionId) =>
+        requireGraphSupervisorWake(graphSupervisorWake).notifyPermissionResponse(rootSessionId),
     });
     memory = new HostMemoryCoordinator({
       store: memoryStore,
@@ -1000,7 +1054,7 @@ export async function createExecutionRuntimeHostComposition(
         resolveTavilyWebSearchReadiness: () =>
           resolveHostTavilyWebSearchReadiness(runtimePolicyStores.operations),
         ...(scheduledTaskTool ? { scheduledTaskTool } : {}),
-        planStore: openedPlanStore,
+        planStore,
         deepResearchTools: requireDeepResearch(deepResearch).toolsForSession(
           backendContext.sessionId,
         ),
@@ -1163,7 +1217,7 @@ export async function createExecutionRuntimeHostComposition(
       try {
         const [graphTools, planState] = await Promise.all([
           requireGraphCoordinator(graphCoordinator).toolsForSession(sessionId),
-          openedPlanStore.readState(sessionId),
+          planStore.readState(sessionId),
         ]);
         const { runtimePolicy, surface } = await resolveInteractiveToolSurface({
           connectionRef: sessionExecutionConnectionRef(header),
@@ -1187,7 +1241,7 @@ export async function createExecutionRuntimeHostComposition(
           goalTools: requireGoal(goal).tools,
           ...(surface.parentAgentTools ? { parentAgentTools: surface.parentAgentTools } : {}),
           plan: {
-            store: openedPlanStore,
+            store: planStore,
             state: planState,
             mode: header.collaborationMode ?? 'agent',
             permissionMode: header.permissionMode,
@@ -1251,7 +1305,7 @@ export async function createExecutionRuntimeHostComposition(
             goalTools: requireGoal(goal).tools,
             ...(surface.parentAgentTools ? { parentAgentTools: surface.parentAgentTools } : {}),
             plan: {
-              store: openedPlanStore,
+              store: planStore,
               state: emptyPlanSessionState(previewSessionId),
               mode: collaborationMode,
               permissionMode,
@@ -1365,6 +1419,15 @@ export async function createExecutionRuntimeHostComposition(
         },
       }),
       runBackendActivation: (operation) => runtimePolicyActivation.runBackendActivation(operation),
+      resolveFreshTurnToolMode: async (header) => {
+        // WorkHub keeps one permanent Session, so creation-time defaults cannot
+        // track this setting. Snapshot it per turn without rewriting that Session.
+        if (header.id !== WORKHUB_COORDINATION_SESSION_ID) return undefined;
+        return (await runtimePolicyStores.runtimePolicy.getSnapshot()).policy.chatDefaults
+          .codeModeEnabled
+          ? 'code_mode'
+          : 'direct';
+      },
       messageAuthority: runtimeAuthority,
       hostedAgentGraphExecution: {
         readAgentGraphIntentClaim: (graphId, intentId) =>
@@ -1379,7 +1442,7 @@ export async function createExecutionRuntimeHostComposition(
       interactionAuthority: interactions,
       canonicalPermissionOutcomes,
       shellRuns,
-      planStore: openedPlanStore,
+      planStore,
       resolveChildTools,
       worktreeChildExecutor,
       listArtifactsForTurn: (sessionId, turnId) =>
@@ -2382,15 +2445,13 @@ export async function createExecutionRuntimeHostComposition(
       requestDrain: context.requestDrain,
     });
     const plans = new HostPlanCoordinator({
-      store: openedPlanStore,
+      store: planStore,
       sessions: stores.sessionStore,
       runtime: manager,
       sessionAdmission,
       isSessionActive: (sessionId) => coordinator.readRootState(sessionId).kind !== 'idle',
       refreshContinuity: (sessionId, lease) =>
         continuityCoordinator.refreshCanonical(sessionId, lease),
-      onProjectionChanged: (sessionId) =>
-        continuityCoordinator.enqueueSessionDomainChanged(sessionId, 'plan'),
       requestDrain: context.requestDrain,
       root: coordinator,
     });
@@ -2427,6 +2488,9 @@ export async function createExecutionRuntimeHostComposition(
       ...(contextOffloadAuthority ? { contextOffload: contextOffloadAuthority } : {}),
       purgeOperationalState: async (sessionId) => {
         await stores.purgeConversationOperationalState(sessionId);
+        // Session retirement deletes the whole projection, so it purges the raw
+        // writer: publishing a per-Session `plan` invalidation for state that is
+        // being removed would only wake subscribers to read nothing.
         await openedPlanStore.purgeSessionState(sessionId);
         await openedDeepResearchStore.purgeSessionState(sessionId);
       },
@@ -2581,6 +2645,7 @@ export async function createExecutionRuntimeHostComposition(
           () => externalAgentSetup?.close(),
           () => {
             unsubscribeTranscriptChanges?.();
+            unsubscribeRuntimeEventCommits?.();
             unsubscribeUsageChanges?.();
           },
         ],
@@ -2905,6 +2970,7 @@ export async function createExecutionRuntimeHostComposition(
     }
     try {
       unsubscribeTranscriptChanges?.();
+      unsubscribeRuntimeEventCommits?.();
       unsubscribeUsageChanges?.();
     } catch (closeError) {
       errors.push(closeError);

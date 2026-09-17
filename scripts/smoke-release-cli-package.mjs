@@ -50,6 +50,8 @@ import { npmSpawnOptions } from './npm-spawn.mjs';
 const MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
 const PROCESS_TIMEOUT_MS = 90_000;
 const RUNTIME_HOST_SHUTDOWN_TIMEOUT_MS = 45_000;
+const RELEASE_SMOKE_IDLE_GRACE_MS = 2_000;
+let installedIdleGraceEnvVar;
 const MODEL_ID = 'maka-release-smoke-model';
 const CONNECTION_SLUG = 'maka-release-smoke';
 const API_KEY = 'maka-release-smoke-key';
@@ -141,6 +143,11 @@ async function validateInstalledProduct(root) {
     process.platform === 'win32'
       ? join(prefix, 'node_modules/maka-agent')
       : join(prefix, 'lib/node_modules/maka-agent');
+  const client = await importInstalled(
+    packageRoot,
+    'node_modules/@maka/runtime-host/dist/client/index.js',
+  );
+  installedIdleGraceEnvVar = client.IDLE_GRACE_MS_ENV_VAR;
   const baseEnvironment = isolatedEnvironment(join(root, 'home'));
   const maka = process.platform === 'win32' ? join(prefix, 'maka.cmd') : join(prefix, 'bin/maka');
   const cliEntrypoint = join(packageRoot, 'dist/cli.js');
@@ -175,8 +182,8 @@ async function validateInstalledProduct(root) {
   await smokeRuntimeHostPeerProtocol({ packageRoot, cliEntrypoint, root });
 
   // These flows own separate roots and each proves the packaged Host's idle
-  // retirement. Start both before awaiting so the same 30-second grace window
-  // is observed once in wall-clock time rather than twice in series.
+  // retirement. Start both before awaiting so the same grace window is
+  // observed once in wall-clock time rather than twice in series.
   logStep('checking the interactive TUI setup path');
   const interactiveTui = smokeInteractiveTui({
     packageRoot,
@@ -950,10 +957,9 @@ async function smokeNpxScheduleRecovery({ packageRoot, cliEntrypoint, ptySpawn, 
         recovered = { hostEpoch: observer.hostEpoch, pid: connected.registration.pid };
         await assertSchedule();
       });
-      // A persistent installation's Host survives Surface exit with this same
-      // schedule, beyond the ordinary idle grace and with no observer keeping
-      // it alive. Only remove our marked task after proving that distinction.
-      await delay(RUNTIME_HOST_SHUTDOWN_TIMEOUT_MS);
+      // Past the idle grace plus a margin for a loaded runner's process exit, so
+      // a Host that lost its residency cannot still read as alive.
+      await delay(RELEASE_SMOKE_IDLE_GRACE_MS + 3_000);
       const connected = await connect();
       if (
         observer.hostEpoch !== recovered.hostEpoch ||
@@ -1572,6 +1578,8 @@ function runProcess(command, args, { cwd, environment, timeoutMs }) {
 }
 
 function isolatedEnvironment(home) {
+  if (!installedIdleGraceEnvVar)
+    throw new Error('Installed client exports no IDLE_GRACE_MS_ENV_VAR');
   const appData = join(home, 'AppData', 'Roaming');
   const localAppData = join(home, 'AppData', 'Local');
   const temporaryDirectory = join(home, 'tmp');
@@ -1592,6 +1600,7 @@ function isolatedEnvironment(home) {
     TERM: 'xterm-256color',
     NO_PROXY: '127.0.0.1,localhost',
     no_proxy: '127.0.0.1,localhost',
+    [installedIdleGraceEnvVar]: String(RELEASE_SMOKE_IDLE_GRACE_MS),
   };
 }
 

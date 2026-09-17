@@ -23,7 +23,8 @@ import { openInteractiveContextOffloadStoreForWrite } from './context-offload-st
 import { openInteractiveDailyReviewAuthorityForWrite } from './daily-review-authority.js';
 import { openInteractiveDeepResearchStoreForWrite } from './deep-research-authority.js';
 import { openInteractiveExecutionStoresForWrite } from './execution-stores.js';
-import { openInteractiveGoalAuthorityForWrite } from './goal-authority.js';
+import type { ExecutionPersistenceProvider } from './execution-persistence-provider.js';
+import type { InteractiveGoalAuthorityWriter } from './goal-authority.js';
 import { openInteractiveLongTermMemoryStoreForWrite } from './long-term-memory-store.js';
 import { openInteractiveMemoryBundleStoreForWrite } from './memory-bundle-store.js';
 import { openInteractivePlanStoreForWrite } from './plan-authority.js';
@@ -36,6 +37,8 @@ import { openInteractiveShellRunStoreForWrite } from './shell-run-authority.js';
 import { openInteractiveUsageStoresForWrite } from './usage-stores.js';
 
 export interface OpenStorageWriterCompositionOptions {
+  /** One trusted backend for the complete execution transaction domain. */
+  executionProvider?: ExecutionPersistenceProvider;
   /** Runs after the runtime-policy stores open and before the remaining writers open. */
   afterRuntimePolicyOpened?: (
     stores: Awaited<ReturnType<typeof openInteractiveRuntimePolicyStoresForWrite>>,
@@ -52,7 +55,7 @@ export interface StorageWriterComposition {
   readonly plan: Awaited<ReturnType<typeof openInteractivePlanStoreForWrite>>;
   readonly deepResearch: Awaited<ReturnType<typeof openInteractiveDeepResearchStoreForWrite>>;
   readonly dailyReview: Awaited<ReturnType<typeof openInteractiveDailyReviewAuthorityForWrite>>;
-  readonly goal: Awaited<ReturnType<typeof openInteractiveGoalAuthorityForWrite>>;
+  readonly goal: InteractiveGoalAuthorityWriter;
   readonly memoryBundle: Awaited<ReturnType<typeof openInteractiveMemoryBundleStoreForWrite>>;
   readonly longTermMemory: Awaited<ReturnType<typeof openInteractiveLongTermMemoryStoreForWrite>>;
   readonly sessionTodo: Awaited<ReturnType<typeof openInteractiveSessionTodoStoreForWrite>>;
@@ -115,7 +118,7 @@ async function createComposition(
   };
 
   const execution = await openWriter(
-    () => openInteractiveExecutionStoresForWrite(lease),
+    () => openInteractiveExecutionStoresForWrite(lease, options.executionProvider),
     (writer) => writer.sessionStore.close?.(),
   );
   try {
@@ -146,7 +149,7 @@ async function createComposition(
     () => openInteractiveDailyReviewAuthorityForWrite(lease),
     closeWriter,
   );
-  const goal = await openWriter(() => openInteractiveGoalAuthorityForWrite(lease), closeWriter);
+  const goal = execution.goalStore;
   const memoryBundle = await openWriter(() => openInteractiveMemoryBundleStoreForWrite(lease));
   const longTermMemory = await openWriter(
     () => openInteractiveLongTermMemoryStoreForWrite(lease),

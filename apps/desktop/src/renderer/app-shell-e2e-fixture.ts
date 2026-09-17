@@ -33,7 +33,7 @@ export function createAppShellE2eFixtureActions(options: {
   refreshSessions: () => Promise<unknown>;
   setActiveId: (sessionId: string | undefined) => void;
   setNavSelection: Dispatch<SetStateAction<NavSelection>>;
-  setSearchModalOpen: Dispatch<SetStateAction<boolean>>;
+  openSearchModal(): void;
   setSessionListCollapsed(collapsed: boolean): void;
   workbar: {
     rightCollapsed: boolean;
@@ -51,7 +51,7 @@ export function createAppShellE2eFixtureActions(options: {
     refreshSessions,
     setActiveId,
     setNavSelection,
-    setSearchModalOpen,
+    openSearchModal,
     setSessionListCollapsed,
     workbar,
     setThemePref,
@@ -141,7 +141,7 @@ export function createAppShellE2eFixtureActions(options: {
     // shell is on screen deterministically. Real users never reach this branch
     // (e2eFixture.getState returns null without MAKA_E2E_FIXTURE).
     if (state.searchModalOpen) {
-      setSearchModalOpen(true);
+      openSearchModal();
     }
     if (state.sidebarSection === 'automations') {
       setNavSelection({ section: 'automations', module: 'scheduled-tasks' });

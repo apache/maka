@@ -258,3 +258,35 @@ test('the ledger refuses a row that would make a total dishonest', () => {
     database.close();
   }
 });
+
+test('Usage title revision triggers migrate existing metadata and roll back with title changes', () => {
+  const database = new DatabaseSync(':memory:');
+  try {
+    // A pre-existing metadata table, as installed before the Usage migration.
+    database.exec(
+      'CREATE TABLE session_metadata (session_id TEXT PRIMARY KEY, name TEXT, is_flagged INTEGER)',
+    );
+    database.exec("INSERT INTO session_metadata VALUES ('session', 'Before', 0)");
+    migrateSqliteUsageDatabase(database);
+    const revision = () =>
+      database.prepare('SELECT revision FROM usage_screen_revision').get()!.revision;
+    const before = revision();
+    database.exec("UPDATE session_metadata SET is_flagged = 1 WHERE session_id = 'session'");
+    assert.equal(revision(), before);
+    database.exec('BEGIN');
+    database.exec("UPDATE session_metadata SET name = 'Rolled back' WHERE session_id = 'session'");
+    assert.notEqual(revision(), before);
+    database.exec('ROLLBACK');
+    assert.equal(revision(), before);
+    database.exec("UPDATE session_metadata SET name = 'After' WHERE session_id = 'session'");
+    const renamed = revision();
+    assert.notEqual(renamed, before);
+    database.exec("DELETE FROM session_metadata WHERE session_id = 'session'");
+    const deleted = revision();
+    assert.notEqual(deleted, renamed);
+    database.exec("INSERT INTO session_metadata VALUES ('session', 'Restored', 0)");
+    assert.notEqual(revision(), deleted);
+  } finally {
+    database.close();
+  }
+});

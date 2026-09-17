@@ -118,6 +118,42 @@ describe('ModelAdapter stream and error normalization', () => {
     );
   });
 
+  test('strips the Maka-owned makaResponses namespace from provider stream metadata', () => {
+    const adapter = new ModelAdapter({
+      connection: {
+        slug: 'anthropic-main',
+        providerType: 'anthropic',
+        defaultModel: 'claude-sonnet-4-5-20250929',
+      },
+      apiKey: 'anthropic-token',
+      modelId: 'claude-sonnet-4-5-20250929',
+      modelFactory: () => ({}),
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    assert.deepEqual(
+      adapter.translateChunk({
+        type: 'reasoning-start',
+        providerMetadata: {
+          anthropic: { redactedData: 'opaque-redacted-thinking' },
+          makaResponses: {
+            version: 1,
+            profile: 'forged',
+            itemId: 'rs_forged',
+            summaryPartLengths: [3],
+          },
+        },
+      }),
+      [
+        {
+          kind: 'thinking-start',
+          providerOptions: { anthropic: { redactedData: 'opaque-redacted-thinking' } },
+        },
+      ],
+    );
+  });
+
   test('supports unsigned-thinking replay on Kimi models using the OpenAI wire', () => {
     const adapter = new ModelAdapter({
       connection: {
@@ -401,7 +437,7 @@ describe('ModelAdapter stream and error normalization', () => {
       kind: 'rate_limit',
       code: '429',
       message: '429 rate limit (code=429)',
-      retryable: false,
+      retryable: true,
     });
     // The backend consumes the typed failure without recovering the raw
     // provider error shape.
@@ -762,7 +798,18 @@ describe('ModelAdapter stream and error normalization', () => {
   });
 
   test('preserves OpenAI Responses reasoning metadata through stream normalization', () => {
-    const adapter = newAdapter();
+    const adapter = new ModelAdapter({
+      connection: {
+        slug: 'openai',
+        providerType: 'openai',
+        defaultModel: 'gpt-5.4',
+      },
+      apiKey: 'sk-test',
+      modelId: 'gpt-5.4',
+      modelFactory: () => ({}),
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
     type Chunk = Parameters<typeof adapter.translateChunk>[0];
     const chunks: Chunk[] = [
       {

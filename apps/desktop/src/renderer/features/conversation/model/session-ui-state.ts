@@ -61,7 +61,6 @@ export interface SessionPendingClaim {
 
 export interface TranscriptReadingAnchor {
   readonly turnId: string;
-  readonly sequence?: number;
 }
 
 const SESSION_UI_MAP_KEYS = [
@@ -253,12 +252,8 @@ function createTranscriptReadingAnchorRegistry() {
         registry.clear(sessionId);
         return;
       }
-      const next = previous?.turnId === anchor.turnId &&
-          previous.sequence !== undefined && anchor.sequence === undefined
-        ? previous
-        : anchor;
-      if (next === previous) return;
-      ref.current = { ...ref.current, [sessionId]: next };
+      if (previous?.turnId === anchor.turnId) return;
+      ref.current = { ...ref.current, [sessionId]: anchor };
     },
   };
 }

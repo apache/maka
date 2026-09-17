@@ -18,6 +18,7 @@
  */
 
 import { join } from 'node:path';
+import { popupNativeMenu } from './native-menu.js';
 import { arch as osArch, homedir, release as osRelease } from 'node:os';
 import { app, ipcMain, shell } from 'electron';
 import { resolveProjectGitInfo } from '@maka/runtime/system-prompt/project-context';
@@ -65,6 +66,13 @@ export function registerAppClientIpc(
   targetIpc: Pick<ReconnectableReadIpcMain, 'handle'> = ipcMain,
 ): void {
   const { mainWindowController, e2eFixture, updateService } = deps;
+  targetIpc.handle('window:popupMenu', (event, input: unknown) => {
+    if (!mainWindowController.isMainRenderer(event.sender) || event.senderFrame !== event.sender.mainFrame) {
+      throw new Error('Native menus require the main renderer');
+    }
+    const window = mainWindowController.browserWindow();
+    return window ? popupNativeMenu(window, input) : null;
+  });
   targetIpc.handle('window:setTitlebarControlsVisible', (event, visible: unknown): void => {
     mainWindowController.setTitlebarControlsVisible(event.sender, visible);
   });

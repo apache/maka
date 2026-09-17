@@ -1,0 +1,5 @@
+{
+  "epoch": 160,
+  "files": ["packages/runtime-host/src/protocol/external-session.ts"],
+  "reason": "Re-exports the unchanged 4096-byte cwd limit from its core authority without changing any codec, field, accepted value, or encoded result"
+}

@@ -165,6 +165,7 @@ test('read marker clears unread only at the ledger transcript tail', async () =>
         records: [
           {
             sequence: 1,
+            cluster: 1,
             message: {
               type: 'assistant',
               id: 'message-2',
@@ -176,6 +177,7 @@ test('read marker clears unread only at the ledger transcript tail', async () =>
           },
           {
             sequence: 0,
+            cluster: 1,
             message: { type: 'user', id: 'message-1', turnId: 'turn-1', ts: 10, text: 'ask' },
           },
         ],
@@ -211,6 +213,7 @@ test('read marker pages past a hidden tail to reach the newest visible message',
     records: [
       {
         sequence: 2,
+        cluster: 1,
         message: {
           type: 'turn_state' as const,
           id: 'turn-state-1',
@@ -227,6 +230,7 @@ test('read marker pages past a hidden tail to reach the newest visible message',
     records: [
       {
         sequence: 1,
+        cluster: 1,
         message: {
           type: 'assistant' as const,
           id: 'message-2',
@@ -629,6 +633,7 @@ test('WorkHub model authority preserves its execution policy and uses versioned 
   });
   const input = {
     expectedRevision: fixture.revision(),
+    thinkingLevel: null,
     modelTarget: {
       kind: 'explicit' as const,
       connectionId: 'connection-1',
@@ -648,6 +653,43 @@ test('WorkHub model authority preserves its execution policy and uses versioned 
   const rejected = await corrupt.coordinator.configureWorkHubModel(input);
   assert.equal(rejected.ok, false);
   assert.equal(corrupt.revision(), 3);
+});
+
+test('WorkHub thinking level persists, clears to default and rejects unsupported levels', async () => {
+  const fixture = createFixture({
+    header: {
+      id: WORKHUB_COORDINATION_SESSION_ID,
+      role: WORKHUB_COORDINATION_SESSION_ROLE,
+      toolProfile: 'workhub-coordination-v2',
+      permissionMode: 'bypass',
+    },
+    connection: {
+      providerType: 'openai-compatible',
+      modelOverrides: { 'model-1': { thinkingLevels: ['low', 'high'] } },
+    },
+  });
+  const modelTarget = {
+    kind: 'explicit' as const,
+    connectionId: 'connection-1',
+    connectionSlug: 'test',
+    model: 'model-1',
+  };
+  const set = (thinkingLevel: 'low' | 'high' | 'xhigh' | null) =>
+    fixture.coordinator.configureWorkHubModel({
+      expectedRevision: fixture.revision(),
+      modelTarget,
+      thinkingLevel,
+    });
+  assert.equal((await set('high')).ok, true);
+  assert.equal(fixture.header().thinkingLevel, 'high');
+  const revision = fixture.revision();
+  assert.equal((await set('xhigh')).ok, false);
+  assert.equal(fixture.revision(), revision);
+  assert.equal(fixture.header().thinkingLevel, 'high');
+  assert.equal((await set(null)).ok, true);
+  assert.equal(fixture.header().thinkingLevel, undefined);
+  assert.equal(fixture.header().permissionMode, 'bypass');
+  assert.equal(fixture.header().toolProfile, 'workhub-coordination-v2');
 });
 
 test('ordinary metadata and configuration reject a corrupt Coordination role on another identity', async () => {

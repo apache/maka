@@ -19,21 +19,18 @@
 
 import { resolveUsageRange } from "@maka/core/model-call-usage-projection";
 import { tryResult } from "@maka/core/result";
-import type { UsageRange, UsageStats } from "@maka/core/settings";
+import type { UsageRange, UsageStats, UsageScreenQuery, UsageScreenFailure, UsageScreenRequest } from "@maka/core/settings";
 import {
   normalizePricingConfig,
   normalizePricingModelKey,
 } from "@maka/core/usage-stats/pricing";
 import type {
   PricingConfig,
-  TimeRange,
   UsageGroupBy,
   UsageQuery,
 } from "@maka/core/usage-stats/types";
 import {
   USAGE_PAGE_MAX_ITEMS,
-  type LlmUsageLogProjection,
-  type ToolUsageLogProjection,
 } from "@maka/runtime-host/protocol";
 import {
   handleReconnectableRead,
@@ -48,7 +45,6 @@ interface RuntimeHostUsageIpcDeps {
   readonly sendToRenderer: (channel: string, ...args: unknown[]) => void;
 }
 
-const MAX_ACTIVITY_RECORDS = 50_000;
 
 export function registerRuntimeHostUsageIpc(
   deps: RuntimeHostUsageIpcDeps,
@@ -66,9 +62,14 @@ export function registerRuntimeHostUsageIpc(
   handleReconnectableRead(
     deps.ipcMain,
     "settings:usageStats",
-    (_event, range: UsageRange = "24h") =>
-      loadUsageStats(deps.client, normalizeUsageRange(range)),
+    (_event, range: UsageRange = "24h", query?: UsageScreenQuery) =>
+      loadUsageStats(deps.client, normalizeUsageRange(range), query),
   );
+  handleReconnectableRead(deps.ipcMain, "usage:activity", async (_event, input: Extract<UsageScreenRequest, {kind: "activity"}>) => {
+    const result = await deps.client.queryUsage(input);
+    if (result.kind !== "activity" && result.kind !== "revision_changed" && result.kind !== "screen_response_too_large") throw invalidUsageProjection();
+    return result;
+  });
   handleReconnectableRead(
     deps.ipcMain,
     "usage:summary",
@@ -159,235 +160,15 @@ export function registerRuntimeHostUsageIpc(
 async function loadUsageStats(
   client: DesktopRuntimeHostClient,
   range: UsageRange,
-): Promise<UsageStats> {
-  const query = { range: resolveUsageRange(range, Date.now()) } satisfies UsageQuery;
-  const [summaryResult, llmResult, toolResult, pricing] = await Promise.all([
-    client.queryUsage({ kind: "summary", query }),
-    loadAllLogs(client, "llm", query),
-    loadAllLogs(client, "tool", query),
-    client.loadPricingSnapshot(),
-  ]);
-  if (summaryResult.kind !== "summary") throw invalidUsageProjection();
-  const llmLogs = llmResult.rows;
-  const toolLogs = toolResult.rows;
-  const logsTruncated = llmResult.truncated || toolResult.truncated;
-  // The canonical summary is the authoritative headline count. We no longer
-  // throw when it disagrees with the number of activity rows we managed to
-  // load: a Host restart with pending repairs can make the summary read land
-  // before a catch-up commits and the logs read land after, and truncation
-  // (above) deliberately shortens the list. Either way the summary total stays
-  // correct; `provenance`/`logsTruncated` tell the page the activity list may
-  // be incomplete instead of erroring the whole page.
-
-  return {
-    summary: {
-      totalRequests: summaryResult.summary.totalRequests,
-      totalCostUsd: summaryResult.summary.totalCostUsd,
-      totalTokens: summaryResult.summary.totalTokens.total,
-      inputTokens: summaryResult.summary.totalTokens.input,
-      outputTokens: summaryResult.summary.totalTokens.output,
-      cacheTokens:
-        summaryResult.summary.totalTokens.cacheRead +
-        summaryResult.summary.totalTokens.cacheWrite,
-      cacheMiss: summaryResult.summary.totalTokens.cacheMiss,
-      cacheRead: summaryResult.summary.totalTokens.cacheRead,
-      cacheCreation: summaryResult.summary.totalTokens.cacheWrite,
-      reasoning: summaryResult.summary.totalTokens.reasoning,
-    },
-    logs: [...llmLogs.map(projectLlmLog), ...toolLogs.map(projectToolLog)].sort(
-      (left, right) => right.ts - left.ts,
-    ),
-    byProvider: aggregateModelLogs(llmLogs, "provider"),
-    byModel: aggregateModelLogs(llmLogs, "model"),
-    byTool: aggregateToolLogs(toolLogs),
-    pricing: pricing.entries
-      .filter((entry) => entry.source === "custom")
-      .map(({ pricing: entry }) => projectPricing(entry))
-      .sort(
-        (left, right) =>
-          left.provider.localeCompare(right.provider) || left.model.localeCompare(right.model),
-      ),
-    provenance: summaryResult.provenance,
-    ...(logsTruncated ? { logsTruncated: true } : {}),
-  };
-}
-
-async function loadAllLogs(
-  client: DesktopRuntimeHostClient,
-  source: "llm",
-  query: UsageQuery & { range: TimeRange },
-): Promise<{ rows: LlmUsageLogProjection[]; truncated: boolean }>;
-async function loadAllLogs(
-  client: DesktopRuntimeHostClient,
-  source: "tool",
-  query: UsageQuery & { range: TimeRange },
-): Promise<{ rows: ToolUsageLogProjection[]; truncated: boolean }>;
-async function loadAllLogs(
-  client: DesktopRuntimeHostClient,
-  source: "llm" | "tool",
-  query: UsageQuery & { range: TimeRange },
-): Promise<{
-  rows: Array<LlmUsageLogProjection | ToolUsageLogProjection>;
-  truncated: boolean;
-}> {
-  const rows: Array<LlmUsageLogProjection | ToolUsageLogProjection> = [];
-  let offset = 0;
-  let total: number | undefined;
-  while (true) {
-    const result = await client.queryUsage(
-      source === "llm"
-        ? {
-            kind: "logs",
-            source,
-            query: toLlmQuery(query),
-            offset,
-            limit: USAGE_PAGE_MAX_ITEMS,
-          }
-        : {
-            kind: "logs",
-            source,
-            query: toToolQuery(query),
-            offset,
-            limit: USAGE_PAGE_MAX_ITEMS,
-          },
-    );
-    if (result.kind !== "logs" || result.source !== source || result.offset !== offset) {
-      throw invalidUsageProjection();
-    }
-    total ??= result.total;
-    if (result.total !== total) throw invalidUsageProjection();
-    rows.push(...result.rows);
-    // Structural integrity: the Host must never return more rows than it claims.
-    if (rows.length > total) throw invalidUsageProjection();
-    // Client-side cap: when a range holds more activity than we render, keep the
-    // newest MAX_ACTIVITY_RECORDS and stop paging. This is truncation, not a
-    // protocol error, and the exhaustiveness check below is skipped for it — the
-    // caller surfaces `logsTruncated` so the page can say the list is partial.
-    if (total > MAX_ACTIVITY_RECORDS && rows.length >= MAX_ACTIVITY_RECORDS) {
-      return { rows: rows.slice(0, MAX_ACTIVITY_RECORDS), truncated: true };
-    }
-    if (result.nextOffset === null) {
-      if (rows.length !== total) throw invalidUsageProjection();
-      return { rows, truncated: false };
-    }
-    if (result.nextOffset <= offset) throw invalidUsageProjection();
-    offset = result.nextOffset;
-  }
-}
-
-// The Task column names the session each usage row belongs to. The Host resolves
-// the human-readable title (from the durable session header) and carries it on
-// the projection as `sessionTitle`; untitled/unreadable sessions omit it, and the
-// renderer falls back to the untitled label.
-function projectLlmLog(row: LlmUsageLogProjection): UsageStats["logs"][number] {
-  return {
-    id: row.id,
-    ts: row.ts,
-    kind: "model",
-    ...(row.sessionId === undefined ? {} : { sessionId: row.sessionId }),
-    ...(row.sessionTitle === undefined ? {} : { sessionName: row.sessionTitle }),
-    ...(row.turnId === undefined ? {} : { turnId: row.turnId }),
-    provider: row.providerId,
-    model: row.modelId,
-    inputTokens: row.inputTokens,
-    outputTokens: row.outputTokens,
-    cacheMiss: row.cacheMissTokens,
-    cacheRead: row.cacheReadTokens,
-    cacheCreation: row.cacheWriteTokens,
-    reasoning: row.reasoningTokens,
-    ...(row.costUsd === undefined ? {} : { costUsd: row.costUsd }),
-    latencyMs: row.latencyMs,
-    status: row.status,
-  };
-}
-
-function projectToolLog(row: ToolUsageLogProjection): UsageStats["logs"][number] {
-  return {
-    id: row.id,
-    ts: row.ts,
-    kind: "tool",
-    ...(row.sessionId === undefined ? {} : { sessionId: row.sessionId }),
-    ...(row.sessionTitle === undefined ? {} : { sessionName: row.sessionTitle }),
-    ...(row.turnId === undefined ? {} : { turnId: row.turnId }),
-    provider: row.providerId ?? "",
-    model: row.modelId ?? "",
-    toolName: row.toolName,
-    inputTokens: 0,
-    outputTokens: 0,
-    latencyMs: row.durationMs,
-    status: row.status,
-  };
-}
-
-function aggregateModelLogs(
-  logs: readonly LlmUsageLogProjection[],
-  key: "provider",
-): UsageStats["byProvider"];
-function aggregateModelLogs(
-  logs: readonly LlmUsageLogProjection[],
-  key: "model",
-): UsageStats["byModel"];
-function aggregateModelLogs(
-  logs: readonly LlmUsageLogProjection[],
-  key: "provider" | "model",
-): UsageStats["byProvider"] | UsageStats["byModel"] {
-  const rows = new Map<string, { requests: number; tokens: number; costUsd: number }>();
-  for (const log of logs) {
-    // Provider breakdown keys on the connection the user configured, not the
-    // raw provider type: two connections to the same provider are two rows, not
-    // one collapsed row. `connectionSlug` is optional on pre-cutover rows, so
-    // fall back to the provider id.
-    const id = key === "provider" ? (log.connectionSlug ?? log.providerId) : log.modelId;
-    const current = rows.get(id) ?? { requests: 0, tokens: 0, costUsd: 0 };
-    current.requests += 1;
-    current.tokens += log.inputTokens + log.outputTokens;
-    current.costUsd += log.costUsd ?? 0;
-    rows.set(id, current);
-  }
-  return [...rows.entries()]
-    .map(([id, row]) => ({ [key]: id, ...row }))
-    .sort((left, right) => right.requests - left.requests) as
-      | UsageStats["byProvider"]
-      | UsageStats["byModel"];
-}
-
-function aggregateToolLogs(logs: readonly ToolUsageLogProjection[]): UsageStats["byTool"] {
-  const rows = new Map<
-    string,
-    { calls: number; success: number; errors: number; totalDurationMs: number }
-  >();
-  for (const log of logs) {
-    const current = rows.get(log.toolName) ?? {
-      calls: 0,
-      success: 0,
-      errors: 0,
-      totalDurationMs: 0,
-    };
-    current.calls += 1;
-    if (log.status === "success") current.success += 1;
-    if (log.status === "error") current.errors += 1;
-    current.totalDurationMs += log.durationMs;
-    rows.set(log.toolName, current);
-  }
-  return [...rows.entries()]
-    .map(([tool, row]) => ({
-      tool,
-      calls: row.calls,
-      success: row.success,
-      errors: row.errors,
-      avgDurationMs: row.calls === 0 ? 0 : Math.round(row.totalDurationMs / row.calls),
-    }))
-    .sort((left, right) => right.calls - left.calls || left.tool.localeCompare(right.tool));
-}
-
-function projectPricing(pricing: PricingConfig): UsageStats["pricing"][number] {
-  const separator = pricing.modelKey.indexOf(":");
-  return {
-    provider: separator < 0 ? "" : pricing.modelKey.slice(0, separator),
-    model: separator < 0 ? pricing.modelKey : pricing.modelKey.slice(separator + 1),
-    inputPerMTokUsd: pricing.inputUsdPer1M,
-    outputPerMTokUsd: pricing.outputUsdPer1M,
-  };
+  query?: UsageScreenQuery,
+): Promise<UsageStats | Extract<UsageScreenFailure, {kind: 'screen_response_too_large'}>> {
+  const result = await client.queryUsage({kind: "screen", query: query ?? {
+    range: resolveUsageRange(range, Date.now()), search: "", status: "all",
+  }});
+  if (result.kind === "screen_response_too_large") return result;
+  if (result.kind !== "screen") throw invalidUsageProjection();
+  const {revision, queryIdentity, query: resolvedQuery, nextCursor, activityTotal, ...stats} = result.screen;
+  return {...stats, navigation: {revision, queryIdentity, query: resolvedQuery, nextCursor, activityTotal}};
 }
 
 async function loadAllBuckets(

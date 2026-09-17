@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { AttachmentRef } from '@maka/core/events';
 import { isWorkHubActionResult, type WorkHubActionResult } from '@maka/core/workhub-action-result';
 import { decodeMessageContent } from './turn.js';
@@ -54,6 +55,7 @@ import {
 export interface WorkHubCoordinationConfigureModelInput {
   readonly expectedRevision: number;
   readonly modelTarget: Extract<SessionModelTarget, { readonly kind: 'explicit' }>;
+  readonly thinkingLevel: ThinkingLevel | null;
 }
 
 export function decodeWorkHubCoordinationConfigureModelInput(
@@ -62,15 +64,20 @@ export function decodeWorkHubCoordinationConfigureModelInput(
   const input = requireExactRecord(value, 'WorkHub model configuration', [
     'expectedRevision',
     'modelTarget',
+    'thinkingLevel',
   ]);
   const decoded = decodeSessionConfigurationUpdateInput({
     sessionId: WORKHUB_COORDINATION_SESSION_ID,
     expectedRevision: input.expectedRevision,
-    patch: { modelTarget: input.modelTarget },
+    patch: {
+      modelTarget: input.modelTarget,
+      thinkingLevel: input.thinkingLevel,
+    },
   });
   return {
     expectedRevision: decoded.expectedRevision,
     modelTarget: decoded.patch.modelTarget!,
+    thinkingLevel: decoded.patch.thinkingLevel ?? null,
   };
 }
 
@@ -255,7 +262,10 @@ export const WORKHUB_COORDINATION_OPERATION_SPECS = {
         {
           sessionId: WORKHUB_COORDINATION_SESSION_ID,
           expectedRevision: input.expectedRevision,
-          patch: { modelTarget: input.modelTarget },
+          patch: {
+            modelTarget: input.modelTarget,
+            thinkingLevel: input.thinkingLevel,
+          },
         },
         output,
       ),

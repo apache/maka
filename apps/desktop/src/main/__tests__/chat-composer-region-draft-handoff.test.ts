@@ -35,6 +35,8 @@ const originalGlobals = {
   window: globalThis.window,
   HTMLElement: globalThis.HTMLElement,
   HTMLIFrameElement: globalThis.HTMLIFrameElement,
+  HTMLBRElement: globalThis.HTMLBRElement,
+  Element: globalThis.Element,
   Event: globalThis.Event,
   Node: globalThis.Node,
   sessionStorage: globalThis.sessionStorage,
@@ -68,17 +70,39 @@ async function mountRegion(): Promise<{
 }> {
   const { document, window } = parseHTML('<div id="root"></div>');
   const storage = new Map<string, string>();
-  Object.assign(document, {
-    getSelection: () => ({
+  const getSelection = () =>
+    ({
+      rangeCount: 0,
+      isCollapsed: true,
+      anchorNode: null,
+      focusNode: null,
       removeAllRanges() {},
       addRange() {},
-    }),
+      getRangeAt: () => {
+        throw new Error('no range');
+      },
+    }) as unknown as Selection;
+  Object.assign(document, { getSelection });
+  Object.assign(window, {
+    getSelection,
+    matchMedia: () =>
+      ({ matches: false, addEventListener() {}, removeEventListener() {} }) as unknown as MediaQueryList,
   });
+  document.createRange = () =>
+    ({
+      selectNodeContents() {},
+      collapse() {},
+      cloneRange() {
+        return this;
+      },
+    }) as unknown as Range;
   Object.assign(globalThis, {
     document,
     window,
     HTMLElement: window.HTMLElement,
     HTMLIFrameElement: window.HTMLIFrameElement ?? class HTMLIFrameElement {},
+    HTMLBRElement: window.HTMLBRElement,
+    Element: window.Element,
     Event: window.Event,
     Node: window.Node,
     sessionStorage: {

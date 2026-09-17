@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import type { StoredMessage } from '@maka/core/session';
 import { RuntimeHostOperationError } from "@maka/runtime-host/client";
 import type {
   RuntimeHostSessionObserver,
@@ -25,8 +26,8 @@ import type {
   RuntimeHostTranscriptTarget,
 } from "./runtime-host-session-observer.js";
 import type {
+  DesktopTranscriptOpenMode,
   DesktopTranscriptOpenResult,
-  DesktopTranscriptRangeRequest,
   DesktopTranscriptTailAcknowledgement,
 } from '../preload/transcript-contract.js';
 
@@ -37,11 +38,9 @@ type SessionObservationSource = Pick<RuntimeHostSessionObserver, 'observe' | 'un
       | 'acknowledgeTranscript'
       | 'acknowledgeTranscriptTail'
       | 'closeTranscript'
-      | 'loadTranscriptAround'
-      | 'loadTranscriptBefore'
-      | 'loadTranscriptAfter'
-      | 'loadTranscriptLatest'
+      | 'loadEarlierTranscript'
       | 'openTranscript'
+      | 'readTranscriptTurn'
     >
   >;
 
@@ -50,11 +49,9 @@ type TranscriptSource = Required<
     RuntimeHostSessionObserver,
     | 'acknowledgeTranscriptTail'
     | 'closeTranscript'
-    | 'loadTranscriptAround'
-    | 'loadTranscriptBefore'
-    | 'loadTranscriptAfter'
-    | 'loadTranscriptLatest'
+    | 'loadEarlierTranscript'
     | 'openTranscript'
+    | 'readTranscriptTurn'
   >
 >;
 
@@ -78,10 +75,8 @@ function requireTranscriptSource(
   if (
     !source?.openTranscript ||
     !source.acknowledgeTranscriptTail ||
-    !source.loadTranscriptBefore ||
-    !source.loadTranscriptAfter ||
-    !source.loadTranscriptAround ||
-    !source.loadTranscriptLatest ||
+    !source.loadEarlierTranscript ||
+    !source.readTranscriptTurn ||
     !source.closeTranscript
   ) {
     throw new Error('Runtime Host transcript source is unavailable');
@@ -114,12 +109,20 @@ interface SessionObservationRegistration {
 
 interface TranscriptRegistration {
   readonly sessionId: string;
+  readonly mode: DesktopTranscriptOpenMode;
   readonly target: RuntimeHostTranscriptTarget;
   readonly destroyedListener: () => void;
   readonly ready: TranscriptReadiness;
   restore: ObservationReadiness | undefined;
   restoreOpened: boolean;
   lifecycle: 'pending' | 'active';
+  /**
+   * The oldest sequence this consumer has been given. A consumer dies with
+   * the connection that made it; the reader it feeds does not, so a
+   * replacement has to reopen onto the history the reader is holding rather
+   * than onto a fresh budget.
+   */
+  deliveredFrom: number | null;
 }
 
 interface TranscriptReadiness {
@@ -341,10 +344,39 @@ export class RuntimeHostSessionObservationRegistry {
     await this.#remove(observerId);
   }
 
+  /**
+   * The consumer's target, with the oldest sequence it is handed recorded on
+   * the registration — which outlives the connection the consumer belongs to.
+   * A reset replaces what the consumer holds, so it starts the count again.
+   */
+  #trackDelivered(
+    registration: TranscriptRegistration,
+    target: RuntimeHostTranscriptTarget,
+  ): RuntimeHostTranscriptTarget {
+    return {
+      get id() {
+        return target.id;
+      },
+      send: (channel, payload) => {
+        if (payload.reset) registration.deliveredFrom = null;
+        for (const { sequence } of payload.fragments) {
+          if (registration.deliveredFrom === null || sequence < registration.deliveredFrom) {
+            registration.deliveredFrom = sequence;
+          }
+        }
+        target.send(channel, payload);
+      },
+      once: (event, listener) => target.once(event, listener),
+      off: (event, listener) => target.off(event, listener),
+    };
+  }
+
   async openTranscript(
     sessionId: string,
     consumerId: string,
     target: RuntimeHostTranscriptTarget,
+    mode: DesktopTranscriptOpenMode = 'tail',
+    resumeFrom?: number,
   ): Promise<DesktopTranscriptOpenResult> {
     this.#assertOpen();
     if (this.#transcripts.has(consumerId)) {
@@ -357,12 +389,14 @@ export class RuntimeHostSessionObservationRegistry {
     void ready.promise.catch(() => undefined);
     const registration: TranscriptRegistration = {
       sessionId,
+      mode,
       target,
       destroyedListener,
       ready,
       restore: undefined,
       restoreOpened: false,
       lifecycle: 'pending',
+      deliveredFrom: resumeFrom ?? null,
     };
     this.#transcripts.set(consumerId, registration);
     target.once('destroyed', destroyedListener);
@@ -373,7 +407,9 @@ export class RuntimeHostSessionObservationRegistry {
       const result = await transcriptSource.openTranscript(
         sessionId,
         consumerId,
-        this.#bindTarget(target),
+        this.#trackDelivered(registration, this.#bindTarget(target)),
+        mode,
+        resumeFrom,
       );
       if (this.#source === source && this.#transcripts.get(consumerId) === registration) {
         registration.lifecycle = 'active';
@@ -391,40 +427,19 @@ export class RuntimeHostSessionObservationRegistry {
     return registration.ready.promise;
   }
 
-  async loadTranscriptBefore(
-    request: DesktopTranscriptRangeRequest,
+  async loadEarlierTranscript(
+    consumerId: string,
     targetId?: number,
+    throughSequence?: number,
   ): Promise<void> {
-    await this.#runTranscriptOperation(request, (source) =>
-      source.loadTranscriptBefore(request, targetId),
+    await this.#runTranscriptOperation({ consumerId }, (source) =>
+      source.loadEarlierTranscript(consumerId, targetId, throughSequence),
     );
   }
 
-  async loadTranscriptAround(
-    request: DesktopTranscriptRangeRequest,
-    targetId?: number,
-  ): Promise<void> {
-    await this.#runTranscriptOperation(request, (source) =>
-      source.loadTranscriptAround(request, targetId),
-    );
-  }
-
-  async loadTranscriptAfter(
-    request: DesktopTranscriptRangeRequest,
-    targetId?: number,
-  ): Promise<void> {
-    await this.#runTranscriptOperation(request, (source) =>
-      source.loadTranscriptAfter(request, targetId),
-    );
-  }
-
-  async loadTranscriptLatest(
-    request: DesktopTranscriptRangeRequest,
-    targetId?: number,
-  ): Promise<void> {
-    await this.#runTranscriptOperation(request, (source) =>
-      source.loadTranscriptLatest(request, targetId),
-    );
+  readTranscriptTurn(sessionId: string, turnId: string): Promise<StoredMessage[]> {
+    this.#assertOpen();
+    return requireTranscriptSource(this.#source).readTranscriptTurn(sessionId, turnId);
   }
 
   async acknowledgeTranscriptTail(
@@ -572,7 +587,9 @@ export class RuntimeHostSessionObservationRegistry {
       const result = await transcriptSource.openTranscript(
         registration.sessionId,
         consumerId,
-        this.#bindTarget(registration.target),
+        this.#trackDelivered(registration, this.#bindTarget(registration.target)),
+        registration.mode,
+        registration.deliveredFrom ?? undefined,
       );
       if (
         this.#source === source &&

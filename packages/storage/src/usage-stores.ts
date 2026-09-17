@@ -30,6 +30,8 @@ import type {
   UsageQuery,
   UsageSummaryV2,
 } from '@maka/core/usage-stats/types';
+import type { UsageScreenRequest, UsageScreenResult } from '@maka/core/settings';
+import { createUsageScreenReader } from './usage-screen.js';
 import { throwDeduplicatedFailures } from './failure-utils.js';
 import {
   createSqliteModelCallLedger,
@@ -143,6 +145,7 @@ export interface PricingAuthorityWriter extends PricingAuthorityReader {
 }
 
 export interface InteractiveUsageStoresReader {
+  readUsageScreen(input: UsageScreenRequest): Promise<UsageScreenResult>;
   readonly kind: 'interactive';
   readonly access: 'read';
   readonly [readerBrand]: true;
@@ -153,6 +156,7 @@ export interface InteractiveUsageStoresReader {
 }
 
 export interface InteractiveUsageStoresWriter {
+  readUsageScreen(input: UsageScreenRequest): Promise<UsageScreenResult>;
   readonly kind: 'interactive';
   readonly access: 'write';
   readonly [writerBrand]: true;
@@ -283,6 +287,7 @@ export async function openInteractiveUsageStoresForRead(
     return runWithStorageRootLease(lease, 'interactive', 'read', async () => operation());
   };
   const stores: InteractiveUsageStoresReader = {
+    readUsageScreen: (input) => run(() => repos.screen.read(input)),
     kind: 'interactive',
     access: 'read',
     [readerBrand]: true,
@@ -292,6 +297,7 @@ export async function openInteractiveUsageStoresForRead(
     close: () => {
       if (closePromise) return closePromise;
       closed = true;
+      repos.screen.close();
       closePromise = closeRepos(repos.telemetry, repos.modelCalls, repos.pricing);
       return closePromise;
     },
@@ -310,7 +316,13 @@ export async function openInteractiveUsageStoresForWrite(
   if (opening) return opening;
   const pending = runWithStorageRootLease(lease, 'interactive', 'write', async (root) => {
     const repos = await openRepos(root, true);
-    const stores = createWriterFacade(lease, repos.telemetry, repos.modelCalls, repos.pricing);
+    const stores = createWriterFacade(
+      lease,
+      repos.telemetry,
+      repos.modelCalls,
+      repos.pricing,
+      repos.screen,
+    );
     writers.add(stores);
     writerByLease.set(lease, stores);
     return stores;
@@ -326,14 +338,19 @@ export async function openInteractiveUsageStoresForWrite(
 async function openRepos(
   root: string,
   createIfMissing: boolean,
-): Promise<{ telemetry: TelemetryRepo; modelCalls: ModelCallLedger; pricing: PricingStore }> {
+): Promise<{
+  telemetry: TelemetryRepo;
+  modelCalls: ModelCallLedger;
+  pricing: PricingStore;
+  screen: ReturnType<typeof createUsageScreenReader>;
+}> {
   const telemetry = createSqliteTelemetryRepo(root, { createIfMissing, managePricing: false });
   await telemetry.load();
   const modelCalls = createSqliteModelCallLedger(root);
   const pricing = createSqlitePricingStore(root, { createIfMissing });
   try {
     await pricing.load();
-    return { telemetry, modelCalls, pricing };
+    return { telemetry, modelCalls, pricing, screen: createUsageScreenReader(root) };
   } catch (error) {
     const closed = await Promise.allSettled([
       telemetry.close(),
@@ -351,6 +368,7 @@ function createWriterFacade(
   telemetry: TelemetryRepo,
   modelCalls: ModelCallLedger,
   pricing: PricingStore,
+  screen: ReturnType<typeof createUsageScreenReader>,
 ): InteractiveUsageStoresWriter {
   const run = <T>(operation: () => T | Promise<T>): Promise<T> =>
     runWithStorageRootLease(lease, 'interactive', 'write', async () => operation());
@@ -463,11 +481,13 @@ function createWriterFacade(
       .finally(() => {
         state = 'closed';
         sessionUsageChangeListeners.clear();
+        screen.close();
       });
     return closePromise;
   };
 
   const stores: InteractiveUsageStoresWriter = {
+    readUsageScreen: (input) => read(() => screen.read(input)),
     kind: 'interactive',
     access: 'write',
     [writerBrand]: true,

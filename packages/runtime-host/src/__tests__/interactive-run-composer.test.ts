@@ -19,12 +19,21 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import {
+  emptyPlanSessionState,
+  type PlanExecution,
+  type PlanExecutionStep,
+  type PlanSessionState,
+  type PlanStore,
+} from '@maka/core/plan';
 import { createDefaultRuntimePolicy } from '@maka/core/runtime-policy';
 import type { SessionTodoToolStore } from '@maka/runtime/session-todo-tools';
+import { z } from 'zod';
 import type { MakaTool } from '@maka/runtime/tool-runtime';
 import { createInteractiveRunComposer } from '../server/interactive-run-composer.js';
 import type { HostMemoryCoordinator } from '../server/memory-coordinator.js';
 import type { HostSkillCatalogCoordinator } from '../server/skill-catalog-coordinator.js';
+import { WORKHUB_BROWSER_TOOL_NAMES } from './fixtures/workhub-capabilities.js';
 
 test('the interactive tool surface does not expose the retired ExploreAgent tool', () => {
   const composer = createFixtureComposer();
@@ -114,8 +123,54 @@ test('scoped Tool resolution receives the complete stable Host binding', () => {
   );
 });
 
+test('Full access composes Bash without a boundary declaration and without the widening tool', () => {
+  const bashKeys = (permissionMode: 'bypass' | 'ask' | undefined) => {
+    const composer = createFixtureComposer({
+      builtinTools: unusedManagedShellBuiltinTools(),
+      ...(permissionMode
+        ? {
+            plan: {
+              store: {} as PlanStore,
+              state: emptyPlanSessionState('session'),
+              mode: 'agent' as const,
+              permissionMode,
+            },
+          }
+        : {}),
+    });
+    const tools = composer.resolveTools?.() ?? [];
+    const bash = tools.find(({ name }) => name === 'Bash');
+    assert.ok(bash);
+    return {
+      keys: Object.keys(z.toJSONSchema(bash.parameters as z.ZodTypeAny).properties ?? {}),
+      widening: tools.some(({ name }) => name === 'request_sandbox_boundary'),
+      enforced: bash.description.includes('Enforced by the current session sandbox boundary.'),
+    };
+  };
+  assert.deepEqual(bashKeys('bypass'), {
+    keys: ['command', 'timeout_ms', 'run_in_background', 'pty'],
+    widening: false,
+    enforced: false,
+  });
+  for (const mode of ['ask', undefined] as const) {
+    assert.deepEqual(bashKeys(mode), {
+      keys: [
+        'command',
+        'timeout_ms',
+        'run_in_background',
+        'pty',
+        'boundary_intent',
+        'required_boundary',
+      ],
+      widening: true,
+      enforced: true,
+    });
+  }
+});
+
 test('an explicit tool profile remains an exact ceiling over scoped Tool additions', () => {
   const composer = createFixtureComposer({
+    builtinTools: unusedManagedShellBuiltinTools(),
     toolProfile: 'headless-coding-v1',
     resolveAdditionalTools: () => [tool('Read'), tool('plugin_only')],
   });
@@ -218,8 +273,11 @@ function tool(name: string): MakaTool {
 test('WorkHub v2 binds control, tasks, attachment reading and user questions while legacy WorkHub stays tool-free', () => {
   const control = tool('mcp__desktop_workhub__control');
   const tasks = tool('mcp__desktop_workhub__tasks');
+  const browserTools = WORKHUB_BROWSER_TOOL_NAMES.map((name) =>
+    tool(`mcp__desktop_browser__${name}`),
+  );
   const clientCapabilities = {
-    tools: [control, tasks, tool('Bash'), tool('mcp__desktop_browser__navigate')],
+    tools: [control, tasks, ...browserTools, tool('Bash')],
     groups: [],
   };
   assert.deepEqual(
@@ -228,7 +286,7 @@ test('WorkHub v2 binds control, tasks, attachment reading and user questions whi
       clientCapabilities,
       resolveAdditionalTools: () => [tool('plugin_only'), tool('Read')],
     }).tools.map(({ name }) => name),
-    [control.name, tasks.name, 'Read', 'AskUserQuestion'],
+    [control.name, tasks.name, ...browserTools.map(({ name }) => name), 'Read', 'AskUserQuestion'],
   );
   assert.deepEqual(
     createFixtureComposer({
@@ -255,6 +313,107 @@ test('WorkHub v2 binds control, tasks, attachment reading and user questions whi
     /Hosted tool profile is unavailable/,
   );
 });
+
+test('Plan execution tools are bound only for active agent executions', () => {
+  const activeAgentTools = createFixtureComposer({
+    plan: {
+      store: {} as PlanStore,
+      state: activePlanState(),
+      mode: 'agent',
+    },
+  }).tools.map(({ name }) => name);
+  assert.equal(activeAgentTools.includes('update_plan'), true);
+  assert.equal(activeAgentTools.includes('cancel_plan'), true);
+  assert.equal(activeAgentTools.includes('SubmitPlan'), false);
+
+  const idleAgentTools = createFixtureComposer({
+    plan: {
+      store: {} as PlanStore,
+      state: emptyPlanSessionState('session-1'),
+      mode: 'agent',
+    },
+  }).tools.map(({ name }) => name);
+  assert.equal(idleAgentTools.includes('update_plan'), false);
+  assert.equal(idleAgentTools.includes('cancel_plan'), false);
+  assert.equal(idleAgentTools.includes('SubmitPlan'), false);
+
+  const planModeTools = createFixtureComposer({
+    plan: {
+      store: {} as PlanStore,
+      state: emptyPlanSessionState('session-1'),
+      mode: 'plan',
+    },
+  }).tools.map(({ name }) => name);
+  assert.equal(planModeTools.includes('SubmitPlan'), true);
+  assert.equal(planModeTools.includes('update_plan'), false);
+  assert.equal(planModeTools.includes('cancel_plan'), false);
+});
+
+function planStep(status: PlanExecutionStep['status']): PlanExecutionStep {
+  return {
+    id: 'step-1',
+    title: 'Step one',
+    description: 'Do the first step.',
+    status,
+    updatedAt: 2,
+  };
+}
+
+function activePlanState(
+  overrides: {
+    storeVersion?: number;
+    status?: PlanExecution['status'];
+    step?: PlanExecutionStep;
+  } = {},
+): PlanSessionState {
+  const step = overrides.step ?? planStep('pending');
+  const status = overrides.status ?? 'active';
+  return {
+    schemaVersion: 1,
+    sessionId: 'session-1',
+    storeVersion: overrides.storeVersion ?? 2,
+    proposals: [
+      {
+        planId: 'plan-1',
+        proposalId: 'proposal-1',
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+        revision: 1,
+        title: 'Ship the plan request',
+        steps: [{ id: step.id, title: step.title, description: step.description }],
+        status: 'approved',
+        submittedAt: 1,
+      },
+    ],
+    executions: [
+      {
+        executionId: 'execution-1',
+        planId: 'plan-1',
+        proposalId: 'proposal-1',
+        sessionId: 'session-1',
+        status,
+        steps: [step],
+        startedAt: 1,
+        updatedAt: 2,
+      },
+    ],
+    latestProposalId: 'proposal-1',
+    // Only an active execution is the Session's current one; a cancelled or
+    // completed execution must not stay selected.
+    ...(status === 'active' ? { activeExecutionId: 'execution-1' } : {}),
+  };
+}
+
+function unusedManagedShellBuiltinTools(): Parameters<
+  typeof createInteractiveRunComposer
+>[0]['builtinTools'] {
+  const unused = () => Promise.reject(new Error('not used'));
+  return {
+    shellRuns: { runForegroundBash: unused, runBackgroundBash: unused },
+    backgroundTasks: { stopBackgroundTask: unused },
+    ptyControls: { writeStdin: unused },
+  };
+}
 
 function createFixtureComposer(
   overrides: Partial<Parameters<typeof createInteractiveRunComposer>[0]> = {},

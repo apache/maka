@@ -34,6 +34,10 @@ import {
   RuntimeTranscriptQuery,
 } from '../runtime-transcript-query.js';
 import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
+import {
+  acquireOperationalStateDatabase,
+  resolveOperationalStateDatabasePath,
+} from '../operational-state-store.js';
 import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
 import {
   buildImmutableRuntimePrefix,
@@ -190,40 +194,37 @@ describe('SqliteRuntimeStore', () => {
         direction: 'newer' as const,
         throughOrdinal: Number.MAX_SAFE_INTEGER,
         position: 1,
-        limit: 8,
         maxEvents: 64,
         maxRecordBytes: 64_000,
       };
       await assert.rejects(
-        store.readTranscriptInvocations(
-          run.sessionId,
-          { ...request, maxBytes: 6_000 },
-          (_turn, events) => [...events],
-        ),
+        store.readTranscriptRun(run.sessionId, { ...request, maxBytes: 6_000 }, (_run, events) => [
+          ...events,
+        ]),
         (error: unknown) => error instanceof RuntimeTranscriptOversizedTurnError,
       );
       await assert.rejects(
-        store.readTranscriptInvocations(
+        store.readTranscriptRun(
           run.sessionId,
           { ...request, maxBytes: 64_000, maxRecordBytes: 6_000 },
-          (_turn, events) => [...events],
+          (_run, events) => [...events],
         ),
         (error: unknown) => error instanceof RuntimeTranscriptOversizedTurnError,
       );
       await assert.rejects(
-        store.readTranscriptInvocations(
+        store.readTranscriptRun(
           run.sessionId,
           { ...request, maxEvents: 2, maxBytes: 64_000 },
-          (_turn, events) => [...events],
+          (_run, events) => [...events],
         ),
         (error: unknown) => error instanceof RuntimeTranscriptOversizedTurnError,
       );
-      const served = await store.readTranscriptInvocations(
+      const served = await store.readTranscriptRun(
         run.sessionId,
         { ...request, maxBytes: 64_000 },
-        (_turn, events) => [...events],
+        (_run, events) => [...events],
       );
-      assert.equal(served.length, 1);
+      assert.equal(served?.length, 3);
     });
   });
 
@@ -231,40 +232,39 @@ describe('SqliteRuntimeStore', () => {
     await withStore(async (store) => {
       await appendSettledTurn(store, 1);
 
-      const projected = await store.readTranscriptInvocations(
+      const projected = await store.readTranscriptRun(
         'session-1',
         {
           direction: 'newer',
           throughOrdinal: Number.MAX_SAFE_INTEGER,
           position: 1,
-          limit: 1,
           maxEvents: 3,
           maxBytes: 64_000,
           maxRecordBytes: 32_000,
         },
-        (turn, events) => {
+        (run, events) => {
           assert.equal(Array.isArray(events), false);
           return {
-            invocationId: turn.invocation.invocationId,
-            firstOrdinal: turn.firstOrdinal,
-            lastOrdinal: turn.lastOrdinal,
+            invocationId: run.invocation.invocationId,
+            firstOrdinal: run.firstOrdinal,
+            lastOrdinal: run.lastOrdinal,
             rows: [...events].map(({ ordinal, event }) => ({ ordinal, eventId: event.id })),
           };
         },
       );
 
-      assert.deepEqual(projected, [
-        {
-          invocationId: 'invocation-1',
-          firstOrdinal: 1,
-          lastOrdinal: 3,
-          rows: [
-            { ordinal: 1, eventId: 'opened-1' },
-            { ordinal: 2, eventId: 'prompt-1' },
-            { ordinal: 3, eventId: 'terminal-1' },
-          ],
-        },
-      ]);
+      assert.deepEqual(projected, {
+        invocationId: 'invocation-1',
+        firstOrdinal: 1,
+        // The Session holds nothing after this Turn, so its run reaches the
+        // read's own bound rather than stopping at another Turn's first event.
+        lastOrdinal: Number.MAX_SAFE_INTEGER,
+        rows: [
+          { ordinal: 1, eventId: 'opened-1' },
+          { ordinal: 2, eventId: 'prompt-1' },
+          { ordinal: 3, eventId: 'terminal-1' },
+        ],
+      });
     });
   });
 
@@ -285,18 +285,13 @@ describe('SqliteRuntimeStore', () => {
         const request = {
           throughOrdinal: Number.MAX_SAFE_INTEGER,
           position: 6,
-          limit: 1,
           maxEvents: 64,
           maxBytes: 64_000,
           maxRecordBytes: 64_000,
         };
         query.highWater('session-1');
-        query.invocations('session-1', { ...request, direction: 'older' }, (_turn, events) => [
-          ...events,
-        ]);
-        query.invocations('session-1', { ...request, direction: 'newer' }, (_turn, events) => [
-          ...events,
-        ]);
+        query.run('session-1', { ...request, direction: 'older' }, (_run, events) => [...events]);
+        query.run('session-1', { ...request, direction: 'newer' }, (_run, events) => [...events]);
         // A full scan is how a page starts costing the Session it sits in: the
         // rows it walks are every Turn's, not the page's.
         for (const { sql, bind } of executed) {
@@ -354,6 +349,65 @@ describe('SqliteRuntimeStore', () => {
       }
     });
   });
+  it('publishes RuntimeEvent commits once, after a committed transaction', async () => {
+    await withStore(async (store) => {
+      const commits: string[] = [];
+      store.subscribeRuntimeEventCommits((sessionId) => commits.push(sessionId));
+      const first = textEvent('batch-1');
+      const second = textEvent('batch-2');
+      await assert.rejects(
+        store.importRuntimeEventsBatch({
+          sessionId: first.sessionId,
+          runId: first.runId,
+          events: [first, { ...first, ts: 99 }],
+        }),
+      );
+      assert.deepEqual(await store.readSessionRuntimeEventEntries('session-1'), []);
+      assert.deepEqual(commits, []);
+      await store.importRuntimeEventsBatch({
+        sessionId: first.sessionId,
+        runId: first.runId,
+        events: [first, second],
+      });
+      assert.deepEqual(commits, ['session-1']);
+    });
+  });
+
+  it('publishes leased RuntimeEvent commits when the outermost transaction settles', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-sqlite-runtime-lease-'));
+    const outer = acquireOperationalStateDatabase(root);
+    const store = createSqliteRuntimeStore(resolveOperationalStateDatabasePath(root), {
+      databaseLease: acquireOperationalStateDatabase(root),
+    });
+    try {
+      const commits: string[] = [];
+      store.subscribeRuntimeEventCommits((sessionId) => commits.push(sessionId));
+      const appends: Promise<void>[] = [];
+      assert.throws(() =>
+        outer.transaction('write', () => {
+          appends.push(store.appendRuntimeEvent('session-1', 'run-1', textEvent('lost')));
+          throw new Error('roll back');
+        }),
+      );
+      await Promise.all(appends);
+      assert.deepEqual(commits, []);
+      assert.deepEqual(await store.readSessionRuntimeEventEntries('session-1'), []);
+
+      outer.transaction('write', () => {
+        for (const id of ['kept-1', 'kept-2']) {
+          appends.push(store.appendRuntimeEvent('session-1', 'run-1', textEvent(id)));
+        }
+        assert.deepEqual(commits, []);
+      });
+      assert.deepEqual(commits, ['session-1']);
+      await Promise.all(appends);
+    } finally {
+      store.close();
+      outer.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('makes a raw canonical-equivalent terminal durability retry idempotent', async () => {
     await withStore(async (store) => {
       const terminal: RuntimeEvent = {
@@ -2640,6 +2694,10 @@ async function appendSettledTurn(store: Store, index: number): Promise<void> {
     status: 'completed',
     actions: { endInvocation: true },
   });
+}
+
+function textEvent(id: string): RuntimeEvent {
+  return functionCallEvent({ id, content: { kind: 'text', text: id } });
 }
 
 function functionCallEvent(overrides: Partial<RuntimeEvent> = {}): RuntimeEvent {

@@ -18,8 +18,14 @@
  */
 
 import type { CreateSessionInput } from '@maka/core/runtime-inputs';
+import { decodeCanonicalMessage, isConversationTextMessage } from '@maka/core/session';
 import type { SessionHeader } from '@maka/core/session';
-import type { ExternalAgentId, ExternalSessionAdapterRegistry } from '@maka/core/external-session';
+import {
+  sanitizeExternalSessionCwd,
+  sanitizeExternalSessionTitle,
+  type ExternalAgentId,
+  type ExternalSessionAdapterRegistry,
+} from '@maka/core/external-session';
 import type { SessionAuthorityStore } from './session-store.js';
 
 export type ExternalSessionImportTarget = Omit<CreateSessionInput, 'cwd' | 'name'> & {
@@ -46,14 +52,37 @@ export class ExternalSessionImporter {
   async import(request: ExternalSessionImportRequest): Promise<SessionHeader> {
     const adapter = this.adapters.require(request.adapterId);
     const external = await adapter.readSession(request.sourceSessionId);
+    const messages = external.messages.map((message) =>
+      decodeCanonicalMessage(JSON.parse(JSON.stringify(message)) as unknown),
+    );
+    for (const message of messages) {
+      if (!Number.isSafeInteger(message.ts) || message.ts < 0) {
+        throw new Error('External Session contains an invalid message timestamp');
+      }
+    }
+    // Non-empty rows are not a conversation. The Ledger materializes an
+    // imported transcript as `conversation_text`, so a transcript of tool rows,
+    // notes and turn states converts to nothing and would publish as a Session
+    // with an empty history. The projection decides here instead, before
+    // anything is persisted — and an assistant-only opening is conversation
+    // like any other, so it passes.
+    if (!messages.some(isConversationTextMessage)) {
+      throw new Error('External Session has no importable conversation');
+    }
+
+    const name =
+      sanitizeExternalSessionTitle(request.target.name ?? external.metadata.name) ||
+      sanitizeExternalSessionTitle(request.sourceSessionId);
+    if (name.length === 0) throw new Error('External Session title is empty after sanitization');
+    const cwd = sanitizeExternalSessionCwd(request.target.cwd ?? external.metadata.cwd);
 
     return this.sessions.createImportedSession(
       {
         ...request.target,
-        cwd: request.target.cwd ?? external.metadata.cwd,
-        name: request.target.name ?? external.metadata.name,
+        cwd,
+        name,
       },
-      external.messages,
+      messages,
       {
         adapterId: request.adapterId,
         sourceSessionId: request.sourceSessionId,

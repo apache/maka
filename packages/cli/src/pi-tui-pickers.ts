@@ -829,6 +829,10 @@ export interface SessionSearchOverlayInput {
   locale: UiLocale;
   choices: readonly SessionSearchChoice[];
   scopeLabel: string;
+  title?: string;
+  emptyText?: string;
+  notice?: string;
+  onQuery?: (query: string) => void;
   onSelect: (item: SelectItem) => void;
   onCancel: () => void;
   onToggleScope: () => void;
@@ -843,6 +847,7 @@ export class SessionSearchOverlay implements Component {
   private list: SelectList;
   private selectedValue: string | undefined;
   private scopeLabel: string;
+  private notice: string | undefined;
 
   constructor(
     private readonly tui: TUI,
@@ -852,15 +857,26 @@ export class SessionSearchOverlay implements Component {
     this.choices = input.choices;
     this.filtered = input.choices;
     this.scopeLabel = input.scopeLabel;
+    this.notice = input.notice;
     this.list = this.buildList();
     this.searchEditor = new Editor(tui, editorTheme(), { paddingX: 0 });
     this.searchEditor.onChange = (text) => this.applyQuery(text);
   }
 
-  updateChoices(choices: readonly SessionSearchChoice[], scopeLabel: string): void {
+  updateChoices(
+    choices: readonly SessionSearchChoice[],
+    scopeLabel: string,
+    notice?: string,
+  ): void {
     this.choices = choices;
     this.scopeLabel = scopeLabel;
-    this.applyQuery(this.searchEditor.getText());
+    this.notice = notice;
+    if (this.input.onQuery) {
+      this.filtered = choices;
+      this.list = this.buildList();
+    } else {
+      this.applyQuery(this.searchEditor.getText());
+    }
   }
 
   private buildList(): SelectList {
@@ -888,6 +904,10 @@ export class SessionSearchOverlay implements Component {
 
   private applyQuery(text: string): void {
     const query = text.trim().toLocaleLowerCase();
+    if (this.input.onQuery) {
+      this.input.onQuery(query);
+      return;
+    }
     this.filtered = query
       ? this.choices.filter((choice) => choice.searchText.includes(query))
       : this.choices;
@@ -924,13 +944,17 @@ export class SessionSearchOverlay implements Component {
     }
     this.searchEditor.focused = true;
     return [
-      padLine(`${this.copy.resumeSessionTitle} ${ansi.accent(this.scopeLabel)}`, safeWidth),
+      padLine(
+        `${this.input.title ?? this.copy.resumeSessionTitle} ${ansi.accent(this.scopeLabel)}`,
+        safeWidth,
+      ),
       padLine(ansi.dim(this.copy.sessionSearchHint), safeWidth),
       padLine('', safeWidth),
       ...this.renderFieldRow(safeWidth),
       padLine('', safeWidth),
+      ...(this.notice ? [padLine(ansi.dim(this.notice), safeWidth)] : []),
       ...(this.filtered.length === 0
-        ? [padLine(ansi.dim(this.copy.noMatchingSessions), safeWidth)]
+        ? [padLine(ansi.dim(this.input.emptyText ?? this.copy.noMatchingSessions), safeWidth)]
         : this.list.render(safeWidth).map((line) => formatPickerItemLine(line, safeWidth))),
       padLine(ansi.accent('-'.repeat(safeWidth)), safeWidth),
     ];

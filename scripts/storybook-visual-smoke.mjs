@@ -185,6 +185,8 @@ export function storyUrl(baseUrl, job) {
 }
 
 export function storyViewport(storyId) {
+  // Full desktop width verifies WorkHub reaches the shared transcript measure.
+  if (storyId === 'product-workhub--colored-work-history') return { width: 1600, height: 900 };
   // The progress card also uses viewport-relative picker sizing inside its
   // native 360px WebContents; a narrow wrapper alone does not reproduce that.
   if (storyId === 'product-workhub--progress-model-picker') return { width: 360, height: 900 };

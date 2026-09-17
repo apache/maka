@@ -373,7 +373,6 @@
   min-width: 100px;
   max-width: min(220px, 28vw);
 }
-
 .maka-composer-model-chip-text {
   min-width: 0;
   overflow: hidden;

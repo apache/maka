@@ -18,12 +18,15 @@
  */
 
 import type { StoredMessage } from './session.js';
+import { redactSecrets } from './redaction.js';
+import { sanitizeUnicodeText } from './text-sanitize.js';
 
 /** Stable identifier for one external Agent integration, for example `codex`. */
 export type ExternalAgentId = string;
 
 /** A search term longer than this is truncated to this length before matching. */
 export const EXTERNAL_SESSION_QUERY_TEXT_MAX_CHARS = 200;
+export const EXTERNAL_SESSION_CWD_MAX_BYTES = 4 * 1024;
 
 export interface ExternalSessionQuery {
   cwd?: string;
@@ -36,6 +39,35 @@ export interface ExternalSessionQuery {
    * worse than offering no search at all.
    */
   text?: string;
+  /** Compatibility offset used inside concrete adapters, outside the Host adapter seam. */
+  offset?: number;
+  /** Maximum summaries returned. Adapters must apply it before returning to the Host. */
+  limit?: number;
+}
+
+export interface ExternalSessionCatalogPageQuery extends Omit<ExternalSessionQuery, 'offset'> {
+  /** Source-owned opaque continuation token. */
+  cursor?: string;
+}
+
+export interface ExternalSessionCatalogPageItem {
+  readonly summary: ExternalSessionSummary;
+  /** Cursor immediately after this source row. */
+  readonly nextCursor: string;
+}
+
+export interface ExternalSessionCatalogPage {
+  readonly items: readonly ExternalSessionCatalogPageItem[];
+  readonly hasMore: boolean;
+}
+
+/** An opaque source cursor is malformed, stale, or belongs to another query. */
+export class ExternalSessionCatalogCursorError extends Error {
+  readonly name = 'ExternalSessionCatalogCursorError';
+
+  constructor(message = 'External Session catalog cursor is invalid') {
+    super(message);
+  }
 }
 
 /** Lightweight source-native identity used by session pickers and import commands. */
@@ -46,6 +78,37 @@ export interface ExternalSessionSummary {
   createdAt?: number;
   updatedAt?: number;
   archived?: boolean;
+}
+
+const EXTERNAL_SESSION_TITLE_MAX_CODE_POINTS = 120;
+
+/** Sanitize and redact a source-owned title before it reaches a Maka surface. */
+export function sanitizeExternalSessionTitle(input: unknown): string {
+  if (typeof input !== 'string') return '';
+  return redactSecrets(
+    sanitizeUnicodeText(input, { maxCodePoints: EXTERNAL_SESSION_TITLE_MAX_CODE_POINTS }),
+  );
+}
+
+/** Canonical bounded path metadata accepted from every external adapter. */
+export function sanitizeExternalSessionCwd(input: unknown): string {
+  if (typeof input !== 'string') return '';
+  const cleaned = input
+    .normalize('NFC')
+    .replace(
+      /[\u0000-\u001F\u007F-\u009F\u061C\u200B-\u200F\u202A-\u202E\u2060-\u206F\uFEFF]/gu,
+      '',
+    );
+  if (Buffer.byteLength(cleaned, 'utf8') <= EXTERNAL_SESSION_CWD_MAX_BYTES) return cleaned;
+  let bounded = '';
+  let bytes = 0;
+  for (const point of cleaned) {
+    const pointBytes = Buffer.byteLength(point, 'utf8');
+    if (bytes + pointBytes > EXTERNAL_SESSION_CWD_MAX_BYTES) break;
+    bounded += point;
+    bytes += pointBytes;
+  }
+  return bounded;
 }
 
 /**
@@ -196,13 +259,22 @@ export class ExternalSessionLimitError extends Error {
   }
 }
 
+export class ExternalSessionNotFoundError extends Error {
+  readonly name = 'ExternalSessionNotFoundError';
+
+  constructor() {
+    super('External Session does not exist');
+  }
+}
+
 /** Read-only, source-specific conversion boundary for one external Agent. */
 export interface ExternalSessionAdapter {
   readonly id: ExternalAgentId;
 
   detect(): Promise<boolean>;
 
-  listSessions(query?: ExternalSessionQuery): Promise<readonly ExternalSessionSummary[]>;
+  /** Source-owned paging; callers never interpret the opaque continuation key. */
+  listSessionPage(query: ExternalSessionCatalogPageQuery): Promise<ExternalSessionCatalogPage>;
 
   readSession(sessionId: string): Promise<ExternalMakaSession>;
 }

@@ -1442,12 +1442,23 @@ function connectionHarness(
       if (options.subscriptionError) throw options.subscriptionError;
       const subscriptionFrames = new AsyncFrameQueue();
       activeSubscriptionFrames = subscriptionFrames;
-      const closeSubscription = () => { subscriptionFrames.end(); ptyListeners.clear(); };
+      // The Host holds a subscription's frames until the subscriber calls
+      // ready(), so handing them over earlier would let an ordering bug pass.
+      let releaseFrames = (): void => undefined;
+      const readyGate = new Promise<void>((resolve) => {
+        releaseFrames = resolve;
+      });
+      let closed = false;
+      const closeSubscription = () => {
+        closed = true;
+        subscriptionFrames.end();
+        ptyListeners.clear();
+        releaseFrames();
+      };
       closeSubscriptions.add(closeSubscription);
       const emptyPage = {
         kind: 'page' as const,
         sessionId,
-        source: 'durable' as const,
         direction: 'older' as const,
         throughSequence: null,
         rawBytes: 0,
@@ -1468,15 +1479,17 @@ function connectionHarness(
         activeAssistantStreams: options.activeAssistantStreams ?? [],
         transcriptBootstrap: {
           throughSequence: null,
-          overlayMessageCount: 0,
           durable: emptyPage,
-          overlay: { ...emptyPage, source: 'overlay' },
         },
         loadTranscript: async () => [],
-        loadTranscriptOverlay: async () => [],
         decodeTranscriptPage: async () => ({ messages: [], nextCursor: null }),
         loadTranscriptPage: async () => emptyPage,
-        [Symbol.asyncIterator]: () => subscriptionFrames[Symbol.asyncIterator](),
+        [Symbol.asyncIterator]: async function* () {
+          await readyGate;
+          if (closed) return;
+          yield* subscriptionFrames;
+        },
+        ready: async () => releaseFrames(),
         close: async () => closeSubscription(),
       };
     },

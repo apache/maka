@@ -349,6 +349,33 @@ describe('builtin Bash streaming output', () => {
     );
   });
 
+  test('Bash drops its boundary declaration when the session has no boundary to widen', () => {
+    const shellRuns = {
+      runForegroundBash: () => Promise.reject(new Error('not used')),
+      runBackgroundBash: () => Promise.reject(new Error('not used')),
+    };
+    for (const options of [
+      { shellRuns, declareSandboxBoundary: false },
+      {
+        sandboxManager: availableLinuxManager(),
+        sandboxPlatform: 'linux' as const,
+        declareSandboxBoundary: false,
+      },
+    ]) {
+      const bash = buildBuiltinTools(options).find((tool) => tool.name === 'Bash');
+      if (!bash) throw new Error('Bash tool missing');
+      const parameters = bash.parameters as z.ZodTypeAny;
+      const keys = Object.keys(z.toJSONSchema(parameters).properties ?? {});
+      assert.equal(keys.includes('boundary_intent'), false);
+      assert.equal(keys.includes('required_boundary'), false);
+      assert.doesNotMatch(bash.description, /sandbox boundary/u);
+      assert.equal(
+        parameters.safeParse({ command: 'echo', boundary_intent: 'expand' }).success,
+        false,
+      );
+    }
+  });
+
   test('Bash schema exposes explicit background execution and boundary declarations', () => {
     const bash = buildBuiltinTools({
       shellRuns: {
