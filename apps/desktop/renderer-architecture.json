@@ -1145,6 +1145,7 @@
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
+          "./locales/settings-navigation-copy.js": 1,
           "./locales/shell-copy.js": 1,
           "./settings/settings-nav.js": 1,
           "@maka/core/provider-registry": 1,
