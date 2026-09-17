@@ -607,7 +607,11 @@ export class ShellRunProcessManager
     if (!target) return null;
     const live = this.live.get(target.shellRunId);
     if (!live || live.sessionId !== sessionId || live.mode !== 'pty') return null;
-    if (live.driverExit || live.finalizeOnce) return null;
+    // The collector dies before the process exit lands: an integrity failure or
+    // startup cleanup leaves it throwing while `live` still looks attachable.
+    // Report the resource as gone so the caller repairs the stale record.
+    if (live.driverExit || live.finalizeOnce || live.integrityFailure) return null;
+    if (!live.collector.available) return null;
     // Flush pending bytes first so the snapshot sequence always names the last
     // published event the buffer already contains.
     this.publishPtyData(live);

@@ -111,6 +111,10 @@ export class PtyScreenCollector {
     this.lastGood = blankPtyOutput(cols, rows);
   }
 
+  get available(): boolean {
+    return !this.failure && !this.disposed;
+  }
+
   accept(data: string): void {
     if (!data) return;
     if (!this.dataOpen || this.disposed) {
