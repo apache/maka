@@ -121,6 +121,15 @@ jobs:
       - name: Check Electron e2e budget
         run: npm run check:e2e-budget
 
+      # Here rather than in a packaging job so the cost lands in the pull
+      # request that adds it. electron-builder ships the production dependency
+      # closure whether or not anything loads it, and a packaging job runs only
+      # at release -- which is how 183 MB of renderer sources shipped for weeks
+      # with nothing reporting the step change (#3146). Pure Node, no build --
+      # it reads package.json.
+      - name: Check packaged artifact budget
+        run: npm run check:artifact-budget
+
       # Runs on the PR merge result: after a sibling protocol change lands on
       # main with the same epoch text, the silently merged tree still carries
       # the current base parent's epoch and this fails instead of shipping two
