@@ -350,7 +350,8 @@ describe('ShellRunProcessManager', () => {
             cwd,
             command: nodeCommand(`
               const { existsSync } = require('node:fs');
-              process.stdout.write('READY\\n');
+              // No trailing control bytes: seeing READY must mean the entire output arrived.
+              process.stdout.write('READY');
               setInterval(() => {
                 if (existsSync(${JSON.stringify(exitGate)})) process.exit(0);
               }, 10);
@@ -3097,6 +3098,7 @@ function waitForTerminalShellRun(
   );
 }
 
+// 若调用方随后比较输出快照，fixture 必须在匹配标记之后停止输出任何字节。
 function waitForPtyText(
   manager: ShellRunProcessManager,
   ref: string,
