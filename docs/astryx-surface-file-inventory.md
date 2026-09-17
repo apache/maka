@@ -6,7 +6,7 @@ Generated against `@astryxdesign/core@0.6.1` (195 component exports).
 
 Wiki bar: Design Conventions · API Use-the-System · Theming · Container Padding.
 
-**Totals:** 282 files — blocker 0, reimplementation 0, polish 4, aligned 278.
+**Totals:** 283 files — blocker 0, reimplementation 0, polish 4, aligned 279.
 
 ## Exclusions (explicit)
 
@@ -144,7 +144,7 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/settings/bot-onboarding-modal.tsx` | settings-page | Button, Dialog, DialogHeader, Layout, LayoutContent, Spinner | aligned — uses Astryx (Button, Dialog, DialogHeader, Layout, LayoutContent, Spinner) | aligned |
 | `apps/desktop/src/renderer/settings/bot-wechat-login.tsx` | settings-module | Banner, Button, Collapsible, Dialog, DialogHeader, EmptyState, FormLayout, Layout, LayoutContent, Spinner, TextInput | aligned — uses Astryx (Banner, Button, Collapsible, Dialog, DialogHeader, EmptyState, FormLayout, Layout) | aligned |
 | `apps/desktop/src/renderer/settings/custom-pet-settings-section.tsx` | settings-module | Badge, Button, EmptyState | aligned — uses Astryx (Badge, Button, EmptyState) | aligned |
-| `apps/desktop/src/renderer/settings/daily-review-settings-page.tsx` | settings-page | Banner, Switch, TextInput | aligned — uses Astryx (Banner, Switch, TextInput) | aligned |
+| `apps/desktop/src/renderer/settings/daily-review-settings-page.tsx` | settings-page | Banner, Selector, Switch, TextInput | aligned — uses Astryx (Banner, Selector, Switch, TextInput) | aligned |
 | `apps/desktop/src/renderer/settings/data-settings-page.tsx` | settings-page | Banner, Button, Selector, Switch | aligned — uses Astryx (Banner, Button, Selector, Switch) | aligned |
 | `apps/desktop/src/renderer/settings/general-settings-page.tsx` | settings-page | Banner, Button, FormLayout, NumberInput, Selector, Switch, TextInput | aligned — uses Astryx (Banner, Button, FormLayout, NumberInput, Selector, Switch, TextInput) | aligned |
 | `apps/desktop/src/renderer/settings/health-center-page.tsx` | settings-page | Banner, Button, StatusDot, Text, VStack | aligned — uses Astryx (Banner, Button, StatusDot, Text, VStack) | aligned |
@@ -156,7 +156,7 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/settings/permission-center-page.tsx` | settings-page | Banner, Button, Collapsible, CollapsibleGroup, HStack, List, ListItem, MetadataList, MetadataListItem, StatusDot, Text, VStack | aligned — uses Astryx (Banner, Button, Collapsible, CollapsibleGroup, HStack, List, ListItem, MetadataList) | aligned |
 | `apps/desktop/src/renderer/settings/personalization-settings-section.tsx` | settings-module | Selector, TextArea, TextInput | aligned — uses Astryx (Selector, TextArea, TextInput) | aligned |
 | `apps/desktop/src/renderer/settings/projects-settings-page.tsx` | settings-page | Badge, Banner, Button, EmptyState, HStack, List, ListItem, MoreMenu, TextInput | aligned — uses Astryx (Badge, Banner, Button, EmptyState, HStack, List, ListItem, MoreMenu) | aligned |
-| `apps/desktop/src/renderer/settings/provider-add-form.tsx` | settings-module | Banner, Button, CheckboxList, CheckboxListItem, Collapsible, EmptyState, FormLayout, HStack, Step, Stepper, Text, TextInput, VStack | aligned — uses Astryx (Banner, Button, CheckboxList, CheckboxListItem, Collapsible, EmptyState, FormLayout, HStack) | aligned |
+| `apps/desktop/src/renderer/settings/provider-add-form.tsx` | settings-module | Banner, Button, CheckboxList, CheckboxListItem, Collapsible, EmptyState, FormLayout, HStack, Selector, Step, Stepper, Text, TextInput, VStack | aligned — uses Astryx (Banner, Button, CheckboxList, CheckboxListItem, Collapsible, EmptyState, FormLayout, HStack) | aligned |
 | `apps/desktop/src/renderer/settings/provider-brand-marks.tsx` | settings-module | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/settings/provider-catalog-page.tsx` | settings-page | Banner, Button, EmptyState, HStack, Heading, List, ListItem, TextInput, VStack | aligned — uses Astryx (Banner, Button, EmptyState, HStack, Heading, List, ListItem, TextInput) | aligned |
 | `apps/desktop/src/renderer/settings/provider-connection-detail.tsx` | settings-module | Badge, Banner, Button, HStack, Icon, IconButton, Link, Switch, Text, TextInput, Token, VStack | aligned — uses Astryx (Badge, Banner, Button, HStack, Icon, IconButton, Link, Switch) | aligned |
@@ -252,7 +252,7 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `packages/ui/src/bot-brand-logo.tsx` | ui-composition | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `packages/ui/src/capability-audit-strip.tsx` | ui-composition | Banner | aligned — uses Astryx (Banner) | aligned |
 | `packages/ui/src/chat-empty-hero.tsx` | shell-chrome-or-panel | Item | aligned — uses Astryx (Item) | aligned |
-| `packages/ui/src/chat-model-switcher.tsx` | shell-chrome-or-panel | Button, DropdownMenu, DropdownMenuRadioGroup, DropdownMenuRadioItem | aligned — uses Astryx (Button, DropdownMenu, DropdownMenuRadioGroup, DropdownMenuRadioItem) | aligned |
+| `packages/ui/src/chat-model-switcher.tsx` | shell-chrome-or-panel | Button, Selector | aligned — uses Astryx (Button, Selector) | aligned |
 | `packages/ui/src/chat-surface-layout.tsx` | shell-chrome-or-panel | ChatLayout | aligned — uses Astryx (ChatLayout) | aligned |
 | `packages/ui/src/chat-turn.tsx` | shell-chrome-or-panel | Badge, Banner, Button, ChatMessage, ChatMessageBubble, ChatMessageMetadata, ChatSystemMessage, ChatTokenizedText, HStack, Icon, IconButton, Spinner, Thumbnail, Timestamp, Token, Tooltip | aligned — uses Astryx (Badge, Banner, Button, ChatMessage, ChatMessageBubble, ChatMessageMetadata, ChatSystemMessage, ChatTokenizedText) | aligned |
 | `packages/ui/src/chat-view.tsx` | shell-chrome-or-panel | Button, ButtonGroup, ChatMessageList, EmptyState, HStack, Spinner | aligned — uses Astryx (Button, ButtonGroup, ChatMessageList, EmptyState, HStack, Spinner) | aligned |
@@ -273,7 +273,8 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `packages/ui/src/markdown-math.tsx` | ui-composition | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `packages/ui/src/markdown.tsx` | ui-composition | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `packages/ui/src/mermaid-diagram.tsx` | ui-composition | Button, CodeBlock, Collapsible, Dialog, IconButton, Toolbar | aligned — uses Astryx (Button, CodeBlock, Collapsible, Dialog, IconButton, Toolbar) | aligned |
-| `packages/ui/src/model-picker.tsx` | ui-composition | none | aligned — no raw controls; no Astryx JSX usage | aligned |
+| `packages/ui/src/model-picker-internals.tsx` | ui-composition | SelectorOption | aligned — uses Astryx (SelectorOption) | aligned |
+| `packages/ui/src/model-picker.tsx` | ui-composition | Selector | aligned — uses Astryx (Selector) | aligned |
 | `packages/ui/src/model-wheel-picker.tsx` | ui-composition | Button | aligned — uses Astryx (Button) | aligned |
 | `packages/ui/src/module-hub-selector.tsx` | ui-composition | Tab, TabList | aligned — uses Astryx (Tab, TabList) | aligned |
 | `packages/ui/src/module-pages.tsx` | ui-composition | EmptyState, Spinner | aligned — uses Astryx (EmptyState, Spinner) | aligned |

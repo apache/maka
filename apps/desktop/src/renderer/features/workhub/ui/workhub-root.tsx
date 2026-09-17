@@ -341,6 +341,7 @@ export function WorkHubRoot() {
               activeModelConnectionId={session?.llmConnectionId}
               activeModelConnectionSlug={session?.llmConnectionSlug}
               modelChoices={controller.choices}
+              pickerPresentation={showConversation ? 'popover' : 'wheel'}
               maxInputRows={progress && !editingProgress ? 1 : showConversation ? undefined : 6}
               onModelChange={controller.changeModel}
               modelSwitchAvailability={controller.configuringModel ? { available: false, pending: true, reason: 'pending' } : undefined}

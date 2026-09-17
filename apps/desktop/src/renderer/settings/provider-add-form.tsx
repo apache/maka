@@ -39,7 +39,7 @@ import { Collapsible } from '@astryxdesign/core/Collapsible';
 import {
   Button,
   FormLayout,
-  ModelWheelPicker,
+  Selector,
   TextInput,
   useMountedRef,
   useUiLocale,
@@ -604,19 +604,16 @@ export function AddProviderForm(props: {
             ))}
           </CheckboxList>
         )}
-        <VStack gap={1}>
-          <Text weight="semibold">{copy.onboardingDefaultModel}</Text>
-          <Text type="supporting" color="secondary">{copy.onboardingDefaultModelHelp}</Text>
-          <ModelWheelPicker
-            ariaLabel={copy.onboardingDefaultModel}
-            label={selectedOptions.find((option) => option.value === managedPhase.defaultId)?.label ?? copy.onboardingSelectModel}
-            options={selectedOptions}
-            value={managedPhase.defaultId}
-            onValueChange={(defaultId) => setManagedPhase({ ...managedPhase, defaultId })}
-            disabled={busy || selectedOptions.length === 0}
-            size="md"
-          />
-        </VStack>
+        <Selector
+          label={copy.onboardingDefaultModel}
+          description={copy.onboardingDefaultModelHelp}
+          options={selectedOptions}
+          value={managedPhase.defaultId}
+          onChange={(defaultId: string) => setManagedPhase({ ...managedPhase, defaultId })}
+          isDisabled={busy || selectedOptions.length === 0}
+          placeholder={copy.onboardingSelectModel}
+          width="100%"
+        />
         <div role="status" aria-live="polite">
           {busy ? <Text type="supporting">{copy.saving}</Text> : null}
         </div>
