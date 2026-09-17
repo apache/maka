@@ -228,7 +228,7 @@ const ONBOARDING_COPY_BY_LOCALE: UiCatalog<OnboardingCatalog> = {
       'blocked:all_connections_retired': {
         eyebrow: '연결 확인 필요',
         title: '연결에서 사용하는 로그인 방식의 지원이 종료되었습니다.',
-        body: '이 연결들이 사용하는 로그인 방식이 Maka에서 제거되었습니다. 더 이상 로그인하거나 대화에 사용할 수 없습니다. 계속하려면 새 모델 연결을 추가하세요.',
+        body: '이 연결들이 사용하는 로그인 방식이 Maka에서 제거되었습니다. 더 이상 로그인하거나 대화에 사용할 수 없습니다. 계속하려면 새 모델 연결을 추가해 주세요.',
         cta: { label: '모델 연결 추가' },
         tone: 'destructive',
       },
