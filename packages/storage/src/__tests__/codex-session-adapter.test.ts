@@ -658,7 +658,7 @@ describe('CodexSessionAdapter', () => {
     });
   });
 
-  test('filesystem keyset paging uses one path order across equal-mtime pages', async () => {
+  test('filesystem keyset paging uses one digest order across equal-mtime pages', async () => {
     await withCodexHome(async (codexHome) => {
       const underscore = await seedMinimalRollout(
         codexHome,
@@ -680,19 +680,31 @@ describe('CodexSessionAdapter', () => {
       const adapter = new CodexSessionAdapter({ codexHome });
 
       const first = await adapter.listSessionPage!({ limit: 1 });
-      assert.deepEqual(
-        first.items.map(({ summary }) => summary.id),
-        ['codex_a'],
-      );
+      assert.equal(first.items.length, 1);
       assert.equal(first.hasMore, true);
+      const cursor = first.items[0]!.nextCursor;
+      const [tag, queryHash, timestamp, identity] = cursor.split(':');
+      if (!queryHash || !timestamp || !identity) throw new Error('Expected a filesystem cursor');
+      assert.equal(tag, 'f2');
+      for (const invalidCursor of [
+        `f:${queryHash}:${timestamp}:${identity}`,
+        `f2:${queryHash}:${timestamp}:${identity.slice(0, -1)}`,
+        `f2:${queryHash}:${timestamp}:${identity}A`,
+        `f2:${queryHash}:${timestamp}:${identity.slice(0, -1)}+`,
+      ]) {
+        await assert.rejects(
+          adapter.listSessionPage!({ cursor: invalidCursor, limit: 1 }),
+          ExternalSessionCatalogCursorError,
+        );
+      }
 
       const second = await adapter.listSessionPage!({
-        cursor: first.items[0]!.nextCursor,
+        cursor,
         limit: 1,
       });
       assert.deepEqual(
-        second.items.map(({ summary }) => summary.id),
-        ['codex-a'],
+        new Set([...first.items, ...second.items].map(({ summary }) => summary.id)),
+        new Set(['codex_a', 'codex-a']),
       );
       assert.equal(second.hasMore, false);
     });

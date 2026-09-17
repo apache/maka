@@ -32,7 +32,10 @@ import {
   type Terminal,
 } from '@earendil-works/pi-tui';
 import type { PermissionMode } from '@maka/core/permission';
-import type { ExternalSessionLimit } from '@maka/core/external-session';
+import {
+  normalizeExternalSessionQueryText,
+  type ExternalSessionLimit,
+} from '@maka/core/external-session';
 import { CurrentTodoStore, TodoOverlay, renderTodoIndicator } from './pi-tui-todo.js';
 import { isThinkingLevel, type ThinkingLevel } from '@maka/core/model-thinking';
 import { deriveConnectionSlug, type ProviderType } from '@maka/core/llm-connections';
@@ -3115,6 +3118,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     let sessions: readonly ExternalSessionCatalogItem[] = [];
     let nextCursor: string | null = null;
     let revision = 0;
+    let normalizedQuery = normalizeExternalSessionQueryText(query);
     let cancelScheduledSearch: (() => void) | undefined;
     let pageClosed = false;
     let overlay: OverlayHandle | undefined;
@@ -3220,7 +3224,10 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         emptyText: sessions.length === 0 ? copy.externalEmpty : copy.externalUnavailable,
         notice,
         onQuery: (text) => {
+          const nextNormalizedQuery = normalizeExternalSessionQueryText(text);
           query = text;
+          if (nextNormalizedQuery === normalizedQuery) return;
+          normalizedQuery = nextNormalizedQuery;
           dropScheduledSearch();
           resetCatalogPage();
           // Retire an older in-flight response immediately. Waiting until the
@@ -3240,10 +3247,6 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         },
         onSelect: (item) => {
           if (item.value === 'external:load-more' && nextCursor) {
-            if (dropScheduledSearch()) {
-              void load(false);
-              return;
-            }
             void load(true, nextCursor);
             return;
           }

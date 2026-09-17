@@ -1114,7 +1114,7 @@ function encodeCatalogKeyset(
   if (keyset.kind === 'database') {
     return `d:${queryHash}:${Buffer.from(keyset.stateDatabase).toString('base64url')}:${encodeCursorNumber(keyset.sortTimestamp)}:${Buffer.from(keyset.id).toString('base64url')}`;
   }
-  return `f:${queryHash}:${encodeCursorNumber(keyset.mtimeMs)}:${keyset.pathIdentity}`;
+  return `f2:${queryHash}:${encodeCursorNumber(keyset.mtimeMs)}:${keyset.pathIdentity}`;
 }
 
 function decodeCatalogKeyset(
@@ -1144,7 +1144,7 @@ function decodeCatalogKeyset(
     }
     return { kind: 'database', stateDatabase, sortTimestamp, id };
   }
-  if (parts[0] === 'f') {
+  if (parts[0] === 'f2') {
     if (parts.length !== 4) throw new ExternalSessionCatalogCursorError();
     const mtimeMs = decodeCursorNumber(parts[2]!);
     const pathIdentity = parts[3]!;

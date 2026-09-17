@@ -6507,7 +6507,7 @@ Slug openai-work<cursor>
     await run;
   });
 
-  test('coalesces external catalog search while retiring stale responses immediately', async () => {
+  test('coalesces external catalog search while retiring stale responses immediately', async (t) => {
     const terminal = new FakeTerminal();
     const driver = new SlashCommandDriver([]);
     const queries: Array<string | undefined> = [];
@@ -6569,6 +6569,14 @@ Slug openai-work<cursor>
     await waitFor(() => queries.length === 2);
     assert.equal(requests[1]?.cursor, undefined);
     assert.doesNotMatch(plainTerminalOutput(terminal.screenOutput()), /Old empty-query result/);
+
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    terminal.input(' ');
+    t.mock.timers.tick(121);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    t.mock.timers.reset();
+    assert.deepEqual(queries, [undefined, 'code']);
+    terminal.input('\x7f');
 
     terminal.input('x');
     resolveStale({

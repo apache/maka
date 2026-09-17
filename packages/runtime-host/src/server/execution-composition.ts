@@ -29,6 +29,7 @@ import type { RuntimeExecutionConnection } from '@maka/core/llm-connections';
 import { generalizedErrorMessage } from '@maka/core/redaction';
 import { emptyPlanSessionState } from '@maka/core/plan';
 import { readLogicalRuntimeExecutionForRun } from '@maka/core/runtime-logical-execution';
+import { foldForMatch } from '@maka/core/thread-search';
 import type { PermissionMode } from '@maka/core/permission';
 import {
   runtimeInvocationOutcome,
@@ -1709,19 +1710,17 @@ export async function createExecutionRuntimeHostComposition(
         });
       },
       search: async (request, caller) => {
-        const query = request.query.toLocaleLowerCase();
+        const query = foldForMatch(request.query);
         const sessions = await visibleAgentSessions(sessionQueryInitiator(caller));
         const matches: typeof sessions = [];
         for (const session of sessions) {
-          const headerText = `${session.name}\n${session.cwd ?? ''}`.toLocaleLowerCase();
+          const headerText = foldForMatch(`${session.name}\n${session.cwd ?? ''}`);
           if (headerText.includes(query)) {
             matches.push(session);
             continue;
           }
           const messages = await requireSessionManager(manager).getMessages(session.id);
-          if (
-            messages.some((message) => JSON.stringify(message).toLocaleLowerCase().includes(query))
-          ) {
+          if (messages.some((message) => foldForMatch(JSON.stringify(message)).includes(query))) {
             matches.push(session);
           }
         }

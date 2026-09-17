@@ -171,7 +171,7 @@ Codex 不保存跨请求的 SQLite 事务、catalog snapshot、TTL 或 LRU 状�
 两条来源路径分别使用自己的稳定排序键：
 
 1. **state DB**：`(sort_key DESC, id DESC)`。`sort_key` 由查询算一次、随行一起选出，cursor 直接读回该行上的这个值 —— 这样 cursor 指向的位置必然就是查询排序的位置。adapter 中的唯一 normalizer 接受有限数值或数字字符串形式的 epoch 秒/毫秒，以及 ISO 8601 等可解析 date-time 字符串；SQLite 排序、cursor 位置和展示的摘要时间都调用同一条规则。首页只读最新的 `state_N.sqlite`；若该 generation 读不了，本页改由 filesystem fallback 回答，而**不是**退到更旧的 generation：更旧那本是上一次跃迁时冻结的快照，跃迁之后新建的会话都不在里面。cursor 记录起始 generation，续页仍只读打开同一个文件，通过 `WHERE` keyset 条件继续，并保持严格 —— 原 generation 已删除或不可读时 cursor 明确失效，读失败仍是 persistence failure。连接用完立即关闭。
-2. **filesystem fallback**：`(mtime DESC, fixed-size path identity ASC)`。identity 由相对 rollout path 一次派生，因此深层路径不会使 cursor 超过 Host wire 上限。一次遍历 active 和可选 archived roots，以 `maxCatalogCandidates` 限制遍历的文件数；超过上限返回 typed limit error。候选先用 stat 已知排序键与当前页尾比较，只有可能进入当前页的候选才读取有界 head 并完成 query/path 校验；内存最多保留 `limit + 1` 个匹配摘要，不物化整个 catalog，也不为深分页重复扫描多轮。
+2. **filesystem fallback**：`(mtime DESC, fixed-size path identity ASC)`。opaque cursor 使用版本化的 `f2` filesystem tag；identity 由相对 rollout path 一次派生，因此深层路径不会使 cursor 超过 Host wire 上限。一次遍历 active 和可选 archived roots，以 `maxCatalogCandidates` 限制遍历的文件数；超过上限返回 typed limit error。候选先用 stat 已知排序键与当前页尾比较，只有可能进入当前页的候选才读取有界 head 并完成 query/path 校验；内存最多保留 `limit + 1` 个匹配摘要，不物化整个 catalog，也不为深分页重复扫描多轮。
 
 keyset 的语义是“继续读取严格排在最后交付项之后的记录”。如果一个尚未读取的 live Session 在两页之间更新并移动到 cursor 之前，本次遍历可能看不到它，但不会因此重复已经交付的行；重新打开或刷新 catalog 会看到当前最新顺序。这是实时可变来源下不持有 snapshot 的明确边界。
 

@@ -32,7 +32,7 @@ export interface ExternalSessionQuery {
   cwd?: string;
   includeArchived?: boolean;
   /**
-   * Free text matched against a summary's title and cwd.
+   * Free text matched against a summary's source id, title, and cwd.
    *
    * Applied by the adapter, before paging. Filtering an assembled page would
    * search only the rows already fetched, which on a 1128-session source is

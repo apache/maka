@@ -445,7 +445,7 @@ export function createMemorySessionStore(
         sourceIds.flatMap((sourceSessionId) => {
           const matches = [...headers(s).values()].filter(
             (h) =>
-              h.header.transcriptLedgerVersion === 1 &&
+              h.header.transcriptLedgerVersion !== 0 &&
               h.header.externalOrigin?.adapterId === adapterId &&
               h.header.externalOrigin.sourceSessionId === sourceSessionId,
           );
