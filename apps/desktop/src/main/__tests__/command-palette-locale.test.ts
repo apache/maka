@@ -83,6 +83,7 @@ for (const locale of ['en', 'zh-CN', 'zh-TW'] as const) {
         onOpenSettingsSection: noop,
         onOpenShortcuts: noop,
         onSetTheme: noop,
+        onSelectModule: noop,
       });
       const root = createRoot(document.getElementById('root')!);
       let overlays: import('../../renderer/features/overlays/testing.js').OverlaysShellProjection;
@@ -129,19 +130,32 @@ for (const locale of ['en', 'zh-CN', 'zh-TW'] as const) {
         });
         const sections = getSettingsNavigationCopy(locale).sections;
         const palette = getShellCopy(locale).commandPalette;
-        if (scope === 'settings')
+        if (scope === 'settings') {
           for (const { id } of SETTINGS_NAV) {
             const label = sections[id].label;
             await search(label, palette.settingsCommand(label));
           }
+          await search('bot-chat', palette.settingsCommand(sections['bot-chat'].label));
+          if (locale === 'zh-TW')
+            await search('設定', palette.settingsCommand(sections.general.label));
+        }
         const aliases: Record<UiLocale, readonly string[]> = {
           en: ['side', 'btw'],
           'zh-CN': ['侧聊', '追问'],
           'zh-TW': ['側聊', '追問', '侧聊', 'btw'],
         };
-        if (scope === 'aliases')
+        if (scope === 'aliases') {
           for (const alias of aliases[locale])
             await search(alias, palette.commands['action:side-chat'].label);
+          await search(
+            locale === 'zh-TW' ? '偏好' : locale === 'zh-CN' ? '设置' : 'preferences',
+            palette.commands['action:open-settings'].label,
+          );
+          await search(
+            locale === 'zh-TW' ? '會話' : locale === 'zh-CN' ? '会话' : 'chats',
+            palette.commands['nav:sessions'].label,
+          );
+        }
         await search('no-such-command-5377');
       } finally {
         await act(async () => {

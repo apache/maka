@@ -718,7 +718,7 @@ const ZH_TW_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
     group: '診斷',
   },
   'diag:paste-today-daily-review': {
-    label: '將今日回顧貼到 composer',
+    label: '將今日回顧貼到輸入框',
     hint: '不經剪貼簿',
     group: '診斷',
   },
