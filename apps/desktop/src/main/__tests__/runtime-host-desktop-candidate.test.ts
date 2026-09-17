@@ -68,6 +68,7 @@ import { RuntimeHostReconnectingIpcMain } from '../runtime-host-reconnecting-ipc
 import { desktopSessionResourceKey } from '../../shared/runtime-host-identity.js';
 import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
 import { canRepairManagedRuntimeHostStartup } from '../runtime-host-startup-recovery.js';
+import { ManagedArtifactPreview } from '../managed-artifact-preview.js';
 
 const TEST_HOST_ID = 'a'.repeat(64);
 const TEST_TARGET_EPOCH = 'test-target-epoch';
@@ -542,6 +543,51 @@ test('tears down the whole candidate when the Host connection closes', async () 
   await candidate.closed;
 
   assert.equal(host.closeCalls, 1);
+});
+
+test('closes managed Artifact previews when the Host connection closes', async () => {
+  const ipc = ipcHarness();
+  const host = connectionHarness('preview-closed');
+  const preview = new ManagedArtifactPreview();
+  const bytes = Buffer.from('<!doctype html><title>Preview</title>');
+  const candidate = await createDesktopRuntimeHostCandidate(host.connection, {
+    ...deps(ipc),
+    registerClientIpc: (_client, _ipc, _controls, _target, scope) =>
+      () => preview.closeScope(scope.targetEpoch),
+  });
+
+  try {
+    const endpoint = await preview.prepare(
+      TEST_TARGET_EPOCH,
+      {
+        getArtifact: async () => ({
+          id: 'artifact-1',
+          sessionId: 'session-1',
+          turnId: 'turn-1',
+          createdAt: 0,
+          name: 'preview.html',
+          kind: 'html',
+          sizeBytes: bytes.length,
+          source: 'tool_result',
+        }),
+        streamArtifact: async (_sessionId, _artifactId, write) => {
+          await write(bytes);
+          return bytes.length;
+        },
+      },
+      'session-1',
+      'artifact-1',
+    );
+    assert.equal(await (await fetch(endpoint.url)).text(), bytes.toString());
+
+    host.disconnect();
+    await candidate.closed;
+
+    await assert.rejects(fetch(endpoint.url));
+  } finally {
+    await candidate.close();
+    await preview.close();
+  }
 });
 
 test('preserves supported IPC when the connection closes before candidate startup returns', { timeout: 5_000 }, async (t) => {
