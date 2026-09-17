@@ -53,7 +53,8 @@ import {
   type BackendPreparationContext,
 } from '@maka/runtime/session-manager';
 import { buildToolsForAgentDefinition } from '@maka/runtime/agent-catalog';
-import { buildHistoryTools } from '@maka/runtime/history-tools';
+import { buildRecallTools } from '@maka/runtime/recall-tools';
+import { RECALL_SYNTHETIC_TEXT_PATTERNS } from '@maka/runtime/recall-candidates';
 import { buildBuiltinTools } from '@maka/runtime/builtin-tools';
 import { createLocalContinuationSafetyInspector } from '@maka/runtime/continuation-safety';
 import { createConfiguredSubagentCatalog } from '@maka/runtime/configured-subagent-catalog';
@@ -641,7 +642,7 @@ export async function createExecutionRuntimeHostComposition(
         webSearchService.search({ query, limit, ...(abortSignal ? { abortSignal } : {}) }),
       fetch: (input) => webFetchService.fetch(input),
     });
-    const historyTools = buildHistoryTools({
+    const recallTools = buildRecallTools({
       listSessions: () => requireSessionManager(manager).listSessions(),
       readMessages: async (sessionId, abortSignal) => {
         if (abortSignal?.aborted) return null;
@@ -649,6 +650,42 @@ export async function createExecutionRuntimeHostComposition(
           .getMessages(sessionId)
           .catch(() => null);
         return abortSignal?.aborted ? null : messages;
+      },
+      listCandidateSessions: async ({ terms, sessionIds, abortSignal }) => {
+        if (abortSignal?.aborted) return null;
+        // A storage failure only costs speed here: declining the fast path
+        // sends recall back to reading transcripts, which yields the same
+        // answer. Returning a partial candidate set instead would break the
+        // superset contract and silently drop matches.
+        const candidates = await requireSessionManager(manager)
+          .listRecallCandidateSessions(sessionIds, terms)
+          .catch(() => undefined);
+        if (abortSignal?.aborted || !candidates) return null;
+        return candidates;
+      },
+      countSearchableMessages: async ({ sessionIds }) =>
+        (await requireSessionManager(manager)
+          .countRecallSearchableMessages(sessionIds)
+          .catch(() => undefined)) ?? null,
+      syntheticTextPatterns: RECALL_SYNTHETIC_TEXT_PATTERNS,
+      searchFacts: async ({ sessionId, terms, limit }) => {
+        const workspaceKey = sessionId
+          ? await stores.sessionStore
+              .readHeaderSnapshot(sessionId)
+              .then((header) => header.workspaceRoot)
+              .catch(() => undefined)
+          : undefined;
+        const records = await longTermMemoryStore.searchByKeys({
+          terms,
+          match: 'prefix',
+          ...(workspaceKey ? { workspaceKey } : {}),
+          limit,
+        });
+        return records.map((record) => ({
+          content: record.item.content,
+          kind: record.item.kind,
+          observedAt: record.item.observedAt,
+        }));
       },
       getPrivacyContext: async () => ({
         incognitoActive: (await runtimePolicyStores.runtimePolicy.getSnapshot()).policy.privacy
@@ -661,7 +698,7 @@ export async function createExecutionRuntimeHostComposition(
       backgroundTaskHealthTool,
       ...runtimePolicy.modelTools,
     ];
-    const hostTools = [...childHostTools, ...historyTools];
+    const hostTools = [...childHostTools, ...recallTools];
     const childAgentTools = createHostChildAgentToolComposition({
       builtinTools,
       hostTools: childHostTools,

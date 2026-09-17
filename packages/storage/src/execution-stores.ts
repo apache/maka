@@ -180,6 +180,11 @@ export type ExecutionRuntimeEventWriter = DurableRuntimeEventStore &
     readSessionRuntimeEventEntries(sessionId: string): Promise<SessionRuntimeEventEntry[]>;
     /** Called once per Session after each write that committed RuntimeEvents to it. */
     subscribeRuntimeEventCommits(listener: (sessionId: string) => void): () => void;
+    listSessionsWithRuntimeEventText(
+      sessionIds: readonly string[],
+      terms: readonly string[],
+    ): Promise<string[]>;
+    countRuntimeEventMessages(sessionIds: readonly string[]): Promise<number>;
   };
 interface ExecutionStoresWriterBase<K extends StorageRootKind> {
   readonly kind: K;
@@ -268,6 +273,12 @@ export interface ExecutionRuntimeEventReader {
   readSessionRuntimeEventEntries(
     sessionId: string,
   ): Promise<ReadonlyArray<{ ordinal: number; event: RuntimeEvent }>>;
+  /** Recall's narrowing over the ledger; see `RuntimeEventStore`. */
+  listSessionsWithRuntimeEventText(
+    sessionIds: readonly string[],
+    terms: readonly string[],
+  ): Promise<string[]>;
+  countRuntimeEventMessages(sessionIds: readonly string[]): Promise<number>;
 }
 
 interface ExecutionStoresReaderBase<K extends StorageRootKind> {
@@ -729,6 +740,10 @@ async function createExecutionStoresForWrite(
         run(() => runtimeEventStore.readSessionRuntimeEvents(sessionId)),
       readSessionRuntimeEventEntries: (sessionId) =>
         run(() => runtimeEventStore.readSessionRuntimeEventEntries(sessionId)),
+      listSessionsWithRuntimeEventText: (sessionIds, terms) =>
+        run(() => runtimeEventStore.listSessionsWithRuntimeEventText(sessionIds, terms)),
+      countRuntimeEventMessages: (sessionIds) =>
+        run(() => runtimeEventStore.countRuntimeEventMessages(sessionIds)),
       resequenceSessionEventOrdinals: (sessionId) =>
         run(() => runtimeEventStore.resequenceSessionEventOrdinals(sessionId)),
       readTranscriptHighWater: (sessionId) =>
@@ -868,6 +883,10 @@ async function openExecutionStoresForRead<K extends StorageRootKind, E extends o
         run(() => runtimeEventStore.readSessionRuntimeEvents(sessionId)),
       readSessionRuntimeEventEntries: (sessionId) =>
         run(() => runtimeEventStore.readSessionRuntimeEventEntries(sessionId)),
+      listSessionsWithRuntimeEventText: (sessionIds, terms) =>
+        run(() => runtimeEventStore.listSessionsWithRuntimeEventText(sessionIds, terms)),
+      countRuntimeEventMessages: (sessionIds) =>
+        run(() => runtimeEventStore.countRuntimeEventMessages(sessionIds)),
     },
   };
   freezeExecutionStoresFacade(stores);

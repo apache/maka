@@ -64,7 +64,6 @@
     "./goal-turn-lifecycle": "./dist/goal-turn-lifecycle.js",
     "./history-compact-checkpoint": "./dist/history-compact-checkpoint.js",
     "./history-compact-ledger": "./dist/history-compact-ledger.js",
-    "./history-tools": "./dist/history-tools.js",
     "./history-compact-summarizer": "./dist/history-compact-summarizer.js",
     "./openai-codex-history-compactor": "./dist/openai-codex-history-compactor.js",
     "./interaction-authority": "./dist/interaction-authority.js",
@@ -103,6 +102,7 @@
     "./plugin-tool-service": "./dist/plugin-tool-service.js",
     "./process-tree-terminator": "./dist/process-tree-terminator.js",
     "./provider-request-telemetry": "./dist/provider-request-telemetry.js",
+    "./recall-tools": "./dist/recall-tools.js",
     "./request-customization-fetch": "./dist/request-customization-fetch.js",
     "./request-shape": "./dist/request-shape.js",
     "./runtime-commit-sink": "./dist/runtime-commit-sink.js",
@@ -139,7 +139,8 @@
     "./session-import": "./dist/session-import.js",
     "./filesystem-executor": "./dist/filesystem-executor.js",
     "./workspace-executor": "./dist/workspace-executor.js",
-    "./auto-review": "./dist/auto-review.js"
+    "./auto-review": "./dist/auto-review.js",
+    "./recall-candidates": "./dist/recall-candidates.js"
   },
   "scripts": {
     "clean": "node ../../scripts/clean-paths.mjs dist tsconfig.tsbuildinfo src/telemetry/model-pricing.generated.ts",

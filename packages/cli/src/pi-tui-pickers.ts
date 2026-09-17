@@ -63,6 +63,15 @@ import { stripUnfocusedCursorStyle } from './tui-editor-render.js';
 import { TUI_COPY_RESOURCES } from './tui-copy-catalog.js';
 
 interface TuiPickerCopy {
+  readonly permissionPickerTitle: string;
+  readonly autoReviewLabel: string;
+  readonly autoReviewCompactLabel: string;
+  readonly autoReviewDescription: string;
+  readonly bypassDescription: string;
+  readonly keepAutoReviewLabel: string;
+  readonly enableBypassLabel: string;
+  readonly switchToBypassTitle: string;
+
   readonly modelPickerTitle: string;
   readonly modelSwitchCacheWarning: string;
   readonly modelSearchHint: string;
@@ -1091,23 +1100,27 @@ export class ModelSearchOverlay implements Component {
 }
 
 /** The picker names the execution policy in force. */
-export function permissionModePickerItems(currentMode: PermissionMode): SelectItem[] {
+export function permissionModePickerItems(
+  currentMode: PermissionMode,
+  locale: UiLocale = 'en',
+): SelectItem[] {
+  const copy = getTuiPickerCopy(locale);
   const autoIsCurrent = currentMode === 'auto_review';
   return [
     {
       value: 'auto',
-      label: 'Auto review',
+      label: copy.autoReviewLabel,
       description: autoIsCurrent
-        ? 'current · model review before execution'
-        : 'model review before execution',
+        ? `${copy.currentMarker} · ${copy.autoReviewDescription}`
+        : copy.autoReviewDescription,
     },
     {
       value: 'bypass',
       label: 'Bypass',
       description:
         currentMode === 'bypass'
-          ? 'current · direct execution without review'
-          : 'direct execution without review',
+          ? `${copy.currentMarker} · ${copy.bypassDescription}`
+          : copy.bypassDescription,
     },
   ];
 }

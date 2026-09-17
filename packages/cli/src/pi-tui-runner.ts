@@ -3659,7 +3659,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     state.entries.push({
       kind: 'notice',
       level: 'info',
-      text: `Permissions: ${permissionModeLabel(permissionMode)}`,
+      text: `${pickerCopy.permissionPickerTitle}: ${permissionModeLabel(permissionMode, locale)}`,
     });
     requestRender();
   };
@@ -3672,17 +3672,17 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     const confirmation = [
       {
         value: 'keep',
-        label: 'Keep Auto review',
-        description: 'Review actions before execution',
+        label: pickerCopy.keepAutoReviewLabel,
+        description: pickerCopy.autoReviewDescription,
       },
       {
         value: 'bypass',
-        label: 'Turn on Bypass',
-        description: 'Execute tools directly without model review',
+        label: pickerCopy.enableBypassLabel,
+        description: pickerCopy.bypassDescription,
       },
     ];
     showSelectPicker(
-      'Switch to Bypass?',
+      pickerCopy.switchToBypassTitle,
       'keep',
       confirmation,
       (choice) => {
@@ -3918,11 +3918,11 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   };
 
   const showPermissionModeList = () => {
-    const items = permissionModePickerItems(permissionMode);
+    const items = permissionModePickerItems(permissionMode, locale);
     const cursorValue = permissionMode === 'bypass' ? 'bypass' : 'auto';
     showSelectPicker(
-      'Permissions',
-      permissionModeLabel(permissionMode),
+      pickerCopy.permissionPickerTitle,
+      permissionModeLabel(permissionMode, locale),
       items,
       (item) => {
         if (item.value === 'auto' || item.value === 'bypass') {

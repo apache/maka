@@ -1625,9 +1625,9 @@ function transcriptEntrySignature(entry: MakaPiTranscriptEntry, width: number): 
 }
 
 /** Shared execution-mode label for the status line and picker. */
-export function permissionModeLabel(mode: string): string {
+export function permissionModeLabel(mode: string, locale: UiLocale = 'en'): string {
   if (mode === 'bypass') return 'Bypass';
-  return 'Auto review';
+  return TUI_COPY_RESOURCES.pickers[locale].autoReviewLabel;
 }
 
 export function renderMakaPiStatusLine(metadata: MakaPiTranscriptMetadata, width: number): string {
@@ -1648,9 +1648,11 @@ export function renderMakaPiStatusLine(metadata: MakaPiTranscriptMetadata, width
       shortenedText: ansi.bold(fitLine(metadata.title, 7)),
     },
     {
-      text: ansi.dim(permissionModeLabel(metadata.permissionMode)),
+      text: ansi.dim(permissionModeLabel(metadata.permissionMode, metadata.uiLocale)),
       compactRank: 4,
-      shortenedText: ansi.dim(compactPermissionModeLabel(metadata.permissionMode)),
+      shortenedText: ansi.dim(
+        compactPermissionModeLabel(metadata.permissionMode, metadata.uiLocale ?? 'en'),
+      ),
     },
     {
       text: ansi.dim(metadata.model),
@@ -1819,9 +1821,9 @@ function fitStatusLine(segments: MakaPiStatusLineSegment[], sep: string, width: 
   return fitLine(kept.map((segment) => segment.text).join(activeSep), width);
 }
 
-function compactPermissionModeLabel(mode: string): string {
+function compactPermissionModeLabel(mode: string, locale: UiLocale): string {
   if (mode === 'bypass') return 'Bypass';
-  return 'Auto';
+  return TUI_COPY_RESOURCES.pickers[locale].autoReviewCompactLabel;
 }
 
 function sideConversationStatusLineText(

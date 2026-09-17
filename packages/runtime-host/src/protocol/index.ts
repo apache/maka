@@ -101,8 +101,9 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 160 as const;
-// 160: Direct host execution, Auto review permission mode and reviewer model settings.
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 161 as const;
+// 161: Direct host execution, Auto review permission mode and reviewer model settings.
+// 160: Usage queries add revision-consistent screens and revision-bound activity pages.
 // 159: External Session catalog queries distinguish adapter source limits from
 // persistence failures. Older Clients reject the new closed error code.
 // 158: Session transcripts advance per committed RuntimeEvent; the active overlay is gone.

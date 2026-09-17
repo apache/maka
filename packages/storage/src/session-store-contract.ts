@@ -28,6 +28,7 @@ import type {
   SettleSandboxBoundaryRequest,
 } from '@maka/core/sandbox-boundary';
 import type { CreateSessionInput, SessionListFilter } from '@maka/core/runtime-inputs';
+
 import type {
   SessionHeader,
   SessionHeaderPatch,
@@ -345,6 +346,20 @@ export interface SessionStore {
   listTurnsSnapshot(sessionId: string): Promise<TurnRecord[]>;
   readHeader(sessionId: string): Promise<SessionHeader>;
   readMessages(sessionId: string): Promise<StoredMessage[]>;
+  /**
+   * Narrow recall to the pre-ledger Sessions whose transcript rows contain a
+   * folded term. Sessions the RuntimeEvent ledger owns are not scanned here;
+   * the ledger store answers for them. The result is a superset of the true
+   * matches, never an answer: callers project each candidate Session and
+   * re-run the real predicate. Resolves to `undefined` when the store declines
+   * the fast path, which sends the caller back to reading every transcript.
+   */
+  listLegacyTranscriptCandidateSessions?(
+    sessionIds: readonly string[],
+    terms: readonly string[],
+  ): Promise<string[] | undefined>;
+  /** Pre-ledger transcript rows of searchable types, for recall's idf term. */
+  countLegacyTranscriptMessages?(sessionIds: readonly string[]): Promise<number>;
   readMessagesAfter(
     sessionId: string,
     request: SessionMessageScanRequest,
