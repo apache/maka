@@ -70,6 +70,7 @@ import {
 import type { HostInteractionCoordinator } from './interaction-coordinator.js';
 import type { WorkHubCoordinationSelectAndDelegateInput } from '../protocol/workhub-coordination.js';
 import type { SessionContinuityCoordinator } from './session-continuity-coordinator.js';
+import type { WorkHubTargetExecutionAuthority } from './workhub-target-execution-authority.js';
 import {
   WorkHubActionEffectFailure,
   WorkHubActionGateFailure,
@@ -143,6 +144,8 @@ type CoordinationSessionActions = Pick<
     context: ConnectionContext,
     actionId: string,
     validateFreshTarget: () => Promise<void>,
+    prepareTargetExecution?: () => Promise<void>,
+    assertTargetExecutionReady?: () => Promise<void>,
   ): Promise<WorkHubResumeResult>;
 };
 
@@ -165,6 +168,7 @@ export interface HostWorkHubCoordinationCoordinatorOptions {
   ) => Promise<OperationOutcome<'workhub.coordination.configureModel'>>;
   readonly routingModel?: HostWorkHubRoutingModel;
   readonly requestForm?: HostInteractionCoordinator['requestForm'];
+  readonly targetExecution?: WorkHubTargetExecutionAuthority;
 }
 
 /** Resolves the one durable Coordination Session owned by this Runtime Host. */
@@ -211,6 +215,7 @@ export class HostWorkHubCoordinationCoordinator {
     this.#requestDrain = options.requestDrain;
     this.#actionGate = new WorkHubCoordinationActionGate({
       listSessions: () => this.#stores.listHeaders(),
+      ...(options.targetExecution ? { targetExecution: options.targetExecution } : {}),
       // The global action owner is committed under the same Coordination
       // admission that serializes every durable Coordination fact, so a
       // concurrent action cannot slip between the claim and the fact it owns.
@@ -250,6 +255,8 @@ export class HostWorkHubCoordinationCoordinator {
           context,
           input.actionId,
           input.validateFreshTarget,
+          input.prepareTargetExecution,
+          input.assertTargetExecutionReady,
         )),
       }),
     });
@@ -756,6 +763,7 @@ export class HostWorkHubCoordinationCoordinator {
           {
             ...action,
             ...(selectedTarget ? { selectedTarget } : {}),
+            coordinationRunId: request.runId,
             userText: request.content.text,
             ...(carriesAttachments && request.content.attachments
               ? { attachments: request.content.attachments }

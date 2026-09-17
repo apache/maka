@@ -22,7 +22,7 @@ import { AttachmentIngestBlockedError } from '@maka/core/attachments';
 import { RuntimeHostOperationError, RuntimeHostRequestInterruptedError } from '@maka/runtime-host/client';
 import { prepareIngestItems, resolveAttachmentRefs } from './attachment-ingest.js';
 import type { DesktopRuntimeHostClient } from './runtime-host-client.js';
-import { handleReconciledControl, rethrowReconnectableReadFailure, type ReconnectableReadIpcMain } from './ipc-reconnect-policy.js';
+import { handleReconnectableRead, handleReconciledControl, rethrowReconnectableReadFailure, type ReconnectableReadIpcMain } from './ipc-reconnect-policy.js';
 import type {
   WorkHubAnswerInput,
   WorkHubAnswerResult,
@@ -51,7 +51,9 @@ export function registerRuntimeHostWorkHubIpc(
   ipcMain: ReconnectableReadIpcMain,
   options: RuntimeHostWorkHubIpcOptions,
 ): void {
-  ipcMain.handle('workhub:getSession', async () => toDesktopHostSessionSummary(await client.getWorkHubSession()));
+  handleReconnectableRead(ipcMain, 'workhub:getSession', async () =>
+    toDesktopHostSessionSummary(await client.getWorkHubSession()),
+  );
   ipcMain.handle('workhub:resolveCoordinationSession', () =>
     client.resolveWorkHubCoordinationSession(),
   );

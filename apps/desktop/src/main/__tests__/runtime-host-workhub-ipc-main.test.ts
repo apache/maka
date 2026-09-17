@@ -22,6 +22,26 @@ import test from 'node:test';
 import type { IpcHandler } from '../ipc-reconnect-policy.js';
 import { registerRuntimeHostWorkHubIpc } from '../runtime-host-workhub-ipc-main.js';
 
+test('registers the WorkHub Session projection as a reconnectable read', () => {
+  const ordinary = new Set<string>();
+  const reconnectable = new Set<string>();
+  registerRuntimeHostWorkHubIpc(
+    {} as Parameters<typeof registerRuntimeHostWorkHubIpc>[0],
+    {
+      handle(channel) {
+        ordinary.add(channel);
+      },
+      handleReconnectableRead(channel) {
+        reconnectable.add(channel);
+      },
+    },
+    {},
+  );
+
+  assert.equal(reconnectable.has('workhub:getSession'), true);
+  assert.equal(ordinary.has('workhub:getSession'), false);
+});
+
 test('returns a structured WorkHub attachment rejection across IPC', async () => {
   const handlers = new Map<string, IpcHandler>();
   registerRuntimeHostWorkHubIpc(
