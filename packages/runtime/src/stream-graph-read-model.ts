@@ -66,7 +66,7 @@ const MAX_OPERATOR_INSPECTION_EDGES = 512;
 const MAX_OPERATOR_INSPECTION_WORK = 256;
 const MAX_OPERATOR_INSPECTION_CLAIMS = 256;
 const MAX_INSTRUCTION_PREVIEW_CHARS = 500;
-const MAX_OUTPUT_PREVIEW_CODE_POINTS = 280;
+export const MAX_OUTPUT_PREVIEW_CODE_POINTS = 280;
 
 export type AgentGraphClientOperatorStatus =
   | 'not_started'
@@ -368,6 +368,7 @@ export function advanceMaterializedAgentGraphClientProjection(
   inspectionInput: AgentGraphOperatorInspection,
   runtime: AgentGraphSupervisorRuntimeEvent,
   activationHadError: boolean,
+  sampleStartedAt?: number,
 ): AdvancedAgentGraphClientProjection | undefined {
   const projected = projectClientSessionEvent(runtime.event, activationHadError);
   const output = advanceClientOperatorOutput(
@@ -375,6 +376,7 @@ export function advanceMaterializedAgentGraphClientProjection(
     runtime.event,
     runtime.claim.targetRunId,
     ['completed', 'failed', 'aborted', 'cancelled'].includes(inspectionInput.operator.status),
+    sampleStartedAt,
   );
   if (!projected && !output) return undefined;
   if (
@@ -865,6 +867,7 @@ function advanceClientOperatorOutput(
   event: SessionEvent,
   activationId: string,
   operatorSettled: boolean,
+  sampleStartedAt?: number,
 ): AgentGraphClientOperatorOutput | undefined {
   if (current?.activationId === activationId && current.sourceEventId === event.id) {
     return undefined;
@@ -891,7 +894,7 @@ function advanceClientOperatorOutput(
       previewUpdatedAt: event.ts,
       sourceEventId: event.id,
       ...(event.messageId ? { messageId: event.messageId } : {}),
-      sampleStartedAt: existing?.sampleStartedAt ?? event.ts,
+      sampleStartedAt: existing?.sampleStartedAt ?? sampleStartedAt ?? event.ts,
       ...(existing?.outputTokens !== undefined ? { outputTokens: existing.outputTokens } : {}),
       ...(existing?.sampleDurationMs !== undefined
         ? { sampleDurationMs: existing.sampleDurationMs }

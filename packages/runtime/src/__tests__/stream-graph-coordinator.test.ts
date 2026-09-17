@@ -568,6 +568,10 @@ describe('host-managed agent graph coordinator', () => {
       );
       assert.ok(outputProjectionCommits.length > 0);
       assert.ok(
+        outputProjectionCommits.length < 60,
+        `streaming output deltas should share SQLite commits; got ${outputProjectionCommits.length} output commits`,
+      );
+      assert.ok(
         outputProjectionCommits.every((request) =>
           request.operators.every((candidate) => {
             const payload = candidate.payload as {

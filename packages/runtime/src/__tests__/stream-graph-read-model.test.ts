@@ -478,15 +478,17 @@ describe('agent graph client read model', () => {
       outputRuntimeEvent(graphId, operatorId, childSessionId, {
         id: 'delta-1',
         type: 'text_delta',
-        ts: 1_000,
+        ts: 1_200,
         messageId: 'message-1',
         startOffset: 0,
         text: 'Reviewing ',
       }),
       false,
+      1_000,
     )!;
     assert.equal(first.activity, undefined);
     assert.equal(first.operator.operator.output?.preview, 'Reviewing ');
+    assert.equal(first.operator.operator.output?.sampleStartedAt, 1_000);
 
     const replayed = advanceMaterializedAgentGraphClientProjection(
       first.snapshot,

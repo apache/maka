@@ -89,12 +89,12 @@ function WorkbarToolSurface(props: { kind: 'terminal' | 'browser' | 'files'; hid
           sessionId="runtime-surface"
           hidden={props.hidden ?? false}
           onDismissPanel={noop}
+          onToggleRightPanel={noop}
           panelsState={createSessionWorkbarPanelsState(props.backgroundFiles ? openStaticSessionWorkbarTab(right, 'review') : right)}
           rightCollapsed={false}
           bottomOpen={false}
           onActivateTab={noop}
           onCloseTab={noop}
-          onCloseTabs={noop}
           onOpenLauncher={noop}
           onRequestOpenTab={noop}
           confirmBypass={async () => true}
@@ -206,6 +206,7 @@ export const BrowserLoaded: Story = {
         }),
         subscribeState: unsubscribe,
         setViewport: () => undefined,
+        capturePage: async () => undefined,
         back: async () => undefined,
         forward: async () => undefined,
         stop: async () => undefined,

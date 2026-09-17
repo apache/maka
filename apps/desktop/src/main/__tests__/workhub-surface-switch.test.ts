@@ -18,6 +18,9 @@
  */
 
 import assert from 'node:assert/strict';
+import { useWorkHubWorkspace } from '../../renderer/application/contracts/workhub-workspace/use-workhub-workspace.js';
+import { deferred } from '@maka/core/test-only/async-primitives';
+import { desktopSessionKey } from '../../shared/runtime-host-identity.js';
 import { afterEach, test } from 'node:test';
 import { act, createElement, useEffect } from 'react';
 import { useToast, useUiLocale } from '@maka/ui';
@@ -101,4 +104,41 @@ test('the WorkHub slot retains its providers and mount across locale updates', a
   }
   assert.equal(unmounts, 1);
   assert.equal(unsubscribes, 1);
+});
+
+test('Main panels follow the resolved Host identity and retain Coordination in the catalog', async () => {
+  const { root } = installReactRenderer();
+  const first = desktopSessionKey({ hostId: 'first', sessionId: 'maka_workhub_coordination' });
+  const second = desktopSessionKey({ hostId: 'second', sessionId: 'maka_workhub_coordination' });
+  const oldResolve = deferred<string>();
+  let selected = first;
+  let resolves = 0;
+  let hostChange!: Parameters<WorkHubServices['subscribeHosts']>[0];
+  let latest!: ReturnType<typeof useWorkHubWorkspace>;
+  const services = {
+    resolve: async () => { resolves++; return selected === first ? oldResolve.promise : selected; },
+    subscribeHosts: (handler: Parameters<WorkHubServices['subscribeHosts']>[0]) => { hostChange = handler; return () => {}; },
+    subscribeAvailability: () => () => {},
+  } as unknown as WorkHubServices;
+  const workspace = () => latest;
+  const ids = new Set(['ordinary']);
+  function Probe({ enabled }: { enabled: boolean }) { latest = useWorkHubWorkspace(enabled, ids); return null; }
+  const render = (enabled: boolean) => root.render(createElement(WorkHubServicesProvider, { services, children: createElement(Probe, { enabled }) }));
+  try {
+    await act(async () => render(false));
+    assert.equal(resolves, 0);
+    await act(async () => render(true));
+    assert.equal(workspace().sessionId, undefined);
+    selected = second;
+    await act(async () => hostChange({ hostId: 'second', isDefault: true, readiness: 'ready' }));
+    assert.equal(workspace().sessionId, second);
+    await act(async () => oldResolve.resolve(first));
+    assert.equal(workspace().sessionId, second);
+    assert.deepEqual([...workspace().authoritativeSessionIds!], ['ordinary', second]);
+    await act(async () => render(false));
+    assert.equal(workspace().sessionId, undefined);
+    assert.deepEqual([...workspace().authoritativeSessionIds!], ['ordinary']);
+  } finally {
+    await act(async () => root.unmount());
+  }
 });

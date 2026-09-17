@@ -148,7 +148,8 @@
 
   .workHubLive, .workHubDock { width: 100%; height: 100%; min-width: 0; min-height: 0; }
   .workHubLive { position: relative; display: flex; flex-direction: column; background: var(--background); }
-  .workHubWorkspace { --maka-plate-titlebar-clearance: var(--size-element-sm); }
+  .workHubWorkspace { display: flex; flex: 1; min-height: 0; }
+  .workHubWorkspace > .mainColumn { display: flex; flex: 1; min-width: 0; min-height: 0; }
   .workHubWorkspace > .mainColumn > .maka-chat-layout { flex: 1; min-height: 0; }
   .workHubLiveWelcome, .workHubDockPlaceholder { display: grid; justify-items: center; align-content: center; gap: var(--space-3); padding: var(--space-6); min-height: 220px; text-align: center; }
   .workHubDockPlaceholder { height: 100%; }

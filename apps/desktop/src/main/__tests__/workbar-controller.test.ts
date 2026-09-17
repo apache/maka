@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { WorkHubWorkspaceServicesProvider, type WorkHubWorkspaceServices } from '../../renderer/application/contracts/workhub-workspace/use-workhub-workspace.js';
 import { deferred } from '@maka/core/test-only/async-primitives';
 import { strict as assert } from 'node:assert';
 import { afterEach, describe, it } from 'node:test';
@@ -27,7 +28,7 @@ import type { WorkBoardActiveItem, WorkBoardItem, WorkBoardLinkedSession } from 
 import { LocaleProvider, type ToastApi } from '@maka/ui';
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
 import { TerminalCloseIntents } from '../terminal-close-intents.js';
-import type { TerminalCloseChange } from '../../shared/runtime-host-identity.js';
+import { desktopSessionKey, type TerminalCloseChange } from '../../shared/runtime-host-identity.js';
 import {
   createFakeWorkbarServices,
   projectWorkbarPanelsForSession,
@@ -335,6 +336,33 @@ describe('useWorkbarController', () => {
     assert.equal(controller().host.rightCollapsed, false);
   });
 
+  it('toggles the visible tool, reveals a different one, and retains its placement', async () => {
+    const { root } = installReactRenderer();
+    await act(async () => renderController(root, createFakeWorkbarServices(), input(session('a'))));
+    await act(async () => controller().commands.toggleTool('files'));
+    assert.equal(controller().host.rightCollapsed, false);
+    const filesId = controller().host.panelsState.right.activeTabId;
+    await act(async () => controller().commands.toggleTool('files'));
+    assert.equal(controller().host.rightCollapsed, true);
+    await act(async () => controller().commands.toggleTool('files'));
+    assert.equal(controller().host.rightCollapsed, false);
+    assert.equal(controller().host.panelsState.right.activeTabId, filesId);
+    await act(async () => controller().commands.toggleTool('browser'));
+    assert.equal(controller().host.rightCollapsed, false);
+    assert.equal(controller().host.panelsState.right.activeTabId, 'workbar:browser');
+    await act(async () => controller().commands.toggleTool('files'));
+    assert.equal(controller().host.rightCollapsed, false);
+    assert.equal(controller().host.panelsState.right.activeTabId, filesId);
+    await act(async () => controller().commands.openTool('inspector', 'bottom'));
+    assert.equal(controller().host.bottomOpen, true);
+    await act(async () => controller().commands.toggleTool('inspector'));
+    assert.equal(controller().host.bottomOpen, false);
+    assert.equal(controller().host.rightCollapsed, false);
+    await act(async () => controller().commands.toggleTool('inspector'));
+    assert.equal(controller().host.bottomOpen, true);
+    assert.equal(controller().host.panelsState.bottom.activeTabId, 'workbar:inspector');
+  });
+
   it('keeps right-panel visibility independent across Session navigation', async () => {
     const { root } = installReactRenderer();
     const services = createFakeWorkbarServices();
@@ -471,6 +499,39 @@ describe('useWorkbarController', () => {
       ),
       true,
     );
+  });
+
+  it('blocks task-specific tools and side-chat commands in WorkHub', async () => {
+    const { root } = installReactRenderer();
+    const services = createFakeWorkbarServices();
+    const coordinationId = desktopSessionKey({ hostId: 'local', sessionId: 'maka_workhub_coordination' });
+    const coordination: WorkHubWorkspaceServices = {
+      resolve: async () => coordinationId,
+      subscribeHosts: () => () => {},
+      subscribeAvailability: () => () => {},
+    };
+    const ordinary = input(session('ordinary'));
+    const render = (active: boolean) => root.render(createElement(LocaleProvider, {
+      locale: 'en',
+      children: createElement(WorkbarServicesProvider, { services },
+        createElement(WorkHubWorkspaceServicesProvider, { value: coordination },
+          createElement(ControllerProbe, { ...ordinary, workHub: { enabled: true, active } }))),
+    }));
+    await act(async () => render(true));
+    assert.equal(controller().host.activeId, coordinationId);
+    await act(async () => {
+      for (const kind of ['review', 'terminal', 'files', 'side-chat'] as const) controller().commands.openTool(kind);
+    });
+    assert.deepEqual(controller().host.panelsState.right.tabs, []);
+    await act(async () => controller().commands.openTool('browser'));
+    assert.deepEqual(controller().host.panelsState.right.tabs.map((tab) => tab.kind), ['browser']);
+    await act(async () => render(false));
+    assert.equal(controller().host.activeId, 'ordinary');
+    await act(async () => controller().commands.openTool('review'));
+    assert.ok(controller().host.panelsState.right.tabs.some((tab) => tab.kind === 'review'));
+    await act(async () => render(true));
+    assert.equal(controller().host.activeId, coordinationId);
+    assert.ok(controller().host.panelsState.right.tabs.some((tab) => tab.kind === 'browser'));
   });
 
   it('opens registry singletons once and dynamic tools as separate instances', async () => {

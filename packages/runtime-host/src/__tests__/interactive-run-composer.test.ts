@@ -19,7 +19,13 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { emptyPlanSessionState, type PlanStore } from '@maka/core/plan';
+import {
+  emptyPlanSessionState,
+  type PlanExecution,
+  type PlanExecutionStep,
+  type PlanSessionState,
+  type PlanStore,
+} from '@maka/core/plan';
 import { createDefaultRuntimePolicy } from '@maka/core/runtime-policy';
 import type { SessionTodoToolStore } from '@maka/runtime/session-todo-tools';
 import { z } from 'zod';
@@ -307,6 +313,96 @@ test('WorkHub v2 binds control, tasks, attachment reading and user questions whi
     /Hosted tool profile is unavailable/,
   );
 });
+
+test('Plan execution tools are bound only for active agent executions', () => {
+  const activeAgentTools = createFixtureComposer({
+    plan: {
+      store: {} as PlanStore,
+      state: activePlanState(),
+      mode: 'agent',
+    },
+  }).tools.map(({ name }) => name);
+  assert.equal(activeAgentTools.includes('update_plan'), true);
+  assert.equal(activeAgentTools.includes('cancel_plan'), true);
+  assert.equal(activeAgentTools.includes('SubmitPlan'), false);
+
+  const idleAgentTools = createFixtureComposer({
+    plan: {
+      store: {} as PlanStore,
+      state: emptyPlanSessionState('session-1'),
+      mode: 'agent',
+    },
+  }).tools.map(({ name }) => name);
+  assert.equal(idleAgentTools.includes('update_plan'), false);
+  assert.equal(idleAgentTools.includes('cancel_plan'), false);
+  assert.equal(idleAgentTools.includes('SubmitPlan'), false);
+
+  const planModeTools = createFixtureComposer({
+    plan: {
+      store: {} as PlanStore,
+      state: emptyPlanSessionState('session-1'),
+      mode: 'plan',
+    },
+  }).tools.map(({ name }) => name);
+  assert.equal(planModeTools.includes('SubmitPlan'), true);
+  assert.equal(planModeTools.includes('update_plan'), false);
+  assert.equal(planModeTools.includes('cancel_plan'), false);
+});
+
+function planStep(status: PlanExecutionStep['status']): PlanExecutionStep {
+  return {
+    id: 'step-1',
+    title: 'Step one',
+    description: 'Do the first step.',
+    status,
+    updatedAt: 2,
+  };
+}
+
+function activePlanState(
+  overrides: {
+    storeVersion?: number;
+    status?: PlanExecution['status'];
+    step?: PlanExecutionStep;
+  } = {},
+): PlanSessionState {
+  const step = overrides.step ?? planStep('pending');
+  const status = overrides.status ?? 'active';
+  return {
+    schemaVersion: 1,
+    sessionId: 'session-1',
+    storeVersion: overrides.storeVersion ?? 2,
+    proposals: [
+      {
+        planId: 'plan-1',
+        proposalId: 'proposal-1',
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+        revision: 1,
+        title: 'Ship the plan request',
+        steps: [{ id: step.id, title: step.title, description: step.description }],
+        status: 'approved',
+        submittedAt: 1,
+      },
+    ],
+    executions: [
+      {
+        executionId: 'execution-1',
+        planId: 'plan-1',
+        proposalId: 'proposal-1',
+        sessionId: 'session-1',
+        status,
+        steps: [step],
+        startedAt: 1,
+        updatedAt: 2,
+      },
+    ],
+    latestProposalId: 'proposal-1',
+    // Only an active execution is the Session's current one; a cancelled or
+    // completed execution must not stay selected.
+    ...(status === 'active' ? { activeExecutionId: 'execution-1' } : {}),
+  };
+}
 
 function unusedManagedShellBuiltinTools(): Parameters<
   typeof createInteractiveRunComposer

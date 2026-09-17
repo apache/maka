@@ -68,6 +68,7 @@ export function createFakeWorkbarServices(
   overrides: Partial<WorkbarServices> = {},
 ): WorkbarServices {
   return {
+    popupMenu: async () => null,
     review: {
       read: async () => {
         throw new Error('Fake review.read is not configured');
@@ -91,6 +92,7 @@ export function createFakeWorkbarServices(
     browser: {
       setActiveSession: () => undefined,
       setViewport: () => undefined,
+      capturePage: async () => undefined,
       navigate: async () => undefined,
       back: async () => undefined,
       forward: async () => undefined,

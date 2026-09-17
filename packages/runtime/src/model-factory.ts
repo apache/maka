@@ -55,6 +55,11 @@ import { createOpenResponsesCompatibilityFinalizer } from './open-responses-comp
 import { resolveModelRuntime, type ResolvedModelRuntime } from './model-runtime.js';
 import { runtimeProviderName, type RuntimeProviderAdapter } from './provider-runtime-policy.js';
 import { openAiCodexHeaders } from './subscription-auth.js';
+import {
+  CommandCodeCliLanguageModel,
+  CommandCodeCliTransportDisabledError,
+  isCommandCodeCliTransportEnabled,
+} from './commandcode-cli-language-model.js';
 import { createRequestCustomizationFetch } from './request-customization-fetch.js';
 import { createStreamUsageFallbackFetch } from './stream-usage-fallback-fetch.js';
 import { withOpenCodeSessionHeader } from './opencode-session-header.js';
@@ -143,6 +148,18 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
 
     case 'cohere':
       return createCohere({ apiKey, baseURL, fetch: requestFetch })(modelId);
+
+    case 'commandcode-cli':
+      // Off by default; the operator's flag is read where the request is
+      // built so a stored connection cannot send through a transport this
+      // install never opted into.
+      if (!isCommandCodeCliTransportEnabled()) throw new CommandCodeCliTransportDisabledError();
+      return new CommandCodeCliLanguageModel({
+        modelId,
+        apiKey,
+        apiBase: baseURL,
+        fetch: requestFetch,
+      });
 
     case 'openai-compatible': {
       if (adapter.requireBaseUrl && !baseURL) {
@@ -777,6 +794,12 @@ function buildFamilyWire(
             ? { thinking: { type: 'disabled' as const } }
             : {},
       };
+    case 'commandcode-cli':
+      // The CLI wire takes `reasoning_effort` as the CLI's own effort words;
+      // `max` has no counterpart there and rounds down to `high`.
+      return level === undefined || level === 'off'
+        ? {}
+        : { 'commandcode-cli': { reasoningEffort: level === 'max' ? 'high' : level } };
     default:
       return {};
   }

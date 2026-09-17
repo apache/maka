@@ -2797,7 +2797,14 @@ export class AiSdkTurn {
       // `runtimeContext` may be a budget/history-search slice; the tool-turn
       // thinking skip is a whole-history invariant, so seed it from the full
       // prior ledger so a sliced-in tool-turn thinking still gets skipped.
-      { toolActivityTurnIds: collectToolActivityTurnIds(priorRuntimeContext) },
+      {
+        toolActivityTurnIds: collectToolActivityTurnIds(priorRuntimeContext),
+        // Transcript repair can preserve an assistant-only opening from either
+        // an imported or a native legacy Session. Ordinary provider requests
+        // admit both at the first valid user head; explicit continuations use
+        // their separately admitted boundary.
+        allowRepairedAssistantPrefix: input.continuation !== undefined,
+      },
     );
     const hasProviderHistoryCompactCheckpoint =
       projectedHistoryCompactCheckpoint !== undefined &&

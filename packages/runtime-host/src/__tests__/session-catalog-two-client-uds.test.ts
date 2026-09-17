@@ -245,6 +245,7 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
         sessionId: created.id,
         transcript: { kind: 'none' },
       });
+      await subscription.ready();
       const iterator = subscription[Symbol.asyncIterator]();
       assert.equal(subscription.snapshot.session.metadataRevision, created.revision);
       await assert.rejects(
@@ -477,6 +478,7 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
         sessionId: created.id,
         transcript: { kind: 'none' },
       });
+      await retirementSubscription.ready();
       const retirementIterator = retirementSubscription[Symbol.asyncIterator]();
       const beforeArchive = await querySession(desktop, created.id);
       assert.equal(beforeArchive.status, 'active');

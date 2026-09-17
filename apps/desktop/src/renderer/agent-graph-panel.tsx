@@ -387,8 +387,8 @@ export function AgentGraphPanel(props: {
                                   : ` · ${copy.throughput(operator.output.tokensPerSecond)}`}
                               </span>
                               <span className="maka-agent-graph-output-preview">
-                                {operator.output.preview}
                                 {operator.output.previewTruncated ? '…' : ''}
+                                {operator.output.preview}
                               </span>
                             </span>
                           ) : null}

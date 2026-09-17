@@ -61,6 +61,7 @@ import {
 } from './stream-graph-schedule-reconcile.js';
 import {
   AGENT_GRAPH_CLIENT_TERMINAL_PAGE_SIZE,
+  MAX_OUTPUT_PREVIEW_CODE_POINTS,
   advanceMaterializedAgentGraphClientProjection,
   buildAgentGraphClientSnapshot,
   decodeAgentGraphTerminalCursor,
@@ -92,6 +93,7 @@ import { buildAgentSwarmStatusTool, projectAgentSwarmStatus } from './agent-swar
 
 const DEFAULT_MAX_NEW_ACTIVATIONS = 32;
 const MAX_CLIENT_PROJECTION_COMMIT_ATTEMPTS = 4;
+const OUTPUT_DELTA_PROJECTION_INTERVAL_MS = 100;
 
 export interface AgentGraphCoordinatorSessionStore {
   listForRecovery(): Promise<SessionHeader[]>;
@@ -160,6 +162,14 @@ interface GraphDriver {
   stopTask?: Promise<void>;
   clientProjectionTask?: Promise<void>;
   clientProjectionDirty: boolean;
+  pendingOutputDeltas: Map<
+    string,
+    {
+      event: AgentGraphSupervisorRuntimeEvent;
+      activationHadError: boolean;
+      sampleStartedAt: number;
+    }
+  >;
   runtimeFailureRunIds: Set<string>;
   lastResult?: AgentGraphScheduleReconciliationResult;
   lastError?: unknown;
@@ -835,7 +845,9 @@ export class AgentGraphCoordinator {
           if (event.event.type === 'complete' || event.event.type === 'abort') {
             driver.runtimeFailureRunIds.delete(event.claim.targetRunId);
           }
-          if (isMaterializedGraphClientEvent(event.event.type)) {
+          if (event.event.type === 'text_delta') {
+            this.#queueOutputDelta(driver, event, activationHadError);
+          } else if (isMaterializedGraphClientEvent(event.event.type)) {
             this.#queueClientProjectionUpdate(driver, async () => {
               const advancement = await this.#advanceClientProjection(
                 driver,
@@ -1138,6 +1150,59 @@ export class AgentGraphCoordinator {
       });
   }
 
+  #queueOutputDelta(
+    driver: GraphDriver,
+    event: AgentGraphSupervisorRuntimeEvent,
+    activationHadError: boolean,
+  ): void {
+    const operatorId = event.claim.targetOperatorId;
+    const pending = driver.pendingOutputDeltas.get(operatorId);
+    if (pending && pending.event.event.type === 'text_delta' && event.event.type === 'text_delta') {
+      const previous = pending.event.event;
+      const current = event.event;
+      if (
+        pending.event.claim.targetRunId === event.claim.targetRunId &&
+        previous.messageId === current.messageId &&
+        ((previous.startOffset === undefined && current.startOffset === undefined) ||
+          (previous.startOffset !== undefined &&
+            current.startOffset === previous.startOffset + previous.text.length))
+      ) {
+        const joined = Array.from(previous.text + current.text);
+        const truncated = joined.length > MAX_OUTPUT_PREVIEW_CODE_POINTS + 1;
+        pending.event = {
+          ...event,
+          event: {
+            ...current,
+            text: truncated
+              ? joined.slice(-(MAX_OUTPUT_PREVIEW_CODE_POINTS + 1)).join('')
+              : joined.join(''),
+            startOffset: truncated ? undefined : previous.startOffset,
+          },
+        };
+      } else {
+        pending.event = event;
+        pending.sampleStartedAt = event.event.ts;
+      }
+      pending.activationHadError ||= activationHadError;
+      return;
+    }
+    const next = { event, activationHadError, sampleStartedAt: event.event.ts };
+    driver.pendingOutputDeltas.set(operatorId, next);
+    const due = new Promise<void>((resolve) => {
+      setTimeout(resolve, OUTPUT_DELTA_PROJECTION_INTERVAL_MS);
+    });
+    this.#queueClientProjectionUpdate(driver, async () => {
+      await due;
+      driver.pendingOutputDeltas.delete(operatorId);
+      await this.#advanceClientProjection(
+        driver,
+        next.event,
+        next.activationHadError,
+        next.sampleStartedAt,
+      );
+    });
+  }
+
   async #waitForClientProjectionUpdates(driver: GraphDriver): Promise<void> {
     await driver.clientProjectionTask?.catch(() => {
       // A best-effort repair or later durable observation may repair this
@@ -1160,6 +1225,7 @@ export class AgentGraphCoordinator {
     driver: GraphDriver,
     event: AgentGraphSupervisorRuntimeEvent,
     activationHadError: boolean,
+    sampleStartedAt?: number,
   ): Promise<{ before: AgentGraphClientSnapshot; after: AgentGraphClientSnapshot } | undefined> {
     for (let attempt = 0; attempt < MAX_CLIENT_PROJECTION_COMMIT_ATTEMPTS; attempt += 1) {
       const graph = await this.#input.controlStore.readAgentGraphClientProjection(driver.graphId);
@@ -1188,6 +1254,7 @@ export class AgentGraphCoordinator {
         inspection,
         event,
         activationHadError,
+        sampleStartedAt,
       );
       if (!advanced) return undefined;
       try {
@@ -1561,6 +1628,7 @@ export class AgentGraphCoordinator {
       closed: false,
       reconciliationReaders: 0,
       clientProjectionDirty: false,
+      pendingOutputDeltas: new Map(),
       runtimeFailureRunIds: new Set(),
       yieldWaiters: new Set(),
     };

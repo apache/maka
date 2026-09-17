@@ -337,7 +337,7 @@
           "@maka/ui": 1
         },
         "importSpecifiers": 10,
-        "nonTriviaTokens": 3616
+        "nonTriviaTokens": 3612
       },
       "src/renderer/app-shell-chrome-actions.tsx": {
         "importDeclarations": 4,
@@ -503,7 +503,7 @@
           "react": 1
         },
         "importSpecifiers": 18,
-        "nonTriviaTokens": 3718
+        "nonTriviaTokens": 3677
       },
       "src/renderer/app-shell-overlays.tsx": {
         "importDeclarations": 5,
@@ -610,7 +610,7 @@
           "@maka/ui": 1
         },
         "importSpecifiers": 7,
-        "nonTriviaTokens": 2725
+        "nonTriviaTokens": 2687
       },
       "src/renderer/app-shell-session-start-actions.ts": {
         "importDeclarations": 2,
@@ -861,7 +861,7 @@
           "react": 1
         },
         "importSpecifiers": 100,
-        "nonTriviaTokens": 13288
+        "nonTriviaTokens": 13152
       },
       "src/renderer/use-app-shell-composer-quotes.ts": {
         "importDeclarations": 2,
@@ -2595,9 +2595,9 @@
         "hookCalls": {
           "useEffect": 5,
           "useMountedRef": 1,
-          "useRef": 5,
+          "useRef": 4,
           "useRuntimeHostSettingsTarget": 1,
-          "useState": 18,
+          "useState": 15,
           "useUiLocale": 1
         },
         "lifecycleMethods": {},

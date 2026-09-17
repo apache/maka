@@ -20,6 +20,7 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import {
+  installRefreshedModelMetadata,
   lookupModelMetadata,
   openAiAdapterApiProtocol,
   providerReportsCompleteModelCatalog,
@@ -33,6 +34,43 @@ describe('provider model-catalog completeness', () => {
     assert.equal(providerReportsCompleteModelCatalog('github-copilot'), true);
     assert.equal(providerReportsCompleteModelCatalog('openai-codex'), false);
     assert.equal(providerReportsCompleteModelCatalog('openai'), false);
+  });
+});
+
+describe('OpenAI Codex OAuth metadata', () => {
+  it('does not inherit public API input limits across shipped, refreshed, and fallback metadata', () => {
+    assert.equal(lookupModelMetadata('openai', 'gpt-5.6-sol').inputLimit, 922_000);
+    assert.equal(lookupModelMetadata('openai-codex', 'gpt-5.6-sol').inputLimit, undefined);
+    assert.equal(lookupModelMetadata('openai-codex', 'gpt-5.6-terra').inputLimit, undefined);
+
+    installRefreshedModelMetadata({
+      openai: {
+        'gpt-5.6-sol': { displayName: 'Refreshed Sol', inputLimit: 123_456 },
+        'gpt-5.6-luna': {
+          displayName: 'Refreshed Luna',
+          inputLimit: 234_567,
+          capabilities: { vision: true },
+        },
+      },
+    });
+    try {
+      assert.equal(lookupModelMetadata('openai', 'gpt-5.6-sol').inputLimit, 123_456);
+      assert.equal(lookupModelMetadata('openai-codex', 'gpt-5.6-sol').inputLimit, undefined);
+      const refreshedLuna = lookupModelMetadata('openai', 'gpt-5.6-luna');
+      assert.equal(refreshedLuna.inputLimit, 234_567);
+
+      const oauthLuna = lookupModelMetadata('openai-codex', 'gpt-5.6-luna');
+      assert.equal(oauthLuna.displayName, 'Refreshed Luna');
+      assert.equal(oauthLuna.capabilities?.vision, true);
+      assert.equal(oauthLuna.inputLimit, undefined);
+
+      const fallback = lookupModelMetadata('openai-codex', 'gpt-5.5');
+      assert.equal(fallback.displayName, 'GPT-5.5');
+      assert.equal(fallback.contextWindow, 272_000);
+      assert.equal(fallback.inputLimit, undefined);
+    } finally {
+      installRefreshedModelMetadata(undefined);
+    }
   });
 });
 

@@ -101,14 +101,7 @@ export function createSessionWorkspaceActions(deps: {
   ): TransientUserMessage[] {
     const pending = transientMessagesBySessionRef.current.get(sessionId);
     if (!pending || pending.size === 0) return [];
-    let includeTransient = true;
-    try {
-      const range = transcriptRangeRef.current?.store.range();
-      includeTransient = range?.sessionId !== sessionId || !range.hasNewer;
-    } catch {
-      // An unopened transcript has no historical range to hide the live tail from.
-    }
-    const projected = reconcileTransientMessages(pending, durable, { includeTransient });
+    const projected = reconcileTransientMessages(pending, durable);
     if (pending.size === 0) {
       transientMessagesBySessionRef.current.delete(sessionId);
     }

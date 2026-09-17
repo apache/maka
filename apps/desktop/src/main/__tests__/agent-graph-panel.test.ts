@@ -435,8 +435,8 @@ describe('AgentGraphPanel dismiss', () => {
       await Promise.resolve();
     });
 
-    assert.match(harness.container.textContent ?? '', /Live output · 21\.0 token\/s/);
-    assert.match(harness.container.textContent ?? '', /Inspecting the renderer projection…/);
+    assert.match(harness.container.textContent ?? '', /Live output · avg 21\.0 output token\/s/);
+    assert.match(harness.container.textContent ?? '', /…Inspecting the renderer projection/);
     assert.match(harness.container.textContent ?? '', /Result preview/);
     const open = [...harness.container.querySelectorAll('button')].find((button) =>
       button.textContent?.includes('Open child task'),
