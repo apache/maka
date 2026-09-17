@@ -402,25 +402,16 @@ export function useActiveSessionEvents(options: {
         now: Date.now(),
       }),
     }));
-    const openTranscript = (signal: AbortSignal) =>
-      window.maka.transcripts.open(
-        activeId,
-        (batch) => {
-          if (disposed) return;
-          try {
-            transcript.accept(batch);
-          } catch (error) {
-            applyReadError(activeId, error);
-          }
-        },
-        (cancel) => {
-          if (signal.aborted) cancel();
-          else signal.addEventListener('abort', cancel, { once: true });
-        },
-      );
-    const controller = desktopTranscript.createRecoveringDesktopTranscriptRangeController(
+    const controller = desktopTranscript.createDesktopTranscriptRangeController(
       transcript,
-      openTranscript,
+      desktopTranscript.openDesktopTranscriptHistory(window.maka.transcripts.open, activeId, (batch) => {
+        if (disposed) return;
+        try {
+          transcript.accept(batch);
+        } catch (error) {
+          applyReadError(activeId, error);
+        }
+      }),
       {
         onError: (error) => { if (!disposed) applyReadError(activeId, error); },
       },

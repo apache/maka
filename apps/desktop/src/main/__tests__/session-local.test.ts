@@ -498,7 +498,7 @@ test('cache restoration expires independently of the outbox', async (t) => {
       },
     ],
     hasOlder: false,
-    hasNewer: false,
+    beginsAtTurnBoundary: true,
   });
   assert.equal(store.transcript('authority', 'session-1')?.snapshot.durableThrough, 1);
   assert.equal(store.transcript('different-authority', 'session-1'), undefined);
@@ -551,7 +551,7 @@ test('durable Host evidence retires delivery independently of cache admission an
             },
           ],
           hasOlder: false,
-          hasNewer: false,
+          beginsAtTurnBoundary: true,
         };
         service.cacheTranscript(target.scope, snapshot);
         if (cacheLoss === 'revision') db.store.enqueue('other-authority', intent('other-message'));

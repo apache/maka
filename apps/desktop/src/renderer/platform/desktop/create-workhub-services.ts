@@ -32,71 +32,12 @@ import {
 import {
   DesktopTranscriptRangeStore,
   createDesktopTranscriptRangeController,
-  createRecoveringDesktopTranscriptRangeController,
+  openDesktopTranscriptHistory,
 } from './desktop-transcript-range-store.js';
-import type { TurnRecord } from '@maka/core/session';
 import {
   MESSAGE_QUEUE_MAX_ENTRIES,
   type TurnMessageExecutionResolution,
 } from '@maka/runtime-host/protocol';
-
-const WORKHUB_RESULT_SCAN_MAX_PAGES = 16;
-
-async function readDelegatedTurnResult(
-  bridge: Pick<MakaBridge, 'transcripts'>,
-  sessionId: string,
-  turn: TurnRecord,
-): Promise<string | undefined> {
-  const store = new DesktopTranscriptRangeStore(sessionId);
-  const controller = createDesktopTranscriptRangeController(store, (signal) =>
-    bridge.transcripts.open(
-      sessionId,
-      (batch) => {
-        if (signal.aborted) return;
-        store.accept(batch);
-      },
-      (cancel) => {
-        if (signal.aborted) cancel();
-        else signal.addEventListener('abort', cancel, { once: true });
-      },
-    ),
-  );
-  try {
-    await controller.ready();
-    let preview: string | undefined;
-    let lastTargetSequence: number | undefined;
-    const boundaryEstablished = () => {
-      const entries = store.durableEntries();
-      const currentPreview = workHubTurnResultPreview(
-        entries.map(({ message }) => message),
-        turn.turnId,
-      );
-      if (currentPreview) preview = currentPreview;
-      for (const entry of entries) {
-        if (entry.message.turnId === turn.turnId) {
-          lastTargetSequence = Math.max(lastTargetSequence ?? entry.sequence, entry.sequence);
-        }
-      }
-      const crossedIntoLaterTurn = lastTargetSequence !== undefined && entries.some(
-        (entry) => entry.sequence > lastTargetSequence! && entry.message.turnId !== turn.turnId,
-      );
-      return lastTargetSequence !== undefined && (
-        crossedIntoLaterTurn || !store.range().hasNewer
-      );
-    };
-    if (!boundaryEstablished() && lastTargetSequence === undefined && turn.firstSequence !== undefined) {
-      await controller.loadAround(turn.firstSequence);
-    }
-    for (let page = 0; page <= WORKHUB_RESULT_SCAN_MAX_PAGES; page += 1) {
-      if (boundaryEstablished()) return preview;
-      if (!store.range().hasNewer || page === WORKHUB_RESULT_SCAN_MAX_PAGES) return undefined;
-      await controller.loadAfter();
-    }
-    return undefined;
-  } finally {
-    await controller.close();
-  }
-}
 
 export function createDesktopWorkHubServices(
   bridge: Pick<
@@ -204,7 +145,10 @@ export function createDesktopWorkHubServices(
             resultPreview = delegatedResultCache.get(cacheKey);
             if (!resultPreview) {
               try {
-                resultPreview = await readDelegatedTurnResult(bridge, sessionId, turn);
+                resultPreview = workHubTurnResultPreview(
+                  await bridge.transcripts.readTurn(sessionId, turn.turnId),
+                  turn.turnId,
+                );
                 if (resultPreview) {
                   delegatedResultCache.set(cacheKey, resultPreview);
                   if (delegatedResultCache.size > 100) {
@@ -266,21 +210,10 @@ export function createDesktopWorkHubServices(
     },
     async openTranscript(sessionId, handler, cancellation, onError) {
       const store = new DesktopTranscriptRangeStore(sessionId);
-      // Every window change commits through the store, a trim included, so
-      // this is the whole of what the surface hears.
       const unsubscribe = store.subscribe(() => handler(store.snapshot()));
-      const controller = createRecoveringDesktopTranscriptRangeController(store, (signal) =>
-        bridge.transcripts.open(
-          sessionId,
-          (batch) => {
-            if (signal.aborted) return;
-            store.accept(batch);
-          },
-          (cancel) => {
-            if (signal.aborted) cancel();
-            else signal.addEventListener('abort', cancel, { once: true });
-          },
-        ),
+      const controller = createDesktopTranscriptRangeController(
+        store,
+        openDesktopTranscriptHistory(bridge.transcripts.open, sessionId, (batch) => store.accept(batch)),
         { onError },
       );
       const cancel = () => { unsubscribe(); void controller.close(); };
@@ -288,17 +221,7 @@ export function createDesktopWorkHubServices(
       if (cancellation.aborted) cancel();
       return {
         observationChanged: controller.observationChanged,
-        prefetchHistory: (edge) =>
-          edge === 'older' ? controller.loadBefore() : controller.loadAfter(),
-        retain: ({ firstTurnId, lastTurnId }) => {
-          // A Turn the band named but the window no longer holds yields null,
-          // which leaves that side of the window unbounded rather than empty.
-          controller.store.retain(
-            controller.store.sequenceForTurn(firstTurnId, 'first'),
-            controller.store.sequenceForTurn(lastTurnId, 'last'),
-          );
-        },
-        loadLatest: () => controller.loadLatest(),
+        loadEarlier: () => controller.loadEarlier(),
         close: () => {
           cancellation.removeEventListener('abort', cancel);
           unsubscribe();

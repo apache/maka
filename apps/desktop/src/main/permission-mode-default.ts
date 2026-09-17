@@ -17,11 +17,8 @@
  * under the License.
  */
 
-import {
-  DEFAULT_CHAT_PERMISSION_MODE,
-  type AppSettings,
-  type ChatDefaultPermissionMode,
-} from '@maka/core/settings';
+import { DEFAULT_SESSION_PERMISSION_MODE } from '@maka/core/session';
+import type { AppSettings, ChatDefaultPermissionMode } from '@maka/core/settings';
 
 /** Read the configured chat-default permission mode; fall back to Auto review if
  *  settings cannot be read (so session creation never fails on a corrupted
@@ -32,6 +29,6 @@ export async function resolveDefaultPermissionMode(
   try {
     return (await readSettings()).chatDefaults.permissionMode;
   } catch {
-    return DEFAULT_CHAT_PERMISSION_MODE;
+    return DEFAULT_SESSION_PERMISSION_MODE;
   }
 }

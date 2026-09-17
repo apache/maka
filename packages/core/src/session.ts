@@ -64,6 +64,9 @@ import { decodeTurnOrigin, type TurnOrigin } from './turn-origin.js';
 
 export { DEEP_RESEARCH_SESSION_LABEL, isDeepResearchSession } from './deep-research.js';
 
+/** Product default for newly created Sessions without an explicit permission choice. */
+export const DEFAULT_SESSION_PERMISSION_MODE: PermissionMode = 'auto_review';
+
 /** Runtime execution states. Archive visibility is represented by `isArchived`. */
 export const SESSION_STATUSES = [
   'active',

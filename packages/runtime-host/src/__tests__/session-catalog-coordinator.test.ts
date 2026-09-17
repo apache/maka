@@ -165,6 +165,7 @@ test('read marker clears unread only at the ledger transcript tail', async () =>
         records: [
           {
             sequence: 1,
+            cluster: 1,
             message: {
               type: 'assistant',
               id: 'message-2',
@@ -176,13 +177,8 @@ test('read marker clears unread only at the ledger transcript tail', async () =>
           },
           {
             sequence: 0,
-            message: {
-              type: 'user',
-              id: 'message-1',
-              turnId: 'turn-1',
-              ts: 10,
-              text: 'auto_review',
-            },
+            cluster: 1,
+            message: { type: 'user', id: 'message-1', turnId: 'turn-1', ts: 10, text: 'ask' },
           },
         ],
         nextPosition: null,
@@ -217,6 +213,7 @@ test('read marker pages past a hidden tail to reach the newest visible message',
     records: [
       {
         sequence: 2,
+        cluster: 1,
         message: {
           type: 'turn_state' as const,
           id: 'turn-state-1',
@@ -233,6 +230,7 @@ test('read marker pages past a hidden tail to reach the newest visible message',
     records: [
       {
         sequence: 1,
+        cluster: 1,
         message: {
           type: 'assistant' as const,
           id: 'message-2',

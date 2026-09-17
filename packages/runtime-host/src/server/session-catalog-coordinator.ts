@@ -549,10 +549,7 @@ export class HostSessionCatalogCoordinator {
     input: SessionTurnLandmarksQueryInput,
   ): Promise<OperationOutcome<'session.turn_landmarks.query'>> {
     try {
-      const snapshot = await this.#turnIndex.readDurableTurnLandmarks(
-        input.sessionId,
-        input.maxLandmarks,
-      );
+      const snapshot = await this.#turnIndex.readDurableTurnLandmarks(input.sessionId, input);
       return {
         ok: true,
         result: {

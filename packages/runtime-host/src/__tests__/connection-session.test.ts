@@ -179,9 +179,8 @@ test('transcript pages are serialized per connection before their responses are 
           throughSequence: input.throughSequence,
           rawBytes: 0,
           fragments: [],
-          rangeBoundarySequence: null,
-          protectedTurnSequence: null,
           nextCursor: null,
+          endsAtTurnBoundary: true,
         },
       };
     },
@@ -1808,9 +1807,8 @@ function transcriptBootstrapFor(sessionId: string) {
           data: contents.toString('base64'),
         },
       ],
-      rangeBoundarySequence: null,
-      protectedTurnSequence: null,
       nextCursor: null,
+      endsAtTurnBoundary: true,
     },
   };
 }

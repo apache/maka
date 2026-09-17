@@ -35,6 +35,7 @@ import {
 } from './web-search.js';
 import { defaultLocalMemorySettings, normalizeLocalMemorySettings } from './local-memory.js';
 import type { PermissionMode } from './permission.js';
+import { DEFAULT_SESSION_PERMISSION_MODE } from './session.js';
 import { decodePersistedPermissionMode } from './permission.js';
 import type { UsageProvenance } from './usage-ledger-merge.js';
 import { normalizeUiLocalePreference, type UiLocalePreference } from './ui-locale.js';
@@ -482,8 +483,6 @@ export interface PrivacySettings {
 
 /** Both execution modes are available to new and existing sessions. */
 export type ChatDefaultPermissionMode = PermissionMode;
-
-export const DEFAULT_CHAT_PERMISSION_MODE: ChatDefaultPermissionMode = 'auto_review';
 
 export const CHAT_DEFAULT_PERMISSION_MODES: readonly ChatDefaultPermissionMode[] = [
   'auto_review',
@@ -1130,7 +1129,7 @@ function defaultProjectPreferencesSettings(): ProjectPreferencesSettings {
 }
 
 function defaultChatDefaultsSettings(): ChatDefaultsSettings {
-  return { permissionMode: DEFAULT_CHAT_PERMISSION_MODE };
+  return { permissionMode: DEFAULT_SESSION_PERMISSION_MODE };
 }
 
 // Unknown persisted modes use the product default; retired sandbox modes
@@ -1162,7 +1161,7 @@ function normalizeChatDefaultsSettings(settings: ChatDefaultsSettings): ChatDefa
       const mode = decodePersistedPermissionMode(settings.permissionMode);
       return mode !== undefined && isChatDefaultPermissionMode(mode)
         ? mode
-        : DEFAULT_CHAT_PERMISSION_MODE;
+        : DEFAULT_SESSION_PERMISSION_MODE;
     })(),
   };
 }

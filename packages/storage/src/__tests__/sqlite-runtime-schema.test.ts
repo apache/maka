@@ -119,6 +119,12 @@ describe('SQLite runtime schema migration', () => {
           payload_json TEXT NOT NULL,
           committed_at INTEGER NOT NULL
         );
+        CREATE TABLE runtime_session_event_ordinals (
+          session_id TEXT NOT NULL,
+          ordinal INTEGER NOT NULL,
+          event_id TEXT NOT NULL UNIQUE,
+          PRIMARY KEY (session_id, ordinal)
+        );
         CREATE TABLE runtime_continuation_claims (
           claim_id TEXT PRIMARY KEY,
           source_session_id TEXT NOT NULL,
@@ -202,6 +208,117 @@ describe('SQLite runtime schema migration', () => {
     }
   });
 
+  it('backfills the extent of every visible Turn already in the ledger', () => {
+    const db = new DatabaseSync(':memory:');
+    try {
+      migrateSqliteRuntimeDatabase(db);
+      const insert = db.prepare(
+        'INSERT INTO runtime_events(event_id, session_id, invocation_id, run_id, turn_id, event_seq, event_kind, payload_json, committed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      );
+      const ordinal = db.prepare(
+        'INSERT INTO runtime_session_event_ordinals(session_id, ordinal, event_id) VALUES (?, ?, ?)',
+      );
+      const opening = (lineage?: object) =>
+        JSON.stringify({
+          content: {
+            kind: 'invocation_opened',
+            source: { kind: 'fresh' },
+            ...(lineage ? { lineage } : {}),
+          },
+        });
+      const rows = [
+        ['shown-opened', 'shown', 'invocation_opened', opening()],
+        ['hidden-opened', 'hidden', 'invocation_opened', opening({ parentRunId: 'shown' })],
+        ['hidden-text', 'hidden', 'text', '{}'],
+        ['shown-text', 'shown', 'text', '{}'],
+      ] as const;
+      rows.forEach(([eventId, invocation, kind, payload], index) => {
+        insert.run(
+          eventId,
+          'session',
+          invocation,
+          invocation,
+          `${invocation}-turn`,
+          index + 1,
+          kind,
+          payload,
+          1,
+        );
+        ordinal.run('session', index + 1, eventId);
+      });
+      db.exec('PRAGMA user_version = 18');
+      migrateSqliteRuntimeDatabase(db);
+
+      assert.deepEqual(
+        db
+          .prepare('SELECT turn_id, first_ordinal, last_ordinal FROM runtime_session_turn_extents')
+          .all()
+          .map((row) => ({ ...row })),
+        [{ turn_id: 'shown-turn', first_ordinal: 1, last_ordinal: 4 }],
+      );
+    } finally {
+      db.close();
+    }
+  });
+
+  it('backfills extents over a ledger holding an undecodable opening', () => {
+    const db = new DatabaseSync(':memory:');
+    try {
+      migrateSqliteRuntimeDatabase(db);
+      const insert = db.prepare(
+        'INSERT INTO runtime_events(event_id, session_id, invocation_id, run_id, turn_id, event_seq, event_kind, payload_json, committed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      );
+      insert.run(
+        'broken-opened',
+        'session',
+        'broken',
+        'broken',
+        'broken-turn',
+        1,
+        'invocation_opened',
+        '{',
+        1,
+      );
+      insert.run(
+        'shown-opened',
+        'session',
+        'shown',
+        'shown',
+        'shown-turn',
+        1,
+        'invocation_opened',
+        JSON.stringify({ content: { kind: 'invocation_opened', source: { kind: 'fresh' } } }),
+        1,
+      );
+      insert.run('legacy-text', 'session', 'legacy', 'legacy', 'legacy-turn', 1, 'text', '{}', 1);
+      db.prepare(
+        'INSERT INTO runtime_legacy_invocation_openings(invocation_id, session_id, run_id, turn_id, opened_at, opening_json, anchor_event_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      ).run('legacy', 'session', 'legacy', 'legacy-turn', 1, '{', 'legacy-text');
+      const ordinal = db.prepare(
+        'INSERT INTO runtime_session_event_ordinals(session_id, ordinal, event_id) VALUES (?, ?, ?)',
+      );
+      ordinal.run('session', 1, 'broken-opened');
+      ordinal.run('session', 2, 'shown-opened');
+      ordinal.run('session', 3, 'legacy-text');
+      db.exec('PRAGMA user_version = 18');
+      migrateSqliteRuntimeDatabase(db);
+
+      assert.equal(
+        (db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version,
+        SQLITE_RUNTIME_SCHEMA_VERSION,
+      );
+      assert.deepEqual(
+        db
+          .prepare('SELECT turn_id FROM runtime_session_turn_extents')
+          .all()
+          .map((row) => row.turn_id),
+        ['shown-turn'],
+      );
+    } finally {
+      db.close();
+    }
+  });
+
   it('builds the terminal index over a ledger holding an undecodable payload', () => {
     const db = new DatabaseSync(':memory:');
     try {
@@ -212,9 +329,7 @@ describe('SQLite runtime schema migration', () => {
       // A partial index is rebuilt by evaluating its predicate over every row,
       // so one such row would otherwise fail this migration — and the failure
       // rolls the version back, leaving the next open to fail the same way.
-      db.exec(
-        `DROP INDEX runtime_events_terminal; PRAGMA user_version = ${SQLITE_RUNTIME_SCHEMA_VERSION - 1}`,
-      );
+      db.exec('DROP INDEX runtime_events_terminal; PRAGMA user_version = 17');
       migrateSqliteRuntimeDatabase(db);
 
       assert.equal(

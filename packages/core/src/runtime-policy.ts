@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { DEFAULT_SESSION_PERMISSION_MODE } from './session.js';
 import type {
   ConnectionLastTestStatus,
   ConnectionTestErrorClass,
@@ -27,7 +28,6 @@ import type { ThinkingLevel } from './model-thinking.js';
 import type { ProviderType } from './provider-registry.js';
 import type { ModelOverride } from './model-thinking.js';
 import {
-  DEFAULT_CHAT_PERMISSION_MODE,
   networkProxyCredentialTarget,
   type ChatDefaultPermissionMode,
   type NetworkProxyCredentialTarget,
@@ -260,7 +260,7 @@ export function createDefaultRuntimePolicy(): RuntimePolicy {
     memory: { enabled: true, agentReadEnabled: false },
     workspaceInstructions: { enabled: true },
     privacy: { incognitoActive: false },
-    chatDefaults: { permissionMode: DEFAULT_CHAT_PERMISSION_MODE },
+    chatDefaults: { permissionMode: DEFAULT_SESSION_PERMISSION_MODE },
     webSearch: { enabled: false, defaultProvider: 'model' },
     subagents: { presets: [] },
     shell: { preference: 'auto', executable: '' },

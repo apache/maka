@@ -36,7 +36,7 @@ const FIXTURE_EPOCH = Date.UTC(2026, 0, 2, 3, 4, 5);
  * Legacy-shaped input keeps the payload fixture legible, but every page is
  * projected by the production RuntimeEvent reader.
  */
-export async function openTranscriptNavigationLedger(messages: readonly StoredMessage[]) {
+export async function openTranscriptLedger(messages: readonly StoredMessage[]) {
   const base = await mkdtemp(join(tmpdir(), 'maka-transcript-navigation-'));
   const capability = await resolveStorageRoot({ path: join(base, 'root'), kind: 'interactive' });
   const owner = await tryAcquireInteractiveRootOwner(capability);
@@ -111,7 +111,7 @@ export async function openTranscriptNavigationLedger(messages: readonly StoredMe
           direction: 'newer', maxMessages: 1_000, maxStoredBytes: 16 * 1024 * 1024,
         });
         assert.equal(result.nextPosition, null, 'the assertion sweep must include every durable row');
-        return result.records;
+        return result.records.map(({ sequence, message }) => ({ sequence, message }));
       },
       async close() {
         await stores!.sessionStore.close?.();

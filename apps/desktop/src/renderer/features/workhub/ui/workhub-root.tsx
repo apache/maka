@@ -17,11 +17,11 @@
  * under the License.
  */
 
+import { DEFAULT_SESSION_PERMISSION_MODE } from '@maka/core/session';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { ChatSurfaceLayout, UserQuestionPrompt, MakaWordmark, useToast, useUiLocale, type ComposerHandle } from '@maka/ui';
 import { Button, IconButton } from '@astryxdesign/core';
 import { ChevronDown, PictureInPicture2, Undo2, X } from '@maka/ui/icons';
-import { DEFAULT_CHAT_PERMISSION_MODE } from '@maka/core/settings';
 import { useLiveContextUsage } from '../../../application/contracts/session-inspector/use-live-context-usage.js';
 import { selectLatestRequestUsage } from '../../../application/contracts/session-inspector/latest-request-usage.js';
 import { WorkHubProgressCard } from './workhub-progress-card.js';
@@ -297,7 +297,6 @@ export function WorkHubRoot() {
       <ChatSurfaceLayout
         scrollButton={showConversation ? undefined : null}
         style={!showConversation ? { height: expandedLayoutHeight, flex: 'none', position: 'absolute', bottom: 0, width: '100%' } : undefined}
-        onReturnToTail={transcript.hasNewer ? controller.loadLatest : undefined}
         composer={
           <div className="workHubComposerSurface" ref={composerSurface} onFocusCapture={editProgress} onPointerUpCapture={editProgress}>
             {(controller.error || control?.error) && (
@@ -347,7 +346,7 @@ export function WorkHubRoot() {
               maxInputRows={progress && !editingProgress ? 1 : showConversation ? undefined : 6}
               onModelChange={controller.changeModel}
               modelSwitchAvailability={controller.configuringModel ? { available: false, pending: true, reason: 'pending' } : undefined}
-              permissionMode={controller.permissionMode ?? DEFAULT_CHAT_PERMISSION_MODE}
+              permissionMode={controller.permissionMode ?? DEFAULT_SESSION_PERMISSION_MODE}
               permissionModeDisabledReason={controller.permissionMode === undefined
                 ? getShellCopy(locale).app.modeChangeLoading
                 : controller.configuringPermissionMode
@@ -375,7 +374,7 @@ export function WorkHubRoot() {
                 await controller.changePermissionMode(mode);
               }}
               contextUsage={session ? {
-                usageTokens: liveContextUsage?.usageTokens ?? selectLatestRequestUsage(transcript.messages, transcript, session.model, session),
+                usageTokens: liveContextUsage?.usageTokens ?? selectLatestRequestUsage(transcript.messages, session.model, session),
                 declaredContextWindow: modelChoice?.declaredContextWindow,
                 meteredContextWindow: liveContextUsage?.contextWindow,
                 metadataContextWindow: modelChoice?.contextWindow,
@@ -411,10 +410,8 @@ export function WorkHubRoot() {
           scrollBehavior="auto"
           onNew={() => composer.current?.focus()}
           messages={[...transcript.messages]}
-          hasOlderHistory={transcript.hasOlder}
-          hasNewerHistory={transcript.hasNewer}
-          onPrefetchHistory={controller.prefetchHistory}
-          onRetainWindow={controller.retainWindow}
+          hasEarlierHistory={transcript.hasOlder}
+          onLoadEarlierHistory={controller.loadEarlier}
           transientMessages={controller.transientMessages}
           viewportNavigation={controller.viewportNavigation}
           liveTurns={controller.liveTurns}

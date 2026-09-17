@@ -76,7 +76,7 @@ test('setting and Plan failures retain their codes through Electron', async ({ w
   });
 
   const result = await page.evaluate(async (id) => ({
-    setting: await window.maka.sessions.setPermissionMode(id, 'explore'),
+    setting: await window.maka.sessions.setPermissionMode(id, 'bypass'),
     plan: await window.maka.sessions.abandonPlanProposal(id, 'missing-proposal'),
   }), sessionId);
   expect(result.setting).toEqual({ ok: false, code: 'session_busy' });

@@ -166,7 +166,7 @@ export function createAppShellChatActions(deps: {
   removeTransientMessage: (sessionId: string, messageId: string) => void;
   transcriptRangeRef: RefBox<DesktopTranscriptRangeController | undefined>;
   isMessagePublished: (message: StoredMessage) => boolean;
-  onFollowLatest: (sessionId: string) => Promise<boolean>;
+  onFollowLatest: (sessionId: string) => boolean;
   /** #646: arm the "正在处理…" indicator locally at send() — the model-wait
    * window opens before any SessionEvent arrives (turn_started is not one). */
   setInteractionBySession: InteractionQueueUpdater;
@@ -434,7 +434,7 @@ export function createAppShellChatActions(deps: {
         void refreshSessions().catch(() => undefined);
         return true;
       }
-      if (!await onFollowLatest(initialSessionId)) return false;
+      if (!onFollowLatest(initialSessionId)) return false;
       optimisticSessionId = initialSessionId;
       optimisticMessageId = messageId;
       publishTransientUserMessage(initialSessionId, {

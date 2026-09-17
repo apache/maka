@@ -34,6 +34,7 @@ import {
   E2E_FIXTURE_NOW,
   LONG_SIDEBAR_PROJECT_ID,
   LONG_SIDEBAR_PROJECT_NAME,
+  LARGE_HISTORY_SESSION_PREFIX,
   LONG_SIDEBAR_SESSION_PREFIX,
   PARTIAL_HISTORY_SESSION_ID,
   PROMPT_RAIL_SESSION_ID,
@@ -41,6 +42,7 @@ import {
   writeSession,
 } from './e2e-fixture/seed-helpers.js';
 import {
+  largeHistorySessions,
   partialHistoryMessages,
   partialHistorySession,
   promptRailMessages,
@@ -64,6 +66,7 @@ const E2E_FIXTURE_SCENARIOS = new Set<E2eFixtureScenario>([
   'turn-narrative-browser',
   'chat-prompt-rail',
   'chat-partial-history',
+  'chat-large-history',
   'settings-data',
   'settings-bots-onboarding',
   'settings-general',
@@ -175,6 +178,8 @@ export function getE2eFixtureState(fixture: E2eFixture | null): E2eFixtureState 
       return { ...state, activeSessionId: PROMPT_RAIL_SESSION_ID, workbarCollapsed: true };
     case 'chat-partial-history':
       return { ...state, activeSessionId: PARTIAL_HISTORY_SESSION_ID, workbarCollapsed: true };
+    case 'chat-large-history':
+      return { ...state, activeSessionId: `${LARGE_HISTORY_SESSION_PREFIX}1`, workbarCollapsed: true };
     case 'settings-data':
       return { ...state, activeSessionId: TURN_SESSION_ID, openSettingsSection: 'data' };
     case 'settings-bots-onboarding':
@@ -236,6 +241,11 @@ export async function seedE2eFixture(input: {
       partialHistorySession(now),
       partialHistoryMessages(now),
     );
+  }
+  if (scenario === 'chat-large-history') {
+    for (const seed of largeHistorySessions(now)) {
+      await writeSession(input.workspaceRoot, seed.header, seed.messages);
+    }
   }
   if (scenario === 'sidebar-search-modal-open') {
     for (const seed of longSidebarSessions(now)) {

@@ -99,10 +99,10 @@ import {
   type DesktopHostExternalSessionCatalogItem,
 } from './external-session-catalog.js';
 import {
-  DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES,
   assertDesktopTranscriptBatch,
   type DesktopTranscriptBatch,
   type DesktopTranscriptHandle,
+  type DesktopTranscriptOpenMode,
   type DesktopTranscriptOpenResult,
 } from './transcript-contract.js';
 import {
@@ -176,6 +176,7 @@ import type {
   SessionCatalogSummary,
   SessionChangedEvent,
   SessionSummary,
+  StoredMessage,
   TurnRecord,
 } from '@maka/core/session';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
@@ -275,6 +276,7 @@ import {
   projectDesktopDailyReviewSummary,
   projectDesktopSessionEvent,
   projectDesktopSessionSummary,
+  projectDesktopStoredMessage,
   projectDesktopTurnRecord,
   projectDesktopUsageStats,
   projectDesktopUsageActivity,
@@ -2282,8 +2284,8 @@ const makaBridge = {
       ) as TurnRecord[];
       return turns.map((turn) => projectDesktopTurnRecord(session.scope, turn));
     },
-    listTurnLandmarks(sessionId) {
-      return invokeProjectedSessionRuntimeHost('sessions:listTurnLandmarks', sessionId);
+    listTurnLandmarks(sessionId, turnId = null) {
+      return invokeProjectedSessionRuntimeHost('sessions:listTurnLandmarks', sessionId, turnId);
     },
     regenerateTurn(sessionId: string, input: RegenerateTurnInput): Promise<void> {
       return invokeSessionRuntimeHost('sessions:regenerateTurn', sessionId, input);
@@ -2541,10 +2543,22 @@ const makaBridge = {
     },
   },
   transcripts: {
+    async readTurn(sessionId: string, turnId: string): Promise<StoredMessage[]> {
+      const session = await runtimeHostSessionRef(sessionId);
+      const messages = await ipcRenderer.invoke(
+        'sessions:transcript:read-turn',
+        session.scope,
+        session.sessionId,
+        turnId,
+      ) as StoredMessage[];
+      return messages.map((message) => projectDesktopStoredMessage(session.scope, message));
+    },
     async open(
       sessionId: string,
       handler: (batch: DesktopTranscriptBatch) => void,
       registerCancellation?: (cancel: () => void) => void,
+      mode: DesktopTranscriptOpenMode = 'history',
+      resumeFrom?: number,
     ): Promise<DesktopTranscriptHandle> {
       const consumerId = crypto.randomUUID();
       const channel = `sessions:transcript:${consumerId}`;
@@ -2610,6 +2624,8 @@ const makaBridge = {
             session.scope,
             session.sessionId,
             consumerId,
+            mode,
+            resumeFrom ?? null,
           ) as Promise<RuntimeHostObservationIpcResult<DesktopTranscriptOpenResult>>,
         };
       });
@@ -2636,8 +2652,7 @@ const makaBridge = {
           return {
             ...cachedIdentity, sessionId, readThroughMessageId: null,
             acknowledgeTail: unavailable,
-            loadBefore: unavailable, loadAfter: unavailable, loadAround: unavailable,
-            loadLatest: unavailable,
+            loadEarlier: unavailable,
             close: async () => {},
           };
         }
@@ -2651,29 +2666,6 @@ const makaBridge = {
       const opened = openResult.value;
       if (closed) throw new Error('Desktop transcript open was cancelled');
       identity ??= { generation: opened.generation, hostEpoch: opened.hostEpoch };
-      const range = (
-        operation:
-          | 'sessions:transcript:load-before'
-          | 'sessions:transcript:load-after'
-          | 'sessions:transcript:load-around'
-          | 'sessions:transcript:load-latest',
-        anchorSequence: number | null,
-        maxBytes: number,
-        navigation: number,
-      ): Promise<void> => {
-        const currentIdentity = identity;
-        if (!currentIdentity) {
-          throw new Error('Desktop transcript identity is unavailable');
-        }
-        return ipcRenderer.invoke(operation, consumerScope, {
-          consumerId,
-          sessionId: opened.sessionId,
-          hostEpoch: currentIdentity.hostEpoch,
-          anchorSequence,
-          maxBytes,
-          navigation,
-        }) as Promise<void>;
-      };
       return {
         ...opened,
         sessionId,
@@ -2689,14 +2681,13 @@ const makaBridge = {
             through,
           }) as Promise<void>;
         },
-        loadBefore: (anchorSequence, maxBytes, navigation) =>
-          range('sessions:transcript:load-before', anchorSequence, maxBytes, navigation),
-        loadAfter: (anchorSequence, maxBytes, navigation) =>
-          range('sessions:transcript:load-after', anchorSequence, maxBytes, navigation),
-        loadAround: (sequence, maxBytes, navigation) =>
-          range('sessions:transcript:load-around', sequence, maxBytes, navigation),
-        loadLatest: (navigation) =>
-          range('sessions:transcript:load-latest', null, DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES, navigation),
+        loadEarlier: (throughSequence) =>
+          ipcRenderer.invoke(
+            'sessions:transcript:load-earlier',
+            consumerScope,
+            consumerId,
+            throughSequence ?? null,
+          ) as Promise<void>,
         async close() {
           if (closed) return;
           requestClose();
