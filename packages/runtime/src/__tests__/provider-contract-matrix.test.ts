@@ -52,7 +52,7 @@ after(closeAllJsonServers);
 
 test('provider override cells and executable bindings are a bijection', () => {
   const plannedKeys = listProviderContractCells(plan)
-    .flatMap(({ cell }) => (cell.state === 'override' ? [cell.overrideKey] : []))
+    .flatMap((cell) => (cell.state === 'override' ? [cell.overrideKey] : []))
     .sort();
   const bindingKeys = PROVIDER_CONTRACT_OVERRIDE_BINDINGS.flatMap(({ keys }) => keys).sort();
   assert.deepEqual(duplicateValues(plannedKeys), [], 'override cells must be unique');
