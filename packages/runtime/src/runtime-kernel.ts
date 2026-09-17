@@ -3176,7 +3176,9 @@ function consumeAdmittedRuntimeContinuation(input: {
   ) {
     throw new Error('Runtime continuation durable admission boundary is inconsistent');
   }
-  const replay = buildRuntimeEventModelReplayPlan(continuation.runtimeContext);
+  const replay = buildRuntimeEventModelReplayPlan(continuation.runtimeContext, {
+    allowRepairedAssistantPrefix: true,
+  });
   const providerReasoningReplayEventIds = compatibleProviderReasoningReplayEventIds(
     continuation.runtimeContext,
     input.admissionRoute.invocations,

@@ -118,26 +118,25 @@ test('derives turn records from bounded contribution pages', async () => {
   await client.close();
 });
 
-test('reads the bounded prompt rail index without paging every turn', async () => {
+test('reads the bounded prompt rail index, or one Turn, without paging every turn', async () => {
+  const inputs: unknown[] = [];
+  const landmark = { turnId: 'turn-50', sequence: 50, lastSequence: 59, label: 'middle' };
   const connection = {
     request: async (operation: string, input: unknown) => {
       assert.equal(operation, 'session.turn_landmarks.query');
-      assert.deepEqual(input, { sessionId: 'session-1', maxLandmarks: 64 });
-      return {
-        sessionId: 'session-1',
-        throughSequence: 100,
-        landmarks: [{ turnId: 'turn-50', sequence: 50, label: 'middle' }],
-      };
+      inputs.push(input);
+      return { sessionId: 'session-1', throughSequence: 100, landmarks: [landmark] };
     },
     close: async () => undefined,
   } as unknown as RuntimeHostConnection;
   const client = new DesktopRuntimeHostClient(connection);
 
-  assert.deepEqual(await client.listSessionTurnLandmarks('session-1'), {
-    sessionId: 'session-1',
-    throughSequence: 100,
-    landmarks: [{ turnId: 'turn-50', sequence: 50, label: 'middle' }],
-  });
+  assert.deepEqual((await client.listSessionTurnLandmarks('session-1')).landmarks, [landmark]);
+  await client.listSessionTurnLandmarks('session-1', 'turn-50');
+  assert.deepEqual(inputs, [
+    { sessionId: 'session-1', maxLandmarks: 64, turnId: null },
+    { sessionId: 'session-1', maxLandmarks: 1, turnId: 'turn-50' },
+  ]);
   await client.close();
 });
 
@@ -151,12 +150,7 @@ function subscription(
     hostEpoch: 'host-1',
     subscriptionId: `subscription-${sessionId}`,
     activeAssistantStreams: [],
-    transcriptBootstrap: {
-      throughSequence: null,
-      overlayMessageCount: 0,
-      durable: emptyTranscriptPage(sessionId, 'durable'),
-      overlay: emptyTranscriptPage(sessionId, 'overlay'),
-    },
+    transcriptBootstrap: { durable: emptyTranscriptPage(sessionId) },
     snapshot: {
       schemaVersion: SESSION_CONTINUITY_SCHEMA_VERSION,
       session: {
@@ -176,12 +170,14 @@ function subscription(
       lifecycle.push(`${sessionId}:transcript`);
       return [] as T[];
     },
-    loadTranscriptOverlay: async <T>(_decodeMessage: (value: unknown) => T) => [] as T[],
     decodeTranscriptPage: async () => {
       throw new Error('Fake subscription does not expose transcript pages');
     },
     loadTranscriptPage: async () => {
       throw new Error('Fake subscription does not expose transcript pages');
+    },
+    ready: async () => {
+      lifecycle.push(`${sessionId}:ready`);
     },
     close: async () => {
       lifecycle.push(`${sessionId}:close`);
@@ -190,17 +186,15 @@ function subscription(
   };
 }
 
-function emptyTranscriptPage(sessionId: string, source: 'durable' | 'overlay') {
+function emptyTranscriptPage(sessionId: string) {
   return {
     kind: 'page' as const,
     sessionId,
-    source,
     direction: 'older' as const,
     throughSequence: null,
     rawBytes: 0,
     fragments: [],
-    rangeBoundarySequence: null,
-    protectedTurnSequence: null,
     nextCursor: null,
+    endsAtTurnBoundary: true,
   };
 }

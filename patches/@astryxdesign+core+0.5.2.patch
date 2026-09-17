@@ -201,10 +201,10 @@ index e1d2ebd..dcb9189 100644
          const prevChar = i > 0 ? textBeforeCursor[i - 1] : null;
          if (prevChar === null || prevChar === ' ' || prevChar === '\n') {
            const query = textBeforeCursor.slice(i + 1);
-+          // Codex-style @ search stays open while the user types a
-+          // multi-word name or leaves a trailing space to browse the full
-+          // list. Slash commands keep their original single-token grammar.
-+          if (trigger.character !== '@' && /[ \n]/u.test(query)) return null;
++          // A bare @ plus one space may browse the list. Once a name
++          // starts, whitespace ends the query so ordinary prose keeps Enter.
++          // Newlines always end a trigger; slash keeps single-token grammar.
++          if (/[\r\n]/u.test(query) || (/\s/u.test(query) && !(trigger.character === '@' && query === ' '))) return null;
            return {
              trigger,
              query,
@@ -926,10 +926,10 @@ index 6eefd4a..a3eba69 100644
          const prevChar = i > 0 ? textBeforeCursor[i - 1] : null;
          if (prevChar === null || prevChar === ' ' || prevChar === '\n') {
            const query = textBeforeCursor.slice(i + 1);
-+          // Codex-style @ search stays open while the user types a
-+          // multi-word name or leaves a trailing space to browse the full
-+          // list. Slash commands keep their original single-token grammar.
-+          if (trigger.character !== '@' && /[ \n]/u.test(query)) return null;
++          // A bare @ plus one space may browse the list. Once a name
++          // starts, whitespace ends the query so ordinary prose keeps Enter.
++          // Newlines always end a trigger; slash keeps single-token grammar.
++          if (/[\r\n]/u.test(query) || (/\s/u.test(query) && !(trigger.character === '@' && query === ' '))) return null;
            return {trigger, query, triggerStart: i};
          }
        }

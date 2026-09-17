@@ -17,71 +17,51 @@
  * under the License.
  */
 
-/**
- * Contract for the narrow #4309 Composer seam. Session selection is a
- * reference action, not an inline text token: the trigger query disappears,
- * the host reads one bounded snapshot, and the resulting QuoteRef owns the
- * actual context sent with the next turn.
- */
-
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import test from 'node:test';
-import { fileURLToPath } from 'node:url';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import type { UiLocale } from '@maka/core/ui-locale';
+import { QuoteRefChip, quoteProvenanceSummary } from '../quote-ref-chip.js';
+import { LocaleProvider } from '../locale-context.js';
+import { getConversationCopy } from '../conversation-copy.js';
 
-function readSource(relativePath: string): string {
-  return readFileSync(fileURLToPath(new URL(`../../src/${relativePath}`, import.meta.url)), 'utf8');
+const quote = {
+  text: 'User: reference text',
+  label: 'Session: source',
+  sourceSessionId: 'source-id',
+  sourceSessionName: 'source',
+  sourceCapturedAt: 0,
+  sourceTruncated: true,
+};
+
+for (const [locale, label, captured, truncated] of [
+  ['en', 'Session: source', 'captured', 'truncated'],
+  ['zh-CN', '会话：source', '快照时间', '内容已截断'],
+  ['zh-TW', '作業階段：source', '快照時間', '內容已截斷'],
+] as const) {
+  test(`Session quote renders its label and capture provenance in ${locale}`, () => {
+    const markup = renderToStaticMarkup(createElement(LocaleProvider, {
+      locale: locale as UiLocale,
+      children: createElement(QuoteRefChip, { quote }),
+    }));
+    assert.ok(markup.includes(label));
+    assert.ok(markup.includes(captured));
+    assert.ok(markup.includes(truncated));
+    assert.ok(markup.includes('1970-01-01T00:00:00.000Z'));
+    assert.ok(markup.includes('lucide-messages-square'));
+    if (locale !== 'en') {
+      assert.equal(markup.includes('Session: source'), false);
+      assert.equal(markup.includes(' · truncated'), false);
+      assert.notEqual(getConversationCopy(locale).messages.sessionSnapshotPending, 'snapshot captured when sent');
+    }
+  });
 }
 
-function readRepoFile(relativePath: string): string {
-  return readFileSync(fileURLToPath(new URL(`../../../../${relativePath}`, import.meta.url)), 'utf8');
-}
-
-test('Composer exposes Session references through the @ trigger without serializing them as text', () => {
-  const source = readSource('composer.tsx');
-  assert.match(source, /sessionReferences\?: ReadonlyArray<ComposerSessionReference>/);
-  assert.match(source, /onPickSessionReference\?\(session: ComposerSessionReference\)/);
-  assert.match(source, /id: `session:\$\{session\.id\}`/);
-  assert.match(source, /MessagesSquare/);
-  assert.match(
-    source,
-    /onPickSessionReference\?\.\(suggestion\.session\)[\s\S]*?return '';/,
-  );
-});
-
-test('Composer copy tells users that @ can reference files or Sessions', () => {
-  const source = readSource('conversation-copy.ts');
-  assert.match(source, /@ 引用文件或会话/);
-  assert.match(source, /@ to reference files or sessions/);
-});
-
-test('Session search stays name-only and @ keeps the menu open after spaces', () => {
-  const composer = readSource('composer.tsx');
-  const dependencyPatch = readRepoFile('patches/@astryxdesign+core+0.5.2.patch');
-
-  assert.match(composer, /const searchQuery = query\.trim\(\)/);
-  assert.match(composer, /const sessionOnly = \/\\s\/u\.test\(query\)/);
-  assert.match(composer, /!sessionOnly && source\.onSearchMentionFiles/);
-  assert.match(composer, /mentionQueryMatches\(searchQuery, session\.name\)/);
-  assert.doesNotMatch(composer, /session\.lastMessagePreview \?\?/);
-  assert.match(dependencyPatch, /if \(trigger\.character !== '@' && \/\[ \\n\]\/u\.test\(query\)\) return null;/);
-});
-
-test('Session Quote chips use the conversation icon so they are distinct from pasted excerpts', () => {
-  const source = readSource('quote-ref-chip.tsx');
-  assert.match(source, /props\.quote\.sourceSessionId \? MessagesSquare : TextQuote/);
-});
-
-test('Session-only context stays compact without bypassing the drawer disclosure contract', () => {
-  const composer = readSource('composer.tsx');
-  const styles = readRepoFile('apps/desktop/src/renderer/styles/composer.css');
-  const sessionStyles = styles.slice(
-    styles.indexOf('/* A Session reference follows'),
-    styles.indexOf('/* Astryx ChatComposerDrawer wraps'),
-  );
-
-  assert.match(composer, /count=\{sessionReferenceDrawer \? undefined : drawerTokenCount\}/);
-  assert.match(composer, /className=\{quote\.sourceSessionId \? 'maka-composer-session-token' : undefined\}/);
-  assert.doesNotMatch(sessionStyles, /\[role=|> div\[id\]|\.astryx-token/);
-  assert.match(sessionStyles, /\.maka-composer-session-token[\s\S]*max-width: min\(420px, 100%\)/);
+test('quote provenance omits invalid dates and does not call complete content truncated', () => {
+  for (const sourceCapturedAt of [-1, NaN, Infinity, 8.64e15 + 1]) {
+    assert.equal(quoteProvenanceSummary({ ...quote, sourceCapturedAt }), undefined);
+  }
+  assert.equal(quoteProvenanceSummary({ ...quote, sourceTruncated: false }), 'captured 1970-01-01T00:00:00.000Z');
+  assert.equal(quoteProvenanceSummary({ text: 'ordinary quote' }), undefined);
 });

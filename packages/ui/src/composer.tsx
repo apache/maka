@@ -1872,14 +1872,14 @@ export const Composer = forwardRef<
                 {props.pendingSessionReferences?.map((session) => (
                   <Tooltip
                     key={`pending-session:${session.id}`}
-                    content={`${session.name} · snapshot captured when sent`}
+                    content={`${session.name} · ${getConversationCopy(locale).messages.sessionSnapshotPending}`}
                     focusTrigger="always"
                   >
                     <Token
                       size="sm"
                       className="maka-composer-session-token"
                       icon={<MessagesSquare aria-hidden="true" />}
-                      label={`Session: ${session.name}`}
+                      label={getConversationCopy(locale).messages.sessionSnapshotLabel(session.name)}
                       onRemove={props.onRemovePendingSessionReference
                         ? () => props.onRemovePendingSessionReference?.(session.id)
                         : undefined}

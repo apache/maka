@@ -666,16 +666,11 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
           () => this.#closeSessionSubscription(result.subscriptionId),
           (query) => this.request('session.transcript.page', query, requestTimeoutMs),
           async () => {
-            try {
-              await this.request(
-                'session.transcript.overlay.release',
-                { subscriptionId: result.subscriptionId },
-                requestTimeoutMs,
-              );
-            } catch (error) {
-              this.#fail(asError(error));
-              throw error;
-            }
+            await this.request(
+              'subscription.ready',
+              { subscriptionId: result.subscriptionId },
+              requestTimeoutMs,
+            );
           },
         );
         this.#subscriptions.set(result.subscriptionId, subscription);

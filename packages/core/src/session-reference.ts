@@ -153,7 +153,7 @@ export function sessionSnapshotToQuote(snapshot: SessionSnapshot): QuoteRef {
   const sessionName = redactSecrets(snapshot.reference.sessionName);
   return {
     text: snapshot.text,
-    label: `Session: ${sessionName}`,
+    label: sliceAtCodePointBoundary(`Session: ${sessionName}`, 200),
     sourceSessionId: snapshot.reference.sessionId,
     sourceSessionName: sessionName,
     sourceCapturedAt: snapshot.reference.capturedAt,

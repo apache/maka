@@ -97,33 +97,39 @@ for (const phase of ['connecting', 'seeding'] as const) {
   }
 }
 
-test('window transcript reads are observation operations scoped to the renderer', async () => {
+test('transcript history IPC forwards open mode, load-earlier, and read-turn to the registry', async () => {
   const ipc = ipcHarness();
   const observations = new RuntimeHostSessionObservationRegistry();
   const calls: unknown[] = [];
-  observations.loadTranscriptAfter = async (request, targetId) => { calls.push({ command: 'after', request, targetId }); };
-  observations.loadTranscriptLatest = async (request, targetId) => { calls.push({ command: 'latest', request, targetId }); };
-  registerRuntimeHostSessionObservationIpc({ observations, resolveSideConversation: async () => false }, ipc);
-  const request = {
-    consumerId: 'guest-consumer', sessionId: 'shared-session', hostEpoch: 'host-1',
-    anchorSequence: 42, maxBytes: 512 * 1024, navigation: 7,
+  observations.openTranscript = async (sessionId, consumerId, target, mode) => {
+    calls.push({ command: 'open', sessionId, consumerId, targetId: target.id, mode });
+    return { sessionId, generation: 'generation-1', hostEpoch: 'host-1', readThroughMessageId: null };
   };
-  await ipc.invoke('sessions:transcript:load-after', request);
-  await ipc.invoke('sessions:transcript:load-latest', { ...request, anchorSequence: null });
+  observations.loadEarlierTranscript = async (consumerId, targetId) => {
+    calls.push({ command: 'earlier', consumerId, targetId });
+  };
+  const turn = [{ type: 'user', id: 'message-1', turnId: 'turn-1', ts: 1, text: 'hello' }];
+  observations.readTranscriptTurn = async (sessionId, turnId) => {
+    calls.push({ command: 'read-turn', sessionId, turnId });
+    return turn as never;
+  };
+  registerRuntimeHostSessionObservationIpc({ observations, resolveSideConversation: async () => false }, ipc);
+
+  await ipc.invoke('sessions:transcript:open', 'shared-session', 'guest-consumer', 'history');
+  await ipc.invoke('sessions:transcript:load-earlier', 'guest-consumer');
+  assert.deepEqual(await ipc.invoke('sessions:transcript:read-turn', 'shared-session', 'turn-1'), turn);
+  assert.equal(ipc.reconnectableChannels.has('sessions:transcript:read-turn'), true);
   assert.deepEqual(calls, [
-    { command: 'after', request, targetId: 9 },
-    { command: 'latest', request: { ...request, anchorSequence: null }, targetId: 9 },
+    { command: 'open', sessionId: 'shared-session', consumerId: 'guest-consumer', targetId: 9, mode: 'history' },
+    { command: 'earlier', consumerId: 'guest-consumer', targetId: 9 },
+    { command: 'read-turn', sessionId: 'shared-session', turnId: 'turn-1' },
   ]);
   await assert.rejects(
-    ipc.invoke('sessions:transcript:load-after', { ...request, anchorSequence: -1 }),
-    /Invalid Desktop transcript range anchor/,
+    ipc.invoke('sessions:transcript:open', 'shared-session', 'other-consumer', 'window'),
+    /Invalid Desktop transcript open mode/,
   );
-  // The Renderer owns the window, so every read must name the version it reads for.
-  await assert.rejects(
-    ipc.invoke('sessions:transcript:load-after', { ...request, navigation: undefined }),
-    /Invalid Desktop transcript navigation/,
-  );
-  assert.equal(calls.length, 2);
+  await assert.rejects(ipc.invoke('sessions:transcript:load-earlier', ''), /Transcript consumer/);
+  assert.equal(calls.length, 3);
 });
 
 test('treats pending Session observation teardown as IPC cancellation', async () => {
@@ -170,16 +176,14 @@ test('treats pending transcript teardown as IPC cancellation', async () => {
         readThroughMessageId: null,
       };
     },
-    async loadTranscriptBefore() {},
-    async loadTranscriptAround() {},
-    async loadTranscriptAfter() {},
-    async loadTranscriptLatest() {},
+    async loadEarlierTranscript() {},
+    async readTranscriptTurn() { return []; },
     acknowledgeTranscriptTail() {},
     async closeTranscript() {},
   });
   const ipc = observationIpcHarness(observations);
 
-  const opening = ipc.invoke('sessions:transcript:open', 'session-1', 'consumer-1');
+  const opening = ipc.invoke('sessions:transcript:open', 'session-1', 'consumer-1', 'tail');
   try {
     await started.promise;
     assert.deepEqual(observations.trackedSessionIds(), ['session-1']);
@@ -215,16 +219,14 @@ for (const teardown of ['forgetSession', 'close'] as const) {
           readThroughMessageId: null,
         };
       },
-      async loadTranscriptBefore() {},
-      async loadTranscriptAround() {},
-      async loadTranscriptAfter() {},
-      async loadTranscriptLatest() {},
+      async loadEarlierTranscript() {},
+      async readTranscriptTurn() { return []; },
       acknowledgeTranscriptTail() {},
       async closeTranscript() {},
     });
     const ipc = observationIpcHarness(observations);
     const observing = ipc.invoke('sessions:observe', 'session-1', 'observer-1');
-    const opening = ipc.invoke('sessions:transcript:open', 'session-1', 'consumer-1');
+    const opening = ipc.invoke('sessions:transcript:open', 'session-1', 'consumer-1', 'tail');
     // Attach rejection handlers before teardown. The late source completion
     // must not turn the lost observation into readiness or silent cancellation.
     const results = Promise.allSettled([observing, opening]);
@@ -257,10 +259,8 @@ test('preserves genuine Session observation initialization failures', async () =
     async openTranscript() {
       throw transcriptFailure;
     },
-    async loadTranscriptBefore() {},
-    async loadTranscriptAround() {},
-    async loadTranscriptAfter() {},
-    async loadTranscriptLatest() {},
+    async loadEarlierTranscript() {},
+    async readTranscriptTurn() { return []; },
     acknowledgeTranscriptTail() {},
     async closeTranscript() {},
   });
@@ -271,7 +271,7 @@ test('preserves genuine Session observation initialization failures', async () =
     (error) => error === sessionFailure,
   );
   await assert.rejects(
-    ipc.invoke('sessions:transcript:open', 'session-1', 'consumer-1'),
+    ipc.invoke('sessions:transcript:open', 'session-1', 'consumer-1', 'tail'),
     (error) => error === transcriptFailure,
   );
   await observations.close();
@@ -286,14 +286,14 @@ test('releases a transcript registration whose source lacks the window contract'
   const ipc = observationIpcHarness(observations);
 
   await assert.rejects(
-    ipc.invoke('sessions:transcript:open', 'session-1', 'consumer-1'),
+    ipc.invoke('sessions:transcript:open', 'session-1', 'consumer-1', 'tail'),
     /transcript source is unavailable/,
   );
   assert.deepEqual(observations.trackedSessionIds(), []);
   // Reusing the consumer id must reach the same missing-source failure rather
   // than the duplicate-identity guard, which only a leaked registration trips.
   await assert.rejects(
-    ipc.invoke('sessions:transcript:open', 'session-1', 'consumer-1'),
+    ipc.invoke('sessions:transcript:open', 'session-1', 'consumer-1', 'tail'),
     /transcript source is unavailable/,
   );
   await observations.close();
@@ -313,10 +313,8 @@ test('returns explicit ready results for Session observation IPC', async () => {
     async openTranscript() {
       return transcript;
     },
-    async loadTranscriptBefore() {},
-    async loadTranscriptAround() {},
-    async loadTranscriptAfter() {},
-    async loadTranscriptLatest() {},
+    async loadEarlierTranscript() {},
+    async readTranscriptTurn() { return []; },
     acknowledgeTranscriptTail() {},
     async closeTranscript() {},
   });
@@ -326,7 +324,7 @@ test('returns explicit ready results for Session observation IPC', async () => {
     kind: 'ready',
     value: undefined,
   });
-  assert.deepEqual(await ipc.invoke('sessions:transcript:open', 'session-1', 'consumer-1'), {
+  assert.deepEqual(await ipc.invoke('sessions:transcript:open', 'session-1', 'consumer-1', 'tail'), {
     kind: 'ready',
     value: transcript,
   });
@@ -2234,6 +2232,67 @@ test('returns the attachment_blocked envelope when an approved source has expire
   assert.deepEqual(result, { ok: false, reason: "attachment_blocked", code: "source_expired" });
 });
 
+test('Session snapshot IPC uses committed text, keeps truncation, and tolerates close failure', async () => {
+  const ipc = ipcHarness();
+  let closes = 0;
+  const opened = runtimeHostSessionFixture({
+    snapshot: {
+      schemaVersion: SESSION_CONTINUITY_SCHEMA_VERSION,
+      session: { sessionId: 'session-1', metadataRevision: 1, status: 'running', createdAt: 1, isArchived: false },
+      projectionRevision: 1,
+      rootTurn: { sessionId: 'session-1', turnId: 'turn-1', runId: 'run-1', status: 'running' },
+      goal: null,
+      queue: { hostEpoch: 'host-1', queueRevision: 0, steering: [], followup: [] },
+      interactions: { pending: [] },
+    },
+    activeAssistantStreams: [{ kind: 'text', turnId: 'turn-1', messageId: 'streaming' }],
+    transcript: Promise.resolve([]),
+    events: (async function* () {})(),
+    async decodeTranscriptPage() {
+      return {
+        messages: [
+          { identity: 1, message: { type: 'user', id: 'user-1', turnId: 'turn-1', ts: 1, text: 'committed question' } },
+          { identity: 2, message: { type: 'assistant', id: 'streaming', turnId: 'turn-1', ts: 2, text: 'unfinished ans', modelId: 'test-model' } },
+          { identity: 3, message: { type: 'assistant', id: 'settled', turnId: 'turn-0', ts: 0, text: 'settled answer', modelId: 'test-model' } },
+        ],
+        nextCursor: 'older-page',
+      };
+    },
+    async close() { closes += 1; throw new Error('connection closed'); },
+  });
+  registerExecutionIpc({ client: executionClient({
+    getSession: async () => session(),
+    openSession: async () => opened,
+  }) }, ipc);
+  const result = await ipc.invoke('sessions:readSnapshot', 'session-1') as import('@maka/core/session-reference').SessionSnapshot;
+  assert.equal(result.text, 'Assistant: settled answer\n\nUser: committed question');
+  assert.equal(result.truncated, true);
+  assert.equal(closes, 1);
+  assert.equal(ipc.reconnectableChannels.has('sessions:readSnapshot'), true);
+
+  opened.snapshot.session.isArchived = true;
+  await assert.rejects(ipc.invoke('sessions:readSnapshot', 'session-1'), /archived/);
+  assert.equal(closes, 2, 'archive race must still release the subscription');
+  opened.snapshot.session.isArchived = false;
+  opened.decodeTranscriptPage = async () => { throw new Error('decode failed'); };
+  await assert.rejects(ipc.invoke('sessions:readSnapshot', 'session-1'), /decode failed/);
+  assert.equal(closes, 3, 'close failure must not mask the original read failure');
+});
+
+test('Session snapshot IPC rejects invalid budgets and unavailable sources before opening', async () => {
+  const ipc = ipcHarness();
+  let lookups = 0;
+  let source: SessionCatalogProjection | null = null;
+  registerExecutionIpc({ client: executionClient({ getSession: async () => { lookups += 1; return source; } }) }, ipc);
+  for (const options of [null, [], 1, { maxChars: 0 }, { maxChars: 32_001 }, { maxChars: 1.5 }]) {
+    await assert.rejects(ipc.invoke('sessions:readSnapshot', 'session-1', options), /Invalid Session snapshot/);
+  }
+  assert.equal(lookups, 0);
+  await assert.rejects(ipc.invoke('sessions:readSnapshot', 'session-1'), /not found/);
+  source = { ...session(), isArchived: true };
+  await assert.rejects(ipc.invoke('sessions:readSnapshot', 'session-1'), /archived/);
+});
+
 type ExecutionClient = RuntimeHostSessionExecutionIpcDeps["client"];
 
 function executionClient(overrides: Partial<ExecutionClient>): ExecutionClient {
@@ -2247,8 +2306,8 @@ function executionClient(overrides: Partial<ExecutionClient>): ExecutionClient {
     getSession: unavailable,
     ingestAttachment: unavailable,
     interruptTurn: unavailable,
-    listSessionTurnLandmarks: unavailable,
     listSessionTurns: unavailable,
+    listSessionTurnLandmarks: unavailable,
     queryMessageExecutions: unavailable,
     queryMessages: unavailable,
     queryTurnResume: unavailable,

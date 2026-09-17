@@ -83,8 +83,6 @@ export {
   type SessionTranscriptRecordScanPage,
   type SessionTurnContribution,
   type SessionTurnContributionPage,
-  type SessionTurnLandmark,
-  type SessionTurnLandmarkSnapshot,
   type SessionStore,
   type CoordinationTranscriptReference,
   type CoordinationTranscriptIndexRecord,
@@ -198,6 +196,7 @@ class SqliteSessionStore implements SessionAuthorityStore {
     input: CreateSessionInput,
     messages: readonly StoredMessage[],
     externalOrigin: SessionExternalOrigin,
+    options: { readonly onCommitStarted?: () => void } = {},
   ): Promise<SessionHeader> {
     await this.ensureReady();
     assertNoConversationCopyMetadata(input);
@@ -212,6 +211,7 @@ class SqliteSessionStore implements SessionAuthorityStore {
       externalOrigin,
       transcriptLedgerVersion: 0,
     };
+    options.onCommitStarted?.();
     const outcome = await this.metadata.importSession(
       header,
       canonicalMessages,
@@ -690,6 +690,19 @@ class SqliteSessionStore implements SessionAuthorityStore {
 
   async readMessages(sessionId: string): Promise<StoredMessage[]> {
     return this.readMessagesSnapshot(sessionId);
+  }
+
+  async listLegacyTranscriptCandidateSessions(
+    sessionIds: readonly string[],
+    terms: readonly string[],
+  ): Promise<string[] | undefined> {
+    await this.ensureReady();
+    return this.metadata.listLegacyTranscriptCandidateSessions(sessionIds, terms);
+  }
+
+  async countLegacyTranscriptMessages(sessionIds: readonly string[]): Promise<number> {
+    await this.ensureReady();
+    return this.metadata.countLegacyTranscriptMessages(sessionIds);
   }
 
   async readMessagesAfter(

@@ -19,7 +19,7 @@
 
 import { useState, type CSSProperties } from 'react';
 import type { Decorator, Meta, StoryObj } from '@storybook/react-vite';
-import { expect, userEvent, waitFor, within } from 'storybook/test';
+import { expect, fn, userEvent, waitFor, within } from 'storybook/test';
 import type { ArtifactRecord } from '@maka/core/artifacts';
 import type { BrowserState } from '@maka/core/browser';
 import type { GitReviewReadResult, GitReviewSnapshot } from '@maka/core/git-review';
@@ -27,11 +27,12 @@ import type { SessionSummary } from '@maka/core/session';
 import type { SessionTrace } from '@maka/core/session-trace';
 import type { ContextDiagnosticsResult } from '@maka/runtime-host/protocol';
 import { ToastProvider } from '@maka/ui';
-import { WorkbarServicesProvider, WorkbarTitlebarActions } from '../src/renderer/features/workbar';
+import { WorkbarServicesProvider } from '../src/renderer/features/workbar';
 import { WorkbarSurface } from '../src/renderer/features/workbar/stories';
 import {
   createFakeWorkbarServices,
   createSessionWorkbarPanelsState,
+  reduceWorkbarPanels,
   activateSessionWorkbarTab,
   createSessionWorkbarTabsState,
   openStaticSessionWorkbarTab,
@@ -40,6 +41,7 @@ import {
   type SessionWorkbarTab,
   type SessionWorkbarTabKind,
   type SessionUsageSummary,
+  type WorkbarServices,
 } from '../src/renderer/features/workbar/testing';
 
 // Fidelity convention (#1433): every story below names the real app path
@@ -764,6 +766,9 @@ function bridge(options: {
   /** The context snapshot the composition block reads (#2323). */
   context?: ContextDiagnosticsResult;
   browserState?: BrowserState;
+  browserViewport?: (input: { sessionId: string; rect: unknown }) => void;
+  browserCapture?: () => Promise<string | undefined>;
+  popupMenu?: WorkbarServices['popupMenu'];
   /** Make `browser.navigate` reject, so a valid address surfaces the navigation-failed toast. */
   browserNavigateFails?: boolean;
   /** The git-review read result the 变更 panel receives (empty / source error / truncated / edge diffs). */
@@ -779,6 +784,7 @@ function bridge(options: {
 } = {}): Decorator {
   const browserState = options.browserState ?? EMPTY_BROWSER_STATE;
   const services = createFakeWorkbarServices({
+    popupMenu: options.popupMenu ?? (async () => null),
     artifacts: {
       list: async () => artifacts,
       readText: async (_sessionId: string, id: string) => ({ ok: true, text: artifactText[id] ?? '' }),
@@ -852,7 +858,8 @@ function bridge(options: {
     },
     browser: {
       setActiveSession: noop,
-      setViewport: noop,
+      setViewport: options.browserViewport ?? noop,
+      capturePage: options.browserCapture ?? (async () => undefined),
       navigate: async () => {
         if (options.browserNavigateFails) throw new Error('navigation failed');
       },
@@ -929,6 +936,7 @@ function bridge(options: {
  * column. Its 990px media query is what stacks the column in narrow windows.
  */
 function Workbar(props: {
+  workspace?: 'session' | 'workhub';
   tab?: SessionWorkbarTabKind;
   /** Extra faces opened after `tab`, so the strip can be seen with several. */
   alsoOpen?: readonly Exclude<SessionWorkbarTabKind, 'side-chat' | 'terminal'>[];
@@ -983,6 +991,7 @@ function Workbar(props: {
   const tabsState = openedFirst.activeTabId
     ? activateSessionWorkbarTab(withExtras, openedFirst.activeTabId)
     : withExtras;
+  const [panels, setPanels] = useState(() => createSessionWorkbarPanelsState(tabsState));
   return (
     <ToastProvider>
       <div
@@ -1000,26 +1009,28 @@ function Workbar(props: {
         } as CSSProperties}
       >
         <div className="mainColumn">
-          {props.collapsible && (
-            <WorkbarTitlebarActions
-              available
-              collapsed={collapsed}
-              onToggle={() => setCollapsed(false)}
-            />
-          )}
+
         </div>
         <WorkbarSurface
+          workspace={props.workspace}
           sessionId={SESSION_ID}
           hidden={false}
           onDismissPanel={props.collapsible ? () => setCollapsed(true) : noop}
-          panelsState={createSessionWorkbarPanelsState(tabsState)}
+          onToggleRightPanel={() => setCollapsed((value) => !value)}
+          panelsState={panels}
           rightCollapsed={collapsed}
           bottomOpen={false}
-          onActivateTab={noop}
-          onCloseTab={noop}
-          onCloseTabs={noop}
+          onActivateTab={(placement, tabId) => setPanels((state) => reduceWorkbarPanels(state, { type: 'activate', placement, tabId }))}
+          onCloseTab={(placement, tab) => setPanels((state) => reduceWorkbarPanels(state, { type: 'close', placement, tabIds: [tab.id] }))}
           onOpenLauncher={noop}
-          onRequestOpenTab={noop}
+          onRequestOpenTab={(placement, kind) => {
+            if (kind === 'side-chat' || kind === 'terminal') return;
+            setPanels((state) => ({
+              ...state,
+              [placement]: openStaticSessionWorkbarTab(state[placement], kind),
+              focusedPanel: placement,
+            }));
+          }}
           confirmBypass={async () => true}
           quotes={quotes}
           sourceSession={
@@ -1325,11 +1336,66 @@ export const BrowserLoading: Story = {
   render: () => <Workbar tab="browser" />,
 };
 
-// A committed page. The strip below the toolbar is blank here because the native
-// view owns that rect in the app.
+const browserViewport = fn();
+const browserCapture = fn(async () => 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j1ioAAAAASUVORK5CYII=');
+// Real path: a loaded browser → [+] opens a native menu without parking the page.
+// This browser story checks the bridge handoff; Electron verifies native layers.
+let finishNativeMenu: (selected: string | null) => void;
+const nativeMenu = fn<WorkbarServices['popupMenu']>(() => new Promise((resolve) => { finishNativeMenu = resolve; }));
 export const BrowserLoaded: Story = {
-  decorators: [bridge({ browserState: LOADED_BROWSER_STATE })],
+  decorators: [bridge({ browserState: LOADED_BROWSER_STATE, browserViewport, browserCapture, popupMenu: nativeMenu })],
   render: () => <Workbar tab="browser" />,
+  play: async ({ canvasElement }) => {
+    browserViewport.mockClear(); browserCapture.mockClear(); nativeMenu.mockClear();
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(browserViewport.mock.lastCall?.[0].rect).toBeTruthy());
+    const add = canvas.getByRole('button', { name: '添加面板' });
+    await userEvent.click(add);
+    await waitFor(() => expect(add).toHaveAttribute('aria-expanded', 'true'));
+    expect(nativeMenu).toHaveBeenCalledOnce();
+    expect(browserCapture).not.toHaveBeenCalled();
+    expect(browserViewport.mock.lastCall?.[0].rect).toBeTruthy();
+    expect(canvasElement.querySelector('.maka-browser-backdrop')).toBeNull();
+    finishNativeMenu(null);
+    await waitFor(() => expect(add).toHaveAttribute('aria-expanded', 'false'));
+  },
+};
+
+// Real path: close an inactive tab by its X, then close the active tab with Delete.
+export const CloseTabsDirectly: Story = {
+  decorators: [bridge()],
+  render: () => <Workbar tab="browser" alsoOpen={['files']} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const browser = canvas.getByRole('tab', { name: '浏览器' });
+    const files = canvas.getByRole('tab', { name: /生成文件/ });
+    await userEvent.click(files.querySelector('.maka-workbar-tab-close')!);
+    expect(files).not.toBeInTheDocument();
+    expect(browser).toHaveAttribute('aria-selected', 'true');
+    browser.focus();
+    await userEvent.keyboard('{Delete}');
+    expect(browser).not.toBeInTheDocument();
+    await waitFor(() => expect(canvas.getByRole('button', { name: '添加面板' })).toHaveFocus());
+  },
+};
+
+// Real path: Main → WorkHub restores old ordinary-session tabs, then opens [+].
+const workHubMenu = fn<WorkbarServices['popupMenu']>(async () => null);
+export const WorkHubTools: Story = {
+  decorators: [bridge({ popupMenu: workHubMenu })],
+  render: () => <Workbar tab="browser" alsoOpen={['files', 'review', 'inspector']} workspace="workhub" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    expect(canvas.queryByRole('tab', { name: /生成文件|变更/ })).toBeNull();
+    workHubMenu.mockClear();
+    workHubMenu.mockResolvedValueOnce('inspector');
+    await userEvent.click(canvas.getByRole('button', { name: '添加面板' }));
+    expect(workHubMenu.mock.lastCall?.[0].items.map((item) => item.label)).toEqual(['浏览器', '工作看板', '追踪']);
+    await waitFor(() => expect(canvas.getByRole('tab', { name: '追踪' })).toHaveAttribute('aria-selected', 'true'));
+    workHubMenu.mockResolvedValueOnce('browser');
+    await userEvent.click(canvas.getByRole('button', { name: '添加面板' }));
+    await waitFor(() => expect(canvas.getByRole('tab', { name: '浏览器' })).toHaveAttribute('aria-selected', 'true'));
+  },
 };
 
 // An http page, where `secure` turns into Astryx's warning status on the field.

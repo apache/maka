@@ -84,6 +84,7 @@ export function UsageStatsTable(props: {
   rowIndexStart?: number;
   rowCount?: number;
   plugins?: Record<string, TablePlugin<UsageTableRow>>;
+  footer?: ReactNode;
   columns: UsageColumn[];
   rows: Array<Array<ReactNode>>;
   empty: UsageEmpty;
@@ -136,6 +137,7 @@ export function UsageStatsTable(props: {
           props.plugins ? { ...usageTablePlugins, ...props.plugins } : usageTablePlugins
         }
       />
+      {props.footer}
     </Card>
   );
 }

@@ -88,6 +88,12 @@ type ProviderRuntimeAdapterDefinition =
   | { kind: 'openai-codex' }
   | { kind: 'google'; normalizeBaseUrl?: boolean }
   | { kind: 'cohere' }
+  /**
+   * The official Command Code CLI's private `/alpha/generate` wire. Not a
+   * published API: see `docs/commandcode-cli-transport.md` for provenance and
+   * why it ships behind a per-install flag.
+   */
+  | { kind: 'commandcode-cli' }
   | OpenAiCompatibleRuntimeAdapter;
 
 export type ProviderRuntimeAdapter = ProviderRuntimeAdapterDefinition & {
@@ -1524,6 +1530,21 @@ const providerRegistry = {
     catalogGroup: 'plans',
     signupUrl: 'https://commandcode.ai/docs/plans/goat',
     catalogOrder: 41.5,
+  },
+  'commandcode-go': {
+    label: 'Command Code GO',
+    // The API root, not `/provider/v1`: generation posts to `/alpha/generate`
+    // and discovery reads `/provider/v1/models`, both under it.
+    baseUrl: 'https://api.commandcode.ai',
+    authKind: 'api_key',
+    fallbackModels: [],
+    status: 'ready',
+    runtimeAdapter: { kind: 'commandcode-cli' },
+    modelDiscovery: { kind: 'protocol', path: 'provider/v1/models' },
+    category: 'overseas',
+    catalogGroup: 'plans',
+    signupUrl: 'https://commandcode.ai/docs/plans/go',
+    catalogOrder: 41.6,
   },
   'cloudflare-workers-ai': {
     label: cloudflareWorkersAi.name,

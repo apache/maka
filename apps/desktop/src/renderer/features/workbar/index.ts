@@ -23,10 +23,7 @@
 // for every importer of this barrel. Stories reach it through `stories`,
 // which nothing shipped imports.
 export { WorkbarHost } from './ui/workbar-host';
-export { WorkbarTitlebarActions } from './ui/workbar-toggle';
 export { WorkbarServicesProvider } from './services-context';
 export { useWorkbarController } from './controller/use-workbar-controller';
 export type { SessionWorkbarTabKind } from './model/workbar-tabs';
 export type { WorkbarServices } from './ports';
-
-export { WorkbarWorkspace } from './ui/workbar-workspace.js';

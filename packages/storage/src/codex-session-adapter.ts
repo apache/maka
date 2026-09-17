@@ -17,22 +17,31 @@
  * under the License.
  */
 
-import type { Dirent } from 'node:fs';
-import { open, readdir, realpath, stat } from 'node:fs/promises';
+import { open, opendir, readdir, realpath, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, join, resolve, sep } from 'node:path';
+import type { DatabaseSync } from 'node:sqlite';
 import type { StoredMessage } from '@maka/core/session';
-import { isSupportedCodexThreadSource, sanitizeForeignTitle } from '@maka/core/foreign-session';
-import { externalSessionMatchesQuery } from '@maka/core/external-session';
+import {
+  ExternalSessionCatalogCursorError,
+  ExternalSessionLimitError,
+  ExternalSessionNotFoundError,
+  externalSessionMatchesQuery,
+  sanitizeExternalSessionTitle,
+} from '@maka/core/external-session';
 import type {
   ExternalMakaSession,
   ExternalSessionAdapter,
+  ExternalSessionCatalogPage,
+  ExternalSessionCatalogPageQuery,
   ExternalSessionQuery,
   ExternalSessionSummary,
 } from '@maka/core/external-session';
+import { externalSessionCatalogQueryHash } from './offset-external-session-catalog.js';
 
 export const CODEX_SESSION_ADAPTER_ID = 'codex';
 export const CODEX_ROLLOUT_MAX_BYTES = 2 * 1024 * 1024 * 1024;
+export const CODEX_CATALOG_MAX_CANDIDATES = 100_000;
 
 const CODEX_ROLLOUT_HEAD_BYTES = 512 * 1024;
 const CODEX_ROLLOUT_READ_BYTES = 64 * 1024;
@@ -40,6 +49,7 @@ const CODEX_ROLLOUT_MAX_RECORD_BYTES = 64 * 1024 * 1024;
 const CODEX_ROLLOUT_MAX_CONVERTED_BYTES = 256 * 1024 * 1024;
 const CODEX_ROLLOUT_MAX_MESSAGES = 250_000;
 const CODEX_SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
+const CODEX_SUPPORTED_THREAD_SOURCES = ['cli', 'exec', 'vscode', 'atlas', 'chatgpt'] as const;
 const CODEX_UNSAFE_PATH_CHARS =
   /[\u0000-\u001F\u007F\u0080-\u009F\u061C\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\uFEFF]/;
 
@@ -54,6 +64,8 @@ export interface CodexSessionAdapterOptions {
   maxConvertedBytes?: number;
   /** Maximum number of converted messages retained in memory. */
   maxMessages?: number;
+  /** Maximum rollout files examined by one filesystem catalog query. */
+  maxCatalogCandidates?: number;
 }
 
 interface CodexCatalogEntry extends ExternalSessionSummary {
@@ -74,9 +86,24 @@ interface CodexThreadRow {
   updated_at?: unknown;
   archived?: unknown;
   source?: unknown;
+  sort_key?: unknown;
+}
+
+interface CodexThreadQuery {
+  readonly sql: string;
+  readonly params: readonly (string | number)[];
 }
 
 type JsonRecord = Record<string, unknown>;
+
+type CodexCatalogKeyset =
+  | {
+      readonly kind: 'database';
+      readonly stateDatabase: string;
+      readonly sortTimestamp: number;
+      readonly id: string;
+    }
+  | { readonly kind: 'filesystem'; readonly mtimeMs: number; readonly pathKey: string };
 
 /**
  * Read-only adapter for Codex rollout JSONL.
@@ -96,6 +123,7 @@ export class CodexSessionAdapter implements ExternalSessionAdapter {
   private readonly maxRecordBytes: number;
   private readonly maxConvertedBytes: number;
   private readonly maxMessages: number;
+  private readonly maxCatalogCandidates: number;
 
   constructor(options: CodexSessionAdapterOptions = {}) {
     this.codexHome = resolve(
@@ -105,10 +133,12 @@ export class CodexSessionAdapter implements ExternalSessionAdapter {
     this.maxRecordBytes = options.maxRecordBytes ?? CODEX_ROLLOUT_MAX_RECORD_BYTES;
     this.maxConvertedBytes = options.maxConvertedBytes ?? CODEX_ROLLOUT_MAX_CONVERTED_BYTES;
     this.maxMessages = options.maxMessages ?? CODEX_ROLLOUT_MAX_MESSAGES;
+    this.maxCatalogCandidates = options.maxCatalogCandidates ?? CODEX_CATALOG_MAX_CANDIDATES;
     assertPositiveSafeInteger(this.maxRolloutBytes, 'Codex rollout byte limit');
     assertPositiveSafeInteger(this.maxRecordBytes, 'Codex rollout record byte limit');
     assertPositiveSafeInteger(this.maxConvertedBytes, 'Codex converted message byte limit');
     assertPositiveSafeInteger(this.maxMessages, 'Codex converted message count limit');
+    assertPositiveSafeInteger(this.maxCatalogCandidates, 'Codex catalog candidate limit');
   }
 
   async detect(): Promise<boolean> {
@@ -119,38 +149,28 @@ export class CodexSessionAdapter implements ExternalSessionAdapter {
     );
   }
 
-  async listSessions(query: ExternalSessionQuery = {}): Promise<readonly ExternalSessionSummary[]> {
-    const entries = await this.listCatalog(query);
-    return entries.map(({ rolloutPath: _rolloutPath, ...summary }) => summary);
+  async listSessionPage(
+    query: ExternalSessionCatalogPageQuery,
+  ): Promise<ExternalSessionCatalogPage> {
+    const limit = query.limit ?? Number.MAX_SAFE_INTEGER;
+    if (!Number.isSafeInteger(limit) || limit < 0) throw new Error('Invalid Codex catalog page');
+    if (limit === 0) return { items: [], hasMore: false };
+    return this.listCatalogKeysetPage(query, limit);
   }
 
   async readSession(sessionId: string): Promise<ExternalMakaSession> {
     assertSafeCodexSessionId(sessionId);
     const catalogEntry = await this.findCatalogEntry(sessionId);
-    if (!catalogEntry) throw new Error(`Codex Session not found: ${sessionId}`);
+    if (!catalogEntry) throw new ExternalSessionNotFoundError();
 
     const rolloutPath = await this.resolveRolloutPath(catalogEntry.rolloutPath, sessionId);
-    if (!rolloutPath) throw new Error(`Codex rollout is unavailable: ${sessionId}`);
+    if (!rolloutPath) throw new ExternalSessionNotFoundError();
     return convertCodexRollout(rolloutPath, sessionId, catalogEntry.name, catalogEntry.cwd, {
       maxRolloutBytes: this.maxRolloutBytes,
       maxRecordBytes: this.maxRecordBytes,
       maxConvertedBytes: this.maxConvertedBytes,
       maxMessages: this.maxMessages,
     });
-  }
-
-  private async listCatalog(query: ExternalSessionQuery): Promise<CodexCatalogEntry[]> {
-    for (const dbPath of await codexStateDbsNewestFirst(this.codexHome)) {
-      const rows = await readCodexThreadRows(dbPath, query);
-      if (rows === undefined) continue;
-      const entries = await Promise.all(rows.map((row) => this.entryFromRow(row)));
-      return entries
-        .filter((entry): entry is CodexCatalogEntry => entry !== undefined)
-        .filter((entry) => matchesQuery(entry, query))
-        .sort(compareCatalogEntries);
-    }
-
-    return this.scanRolloutCatalog(query);
   }
 
   private async findCatalogEntry(sessionId: string): Promise<CodexCatalogEntry | undefined> {
@@ -190,25 +210,90 @@ export class CodexSessionAdapter implements ExternalSessionAdapter {
     };
   }
 
-  private async scanRolloutCatalog(query: ExternalSessionQuery): Promise<CodexCatalogEntry[]> {
-    const candidates = [
-      ...(await walkRolloutFiles(join(this.codexHome, 'sessions'), false)),
-      ...(query.includeArchived
-        ? await walkRolloutFiles(join(this.codexHome, 'archived_sessions'), true)
-        : []),
-    ].sort((a, b) => b.mtimeMs - a.mtimeMs);
-    const entries: CodexCatalogEntry[] = [];
-    for (const candidate of candidates) {
-      const head = await readUtf8Prefix(candidate.path, CODEX_ROLLOUT_HEAD_BYTES).catch(
-        () => undefined,
+  private async listCatalogKeysetPage(
+    query: ExternalSessionCatalogPageQuery,
+    limit: number,
+  ): Promise<ExternalSessionCatalogPage> {
+    const keyset = decodeCatalogKeyset(query.cursor, query);
+    if (keyset?.kind === 'database') {
+      const stateDatabases = await codexStateDbsNewestFirst(this.codexHome);
+      const dbPath = stateDatabases.find(
+        (candidate) => basename(candidate) === keyset.stateDatabase,
       );
-      if (head === undefined) continue;
-      const entry = catalogEntryFromRolloutHead(head, candidate);
-      if (!entry || !matchesQuery(entry, query)) continue;
-      const rolloutPath = await this.resolveRolloutPath(candidate.path, entry.id);
-      if (rolloutPath) entries.push({ ...entry, rolloutPath });
+      if (!dbPath) throw new ExternalSessionCatalogCursorError();
+      const page = await this.readStateCatalogKeysetPage(dbPath, query, keyset, limit);
+      if (!page) throw new ExternalSessionCatalogCursorError();
+      return page;
     }
-    return entries.sort(compareCatalogEntries);
+    if (!keyset) {
+      for (const dbPath of await codexStateDbsNewestFirst(this.codexHome)) {
+        let page: ExternalSessionCatalogPage | undefined;
+        try {
+          page = await this.readStateCatalogKeysetPage(dbPath, query, keyset, limit);
+        } catch {
+          // Stop the whole ladder, not just this generation. A `state_*.sqlite`
+          // Codex is rewriting can be unreadable this instant, and the answer
+          // is not to settle for an older one: a lower generation is the
+          // snapshot frozen at the last bump, so everything created since is
+          // missing from it. Continuing would turn a transient read failure
+          // into a quietly truncated list. The rollout scan below is the one
+          // source still known to be complete, so the page belongs to it.
+          // The `d:` cursor branch above stays loud — a cursor names its
+          // generation and must fail rather than switch corpora.
+          break;
+        }
+        if (page !== undefined) return page;
+      }
+    }
+
+    const candidates = await nextRolloutCatalogBatch(
+      this.codexHome,
+      query,
+      keyset?.kind === 'filesystem' ? keyset : undefined,
+      limit + 1,
+      this.maxCatalogCandidates,
+      (candidate, id) => this.resolveRolloutPath(candidate.path, id),
+    );
+    const items = candidates.slice(0, limit).map(({ candidate, summary }) => ({
+      summary,
+      nextCursor: encodeCatalogKeyset(query, candidateKeyset(candidate)),
+    }));
+    return { items, hasMore: candidates.length > items.length };
+  }
+
+  private async readStateCatalogKeysetPage(
+    dbPath: string,
+    query: ExternalSessionCatalogPageQuery,
+    keyset: CodexCatalogKeyset | undefined,
+    limit: number,
+  ): Promise<ExternalSessionCatalogPage | undefined> {
+    if (keyset?.kind === 'filesystem') return undefined;
+    let db: DatabaseSync | undefined;
+    try {
+      const sqlite = await import('node:sqlite');
+      db = new sqlite.DatabaseSync(dbPath, { readOnly: true });
+      const spec = codexThreadQuery(db, query, undefined, keyset);
+      if (!spec) return undefined;
+      const items: ExternalSessionCatalogPage['items'][number][] = [];
+      for (const row of db.prepare(spec.sql).iterate(...spec.params) as Iterable<CodexThreadRow>) {
+        const entry = await this.entryFromRow(row);
+        if (!entry || !matchesQuery(entry, query)) continue;
+        if (items.length === limit) return { items, hasMore: true };
+        const { rolloutPath: _rolloutPath, ...summary } = entry;
+        items.push({
+          summary,
+          nextCursor: encodeCatalogKeyset(query, {
+            kind: 'database',
+            stateDatabase: basename(dbPath),
+            sortTimestamp: codexRowSortTimestamp(row),
+            id: entry.id,
+          }),
+        });
+      }
+      return { items, hasMore: false };
+    } finally {
+      db?.close();
+    }
   }
 
   private async findRolloutEntry(sessionId: string): Promise<CodexCatalogEntry | undefined> {
@@ -216,7 +301,7 @@ export class CodexSessionAdapter implements ExternalSessionAdapter {
       [join(this.codexHome, 'sessions'), false],
       [join(this.codexHome, 'archived_sessions'), true],
     ] as const) {
-      for (const candidate of await walkRolloutFiles(root, archived)) {
+      for await (const candidate of iterateRolloutFiles(root, archived)) {
         if (!rolloutFilenameMatchesId(basename(candidate.path), sessionId)) continue;
         const head = await readUtf8Prefix(candidate.path, CODEX_ROLLOUT_HEAD_BYTES).catch(
           () => undefined,
@@ -250,6 +335,7 @@ export class CodexSessionAdapter implements ExternalSessionAdapter {
 
 interface RolloutCandidate {
   path: string;
+  catalogKey: string;
   mtimeMs: number;
   archived: boolean;
 }
@@ -566,8 +652,8 @@ class CodexRolloutConverter {
       throw new Error(`Codex rollout Session id mismatch: expected ${this.expectedSessionId}`);
     }
     const name =
-      sanitizeForeignTitle(this.fallbackName) ||
-      sanitizeForeignTitle(this.firstUserText) ||
+      sanitizeExternalSessionTitle(this.fallbackName) ||
+      sanitizeExternalSessionTitle(this.firstUserText) ||
       this.expectedSessionId;
     return {
       sourceSessionId: this.expectedSessionId,
@@ -590,11 +676,19 @@ class CodexRolloutConverter {
 
   private append(message: StoredMessage): void {
     if (this.messages.length >= this.limits.maxMessages) {
-      throw new Error(`Codex rollout converts to more than ${this.limits.maxMessages} messages`);
+      throw new ExternalSessionLimitError(
+        'messages',
+        this.limits.maxMessages,
+        `Codex rollout converts to more than ${this.limits.maxMessages} messages`,
+      );
     }
     const encodedBytes = Buffer.byteLength(JSON.stringify(message), 'utf8');
     if (encodedBytes > this.limits.maxConvertedBytes - this.convertedBytes) {
-      throw new Error(`Codex rollout converts to more than ${this.limits.maxConvertedBytes} bytes`);
+      throw new ExternalSessionLimitError(
+        'converted_bytes',
+        this.limits.maxConvertedBytes,
+        `Codex rollout converts to more than ${this.limits.maxConvertedBytes} bytes`,
+      );
     }
     this.convertedBytes += encodedBytes;
     this.messages.push(message);
@@ -611,7 +705,11 @@ async function* readCodexRolloutRecords(
     const metadata = await handle.stat();
     if (!metadata.isFile()) throw new Error('Codex rollout is not a regular file');
     if (metadata.size > limits.maxRolloutBytes) {
-      throw new Error(`Codex rollout exceeds ${limits.maxRolloutBytes} bytes`);
+      throw new ExternalSessionLimitError(
+        'transcript_bytes',
+        limits.maxRolloutBytes,
+        `Codex rollout exceeds ${limits.maxRolloutBytes} bytes`,
+      );
     }
 
     const snapshotBytes = metadata.size;
@@ -698,7 +796,11 @@ function parseCodexRolloutLine(
 
 function assertCodexRecordSize(actualBytes: number, maxBytes: number, line: number): void {
   if (actualBytes > maxBytes) {
-    throw new Error(`Codex rollout record at line ${line} exceeds ${maxBytes} bytes`);
+    throw new ExternalSessionLimitError(
+      'record_bytes',
+      maxBytes,
+      `Codex rollout record at line ${line} exceeds ${maxBytes} bytes`,
+    );
   }
 }
 
@@ -750,7 +852,7 @@ function catalogEntryFromRolloutHead(
   if (!rolloutFilenameMatchesId(basename(candidate.path), id)) return undefined;
   return {
     id,
-    name: sanitizeForeignTitle(firstUserText) || id,
+    name: sanitizeExternalSessionTitle(firstUserText) || id,
     cwd,
     ...(createdAt !== undefined ? { createdAt } : {}),
     updatedAt: candidate.mtimeMs,
@@ -767,63 +869,102 @@ async function readCodexThreadRows(
     const sqlite = await import('node:sqlite');
     const db = new sqlite.DatabaseSync(dbPath, { readOnly: true });
     try {
-      const columns = new Set(
-        (db.prepare('PRAGMA table_info(threads)').all() as { name?: unknown }[])
-          .map((column) => (typeof column.name === 'string' ? column.name : ''))
-          .filter(Boolean),
-      );
-      if (!columns.has('id') || !columns.has('rollout_path')) return undefined;
-      const wanted = [
-        'id',
-        'rollout_path',
-        'cwd',
-        'name',
-        'title',
-        'preview',
-        'first_user_message',
-        'created_at_ms',
-        'created_at',
-        'updated_at_ms',
-        'updated_at',
-        'archived',
-        'source',
-      ].filter((column) => columns.has(column));
-      const where: string[] = [];
-      const params: Array<string | number> = [];
-      if (exactId !== undefined) {
-        where.push('id = ?');
-        params.push(exactId);
-      }
-      if (!query.includeArchived && columns.has('archived')) {
-        where.push('(archived IS NULL OR archived = 0)');
-      }
-      // No cwd clause. `cwd IN (...)` enumerated spelling variants of the
-      // query, but SQLite compares them exactly: a row stored `C:\\Repo\\App`
-      // was discarded before `matchesQuery` could see that `c:/repo/app` names
-      // the same project. A prefilter that cannot express the matcher's own
-      // equivalence is not an optimization, it is a second, weaker rule — so
-      // the shared matcher below is the only authority on which project a row
-      // belongs to. The archived clause stays: that one is an exact boolean
-      // and agrees with the matcher by construction.
-      //
-      // The statement has no LIMIT, so dropping the clause widens the read
-      // rather than truncating it.
-      const orderColumn = columns.has('updated_at_ms')
-        ? 'updated_at_ms'
-        : columns.has('updated_at')
-          ? 'updated_at'
-          : 'id';
-      const sql =
-        `SELECT ${wanted.join(', ')} FROM threads` +
-        (where.length > 0 ? ` WHERE ${where.join(' AND ')}` : '') +
-        ` ORDER BY ${orderColumn} DESC`;
-      return db.prepare(sql).all(...params) as CodexThreadRow[];
+      const spec = codexThreadQuery(db, query, exactId);
+      if (!spec) return undefined;
+      return db.prepare(spec.sql).all(...spec.params) as CodexThreadRow[];
     } finally {
       db.close();
     }
   } catch {
     return undefined;
   }
+}
+
+function codexThreadQuery(
+  db: DatabaseSync,
+  query: ExternalSessionQuery,
+  exactId?: string,
+  keyset?: Extract<CodexCatalogKeyset, { kind: 'database' }>,
+): CodexThreadQuery | undefined {
+  const columns = new Set(
+    (db.prepare('PRAGMA table_info(threads)').all() as { name?: unknown }[])
+      .map((column) => (typeof column.name === 'string' ? column.name : ''))
+      .filter(Boolean),
+  );
+  if (!columns.has('id') || !columns.has('rollout_path')) return undefined;
+  const wanted = [
+    'id',
+    'rollout_path',
+    'cwd',
+    'name',
+    'title',
+    'preview',
+    'first_user_message',
+    'created_at_ms',
+    'created_at',
+    'updated_at_ms',
+    'updated_at',
+    'archived',
+    'source',
+  ].filter((column) => columns.has(column));
+  const where: string[] = [];
+  const params: Array<string | number> = [];
+  if (exactId !== undefined) {
+    where.push('id = ?');
+    params.push(exactId);
+  }
+  if (!query.includeArchived && columns.has('archived')) {
+    where.push('(archived IS NULL OR archived = 0)');
+  }
+  // No cwd clause. SQLite cannot express the matcher's cross-platform path
+  // equivalence, so the shared matcher remains the only workspace authority.
+  const orderColumns = ['updated_at_ms', 'updated_at', 'created_at_ms', 'created_at'].filter(
+    (column) => columns.has(column),
+  );
+  // One authority for the ordering key. It is computed here, selected as
+  // `sort_key`, and read straight back off the row to build the cursor, so the
+  // position a cursor names is by construction the position the query ordered
+  // by. Recomputing it in JS let the two drift on a stored TEXT value: SQL
+  // keeps the text as the key and orders it above every number, while the JS
+  // fallback chain skips that column and lands on a different one. A TEXT key
+  // never satisfies a numeric comparison, so the disagreement did not surface
+  // as a duplicate — it ended the traversal at that page and dropped every
+  // Conversation after it without an error. Casting first also keeps the key
+  // numeric, which is what the cursor's 8-byte encoding requires.
+  const orderValues = orderColumns.map((column) => {
+    const numeric = `CAST(${column} AS REAL)`;
+    return column.endsWith('_ms')
+      ? numeric
+      : `(CASE WHEN ${numeric} >= 1000000000000 THEN ${numeric} ELSE ${numeric} * 1000 END)`;
+  });
+  const orderExpression = orderValues.length > 0 ? `coalesce(${orderValues.join(', ')}, 0)` : '0';
+  if (keyset) {
+    where.push(`(${orderExpression} < ? OR (${orderExpression} = ? AND id < ?))`);
+    params.push(keyset.sortTimestamp, keyset.sortTimestamp, keyset.id);
+  }
+  return {
+    sql:
+      `SELECT ${[...wanted, `${orderExpression} AS sort_key`].join(', ')} FROM threads` +
+      (where.length > 0 ? ` WHERE ${where.join(' AND ')}` : '') +
+      ` ORDER BY ${orderExpression} DESC, id DESC`,
+    params,
+  };
+}
+
+function codexRowSortTimestamp(row: CodexThreadRow): number {
+  // Reads the key the query ordered by rather than recomputing it. The SQL
+  // expression is the single authority; `sort_key` is coalesced, so the only
+  // way to land on the fallback is a row shape the query cannot produce.
+  return finiteNumber(row.sort_key) ?? 0;
+}
+
+function finiteNumber(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string' && value.length > 0) {
+    const numeric = Number(value);
+    if (Number.isFinite(numeric)) return numeric;
+  }
+  return undefined;
 }
 
 async function codexStateDbsNewestFirst(codexHome: string): Promise<string[]> {
@@ -844,34 +985,190 @@ async function codexStateDbsNewestFirst(codexHome: string): Promise<string[]> {
   }
 }
 
-async function walkRolloutFiles(root: string, archived: boolean): Promise<RolloutCandidate[]> {
-  const files: RolloutCandidate[] = [];
-  const visit = async (directory: string): Promise<void> => {
-    let entries: Dirent<string>[];
-    try {
-      entries = await readdir(directory, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const entry of entries) {
-      const path = join(directory, entry.name);
-      if (entry.isDirectory()) {
-        await visit(path);
-      } else if (
-        entry.isFile() &&
-        entry.name.startsWith('rollout-') &&
-        entry.name.endsWith('.jsonl')
-      ) {
-        try {
-          files.push({ path, mtimeMs: (await stat(path)).mtimeMs, archived });
-        } catch {
-          // The external store may change while it is being scanned.
-        }
+async function* iterateRolloutFiles(
+  root: string,
+  archived: boolean,
+  relativeRoot = '',
+): AsyncGenerator<RolloutCandidate> {
+  let directory;
+  try {
+    directory = await opendir(root);
+  } catch {
+    return;
+  }
+  for await (const entry of directory) {
+    const path = join(root, entry.name);
+    const relativePath = relativeRoot ? `${relativeRoot}/${entry.name}` : entry.name;
+    if (entry.isDirectory()) {
+      yield* iterateRolloutFiles(path, archived, relativePath);
+    } else if (
+      entry.isFile() &&
+      entry.name.startsWith('rollout-') &&
+      entry.name.endsWith('.jsonl')
+    ) {
+      try {
+        yield {
+          path,
+          catalogKey: `${archived ? 'a' : 's'}/${relativePath}`,
+          mtimeMs: (await stat(path)).mtimeMs,
+          archived,
+        };
+      } catch {
+        // The external store may change while it is being scanned.
       }
     }
-  };
-  await visit(root);
-  return files;
+  }
+}
+
+async function nextRolloutCatalogBatch(
+  codexHome: string,
+  query: ExternalSessionCatalogPageQuery,
+  keyset: Extract<CodexCatalogKeyset, { kind: 'filesystem' }> | undefined,
+  limit: number,
+  maxCandidates: number,
+  resolvePath: (candidate: RolloutCandidate, id: string) => Promise<string | undefined>,
+): Promise<ReadonlyArray<{ candidate: RolloutCandidate; summary: ExternalSessionSummary }>> {
+  const page: Array<{ candidate: RolloutCandidate; summary: ExternalSessionSummary }> = [];
+  let candidatesSeen = 0;
+  const roots = [
+    [join(codexHome, 'sessions'), false],
+    ...(query.includeArchived ? [[join(codexHome, 'archived_sessions'), true] as const] : []),
+  ] as const;
+  for (const [root, archived] of roots) {
+    for await (const candidate of iterateRolloutFiles(root, archived)) {
+      candidatesSeen += 1;
+      if (candidatesSeen > maxCandidates) {
+        throw new ExternalSessionLimitError(
+          'records',
+          maxCandidates,
+          `Codex catalog contains more than ${maxCandidates} rollout files`,
+        );
+      }
+      if (keyset && !rolloutCandidateIsAfter(candidate, keyset)) continue;
+      // Once the page is full, a candidate ordered after its current tail
+      // cannot enter the result even if its rollout metadata matches.
+      const tail = page.at(-1);
+      if (
+        tail &&
+        page.length === limit &&
+        compareRolloutCandidates(candidate, tail.candidate) >= 0
+      ) {
+        continue;
+      }
+      const head = await readUtf8Prefix(candidate.path, CODEX_ROLLOUT_HEAD_BYTES).catch(
+        () => undefined,
+      );
+      if (head === undefined) continue;
+      const entry = catalogEntryFromRolloutHead(head, candidate);
+      if (!entry || !matchesQuery(entry, query)) continue;
+      const rolloutPath = await resolvePath(candidate, entry.id);
+      if (!rolloutPath) continue;
+      const { rolloutPath: _rolloutPath, ...summary } = { ...entry, rolloutPath };
+      const insertionIndex = page.findIndex(
+        (current) => compareRolloutCandidates(candidate, current.candidate) < 0,
+      );
+      if (insertionIndex === -1) page.push({ candidate, summary });
+      else page.splice(insertionIndex, 0, { candidate, summary });
+      if (page.length > limit) page.pop();
+    }
+  }
+  return page;
+}
+
+function compareRolloutCandidates(
+  left: Pick<RolloutCandidate, 'mtimeMs' | 'catalogKey'>,
+  right: Pick<RolloutCandidate, 'mtimeMs' | 'catalogKey'>,
+): number {
+  return right.mtimeMs - left.mtimeMs || left.catalogKey.localeCompare(right.catalogKey);
+}
+
+function rolloutCandidateIsAfter(
+  candidate: RolloutCandidate,
+  keyset: Extract<CodexCatalogKeyset, { kind: 'filesystem' }>,
+): boolean {
+  return (
+    compareRolloutCandidates(candidate, {
+      mtimeMs: keyset.mtimeMs,
+      catalogKey: keyset.pathKey,
+    }) > 0
+  );
+}
+
+function candidateKeyset(
+  candidate: RolloutCandidate,
+): Extract<CodexCatalogKeyset, { kind: 'filesystem' }> {
+  return { kind: 'filesystem', mtimeMs: candidate.mtimeMs, pathKey: candidate.catalogKey };
+}
+
+function encodeCatalogKeyset(
+  query: ExternalSessionCatalogPageQuery,
+  keyset: CodexCatalogKeyset,
+): string {
+  const queryHash = externalSessionCatalogQueryHash(query);
+  if (keyset.kind === 'database') {
+    return `d:${queryHash}:${Buffer.from(keyset.stateDatabase).toString('base64url')}:${encodeCursorNumber(keyset.sortTimestamp)}:${Buffer.from(keyset.id).toString('base64url')}`;
+  }
+  return `f:${queryHash}:${encodeCursorNumber(keyset.mtimeMs)}:${Buffer.from(keyset.pathKey).toString('base64url')}`;
+}
+
+function decodeCatalogKeyset(
+  cursor: string | undefined,
+  query: ExternalSessionCatalogPageQuery,
+): CodexCatalogKeyset | undefined {
+  if (cursor === undefined) return undefined;
+  const parts = cursor.split(':');
+  if (parts[1] !== externalSessionCatalogQueryHash(query)) {
+    throw new ExternalSessionCatalogCursorError();
+  }
+  if (parts[0] === 'd') {
+    if (parts.length !== 5) throw new ExternalSessionCatalogCursorError();
+    const encodedStateDatabase = parts[2]!;
+    const stateDatabase = Buffer.from(encodedStateDatabase, 'base64url').toString('utf8');
+    if (
+      !/^state_\d+\.sqlite$/.test(stateDatabase) ||
+      Buffer.from(stateDatabase).toString('base64url') !== encodedStateDatabase
+    ) {
+      throw new ExternalSessionCatalogCursorError();
+    }
+    const sortTimestamp = decodeCursorNumber(parts[3]!);
+    const encodedId = parts[4]!;
+    const id = Buffer.from(encodedId, 'base64url').toString('utf8');
+    if (!isSafeCodexSessionId(id) || Buffer.from(id).toString('base64url') !== encodedId) {
+      throw new ExternalSessionCatalogCursorError();
+    }
+    return { kind: 'database', stateDatabase, sortTimestamp, id };
+  }
+  if (parts[0] === 'f') {
+    if (parts.length !== 4) throw new ExternalSessionCatalogCursorError();
+    const mtimeMs = decodeCursorNumber(parts[2]!);
+    const encodedPathKey = parts[3]!;
+    const pathKey = Buffer.from(encodedPathKey, 'base64url').toString('utf8');
+    if (
+      Buffer.byteLength(pathKey, 'utf8') > 320 ||
+      Buffer.from(pathKey).toString('base64url') !== encodedPathKey ||
+      !/^[as]\/[^\u0000-\u001f\u007f]+$/.test(pathKey)
+    ) {
+      throw new ExternalSessionCatalogCursorError();
+    }
+    return { kind: 'filesystem', mtimeMs, pathKey };
+  }
+  throw new ExternalSessionCatalogCursorError();
+}
+
+function encodeCursorNumber(value: number): string {
+  const buffer = Buffer.allocUnsafe(8);
+  buffer.writeDoubleBE(value);
+  return buffer.toString('base64url');
+}
+
+function decodeCursorNumber(value: string): number {
+  const buffer = Buffer.from(value, 'base64url');
+  if (buffer.length !== 8 || buffer.toString('base64url') !== value) {
+    throw new ExternalSessionCatalogCursorError();
+  }
+  const number = buffer.readDoubleBE();
+  if (!Number.isFinite(number)) throw new ExternalSessionCatalogCursorError();
+  return number;
 }
 
 async function readUtf8Prefix(path: string, maxBytes: number): Promise<string> {
@@ -888,6 +1185,31 @@ async function readUtf8Prefix(path: string, maxBytes: number): Promise<string> {
 
 function asRecord(value: unknown): JsonRecord | undefined {
   return isRecord(value) ? value : undefined;
+}
+
+function codexSourceToken(value: unknown): string | undefined {
+  if (typeof value === 'string') {
+    if (value.length === 0) return undefined;
+    if ((CODEX_SUPPORTED_THREAD_SOURCES as readonly string[]).includes(value)) return value;
+    if (!value.startsWith('{')) return undefined;
+    try {
+      return codexSourceToken(JSON.parse(value) as unknown);
+    } catch {
+      return undefined;
+    }
+  }
+  if (typeof value === 'object' && value !== null) {
+    const custom = (value as Record<string, unknown>).custom;
+    return typeof custom === 'string' &&
+      (CODEX_SUPPORTED_THREAD_SOURCES as readonly string[]).includes(custom)
+      ? custom
+      : undefined;
+  }
+  return undefined;
+}
+
+function isSupportedCodexThreadSource(value: unknown): boolean {
+  return value === undefined || value === null || codexSourceToken(value) !== undefined;
 }
 
 function isRecord(value: unknown): value is JsonRecord {
@@ -925,7 +1247,7 @@ function safeCodexCwd(value: unknown): string {
 
 function firstNonEmptyTitle(...values: unknown[]): string | undefined {
   for (const value of values) {
-    const title = sanitizeForeignTitle(value);
+    const title = sanitizeExternalSessionTitle(value);
     if (title.length > 0) return title;
   }
   return undefined;
@@ -955,10 +1277,6 @@ function matchesQuery(entry: ExternalSessionSummary, query: ExternalSessionQuery
   // other adapter. The local path helpers this file used to keep were only
   // reachable from the SQL prefilter that has been removed.
   return externalSessionMatchesQuery(entry, query);
-}
-
-function compareCatalogEntries(a: CodexCatalogEntry, b: CodexCatalogEntry): number {
-  return (b.updatedAt ?? b.createdAt ?? 0) - (a.updatedAt ?? a.createdAt ?? 0);
 }
 
 function stateGeneration(path: string): number {

@@ -36,22 +36,25 @@ import {
   RuntimeHostSubscriptionError,
   type RuntimeHostConnection,
   type RuntimeHostSessionSubscription,
+  type DecodedSessionTranscriptPage,
 } from '@maka/runtime-host/client';
 
 import {
   InteractionAnsweredSnapshot,
   InteractionPendingSnapshot,
   SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
+  SESSION_TRANSCRIPT_PAGE_MAX_BYTES,
   SessionContinuitySnapshot,
   SessionDomainChangedFrame,
   SubscriptionFrame,
   type GoalProjection,
+  type SessionTranscriptPage,
 } from '@maka/runtime-host/protocol';
 import type { MakaPreparedSessionTurn } from './session-driver.js';
 
 const decodeStoredMessage = (value: unknown): StoredMessage =>
   decodePersistedStoredMessage(markPersisted<StoredMessage>(value));
-const MAX_PENDING_FRAMES = 512;
+const PROMPT_TRANSCRIPT_RANGE_MAX_BYTES = 16 * 1024 * 1024;
 const MAX_PENDING_EVENTS_PER_TURN = 1_024;
 const LAG_REARM_PENDING_EVENTS = MAX_PENDING_EVENTS_PER_TURN / 2;
 const MAX_RECOVERY_ATTEMPTS_WITHOUT_LIVE_FRAME = 8;
@@ -64,6 +67,22 @@ export interface RuntimeHostSessionChannelOpenResult {
   messages: StoredMessage[];
   attachedTurnId?: string;
   terminalTurn?: TerminalTurnSnapshot;
+}
+
+/** Incremental prompt transcript consumption with replay across subscription recovery. */
+export interface RuntimeHostPromptTranscript {
+  /** Concurrent calls join the active scan; only its onMessages callback consumes that scan. */
+  reconcile(
+    onMessages: (messages: readonly StoredMessage[]) => Promise<void>,
+    signal?: AbortSignal,
+    options?: { replay?: boolean },
+  ): Promise<void>;
+  dispose(): void;
+}
+
+interface PromptTranscriptCut {
+  afterSequence: number | null;
+  generation: AbortSignal;
 }
 
 export interface RuntimeHostSessionChannelOptions {
@@ -112,7 +131,6 @@ export class RuntimeHostSessionChannel {
   readonly #onFailed: ((error: Error) => void) | undefined;
   readonly #onRecovered: () => void;
   readonly #turns = new Map<string, SessionEventQueue>();
-  readonly #pendingFrames: SubscriptionFrame[] = [];
   readonly #pendingStartedTurns = new Map<string, MakaPreparedSessionTurn>();
   readonly #pendingOpenedInteractions: InteractionPendingSnapshot[] = [];
   readonly #pendingResolvedInteractions: InteractionPendingSnapshot[] = [];
@@ -131,6 +149,10 @@ export class RuntimeHostSessionChannel {
   #recoveryAttemptsWithoutLiveFrame = 0;
   #recoveryAwaitingLiveFrame: RuntimeHostSessionSubscription | undefined;
   #recoveryStableTimer: ReturnType<typeof setTimeout> | undefined;
+  #transcriptThrough: number | null;
+  #transcriptGeneration = new AbortController();
+  readonly #lifetime = new AbortController();
+  readonly #trackedPromptTurns = new Set<string>();
 
   private constructor(
     subscription: RuntimeHostSessionSubscription,
@@ -140,6 +162,7 @@ export class RuntimeHostSessionChannel {
   ) {
     this.#connection = connection;
     this.#subscription = subscription;
+    this.#transcriptThrough = subscription.transcriptBootstrap?.durable.throughSequence ?? null;
     this.sessionId = subscription.snapshot.session.sessionId;
     this.messages = messages;
     this.#now = options.now;
@@ -232,7 +255,7 @@ export class RuntimeHostSessionChannel {
     this.#acceptCanonicalReplacement(messages ?? []);
     this.#ready = true;
     try {
-      for (const frame of this.#pendingFrames.splice(0)) this.#accept(frame);
+      await subscription.ready();
     } catch (error) {
       if (!this.#canRecover(error)) throw error;
       this.#failedSubscriptions.add(subscription);
@@ -266,6 +289,161 @@ export class RuntimeHostSessionChannel {
 
   get firstObservedTurnId(): string | undefined {
     return this.#pendingStartedTurns.keys().next().value;
+  }
+
+  /** Call before turn.start: this deliberately does not implement historical turn lookup. */
+  trackPromptTranscript(turnId: string): RuntimeHostPromptTranscript {
+    if (this.#closing || this.#failure)
+      throw this.#failure ?? new Error('Session channel is closed');
+    const afterSequence = this.#transcriptThrough;
+    if (this.#trackedPromptTurns.has(turnId))
+      throw new Error('Prompt transcript already has an observer');
+    this.#trackedPromptTurns.add(turnId);
+    const disposed = new AbortController();
+    let inFlight: Promise<void> | undefined;
+    let requested = 0;
+    let replayRequested = false;
+    let consumed: PromptTranscriptCut = {
+      afterSequence,
+      generation: this.#transcriptGeneration.signal,
+    };
+    return {
+      reconcile: (onMessages, signal, options) => {
+        requested += 1;
+        replayRequested ||= options?.replay === true;
+        if (inFlight) return awaitTranscript(inFlight, signal);
+        const lifetime = AbortSignal.any([
+          this.#lifetime.signal,
+          disposed.signal,
+          ...(signal ? [signal] : []),
+        ]);
+        let task!: Promise<void>;
+        task = (async () => {
+          try {
+            let served: number;
+            do {
+              served = requested;
+              const replay = replayRequested;
+              replayRequested = false;
+              consumed = await this.#reconcilePromptTranscript(
+                turnId,
+                afterSequence,
+                replay ? { ...consumed, afterSequence } : consumed,
+                onMessages,
+                lifetime,
+              );
+            } while (served !== requested);
+          } finally {
+            // Clear before settling: a watermark can arrive between this
+            // task's completion and a separately queued .then cleanup.
+            if (inFlight === task) inFlight = undefined;
+          }
+        })();
+        inFlight = task;
+        return task;
+      },
+      dispose: () => {
+        if (disposed.signal.aborted) return;
+        this.#trackedPromptTurns.delete(turnId);
+        disposed.abort(new Error('Prompt transcript observation disposed'));
+      },
+    };
+  }
+
+  async #reconcilePromptTranscript(
+    turnId: string,
+    admissionSequence: number | null,
+    consumed: PromptTranscriptCut,
+    onMessages: (messages: readonly StoredMessage[]) => Promise<void>,
+    lifetime: AbortSignal,
+  ): Promise<PromptTranscriptCut> {
+    for (;;) {
+      lifetime.throwIfAborted();
+      if (this.#failure) throw this.#failure;
+      if (this.#recoveryTask) await awaitTranscript(this.#recoveryTask, lifetime);
+      const subscription = this.#subscription;
+      const generation = this.#transcriptGeneration.signal;
+      const signal = AbortSignal.any([lifetime, generation]);
+      const throughSequence = this.#transcriptThrough;
+      // A replacement subscription may revise already consumed messages. Only
+      // ordinary advances on the same generation can use the incremental cut.
+      const afterSequence =
+        consumed.generation === generation ? consumed.afterSequence : admissionSequence;
+      const nextCut = { afterSequence: throughSequence, generation };
+      if (throughSequence === null || throughSequence === afterSequence) return nextCut;
+      if (afterSequence !== null && throughSequence < afterSequence) {
+        throw new RuntimeHostSubscriptionError(
+          'correlation_changed',
+          'Session transcript moved behind the prompt reconciliation cut',
+        );
+      }
+      try {
+        let cursor: string | null = null;
+        do {
+          signal.throwIfAborted();
+          const page: SessionTranscriptPage = await awaitTranscript(
+            subscription.loadTranscriptPage({
+              direction: 'newer',
+              throughSequence,
+              cursor,
+              anchorSequence: cursor === null ? afterSequence : null,
+              maxBytes: SESSION_TRANSCRIPT_PAGE_MAX_BYTES,
+            }),
+            signal,
+          );
+          let assemblyBytes = 0;
+          const decoded: DecodedSessionTranscriptPage<StoredMessage> = await awaitTranscript(
+            subscription.decodeTranscriptPage(
+              page,
+              decodeStoredMessage,
+              PROMPT_TRANSCRIPT_RANGE_MAX_BYTES,
+              (delta) => {
+                assemblyBytes += delta;
+                if (assemblyBytes > PROMPT_TRANSCRIPT_RANGE_MAX_BYTES) {
+                  throw new RangeError(
+                    'Prompt transcript assembly exceeds the existing range byte limit',
+                  );
+                }
+              },
+            ),
+            signal,
+          );
+          signal.throwIfAborted();
+          if (subscription !== this.#subscription) break;
+          if (
+            decoded.nextCursor !== null &&
+            (decoded.nextCursor === cursor || decoded.messages.length === 0)
+          ) {
+            throw new RuntimeHostSubscriptionError(
+              'correlation_changed',
+              'Prompt transcript cursor did not advance',
+            );
+          }
+          // Durable event ordinals may be sparse. The correlated cursor, not
+          // consecutive message numbers, establishes coverage of this cut.
+          const messages = decoded.messages
+            .map((entry) => entry.message)
+            .filter((message) => message.turnId === turnId);
+          if (messages.length) await awaitTranscript(onMessages(messages), signal);
+          signal.throwIfAborted();
+          if (
+            messages.some(
+              (message) => message.type === 'turn_state' && message.status !== 'running',
+            )
+          )
+            return nextCut;
+          cursor = decoded.nextCursor;
+        } while (cursor !== null);
+        // Commit progress only after every page and its consumer succeed.
+        if (subscription === this.#subscription) return nextCut;
+      } catch (error) {
+        lifetime.throwIfAborted();
+        if (this.#failure) throw this.#failure;
+        if (generation.aborted || subscription !== this.#subscription) continue;
+        if (!this.#canRecover(error)) throw error;
+        this.#scheduleRecovery(subscription);
+      }
+    }
   }
 
   activate(claimedTurnId?: string): void {
@@ -349,6 +527,8 @@ export class RuntimeHostSessionChannel {
   async #close(): Promise<void> {
     this.#closing = true;
     this.#closeController.abort(new Error('Runtime Host Session channel is closed'));
+    this.#lifetime.abort(new Error('Session channel closed'));
+    this.#trackedPromptTurns.clear();
     this.#clearRecoveryStableTimer();
     this.#recoveryAwaitingLiveFrame = undefined;
     this.#pendingStartedTurns.clear();
@@ -360,18 +540,13 @@ export class RuntimeHostSessionChannel {
     try {
       for await (const frame of subscription) {
         if (this.#closing || this.#subscription !== subscription) return;
+        // The Host holds frames until `ready()`, which this channel calls only
+        // once the transcript it folds them onto is in place.
         if (!this.#ready) {
-          if (this.#pendingFrames.length >= MAX_PENDING_FRAMES) {
-            throw new RuntimeHostSubscriptionError(
-              'slow_consumer',
-              'Runtime Host transcript could not keep up with live Session events',
-            );
-          }
-          this.#pendingFrames.push(frame);
-        } else {
-          this.#accept(frame);
-          if (frame.kind !== 'subscription.closed') this.#observeRecoveryLiveFrame(subscription);
+          throw new Error('Runtime Host sent a Session frame before the subscriber was ready');
         }
+        this.#accept(frame);
+        if (frame.kind !== 'subscription.closed') this.#observeRecoveryLiveFrame(subscription);
       }
       // A stream that ends without a subscription.closed frame is a broken
       // live channel, not a terminal state: the Host may have torn the
@@ -458,9 +633,11 @@ export class RuntimeHostSessionChannel {
         return;
       }
       this.#subscription = replacement;
+      this.#transcriptGeneration.abort(new Error('Session transcript subscription replaced'));
+      this.#transcriptGeneration = new AbortController();
+      this.#transcriptThrough = replacement.transcriptBootstrap?.durable.throughSequence ?? null;
       this.#subscribeSessionDomainChanges(replacement);
       this.#ready = false;
-      this.#pendingFrames.length = 0;
       void this.#pump(replacement);
       try {
         const messages = await runChannelOperation(
@@ -477,7 +654,7 @@ export class RuntimeHostSessionChannel {
         const replacedLiveState = this.#acceptCanonicalReplacement(messages);
         this.#recoveryAwaitingLiveFrame = replacement;
         this.#ready = true;
-        for (const frame of this.#pendingFrames.splice(0)) this.#accept(frame);
+        await replacement.ready();
         if (replacedLiveState) this.#onRecovered();
         return;
       } catch (error) {
@@ -631,12 +808,17 @@ export class RuntimeHostSessionChannel {
       (error.reason === 'connection_closed' ||
         error.reason === 'sequence_gap' ||
         error.reason === 'projection_revision_invalid' ||
-        error.reason === 'transcript_release_failed' ||
         error.reason === 'slow_consumer')
     );
   }
 
   #accept(frame: SubscriptionFrame): void {
+    if (frame.kind === 'subscription.transcript_advanced') {
+      this.#transcriptThrough = frame.throughSequence;
+      // A tool_result can arrive before its durable watermark. Wake only
+      // registered prompt consumers once the same subscription can page it.
+      for (const turnId of this.#trackedPromptTurns) this.#onTranscriptSettlement(turnId);
+    }
     if (frame.kind === 'subscription.session_domain_changed') {
       if (frame.domain === 'runtime_resource') {
         for (const resource of frame.resources) {
@@ -734,9 +916,20 @@ export class RuntimeHostSessionChannel {
   #fail(error: unknown): void {
     if (this.#failure) return;
     this.#failure = error instanceof Error ? error : new Error(String(error));
+    this.#lifetime.abort(this.#failure);
     for (const queue of this.#turns.values()) queue.fail(this.#failure);
     this.#onFailed?.(this.#failure);
   }
+}
+
+function awaitTranscript<T>(task: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return task;
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise<T>((resolve, reject) => {
+    const aborted = () => reject(signal.reason);
+    signal.addEventListener('abort', aborted, { once: true });
+    void task.then(resolve, reject).finally(() => signal.removeEventListener('abort', aborted));
+  });
 }
 
 class SessionEventQueue implements AsyncIterable<SessionEvent>, AsyncIterator<SessionEvent> {

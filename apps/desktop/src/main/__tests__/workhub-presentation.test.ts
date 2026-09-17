@@ -53,6 +53,7 @@ async function harness(animate = false, displayFrequency = 60, revealMode: Windo
   };
   const windows: FakeWindow[] = [];
   const views: FakeView[] = [];
+  const containers: NativeView[] = [];
   const errors: unknown[] = [];
   let handler: ((event: unknown, command: string, payload?: unknown) => Promise<unknown>) | undefined;
   let unregistered = false;
@@ -87,9 +88,9 @@ async function harness(animate = false, displayFrequency = 60, revealMode: Windo
       if (this.destroyed) throw new Error('Object has been destroyed');
       return this.contents;
     }
-    children = new Set<FakeView>();
+    children = new Set<NativeView>();
     cornerRadius = 0;
-    contentView = { setBorderRadius: (radius: number) => { this.cornerRadius = radius; }, addChildView: (v: FakeView) => this.children.add(v), removeChildView: (v: FakeView) => this.children.delete(v) };
+    contentView = { setBorderRadius: (radius: number) => { this.cornerRadius = radius; }, addChildView: (v: NativeView) => this.children.add(v), removeChildView: (v: NativeView) => this.children.delete(v) };
     visible = false;
     destroyed = false;
     bounds = { x: 0, y: 0, width: 1000, height: 800 };
@@ -119,15 +120,23 @@ async function harness(animate = false, displayFrequency = 60, revealMode: Windo
     restore() {}
     destroy() { this.destroyed = true; this.contents.close(); this.emit('closed'); }
   }
-  class FakeView {
-    webContents = new Contents();
-    visible = false;
-    constructor() { views.push(this); }
+  class NativeView {
+    visible = true;
+    children = new Set<NativeView>();
+    addChildView(view: NativeView) { this.children.add(view); }
+    removeChildView(view: NativeView) { this.children.delete(view); }
     setVisible(value: boolean) { this.visible = value; }
     getVisible() { return this.visible; }
-    setBackgroundColor() {}
     boundsUpdates: Electron.Rectangle[] = [];
     setBounds(bounds: Electron.Rectangle) { this.boundsUpdates.push(bounds); }
+  }
+  class Container extends NativeView {
+    constructor() { super(); containers.push(this); }
+  }
+  class FakeView extends NativeView {
+    webContents = new Contents();
+    constructor() { super(); views.push(this); }
+    setBackgroundColor() {}
   }
   const output = await build({ entryPoints: [source], bundle: true, write: false, format: 'cjs', platform: 'node', external: ['electron'] });
   const module = { exports: {} as { createWorkHubPresentation: typeof createWorkHubPresentation } };
@@ -140,7 +149,7 @@ async function harness(animate = false, displayFrequency = 60, revealMode: Windo
     setTimeout: (callback: () => void, delay: number) => { timers.set(++timerId, { at: now + Math.max(1, Math.floor(delay)), callback }); return timerId; },
     clearTimeout: (id: number) => timers.delete(id),
     require: (name: string) => name === 'electron' ? {
-      BrowserWindow: FakeWindow, WebContentsView: FakeView,
+      BrowserWindow: FakeWindow, View: Container, WebContentsView: FakeView,
       systemPreferences: { getAnimationSettings: () => ({ prefersReducedMotion: !animate }) },
       globalShortcut: { register: (_accelerator: string, callback: () => void) => { shortcut = callback; return true; }, unregister: () => { unregistered = true; } },
       ipcMain: { handle: (_channel: string, callback: typeof handler) => { handler = callback; }, removeHandler: () => { handler = undefined; } },
@@ -156,13 +165,34 @@ async function harness(animate = false, displayFrequency = 60, revealMode: Windo
     mainModuleDirectory: '/app/dist/main', preloadPath: '/app/dist/preload/preload.cjs',
     onError: (error) => errors.push(error),
     onVisibilityChanged: () => visibilityChanged?.(),
-    onViewCreated: () => { registeredViews++; return () => { releasedViews++; }; },
+    onViewCreated: (contents, container) => { assert.equal(contents, views.at(-1)?.webContents); assert.equal(container, containers.at(-1)); registeredViews++; return () => { releasedViews++; }; },
   });
   controller.attachMainWindow(main as unknown as Electron.BrowserWindow);
   controller.registerIpc();
   const command = (sender: Contents, name: string, payload?: unknown) => handler!({ sender, senderFrame: sender.mainFrame }, name, payload);
-  return { onVisibilityChanged: (listener: () => void) => { visibilityChanged = listener; }, setMainAvailable: (value: boolean) => { mainAvailable = value; }, shortcut: () => shortcut!(), get mainRequests() { return mainRequests; }, controller, main, windows, views, errors, command, advance, setEnabled: (value: boolean) => { enabled = value; }, deferOpening: (value: Promise<void>) => { opening = value; return openingStarted.promise; }, movePointer: (display: typeof pointerDisplay) => { pointerDisplay = display; }, registrations: () => [registeredViews, releasedViews], handler: () => handler, unregistered: () => unregistered };
+  return { onVisibilityChanged: (listener: () => void) => { visibilityChanged = listener; }, setMainAvailable: (value: boolean) => { mainAvailable = value; }, shortcut: () => shortcut!(), get mainRequests() { return mainRequests; }, controller, main, windows, views, containers, get container() { return containers.at(-1)!; }, errors, command, advance, setEnabled: (value: boolean) => { enabled = value; }, deferOpening: (value: Promise<void>) => { opening = value; return openingStarted.promise; }, movePointer: (display: typeof pointerDisplay) => { pointerDisplay = display; }, registrations: () => [registeredViews, releasedViews], handler: () => handler, unregistered: () => unregistered };
 }
+
+test('moves a shared native container while keeping renderer and browser coordinates local', async () => {
+  const h = await harness();
+  const host = { visible: true, rect: { x: 200, y: 40, width: 800, height: 760 } };
+  await h.command(h.main.webContents, 'host', host);
+  const renderer = h.views[0]!;
+  const container = h.container;
+  assert.ok(container.children.has(renderer));
+  assert.deepEqual({ ...container.boundsUpdates.at(-1) }, host.rect);
+  assert.deepEqual({ ...renderer.boundsUpdates.at(-1) }, { x: 0, y: 0, width: 800, height: 760 });
+  await h.command(renderer.webContents, 'detach');
+  assert.equal(h.container, container);
+  assert.ok(h.windows[1]!.children.has(container));
+  assert.ok(!h.main.children.has(container));
+  assert.ok(container.children.has(renderer));
+  assert.equal(renderer.boundsUpdates.at(-1)!.x, 0);
+  assert.equal(renderer.boundsUpdates.at(-1)!.y, 0);
+  h.controller.dispose();
+  assert.ok(!h.windows[1]!.children.has(container));
+  assert.equal(renderer.webContents.isDestroyed(), true);
+});
 
 test('yields the docked native view to main-window overlays without replacing the conversation', async () => {
   const h = await harness();
@@ -171,21 +201,21 @@ test('yields the docked native view to main-window overlays without replacing th
   const view = h.views[0]!;
   h.main.show();
   await h.command(view.webContents, 'ready');
-  assert.equal(view.visible, true);
+  assert.equal(h.container.visible, true);
   let leaseRevoked = false;
-  h.onVisibilityChanged(() => { if (!view.visible) leaseRevoked = true; });
+  h.onVisibilityChanged(() => { if (!h.container.visible) leaseRevoked = true; });
   const backdrop = await h.command(h.main.webContents, 'host', { ...host, occluded: true });
   assert.equal(backdrop, 'data:image/png;base64,workhub-frame');
   assert.equal(leaseRevoked, true, 'occlusion revokes browser actions after hiding the native view');
-  assert.equal(view.visible, false);
+  assert.equal(h.container.visible, false);
   await h.command(h.main.webContents, 'host', { ...host, occluded: true });
   assert.equal(view.webContents.captures, 1);
   await h.command(h.main.webContents, 'host', host);
-  assert.equal(view.visible, true);
+  assert.equal(h.container.visible, true);
   assert.equal(h.views.length, 1);
   await h.command(view.webContents, 'detach');
   await h.command(h.main.webContents, 'host', { ...host, occluded: true });
-  assert.equal(view.visible, true);
+  assert.equal(h.container.visible, true);
   assert.equal(view.webContents.captures, 1);
   await assert.rejects(h.command(h.main.webContents, 'host', { ...host, occluded: 'yes' }), /Invalid WorkHub host/);
   h.controller.dispose();
@@ -210,17 +240,17 @@ test('yields and restores the conversation when its compositor frame is unavaila
   h.main.show();
   view.webContents.capturePage = async () => { throw new Error('UnknownVizError'); };
   assert.equal(await occlude(), undefined);
-  assert.equal(view.visible, false);
+  assert.equal(h.container.visible, false);
   assert.deepEqual(h.errors, []);
   await restore();
-  assert.equal(view.visible, true);
+  assert.equal(h.container.visible, true);
   assert.equal(h.views.length, 1);
   const unexpected = new Error('Unexpected capture failure');
   view.webContents.capturePage = async () => { throw unexpected; };
   await occlude();
   assert.deepEqual(h.errors, [unexpected]);
   await restore();
-  assert.equal(view.visible, true);
+  assert.equal(h.container.visible, true);
   h.controller.dispose();
 });
 
@@ -270,7 +300,7 @@ test('reopening or docking a crashed conversation creates a ready-gated renderer
     const recovered = h.views.at(-1)!;
     assert.notEqual(recovered, previous);
     assert.equal(previous.webContents.isDestroyed(), true);
-    assert.equal(h.windows.some((window) => window.children.has(previous)), false);
+    assert.equal(h.windows.some((window) => window.children.has(h.containers[0]!)), false);
     assert.equal(h.controller.ownsWebContents(previous.webContents as unknown as Electron.WebContents), false);
     assert.equal(recovered.webContents.sent.some(([channel]) => channel === 'workhub-presentation:focus-composer'), false);
     await h.command(recovered.webContents, 'ready');
@@ -294,8 +324,8 @@ test('animates from the current height, keeps the bottom anchored and survives r
   h.advance(80);
   assert.ok(floating.bounds.height > 110 && floating.bounds.height < 720);
   assert.equal(floating.bounds.y + floating.bounds.height, bottom);
-  assert.equal(view.boundsUpdates.at(-1)!.height, 720, 'height animation keeps the renderer canvas stable');
-  assert.equal(view.boundsUpdates.at(-1)!.y + 720, floating.bounds.height, 'the live editor stays at the native bottom');
+  assert.equal(h.container.boundsUpdates.at(-1)!.height, 720, 'height animation keeps the renderer canvas stable');
+  assert.equal(h.container.boundsUpdates.at(-1)!.y + 720, floating.bounds.height, 'the live editor stays at the native bottom');
   // A composer measurement during expansion must not restart or shrink it.
   await h.command(view.webContents, 'conversation-layout', { expanded: true, compactHeight: 114 });
   h.advance(340);
@@ -308,11 +338,11 @@ test('animates from the current height, keeps the bottom anchored and survives r
   assert.ok(intermediate > 110 && intermediate < 720);
   await h.command(view.webContents, 'conversation-layout', { expanded: true, compactHeight: 110 });
   assert.equal(floating.bounds.height, intermediate);
-  assert.equal(view.boundsUpdates.at(-1)!.height, 720, 'reversal reuses the existing canvas');
+  assert.equal(h.container.boundsUpdates.at(-1)!.height, 720, 'reversal reuses the existing canvas');
   h.advance(420);
   assert.equal(floating.bounds.height, 720);
   assert.equal(floating.bounds.y + floating.bounds.height, bottom);
-  assert.equal(view.boundsUpdates.at(-1)!.y, 0);
+  assert.equal(h.container.boundsUpdates.at(-1)!.y, 0);
   await h.command(view.webContents, 'conversation-layout', { expanded: false, compactHeight: 110 });
   h.advance(80);
   await h.command(view.webContents, 'hide');
@@ -330,12 +360,12 @@ test('reparents one live conversation across docking, floating, hide and main-wi
   const view = h.views[0]!;
   await h.command(view.webContents, 'ready');
   await h.command(view.webContents, 'conversation-layout', { expanded: true, compactHeight: 96 });
-  assert.ok(h.main.children.has(view));
+  assert.ok(h.main.children.has(h.container));
   await h.command(view.webContents, 'detach');
   const floating = h.windows[1]!;
   let leaseRevoked = false;
   h.onVisibilityChanged(() => { if (!floating.visible) leaseRevoked = true; });
-  assert.ok(!h.main.children.has(view) && floating.children.has(view));
+  assert.ok(!h.main.children.has(h.container) && floating.children.has(h.container));
   const expandedHeight = floating.bounds.height;
   const anchoredBottom = floating.bounds.y + floating.bounds.height;
   await h.command(view.webContents, 'conversation-layout', { expanded: false, compactHeight: 160 });
@@ -352,32 +382,32 @@ test('reparents one live conversation across docking, floating, hide and main-wi
   assert.equal(floating.visible, false);
   assert.equal(leaseRevoked, true, 'hiding the floating container revokes browser actions');
   assert.equal(h.controller.getSnapshot().placement, 'docked');
-  assert.ok(h.main.children.has(view));
+  assert.ok(h.main.children.has(h.container));
   assert.equal(view.webContents.destroyed, false);
   await h.command(view.webContents, 'dock');
-  assert.ok(h.main.children.has(view) && !floating.children.has(view));
+  assert.ok(h.main.children.has(h.container) && !floating.children.has(h.container));
   let dockedLeaseRevoked = false;
   h.onVisibilityChanged(() => { if (!h.main.visible) dockedLeaseRevoked = true; });
   h.main.hide();
   assert.equal(dockedLeaseRevoked, true, 'the current dock window revokes actions after reparenting');
   h.main.show();
   await h.command(h.main.webContents, 'host', { visible: false, rect: { x: 0, y: 0, width: 0, height: 0 } });
-  assert.equal(view.visible, false);
+  assert.equal(h.container.visible, false);
   h.main.emit('close');
   h.main.hide();
   const mainFocusCount = h.main.focused;
-  assert.ok(floating.children.has(view));
+  assert.ok(floating.children.has(h.container));
   assert.equal(view.webContents.destroyed, false);
   await h.controller.toggle();
   assert.equal(h.controller.getSnapshot().placement, 'floating');
-  assert.ok(floating.children.has(view));
+  assert.ok(floating.children.has(h.container));
   assert.equal(floating.visible, true);
   await h.controller.toggle();
   assert.equal(floating.visible, false);
   assert.equal(h.main.visible, false, 'hiding the floating window must not show Desktop');
   assert.equal(h.main.focused, mainFocusCount, 'the shortcut never focuses Desktop');
   assert.equal(h.controller.getSnapshot().placement, 'docked');
-  assert.ok(floating.children.has(view), 'a hidden Desktop defers native reparenting');
+  assert.ok(floating.children.has(h.container), 'a hidden Desktop defers native reparenting');
   await h.controller.toggle();
   assert.equal(floating.visible, true);
   h.movePointer({ x: 1600, y: -900, width: 1000, height: 800 });
@@ -391,7 +421,7 @@ test('reparents one live conversation across docking, floating, hide and main-wi
   await h.command(view.webContents, 'dock');
   assert.equal(h.controller.getSnapshot().placement, 'docked');
   assert.equal(h.main.visible, true, 'only the explicit dock action returns to Desktop');
-  assert.ok(h.main.children.has(view));
+  assert.ok(h.main.children.has(h.container));
   assert.equal(h.views.length, 1);
   assert.doesNotThrow(() => h.main.destroy());
   assert.doesNotThrow(() => h.controller.send('settings:changed'));
@@ -579,7 +609,7 @@ test('all WorkHub entries obey the client enable setting and disabling retains t
   await h.command(h.main.webContents, 'host', host);
   assert.equal(h.controller.getSnapshot().shortcutRegistered, false);
   assert.equal(floating.visible, false);
-  assert.equal(view.visible, false);
+  assert.equal(h.container.visible, false);
   assert.equal(view.webContents.destroyed, false);
   assert.equal(h.main.webContents.sent.some(([channel]) => channel === 'workhub-presentation:open-main'), false);
 
@@ -587,11 +617,11 @@ test('all WorkHub entries obey the client enable setting and disabling retains t
   await h.controller.refreshSettings();
   await h.command(view.webContents, 'dock');
   await h.command(h.main.webContents, 'host', host);
-  assert.equal(view.visible, true);
+  assert.equal(h.container.visible, true);
   h.setEnabled(false);
   await h.controller.refreshSettings();
   h.main.emit('resize');
-  assert.equal(view.visible, false, 'layout cannot revive a disabled dock');
+  assert.equal(h.container.visible, false, 'layout cannot revive a disabled dock');
   h.setEnabled(true);
   await h.controller.show();
   assert.equal(h.views.length, 1, 'reenabling preserves the renderer and its draft');
@@ -615,8 +645,8 @@ test('creates on first shortcut, then shows and hides synchronously', async () =
   const floating = h.windows[1]!;
   const view = h.views[0]!;
   assert.equal(floating.visible, false);
-  assert.equal(view.visible, true);
-  assert.ok(floating.children.has(view));
+  assert.equal(h.container.visible, true);
+  assert.ok(floating.children.has(h.container));
   await h.controller.refreshSettings();
   assert.equal(h.windows.length, 2);
   assert.equal(h.views.length, 1);
@@ -662,15 +692,18 @@ test('a pending backdrop capture and older hide cannot delay or undo the shortcu
   view.webContents.capturePage = () => { started.resolve(); return capture.promise; };
   const occlude = h.command(h.main.webContents, 'host', { ...host, occluded: true });
   await started.promise;
+  assert.equal(h.container.visible, false, 'native input yields before the screenshot completes');
+  await h.command(h.main.webContents, 'host', host);
+  assert.equal(h.container.visible, true, 'closing the overlay restores input without waiting for its screenshot');
   const olderHide = h.command(view.webContents, 'hide');
   h.shortcut();
   const floating = h.windows[1]!;
   assert.equal(floating.visible, true);
-  assert.ok(floating.children.has(view));
+  assert.ok(floating.children.has(h.container));
   capture.resolve({ toDataURL: () => 'data:image/png;base64,frame' });
   await Promise.all([occlude, olderHide]);
   assert.equal(floating.visible, true, 'an older queued intent cannot hide the newer summon');
-  assert.equal(view.visible, true);
+  assert.equal(h.container.visible, true);
   h.controller.dispose();
 });
 
@@ -683,12 +716,12 @@ test('the shortcut supersedes a pending dock without waiting for the main window
   const floating = h.windows[1]!;
   await h.command(view.webContents, 'conversation-layout', { expanded: true, compactHeight: 96 });
   h.advance(80);
-  assert.ok(view.boundsUpdates.at(-1)!.y < 0);
+  assert.ok(h.container.boundsUpdates.at(-1)!.y < 0);
   const opened = deferred<void>();
   const opening = h.deferOpening(opened.promise);
   const docking = h.command(view.webContents, 'dock');
   await opening;
-  assert.deepEqual({ ...view.boundsUpdates.at(-1) }, { x: 0, y: 0, width: floating.bounds.width, height: floating.bounds.height }, 'pending docking restores normal input coordinates');
+  assert.deepEqual({ ...h.container.boundsUpdates.at(-1) }, { x: 0, y: 0, width: floating.bounds.width, height: floating.bounds.height }, 'pending docking restores normal input coordinates');
   h.shortcut();
   h.shortcut();
   assert.equal(floating.visible, true);
@@ -696,7 +729,7 @@ test('the shortcut supersedes a pending dock without waiting for the main window
   opened.resolve();
   await docking;
   assert.equal(h.controller.getSnapshot().placement, 'floating');
-  assert.ok(floating.children.has(view));
+  assert.ok(floating.children.has(h.container));
   assert.equal(floating.visible, true);
   assert.equal(h.main.focused, 0);
   h.controller.dispose();
@@ -710,17 +743,17 @@ test('native resize callbacks do not submit duplicate view bounds and follow dis
   await h.command(view.webContents, 'ready');
   view.webContents.getZoomFactor = () => 2;
   await h.command(view.webContents, 'conversation-layout', { expanded: true, compactHeight: 96 });
-  const before = view.boundsUpdates.length;
+  const before = h.container.boundsUpdates.length;
   h.advance(9);
-  assert.ok(view.boundsUpdates.length > before, 'a 120Hz display gets its next animation frame before 16ms');
-  assert.equal(view.boundsUpdates.length - before, 1, 'an early timer must not submit a second resize for the same display frame');
+  assert.ok(h.container.boundsUpdates.length > before, 'a 120Hz display gets its next animation frame before 16ms');
+  assert.equal(h.container.boundsUpdates.length - before, 1, 'an early timer must not submit a second resize for the same display frame');
   const floating = h.windows[1]!;
   assert.equal(floating.cornerRadius, 40, 'native clipping follows renderer zoom');
   assert.equal(view.webContents.sent.filter(([channel]) => channel.endsWith('viewport-inset')).at(-1)![1], (720 - floating.bounds.height) / 2, 'renderer offsets use CSS pixels');
   h.advance(411);
   assert.equal(h.windows[1]!.bounds.height, 720);
-  for (let index = 1; index < view.boundsUpdates.length; index++) {
-    assert.notDeepEqual(view.boundsUpdates[index], view.boundsUpdates[index - 1]);
+  for (let index = 1; index < h.container.boundsUpdates.length; index++) {
+    assert.notDeepEqual(h.container.boundsUpdates[index], h.container.boundsUpdates[index - 1]);
   }
   h.controller.dispose();
 });
@@ -740,13 +773,13 @@ test('hiding returns the live view to Desktop and preserves floating geometry fo
   h.shortcut();
   assert.equal(floating.visible, false);
   assert.equal(h.controller.getSnapshot().placement, 'docked');
-  assert.ok(h.main.children.has(view));
-  assert.equal(view.visible, true);
+  assert.ok(h.main.children.has(h.container));
+  assert.equal(h.container.visible, true);
   await h.command(view.webContents, 'conversation-layout', { expanded: false, compactHeight: 96 });
   h.shortcut();
   assert.equal(floating.visible, true);
   assert.equal(floating.bounds.height, 144, 'Desktop geometry does not shrink the floating composer');
-  assert.ok(floating.children.has(view));
+  assert.ok(floating.children.has(h.container));
   assert.equal(h.mainRequests, 0);
   assert.equal(h.main.focused, 0);
   assert.equal(h.views.length, 1);
@@ -763,7 +796,7 @@ test('hiding with Desktop closed keeps the conversation alive without reopening 
   await h.controller.toggle();
   assert.equal(h.controller.getSnapshot().placement, 'docked');
   assert.equal(h.windows[1]!.visible, false);
-  assert.ok(h.windows[1]!.children.has(view));
+  assert.ok(h.windows[1]!.children.has(h.container));
   assert.equal(view.webContents.destroyed, false);
   await h.controller.toggle();
   assert.equal(h.windows[1]!.visible, true);
@@ -782,20 +815,20 @@ test('a hidden Desktop defers native docking until it shows', async () => {
   const view = h.views[0]!;
   const floating = h.windows[1]!;
   await h.command(view.webContents, 'conversation-layout', { expanded: false, compactHeight: 144 });
-  const before = view.boundsUpdates.length;
+  const before = h.container.boundsUpdates.length;
   h.shortcut();
   await h.command(h.main.webContents, 'host', host);
   assert.equal(h.controller.getSnapshot().placement, 'docked');
   assert.equal(floating.visible, false);
-  assert.ok(floating.children.has(view));
-  assert.equal(view.boundsUpdates.length, before, 'hiding does not resize an invisible conversation');
+  assert.ok(floating.children.has(h.container));
+  assert.equal(h.container.boundsUpdates.length, before, 'hiding does not resize an invisible conversation');
   await h.command(view.webContents, 'conversation-layout', { expanded: false, compactHeight: 96 });
   h.shortcut();
   assert.equal(floating.bounds.height, 144);
   h.shortcut();
   h.main.show();
-  assert.ok(h.main.children.has(view), 'Desktop receives the conversation in its show callback');
-  assert.equal(view.visible, true);
+  assert.ok(h.main.children.has(h.container), 'Desktop receives the conversation in its show callback');
+  assert.equal(h.container.visible, true);
   assert.equal(h.main.focused, 0);
   assert.equal(h.mainRequests, 0);
   assert.equal(h.views.length, 1);
@@ -813,14 +846,14 @@ test('control keeps a visible Desktop conversation docked and floats it when the
     await h.controller.prepareControl('turn');
     assert.equal(h.controller.getSnapshot().placement, 'docked');
     assert.equal(h.windows.length, 1, 'control does not create an unnecessary floating window');
-    assert.ok(h.main.children.has(view));
-    assert.equal(view.visible, true);
+    assert.ok(h.main.children.has(h.container));
+    assert.equal(h.container.visible, true);
     await h.command(h.main.webContents, 'host', { ...host, ...hidden });
     await h.controller.prepareControl('turn');
     assert.equal(h.controller.getSnapshot().placement, 'floating');
     assert.equal(typeof h.controller.getSnapshot().progressRequest, 'number');
     await h.command(view.webContents, 'progress-ready', h.controller.getSnapshot().progressRequest);
-    assert.ok(h.windows[1]!.visible && h.windows[1]!.children.has(view));
+    assert.ok(h.windows[1]!.visible && h.windows[1]!.children.has(h.container));
     assert.equal(h.views.length, 1);
     h.controller.dispose();
   }
@@ -885,8 +918,8 @@ test('editing progress grows at its existing bottom and opening interpolates bot
   assert.equal(floating.cornerRadius, 18, 'the native card clips the moving canvas at its visible edge');
   assert.equal(floating.bounds.y + floating.bounds.height, bottom);
   assert.equal(h.controller.getSnapshot().progressRequest, request, 'editing does not open the conversation');
-  assert.equal(view.boundsUpdates.at(-1)!.height, 180);
-  assert.equal(view.boundsUpdates.at(-1)!.y + 180, floating.bounds.height);
+  assert.equal(h.container.boundsUpdates.at(-1)!.height, 180);
+  assert.equal(h.container.boundsUpdates.at(-1)!.y + 180, floating.bounds.height);
   h.advance(340);
   assert.equal(floating.bounds.height, 180);
   await h.command(view.webContents, 'show-conversation', request);
@@ -895,12 +928,12 @@ test('editing progress grows at its existing bottom and opening interpolates bot
   assert.ok(floating.bounds.height > 180 && floating.bounds.height < 720);
   assert.ok(Math.abs(floating.bounds.x + floating.bounds.width / 2 - center) <= 0.5);
   assert.equal(floating.bounds.y + floating.bounds.height, bottom);
-  assert.equal(view.boundsUpdates.at(-1)!.height, 720, 'opening the card changes width without relaying height through layout');
+  assert.equal(h.container.boundsUpdates.at(-1)!.height, 720, 'opening the card changes width without relaying height through layout');
   h.advance(340);
   assert.equal(floating.bounds.height, 720);
   assert.equal(floating.bounds.width, 520);
   assert.equal(floating.cornerRadius, 20);
-  assert.deepEqual({ ...view.boundsUpdates.at(-1) }, { x: 0, y: 0, width: 520, height: 720 });
+  assert.deepEqual({ ...h.container.boundsUpdates.at(-1) }, { x: 0, y: 0, width: 520, height: 720 });
   assert.equal(floating.focused, 0);
   assert.equal(h.main.focused, 0);
   assert.equal(view.webContents.sent.some(([channel]) => channel.endsWith('focus-composer')), false);
@@ -996,4 +1029,24 @@ test('expanding progress before its first paint reveals the conversation without
     assert.equal(floating.visible, false, 'late acknowledgements and stale expansions cannot reopen a dismissed window');
     h.controller.dispose();
   }
+});
+
+// Main owns panel state; the native conversation paints its overlay without
+// giving up width or inventing a second panel controller.
+test('mirrors panel state to WorkHub and routes edge toggles back to Main', async () => {
+  const h = await harness();
+  const host = { visible: true, rect: { x: 200, y: 40, width: 800, height: 760 }, workbar: { collapsed: true, placement: 'right' } };
+  await h.command(h.main.webContents, 'host', host);
+  const view = h.views[0]!;
+  assert.equal(JSON.stringify((await h.command(view.webContents, 'snapshot') as import('../../shared/workhub-presentation.js').WorkHubPresentationSnapshot).workbar), JSON.stringify(host.workbar));
+  await h.command(h.main.webContents, 'ready');
+  await h.command(view.webContents, 'toggle-workbar');
+  const event = [...h.main.webContents.sent].reverse().find(([channel]) => channel.endsWith('open-main'));
+  assert.equal(JSON.stringify(event?.[1]), JSON.stringify({ kind: 'workhub', panelAction: 'toggle' }));
+  await h.command(h.main.webContents, 'host', { ...host, workbar: { collapsed: false, placement: 'bottom' } });
+  const update = [...view.webContents.sent].reverse().find(([channel]) => channel.endsWith('changed'));
+  assert.ok(update);
+  assert.equal(JSON.stringify((update[1] as import('../../shared/workhub-presentation.js').WorkHubPresentationSnapshot).workbar), JSON.stringify({ collapsed: false, placement: 'bottom' }));
+  await assert.rejects(h.command(view.webContents, 'host', host), /Only the main window/);
+  h.controller.dispose();
 });

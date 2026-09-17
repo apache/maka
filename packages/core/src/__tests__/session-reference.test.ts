@@ -22,6 +22,19 @@ import test from 'node:test';
 import type { StoredMessage } from '../session.js';
 import { createSessionSnapshot, sessionSnapshotToQuote } from '../session-reference.js';
 
+test('bounds long Session labels without splitting a Unicode character', () => {
+  const name = `${'会'.repeat(190)}😀suffix`;
+  const quote = sessionSnapshotToQuote(
+    createSessionSnapshot([user('message', 'hello')], {
+      sessionId: 'source',
+      sessionName: name,
+    }),
+  );
+  assert.ok(quote.label!.length <= 200);
+  assert.equal(quote.label, `Session: ${'会'.repeat(190)}`);
+  assert.equal(quote.sourceSessionName, name);
+});
+
 function user(id: string, text: string, ts = 1): StoredMessage {
   return { type: 'user', id, turnId: `turn-${id}`, ts, text };
 }
