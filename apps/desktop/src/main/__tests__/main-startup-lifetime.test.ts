@@ -27,7 +27,7 @@ const mainSource = readFileSync(
   'utf8',
 );
 const bootSource = readFileSync(
-  fileURLToPath(new URL('../../../src/main/runtime-host-boot.ts', import.meta.url)),
+  fileURLToPath(new URL('../../../src/main/runtime-host-legacy-boot.ts', import.meta.url)),
   'utf8',
 );
 const appIpcSource = readFileSync(
@@ -65,7 +65,9 @@ test('retains process lifetime before a standalone startup dialog can close', ()
 });
 
 test('registers one shared quit cleanup before the initial Host handoff', () => {
-  const hostStart = bootSource.indexOf("startupTasks.runTask(\n  'connect-runtime-host'");
+  const hostStart = bootSource.indexOf(
+    'runtimeHostManager = await startLocalRuntimeHostManager',
+  );
   const quitRegistration = bootSource.indexOf('app.on("before-quit", quitCoordinator.handleBeforeQuit)');
   const workBoardDeclaration = bootSource.indexOf('let workBoardIpc:');
   assert.ok(workBoardDeclaration >= 0 && workBoardDeclaration < quitRegistration);
@@ -82,10 +84,12 @@ test('drains startup resources before cancellation quit or fatal presentation', 
   const callback = bootSource.slice(callbackStart, bootSource.indexOf('\n);', callbackStart));
   assert.ok(callback.indexOf('if (!runtimeHostManager) return;') < callback.indexOf('app.quit()'));
 
-  const hostStart = bootSource.indexOf("startupTasks.runTask(\n  'connect-runtime-host'");
+  const hostStart = bootSource.indexOf(
+    'runtimeHostManager = await startLocalRuntimeHostManager',
+  );
   const failure = bootSource.slice(
     hostStart,
-    bootSource.indexOf("startupTasks.runTaskSync(\n  'initialize-renderer'", hostStart),
+    bootSource.indexOf('// Runtime Host is the only', hostStart),
   );
   const cleanup = failure.indexOf('await closeRuntimeHostDesktop()');
   assert.ok(cleanup >= 0 && cleanup < failure.indexOf('app.quit()'));
@@ -123,7 +127,7 @@ test('resolves persisted locale before first post-settings recovery prompt', () 
 
 test('lets the Runtime Host migrate its State Root before Desktop opens shared tables', () => {
   const hostStart = bootSource.indexOf(
-    "startupTasks.runTask(\n  'connect-runtime-host'",
+    'runtimeHostManager = await startLocalRuntimeHostManager',
   );
   const workBoardOpen = bootSource.indexOf(
     'store: createWorkBoardStore(workspaceRoot',

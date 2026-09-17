@@ -17,84 +17,43 @@
  * under the License.
  */
 
-import type { StartupTaskDefinition } from './startup-task-registry.js';
+import {
+  createStartupTaskRegistry,
+  type StartupTaskDefinition,
+  type StartupTaskEvent,
+  type StartupTaskRegistryOptions,
+} from './startup-task-registry.js';
 
 export const runtimeHostStartupTaskPlan = [
   { name: 'resolve-shell-env', phase: 'environment', dependencies: [] },
   {
-    name: 'configure-runtime-host-peer',
+    name: 'legacy-runtime-host-sequence',
     phase: 'runtime-host',
     dependencies: ['resolve-shell-env'],
   },
   {
-    name: 'open-runtime-host-peer',
-    phase: 'runtime-host',
-    dependencies: ['configure-runtime-host-peer'],
-  },
-  {
-    name: 'load-runtime-host-client-instance',
-    phase: 'runtime-host',
-    dependencies: ['open-runtime-host-peer'],
-  },
-  {
-    name: 'resolve-runtime-host-startup',
-    phase: 'runtime-host',
-    dependencies: ['load-runtime-host-client-instance'],
-  },
-  {
-    name: 'seed-e2e-fixture',
-    phase: 'storage',
-    dependencies: ['resolve-runtime-host-startup'],
-  },
-  {
-    name: 'resolve-storage-root',
-    phase: 'storage',
-    dependencies: ['seed-e2e-fixture'],
-  },
-  {
-    name: 'register-persistent-client-ipc',
-    phase: 'ipc',
-    dependencies: ['resolve-storage-root'],
-  },
-  {
-    name: 'register-pet-pack-ipc',
-    phase: 'ipc',
-    dependencies: ['register-persistent-client-ipc'],
-  },
-  {
-    name: 'register-notifications-ipc',
-    phase: 'ipc',
-    dependencies: ['register-pet-pack-ipc'],
-  },
-  {
-    name: 'connect-runtime-host',
-    phase: 'connect',
-    dependencies: ['register-notifications-ipc'],
-  },
-  {
-    name: 'initialize-renderer',
-    phase: 'renderer',
-    dependencies: ['connect-runtime-host'],
-  },
-  {
     name: 'restore-guest-session-mounts',
-    phase: 'renderer',
-    dependencies: ['initialize-renderer'],
+    phase: 'background',
+    dependencies: ['legacy-runtime-host-sequence'],
+    execution: 'detached',
   },
   {
     name: 'recover-local-runtime-host-access',
-    phase: 'renderer',
+    phase: 'background',
     dependencies: ['restore-guest-session-mounts'],
+    execution: 'detached',
   },
   {
     name: 'start-enabled-runtime-host-profiles',
     phase: 'background',
     dependencies: ['recover-local-runtime-host-access'],
+    execution: 'detached',
   },
   {
     name: 'offer-unavailable-default-runtime-host',
     phase: 'background',
     dependencies: ['start-enabled-runtime-host-profiles'],
+    execution: 'detached',
   },
   {
     name: 'start-desktop-background-services',
@@ -105,15 +64,56 @@ export const runtimeHostStartupTaskPlan = [
     name: 'start-mcp',
     phase: 'background',
     dependencies: ['start-desktop-background-services'],
+    execution: 'detached',
   },
   {
     name: 'resume-mcp-logins',
     phase: 'background',
     dependencies: ['start-mcp'],
+    execution: 'detached',
   },
   {
     name: 'refresh-client-settings',
     phase: 'background',
     dependencies: ['resume-mcp-logins'],
+    execution: 'detached',
   },
 ] as const satisfies readonly StartupTaskDefinition[];
+
+export type RuntimeHostStartupTaskName =
+  (typeof runtimeHostStartupTaskPlan)[number]['name'];
+
+export type RuntimeHostStartupTaskImplementations = Record<
+  RuntimeHostStartupTaskName,
+  () => unknown | Promise<unknown>
+>;
+
+function logStartupTaskEvent(event: StartupTaskEvent<RuntimeHostStartupTaskName>): void {
+  if (event.status === 'started') {
+    console.info(
+      `[startup] task=${event.name} phase=${event.phase} execution=${event.execution} startedAt=${new Date(event.at).toISOString()}`,
+    );
+    return;
+  }
+  const detail =
+    event.status === 'failed'
+      ? ` error=${event.error instanceof Error ? event.error.message : String(event.error)}`
+      : '';
+  const message = `[startup] task=${event.name} phase=${event.phase} execution=${event.execution} status=${event.status} startedAt=${new Date(event.startedAt).toISOString()} completedAt=${new Date(event.completedAt).toISOString()} durationMs=${event.durationMs}${detail}`;
+  if (event.status === 'failed') console.error(message);
+  else console.info(message);
+}
+
+export function createRuntimeHostStartupTaskRegistry(
+  tasks: RuntimeHostStartupTaskImplementations,
+  options: StartupTaskRegistryOptions<RuntimeHostStartupTaskName> = {},
+) {
+  const registry = createStartupTaskRegistry(runtimeHostStartupTaskPlan, {
+    ...options,
+    observe: options.observe ?? logStartupTaskEvent,
+  });
+  for (const definition of runtimeHostStartupTaskPlan) {
+    registry.register(definition.name, tasks[definition.name]);
+  }
+  return registry;
+}

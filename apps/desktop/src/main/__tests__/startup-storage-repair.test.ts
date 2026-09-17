@@ -32,8 +32,6 @@ import { resolveStorageRoot, STORAGE_ROOT_MARKER_FILE } from '@maka/storage/root
 import type { BrowserMessageBoxAppearance } from '../browser-message-box.js';
 import { showMessageBoxWithDiagnostics } from '../native-diagnostic-dialog.js';
 import { getNativeDiagnosticDialogCopy } from '../native-diagnostic-dialog-copy.js';
-import { runtimeHostStartupTaskPlan } from '../runtime-host-startup-tasks.js';
-import { createStartupTaskRegistry } from '../startup-task-registry.js';
 import { resolveDesktopStorageRoot } from '../storage-root-startup.js';
 import { startupStep } from '../startup-step.js';
 import { resolveWindowRevealMode } from '../window-reveal.js';
@@ -46,14 +44,17 @@ async function compile(name: string, asynchronous = false): Promise<string> {
     const imports = parse(source, { sourceType: 'module', plugins: ['typescript'] }).program.body
       .filter((node) => node.type === 'ImportDeclaration');
     const end = imports.at(-1)?.end ?? 0;
-    source = `${source.slice(0, end)}\nexport default async function() {\n${source.slice(end)}\n}`;
+    const body = source
+      .slice(end)
+      .replace('export const runtimeHostPostStartupTasks', 'const runtimeHostPostStartupTasks');
+    source = `${source.slice(0, end)}\nexport default async function() {\n${body}\n}`;
   }
   return (await transform(source, {
     loader: 'ts', format: 'cjs', target: 'esnext', define: { 'import.meta': 'importMeta' },
   })).code;
 }
 
-const boot = await compile('runtime-host-boot', true);
+const boot = await compile('runtime-host-legacy-boot', true);
 const context = await compile('startup-context');
 
 for (const accept of [false, true]) {
@@ -94,8 +95,6 @@ for (const accept of [false, true]) {
         app,
         resolveSystemUiLocale,
         resolveShellEnv: async () => {},
-        createStartupTaskRegistry,
-        runtimeHostStartupTaskPlan,
         resolveBuildInfo: () => ({ mode: 'packaged' }),
         configureDesktopRuntimeHostPeerClient: async () => undefined,
         loadOrCreateRuntimeHostClientInstanceId: async () => 'test',
