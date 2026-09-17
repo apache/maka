@@ -148,7 +148,10 @@ import { HostContextCoordinator } from './context-coordinator.js';
 import { HostClientCapabilityCoordinator } from './client-capability-coordinator.js';
 import { HostDeepResearchCoordinator } from './deep-research-coordinator.js';
 import { HostDailyReviewCoordinator } from './daily-review-coordinator.js';
-import { prepareHostAiSdkBackend } from './execution-model-composition.js';
+import {
+  prepareHostAiSdkBackendFromRoot,
+  type HostManagedFilesHelper,
+} from './execution-model-composition.js';
 import {
   createInteractiveRunComposer,
   createInteractiveRunComposerFactory,
@@ -222,6 +225,7 @@ import { startHostModelMetadataRefresh } from './model-metadata-refresh.js';
 import { HostRuntimeResourceCoordinator } from './runtime-resource-coordinator.js';
 import { SessionAdmissionGate } from './session-admission-gate.js';
 import { HostSessionCatalogCoordinator } from './session-catalog-coordinator.js';
+import { publishPreparedGitoxideManagedTaskInternal } from './gitoxide-managed-session-internal.js';
 import { HostWorkspaceResolver } from './workspace-resolver.js';
 import { HostSessionRetirementCoordinator } from './session-retirement-coordinator.js';
 import { HostStorageMaintenance } from './storage-maintenance.js';
@@ -293,6 +297,7 @@ export interface CreateExecutionRuntimeHostCompositionOptions {
 }
 
 export interface ExecutionRuntimeHostCompositionDependencies {
+  readonly managedFilesHelper?: HostManagedFilesHelper;
   readonly executionPersistenceProvider?: ExecutionPersistenceProvider;
   readonly primaryBackendFactory?: BackendFactory;
   readonly workHubRoutingModel?: HostWorkHubRoutingModel;
@@ -1115,7 +1120,12 @@ export async function createExecutionRuntimeHostComposition(
     backends.register(
       'ai-sdk',
       dependencies.primaryBackendFactory ?? {
-        prepare: (backendContext) => prepareHostAiSdkBackend(hostAiSdkBackendInput(backendContext)),
+        prepare: (backendContext) =>
+          prepareHostAiSdkBackendFromRoot(
+            context.owner.lease,
+            dependencies.managedFilesHelper,
+            hostAiSdkBackendInput(backendContext),
+          ),
       },
     );
     backends.register('plugin-executor', {
@@ -2032,6 +2042,20 @@ export async function createExecutionRuntimeHostComposition(
       onCommittedMutation: registerConfigurationMutation,
     });
     const sessionCatalog = new HostSessionCatalogCoordinator({
+      ...(dependencies.managedFilesHelper
+        ? {
+            managedCreation: {
+              stores: stores.sessionStore,
+              publish: async (sessionId: string, requestFingerprint: string) => {
+                await publishPreparedGitoxideManagedTaskInternal(context.owner.lease, {
+                  ...dependencies.managedFilesHelper!,
+                  sessionId,
+                  requestFingerprint,
+                });
+              },
+            },
+          }
+        : {}),
       stores: stores.sessionStore,
       turnIndex: requireTranscriptReader(transcriptReader),
       runtimePolicy: runtimePolicyStores,

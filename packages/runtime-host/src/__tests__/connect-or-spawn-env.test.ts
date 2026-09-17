@@ -90,3 +90,27 @@ test('an invalid idle grace override fails before touching storage', async () =>
       error instanceof RangeError && /MAKA_RUNTIME_HOST_IDLE_GRACE_MS/u.test(error.message),
   );
 });
+
+test('invalid managed resume requirements fail before touching storage', async () => {
+  for (const requirement of [false, 'true', 1]) {
+    await assert.rejects(
+      connectOrSpawnRuntimeHostWithDependencies(
+        {
+          rootPath: '/nonexistent-maka-managed-requirement-root',
+          protocol: { min: RUNTIME_HOST_PROTOCOL_VERSION, max: RUNTIME_HOST_PROTOCOL_VERSION },
+          compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
+          candidateEntrypoint: 'candidate-entry.js',
+          requireManagedFilesResume: requirement as true,
+        },
+        {
+          launchCandidate: () => {
+            throw new Error('must not spawn');
+          },
+          random: Math.random,
+          env: {},
+        },
+      ),
+      /requireManagedFilesResume must be true/,
+    );
+  }
+});

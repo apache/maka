@@ -82,6 +82,24 @@ test('session creation forwards a plugin executor without a model target', async
   );
 });
 
+test('session creation preserves explicit managed files intent', async () => {
+  const creates: SessionCreateInput[] = [];
+  const ipc = ipcHarness();
+  registerRuntimeHostSessionCatalogIpc(createDeps(creates), ipc as unknown as IpcMain);
+  await ipc.invoke('sessions:create', { toolProfile: 'managed-files-v1' });
+  assert.equal(creates[0]?.toolProfile, 'managed-files-v1');
+});
+
+test('unknown and internal tool profiles cannot silently create ordinary Desktop sessions', async () => {
+  const creates: SessionCreateInput[] = [];
+  const ipc = ipcHarness();
+  registerRuntimeHostSessionCatalogIpc(createDeps(creates), ipc as unknown as IpcMain);
+  for (const toolProfile of ['managed-files-v999', 'workhub-coordination-v2', null]) {
+    await assert.rejects(ipc.invoke('sessions:create', { toolProfile }), /Invalid Session tool profile/);
+  }
+  assert.equal(creates.length, 0);
+});
+
 type IpcHandler = Parameters<Pick<IpcMain, 'handle'>['handle']>[1];
 
 function ipcHarness() {

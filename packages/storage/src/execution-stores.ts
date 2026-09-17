@@ -537,6 +537,10 @@ async function createExecutionStoresForWrite(
         ),
       probeStableSessionCreate: (sessionId, requestFingerprint) =>
         run(() => sessionStore.probeStableSessionCreate(sessionId, requestFingerprint)),
+      readPreparedStableSessionCreate: (sessionId, requestFingerprint) =>
+        run(() => sessionStore.readPreparedStableSessionCreate(sessionId, requestFingerprint)),
+      prepareStableSessionCreate: (request) =>
+        run(() => sessionStore.prepareStableSessionCreate(request)),
       createStableSession: (request, initialBoundary) =>
         run(() => sessionStore.createStableSession(request, initialBoundary)),
       assignWorkHubMessage: (request) => run(() => sessionStore.assignWorkHubMessage(request)),

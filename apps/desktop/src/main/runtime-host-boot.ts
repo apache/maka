@@ -18,6 +18,7 @@
  */
 
 import { resolveDesktopWslHostHandoff } from './runtime-host-wsl-handoff.js';
+import { selectDesktopRuntimeHostEntry } from './runtime-host-candidate-entry.js';
 import {
   app,
   type BrowserWindow,
@@ -1135,11 +1136,12 @@ const startLocalRuntimeHostManager = () => startRuntimeHostDesktopManager(
     // release packaging drops: picking it here is what keeps FakeBackend and
     // the E2E bootstrap out of the shipped Runtime Host.
     candidateEntrypoint: new URL(
-      import.meta.resolve(
-        isE2e
-          ? "@maka/runtime-host/test-only/execution-candidate-e2e-main"
-          : "@maka/runtime-host/execution-candidate-main",
-      ),
+      selectDesktopRuntimeHostEntry({
+        isPackaged: app.isPackaged,
+        isE2e,
+        managedFilesDevHelper: process.env.MAKA_MANAGED_FILES_DEV_HELPER,
+      }),
+      import.meta.resolve("@maka/runtime-host/execution-candidate-main"),
     ),
     ipcMain,
     workspaceRoot,

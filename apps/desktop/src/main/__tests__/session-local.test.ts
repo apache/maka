@@ -638,7 +638,7 @@ test('attachment retries across restart reuse committed uploads and release stag
 
 test('local creation preserves a plugin executor in the pending Session projection', async (t) => {
   const { store, beforeClose } = await database(t);
-  const target: DesktopSessionLocalTarget = {
+  let target: DesktopSessionLocalTarget = {
     partition: 'authority',
     profileId: 'profile',
     scope: { hostId: 'root', targetEpoch: 'target' },
@@ -675,6 +675,18 @@ test('local creation preserves a plugin executor in the pending Session projecti
   assert.equal(summary.llmConnectionSlug, 'executor:codex.app-server');
   assert.equal(summary.model, 'codex.app-server');
   assert.equal(store.creation(target.partition, summary.id)?.executorId, 'codex.app-server');
+  await assert.rejects(create(
+    {} as IpcMainInvokeEvent, target.scope, { toolProfile: 'managed-files-v1' },
+  ), /MAKA_MANAGED_FILES_UNAVAILABLE/);
+  let checked = false;
+  target = { ...target, client: {
+    requireManagedFilesAvailable: async () => { checked = true; },
+  } as NonNullable<DesktopSessionLocalTarget['client']> };
+  const managed = await create({} as IpcMainInvokeEvent, target.scope, {
+    toolProfile: 'managed-files-v1', permissionMode: 'ask',
+  }) as DesktopSessionSummaryInput;
+  assert.equal(checked, true);
+  assert.equal(store.creation(target.partition, managed.id)?.toolProfile, 'managed-files-v1');
 });
 
 test('local submit preserves picked-file approvals until durable admission succeeds', async (t) => {

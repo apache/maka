@@ -112,6 +112,7 @@ import {
 import {
   createHostAiSdkBackend,
   prepareHostAiSdkBackend,
+  prepareHostAiSdkBackendFromRoot,
   type HostAiSdkBackendInput,
 } from '../server/execution-model-composition.js';
 import {
@@ -5063,6 +5064,64 @@ async function publishConnectionModel(
   });
   assert.equal(committed.kind, 'committed');
 }
+
+test('root backend preparation keeps ordinary sessions independent of the managed helper', async () => {
+  let providerReads = 0;
+  const input = backendCreationFixture({
+    abortSignal: new AbortController().signal,
+    resolveExecutionConnection: async () => {
+      providerReads++;
+      throw new Error('provider reached');
+    },
+    readPricing: async () => ({ revision: 0, overrides: [] }),
+  });
+  const lease = {} as Parameters<typeof prepareHostAiSdkBackendFromRoot>[0];
+  await assert.rejects(
+    prepareHostAiSdkBackendFromRoot(lease, undefined, input),
+    /provider reached/,
+  );
+  assert.equal(providerReads, 1);
+  input.context.header.toolProfile = 'managed-files-v1';
+  await assert.rejects(
+    prepareHostAiSdkBackendFromRoot(lease, undefined, input),
+    /helper is unavailable/,
+  );
+  assert.equal(providerReads, 1);
+});
+
+test('rejects a managed profile without execution capability before provider credentials', async () => {
+  const input = backendCreationFixture({
+    abortSignal: new AbortController().signal,
+    resolveExecutionConnection: async () => {
+      throw new Error('provider must not be read');
+    },
+    readPricing: async () => ({ revision: 0, overrides: [] }),
+  });
+  input.context.header.toolProfile = 'managed-files-v1';
+  for (const create of [createHostAiSdkBackend, prepareHostAiSdkBackend])
+    await assert.rejects(create(input), /Managed files profile requires its session capability/);
+});
+
+test('rejects a forged managed session before resolving provider credentials', async () => {
+  let providerReads = 0;
+  const input = backendCreationFixture({
+    abortSignal: new AbortController().signal,
+    resolveExecutionConnection: async () => {
+      providerReads++;
+      throw new Error('provider must not be read');
+    },
+    readPricing: async () => ({ revision: 0, overrides: [] }),
+  });
+  for (const create of [createHostAiSdkBackend, prepareHostAiSdkBackend])
+    await assert.rejects(
+      create({
+        ...input,
+        managedFilesSession: { kind: 'gitoxide_managed_files_session' },
+      }),
+      /Managed session does not match/,
+    );
+  assert.equal(providerReads, 0);
+});
 
 function backendCreationFixture(input: {
   abortSignal: AbortSignal;

@@ -74,8 +74,40 @@ import {
 } from './execution-model-authority.js';
 import { toRuntimePolicyProxy } from './runtime-policy-proxy.js';
 import type { HostRunComposer, HostRunComposerFactory } from './host-run-composer.js';
+import {
+  requireGitoxideManagedSessionInternal,
+  reopenGitoxideManagedTaskInternal,
+  type GitoxideManagedSessionCapability,
+} from './gitoxide-managed-session-internal.js';
+import type { StorageRootLease } from '@maka/storage/root-authority';
+import type { GitoxideHelperInvocationCapability } from './gitoxide-helper-artifact-authority-internal.js';
+
+export interface HostManagedFilesHelper {
+  readonly invocationOwnerToken: object;
+  readonly helperCapability: GitoxideHelperInvocationCapability;
+}
+
+/** Reconstruct managed authority from persisted state before touching provider credentials. */
+export async function prepareHostAiSdkBackendFromRoot(
+  lease: StorageRootLease<'interactive', 'write'>,
+  helper: HostManagedFilesHelper | undefined,
+  input: Omit<HostAiSdkBackendPreparationInput, 'managedFilesSession'>,
+): Promise<PreparedBackendActivation> {
+  input = { ...input };
+  if (input.context.header.toolProfile !== 'managed-files-v1')
+    return prepareHostAiSdkBackend(input);
+  if (!helper) throw new Error('Managed files helper is unavailable in this Host');
+  const capability = await reopenGitoxideManagedTaskInternal(lease, {
+    sessionId: input.context.sessionId,
+    invocationOwnerToken: helper.invocationOwnerToken,
+    helperCapability: helper.helperCapability,
+    abortSignal: input.context.abortSignal,
+  });
+  return prepareHostAiSdkBackend({ ...input, managedFilesSession: capability });
+}
 
 export interface HostAiSdkBackendInput {
+  readonly managedFilesSession?: GitoxideManagedSessionCapability;
   readonly context: BackendFactoryContext;
   readonly runtimePolicy: HostExecutionRuntimePolicyAuthority;
   readonly oauthCredentials: HostOAuthExecutionAuthority;
@@ -117,6 +149,8 @@ type HostExecutionUsageAuthority = {
 
 /** Builds one real provider backend from canonical Host state. */
 export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Promise<AiSdkBackend> {
+  input = { ...input };
+  managedSessionForBackend(input);
   const createFetchTransport = input.createFetchTransport ?? createProxiedFetchTransport;
   const target = await readDuringBackendCreation(
     () =>
@@ -135,6 +169,7 @@ async function buildHostAiSdkBackend(
   input: HostAiSdkBackendInput,
   target: ResolvedExecutionTarget,
 ): Promise<AiSdkBackend> {
+  const managedSession = managedSessionForBackend(input);
   const createFetchTransport = input.createFetchTransport ?? createProxiedFetchTransport;
   const pricingSnapshot = await readDuringBackendCreation(
     () => input.usage.pricing.snapshot(),
@@ -313,12 +348,14 @@ async function buildHostAiSdkBackend(
   };
   const recordRunComposition = input.context.recordRunComposition;
   const recordRequestComposition = input.context.recordRequestComposition;
+  const projectModelTools = (tools: readonly MakaTool[]): readonly MakaTool[] =>
+    managedSession ? managedSession.projectTools(tools) : tools;
   const resolveModelTools = (): readonly MakaTool[] =>
-    modelComposition.resolveTools?.() ?? modelComposition.tools;
+    projectModelTools(modelComposition.resolveTools?.() ?? modelComposition.tools);
   // RunComposition remains the immutable C0 baseline. Dynamic Tool changes
   // belong exclusively to RequestComposition epochs, so never re-sample them
   // while committing the baseline immediately before provider dispatch.
-  const initialModelTools = Object.freeze([...modelComposition.tools]);
+  const initialModelTools = Object.freeze([...projectModelTools(modelComposition.tools)]);
   const runCompositionCommits = new Map<string, Promise<void>>();
   const commitRunComposition = recordRunComposition
     ? async (context: { readonly turnId: string; readonly runId: string }): Promise<void> => {
@@ -397,7 +434,7 @@ async function buildHostAiSdkBackend(
         ...(modelComposition.planTraceContext
           ? { planTraceContext: modelComposition.planTraceContext }
           : {}),
-        ...(!input.context.tools && input.childAgents ? input.childAgents : {}),
+        ...(!managedSession && !input.context.tools && input.childAgents ? input.childAgents : {}),
         providerOptions,
         contextBudget: buildDefaultContextBudgetPolicy({
           name: 'runtime-host-default-history-budget',
@@ -482,6 +519,9 @@ async function buildHostAiSdkBackend(
         assertModelCallAccountingReady,
         recordToolInvocation: (event) => recordToolInvocation({ repo: telemetry }, event),
         ...(input.runtimeCommitSink ? { runtimeCommitSink: input.runtimeCommitSink } : {}),
+        ...(managedSession
+          ? { prepareManagedMutation: managedSession.prepareManagedMutation }
+          : {}),
         newId: randomUUID,
         now: Date.now,
       },
@@ -501,6 +541,8 @@ async function buildHostAiSdkBackend(
 export async function prepareHostAiSdkBackend(
   input: HostAiSdkBackendPreparationInput,
 ): Promise<PreparedBackendActivation> {
+  input = { ...input };
+  managedSessionForBackend(input);
   const createFetchTransport = input.createFetchTransport ?? createProxiedFetchTransport;
   const preparedTarget = await readDuringBackendCreation(
     () =>
@@ -523,6 +565,29 @@ export async function prepareHostAiSdkBackend(
         preparedTarget,
       ),
   };
+}
+
+function managedSessionForBackend(input: {
+  readonly managedFilesSession?: GitoxideManagedSessionCapability;
+  readonly runtimeCommitSink?: RuntimeCommitSink;
+  readonly context: {
+    readonly sessionId: string;
+    readonly header: { readonly toolProfile?: string };
+  };
+}) {
+  if (input.managedFilesSession === undefined) {
+    if (input.context.header.toolProfile === 'managed-files-v1')
+      throw new Error('Managed files profile requires its session capability');
+    return undefined;
+  }
+  const session = requireGitoxideManagedSessionInternal(
+    input.managedFilesSession,
+    input.context.sessionId,
+    input.runtimeCommitSink,
+  );
+  if (input.context.header.toolProfile !== 'managed-files-v1')
+    throw new Error('Managed session capability requires the managed files profile');
+  return session;
 }
 
 class HostAiSdkBackend extends AiSdkBackend {

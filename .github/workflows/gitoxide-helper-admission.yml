@@ -20,6 +20,10 @@ name: Gitoxide helper admission
 on:
   pull_request:
     paths:
+      - 'packages/runtime-host/src/**'
+      - 'packages/core/src/session.ts'
+      - 'apps/desktop/src/**'
+      - 'packages/ui/src/**'
       - '.github/workflows/gitoxide-helper-admission.yml'
       - 'native/gitoxide-helper/**'
       - 'packages/runtime-host/src/server/gitoxide-helper-*.ts'
@@ -43,6 +47,10 @@ on:
     branches:
       - main
     paths:
+      - 'packages/runtime-host/src/**'
+      - 'packages/core/src/session.ts'
+      - 'apps/desktop/src/**'
+      - 'packages/ui/src/**'
       - '.github/workflows/gitoxide-helper-admission.yml'
       - 'native/gitoxide-helper/**'
       - 'packages/runtime-host/src/server/gitoxide-helper-*.ts'
@@ -147,3 +155,17 @@ jobs:
           packages/runtime-host/dist/__tests__/gitoxide-helper-artifact-authority-internal.test.js
           packages/runtime-host/dist/__tests__/gitoxide-helper-invocation-internal.test.js
           packages/runtime-host/dist/__tests__/gitoxide-repository-admission-authority-internal.test.js
+      - name: Test managed task creation and pinned developer admission
+        env:
+          MAKA_GITOXIDE_HELPER_PATH: ${{ github.workspace }}/native/gitoxide-helper/target/debug/maka-gitoxide-helper${{ runner.os == 'Windows' && '.exe' || '' }}
+        run: >-
+          node --test --test-force-exit
+          --test-name-pattern="managed|development helper|prepared create|metadata 39|stable create|execution capability query|root backend preparation|pins the selected helper|forwards its pinned helper"
+          packages/runtime-host/dist/__tests__/managed-files-dev-bootstrap.test.js
+          packages/runtime-host/dist/__tests__/execution-composition-factory.test.js
+          packages/runtime-host/dist/__tests__/execution-model-composition.test.js
+          packages/runtime-host/dist/__tests__/hosted-execution-tool-profile.test.js
+          packages/runtime-host/dist/__tests__/session-catalog-coordinator.test.js
+          packages/runtime-host/dist/__tests__/handshake-compatibility.test.js
+          packages/runtime-host/dist/__tests__/protocol.test.js
+          packages/storage/dist/__tests__/sqlite-session-metadata-store.test.js

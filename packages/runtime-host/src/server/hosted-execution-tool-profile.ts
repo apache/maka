@@ -97,6 +97,18 @@ export function hostedExecutionRunProfile(
   profile: SessionToolProfile | undefined,
 ): HostedExecutionRunProfile | undefined {
   if (profile === undefined) return undefined;
+  if (profile === 'managed-files-v1') {
+    return {
+      toolNames: ['Read', 'Write', 'Edit'],
+      systemPrompt: [
+        'Work only on the accepted Git tree using Read, Write, and Edit with repository-relative paths.',
+        'Changes are accepted into isolated Git history, not applied to the user checkout.',
+        'Shell commands, tests, dependency installation, Glob, Grep, and publishing are unavailable in this profile.',
+        'Do not claim to have run tests or published changes. Report these limitations when relevant.',
+      ].join('\n'),
+      memoryExtraction: false,
+    };
+  }
   if (profile === 'headless-coding-v1') {
     return {
       toolNames: HEADLESS_CODING_V1_TOOL_NAMES,

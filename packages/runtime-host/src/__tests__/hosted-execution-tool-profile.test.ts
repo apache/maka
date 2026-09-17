@@ -33,6 +33,29 @@ import {
   projectHostedExecutionTools,
 } from '../server/hosted-execution-tool-profile.js';
 
+test('managed files has an explicit durable profile with no checkout command tools', () => {
+  const decoded = decodeHostedExecutionStartInput({
+    executionId: '00000000-0000-4000-8000-000000000001',
+    session: {
+      workspace: { kind: 'host_path', path: '/workspace' },
+      modelTarget: {
+        kind: 'explicit',
+        connectionId: 'connection-1',
+        connectionSlug: 'provider',
+        model: 'model',
+      },
+      toolProfile: 'managed-files-v1',
+    },
+    content: { text: 'edit accepted files' },
+  });
+  const profile = hostedExecutionRunProfile(decoded.session.toolProfile);
+  assert.equal(decoded.session.toolProfile, 'managed-files-v1');
+  assert.deepEqual(profile?.toolNames, ['Read', 'Write', 'Edit']);
+  assert.equal(profile?.memoryExtraction, false);
+  assert.match(profile!.systemPrompt, /accepted Git tree/);
+  assert.match(profile!.systemPrompt, /not.*user checkout/);
+});
+
 test('hosted execution tool profiles are durable Session creation inputs', () => {
   const decoded = decodeHostedExecutionStartInput({
     executionId: '00000000-0000-4000-8000-000000000001',

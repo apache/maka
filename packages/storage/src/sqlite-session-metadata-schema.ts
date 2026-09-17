@@ -19,7 +19,7 @@
 
 import type { DatabaseSync } from 'node:sqlite';
 
-export const SQLITE_SESSION_METADATA_SCHEMA_VERSION = 39;
+export const SQLITE_SESSION_METADATA_SCHEMA_VERSION = 40;
 export const SQLITE_SESSION_MESSAGE_CHUNK_BYTES = 64 * 1024;
 export const SQLITE_SESSION_MESSAGE_CHUNK_MARKER = '{"$maka":"session-message-chunks-v1"}';
 
@@ -37,6 +37,14 @@ export const SQLITE_AGENT_GRAPH_CONTROL_TABLES = [
 ] as const;
 
 const MIGRATIONS: ReadonlyMap<number, string> = new Map([
+  [
+    40,
+    `
+    ALTER TABLE session_create_claims ADD COLUMN prepared_header_json TEXT
+      CHECK (prepared_header_json IS NULL OR
+        (json_valid(prepared_header_json) AND length(CAST(prepared_header_json AS BLOB)) <= 65536));
+  `,
+  ],
   [
     39,
     `

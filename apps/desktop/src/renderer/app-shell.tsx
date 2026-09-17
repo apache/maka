@@ -410,6 +410,8 @@ function AppShellContent({
   // What a new chat will start with, held the way the Session holds it: a
   // Plan toggle and one orchestration value, not one fused choice.
   const [newChatPlanModeActive, setNewChatPlanModeActive] = useState(false);
+  const [newChatManagedFiles, setNewChatManagedFiles, clearNewChatManagedFiles] =
+    useNewTaskChoice<boolean>(currentNewTaskDraftKey);
   const [newChatOrchestrationMode, setNewChatOrchestrationMode] = useState<OrchestrationMode>('default');
   const [newTaskPermissionChoice, setNewTaskPermissionChoice, clearNewTaskPermissionChoice] =
     useNewTaskChoice<ChatDefaultPermissionMode>(currentNewTaskDraftKey);
@@ -844,6 +846,7 @@ function AppShellContent({
   function setPlanMode(active: boolean): Promise<boolean> {
     const sessionId = activeIdRef.current;
     if (!sessionId) {
+      if (newChatManagedFiles && active) return Promise.resolve(false);
       setNewChatPlanModeActive(active);
       return Promise.resolve(true);
     }
@@ -861,6 +864,7 @@ function AppShellContent({
   function setOrchestrationMode(mode: OrchestrationMode): Promise<boolean> {
     const sessionId = activeIdRef.current;
     if (!sessionId) {
+      if (newChatManagedFiles && mode !== 'default') return Promise.resolve(false);
       setNewChatOrchestrationMode(mode);
       return Promise.resolve(true);
     }
@@ -1454,6 +1458,8 @@ function AppShellContent({
     clearNewChatPermissionChoice: clearNewTaskPermissionChoice,
     newChatCollaborationMode: newChatPlanModeActive ? 'plan' : 'agent',
     newChatOrchestrationMode: newChatOrchestrationMode,
+    newChatManagedFiles,
+    clearNewChatManagedFiles,
     newTaskTarget: taskEntry.selectors.target,
   });
 
@@ -2534,7 +2540,9 @@ function AppShellContent({
                   // mode change to land before the run registers and alter the
                   // execution config of the turn already sent.
                   permissionModeDisabledReason={
-                    activeStreamingLive
+                    !activeId && newChatManagedFiles
+                      ? (uiLocale === 'en' ? 'Managed files tasks use ask permission' : '托管文件任务使用 ask 权限')
+                    : activeStreamingLive
                       ? shellCopy.permissionModeStreaming
                       : activeId && turnActive
                         ? shellCopy.permissionModeRunning
@@ -2554,10 +2562,28 @@ function AppShellContent({
                   // pending registries already swallow re-entrant toggles, and
                   // a reason here would gray the row mid-click — the blink
                   // this control had. The rows repaint when the write lands.
-                  planModeDisabledReason={modeChangeDisabledReason}
+                  managedFilesMode={!activeId && !sharedSessionActive ? {
+                    active: newChatManagedFiles === true,
+                    label: uiLocale === 'en' ? 'Managed files task' : uiLocale === 'zh-TW' ? '託管檔案任務' : '托管文件任务',
+                    description: uiLocale === 'en'
+                      ? 'Git projects only. Read, Write and Edit use an internal workspace, not your source checkout.'
+                      : uiLocale === 'zh-TW'
+                        ? '僅限 Git 專案。Read、Write、Edit 使用內部工作區，不直接修改來源目錄。'
+                        : '仅限 Git 项目。Read、Write、Edit 使用内部工作区，不直接修改源目录。',
+                    disabled: newTaskSendPending,
+                    onChange: (active) => {
+                      setNewChatManagedFiles(active);
+                      if (active) {
+                        setNewChatPlanModeActive(false);
+                        setNewChatOrchestrationMode('default');
+                        setNewTaskPermissionChoice('ask');
+                      }
+                    },
+                  } : undefined}
+                  planModeDisabledReason={!activeId && newChatManagedFiles ? (uiLocale === 'en' ? 'Unavailable in managed files tasks' : '托管文件任务暂不支持此模式') : modeChangeDisabledReason}
                   onPlanModeChange={(active) => void setPlanMode(active)}
                   orchestrationMode={activeOrchestrationMode}
-                  orchestrationModeDisabledReason={modeChangeDisabledReason}
+                  orchestrationModeDisabledReason={!activeId && newChatManagedFiles ? (uiLocale === 'en' ? 'Unavailable in managed files tasks' : '托管文件任务暂不支持此模式') : modeChangeDisabledReason}
                   onOrchestrationModeChange={(mode) => void setOrchestrationMode(mode)}
                   goalDisabledReason={
                     activeStreamingLive || (activeId && turnActive)

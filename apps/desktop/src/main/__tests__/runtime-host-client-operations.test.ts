@@ -900,6 +900,59 @@ test('projects SessionTodo content through the shared Desktop display boundary',
   assert.match(items[0]!.content, /<redacted>|\[redacted\]/);
 });
 
+test('managed creation rejects an incapable resident Host without creating or closing it', async () => {
+  const { client, requests } = clientWithResponses([
+    { hostEpoch: 'host-current', state: 'ready', managedFilesResume: false },
+    session('ordinary', 1),
+  ]);
+  await assert.rejects(client.createSession({
+    sessionId: 'managed', workspace: { kind: 'host_path', path: '/workspace' },
+    modelTarget: { kind: 'default' }, toolProfile: 'managed-files-v1',
+  }), (error: unknown) => error instanceof DesktopRuntimeHostClientError
+    && error.code === 'managed_files_unavailable');
+  assert.equal((await client.createSession({
+    sessionId: 'ordinary', workspace: { kind: 'host_path', path: '/workspace' },
+    modelTarget: { kind: 'default' },
+  })).id, 'ordinary');
+  assert.deepEqual(requests.map(({ operation }) => operation), [
+    'host.execution-capabilities.query', 'session.create',
+  ]);
+});
+
+test('managed creation requires a ready capability from the same Host epoch', async () => {
+  for (const capability of [
+    { hostEpoch: 'old-host', state: 'ready', managedFilesResume: true },
+    { hostEpoch: 'host-current', state: 'draining', managedFilesResume: true },
+  ]) {
+    const { client, requests } = clientWithResponses([capability]);
+    await assert.rejects(client.createSession({
+      sessionId: 'managed', workspace: { kind: 'host_path', path: '/workspace' },
+      modelTarget: { kind: 'default' }, toolProfile: 'managed-files-v1',
+    }), /MAKA_MANAGED_FILES_UNAVAILABLE/);
+    assert.equal(requests.length, 1);
+  }
+});
+
+test('capable managed creation preserves the exact request and still uses the Host writer', async () => {
+  const { client, requests } = clientWithResponses([
+    { hostEpoch: 'host-current', state: 'ready', managedFilesResume: true },
+    session('managed', 1),
+  ]);
+  const input = {
+    sessionId: 'managed', workspace: { kind: 'host_path' as const, path: '/workspace' },
+    modelTarget: { kind: 'default' as const }, toolProfile: 'managed-files-v1' as const,
+  };
+  const pending = client.createSession(input);
+  input.workspace.path = '/changed-after-query';
+  assert.equal((await pending).id, 'managed');
+  assert.deepEqual(requests.map(({ operation }) => operation), [
+    'host.execution-capabilities.query', 'session.create',
+  ]);
+  const creation = requests[1];
+  assert.ok(creation);
+  assert.equal((creation.input as { workspace: { path: string } }).workspace.path, '/workspace');
+});
+
 interface RecordedRequest {
   operation: OperationKey;
   input: unknown;

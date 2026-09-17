@@ -182,6 +182,13 @@ export class NoUsableImportModelError extends SessionOperationFailure {
 }
 
 export interface HostSessionCatalogCoordinatorOptions {
+  readonly managedCreation?: {
+    readonly stores: Pick<
+      ExecutionStoresWriter<'interactive'>['sessionStore'],
+      'readPreparedStableSessionCreate' | 'prepareStableSessionCreate'
+    >;
+    readonly publish: (sessionId: string, requestFingerprint: string) => Promise<void>;
+  };
   readonly stores: SessionCatalogStores;
   readonly turnIndex: SessionTurnIndexReader;
   readonly runtimePolicy: SessionRuntimePolicyStores;
@@ -295,6 +302,7 @@ export class HostSessionCatalogCoordinator {
   };
 
   readonly #stores: SessionCatalogStores;
+  readonly #managedCreation: HostSessionCatalogCoordinatorOptions['managedCreation'];
   readonly #turnIndex: SessionTurnIndexReader;
   readonly #runtimePolicy: SessionRuntimePolicyStores;
   readonly #manager: SessionConfigurationAuthority;
@@ -308,6 +316,7 @@ export class HostSessionCatalogCoordinator {
     | undefined;
 
   constructor(options: HostSessionCatalogCoordinatorOptions) {
+    this.#managedCreation = options.managedCreation;
     this.#stores = options.stores;
     this.#turnIndex = options.turnIndex;
     this.#runtimePolicy = options.runtimePolicy;
@@ -574,6 +583,7 @@ export class HostSessionCatalogCoordinator {
     input: SessionCreateInput,
     toolMode?: ToolMode,
   ): Promise<OperationOutcome<'session.create'>> {
+    input = structuredClone(input);
     if (isWorkHubCoordinationSessionId(input.sessionId)) {
       return createFailure(
         'operation_conflict',
@@ -582,7 +592,16 @@ export class HostSessionCatalogCoordinator {
     }
     let prepared: PreparedSessionCreate;
     try {
-      prepared = await prepareCreate(input);
+      prepared = await prepareCreate(input, this.#managedCreation !== undefined);
+      if (
+        input.toolProfile === 'managed-files-v1' &&
+        toolMode !== undefined &&
+        toolMode !== 'direct'
+      )
+        throw new SessionOperationFailure(
+          'invalid_request',
+          'Managed files require direct tool mode',
+        );
     } catch (error) {
       return createOperationFailure(error, 'invalid_request');
     }
@@ -591,6 +610,10 @@ export class HostSessionCatalogCoordinator {
       let commitAttempted = false;
       const requestFingerprint = createRequestFingerprint(input, prepared);
       try {
+        if (input.toolProfile === 'managed-files-v1') {
+          commitAttempted = true;
+          return await this.#createManaged(input, prepared, requestFingerprint, lease);
+        }
         const probe = await this.#stores.probeStableSessionCreate(
           input.sessionId,
           requestFingerprint,
@@ -661,6 +684,86 @@ export class HostSessionCatalogCoordinator {
         }
         return createFailure('commit_outcome_unknown', 'Session creation outcome is unknown');
       }
+    });
+  }
+
+  async #createManaged(
+    input: SessionCreateInput,
+    prepared: PreparedSessionCreate,
+    fingerprint: string,
+    lease: SessionAdmissionLease,
+  ): Promise<OperationOutcome<'session.create'>> {
+    const owner = this.#managedCreation;
+    if (!owner)
+      throw new SessionOperationFailure('operation_unavailable', 'Managed creation is unavailable');
+    const saved = await owner.stores.readPreparedStableSessionCreate(input.sessionId, fingerprint);
+    if (saved.kind === 'conflict')
+      throw new SessionOperationFailure(
+        'operation_conflict',
+        'Session identity belongs to a different create request',
+      );
+    return this.#workspaceResolver.runWithUsageRecorded(input.workspace, async (workspace) => {
+      let header =
+        saved.kind === 'prepared'
+          ? saved.header
+          : saved.kind === 'existing'
+            ? saved.record.header
+            : undefined;
+      if (!header) {
+        const model = await this.#resolveModel(input.modelTarget!, input.thinkingLevel);
+        const result = await owner.stores.prepareStableSessionCreate({
+          sessionId: input.sessionId,
+          requestFingerprint: fingerprint,
+          input: {
+            cwd: workspace.cwd,
+            ...(workspace.projectId === null ? {} : { projectId: workspace.projectId }),
+            name: prepared.name,
+            labels: [...prepared.labels],
+            llmConnectionId: model.connectionId,
+            llmConnectionSlug: model.connectionSlug,
+            model: model.model,
+            ...(input.thinkingLevel === undefined ? {} : { thinkingLevel: input.thinkingLevel }),
+            toolProfile: 'managed-files-v1',
+            toolMode: 'direct',
+            permissionMode: 'ask',
+            collaborationMode: 'agent',
+            orchestrationMode: 'default',
+          },
+        });
+        if (result.kind !== 'prepared')
+          throw new SessionOperationFailure(
+            'operation_conflict',
+            'Managed creation identity changed',
+          );
+        header = result.header;
+      }
+      if (
+        header.cwd !== workspace.cwd ||
+        (header.projectId ?? null) !== workspace.projectId ||
+        header.toolProfile !== 'managed-files-v1' ||
+        header.executorId ||
+        !header.llmConnectionId ||
+        header.toolMode !== 'direct' ||
+        header.permissionMode !== 'ask' ||
+        header.collaborationMode !== 'agent' ||
+        header.orchestrationMode !== 'default'
+      )
+        throw new SessionOperationFailure('operation_conflict', 'Managed creation binding changed');
+      // Reauthorize the pinned model, never reinterpret a default selector on retry.
+      await this.#resolveModel(
+        {
+          kind: 'explicit',
+          connectionId: header.llmConnectionId,
+          connectionSlug: header.llmConnectionSlug,
+          model: header.model,
+        },
+        header.thinkingLevel,
+      );
+      if (saved.kind !== 'existing') await owner.publish(input.sessionId, fingerprint);
+      await this.#continuity.refreshCanonical(input.sessionId, lease);
+      return createSuccess(
+        projectSessionCatalogRecord(await this.#stores.readCatalogRecord(input.sessionId)),
+      );
     });
   }
 
@@ -1350,7 +1453,29 @@ interface PreparedSessionCreate {
   readonly permissionMode?: SessionCreateInput['permissionMode'];
 }
 
-async function prepareCreate(input: SessionCreateInput): Promise<PreparedSessionCreate> {
+async function prepareCreate(
+  input: SessionCreateInput,
+  managedAvailable = false,
+): Promise<PreparedSessionCreate> {
+  // A profile string cannot substitute for the epoch/import admission owner.
+  if (input.toolProfile === 'managed-files-v1' && !managedAvailable) {
+    throw new SessionOperationFailure(
+      'invalid_request',
+      'Managed files creation requires workspace admission; this entry point is unavailable',
+    );
+  }
+  if (
+    input.toolProfile === 'managed-files-v1' &&
+    (input.executorId !== undefined ||
+      input.mode !== undefined ||
+      (input.permissionMode !== undefined && input.permissionMode !== 'ask') ||
+      (input.collaborationMode !== undefined && input.collaborationMode !== 'agent') ||
+      (input.orchestrationMode !== undefined && input.orchestrationMode !== 'default'))
+  )
+    throw new SessionOperationFailure(
+      'invalid_request',
+      'Managed files require native ask/agent/default mode',
+    );
   if ((input.executorId === undefined) === (input.modelTarget === undefined)) {
     throw new SessionOperationFailure(
       'invalid_request',
@@ -1375,7 +1500,10 @@ async function prepareCreate(input: SessionCreateInput): Promise<PreparedSession
   }
   const name = normalizedSessionName(mode?.name ?? input.name ?? DEFAULT_SESSION_NAME);
   const labels = [...(input.labels ?? []), ...(mode?.labels ?? [])];
-  const permissionMode = mode?.permissionMode ?? input.permissionMode;
+  const permissionMode =
+    input.toolProfile === 'managed-files-v1'
+      ? 'ask'
+      : (mode?.permissionMode ?? input.permissionMode);
   return {
     name,
     labels,

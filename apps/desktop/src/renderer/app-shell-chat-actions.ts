@@ -198,6 +198,8 @@ export function createAppShellChatActions(deps: {
   clearNewChatPermissionChoice: () => void;
   newChatCollaborationMode: CollaborationMode;
   newChatOrchestrationMode: OrchestrationMode;
+  newChatManagedFiles?: boolean;
+  clearNewChatManagedFiles?: () => void;
   newTaskTarget: DesktopNewTaskTarget | undefined;
 }): AppShellChatActions {
   const {
@@ -228,6 +230,8 @@ export function createAppShellChatActions(deps: {
     clearNewChatPermissionChoice,
     newChatCollaborationMode,
     newChatOrchestrationMode,
+    newChatManagedFiles,
+    clearNewChatManagedFiles,
     newTaskTarget,
   } = deps;
   const copy = getShellCopy(uiLocale).chatActions;
@@ -391,6 +395,12 @@ export function createAppShellChatActions(deps: {
           ...(newChatPermissionChoice ? { permissionMode: newChatPermissionChoice } : {}),
           collaborationMode: newChatCollaborationMode,
           orchestrationMode: newChatOrchestrationMode,
+          ...(newChatManagedFiles ? {
+            toolProfile: 'managed-files-v1' as const,
+            permissionMode: 'ask' as const,
+            collaborationMode: 'agent' as const,
+            orchestrationMode: 'default' as const,
+          } : {}),
         });
         unsentSessionId = session.id;
         // Creation can also yield while a same-target New Task is reopened.
@@ -428,6 +438,8 @@ export function createAppShellChatActions(deps: {
         // survive for retry. Clear only while this Session still owns the UI.
         if (newChatPermissionChoice && activeIdRef.current === session.id)
           clearNewChatPermissionChoice();
+        if (newChatManagedFiles && activeIdRef.current === session.id)
+          clearNewChatManagedFiles?.();
         // The callback fires only when this send's first message projected;
         // an unreconciled first message stays unreported.
         if (submitted.kind === 'projected')

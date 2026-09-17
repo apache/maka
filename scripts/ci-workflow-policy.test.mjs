@@ -909,6 +909,24 @@ test('the Gitoxide gate owns repository admission changes', () => {
   );
 });
 
+test('the Gitoxide gate exercises managed task creation on all helper platforms', () => {
+  const workflow = readWorkflow('gitoxide-helper-admission.yml');
+  for (const path of [
+    'packages/runtime-host/src/**',
+    'packages/core/src/session.ts',
+    'apps/desktop/src/**',
+    'packages/ui/src/**',
+  ]) {
+    assert.equal(workflow.split(`'${path}'`).length - 1, 2);
+  }
+  for (const file of [
+    'managed-files-dev-bootstrap.test.js',
+    'session-catalog-coordinator.test.js',
+    'sqlite-session-metadata-store.test.js',
+  ])
+    assert.ok(workflow.includes(file));
+});
+
 test('specialized platform workflows stay reachable without pull requests', () => {
   const cli = readWorkflow('cli-package-validation.yml');
   const baseline = readWorkflow('windows-baseline.yml');

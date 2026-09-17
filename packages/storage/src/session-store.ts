@@ -43,6 +43,7 @@ import {
   type WorkHubMessageAssignmentResult,
   type CreateStableSessionResult,
   type ProbeStableSessionCreateResult,
+  type PreparedSessionCreateResult,
   type UpdateSessionConfigurationRequest,
   type SessionTranscriptMessageLookupRequest,
   type SessionMessageScanRequest,
@@ -318,6 +319,32 @@ class SqliteSessionStore implements SessionAuthorityStore {
     return result.kind === 'created' || result.kind === 'existing'
       ? { kind: result.kind, record: projectHeaderSnapshot(result.record) }
       : result;
+  }
+
+  async readPreparedStableSessionCreate(
+    sessionId: string,
+    requestFingerprint: string,
+  ): Promise<PreparedSessionCreateResult> {
+    await this.ensureReady();
+    const result = await this.metadata.readPreparedStableSessionCreate(
+      sessionId,
+      requestFingerprint,
+    );
+    return result.kind === 'prepared' ? result : projectStableSessionCreateProbe(result);
+  }
+
+  async prepareStableSessionCreate(
+    request: CreateStableSessionRequest,
+  ): Promise<PreparedSessionCreateResult> {
+    await this.ensureReady();
+    assertCoordinationIdentityPairing(request.sessionId, request.input.role);
+    if (request.input.subagentSpawn || request.input.conversationCopy)
+      throw new Error('Prepared creation cannot own subagent or conversation-copy lifecycle');
+    const result = await this.metadata.prepareStableSessionCreate(
+      buildSessionHeader(this.workspaceRoot, request.input, request.sessionId),
+      request.requestFingerprint,
+    );
+    return result.kind === 'prepared' ? result : projectStableSessionCreateProbe(result);
   }
 
   async assignWorkHubMessage(

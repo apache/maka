@@ -80,6 +80,8 @@ export const ELECTION_DEADLINE_MS_ENV_VAR = 'MAKA_RUNTIME_HOST_ELECTION_DEADLINE
 export const IDLE_GRACE_MS_ENV_VAR = 'MAKA_RUNTIME_HOST_IDLE_GRACE_MS';
 
 export interface ConnectOrSpawnRuntimeHostInput {
+  /** Require existing-session resume support; never implies managed task creation. */
+  requireManagedFilesResume?: true;
   rootPath: string;
   protocol: ProtocolRange;
   compositionId: string;
@@ -100,6 +102,16 @@ export interface ConnectOrSpawnRuntimeHostInput {
   closeOnLauncherExit?: boolean;
   /** Candidate-exit sink forwarded to the launcher; the embedder owns the sink. */
   onExit?: (details: CandidateExitDetails) => void;
+}
+
+export class RuntimeHostManagedFilesUnavailableError extends Error {
+  readonly code = 'managed_files_resume_unavailable';
+  constructor(readonly hostEpoch: string) {
+    super(
+      'managed_files_resume_unavailable: the connected Host cannot resume managed files sessions',
+    );
+    this.name = 'RuntimeHostManagedFilesUnavailableError';
+  }
 }
 
 interface ConnectOrSpawnRuntimeHostDependencies {
@@ -355,6 +367,10 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
   requireHostCompositionId(input.compositionId);
   requireOptionalTimeout(input.connectTimeoutMs, 'connectTimeoutMs', 1);
   requireOptionalTimeout(input.handshakeTimeoutMs, 'handshakeTimeoutMs', 1);
+  if (input.requireManagedFilesResume !== undefined && input.requireManagedFilesResume !== true) {
+    throw new TypeError('requireManagedFilesResume must be true when supplied');
+  }
+  const requireManagedFilesResume = input.requireManagedFilesResume === true;
   const managedLaunchClaim =
     input.managedLaunchClaim === undefined
       ? undefined
@@ -436,6 +452,27 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
             Math.max(1, Math.ceil(remaining)),
             input.signal,
           );
+          if (requireManagedFilesResume) {
+            const budget = deadline - performance.now();
+            if (budget <= 0) throw new Error('Runtime Host capability deadline elapsed');
+            const available = await abortable(
+              () =>
+                result.connection.request(
+                  'host.execution-capabilities.query',
+                  {},
+                  Math.max(1, Math.ceil(budget)),
+                ),
+              input.signal,
+            );
+            input.signal?.throwIfAborted();
+            if (
+              available.hostEpoch !== result.connection.hostEpoch ||
+              available.state !== 'ready' ||
+              available.managedFilesResume !== true
+            ) {
+              throw new RuntimeHostManagedFilesUnavailableError(result.connection.hostEpoch);
+            }
+          }
           electionSettled = true;
           await retireCandidateStartupDiagnostic(capability.rootId, startupFailure);
           const selected = latestCandidate?.attempt;
@@ -444,9 +481,10 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
               ? { pid: selected.pid, exited: selected.exited }
               : undefined;
           return spawnedProcess ? { ...result, spawnedProcess } : result;
-        } catch {
+        } catch (error) {
           observations.readyWaitFailed += 1;
           await result.connection.close().catch(() => undefined);
+          if (error instanceof RuntimeHostManagedFilesUnavailableError) throw error;
         }
         input.signal?.throwIfAborted();
         sawUnresponsiveEndpoint = true;

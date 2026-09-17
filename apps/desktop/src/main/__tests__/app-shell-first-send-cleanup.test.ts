@@ -51,6 +51,29 @@ import {
 } from './app-shell-chat-actions-fixture.js';
 
 describe('composer first-send cleanup', () => {
+  it('passes explicit managed intent with fixed modes to the new-task bridge', async () => {
+    let creation: unknown;
+    const restoreWindow = installWindow({
+      newTasks: { create: async (_target: unknown, input: unknown) => {
+        creation = input;
+        throw new Error('stop after observing creation request');
+      } },
+    });
+    try {
+      const actions = createAppShellChatActions({
+        ...createActionsDeps(),
+        newChatManagedFiles: true,
+        newChatCollaborationMode: 'plan',
+        newChatOrchestrationMode: 'swarm',
+        newChatPermissionChoice: 'bypass',
+      });
+      await actions.send('Edit the file');
+      assert.deepEqual(creation, {
+        name: 'New Chat', toolProfile: 'managed-files-v1',
+        permissionMode: 'ask', collaborationMode: 'agent', orchestrationMode: 'default',
+      });
+    } finally { restoreWindow(); }
+  });
   it('cancels when the composer owner changes during the readiness check', async () => {
     const readiness = deferred<boolean>();
     const activeIdRef = { current: 'session-a' as string | undefined };
@@ -255,6 +278,8 @@ describe('composer first-send cleanup', () => {
   it('retains the permission choice across refused and throwing first sends, then consumes it on success', async () => {
     const createInputs: unknown[] = [];
     let cleared = 0;
+    let managed = true;
+    let managedCleared = 0;
     const removed: string[] = [];
     const restoreWindow = installWindow({
       newTasks: {
@@ -280,6 +305,11 @@ describe('composer first-send cleanup', () => {
       const deps = () => ({
         ...createActionsDeps(),
         newChatPermissionChoice: choice,
+        newChatManagedFiles: managed,
+        clearNewChatManagedFiles: () => {
+          managedCleared += 1;
+          managed = false;
+        },
         clearNewChatPermissionChoice: () => {
           cleared += 1;
           choice = undefined;
@@ -287,18 +317,24 @@ describe('composer first-send cleanup', () => {
       });
       assert.equal(await createAppShellChatActions(deps()).send('task A'), false);
       assert.equal(choice, 'ask');
+      assert.equal(managed, true);
       assert.deepEqual(removed, ['session-1']);
       assert.equal(await createAppShellChatActions(deps()).send('retry task A'), false);
       assert.equal(choice, 'ask');
+      assert.equal(managed, true);
       assert.deepEqual(removed, ['session-1', 'session-2']);
       assert.equal(await createAppShellChatActions(deps()).send('retry task A again'), true);
       assert.equal(choice, undefined);
+      assert.equal(managed, false);
       assert.equal(await createAppShellChatActions(deps()).send('task B'), true);
     } finally {
       restoreWindow();
     }
 
     assert.equal(cleared, 1);
+    assert.equal(managedCleared, 1);
+    assert.deepEqual(createInputs.map((input) => (input as { toolProfile?: string }).toolProfile),
+      ['managed-files-v1', 'managed-files-v1', 'managed-files-v1', undefined]);
     assert.equal((createInputs[0] as { permissionMode?: unknown }).permissionMode, 'ask');
     assert.equal((createInputs[1] as { permissionMode?: unknown }).permissionMode, 'ask');
     assert.equal((createInputs[2] as { permissionMode?: unknown }).permissionMode, 'ask');

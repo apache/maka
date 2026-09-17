@@ -105,6 +105,34 @@ import { MakaCompositionLoader } from '../plugin-composition-loader.js';
 import { PluginToolService } from '../plugin-tool-service.js';
 import { testInvocationOpening } from './invocation-fixture.js';
 
+test('managed profile cannot construct a generic backend without its durable execution port', () => {
+  const input = {
+    sessionId: 'session-1',
+    header: { ...header(), toolProfile: 'managed-files-v1' },
+    appendMessage: async () => {},
+    connection: connection(),
+    apiKey: 'offline',
+    modelId: 'mock-model-id',
+    tools: [],
+    modelFactory: () => new MockLanguageModelV4({}),
+  } satisfies Parameters<typeof createTestAiSdkBackend>[0];
+  assert.throws(
+    () => createTestAiSdkBackend(input),
+    /Managed files profile requires durable managed execution/,
+  );
+  const prepareManagedMutation = async () => {
+    throw new Error('not executed');
+  };
+  assert.throws(
+    () => createTestAiSdkBackend({ ...input, prepareManagedMutation }),
+    /Managed files profile requires durable managed execution/,
+  );
+  assert.throws(
+    () => createTestAiSdkBackend({ ...input, header: header(), prepareManagedMutation }),
+    /Managed execution requires the managed files profile/,
+  );
+});
+
 for (const terminal of ['gateway', 'eof', 'other'] as const) {
   test(`recovers ${terminal} SSE with one failed attempt and no repeated tool effects`, async () => {
     const durable = durableTurnHarness('turn-tb4', 'do the work', { runId: 'run-tb4' });

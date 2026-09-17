@@ -106,6 +106,31 @@ export interface HostDiagnosticsResult extends HostStatusResult {
 }
 
 export const HOST_BOOTSTRAP_OPERATION_SPECS = {
+  'host.execution-capabilities.query': defineOperation({
+    mode: 'query',
+    availability: 'bootstrap',
+    errors: ['host_draining', 'internal_failure'] as const,
+    decodeInput: (value) => decodeEmptyHostInput(value, 'execution capabilities input'),
+    decodeOutput: (value) => {
+      const record = requireExactRecord(value, 'execution capabilities', [
+        'hostEpoch',
+        'state',
+        'managedFilesResume',
+      ]);
+      const state = requireHostLifecycleState(record.state);
+      if (
+        typeof record.managedFilesResume !== 'boolean' ||
+        (state !== 'ready' && record.managedFilesResume)
+      ) {
+        throw invalidProtocolFrame('Invalid execution capabilities');
+      }
+      return {
+        hostEpoch: requireId(record.hostEpoch, 'hostEpoch'),
+        state,
+        managedFilesResume: record.managedFilesResume,
+      };
+    },
+  }),
   'host.status': defineOperation({
     mode: 'query',
     availability: 'bootstrap',

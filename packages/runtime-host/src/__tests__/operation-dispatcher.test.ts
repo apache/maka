@@ -190,6 +190,7 @@ function validHandlers(): OperationHandlerMap {
     }) as OperationOutcome<K>;
   return {
     'host.status': unavailable,
+    'host.execution-capabilities.query': unavailable,
     'host.diagnostics.query': unavailable,
     'host.resources.query': unavailable,
     'host.upgrade.prepare': unavailable,

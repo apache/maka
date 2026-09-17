@@ -238,6 +238,8 @@ describe('CLI release file policy', () => {
     for (const path of [
       'dist/test-only/fake-backend.js',
       'dist/test-only/execution-candidate-e2e-main.js',
+      'dist/test-only/managed-files-candidate-main.js',
+      'dist/test-only/managed-files-dev-bootstrap.js',
       String.raw`dist\test-only\desktop-e2e-execution.js`,
     ]) {
       assert.equal(isMakaDevelopmentArtifact(path), true, path);

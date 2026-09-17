@@ -43,7 +43,7 @@ import {
   headerToSummary,
 } from '@maka/runtime/session-manager';
 import { type ProjectCatalog, ProjectUnavailableError } from '@maka/storage/project-catalog';
-import { SessionNotFoundError } from '@maka/storage/session-store';
+import { createSessionStore, SessionNotFoundError } from '@maka/storage/session-store';
 import type { ResolveExecutionConnectionResult } from '@maka/storage/runtime-policy-stores';
 import {
   SessionMetadataVersionConflictError,
@@ -79,6 +79,145 @@ const context: ConnectionContext = {
   principal: 'local_os_user',
   acquireResidency: () => ({ release: () => undefined }),
 };
+
+test('ordinary session creation cannot mint a managed profile without workspace admission', async () => {
+  const fixture = createFixture();
+  const outcome = await fixture.coordinator.handlers['session.create'](
+    {
+      sessionId: fixture.sessionId,
+      workspace: { kind: 'host_path', path: process.cwd() },
+      modelTarget: {
+        kind: 'explicit',
+        connectionId: 'connection-1',
+        connectionSlug: 'test',
+        model: 'model-1',
+      },
+      toolProfile: 'managed-files-v1',
+    },
+    context,
+  );
+  assert.deepEqual(outcome, {
+    ok: false,
+    error: {
+      code: 'invalid_request',
+      message:
+        'Managed files creation requires workspace admission; this entry point is unavailable',
+    },
+  });
+  assert.equal(fixture.drainRequests(), 0);
+});
+
+test('managed catalog retries the prepared model instead of resolving a changed default', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-catalog-managed-'));
+  let store = createSessionStore(root);
+  let interrupted = true;
+  let defaultModel = 'model-1';
+  let revoked = false;
+  let publications = 0;
+  const policy = runtimePolicyFixture({
+    enabledModelIds: ['model-1', 'model-2'],
+    models: [{ id: 'model-1' }, { id: 'model-2' }],
+  });
+  const snapshot = policy.connectionCatalog.getSnapshot;
+  const runtimePolicy = {
+    ...policy,
+    operations: {
+      resolveExecutionConnection: async (
+        ref: Parameters<RuntimePolicy['operations']['resolveExecutionConnection']>[0],
+      ) => {
+        const result = await policy.operations.resolveExecutionConnection(ref);
+        return revoked && result.kind === 'ready'
+          ? { ...result, connection: { ...result.connection, enabledModelIds: ['model-2'] } }
+          : result;
+      },
+    },
+    connectionCatalog: {
+      getSnapshot: async () => ({
+        ...(await snapshot()),
+        defaultTarget: { connectionId: 'connection-1', modelId: defaultModel },
+      }),
+    },
+  };
+  const options = () => ({
+    stores: store,
+    runtimePolicy,
+    managedCreation: {
+      stores: store,
+      publish: async (sessionId: string, fingerprint: string) => {
+        publications += 1;
+        if (interrupted) throw new Error('publication interrupted');
+        const prepared = await store.readPreparedStableSessionCreate(sessionId, fingerprint);
+        assert.equal(prepared.kind, 'prepared');
+        if (prepared.kind !== 'prepared') throw new Error('Missing preparation');
+        await store.createStableSession({
+          sessionId,
+          requestFingerprint: fingerprint,
+          input: prepared.header,
+        });
+      },
+    },
+  });
+  const input = {
+    sessionId: 'managed-retry',
+    workspace: { kind: 'host_path' as const, path: root },
+    modelTarget: { kind: 'default' as const },
+    toolProfile: 'managed-files-v1' as const,
+  };
+  try {
+    for (const unsupported of [
+      { collaborationMode: 'plan' },
+      { orchestrationMode: 'swarm' },
+      { mode: 'deep_research' },
+    ] as const) {
+      const incompatible = await createFixture(options()).coordinator.handlers['session.create'](
+        { ...input, ...unsupported },
+        context,
+      );
+      assert.equal(incompatible.ok, false);
+    }
+    assert.equal(publications, 0);
+    const first = await createFixture(options()).coordinator.handlers['session.create'](
+      input,
+      context,
+    );
+    assert.equal(first.ok, false);
+    await store.close?.();
+    store = createSessionStore(root);
+    interrupted = false;
+    defaultModel = 'model-2';
+    revoked = true;
+    const denied = await createFixture(options()).coordinator.handlers['session.create'](
+      input,
+      context,
+    );
+    assert.equal(denied.ok, false);
+    assert.equal(publications, 1, 'revoked pinned model must not reach publication');
+    revoked = false;
+    const changed = await createFixture(options()).coordinator.handlers['session.create'](
+      { ...input, name: 'different request' },
+      context,
+    );
+    assert.equal(changed.ok, false);
+    if (changed.ok) throw new Error('Expected conflict');
+    assert.equal(changed.error.code, 'operation_conflict');
+    assert.equal(publications, 1);
+    const retry = await createFixture(options()).coordinator.handlers['session.create'](
+      input,
+      context,
+    );
+    assert.equal(retry.ok, true, JSON.stringify(retry));
+    assert.equal((await store.readHeader(input.sessionId)).model, 'model-1');
+    const again = await createFixture(options()).coordinator.handlers['session.create'](
+      input,
+      context,
+    );
+    assert.equal(again.ok, true);
+    assert.equal(publications, 2, 'published retry must not import again');
+  } finally {
+    await store.close?.();
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test('projects only bounded execution boundary presentation facts', async () => {
   const fixture = createFixture({
@@ -2016,6 +2155,13 @@ function createFixture(
     readonly legacyConnectionIdentity?: boolean;
     readonly header?: Partial<SessionHeader>;
     readonly assertExecutorAvailable?: (sessionId: string, executorId: string) => void;
+    readonly managedCreation?: {
+      readonly stores: Pick<
+        ReturnType<typeof createSessionStore>,
+        'readPreparedStableSessionCreate' | 'prepareStableSessionCreate'
+      >;
+      readonly publish: (sessionId: string, fingerprint: string) => Promise<void>;
+    };
   } = {},
 ) {
   const sessionId = 'session-1';
@@ -2091,6 +2237,7 @@ function createFixture(
     ...options.continuity,
   };
   const coordinator = new HostSessionCatalogCoordinator({
+    ...(options.managedCreation ? { managedCreation: options.managedCreation } : {}),
     stores,
     turnIndex,
     runtimePolicy,

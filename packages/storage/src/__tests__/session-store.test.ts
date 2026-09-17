@@ -871,6 +871,7 @@ describe('SQLite SessionStore', () => {
       DROP INDEX session_metadata_by_external_origin;
       ALTER TABLE session_metadata DROP COLUMN external_adapter_id;
       ALTER TABLE session_metadata DROP COLUMN external_source_session_id;
+      ALTER TABLE session_create_claims DROP COLUMN prepared_header_json;
       UPDATE session_metadata_schema SET version = 22 WHERE scope = 'session_metadata';
     `);
     legacy.close();

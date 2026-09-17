@@ -220,6 +220,10 @@ export type ProbeStableSessionCreateResult =
       readonly reason: 'identity_mismatch' | 'removed';
     };
 
+export type PreparedSessionCreateResult =
+  | { readonly kind: 'prepared'; readonly header: SessionHeader }
+  | ProbeStableSessionCreateResult;
+
 export type UpdateSessionConfigurationRequest = SessionConfigurationMetadataUpdate;
 
 export interface SessionTranscriptStorageFragment {
@@ -465,6 +469,16 @@ export interface SessionAuthorityStore extends SessionStore, MessageAdmissionSto
     sessionId: string,
     requestFingerprint: string,
   ): Promise<ProbeStableSessionCreateResult>;
+  readPreparedStableSessionCreate(
+    sessionId: string,
+    requestFingerprint: string,
+  ): Promise<PreparedSessionCreateResult>;
+  /** Pins resolved creation fields without publishing a catalog Session. Read
+   * an existing preparation before resolving mutable defaults on a retry.
+   * Custom genesis boundaries and conversation-copy/subagent lifecycles are not supported. */
+  prepareStableSessionCreate(
+    request: CreateStableSessionRequest,
+  ): Promise<PreparedSessionCreateResult>;
   createStableSession(
     request: CreateStableSessionRequest,
     initialBoundary?: ExecutionBoundary,

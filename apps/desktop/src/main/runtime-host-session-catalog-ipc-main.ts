@@ -124,6 +124,7 @@ export function registerRuntimeHostSessionCatalogIpc(
     pendingCleanup.add(sessionId);
   });
   ipcMain.handle('sessions:create', async (_event, input?: CreateSessionRequestInput) => {
+    input = input === undefined ? undefined : structuredClone(input);
     const workspace = await deps.resolveCreateProject({
       ...(input?.cwd === undefined ? {} : { cwd: input.cwd }),
       ...(input?.projectId === undefined ? {} : { projectId: input.projectId }),
@@ -321,6 +322,9 @@ function normalizeSessionListFilter(value: unknown): SessionListFilter | undefin
 }
 
 export function resolveDesktopSessionCreateInput(input: CreateSessionRequestInput | undefined, sessionId: string, workspace: WorkspaceTarget): SessionCreateInput {
+  if (input?.toolProfile !== undefined && input.toolProfile !== 'managed-files-v1') {
+    throw new TypeError('Invalid Session tool profile');
+  }
   const request = resolveCreateSessionRequest(input);
   const executorId = normalizeOptionalString(input?.executorId, 'executor id');
   if (
@@ -333,6 +337,7 @@ export function resolveDesktopSessionCreateInput(input: CreateSessionRequestInpu
   }
   return {
     sessionId, workspace,
+    ...(input?.toolProfile === undefined ? {} : { toolProfile: input.toolProfile }),
     ...(request.mode === undefined ? {} : { mode: request.mode }),
     name: request.name,
     ...(request.labels === undefined ? {} : { labels: request.labels }),

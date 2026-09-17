@@ -121,6 +121,21 @@ const base = {
   onOrchestrationModeChange: () => undefined,
 };
 
+test('managed files is an explicit plus-menu choice with a visible active mark', async () => {
+  const markup = await plusMenu({
+    ...base,
+    managedFilesMode: {
+      active: true,
+      label: 'Managed files task',
+      description: 'Changes stay in the internal workspace.',
+      onChange: () => undefined,
+    },
+  });
+  assert.ok(markup.includes('Managed files task'));
+  assert.ok(markup.includes('Changes stay in the internal workspace.'));
+  assert.ok(tagsWith(markup, 'role="menuitemcheckbox"', 'aria-checked="true"').length > 0);
+});
+
 test('the mode controls alone open the menu on a row, not on a rule', async () => {
   assert.equal((await plusMenu(base)).includes('astryx-dropdown-menu-divider'), false);
 });

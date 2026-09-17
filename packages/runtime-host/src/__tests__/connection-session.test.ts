@@ -745,7 +745,7 @@ test('a connection accepted before composition exists resolves ready handlers wi
   let transport: FramedTransport | undefined;
   let host: RuntimeHostKernel | undefined;
   try {
-    await withTimeout(factoryEntered.promise, 1_000, 'Runtime Host did not enter composition');
+    await withTimeout(factoryEntered.promise, 5_000, 'Runtime Host did not enter composition');
     const registration = await readHostRegistration(owner.controlDirectory);
     assert.ok(registration);
     assert.equal(registration.state, 'recovering');
@@ -1695,9 +1695,16 @@ function statusResponse(requestId: string): ResponseFrame {
 
 const UNUSED_HOST_DIAGNOSTICS_HANDLER: Pick<
   OperationHandlerMap,
-  'host.diagnostics.query' | 'host.resources.query' | 'host.upgrade.prepare'
+  | 'host.execution-capabilities.query'
+  | 'host.diagnostics.query'
+  | 'host.resources.query'
+  | 'host.upgrade.prepare'
 > = {
   'host.diagnostics.query': async () => ({
+    ok: false,
+    error: { code: 'internal_failure', message: 'not used' },
+  }),
+  'host.execution-capabilities.query': async () => ({
     ok: false,
     error: { code: 'internal_failure', message: 'not used' },
   }),

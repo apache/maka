@@ -401,6 +401,10 @@ export type StableSessionCreateProbe =
       readonly reason: 'identity_mismatch' | 'removed';
     };
 
+export type PreparedStableSessionCreate =
+  | { readonly kind: 'prepared'; readonly header: SessionHeader }
+  | StableSessionCreateProbe;
+
 export type StableSessionMetadataCreateResult =
   | { readonly kind: 'created'; readonly record: SessionMetadataRecord }
   | { readonly kind: 'existing'; readonly record: SessionMetadataRecord }
@@ -945,6 +949,48 @@ export class SqliteSessionMetadataStore {
     });
   }
 
+  async prepareStableSessionCreate(
+    header: SessionHeader,
+    requestFingerprint: string,
+  ): Promise<PreparedStableSessionCreate> {
+    this.assertOpen();
+    const normalized = normalizeSessionHeader(header);
+    assertSafeSessionId(normalized.id);
+    assertSessionCreateFingerprint(requestFingerprint);
+    if (normalized.subagentSpawn || normalized.conversationCopy)
+      throw new Error('Prepared creation cannot own subagent or conversation-copy lifecycle');
+    const payload = JSON.stringify(normalized);
+    if (Buffer.byteLength(payload) > 65536) throw new Error('Prepared Session header is too large');
+    return this.transaction(() => {
+      const probe = this.probeStableSessionCreateSync(normalized.id, requestFingerprint);
+      if (probe.kind !== 'absent') return probe;
+      this.db
+        .prepare(`
+        INSERT INTO session_create_claims(session_id, request_fingerprint, claimed_at, prepared_header_json)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(session_id) DO UPDATE SET
+          prepared_header_json = COALESCE(session_create_claims.prepared_header_json, excluded.prepared_header_json)
+      `)
+        .run(normalized.id, requestFingerprint, this.now(), payload);
+      return { kind: 'prepared', header: this.readPreparedCreateHeaderSync(normalized.id)! };
+    });
+  }
+
+  async readPreparedStableSessionCreate(
+    sessionId: string,
+    requestFingerprint: string,
+  ): Promise<PreparedStableSessionCreate> {
+    this.assertOpen();
+    assertSafeSessionId(sessionId);
+    assertSessionCreateFingerprint(requestFingerprint);
+    return this.readTransaction(() => {
+      const probe = this.probeStableSessionCreateSync(sessionId, requestFingerprint);
+      if (probe.kind !== 'absent') return probe;
+      const header = this.readPreparedCreateHeaderSync(sessionId);
+      return header ? { kind: 'prepared', header } : probe;
+    });
+  }
+
   async hasStableSessionCreateClaim(
     sessionId: string,
     requestFingerprint: string,
@@ -987,7 +1033,13 @@ export class SqliteSessionMetadataStore {
         .run(normalized.id, requestFingerprint, committedAt);
       return {
         kind: 'created' as const,
-        record: this.insertHeader(normalized, 1, committedAt, initialBoundary),
+        record: this.insertHeader(
+          this.readPreparedCreateHeaderSync(normalized.id) ?? normalized,
+          1,
+          committedAt,
+          initialBoundary,
+          requestFingerprint,
+        ),
       };
     });
   }
@@ -1001,6 +1053,9 @@ export class SqliteSessionMetadataStore {
     assertSessionCreateFingerprint(requestFingerprint);
     return this.transaction(() => {
       const probe = this.probeStableSessionCreateSync(sessionId, requestFingerprint);
+      if (this.readPreparedCreateHeaderSync(sessionId)) {
+        throw new SessionMetadataConflictError('Prepared Session creation cannot be discarded');
+      }
       if (probe.kind === 'conflict') {
         throw new SessionMetadataConflictError(
           'Stable Session identity belongs to a different request',
@@ -4555,6 +4610,7 @@ export class SqliteSessionMetadataStore {
     metadataVersion: number,
     committedAt: number,
     initialBoundary?: ExecutionBoundary,
+    preparedRequestFingerprint?: string,
   ): SessionMetadataRecord {
     const inserted = this.tryInsertHeader(
       header,
@@ -4562,6 +4618,7 @@ export class SqliteSessionMetadataStore {
       committedAt,
       false,
       initialBoundary,
+      preparedRequestFingerprint,
     );
     if (!inserted) {
       throw new SessionMetadataConflictError(`Session metadata already exists: ${header.id}`);
@@ -4575,7 +4632,21 @@ export class SqliteSessionMetadataStore {
     committedAt: number,
     ignoreConflicts: boolean,
     initialBoundary?: ExecutionBoundary,
+    preparedRequestFingerprint?: string,
   ): SessionMetadataRecord | undefined {
+    const prepared = this.readPreparedCreateHeaderSync(header.id);
+    if (
+      prepared &&
+      (initialBoundary !== undefined ||
+        !preparedRequestFingerprint ||
+        this.probeStableSessionCreateSync(header.id, preparedRequestFingerprint).kind ===
+          'conflict' ||
+        !isDeepStrictEqual(prepared, header))
+    ) {
+      throw new SessionMetadataConflictError(
+        'Prepared Session requires its exact stable publication',
+      );
+    }
     const result = this.db
       .prepare(
         `
@@ -5331,6 +5402,20 @@ export class SqliteSessionMetadataStore {
       generation: row.generation as number,
       pendingWrites: row.pending_writes as number,
     };
+  }
+
+  private readPreparedCreateHeaderSync(sessionId: string): SessionHeader | undefined {
+    const row = this.db
+      .prepare(
+        'SELECT prepared_header_json AS payload FROM session_create_claims WHERE session_id = ?',
+      )
+      .get(sessionId) as { payload: unknown } | undefined;
+    if (!row || row.payload === null) return undefined;
+    if (typeof row.payload !== 'string' || Buffer.byteLength(row.payload) > 65536)
+      throw new Error('Corrupt prepared Session creation');
+    const parsed = JSON.parse(row.payload) as SessionHeader;
+    if (!parsed || parsed.id !== sessionId) throw new Error('Prepared Session identity mismatch');
+    return decodePersistedSessionHeader(markPersisted<SessionHeader>(parsed), sessionId);
   }
 
   private probeStableSessionCreateSync(

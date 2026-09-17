@@ -155,6 +155,7 @@ export {
 } from './catalog-reader.js';
 export {
   IDLE_GRACE_MS_ENV_VAR,
+  RuntimeHostManagedFilesUnavailableError,
   connectOrSpawnRuntimeHost,
   type CandidateExitDetails,
   type ConnectOrSpawnRuntimeHostInput,

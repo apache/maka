@@ -2336,6 +2336,13 @@ export function getShellCopy(locale: UiLocale): ShellCopy {
 }
 
 export function localizedShellErrorMessage(error: unknown, fallback: string, locale: UiLocale): string {
+  if (error instanceof Error && /^(?:Error invoking remote method '(?:sessions:create|session-local:create)': )?(?:DesktopRuntimeHostClientError: |Error: )?MAKA_MANAGED_FILES_UNAVAILABLE:/u.test(error.message)) {
+    return {
+      'zh-CN': '当前 Runtime Host 尚未启用托管文件任务。普通聊天仍可使用；请连接支持此能力的 Host 后重试。',
+      'zh-TW': '目前 Runtime Host 尚未啟用託管檔案任務。普通聊天仍可使用；請連接支援此能力的 Host 後重試。',
+      en: 'The connected Runtime Host does not support managed files tasks. Ordinary chat remains available; connect to a capable Host before retrying.',
+    }[locale];
+  }
   if (error instanceof AttachmentIngestBlockedError)
     return getShellCopy(locale).sessionSettingsActions.attachmentIngestBlocked[error.code];
   // A classified failure (timeout / rate limit / auth / provider / network)

@@ -141,6 +141,8 @@ export interface RuntimeHostCompositionContext {
 }
 
 export interface RuntimeHostComposition {
+  /** Availability hint only; every managed operation still validates its capability. */
+  readonly managedFilesResume?: boolean;
   readonly handlers: DomainOperationHandlerMap;
   readonly moduleIds?: readonly string[];
   readonly continuity?: SessionContinuityService;
@@ -719,6 +721,15 @@ export class RuntimeHostKernel {
         'host.status': async () => ({
           ok: true,
           result: this.#statusSnapshot(),
+        }),
+        'host.execution-capabilities.query': async () => ({
+          ok: true,
+          result: {
+            hostEpoch: this.hostEpoch,
+            state: this.#state,
+            managedFilesResume:
+              this.#state === 'ready' && this.#composition?.managedFilesResume === true,
+          },
         }),
         'host.diagnostics.query': async () => ({
           ok: true,

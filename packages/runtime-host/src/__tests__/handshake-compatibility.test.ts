@@ -391,7 +391,18 @@ async function withForgedHandshakePeer(
   });
   const serverTask = deferred<void>();
   let endpointConnected = false;
+  let acceptingHandshakes = false;
+  let preparationConnections = 0;
+  let handshakeConnections = 0;
   const server = createServer((socket) => {
+    // Windows ACL preparation opens the named pipe without sending a hello.
+    // Do not give that endpoint-maintenance connection a protocol identity.
+    if (!acceptingHandshakes) {
+      preparationConnections++;
+      socket.resume();
+      return;
+    }
+    handshakeConnections++;
     endpointConnected = true;
     void serve(new FramedTransport(socket), hostEpoch, capability.rootId).then(
       serverTask.resolve,
@@ -403,6 +414,7 @@ async function withForgedHandshakePeer(
       await listen(server, endpoint.path);
       if (options.prepareAfterListen !== false) await endpoint.prepareAfterListen();
     }
+    acceptingHandshakes = true;
     await writeHostRegistration(controlDirectory, {
       kind: 'maka-runtime-host',
       schemaVersion: RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION,
@@ -451,6 +463,17 @@ async function withForgedHandshakePeer(
       if (result.kind === 'connected') await result.connection.close();
     }
     if (options.expectConnection !== false) await serverTask.promise;
+    assert.equal(handshakeConnections, options.expectConnection === false ? 0 : 1);
+    if (
+      process.platform === 'win32' &&
+      options.expectConnection !== false &&
+      options.prepareAfterListen !== false
+    ) {
+      assert.ok(
+        preparationConnections > 0,
+        'real Windows ACL setup must exercise the preparation connection',
+      );
+    }
   } finally {
     await closeServer(server);
     await removeHostRegistration(controlDirectory, hostEpoch).catch(() => undefined);

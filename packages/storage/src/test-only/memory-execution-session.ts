@@ -416,6 +416,12 @@ export function createMemorySessionStore(
     createStableSession: async (request, initial) =>
       write('session.createStable', (s) => stable(s, root, request, initial)),
     probeStableSessionCreate: async (id, fingerprint) => read((s) => probe(s, id, fingerprint)),
+    readPreparedStableSessionCreate: async () => {
+      throw new Error('Prepared Session creation requires the SQLite test owner');
+    },
+    prepareStableSessionCreate: async () => {
+      throw new Error('Prepared Session creation requires the SQLite test owner');
+    },
     createImportedSession: async (input, values, origin, options) => {
       const canonicalValues = values.map((value) => decodeCanonicalMessage(copy(value)));
       const h = {

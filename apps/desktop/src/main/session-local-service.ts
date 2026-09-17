@@ -64,7 +64,7 @@ export interface DesktopSessionLocalTarget {
   readonly client?: Pick<
     DesktopRuntimeHostClient,
     'hostEpoch' | 'createSession' | 'getSession' | 'listSessions' | 'ingestAttachment'
-  >;
+  > & Partial<Pick<DesktopRuntimeHostClient, 'requireManagedFilesAvailable'>>;
   readonly submit?: (input: TurnMessageSubmitInput) => Promise<TurnMessageSubmitResult>;
 }
 
@@ -517,7 +517,14 @@ export function registerDesktopSessionLocalIpc(deps: {
   ipcMain.handle(
     'session-local:create',
     async (_event, scope: unknown, input: CreateSessionRequestInput = {}) => {
+      input = structuredClone(input);
       const target = service.target(scope);
+      if (input.toolProfile === 'managed-files-v1') {
+        if (!target.client?.requireManagedFilesAvailable) {
+          throw new Error('MAKA_MANAGED_FILES_UNAVAILABLE: Managed files require a connected capable Host.');
+        }
+        await target.client.requireManagedFilesAvailable();
+      }
       const workspace =
         typeof input.projectId === 'string'
           ? { kind: 'project' as const, projectId: input.projectId }

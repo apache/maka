@@ -7,13 +7,13 @@
 | --- | --- | --- |
 | 1 | managed T1 后只经限定 authority 结算 | 已提取，Windows 独立构建和定向测试通过 |
 | 2 | accepted Git 内容、candidate 与接受证明一致 | 已提取，独立构建和定向验证通过；完整 CI 未宣称通过 |
-| 3 | 创建前固定 managed intent 与 Host capability | 待提取 |
+| 3 | 创建前固定 managed intent 与 Host capability | 已提取；Windows 开发态真实 Electron smoke 通过，保持 Draft 候选 |
 | 4 | 同一 causal boundary 恢复且不重跑已完成 mutation | 待提取 |
 
 ## 文件与测试归属
 
 以下覆盖来源增量全部 94 个路径。多编号表示必须按功能块提取，不允许整文件或跨边界
-commit 搬运；原表是分配计划，PR2 的实际提取见文末，PR3/4 尚未提取。
+commit 搬运；原表是分配计划，PR2/3 的实际提取见文末，PR4 尚未提取。
 
 | 来源路径 | 交付 |
 | --- | --- |
@@ -136,6 +136,24 @@ commit 搬运；原表是分配计划，PR2 的实际提取见文末，PR3/4 尚
 - Core、Storage、Runtime 独立 build 通过；13 个代码/测试文件 Biome format 通过。
 - 路径比较实际仅三个预期差异；其余十个代码/测试文件与冻结来源完全一致。
 - 当前 main 的 package-lock.json 和依赖版本未改变。
+
+## 交付 3 的实际提取
+
+- 分支 `codex/desktop-managed-files-delivery`，基于交付 2 `2e8033292`。
+- 取 `672d82731..7f534eeff` 中 Desktop 创建、prepared header、Host readiness、
+  managed session backend 和 accepted Read 的功能块；不搬整个历史提交。
+- `e2bafcc1d` 至 `9bdbebee1`：session/backend、source-bound import、
+  pinned helper、Host capability、prepared session publication。
+- `3dd807118`、`2362f0626`、`355e46d14`：开发态 candidate、
+  显式创建 intent 与加号菜单；`7f534eeff` 只取正常启动的 Electron smoke。
+- 保留新 main 的 first-send 清理顺序：拒绝/异常时保留 managed intent，
+  成功且当前 Session 仍持有 UI 时才清除；补对应断言。
+- PR3 不修改 Rust、tool-runtime、runtime-kernel、session-manager、continuation、
+  candidate recovery、依赖版本或 lockfile。prepared facade 单独从交付 2 增量提取。
+- 三平台 helper workflow 增加创建相关选择与定向测试；真实 Electron smoke 本轮为
+  Windows 手工执行证据，不声称已经被三平台 CI 执行。
+- path diff 保留最新 main 的 Desktop/Host 修改；range-diff 中未匹配的恢复提交归 PR4。
+- 验证与未关闭限制见 `desktop-managed-files-delivery.zh-CN.md`。
 
 ## 交付 2 的实际提取
 

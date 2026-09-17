@@ -18,6 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -58,6 +59,27 @@ import {
 import { SQLITE_AGENT_GRAPH_CONTROL_TABLES } from '../sqlite-session-metadata-schema.js';
 
 describe('SqliteSessionMetadataStore', () => {
+  test('preserves the explicit managed files profile across database reopen', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-managed-profile-'));
+    const path = join(root, 'state.sqlite');
+    try {
+      const store = createSqliteSessionMetadataStore(path);
+      try {
+        await store.create(fullHeader({ toolProfile: 'managed-files-v1' }));
+      } finally {
+        store.close();
+      }
+      const reopened = createSqliteSessionMetadataStore(path);
+      try {
+        assert.equal((await reopened.read('session-1'))?.header.toolProfile, 'managed-files-v1');
+        assert.equal(reopened.schemaVersion(), SQLITE_SESSION_METADATA_SCHEMA_VERSION);
+      } finally {
+        reopened.close();
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
   test('migrates version 38 and resumes the body-free Coordination index idempotently', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-coordination-index-migration-'));
     const path = join(root, 'state.sqlite');
@@ -66,7 +88,7 @@ describe('SqliteSessionMetadataStore', () => {
       setup.close();
       const baseline = new DatabaseSync(path);
       baseline.exec(
-        "DROP TABLE coordination_transcript_index; UPDATE session_metadata_schema SET version = 38 WHERE scope = 'session_metadata'",
+        "ALTER TABLE session_create_claims DROP COLUMN prepared_header_json; DROP TABLE coordination_transcript_index; UPDATE session_metadata_schema SET version = 38 WHERE scope = 'session_metadata'",
       );
       baseline.close();
       const migrated = createSqliteSessionMetadataStore(path);
@@ -141,11 +163,9 @@ describe('SqliteSessionMetadataStore', () => {
               DROP TABLE message_admissions;
             `);
           }
-          version30
-            .prepare(
-              `UPDATE session_metadata_schema SET version = 30 WHERE scope = 'session_metadata'`,
-            )
-            .run();
+          version30.exec(
+            `ALTER TABLE session_create_claims DROP COLUMN prepared_header_json; UPDATE session_metadata_schema SET version = 30 WHERE scope = 'session_metadata'`,
+          );
         } finally {
           version30.close();
         }
@@ -227,6 +247,7 @@ describe('SqliteSessionMetadataStore', () => {
     const legacy = new DatabaseSync(path);
     try {
       legacy.exec(`
+        ALTER TABLE session_create_claims DROP COLUMN prepared_header_json;
         UPDATE session_metadata_schema SET version = 32 WHERE scope = 'session_metadata';
       `);
     } finally {
@@ -269,6 +290,7 @@ describe('SqliteSessionMetadataStore', () => {
         DROP INDEX session_metadata_by_external_origin;
         ALTER TABLE session_metadata DROP COLUMN external_adapter_id;
         ALTER TABLE session_metadata DROP COLUMN external_source_session_id;
+        ALTER TABLE session_create_claims DROP COLUMN prepared_header_json;
         UPDATE session_metadata_schema SET version = 27 WHERE scope = 'session_metadata';
       `);
     } finally {
@@ -529,6 +551,7 @@ describe('SqliteSessionMetadataStore', () => {
       try {
         legacy.exec(`
           ALTER TABLE message_admissions DROP COLUMN skill_invocation_json;
+          ALTER TABLE session_create_claims DROP COLUMN prepared_header_json;
           UPDATE session_metadata_schema SET version = 34 WHERE scope = 'session_metadata';
         `);
       } finally {
@@ -581,6 +604,7 @@ describe('SqliteSessionMetadataStore', () => {
       try {
         legacy.exec(`
           ALTER TABLE cancelled_message_admissions DROP COLUMN cancellation_claim_id;
+          ALTER TABLE session_create_claims DROP COLUMN prepared_header_json;
           UPDATE session_metadata_schema SET version = 36 WHERE scope = 'session_metadata';
         `);
       } finally {
@@ -1476,11 +1500,9 @@ describe('SqliteSessionMetadataStore', () => {
             `,
           )
           .run(13, 300, 'legacy-unchanged');
-        legacy
-          .prepare(
-            `UPDATE session_metadata_schema SET version = 24 WHERE scope = 'session_metadata'`,
-          )
-          .run();
+        legacy.exec(
+          `ALTER TABLE session_create_claims DROP COLUMN prepared_header_json; UPDATE session_metadata_schema SET version = 24 WHERE scope = 'session_metadata'`,
+        );
       } finally {
         legacy.close();
       }
@@ -1693,6 +1715,7 @@ describe('SqliteSessionMetadataStore', () => {
           DROP INDEX session_metadata_by_external_origin;
           ALTER TABLE session_metadata DROP COLUMN external_adapter_id;
           ALTER TABLE session_metadata DROP COLUMN external_source_session_id;
+          ALTER TABLE session_create_claims DROP COLUMN prepared_header_json;
           UPDATE session_metadata_schema SET version = 26 WHERE scope = 'session_metadata';
         `);
         legacy
@@ -3444,6 +3467,136 @@ describe('SqliteSessionMetadataStore', () => {
         assert.equal(created.kind, 'created');
       } finally {
         reopened.close();
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('prepared create preserves the first resolved model before Session publication', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-prepared-create-'));
+    const path = join(root, 'sessions.sqlite');
+    const fingerprint = `sha256:${'e'.repeat(64)}`;
+    let store = createSqliteSessionMetadataStore(path);
+    try {
+      const first = await store.prepareStableSessionCreate(
+        fullHeader({ id: 'prepared-session', model: 'first-model' }),
+        fingerprint,
+      );
+      assert.equal(first.kind, 'prepared');
+      await assert.rejects(store.read('prepared-session'));
+      await assert.rejects(
+        store.create(fullHeader({ id: 'prepared-session', model: 'bypass' })),
+        /Prepared Session/,
+      );
+      store.close();
+      store = createSqliteSessionMetadataStore(path);
+      const retry = await store.prepareStableSessionCreate(
+        fullHeader({ id: 'prepared-session', model: 'changed-default' }),
+        fingerprint,
+      );
+      assert.equal(retry.kind, 'prepared');
+      if (retry.kind !== 'prepared') throw new Error('Expected prepared creation');
+      assert.equal(retry.header.model, 'first-model');
+      retry.header.model = 'mutated-read-result';
+      const read = await store.readPreparedStableSessionCreate('prepared-session', fingerprint);
+      assert.equal(read.kind, 'prepared');
+      if (read.kind !== 'prepared') throw new Error('Expected prepared creation');
+      assert.equal(read.header.model, 'first-model');
+      assert.deepEqual(
+        await store.readPreparedStableSessionCreate('prepared-session', `sha256:${'f'.repeat(64)}`),
+        { kind: 'conflict', reason: 'identity_mismatch' },
+      );
+      await assert.rejects(
+        store.discardStableSessionCreate('prepared-session', fingerprint),
+        /cannot be discarded/,
+      );
+      const result = await store.createStableSession(
+        fullHeader({ id: 'prepared-session', model: 'changed-default' }),
+        fingerprint,
+      );
+      assert.equal(result.kind, 'created');
+      if (result.kind !== 'created') throw new Error('Expected publication');
+      assert.equal(result.record.header.model, 'first-model');
+    } finally {
+      store.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('prepared create survives a child exit before publication', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-prepared-create-crash-'));
+    const path = join(root, 'sessions.sqlite');
+    const fingerprint = `sha256:${'f'.repeat(64)}`;
+    const header = fullHeader({ id: 'crashed-create', model: 'before-exit' });
+    try {
+      const child = spawnSync(
+        process.execPath,
+        [
+          '--input-type=module',
+          '-e',
+          `
+        import { createSqliteSessionMetadataStore } from ${JSON.stringify(new URL('../sqlite-session-metadata-store.js', import.meta.url).href)};
+        const store = createSqliteSessionMetadataStore(process.argv[1]);
+        await store.prepareStableSessionCreate(JSON.parse(process.argv[2]), process.argv[3]);
+        process.exit(87);
+      `,
+          path,
+          JSON.stringify(header),
+          fingerprint,
+        ],
+        { encoding: 'utf8', timeout: 15000, windowsHide: true },
+      );
+      assert.ifError(child.error);
+      assert.equal(child.status, 87, child.stderr);
+      const store = createSqliteSessionMetadataStore(path);
+      try {
+        await assert.rejects(store.read(header.id));
+        const prepared = await store.readPreparedStableSessionCreate(header.id, fingerprint);
+        assert.equal(prepared.kind, 'prepared');
+        if (prepared.kind !== 'prepared') throw new Error('Expected crash residue');
+        assert.equal(prepared.header.model, 'before-exit');
+        const result = await store.createStableSession(
+          { ...header, model: 'after-restart' },
+          fingerprint,
+        );
+        assert.equal(result.kind, 'created');
+        if (result.kind !== 'created') throw new Error('Expected publication');
+        assert.equal(result.record.header.model, 'before-exit');
+      } finally {
+        store.close();
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('metadata 39 upgrade preserves pending claims without inventing resolved defaults', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-prepared-create-upgrade-'));
+    const path = join(root, 'sessions.sqlite');
+    const fingerprint = `sha256:${'a'.repeat(64)}`;
+    try {
+      const old = createSqliteSessionMetadataStore(path);
+      await old.claimStableSessionCreate('legacy-pending', fingerprint);
+      old.close();
+      const db = new DatabaseSync(path);
+      db.exec(
+        "ALTER TABLE session_create_claims DROP COLUMN prepared_header_json; UPDATE session_metadata_schema SET version = 39 WHERE scope = 'session_metadata'",
+      );
+      db.close();
+      const migrated = createSqliteSessionMetadataStore(path);
+      try {
+        assert.equal(migrated.schemaVersion(), 40);
+        assert.deepEqual(
+          await migrated.readPreparedStableSessionCreate('legacy-pending', fingerprint),
+          { kind: 'absent' },
+        );
+        assert.deepEqual(
+          await migrated.probeStableSessionCreate('legacy-pending', `sha256:${'b'.repeat(64)}`),
+          { kind: 'conflict', reason: 'identity_mismatch' },
+        );
+      } finally {
+        migrated.close();
       }
     } finally {
       await rm(root, { recursive: true, force: true });

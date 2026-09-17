@@ -20,6 +20,22 @@
 import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
+
+test('execution capability query is strict and cannot advertise resume before ready', () => {
+  const specs: Record<
+    string,
+    { decodeInput(value: unknown): unknown; decodeOutput(value: unknown): unknown }
+  > = HOST_BOOTSTRAP_OPERATION_SPECS;
+  const spec = specs['host.execution-capabilities.query'];
+  assert.ok(spec, 'Host must expose its actual execution capability');
+  const result = { hostEpoch: 'epoch', state: 'ready', managedFilesResume: true };
+  assert.deepEqual(spec.decodeInput({}), {});
+  assert.deepEqual(spec.decodeOutput(result), result);
+  assert.throws(() => spec.decodeInput({ managedFilesResume: true }));
+  assert.throws(() => spec.decodeOutput({ ...result, state: 'recovering' }));
+  assert.throws(() => spec.decodeOutput({ ...result, managedFilesResume: 'true' }));
+  assert.throws(() => spec.decodeOutput({ ...result, managedFilesCreate: true }));
+});
 import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_COUNT } from '@maka/core/attachments';
 import { TOOL_OUTPUT_DELTA_MAX_CHARS } from '@maka/core/events';
 import { CONNECTION_CATALOG_MAX_ENABLED_MODEL_IDS } from '@maka/core/runtime-policy';
@@ -2277,7 +2293,7 @@ describe('Runtime Host bootstrap protocol', () => {
     ) => unknown;
     assert.throws(
       () => composeUnchecked(HOST_BOOTSTRAP_OPERATION_SPECS, HOST_BOOTSTRAP_OPERATION_SPECS),
-      /Duplicate Runtime Host operation key: host\.status/,
+      /Duplicate Runtime Host operation key: host\.execution-capabilities\.query/,
     );
   });
 

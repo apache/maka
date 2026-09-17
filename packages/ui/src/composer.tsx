@@ -469,6 +469,14 @@ export const Composer = forwardRef<
     planModeActive?: boolean;
     planModeDisabledReason?: string;
     onPlanModeChange?(active: boolean): void | Promise<void>;
+    /** Explicit creation-only profile, owned by the embedding application. */
+    managedFilesMode?: {
+      active: boolean;
+      label: string;
+      description: string;
+      disabled?: boolean;
+      onChange(active: boolean): void;
+    };
     /**
      * The Session's standing orchestration default. Of the field's three
      * values only Swarm and Graph name a way to fan a turn out; `default` is
@@ -1623,6 +1631,14 @@ export const Composer = forwardRef<
     isDisabled: boolean;
     onDeactivate(): void;
   }> = [
+    ...(props.managedFilesMode?.active ? [{
+      id: 'managed-files',
+      icon: <FolderOpen size={ICON_SIZE.control} aria-hidden="true" />,
+      label: props.managedFilesMode.label,
+      tooltip: props.managedFilesMode.description,
+      isDisabled: Boolean(props.disabled || props.managedFilesMode.disabled),
+      onDeactivate: () => props.managedFilesMode?.onChange(false),
+    }] : []),
     ...(planModeActive
       ? [{
         id: 'plan',
@@ -1673,7 +1689,7 @@ export const Composer = forwardRef<
   const hasPlusMenuActions = Boolean(
     props.onPickAttachments || props.onPickDirectory || props.mentionSkills || props.onSetGoal,
   );
-  const hasPlusMenuModes = Boolean(props.onPlanModeChange || props.onOrchestrationModeChange);
+  const hasPlusMenuModes = Boolean(props.onPlanModeChange || props.onOrchestrationModeChange || props.managedFilesMode);
   const showPlusMenu = Boolean(hasPlusMenuActions || hasPlusMenuModes);
 
   return (
@@ -2051,6 +2067,16 @@ export const Composer = forwardRef<
                     {hasPlusMenuModes ? (
                       <>
                         {hasPlusMenuActions ? <DropdownMenuDivider /> : null}
+                        {props.managedFilesMode ? (
+                          <DropdownMenuCheckboxItem
+                            label={props.managedFilesMode.label}
+                            icon={<FolderOpen size={ICON_SIZE.control} aria-hidden="true" />}
+                            value={props.managedFilesMode.active}
+                            isDisabled={Boolean(props.disabled || props.managedFilesMode.disabled)}
+                            onChange={(active) => props.managedFilesMode?.onChange(active)}
+                            aria-description={props.managedFilesMode.description}
+                          />
+                        ) : null}
                         {props.onPlanModeChange ? (
                           <DropdownMenuCheckboxItem
                             label={copy.planModeLabel}
