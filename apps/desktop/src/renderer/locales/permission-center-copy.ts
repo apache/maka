@@ -272,6 +272,63 @@ const PERMISSION_CENTER_COPY = {
       } satisfies Record<RuntimeProbeState, string>)[health],
     reasonFallback: 'See the runtime logs for details.',
   },
+  ko: {
+    readiness: {
+      not_configured: { label: '설정 필요', detail: '먼저 기능을 켜거나 구성을 완료하세요.', tone: 'neutral' },
+      denied: { label: '시스템에서 거부됨', detail: '필요한 시스템 권한이 거부되었거나 이 플랫폼에서 지원되지 않습니다.', tone: 'error' },
+      enabled: { label: '사용 가능', detail: '현재 스냅샷은 사용 가능합니다. 자세한 내용은 아래 계층에서 확인하세요.', tone: 'success' },
+      degraded: { label: '부분 사용 가능', detail: '일부 기능은 사용할 수 있지만 런타임, 권한, 하위 기능에 남은 작업이 있습니다.', tone: 'attention' },
+      paused: { label: '일시 중지됨', detail: '구성은 저장된 채로 기능만 명시적으로 꺼졌습니다.', tone: 'neutral' },
+    },
+    osPermissions: {
+      accessibility: { label: '손쉬운 사용', purpose: 'Computer Use가 창 포커스를 읽고 키보드나 마우스 입력을 시뮬레이션하려면 필요합니다.', impact: 'Computer Use · 키보드와 마우스 자동 입력' },
+      screen_recording: { label: '화면 및 시스템 오디오 녹음', purpose: 'Computer Use가 창 내용을 읽으려면 필요합니다. 앞으로 화면 활동 기록에도 사용됩니다.', impact: 'Computer Use · 스크린샷 컨텍스트' },
+      notifications: { label: '알림', purpose: '권한 요청, 데일리 리뷰 완료 등 시스템 알림에 필요합니다.', impact: '권한 알림 · 데일리 리뷰 완료' },
+      automation: { label: '자동화(Apple Events)', purpose: 'Computer Use가 다른 앱을 제어하려면 대상별 허용이 필요합니다.', impact: 'Computer Use · 앱 간 자동화' },
+    },
+    osStates: {
+      unsupported: { label: '이 플랫폼 미지원', tone: 'neutral' }, unknown: { label: '상태를 알 수 없음', tone: 'neutral' },
+      not_determined: { label: '권한 대기 중', tone: 'attention' }, denied: { label: '거부됨', tone: 'error' }, granted: { label: '허용됨', tone: 'success' },
+    },
+    loading: '권한 스냅샷 불러오는 중', readFailed: '권한 스냅샷 읽기 실패', noData: '권한 서비스가 데이터를 반환하지 않았습니다.', readAgain: '다시 읽기',
+    actionFailed: '권한 동작 실패',
+    actionFailures: {
+      invalid_id: '내부 오류: 권한 ID를 인식할 수 없습니다.',
+      unsupported_platform: '이 운영체제는 권한 동작을 지원하지 않습니다.',
+      unsupported_permission: '이 플랫폼은 해당 권한의 직접 진입점을 제공하지 않습니다.',
+      denied: '권한이 허용되지 않았습니다. 시스템 설정에서 켤 수 있습니다.',
+      already_open: '다른 권한 안내가 아직 열려 있습니다. 먼저 완료하거나 닫아 주세요.',
+      open_settings_failed: '시스템 설정을 열지 못했습니다. 개인정보 보호 및 보안을 직접 열어 주세요.',
+      failed: '권한 동작이 성공하지 못했습니다. 잠시 후 다시 시도해 주세요.',
+    },
+    title: '권한과 기능 상태', subtitle: 'Maka에 필요한 시스템 권한과 현재 상태를 확인하세요. 해당하는 개인정보 보호 및 보안 섹션을 바로 열어 접근을 허용하거나 철회하세요.',
+    lastRead: '최근 읽음: ', detectAgain: '다시 확인', summaryAria: '허용 상태로 시스템 권한 필터링', summaryFilterAria: (label, count, selected) => selected ? `${label}, ${count}개. 필터 적용됨. 다시 누르면 모든 권한을 표시합니다` : `${label} 권한만 표시, ${count}개`, granted: '허용됨', pending: '대기 중', denied: '거부됨', other: '알 수 없음 / 미지원',
+    osSection: '시스템 권한', osSectionHelp: 'Maka가 읽은 OS 수준 권한 상태입니다. 오른쪽 동작으로 시스템 설정의 해당 개인정보 보호 및 보안 섹션을 열 수 있습니다.', osListAria: '시스템 권한 목록',
+    capabilitiesSection: '기능 상태', capabilitiesHelp: '각 준비 상태는 기능 토글, 구성, 시스템 권한, 런타임 프로브를 합쳐서 결정됩니다.',
+    capabilityListAria: '기능 상태 목록',
+    footnote: 'Maka는 손쉬운 사용, 자동화, 화면 및 시스템 오디오 녹음을 자동으로 허용하지 않습니다. 고위험 자동화는 건별 승인, 감사 가능, 철회 가능 상태로 유지되어야 합니다. 이 페이지는 현재 스냅샷을 읽기만 합니다. 권한 변경은 여전히 시스템 설정의 개인정보 보호 및 보안에서 해야 합니다.',
+    layers: {
+      aria: (label) => `${label} 기능 상태 상세`, feature: '기능 토글', configuration: '구성', approval: '동작 승인', memory: '메모리 쓰기', runtime: '런타임 프로브',
+      featureStates: { enabled: '켜짐', partial: '부분 사용 가능', disabled: '꺼짐', not_available: '사용할 수 없음' },
+      configurationStates: { not_required: '구성 불필요', missing: '구성 필요', present: '구성됨' },
+      approvalStates: { not_required: '승인 불필요', required_per_action: '호출마다 승인 필요', required_scoped_lease: '대상과 동작 범주별 허용', pending: '승인 대기 중', approved: '이 작업에 승인됨', denied: '이 작업에 거부됨' },
+      memoryStates: { not_applicable: '메모리 쓰기 없음', disabled: '메모리 쓰기 꺼짐', draft_required: '메모리 프로토콜을 먼저 작성하세요', accepted: '메모리 쓰기 수락됨' },
+      runtimeStates: { not_available: '런타임 프로브 없음', not_run: '프로브 미실행', healthy: '프로브 통과', degraded: '프로브 저하' },
+    },
+    requiredPermissions: '필요한 시스템 권한', requiredPermissionsAria: (label) => `${label} 필요 시스템 권한`,
+    auditSection: '감사 기록', noAudit: '감사 기록 없음', auditAria: (label) => `${label} 감사 기록`,
+    impact: '영향 범위', opening: '여는 중…', openSettings: '시스템 설정 열기', requesting: '요청하는 중…', request: '권한 요청', dragGrant: '안내 받기', dragGranting: '여는 중…',
+    cuBackendStatus: (missing, health) =>
+      'maka-cu 아티팩트가 로컬 무결성 검사를 통과했습니다. '
+      + (missing.length > 0 ? `${missing.join(', ')} 권한을 기다리는 중입니다. ` : '')
+      + ({
+        not_available: 'maka-cu 서비스가 시작에 실패했거나, 종료됐거나, 중지되었습니다.',
+        degraded: 'maka-cu 서비스가 시작 중이거나 복구 중입니다.',
+        healthy: '동작·스크린샷 서비스가 준비됐습니다. 로컬 앱을 조작하려면 대상과 동작 범주별로 허용하세요.',
+        not_run: '서비스는 처음 사용할 때 시작됩니다. 로컬 앱을 조작하려면 대상과 동작 범주별로 허용하세요.',
+      } satisfies Record<RuntimeProbeState, string>)[health],
+    reasonFallback: '자세한 내용은 런타임 로그를 확인하세요.',
+  },
 } satisfies UiCatalog<PermissionCenterCopy>;
 
 export function getPermissionCenterCopy(locale: UiLocale): PermissionCenterCopy {
