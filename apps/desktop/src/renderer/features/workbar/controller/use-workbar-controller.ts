@@ -38,6 +38,7 @@ import { getDesktopConversationCopy } from '../../../locales/conversation-copy.j
 import { getShellCopy, localizedShellErrorMessage } from '../../../locales/shell-copy.js';
 import { sideChatTitleFromPrompt } from '../../../side-chat-command.js';
 import { desktopSessionKey, parseDesktopSessionKey } from '../../../../shared/runtime-host-identity.js';
+import { useWorkHubWorkspace } from '../../../application/contracts/workhub-workspace/use-workhub-workspace.js';
 import { useWorkbarServices } from '../services-context.js';
 import type { WorkbarHostModel } from '../ui/workbar-host.js';
 import { SKIP_SIDE_CHAT_CLOSE_CONFIRMATION_KEY } from '../ui/side-chat-close-confirmation.js';
@@ -49,7 +50,7 @@ import {
   type SessionWorkbarTab,
   type SessionWorkbarTabKind,
 } from '../model/workbar-tabs.js';
-import { workbarToolDefinition } from '../model/workbar-tool-definitions.js';
+import { workbarToolDefinition, workbarToolsForWorkspace } from '../model/workbar-tool-definitions.js';
 import {
   consumeCompanionInitialPrompt,
   consumeCompanionQuoteSnapshot,
@@ -82,6 +83,7 @@ export interface WorkbarControllerCommands {
   respondToClientCapability(response: ClientCapabilityResponse): Promise<void>;
   respondToUserForm(sessionId: string, response: InteractionFormResponse): Promise<void>;
   toggleRight(): void;
+  toggleTool(kind: SessionWorkbarTabKind): void;
   /**
    * Accepts the Session produced by a projected first send that belongs to the
    * pending Work Board start claim. The claim is owned by one specific
@@ -100,12 +102,12 @@ export interface WorkbarControllerSelectors {
 }
 
 export interface UseWorkbarControllerInput {
+  workHub?: { enabled: boolean; active: boolean };
   /** Whether the Session workspace (rather than a module page) owns the shell. */
   available: boolean;
   /** Local selection owns layout even while Host creation is pending. */
   layoutSessionId: string | undefined;
   /** Independent persistent renderers must not overwrite each other’s panel topology. */
-  layoutScope?: string;
   activeSession: SessionSummary | undefined;
   sessions: readonly SessionSummary[];
   projectId: string | null | undefined;
@@ -158,8 +160,20 @@ function nextOrdinal(
 }
 
 export function useWorkbarController(
-  input: UseWorkbarControllerInput,
+  requested: UseWorkbarControllerInput,
 ): WorkbarController {
+  const coordination = useWorkHubWorkspace(requested.workHub?.enabled ?? false, requested.authoritativeSessionIds);
+  const workspace = requested.workHub?.active ? 'workhub' : 'session';
+  const activeSessionId = requested.workHub?.active ? coordination.sessionId : requested.activeSession?.id;
+  const input: UseWorkbarControllerInput = requested.workHub?.active ? {
+    ...requested,
+    available: requested.available && Boolean(activeSessionId),
+    layoutSessionId: activeSessionId,
+    activeSession: undefined,
+    projectId: null,
+    projectAliases: [],
+    authoritativeSessionIds: coordination.authoritativeSessionIds,
+  } : { ...requested, authoritativeSessionIds: coordination.authoritativeSessionIds };
   const locale = useUiLocale();
   // Enforce development-only: the experimental Start-task path must never be
   // reachable in a production build even if the flag is set, so the gate
@@ -175,8 +189,7 @@ export function useWorkbarController(
     Boolean(input.openNewTaskSurface && input.resolveWorkBoardTarget && input.prepareWorkBoardDraft);
   const terminalCopy = getDesktopConversationCopy(locale).terminalPanel;
   const { browser, sideChat, terminal, workBoard } = useWorkbarServices();
-  const activeSessionId = input.activeSession?.id;
-  const layout = useWorkbarLayoutState(input.layoutSessionId, input.authoritativeSessionIds, input.layoutScope);
+  const layout = useWorkbarLayoutState(input.layoutSessionId, input.authoritativeSessionIds);
   const sideConversations = useSideConversationWorkspace();
   const [pendingSideChatClose, setPendingSideChatClose] = useState<
     Array<{ placement: SessionWorkbarPlacement; tab: SessionWorkbarTab }>
@@ -506,7 +519,7 @@ export function useWorkbarController(
   const openNewSideConversation = useCallback(
     (placement: SessionWorkbarPlacement, initialPrompt?: string) => {
       const sourceSessionId = activeSessionIdRef.current;
-      if (!sourceSessionId) return;
+      if (!sourceSessionId || !workbarToolsForWorkspace(workspace).some((tool) => tool.kind === 'side-chat')) return;
       const panel = openCompanionPanel(null, {
         sourceSessionId,
         initialPrompt,
@@ -529,11 +542,13 @@ export function useWorkbarController(
       reserveOrdinal,
       revealPlacement,
       sideConversations,
+      workspace,
     ],
   );
 
   const openTool = useCallback<WorkbarControllerCommands['openTool']>(
     (kind, placement, options = {}) => {
+      if (!workbarToolsForWorkspace(workspace).some((tool) => tool.kind === kind)) return;
       const definition = workbarToolDefinition(kind);
       const targetPlacement = placement ?? definition.defaultPlacement;
       if (definition.singleton) {
@@ -610,7 +625,7 @@ export function useWorkbarController(
   const openSideChatWithQuote = useCallback(
     (quote: QuoteRef) => {
       const sourceSessionId = activeSessionIdRef.current;
-      if (!sourceSessionId) return;
+      if (!sourceSessionId || !workbarToolsForWorkspace(workspace).some((tool) => tool.kind === 'side-chat')) return;
       const activeSideChat = findPreferredSideChatWorkbarTab(
         panelsStateRef.current,
       );
@@ -645,6 +660,7 @@ export function useWorkbarController(
       reserveOrdinal,
       revealPlacement,
       sideConversations,
+      workspace,
     ],
   );
 
@@ -811,6 +827,29 @@ export function useWorkbarController(
     [browser, openTool],
   );
 
+  const toggleTool = useCallback((kind: SessionWorkbarTabKind) => {
+    if (!workbarToolsForWorkspace(workspace).some((tool) => tool.kind === kind)) return;
+    const panels = panelsStateRef.current;
+    const placements = [panels.focusedPanel, 'right', 'bottom'] as const;
+    for (const placement of placements) {
+      const panel = panels[placement];
+      const tab = panel.tabs.find((candidate) => candidate.id === panel.activeTabId && candidate.kind === kind)
+        ?? panel.tabs.find((candidate) => candidate.kind === kind);
+      if (!tab) continue;
+      const visible = placement === 'right' ? !layout.workbarCollapsed : layout.bottomPanelOpen;
+      if (visible && !panel.launcherOpen && panel.activeTabId === tab.id) {
+        if (placement === 'right') layout.setWorkbarCollapsed(true);
+        else layout.setBottomPanelOpen(false);
+      } else {
+        layout.activateWorkbarTab(placement, tab.id);
+        revealPlacement(placement);
+      }
+      return;
+    }
+    openTool(kind);
+  }, [workspace, layout.workbarCollapsed, layout.bottomPanelOpen, layout.setWorkbarCollapsed,
+    layout.setBottomPanelOpen, layout.activateWorkbarTab, revealPlacement, openTool]);
+
   useEffect(() => {
     const handleShortcut = (event: KeyboardEvent) => {
       if (!input.available || input.shellObscured || !activeSessionId) return;
@@ -820,7 +859,7 @@ export function useWorkbarController(
       const key = event.key.toLowerCase();
       if (event.ctrlKey && event.shiftKey && !event.altKey && key === 'g') {
         event.preventDefault();
-        openTool('review');
+        toggleTool('review');
       } else if (
         event.ctrlKey &&
         !event.altKey &&
@@ -828,21 +867,21 @@ export function useWorkbarController(
         (key === '`' || event.code === 'Backquote')
       ) {
         event.preventDefault();
-        openTool('terminal');
+        toggleTool('terminal');
       } else if (primary && !event.altKey && !event.shiftKey && key === 't') {
         event.preventDefault();
-        openTool('browser');
+        toggleTool('browser');
       } else if (primary && !event.altKey && !event.shiftKey && key === 'p') {
         event.preventDefault();
-        openTool('files');
+        toggleTool('files');
       } else if (primary && event.altKey && !event.shiftKey && key === 's') {
         event.preventDefault();
-        openTool('side-chat');
+        toggleTool('side-chat');
       }
     };
     window.addEventListener('keydown', handleShortcut, true);
     return () => window.removeEventListener('keydown', handleShortcut, true);
-  }, [activeSessionId, input.available, input.shellObscured, openTool]);
+  }, [activeSessionId, input.available, input.shellObscured, toggleTool]);
 
   const confirmPendingClose = useCallback(
     (skipFutureConfirmations: boolean) => {
@@ -868,6 +907,7 @@ export function useWorkbarController(
   const commands = useMemo<WorkbarControllerCommands>(
     () => ({
       openTool,
+      toggleTool,
       openSideChatWithQuote,
       respondToClientCapability,
       respondToUserForm: sideChat.respondToUserForm,
@@ -878,6 +918,7 @@ export function useWorkbarController(
       bindNewTaskSessionResolver,
       openSideChatWithQuote,
       openTool,
+      toggleTool,
       respondToClientCapability,
       sideChat.respondToUserForm,
       toggleRight,
@@ -907,6 +948,7 @@ export function useWorkbarController(
       hiddenSessionIds: hiddenCompanionForkIds,
     },
     host: {
+      workspace: workspace,
       activeId: input.available ? activeSessionId ?? retainedFamilySessionId : undefined,
       projectId: input.projectId,
       projectAliases: input.projectAliases,
@@ -918,12 +960,12 @@ export function useWorkbarController(
       panelsState: layout.workbarPanelsState,
       onActivateTab: layout.activateWorkbarTab,
       onCloseTab: closeTab,
-      onCloseTabs: closeTabs,
       onOpenLauncher: (placement) => {
         layout.openWorkbarLauncher(placement);
         revealPlacement(placement);
       },
       onRequestOpenTab: (placement, kind) => openTool(kind, placement),
+      onToggleRightPanel: toggleRight,
       onDismissPanel: (placement) => {
         if (placement === 'right') layout.setWorkbarCollapsed(true);
         else layout.setBottomPanelOpen(false);

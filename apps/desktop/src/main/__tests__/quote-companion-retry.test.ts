@@ -23,7 +23,6 @@ import { afterEach, test } from 'node:test';
 import { parseHTML } from 'linkedom';
 import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { renderToStaticMarkup } from 'react-dom/server';
 import { ChatSurfaceLayout, ChatView, LocaleProvider } from '@maka/ui';
 import type { SessionEvent } from '@maka/core/events';
 import type { ChatModelChoice } from '@maka/core/chat-model-choice';
@@ -46,6 +45,7 @@ import {
   type WorkbarIngestInput,
   type WorkbarServices,
 } from '../../renderer/features/workbar/testing.js';
+import { renderTranscriptMarkup } from './transcript-test-dom.js';
 
 const originalGlobals = {
   document: globalThis.document,
@@ -249,8 +249,8 @@ async function renderOwnershipProbe(
     stop: () => stop(),
     deleteQueuedEntry: (entryId: string) => deleteQueuedEntry(entryId),
     setPermissionMode: (mode: PermissionMode) => setPermissionMode(mode),
-    transcript() {
-      return parseHTML(`<html><body>${renderToStaticMarkup(
+    async transcript() {
+      return parseHTML(`<html><body>${await renderTranscriptMarkup(
         createElement(LocaleProvider, { locale: 'en', children: createElement(ChatSurfaceLayout, {
           composer: null,
           children: createElement(ChatView, {
@@ -501,8 +501,8 @@ for (const proof of ['send reply', 'admission event'] as const) {
       h.emit({ type: 'text_complete', id: 'answer-event', messageId: 'answer',
         turnId: 'first-turn', ts: 2, text: 'answer to initial question' });
     });
-    const assertPromptBeforeReply = () => {
-      const transcript = h.transcript();
+    const assertPromptBeforeReply = async () => {
+      const transcript = await h.transcript();
       const turn = transcript.querySelector('[data-transcript-turn-id="first-turn"]');
       assert.ok(turn);
       assert.ok(turn.querySelector('.maka-user-message')?.textContent.startsWith('initial question'));
@@ -511,11 +511,11 @@ for (const proof of ['send reply', 'admission event'] as const) {
       assert.ok(text.indexOf('initial question') < text.indexOf('answer to initial question'));
       assert.equal(transcript.querySelectorAll('.maka-user-message').length, 1);
     };
-    assertPromptBeforeReply();
+    await assertPromptBeforeReply();
     await act(async () => { h.hostTurn('first-turn', 'completed'); });
-    assertPromptBeforeReply();
+    await assertPromptBeforeReply();
     await act(async () => { h.hostTurn('successor-turn'); });
-    assertPromptBeforeReply();
+    await assertPromptBeforeReply();
     if (proof === 'admission event') {
       await act(async () => {
         receipt.resolve({ ok: true, turnId: 'first-turn' });
@@ -2190,7 +2190,7 @@ for (const proof of ['started receipt', 'admission event'] as const) {
     });
     assert.equal(container.firstElementChild?.getAttribute('data-live-text'), 'new answer');
     assert.match(
-      transcript().querySelector('[data-transcript-turn-id="new-turn"] .maka-user-message')?.textContent ?? '',
+      (await transcript()).querySelector('[data-transcript-turn-id="new-turn"] .maka-user-message')?.textContent ?? '',
       /start after settlement/,
     );
     if (proof === 'admission event') {
@@ -2243,7 +2243,7 @@ for (const proof of ['admission event', 'ownership recovery'] as const) {
         turnId: 'turn-b', ts: 3, text: 'reply to raced successor' });
     });
     await waitUntil(() => h.container.firstElementChild?.getAttribute('data-processing') === 'false');
-    const turn = h.transcript().querySelector('[data-transcript-turn-id="turn-b"]');
+    const turn = (await h.transcript()).querySelector('[data-transcript-turn-id="turn-b"]');
     assert.ok(turn);
     assert.match(turn.querySelector('.maka-user-message')?.textContent ?? '', /raced successor prompt/);
     assert.ok(turn.textContent.includes('reply to raced successor'));

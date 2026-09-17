@@ -340,9 +340,6 @@ export function createAppShellSessionEventHandlers(options: {
           return next;
         });
         break;
-      case 'text_complete':
-        void refreshMessages(sessionId, { requiredAssistantMessageId: event.messageId }).catch(() => false);
-        break;
       case 'sandbox_boundary_request':
       case 'client_capability_request':
       case 'user_question_request':
@@ -364,9 +361,6 @@ export function createAppShellSessionEventHandlers(options: {
         // or the permission label keeps describing the permissions the session
         // had before the user granted more.
         onExecutionBoundaryChanged?.(sessionId);
-        break;
-      case 'tool_result':
-        void refreshMessages(sessionId);
         break;
       case 'error':
         onInteractionChanged?.(sessionId);

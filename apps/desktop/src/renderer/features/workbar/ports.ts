@@ -103,6 +103,7 @@ export interface WorkbarTerminalService {
 export interface WorkbarBrowserService {
   setActiveSession(sessionId: string | null): void;
   setViewport(input: { sessionId: string; rect: BrowserViewRect | null }): void;
+  capturePage(sessionId: string): Promise<string | undefined>;
   navigate(sessionId: string, url: string): Promise<void>;
   back(sessionId: string): Promise<void>;
   forward(sessionId: string): Promise<void>;
@@ -283,6 +284,7 @@ export interface SideChatSessionPort {
 }
 
 export interface WorkbarServices {
+  popupMenu(input: import('../../../shared/native-menu.js').NativeMenuRequest): Promise<string | null>;
   readonly review: WorkbarReviewService;
   readonly terminal: WorkbarTerminalService;
   readonly browser: WorkbarBrowserService;

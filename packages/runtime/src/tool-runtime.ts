@@ -1079,7 +1079,7 @@ export class ToolRuntime {
     },
     stepId?: string,
   ): Promise<unknown> {
-    const rawExecutionArgs = snapshotToolArgs(args);
+    const executionArgs = snapshotToolArgs(args);
     const sandboxBoundaryDecisionGeneration = this.sandboxBoundaryDecisionGeneration;
     const toolUseId = ctx.toolCallId;
     // Registration is synchronous and happens before the first await, so
@@ -1089,20 +1089,18 @@ export class ToolRuntime {
         ? `Tool ${tool.name} is direct-only and cannot run inside exec.`
         : undefined;
     const admissionFailure = directOnlyFailure ?? this.admitToolForStep(tool, stepId);
-    const executionArgs = rawExecutionArgs;
     let permissionArgs = executionArgs;
     let permissionArgsError: unknown;
     if (directOnlyFailure === undefined) {
       try {
-        // A surface that cannot carry a sandbox-boundary request rejects the
-        // operation before it interprets the requested expansion. Preserve that
-        // availability contract even when an older caller sends a legacy shape.
+        // An unavailable sandbox-boundary surface rejects the expansion before
+        // interpreting it, including legacy shapes whose validation stays deferred.
         const sandboxBoundaryUnavailable =
           tool.name === 'request_sandbox_boundary' &&
           !this.interactionRun() &&
           (!this.input.createSandboxBoundaryRequest || !this.input.settleSandboxBoundaryRequest);
         if (!sandboxBoundaryUnavailable) {
-          await validateDeclaredToolArgs(tool.parameters, rawExecutionArgs);
+          await validateDeclaredToolArgs(tool.parameters, executionArgs);
         }
         permissionArgs = tool.permissionArgs
           ? snapshotToolArgs(
@@ -1117,42 +1115,13 @@ export class ToolRuntime {
         permissionArgsError = error;
       }
     }
-    // The args written into the `tool_start` event, the persisted `tool_call`
-    // message and the durable ledger — that is, the record of the call the
-    // model reads back on its next turn (`model-history.ts` replays
-    // `event.content.args`).
-    //
-    // Computer Use used the host's approval summary here. That projection
-    // exists to decide and display a permission: it renames `window_id` to
-    // `windowId`, adds `approvalClass` and `rememberForTurnAllowed`, and drops
-    // every argument it does not need. On the real ToolRuntime a model that
-    // sent {action:'press_key', app, window_id, observation_id, element_id,
-    // text:'cmd+s'} read back {action, approvalClass, rememberForTurnAllowed,
-    // app, windowId, observationId} — a key the tool rejects, two fields it
-    // never sent, no element, and a press_key with no key. It then went on
-    // calling it that way.
-    //
-    // The permission prompt still reads `permissionArgs`, and the approval
-    // scope key is still computed from the raw call, so this only changes what
-    // is written down. `computerUseModelCallArgs` keeps the same privacy rule
-    // — screen-derived and user-typed values are reduced to a shape — and
-    // speaks the tool's own argument names.
+    // Permission args are a policy/UI projection. Persistence and model replay
+    // share one canonical tool-dialect projection; Computer Use also strips
+    // screen-derived and user-typed values at this boundary.
     const persistedArgs =
       tool.categoryHint === 'computer_use'
         ? snapshotToolArgs(computerUseModelCallArgs(permissionArgs))
         : permissionArgs;
-    // What the model will read back as its own call. The approval summary is
-    // the host's projection for deciding a permission, and using it here taught
-    // the model to call the tool with `approvalClass`, `rememberForTurnAllowed`
-    // and `windowId` — two fields it does not take and one key in a dialect it
-    // rejects. Same privacy boundary, names the tool accepts.
-    //
-    // The same projection as the audit record, since `computerUseModelCallArgs`
-    // became what both are written with. It was spelled out twice, which meant
-    // running it twice per call and leaving two expressions to drift apart. The
-    // two names stay because the roles are different — one is what the host
-    // records, one is what the model reads — and a divergence would go here.
-    const modelFacingArgs = persistedArgs;
     const now = this.input.now();
     const trace = this.input.getRunTrace?.() ?? null;
     const runId = this.input.runId;
@@ -1517,7 +1486,6 @@ export class ToolRuntime {
         tool,
         startEvent: buildCallEvent('dispatch'),
         persistedArgs,
-        modelFacingArgs,
         abortSignal: ctx.abortSignal,
         ...(invocationId ? { invocationId } : {}),
         ...(runId ? { runId } : {}),
@@ -1921,8 +1889,6 @@ export class ToolRuntime {
     tool: MakaTool;
     startEvent: ToolStartEvent;
     persistedArgs: unknown;
-    /** The projection the model replays as its own call. */
-    modelFacingArgs: unknown;
     abortSignal: AbortSignal;
     invocationId?: string;
     runId?: string;
@@ -1968,7 +1934,7 @@ export class ToolRuntime {
         kind: 'function_call',
         id: input.startEvent.toolUseId,
         name: input.tool.name,
-        args: structuredClone(input.modelFacingArgs),
+        args: structuredClone(input.persistedArgs),
         ...(input.startEvent.providerOptions !== undefined
           ? { providerOptions: structuredClone(input.startEvent.providerOptions) }
           : {}),

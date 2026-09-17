@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import type { UsageScreenQuery, UsageScreenRequest } from '@maka/core/settings';
+
 import {
   useEffect,
   useEffectEvent,
@@ -390,11 +392,19 @@ function SettingsSurfaceContent(
   // Settings surface. `usageScopeRef.fenceTarget()` rejects an in-flight old-Host
   // load synchronously at a Host change, before React re-renders the new target.
   const usageScopeRef = useRef<UsageScopeHandle>(null);
+  const readUsage = (range: UsageRange | Extract<UsageScreenRequest, {kind: 'activity'}>, query?: UsageScreenQuery) =>
+    selectedRuntimeHost ? window.maka.settings.usageStats(range, selectedRuntimeHost, query) : Promise.resolve(null);
   const usageServices = {
-    loadUsageStats: (range: UsageRange) =>
-      selectedRuntimeHost
-        ? window.maka.settings.usageStats(range, selectedRuntimeHost)
-        : Promise.resolve(null),
+    loadUsageStats: async (range: UsageRange, query?: UsageScreenQuery) => {
+      const result = await readUsage(range, query);
+      if (result && 'kind' in result && result.kind !== 'screen_response_too_large') throw new Error('Invalid Usage screen response');
+      return result;
+    },
+    loadUsageActivity: async (input: Extract<UsageScreenRequest, {kind: 'activity'}>) => {
+      const result = await readUsage(input);
+      if (!result || !('kind' in result)) throw new Error('Invalid Usage activity response');
+      return result;
+    },
     updateUsageSettings: (patch: Partial<AppSettings['usage']>) =>
       updateSettings({ usage: patch }).then((result) => result.settings.usage),
   };

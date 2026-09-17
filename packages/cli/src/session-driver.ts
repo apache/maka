@@ -35,6 +35,7 @@ import type {
   GoalProjection,
   TurnMessageQueryResult,
   TurnMessageSubmitResult,
+  WorkspaceTarget,
 } from '@maka/runtime-host/protocol';
 
 export interface MakaSessionMoveResult {
@@ -144,6 +145,8 @@ export interface MakaUserCommand {
 
 export interface MakaSessionDriver {
   listSessions(): Promise<SessionSummary[]>;
+  /** The Host workspace currently attached to this shell, when one exists. */
+  getWorkspaceTarget(): WorkspaceTarget | undefined;
   /** Reads the current committed Todo projection for the attached Session. */
   queryTodo?(sessionId: string): Promise<{ sessionId: string; items: SessionTodoItem[] }>;
   getSessionResumeAvailability?(session: SessionSummary): Promise<SessionResumeAvailability>;

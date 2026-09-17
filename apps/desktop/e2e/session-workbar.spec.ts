@@ -17,7 +17,15 @@
  * under the License.
  */
 
-import { awaitSendReady, COMPOSER_INPUT, test, expect } from './fixtures';
+import {
+  awaitSendReady,
+  COMPOSER_INPUT,
+  ensureSidebarExpanded,
+  PARENT_REMOVAL_CHILD_NAME,
+  PARENT_REMOVAL_PARENT_NAME,
+  test,
+  expect,
+} from './fixtures';
 import type { Page } from '@playwright/test';
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -222,8 +230,7 @@ test('Terminal survives navigation and reload, then stops on explicit close', as
   await sidebar.locator(`[data-session-id=${JSON.stringify(sessionId)}]`).click();
   await expect(terminal).toBeVisible();
   await expect(terminal).toHaveAttribute('data-terminal-ref', terminalRef!);
-  await page.getByRole('button', { name: '打开或关闭工作栏的面' }).click();
-  await page.getByRole('menu').getByRole('menuitem', { name: /终端/ }).click();
+  await page.locator('[role=tab][aria-selected=true] .maka-workbar-tab-close').click();
   await expect(terminal).toHaveCount(0);
   await expect.poll(async () =>
     (await page.evaluate((id) => window.maka.shellRuns.list(id), sessionId))
@@ -286,14 +293,9 @@ test('Side Chat survives collapse, confirms close, and cleans up on source switc
   await page.getByRole('button', { name: '展开任务工作栏' }).click();
   await expect(companion).toBeVisible();
 
-  // Closing is the same [+] menu that opens: the face already on screen carries
-  // a checkmark, and picking it again asks to close it.
+  // The tab's close affordance retains the native-backed conversation's confirmation flow.
   const closeActiveSideChat = async () => {
-    await page.getByRole('button', { name: '打开或关闭工作栏的面' }).first().click();
-    await page
-      .getByRole('menu')
-      .getByRole('menuitem', { name: '侧边对话', exact: true })
-      .click();
+    await page.locator('[role=tab][aria-selected=true] .maka-workbar-tab-close').click();
   };
   await closeActiveSideChat();
   const confirmation = page.getByRole('dialog');
@@ -333,4 +335,51 @@ test('Side Chat survives collapse, confirms close, and cleans up on source switc
     )
     .toBe(false);
   await expect(composer).toHaveText('');
+});
+
+test('linked child navigation keeps the Side Chat Host fork and draft', async ({
+  parentRemovalWindow: page,
+}) => {
+  const sessions = await page.evaluate(() => window.maka.sessions.list());
+  const parent = sessions.find((session) => session.name === PARENT_REMOVAL_PARENT_NAME);
+  const child = sessions.find((session) => session.name === PARENT_REMOVAL_CHILD_NAME);
+  expect(parent).toBeDefined();
+  expect(child).toBeDefined();
+  const knownSessionIds = new Set(sessions.map((session) => session.id));
+  await ensureSidebarExpanded(page);
+  const sidebar = page.getByRole('navigation', { name: '任务列表' });
+  await sidebar.locator(`[data-session-id=${JSON.stringify(parent!.id)}]`).click();
+  await page.getByRole('button', { name: '展开任务工作栏' }).click();
+  await page.getByRole('button', {
+    name: /侧边对话.*在不打断主任务的情况下追问和只读探索/,
+  }).click();
+
+  const companion = page.locator('.maka-quote-companion');
+  const draft = companion.locator(COMPOSER_INPUT);
+  await draft.fill('retain this reply across linked navigation');
+  await draft.press('Enter');
+  await expect(companion).toContainText('Fake backend received: retain this reply across linked navigation');
+  let forkId: string | undefined;
+  await expect.poll(async () => {
+    forkId = (await page.evaluate(() => window.maka.sessions.list()))
+      .find((session) => !knownSessionIds.has(session.id))?.id;
+    return forkId;
+  }).not.toBeUndefined();
+  await draft.fill('unsent linked draft');
+
+  await page.getByRole('button', { name: '搜索任务', exact: true }).click();
+  const search = page.locator('[data-maka-contract="search-modal"]');
+  await search.locator('input').fill(PARENT_REMOVAL_CHILD_NAME);
+  await search.locator('.maka-search-modal-result-title', {
+    hasText: PARENT_REMOVAL_CHILD_NAME,
+  }).click();
+  await expect(page.getByRole('region', { name: `对话：${PARENT_REMOVAL_CHILD_NAME}` })).toBeVisible();
+  await expect(companion).toBeVisible();
+  await expect(draft).toHaveText('unsent linked draft');
+  await expect(companion).toContainText('Fake backend received: retain this reply across linked navigation');
+  await expect.poll(async () => (await page.evaluate(() => window.maka.sessions.list()))
+    .some((session) => session.id === forkId)).toBe(true);
+
+  await sidebar.locator(`[data-session-id=${JSON.stringify(parent!.id)}]`).click();
+  await expect(draft).toHaveText('unsent linked draft');
 });

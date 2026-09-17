@@ -47,7 +47,8 @@ export type ModelRuntimeWire =
   | 'openai-chat'
   | 'openai-responses'
   | 'google-generate'
-  | 'cohere-v2';
+  | 'cohere-v2'
+  | 'commandcode-cli';
 
 export type ReasoningReplayContract =
   | { kind: 'none' }
@@ -83,6 +84,14 @@ type ModelRuntimeCall =
       wire: 'cohere-v2';
       adapter: Extract<RuntimeProviderAdapter, { kind: 'cohere' }>;
       reasoningReplay: { kind: 'none' };
+    }
+  | {
+      wire: 'commandcode-cli';
+      adapter: Extract<RuntimeProviderAdapter, { kind: 'commandcode-cli' }>;
+      // The gateway rebuilds the upstream request from the replayed blocks and
+      // DeepSeek thinking mode rejects a tool loop whose history lacks its
+      // reasoning, so assistant reasoning is replayed as a `reasoning` block.
+      reasoningReplay: { kind: 'openai-chat-plaintext'; requestField: 'reasoning' };
     };
 
 export type ResolvedModelRuntime = ModelRuntimeCall & {
@@ -218,6 +227,14 @@ function adapterCalls(adapter: RuntimeProviderAdapter): ModelRuntimeCall[] {
       return [{ adapter, wire: 'google-generate', reasoningReplay: { kind: 'none' } }];
     case 'cohere':
       return [{ adapter, wire: 'cohere-v2', reasoningReplay: { kind: 'none' } }];
+    case 'commandcode-cli':
+      return [
+        {
+          adapter,
+          wire: 'commandcode-cli',
+          reasoningReplay: { kind: 'openai-chat-plaintext', requestField: 'reasoning' },
+        },
+      ];
     case 'openai-codex':
       return [
         {

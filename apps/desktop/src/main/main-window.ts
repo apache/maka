@@ -57,6 +57,7 @@ export interface MainWindowController {
   /** Subscribe an app-owned renderer to existing application broadcasts. */
   registerAuxiliaryRenderer(contents: Electron.WebContents, parent?: View): () => void;
   ownsRenderer(contents: Electron.WebContents): boolean;
+  isMainRenderer(contents: Electron.WebContents): boolean;
   browserParentForRenderer(contents: Electron.WebContents): View | undefined;
   setBrowserViewParentResolver(resolve: (sessionId: string) => View | undefined): void;
   // PR-SHOW-AFTER-FIRST-COMMIT: reveal the hidden window after the renderer's
@@ -638,6 +639,7 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
     registerAuxiliaryRenderer,
     ownsRenderer,
     browserParentForRenderer,
+    isMainRenderer: (contents) => !!mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents === contents,
     setBrowserViewParentResolver(resolve) {
       browserViewParentResolver = resolve;
     },

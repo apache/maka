@@ -549,6 +549,28 @@ describe('SQLite SessionStore', () => {
     }
   });
 
+  test('announces import commit only after validating the complete payload', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-import-commit-boundary-'));
+    const store = createSessionStore(root);
+    let commitStarted = false;
+    try {
+      await assert.rejects(
+        store.createImportedSession(
+          makeInput(),
+          [{ type: 'user' } as unknown as StoredMessage],
+          { adapterId: 'fake', sourceSessionId: 'source-1' },
+          { onCommitStarted: () => (commitStarted = true) },
+        ),
+        /Invalid stored message schema/,
+      );
+      assert.equal(commitStarted, false);
+      assert.deepEqual(await store.listHeaders(), []);
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('a generated title fills an absence and never overwrites a rename', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-session-generated-title-'));
     const store = createSessionStore(root);

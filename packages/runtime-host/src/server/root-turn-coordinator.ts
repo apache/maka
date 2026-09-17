@@ -3021,7 +3021,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
         startSettled.resolve();
       }
       this.observeExecutionCompletion(active, { kind: 'terminal', snapshot });
-      await this.interruptPlanAfterUnsuccessfulTurn(input.sessionId, active, snapshot.status);
+      await this.settlePlanAfterTerminalTurn(input.sessionId, active, snapshot.status);
       await this.materializeAdmittedMessageSources(active);
       terminalTransitionStarted = true;
       await this.completeTerminalTransition(input.sessionId, active);
@@ -3045,7 +3045,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
               kind: 'terminal',
               snapshot,
             });
-            await this.interruptPlanAfterUnsuccessfulTurn(input.sessionId, active, snapshot.status);
+            await this.settlePlanAfterTerminalTurn(input.sessionId, active, snapshot.status);
             await this.materializeAdmittedMessageSources(active);
             terminalTransitionStarted = true;
             await this.completeTerminalTransition(input.sessionId, active);
@@ -3131,18 +3131,16 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
     if (settlement) active.observationSettled = Promise.resolve(settlement);
   }
 
-  private async interruptPlanAfterUnsuccessfulTurn(
+  private async settlePlanAfterTerminalTurn(
     sessionId: string,
     active: ActiveRootTurn,
-    status: string,
+    status: 'completed' | 'failed' | 'cancelled',
   ): Promise<void> {
-    if (status === 'completed' || !this.manager.hasPlanAuthority()) return;
-    await this.manager.interruptActivePlanExecution(
+    if (!this.manager.hasPlanAuthority()) return;
+    await this.manager.settleActivePlanExecutionAfterRootTurn(
       sessionId,
-      status === 'cancelled'
-        ? 'Plan execution was interrupted because the Runtime root Turn was cancelled.'
-        : 'Plan execution was interrupted because the Runtime root Turn failed.',
-      `plan_interrupt_${active.runId}`,
+      status,
+      `plan_root_terminal_${active.runId}`,
     );
   }
 

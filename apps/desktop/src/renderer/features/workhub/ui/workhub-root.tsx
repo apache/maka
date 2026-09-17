@@ -23,11 +23,12 @@ import { Button, IconButton } from '@astryxdesign/core';
 import { ChevronDown, PictureInPicture2, Undo2, X } from '@maka/ui/icons';
 import { useLiveContextUsage } from '../../../application/contracts/session-inspector/use-live-context-usage.js';
 import { selectLatestRequestUsage } from '../../../application/contracts/session-inspector/latest-request-usage.js';
-import type { SessionWorkspaceComponent } from '../../../application/contracts/session-workspace.js';
 import { WorkHubProgressCard } from './workhub-progress-card.js';
 import { WorkHubComposer } from './workhub-composer.js';
 import { WorkHubConversation } from './workhub-conversation.js';
 import { FormInteractionPrompt } from '@maka/ui';
+import { getShellCopy } from '../../../locales/shell-copy.js';
+import { WorkbarEdgeToggle } from '../../../application/contracts/workbar-edge-toggle.js';
 import { WorkHubNavigationRail } from './workhub-navigation-rail.js';
 import { useWorkHubHighlightState, WorkHubHighlightContext, WorkHubHueProvider } from './workhub-work-identity.js';
 import { getWorkHubRailCopy } from '../../../locales/workhub-copy.js';
@@ -69,13 +70,14 @@ function revealWordmark(element: HTMLDivElement | null, content: HTMLDivElement 
   }
 }
 
-export function WorkHubRoot({ workspace: Workspace }: { workspace: SessionWorkspaceComponent }) {
+export function WorkHubRoot() {
   const highlight = useWorkHubHighlightState();
   const controller = useWorkHubController(() => highlight.selectWork(undefined));
   const { services, session, transcript, busy } = controller;
-  const sessionIds = useMemo(() => controller.sessionId
-    ? new Set([...controller.sessions.map((candidate) => candidate.id), controller.sessionId])
-    : undefined, [controller.sessions, controller.sessionId]);
+  useEffect(() => {
+    services.bindBrowserSession(controller.sessionId ?? null);
+    return () => services.bindBrowserSession(null);
+  }, [services, controller.sessionId]);
   const modelChoice = controller.choices.find((choice) =>
     choice.connectionId === session?.llmConnectionId && choice.connectionSlug === session?.llmConnectionSlug && choice.model === session?.model,
   );
@@ -276,6 +278,7 @@ export function WorkHubRoot({ workspace: Workspace }: { workspace: SessionWorksp
     <WorkHubHighlightContext.Provider value={highlight}>
     <WorkHubHueProvider sessionIds={[...tasks.map((task) => task.target.sessionId), ...delegatedSessionIds]}>
     <section ref={surface} data-progress={progress} data-progress-editing={editingProgress} className="workHubLive workhub-surface" data-placement={presentation?.placement ?? 'docked'} data-conversation-expanded={showConversation} aria-label={t.title}>
+      {!floating && presentation?.workbar && <WorkbarEdgeToggle label={getShellCopy(locale).chrome[presentation.workbar.collapsed ? 'expandWorkbar' : 'collapseWorkbar']} {...presentation.workbar} onToggle={() => call(services.presentation.toggleWorkbar())} />}
       {progress && <WorkHubProgressCard ref={progressHeader} request={presentation.progressRequest!} control={control} liveTurn={controller.liveTurn} messages={transcript.messages} busy={Boolean(controller.activeTurn) || controller.sending} onOpen={() => {
         setConversationExpanded(true);
         if (presentation.progressRequest !== undefined) call(services.presentation.expandProgress(presentation.progressRequest));
@@ -288,16 +291,10 @@ export function WorkHubRoot({ workspace: Workspace }: { workspace: SessionWorksp
         </div>
       </div>}
       <div className="workHubRevealMark" ref={revealMark} aria-hidden="true"><MakaWordmark width={192} /></div>
-      <Workspace className="workHubWorkspace" layoutScope="workhub" session={session} sessionIds={sessionIds} modelChoices={controller.choices} visible={showConversation} composerRef={composer}
-        onShowConversation={() => {
-          setConversationExpanded(true);
-          if (progress) call(services.presentation.expandProgress(presentation.progressRequest));
-        }}
-        onOpenSession={(id) => call(services.presentation.openSession(id))}>
-      {(workbar) => <ChatSurfaceLayout
+      <div className="workHubWorkspace"><div className="mainColumn">
+      <ChatSurfaceLayout
         scrollButton={showConversation ? undefined : null}
         style={!showConversation ? { height: expandedLayoutHeight, flex: 'none', position: 'absolute', bottom: 0, width: '100%' } : undefined}
-        onReturnToTail={transcript.hasNewer ? controller.loadLatest : undefined}
         composer={
           <div className="workHubComposerSurface" ref={composerSurface} onFocusCapture={editProgress} onPointerUpCapture={editProgress}>
             {(controller.error || control?.error) && (
@@ -348,11 +345,11 @@ export function WorkHubRoot({ workspace: Workspace }: { workspace: SessionWorksp
               onModelChange={controller.changeModel}
               modelSwitchAvailability={controller.configuringModel ? { available: false, pending: true, reason: 'pending' } : undefined}
               contextUsage={session ? {
-                usageTokens: liveContextUsage?.usageTokens ?? selectLatestRequestUsage(transcript.messages, transcript, session.model, session),
+                usageTokens: liveContextUsage?.usageTokens ?? selectLatestRequestUsage(transcript.messages, session.model, session),
                 declaredContextWindow: modelChoice?.declaredContextWindow,
                 meteredContextWindow: liveContextUsage?.contextWindow,
                 metadataContextWindow: modelChoice?.contextWindow,
-                onOpen: workbar.openUsage,
+                onOpen: () => call(services.presentation.openUsage()),
               } : undefined}
               activeThinkingLevels={thinkingLevels}
               activeThinkingLevel={thinkingLevel}
@@ -360,7 +357,6 @@ export function WorkHubRoot({ workspace: Workspace }: { workspace: SessionWorksp
               modelSwitchHasHistory={transcript.messages.length > 0}
               footerAccessory={
                 <div className="workHubComposerActions">
-                  {workbar.toggle}
                   {control?.canUndo && <IconButton type="button" size="sm" variant="ghost" icon={<Undo2 size={16} />} label={t.undo} isDisabled={busy} onClick={() => call(services.control.undo())} />}
                   {!floating && <IconButton type="button" size="sm" variant="ghost" icon={<PictureInPicture2 size={16} />} label={t.float} tooltip={`${t.float} · ${shortcutLabel}`} onClick={() => call(services.presentation.detach())} />}
                 </div>
@@ -385,10 +381,8 @@ export function WorkHubRoot({ workspace: Workspace }: { workspace: SessionWorksp
           scrollBehavior="auto"
           onNew={() => composer.current?.focus()}
           messages={[...transcript.messages]}
-          hasOlderHistory={transcript.hasOlder}
-          hasNewerHistory={transcript.hasNewer}
-          onPrefetchHistory={controller.prefetchHistory}
-          onRetainWindow={controller.retainWindow}
+          hasEarlierHistory={transcript.hasOlder}
+          onLoadEarlierHistory={controller.loadEarlier}
           transientMessages={controller.transientMessages}
           viewportNavigation={controller.viewportNavigation}
           liveTurns={controller.liveTurns}
@@ -406,8 +400,8 @@ export function WorkHubRoot({ workspace: Workspace }: { workspace: SessionWorksp
         />
         </div></div>
         </div>
-      </ChatSurfaceLayout>}
-      </Workspace>
+      </ChatSurfaceLayout>
+      </div></div>
     </section>
     </WorkHubHueProvider>
     </WorkHubHighlightContext.Provider>

@@ -617,7 +617,10 @@ test('startup recovery replays one admitted safe-boundary continuation without a
     assert.equal(opened.ok, true, JSON.stringify(opened));
     if (!opened.ok) assert.fail('Unable to observe the recovered Session');
     observeTerminal(opened.result.snapshot);
-    observer.activate(opened.result.subscriptionId);
+    await continuity.handlers['subscription.ready'](
+      { subscriptionId: opened.result.subscriptionId },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency, connectionId),
+    );
 
     await recovery.recover();
     assert.equal(
@@ -2979,7 +2982,8 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
       onPoison: () => {
         drainRequested = true;
       },
-      onSandboxBoundarySettled: async () => {},
+      resolveSandboxBoundaryRootSession: async () => undefined,
+      onSandboxBoundaryGraphWake: async () => {},
     });
     const interactionAuthority: RuntimeInteractionAuthority = {
       bindRun: (identity) => {
@@ -3061,7 +3065,10 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
     );
     assert.equal(parentOpened.ok, true);
     if (!parentOpened.ok) return;
-    parentConnection.activate(parentOpened.result.subscriptionId);
+    await continuity.handlers['subscription.ready'](
+      { subscriptionId: parentOpened.result.subscriptionId },
+      operationContext(hostEpoch, acquireResidency, parentConnectionId),
+    );
 
     const parentTurnId = randomUUID();
     const parentStarted = await interactiveTurns.handlers['turn.start'](
@@ -3122,7 +3129,10 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
         );
         assert.equal(opened.ok, true);
         if (!opened.ok) throw new Error('Unable to subscribe to hosted linked child');
-        connection.activate(opened.result.subscriptionId);
+        await childContinuity.handlers['subscription.ready'](
+          { subscriptionId: opened.result.subscriptionId },
+          operationContext(hostEpoch, acquireResidency, childConnectionId),
+        );
         closeChildContinuity = () => connection.close();
       },
       onEvent: () => {
@@ -5921,15 +5931,19 @@ test('repeated handoffs preserve one logical admission, decreasing budget and ex
           stores: fixture.stores,
           canonicalPermissionOutcomes: { readPermissionOutcome: async () => undefined },
         });
-        const overlay = await transcript.readActiveOverlay(fixture.sessionId, {
-          sessionId: fixture.sessionId,
-          turnId: 'repeated-handoff',
-          runId: rootRunId,
-          status: 'running',
+        const page = await transcript.readDurablePage(fixture.sessionId, {
+          direction: 'newer',
+          throughSequence: await transcript.readDurableHighWater(fixture.sessionId),
+          maxBytes: 512 * 1024,
+          maxMessages: 256,
         });
+        assert.equal(page.next, null);
         assert.deepEqual(
-          overlay.filter((message) => message.type === 'assistant').map((message) => message.id),
-          ['assistant-0', 'assistant-1', 'assistant-2'],
+          page.fragments
+            .map((fragment) => JSON.parse(Buffer.from(fragment.data).toString('utf8')))
+            .filter((message) => message.type === 'assistant')
+            .map((message) => message.id),
+          ['assistant-0', 'assistant-1'],
         );
       }
       const submitted = await fixture.messages.handlers['turn.message.submit'](
@@ -6272,7 +6286,8 @@ async function createFailureFixture(options: {
         refreshCanonicalContinuity: (sessionId, admission) =>
           requireContinuity(continuity).refreshCanonical(sessionId, admission),
         onPoison: requestDrain,
-        onSandboxBoundarySettled: async () => {},
+        resolveSandboxBoundaryRootSession: async () => undefined,
+        onSandboxBoundaryGraphWake: async () => {},
       })
     : undefined;
   const backends = new BackendRegistry();
