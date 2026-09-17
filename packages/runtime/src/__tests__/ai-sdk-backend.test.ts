@@ -13862,20 +13862,7 @@ describe('AiSdkBackend thinking persistence', () => {
     );
   });
 
-  test('Alibaba Responses fails when streamed reasoning differs from the final summary', async (t) => {
-    // The early stop tears down the SDK stream while its settlement promises
-    // are still in flight; when those rejections land is scheduler-owned (on
-    // Windows they were observed after the test boundary). Trap unhandled
-    // rejections for the lifetime of this turn and assert the mismatch path
-    // leaves none behind, on every event loop, not just the one that raced.
-    const leakedRejections: unknown[] = [];
-    const trapUnhandledRejection = (reason: unknown): void => {
-      leakedRejections.push(reason);
-    };
-    process.on('unhandledRejection', trapUnhandledRejection);
-    t.after(() => {
-      process.off('unhandledRejection', trapUnhandledRejection);
-    });
+  test('Alibaba Responses adopts the final summary when streamed reasoning differs', async () => {
     const appended: AssistantMessage[] = [];
     const mismatchEvents = [
       { type: 'response.created', response: { id: 'r' } },
@@ -13901,6 +13888,18 @@ describe('AiSdkBackend thinking persistence', () => {
           type: 'reasoning',
           id: 'reasoning-item',
           summary: [{ type: 'summary_text', text: 'different final summary' }],
+        },
+      },
+      {
+        type: 'response.completed',
+        response: {
+          id: 'r',
+          object: 'response',
+          created_at: 1,
+          model: 'qwen3.8-max',
+          status: 'completed',
+          output: [],
+          usage: { input_tokens: 8, output_tokens: 4, total_tokens: 12 },
         },
       },
     ];
@@ -13934,15 +13933,19 @@ describe('AiSdkBackend thinking persistence', () => {
 
     assert.equal(
       events.some((event) => event.type === 'error'),
-      true,
+      false,
+      JSON.stringify(events.filter((event) => event.type === 'error')),
     );
-    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'error');
-    assert.equal(JSON.stringify(appended).includes('makaResponses'), false);
+    // The provider's final summary wins over the streamed deltas, and the
+    // stored boundaries describe that adopted text — so the durable state
+    // stays self-consistent and replays instead of bricking the session.
+    assert.equal(JSON.stringify(appended).includes('different final summary'), true);
+    assert.equal(JSON.stringify(appended).includes('makaResponses'), true);
 
     const ctx = {
       sessionId: 'session-1',
       invocationId: 'inv-1',
-      runId: 'run-1',
+      runId: 'run-prev',
       turnId: 'turn-1',
       now: () => 7,
       newId: idGenerator(),
@@ -13972,14 +13975,7 @@ describe('AiSdkBackend thinking persistence', () => {
       }),
     );
     assert.ok(compactPrompt(recoveryModel));
-    // Let SDK teardown settle across macrotask cycles so a leaked rejection
-    // is caught before the trap comes off.
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    assert.deepEqual(
-      leakedRejections,
-      [],
-      'reasoning-mismatch teardown must not leak unhandled rejections',
-    );
+    assert.match(JSON.stringify(recoveryModel.doStreamCalls[0]?.prompt), /different final summary/);
   });
 
   test('Alibaba Responses preserves live compatibility reasoning across abrupt transport failure', async () => {
@@ -14425,7 +14421,8 @@ describe('AiSdkBackend thinking persistence', () => {
     );
   });
 
-  test('Alibaba Responses rejects malformed state owned by its profile', async () => {
+  test('Alibaba Responses drops malformed state owned by its profile', async () => {
+    const model = completionModel();
     const backend = createBackend({
       connection: {
         slug: 'alibaba-token-plan-cn',
@@ -14434,7 +14431,7 @@ describe('AiSdkBackend thinking persistence', () => {
       },
       apiKey: 'alibaba-token',
       modelId: 'qwen3.8-max',
-      modelFactory: () => completionModel(),
+      modelFactory: () => model,
       tools: [],
     });
     const runtimeContext: RuntimeEvent[] = [
@@ -14459,18 +14456,18 @@ describe('AiSdkBackend thinking persistence', () => {
       }),
     ];
 
-    await assert.rejects(
-      drain(
-        backend.send({
-          turnId: 'turn-current',
-          text: 'follow up',
-          context: [],
-          ...sameRouteReplayProvenance('qwen3.8-max'),
-          runtimeContext,
-        }),
-      ),
-      /Malformed durable plaintext Responses reasoning state/,
+    await drain(
+      backend.send({
+        turnId: 'turn-current',
+        text: 'follow up',
+        context: [],
+        ...sameRouteReplayProvenance('qwen3.8-max'),
+        runtimeContext,
+      }),
     );
+
+    assert.equal(model.doStreamCalls.length, 1);
+    assert.doesNotMatch(JSON.stringify(model.doStreamCalls[0]?.prompt), /"type":"reasoning"/);
   });
 
   test('passes DeepSeek max reasoning through as the provider-native effort', async () => {

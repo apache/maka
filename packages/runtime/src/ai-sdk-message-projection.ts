@@ -284,31 +284,18 @@ export class AiSdkMessageProjection {
         replaySupport.responsesReasoning.kind === 'plaintext-item'
       ) {
         const decoded = decodePlaintextResponsesReasoningState(item.providerOptions);
-        if (decoded.kind === 'missing') return undefined;
-        if (decoded.kind === 'unsupported-version') return undefined;
-        if (decoded.kind === 'malformed') {
-          if (
-            decoded.profile !== undefined &&
-            decoded.profile !== replaySupport.responsesReasoning.profile
-          ) {
-            return undefined;
-          }
-          throw new Error('Malformed durable plaintext Responses reasoning state');
-        }
-        const state = decoded.state;
-        if (state.profile !== replaySupport.responsesReasoning.profile) {
+        if (decoded.kind !== 'valid') return undefined;
+        if (decoded.state.profile !== replaySupport.responsesReasoning.profile) {
           return undefined;
         }
+        const providerOptions = replayPlaintextResponsesProviderOptions({
+          providerOptionsKey: replaySupport.responsesReasoning.providerOptionsKey,
+          state: decoded.state,
+          text: item.text,
+        });
+        if (!providerOptions) return undefined;
         return {
-          part: {
-            type: 'reasoning' as const,
-            text: item.text,
-            providerOptions: replayPlaintextResponsesProviderOptions({
-              providerOptionsKey: replaySupport.responsesReasoning.providerOptionsKey,
-              state,
-              text: item.text,
-            }),
-          },
+          part: { type: 'reasoning' as const, text: item.text, providerOptions },
         };
       }
       if (replaySupport.responsesReasoning === 'plaintext-content') {

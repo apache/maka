@@ -1235,6 +1235,10 @@ async function runOpenAIResponsesWire(input: {
     );
   }
   if (summaryReasoning) {
+    // Replay does not depend on server-side retention, so the dialect sends
+    // no `store` field unless a compatibility profile forces one.
+    assert.equal(requestBodies[0]?.store, undefined);
+    assert.equal(requestBodies[1]?.store, undefined);
     assert.deepEqual(
       (requestBodies[1].input as Array<Record<string, unknown>>).find(
         ({ type }) => type === 'reasoning',

@@ -107,11 +107,13 @@ export function replayPlaintextResponsesProviderOptions(input: {
   providerOptionsKey: string;
   state: PlaintextResponsesReasoningState;
   text: string;
-}): NonNullable<ModelMessage['providerOptions']> {
+}): NonNullable<ModelMessage['providerOptions']> | undefined {
+  const reasoningSummary = reconstructSummaryParts(input.text, input.state);
+  if (!reasoningSummary) return undefined;
   return {
     [input.providerOptionsKey]: {
       itemId: input.state.itemId,
-      reasoningSummary: reconstructSummaryParts(input.text, input.state),
+      reasoningSummary,
       // Presence is meaningful to @ai-sdk/open-responses: null prevents its
       // fallback from copying the canonical text into content when the
       // provider replays reasoning through summary instead.
@@ -127,17 +129,14 @@ export function safePlaintextResponsesReasoningItemId(value: unknown): string | 
 function reconstructSummaryParts(
   text: string,
   state: PlaintextResponsesReasoningState,
-): Array<{ type: 'summary_text'; text: string }> {
+): Array<{ type: 'summary_text'; text: string }> | undefined {
   let offset = 0;
   const parts = state.summaryPartLengths.map((length) => {
     const part = { type: 'summary_text' as const, text: text.slice(offset, offset + length) };
     offset += length;
     return part;
   });
-  if (offset !== text.length) {
-    throw new Error('Durable plaintext Responses reasoning summary boundaries do not match text');
-  }
-  return parts;
+  return offset === text.length ? parts : undefined;
 }
 
 function isSafeItemId(value: unknown): value is string {
