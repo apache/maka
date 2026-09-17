@@ -581,7 +581,10 @@ function normalizeRuntimeOverrides(overrides) {
   const adapters = {
     '@ai-sdk/anthropic': { kind: 'anthropic', auth: 'api-key', normalizeBaseUrl: true },
     '@ai-sdk/google': { kind: 'google', normalizeBaseUrl: false },
-    '@ai-sdk/openai': { kind: 'openai' },
+    '@ai-sdk/openai': {
+      kind: 'openai',
+      responses: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
+    },
     '@ai-sdk/openai-compatible': { kind: 'openai-compatible', name: 'provider' },
   };
   return Object.fromEntries(

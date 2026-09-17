@@ -189,7 +189,7 @@ export const PROVIDER_CONTRACT_OVERRIDE_BINDINGS: readonly ProviderContractOverr
       'moonshot-global:tool-loop',
       'moonshot-global:reasoning-replay',
     ],
-    title: 'Moonshot Global preserves Kimi model ids and reasoning across a Responses tool loop',
+    title: 'Moonshot Global replays Kimi summary-only reasoning items across a Responses tool loop',
     run: () =>
       runOpenAIResponsesWire({
         providerType: 'moonshot-global',
@@ -198,7 +198,7 @@ export const PROVIDER_CONTRACT_OVERRIDE_BINDINGS: readonly ProviderContractOverr
         basePath: '/v1',
         modelId: 'kimi-k3',
         apiKey: 'moonshot-global-test-key',
-        statelessReasoning: true,
+        summaryReasoning: true,
       }),
   },
   {
@@ -1090,6 +1090,8 @@ async function runOpenAIResponsesWire(input: {
   apiKey: string;
   statelessReasoning?: boolean;
   plaintextReasoning?: boolean;
+  /** The provider's real carrier: a reasoning item with summary and no encrypted_content. */
+  summaryReasoning?: boolean;
 }): Promise<void> {
   const {
     providerType,
@@ -1100,8 +1102,9 @@ async function runOpenAIResponsesWire(input: {
     apiKey,
     statelessReasoning,
     plaintextReasoning,
+    summaryReasoning,
   } = input;
-  const hasReasoning = statelessReasoning || plaintextReasoning;
+  const hasReasoning = statelessReasoning || plaintextReasoning || summaryReasoning;
   const requestBodies: Array<Record<string, unknown>> = [];
   const server = await startJsonServer(async (request, response) => {
     assert.equal(request.method, 'POST');
@@ -1134,7 +1137,15 @@ async function runOpenAIResponsesWire(input: {
                     content: [{ type: 'reasoning_text', text: 'Use echo.' }],
                   },
                 ]
-              : []),
+              : summaryReasoning
+                ? [
+                    {
+                      type: 'reasoning',
+                      id: 'rs_relay_tool',
+                      summary: [{ type: 'summary_text', text: 'Use echo.' }],
+                    },
+                  ]
+                : []),
           {
             type: 'function_call',
             id: 'fc_relay_echo',
@@ -1220,6 +1231,18 @@ async function runOpenAIResponsesWire(input: {
         id: 'rs_relay_tool',
         summary: [],
         content: [{ type: 'reasoning_text', text: 'Use echo.' }],
+      },
+    );
+  }
+  if (summaryReasoning) {
+    assert.deepEqual(
+      (requestBodies[1].input as Array<Record<string, unknown>>).find(
+        ({ type }) => type === 'reasoning',
+      ),
+      {
+        type: 'reasoning',
+        id: 'rs_relay_tool',
+        summary: [{ type: 'summary_text', text: 'Use echo.' }],
       },
     );
   }

@@ -51,7 +51,6 @@ import {
   type ProviderRuntimeAdapter,
   type ProviderType,
 } from '@maka/core/provider-registry';
-import { resolveRuntimeProviderAdapter } from '../provider-runtime-policy.js';
 
 export const PROVIDER_CONTRACT_DIMENSIONS = [
   'discovery',
@@ -238,7 +237,7 @@ function usesOpenAiResponsesWire(
   def: ProviderDefaults,
   modelId: string,
 ): boolean {
-  const adapter = resolveRuntimeProviderAdapter(def.runtimeAdapter);
+  const adapter = def.runtimeAdapter;
   const supportsResponses =
     adapter.kind === 'openai' ||
     (adapter.kind === 'openai-compatible' && adapter.responses !== undefined);
@@ -369,7 +368,7 @@ function reasoningReplayCell(
   providerType: ProviderType,
   def: ProviderDefaults,
 ): ProviderContractCell {
-  const adapter = resolveRuntimeProviderAdapter(def.runtimeAdapter);
+  const adapter = def.runtimeAdapter;
   if (adapter.kind === 'unavailable') {
     return {
       state: 'not-applicable',
@@ -419,7 +418,10 @@ function reasoningReplayCell(
       state: 'override',
       dimension: 'reasoning-replay',
       overrideKey: overrideKeyFor(providerType, 'reasoning-replay'),
-      contract: 'Native OpenAI Responses reasoning items retain their provider continuation state',
+      contract:
+        adapter.responses.adapter === 'open-responses'
+          ? 'The declared Open Responses contract owns its provider-specific continuation representation'
+          : 'Native OpenAI Responses reasoning items retain their provider continuation state',
     };
   }
   // Native Anthropic / OpenAI / Google / Cohere SDKs own signed reasoning replay

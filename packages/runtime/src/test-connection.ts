@@ -438,7 +438,7 @@ function retiredProviderTestResult(providerType: string): ConnectionTestResult {
 
 async function probeAnthropic(
   adapter: Extract<
-    import('./provider-runtime-policy.js').RuntimeProviderAdapter,
+    import('@maka/core/llm-connections').ProviderRuntimeAdapter,
     { kind: 'anthropic' }
   >,
   baseUrl: string,

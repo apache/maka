@@ -56,6 +56,7 @@ describe('Moonshot provider regions', () => {
     assert.deepEqual(global.runtimeAdapter, {
       kind: 'openai',
       apiProtocol: 'openai-responses',
+      responses: { adapter: 'open-responses', reasoningReplay: 'plaintext-summary' },
     });
     assert.ok(global.fallbackModels.includes('kimi-k3'));
   });
@@ -94,16 +95,97 @@ describe('provider catalog contract — structural invariants over CATALOG_PROVI
     }
   });
 
-  it('delegates Alibaba Token Plan execution through one explicit Runtime profile', () => {
-    const delegated = Object.entries(PROVIDER_REGISTRY).flatMap(([providerType, definition]) => {
-      const adapter = definition.runtimeAdapter;
-      return adapter.kind === 'openai-compatible' && adapter.runtimeProfile
-        ? [{ providerType, runtimeProfile: adapter.runtimeProfile }]
-        : [];
+  it('pins every declared Responses reasoning contract', () => {
+    const declared = Object.entries(PROVIDER_REGISTRY).flatMap(([providerType, definition]) => {
+      const adapters = [
+        ['runtimeAdapter', definition.runtimeAdapter],
+        ...Object.entries(definition.protocolAdapters ?? {}).map(
+          ([protocol, adapter]) => [`protocolAdapters.${protocol}`, adapter] as const,
+        ),
+      ] as const;
+      return adapters.flatMap(([via, adapter]) =>
+        (adapter.kind === 'openai' ||
+          adapter.kind === 'openai-codex' ||
+          adapter.kind === 'openai-compatible') &&
+        adapter.responses
+          ? [{ providerType, via, contract: adapter.responses }]
+          : [],
+      );
     });
-    assert.deepEqual(delegated, [
-      { providerType: 'alibaba-token-plan-cn', runtimeProfile: 'alibaba-token-plan' },
-      { providerType: 'alibaba-token-plan', runtimeProfile: 'alibaba-token-plan' },
+    assert.deepEqual(declared, [
+      {
+        providerType: 'volcengine-agent-plan',
+        via: 'runtimeAdapter',
+        contract: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
+      },
+      {
+        providerType: 'openai',
+        via: 'runtimeAdapter',
+        contract: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
+      },
+      {
+        providerType: 'deepseek',
+        via: 'runtimeAdapter',
+        contract: { adapter: 'open-responses', reasoningReplay: 'plaintext-content' },
+      },
+      {
+        providerType: 'moonshot-global',
+        via: 'runtimeAdapter',
+        contract: { adapter: 'open-responses', reasoningReplay: 'plaintext-summary' },
+      },
+      {
+        providerType: 'xai',
+        via: 'runtimeAdapter',
+        contract: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
+      },
+      {
+        providerType: 'xai-oauth',
+        via: 'runtimeAdapter',
+        contract: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
+      },
+      {
+        providerType: 'opencode',
+        via: 'protocolAdapters.openai-responses',
+        contract: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
+      },
+      {
+        providerType: 'opencode-go',
+        via: 'protocolAdapters.openai-responses',
+        contract: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
+      },
+      {
+        providerType: 'alibaba-token-plan-cn',
+        via: 'runtimeAdapter',
+        contract: {
+          adapter: 'open-responses',
+          reasoningReplay: 'plaintext-summary',
+          compatibility: 'alibaba-token-plan',
+        },
+      },
+      {
+        providerType: 'alibaba-token-plan',
+        via: 'runtimeAdapter',
+        contract: {
+          adapter: 'open-responses',
+          reasoningReplay: 'plaintext-summary',
+          compatibility: 'alibaba-token-plan',
+        },
+      },
+      {
+        providerType: 'openai-responses-compatible',
+        via: 'runtimeAdapter',
+        contract: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
+      },
+      {
+        providerType: 'github-copilot',
+        via: 'protocolAdapters.openai-responses',
+        contract: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
+      },
+      {
+        providerType: 'openai-codex',
+        via: 'runtimeAdapter',
+        contract: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
+      },
     ]);
   });
 });

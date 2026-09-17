@@ -762,7 +762,18 @@ describe('ModelAdapter stream and error normalization', () => {
   });
 
   test('preserves OpenAI Responses reasoning metadata through stream normalization', () => {
-    const adapter = newAdapter();
+    const adapter = new ModelAdapter({
+      connection: {
+        slug: 'openai',
+        providerType: 'openai',
+        defaultModel: 'gpt-5.4',
+      },
+      apiKey: 'sk-test',
+      modelId: 'gpt-5.4',
+      modelFactory: () => ({}),
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
     type Chunk = Parameters<typeof adapter.translateChunk>[0];
     const chunks: Chunk[] = [
       {
