@@ -19,6 +19,7 @@
 
 import type { ArtifactBinaryReadResult } from '@maka/core/artifacts';
 import type { ChatModelChoice } from '@maka/core/chat-model-choice';
+import type { ChatDefaultPermissionMode } from '@maka/core/settings';
 import type { UiLocale } from '@maka/core/ui-locale';
 import type { StoredMessage, SessionSummary } from '@maka/core/session';
 import type { ComposerAttachmentService } from '@maka/ui/use-composer-attachments';
@@ -63,6 +64,9 @@ export interface WorkHubServices extends WorkHubWorkspaceServices {
     references: readonly WorkHubDelegationReference[],
   ): Promise<readonly WorkHubDelegationFeedback[]>;
   modelChoices(sessionId: string): Promise<ChatModelChoice[]>;
+  readDefaultPermissionMode(): Promise<ChatDefaultPermissionMode>;
+  setDefaultPermissionMode(mode: ChatDefaultPermissionMode): Promise<ChatDefaultPermissionMode>;
+  subscribeDefaultPermissionMode(handler: () => void): () => void;
   readonly attachments: ComposerAttachmentService;
   readAttachmentBytes(sessionId: string, artifactId: string): Promise<ArtifactBinaryReadResult>;
   prepareAttachments(sessionId: string, items: Array<{ approvalId: string; name: string; mimeType?: string } | { file: File }>): Promise<AttachmentRef[]>;

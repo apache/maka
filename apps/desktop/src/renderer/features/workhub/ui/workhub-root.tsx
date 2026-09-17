@@ -18,9 +18,10 @@
  */
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { ChatSurfaceLayout, UserQuestionPrompt, MakaWordmark, useUiLocale, type ComposerHandle } from '@maka/ui';
+import { ChatSurfaceLayout, UserQuestionPrompt, MakaWordmark, useToast, useUiLocale, type ComposerHandle } from '@maka/ui';
 import { Button, IconButton } from '@astryxdesign/core';
 import { ChevronDown, PictureInPicture2, Undo2, X } from '@maka/ui/icons';
+import { DEFAULT_CHAT_PERMISSION_MODE } from '@maka/core/settings';
 import { useLiveContextUsage } from '../../../application/contracts/session-inspector/use-live-context-usage.js';
 import { selectLatestRequestUsage } from '../../../application/contracts/session-inspector/latest-request-usage.js';
 import { WorkHubProgressCard } from './workhub-progress-card.js';
@@ -86,6 +87,7 @@ export function WorkHubRoot() {
   const thinkingLevel = session?.thinkingLevel && thinkingLevels.includes(session.thinkingLevel) ? session.thinkingLevel : undefined;
   const locale = useUiLocale();
   const t = workHubLiveCopy[locale];
+  const toast = useToast();
   const shortcutLabel = navigator.platform.toLowerCase().includes('mac') ? '⌘⇧K' : 'Ctrl+Shift+K';
   const composer = useRef<ComposerHandle>(null);
   const composerSurface = useRef<HTMLDivElement>(null);
@@ -345,6 +347,33 @@ export function WorkHubRoot() {
               maxInputRows={progress && !editingProgress ? 1 : showConversation ? undefined : 6}
               onModelChange={controller.changeModel}
               modelSwitchAvailability={controller.configuringModel ? { available: false, pending: true, reason: 'pending' } : undefined}
+              permissionMode={controller.permissionMode ?? DEFAULT_CHAT_PERMISSION_MODE}
+              permissionModeDisabledReason={controller.permissionMode === undefined
+                ? getShellCopy(locale).app.modeChangeLoading
+                : controller.configuringPermissionMode
+                  ? getShellCopy(locale).app.modeChanging
+                  : busy
+                    ? getShellCopy(locale).app.permissionModeRunning
+                    : undefined}
+              onPermissionModeChange={async (mode) => {
+                if (mode === 'bypass' && controller.permissionMode !== 'bypass') {
+                  const copy = getShellCopy(locale).sessionSettingsActions;
+                  try {
+                    const confirmed = await toast.confirm({
+                      title: copy.bypassConfirmTitle,
+                      description: copy.bypassConfirmDescription,
+                      confirmLabel: copy.bypassConfirmLabel,
+                      cancelLabel: copy.bypassCancelLabel,
+                      destructive: true,
+                    });
+                    if (!confirmed) return;
+                  } catch (reason) {
+                    controller.report(reason);
+                    return;
+                  }
+                }
+                await controller.changePermissionMode(mode);
+              }}
               contextUsage={session ? {
                 usageTokens: liveContextUsage?.usageTokens ?? selectLatestRequestUsage(transcript.messages, transcript, session.model, session),
                 declaredContextWindow: modelChoice?.declaredContextWindow,

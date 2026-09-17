@@ -161,6 +161,19 @@ test('a chat-default thinking level the app does not recognize drops to no prefe
   assert.strictEqual(normalized.chatDefaults.thinkingLevel, undefined);
 });
 
+test('new and invalid chat defaults use Auto review while an explicit Bypass choice persists', () => {
+  assert.strictEqual(createDefaultSettings().chatDefaults.permissionMode, 'auto_review');
+  assert.strictEqual(
+    normalizeSettings({ chatDefaults: { permissionMode: 'invalid' as never } }).chatDefaults
+      .permissionMode,
+    'auto_review',
+  );
+  assert.strictEqual(
+    normalizeSettings({ chatDefaults: { permissionMode: 'bypass' } }).chatDefaults.permissionMode,
+    'bypass',
+  );
+});
+
 test('an app icon the build does not ship falls back without disturbing the theme', () => {
   // The fallback is the shipped default, which is no longer the id literally
   // named `default` — that id is now one selectable icon among many (the

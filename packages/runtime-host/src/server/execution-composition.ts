@@ -54,6 +54,8 @@ import {
 } from '@maka/runtime/session-manager';
 import { buildToolsForAgentDefinition } from '@maka/runtime/agent-catalog';
 import { buildRecallTools } from '@maka/runtime/recall-tools';
+import { AUTO_REVIEW_TOOL_NAMES } from '@maka/runtime/auto-review';
+import { resolveAutoReviewContext } from './auto-review-context.js';
 import { RECALL_SYNTHETIC_TEXT_PATTERNS } from '@maka/runtime/recall-candidates';
 import { buildBuiltinTools } from '@maka/runtime/builtin-tools';
 import { createLocalContinuationSafetyInspector } from '@maka/runtime/continuation-safety';
@@ -993,6 +995,20 @@ export async function createExecutionRuntimeHostComposition(
       oauthCredentials,
       usage: openedUsageStores,
       requestDrain: context.requestDrain,
+      reviewTools: [
+        ...buildBuiltinTools({
+          runtimeResources,
+          attachmentResources: builtinTools.attachmentResources,
+        }).filter((tool) => AUTO_REVIEW_TOOL_NAMES.has(tool.name)),
+        ...recallTools,
+      ],
+      readReviewContext: (request) =>
+        resolveAutoReviewContext(request, {
+          readRootTurnAdmission: (sessionId, turnId) =>
+            stores.agentRunStore.readRootTurnAdmission(sessionId, turnId),
+          readActiveWorkHubAssignmentsByTarget: (sessionIds, limit) =>
+            stores.sessionStore.readActiveWorkHubAssignmentsByTarget(sessionIds, limit),
+        }),
     });
     const hostAiSdkBackendInput = <T extends BackendPreparationContext>(backendContext: T) => ({
       context: backendContext,

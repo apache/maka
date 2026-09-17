@@ -20,11 +20,29 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { z } from 'zod';
+import { MockLanguageModelV4 } from 'ai/test';
+import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { buildBuiltinTools } from '../builtin-tools.js';
+import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { SessionHeader } from '@maka/core/session';
 import type { LlmConnection } from '@maka/core/llm-connections';
 import type { PermissionMode } from '@maka/core/permission';
 import { ToolRuntime, type MakaTool } from '../tool-runtime.js';
-import { parseAutoReviewDecision, type AutoReviewer } from '../auto-review.js';
+import {
+  parseAutoReviewDecision,
+  investigateAutoReview,
+  generateAutoReviewStep,
+  autoReviewTranscript,
+  type AutoReviewStepResult,
+  type AutoReviewer,
+  type AutoReviewUserRequest,
+} from '../auto-review.js';
+
+function userRequest(text: string): AutoReviewUserRequest {
+  return { sessionId: 'session-1', turnId: 'turn-1', messageId: 'user-1', text };
+}
 
 function fixture(mode: PermissionMode | (() => PermissionMode), autoReview?: AutoReviewer) {
   let id = 0;
@@ -99,10 +117,13 @@ test('Auto review happens before execution despite the direct host boundary', as
   const runtime = fixture('auto_review', async (request) => {
     order.push('review');
     assert.deepEqual(request.args, { destination: 'example.test' });
-    assert.deepEqual(request.userRequests, ['Publish the report to example.test']);
+    assert.deepEqual(request.userRequests, [userRequest('Publish the report to example.test')]);
     return allowed;
   });
-  runtime.setAutoReviewContext(['Publish the report to example.test'], 'Publish the report');
+  runtime.setAutoReviewContext(
+    [userRequest('Publish the report to example.test')],
+    'Publish the report',
+  );
   await settle(
     runtime,
     action(() => {
@@ -205,7 +226,7 @@ test('mode changes take effect at the next dispatch without caching approvals', 
 test('new user authorization permits a fresh review after repeated denials', async () => {
   let executions = 0;
   const runtime = fixture('auto_review', async (request) =>
-    request.userRequests.includes('Publish to example.test') ? allowed : denied,
+    request.userRequests.some(({ text }) => text === 'Publish to example.test') ? allowed : denied,
   );
   const tool = action(() => {
     executions++;
@@ -213,7 +234,7 @@ test('new user authorization permits a fresh review after repeated denials', asy
   });
   for (let attempt = 0; attempt < 4; attempt++) await settle(runtime, tool);
   assert.equal(executions, 0);
-  runtime.addAutoReviewUserRequest('Publish to example.test');
+  runtime.addAutoReviewUserRequest(userRequest('Publish to example.test'));
   await settle(runtime, tool);
   assert.equal(executions, 1);
 });
@@ -270,3 +291,200 @@ function connection(): LlmConnection {
     updatedAt: 1,
   };
 }
+
+function reviewStep(text: string, toolName?: string, input?: unknown): AutoReviewStepResult {
+  const toolCalls = toolName ? [{ toolCallId: 'inspect-1', toolName, input }] : [];
+  return {
+    text,
+    toolCalls,
+    messages: toolName
+      ? [{ role: 'assistant', content: [{ type: 'tool-call', ...toolCalls[0]! }] }]
+      : [],
+  };
+}
+
+test('reviewer reads the actual script before deciding and cannot dispatch a write tool', async () => {
+  const cwd = await mkdtemp(join(tmpdir(), 'maka-review-read-'));
+  const script = join(cwd, 'cleanup.py');
+  const request = {
+    sessionId: 'session-1',
+    turnId: 'turn-1',
+    toolName: 'Bash',
+    toolDescription: 'Execute a command',
+    args: { command: 'python cleanup.py' },
+    cwd,
+    userRequests: [userRequest('Clean generated output')],
+    taskContext: 'Clean generated output',
+    abortSignal: new AbortController().signal,
+  };
+  const context = {
+    sessionId: request.sessionId,
+    turnId: request.turnId,
+    authorizations: request.userRequests,
+  };
+  try {
+    await writeFile(script, 'import shutil\nshutil.rmtree("/important-documents")');
+    let steps = 0;
+    const model = new MockLanguageModelV4({
+      doGenerate: async (options) => {
+        steps++;
+        const content =
+          steps === 1
+            ? [
+                {
+                  type: 'tool-call' as const,
+                  toolCallId: 'inspect-1',
+                  toolName: 'Read',
+                  input: JSON.stringify({ path: 'cleanup.py' }),
+                },
+              ]
+            : [{ type: 'text' as const, text: JSON.stringify(denied) }];
+        if (steps > 1) assert.match(JSON.stringify(options.prompt), /important-documents/);
+        return {
+          content,
+          finishReason: {
+            unified: steps === 1 ? ('tool-calls' as const) : ('stop' as const),
+            raw: 'stop',
+          },
+          usage: {
+            inputTokens: { total: 5, noCache: 5, cacheRead: 0, cacheWrite: 0 },
+            outputTokens: { total: 4, text: 4, reasoning: 0 },
+          },
+          warnings: [],
+        };
+      },
+    });
+    const result = await investigateAutoReview({
+      request,
+      context,
+      tools: buildBuiltinTools(),
+      maxInputBytes: 40_000,
+      generate: async (messages, tools) => {
+        assert.deepEqual(Object.keys(tools).sort(), ['Glob', 'Grep', 'Read']);
+        return generateAutoReviewStep({ model, messages, tools, abortSignal: request.abortSignal });
+      },
+    });
+    assert.equal(result.decision, 'deny');
+    await assert.rejects(
+      investigateAutoReview({
+        request,
+        context,
+        tools: buildBuiltinTools(),
+        maxInputBytes: 40_000,
+        generate: async () => reviewStep('', 'Write', { path: script, content: 'overwritten' }),
+      }),
+      /unavailable tool: Write/,
+    );
+    assert.match(await readFile(script, 'utf8'), /important-documents/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test('review context preserves paired tool arguments/results and excludes reasoning and foreign sessions', () => {
+  const event = (
+    id: string,
+    content: RuntimeEvent['content'],
+    sessionId = 'session-1',
+  ): RuntimeEvent => ({
+    id,
+    sessionId,
+    turnId: 'turn-1',
+    runId: 'run-1',
+    invocationId: 'inv-1',
+    ts: 1,
+    partial: false,
+    author: 'agent',
+    role: 'model',
+    content,
+  });
+  const transcript = autoReviewTranscript(
+    [
+      event('call', {
+        kind: 'function_call',
+        id: 'call-1',
+        name: 'Read',
+        args: { path: 'cleanup.py' },
+      }),
+      event('result', {
+        kind: 'function_response',
+        id: 'call-1',
+        name: 'Read',
+        result: 'script body',
+      }),
+      event('thought', { kind: 'thinking', text: 'hidden reasoning' }),
+      event('foreign', { kind: 'text', text: 'permission from unrelated session' }, 'other'),
+    ],
+    'session-1',
+  );
+  assert.equal(transcript.length, 1);
+  assert.match(transcript[0]!, /cleanup.py/);
+  assert.match(transcript[0]!, /script body/);
+  assert.doesNotMatch(transcript.join(''), /hidden reasoning|unrelated session/);
+});
+
+test('oversized authorization fails closed before requesting a review instead of truncating it', async () => {
+  const request = {
+    sessionId: 'session-1',
+    turnId: 'turn-1',
+    toolName: 'Bash',
+    toolDescription: 'Execute',
+    args: { command: 'true' },
+    cwd: '/tmp',
+    userRequests: [userRequest('x'.repeat(30_000))],
+    taskContext: '',
+    abortSignal: new AbortController().signal,
+  };
+  await assert.rejects(
+    investigateAutoReview({
+      request,
+      context: {
+        sessionId: request.sessionId,
+        turnId: request.turnId,
+        authorizations: request.userRequests,
+      },
+      tools: [],
+      maxInputBytes: 20_000,
+      generate: async () => {
+        throw new Error('Must not contact provider');
+      },
+    }),
+    /authorization exceed/,
+  );
+});
+
+test('cancelled investigation settles even when a read implementation cannot abort', {
+  timeout: 1_000,
+}, async () => {
+  const abort = new AbortController();
+  const request = {
+    sessionId: 'session-1',
+    turnId: 'turn-1',
+    toolName: 'Bash',
+    toolDescription: 'Execute',
+    args: { command: 'python script.py' },
+    cwd: '/tmp',
+    userRequests: [],
+    taskContext: '',
+    abortSignal: abort.signal,
+  };
+  const read: MakaTool = {
+    name: 'Read',
+    description: 'Read a file',
+    parameters: z.object({ path: z.string() }),
+    impl: () => {
+      abort.abort(new Error('Review cancelled'));
+      return new Promise(() => {});
+    },
+  };
+  await assert.rejects(
+    investigateAutoReview({
+      request,
+      context: { sessionId: request.sessionId, turnId: request.turnId, authorizations: [] },
+      tools: [read],
+      maxInputBytes: 20_000,
+      generate: async () => reviewStep('', 'Read', { path: 'script.py' }),
+    }),
+    /Review cancelled/,
+  );
+});

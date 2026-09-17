@@ -224,6 +224,12 @@ export function createDesktopWorkHubServices(
     },
     modelChoices: async (sessionId) =>
       (await bridge.connections.getSnapshot(sessionId)).chatModelChoices,
+    readDefaultPermissionMode: async () =>
+      (await bridge.settings.get()).chatDefaults.permissionMode,
+    setDefaultPermissionMode: async (permissionMode) =>
+      (await bridge.settings.update({ chatDefaults: { permissionMode } })).settings.chatDefaults.permissionMode,
+    subscribeDefaultPermissionMode: (handler) =>
+      bridge.settings.subscribeExternalChanged(handler),
     attachments: bridge.attachments,
     readAttachmentBytes: bridge.attachments.readBytes,
     prepareAttachments: async (sessionId, items) => {

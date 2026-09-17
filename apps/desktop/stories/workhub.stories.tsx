@@ -20,6 +20,10 @@
 import { useState } from 'react';
 import { ToastProvider, LocaleProvider, AstryxLocaleProvider, ChatSurfaceLayout } from '@maka/ui';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
+import {
+  DEFAULT_CHAT_PERMISSION_MODE,
+  type ChatDefaultPermissionMode,
+} from '@maka/core/settings';
 import type { StoredMessage, SessionSummary } from '@maka/core/session';
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { expect, fn, userEvent, within, waitFor } from 'storybook/test';
@@ -70,6 +74,8 @@ function makeServices(failFirst: boolean, withHistory: boolean | 'usage', colore
   let interactionUpdate: Parameters<WorkHubServices['subscribeActiveInteractions']>[0] | undefined;
   let updateTranscript: ((snapshot: WorkHubTranscriptSnapshot) => void) | undefined;
   let updateSessions: (() => void) | undefined;
+  let defaultPermissionMode: ChatDefaultPermissionMode = DEFAULT_CHAT_PERMISSION_MODE;
+  let updateDefaultPermissionMode: (() => void) | undefined;
   let updateExecution: Parameters<WorkHubServices['observe']>[4];
   let questionPending = question;
   let pendingForm: import('@maka/core/events').FormRequestEvent | undefined;
@@ -98,6 +104,18 @@ function makeServices(failFirst: boolean, withHistory: boolean | 'usage', colore
     resolve: async () => sessionId, subscribeHosts: () => () => {}, subscribeAvailability: () => () => {},
     getSession: async () => session,
     listSessions: async () => coloredHistory ? [target, secondTarget] : [target], subscribeSessions: (handler) => { updateSessions = handler; return () => { updateSessions = undefined; }; }, modelChoices: async () => choices,
+    readDefaultPermissionMode: async () => defaultPermissionMode,
+    setDefaultPermissionMode: async (mode) => {
+      defaultPermissionMode = mode;
+      updateDefaultPermissionMode?.();
+      return mode;
+    },
+    subscribeDefaultPermissionMode: (handler) => {
+      updateDefaultPermissionMode = handler;
+      return () => {
+        if (updateDefaultPermissionMode === handler) updateDefaultPermissionMode = undefined;
+      };
+    },
     delegationFeedback: async (references) => references.map(({ id }) => ({
       id,
       state: coloredHistory && id === 'link-1' ? 'waiting_for_user' as const : coloredHistory && id === 'link-2' ? 'running' as const : 'completed' as const,

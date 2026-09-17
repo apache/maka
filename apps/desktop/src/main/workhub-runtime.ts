@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { WORKHUB_COORDINATION_SESSION_ID, type WorkHubCreateDefaults } from '@maka/core/session';
+import { WORKHUB_COORDINATION_SESSION_ID } from '@maka/core/session';
 import { clientCapabilityEntityId } from '@maka/runtime-host/client-capability-entity-id';
 import type { WorkHubCoordinationProposal, WorkspaceTarget } from '@maka/runtime-host/protocol';
 import { desktopSessionKey, type DesktopTargetScope } from '../shared/runtime-host-identity.js';
@@ -27,11 +27,11 @@ import type { DesktopRuntimeHostClient } from './runtime-host-client.js';
 interface WorkHubRuntimeDeps {
   client(scope: DesktopTargetScope): Pick<DesktopRuntimeHostClient, 'queryTurn' | 'stopTurn' | 'listWorkHubCoordinationCandidates' | 'actWorkHubCoordinationFromTurn' | 'selectAndDelegateWorkHubTarget'>;
   isCurrent(scope: DesktopTargetScope): boolean;
-  createContext(scope: DesktopTargetScope): Promise<{ workspace: WorkspaceTarget; defaults: WorkHubCreateDefaults }>;
+  workspace(scope: DesktopTargetScope): Promise<WorkspaceTarget>;
   changed(scope: DesktopTargetScope, reason: 'created' | 'status-change', sessionId: string): void;
 }
 
-/** Keep task authority in the Host; Desktop supplies only its selected workspace and preferences. */
+/** Keep task authority in the Host; Desktop supplies only its selected workspace; creation defaults belong to the Host. */
 export function createWorkHubRuntime(deps: WorkHubRuntimeDeps) {
   const requireCurrent = (scope: DesktopTargetScope) => {
     if (!deps.isCurrent(scope)) throw new Error('Runtime Host changed');
@@ -85,13 +85,13 @@ export function createWorkHubRuntime(deps: WorkHubRuntimeDeps) {
         ('operation' in proposal &&
           proposal.operation === 'correct' &&
           proposal.target.disposition === 'create_new');
-      const context = createsTarget ? await deps.createContext(scope) : undefined;
+      const workspace = createsTarget ? await deps.workspace(scope) : undefined;
       requireCurrent(scope);
       const result = await client.actWorkHubCoordinationFromTurn({
         turnId, actionId, proposal,
         ...('text' in input ? { delegationText: input.text } : {}),
         ...('candidateSetId' in input && input.candidateSetId ? { candidateSetId: input.candidateSetId } : {}),
-        ...(context ? { create: { workspace: context.workspace }, newWorkDefaults: context.defaults } : {}),
+        ...(workspace ? { create: { workspace } } : {}),
       });
       if (result.disposition === 'create_new' || (result.disposition === 'replace' && result.replacementDisposition === 'create_new')) {
         deps.changed(scope, 'created', result.targetSessionId);

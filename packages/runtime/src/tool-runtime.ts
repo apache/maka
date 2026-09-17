@@ -17,7 +17,6 @@
  * under the License.
  */
 
-import { inspect } from 'node:util';
 import { decodeCanonicalToolResultContent } from '@maka/core/tool-result-record-schema';
 import { projectAgentSwarmResult } from '@maka/core/agent-swarm';
 import { projectToolActivityArgs } from '@maka/core/tool-activity-args';
@@ -322,7 +321,13 @@ function composeChildAbortSignal(
   return AbortSignal.any([invocationSignal, childSignal]);
 }
 
-import type { AutoReviewer } from './auto-review.js';
+import {
+  autoReviewEvidence,
+  autoReviewTranscript,
+  boundReviewTranscript,
+  type AutoReviewer,
+  type AutoReviewUserRequest,
+} from './auto-review.js';
 
 export interface ToolRuntimeInput {
   sessionId: string;
@@ -435,17 +440,21 @@ export function isRuntimeCommitBoundaryError(error: unknown): boolean {
 }
 
 export class ToolRuntime {
-  private autoReviewUserRequests: string[] = [];
+  private autoReviewUserRequests: AutoReviewUserRequest[] = [];
   private autoReviewTaskContext = '';
-  private readonly autoReviewEvidence: { tool: string; result: string }[] = [];
+  private autoReviewEvidence: string[] = [];
 
-  setAutoReviewContext(userRequests: readonly string[], taskContext: string): void {
+  setAutoReviewContext(userRequests: readonly AutoReviewUserRequest[], taskContext: string): void {
     this.autoReviewUserRequests = [...userRequests];
     this.autoReviewTaskContext = taskContext;
   }
 
-  addAutoReviewUserRequest(text: string): void {
-    this.autoReviewUserRequests.push(text);
+  setAutoReviewHistory(events: readonly RuntimeEvent[]): void {
+    this.autoReviewEvidence = autoReviewTranscript(events, this.input.sessionId);
+  }
+
+  addAutoReviewUserRequest(request: AutoReviewUserRequest): void {
+    this.autoReviewUserRequests.push(request);
     this.lastFailedToolCallSignature = undefined;
     this.failedToolCallStreak = 0;
   }
@@ -592,9 +601,13 @@ export class ToolRuntime {
     }
     const resolved = this.userQuestions.resolve(response.requestId, response) !== null;
     if (resolved)
-      this.addAutoReviewUserRequest(
-        JSON.stringify({ questions: pending.questions, answers: response.answers }),
-      );
+      this.addAutoReviewUserRequest({
+        sessionId: this.input.sessionId,
+        turnId,
+        messageId: response.requestId,
+        kind: 'question_answer',
+        text: JSON.stringify({ questions: pending.questions, answers: response.answers }),
+      });
     this.finishDeferredQuestionTurnClosure();
     return resolved;
   }
@@ -1169,15 +1182,14 @@ export class ToolRuntime {
           ctx.abortSignal.throwIfAborted();
           const decision = await this.input.autoReview({
             sessionId: this.input.sessionId,
+            turnId,
             toolName: tool.name,
             toolDescription: tool.description,
             args: structuredClone(executionArgs),
             cwd: this.input.header.cwd,
             userRequests: [...this.autoReviewUserRequests],
-            taskContext: JSON.stringify({
-              task: this.autoReviewTaskContext,
-              recentToolResults: this.autoReviewEvidence,
-            }),
+            taskContext: this.autoReviewTaskContext,
+            transcript: [...this.autoReviewEvidence],
             abortSignal: ctx.abortSignal,
           });
           ctx.abortSignal.throwIfAborted();
@@ -1429,18 +1441,10 @@ export class ToolRuntime {
         // collapses `aborted` into an error bit and therefore cannot drive live
         // tool status, telemetry, or subagent lifecycle projection.
         if (reviewed) {
-          // Text evidence is bounded; never duplicate binary attachments or Bypass results.
-          const evidence = inspect(content, {
-            depth: 4,
-            maxArrayLength: 20,
-            maxStringLength: 8_000,
-            customInspect: false,
-          }).slice(0, 16_000);
-          this.autoReviewEvidence.push({
-            tool: tool.name,
-            result: `[Bounded tool evidence; omitted data is not evidence of absence]\n${evidence}`,
-          });
-          if (this.autoReviewEvidence.length > 8) this.autoReviewEvidence.shift();
+          this.autoReviewEvidence = boundReviewTranscript([
+            ...this.autoReviewEvidence,
+            autoReviewEvidence({ tool: tool.name, args: executionArgs, result: content }),
+          ]);
         }
         const toolResultStatus = deriveToolResultStatus(content, result);
         await this.commitAndPublishToolResult({

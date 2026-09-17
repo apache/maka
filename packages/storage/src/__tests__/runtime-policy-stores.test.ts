@@ -66,7 +66,7 @@ describe('runtime policy stores', () => {
   test('migrates legacy Ask defaults and persists a separate reviewer model', async () => {
     await withInteractiveOwner(async ({ root, stores }) => {
       const policy = createDefaultRuntimePolicy();
-      assert.equal(policy.chatDefaults.permissionMode, 'bypass');
+      assert.equal(policy.chatDefaults.permissionMode, 'auto_review');
       await writeFile(
         join(root, 'runtime-policy.json'),
         JSON.stringify({

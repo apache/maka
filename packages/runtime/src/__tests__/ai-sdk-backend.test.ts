@@ -1061,7 +1061,7 @@ for (const linkedChild of [false, true]) {
       modelFactory: () => model,
       loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
       autoReview: async (request) => {
-        reviewed.push(request.userRequests);
+        reviewed.push(request.userRequests.map(({ text }) => text));
         return {
           decision: 'deny',
           risk: 'high',

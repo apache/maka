@@ -483,6 +483,8 @@ export interface PrivacySettings {
 /** Both execution modes are available to new and existing sessions. */
 export type ChatDefaultPermissionMode = PermissionMode;
 
+export const DEFAULT_CHAT_PERMISSION_MODE: ChatDefaultPermissionMode = 'auto_review';
+
 export const CHAT_DEFAULT_PERMISSION_MODES: readonly ChatDefaultPermissionMode[] = [
   'auto_review',
   'bypass',
@@ -1128,7 +1130,7 @@ function defaultProjectPreferencesSettings(): ProjectPreferencesSettings {
 }
 
 function defaultChatDefaultsSettings(): ChatDefaultsSettings {
-  return { permissionMode: 'bypass' };
+  return { permissionMode: DEFAULT_CHAT_PERMISSION_MODE };
 }
 
 // Unknown persisted modes use the product default; retired sandbox modes
@@ -1158,7 +1160,9 @@ function normalizeChatDefaultsSettings(settings: ChatDefaultsSettings): ChatDefa
     // keeps working; knowing which modes are retired lives in one place.
     permissionMode: (() => {
       const mode = decodePersistedPermissionMode(settings.permissionMode);
-      return mode !== undefined && isChatDefaultPermissionMode(mode) ? mode : 'bypass';
+      return mode !== undefined && isChatDefaultPermissionMode(mode)
+        ? mode
+        : DEFAULT_CHAT_PERMISSION_MODE;
     })(),
   };
 }

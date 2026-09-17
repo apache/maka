@@ -74,6 +74,7 @@ import type {
 } from '@maka/core/runtime-inputs';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import type { PermissionMode } from '@maka/core/permission';
+import { DEFAULT_CHAT_PERMISSION_MODE } from '@maka/core/settings';
 import { DEFAULT_TOOL_MODE, type ToolMode } from '@maka/core/tool-mode';
 import type {
   CreateSandboxBoundaryRequest,
@@ -5087,7 +5088,7 @@ export function headerToSummary(h: SessionHeader): SessionSummary {
     llmConnectionSlug: h.llmConnectionSlug,
     connectionLocked: h.connectionLocked,
     model: h.model,
-    permissionMode: h.permissionMode ?? 'bypass',
+    permissionMode: h.permissionMode ?? DEFAULT_CHAT_PERMISSION_MODE,
     collaborationMode: h.collaborationMode ?? 'agent',
     orchestrationMode: h.orchestrationMode ?? 'default',
   };

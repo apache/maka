@@ -17,9 +17,13 @@
  * under the License.
  */
 
-import type { AppSettings, ChatDefaultPermissionMode } from '@maka/core/settings';
+import {
+  DEFAULT_CHAT_PERMISSION_MODE,
+  type AppSettings,
+  type ChatDefaultPermissionMode,
+} from '@maka/core/settings';
 
-/** Read the configured chat-default permission mode; fall back to 'bypass' if
+/** Read the configured chat-default permission mode; fall back to Auto review if
  *  settings cannot be read (so session creation never fails on a corrupted
  *  settings.json). Injected so the fallback is unit-testable. */
 export async function resolveDefaultPermissionMode(
@@ -28,6 +32,6 @@ export async function resolveDefaultPermissionMode(
   try {
     return (await readSettings()).chatDefaults.permissionMode;
   } catch {
-    return 'bypass';
+    return DEFAULT_CHAT_PERMISSION_MODE;
   }
 }

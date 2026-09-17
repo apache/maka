@@ -1121,7 +1121,7 @@ test('creation on a relay connection without declarations still fails closed on 
   assert.equal(createAttempts, 0);
 });
 
-test('new tasks snapshot the current global Code Mode setting', async () => {
+test('new tasks and WorkHub delegations snapshot the current Host execution defaults', async () => {
   let enabled = true;
   const runtimePolicy: RuntimePolicy = {
     ...runtimePolicyFixture({}),
@@ -1130,7 +1130,10 @@ test('new tasks snapshot the current global Code Mode setting', async () => {
         revision: 1,
         policy: {
           ...createDefaultRuntimePolicy(),
-          chatDefaults: { permissionMode: 'auto_review', codeModeEnabled: enabled },
+          chatDefaults: {
+            permissionMode: enabled ? 'auto_review' : 'bypass',
+            codeModeEnabled: enabled,
+          },
         },
       }),
     },
@@ -1156,6 +1159,13 @@ test('new tasks snapshot the current global Code Mode setting', async () => {
       expectedMode,
     );
     assert.equal((await fixture.coordinator.resolveDefaultCreateTarget()).toolMode, expectedMode);
+    const workHub = await fixture.coordinator.prepareWorkHubCreate({
+      sessionId: fixture.sessionId,
+      workspace: { kind: 'host_path', path: process.cwd() },
+      modelTarget: { kind: 'default' },
+    });
+    assert.equal(workHub.input.permissionMode, value ? 'auto_review' : 'bypass');
+    assert.equal(workHub.input.toolMode, expectedMode);
     const outcome = await fixture.coordinator.handlers['session.create'](
       {
         sessionId: fixture.sessionId,
@@ -1254,7 +1264,7 @@ test('bot mode uses the configured default while keeping its supplied Session na
   assert.ok(created);
   assert.equal(created.input.name, '飞书 任务');
   assert.deepEqual(created.input.labels, ['bot', 'feishu', 'mode:bot']);
-  assert.equal(created.input.permissionMode, 'bypass');
+  assert.equal(created.input.permissionMode, 'auto_review');
   assert.equal(fixture.drainRequests(), 0);
 });
 

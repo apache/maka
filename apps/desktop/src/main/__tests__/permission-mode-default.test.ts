@@ -36,18 +36,18 @@ import { createDefaultSettings } from '@maka/core/settings';
 import { resolveDefaultPermissionMode } from '../permission-mode-default.js';
 
 describe('resolveDefaultPermissionMode', () => {
-  it('respects an explicitly configured Auto review default', async () => {
+  it('respects an explicitly configured Bypass default', async () => {
     const settings = createDefaultSettings();
-    settings.chatDefaults.permissionMode = 'auto_review';
+    settings.chatDefaults.permissionMode = 'bypass';
     const mode = await resolveDefaultPermissionMode(async () => settings);
-    assert.equal(mode, 'auto_review');
+    assert.equal(mode, 'bypass');
   });
 
-  it('falls back to bypass when the settings read rejects (corrupted settings.json)', async () => {
+  it('falls back to Auto review when the settings read rejects (corrupted settings.json)', async () => {
     const readFailingSettings = async (): Promise<AppSettings> => {
       throw new Error("simulated settingsStore.get() rethrow (non-ENOENT)");
     };
     const mode = await resolveDefaultPermissionMode(readFailingSettings);
-    assert.equal(mode, 'bypass');
+    assert.equal(mode, 'auto_review');
   });
 });

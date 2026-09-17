@@ -674,6 +674,7 @@ test('local creation preserves a plugin executor in the pending Session projecti
   assert.equal(summary.llmConnectionId, undefined);
   assert.equal(summary.llmConnectionSlug, 'executor:codex.app-server');
   assert.equal(summary.model, 'codex.app-server');
+  assert.equal(summary.permissionMode, 'auto_review');
   assert.equal(store.creation(target.partition, summary.id)?.executorId, 'codex.app-server');
 });
 

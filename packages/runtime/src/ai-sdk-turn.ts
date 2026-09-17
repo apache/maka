@@ -838,12 +838,20 @@ export class AiSdkTurn {
     const userRequests = [
       ...new Map(reviewEvents.map((event) => [event.id, event])).values(),
     ].flatMap((event) =>
-      event.author === 'user' && event.content?.kind === 'text'
-        ? (event.content.authenticatedUserRequests ?? [])
+      event.sessionId === this.deps.backend.sessionId &&
+      event.author === 'user' &&
+      event.content?.kind === 'text'
+        ? (event.content.authenticatedUserRequests ?? []).map((text) => ({
+            sessionId: event.sessionId,
+            turnId: event.turnId,
+            messageId: event.refs?.providerEventId ?? event.id,
+            text,
+          }))
         : [],
     );
     // Conversation roles describe projection, not human authorization.
     toolRuntime.setAutoReviewContext(userRequests, input.text);
+    toolRuntime.setAutoReviewHistory(reviewEvents);
 
     const turnAbortController = this.abortController;
 
@@ -2139,7 +2147,10 @@ export class AiSdkTurn {
               // Queue consumption alone does not prove that the latest assistant
               // facts remain readable. Fail before any external tool side effect
               // when the authoritative ledger became unavailable after the step.
-              await loadDurableTurnEvents();
+              toolRuntime.setAutoReviewHistory([
+                ...reviewEvents,
+                ...(await loadDurableTurnEvents()),
+              ]);
             }
             const toolsByName = new Map(providerTools.map((tool) => [tool.name, tool]));
             const settlementOutcomes = await Promise.allSettled(
@@ -2980,7 +2991,12 @@ export class AiSdkTurn {
         // injected message and its future ledger replay share one identity.
         this.injectedSteeringMessages.push(steeringModelMessage(eventId, providerContent));
         for (const text of lease.authenticatedUserRequests ?? [])
-          this.toolRuntime.addAutoReviewUserRequest(text);
+          this.toolRuntime.addAutoReviewUserRequest({
+            sessionId: this.deps.backend.sessionId,
+            turnId,
+            messageId: lease.messageId,
+            text,
+          });
         input.ackSteering?.([lease.id]);
         undelivered.shift();
         if (this.aborted || abortSignal?.aborted) {

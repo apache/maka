@@ -55,6 +55,8 @@ async function mountController(failFirstRead = false, overrides: Partial<WorkHub
   const steers: Array<Parameters<WorkHubServices['enqueueMessage']>> = [];
   let steerResult: Awaited<ReturnType<WorkHubServices['enqueueMessage']>> = 'admitted';
   let onSteer: ((input: Parameters<WorkHubServices['enqueueMessage']>) => void) | undefined;
+  let defaultPermissionMode: Awaited<ReturnType<WorkHubServices['readDefaultPermissionMode']>> = 'auto_review';
+  let onDefaultPermissionModeChanged: (() => void) | undefined;
   const interrupts: Array<{ sessionId: string; turnId: string; runId: string }> = [];
   let stopRetractions: string[] = [];
   const handlers = new Map<string, IpcHandler>();
@@ -94,6 +96,16 @@ async function mountController(failFirstRead = false, overrides: Partial<WorkHub
     getSession: async () => ({ id: sessionId, runningTurnIds: [] }),
     listSessions: async () => [],
     modelChoices: async () => [],
+    readDefaultPermissionMode: async () => defaultPermissionMode,
+    setDefaultPermissionMode: async (mode: typeof defaultPermissionMode) => {
+      defaultPermissionMode = mode;
+      onDefaultPermissionModeChanged?.();
+      return mode;
+    },
+    subscribeDefaultPermissionMode: (handler: () => void) => {
+      onDefaultPermissionModeChanged = handler;
+      return () => { if (onDefaultPermissionModeChanged === handler) onDefaultPermissionModeChanged = undefined; };
+    },
     subscribeHosts: () => () => {},
     subscribeAvailability: () => () => {},
     subscribeSessions: () => () => {},
@@ -149,10 +161,27 @@ async function mountController(failFirstRead = false, overrides: Partial<WorkHub
     loseObservation() { projectExecution(false); },
     get loadLatestCount() { return loadLatestCount; },
     prefetched, retained,
+    publishDefaultPermissionMode(mode: typeof defaultPermissionMode) {
+      defaultPermissionMode = mode;
+      onDefaultPermissionModeChanged?.();
+    },
     emit(event: Parameters<typeof observe>[0]) { observe(event); },
     publish(messages: StoredMessage[]) { publish({ messages, ready: true, hasOlder: false, hasNewer: false }); },
   };
 }
+
+test('WorkHub reads and updates the live Host default permission mode', async () => {
+  const h = await mountController();
+  assert.equal(h.controller.permissionMode, 'auto_review');
+  await act(async () => { await h.controller.changePermissionMode('bypass'); });
+  assert.equal(h.controller.permissionMode, 'bypass');
+  await act(async () => { h.publishDefaultPermissionMode('auto_review'); });
+  assert.equal(h.controller.permissionMode, 'auto_review');
+
+  await act(() => h.admit('busy-turn'));
+  await act(async () => { await h.controller.changePermissionMode('bypass'); });
+  assert.equal(h.controller.permissionMode, 'auto_review', 'a running WorkHub turn keeps the current authority');
+});
 
 test('WorkHub model and thinking selection share versioned saves and reject stale reads', async () => {
   type Session = Awaited<ReturnType<WorkHubServices['getSession']>>;

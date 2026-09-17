@@ -3616,7 +3616,7 @@ test('review authority follows live WorkHub settings and linked ancestry', async
   const runtimePolicy = { runtimePolicy: { getSnapshot: async () => ({ revision: 0, policy }) } };
   const read = (sessionId: string) =>
     readHostSessionPermissionMode({ sessionId, store }, runtimePolicy);
-  assert.equal(await read('child'), 'bypass');
+  assert.equal(await read('child'), 'auto_review');
   policy = { ...policy, chatDefaults: { ...policy.chatDefaults, permissionMode: 'auto_review' } };
   assert.equal(await read('workhub'), 'auto_review');
   assert.equal(await read('child'), 'auto_review');
@@ -3673,7 +3673,7 @@ test('Host auxiliary models meter provider usage and abort physical requests', {
       secret: API_KEY,
     });
     assert.equal(credential.kind, 'committed');
-    await publishConnectionModel(policy, connection.connectionId, MODEL_ID);
+    await publishConnectionModel(policy, connection.connectionId, MODEL_ID, 32_768);
     const session = await execution.sessionStore.create({
       cwd: capability.canonicalPath,
       llmConnectionId: connection.connectionId,
@@ -3701,14 +3701,29 @@ test('Host auxiliary models meter provider usage and abort physical requests', {
         },
       },
     });
-    const reviewer = createHostAutoReviewer(evaluatorInput);
+    const reviewer = createHostAutoReviewer({
+      ...evaluatorInput,
+      reviewTools: [],
+      readReviewContext: async ({ sessionId, turnId, userRequests }) => ({
+        sessionId,
+        turnId,
+        delegations: [],
+        authorizations: userRequests.map((request) => ({
+          request,
+          kind: 'session_request' as const,
+        })),
+      }),
+    });
     const reviewRequest = {
       sessionId: session.id,
       toolName: 'Read',
       toolDescription: 'Read a file',
       args: { path: 'README.md' },
       cwd: capability.canonicalPath,
-      userRequests: ['Read README.md'],
+      turnId: 'turn-1',
+      userRequests: [
+        { sessionId: session.id, turnId: 'turn-1', messageId: 'user-1', text: 'Read README.md' },
+      ],
       taskContext: '',
       abortSignal: new AbortController().signal,
     };

@@ -36,6 +36,7 @@ import type { WorkHubAnswerInput, WorkHubAnswerResult } from '../../../../shared
 import type { AttachmentRef, FollowUpMode, MessageQueueEntryProjection, MessageQueuePlacement } from '@maka/core/events';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { ChatModelChoice } from '@maka/core/chat-model-choice';
+import type { ChatDefaultPermissionMode } from '@maka/core/settings';
 import { startWorkHubCoordinationLifecycle } from '../../../application/contracts/workhub-workspace/coordination-lifecycle.js';
 import { useWorkHubServices } from '../services.js';
 import { workHubLiveCopy } from '../locales/workhub-live-copy.js';
@@ -69,6 +70,9 @@ export function useWorkHubController(onSubmit?: () => void) {
   );
   const [configuringModel, setConfiguringModel] = useState(false);
   const configuringModelRef = useRef(false);
+  const [permissionMode, setPermissionMode] = useState<ChatDefaultPermissionMode>();
+  const [configuringPermissionMode, setConfiguringPermissionMode] = useState(false);
+  const configuringPermissionModeRef = useRef(false);
   const [choices, setChoices] = useState<ChatModelChoice[]>([]);
   const [transcript, setTranscript] = useState(emptyTranscript);
   // Reconciliation reads the published view, never a source page held by input.
@@ -253,6 +257,26 @@ export function useWorkHubController(onSubmit?: () => void) {
     return () => {
       disposed = true;
       if (refreshSessions.current === refresh) refreshSessions.current = () => undefined;
+      unsubscribe();
+    };
+  }, [services, sessionId]);
+
+  useEffect(() => {
+    let disposed = false;
+    let revision = 0;
+    setPermissionMode(undefined);
+    const refresh = () => {
+      const read = ++revision;
+      void services.readDefaultPermissionMode().then((mode) => {
+        if (!disposed && read === revision) setPermissionMode(mode);
+      }).catch((reason: unknown) => {
+        if (!disposed && read === revision) report(reason);
+      });
+    };
+    const unsubscribe = services.subscribeDefaultPermissionMode(refresh);
+    refresh();
+    return () => {
+      disposed = true;
       unsubscribe();
     };
   }, [services, sessionId]);
@@ -590,6 +614,22 @@ export function useWorkHubController(onSubmit?: () => void) {
       setConfiguringModel(false);
     }
   }
+  async function changePermissionMode(mode: ChatDefaultPermissionMode) {
+    if (!sessionId || !permissionMode || busy || configuringPermissionModeRef.current) return;
+    configuringPermissionModeRef.current = true;
+    setConfiguringPermissionMode(true);
+    try {
+      const updated = await services.setDefaultPermissionMode(mode);
+      if (currentSessionId.current !== sessionId) return;
+      setPermissionMode(updated);
+      setError(undefined);
+    } catch (reason) {
+      if (currentSessionId.current === sessionId) report(reason);
+    } finally {
+      configuringPermissionModeRef.current = false;
+      setConfiguringPermissionMode(false);
+    }
+  }
   async function mutateQueue(action: (target: string) => Promise<void>) {
     if (!sessionId) return;
     setError(undefined);
@@ -635,6 +675,9 @@ export function useWorkHubController(onSubmit?: () => void) {
     stop,
     changeModel,
     configuringModel,
+    permissionMode,
+    changePermissionMode,
+    configuringPermissionMode,
     changeThinkingLevel: async (level: ThinkingLevel | undefined) => {
       if (!session?.llmConnectionId || !session.llmConnectionSlug || !session.model) return;
       await changeModel({ llmConnectionId: session.llmConnectionId, llmConnectionSlug: session.llmConnectionSlug, model: session.model }, level ?? null);

@@ -236,6 +236,7 @@ function createWorkspaceFilesystemExecutor(
           const result = await workspace.readFile({
             cwd,
             path,
+            abortSignal,
           });
           if ('bytes' in result) {
             return { kind: 'read_image', bytes: result.bytes, mimeType: result.mimeType };
@@ -507,6 +508,7 @@ function createWorkspaceFilesystemExecutor(
             scope,
           });
           const { files } = await workspace.globFiles({
+            abortSignal,
             cwd: base,
             pattern: operation.pattern,
             ...(operation.limit !== undefined ? { limit: operation.limit } : {}),
