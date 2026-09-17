@@ -590,6 +590,11 @@ const GENERATED_OPENAI_RESPONSES_CONTRACTS = {
 };
 
 function normalizeRuntimeOverrides(provider, overrides) {
+  // A generated row shadows the provider's declared runtimeAdapter wholesale
+  // for the ids it covers — including any chat-lane reasoning replay fields
+  // the registry declares (e.g. zenmux's signed reasoning_details). That is a
+  // deliberate trade: models.dev's npm package is treated as the adapter
+  // authority for those ids.
   const adapters = {
     '@ai-sdk/anthropic': { kind: 'anthropic', auth: 'api-key', normalizeBaseUrl: true },
     '@ai-sdk/google': { kind: 'google', normalizeBaseUrl: false },
