@@ -483,6 +483,16 @@ export const QuestionLifecycle: Story = {
   },
 };
 
+// Real path: WorkHub asks its Host a question; the prompt stays in the composer slot until answered or stopped.
+export const QuestionPending: Story = {
+  render: () => <Surface question />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByRole('heading', { name: '首批发布范围选哪个？' })).toBeInTheDocument());
+    expect(canvasElement.querySelector('.workhub-delegation-status')).toHaveTextContent('等待');
+  },
+};
+
 export const QuestionStopped: Story = {
   render: () => <Surface question />,
   play: async ({ canvasElement }) => {
