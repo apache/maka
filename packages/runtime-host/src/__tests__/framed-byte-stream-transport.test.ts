@@ -115,6 +115,40 @@ test('retains split UTF-8 when the producer reuses its buffer and a frame shares
   }
 });
 
+test('accepts the exact inbound byte budget and drains every complete frame', async () => {
+  const stream = new TestByteStream();
+  const transport = new FramedByteStreamTransport(stream);
+  const limit = 2 * 1024 * 1024;
+  const frame = Buffer.from(`${JSON.stringify({ text: 'x'.repeat(128 * 1024 - 12) })}\n`);
+  const wire = Buffer.concat(Array.from({ length: 16 }, () => frame));
+  assert.equal(wire.byteLength, limit);
+  try {
+    stream.data(wire);
+    stream.end();
+    for (let index = 0; index < 16; index += 1) {
+      assert.deepEqual(await transport.read(1_000), JSON.parse(frame.toString()));
+    }
+    await assert.rejects(transport.read(1_000), { code: 'read_eof' });
+  } finally {
+    transport.abort();
+    await transport.closed;
+  }
+});
+
+test('rejects an inbound chunk one byte over the budget before delivering frames', async () => {
+  const stream = new TestByteStream();
+  const transport = new FramedByteStreamTransport(stream);
+  try {
+    const wire = Buffer.alloc(2 * 1024 * 1024 + 1, '0\n');
+    stream.data(wire);
+    await assert.rejects(transport.read(1_000), { code: 'inbound_queue_full' });
+    await transport.closed;
+  } finally {
+    transport.abort();
+    await transport.closed;
+  }
+});
+
 class TestByteStream implements RuntimeHostByteStream {
   readonly completion = deferred<void>();
   readonly closed = this.completion.promise;

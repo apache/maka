@@ -167,7 +167,7 @@ export class FramedByteStreamTransport implements RuntimeHostMessageTransport {
   // scanning resumes at the previous tail instead of revisiting every fragment.
   #appendIncoming(chunk: Buffer): void {
     const length = this.#buffered.byteLength + chunk.byteLength;
-    const start = this.#buffered.byteOffset - this.#bufferStorage.byteOffset;
+    let start = this.#buffered.byteOffset - this.#bufferStorage.byteOffset;
     if (this.#buffered.byteLength === 0 || start + length > this.#bufferStorage.byteLength) {
       const capacity = Math.min(
         MAX_BUFFERED_BYTES,
@@ -177,16 +177,16 @@ export class FramedByteStreamTransport implements RuntimeHostMessageTransport {
       this.#buffered.copy(storage);
       this.#bufferStorage = storage;
       this.#buffered = storage.subarray(0, this.#buffered.byteLength);
+      start = 0;
     }
-    const offset = this.#buffered.byteOffset - this.#bufferStorage.byteOffset;
-    chunk.copy(this.#bufferStorage, offset + this.#buffered.byteLength);
-    this.#buffered = this.#bufferStorage.subarray(offset, offset + length);
+    chunk.copy(this.#bufferStorage, start + this.#buffered.byteLength);
+    this.#buffered = this.#bufferStorage.subarray(start, start + length);
   }
 
   #findNewline(): number {
     if (this.#nextNewline !== undefined) return this.#nextNewline;
     const newline = this.#buffered.indexOf(0x0a, this.#searchedBytes);
-    this.#searchedBytes = this.#buffered.byteLength;
+    this.#searchedBytes = newline === -1 ? this.#buffered.byteLength : newline + 1;
     if (newline !== -1) this.#nextNewline = newline;
     return newline;
   }
