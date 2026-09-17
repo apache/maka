@@ -194,22 +194,26 @@ describe('provider catalog contract — structural invariants over CATALOG_PROVI
 
   it('keeps generated models.dev overrides on the declared contract or none', () => {
     // The sync script cannot read the registry, so it mirrors this rule from
-    // a pinned provider set. A generated `openai` row may only carry the
-    // contract its provider declared on `protocolAdapters['openai-responses']`;
-    // without that declaration the honest value is `none`.
+    // a pinned provider map. A generated `openai` row may only carry a
+    // contract the provider declares — on `protocolAdapters['openai-responses']`
+    // or its `runtimeAdapter`; without either, the honest value is `none`.
     for (const [providerType, rows] of Object.entries(
       GENERATED_MODELS_DEV_MODEL_PROVIDER_OVERRIDES,
     )) {
-      const declaredAdapter =
-        PROVIDER_REGISTRY[providerType as ProviderType]?.protocolAdapters?.['openai-responses'];
+      const definition = PROVIDER_REGISTRY[providerType as ProviderType];
+      const protocolAdapter = definition?.protocolAdapters?.['openai-responses'];
+      const runtimeAdapter = definition?.runtimeAdapter;
       const declared =
-        declaredAdapter && 'responses' in declaredAdapter ? declaredAdapter.responses : undefined;
+        (protocolAdapter && 'responses' in protocolAdapter
+          ? protocolAdapter.responses
+          : undefined) ??
+        (runtimeAdapter && 'responses' in runtimeAdapter ? runtimeAdapter.responses : undefined);
       for (const [modelId, row] of Object.entries(rows)) {
         if (row.adapter.kind !== 'openai') continue;
         assert.deepEqual(
           row.adapter.responses,
           declared ?? { adapter: 'openai', reasoningReplay: 'none' },
-          `${providerType}/${modelId} generated Responses contract must equal the declared protocolAdapter contract, or 'none' when undeclared`,
+          `${providerType}/${modelId} generated Responses contract must equal the provider's declared contract, or 'none' when undeclared`,
         );
       }
     }

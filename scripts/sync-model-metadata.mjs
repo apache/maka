@@ -578,11 +578,16 @@ function toModelProviderOverride(providerId, modelId, override) {
 }
 
 // An npm package name says which SDK speaks to the endpoint, not which
-// reasoning carrier the provider actually returns. Only providers whose
-// registry entry declares a reviewed `openai-responses` protocolAdapter may
-// mint the encrypted-content contract; the catalog contract test pins this
-// set against PROVIDER_REGISTRY so a new declaration forces an update here.
-const ENCRYPTED_RESPONSES_PROVIDERS = new Set(['github-copilot', 'opencode', 'opencode-go']);
+// reasoning carrier the provider actually returns. A generated `openai`
+// row may only mirror a Responses contract the registry already declares
+// (protocolAdapters or runtimeAdapter); providers without one get the
+// honest `none`. The catalog contract test pins this map against
+// PROVIDER_REGISTRY, so a new declaration forces an update here.
+const GENERATED_OPENAI_RESPONSES_CONTRACTS = {
+  'github-copilot': { adapter: 'openai', reasoningReplay: 'encrypted-content' },
+  opencode: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
+  'opencode-go': { adapter: 'openai', reasoningReplay: 'encrypted-content' },
+};
 
 function normalizeRuntimeOverrides(provider, overrides) {
   const adapters = {
@@ -590,9 +595,9 @@ function normalizeRuntimeOverrides(provider, overrides) {
     '@ai-sdk/google': { kind: 'google', normalizeBaseUrl: false },
     '@ai-sdk/openai': {
       kind: 'openai',
-      responses: {
+      responses: GENERATED_OPENAI_RESPONSES_CONTRACTS[provider] ?? {
         adapter: 'openai',
-        reasoningReplay: ENCRYPTED_RESPONSES_PROVIDERS.has(provider) ? 'encrypted-content' : 'none',
+        reasoningReplay: 'none',
       },
     },
     '@ai-sdk/openai-compatible': { kind: 'openai-compatible', name: 'provider' },
