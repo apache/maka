@@ -425,8 +425,8 @@ function reasoningReplayCell(
     };
   }
   // Native Anthropic / OpenAI / Google / Cohere SDKs own signed reasoning replay
-  // opaquely; except for the stateless Agent Plan contract above, the Maka
-  // provider layer adds no wire transform to derive from.
+  // opaquely; except for the declared per-adapter Responses contracts above, the
+  // Maka provider layer adds no wire transform to derive from.
   return {
     state: 'not-applicable',
     dimension: 'reasoning-replay',

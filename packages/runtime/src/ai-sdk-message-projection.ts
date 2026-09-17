@@ -381,17 +381,20 @@ export class AiSdkMessageProjection {
     ) => {
       const calls = exchanges.map(({ call }) => call);
       const content: unknown[] = [];
+      const replayReasoning = (reasoning ?? [])
+        .map((item) => ({ eventId: item.eventId, replay: reasoningReplay(item) }))
+        .filter(
+          (entry): entry is { eventId: string; replay: ReplayReasoning } =>
+            entry.replay !== undefined,
+        );
       const eventIds = [
-        ...(reasoning ?? []).map((item) => item.eventId),
+        ...replayReasoning.map((entry) => entry.eventId),
         ...(text ? [text.eventId] : []),
         ...calls.map((call) => call.eventId),
         ...replayFacts.flatMap((fact) => fact.eventIds),
       ];
-      const replayReasoning = reasoning
-        ?.map(reasoningReplay)
-        .filter((item): item is ReplayReasoning => item !== undefined);
-      for (const item of replayReasoning ?? []) {
-        if (item.part) content.push(item.part);
+      for (const { replay } of replayReasoning) {
+        if (replay.part) content.push(replay.part);
       }
       // Provider-owned tools execute before the grounded assistant text in the
       // same provider step. Preserve that chronology for Responses item
@@ -439,9 +442,9 @@ export class AiSdkMessageProjection {
             : {}),
         });
       }
-      const replayProviderOptions = replayReasoning?.find(
-        (item) => item.providerOptions !== undefined,
-      )?.providerOptions;
+      const replayProviderOptions = replayReasoning.find(
+        (entry) => entry.replay.providerOptions !== undefined,
+      )?.replay.providerOptions;
       if (content.length > 0 || replayProviderOptions) {
         push(
           {

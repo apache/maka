@@ -36,7 +36,7 @@ export interface PlaintextResponsesReasoningState {
 export type PlaintextResponsesReasoningStateDecodeResult =
   | { readonly kind: 'missing' }
   | { readonly kind: 'unsupported-version'; readonly version: number }
-  | { readonly kind: 'malformed'; readonly profile?: string }
+  | { readonly kind: 'malformed' }
   | { readonly kind: 'valid'; readonly state: PlaintextResponsesReasoningState };
 
 export function plaintextResponsesReasoningProviderOptions(
@@ -71,7 +71,7 @@ export function decodePlaintextResponsesReasoningState(
   }
   const baseInvalid = record.version !== STATE_VERSION || !profile || !itemId;
   if (baseInvalid) {
-    return { kind: 'malformed', ...(profile ? { profile } : {}) };
+    return { kind: 'malformed' };
   }
   if (
     !isSafeSummaryPartLengths(record.summaryPartLengths) ||
@@ -79,7 +79,7 @@ export function decodePlaintextResponsesReasoningState(
       (key) => !['version', 'profile', 'itemId', 'summaryPartLengths'].includes(key),
     )
   ) {
-    return { kind: 'malformed', ...(profile ? { profile } : {}) };
+    return { kind: 'malformed' };
   }
   return {
     kind: 'valid',
