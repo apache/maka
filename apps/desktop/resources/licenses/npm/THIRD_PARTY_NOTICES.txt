@@ -14363,7 +14363,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 ================================================================================
 
-Package: virtua@0.51.3
+Package: virtua@0.50.6
 Declared license: MIT
 Selected license: MIT
 Repository: git+https://github.com/inokawa/virtua.git
