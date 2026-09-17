@@ -34,7 +34,7 @@
     "mermaid": "^11.17.2",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
-    "virtua": "0.51.3"
+    "virtua": "0.50.6"
   },
   "devDependencies": {
     "@types/react": "^19.3.0",

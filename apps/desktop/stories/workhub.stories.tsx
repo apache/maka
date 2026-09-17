@@ -354,6 +354,8 @@ async function expectPromptRailClearance(canvasElement: HTMLElement) {
   // At full desktop width, WorkHub must reach the same shared reading measure
   // as Sessions; applying transcript gutters twice makes this narrower.
   if (window.innerWidth >= 1600) {
+    // The rail settles before the virtualized transcript mounts its rows.
+    await waitFor(() => expect(canvasElement.querySelector('.maka-turn')).not.toBeNull());
     const turn = canvasElement.querySelector('.maka-turn')!;
     const measure = document.createElement('div');
     measure.style.cssText = 'position: absolute; visibility: hidden; height: 0; width: var(--maka-reading-measure)';
