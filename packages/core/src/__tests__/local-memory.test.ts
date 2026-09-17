@@ -455,6 +455,10 @@ describe('local memory fenced content', () => {
         assert.ok(draft.slice(range.start, range.end).includes('Keep this final instruction.'));
         assert.ok(draft.slice(range.end).startsWith('## Next entry'));
       }
+      const nextRange = findLocalMemoryEntryDraftRange(source, 'mem-next');
+      assert.ok(nextRange);
+      assert.equal(source.slice(nextRange.start), following.trimStart());
+      assert.equal(findLocalMemoryEntryDraft(source, 'mem-next')?.content, 'Next body.');
       assert.equal(findLocalMemoryEntryDraftRange(source, 'installation'), null);
       const archived = setLocalMemoryEntryStatusDraft(source, {
         id: 'mem-template',
@@ -528,6 +532,72 @@ describe('local memory fenced content', () => {
     assert.ok(archived.ok);
     assert.ok(archived.draft.includes('```md\n<!-- maka-memory: id=example -->\n```'));
     assert.equal(parseLocalMemoryMarkdown(archived.draft).entries[0]?.status, 'archived');
+  });
+
+  for (const indent of ['    ', '\t']) {
+    it(`preserves indented metadata examples through parse, lookup and edits (${JSON.stringify(indent)})`, () => {
+      const content = [
+        '- Step one:',
+        '',
+        `${indent}\`\`\`md`,
+        `${indent}<!-- maka-memory: id=hijack status=archived -->`,
+        `${indent}\`\`\``,
+        'Body.',
+      ].join('\n');
+      const source = `## Recipes\n${content}\n\n## Next\nNext body.\n`;
+      assert.deepEqual(
+        parseLocalMemoryMarkdown(source).entries.map(({ id, status }) => ({ id, status })),
+        [
+          { id: 'recipes', status: 'active' },
+          { id: 'next', status: 'active' },
+        ],
+      );
+      assert.equal(findLocalMemoryEntryDraft(source, 'recipes')?.content, content);
+      const range = findLocalMemoryEntryDraftRange(source, 'recipes');
+      assert.ok(range);
+      assert.equal(source.slice(range.end), '## Next\nNext body.\n');
+      const archived = setLocalMemoryEntryStatusDraft(source, {
+        id: 'recipes',
+        status: 'archived',
+        now: 2,
+      });
+      assert.ok(archived.ok);
+      assert.equal(findLocalMemoryEntryDraft(archived.draft, 'recipes')?.content, content);
+      assert.deepEqual(
+        parseLocalMemoryMarkdown(archived.draft).activeEntries.map((entry) => entry.id),
+        ['next'],
+      );
+      assert.ok(buildLocalMemoryPromptBody(source)?.includes(content));
+    });
+  }
+
+  it('resets fence state between two fenced entries', () => {
+    const first = '```md\n## Example A\n```';
+    const second = '~~~md\n## Example B\n~~~';
+    const source = `## First\n${first}\n\n## Second\n${second}\n`;
+    assert.deepEqual(
+      parseLocalMemoryMarkdown(source).entries.map((entry) => entry.id),
+      ['first', 'second'],
+    );
+    assert.equal(findLocalMemoryEntryDraft(source, 'first')?.content, first);
+    assert.equal(findLocalMemoryEntryDraft(source, 'second')?.content, second);
+    const range = findLocalMemoryEntryDraftRange(source, 'second');
+    assert.ok(range);
+    assert.equal(source.slice(range.start, range.end), `## Second\n${second}\n`);
+  });
+
+  it('treats later headings as literal content until an unclosed fence reaches EOF', () => {
+    const content =
+      '```md\nSample.\n## Second\n<!-- maka-memory: id=second -->\nSecond body.\n## Third\nThird body.';
+    const source = `## First\n${content}`;
+    assert.deepEqual(
+      parseLocalMemoryMarkdown(source).entries.map((entry) => entry.id),
+      ['first'],
+    );
+    assert.equal(findLocalMemoryEntryDraftRange(source, 'second'), null);
+    assert.equal(findLocalMemoryEntryDraftRange(source, 'third'), null);
+    assert.equal(findLocalMemoryEntryDraft(source, 'first')?.content, content);
+    assert.ok(buildLocalMemoryPromptBody(source)?.includes(content));
   });
 
   it('keeps an unclosed fence through EOF without creating phantom entries', () => {

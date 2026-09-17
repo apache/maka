@@ -774,7 +774,8 @@ function createMemoryCodeFenceTracker(): (line: string) => boolean {
 }
 
 function parseMetaComment(line: string): Record<string, string> | null {
-  const match = /^<!--\s*maka-memory:\s*(.*?)\s*-->$/.exec(line.trim());
+  // 四空格或 tab 缩进属于代码示例，不能覆盖条目的身份与状态。
+  const match = /^ {0,3}<!--\s*maka-memory:\s*(.*?)\s*-->[ \t]*$/.exec(line);
   if (!match) return null;
   const meta: Record<string, string> = {};
   for (const part of (match[1] ?? '').split(/\s+/)) {
