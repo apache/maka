@@ -29,6 +29,13 @@ import {
   type RuntimeEventInvocationOpenedContent,
 } from '../runtime-event.js';
 
+import { encodeCanonicalRuntimeEvent } from '../canonical-runtime-event.js';
+import {
+  decodePersistedPermissionMode,
+  isPermissionMode,
+  isRecordedPermissionMode,
+} from '../permission.js';
+
 const DIGEST = `sha256:${'a'.repeat(64)}` as const;
 
 function opening(
@@ -47,7 +54,7 @@ function opening(
     },
     configuration: {
       cwd: '/repo',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       collaborationMode: 'agent',
       orchestrationMode: 'default',
       orchestrationSource: 'session',
@@ -87,6 +94,33 @@ describe('invocation_opened content contract', () => {
     assert.equal(fact.protocol, 'invocation_opened_v1');
     assert.equal(fact.route.provenance, 'runtime');
     assert.equal(fact.route.modelId, 'claude-x');
+  });
+
+  test('preserves retired modes in immutable facts without admitting them as live settings', () => {
+    for (const permissionMode of ['ask', 'execute', 'explore'] as const) {
+      const content = opening();
+      content.configuration.permissionMode = permissionMode;
+      const original = openingEvent(content) as RuntimeEvent;
+      const decoded = decodeRuntimeEvent(original);
+      assert.equal(
+        runtimeEventInvocationOpening(decoded)?.configuration.permissionMode,
+        permissionMode,
+      );
+      assert.deepEqual(encodeCanonicalRuntimeEvent(decoded), encodeCanonicalRuntimeEvent(original));
+      assert.equal(isPermissionMode(permissionMode), false);
+      assert.equal(decodePersistedPermissionMode(permissionMode), 'auto_review');
+    }
+    for (const permissionMode of ['invalid-mode', 'toString', '__proto__']) {
+      assert.equal(isRecordedPermissionMode(permissionMode), false);
+      assert.equal(decodePersistedPermissionMode(permissionMode), undefined);
+      const content = opening();
+      assert.throws(() =>
+        decodeRuntimeInvocationOpened({
+          ...content,
+          configuration: { ...content.configuration, permissionMode },
+        }),
+      );
+    }
   });
 
   test('is never model visible', () => {

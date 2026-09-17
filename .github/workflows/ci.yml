@@ -208,13 +208,13 @@ jobs:
           restore-keys: electron-${{ runner.os }}-
 
       - name: Install Linux runtime dependencies
-        if: steps.plan.outputs.runtime_sandbox == 'true' || steps.plan.outputs.state_root_compat == 'true'
+        if: steps.plan.outputs.state_root_compat == 'true'
         run: sudo apt-get update && sudo apt-get install -y ripgrep bubblewrap
 
       # Ubuntu 24.04 hosted runners gate unprivileged user namespaces through
       # AppArmor, which otherwise makes bwrap fail while configuring loopback.
       - name: Enable bubblewrap user namespaces
-        if: steps.plan.outputs.runtime_sandbox == 'true' || steps.plan.outputs.state_root_compat == 'true'
+        if: steps.plan.outputs.state_root_compat == 'true'
         run: |
           if [[ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]]; then
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
@@ -323,12 +323,6 @@ jobs:
       - name: Knip (packages/ui)
         if: steps.plan.outputs.code == 'true'
         run: npx knip --workspace packages/ui
-
-      - name: Linux sandbox smoke
-        if: steps.plan.outputs.runtime_sandbox == 'true'
-        env:
-          MAKA_REQUIRE_LINUX_SANDBOX_SMOKE: '1'
-        run: npm exec -w @maka/runtime -- node --test dist/__tests__/linux-sandbox-smoke.test.js
 
       - name: Run affected standard workspace tests
         if: steps.plan.outputs.standard_workspaces != ''

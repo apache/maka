@@ -46,7 +46,6 @@
     "src/renderer/daily-review-actions.ts",
     "src/renderer/default-runtime-host-operation.ts",
     "src/renderer/derive-turn-lineage-badges.ts",
-    "src/renderer/desktop-execution-boundary-surface.ts",
     "src/renderer/desktop-slash-command.ts",
     "src/renderer/error-boundary.tsx",
     "src/renderer/follow-up-submit-routing.ts",
@@ -207,7 +206,6 @@
     "src/renderer/titlebar-dim-color.ts",
     "src/renderer/titlebar-modal-sync.ts",
     "src/renderer/turn-footer-actions.ts",
-    "src/renderer/use-active-execution-boundary.ts",
     "src/renderer/use-app-shell-composer-quotes.ts",
     "src/renderer/use-app-shell-session-list.ts",
     "src/renderer/use-app-shell-session-ui-reads.ts",
@@ -314,7 +312,6 @@
         "bridgePaths": {
           "window.maka.newTasks.create": 1,
           "window.maka.sessions.remove": 1,
-          "window.maka.sessions.respondToSandboxBoundary": 1,
           "window.maka.sessions.respondToUserQuestion": 1,
           "window.maka.sessions.submitMessage": 1
         },
@@ -337,7 +334,7 @@
           "@maka/ui": 1
         },
         "importSpecifiers": 10,
-        "nonTriviaTokens": 3612
+        "nonTriviaTokens": 3570
       },
       "src/renderer/app-shell-chrome-actions.tsx": {
         "importDeclarations": 4,
@@ -712,7 +709,7 @@
         "nonTriviaTokens": 1273
       },
       "src/renderer/app-shell.tsx": {
-        "importDeclarations": 64,
+        "importDeclarations": 62,
         "bridgePaths": {
           "window.maka.attachments": 1,
           "window.maka.attachments.readBytes": 1,
@@ -739,7 +736,6 @@
           "window.setTimeout": 1
         },
         "hookCalls": {
-          "useActiveExecutionBoundary": 1,
           "useActiveSessionEvents": 1,
           "useAppShellBootstrapSubscriptions": 1,
           "useAppShellComposerQuotes": 1,
@@ -801,7 +797,6 @@
           "./custom-pet-companion": 1,
           "./custom-pet-companion-model": 1,
           "./default-runtime-host-operation.js": 1,
-          "./desktop-execution-boundary-surface": 1,
           "./desktop-slash-command": 1,
           "./error-boundary": 1,
           "./features/app-update/index.js": 1,
@@ -833,7 +828,6 @@
           "./settings/provider-display": 1,
           "./settings/runtime-host-ssh-terminal-dialog.js": 1,
           "./stale-sessions": 1,
-          "./use-active-execution-boundary": 1,
           "./use-app-shell-composer-quotes": 1,
           "./use-app-shell-session-ui-reads": 1,
           "./use-app-shell-session-workspace": 1,
@@ -860,8 +854,8 @@
           "@maka/ui": 1,
           "react": 1
         },
-        "importSpecifiers": 100,
-        "nonTriviaTokens": 13152
+        "importSpecifiers": 99,
+        "nonTriviaTokens": 12995
       },
       "src/renderer/use-app-shell-composer-quotes.ts": {
         "importDeclarations": 2,
@@ -1280,17 +1274,6 @@
         "actionFactories": [],
         "dependencyPaths": {
           "./locales/conversation-copy.js": 1
-        }
-      },
-      "src/renderer/desktop-execution-boundary-surface.ts": {
-        "bridgePaths": {},
-        "environmentCapabilities": {},
-        "hookCalls": {},
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {
-          "@maka/core/sandbox-boundary": 1
         }
       },
       "src/renderer/desktop-slash-command.ts": {
@@ -3936,26 +3919,6 @@
         "actionFactories": [],
         "dependencyPaths": {
           "./locales/conversation-copy.js": 1
-        }
-      },
-      "src/renderer/use-active-execution-boundary.ts": {
-        "bridgePaths": {
-          "window.maka.sessions.readExecutionBoundary": 1
-        },
-        "environmentCapabilities": {
-          "clearTimeout": 1,
-          "setTimeout": 1
-        },
-        "hookCalls": {
-          "useEffect": 2,
-          "useRef": 1,
-          "useState": 3
-        },
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {
-          "react": 1
         }
       },
       "src/renderer/use-deep-research-run.ts": {

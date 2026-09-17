@@ -203,7 +203,7 @@ async function seedRailRenderSessions(userDataDir: string): Promise<void> {
         cwd: path.join(userDataDir, 'project'),
         llmConnectionSlug: 'e2e',
         model: 'claude-sonnet-4-5-20250929',
-        permissionMode: 'ask',
+        permissionMode: 'auto_review',
         name: `Rail row ${index}`,
         labels: [],
       });
@@ -221,7 +221,7 @@ async function seedParentRemovalSessions(userDataDir: string): Promise<void> {
       cwd: path.join(userDataDir, 'project'),
       llmConnectionSlug: 'e2e',
       model: 'claude-sonnet-4-5-20250929',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       name: PARENT_REMOVAL_PARENT_NAME,
       labels: [],
     });
@@ -229,7 +229,7 @@ async function seedParentRemovalSessions(userDataDir: string): Promise<void> {
       cwd: path.join(userDataDir, 'project'),
       llmConnectionSlug: 'e2e',
       model: 'claude-sonnet-4-5-20250929',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       name: PARENT_REMOVAL_CHILD_NAME,
       labels: [],
       subagentParent: {

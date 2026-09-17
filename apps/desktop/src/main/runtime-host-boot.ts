@@ -902,10 +902,7 @@ const isCurrentWorkHubTarget = (scope: DesktopTargetScope): boolean => {
 const workHubRuntime = createWorkHubRuntime({
   client: (scope) => requireWorkHubTarget(scope).client,
   isCurrent: isCurrentWorkHubTarget,
-  createContext: async (scope) => ({
-    workspace: await currentDesktopWorkspaceTarget(requireWorkHubTarget(scope).policy),
-    defaults: { permissionMode: (await settingsStore.get()).chatDefaults.permissionMode },
-  }),
+  workspace: (scope) => currentDesktopWorkspaceTarget(requireWorkHubTarget(scope).policy),
   changed: emitSessionsChanged,
 });
 const workHubControl = createWorkHubControl({

@@ -76,9 +76,7 @@ const internalPackageNames = workspacePackages
   .filter((name) => name !== 'maka-agent');
 const internalPackageSet = new Set(internalPackageNames);
 const buildOrder = orderWorkspaceBuilds(workspacePackages);
-const developmentGeneratedFiles = new Map([
-  ['@maka/runtime', new Set(['workers/filesystem-worker.js'])],
-]);
+const developmentGeneratedFiles = new Map([]);
 const strippedInstallScripts = new Map([
   // The clean repository install has already produced every generated file and
   // platform prebuild copied below. Do not run advisory postinstalls on an end
@@ -749,7 +747,6 @@ function validateStaging(publishable) {
     'DISCLAIMER-WIP',
     'RUNTIME_HOST_PEER_DEPENDENCIES.rust.tsv',
     'RUNTIME_HOST_PEER_THIRD_PARTY_NOTICES.txt',
-    'node_modules/@maka/runtime/dist/workers/filesystem-worker.js',
     'node_modules/@maka/runtime-host/dist/execution-candidate-main.js',
     'node_modules/@maka/eval/dist/harbor-external-subject.js',
     'node_modules/@maka/eval/harbor/relay_agent.py',
@@ -859,7 +856,6 @@ function validatePackedFiles(files, expectedDependencyManifests, publishable) {
   const requiredPacked = [
     'dist/cli.js',
     'DISCLAIMER-WIP',
-    'node_modules/@maka/runtime/dist/workers/filesystem-worker.js',
     'node_modules/@maka/runtime-host/dist/execution-candidate-main.js',
     'node_modules/@maka/eval/harbor/relay_agent.py',
     ...(publishable || privateRuntimeHostTarget !== 'none'

@@ -20,7 +20,7 @@
 import { withTimeout } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { fork, type ChildProcess } from 'node:child_process';
-import { mkdtemp, readdir, rm } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -54,7 +54,7 @@ test('a live Host serves Interactive inspection over its real endpoint while ret
     llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
     llmConnectionSlug: 'fake',
     model: 'fake-model',
-    permissionMode: 'ask',
+    permissionMode: 'auto_review',
   });
   await stores.sessionStore.close?.();
   await owner.close();

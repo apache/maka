@@ -78,7 +78,7 @@ function renderLiveTurn(liveTurn: LiveTurnProjection): Promise<string> {
       llmConnectionSlug: 'conn',
       connectionLocked: false,
       model: 'model',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     },
     messages: [{ type: 'user', id: 'user-1', turnId: liveTurn.turnId, ts: 1, text: 'go' }],
     scrollBehavior: 'smooth',
@@ -92,7 +92,7 @@ describe('single live-turn handoff', () => {
     const session: NonNullable<Parameters<typeof ChatView>[0]['activeSession']> = {
       id: 'session-1', name: 'pending', status: 'running' as const, backend: 'ai-sdk',
       labels: [], isFlagged: false, isArchived: false, hasUnread: false,
-      llmConnectionSlug: 'conn', connectionLocked: false, model: 'model', permissionMode: 'ask' as const,
+      llmConnectionSlug: 'conn', connectionLocked: false, model: 'model', permissionMode: 'auto_review' as const,
     };
     for (const activeSession of [undefined, session]) {
       const markup = await renderWithLocale(createElement(ChatView, {
@@ -119,7 +119,7 @@ describe('single live-turn handoff', () => {
       activeSession: {
         id: 'session-1', name: 'pending', lastMessageAt: 1, status: 'active', backend: 'ai-sdk',
         labels: [], isFlagged: false, isArchived: false, hasUnread: false,
-        llmConnectionSlug: 'conn', connectionLocked: false, model: 'model', permissionMode: 'ask',
+        llmConnectionSlug: 'conn', connectionLocked: false, model: 'model', permissionMode: 'auto_review',
       },
       messages: [
         { type: 'user', id: 'old-user', turnId: 'old-turn', ts: 1, text: 'before' },
@@ -144,7 +144,7 @@ describe('single live-turn handoff', () => {
       activeSession: {
         id: 'session-1', name: 'pending', status: 'active', backend: 'ai-sdk',
         labels: [], isFlagged: false, isArchived: false, hasUnread: false,
-        llmConnectionSlug: 'conn', connectionLocked: false, model: 'model', permissionMode: 'ask',
+        llmConnectionSlug: 'conn', connectionLocked: false, model: 'model', permissionMode: 'auto_review',
       },
       messages: [],
       transientMessages: [
@@ -167,7 +167,7 @@ describe('single live-turn handoff', () => {
       activeSession: {
         id: 'session-1', name: 'pending', lastMessageAt: 1, status: 'running', backend: 'ai-sdk',
         labels: [], isFlagged: false, isArchived: false, hasUnread: false,
-        llmConnectionSlug: 'conn', connectionLocked: false, model: 'model', permissionMode: 'ask',
+        llmConnectionSlug: 'conn', connectionLocked: false, model: 'model', permissionMode: 'auto_review',
       },
       messages: [],
       transientMessages: [
@@ -204,7 +204,7 @@ describe('single live-turn handoff', () => {
       activeSession: {
         id: 'session-1', name: 'pending', lastMessageAt: 1, status: 'running', backend: 'ai-sdk',
         labels: [], isFlagged: false, isArchived: false, hasUnread: false,
-        llmConnectionSlug: 'conn', connectionLocked: false, model: 'model', permissionMode: 'ask',
+        llmConnectionSlug: 'conn', connectionLocked: false, model: 'model', permissionMode: 'auto_review',
       },
       messages: [],
       transientMessages: [
@@ -268,7 +268,7 @@ describe('single live-turn handoff', () => {
       activeSession: {
         id: 'session-1', name: 'streaming', lastMessageAt: 1, status: 'active', backend: 'ai-sdk',
         labels: [], isFlagged: false, isArchived: false, hasUnread: false,
-        llmConnectionSlug: 'conn', connectionLocked: false, model: 'model', permissionMode: 'ask',
+        llmConnectionSlug: 'conn', connectionLocked: false, model: 'model', permissionMode: 'auto_review',
       },
       messages: [
         { type: 'user', id: 'user-1', turnId: 'turn-1', ts: 1, text: 'go' },
@@ -297,7 +297,7 @@ describe('single live-turn handoff', () => {
       activeSession: {
         id: 'session-1', name: 'streaming', lastMessageAt: 1, status: 'running', backend: 'ai-sdk',
         labels: [], isFlagged: false, isArchived: false, hasUnread: false,
-        llmConnectionSlug: 'conn', connectionLocked: false, model: 'model', permissionMode: 'ask',
+        llmConnectionSlug: 'conn', connectionLocked: false, model: 'model', permissionMode: 'auto_review',
       },
       messages: [
         { type: 'user', id: 'user-1', turnId: 'turn-1', ts: 1, text: 'go' },
@@ -640,47 +640,6 @@ describe('single live-turn handoff', () => {
     assert.equal(publications, 1);
     assert.equal(liveTurns.get()['session-1']?.[0]?.steps[0]?.text?.text, 'done');
     assert.equal(liveTurns.get()['session-1']?.[0]?.steps[0]?.text?.complete, true);
-  });
-
-  it('queues a sandbox boundary request without ending the live turn', () => {
-    const liveTurns = createStateSetter<Record<string, readonly LiveTurnProjection[]>>({
-      'session-1': [armLiveTurn('turn-1')],
-    });
-    const ref = { current: liveTurns.get() };
-    const interactions = createStateSetter<InteractionQueues>({});
-    const setLiveTurnBySession = (updater: (current: Record<string, readonly LiveTurnProjection[]>) => Record<string, readonly LiveTurnProjection[]>) => {
-      liveTurns.set(updater);
-      ref.current = liveTurns.get();
-    };
-    const handlers = createAppShellSessionEventHandlers({
-      uiLocale: 'zh-CN',
-      activeIdRef: { current: 'session-1' },
-      liveTurnBySessionRef: ref,
-      refreshMessages: async () => true,
-      refreshSessions: async () => [],
-      setLiveTurnBySession,
-      setInteractionBySession: interactions.set,
-      showModelSetupToast: () => {},
-      toastApi: { error: () => {} },
-    });
-
-    handlers.handleEvent('session-1', {
-      type: 'sandbox_boundary_request',
-      id: 'e1',
-      turnId: 'turn-1',
-      ts: 1,
-      requestId: 'request-1',
-      toolUseId: 'tool-1',
-      justification: 'Write the requested export.',
-      expansion: {
-        filesystem: {
-          entries: [{ path: '/tmp/export.txt', access: 'write', scope: 'exact' }],
-        },
-      },
-    });
-
-    assert.equal(liveTurns.get()['session-1']?.[0]?.terminal, undefined);
-    assert.equal(interactions.get()['session-1']?.[0]?.requestId, 'request-1');
   });
 
   it('queues and retires a form at the Host answer acknowledgement', () => {

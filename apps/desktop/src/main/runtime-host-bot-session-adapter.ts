@@ -41,7 +41,6 @@ type RuntimeHostBotSessionClient = Pick<
   | 'getSession'
   | 'openSession'
   | 'startTurn'
-  | 'updateSessionConfiguration'
 >;
 
 export interface RuntimeHostBotSessionCreateTarget {
@@ -104,22 +103,6 @@ export function createRuntimeHostBotSessionAdapter(
       if (!session || session.isArchived) {
         throw unavailableSession(sessionId);
       }
-      if (session.permissionMode === 'explore') return 'ready';
-
-      try {
-        session = await deps.client.updateSessionConfiguration(sessionId, {
-          permissionMode: 'explore',
-        });
-      } catch (error) {
-        throwUnavailable(error, sessionId);
-        if (isPermissionUpdateRefusal(error)) return 'permission_refused';
-        throw error;
-      }
-      if (session.isArchived) {
-        throw unavailableSession(sessionId);
-      }
-      if (session.permissionMode !== 'explore') return 'permission_refused';
-      deps.emitSessionsChanged('updated', sessionId);
       return 'ready';
     },
 
@@ -237,14 +220,6 @@ function throwUnavailable(error: unknown, sessionId: string): void {
   ) {
     throw unavailableSession(sessionId, error);
   }
-}
-
-function isPermissionUpdateRefusal(error: unknown): boolean {
-  return (
-    (error instanceof RuntimeHostOperationError &&
-      (error.code === 'session_busy' || error.code === 'operation_conflict')) ||
-    (error instanceof DesktopRuntimeHostClientError && error.code === 'revision_conflict')
-  );
 }
 
 function unavailableSession(sessionId: string, cause?: unknown): BotSessionUnavailableError {

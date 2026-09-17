@@ -68,6 +68,6 @@ function session(id: string): SessionSummary & { revision: number } {
     llmConnectionSlug: 'default',
     connectionLocked: false,
     model: 'gpt-5',
-    permissionMode: 'ask',
+    permissionMode: 'auto_review',
   };
 }

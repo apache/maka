@@ -117,7 +117,6 @@ import type {
 } from '@maka/core/agent-graph-topology';
 
 import type {
-  CreateSandboxBoundaryRequest,
   ExecutionBoundary,
   SandboxBoundaryRequest,
   SandboxBoundarySettlement,
@@ -517,13 +516,6 @@ class SqliteSessionStore implements SessionAuthorityStore {
     return this.metadata.readExecutionBoundary(sessionId);
   }
 
-  async createSandboxBoundaryRequest(
-    input: CreateSandboxBoundaryRequest,
-  ): Promise<SandboxBoundaryRequest> {
-    await this.ensureReady();
-    return this.metadata.createSandboxBoundaryRequest(input);
-  }
-
   async readSandboxBoundaryRequest(
     sessionId: string,
     requestId: string,
@@ -554,18 +546,6 @@ class SqliteSessionStore implements SessionAuthorityStore {
   ): Promise<SandboxBoundarySettlement> {
     await this.ensureReady();
     return this.metadata.settleSandboxBoundaryRequest(input);
-  }
-
-  async setExecutionBoundaryKind(
-    sessionId: string,
-    kind: 'managed' | 'bypass',
-    projection?: {
-      permissionMode: SessionHeader['permissionMode'];
-      labels?: readonly string[];
-    },
-  ): Promise<ExecutionBoundary> {
-    await this.ensureReady();
-    return this.metadata.setExecutionBoundaryKind(sessionId, kind, projection);
   }
 
   async list(filter?: SessionListFilter): Promise<SessionSummary[]> {

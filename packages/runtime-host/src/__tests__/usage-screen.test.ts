@@ -368,7 +368,7 @@ test('real Host keeps Session titles in the screen revision across rename and pa
       cwd: root,
       llmConnectionSlug: 'test',
       model: 'model',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       name: 'Before rename',
       labels: [],
     });

@@ -41,7 +41,7 @@ const execution = {
 const base = {
   collaborationMode: 'agent' as const,
   orchestrationMode: 'default' as const,
-  permissionMode: 'explore' as const,
+  permissionMode: 'auto_review' as const,
   subagentWorkspace: undefined,
   transcriptLedgerVersion: 1 as const,
   toolProfile: 'workhub-coordination-v1' as const,
@@ -109,7 +109,7 @@ test('WorkHub execution requires the exact reserved id, role, and zero-tool prof
   );
 });
 
-test('WorkHub v2 requires its capability permission mode and cannot run as an ordinary turn', () => {
+test('WorkHub supports both review modes but cannot run as an ordinary turn', () => {
   const header = {
     ...base,
     id: WORKHUB_COORDINATION_SESSION_ID,
@@ -119,8 +119,8 @@ test('WorkHub v2 requires its capability permission mode and cannot run as an or
   };
   assert.equal(runtimeHostExecutionUnavailableReason(header, execution), undefined);
   assert.equal(
-    runtimeHostExecutionUnavailableReason({ ...header, permissionMode: 'explore' }, execution),
-    WORKHUB_COORDINATION_EXECUTION_UNAVAILABLE_REASON,
+    runtimeHostExecutionUnavailableReason({ ...header, permissionMode: 'auto_review' }, execution),
+    undefined,
   );
   assert.equal(
     runtimeHostExecutionUnavailableReason(header, { kind: 'external_message' }),

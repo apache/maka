@@ -27,7 +27,6 @@ import type {
 import type {
   ShellRunCompactResult,
   ShellRunSnapshotResult,
-  ShellRunStateResult,
   ShellRunUpdate,
   ToolResultContent,
 } from '@maka/core/events';
@@ -37,7 +36,6 @@ import { isActiveShellRunStatus } from '@maka/core/shell-run';
 
 import { shellRunResourceRef, type ShellRunWriteInput } from './shell-run-contract.js';
 import { truncateToolOutput } from './tool-output.js';
-import { isLikelySandboxDenial } from './sandbox/detect.js';
 
 export const PTY_MODEL_TEXT_BUDGET_BYTES = 50 * 1024;
 
@@ -68,7 +66,6 @@ export function terminalContent(record: ShellRunRecord): TerminalToolResult {
     ...(record.exitCode !== undefined ? { exitCode: record.exitCode } : {}),
     ...(record.failureMessage !== undefined ? { failureMessage: record.failureMessage } : {}),
     output: record.output,
-    ...(sandboxDenialForRecord(record) ? { sandboxDenial: sandboxDenialForRecord(record) } : {}),
   };
 }
 
@@ -164,47 +161,12 @@ function shellRunSnapshotContent(record: ShellRunRecord): ShellRunSnapshotResult
         ...state,
         mode: 'pipes',
         output,
-        ...(sandboxDenialForRecord(record)
-          ? { sandboxDenial: sandboxDenialForRecord(record) }
-          : {}),
       }
     : {
         ...state,
         mode: 'pty',
         output,
-        ...(sandboxDenialForRecord(record)
-          ? { sandboxDenial: sandboxDenialForRecord(record) }
-          : {}),
       };
-}
-
-function sandboxDenialForRecord(record: ShellRunRecord):
-  | {
-      likely: true;
-      backend?: 'macos-seatbelt' | 'linux' | 'windows';
-    }
-  | undefined {
-  if (record.status !== 'failed' || record.sandboxExecution?.enforced !== true) return undefined;
-  const flat = flattenSandboxDenialText(record.output);
-  if (!isLikelySandboxDenial({ ...flat, sandboxed: true })) return undefined;
-  const backend = record.sandboxExecution.type;
-  return {
-    likely: true,
-    ...(backend === 'macos-seatbelt' || backend === 'linux' || backend === 'windows'
-      ? { backend }
-      : {}),
-  };
-}
-
-function flattenSandboxDenialText(output: ShellOutput): {
-  stdout: string;
-  stderr: string;
-} {
-  if (output.mode === 'pipes') return { stdout: output.stdout, stderr: output.stderr };
-  return {
-    stdout: `${output.scrollback}\n${output.screen}\n${output.lastAlternateScreen ?? ''}`,
-    stderr: '',
-  };
 }
 
 function projectShellOutputForModel(output: ShellOutput): ShellOutput {

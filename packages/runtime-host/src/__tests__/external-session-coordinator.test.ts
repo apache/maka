@@ -49,10 +49,7 @@ import {
 } from '../protocol/index.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
 import { HostExternalSessionCoordinator } from '../server/external-session-coordinator.js';
-import {
-  NoUsableImportModelError,
-  SessionOperationFailure,
-} from '../server/session-catalog-coordinator.js';
+import { NoUsableImportModelError } from '../server/session-catalog-coordinator.js';
 import { SessionAdmissionGate } from '../server/session-admission-gate.js';
 
 const context: ConnectionContext = {
@@ -1043,7 +1040,7 @@ function coordinatorFixture(
         readonly backend: 'ai-sdk';
         readonly llmConnectionSlug: string;
         readonly model: string;
-        readonly permissionMode: 'ask';
+        readonly permissionMode: 'auto_review';
         readonly collaborationMode: 'agent';
         readonly orchestrationMode: 'default';
       }>;
@@ -1139,7 +1136,7 @@ function coordinatorFixture(
           backend: 'ai-sdk',
           llmConnectionSlug: 'default',
           model: 'gpt-5',
-          permissionMode: 'ask',
+          permissionMode: 'auto_review',
           collaborationMode: 'agent',
           orchestrationMode: 'default',
         })),
@@ -1174,7 +1171,7 @@ function coordinatorFixture(
           cwd: '/external',
           llmConnectionSlug: 'default',
           model: 'gpt-5',
-          permissionMode: 'ask',
+          permissionMode: 'auto_review',
         },
         [],
         { adapterId: 'codex', sourceSessionId: 'source-0' },
@@ -1245,7 +1242,7 @@ function sessionHeader(id: string, cwd: string, name: string): SessionHeader {
     llmConnectionSlug: 'default',
     connectionLocked: true,
     model: 'gpt-5',
-    permissionMode: 'ask',
+    permissionMode: 'auto_review',
     collaborationMode: 'agent',
     orchestrationMode: 'default',
     schemaVersion: 1,

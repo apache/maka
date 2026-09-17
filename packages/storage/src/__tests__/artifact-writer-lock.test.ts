@@ -23,7 +23,6 @@ import {
   lstat,
   mkdir,
   mkdtemp,
-  readFile,
   readdir,
   rename,
   rm,
@@ -545,7 +544,7 @@ function sessionInput() {
     backend: 'fake' as const,
     llmConnectionSlug: 'fixture',
     model: 'fixture-model',
-    permissionMode: 'ask' as const,
+    permissionMode: 'auto_review' as const,
     name: 'Selected',
   };
 }

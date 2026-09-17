@@ -34,7 +34,6 @@ import {
   type TransientUserMessageProjection,
 } from '@maka/ui';
 import type {
-  SandboxBoundaryRequestEvent,
   ClientCapabilityRequestEvent,
   ContextCompactionOutcome,
   FormRequestEvent,
@@ -44,7 +43,6 @@ import type {
   SessionEvent,
   UserQuestionRequestEvent,
 } from '@maka/core/events';
-import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { ClientCapabilityResponse } from '@maka/core/client-capability-grant';
 import type { PermissionMode } from '@maka/core/permission';
 import type { SessionSummary, StoredMessage } from '@maka/core/session';
@@ -191,8 +189,7 @@ export interface UseQuoteCompanionResult {
   error: string | null;
   /** The model the companion inherited from the source (shown read-only). */
   activeModel: { llmConnectionSlug: string; model: string } | undefined;
-  /** Pending sandbox-boundary / question / form prompt raised by the companion's run. */
-  activeSandboxBoundary: SandboxBoundaryRequestEvent | undefined;
+  /** Pending capability, question, or form prompt raised by the companion's run. */
   activeClientCapability: ClientCapabilityRequestEvent | undefined;
   activeQuestion: UserQuestionRequestEvent | undefined;
   activeForm: FormRequestEvent | undefined;
@@ -228,7 +225,6 @@ export interface UseQuoteCompanionResult {
   setPermissionMode: (mode: PermissionMode) => Promise<boolean>;
   regenerate: (turnId: string) => Promise<boolean>;
   stop: () => Promise<void>;
-  respondToSandboxBoundary: (response: SandboxBoundaryResponse) => Promise<void>;
   respondToClientCapability: (response: ClientCapabilityResponse) => Promise<void>;
   respondToUserQuestion: (response: UserQuestionResponse) => Promise<void>;
   respondToUserForm: (response: InteractionFormResponse) => Promise<void>;
@@ -1624,19 +1620,6 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     [mountedRef, regeneratePendingTurnId, sideChat, turnInFlight],
   );
 
-  const respondToSandboxBoundary = useCallback(
-    async (response: SandboxBoundaryResponse): Promise<void> => {
-      const id = companionIdRef.current;
-      if (!mountedRef.current || !id) return;
-      try {
-        await sideChat.respondToSandboxBoundary(id, response);
-      } catch {
-        if (mountedRef.current) setError(copyRef.current.errors.respondFailed);
-      }
-    },
-    [mountedRef, sideChat],
-  );
-
   const respondToUserQuestion = useCallback(
     async (response: UserQuestionResponse): Promise<void> => {
       const id = companionIdRef.current;
@@ -1700,8 +1683,6 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   const activeInteraction = companionIdRef.current
     ? activeInteractionFor(interactions, companionIdRef.current)
     : undefined;
-  const activeSandboxBoundary =
-    activeInteraction?.type === 'sandbox_boundary_request' ? activeInteraction : undefined;
   const activeClientCapability =
     activeInteraction?.type === 'client_capability_request' ? activeInteraction : undefined;
   const activeQuestion =
@@ -1724,7 +1705,6 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     regeneratePendingTurnId,
     error,
     activeModel,
-    activeSandboxBoundary,
     activeClientCapability,
     activeQuestion,
     activeForm,
@@ -1739,7 +1719,6 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     setPermissionMode,
     regenerate,
     stop,
-    respondToSandboxBoundary,
     respondToClientCapability,
     respondToUserQuestion,
     respondToUserForm,

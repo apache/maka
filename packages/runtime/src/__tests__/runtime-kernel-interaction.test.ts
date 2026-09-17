@@ -24,7 +24,6 @@ import { describe, test } from 'node:test';
 import type { SessionEvent } from '@maka/core/events';
 
 import type { SessionHeader, StoredMessage } from '@maka/core/session';
-import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { AgentBackend, BackendSendInput, BackendStopMode } from '@maka/core/backend-types';
 
 import {
@@ -98,7 +97,6 @@ describe('RuntimeKernel Interaction close cleanup', () => {
         stoppedFailure = rejectionOf(stopped);
         return {
           ...identity,
-          acceptSandboxBoundaryRequest: async () => {},
           acceptUserQuestionRequest: async () => {},
           acceptFormRequest: async () => {},
           withdrawFormRequest: async () => {},
@@ -453,7 +451,6 @@ function runtimeFixture(options: RuntimeFixtureOptions = {}): {
   const interactionAuthority: RuntimeInteractionAuthority = {
     bindRun: (identity) => ({
       ...identity,
-      acceptSandboxBoundaryRequest: async () => {},
       acceptUserQuestionRequest: async () => {},
       acceptFormRequest: async () => {},
       withdrawFormRequest: async () => {},
@@ -575,8 +572,6 @@ class BlockingBackend implements AgentBackend {
     this.releaseSend?.();
   }
 
-  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
-
   async dispose(): Promise<void> {
     this.disposeCalls += 1;
     if (this.options.releaseSendOnDispose !== false) this.releaseSend?.();
@@ -615,9 +610,6 @@ function memoryStore(): SessionStore {
   return {
     create: async () => header,
     createSubagent: async () => ({ header, created: false }),
-    setExecutionBoundaryKind: async () => {
-      throw new Error('not implemented');
-    },
     readExecutionBoundary: async () => {
       throw new Error('not implemented');
     },

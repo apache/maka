@@ -78,7 +78,7 @@ test('two Clients and a restarted production Host share one retry-safe Plan auth
       llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
-      permissionMode: 'explore',
+      permissionMode: 'auto_review',
       collaborationMode: 'plan',
     });
     const submitted = await setupPlanStore.submitProposal({
@@ -424,7 +424,7 @@ test('Plan queries include their state header when selecting byte-limited contin
       cwd: root,
       llmConnectionSlug: 'test',
       model: 'test-model',
-      permissionMode: 'explore',
+      permissionMode: 'auto_review',
       collaborationMode: 'plan',
     });
     for (let index = 0; index < 17; index += 1) {

@@ -130,10 +130,6 @@ const baseDesktopBuilderConfig = {
       to: 'status',
     },
     {
-      from: 'resources/workers/filesystem-worker.js',
-      to: 'workers/filesystem-worker.js',
-    },
-    {
       from: '../../native/runtime-host-peer/target/release/maka_runtime_host_peer.node',
       to: 'runtime-host-peer/maka_runtime_host_peer.node',
     },
@@ -141,18 +137,7 @@ const baseDesktopBuilderConfig = {
       from: '../../packages/cli/RUNTIME_HOST_PEER_THIRD_PARTY_NOTICES.txt',
       to: 'licenses/runtime-host-peer/THIRD_PARTY_NOTICES.txt',
     },
-    ...(process.platform === 'win32'
-      ? [
-          {
-            from: 'resources/windows-sandbox/maka-windows-sandbox.exe',
-            to: 'windows-sandbox/maka-windows-sandbox.exe',
-          },
-          {
-            from: 'resources/licenses/cargo/THIRD_PARTY_NOTICES.txt',
-            to: 'licenses/cargo/THIRD_PARTY_NOTICES.txt',
-          },
-        ]
-      : []),
+
     {
       from: '../../LICENSE',
       to: 'licenses/maka/LICENSE',

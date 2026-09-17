@@ -36,8 +36,7 @@ interface AcpSessionConfigSpec {
 }
 
 const PERMISSION_NAMES: Readonly<Record<PermissionMode, string>> = {
-  explore: 'Explore',
-  ask: 'Ask',
+  auto_review: 'Auto review',
   bypass: 'Bypass',
 };
 

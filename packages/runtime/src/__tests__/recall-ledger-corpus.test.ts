@@ -52,7 +52,7 @@ function makeInput(name: string): CreateSessionInput {
     cwd: '/tmp/cwd',
     llmConnectionSlug: 'test-connection',
     model: 'test-model',
-    permissionMode: 'ask',
+    permissionMode: 'auto_review',
     name,
     labels: [],
   };

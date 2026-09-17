@@ -44,7 +44,6 @@ import {
   type DomainOperationHandlerMap,
 } from '../server/operation-dispatcher.js';
 import { RuntimePolicyActivationGate } from '../server/runtime-policy-activation-gate.js';
-import { clientCapabilityCoordinatorTestAdmission } from './fixtures/client-capability.js';
 
 test('unknown Client Capability loads, invokes, and rebinds after UDS reconnect', async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-client-capability-'));
@@ -64,7 +63,6 @@ test('unknown Client Capability loads, invokes, and rebinds after UDS reconnect'
       idleGraceMs: 60_000,
       composition: defineInteractiveRuntimeHostComposition(async () => {
         coordinator = new HostClientCapabilityCoordinator({
-          ...clientCapabilityCoordinatorTestAdmission(),
           activation: new RuntimePolicyActivationGate(),
           onModelToolsChanged: () => undefined,
         });

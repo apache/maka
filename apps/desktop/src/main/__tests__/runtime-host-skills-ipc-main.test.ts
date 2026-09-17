@@ -46,7 +46,7 @@ test("projects an empty Skill surface until a remote Project is selected", async
     mainWindowController: {} as never,
     getSelectedWorkspaceTarget: async () => undefined,
     resolveNewSessionWorkspaceTarget: async () => undefined,
-    getDefaultPermissionMode: async () => "ask",
+    getDefaultPermissionMode: async () => "auto_review",
     openPath: async () => "",
     allowLocalPaths: false,
     resolveLocale: async () => 'en' as const,
@@ -89,7 +89,7 @@ test("binds new-session Skill discovery to its explicit Project", async () => {
         ? { kind: "project", projectId }
         : undefined;
     },
-    getDefaultPermissionMode: async () => "ask",
+    getDefaultPermissionMode: async () => "auto_review",
     openPath: async () => "",
   });
 

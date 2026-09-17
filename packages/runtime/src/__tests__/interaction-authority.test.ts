@@ -21,8 +21,6 @@ import { deferred } from '@maka/core/test-only/async-primitives';
 import { createTestToolRuntime } from './execution-boundary-test-helpers.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { createWorkspaceWritePermissionProfile } from '@maka/core/permission-profile';
-import { type SandboxBoundarySettlement } from '@maka/core/sandbox-boundary';
 import type { HostedInteractionBridge } from '@maka/core/backend-types';
 import type { SessionEvent } from '@maka/core/events';
 import type { SessionHeader } from '@maka/core/session';
@@ -37,7 +35,6 @@ import {
   type RuntimeInteractionAuthority,
   type RuntimeInteractionRunOwner,
   type RuntimeFormContinuation,
-  type RuntimeSandboxBoundaryContinuation,
   type RuntimeUserQuestionContinuation,
 } from '../interaction-authority.js';
 import { SessionManager } from '../session-manager.js';
@@ -88,7 +85,6 @@ describe('Runtime Interaction authority seam', () => {
           bindRun: () => ({
             ...RUN,
             runId: 'wrong-run',
-            acceptSandboxBoundaryRequest: async () => {},
             acceptUserQuestionRequest: async () => {},
             acceptFormRequest: async () => {},
             withdrawFormRequest: async () => {},
@@ -268,87 +264,6 @@ describe('Runtime Interaction authority seam', () => {
     );
 
     await runtime.endTurn();
-    await binding.close('turn_terminal');
-    await binding.settleLocalClosures();
-    binding.release();
-  });
-
-  test('matches a hosted sandbox boundary acknowledgement to its exact durable settlement', async () => {
-    let continuation: RuntimeSandboxBoundaryContinuation | undefined;
-    let applied = false;
-    const binding = await bindRuntimeInteractionRun(
-      authority({
-        acceptSandboxBoundaryRequest: async ({ continuation: admitted }) => {
-          continuation = admitted;
-        },
-      }),
-      RUN,
-    );
-    const request = {
-      type: 'sandbox_boundary_request' as const,
-      id: 'boundary-event-1',
-      turnId: RUN.turnId,
-      ts: 1,
-      requestId: 'boundary-1',
-      toolUseId: 'tool-boundary-1',
-      expansion: {
-        filesystem: {
-          entries: [
-            { path: '/outside/file.txt', access: 'read' as const, scope: 'exact' as const },
-          ],
-        },
-      },
-      justification: 'Read the selected file.',
-    };
-    await binding.admitSandboxBoundaryRequest({
-      request,
-      settlement: {
-        applyDecision: async () => {
-          applied = true;
-        },
-        applyClosure: async () => {},
-      },
-    });
-    binding.assertPendingAdmission(request);
-    assert.ok(continuation);
-    const settlement: SandboxBoundarySettlement = {
-      request: {
-        sessionId: RUN.sessionId,
-        requestId: request.requestId,
-        status: 'approved',
-        baseRevision: 0,
-        expansion: request.expansion,
-        justification: request.justification,
-        createdAt: 1,
-        settledAt: 2,
-        appliedRevision: 1,
-        turnId: RUN.turnId,
-        runId: RUN.runId,
-      },
-      boundary: {
-        kind: 'managed',
-        profile: createWorkspaceWritePermissionProfile(),
-        revision: 1,
-      },
-      changed: true,
-    };
-    await continuation.applyDecision(settlement);
-    assert.equal(applied, true);
-    assert.equal(
-      await binding.canResumeAfterSettlementAck({
-        type: 'sandbox_boundary_decision_ack',
-        id: 'boundary-ack-1',
-        turnId: RUN.turnId,
-        ts: 2,
-        requestId: request.requestId,
-        toolUseId: request.toolUseId,
-        decision: 'allow',
-        status: 'approved',
-        revision: 1,
-      }),
-      true,
-    );
-
     await binding.close('turn_terminal');
     await binding.settleLocalClosures();
     binding.release();
@@ -598,7 +513,6 @@ function authority(
   return {
     bindRun: (identity) => ({
       ...identity,
-      acceptSandboxBoundaryRequest: async () => {},
       acceptUserQuestionRequest: async () => {},
       close: async () => {},
       release: () => {},
@@ -680,7 +594,7 @@ function header(): SessionHeader {
     llmConnectionSlug: 'c',
     connectionLocked: true,
     model: 'm',
-    permissionMode: 'ask',
+    permissionMode: 'auto_review',
     schemaVersion: 1,
   };
 }

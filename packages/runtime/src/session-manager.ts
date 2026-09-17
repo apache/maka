@@ -29,6 +29,7 @@
  * persistence and same-session serialization semantics.
  */
 
+import { DEFAULT_SESSION_PERMISSION_MODE } from '@maka/core/session';
 import type { WorkHubActionReceipt } from '@maka/core/workhub-action-result';
 import {
   countRecallSearchableMessages,
@@ -72,10 +73,8 @@ import type {
   UserMessageInput,
   SessionListFilter,
 } from '@maka/core/runtime-inputs';
-import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { UserQuestionResponse } from '@maka/core/user-question';
-import type { PermissionMode } from '@maka/core/permission';
-import { isCanonicalReadOnlyPermissionProfile } from '@maka/core/permission-profile';
+import { decodePersistedPermissionMode, type PermissionMode } from '@maka/core/permission';
 import { DEFAULT_TOOL_MODE, type ToolMode } from '@maka/core/tool-mode';
 import type {
   CreateSandboxBoundaryRequest,
@@ -97,7 +96,6 @@ import {
   type PlanStore,
 } from '@maka/core/plan';
 import { DEFAULT_SESSION_NAME } from '@maka/core/session-name';
-import { DEEP_RESEARCH_SESSION_LABEL, isDeepResearchSession } from '@maka/core/deep-research';
 import {
   SUBAGENT_SESSION_RUNTIME_SCHEMA_VERSION,
   SUBAGENT_SESSION_SPAWN_SCHEMA_VERSION,
@@ -153,7 +151,6 @@ import type {
   SubagentWorkspaceBinding,
   SubagentWorktreeExecutor,
 } from '@maka/core/subagent-workspace';
-import type { SubagentPreset } from '@maka/core/subagent-settings';
 import type { ResolvedSubagentPreset } from './configured-subagent-catalog.js';
 import { AGENT_GRAPH_OPERATOR_PROVISION_SCHEMA_VERSION } from '@maka/core/agent-graph-topology';
 import {
@@ -630,14 +627,6 @@ export interface SessionStore {
   settleSandboxBoundaryRequest?(
     input: SettleSandboxBoundaryRequest,
   ): Promise<SandboxBoundarySettlement>;
-  setExecutionBoundaryKind(
-    sessionId: string,
-    kind: 'managed' | 'bypass',
-    projection?: {
-      permissionMode: SessionHeader['permissionMode'];
-      labels?: readonly string[];
-    },
-  ): Promise<ExecutionBoundary>;
   createAgentGraphOperator?(
     input: CreateSessionInput,
     request: AgentGraphOperatorProvisionRequest,
@@ -1221,12 +1210,7 @@ export class SessionManager {
         current.header,
         input.configuration.collaborationMode,
       );
-      const leavingDeepResearch =
-        isDeepResearchSession(current.header.labels) &&
-        input.configuration.permissionMode !== 'explore';
-      const labels = leavingDeepResearch
-        ? current.header.labels.filter((label) => label !== DEEP_RESEARCH_SESSION_LABEL)
-        : current.header.labels;
+      const labels = current.header.labels;
       return () =>
         store.updateSessionConfiguration(sessionId, {
           expectedVersion: input.expectedRevision,
@@ -1246,7 +1230,7 @@ export class SessionManager {
     const next = permissionModeOnly
       ? await this.commitExecutionBoundaryTransition(
           sessionId,
-          await this.deps.store.readExecutionBoundary(sessionId),
+          (await this.deps.store.readHeader(sessionId)).permissionMode,
           input.configuration.permissionMode,
           prepareCommit,
         )
@@ -1710,84 +1694,38 @@ export class SessionManager {
   ): Promise<SessionSummary> {
     const previous = await this.deps.store.readHeader(sessionId);
     const boundary = await this.deps.store.readExecutionBoundary(sessionId);
-    const leavingDeepResearch = isDeepResearchSession(previous.labels) && mode !== 'explore';
-    if (
-      previous.permissionMode === mode &&
-      executionBoundaryMatchesPermissionMode(boundary, mode) &&
-      !leavingDeepResearch
-    ) {
-      return headerToSummary(previous);
-    }
-
-    const labels = leavingDeepResearch
-      ? previous.labels.filter((label) => label !== DEEP_RESEARCH_SESSION_LABEL)
-      : previous.labels;
-    const kind = mode === 'bypass' ? 'bypass' : 'managed';
-    await this.commitExecutionBoundaryTransition(sessionId, boundary, mode, async () => {
-      const current = await this.deps.store.readHeader(sessionId);
-      if (current.status === 'waiting_for_user') {
-        throw new SessionConfigurationTransitionError(
-          'session_busy',
-          'Session has a pending Interaction',
-        );
-      }
-      return () =>
-        this.deps.store.setExecutionBoundaryKind(sessionId, kind, {
-          permissionMode: mode,
-          labels,
-        });
-    });
+    if (boundary.kind === 'external')
+      throw new Error('Externally isolated sessions cannot change review mode');
+    if (previous.permissionMode === mode) return headerToSummary(previous);
+    await this.commitExecutionBoundaryTransition(
+      sessionId,
+      previous.permissionMode,
+      mode,
+      async () => {
+        const current = await this.deps.store.readHeader(sessionId);
+        if (current.status === 'waiting_for_user') {
+          throw new SessionConfigurationTransitionError(
+            'session_busy',
+            'Session has a pending Interaction',
+          );
+        }
+        return () => this.deps.store.updateHeader(sessionId, { permissionMode: mode });
+      },
+    );
     const next = await this.deps.store.readHeader(sessionId);
     this.runtimeKernel.updateCachedHeader(sessionId, next);
     return headerToSummary(next);
   }
 
-  async setExecutionBoundaryKind(
-    sessionId: string,
-    kind: 'managed' | 'bypass',
-  ): Promise<ExecutionBoundary> {
-    const current = await this.deps.store.readExecutionBoundary(sessionId);
-    const header = await this.deps.store.readHeader(sessionId);
-    // Managed includes Explore. Match Storage's default projection, then pass
-    // it explicitly so classification and commit describe the same transition.
-    const permissionMode =
-      kind === 'bypass'
-        ? 'bypass'
-        : header.permissionMode === 'bypass'
-          ? 'ask'
-          : header.permissionMode;
-    const narrows = narrowsExecutionAuthority(current, permissionMode);
-    if (narrows && this.runtimeKernel.hasActiveRuns(sessionId)) {
-      throw new SessionConfigurationTransitionError(
-        'session_busy',
-        'Execution boundary cannot change while a Turn is running',
-      );
-    }
-    if (header.status === 'waiting_for_user') {
-      throw new SessionConfigurationTransitionError(
-        'session_busy',
-        'Execution boundary cannot change while an Interaction is pending',
-      );
-    }
-    const boundary = await this.commitExecutionBoundaryTransition(
-      sessionId,
-      current,
-      permissionMode,
-      async () => () =>
-        this.deps.store.setExecutionBoundaryKind(sessionId, kind, { permissionMode }),
-    );
-    return boundary;
-  }
-
   private async commitExecutionBoundaryTransition<T>(
     sessionId: string,
-    current: ExecutionBoundary,
+    current: PermissionMode,
     nextPermissionMode: PermissionMode,
     prepareCommit: () => Promise<() => Promise<T>>,
   ): Promise<T> {
     const prepareBoundaryCommit = async (): Promise<() => Promise<T>> => {
-      const latest = await this.deps.store.readExecutionBoundary(sessionId);
-      if (latest.revision !== current.revision) {
+      const latest = await this.deps.store.readHeader(sessionId);
+      if (latest.permissionMode !== current) {
         throw new SessionConfigurationTransitionError(
           'operation_conflict',
           'Session execution boundary changed before the transition',
@@ -1832,16 +1770,22 @@ export class SessionManager {
     nextPermissionMode: PermissionMode,
     prepareCommit: () => Promise<() => Promise<T>>,
   ): Promise<T> {
-    const initialBoundary = await this.deps.store.readExecutionBoundary(sessionId);
-    const initiallyNarrows = narrowsExecutionAuthority(initialBoundary, nextPermissionMode);
+    const initialHeader = await this.deps.store.readHeader(sessionId);
+    const initiallyNarrows = narrowsExecutionAuthority(
+      initialHeader.permissionMode,
+      nextPermissionMode,
+    );
     const initialDescendants = initiallyNarrows
       ? await this.listLinkedDescendantSessionIds(sessionId)
       : [];
     const fencedSessionIds = [sessionId, ...initialDescendants];
 
     return this.runSessionQuiescentMutation<T>(fencedSessionIds, async () => {
-      const currentBoundary = await this.deps.store.readExecutionBoundary(sessionId);
-      const narrowsShellAuthority = narrowsExecutionAuthority(currentBoundary, nextPermissionMode);
+      const currentHeader = await this.deps.store.readHeader(sessionId);
+      const narrowsShellAuthority = narrowsExecutionAuthority(
+        currentHeader.permissionMode,
+        nextPermissionMode,
+      );
       const descendantSessionIds = narrowsShellAuthority
         ? await this.listLinkedDescendantSessionIds(sessionId)
         : [];
@@ -2727,8 +2671,7 @@ export class SessionManager {
     const resolvedToolNames = executorId
       ? []
       : await this.resolveChildToolNames(input.source.sessionId, parentHeader, definition);
-    const childPermissionMode =
-      parentHeader.permissionMode === 'bypass' ? 'bypass' : definition.permissionMode;
+    const childPermissionMode = parentHeader.permissionMode;
 
     const initialTurnId = this.deps.newId();
     const initialRunId = this.deps.newId();
@@ -3362,7 +3305,7 @@ export class SessionManager {
                   ? { thinkingLevel: parentHeader.thinkingLevel }
                   : {}),
             }),
-        permissionMode: definition.permissionMode,
+        permissionMode: parentHeader.permissionMode,
         collaborationMode: 'agent',
         orchestrationMode: 'default',
         toolMode: parentHeader.toolMode ?? DEFAULT_TOOL_MODE,
@@ -4297,18 +4240,6 @@ export class SessionManager {
     return this.getSessionView(sessionId);
   }
 
-  async respondToSandboxBoundary(
-    sessionId: string,
-    response: SandboxBoundaryResponse,
-  ): Promise<void> {
-    if (this.deps.interactionAuthority) {
-      throw new RuntimeInteractionInvariantError(
-        'Hosted permission answers must use the captured continuation',
-      );
-    }
-    await this.runtimeKernel.respondToSandboxBoundary(sessionId, response);
-  }
-
   async respondToUserQuestion(sessionId: string, response: UserQuestionResponse): Promise<void> {
     if (this.deps.interactionAuthority) {
       throw new RuntimeInteractionInvariantError(
@@ -5157,7 +5088,7 @@ export function headerToSummary(h: SessionHeader): SessionSummary {
     llmConnectionSlug: h.llmConnectionSlug,
     connectionLocked: h.connectionLocked,
     model: h.model,
-    permissionMode: h.permissionMode ?? 'ask',
+    permissionMode: h.permissionMode ?? DEFAULT_SESSION_PERMISSION_MODE,
     collaborationMode: h.collaborationMode ?? 'agent',
     orchestrationMode: h.orchestrationMode ?? 'default',
   };
@@ -5188,7 +5119,7 @@ function invocationListingFacts(invocation: RuntimeInvocationRecord): {
   const failureClass = runtimeInvocationFailureClass(invocation);
   return {
     status: runtimeInvocationOutcome(invocation) ?? 'running',
-    permissionMode: invocation.opening.configuration.permissionMode,
+    permissionMode: decodePersistedPermissionMode(invocation.opening.configuration.permissionMode)!,
     createdAt: invocation.openedAt,
     updatedAt: completedAt ?? invocation.openedAt,
     ...(completedAt !== undefined ? { completedAt } : {}),
@@ -5378,26 +5309,11 @@ function sessionConfigurationMatches(
   );
 }
 
-function executionBoundaryMatchesPermissionMode(
-  boundary: ExecutionBoundary,
-  mode: PermissionMode,
-): boolean {
-  if (mode === 'bypass') return boundary.kind === 'bypass';
-  if (boundary.kind !== 'managed') return false;
-  return mode === 'explore'
-    ? boundary.profile.name === 'read-only'
-    : boundary.profile.name !== 'read-only';
-}
-
 function narrowsExecutionAuthority(
-  boundary: ExecutionBoundary,
+  currentMode: PermissionMode,
   nextPermissionMode: PermissionMode,
 ): boolean {
-  if (nextPermissionMode === 'bypass') return false;
-  if (boundary.kind !== 'managed') return true;
-  return (
-    nextPermissionMode === 'explore' && !isCanonicalReadOnlyPermissionProfile(boundary.profile)
-  );
+  return currentMode === 'bypass' && nextPermissionMode === 'auto_review';
 }
 
 function agentRunStatusForSpawnResult(

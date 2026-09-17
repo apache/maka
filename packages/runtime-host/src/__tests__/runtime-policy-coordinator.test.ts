@@ -134,7 +134,7 @@ test('production composition shares one gate across mutation and backend activat
       llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
 
     composition = await createExecutionRuntimeHostComposition(
@@ -238,7 +238,7 @@ test('production mutation releases the gate before active-turn backend disposal 
       llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     composition = await createExecutionRuntimeHostComposition(
       {
@@ -339,7 +339,7 @@ test('production policy mutation drains and poisons activation when cached backe
       llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
 
     composition = await createExecutionRuntimeHostComposition(

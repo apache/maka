@@ -416,7 +416,7 @@ export function buildCommandList(args: {
   if (args.onSetPermissionMode && args.activeSessionId) {
     const setMode = args.onSetPermissionMode;
     const current = args.activePermissionMode;
-    const modes: ChatDefaultPermissionMode[] = ['ask', 'bypass'];
+    const modes: ChatDefaultPermissionMode[] = ['auto_review', 'bypass'];
     for (const mode of modes) {
       const localized = copy.permissionModes[mode];
       cmds.push({

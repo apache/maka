@@ -50,7 +50,6 @@ import type {
 } from '@maka/core/session';
 import { isDeepStrictEqual } from 'node:util';
 import type { UserMessageInput } from '@maka/core/runtime-inputs';
-import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import {
   resolveEffectiveOrchestration,
   type EffectiveOrchestration,
@@ -182,7 +181,6 @@ export interface RuntimeKernelLike {
   compactSession(sessionId: string, input?: CompactSessionInput): AsyncIterable<SessionEvent>;
   preflightContextCompaction(sessionId: string): Promise<void>;
   stopSession(sessionId: string, input?: StopSessionInput): Promise<void>;
-  respondToSandboxBoundary(sessionId: string, response: SandboxBoundaryResponse): Promise<void>;
   listActiveInteractions?(sessionId: string): ActiveInteractionRequestEvent[];
   respondToUserQuestion?(sessionId: string, response: UserQuestionResponse): Promise<void>;
   /** Compatibility surface; durable message admission belongs to Runtime Host. */
@@ -2123,28 +2121,6 @@ export class RuntimeKernel implements RuntimeKernelLike {
     failures.throwIfAny(`Stop cleanup failed for session ${sessionId}`);
   }
 
-  async respondToSandboxBoundary(
-    sessionId: string,
-    response: SandboxBoundaryResponse,
-  ): Promise<void> {
-    const key = interactionOwnerKey(sessionId, response.requestId);
-    const owner = this.interactionRequestOwners.get(key);
-    if (owner?.request.type !== 'sandbox_boundary_request') {
-      throw new Error(`No pending sandbox boundary request ${response.requestId}`);
-    }
-    const active = this.backendGenerations.get(owner.generation);
-    if (
-      !active ||
-      active.sessionId !== sessionId ||
-      active.phase === 'terminated' ||
-      active.phase === 'failed'
-    ) {
-      this.interactionRequestOwners.delete(key);
-      throw new Error(`Sandbox boundary request owner is unavailable: ${response.requestId}`);
-    }
-    await active.backend.respondToSandboxBoundary(response);
-  }
-
   listActiveInteractions(sessionId: string): ActiveInteractionRequestEvent[] {
     return [...this.interactionRequestOwners.values()]
       .filter((owner) => owner.sessionId === sessionId)
@@ -2276,19 +2252,11 @@ export class RuntimeKernel implements RuntimeKernelLike {
     backend: AgentBackend,
     event: SessionEvent,
   ): void {
-    if (
-      event.type !== 'sandbox_boundary_request' &&
-      event.type !== 'user_question_request' &&
-      event.type !== 'sandbox_boundary_decision_ack' &&
-      event.type !== 'user_question_answer_ack'
-    ) {
+    if (event.type !== 'user_question_request' && event.type !== 'user_question_answer_ack') {
       return;
     }
     const key = interactionOwnerKey(sessionId, event.requestId);
-    if (
-      event.type === 'sandbox_boundary_decision_ack' ||
-      event.type === 'user_question_answer_ack'
-    ) {
+    if (event.type === 'user_question_answer_ack') {
       this.interactionRequestOwners.delete(key);
       return;
     }

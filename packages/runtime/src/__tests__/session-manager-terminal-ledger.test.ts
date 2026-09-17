@@ -33,7 +33,6 @@ import {
   ToolLedgerCorruptionError,
   ToolLedgerRejectionError,
 } from '@maka/core/tool-ledger-scanner';
-import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { AgentRunEvent, AgentRunStore } from '@maka/core/agent-run';
 import {
   runtimeInvocationFailureClass,
@@ -1161,7 +1160,7 @@ describe('SessionManager terminal ledger invariants', () => {
             llmConnectionSlug: 'fake',
             connectionLocked: false,
             model: 'fake-model',
-            permissionMode: 'ask',
+            permissionMode: 'auto_review',
             schemaVersion: 1,
           },
           userInput: { turnId: 'turn-1', text: 'hello' },
@@ -2188,7 +2187,6 @@ class ScriptBackend implements AgentBackend {
   }
 
   async stop(): Promise<void> {}
-  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -2230,7 +2228,6 @@ class StopDuringSendBackend implements AgentBackend {
     this.stopReturned.resolve();
   }
 
-  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -2260,7 +2257,6 @@ class NeverEndingBackend implements AgentBackend {
   }
 
   async stop(_reason: 'user_stop' | 'redirect'): Promise<void> {}
-  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -2303,10 +2299,6 @@ class TinySessionStore implements SessionStore {
     this.headers.set(header.id, header);
     this.messages.set(header.id, []);
     return clone(header);
-  }
-
-  async setExecutionBoundaryKind(): Promise<never> {
-    throw new Error('not implemented');
   }
 
   async readExecutionBoundary(): Promise<never> {
@@ -2604,7 +2596,7 @@ function makeInput(overrides: Partial<CreateSessionInput> = {}): CreateSessionIn
     cwd: '/tmp/cwd',
     llmConnectionSlug: 'fake',
     model: 'fake-model',
-    permissionMode: 'ask',
+    permissionMode: 'auto_review',
     name: 'Session',
     labels: [],
     ...overrides,
@@ -2721,7 +2713,6 @@ function hostedInteractionAuthority(): RuntimeInteractionAuthority {
   return {
     bindRun: (identity) => ({
       ...identity,
-      acceptSandboxBoundaryRequest: async () => {},
       acceptUserQuestionRequest: async () => {},
       acceptFormRequest: async () => {},
       withdrawFormRequest: async () => {},

@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { DEFAULT_SESSION_PERMISSION_MODE } from './session.js';
 import type {
   ConnectionLastTestStatus,
   ConnectionTestErrorClass,
@@ -154,6 +155,7 @@ export interface RuntimePolicy {
   };
   readonly chatDefaults: {
     readonly permissionMode: ChatDefaultPermissionMode;
+    readonly autoReviewModel?: { readonly connectionId: string; readonly model: string } | null;
     readonly thinkingLevel?: ThinkingLevel;
     readonly codeModeEnabled?: boolean;
   };
@@ -258,7 +260,7 @@ export function createDefaultRuntimePolicy(): RuntimePolicy {
     memory: { enabled: true, agentReadEnabled: false },
     workspaceInstructions: { enabled: true },
     privacy: { incognitoActive: false },
-    chatDefaults: { permissionMode: 'ask' },
+    chatDefaults: { permissionMode: DEFAULT_SESSION_PERMISSION_MODE },
     webSearch: { enabled: false, defaultProvider: 'model' },
     subagents: { presets: [] },
     shell: { preference: 'auto', executable: '' },

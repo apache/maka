@@ -134,6 +134,6 @@ function session(overrides: Partial<SessionSummary> & { id: string }): SessionSu
     llmConnectionSlug: overrides.llmConnectionSlug ?? 'default',
     connectionLocked: overrides.connectionLocked ?? false,
     model: overrides.model ?? 'default',
-    permissionMode: overrides.permissionMode ?? 'ask',
+    permissionMode: overrides.permissionMode ?? 'auto_review',
   };
 }

@@ -66,7 +66,7 @@ function sessionProjection(
     llmConnectionSlug: 'openai-main',
     connectionLocked: true,
     model: 'gpt-5',
-    permissionMode: 'ask',
+    permissionMode: 'auto_review',
     collaborationMode: 'agent',
     orchestrationMode: 'default',
     ...overrides,
@@ -75,8 +75,8 @@ function sessionProjection(
 
 test('projects the ordered ACP configuration options', () => {
   assert.deepEqual(projectAcpSessionConfigOptions(sessionProjection(), ['off', 'low', 'high']), [
-    selectOption('permission_mode', 'Permission mode', '_maka/permission_mode', 'ask', [
-      ['ask', 'Ask'],
+    selectOption('permission_mode', 'Permission mode', '_maka/permission_mode', 'auto_review', [
+      ['auto_review', 'Auto review'],
       ['bypass', 'Bypass'],
     ]),
     selectOption('thinking_level', 'Thinking level', 'thought_level', 'default', [
@@ -103,9 +103,9 @@ test('projects the ordered ACP configuration options', () => {
   ]);
 });
 
-test('projects canonical values and keeps reserved explore as a current value only', () => {
+test('projects both supported permission modes', () => {
   for (const [configId, values, field] of [
-    ['permission_mode', ['explore', 'ask', 'bypass'], 'permissionMode'],
+    ['permission_mode', ['auto_review', 'bypass'], 'permissionMode'],
     ['collaboration_mode', ['agent', 'plan'], 'collaborationMode'],
     ['orchestration_mode', ['default', 'swarm', 'graph'], 'orchestrationMode'],
   ] as const) {
@@ -123,12 +123,12 @@ test('projects canonical values and keeps reserved explore as a current value on
     }
   }
   const permission = projectAcpSessionConfigOptions(
-    sessionProjection({ permissionMode: 'explore' }),
+    sessionProjection({ permissionMode: 'auto_review' }),
     ['low'],
   )[0];
-  assert.equal(permission.currentValue, 'explore');
+  assert.equal(permission.currentValue, 'auto_review');
   assert.deepEqual(permission.options, [
-    { value: 'ask', name: 'Ask' },
+    { value: 'auto_review', name: 'Auto review' },
     { value: 'bypass', name: 'Bypass' },
   ]);
 });
@@ -156,7 +156,7 @@ test('projects only the current model thinking levels and omits the switch when 
 
 test('validates requests and creates exact one-field patches', () => {
   const cases = [
-    ['permission_mode', 'ask', { permissionMode: 'ask' }],
+    ['permission_mode', 'auto_review', { permissionMode: 'auto_review' }],
     ['permission_mode', 'bypass', { permissionMode: 'bypass' }],
     ['thinking_level', 'default', { thinkingLevel: null }],
     ['thinking_level', 'off', { thinkingLevel: 'off' }],
@@ -181,7 +181,11 @@ test('validates requests and creates exact one-field patches', () => {
 
 test('rejects unsupported config ids, boolean values, and unsupported strings', () => {
   for (const [request, field, reason] of [
-    [{ sessionId: 'session-1', configId: 'unknown', value: 'ask' }, 'configId', 'unsupported'],
+    [
+      { sessionId: 'session-1', configId: 'unknown', value: 'auto_review' },
+      'configId',
+      'unsupported',
+    ],
     [
       { sessionId: 'session-1', configId: 'permission_mode', type: 'boolean', value: true },
       'value',

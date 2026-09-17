@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import type { SandboxBoundaryRequestEvent } from '@maka/core/events';
+import type { UserQuestionRequestEvent } from '@maka/core/events';
 import type { SessionEventStreamSnapshot } from '@maka/core/session-event-health';
 import type { SessionSummary } from '@maka/core/session';
 import { armLiveTurn, applyLiveTurnBufferEvent, reconcileLiveTurnBuffer } from '@maka/ui';
@@ -39,20 +39,15 @@ import {
   restoreSessionTranscriptRange,
 } from '../../renderer/features/conversation/testing.js';
 
-function boundaryRequest(requestId: string): SandboxBoundaryRequestEvent {
+function questionRequest(requestId: string): UserQuestionRequestEvent {
   return {
-    type: 'sandbox_boundary_request',
+    type: 'user_question_request',
     id: `event-${requestId}`,
     turnId: 'turn-1',
     ts: 1,
     requestId,
     toolUseId: `tool-${requestId}`,
-    justification: 'Read an external file.',
-    expansion: {
-      filesystem: {
-        entries: [{ path: '/outside/file', access: 'read', scope: 'exact' }],
-      },
-    },
+    questions: [{ question: 'Continue?', options: [{ label: 'Yes' }] }],
   };
 }
 
@@ -94,8 +89,8 @@ function seededState(): AppShellSessionUiState {
     stopPendingBySession: { drop: true, keep: true },
     liveTurnBySession: { drop: [armLiveTurn('turn-drop')], keep: [armLiveTurn('turn-keep')] },
     interactionBySession: {
-      drop: [boundaryRequest('drop')],
-      keep: [boundaryRequest('keep')],
+      drop: [questionRequest('drop')],
+      keep: [questionRequest('keep')],
     },
     transcriptRestoreUnavailableBySession: { drop: 'turn-drop', keep: 'turn-keep' },
   };

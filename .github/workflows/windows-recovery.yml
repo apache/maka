@@ -96,21 +96,12 @@ on:
       - 'packages/runtime-host/src/server/skill-catalog-transaction.ts'
       - 'packages/runtime/src/__tests__/runtime-continuation-crash.test.ts'
       - 'packages/runtime/src/__tests__/runtime-resume-crash.test.ts'
-      - 'packages/runtime/src/builtin-tools.ts'
       - 'packages/runtime/src/file-stable-write.ts'
-      - 'packages/runtime/src/filesystem-worker/client.ts'
-      - 'packages/runtime/src/filesystem-worker/launch-spec.ts'
-      - 'packages/runtime/src/filesystem-worker/process-runner.ts'
       - 'packages/runtime/src/pipe-process-driver.ts'
       - 'packages/runtime/src/process-tree-terminator.ts'
       - 'packages/runtime/src/pty-process-driver.ts'
       - 'packages/runtime/src/ripgrep-guidance.ts'
       - 'packages/runtime/src/ripgrep-executable.ts'
-      - 'packages/runtime/src/sandbox-boundary-declaration.ts'
-      - 'packages/runtime/src/sandbox/default-sandbox-manager.ts'
-      - 'packages/runtime/src/sandbox/sandbox-manager.ts'
-      - 'packages/runtime/src/sandbox/windows-profile.ts'
-      - 'packages/runtime/src/sandbox/windows-sandbox.ts'
       - 'packages/runtime/src/shell-detect.ts'
       - 'packages/runtime/src/shell-exec.ts'
       - 'packages/storage/src/__tests__/managed-dependency-environment.test.ts'
@@ -138,7 +129,6 @@ on:
   push:
     branches: [main]
   schedule:
-    # Offset from windows-sandbox-w0 so the Windows lanes do not overlap.
     - cron: '17 8 * * *'
   workflow_dispatch:
 

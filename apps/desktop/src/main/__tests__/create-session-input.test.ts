@@ -55,7 +55,7 @@ describe('resolveCreateSessionRequest', () => {
     assert.equal(resolve(undefined).permissionMode, undefined);
     assert.equal(resolve({}).permissionMode, undefined);
     assert.equal(resolve({ permissionMode: 'bypass' }).permissionMode, 'bypass');
-    assert.equal(resolve({ permissionMode: 'ask' }).permissionMode, 'ask');
+    assert.equal(resolve({ permissionMode: 'auto_review' }).permissionMode, 'auto_review');
   });
 
   it('passes a product mode through verbatim for the Host to expand', () => {
@@ -68,17 +68,8 @@ describe('resolveCreateSessionRequest', () => {
     });
   });
 
-  /**
-   * `explore` is a boundary a mode confers, never one a caller may open a
-   * session at — core names the pickable set `ChatDefaultPermissionMode`.
-   * Without this refusal the seed is only a default: a renderer could ask for
-   * `explore` outright and get it without the Deep Research label, tools or
-   * system prompt that define the mode. `sessions:setPermissionMode` stays the
-   * separate, deliberate path for moving an EXISTING session (the quote
-   * companion relies on it), so the guard belongs on creation only.
-   */
-  it('refuses a directly-requested explore boundary', () => {
-    assert.throws(() => resolve({ permissionMode: 'explore' }), TypeError);
+  it('accepts Auto review and rejects unknown execution modes', () => {
+    assert.equal(resolve({ permissionMode: 'auto_review' }).permissionMode, 'auto_review');
     assert.throws(() => resolve({ permissionMode: 'nonsense' }), TypeError);
   });
 

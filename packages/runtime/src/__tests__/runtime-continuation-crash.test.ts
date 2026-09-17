@@ -191,7 +191,7 @@ async function runCrashChild(): Promise<void> {
     cwd: workspaceRoot,
     llmConnectionSlug: 'fake',
     model: 'fake-model',
-    permissionMode: 'ask',
+    permissionMode: 'auto_review',
     name: 'continuation crash child',
   });
   for (const event of sourceEvents(session.id, workspaceRoot)) {
@@ -376,7 +376,7 @@ function sourceEvents(sessionId: string, cwd: string): RuntimeEvent[] {
         configuration: {
           cwd,
           workspaceIdentity: 'workspace-1',
-          permissionMode: 'ask',
+          permissionMode: 'auto_review',
           collaborationMode: 'agent',
           orchestrationMode: 'default',
           orchestrationSource: 'session',

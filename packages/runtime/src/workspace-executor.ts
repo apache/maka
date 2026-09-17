@@ -86,6 +86,7 @@ export interface WorkspaceExecResult {
 }
 
 export interface WorkspaceReadFileInput {
+  abortSignal?: AbortSignal;
   cwd: string;
   path: string;
   offset?: number;
@@ -198,6 +199,7 @@ export interface WorkspaceWriteLockKeyResult {
 }
 
 export interface WorkspaceGlobInput {
+  abortSignal?: AbortSignal;
   cwd: string;
   pattern: string;
   limit?: number;
@@ -335,9 +337,12 @@ export class LocalWorkspaceExecutor implements WorkspaceExecutor {
 
   async readFile(input: WorkspaceReadFileInput): Promise<WorkspaceReadFileResult> {
     if (isSupportedImagePath(input.path)) {
-      return await readWorkspaceImage(input.path);
+      return await readWorkspaceImage(input.path, input.abortSignal);
     }
-    const content = await fs.readFile(input.path, 'utf8');
+    input.abortSignal?.throwIfAborted();
+    const metadata = await fs.stat(input.path);
+    if (!metadata.isFile()) throw new Error('Read requires a regular file.');
+    const content = await fs.readFile(input.path, { encoding: 'utf8', signal: input.abortSignal });
     return { content: readTextLineWindow(content, input.offset, input.limit) };
   }
 

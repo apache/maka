@@ -38,7 +38,7 @@ import type { OrchestrationMode } from '@maka/core/orchestration';
 import type { ChatDefaultPermissionMode } from '@maka/core/settings';
 import type { UiLocale, UiLocalePreference } from '@maka/core/ui-locale';
 import { collapseSessionRevisions } from '@maka/core/session-revisions';
-import { isLinkedSubagentSession } from '@maka/core/session';
+import { DEFAULT_SESSION_PERMISSION_MODE, isLinkedSubagentSession } from '@maka/core/session';
 import { resolveUiLocale } from '@maka/core/ui-locale';
 import { slashCommandsForSurface } from '@maka/core/slash-command-catalog';
 import { hasSettledInitialOnboarding } from '@maka/core/onboarding-milestone';
@@ -58,7 +58,6 @@ import {
   type ProjectRowActions,
   SessionListPanel,
   TitlebarSessionIdentity,
-  type TurnFooterActionMeta,
   useToast,
   activeInteractionFor,
   deriveComposerModelSwitchAvailability,
@@ -108,7 +107,6 @@ import {
 } from './plan-mode-panel';
 import { getOnboardingActivationCandidate, useOnboardingSnapshot } from './use-onboarding-snapshot';
 import type {
-  DesktopSessionSummary,
   OnboardingSnapshot,
 } from '../preload/bridge-contract.js';
 import { ProviderLogo } from './settings/provider-display';
@@ -130,8 +128,6 @@ import { pendingSessionView } from './pending-session-view';
 import { useAppShellTurnPresentation } from './app-shell-turn-view-model';
 import { readScrollMotionBehavior } from './scroll-motion-policy';
 import { readNavigationState, selectNavigation } from './nav-selection';
-import { deriveDesktopExecutionBoundarySurface } from './desktop-execution-boundary-surface';
-import { useActiveExecutionBoundary } from './use-active-execution-boundary';
 import { modelSetupToastCopy } from './model-connection-errors';
 import type { AppShellCommandListOptions } from './app-shell-command-actions';
 import {
@@ -568,7 +564,7 @@ function AppShellContent({
   const newTaskPermissionMode =
     newTaskPermissionChoice ??
     taskEntry.selectors.selectedHost?.chatDefaults.permissionMode ??
-    'ask';
+    DEFAULT_SESSION_PERMISSION_MODE;
   const setNewTaskPermissionMode = setNewTaskPermissionChoice;
   useEffect(() => {
     if (!appearanceHydrated) return;
@@ -957,12 +953,6 @@ function AppShellContent({
         : activeId && activeSessionForView?.status === 'waiting_for_user'
           ? shellCopy.modeChangeWaiting
           : undefined;
-  const {
-    boundary: activeExecutionBoundary,
-    unreadable: activeExecutionBoundaryUnreadable,
-    reading: activeExecutionBoundaryReading,
-    reload: reloadActiveExecutionBoundary,
-  } = useActiveExecutionBoundary(ownerActiveId, activeSessionForView?.permissionMode);
   // The session view only subscribes to the session it shows, so a request
   // raised while another session was active never reaches this surface as a
   // live event — and neither does one raised before the window existed. The
@@ -995,15 +985,10 @@ function AppShellContent({
       }),
     [markInteractionChanged, sessionUiController.setInteractionBySession],
   );
-  const activeBoundarySurface = deriveDesktopExecutionBoundarySurface(
-    activeId,
-    activeExecutionBoundary,
-    activeId ? (activeSessionForView?.permissionMode ?? 'ask') : newTaskPermissionMode,
-  );
   const activePermissionMode = activeId
     ? sessionSettingIntent.overlays.permissionMode[activeId]
-      ?? activeBoundarySurface.permissionMode
-    : activeBoundarySurface.permissionMode;
+      ?? activeSessionForView?.permissionMode ?? DEFAULT_SESSION_PERMISSION_MODE
+    : newTaskPermissionMode;
   const planMode = usePlanModeState(ownerActiveId ? activeHostSession : undefined);
   const planConversationItems = (planMode.state?.proposals ?? []).map((proposal) => ({
     id: proposal.proposalId,
@@ -1087,21 +1072,6 @@ function AppShellContent({
     showOnboardingHero,
   });
   const onboardingComposerHidden = isOnboardingLoading || (showOnboardingHero && onboardingState !== undefined);
-  // #1629: hiding the composer because the boundary is unknown is right, but
-  // hiding it silently and forever is not. Once the read has spent its retries
-  // the slot says so and hands the user another attempt; while it is still
-  // reading, or while onboarding owns the surface, there is nothing to say.
-  const boundaryUnreadableNotice =
-    activeId && activeExecutionBoundaryUnreadable && !onboardingComposerHidden
-      ? {
-          title: shellCopy.boundaryUnreadableTitle,
-          detail: shellCopy.boundaryUnreadableDetail,
-          retryLabel: shellCopy.boundaryUnreadableRetry,
-          retryPendingLabel: shellCopy.boundaryUnreadableRetrying,
-          retryPending: activeExecutionBoundaryReading,
-          onRetry: () => reloadActiveExecutionBoundary(activeId),
-        }
-      : undefined;
   const desktopSlashCommands = useMemo<readonly ComposerSlashCommandOption[]>(
     () => {
       const availableCommands = slashCommandsForSurface('desktop').filter(
@@ -1414,7 +1384,6 @@ function AppShellContent({
   const {
     send,
     enqueueMessage,
-    respondToSandboxBoundary,
     respondToUserQuestion,
     respondToUserForm,
     refreshMessages,
@@ -1444,7 +1413,6 @@ function AppShellContent({
     isMessagePublished,
     setInteractionBySession: sessionUiController.setInteractionBySession,
     onInteractionChanged: markInteractionChanged,
-    onExecutionBoundaryChanged: reloadActiveExecutionBoundary,
     respondToUserForm: commands.respondToUserForm,
     showModelSetupToast,
     toastApi,
@@ -1858,7 +1826,6 @@ function AppShellContent({
     removeTransientMessage,
     displayBatch: sessionDisplayBatch,
     onInteractionChanged: markInteractionChanged,
-    onExecutionBoundaryChanged: reloadActiveExecutionBoundary,
     onContextCompactionOutcome: (sessionId, turnId, outcome) =>
       contextCompactionPresentation.finished(sessionId, turnId, outcome, uiLocale),
     showModelSetupToast,
@@ -2143,7 +2110,7 @@ function AppShellContent({
     uiLocale,
     activeId,
     activePermissionMode,
-    canSetPermissionMode: activeBoundarySurface.localInteractionAvailable,
+    canSetPermissionMode: true,
     clientPathsAccessible:
       activeId
         ? activeProjectCapabilities.viewClientPath
@@ -2200,7 +2167,7 @@ function AppShellContent({
     // on catalog moves.
     <Goals.GoalProvider
       activeSessionId={ownerActiveId}
-      canOpenDialog={activeBoundarySurface.localInteractionAvailable}
+      canOpenDialog={true}
       reportError={showSessionError}
     >
     <Conversation.SessionLocalMessages sessionId={activeId} publish={addTransientMessage} retire={removeTransientMessage} reportError={toastApi.error} />
@@ -2446,13 +2413,11 @@ function AppShellContent({
                   onboardingComposerHidden={
                     onboardingComposerHidden
                   }
-                  boundaryUnreadableNotice={boundaryUnreadableNotice}
                   activeInteraction={activeInteraction}
                   activeId={activeId}
                   newTaskDraftKey={currentNewTaskDraftKey}
                   newTaskSendPending={newTaskSendPending}
                   stopPendingBySession={stopPendingBySession}
-                  respondToSandboxBoundary={respondToSandboxBoundary}
                   respondToClientCapability={commands.respondToClientCapability}
                   respondToUserQuestion={respondToUserQuestion}
                   respondToUserForm={respondToUserForm}
@@ -2544,11 +2509,7 @@ function AppShellContent({
                           : undefined
                   }
                   onPermissionModeChange={
-                    activeBoundarySurface.localInteractionAvailable
-                      ? async mode => {
-                          await setPermissionMode(mode)
-                        }
-                      : undefined
+                    async mode => { await setPermissionMode(mode); }
                   }
                   planModeActive={activePlanMode}
                   // No pending-keyed disable while a toggle commits: the
@@ -2674,9 +2635,7 @@ function AppShellContent({
                   });
                 }}
                 sessionHealthNotice={sessionHealthNotice}
-                sessionHealthModelPickerAvailable={
-                  activeBoundarySurface.localInteractionAvailable
-                }
+                sessionHealthModelPickerAvailable={true}
                 workspaceReadinessRecovery={workspaceReadinessRecovery}
                 taskReadinessNotice={taskReadinessNotice}
                 onTaskReadinessAction={

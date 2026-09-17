@@ -1290,6 +1290,26 @@ function mergeAttachedBundle(target: DatabaseSync): string[] {
         const quoted = quoteIdentifier(name);
         target.exec(`INSERT INTO main.${quoted} SELECT * FROM bundle.${quoted}`);
       }
+      // A portable transcript is evidence, never proof of this Host's human authorization.
+      // Keep message content and identities intact; discard only Host-attested review metadata.
+      target.exec(`
+        UPDATE runtime_events
+        SET payload_json = json_remove(payload_json, '$.content.authenticatedUserRequests')
+        WHERE session_id IN (SELECT session_id FROM bundle.session_metadata)
+          AND json_type(payload_json, '$.content.authenticatedUserRequests') IS NOT NULL;
+        UPDATE message_admissions SET authenticated_user_requests_json = NULL
+        WHERE session_id IN (SELECT session_id FROM bundle.session_metadata);
+        UPDATE core_root_turn_admissions
+        SET record_json = json_set(
+          json_remove(record_json, '$.authenticatedUserRequests'),
+          '$.sourceMessages', json((SELECT json_group_array(json_remove(value, '$.authenticatedUserRequests'))
+            FROM json_each(record_json, '$.sourceMessages')))
+        )
+        WHERE session_id IN (SELECT session_id FROM bundle.session_metadata)
+          AND (json_type(record_json, '$.authenticatedUserRequests') IS NOT NULL
+            OR EXISTS (SELECT 1 FROM json_each(record_json, '$.sourceMessages')
+              WHERE json_type(value, '$.authenticatedUserRequests') IS NOT NULL));
+      `);
       const violation = target.prepare('PRAGMA foreign_key_check').get();
       if (violation) {
         throw new SessionBundleImportError(

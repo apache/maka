@@ -22,8 +22,6 @@ import { isDeepStrictEqual } from 'node:util';
 import type {
   FormAnswerAckEvent,
   FormRequestEvent,
-  SandboxBoundaryDecisionAckEvent,
-  SandboxBoundaryRequestEvent,
   SessionEvent,
   UserQuestionAnswerAckEvent,
   UserQuestionRequestEvent,
@@ -34,11 +32,9 @@ import type {
   InteractionFormResult,
   InteractionPermissionRequest,
 } from '@maka/core/interaction';
-import type { SandboxBoundarySettlement } from '@maka/core/sandbox-boundary';
 import type {
   HostedInteractionBridge,
   HostedFormSettlement,
-  HostedSandboxBoundarySettlement,
   HostedUserQuestionAnswer,
   HostedUserQuestionSettlement,
 } from '@maka/core/backend-types';
@@ -74,10 +70,6 @@ export type RuntimeFormOutcome =
   | { kind: 'form_answer'; answer: InteractionFormResult }
   | { kind: 'closure'; reason: RuntimeUserQuestionClosureReason };
 
-export type RuntimeSandboxBoundaryOutcome =
-  | { kind: 'sandbox_boundary_decision'; settlement: SandboxBoundarySettlement }
-  | { kind: 'closure'; reason: RuntimeUserQuestionClosureReason };
-
 export type RuntimeInteractionFatalError =
   | RuntimeInteractionFailStopError
   | RuntimeInteractionInvariantError;
@@ -94,12 +86,6 @@ export interface RuntimeFormContinuation
   waitForPublication(): Promise<void>;
 }
 
-export interface RuntimeSandboxBoundaryContinuation
-  extends RuntimeInteractionContinuationIdentity,
-    HostedSandboxBoundarySettlement {
-  waitForPublication(): Promise<void>;
-}
-
 export interface RuntimeInteractionContinuationAuthority {
   acceptUserQuestionRequest(input: {
     request: UserQuestionRequestEvent;
@@ -108,10 +94,6 @@ export interface RuntimeInteractionContinuationAuthority {
   acceptFormRequest(input: {
     request: FormRequestEvent;
     continuation: RuntimeFormContinuation;
-  }): Promise<void>;
-  acceptSandboxBoundaryRequest(input: {
-    request: SandboxBoundaryRequestEvent;
-    continuation: RuntimeSandboxBoundaryContinuation;
   }): Promise<void>;
 }
 
@@ -222,38 +204,21 @@ export function isShutdownCancelledInteractionAdmission(error: unknown): boolean
 
 type LocalClosureFinalizer = () => void;
 
-type HostedInteractionRequestEvent =
-  | UserQuestionRequestEvent
-  | FormRequestEvent
-  | SandboxBoundaryRequestEvent;
-type HostedInteractionSettlementAckEvent =
-  | UserQuestionAnswerAckEvent
-  | FormAnswerAckEvent
-  | SandboxBoundaryDecisionAckEvent;
+type HostedInteractionRequestEvent = UserQuestionRequestEvent | FormRequestEvent;
+type HostedInteractionSettlementAckEvent = UserQuestionAnswerAckEvent | FormAnswerAckEvent;
 
 export function isHostedInteractionRequestEvent(
   event: SessionEvent,
 ): event is HostedInteractionRequestEvent {
-  return (
-    event.type === 'user_question_request' ||
-    event.type === 'form_request' ||
-    event.type === 'sandbox_boundary_request'
-  );
+  return event.type === 'user_question_request' || event.type === 'form_request';
 }
 
 export function isHostedInteractionSettlementAckEvent(
   event: SessionEvent,
 ): event is HostedInteractionSettlementAckEvent {
-  return (
-    event.type === 'user_question_answer_ack' ||
-    event.type === 'form_answer_ack' ||
-    event.type === 'sandbox_boundary_decision_ack'
-  );
+  return event.type === 'user_question_answer_ack' || event.type === 'form_answer_ack';
 }
-type RuntimeHostedInteractionOutcome =
-  | RuntimeUserQuestionOutcome
-  | RuntimeFormOutcome
-  | RuntimeSandboxBoundaryOutcome;
+type RuntimeHostedInteractionOutcome = RuntimeUserQuestionOutcome | RuntimeFormOutcome;
 
 interface TrackedContinuationBase {
   readonly requestId: string;
@@ -277,15 +242,7 @@ interface TrackedFormContinuation extends TrackedContinuationBase {
   readonly continuation: RuntimeFormContinuation;
 }
 
-interface TrackedSandboxBoundaryContinuation extends TrackedContinuationBase {
-  readonly request: SandboxBoundaryRequestEvent;
-  readonly continuation: RuntimeSandboxBoundaryContinuation;
-}
-
-type TrackedContinuation =
-  | TrackedQuestionContinuation
-  | TrackedFormContinuation
-  | TrackedSandboxBoundaryContinuation;
+type TrackedContinuation = TrackedQuestionContinuation | TrackedFormContinuation;
 
 /** Exact-Run bridge between RuntimeKernel and backend Interaction producers. */
 export class RuntimeInteractionRunBinding implements HostedInteractionBridge {
@@ -407,40 +364,6 @@ export class RuntimeInteractionRunBinding implements HostedInteractionBridge {
 
   withdrawFormRequest(requestId: string): Promise<void> {
     return this.owner.withdrawFormRequest(requestId);
-  }
-
-  async admitSandboxBoundaryRequest(input: {
-    request: SandboxBoundaryRequestEvent;
-    settlement: HostedSandboxBoundarySettlement;
-  }): Promise<void> {
-    const tracked = this.trackSandboxBoundary(input.request, input.settlement);
-    try {
-      await this.owner.acceptSandboxBoundaryRequest({
-        request: input.request,
-        continuation: tracked.continuation,
-      });
-    } catch (error) {
-      tracked.completePublicationBarrier();
-      if (!tracked.settlementStarted) this.continuations.delete(tracked.requestId);
-      throw error;
-    }
-    if (tracked.settlementStarted) {
-      try {
-        await tracked.settlementPromise;
-        throw new RuntimeInteractionInvariantError(
-          `Sandbox boundary ${tracked.requestId} settled during pending-only admission`,
-        );
-      } finally {
-        tracked.completePublicationBarrier();
-      }
-    }
-    tracked.admissionState = 'pending';
-    if (this.publicationsSealed) {
-      tracked.completePublicationBarrier();
-      throw new RuntimeInteractionInvariantError(
-        `Sandbox boundary ${tracked.requestId} completed admission after Interaction publication sealed`,
-      );
-    }
   }
 
   assertPendingAdmission(request: HostedInteractionRequestEvent): void {
@@ -645,47 +568,6 @@ export class RuntimeInteractionRunBinding implements HostedInteractionBridge {
     return tracked;
   }
 
-  private trackSandboxBoundary(
-    request: SandboxBoundaryRequestEvent,
-    local: HostedSandboxBoundarySettlement,
-  ): TrackedSandboxBoundaryContinuation {
-    this.assertNewContinuation(request);
-    let tracked!: TrackedSandboxBoundaryContinuation;
-    const publication = createInteractionPublicationBarrier();
-    const continuation: RuntimeSandboxBoundaryContinuation = Object.freeze({
-      requestId: request.requestId,
-      turnId: this.turnId,
-      runId: this.runId,
-      waitForPublication: () => publication.publicationBarrier,
-      applyDecision: (settlement: SandboxBoundarySettlement) =>
-        this.settleTracked(
-          tracked,
-          () => local.applyDecision(settlement),
-          { kind: 'sandbox_boundary_decision', settlement },
-          'sandbox boundary decision',
-        ),
-      applyClosure: (reason: RuntimeUserQuestionClosureReason) =>
-        this.settleTracked(
-          tracked,
-          () => local.applyClosure(reason),
-          { kind: 'closure', reason },
-          'sandbox boundary closure',
-        ),
-    });
-    tracked = {
-      requestId: request.requestId,
-      request,
-      continuation,
-      ...publication,
-      admissionState: undefined,
-      published: false,
-      settlementStarted: false,
-      settled: false,
-    };
-    this.continuations.set(request.requestId, tracked);
-    return tracked;
-  }
-
   private assertNewContinuation(request: HostedInteractionRequestEvent): void {
     if (this.closeReason !== undefined) {
       throw new RuntimeInteractionAdmissionRejectedError(
@@ -758,14 +640,7 @@ function settlementMatchesAck(
   const outcome = tracked.outcome;
   if (!outcome) return false;
   if (event.type === 'user_question_answer_ack') return outcome.kind === 'question_answer';
-  if (event.type === 'form_answer_ack') return outcome.kind === 'form_answer';
-  if (outcome.kind !== 'sandbox_boundary_decision') return false;
-  const { request, boundary } = outcome.settlement;
-  return (
-    event.decision === (request.status === 'denied' ? 'deny' : 'allow') &&
-    event.status === request.status &&
-    event.revision === boundary.revision
-  );
+  return outcome.kind === 'form_answer';
 }
 
 export async function bindRuntimeInteractionRun(

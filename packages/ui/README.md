@@ -33,7 +33,7 @@ Four export surfaces, in the order to look:
 | `src/primitives/` | Maka-specific compositions that do not duplicate an Astryx component. | product-specific |
 | `src/ui.tsx` | Shared product compositions and compatibility-free exports. | stable |
 | `src/*.tsx` / `src/*.ts` (top-level) | Feature components + pure logic (e.g. `chat-view.tsx`, `composer.tsx`, `sandbox-boundary-prompt.tsx`, `session-list-panel.tsx`, plus pure helpers like `materialize.ts` and `redact.ts`). | stable |
-| `src/components.tsx` | Re-export barrel for the feature components above (ChatView, Composer, SandboxBoundaryPrompt, …). | stable |
+| `src/components.tsx` | Re-export barrel for the feature components above (ChatView, Composer, …). | stable |
 
 `src/index.ts` is the package barrel. It follows an **off-barrel convention**: some styling tables and per-surface helpers are deliberately *not* re-exported, so they stay renamable/removable without a public-API break. A symbol earns barrel export when it has a **cross-package consumer or an explicit public-API need**, not merely a second in-package consumer. Don't add to the barrel speculatively. This README is the source of truth for the barrel promotion rule.
 

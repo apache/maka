@@ -688,7 +688,7 @@ describe('Runtime Host bootstrap protocol', () => {
           agentName: 'Local Read',
           turnId: 'turn-child',
           status: 'running',
-          permissionMode: 'explore',
+          permissionMode: 'auto_review',
         },
       },
     ]) {
@@ -747,7 +747,7 @@ describe('Runtime Host bootstrap protocol', () => {
           agentName: 'Local Read',
           turnId: 'turn-child',
           status: 'running',
-          permissionMode: 'explore',
+          permissionMode: 'auto_review',
           summary: 'bulk is not open-facts',
         },
       },

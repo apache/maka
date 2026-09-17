@@ -22,10 +22,12 @@ import { resolve } from 'node:path';
 import { globIterate } from 'glob';
 
 export async function globFiles(input: {
+  abortSignal?: AbortSignal;
   cwd: string;
   pattern: string;
   limit?: number;
 }): Promise<{ files: string[] }> {
+  input.abortSignal?.throwIfAborted();
   let failure: NodeJS.ErrnoException | undefined;
   const directories = new Set([resolve(input.cwd)]);
   function record(error: NodeJS.ErrnoException, path: string): void {
@@ -38,6 +40,7 @@ export async function globFiles(input: {
   const files: string[] = [];
   for await (const file of globIterate(input.pattern, {
     cwd: input.cwd,
+    signal: input.abortSignal,
     ignore: { childrenIgnored: (entry) => entry.isSymbolicLink() },
     fs: {
       readdir(path, options, callback) {
@@ -64,10 +67,12 @@ export async function globFiles(input: {
       },
     },
   })) {
+    input.abortSignal?.throwIfAborted();
     if (failure) throw failure;
     files.push(file);
     if (files.length >= (input.limit ?? 200)) break;
   }
+  input.abortSignal?.throwIfAborted();
   if (failure) throw failure;
   return { files };
 }

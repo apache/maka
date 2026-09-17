@@ -19,14 +19,12 @@
 
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { Buffer } from 'node:buffer';
 import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ExecutionBoundary } from '@maka/core/sandbox-boundary';
-import { createWorkspaceWritePermissionProfile } from '@maka/core/permission-profile';
 import { buildBuiltinTools } from '../builtin-tools.js';
-import { SandboxCommandError } from '../sandbox/errors.js';
+
 import { createLocalWorkspaceExecutor } from '../workspace-executor.js';
 import type { MakaTool } from '../tool-runtime.js';
 
@@ -40,12 +38,6 @@ import type { MakaTool } from '../tool-runtime.js';
  */
 
 const BYPASS: ExecutionBoundary = { kind: 'bypass', revision: 0 };
-const EXTERNAL: ExecutionBoundary = { kind: 'external', revision: 0 };
-const MANAGED: ExecutionBoundary = {
-  kind: 'managed',
-  revision: 0,
-  profile: createWorkspaceWritePermissionProfile(),
-};
 
 async function makeDirs(): Promise<{ cwd: string; outside: string; cleanup: () => Promise<void> }> {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'maka-fs-authority-')));
@@ -141,54 +133,13 @@ describe('file tools follow the execution boundary', () => {
     }
   });
 
-  test('every other boundary keeps the same paths inside the session cwd', async () => {
-    const { cwd, outside, cleanup } = await makeDirs();
-    try {
-      const tools = toolsFor();
-      const target = join(outside, 'note.md');
-      await writeFile(target, 'hello', 'utf8');
-
-      for (const boundary of [undefined, EXTERNAL]) {
-        await assert.rejects(
-          runTool(toolNamed(tools, 'Write'), { path: target, content: 'x' }, cwd, boundary),
-          /Write path must stay inside session cwd/,
-        );
-        await assert.rejects(
-          runTool(toolNamed(tools, 'Read'), { path: target }, cwd, boundary),
-          /Read path must stay inside session cwd/,
-        );
-        await assert.rejects(
-          runTool(
-            toolNamed(tools, 'Edit'),
-            { path: target, old_string: 'hello', new_string: 'bye' },
-            cwd,
-            boundary,
-          ),
-          /Edit path must stay inside session cwd/,
-        );
-        await assert.rejects(
-          runTool(toolNamed(tools, 'Grep'), { pattern: 'hello', path: outside }, cwd, boundary),
-          /Grep path must stay inside session cwd/,
-        );
-      }
-      // The write never landed under any of them.
-      assert.strictEqual(await readFile(target, 'utf8'), 'hello');
-    } finally {
-      await cleanup();
-    }
-  });
-
-  test('a symlink out of the cwd stays an escape under a workspace boundary', async () => {
+  test('host file operations follow symlinks outside the cwd', async () => {
     const { cwd, outside, cleanup } = await makeDirs();
     try {
       const tools = toolsFor();
       await writeFile(join(outside, 'secret.txt'), 'secret', 'utf8');
       await symlink(join(outside, 'secret.txt'), join(cwd, 'link.txt'));
 
-      await assert.rejects(
-        runTool(toolNamed(tools, 'Read'), { path: 'link.txt' }, cwd),
-        /Read path must stay inside session cwd/,
-      );
       // Under bypass the same link resolves, because nothing is being escaped.
       assert.deepStrictEqual(
         await runTool(toolNamed(tools, 'Read'), { path: 'link.txt' }, cwd, BYPASS),
@@ -205,17 +156,13 @@ describe('file tools follow the execution boundary', () => {
     }
   });
 
-  test('a glob pattern may only leave the search root under a bypass boundary', async () => {
+  test('host glob patterns can address paths outside the cwd', async () => {
     const { cwd, outside, cleanup } = await makeDirs();
     try {
       const tools = toolsFor();
       await writeFile(join(outside, 'note.md'), '', 'utf8');
       const absolute = join(outside, '*.md');
 
-      await assert.rejects(
-        runTool(toolNamed(tools, 'Glob'), { pattern: absolute }, cwd),
-        /Glob pattern must stay inside session cwd/,
-      );
       const globbed = (await runTool(
         toolNamed(tools, 'Glob'),
         { pattern: absolute },
@@ -223,49 +170,6 @@ describe('file tools follow the execution boundary', () => {
         BYPASS,
       )) as { files: string[] };
       assert.strictEqual(globbed.files.length, 1);
-    } finally {
-      await cleanup();
-    }
-  });
-
-  test('a managed boundary goes to the worker and never to the host backend', async () => {
-    const { cwd, outside, cleanup } = await makeDirs();
-    try {
-      const calls: unknown[] = [];
-      const target = join(outside, 'note.md');
-      const tools = toolsFor({
-        filesystemWorker: {
-          execute: async (input) => {
-            calls.push(input);
-            return { kind: 'write', ok: true, path: target, bytes: 1 };
-          },
-        },
-      });
-
-      const result = await runTool(
-        toolNamed(tools, 'Write'),
-        { path: target, content: 'x' },
-        cwd,
-        MANAGED,
-      );
-      assert.partialDeepStrictEqual(result, { kind: 'file_write', path: target, bytes: 1 });
-      assert.strictEqual(calls.length, 1);
-      // The worker decided; nothing was written by the host backend.
-      await assert.rejects(readFile(target, 'utf8'));
-    } finally {
-      await cleanup();
-    }
-  });
-
-  test('a managed boundary without a worker refuses instead of falling back to the host', async () => {
-    const { cwd, cleanup } = await makeDirs();
-    try {
-      const tools = toolsFor();
-      await assert.rejects(
-        runTool(toolNamed(tools, 'Write'), { path: 'note.md', content: 'x' }, cwd, MANAGED),
-        (error: unknown) =>
-          error instanceof SandboxCommandError && error.reason === 'requires_bypass',
-      );
     } finally {
       await cleanup();
     }
@@ -398,57 +302,6 @@ describe('file tools follow the execution boundary', () => {
       )) as { matches: string[] };
       assert.strictEqual(found.matches.length, 1);
       assert.ok(found.matches[0].includes('needle here'));
-    } finally {
-      await cleanup();
-    }
-  });
-
-  test('a bypass boundary bypasses a wired worker too', async () => {
-    const { cwd, outside, cleanup } = await makeDirs();
-    try {
-      const calls: unknown[] = [];
-      const tools = toolsFor({
-        filesystemWorker: {
-          execute: async (input) => {
-            calls.push(input);
-            return { kind: 'write', ok: true, path: 'unused', bytes: 0 };
-          },
-        },
-      });
-      const target = join(outside, 'note.md');
-
-      await runTool(toolNamed(tools, 'Write'), { path: target, content: 'host' }, cwd, BYPASS);
-
-      assert.strictEqual(calls.length, 0);
-      assert.strictEqual(await readFile(target, 'utf8'), 'host');
-    } finally {
-      await cleanup();
-    }
-  });
-
-  test('worker image bytes reach the tool decoded', async () => {
-    const { cwd, cleanup } = await makeDirs();
-    try {
-      const snapshots: Uint8Array[] = [];
-      const tools = toolsFor({
-        filesystemWorker: {
-          execute: async () => ({
-            kind: 'read_image',
-            base64: Buffer.from([137, 80, 78, 71]).toString('base64'),
-            mimeType: 'image/png',
-          }),
-        },
-        snapshotImage: async (input) => {
-          snapshots.push(input.bytes);
-          return { kind: 'session_context', sessionId: input.sessionId, refId: 'context-1' };
-        },
-      });
-
-      const result = await runTool(toolNamed(tools, 'Read'), { path: 'image.png' }, cwd, MANAGED);
-
-      assert.partialDeepStrictEqual(result, { kind: 'image', mimeType: 'image/png' });
-      assert.strictEqual(snapshots.length, 1);
-      assert.strictEqual(Buffer.from(snapshots[0] ?? new Uint8Array()).toString('hex'), '89504e47');
     } finally {
       await cleanup();
     }

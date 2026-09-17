@@ -184,7 +184,7 @@ export const ExistingConversation: Story = {
       llmConnectionSlug: activeChoice.connectionSlug,
       connectionLocked: true,
       model: activeChoice.model,
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     } satisfies SessionSummary;
     return (
       <div style={{ width: 460, maxWidth: '100%' }}>
@@ -262,7 +262,7 @@ export const EmptyConversation: Story = {
           llmConnectionSlug: 'anthropic-team',
           connectionLocked: false,
           model: 'claude-sonnet-4',
-          permissionMode: 'ask',
+          permissionMode: 'auto_review',
         }}
         activeModelLabel="Claude Sonnet 4"
         currentProviderType="anthropic"
@@ -472,7 +472,7 @@ export const StaleCurrentModel: Story = {
             llmConnectionSlug: 'anthropic-team',
             connectionLocked: false,
             model: 'claude-opus-3-retired',
-            permissionMode: 'ask',
+            permissionMode: 'auto_review',
           }}
           activeModelLabel="claude-opus-3-retired"
           currentProviderType="anthropic"

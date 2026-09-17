@@ -53,7 +53,7 @@ function session(
     llmConnectionSlug: 'test',
     connectionLocked: true,
     model: 'test',
-    permissionMode: 'ask',
+    permissionMode: 'auto_review',
     profileId: 'local',
     profileName: 'Local',
     profileKind: 'local',

@@ -27,15 +27,9 @@ import {
 } from '@maka/runtime/mcp-tools';
 import { type MakaTool } from '@maka/runtime/tool-runtime';
 import type { RootExecutionDescriptor } from '@maka/core/runtime-invocation';
-import {
-  clientCapabilityScopeIdentity,
-  type ClientCapabilityGrantTarget,
-} from '@maka/core/client-capability-grant';
 import { type ToolGroup } from '@maka/runtime/tool-availability';
-import type { InteractiveInteractionStoreWriterFacade } from '@maka/storage/interaction-store';
 import {
   type ClientCapabilityOffer,
-  type ClientCapabilityAdmissionEvidence,
   type ClientCapabilityOwnerIdentity,
   type ClientCapabilityReplaceInput,
   type ClientCapabilityServiceOffer,
@@ -57,7 +51,6 @@ import type {
   ClientCapabilityConnectionSender,
   ClientCapabilityService,
 } from './client-capability-service.js';
-import type { HostInteractionCoordinator } from './interaction-coordinator.js';
 import { clientCapabilityProviderId } from './client-capability-provider-id.js';
 
 // Leave the Host deadline outside the provider's bounded action deadline so an
@@ -175,11 +168,6 @@ type ClientCapabilityToolBinding = ClientCapabilityBoundTool['binding'];
 export interface HostClientCapabilityCoordinatorOptions {
   readonly activation: RuntimePolicyActivationGate;
   readonly onModelToolsChanged: () => void;
-  readonly interactions: Pick<HostInteractionCoordinator, 'requestClientCapabilityApproval'>;
-  readonly grants: Pick<
-    InteractiveInteractionStoreWriterFacade,
-    'readClientCapabilitySessionGrant'
-  >;
 }
 
 export interface ClientCapabilityServiceInvocationInput {
@@ -209,12 +197,9 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
 
   readonly #activation: RuntimePolicyActivationGate;
   readonly #onModelToolsChanged: () => void;
-  readonly #interactions: HostClientCapabilityCoordinatorOptions['interactions'];
-  readonly #grants: HostClientCapabilityCoordinatorOptions['grants'];
   readonly #providers = new Map<string, ClientProviderState>();
   readonly #connections = new Map<string, ClientProviderConnection>();
   readonly #sessions = new Map<string, SessionCapabilityState>();
-  readonly #pendingApprovals = new Map<string, Promise<'allow' | 'deny'>>();
   readonly #previewSessions = new AsyncLocalStorage<ReadonlyMap<string, SessionCapabilityState>>();
   readonly #pendingConnectionReleases = new Set<Promise<void>>();
   readonly #invocations: ClientCapabilityInvocationBroker<CapabilityRegistration>;
@@ -224,8 +209,6 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
   constructor(options: HostClientCapabilityCoordinatorOptions) {
     this.#activation = options.activation;
     this.#onModelToolsChanged = options.onModelToolsChanged;
-    this.#interactions = options.interactions;
-    this.#grants = options.grants;
     this.#invocations = new ClientCapabilityInvocationBroker({
       senderFor: (connectionId) => {
         const connection = this.#connections.get(connectionId);
@@ -621,7 +604,7 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
       rememberOfferProxyNames(offer, proxyNames);
     }
     const eligible = this.#eligibleOffersByContract();
-    for (const [contractId, candidates] of [...eligible].sort(([left], [right]) =>
+    for (const [_contractId, candidates] of [...eligible].sort(([left], [right]) =>
       left.localeCompare(right),
     )) {
       // A provider-independent snapshot keeps one representative descriptor so
@@ -1099,7 +1082,7 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
     return {
       toolSnapshot: () => snapshot,
       prepareTool: async (binding, args, options): Promise<McpPreparedToolCall> => {
-        const { selectedBinding, dynamicBinding } = resolveBinding(binding);
+        const { dynamicBinding } = resolveBinding(binding);
         const prepared = this.#invocations.prepare(
           dynamicBinding.registration,
           dynamicBinding.tool,
@@ -1109,42 +1092,7 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
           options.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS,
         );
         try {
-          const evidence = await prepared.waitUntilAccepted();
-          const boundary = options.context.executionBoundary;
-          if (!boundary) throw new Error('Client Capability execution boundary is unavailable');
-          if (boundary.kind !== 'bypass') {
-            if (options.context.permissionMode !== 'ask' || !options.context.runId) {
-              throw new Error('Client Capability is unavailable in the current permission mode');
-            }
-            const target = managedClientCapabilityGrantTarget(
-              selectedBinding.contractId,
-              dynamicBinding.registration,
-              dynamicBinding.tool,
-              evidence,
-            );
-            if (!target) {
-              return {
-                execute: ({ emitProgress, requestInteraction } = {}) =>
-                  prepared.admit(emitProgress, requestInteraction),
-                cancel: () => prepared.cancel(),
-              };
-            }
-            const key = { sessionId: options.context.sessionId, ...target };
-            if (!(await this.#grants.readClientCapabilitySessionGrant(key))) {
-              const decision = await this.#requestApprovalOnce({
-                ...key,
-                turnId: options.context.turnId,
-                runId: options.context.runId,
-                toolCallId: options.context.toolCallId,
-                providerSignal: prepared.providerSignal,
-                callerSignal: options.signal,
-              });
-              if (decision !== 'allow') throw new Error('Client Capability request was denied');
-              if (!(await this.#grants.readClientCapabilitySessionGrant(key))) {
-                throw new Error('Client Capability approval did not publish its Session Grant');
-              }
-            }
-          }
+          await prepared.waitUntilAccepted();
           return {
             execute: ({ emitProgress, requestInteraction } = {}) =>
               prepared.admit(emitProgress, requestInteraction),
@@ -1169,54 +1117,6 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
         );
       },
     };
-  }
-
-  #requestApprovalOnce(input: {
-    readonly sessionId: string;
-    readonly turnId: string;
-    readonly runId: string;
-    readonly toolCallId: string;
-    readonly providerId: string;
-    readonly contractId: string;
-    readonly serverId: string;
-    readonly toolName: string;
-    readonly capability: ClientCapabilityGrantTarget['capability'];
-    readonly scope: ClientCapabilityGrantTarget['scope'];
-    readonly providerSignal: AbortSignal;
-    readonly callerSignal?: AbortSignal;
-  }): Promise<'allow' | 'deny'> {
-    const target: ClientCapabilityGrantTarget = {
-      providerId: input.providerId,
-      contractId: input.contractId,
-      serverId: input.serverId,
-      toolName: input.toolName,
-      capability: input.capability,
-      scope: input.scope,
-    };
-    const key = [
-      input.sessionId,
-      target.providerId,
-      target.contractId,
-      target.capability,
-      clientCapabilityScopeIdentity(target.scope),
-    ].join('\0');
-    const existing = this.#pendingApprovals.get(key);
-    if (existing) return waitForClientCapabilityApproval(existing, input.callerSignal);
-    const pending = this.#interactions
-      .requestClientCapabilityApproval({
-        sessionId: input.sessionId,
-        turnId: input.turnId,
-        runId: input.runId,
-        toolCallId: input.toolCallId,
-        target,
-        providerSignal: input.providerSignal,
-        ...(input.callerSignal ? { callerSignal: input.callerSignal } : {}),
-      })
-      .finally(() => {
-        if (this.#pendingApprovals.get(key) === pending) this.#pendingApprovals.delete(key);
-      });
-    this.#pendingApprovals.set(key, pending);
-    return pending;
   }
 
   #provider(identity: ClientCapabilityConnectionIdentity): ClientProviderState {
@@ -1534,74 +1434,6 @@ function freezeRegistration(
   };
 }
 
-function managedClientCapabilityGrantTarget(
-  contractId: string,
-  registration: CapabilityRegistration,
-  tool: FrozenToolBinding,
-  evidence: ClientCapabilityAdmissionEvidence,
-): ClientCapabilityGrantTarget | undefined {
-  const { serverId, name: toolName } = tool.descriptor;
-  if (!registration.trustedProvider) {
-    throw new Error('Managed Client Capability requires a trusted Desktop provider');
-  }
-  if (
-    tool.offerId === DESKTOP_SETTINGS_SERVER_ID &&
-    serverId === DESKTOP_SETTINGS_SERVER_ID &&
-    DESKTOP_SETTINGS_TOOLS.has(toolName)
-  ) {
-    if (evidence.kind !== 'none') {
-      throw new Error('Desktop Settings admission does not accept scope evidence');
-    }
-    return undefined;
-  }
-  if (
-    tool.offerId === DESKTOP_BROWSER_SERVER_ID &&
-    serverId === DESKTOP_BROWSER_SERVER_ID &&
-    DESKTOP_BROWSER_TOOLS.has(toolName)
-  ) {
-    if (evidence.kind !== 'browser_url') {
-      throw new Error('Desktop Browser admission requires URL evidence');
-    }
-    let url: URL;
-    try {
-      url = new URL(evidence.url);
-    } catch {
-      throw new Error('Desktop Browser admission URL is invalid');
-    }
-    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-      throw new Error('Desktop Browser admission requires an HTTP origin');
-    }
-    return Object.freeze({
-      providerId: registration.providerId,
-      contractId,
-      serverId,
-      toolName,
-      capability: 'browser',
-      scope: Object.freeze({ kind: 'browser_origin', origin: url.origin }),
-    });
-  }
-  // Desktop MCP tools publish one offer per MCP server (chunked past the
-  // single-offer tool limit), every offerId carrying the desktop_mcp prefix.
-  // The Session Grant scope takes the descriptor's real MCP server identity.
-  if (
-    tool.offerId === DESKTOP_MCP_OFFER_PREFIX ||
-    tool.offerId.startsWith(`${DESKTOP_MCP_OFFER_PREFIX}_`)
-  ) {
-    if (evidence.kind !== 'none') {
-      throw new Error('Desktop MCP admission does not accept scope evidence');
-    }
-    return Object.freeze({
-      providerId: registration.providerId,
-      contractId,
-      serverId,
-      toolName,
-      capability: 'desktop_mcp',
-      scope: Object.freeze({ kind: 'mcp_tool', serverId, toolName }),
-    });
-  }
-  throw new Error(`Client Capability has no managed admission policy: ${serverId}/${toolName}`);
-}
-
 function serviceContract(serviceId: string, version: string): string {
   return `${serviceId}\0${version}`;
 }
@@ -1710,42 +1542,6 @@ function clientCapabilityOwnerIdentitiesEqual(
       left.principalId === right.principalId &&
       left.clientInstanceId === right.clientInstanceId)
   );
-}
-
-function waitForClientCapabilityApproval(
-  approval: Promise<'allow' | 'deny'>,
-  callerSignal: AbortSignal | undefined,
-): Promise<'allow' | 'deny'> {
-  if (!callerSignal) return approval;
-  if (callerSignal.aborted) {
-    return Promise.reject(clientCapabilityCallerAbortError(callerSignal));
-  }
-  return new Promise((resolve, reject) => {
-    const cleanup = (): void => callerSignal.removeEventListener('abort', onAbort);
-    const onAbort = (): void => {
-      cleanup();
-      reject(clientCapabilityCallerAbortError(callerSignal));
-    };
-    callerSignal.addEventListener('abort', onAbort, { once: true });
-    void approval.then(
-      (decision) => {
-        cleanup();
-        resolve(decision);
-      },
-      (error) => {
-        cleanup();
-        reject(error);
-      },
-    );
-  });
-}
-
-function clientCapabilityCallerAbortError(signal: AbortSignal): Error {
-  const reason = signal.reason;
-  if (reason instanceof Error) return reason;
-  return new Error(typeof reason === 'string' ? reason : 'Client Capability caller cancelled', {
-    ...(reason === undefined ? {} : { cause: reason }),
-  });
 }
 
 function canonicalJson(value: unknown): string {

@@ -23,7 +23,6 @@ import type {
   ProviderRetryEvent,
   ProviderRetryScheduledEvent,
   FormRequestEvent,
-  SandboxBoundaryRequestEvent,
   UserQuestionRequestEvent,
   SessionEvent,
   ShellRunSnapshotResult,
@@ -64,7 +63,6 @@ import {
   collapseToSingleLine,
   fitLine,
   formatTokenCount,
-  formatUnknown,
   limitText,
   markdownTheme,
   renderIndented,
@@ -125,10 +123,7 @@ export interface MakaPiTranscriptState {
   providerRetry?: ProviderRetryCountdown;
 }
 
-export type MakaPiPendingInteraction =
-  | SandboxBoundaryRequestEvent
-  | UserQuestionRequestEvent
-  | FormRequestEvent;
+export type MakaPiPendingInteraction = UserQuestionRequestEvent | FormRequestEvent;
 
 /**
  * A provider retry event plus the CLIENT-local time it was applied. Counting
@@ -937,7 +932,6 @@ export function applyMakaSessionEventToTranscript(
     }
 
     case 'sandbox_boundary_request':
-      enqueuePendingInteraction(state, event);
       break;
     case 'user_question_request':
       enqueuePendingInteraction(state, event);
@@ -947,17 +941,11 @@ export function applyMakaSessionEventToTranscript(
       break;
 
     case 'sandbox_boundary_decision_ack':
-      {
-        const request = findPendingInteraction(state, event.requestId);
-        if (request?.type === 'sandbox_boundary_request') {
-          completePendingInteraction(state, event.requestId);
-          state.entries.push({
-            kind: 'notice',
-            level: 'info',
-            text: `Access ${event.decision === 'allow' ? 'expanded' : 'unchanged'}`,
-          });
-        }
-      }
+      state.entries.push({
+        kind: 'notice',
+        level: 'info',
+        text: `Access ${event.decision === 'allow' ? 'expanded' : 'unchanged'}`,
+      });
       break;
 
     case 'user_question_answer_ack':
@@ -1458,11 +1446,6 @@ export function renderMakaPiTranscript(
   }
   state.renderGeometry.entryFirstLine = entryFirstLine;
 
-  if (state.pendingInteraction?.type === 'sandbox_boundary_request') {
-    lines.push('');
-    lines.push(...renderSandboxBoundaryPrompt(state.pendingInteraction, safeWidth));
-  }
-
   return lines;
 }
 
@@ -1478,14 +1461,6 @@ export function completePendingInteraction(
   if (index < 0) return false;
   state.queuedInteractions.splice(index, 1);
   return true;
-}
-
-export function activeSandboxBoundaryRequest(
-  state: MakaPiTranscriptState,
-): SandboxBoundaryRequestEvent | undefined {
-  return state.pendingInteraction?.type === 'sandbox_boundary_request'
-    ? state.pendingInteraction
-    : undefined;
 }
 
 export function activeUserQuestionRequest(
@@ -1649,17 +1624,10 @@ function transcriptEntrySignature(entry: MakaPiTranscriptEntry, width: number): 
   }
 }
 
-/**
- * The one CLI label for a permission mode, shared by the status line, the
- * picker header, and the mode-change notice (#1611). `explore` is a real
- * boundary a resumed session can be in, so it must be nameable here; legacy
- * `execute` has no boundary of its own and reads as Auto, as does anything
- * else this metadata ever carries.
- */
-export function permissionModeLabel(mode: string): string {
-  if (mode === 'bypass') return 'Full access';
-  if (mode === 'explore') return 'Read only';
-  return 'Auto';
+/** Shared execution-mode label for the status line and picker. */
+export function permissionModeLabel(mode: string, locale: UiLocale = 'en'): string {
+  if (mode === 'bypass') return 'Bypass';
+  return TUI_COPY_RESOURCES.pickers[locale].autoReviewLabel;
 }
 
 export function renderMakaPiStatusLine(metadata: MakaPiTranscriptMetadata, width: number): string {
@@ -1680,9 +1648,11 @@ export function renderMakaPiStatusLine(metadata: MakaPiTranscriptMetadata, width
       shortenedText: ansi.bold(fitLine(metadata.title, 7)),
     },
     {
-      text: ansi.dim(permissionModeLabel(metadata.permissionMode)),
+      text: ansi.dim(permissionModeLabel(metadata.permissionMode, metadata.uiLocale)),
       compactRank: 4,
-      shortenedText: ansi.dim(compactPermissionModeLabel(metadata.permissionMode)),
+      shortenedText: ansi.dim(
+        compactPermissionModeLabel(metadata.permissionMode, metadata.uiLocale ?? 'en'),
+      ),
     },
     {
       text: ansi.dim(metadata.model),
@@ -1851,10 +1821,9 @@ function fitStatusLine(segments: MakaPiStatusLineSegment[], sep: string, width: 
   return fitLine(kept.map((segment) => segment.text).join(activeSep), width);
 }
 
-function compactPermissionModeLabel(mode: string): string {
-  if (mode === 'bypass') return 'Full';
-  if (mode === 'explore') return 'Read';
-  return 'Auto';
+function compactPermissionModeLabel(mode: string, locale: UiLocale): string {
+  if (mode === 'bypass') return 'Bypass';
+  return TUI_COPY_RESOURCES.pickers[locale].autoReviewCompactLabel;
 }
 
 function sideConversationStatusLineText(
@@ -2305,28 +2274,5 @@ function renderWelcomeBlock(width: number, locale: UiLocale): string[] {
   for (const [key, description] of hints) {
     lines.push(fitLine(ansi.dim(`  ${key.padEnd(keyWidth)}  ${description}`), width));
   }
-  return lines;
-}
-
-function renderSandboxBoundaryPrompt(
-  request: SandboxBoundaryRequestEvent,
-  width: number,
-): string[] {
-  const lines = [
-    fitLine(ansi.yellow('Allow access outside the workspace?'), width),
-    ...renderIndented(request.justification, width, 2),
-  ];
-  for (const entry of request.expansion.filesystem?.entries ?? []) {
-    lines.push(...renderIndented(`${entry.access} ${entry.scope} ${entry.path}`, width, 2));
-  }
-  if (request.expansion.network?.enabled) {
-    lines.push(...renderIndented('network enabled', width, 2));
-  }
-  lines.push(
-    fitLine(
-      `${ansi.bold('y')}${ansi.dim('/Enter allow for this task')}  ${ansi.bold('n')}${ansi.dim('/Esc deny')}`,
-      width,
-    ),
-  );
   return lines;
 }

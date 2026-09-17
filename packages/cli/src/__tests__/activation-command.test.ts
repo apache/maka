@@ -72,7 +72,7 @@ function summary(overrides: Partial<SessionSummary> = {}): SessionSummary {
     llmConnectionSlug: 'local',
     connectionLocked: true,
     model: 'fixture-model',
-    permissionMode: 'explore',
+    permissionMode: 'auto_review',
     ...overrides,
   };
 }
@@ -110,7 +110,6 @@ function fakeDeps(
     onClose?: () => void;
     safeBoundaryResume?: boolean;
     onResume?: () => void;
-    onSandboxBoundaryResponse?: (response: { requestId: string; decision: 'deny' }) => void;
     sendMessage?: (
       runtime: MakaActivationRuntime,
       sessionId: string,
@@ -143,9 +142,6 @@ function fakeDeps(
         for (const event of options.events ?? completedEvents()) yield event;
       }
       await observer?.(options.result ?? completedResult());
-    },
-    async respondToSandboxBoundary(_sessionId, response) {
-      options.onSandboxBoundaryResponse?.(response);
     },
     async stopSession() {},
   };
@@ -350,55 +346,6 @@ describe('maka activate JSONL protocol', () => {
       status: 'fatal_failure',
       reason: 'malformed_input',
     });
-  });
-
-  test('returns blocked after denying a non-interactive sandbox boundary request', async () => {
-    const lines: string[] = [];
-    const responses: Array<{ requestId: string; decision: 'deny' }> = [];
-    const result = await runMakaActivationCli(
-      [
-        '--state-root',
-        ROOTS.stateRoot,
-        '--workspace-root',
-        ROOTS.workspaceRoot,
-        '--config-root',
-        ROOTS.configRoot,
-      ],
-      {
-        ...fakeDeps({
-          result: {
-            ...completedResult(),
-            status: 'failed',
-            finalOutput: undefined,
-            failure: { class: 'permission_denied' },
-            sandboxBoundary: 'unresolved',
-          },
-          onSandboxBoundaryResponse: (response) => responses.push(response),
-          events: [
-            {
-              type: 'sandbox_boundary_request',
-              id: 'boundary-event',
-              turnId: 'turn-1',
-              ts: 1,
-              requestId: 'boundary-1',
-              toolUseId: 'tool-1',
-              justification: 'write generated output',
-              expansion: {
-                filesystem: {
-                  entries: [{ path: '/tmp/output', access: 'write', scope: 'subtree' }],
-                },
-              },
-            },
-          ],
-        }),
-        writeStdout: (text) => lines.push(text.trim()),
-      },
-    );
-
-    assert.equal(result, 3);
-    assert.deepEqual(responses, [{ requestId: 'boundary-1', decision: 'deny' }]);
-    assert.equal(JSON.parse(lines.at(-1)!).status, 'blocked');
-    assert.equal(JSON.parse(lines.at(-1)!).reason, 'permission_denied');
   });
 
   test('returns blocked for an unresolved production sandbox tool failure', async () => {

@@ -17,9 +17,11 @@
  * under the License.
  */
 
+import { DEFAULT_SESSION_PERMISSION_MODE } from '@maka/core/session';
 import { useState } from 'react';
 import { ToastProvider, LocaleProvider, AstryxLocaleProvider, ChatSurfaceLayout } from '@maka/ui';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
+import type { ChatDefaultPermissionMode } from '@maka/core/settings';
 import type { StoredMessage, SessionSummary } from '@maka/core/session';
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { expect, fn, userEvent, within, waitFor } from 'storybook/test';
@@ -40,7 +42,7 @@ function makeServices(failFirst: boolean, withHistory: boolean | 'usage', colore
   let session: SessionSummary & { revision: number } = {
     id: sessionId, name: 'WorkHub', revision: 1, isFlagged: false, isArchived: false, labels: [], hasUnread: false,
     status: 'active', runningTurnIds: [], backend: 'ai-sdk', llmConnectionId: 'connection-test', llmConnectionSlug: 'test', connectionLocked: false,
-    model: 'model-a', permissionMode: 'ask',
+    model: 'model-a', permissionMode: 'auto_review',
   };
   const target = { ...session, id: targetId, name: '支付回调幂等性', cwd: '/projects/maka' };
   let messages: StoredMessage[] = withHistory ? [
@@ -70,6 +72,8 @@ function makeServices(failFirst: boolean, withHistory: boolean | 'usage', colore
   let interactionUpdate: Parameters<WorkHubServices['subscribeActiveInteractions']>[0] | undefined;
   let updateTranscript: ((snapshot: WorkHubTranscriptSnapshot) => void) | undefined;
   let updateSessions: (() => void) | undefined;
+  let defaultPermissionMode: ChatDefaultPermissionMode = DEFAULT_SESSION_PERMISSION_MODE;
+  let updateDefaultPermissionMode: (() => void) | undefined;
   let updateExecution: Parameters<WorkHubServices['observe']>[4];
   let questionPending = question;
   let pendingForm: import('@maka/core/events').FormRequestEvent | undefined;
@@ -98,6 +102,18 @@ function makeServices(failFirst: boolean, withHistory: boolean | 'usage', colore
     resolve: async () => sessionId, subscribeHosts: () => () => {}, subscribeAvailability: () => () => {},
     getSession: async () => session,
     listSessions: async () => coloredHistory ? [target, secondTarget] : [target], subscribeSessions: (handler) => { updateSessions = handler; return () => { updateSessions = undefined; }; }, modelChoices: async () => choices,
+    readDefaultPermissionMode: async () => defaultPermissionMode,
+    setDefaultPermissionMode: async (mode) => {
+      defaultPermissionMode = mode;
+      updateDefaultPermissionMode?.();
+      return mode;
+    },
+    subscribeDefaultPermissionMode: (handler) => {
+      updateDefaultPermissionMode = handler;
+      return () => {
+        if (updateDefaultPermissionMode === handler) updateDefaultPermissionMode = undefined;
+      };
+    },
     delegationFeedback: async (references) => references.map(({ id }) => ({
       id,
       state: coloredHistory && id === 'link-1' ? 'waiting_for_user' as const : coloredHistory && id === 'link-2' ? 'running' as const : 'completed' as const,
@@ -549,7 +565,7 @@ function PagedWorkConversation() {
   return <LocaleProvider locale="zh-CN"><AstryxLocaleProvider><ToastProvider>
     <WorkHubHighlightContext.Provider value={{ sessionId: undefined, highlight: () => {}, navigateWork: () => {}, selectedWork, selectWork, toggleWork: (work) => selectWork((current) => current?.sessionId === work.sessionId ? undefined : work) }}>
       <ChatSurfaceLayout composer={null}><div className="workhub-surface"><WorkHubConversation messages={messages} onOpenWork={() => {}} onNew={() => {}} scrollBehavior="auto"
-        activeSession={{ id: sessionId, name: 'WorkHub', isFlagged: false, isArchived: false, labels: [], hasUnread: false, status: 'active', runningTurnIds: [], backend: 'ai-sdk', llmConnectionId: 'connection-test', llmConnectionSlug: 'test', connectionLocked: false, model: 'model-a', permissionMode: 'ask' }}
+        activeSession={{ id: sessionId, name: 'WorkHub', isFlagged: false, isArchived: false, labels: [], hasUnread: false, status: 'active', runningTurnIds: [], backend: 'ai-sdk', llmConnectionId: 'connection-test', llmConnectionSlug: 'test', connectionLocked: false, model: 'model-a', permissionMode: 'auto_review' }}
         hasEarlierHistory={!loaded} onLoadEarlierHistory={() => setLoaded(true)}
         workLinks={['older-turn', 'latest-turn'].map((coordinationTurnId) => ({ id: coordinationTurnId, coordinationTurnId, targetSessionId: targetId, targetSessionName: '支付回调幂等性' }))} />
       </div></ChatSurfaceLayout>

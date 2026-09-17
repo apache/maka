@@ -30,14 +30,6 @@ const CLI_PATH = join(REPO_ROOT, 'packages', 'cli', 'dist', 'cli.js');
 const DESKTOP_MAIN = join(REPO_ROOT, 'apps', 'desktop', 'dist', 'main', 'main.js');
 const DESKTOP_PRELOAD = join(REPO_ROOT, 'apps', 'desktop', 'dist', 'preload', 'preload.cjs');
 const DESKTOP_RENDERER = join(REPO_ROOT, 'apps', 'desktop', 'dist-renderer', 'index.html');
-const DESKTOP_RUNTIME_WORKER = join(
-  REPO_ROOT,
-  'apps',
-  'desktop',
-  'resources',
-  'workers',
-  'filesystem-worker.js',
-);
 const DESKTOP_SMOKE = join(REPO_ROOT, 'scripts', 'desktop-real-window-smoke.mjs');
 const CLI_TIMEOUT_MS = 15_000;
 const DESKTOP_TIMEOUT_MS = 45_000;
@@ -48,13 +40,7 @@ export function runWindowsSmoke(options = {}) {
   const exists = options.existsSync ?? existsSync;
   if (platform !== 'win32') throw new Error('Windows smoke must run on Windows');
 
-  for (const artifact of [
-    CLI_PATH,
-    DESKTOP_MAIN,
-    DESKTOP_PRELOAD,
-    DESKTOP_RENDERER,
-    DESKTOP_RUNTIME_WORKER,
-  ]) {
+  for (const artifact of [CLI_PATH, DESKTOP_MAIN, DESKTOP_PRELOAD, DESKTOP_RENDERER]) {
     if (!exists(artifact)) {
       throw new Error(`Missing build artifact: ${artifact}. Run npm run build first.`);
     }

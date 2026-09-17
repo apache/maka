@@ -22,8 +22,8 @@ import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
-import { homedir, tmpdir } from 'node:os';
+import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { test } from 'node:test';
@@ -32,21 +32,13 @@ import {
   DEFAULT_BASH_TIMEOUT_MS,
   MAX_FOREGROUND_BASH_TIMEOUT_MS,
 } from '@maka/runtime/shell-run-contract';
-import {
-  clientCapabilityConnectionIdentity,
-  clientCapabilityCoordinatorTestAdmission,
-} from './fixtures/client-capability.js';
+import { clientCapabilityConnectionIdentity } from './fixtures/client-capability.js';
 import {
   WORKHUB_BROWSER_TOOL_NAMES,
   workHubDesktopCapabilityOffers,
 } from './fixtures/workhub-capabilities.js';
-import {
-  createBypassExecutionBoundary,
-  createManagedExecutionBoundary,
-  type ExecutionBoundary,
-} from '@maka/core/sandbox-boundary';
+import { createBypassExecutionBoundary, type ExecutionBoundary } from '@maka/core/sandbox-boundary';
 import { PROVIDER_REGISTRY } from '@maka/core/llm-connections';
-import { createWorkspaceWritePermissionProfile } from '@maka/core/permission-profile';
 import {
   decodeRequestCompositionSnapshot,
   decodeRunCompositionSnapshot,
@@ -61,15 +53,13 @@ import { decodeCanonicalToolResultContent } from '@maka/core/tool-result-record-
 import { type ModelCallAttempt, type ModelCallKind } from '@maka/core/model-call-attempt';
 import { type RuntimeEvent } from '@maka/core/runtime-event';
 import { createDefaultRuntimePolicy } from '@maka/core/runtime-policy';
-import type { PlanSessionState, PlanStore } from '@maka/core/plan';
 import type { SessionTodoToolStore } from '@maka/runtime/session-todo-tools';
 import {
   serializeOAuthSubscriptionTokens,
   type OAuthSubscriptionTokens,
 } from '@maka/runtime/subscription-credentials';
 import { type BackendFactoryContext } from '@maka/runtime/session-manager';
-import { type AiSdkBackendInput, type RunTraceEvent } from '@maka/runtime/ai-sdk-backend';
-import { type FilesystemWorkerExecuteInput } from '@maka/runtime/filesystem-worker';
+import { type RunTraceEvent } from '@maka/runtime/ai-sdk-backend';
 import { type MakaTool, type MakaToolContext } from '@maka/runtime/tool-runtime';
 import {
   type ProxiedFetchProxy,
@@ -82,8 +72,7 @@ import { buildParentAgentTools } from '@maka/runtime/subagent-tools';
 import { SESSION_RECAP_INSTRUCTION } from '@maka/runtime/session-recap';
 import { createToolResultArchiveCapability } from '@maka/runtime/tool-result-archive-capability';
 import { loadHistoryCompactCheckpointsFromRunLedger } from '@maka/runtime/history-compact-ledger';
-import { stableHash, toolCatalogHash } from '@maka/runtime/request-shape';
-import { toolAvailabilityHash } from '@maka/runtime/tool-availability';
+import { stableHash } from '@maka/runtime/request-shape';
 import { createSqliteRuntimeStore } from '@maka/storage/sqlite-runtime-store';
 import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
 import { openInteractiveArtifactStoreForWrite } from '@maka/storage/artifact-stores';
@@ -103,6 +92,7 @@ import type { ClientCapabilityHostFrame } from '../protocol/index.js';
 import { createExecutionRuntimeHostComposition } from '../server/execution-composition.js';
 import { createHostChildAgentToolComposition } from '../server/child-agent-composition.js';
 import {
+  createHostAutoReviewer,
   createHostDailyReviewModel,
   createHostGoalEvaluator,
   createHostMemoryExtractionModel,
@@ -112,6 +102,7 @@ import {
 import {
   createHostAiSdkBackend,
   prepareHostAiSdkBackend,
+  readHostSessionPermissionMode,
   type HostAiSdkBackendInput,
 } from '../server/execution-model-composition.js';
 import {
@@ -244,291 +235,6 @@ test('backend creation aborts a stalled pricing snapshot read', async () => {
   });
 });
 
-test('production Host executes Bash against the current live sandbox boundary', {
-  skip: process.platform === 'win32' ? 'Managed arbitrary-shell sandboxing is unavailable' : false,
-}, async () => {
-  const base = await mkdtemp(join(tmpdir(), 'maka-host-managed-bash-'));
-  const root = join(base, 'interactive');
-  const project = join(base, 'project');
-  let outsideRoot: string | undefined;
-  let sandboxPaths: ManagedSandboxPaths | undefined;
-  const provider = await startProvider();
-  const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
-  const owner = await tryAcquireInteractiveRootOwner(capability);
-  assert.ok(owner);
-  if (!owner) return;
-  const context: ConnectionContext = {
-    hostEpoch: 'managed-bash-test-epoch',
-    connectionId: 'managed-bash-test-client',
-    principal: 'local_os_user',
-    acquireResidency: () => ({ release() {} }),
-  };
-  let composition: Awaited<ReturnType<typeof createExecutionRuntimeHostComposition>> | undefined;
-  try {
-    if (process.platform === 'darwin') {
-      outsideRoot = await mkdtemp(join(homedir(), '.maka-host-sandbox-boundary-'));
-      sandboxPaths = {
-        outsideBash: join(outsideRoot, 'bash-denied.txt'),
-        outsideWrite: join(outsideRoot, 'write-denied.txt'),
-        workspaceBash: join(project, 'bash-allowed.txt'),
-        workspaceWrite: join(project, 'write-allowed.txt'),
-      };
-    }
-    provider.configureManagedBashFlow(sandboxPaths);
-    await mkdir(project);
-    const policy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
-    const created = await policy.connectionCatalog.create({
-      expectedCatalogRevision: 0,
-      connection: {
-        slug: 'hosted-managed-bash-provider',
-        name: 'Hosted managed Bash provider',
-        providerType: 'moonshot',
-        baseUrl: provider.baseUrl,
-        enabled: true,
-        enabledModelIds: [MODEL_ID],
-      },
-    });
-    assert.equal(created.kind, 'committed');
-    if (created.kind !== 'committed') return;
-    const connection = created.snapshot.connections[0];
-    assert.ok(connection);
-    if (!connection) return;
-    assert.equal(
-      (
-        await policy.credentialVault.set({
-          locator: {
-            scope: 'connection',
-            connectionId: connection.connectionId,
-            kind: 'api_key',
-          },
-          expected: null,
-          secret: API_KEY,
-        })
-      ).kind,
-      'committed',
-    );
-    await publishConnectionModel(policy, connection.connectionId, MODEL_ID, 32_768);
-
-    const execution = await openInteractiveExecutionStoresForWrite(owner.lease);
-    const session = await execution.sessionStore.create({
-      cwd: project,
-      llmConnectionId: connection.connectionId,
-      llmConnectionSlug: 'hosted-managed-bash-provider',
-      model: MODEL_ID,
-      permissionMode: 'ask',
-    });
-    const initialBoundary = await execution.sessionStore.readExecutionBoundary(session.id);
-    assert.equal(initialBoundary.kind, 'managed');
-    assert.equal(initialBoundary.revision, 0);
-
-    composition = await createExecutionRuntimeHostComposition({
-      owner,
-      hostEpoch: context.hostEpoch,
-      acquireResidency: context.acquireResidency,
-      retainUntilProcessExit: () => undefined,
-      requestDrain: () => undefined,
-    });
-    await composition.recover();
-
-    const firstTurnId = 'hosted-managed-bash-turn-1';
-    const firstTerminal = await waitForTerminal(
-      composition,
-      session.id,
-      firstTurnId,
-      await startTurn(
-        composition,
-        session.id,
-        firstTurnId,
-        'Run one offline workspace command.',
-        context,
-      ),
-      context,
-    );
-    const firstRun = await readInvocation(execution, session.id, firstTerminal.runId);
-    const firstRunEvents = await execution.agentRunStore.readEvents(
-      session.id,
-      firstTerminal.runId,
-    );
-    assert.equal(
-      firstTerminal.status,
-      'completed',
-      JSON.stringify({
-        firstTerminal,
-        firstRun,
-        firstRunEvents,
-        requests: providerRequestTrace(provider.requests),
-      }),
-    );
-    const mainRequests = provider.requests.filter((request) => request.body.stream === true);
-    assert.equal(mainRequests.length, 2);
-    assert.deepEqual(toolParameterEnum(mainRequests[0]?.body, 'Bash', 'boundary_intent'), [
-      'current',
-      'expand',
-    ]);
-    assert.equal((latestToolResultText(mainRequests[1]!.body) ?? '').includes(project), true);
-    assert.deepEqual(
-      await execution.sessionStore.listPendingSandboxBoundaryRequests(session.id),
-      [],
-    );
-    const unchangedBoundary = await execution.sessionStore.readExecutionBoundary(session.id);
-    assert.equal(unchangedBoundary.kind, 'managed');
-    assert.equal(unchangedBoundary.revision, 0);
-    const firstRuntimeEvents = await execution.runtimeEventStore.readRuntimeEvents(
-      session.id,
-      firstTerminal.runId,
-    );
-    const bashCall = firstRuntimeEvents.find(
-      (event) => event.content?.kind === 'function_call' && event.content.name === 'Bash',
-    );
-    assert.equal(
-      bashCall?.content?.kind === 'function_call'
-        ? (bashCall.content.args as { boundary_intent?: unknown }).boundary_intent
-        : undefined,
-      'current',
-    );
-    const bashResult = firstRuntimeEvents.find(
-      (event) => event.content?.kind === 'function_response' && event.content.name === 'Bash',
-    );
-    assert.equal(bashResult?.content?.kind, 'function_response');
-    if (bashResult?.content?.kind === 'function_response') {
-      assert.notEqual(bashResult.content.isError, true);
-    }
-    assert.equal(
-      firstRuntimeEvents.some(
-        (event) => event.actions?.stateDelta?.sandboxBoundaryRequest !== undefined,
-      ),
-      false,
-    );
-
-    const requestId = 'hosted-managed-bash-network-expansion';
-    await execution.sessionStore.createSandboxBoundaryRequest({
-      sessionId: session.id,
-      requestId,
-      turnId: firstTurnId,
-      runId: firstTerminal.runId,
-      expansion: { network: { enabled: true } },
-      justification: 'Exercise the live per-turn boundary projection.',
-    });
-    const expanded = await execution.sessionStore.settleSandboxBoundaryRequest({
-      sessionId: session.id,
-      requestId,
-      decision: 'allow',
-    });
-    assert.equal(expanded.changed, true);
-    assert.equal(expanded.boundary.revision, 1);
-
-    const secondTurnId = 'hosted-managed-bash-turn-2';
-    const secondTerminal = await waitForTerminal(
-      composition,
-      session.id,
-      secondTurnId,
-      await startTurn(
-        composition,
-        session.id,
-        secondTurnId,
-        'Confirm the expanded live boundary.',
-        context,
-      ),
-      context,
-    );
-    assert.equal(secondTerminal.status, 'completed');
-    const refreshedRequests = provider.requests.filter((request) => request.body.stream === true);
-    assert.equal(refreshedRequests.length, 3);
-    const refreshedBoundary = await execution.sessionStore.readExecutionBoundary(session.id);
-    assert.equal(refreshedBoundary.kind, 'managed');
-    assert.equal(refreshedBoundary.revision, 1);
-
-    if (sandboxPaths) {
-      const sandboxTurnId = 'hosted-managed-sandbox-turn-3';
-      const sandboxTerminal = await waitForTerminal(
-        composition,
-        session.id,
-        sandboxTurnId,
-        await startTurn(
-          composition,
-          session.id,
-          sandboxTurnId,
-          'Exercise the enforced filesystem boundary.',
-          context,
-        ),
-        context,
-      );
-      assert.equal(sandboxTerminal.status, 'completed');
-
-      const sandboxRequests = provider.requests.filter((request) => request.body.stream === true);
-      assert.equal(sandboxRequests.length, 8);
-      assert.match(latestToolResultText(sandboxRequests[4]!.body) ?? '', /macos-seatbelt/u);
-      assert.match(
-        latestToolResultText(sandboxRequests[4]!.body) ?? '',
-        /Operation not permitted/u,
-      );
-      assert.match(
-        latestToolResultText(sandboxRequests[5]!.body) ?? '',
-        /sandbox_boundary_required/u,
-      );
-      assert.equal(await fileExists(sandboxPaths.outsideBash), false);
-      assert.equal(await fileExists(sandboxPaths.outsideWrite), false);
-      assert.equal(await readFile(sandboxPaths.workspaceBash, 'utf8'), 'bash allowed');
-      assert.equal(await readFile(sandboxPaths.workspaceWrite, 'utf8'), 'write allowed');
-
-      const sandboxEvents = await execution.runtimeEventStore.readRuntimeEvents(
-        session.id,
-        sandboxTerminal.runId,
-      );
-      const sandboxResponses = sandboxEvents.filter(
-        (event) => event.content?.kind === 'function_response',
-      );
-      assert.deepEqual(
-        sandboxResponses.map((event) =>
-          event.content?.kind === 'function_response'
-            ? {
-                name: event.content.name,
-                isError: event.content.isError === true,
-              }
-            : undefined,
-        ),
-        [
-          { name: 'Bash', isError: true },
-          { name: 'Write', isError: true },
-          { name: 'Bash', isError: false },
-          { name: 'Write', isError: false },
-        ],
-      );
-      assert.equal(
-        sandboxEvents.some(
-          (event) => event.actions?.stateDelta?.sandboxBoundaryRequest !== undefined,
-        ),
-        false,
-      );
-      assert.deepEqual(
-        await execution.sessionStore.listPendingSandboxBoundaryRequests(session.id),
-        [],
-      );
-      const sandboxBoundary = await execution.sessionStore.readExecutionBoundary(session.id);
-      assert.equal(sandboxBoundary.kind, 'managed');
-      assert.equal(sandboxBoundary.revision, expanded.boundary.revision);
-    }
-  } finally {
-    try {
-      await composition?.close();
-    } finally {
-      try {
-        await owner.close();
-      } finally {
-        try {
-          await provider.close();
-        } finally {
-          try {
-            await rm(base, { recursive: true, force: true });
-          } finally {
-            if (outsideRoot) await rm(outsideRoot, { recursive: true, force: true });
-          }
-        }
-      }
-    }
-  }
-});
-
 test('permission widening through the Host reaches the next ordinary Turn tool call', async () => {
   await runPermissionUpdateHostRegression('ordinary_session');
 });
@@ -608,7 +314,7 @@ async function runPermissionUpdateHostRegression(
       llmConnectionId: modelConnection.connectionId,
       llmConnectionSlug: `permission-${scenarioSlug}-provider`,
       model: MODEL_ID,
-      permissionMode: 'explore',
+      permissionMode: 'auto_review',
     });
     composition = await createExecutionRuntimeHostComposition({
       owner,
@@ -777,7 +483,7 @@ async function runPermissionUpdateHostRegression(
       );
       assert.ok(activeGoalRun, 'Goal continuation did not hold an active Run');
       if (!activeGoalRun) return;
-      assert.equal(activeGoalRun.opening.configuration.permissionMode, 'explore');
+      assert.equal(activeGoalRun.opening.configuration.permissionMode, 'auto_review');
       exercisedRunId = activeGoalRun.runId;
 
       await commitBypassPermissionUpdate(composition, execution, session.id, context);
@@ -1881,7 +1587,6 @@ test('backend creation does not acquire Client Capabilities beyond a bound tool 
 
 test('production backend creation continues after a Session Client Capability is lost', async () => {
   const coordinator = new HostClientCapabilityCoordinator({
-    ...clientCapabilityCoordinatorTestAdmission(),
     activation: new RuntimePolicyActivationGate(),
     onModelToolsChanged: () => undefined,
   });
@@ -1947,7 +1652,6 @@ test('production backend preserves coordinator Client Capability semantics acros
   const trace: RunTraceEvent[] = [];
   const calls: Array<Extract<ClientCapabilityHostFrame, { kind: 'client.capability.call' }>> = [];
   const coordinator = new HostClientCapabilityCoordinator({
-    ...clientCapabilityCoordinatorTestAdmission(),
     activation: new RuntimePolicyActivationGate(),
     onModelToolsChanged: () => undefined,
   });
@@ -2766,7 +2470,7 @@ test('production Host executes a canonical ai-sdk Session against a real provide
       llmConnectionId: connection.connectionId,
       llmConnectionSlug: 'hosted-real-provider',
       model: MODEL_ID,
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     const sessionTodo = await openInteractiveSessionTodoStoreForWrite(owner.lease);
     await sessionTodo.replaceAll(session.id, [
@@ -3612,9 +3316,7 @@ test('production Host publishes and retires an implementation child patch', asyn
     assert.equal(child?.subagentRuntime?.profile, 'implementation');
     assert.equal(child?.subagentParent?.parentSessionId, parent.id);
     if (!child) return;
-    // The persisted header is a configuration projection, not execution
-    // authority, and may be narrower than the inherited live boundary.
-    assert.notEqual(child.permissionMode, 'bypass');
+    assert.equal(child.permissionMode, parent.permissionMode);
     const childBoundary = await execution.sessionStore.readExecutionBoundary(child.id);
     assert.equal(childBoundary.kind, 'bypass');
     assert.ok(child.subagentWorkspace);
@@ -3777,7 +3479,7 @@ test('Host auxiliary calls preserve resolved DeepSeek reasoning settings', async
       llmConnectionSlug: 'deepseek-auxiliary',
       model: 'deepseek-v4-flash',
       thinkingLevel: 'high',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     const effects = createHostSessionEffectModel({
       runtimePolicy: policy,
@@ -3845,7 +3547,7 @@ test('WorkHub routing reuses the saved Session model and calls Intent before bou
       llmConnectionSlug: connection.slug,
       model: 'deepseek-v4-flash',
       thinkingLevel: 'high',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     const model = createHostWorkHubRoutingModel({
       runtimePolicy: policy,
@@ -3901,6 +3603,33 @@ test('WorkHub routing reuses the saved Session model and calls Intent before bou
   }
 });
 
+test('review authority follows live WorkHub settings and linked ancestry', async () => {
+  let policy = createDefaultRuntimePolicy();
+  const headers = new Map<string, Record<string, unknown>>([
+    ['workhub', { permissionMode: 'bypass', toolProfile: 'workhub-coordination-v2' }],
+    ['child', { permissionMode: 'bypass', subagentParent: { parentSessionId: 'workhub' } }],
+    ['ordinary', { permissionMode: 'bypass' }],
+  ]);
+  const store = {
+    readHeader: async (id: string) => headers.get(id),
+  } as unknown as BackendFactoryContext['store'];
+  const runtimePolicy = { runtimePolicy: { getSnapshot: async () => ({ revision: 0, policy }) } };
+  const read = (sessionId: string) =>
+    readHostSessionPermissionMode({ sessionId, store }, runtimePolicy);
+  assert.equal(await read('child'), 'auto_review');
+  policy = { ...policy, chatDefaults: { ...policy.chatDefaults, permissionMode: 'auto_review' } };
+  assert.equal(await read('workhub'), 'auto_review');
+  assert.equal(await read('child'), 'auto_review');
+  assert.equal(await read('ordinary'), 'bypass');
+  policy = { ...policy, chatDefaults: { ...policy.chatDefaults, permissionMode: 'bypass' } };
+  assert.equal(await read('child'), 'bypass');
+  headers.set('workhub', {
+    permissionMode: 'bypass',
+    subagentParent: { parentSessionId: 'child' },
+  });
+  await assert.rejects(read('child'), /Invalid linked Session ancestry/);
+});
+
 test('Host auxiliary models meter provider usage and abort physical requests', {
   timeout: 20_000,
 }, async () => {
@@ -3944,13 +3673,13 @@ test('Host auxiliary models meter provider usage and abort physical requests', {
       secret: API_KEY,
     });
     assert.equal(credential.kind, 'committed');
-    await publishConnectionModel(policy, connection.connectionId, MODEL_ID);
+    await publishConnectionModel(policy, connection.connectionId, MODEL_ID, 32_768);
     const session = await execution.sessionStore.create({
       cwd: capability.canonicalPath,
       llmConnectionId: connection.connectionId,
       llmConnectionSlug: 'goal-evaluator-provider',
       model: MODEL_ID,
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     const evaluatorInput = {
       runtimePolicy: policy,
@@ -3961,6 +3690,63 @@ test('Host auxiliary models meter provider usage and abort physical requests', {
         execution.sessionStore.readHeaderSnapshot(sessionId),
       newId: () => 'call-1',
     };
+    const reviewPolicy = await policy.runtimePolicy.getSnapshot();
+    await policy.runtimePolicy.mutate({
+      expectedRevision: reviewPolicy.revision,
+      operation: {
+        kind: 'set_chat_defaults',
+        value: {
+          ...reviewPolicy.policy.chatDefaults,
+          autoReviewModel: { connectionId: connection.connectionId, model: MODEL_ID },
+        },
+      },
+    });
+    const reviewer = createHostAutoReviewer({
+      ...evaluatorInput,
+      reviewTools: [],
+      readReviewContext: async ({ sessionId, turnId, userRequests }) => ({
+        sessionId,
+        turnId,
+        delegations: [],
+        authorizations: userRequests.map((request) => ({
+          request,
+          kind: 'session_request' as const,
+        })),
+      }),
+    });
+    const reviewRequest = {
+      sessionId: session.id,
+      toolName: 'Read',
+      toolDescription: 'Read a file',
+      args: { path: 'README.md' },
+      cwd: capability.canonicalPath,
+      turnId: 'turn-1',
+      userRequests: [
+        { sessionId: session.id, turnId: 'turn-1', messageId: 'user-1', text: 'Read README.md' },
+      ],
+      taskContext: '',
+      abortSignal: new AbortController().signal,
+    };
+    assert.equal((await reviewer(reviewRequest)).decision, 'allow');
+    const reviewUsage = (await usage.telemetry.logs({ range: 'all' })).rows.find(
+      (row) => row.callKind === 'auto_review',
+    );
+    assert.equal(reviewUsage?.sessionId, session.id);
+    assert.equal(reviewUsage?.inputTokens, 7);
+    const selected = await policy.runtimePolicy.getSnapshot();
+    await policy.runtimePolicy.mutate({
+      expectedRevision: selected.revision,
+      operation: {
+        kind: 'set_chat_defaults',
+        value: {
+          ...selected.policy.chatDefaults,
+          autoReviewModel: { connectionId: 'missing-reviewer', model: MODEL_ID },
+        },
+      },
+    });
+    const beforeMissing = provider.requests.length;
+    await assert.rejects(reviewer(reviewRequest), /Configure an available Auto-review model/);
+    assert.equal(provider.requests.length, beforeMissing);
     const evaluator = createHostGoalEvaluator(evaluatorInput);
     const result = await evaluator.evaluate(
       'Judge the completed Goal.',
@@ -5154,6 +4940,7 @@ function backendCreationFixture(input: {
         : {}),
       store: {
         appendMessage: async () => undefined,
+        readHeader: async () => ({ permissionMode: 'bypass' }),
         readExecutionBoundary: async () =>
           input.executionBoundary ?? createBypassExecutionBoundary(0),
       },
@@ -5650,28 +5437,35 @@ async function handleProviderRequest(
             index: 0,
             message: {
               role: 'assistant',
-              content: isMemoryExtraction
+              content: serialized.includes('independent reviewer of one proposed tool action')
                 ? JSON.stringify({
-                    status: 'complete',
-                    coverageStatus: 'processed',
-                    requestedStatus: 'not_applicable',
-                    requestedItems: [],
-                    incidentalItems: [],
+                    decision: 'allow',
+                    risk: 'low',
+                    authorization: 'high',
+                    rationale: 'Requested inspection',
                   })
-                : goalEvaluation > 0
+                : isMemoryExtraction
                   ? JSON.stringify({
-                      met: goalEvaluation > 1,
-                      impossible: false,
-                      progress: true,
-                      waiting: false,
-                      reason:
-                        goalEvaluation > 1
-                          ? 'The permission update reached the continuation tool.'
-                          : 'Continue with the permission-sensitive tool call.',
+                      status: 'complete',
+                      coverageStatus: 'processed',
+                      requestedStatus: 'not_applicable',
+                      requestedItems: [],
+                      incidentalItems: [],
                     })
-                  : isHistoryCompaction
-                    ? COMPACT_SUMMARY_TEXT
-                    : SUMMARY_TEXT,
+                  : goalEvaluation > 0
+                    ? JSON.stringify({
+                        met: goalEvaluation > 1,
+                        impossible: false,
+                        progress: true,
+                        waiting: false,
+                        reason:
+                          goalEvaluation > 1
+                            ? 'The permission update reached the continuation tool.'
+                            : 'Continue with the permission-sensitive tool call.',
+                      })
+                    : isHistoryCompaction
+                      ? COMPACT_SUMMARY_TEXT
+                      : SUMMARY_TEXT,
             },
             finish_reason: 'stop',
           },
@@ -5737,7 +5531,6 @@ async function handleProviderRequest(
   if (flow.kind === 'managed_bash' && flow.sandboxPaths && streamRequestIndex === 4) {
     respondProviderToolCall(response, streamRequestIndex, 'Bash', {
       command: `printf denied > ${JSON.stringify(flow.sandboxPaths.outsideBash)}`,
-      boundary_intent: 'current',
     });
     return;
   }
@@ -5751,7 +5544,6 @@ async function handleProviderRequest(
   if (flow.kind === 'managed_bash' && flow.sandboxPaths && streamRequestIndex === 6) {
     respondProviderToolCall(response, streamRequestIndex, 'Bash', {
       command: `printf 'bash allowed' > ${JSON.stringify(flow.sandboxPaths.workspaceBash)}`,
-      boundary_intent: 'current',
     });
     return;
   }
@@ -5831,7 +5623,6 @@ async function handleProviderRequest(
   if (flow.kind === 'implementation_child_agent' && streamRequestIndex === 4) {
     respondProviderToolCall(response, streamRequestIndex, 'Bash', {
       command: 'node pty-child.mjs',
-      boundary_intent: 'current',
       run_in_background: true,
       pty: true,
     });

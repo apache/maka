@@ -52,7 +52,7 @@ import type {
 import type { BotProvider } from '@maka/core/bot-chat-settings';
 import type { BotOnboardingSnapshot, BotOnboardingStartInput } from '@maka/core/bot-onboarding';
 import type { HealthSnapshot } from '@maka/core/health';
-import type { ExecutionBoundaryReadModel, SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
+import type { ExecutionBoundaryReadModel } from '@maka/core/sandbox-boundary';
 import type { ClientCapabilityResponse } from '@maka/core/client-capability-grant';
 import type {
   ActiveInteractionRequestEvent,
@@ -1277,7 +1277,6 @@ export interface MakaBridge {
       input: DesktopBranchFromTurnInput & { sideConversation?: false },
     ): Promise<DesktopSessionSummary>;
     reviseBeforeTurn(sessionId: string, input: DesktopReviseBeforeTurnInput): Promise<DesktopSessionSummary>;
-    respondToSandboxBoundary(sessionId: string, response: SandboxBoundaryResponse): Promise<void>;
     respondToClientCapability(
       sessionId: string,
       response: ClientCapabilityResponse,

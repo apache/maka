@@ -46,13 +46,7 @@ import {
   type UiLocale,
 } from '@maka/core/ui-locale';
 import type { InvocableSkillEntry } from '@maka/runtime/skill-invocation';
-import {
-  providerDefaultsOf,
-  providerMenuLabel,
-  validateSlug,
-  type ModelInfo,
-  type ProviderType,
-} from '@maka/core/llm-connections';
+import { providerDefaultsOf, validateSlug, type ModelInfo } from '@maka/core/llm-connections';
 import { CONNECTION_NAME_MAX_LENGTH } from '@maka/core/runtime-policy';
 import type {
   ModelChoice,
@@ -69,6 +63,15 @@ import { stripUnfocusedCursorStyle } from './tui-editor-render.js';
 import { TUI_COPY_RESOURCES } from './tui-copy-catalog.js';
 
 interface TuiPickerCopy {
+  readonly permissionPickerTitle: string;
+  readonly autoReviewLabel: string;
+  readonly autoReviewCompactLabel: string;
+  readonly autoReviewDescription: string;
+  readonly bypassDescription: string;
+  readonly keepAutoReviewLabel: string;
+  readonly enableBypassLabel: string;
+  readonly switchToBypassTitle: string;
+
   readonly modelPickerTitle: string;
   readonly modelSwitchCacheWarning: string;
   readonly modelSearchHint: string;
@@ -1096,27 +1099,28 @@ export class ModelSearchOverlay implements Component {
   }
 }
 
-/**
- * #1611: `current` marks an option that is genuinely in force, so choosing it
- * is a no-op. A read-only session is neither of these options, and marking
- * Auto as current there turned "confirm what I already have" into a silent
- * widening of the boundary.
- */
-export function permissionModePickerItems(currentMode: PermissionMode): SelectItem[] {
-  const autoIsCurrent = currentMode === 'ask';
+/** The picker names the execution policy in force. */
+export function permissionModePickerItems(
+  currentMode: PermissionMode,
+  locale: UiLocale = 'en',
+): SelectItem[] {
+  const copy = getTuiPickerCopy(locale);
+  const autoIsCurrent = currentMode === 'auto_review';
   return [
     {
       value: 'auto',
-      label: 'Auto',
-      description: autoIsCurrent ? 'current · protected' : 'protected',
+      label: copy.autoReviewLabel,
+      description: autoIsCurrent
+        ? `${copy.currentMarker} · ${copy.autoReviewDescription}`
+        : copy.autoReviewDescription,
     },
     {
       value: 'bypass',
-      label: 'Full access',
+      label: 'Bypass',
       description:
         currentMode === 'bypass'
-          ? 'current · your files and network, unprotected'
-          : 'your files and network, unprotected',
+          ? `${copy.currentMarker} · ${copy.bypassDescription}`
+          : copy.bypassDescription,
     },
   ];
 }

@@ -377,7 +377,7 @@ describe('Maka Pi TUI transcript', () => {
           },
         },
         // Room for title, mode, model, ctx and a short tail only.
-        'Maka · Auto · deepseek-v4-flash · ctx 20k/500k 4% · project-directory'.length,
+        'Maka · Auto review · deepseek-v4-flash · ctx 20k/500k 4% · project-directory'.length,
       ),
     );
     assert.doesNotMatch(line, /very\/long/);
@@ -441,7 +441,7 @@ describe('Maka Pi TUI transcript', () => {
         75,
       ),
     );
-    assert.match(line, /Full access/);
+    assert.match(line, /Bypass/);
     assert.match(line, /deepseek-v4-flash/);
     assert.match(line, /goal 1\/50/);
     assert.match(line, /ctx 20k\/500k 4%/);
@@ -483,7 +483,7 @@ describe('Maka Pi TUI transcript', () => {
       const line = stripAnsi(renderMakaPiStatusLine(metadata, width));
       assert.ok(visibleWidth(line) <= width);
       assert.match(line, /Maka/);
-      assert.match(line, /Full/);
+      assert.match(line, /Bypass/);
       assert.match(line, /anthropic/);
       assert.match(line, /(?:goal |g)1\/50/);
       assert.match(line, /(?:ctx .*96%|c96%)/);
@@ -2066,228 +2066,25 @@ describe('Maka Pi TUI transcript', () => {
     assert.equal(rendered.split('UNIQUE-PTY-FRAME').length - 1, 1);
   });
 
-  test('renders an unboxed session sandbox boundary request with exact scopes', () => {
+  test('renders a legacy sandbox boundary decision as a read-only notice', () => {
     const state = createMakaPiTranscriptState();
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'sandbox_boundary_request',
-        requestId: 'boundary-1',
-        toolUseId: 'tool-boundary',
-        justification: 'Read the user-selected file.',
-        expansion: {
-          filesystem: {
-            entries: [{ path: '/outside/file.txt', access: 'read', scope: 'exact' }],
-          },
-          network: { enabled: true },
-        },
-      }),
-    );
-
-    const visibleLines = renderMakaPiTranscript(
-      state,
-      {
-        title: 'Maka',
-        cwd: '/tmp/project',
-        model: 'test',
-        connectionSlug: 'test',
-        permissionMode: 'auto',
-      },
-      100,
-    ).map(stripAnsi);
-
-    assert.equal(state.pendingInteraction?.requestId, 'boundary-1');
-    assert.ok(visibleLines.some((line) => line.includes('Allow access outside the workspace?')));
-    assert.ok(visibleLines.some((line) => line.includes('Read the user-selected file.')));
-    assert.ok(visibleLines.some((line) => line.includes('read exact /outside/file.txt')));
-    assert.ok(visibleLines.some((line) => line.includes('network enabled')));
-    assert.ok(visibleLines.some((line) => line.includes('y/Enter allow for this task')));
-    assert.ok(visibleLines.some((line) => line.includes('n/Esc deny')));
-    assert.ok(visibleLines.every((line) => !line.includes(' a ')));
-  });
-
-  test('queues sandbox boundary, question, and form requests in arrival order', () => {
-    const state = createMakaPiTranscriptState();
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'sandbox_boundary_request',
-        requestId: 'boundary-1',
-        toolUseId: 'tool-1',
-        justification: 'Read a selected file.',
-        expansion: {
-          filesystem: {
-            entries: [{ path: '/outside/file.txt', access: 'read', scope: 'exact' }],
-          },
-        },
-      }),
-    );
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'form_request',
-        requestId: 'form-1',
-        toolUseId: 'tool-3',
-        message: 'Configure deployment',
-        requester: { name: 'deploy', source: 'Acme MCP' },
-        fields: [{ kind: 'boolean', name: 'notify', label: 'Notify', required: false }],
-      }),
-    );
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'user_question_request',
-        requestId: 'question-1',
-        toolUseId: 'tool-2',
-        questions: [{ question: 'Choose', options: [{ label: 'A' }, { label: 'B' }] }],
-      }),
-    );
-
-    assert.equal(state.pendingInteraction?.requestId, 'boundary-1');
-    assert.deepEqual(
-      state.queuedInteractions.map((item) => item.requestId),
-      ['form-1', 'question-1'],
-    );
-
     applyMakaSessionEventToTranscript(
       state,
       event({
         type: 'sandbox_boundary_decision_ack',
         requestId: 'boundary-1',
         toolUseId: 'tool-1',
-        decision: 'allow',
-        status: 'applied',
-        revision: 1,
+        decision: 'deny',
+        status: 'denied',
+        revision: 0,
       }),
     );
-    assert.equal(state.pendingInteraction?.requestId, 'form-1');
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'form_answer_ack',
-        requestId: 'form-1',
-        toolUseId: 'tool-3',
-      }),
-    );
-    assert.equal(state.pendingInteraction?.requestId, 'question-1');
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'user_question_answer_ack',
-        requestId: 'question-1',
-        toolUseId: 'tool-2',
-      }),
-    );
+
     assert.equal(state.pendingInteraction, undefined);
-    assert.deepEqual(state.queuedInteractions, []);
-  });
-
-  test('deduplicates sandbox boundary interactions by request id', () => {
-    const state = createMakaPiTranscriptState();
-    const first = event({
-      type: 'sandbox_boundary_request',
-      requestId: 'boundary-1',
-      toolUseId: 'tool-1',
-      justification: 'Read first.',
-      expansion: {
-        filesystem: { entries: [{ path: '/first', access: 'read', scope: 'exact' }] },
-      },
-    });
-    const question = event({
-      type: 'user_question_request',
-      requestId: 'question-1',
-      toolUseId: 'question-tool',
-      questions: [{ question: 'Choose', options: [{ label: 'A' }, { label: 'B' }] }],
-    });
-    const second = event({
-      type: 'sandbox_boundary_request',
-      requestId: 'boundary-2',
-      toolUseId: 'tool-2',
-      justification: 'Read second.',
-      expansion: {
-        filesystem: { entries: [{ path: '/second', access: 'read', scope: 'exact' }] },
-      },
-    });
-    const third = event({
-      type: 'sandbox_boundary_request',
-      requestId: 'boundary-3',
-      toolUseId: 'tool-3',
-      justification: 'Read third.',
-      expansion: {
-        filesystem: { entries: [{ path: '/third', access: 'read', scope: 'exact' }] },
-      },
-    });
-
-    applyMakaSessionEventToTranscript(state, first);
-    applyMakaSessionEventToTranscript(state, question);
-    applyMakaSessionEventToTranscript(state, second);
-    applyMakaSessionEventToTranscript(state, third);
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        ...first,
-        id: 'boundary-request-replay',
-        justification: 'Replayed first.',
-      }),
+    assert.match(
+      renderMakaPiTranscript(state, meta(), 100).map(stripAnsi).join('\n'),
+      /Access unchanged/,
     );
-
-    assert.equal(state.pendingInteraction?.requestId, 'boundary-1');
-    assert.equal(
-      state.pendingInteraction?.type === 'sandbox_boundary_request'
-        ? state.pendingInteraction.justification
-        : undefined,
-      'Read first.',
-    );
-    assert.deepEqual(
-      state.queuedInteractions.map((item) => item.requestId),
-      ['question-1', 'boundary-2', 'boundary-3'],
-    );
-
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'sandbox_boundary_decision_ack',
-        requestId: 'boundary-3',
-        toolUseId: 'tool-3',
-        decision: 'deny',
-        status: 'denied',
-        revision: 0,
-      }),
-    );
-    assert.deepEqual(
-      state.queuedInteractions.map((item) => item.requestId),
-      ['question-1', 'boundary-2'],
-    );
-
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'sandbox_boundary_decision_ack',
-        requestId: 'boundary-2',
-        toolUseId: 'tool-2',
-        decision: 'deny',
-        status: 'denied',
-        revision: 0,
-      }),
-    );
-    assert.deepEqual(
-      state.queuedInteractions.map((item) => item.requestId),
-      ['question-1'],
-    );
-
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'sandbox_boundary_decision_ack',
-        requestId: 'boundary-1',
-        toolUseId: 'tool-1',
-        decision: 'deny',
-        status: 'denied',
-        revision: 0,
-      }),
-    );
-    assert.equal(state.pendingInteraction?.requestId, 'question-1');
-    assert.deepEqual(state.queuedInteractions, []);
   });
 
   test('orders thinking entries by arrival, before text and around tools', () => {
@@ -5021,7 +4818,7 @@ function meta() {
     cwd: '/tmp/project',
     model: 'deepseek-v4-flash',
     connectionSlug: 'deepseek',
-    permissionMode: 'ask',
+    permissionMode: 'auto_review',
   } as const;
 }
 
@@ -5269,7 +5066,7 @@ function subagentResult(
     agentName: 'Local Read',
     turnId: 'child-turn',
     status: 'completed',
-    permissionMode: 'explore',
+    permissionMode: 'auto_review',
     summary: 'done',
     artifactIds: [],
     ...overrides,

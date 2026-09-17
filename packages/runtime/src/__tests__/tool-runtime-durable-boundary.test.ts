@@ -30,7 +30,7 @@ import type {
   ToolOutcomeCommit,
   ToolPreparedCommit,
 } from '../runtime-commit-sink.js';
-import { ToolRuntime, type MakaTool } from '../tool-runtime.js';
+import { type MakaTool } from '../tool-runtime.js';
 
 describe('ToolRuntime durable boundary', () => {
   it('does not invoke the tool or publish a result when T1 fails', async () => {
@@ -817,7 +817,7 @@ function header(): SessionHeader {
     llmConnectionSlug: 'connection-1',
     connectionLocked: true,
     model: 'model-1',
-    permissionMode: 'ask',
+    permissionMode: 'bypass',
     schemaVersion: 1,
   };
 }

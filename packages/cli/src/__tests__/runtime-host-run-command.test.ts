@@ -536,7 +536,7 @@ describe('Runtime Host maka run adapter', () => {
       cwd: '/workspace',
       llmConnectionSlug: 'openai-main',
       model: 'gpt-5',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     await collect(
       fixture.context.runtime.sendMessage(session.id, {
@@ -559,7 +559,7 @@ describe('Runtime Host maka run adapter', () => {
       cwd: '/workspace',
       llmConnectionSlug: 'openai-main',
       model: 'gpt-5',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     await collect(
       fixture.context.runtime.sendMessage(session.id, {
@@ -654,7 +654,7 @@ describe('Runtime Host maka run adapter', () => {
       cwd: '/workspace',
       llmConnectionSlug: 'openai-main',
       model: 'gpt-5',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     await collect(
       fixture.context.runtime.sendMessage(session.id, {
@@ -682,7 +682,7 @@ describe('Runtime Host maka run adapter', () => {
       cwd: '/workspace',
       llmConnectionSlug: 'openai-main',
       model: 'gpt-5',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     await collect(
       context.runtime.sendMessage(session.id, {
@@ -714,7 +714,7 @@ describe('Runtime Host maka run adapter', () => {
       cwd: '/workspace',
       llmConnectionSlug: 'openai-main',
       model: 'gpt-5',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     await collect(
       fixture.context.runtime.sendMessage(session.id, {
@@ -736,7 +736,7 @@ describe('Runtime Host maka run adapter', () => {
       cwd: '/workspace',
       llmConnectionSlug: 'openai-main',
       model: 'gpt-5',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
 
     await collect(
@@ -788,7 +788,7 @@ describe('Runtime Host maka run adapter', () => {
       cwd: '/workspace',
       llmConnectionSlug: 'openai-main',
       model: 'gpt-5',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
 
     await fixture.context.runtime.stopSession(session.id);
@@ -810,7 +810,7 @@ describe('Runtime Host maka run adapter', () => {
       cwd: '/workspace',
       llmConnectionSlug: 'openai-main',
       model: 'gpt-5',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     const sending = collect(
       fixture.context.runtime.sendMessage(session.id, {
@@ -841,7 +841,7 @@ describe('Runtime Host maka run adapter', () => {
       cwd: '/workspace',
       llmConnectionSlug: 'openai-main',
       model: 'gpt-5',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
 
     await assert.rejects(
@@ -868,7 +868,7 @@ describe('Runtime Host maka run adapter', () => {
       cwd: '/workspace',
       llmConnectionSlug: 'openai-main',
       model: 'gpt-5',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
 
     await assert.rejects(
@@ -894,7 +894,7 @@ describe('Runtime Host maka run adapter', () => {
       cwd: '/workspace',
       llmConnectionSlug: 'openai-main',
       model: 'gpt-5',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
 
     const graph = fixture.context.agentGraph;
@@ -921,7 +921,7 @@ describe('Runtime Host maka run adapter', () => {
       cwd: '/workspace',
       llmConnectionSlug: 'openai-main',
       model: 'gpt-5',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     const waiting = fixture.context.agentGraph?.waitForCompletion(session.id);
     assert.ok(waiting);
@@ -936,43 +936,6 @@ describe('Runtime Host maka run adapter', () => {
       new Error('interactive user questions are unavailable in non-interactive mode'),
     );
   });
-
-  test('denies a Graph successor sandbox expansion in non-interactive mode', async () => {
-    const fixture = runFixture({
-      graph: true,
-      pendingInteractions: [
-        {
-          schemaVersion: 1,
-          sessionId: 'session-created',
-          turnId: 'turn-2',
-          runId: 'run-2',
-          interactionId: 'boundary-1',
-          revision: 1,
-          status: 'pending',
-          outcome: null,
-          request: {
-            kind: 'sandbox_boundary',
-            justification: 'Needs broader access',
-            expansion: {
-              filesystem: {
-                entries: [{ path: '/outside', access: 'read', scope: 'subtree' }],
-              },
-            },
-          },
-        },
-      ],
-    });
-    const session = await fixture.context.runtime.createSession({
-      cwd: '/workspace',
-      llmConnectionSlug: 'openai-main',
-      model: 'gpt-5',
-      permissionMode: 'ask',
-    });
-
-    await fixture.context.agentGraph?.waitForCompletion(session.id);
-
-    assert.deepEqual(fixture.sandboxResponses, [{ requestId: 'boundary-1', decision: 'deny' }]);
-  });
 });
 
 function publicCommandContext(input: MakaRunContextInput, onCreate: () => void = () => {}) {
@@ -983,8 +946,7 @@ function publicCommandContext(input: MakaRunContextInput, onCreate: () => void =
         return sessionSummary('session-public');
       },
       readExecutionBoundary: async () => ({
-        kind: 'managed' as const,
-        access: 'writable' as const,
+        kind: 'bypass' as const,
         revision: 0,
       }),
       sendMessage: async function* (_sessionId: string, message: { turnId: string }) {
@@ -996,9 +958,8 @@ function publicCommandContext(input: MakaRunContextInput, onCreate: () => void =
           sandboxBoundary: 'none',
         });
       },
-      respondToSandboxBoundary: async () => {},
       stopSession: async () => {},
-      setExecutionBoundaryKind: async () => {},
+      setPermissionMode: async () => {},
     },
     target: { connection: { slug: 'openai-main' }, model: 'gpt-5' },
     close: async () => {},
@@ -1032,7 +993,6 @@ function runFixture(input: {
   const moves: string[] = [];
   const graphStops: string[] = [];
   const exactTurnStops: { sessionId: string; turnId: string; runId: string }[] = [];
-  const sandboxResponses: { requestId: string; decision: 'deny' }[] = [];
   let turnStops = 0;
   const pendingInteractionListeners = new Set<(pending: InteractionPendingSnapshot) => void>();
   const transcriptListeners = new Set<
@@ -1130,9 +1090,6 @@ function runFixture(input: {
           : events,
       };
     },
-    respondToSandboxBoundary: async (response: { requestId: string; decision: 'deny' }) => {
-      sandboxResponses.push(response);
-    },
     setPermissionMode: async () => {},
     stop: async () => {
       turnStops += 1;
@@ -1214,7 +1171,6 @@ function runFixture(input: {
     graphStops,
     exactTurnStops,
     preparedMaxSteps,
-    sandboxResponses,
     createContext,
     publishPendingInteraction(pending: InteractionPendingSnapshot) {
       for (const listener of pendingInteractionListeners) listener(structuredClone(pending));
@@ -1243,7 +1199,7 @@ async function observeFixtureOutcome(
     cwd: '/workspace',
     llmConnectionSlug: 'openai-main',
     model: 'gpt-5',
-    permissionMode: 'ask',
+    permissionMode: 'auto_review',
   });
   await collect(
     fixture.context.runtime.sendMessage(session.id, {
@@ -1990,7 +1946,7 @@ function sessionProjection(id: string): SessionCatalogProjection {
     llmConnectionSlug: 'openai-main',
     connectionLocked: true,
     model: 'gpt-5',
-    permissionMode: 'ask',
+    permissionMode: 'auto_review',
     collaborationMode: 'agent',
     orchestrationMode: 'default',
   };
@@ -2010,7 +1966,7 @@ function sessionSummary(id: string): SessionSummary {
     llmConnectionSlug: 'openai-main',
     connectionLocked: true,
     model: 'gpt-5',
-    permissionMode: 'ask',
+    permissionMode: 'auto_review',
     collaborationMode: 'agent',
     orchestrationMode: 'default',
   };

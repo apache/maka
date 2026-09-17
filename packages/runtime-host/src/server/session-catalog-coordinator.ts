@@ -24,11 +24,7 @@ import { createHash } from 'node:crypto';
 import { authorizeConnectionModel, connectionEnabledModelIds } from '@maka/core/llm-connections';
 import { isModelExplicitlyUnsupportedForChat } from '@maka/core/model-catalog';
 import { thinkingVariantsForConnection } from '@maka/core/model-thinking';
-import {
-  executionBoundaryDisplayMode,
-  type ExecutionBoundary,
-  type ExecutionBoundarySummary,
-} from '@maka/core/sandbox-boundary';
+import { type ExecutionBoundary, type ExecutionBoundarySummary } from '@maka/core/sandbox-boundary';
 import type { CreateSessionInput } from '@maka/core/runtime-inputs';
 import { isExecutorId } from '@maka/core/executor-id';
 import type { ToolMode } from '@maka/core/tool-mode';
@@ -1367,15 +1363,9 @@ async function prepareCreate(input: SessionCreateInput): Promise<PreparedSession
     );
   }
   const mode = input.mode === undefined ? undefined : sessionStartModeSpec(input.mode);
-  if (mode === undefined && input.permissionMode === 'explore') {
-    throw new SessionOperationFailure(
-      'invalid_request',
-      'Session creation requires a declared mode for explore permission',
-    );
-  }
   const name = normalizedSessionName(mode?.name ?? input.name ?? DEFAULT_SESSION_NAME);
   const labels = [...(input.labels ?? []), ...(mode?.labels ?? [])];
-  const permissionMode = mode?.permissionMode ?? input.permissionMode;
+  const permissionMode = input.permissionMode;
   return {
     name,
     labels,
@@ -1762,7 +1752,7 @@ function projectExecutionBoundary(boundary: ExecutionBoundary): ExecutionBoundar
   if (boundary.kind !== 'managed') return { kind: boundary.kind, revision: boundary.revision };
   return {
     kind: 'managed',
-    access: executionBoundaryDisplayMode(boundary) === 'explore' ? 'read_only' : 'writable',
+    access: boundary.profile.name === 'read-only' ? 'read_only' : 'writable',
     revision: boundary.revision,
   };
 }

@@ -20,14 +20,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { REQUEST_COMPOSITION_MAX_TOOL_DESCRIPTION_LENGTH } from '@maka/core/run-composition';
-import { createManagedExecutionBoundary } from '@maka/core/sandbox-boundary';
-import { createWorkspaceWritePermissionProfile } from '@maka/core/permission-profile';
-import type {
-  McpBoundTool,
-  McpCallResult,
-  McpToolBinding,
-  McpToolDescriptor,
-} from '@maka/core/mcp';
+import type { McpBoundTool, McpToolBinding, McpToolDescriptor } from '@maka/core/mcp';
 import {
   buildMcpTools,
   buildMcpToolsWithIdentities,
@@ -244,53 +237,6 @@ test('prepared MCP execution receives the Runtime-owned form callback after admi
     emitOutput: () => undefined,
     requestUserForm: async () => ({ action: 'accept', values: { target: 'staging' } }),
   });
-});
-
-test('Direct-mode MCP calls request managed network expansion before provider dispatch', async () => {
-  const sequence: string[] = [];
-  const boundary = createManagedExecutionBoundary(createWorkspaceWritePermissionProfile(), 0);
-  const [tool] = buildMcpTools(
-    fakeProvider(
-      [boundTool(descriptor('server', 'mutate'), binding('managed-network-binding'))],
-      async () => {
-        sequence.push('provider');
-        return { content: [{ type: 'text', text: 'ok' }] };
-      },
-    ),
-  );
-
-  await tool?.impl(
-    {},
-    {
-      sessionId: 'session',
-      turnId: 'turn',
-      cwd: '/workspace',
-      toolCallId: 'direct-call',
-      abortSignal: new AbortController().signal,
-      emitOutput() {},
-      executionBoundary: boundary,
-      requestSandboxBoundary: async (expansion, justification) => {
-        sequence.push('boundary');
-        assert.deepEqual(expansion, { network: { enabled: true } });
-        assert.equal(justification, 'Call MCP tool server/mutate.');
-        return {
-          request: {
-            sessionId: 'session',
-            requestId: 'request-1',
-            status: 'approved',
-            baseRevision: 0,
-            expansion,
-            justification,
-            createdAt: 1,
-          },
-          boundary,
-          changed: true,
-        };
-      },
-    },
-  );
-
-  assert.deepEqual(sequence, ['boundary', 'provider']);
 });
 
 test('MCP annotations cannot lower permissions and model output has aggregate bounds', async () => {

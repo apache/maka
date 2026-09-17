@@ -23,8 +23,6 @@ import { resolveModelVisionSupport } from '@maka/core/model-metadata';
 import { modelOverride } from '@maka/core/model-thinking';
 import type { ModelCallAttempt } from '@maka/core/model-call-attempt';
 import type { ModelCallCommit } from '@maka/core/agent-run';
-import type { PermissionMode } from '@maka/core/permission';
-import { resolveCollaborationPermissionMode } from '@maka/core/collaboration';
 import { AiSdkBackend } from '@maka/runtime/ai-sdk-backend';
 import {
   buildDefaultContextBudgetPolicy,
@@ -75,8 +73,34 @@ import {
 import { toRuntimePolicyProxy } from './runtime-policy-proxy.js';
 import type { HostRunComposer, HostRunComposerFactory } from './host-run-composer.js';
 
+import type { AutoReviewer } from '@maka/runtime/auto-review';
+
+/** The current user-selected mode, including the authority of linked parents. */
+export async function readHostSessionPermissionMode(
+  context: Pick<BackendFactoryContext, 'sessionId' | 'store'>,
+  runtimePolicy: Pick<HostExecutionRuntimePolicyAuthority, 'runtimePolicy'>,
+) {
+  // Linked agents cannot bypass a parent's review setting. WorkHub uses
+  // the live setting because its coordination session is permanent.
+  let sessionId = context.sessionId;
+  const visited = new Set<string>();
+  while (!visited.has(sessionId)) {
+    visited.add(sessionId);
+    const header = await context.store.readHeader(sessionId);
+    const mode =
+      header.toolProfile === 'workhub-coordination-v2'
+        ? (await runtimePolicy.runtimePolicy.getSnapshot()).policy.chatDefaults.permissionMode
+        : header.permissionMode;
+    if (mode === 'auto_review') return mode;
+    if (!header.subagentParent) return mode;
+    sessionId = header.subagentParent.parentSessionId;
+  }
+  throw new Error('Invalid linked Session ancestry');
+}
+
 export interface HostAiSdkBackendInput {
   readonly context: BackendFactoryContext;
+  readonly autoReview?: AutoReviewer;
   readonly runtimePolicy: HostExecutionRuntimePolicyAuthority;
   readonly oauthCredentials: HostOAuthExecutionAuthority;
   readonly createRunComposer: HostRunComposerFactory;
@@ -362,30 +386,14 @@ async function buildHostAiSdkBackend(
         header: {
           ...input.context.header,
           model: target.model,
-          permissionMode: resolveCollaborationPermissionMode({
-            collaborationMode: input.context.header.collaborationMode ?? 'agent',
-            permissionMode: input.context.header.permissionMode,
-          }),
         },
         ...(input.context.recordSystemNote
           ? { recordSystemNote: input.context.recordSystemNote }
           : {}),
         readExecutionBoundary: () =>
           input.context.store.readExecutionBoundary(input.context.sessionId),
-        readPermissionMode: async () =>
-          (await input.context.store.readHeader(input.context.sessionId)).permissionMode,
-        ...(input.context.store.createSandboxBoundaryRequest
-          ? {
-              createSandboxBoundaryRequest: (request) =>
-                input.context.store.createSandboxBoundaryRequest!(request),
-            }
-          : {}),
-        ...(input.context.store.settleSandboxBoundaryRequest
-          ? {
-              settleSandboxBoundaryRequest: (request) =>
-                input.context.store.settleSandboxBoundaryRequest!(request),
-            }
-          : {}),
+        autoReview: input.autoReview,
+        readPermissionMode: () => readHostSessionPermissionMode(input.context, input.runtimePolicy),
         connection: target.connection,
         providerStateIdentity: target.providerStateIdentity,
         apiKey,

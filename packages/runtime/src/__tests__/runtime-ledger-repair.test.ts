@@ -98,7 +98,7 @@ test('repairs imported transcript turns into provider-neutral canonical history'
         cwd: '/repo',
         llmConnectionSlug: 'deepseek',
         model: 'deepseek-v4-flash',
-        permissionMode: 'ask',
+        permissionMode: 'auto_review',
       },
       messages,
       { adapterId: 'test', sourceSessionId: 'source-session-1' },
@@ -234,10 +234,10 @@ test('repairs imported transcript turns into provider-neutral canonical history'
 test('an imported snapshot cutoff survives materialization as aborted', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-snapshot-cutoff-'));
   const sessions = createSessionStore(root);
-  const runs = createSqliteAgentRunStore(root);
+  const _runs = createSqliteAgentRunStore(root);
   const runtimeEvents = createSqliteRuntimeStore(join(root, 'runtime.sqlite'));
   let sequence = 0;
-  const newId = () => `cutoff-${++sequence}`;
+  const _newId = () => `cutoff-${++sequence}`;
 
   try {
     const ts = Date.now() + 86_400_000;
@@ -276,7 +276,7 @@ test('an imported snapshot cutoff survives materialization as aborted', async ()
         cwd: '/repo',
         llmConnectionSlug: 'anthropic',
         model: 'claude-opus-5',
-        permissionMode: 'ask',
+        permissionMode: 'auto_review',
       },
       cutoffMessages,
       { adapterId: 'claude-code', sourceSessionId: 'cut-1' },
@@ -306,14 +306,14 @@ test('does not import Host-handed-off transcript messages as synthetic runs', as
   const sessions = createSessionStore(root);
   const runs = createSqliteAgentRunStore(root);
   const runtimeEvents = createSqliteRuntimeStore(join(root, 'runtime.sqlite'));
-  let sequence = 0;
+  let _sequence = 0;
   try {
     const session = await sessions.createImportedSession(
       {
         cwd: '/repo',
         llmConnectionSlug: 'deepseek',
         model: 'deepseek-v4-flash',
-        permissionMode: 'ask',
+        permissionMode: 'auto_review',
       },
       [
         {
@@ -367,7 +367,7 @@ test('an imported turn that opens on an assistant reply still materializes', asy
         cwd: '/repo',
         llmConnectionSlug: 'opencode',
         model: 'opencode/zen',
-        permissionMode: 'ask',
+        permissionMode: 'auto_review',
       },
       [
         {
@@ -416,10 +416,10 @@ test('an imported turn with no terminal state is repaired to failed', async () =
   // cutoff cannot quietly stop being true.
   const root = await mkdtemp(join(tmpdir(), 'maka-missing-terminal-'));
   const sessions = createSessionStore(root);
-  const runs = createSqliteAgentRunStore(root);
+  const _runs = createSqliteAgentRunStore(root);
   const runtimeEvents = createSqliteRuntimeStore(join(root, 'runtime.sqlite'));
   let sequence = 0;
-  const newId = () => `missing-${++sequence}`;
+  const _newId = () => `missing-${++sequence}`;
 
   try {
     const ts = Date.now() + 86_400_000;
@@ -428,7 +428,7 @@ test('an imported turn with no terminal state is repaired to failed', async () =
         cwd: '/repo',
         llmConnectionSlug: 'anthropic',
         model: 'claude-opus-5',
-        permissionMode: 'ask',
+        permissionMode: 'auto_review',
       },
       [
         { type: 'user', id: 'm-user', turnId: 'turn-missing', ts, text: 'read the file' },
@@ -472,7 +472,7 @@ test("converts Maka's own legacy transcript whole, and resumes an interrupted co
       cwd: '/repo',
       llmConnectionSlug: 'anthropic',
       model: 'claude-opus-5',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     await sessions.appendMessages(session.id, [
       { type: 'user', id: 'n-user', turnId: 'turn-1', ts, text: 'run the tests' },
@@ -571,7 +571,7 @@ test('converts an imported turn ahead of a run the Session already sent', async 
         cwd: '/repo',
         llmConnectionSlug: 'anthropic',
         model: 'claude-opus-5',
-        permissionMode: 'ask',
+        permissionMode: 'auto_review',
       },
       [
         { type: 'user', id: 'i-user', turnId: 'turn-old', ts, text: 'the older question' },
@@ -614,7 +614,7 @@ test('converts an imported turn ahead of a run the Session already sent', async 
           },
           configuration: {
             cwd: '/repo',
-            permissionMode: 'ask',
+            permissionMode: 'auto_review',
             collaborationMode: 'agent',
             orchestrationMode: 'default',
             orchestrationSource: 'session',
@@ -679,7 +679,7 @@ test('startup recovery leaves an interrupted legacy conversion for the importer 
       cwd: '/repo',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     const db = new DatabaseSync(join(root, 'runtime.sqlite'));
     try {
@@ -767,7 +767,7 @@ test('a resolved Claude transcript replays as the conversation the user kept', a
   const runs = createSqliteAgentRunStore(root);
   const runtimeEvents = createSqliteRuntimeStore(join(root, 'runtime.sqlite'));
   let sequence = 0;
-  const newId = () => `lineage-${++sequence}`;
+  const _newId = () => `lineage-${++sequence}`;
   const SOURCE_SESSION_ID = 'aaaaaaaa-0000-4000-8000-00000000e2e1';
 
   try {
@@ -895,7 +895,7 @@ test('a resolved Claude transcript replays as the conversation the user kept', a
         cwd: '/repo',
         llmConnectionSlug: 'anthropic',
         model: 'claude-opus-5',
-        permissionMode: 'ask',
+        permissionMode: 'auto_review',
       },
       messages,
       { adapterId: 'claude-code', sourceSessionId: SOURCE_SESSION_ID },
@@ -972,7 +972,7 @@ async function seedLegacyTurn(sessions: ReturnType<typeof createSessionStore>) {
     cwd: '/repo',
     llmConnectionSlug: 'anthropic',
     model: 'claude-opus-5',
-    permissionMode: 'ask',
+    permissionMode: 'auto_review',
   });
   await sessions.appendMessages(session.id, [
     { type: 'user', id: 'r-user', turnId: 'turn-1', ts, text: 'run the tests' },
@@ -1108,7 +1108,7 @@ test('converts a legacy transcript larger than one page without reading it whole
       cwd: '/repo',
       llmConnectionSlug: 'anthropic',
       model: 'claude-opus-5',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     const turnCount = 200;
     for (let turn = 0; turn < turnCount; turn += 1) {
@@ -1182,7 +1182,7 @@ test('keeps interleaved turns through their final state across a page boundary',
       cwd: '/repo',
       llmConnectionSlug: 'openai',
       model: 'gpt-5',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     await sessions.appendMessages(session.id, [
       { type: 'user', id: 'a-user', turnId: 'turn-a', ts, text: 'first' },

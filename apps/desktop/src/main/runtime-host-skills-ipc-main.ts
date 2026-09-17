@@ -399,7 +399,7 @@ function normalizeNewSessionPermissionMode(
 ): ChatDefaultPermissionMode | undefined {
   if (!input || typeof input !== "object" || Array.isArray(input)) return;
   const value = (input as Record<string, unknown>).permissionMode;
-  return value === "ask" || value === "bypass" ? value : undefined;
+  return value === "auto_review" || value === "bypass" ? value : undefined;
 }
 
 function normalizeNewSessionProjectId(input: unknown): string | null | undefined {

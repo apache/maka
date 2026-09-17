@@ -730,7 +730,7 @@ export class HostSessionRevisionCoordinator {
       llmConnectionSlug: source.llmConnectionSlug,
       model: source.model,
       ...(source.thinkingLevel !== undefined ? { thinkingLevel: source.thinkingLevel } : {}),
-      permissionMode: derivesFromCoordination ? 'ask' : source.permissionMode,
+      permissionMode: derivesFromCoordination ? 'auto_review' : source.permissionMode,
       toolMode: source.toolMode ?? 'direct',
       collaborationMode: source.collaborationMode ?? 'agent',
       orchestrationMode: source.orchestrationMode ?? 'default',

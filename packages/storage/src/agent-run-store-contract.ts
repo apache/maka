@@ -75,6 +75,8 @@ export const ROOT_TURN_ADMISSION_MAX_AGGREGATED_ATTACHMENTS =
   ROOT_TURN_ADMISSION_MAX_SOURCE_MESSAGES * MAX_ATTACHMENT_COUNT;
 
 export interface RootTurnSourceMessage {
+  /** Original human text authenticated by Host admission; absent is not authorization. */
+  authenticatedUserRequests?: readonly string[];
   messageId: string;
   content: MessageContent;
   submittedContentDigest?: `sha256:${string}`;
@@ -103,6 +105,8 @@ export interface RootTurnAdmission {
   execution: RootExecutionDescriptor;
   previousRootTurnId: string | null;
   normalizedInput: MessageContent | null;
+  /** Direct human admission (queued inputs carry this on sourceMessages instead). */
+  authenticatedUserRequests?: readonly string[];
   turnOrchestration?: TurnOrchestration;
   skillInvocation?: SkillInvocationResult;
   authorization?: RootTurnAdmissionAuthorization;
@@ -136,6 +140,8 @@ export interface AdmitRootTurnInput {
   execution: RootExecutionDescriptor;
   previousRootTurnId: string | null;
   normalizedInput: MessageContent | null;
+  /** Direct human admission (queued inputs carry this on sourceMessages instead). */
+  authenticatedUserRequests?: readonly string[];
   turnOrchestration?: TurnOrchestration;
   skillInvocation?: SkillInvocationResult;
   authorization?: RootTurnAdmissionAuthorization;
@@ -360,6 +366,13 @@ export function normalizeAdmitRootTurnInput(input: AdmitRootTurnInput): RootTurn
   if (!Number.isSafeInteger(input.admittedAt) || input.admittedAt < 0) {
     throw new Error('Invalid root turn admission timestamp');
   }
+  if (
+    input.authenticatedUserRequests !== undefined &&
+    (!Array.isArray(input.authenticatedUserRequests) ||
+      input.authenticatedUserRequests.some((text) => typeof text !== 'string'))
+  ) {
+    throw new Error('Invalid authenticated user request');
+  }
   const { normalizedInput, sourceMessages } = normalizeRootTurnAdmissionPayload(
     input.normalizedInput,
     input.sourceMessages,
@@ -383,6 +396,9 @@ export function normalizeAdmitRootTurnInput(input: AdmitRootTurnInput): RootTurn
     execution,
     previousRootTurnId: input.previousRootTurnId,
     normalizedInput,
+    ...(input.authenticatedUserRequests !== undefined
+      ? { authenticatedUserRequests: input.authenticatedUserRequests }
+      : {}),
     ...(turnOrchestration ? { turnOrchestration } : {}),
     ...(skillInvocation ? { skillInvocation } : {}),
     ...(authorization ? { authorization } : {}),
@@ -564,6 +580,9 @@ export function normalizeRootTurnAdmission(
   }
   const record = value;
   const valid =
+    (record.authenticatedUserRequests === undefined ||
+      (Array.isArray(record.authenticatedUserRequests) &&
+        record.authenticatedUserRequests.every((text) => typeof text === 'string'))) &&
     record.schemaVersion === ROOT_TURN_ADMISSION_SCHEMA_VERSION &&
     record.sessionId === sessionId &&
     record.turnId === turnId &&
@@ -599,6 +618,9 @@ export function normalizeRootTurnAdmission(
     userMessageId: record.userMessageId as string | null,
     execution: normalizeRootExecutionDescriptor(record.execution),
     previousRootTurnId: record.previousRootTurnId as string | null,
+    ...(record.authenticatedUserRequests !== undefined
+      ? { authenticatedUserRequests: record.authenticatedUserRequests as string[] }
+      : {}),
     normalizedInput,
     ...(turnOrchestration ? { turnOrchestration } : {}),
     ...(skillInvocation ? { skillInvocation } : {}),
@@ -797,6 +819,7 @@ export function normalizeRootTurnSourceMessages(value: unknown): readonly RootTu
         'content',
         'placement',
         'disposition',
+        ...(Object.hasOwn(item, 'authenticatedUserRequests') ? ['authenticatedUserRequests'] : []),
         ...(Object.hasOwn(item, 'submittedContentDigest') ? ['submittedContentDigest'] : []),
         ...(Object.hasOwn(item, 'submittedPlacement') ? ['submittedPlacement'] : []),
         ...(Object.hasOwn(item, 'submittedIntent') ? ['submittedIntent'] : []),
@@ -816,6 +839,9 @@ export function normalizeRootTurnSourceMessages(value: unknown): readonly RootTu
       disposition,
     } = item;
     if (
+      (item.authenticatedUserRequests !== undefined &&
+        (!Array.isArray(item.authenticatedUserRequests) ||
+          item.authenticatedUserRequests.some((text) => typeof text !== 'string'))) ||
       typeof messageId !== 'string' ||
       !isSafeId(messageId) ||
       (placement !== 'current_turn' && placement !== 'next_turn') ||
@@ -837,6 +863,9 @@ export function normalizeRootTurnSourceMessages(value: unknown): readonly RootTu
     messageIds.add(messageId);
     return Object.freeze({
       messageId,
+      ...(item.authenticatedUserRequests !== undefined
+        ? { authenticatedUserRequests: item.authenticatedUserRequests as string[] }
+        : {}),
       content: normalizeRootTurnMessageContent(
         content,
         `root turn source message content at index ${index}`,
@@ -866,6 +895,7 @@ export function rootTurnAdmissionPayloadsEqual(
     isDeepStrictEqual(left.turnOrchestration, right.turnOrchestration) &&
     isDeepStrictEqual(left.skillInvocation, right.skillInvocation) &&
     isDeepStrictEqual(left.authorization, right.authorization) &&
+    isDeepStrictEqual(left.authenticatedUserRequests, right.authenticatedUserRequests) &&
     (left.normalizedInput === null || right.normalizedInput === null
       ? left.normalizedInput === right.normalizedInput
       : messageContentsEqual(left.normalizedInput, right.normalizedInput)) &&
@@ -888,6 +918,7 @@ export function rootTurnSourceMessagePayloadsEqual(
   right: RootTurnSourceMessage,
 ): boolean {
   return (
+    isDeepStrictEqual(left.authenticatedUserRequests, right.authenticatedUserRequests) &&
     left.messageId === right.messageId &&
     left.submittedContentDigest === right.submittedContentDigest &&
     (left.submittedPlacement ?? left.placement) === (right.submittedPlacement ?? right.placement) &&
@@ -1019,12 +1050,15 @@ export function deepFreezeRootTurnAdmission(admission: RootTurnAdmission): RootT
     Object.freeze(admission.execution.claim);
   }
   Object.freeze(admission.execution);
+  if (admission.authenticatedUserRequests) Object.freeze(admission.authenticatedUserRequests);
   if (admission.turnOrchestration) Object.freeze(admission.turnOrchestration);
   if (admission.skillInvocation) Object.freeze(admission.skillInvocation);
   if (admission.authorization) Object.freeze(admission.authorization);
   if (admission.normalizedInput) deepFreezeRootTurnMessageContent(admission.normalizedInput);
   for (const sourceMessage of admission.sourceMessages) {
     deepFreezeRootTurnMessageContent(sourceMessage.content);
+    if (sourceMessage.authenticatedUserRequests)
+      Object.freeze(sourceMessage.authenticatedUserRequests);
     Object.freeze(sourceMessage);
   }
   Object.freeze(admission.sourceMessages);
@@ -1095,9 +1129,12 @@ export function hasRootTurnAdmissionKeys(record: Record<string, unknown>): boole
     'sourceMessages',
     'admittedAt',
   ];
-  const optionalKeys = ['turnOrchestration', 'skillInvocation', 'authorization'].filter((key) =>
-    Object.hasOwn(record, key),
-  );
+  const optionalKeys = [
+    'turnOrchestration',
+    'skillInvocation',
+    'authorization',
+    'authenticatedUserRequests',
+  ].filter((key) => Object.hasOwn(record, key));
   return hasExactKeys(record, [...keys, ...optionalKeys]);
 }
 

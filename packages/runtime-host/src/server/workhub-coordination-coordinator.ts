@@ -43,7 +43,6 @@ import type { WorkHubRoutingDecision } from '@maka/core/workhub-routing';
 import type { ExecutionSessionWriter, SessionHeaderSnapshot } from '@maka/storage/execution-stores';
 import type {
   OperationOutcome,
-  WorkHubCoordinationActResult,
   WorkHubCoordinationActFromTurnInput,
   WorkHubCoordinationAnswerInput,
   WorkHubCoordinationConfigureModelInput,
@@ -1120,7 +1119,8 @@ function validCoordinationHeader(header: SessionHeader): boolean {
     validCoordinationIdentityHeader(header) &&
     ((header.toolProfile === COORDINATION_TOOL_PROFILE &&
       header.permissionMode === COORDINATION_PERMISSION_MODE) ||
-      (header.toolProfile === 'workhub-coordination-v1' && header.permissionMode === 'explore')) &&
+      (header.toolProfile === 'workhub-coordination-v1' &&
+        header.permissionMode === 'auto_review')) &&
     (header.collaborationMode ?? 'agent') === COORDINATION_COLLABORATION_MODE &&
     (header.orchestrationMode ?? 'default') === COORDINATION_ORCHESTRATION_MODE
   );

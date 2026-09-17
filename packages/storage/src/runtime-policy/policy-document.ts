@@ -44,7 +44,7 @@ import {
 } from './document-io.js';
 
 const FILE = 'runtime-policy.json';
-const SCHEMA_VERSION = 4 as const;
+const SCHEMA_VERSION = 5 as const;
 
 export interface RuntimePolicyDocument {
   readonly schemaVersion: typeof SCHEMA_VERSION;
@@ -72,9 +72,33 @@ export class RuntimePolicyDocumentOwner {
     if (
       document.schemaVersion !== 2 &&
       document.schemaVersion !== 3 &&
+      document.schemaVersion !== 4 &&
       document.schemaVersion !== SCHEMA_VERSION
     ) {
       throw codecError('invalid_document', `${FILE} has an unsupported schema version`);
+    }
+    if (document.schemaVersion !== SCHEMA_VERSION) {
+      const policy = record(
+        document.policy,
+        FILE,
+        'invalid_document',
+        Object.keys(document.policy ?? {}),
+      );
+      const defaults = record(
+        policy.chatDefaults,
+        FILE,
+        'invalid_document',
+        ['permissionMode', 'thinkingLevel', 'codeModeEnabled'],
+        ['permissionMode'],
+      );
+      document.policy = {
+        ...policy,
+        chatDefaults: {
+          ...defaults,
+          permissionMode:
+            defaults.permissionMode === 'ask' ? 'auto_review' : defaults.permissionMode,
+        },
+      };
     }
     return {
       schemaVersion: SCHEMA_VERSION,

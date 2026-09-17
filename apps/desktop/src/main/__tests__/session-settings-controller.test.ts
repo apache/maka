@@ -49,57 +49,9 @@ afterEach(async () => {
   Object.assign(globalThis, originalGlobals);
 });
 
-test('rejects non-chat permission modes before confirmation or persistence', async () => {
-  let permissionWrites = 0;
-  let draftWrites = 0;
-  let confirmations = 0;
-  const { controller } = await mountController({
-    services: createServices({
-      setPermissionMode: async () => {
-        permissionWrites += 1;
-        return {} as DesktopSessionSummary;
-      },
-    }),
-    setNewTaskPermissionMode: () => {
-      draftWrites += 1;
-    },
-    confirmBypass: async () => {
-      confirmations += 1;
-      return true;
-    },
-  });
 
-  let accepted = true;
-  await act(async () => {
-    accepted = await controller().setPermissionMode('explore');
-  });
 
-  assert.equal(accepted, false);
-  assert.equal(permissionWrites, 0);
-  assert.equal(draftWrites, 0);
-  assert.equal(confirmations, 0);
-});
 
-test('rejects non-chat permission modes before writing an existing Session', async () => {
-  let permissionWrites = 0;
-  const { controller } = await mountController({
-    owner: { sessionId: 'session-1' },
-    services: createServices({
-      setPermissionMode: async () => {
-        permissionWrites += 1;
-        return {} as DesktopSessionSummary;
-      },
-    }),
-  });
-
-  let accepted = true;
-  await act(async () => {
-    accepted = await controller().setPermissionMode('explore');
-  });
-
-  assert.equal(accepted, false);
-  assert.equal(permissionWrites, 0);
-});
 
 test('persists a model selection as one compound configuration and saves its default', async () => {
   const writes: unknown[] = [];
@@ -309,7 +261,7 @@ test('retires Permission and Orchestration overlays by their committed Session r
       activityAt: 10,
       model: 'model-a',
     }),
-    permissionMode: 'ask' as const,
+    permissionMode: 'auto_review' as const,
     orchestrationMode: 'default' as const,
   };
   const otherHostSession = desktopSession({
@@ -412,7 +364,7 @@ async function mountController(overrides: {
   services?: SessionSettingsServices;
   owner?: { sessionId?: string };
   sessions?: readonly DesktopSessionSummary[];
-  setNewTaskPermissionMode?(mode: 'ask' | 'bypass'): void;
+  setNewTaskPermissionMode?(mode: 'auto_review' | 'bypass'): void;
   confirmBypass?(): Promise<boolean>;
   saveComposerDefaults?(model: {
     llmConnectionId: string;
@@ -463,7 +415,7 @@ function Harness(props: {
   capture(controller: Controller): void;
   owner: { sessionId?: string };
   sessions: readonly DesktopSessionSummary[];
-  setNewTaskPermissionMode(mode: 'ask' | 'bypass'): void;
+  setNewTaskPermissionMode(mode: 'auto_review' | 'bypass'): void;
   confirmBypass(): Promise<boolean>;
   saveComposerDefaults(model: {
     llmConnectionId: string;
@@ -475,7 +427,7 @@ function Harness(props: {
     catalogRevision: 0,
     isActiveSession: () => true,
     sessions: props.sessions,
-    newTaskPermissionMode: 'ask',
+    newTaskPermissionMode: 'auto_review',
     refreshCatalog: async () => {},
     saveComposerDefaults: props.saveComposerDefaults,
     writeFailureCopy: () => ({ title: 'failed', description: 'failed' }),
@@ -499,7 +451,7 @@ function CausalRetirementHarness(props: {
     catalogRevision: props.catalogRevision,
     isActiveSession: () => true,
     sessions: props.sessions,
-    newTaskPermissionMode: 'ask',
+    newTaskPermissionMode: 'auto_review',
     refreshCatalog: async () => {},
     saveComposerDefaults: () => {},
     writeFailureCopy: () => ({ title: 'failed', description: 'failed' }),

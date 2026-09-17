@@ -495,7 +495,7 @@ function claimForBoundary(boundary: RuntimeBoundaryCursor) {
       },
       configuration: {
         cwd: '/workspace',
-        permissionMode: 'ask',
+        permissionMode: 'auto_review',
         collaborationMode: 'agent',
         orchestrationMode: 'default',
         orchestrationSource: 'session',

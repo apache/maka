@@ -242,7 +242,7 @@ function sessionHeader(): SessionHeader {
     llmConnectionSlug: 'connection-1',
     connectionLocked: true,
     model: 'model-1',
-    permissionMode: 'ask',
+    permissionMode: 'bypass',
     schemaVersion: 1,
   };
 }
@@ -285,9 +285,6 @@ function createInteractionCoordinator(
   const options: HostInteractionCoordinatorOptions = {
     store,
     sandboxBoundaries: {
-      createSandboxBoundaryRequest: async () => {
-        throw new Error('Unexpected sandbox boundary publication');
-      },
       readSandboxBoundaryRequest: async () => undefined,
       listPendingSandboxBoundaryRequests: async () => [],
       settleSandboxBoundaryRequest: async () => {
@@ -301,8 +298,6 @@ function createInteractionCoordinator(
     preflightSessionSnapshot: () => true,
     refreshCanonicalContinuity: async () => undefined,
     onPoison: () => undefined,
-    resolveSandboxBoundaryRootSession: async () => undefined,
-    onSandboxBoundaryGraphWake: async () => undefined,
   };
   return new HostInteractionCoordinator(options);
 }

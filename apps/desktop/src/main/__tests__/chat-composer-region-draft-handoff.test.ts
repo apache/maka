@@ -123,7 +123,6 @@ async function mountRegion(): Promise<{
               newTaskDraftKey,
               newTaskSendPending,
               stopPendingBySession: {},
-              respondToSandboxBoundary: () => {},
               respondToClientCapability: () => {},
               respondToUserQuestion: () => {},
               respondToUserForm: () => {},

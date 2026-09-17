@@ -566,8 +566,6 @@ async function createExecutionStoresForWrite(
         ),
       readExecutionBoundary: (sessionId) =>
         run(() => sessionStore.readExecutionBoundary(sessionId)),
-      createSandboxBoundaryRequest: (input) =>
-        run(() => sessionStore.createSandboxBoundaryRequest(input)),
       readSandboxBoundaryRequest: (sessionId, requestId) =>
         run(() => sessionStore.readSandboxBoundaryRequest(sessionId, requestId)),
       listPendingSandboxBoundaryRequests: (sessionId) =>
@@ -578,8 +576,6 @@ async function createExecutionStoresForWrite(
         run(() => sessionStore.hasExplicitSandboxBoundaryDenial(identities)),
       settleSandboxBoundaryRequest: (input) =>
         run(() => sessionStore.settleSandboxBoundaryRequest(input)),
-      setExecutionBoundaryKind: (sessionId, boundaryKind, projection) =>
-        run(() => sessionStore.setExecutionBoundaryKind(sessionId, boundaryKind, projection)),
       list: (filter) => run(() => sessionStore.list(filter)),
       listCatalogPage: (filter, cursor, limit, expectedRevision) =>
         run(() => sessionStore.listCatalogPage(filter, cursor, limit, expectedRevision)),

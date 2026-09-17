@@ -1054,7 +1054,7 @@ describe('projectRuntimeEventsToStoredMessages', () => {
       projected?.type === 'tool_result' && projected.content.kind === 'subagent'
         ? projected.content.permissionMode
         : undefined,
-      'ask',
+      'auto_review',
     );
     assert.deepStrictEqual(out.diagnostics, []);
   });
@@ -2464,7 +2464,7 @@ describe('system note projection', () => {
           turnId,
           ts,
           kind: 'mode_change',
-          data: { from: 'ask', to: 'bypass' },
+          data: { from: 'auto_review', to: 'bypass' },
         },
       ],
       modelHistory: 'full',
@@ -2667,10 +2667,6 @@ class ReadOnlyStore implements SessionStore {
     throw new Error('not implemented');
   }
 
-  async setExecutionBoundaryKind(): Promise<never> {
-    throw new Error('not implemented');
-  }
-
   async readExecutionBoundary(): Promise<never> {
     throw new Error('not implemented');
   }
@@ -2758,7 +2754,7 @@ function makeHeader(id: string): SessionHeader {
     llmConnectionSlug: 'fake',
     connectionLocked: false,
     model: 'fake-model',
-    permissionMode: 'ask',
+    permissionMode: 'auto_review',
     schemaVersion: 1,
   };
 }

@@ -1060,7 +1060,7 @@ describe('WorkHub Coordination Action Gate', () => {
       ],
       newWorkDefaults: {
         model: { llmConnectionId: 'conn', llmConnectionSlug: 'test', model: 'chosen-model' },
-        permissionMode: 'ask' as const,
+        permissionMode: 'auto_review' as const,
       },
       userText: 'Create an accessibility audit',
       proposal: { disposition: 'create_new' as const, title: 'Accessibility audit' },

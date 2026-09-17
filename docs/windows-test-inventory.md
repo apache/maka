@@ -15,11 +15,11 @@ Locations intentionally omit line numbers so unrelated edits do not invalidate t
 
 | Classification | Count |
 |---|---:|
-| windows-backend-gap | 27 |
+| windows-backend-gap | 26 |
 | portable-candidate | 35 |
-| platform-contract | 36 |
+| platform-contract | 33 |
 
-Total Windows-excluded declarations: **98**
+Total Windows-excluded declarations: **94**
 
 ## Inventory
 
@@ -47,7 +47,6 @@ Total Windows-excluded declarations: **98**
 | windows-backend-gap | `packages/runtime-host/src/__tests__/connection-effect-coordinator.test.ts` recovers a durable onboarding intent instead of rolling back a partial publication | `process.platform === 'win32'` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/control-endpoint.test.ts` runtime host control endpoint | `process.platform === 'win32'` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/execution-inspect-uds.test.ts` a live Host serves Interactive inspection over its real endpoint while retaining exclusive ownership | `process.platform === 'win32' ? 'Windows execution Host startup lifecycle' : false` |
-| windows-backend-gap | `packages/runtime-host/src/__tests__/execution-model-composition.test.ts` production Host executes Bash against the current live sandbox boundary | `process.platform === 'win32' ? 'Managed arbitrary-shell sandboxing is unavailable' : false` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/gitoxide-helper-invocation-internal.test.ts` applies the import deadline and terminates the helper process tree | `process.platform === 'win32'` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/gitoxide-helper-invocation-internal.test.ts` rejects an import response that does not match the requested baseline ref | `process.platform === 'win32'` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/gitoxide-helper-invocation-internal.test.ts` rejects an import response that does not match the requested source HEAD | `process.platform === 'win32'` |
@@ -72,9 +71,6 @@ Total Windows-excluded declarations: **98**
 | windows-backend-gap | `packages/runtime-host/src/__tests__/usage-pricing-client-correlation.test.ts` rejects local invalid input without poisoning transport and correlates a private canonical copy | `process.platform === 'win32'` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/usage-pricing-two-client-uds.test.ts` two clients share usage projection and one revision-CAS pricing authority | `process.platform === 'win32'` |
 | portable-candidate | `packages/runtime/src/__tests__/filesystem-apply-patch.test.ts` deletes a self-referential symlink entry without following it | `process.platform === 'win32'` |
-| platform-contract | `packages/runtime/src/__tests__/filesystem-worker-process-runner.test.ts` filesystem worker rejects boundedly when a detached descendant retains stdout | `process.platform === 'win32' ? 'POSIX detached process-group semantics required' : false` |
-| platform-contract | `packages/runtime/src/__tests__/filesystem-worker-smoke.test.ts` macOS filesystem worker smoke | `process.platform !== 'darwin'` |
-| platform-contract | `packages/runtime/src/__tests__/glob-search.test.ts` both Glob paths report permission failures and recover after permissions are restored | `process.platform === 'win32' \|\| process.getuid?.() === 0` |
 | portable-candidate | `packages/runtime/src/__tests__/node-pty-write-lifecycle.test.ts` does not carry queued Unix PTY writes past native exit | `process.platform === 'win32' ? 'Unix PTY file-descriptor lifecycle only' : false` |
 | portable-candidate | `packages/runtime/src/__tests__/shell-exec.test.ts` writes a legacy WSL Bash command through stdin | `process.platform === 'win32' ? 'uses /bin/sh as a portable stdin probe' : false` |
 | platform-contract | `packages/runtime/src/__tests__/shell-exec.test.ts` bounds output drain after the root exits while a detached descendant retains stdout | `process.platform === 'win32' ? 'POSIX detached process-group semantics required' : false` |

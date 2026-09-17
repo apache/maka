@@ -25,12 +25,7 @@
  */
 
 import type { SessionEvent } from '@maka/core/events';
-import type {
-  BackendKind,
-  RuntimeSystemNoteKind,
-  SessionHeader,
-  StoredMessage,
-} from '@maka/core/session';
+import type { BackendKind, RuntimeSystemNoteKind, SessionHeader } from '@maka/core/session';
 import type {
   AgentBackend,
   BackendCompactHistoryInput,
@@ -38,7 +33,6 @@ import type {
   BackendSendInput,
   HostedInteractionBridge,
 } from '@maka/core/backend-types';
-import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import type { EffectiveOrchestration } from '@maka/core/orchestration';
 import type { AttachmentByteReader } from '@maka/core/attachments';
@@ -126,8 +120,7 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
   readExecutionBoundary: ToolRuntimeInput['readExecutionBoundary'];
   /** Reads the user's current Session permission selection for each local tool invocation. */
   readPermissionMode: ToolRuntimeInput['readPermissionMode'];
-  createSandboxBoundaryRequest?: ToolRuntimeInput['createSandboxBoundaryRequest'];
-  settleSandboxBoundaryRequest?: ToolRuntimeInput['settleSandboxBoundaryRequest'];
+  autoReview?: ToolRuntimeInput['autoReview'];
 
   // ── Process-singleton deps ─────────────────────────────────────────────
   /** Canonical-named tools available this session. */
@@ -484,7 +477,6 @@ export class AiSdkBackend implements AgentBackend {
    * long after its step still resolves this turn's watchdog, trace, and run.
    */
   private createToolRuntime(identity: {
-    inheritedSandboxBoundaryDenied: boolean;
     turnId: string;
     runId: string | undefined;
     invocationId: string | undefined;
@@ -494,15 +486,13 @@ export class AiSdkBackend implements AgentBackend {
   }): ToolRuntime {
     const input = this.input;
     return new ToolRuntime({
-      inheritedSandboxBoundaryDenied: identity.inheritedSandboxBoundaryDenied,
       sessionId: input.sessionId,
       header: input.header,
       connection: input.connection,
       modelId: input.modelId,
       readExecutionBoundary: input.readExecutionBoundary,
       readPermissionMode: input.readPermissionMode,
-      createSandboxBoundaryRequest: input.createSandboxBoundaryRequest,
-      settleSandboxBoundaryRequest: input.settleSandboxBoundaryRequest,
+      autoReview: input.autoReview,
       newId: this.newId,
       now: this.now,
       getPermissionPauseTarget: () => identity.scope().watchdog,
@@ -559,7 +549,6 @@ export class AiSdkBackend implements AgentBackend {
         providerRetrySleep: this.providerRetrySleep,
         createToolRuntime: (owner) =>
           this.createToolRuntime({
-            inheritedSandboxBoundaryDenied: input.continuation?.sandboxBoundaryDenied === true,
             turnId: owner.turnId,
             runId: owner.runId,
             invocationId: input.invocationId ?? input.runId,
@@ -619,15 +608,6 @@ export class AiSdkBackend implements AgentBackend {
     );
     if (failures.length === 1) throw failures[0];
     if (failures.length > 1) throw new AggregateError(failures, 'Failed to stop every active turn');
-  }
-
-  async respondToSandboxBoundary(decision: SandboxBoundaryResponse): Promise<void> {
-    // Routed by request id, which is already the identity the registry matches
-    // on: at most one turn parked this request.
-    for (const turn of this.activeTurns) {
-      if (await turn.respondToSandboxBoundary(decision)) return;
-    }
-    throw new Error(`No pending sandbox boundary request ${decision.requestId}`);
   }
 
   async respondToUserQuestion(response: UserQuestionResponse): Promise<void> {

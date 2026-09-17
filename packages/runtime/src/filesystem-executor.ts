@@ -17,44 +17,27 @@
  * under the License.
  */
 
-// packages/runtime/src/filesystem-executor.ts
-// The single authority for where the built-in file tools may reach.
-//
-// One decision — the active ExecutionBoundary — picks the backend and the path
-// scope; the tools carry no policy branch and no executor carries a containment
-// rule of its own. Before this seam existed each file tool repeated the same
-// worker-versus-executor branch, and the fallback executor hard-coded a session-cwd
-// containment that no permission profile actually declares. A bypass boundary
-// skipped the worker, so that undeclared rule became the only arbiter and made
-// "full access" stricter than ask mode, which grants :slash_tmp outright (#2083).
+// Host filesystem operations with serialized, identity-checked writes.
 
 import { Buffer } from 'node:buffer';
 import { readPage } from './read-page.js';
-import { lstat, realpath, stat } from 'node:fs/promises';
+import { lstat, stat } from 'node:fs/promises';
 import { isAbsolute } from 'node:path';
-import type { ExecutionBoundary } from '@maka/core/sandbox-boundary';
-import type { PermissionMode } from '@maka/core/permission';
-import type { PermissionProfile } from '@maka/core/permission-profile';
 import { ToolOutcomeUnknownError } from '@maka/core/events';
 import { computeEditedSource } from './edit-replace.js';
 import { createEditUnifiedDiff, createUnifiedDiff } from './unified-diff.js';
-import {
-  classifyFailedMutationOutcome,
-  type FilesystemTargetIdentity,
-} from './filesystem-authority.js';
+import { type FilesystemTargetIdentity } from './filesystem-authority.js';
 import { StableWriteFailure } from './file-stable-write.js';
 import { applyUpdateToContent } from './apply-patch-file.js';
 import { withFileWriteLock } from './file-write-lock.js';
-import type {
-  FilesystemWorkerClient,
-  FilesystemWorkerClientOperation,
-} from './filesystem-worker/client.js';
-import { isSupportedImagePath, type ImageMimeType } from './image-file.js';
-import type { FilesystemWorkerResult } from './filesystem-worker/protocol.js';
-import { FilesystemWorkerOperationSchema, operationAccess } from './filesystem-worker/protocol.js';
-import { resolveCanonicalDirectoryEntryTarget } from './path-containment.js';
-import { normalizeSandboxBoundaryPath } from './sandbox-boundary-path.js';
-import { SandboxCommandError } from './sandbox/errors.js';
+import { isSupportedImagePath } from './image-file.js';
+import {
+  FilesystemOperationSchema,
+  operationAccess,
+  type FilesystemBackendOperation,
+  type FilesystemResult,
+} from './filesystem-contract.js';
+export type { FilesystemResult } from './filesystem-contract.js';
 import type {
   WorkspaceEditExecutor,
   WorkspaceApplyPatchExecutor,
@@ -64,28 +47,11 @@ import type {
   WorkspaceWriteExecutor,
 } from './workspace-executor.js';
 
-/** A file operation, named the same way on every backend. `cwd` is supplied per call. */
-type FilesystemBackendOperation = FilesystemWorkerClientOperation;
 export type FilesystemOperation = Exclude<FilesystemBackendOperation, { kind: 'apply_patch' }>;
-
-/**
- * The result shape every backend answers with.
- *
- * It is the worker protocol's union with one substitution: image bytes stay
- * bytes. Base64 is how the worker's JSON transport carries them, not part of
- * this contract, so the worker-backed backend decodes once at its own edge and
- * the host-local backend hands its buffer straight through.
- */
-export type FilesystemResult =
-  | Exclude<FilesystemWorkerResult, { kind: 'read_image' }>
-  | { kind: 'read_image'; bytes: Uint8Array; mimeType: ImageMimeType };
 
 export interface FilesystemExecuteInput {
   operation: FilesystemOperation;
   cwd: string;
-  executionBoundary?: ExecutionBoundary;
-  /** Only consulted when no boundary is present; the boundary always wins. */
-  permissionMode?: PermissionMode;
   abortSignal?: AbortSignal;
 }
 
@@ -123,39 +89,18 @@ export type FilesystemWorkspaceExecutor = WorkspaceWriteExecutor &
   Partial<WorkspaceReadModifyWriteExecutor> &
   WorkspaceSearchExecutor;
 
-export interface BoundaryFilesystemExecutorInput {
+export interface FilesystemExecutorInput {
   workspace: FilesystemWorkspaceExecutor;
-  worker?: Pick<FilesystemWorkerClient, 'execute'>;
-  /** Explicit embedding policy handed to the worker instead of a mode default. */
-  permissionProfile?: PermissionProfile;
 }
-
-/**
- * The path scope a boundary authorises.
- *
- * `bypass` is the user asking for no restrictions, and it already means exactly
- * that for Bash, which runs untransformed on the host under the same boundary.
- * Every other boundary — including a missing one, which is an embedder that
- * never opted in — stays workspace-scoped.
- */
-function pathScopeForBoundary(boundary: ExecutionBoundary | undefined): WorkspacePathScope {
-  return boundary?.kind === 'bypass' ? 'host' : 'workspace';
-}
-
-/**
- * Operations that read, modify and write back, and so must hold the target's lock.
- * The single authority on which kinds are writes is `operationAccess` in the
- * worker protocol; `mutates` was a second, narrower list that drifted.
- */
 
 /**
  * Capture the target's stable identity at lock acquisition (T0) — *before*
- * waiting for the write lock. This is the inode the worker compare-and-swaps
+ * waiting for the write lock. This is the inode the executor compare-and-swaps
  * against, so a path replaced while the call is queued for the lock is detected
  * rather than silently written. Returns undefined when the target does not yet
  * exist (a create), since there is no inode to pin.
  *
- * `follow` must match how the worker derives the targetType: content operations
+ * `follow` must match the operation’s target type: content operations
  * follow the final symlink (stat), create/delete pin the directory entry (lstat)
  * so a swapped link is detected against the entry's own inode.
  */
@@ -176,127 +121,31 @@ async function captureIdentityAtLockAcquisition(
   }
 }
 
-/**
- * Compose the backends behind one boundary-driven decision.
- *
- * - `managed` → the sandboxed worker, which enforces the boundary's profile.
- * - `bypass` → host-local execution with host path scope.
- * - `external` → the injected workspace executor, whose own workspace is the
- *   whole filesystem it can address; it never falls back to host access.
- * - absent → the worker when one is wired, otherwise workspace-scoped local
- *   execution. This is the embedding default and deliberately the narrow one.
- */
-export function createBoundaryFilesystemExecutor(
-  input: BoundaryFilesystemExecutorInput,
-): FilesystemExecutor {
+export function createFilesystemExecutor(input: FilesystemExecutorInput): FilesystemExecutor {
   const local = createWorkspaceFilesystemExecutor(input.workspace);
-  /** The worker that owns this boundary, or undefined when the workspace backend does. */
-  const workerFor = (
-    boundary: ExecutionBoundary | undefined,
-  ): Pick<FilesystemWorkerClient, 'execute'> | undefined => {
-    if (boundary?.kind === 'bypass' || boundary?.kind === 'external') return undefined;
-    if (input.worker) return input.worker;
-    if (boundary?.kind !== 'managed') return undefined;
-    throw new SandboxCommandError({
-      domain: 'filesystem',
-      stage: 'capability',
-      reason: 'requires_bypass',
-      recoverable: false,
-      profileName: boundary.profile.name ?? boundary.profile.type,
-      message:
-        'Managed filesystem execution is unavailable because the sandboxed worker cannot be enforced.',
-    });
-  };
   async function run(
     call: FilesystemBackendExecuteInput,
     expectedIdentity?: FilesystemTargetIdentity,
   ): Promise<FilesystemResult> {
     if (call.operation.kind === 'read')
-      FilesystemWorkerOperationSchema.parse({ ...call.operation, cwd: call.cwd });
-    const worker = workerFor(call.executionBoundary);
-    if (!worker) {
-      // The local backend consumes the same identity authority as the worker
-      // (#2600): the pinned read-modify-write validates the T0 identity on the
-      // descriptor. Remote/isolated workspaces without readModifyWrite stay on
-      // the path-based fallback, documented as unprotected by the authority.
-      return await local.execute(
-        call,
-        pathScopeForBoundary(call.executionBoundary),
-        expectedIdentity,
-      );
-    }
-    const result = await worker.execute({
-      operation: call.operation,
-      // The worker is host-local by definition, so a session opened through a
-      // symlinked cwd must reach it under the real path — otherwise the same
-      // file arrives under two identities. The workspace backend is left the cwd
-      // it was given: an isolated or remote workspace path is not the host's to
-      // rewrite, and its own resolvers canonicalise what they need.
-      cwd: await canonicalExistingPath(call.cwd),
-      ...(call.executionBoundary ? { executionBoundary: call.executionBoundary } : {}),
-      mode: call.permissionMode ?? 'ask',
-      ...(input.permissionProfile ? { permissionProfile: input.permissionProfile } : {}),
-      ...(call.abortSignal ? { abortSignal: call.abortSignal } : {}),
-      // The worker client now requires an explicit T0 marker (#3484): a
-      // mutation carries its captured identity, or 'missing' when T0 saw no
-      // target; a read never participates in CAS and says so. `operationAccess`
-      // is the single authority on which kinds are writes (write | apply_patch
-      // | edit | format_json) — `mutates` is narrower and would silently drop
-      // the apply_patch identity onto 'unchecked', disabling the queue-window
-      // CAS on the main editing channel.
-      expectedIdentity:
-        operationAccess(call.operation.kind) === 'write'
-          ? (expectedIdentity ?? 'missing')
-          : 'unchecked',
-    });
-    if (result.kind === 'read_image') {
-      return {
-        kind: 'read_image',
-        bytes: Buffer.from(result.base64, 'base64'),
-        mimeType: result.mimeType,
-      };
-    }
-    return result;
+      FilesystemOperationSchema.parse({ ...call.operation, cwd: call.cwd });
+    return await local.execute(call, 'host', expectedIdentity);
   }
   async function writeLockTarget(
     call: Omit<FilesystemExecuteInput, 'operation'>,
     path: string,
     semantics: 'target' | 'entry' = 'target',
   ): Promise<{ key: string; canonicalPath: string }> {
-    const worker = workerFor(call.executionBoundary);
-    if (!worker) {
-      const key = (
-        await input.workspace.writeLockKey({
-          cwd: call.cwd,
-          path,
-          semantics,
-        })
-      ).key;
-      return { key, canonicalPath: key };
-    }
-    if (semantics === 'entry') {
-      const resolved = await resolveCanonicalDirectoryEntryTarget(call.cwd, path);
-      return { key: resolved.path, canonicalPath: resolved.path };
-    }
-    const normalized = await normalizeSandboxBoundaryPath({
-      path,
-      access: 'write',
-      scope: 'exact',
-      cwd: await canonicalExistingPath(call.cwd),
-    });
-    return { key: normalized.enforcementPath, canonicalPath: normalized.enforcementPath };
+    const { key } = await input.workspace.writeLockKey({ cwd: call.cwd, path, semantics });
+    return { key, canonicalPath: key };
   }
   return {
     async execute(call) {
       if (operationAccess(call.operation.kind) !== 'write') return await run(call);
-      // Canonicalisation without any containment check, so a target the policy
-      // goes on to reject still takes the same lock as its other spellings. The
-      // key is derived from the same canonicalisation the backend will resolve
-      // with, or the lock-key space and the resolved-path space drift apart.
+      // Aliases share the same canonical write lock.
       const { key, canonicalPath } = await writeLockTarget(call, call.operation.path);
       // Capture the target identity at lock acquisition (T0), BEFORE waiting
-      // for the lock, for BOTH backends — the worker CAS and the local pinned
-      // read-modify-write compare against this inode. Content operations follow
+      // for the lock; pinned read-modify-write compares against this inode. Content operations follow
       // the final symlink (stat); apply_patch create/delete use 'entry'
       // semantics but execute() only handles write/edit/format_json here.
       const expectedIdentity = await captureIdentityAtLockAcquisition(canonicalPath, true);
@@ -310,7 +159,7 @@ export function createBoundaryFilesystemExecutor(
       const { operation, ...common } = call;
       const semantics = operation.type === 'update_file' ? 'target' : 'entry';
       const { key, canonicalPath } = await writeLockTarget(common, operation.path, semantics);
-      // Capture identity at T0 (before the lock wait), for both backends.
+      // Capture identity at T0 (before the lock wait), before mutating the file.
       // update_file follows the target (stat); create/delete pin the directory
       // entry (lstat).
       const expectedIdentity = await captureIdentityAtLockAcquisition(
@@ -319,7 +168,7 @@ export function createBoundaryFilesystemExecutor(
       );
       try {
         return await withFileWriteLock(key, async () => {
-          const backendOperation: FilesystemWorkerClientOperation =
+          const backendOperation: FilesystemBackendOperation =
             operation.type === 'delete_file'
               ? { kind: 'apply_patch', path: operation.path, action: 'delete' }
               : {
@@ -355,12 +204,6 @@ function settleMutationFailure(error: unknown): unknown {
     }
     return new Error(error.message, { cause: error });
   }
-  if (classifyFailedMutationOutcome(error) === 'unknown') {
-    return new ToolOutcomeUnknownError(
-      'Filesystem mutation may have been applied before the worker failed.',
-      { cause: error },
-    );
-  }
   return error;
 }
 
@@ -393,6 +236,7 @@ function createWorkspaceFilesystemExecutor(
           const result = await workspace.readFile({
             cwd,
             path,
+            abortSignal,
           });
           if ('bytes' in result) {
             return { kind: 'read_image', bytes: result.bytes, mimeType: result.mimeType };
@@ -467,9 +311,7 @@ function createWorkspaceFilesystemExecutor(
           if (!workspace.applyPatch) throw new Error('Workspace does not support ApplyPatch');
           const common = { cwd, path: operation.path, label: 'ApplyPatch', scope };
           if (operation.action === 'update' && workspace.readModifyWrite) {
-            // update requires an existing target: resolve first (ENOENT guard,
-            // matching the worker's resolveExistingAllowed) so a missing target
-            // is rejected without the exclusive create ever running.
+            // Updating requires an existing target; reject a missing file before creation.
             const { path } = await workspace.resolveExistingPath({
               cwd,
               path: operation.path,
@@ -666,6 +508,7 @@ function createWorkspaceFilesystemExecutor(
             scope,
           });
           const { files } = await workspace.globFiles({
+            abortSignal,
             cwd: base,
             pattern: operation.pattern,
             ...(operation.limit !== undefined ? { limit: operation.limit } : {}),
@@ -709,9 +552,6 @@ function assertGlobPatternInScope(pattern: string, scope: WorkspacePathScope): v
 }
 
 /** The canonical spelling of an existing directory, or the input when it is not resolvable here. */
-async function canonicalExistingPath(path: string): Promise<string> {
-  return await realpath(path).catch(() => path);
-}
 
 // Object.fromEntries creates own data properties, so special keys like
 // "__proto__" are preserved instead of triggering the inherited setter.

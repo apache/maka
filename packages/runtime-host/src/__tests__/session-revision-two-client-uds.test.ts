@@ -21,7 +21,7 @@ import { withTimeout } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { fork, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtemp, readdir, rm } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -226,7 +226,7 @@ async function verifyConcurrentRevisionAuthority(
     const workHubSideConversationSession = requireSessionProjection(
       workHubSideConversation.session,
     );
-    assert.equal(workHubSideConversationSession.permissionMode, 'ask');
+    assert.equal(workHubSideConversationSession.permissionMode, 'auto_review');
     assert.deepEqual(workHubSideConversationSession.labels, ['mode:side_conversation']);
     assert.equal(workHubSideConversationSession.parentSessionId, WORKHUB_COORDINATION_SESSION_ID);
     assert.equal(workHubSideConversationSession.branchOfTurnId, undefined);
@@ -234,7 +234,7 @@ async function verifyConcurrentRevisionAuthority(
       await desktop.request('session.execution_boundary.query', {
         sessionId: WORKHUB_SIDE_CONVERSATION_TARGET_ID,
       }),
-      { kind: 'managed', access: 'writable', revision: 0 },
+      { kind: 'bypass', revision: 0 },
     );
     const continuationSource = await querySession(desktop, continuationSourceSessionId);
     await assert.rejects(
@@ -858,7 +858,7 @@ async function seedSource(
       llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     const coordination = await execution.sessionStore.createStableSession({
       sessionId: WORKHUB_COORDINATION_SESSION_ID,
@@ -886,7 +886,7 @@ async function seedSource(
       llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     const linkedChildSource = await execution.sessionStore.create({
       cwd: root,
@@ -894,7 +894,7 @@ async function seedSource(
       llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     const metadataLinkedSource = await execution.sessionStore.create({
       cwd: root,
@@ -902,7 +902,7 @@ async function seedSource(
       llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     const archivedOwnedSource = await execution.sessionStore.create({
       cwd: root,
@@ -910,7 +910,7 @@ async function seedSource(
       llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     const continuationSource = await execution.sessionStore.create({
       cwd: root,
@@ -918,7 +918,7 @@ async function seedSource(
       llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     const continuationParent = agentRunHeader(
       root,
@@ -1210,7 +1210,7 @@ async function seedSource(
         llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
         llmConnectionSlug: 'fake',
         model: 'fake-model',
-        permissionMode: 'ask',
+        permissionMode: 'auto_review',
         subagentParent: {
           kind: 'subagent',
           parentSessionId: linkedChildSource.id,
@@ -1442,7 +1442,7 @@ async function seedSource(
       llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       subagentParent: {
         kind: 'subagent',
         parentSessionId: metadataLinkedSource.id,
@@ -1476,7 +1476,7 @@ async function seedSource(
       turnId: 'archived-owned-child-turn',
       runId: 'archived-owned-child-run',
       status: 'completed',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       summary: 'done',
       artifactIds: [],
     });
@@ -1833,7 +1833,7 @@ async function verifyDurableBranch(
     );
     assert.equal(workHubSideConversationHeader.role, undefined);
     assert.equal(workHubSideConversationHeader.toolProfile, undefined);
-    assert.equal(workHubSideConversationHeader.permissionMode, 'ask');
+    assert.equal(workHubSideConversationHeader.permissionMode, 'auto_review');
     assert.deepEqual(workHubSideConversationHeader.labels, ['mode:side_conversation']);
     assert.equal(
       workHubSideConversationHeader.conversationCopy?.sourceSessionId,
@@ -1843,7 +1843,7 @@ async function verifyDurableBranch(
     const workHubSideConversationBoundary = await execution.sessionStore.readExecutionBoundary(
       WORKHUB_SIDE_CONVERSATION_TARGET_ID,
     );
-    assert.equal(workHubSideConversationBoundary.kind, 'managed');
+    assert.equal(workHubSideConversationBoundary.kind, 'bypass');
     assert.equal(workHubSideConversationBoundary.revision, 0);
     assert.deepEqual(
       await readLedgerMessages(execution.runtimeEventStore, WORKHUB_SIDE_CONVERSATION_TARGET_ID),
@@ -1944,7 +1944,7 @@ async function verifyDurableBranch(
       turnId: 'archived-owned-child-turn',
       runId: archivedSideConversationChildRun.runId,
       status: 'completed',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       summary: 'done',
       artifactIds: [],
     });
@@ -2178,7 +2178,7 @@ function agentRunHeader(
       },
       configuration: {
         cwd,
-        permissionMode: 'ask',
+        permissionMode: 'auto_review',
         collaborationMode: 'agent',
         orchestrationMode: 'default',
         orchestrationSource: 'session',

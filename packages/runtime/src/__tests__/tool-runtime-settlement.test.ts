@@ -22,11 +22,9 @@ import { createTestToolRuntime } from './execution-boundary-test-helpers.js';
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
-  applySandboxBoundaryExpansion,
   createBypassExecutionBoundary,
   createGenesisExecutionBoundary,
 } from '@maka/core/sandbox-boundary';
-import { createReadOnlyPermissionProfile } from '@maka/core/permission-profile';
 import { type LlmConnection } from '@maka/core/llm-connections';
 import type { SessionEvent } from '@maka/core/events';
 import { type SessionHeader } from '@maka/core/session';
@@ -63,7 +61,7 @@ describe('ToolRuntime settlement', () => {
 
     const blocked = await settle(
       makeRuntime({
-        readExecutionBoundary: async () => createGenesisExecutionBoundary('ask'),
+        readExecutionBoundary: async () => createGenesisExecutionBoundary('auto_review'),
       }),
       'call-managed',
     );
@@ -84,56 +82,6 @@ describe('ToolRuntime settlement', () => {
       String((allowed.result as { error?: unknown }).error),
       /missing its Host admission/u,
     );
-  });
-
-  it('does not promote an expanded Explore boundary into Client Capability admission', async () => {
-    let preparationCalls = 0;
-    let implementationCalls = 0;
-    const clientTool: MakaTool = {
-      name: 'client_browser',
-      description: 'client browser',
-      parameters: {},
-      categoryHint: 'custom_tool',
-      hostAdmission: 'client_capability',
-      prepareExecution: async () => {
-        preparationCalls += 1;
-        return { execute: async () => ({ ok: true }), cancel: () => undefined };
-      },
-      impl: () => {
-        implementationCalls += 1;
-        return { ok: true };
-      },
-    };
-    const expandedProfile = applySandboxBoundaryExpansion(createReadOnlyPermissionProfile(), {
-      filesystem: {
-        entries: [{ path: '/approved/output', access: 'write', scope: 'subtree' }],
-      },
-    });
-    const runtime = makeRuntime({
-      readPermissionMode: async () => 'explore',
-      readExecutionBoundary: async () => ({
-        kind: 'managed',
-        profile: expandedProfile,
-        revision: 1,
-      }),
-    });
-
-    const settlement = await runtime.settleToolCall({
-      tool: clientTool,
-      turnId: 'turn-1',
-      stepId: 'step-1',
-      toolCallId: 'call-expanded-explore',
-      input: {},
-      abortSignal: new AbortController().signal,
-      eventSink: {
-        push: () => undefined,
-        pushAndWaitUntilConsumed: async () => undefined,
-      },
-    });
-
-    assert.equal(preparationCalls, 0);
-    assert.equal(implementationCalls, 0);
-    assert.match(String((settlement.result as { error?: unknown }).error), /require the Bypass/u);
   });
 
   it('prepares Bypass Client Capability work before T1 and admits only after T1', async () => {
@@ -372,7 +320,7 @@ describe('ToolRuntime settlement', () => {
         turnId: 'turn-1',
         stepId: 'step-1',
         toolCallId: `call-${index}`,
-        input: { command: terminal.cmd, boundary_intent: 'current' },
+        input: { command: terminal.cmd },
         abortSignal: new AbortController().signal,
         eventSink: {
           push: (event) => events.push(event),
@@ -501,12 +449,12 @@ describe('ToolRuntime settlement', () => {
       agentName: 'Reviewer',
       turnId: 'child-turn',
       status: 'failed',
-      permissionMode: 'explore',
+      permissionMode: 'auto_review',
       summary: 'review failed',
       artifactIds: [],
     };
 
-    const settlement = await runtime.settleToolCall({
+    const _settlement = await runtime.settleToolCall({
       tool: tool(() => result),
       turnId: 'turn-1',
       stepId: 'step-1',
@@ -630,7 +578,7 @@ describe('ToolRuntime settlement', () => {
           runId: 'child-run',
           agentId: 'local_read',
           agentName: 'Local Read',
-          permissionMode: 'explore',
+          permissionMode: 'auto_review',
         });
         return {
           kind: 'subagent',
@@ -640,7 +588,7 @@ describe('ToolRuntime settlement', () => {
           turnId: 'child-turn',
           runId: 'child-run',
           status: 'completed',
-          permissionMode: 'explore',
+          permissionMode: 'auto_review',
           summary: 'done',
           artifactIds: [],
         };
@@ -682,7 +630,7 @@ describe('ToolRuntime settlement', () => {
       turnId: 'child-turn',
       runId: 'child-run',
       status: 'running',
-      permissionMode: 'explore',
+      permissionMode: 'auto_review',
     });
     const previewIndex = events.findIndex((event) => event.type === 'tool_result_preview');
     const resultIndex = events.findIndex((event) => event.type === 'tool_result');
@@ -750,7 +698,7 @@ function header(): SessionHeader {
     llmConnectionSlug: 'connection-1',
     connectionLocked: true,
     model: 'model-1',
-    permissionMode: 'ask',
+    permissionMode: 'auto_review',
     schemaVersion: 1,
   };
 }

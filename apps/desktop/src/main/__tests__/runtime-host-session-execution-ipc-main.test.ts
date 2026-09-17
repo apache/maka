@@ -343,71 +343,6 @@ function observationIpcHarness(observations: RuntimeHostSessionObservationRegist
   return ipc;
 }
 
-test("keeps synthetic E2E interactions visible through Host hydration and retires their answer", async () => {
-  const observer = observerWithSnapshot();
-  const ipc = ipcHarness();
-  const request = {
-    type: "sandbox_boundary_request" as const,
-    id: "event-1",
-    turnId: "turn-1",
-    ts: 1,
-    requestId: "request-1",
-    toolUseId: "tool-1",
-    justification: "Write outside the workspace.",
-    expansion: {
-      filesystem: {
-        entries: [
-          { path: "/outside", access: "write" as const, scope: "subtree" as const },
-        ],
-      },
-    },
-  };
-  let active = true;
-  const configurationUpdates: unknown[] = [];
-  registerExecutionIpc(
-    {
-      client: executionClient({
-        updateSessionConfiguration: async (sessionId, patch) => {
-          configurationUpdates.push({ sessionId, patch });
-          return session();
-        },
-      }),
-      observer,
-      attachmentApprovals: createAttachmentApprovalRegistry(),
-      emitSessionsChanged() {},
-      stat: async () => ({ size: 0 }),
-      resizeImage: async (bytes) => bytes,
-      beforeStop() {},
-      e2eInteractions: {
-        list: () => (active ? [request] : []),
-        respondToSandboxBoundary: async (_sessionId, response) => {
-          if (response.requestId !== request.requestId) return { handled: false };
-          active = false;
-          return { handled: true, permissionMode: 'ask' };
-        },
-      },
-    },
-    ipc,
-  );
-
-  assert.deepEqual(
-    await ipc.invoke("sessions:listActiveInteractions", "session-1"),
-    [request],
-  );
-  await ipc.invoke("sessions:respondToSandboxBoundary", "session-1", {
-    requestId: request.requestId,
-    decision: "allow",
-  });
-  assert.deepEqual(
-    await ipc.invoke("sessions:listActiveInteractions", "session-1"),
-    [],
-  );
-  assert.deepEqual(configurationUpdates, [
-    { sessionId: 'session-1', patch: { permissionMode: 'ask' } },
-  ]);
-  await observer.close();
-});
-
 test('answers a Client Capability approval through the existing Interaction authority', async () => {
   const pending = {
     schemaVersion: 1 as const,
@@ -2429,7 +2364,7 @@ function session(cwd = "/workspace", id = 'session-1'): SessionCatalogProjection
     llmConnectionSlug: "test-connection",
     connectionLocked: true,
     model: "test-model",
-    permissionMode: "ask",
+    permissionMode: "auto_review",
     collaborationMode: "agent",
     orchestrationMode: "default",
   };

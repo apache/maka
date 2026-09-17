@@ -116,7 +116,7 @@ test('projects typed linked Session ids without rewriting opaque tool data', () 
       agentName: 'Worker',
       turnId: 'child-turn',
       status: 'running',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     },
   });
   const opaque = projectDesktopSessionEvent(host, {
@@ -288,6 +288,6 @@ function summary(id: string): SessionSummary & { revision: number } {
     llmConnectionSlug: 'default',
     connectionLocked: false,
     model: 'model',
-    permissionMode: 'ask',
+    permissionMode: 'auto_review',
   };
 }

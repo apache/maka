@@ -20,22 +20,11 @@
 import assert from 'node:assert/strict';
 import nodeFs from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
-import {
-  chmod,
-  glob,
-  mkdir,
-  mkdtemp,
-  readdir,
-  realpath,
-  rename,
-  rm,
-  symlink,
-  writeFile,
-} from 'node:fs/promises';
+import { glob, mkdir, mkdtemp, realpath, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { executeFilesystemOperation } from '../filesystem-worker/operations.js';
+
 import { globFiles } from '../glob-search.js';
 import { LocalWorkspaceExecutor } from '../workspace-executor.js';
 
@@ -91,57 +80,6 @@ test('Glob reports an enumerated directory disappearing or changing type during 
       t.mock.restoreAll();
       syncBuiltinESMExports();
     }
-  }
-});
-
-test('both Glob paths report permission failures and recover after permissions are restored', {
-  skip: process.platform === 'win32' || process.getuid?.() === 0,
-}, async (t) => {
-  const root = await realpath(await mkdtemp(join(tmpdir(), 'maka-glob-permissions-')));
-  const blocked = join(root, 'blocked');
-  await mkdir(blocked);
-  t.after(async () => {
-    await chmod(blocked, 0o700);
-    await rm(root, { recursive: true, force: true });
-  });
-  await writeFile(join(root, 'visible.txt'), 'visible');
-  await writeFile(join(blocked, 'hidden.txt'), 'hidden');
-  const boundary = {
-    filesystem: { entries: [{ path: root, access: 'read' as const, scope: 'subtree' as const }] },
-  };
-  const local = new LocalWorkspaceExecutor();
-  const searchers = [
-    async (path: string, pattern = '**/*.txt') => {
-      const resolved = await local.resolveExistingPath({
-        cwd: root,
-        path,
-        label: 'Glob cwd',
-        scope: 'workspace',
-      });
-      return local.globFiles({ cwd: resolved.path, pattern, limit: 200 });
-    },
-    async (path: string, pattern = '**/*.txt') =>
-      executeFilesystemOperation({ kind: 'glob', cwd: root, path, pattern, limit: 200 }, boundary),
-  ];
-  await chmod(blocked, 0);
-  const denied = (error: unknown) =>
-    ['EACCES', 'EPERM'].includes((error as NodeJS.ErrnoException).code ?? '');
-  await assert.rejects(readdir(blocked), denied, 'permission fixture must actually deny reads');
-  for (const search of searchers) {
-    await assert.rejects(search(blocked), denied);
-    await assert.rejects(search(root), denied);
-    await assert.rejects(search(root, 'blocked/hidden.txt'), denied);
-    await assert.rejects(search(join(root, 'missing')), { code: 'ENOENT' });
-    const shallow = await search(root, '*.txt');
-    assert.deepEqual('files' in shallow && shallow.files, ['visible.txt']);
-  }
-  await chmod(blocked, 0o700);
-  for (const search of searchers) {
-    const result = await search(root);
-    assert.deepEqual('files' in result && result.files.sort(), [
-      'blocked/hidden.txt',
-      'visible.txt',
-    ]);
   }
 });
 

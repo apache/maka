@@ -655,6 +655,14 @@ export const TUI_COPY_RESOURCES = {
   },
   pickers: {
     en: {
+      permissionPickerTitle: 'Permissions',
+      autoReviewLabel: 'Auto review',
+      autoReviewCompactLabel: 'Auto',
+      autoReviewDescription: 'model review before execution',
+      bypassDescription: 'direct execution without review',
+      keepAutoReviewLabel: 'Keep Auto review',
+      enableBypassLabel: 'Turn on Bypass',
+      switchToBypassTitle: 'Switch to Bypass?',
       modelPickerTitle: 'Select Model',
       modelSwitchCacheWarning:
         '\u26a0 Switching models may rebuild the prompt cache; the next request may be slower or cost more.',
@@ -787,6 +795,14 @@ export const TUI_COPY_RESOURCES = {
       thinkingUnsupported: 'This model does not support changing the thinking level.',
     },
     'zh-CN': {
+      permissionPickerTitle: '权限',
+      autoReviewLabel: '自动审核',
+      autoReviewCompactLabel: '自动审核',
+      autoReviewDescription: '工具操作经模型审核后执行',
+      bypassDescription: '不经审核，直接执行工具操作',
+      keepAutoReviewLabel: '保持自动审核',
+      enableBypassLabel: '启用 Bypass',
+      switchToBypassTitle: '切换到 Bypass？',
       modelPickerTitle: '选择模型',
       modelSwitchCacheWarning:
         '\u26a0 切换模型可能需要重建提示缓存；下一次请求可能更慢或成本更高。',
@@ -908,6 +924,14 @@ export const TUI_COPY_RESOURCES = {
       thinkingUnsupported: '当前模型不支持思考级别切换。',
     },
     'zh-TW': {
+      permissionPickerTitle: '權限',
+      autoReviewLabel: '自動審核',
+      autoReviewCompactLabel: '自動審核',
+      autoReviewDescription: '工具操作經模型審核後執行',
+      bypassDescription: '不經審核，直接執行工具操作',
+      keepAutoReviewLabel: '保持自動審核',
+      enableBypassLabel: '啟用 Bypass',
+      switchToBypassTitle: '切換至 Bypass？',
       modelPickerTitle: '選擇模型',
       modelSwitchCacheWarning:
         '\u26a0 切換模型可能需要重建提示快取；下一次請求可能較慢或成本較高。',

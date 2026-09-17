@@ -134,7 +134,7 @@ function makeSession(input: {
     llmConnectionSlug: 'anthropic-main',
     connectionLocked: false,
     model: 'claude-sonnet-4-5',
-    permissionMode: 'ask',
+    permissionMode: 'auto_review',
     ...(input.projectId ? { projectId: input.projectId } : {}),
     ...(input.cwd ? { cwd: input.cwd } : {}),
   };
@@ -265,7 +265,7 @@ const baseComposerProps: ComposerProps = {
   // Production always wires this (app-shell.tsx); without it ChatModelSwitcher
   // renders disabled, so every shell story understated the composer.
   onModelChange: noop,
-  permissionMode: 'ask',
+  permissionMode: 'auto_review',
   onPermissionModeChange: noop,
   // Fidelity: production app-shell always wires these (app-shell.tsx
   // ~1851-1960), so the daily composer renders the upload button, the

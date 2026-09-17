@@ -31,7 +31,6 @@
  *
  *   libs (tsc --build tsconfig.lib.json) ─── covers core+storage+runtime+ui
  *     ├─→ preload (esbuild)
- *     └─→ filesystem worker (esbuild)
  *   cursor overlay (esbuild)              ─── independent
  *   main (esbuild)                        ─── fast app bundle for Electron
  *   Vite dev server + Electron            ─── fork
@@ -52,7 +51,6 @@ const DESKTOP_DIR = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const REPO_ROOT    = resolve(DESKTOP_DIR, '..', '..');
 const TSC_CLI      = join(REPO_ROOT, 'node_modules', 'typescript', 'bin', 'tsc');
 const MODEL_METADATA_SYNC = join(REPO_ROOT, 'scripts', 'sync-model-metadata.mjs');
-const RUNTIME_WORKER_BUILD = join(REPO_ROOT, 'packages', 'runtime', 'scripts', 'build-filesystem-worker.mjs');
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -98,10 +96,6 @@ const librariesBuild = runNodeTool(REPO_ROOT, TSC_CLI, ['--build', 'tsconfig.lib
 );
 await Promise.all([
   librariesBuild,
-  librariesBuild.then(() => runNodeTool(REPO_ROOT, RUNTIME_WORKER_BUILD, [])).then(
-    () => log('build', 'filesystem worker bundle — done'),
-    (e) => { log('build', `filesystem worker bundle — FAILED: ${e.message}`); throw e; },
-  ),
   // esbuild via its JS API — NOT `node node_modules/esbuild/bin/esbuild`:
   // esbuild's postinstall swaps that file for a platform-native binary,
   // and executing a Mach-O file with node throws SyntaxError (broke

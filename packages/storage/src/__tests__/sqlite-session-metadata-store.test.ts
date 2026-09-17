@@ -22,19 +22,10 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { createWorkspaceWritePermissionProfile } from '@maka/core/permission-profile';
 import { describe, test } from 'node:test';
-import { Worker } from 'node:worker_threads';
 import { AgentGraphClientTerminalCursorError } from '@maka/core/agent-graph-client-projection';
 import { messageContentDigest, type MessageContent } from '@maka/core/events';
-import {
-  canReadPath,
-  createReadOnlyPermissionProfile,
-  createWorkspaceWritePermissionProfile,
-} from '@maka/core/permission-profile';
-import {
-  MAX_EXECUTION_BOUNDARY_SERIALIZED_BYTES,
-  type SandboxBoundarySettlement,
-} from '@maka/core/sandbox-boundary';
 import type { SessionHeader, SessionHeaderPatch } from '@maka/core/session';
 import type { AgentGraphOperatorProvisionRequest } from '@maka/core/agent-graph-topology';
 import {
@@ -58,6 +49,49 @@ import {
 import { SQLITE_AGENT_GRAPH_CONTROL_TABLES } from '../sqlite-session-metadata-schema.js';
 
 describe('SqliteSessionMetadataStore', () => {
+  test('opens a legacy managed Session as direct execution without rewriting its history', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-retired-sandbox-'));
+    const path = join(root, 'state.sqlite');
+    try {
+      const setup = createSqliteSessionMetadataStore(path);
+      await setup.create(fullHeader());
+      setup.close();
+      const legacy = new DatabaseSync(path);
+      const historical = JSON.stringify({
+        kind: 'managed',
+        revision: 0,
+        profile: createWorkspaceWritePermissionProfile(),
+      });
+      legacy
+        .prepare('UPDATE sandbox_boundary_log SET boundary_json = ? WHERE session_id = ?')
+        .run(historical, 'session-1');
+      legacy.close();
+      const store = createSqliteSessionMetadataStore(path);
+      try {
+        assert.deepEqual(await store.readExecutionBoundary('session-1'), {
+          kind: 'bypass',
+          revision: 0,
+        });
+        assert.equal((await store.read('session-1')).header.permissionMode, 'auto_review');
+      } finally {
+        store.close();
+      }
+      const archived = new DatabaseSync(path, { readOnly: true });
+      try {
+        assert.equal(
+          archived
+            .prepare('SELECT boundary_json AS value FROM sandbox_boundary_log WHERE session_id = ?')
+            .get('session-1')?.value,
+          historical,
+        );
+      } finally {
+        archived.close();
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('migrates version 38 and resumes the body-free Coordination index idempotently', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-coordination-index-migration-'));
     const path = join(root, 'state.sqlite');
@@ -65,6 +99,7 @@ describe('SqliteSessionMetadataStore', () => {
       const setup = createSqliteSessionMetadataStore(path);
       setup.close();
       const baseline = new DatabaseSync(path);
+      baseline.exec('ALTER TABLE message_admissions DROP COLUMN authenticated_user_requests_json');
       baseline.exec(
         "DROP TABLE coordination_transcript_index; UPDATE session_metadata_schema SET version = 38 WHERE scope = 'session_metadata'",
       );
@@ -132,6 +167,9 @@ describe('SqliteSessionMetadataStore', () => {
         setup.close();
 
         const version30 = new DatabaseSync(path);
+        version30.exec(
+          'ALTER TABLE message_admissions DROP COLUMN authenticated_user_requests_json',
+        );
         try {
           if (version30Shape === 'admissions-only') {
             version30.exec('DROP INDEX session_metadata_one_workhub_coordination_session');
@@ -225,6 +263,7 @@ describe('SqliteSessionMetadataStore', () => {
     // A subagent spawned before the route froze at creation, and abandoned
     // before its first Message, is the one shape nothing else can lock.
     const legacy = new DatabaseSync(path);
+    legacy.exec('ALTER TABLE message_admissions DROP COLUMN authenticated_user_requests_json');
     try {
       legacy.exec(`
         UPDATE session_metadata_schema SET version = 32 WHERE scope = 'session_metadata';
@@ -263,6 +302,7 @@ describe('SqliteSessionMetadataStore', () => {
       setup.close();
     }
     const legacy = new DatabaseSync(path);
+    legacy.exec('ALTER TABLE message_admissions DROP COLUMN authenticated_user_requests_json');
     try {
       legacy.exec(`
         DROP INDEX session_metadata_one_workhub_coordination_session;
@@ -445,6 +485,7 @@ describe('SqliteSessionMetadataStore', () => {
         runId: 'run-1',
         messageId: 'message-1',
         content: { text: 'submitted', displayText: 'submitted' },
+        authenticatedUserRequests: ['submitted'],
         submittedContentDigest: messageContentDigest({ text: 'submitted' }),
         submittedPlacement: 'current_turn',
         placement: 'current_turn',
@@ -526,6 +567,7 @@ describe('SqliteSessionMetadataStore', () => {
       }
 
       const legacy = new DatabaseSync(path);
+      legacy.exec('ALTER TABLE message_admissions DROP COLUMN authenticated_user_requests_json');
       try {
         legacy.exec(`
           ALTER TABLE message_admissions DROP COLUMN skill_invocation_json;
@@ -578,6 +620,7 @@ describe('SqliteSessionMetadataStore', () => {
       }
 
       const legacy = new DatabaseSync(path);
+      legacy.exec('ALTER TABLE message_admissions DROP COLUMN authenticated_user_requests_json');
       try {
         legacy.exec(`
           ALTER TABLE cancelled_message_admissions DROP COLUMN cancellation_claim_id;
@@ -1418,6 +1461,7 @@ describe('SqliteSessionMetadataStore', () => {
       setup.close();
 
       const legacy = new DatabaseSync(path);
+      legacy.exec('ALTER TABLE message_admissions DROP COLUMN authenticated_user_requests_json');
       try {
         legacy.exec(`
           DROP INDEX session_metadata_one_workhub_coordination_session;
@@ -1679,6 +1723,7 @@ describe('SqliteSessionMetadataStore', () => {
       setup.close();
 
       const legacy = new DatabaseSync(path);
+      legacy.exec('ALTER TABLE message_admissions DROP COLUMN authenticated_user_requests_json');
       try {
         legacy.exec(`
           DROP INDEX session_metadata_one_workhub_coordination_session;
@@ -2262,800 +2307,41 @@ describe('SqliteSessionMetadataStore', () => {
     }
   });
 
-  test('persists one immutable normalized sandbox boundary request at the current revision', async () => {
-    const store = createSqliteSessionMetadataStore(':memory:', { now: () => 50 });
+  test('configures a legacy Session without a boundary row and reads one authority snapshot', async (t) => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-legacy-boundary-'));
+    t.after(() => rm(root, { recursive: true, force: true }));
+    const path = join(root, 'state.sqlite');
+    const store = createSqliteSessionMetadataStore(path, { now: nextNow(275) });
     try {
-      await store.create(fullHeader());
-      const request = await store.createSandboxBoundaryRequest({
-        sessionId: 'session-1',
-        requestId: 'boundary-request-1',
-        turnId: 'turn-1',
-        expansion: {
-          filesystem: {
-            entries: [
-              { path: '/outside/tree/file.txt', access: 'read', scope: 'exact' },
-              { path: '/outside/tree', access: 'read', scope: 'subtree' },
-            ],
-          },
-        },
-        justification: 'Read the requested source tree.',
-      });
-
-      assert.deepEqual(request, {
-        sessionId: 'session-1',
-        requestId: 'boundary-request-1',
-        status: 'pending',
-        baseRevision: 0,
-        expansion: {
-          filesystem: {
-            entries: [{ path: '/outside/tree', access: 'read', scope: 'subtree' }],
-          },
-        },
-        justification: 'Read the requested source tree.',
-        createdAt: 50,
-        turnId: 'turn-1',
-      });
-      assert.equal((await store.readExecutionBoundary('session-1')).revision, 0);
-    } finally {
-      store.close();
-    }
-  });
-
-  test('serializes stale approvals without lost authority and settles retries idempotently', async () => {
-    const store = createSqliteSessionMetadataStore(':memory:', { now: nextNow(100) });
-    try {
-      await store.create(fullHeader());
-      for (const [requestId, path] of [
-        ['request-a', '/outside/a'],
-        ['request-b', '/outside/b'],
-      ] as const) {
-        await store.createSandboxBoundaryRequest({
-          sessionId: 'session-1',
-          requestId,
-          turnId: 'turn-1',
-          expansion: {
-            filesystem: { entries: [{ path, access: 'read', scope: 'subtree' }] },
-          },
-          justification: `Read ${path}.`,
-        });
-      }
-
-      const first = await store.settleSandboxBoundaryRequest({
-        sessionId: 'session-1',
-        requestId: 'request-a',
-        decision: 'allow',
-      });
-      assert.equal(first.changed, true);
-      assert.equal(first.boundary.revision, 1);
-
-      const second = await store.settleSandboxBoundaryRequest({
-        sessionId: 'session-1',
-        requestId: 'request-b',
-        decision: 'allow',
-      });
-      assert.equal(second.changed, true);
-      assert.equal(second.boundary.revision, 2);
-      assert.equal(second.boundary.kind, 'managed');
-      if (second.boundary.kind === 'managed') {
-        assert.equal(canReadPath(second.boundary.profile, '/outside/a/file.txt'), true);
-        assert.equal(canReadPath(second.boundary.profile, '/outside/b/file.txt'), true);
-      }
-
-      const retry = await store.settleSandboxBoundaryRequest({
-        sessionId: 'session-1',
-        requestId: 'request-b',
-        decision: 'allow',
-      });
-      assert.equal(retry.request.status, 'approved');
-      assert.equal(retry.boundary.revision, 2);
-      assert.equal((await store.readExecutionBoundary('session-1')).revision, 2);
-    } finally {
-      store.close();
-    }
-  });
-
-  test('rejects an expansion atomically before the complete boundary exceeds capacity', async () => {
-    const store = createSqliteSessionMetadataStore(':memory:', { now: nextNow(120) });
-    let rejectedRequestId: string | undefined;
-    try {
-      await store.create(fullHeader());
-      // Each request stays near MAX_SANDBOX_BOUNDARY_SERIALIZED_BYTES so the
-      // cumulative boundary crosses capacity in the fewest settles, using few
-      // near-MAX_SANDBOX_BOUNDARY_PATH_CHARS entries to keep the per-settle
-      // boundary scans cheap.
-      for (let request = 0; request < 30; request += 1) {
-        const requestId = `capacity-${request}`;
-        await store.createSandboxBoundaryRequest({
-          sessionId: 'session-1',
-          requestId,
-          turnId: 'turn-1',
-          expansion: {
-            filesystem: {
-              entries: Array.from({ length: 15 }, (_, entry) => ({
-                path: `/outside/${request}/${entry}-${'x'.repeat(4_000)}`,
-                access: 'read' as const,
-                scope: 'exact' as const,
-              })),
-            },
-          },
-          justification: 'Read generated inputs.',
-        });
-        const before = await store.readExecutionBoundary('session-1');
-        try {
-          await store.settleSandboxBoundaryRequest({
-            sessionId: 'session-1',
-            requestId,
-            decision: 'allow',
-          });
-        } catch (error) {
-          assert.match(String(error), /execution boundary.*size limit/i);
-          rejectedRequestId = requestId;
-          assert.deepEqual(await store.readExecutionBoundary('session-1'), before);
-          assert.deepEqual(
-            (await store.listPendingSandboxBoundaryRequests('session-1')).map(
-              (pending) => pending.requestId,
-            ),
-            [requestId],
-          );
-          break;
-        }
-      }
-
-      assert.ok(rejectedRequestId, 'a cumulative boundary must reach the shared capacity');
-      assert.ok(
-        Buffer.byteLength(JSON.stringify(await store.readExecutionBoundary('session-1')), 'utf8') <=
-          MAX_EXECUTION_BOUNDARY_SERIALIZED_BYTES,
-      );
-    } finally {
-      store.close();
-    }
-  });
-
-  test('settles an already-authorized temp path without inflating the boundary revision', async () => {
-    const store = createSqliteSessionMetadataStore(':memory:', { now: nextNow(90) });
-    try {
-      await store.create(fullHeader());
-      await store.createSandboxBoundaryRequest({
-        sessionId: 'session-1',
-        requestId: 'request-tmp',
-        turnId: 'turn-1',
-        expansion: {
-          filesystem: {
-            entries: [{ path: '/tmp/maka-output', access: 'write', scope: 'exact' }],
-          },
-        },
-        justification: 'Write a temporary output.',
-      });
-
-      const settlement = await store.settleSandboxBoundaryRequest({
-        sessionId: 'session-1',
-        requestId: 'request-tmp',
-        decision: 'allow',
-      });
-
-      assert.equal(settlement.changed, false);
-      assert.equal(settlement.request.outcomeReason, 'already_applied');
-      assert.equal(settlement.boundary.revision, 0);
-    } finally {
-      store.close();
-    }
-  });
-
-  test('serializes competing approvals from independent SQLite connections', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'maka-boundary-writer-race-'));
-    const path = join(root, 'sessions.sqlite');
-    const setup = createSqliteSessionMetadataStore(path);
-    try {
-      await setup.create(fullHeader());
-      for (const [requestId, outsidePath] of [
-        ['request-a', '/outside/a'],
-        ['request-b', '/outside/b'],
-      ] as const) {
-        await setup.createSandboxBoundaryRequest({
-          sessionId: 'session-1',
-          requestId,
-          turnId: 'turn-1',
-          expansion: {
-            filesystem: {
-              entries: [{ path: outsidePath, access: 'read', scope: 'subtree' }],
-            },
-          },
-          justification: `Read ${outsidePath}.`,
-        });
-      }
-    } finally {
-      setup.close();
-    }
-
-    const release = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT);
-    const first = boundarySettlementWorker(path, 'request-a', release);
-    let second: ReturnType<typeof boundarySettlementWorker> | undefined;
-    try {
-      await first.ready;
-      second = boundarySettlementWorker(path, 'request-b');
-      await second.ready;
-      first.start();
-      await first.holding;
-      second.start();
-      await second.attempting;
-      releaseWorker(release);
-
-      const settlements = await Promise.all([first.settled, second.settled]);
-      assert.deepEqual(
-        settlements.map((settlement) => settlement.boundary.revision).sort((a, b) => a - b),
-        [1, 2],
-      );
-      const verify = createSqliteSessionMetadataStore(path);
+      const header = fullHeader();
+      await store.create(header);
+      const legacy = new DatabaseSync(path);
       try {
-        const boundary = await verify.readExecutionBoundary('session-1');
-        assert.equal(boundary.kind, 'managed');
-        assert.equal(boundary.revision, 2);
-        if (boundary.kind === 'managed') {
-          assert.equal(canReadPath(boundary.profile, '/outside/a/file.txt'), true);
-          assert.equal(canReadPath(boundary.profile, '/outside/b/file.txt'), true);
-        }
+        legacy.exec('DELETE FROM sandbox_boundary_log');
       } finally {
-        verify.close();
+        legacy.close();
       }
-    } finally {
-      first.start();
-      second?.start();
-      releaseWorker(release);
-      await Promise.all([first.terminate(), second?.terminate()]);
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
-  test('records Auto and Bypass changes in the same revision log and restores managed authority', async () => {
-    const store = createSqliteSessionMetadataStore(':memory:', { now: nextNow(200) });
-    try {
-      await store.create(fullHeader());
-      await store.createSandboxBoundaryRequest({
-        sessionId: 'session-1',
-        requestId: 'approved-before-bypass',
-        turnId: 'turn-1',
-        expansion: {
-          filesystem: {
-            entries: [{ path: '/outside/kept', access: 'write', scope: 'subtree' }],
-          },
+      await store.updateSessionConfiguration('session-1', {
+        expectedVersion: 1,
+        lifecycle: { kind: 'preserve' },
+        configuration: {
+          backend: header.backend,
+          llmConnectionSlug: header.llmConnectionSlug,
+          connectionLocked: header.connectionLocked,
+          model: header.model,
+          thinkingLevel: header.thinkingLevel,
+          permissionMode: 'bypass',
+          collaborationMode: header.collaborationMode ?? 'agent',
+          orchestrationMode: header.orchestrationMode ?? 'default',
+          labels: header.labels,
         },
-        justification: 'Write generated files.',
-      });
-      await store.settleSandboxBoundaryRequest({
-        sessionId: 'session-1',
-        requestId: 'approved-before-bypass',
-        decision: 'allow',
-      });
-      await store.createSandboxBoundaryRequest({
-        sessionId: 'session-1',
-        requestId: 'stale-after-bypass',
-        turnId: 'turn-1',
-        expansion: { network: { enabled: true } },
-        justification: 'Fetch a dependency.',
-      });
-
-      const bypass = await store.setExecutionBoundaryKind('session-1', 'bypass');
-      assert.deepEqual(bypass, { kind: 'bypass', revision: 2 });
-      assert.equal((await store.read('session-1')).header.permissionMode, 'bypass');
-      const conflict = await store.settleSandboxBoundaryRequest({
-        sessionId: 'session-1',
-        requestId: 'stale-after-bypass',
-        decision: 'allow',
-      });
-      assert.equal(conflict.request.status, 'conflict');
-      assert.equal(conflict.request.outcomeReason, 'boundary_kind_changed');
-      assert.equal(conflict.boundary.revision, 2);
-
-      const restored = await store.setExecutionBoundaryKind('session-1', 'managed');
-      assert.equal(restored.kind, 'managed');
-      assert.equal(restored.revision, 3);
-      assert.equal((await store.read('session-1')).header.permissionMode, 'ask');
-      if (restored.kind === 'managed') {
-        assert.equal(canReadPath(restored.profile, '/outside/kept/file.txt'), true);
-      }
-      assert.equal((await store.setExecutionBoundaryKind('session-1', 'managed')).revision, 3);
-    } finally {
-      store.close();
-    }
-  });
-
-  test('restores an unnamed managed profile after a temporary Bypass boundary', async () => {
-    const store = createSqliteSessionMetadataStore(':memory:', { now: nextNow(212) });
-    const { name: _name, ...unnamedProfile } = createWorkspaceWritePermissionProfile();
-    try {
-      await store.create(fullHeader(), {
-        kind: 'managed',
-        profile: unnamedProfile,
-        revision: 0,
-      });
-
-      await store.setExecutionBoundaryKind('session-1', 'bypass');
-      const restored = await store.setExecutionBoundaryKind('session-1', 'managed');
-
-      assert.equal(restored.kind, 'managed');
-      if (restored.kind === 'managed') assert.deepEqual(restored.profile, unnamedProfile);
-    } finally {
-      store.close();
-    }
-  });
-
-  test('restores canonical Auto when an Explore-origin session has no Auto history', async () => {
-    const store = createSqliteSessionMetadataStore(':memory:', { now: nextNow(218) });
-    try {
-      await store.create(fullHeader({ permissionMode: 'explore' }));
-
-      await store.setExecutionBoundaryKind('session-1', 'bypass', {
-        permissionMode: 'bypass',
-      });
-      const restored = await store.setExecutionBoundaryKind('session-1', 'managed', {
-        permissionMode: 'ask',
-      });
-
-      assert.equal(restored.kind, 'managed');
-      if (restored.kind === 'managed') {
-        assert.deepEqual(restored.profile, createWorkspaceWritePermissionProfile());
-      }
-    } finally {
-      store.close();
-    }
-  });
-
-  test('classifies the internal read-only profile by policy instead of its display name', async () => {
-    const store = createSqliteSessionMetadataStore(':memory:', { now: nextNow(220) });
-    const { name: _name, ...unnamedReadOnlyProfile } = createReadOnlyPermissionProfile();
-    try {
-      await store.create(fullHeader({ permissionMode: 'explore' }), {
-        kind: 'managed',
-        profile: unnamedReadOnlyProfile,
-        revision: 0,
-      });
-
-      const restored = await store.setExecutionBoundaryKind('session-1', 'managed', {
-        permissionMode: 'ask',
-      });
-
-      assert.equal(restored.kind, 'managed');
-      if (restored.kind === 'managed') {
-        assert.deepEqual(restored.profile, createWorkspaceWritePermissionProfile());
-      }
-    } finally {
-      store.close();
-    }
-  });
-
-  test('restores accumulated Auto authority after a temporary Explore boundary', async () => {
-    const store = createSqliteSessionMetadataStore(':memory:', { now: nextNow(225) });
-    try {
-      await store.create(fullHeader());
-      await store.createSandboxBoundaryRequest({
-        sessionId: 'session-1',
-        requestId: 'approved-before-explore',
-        turnId: 'turn-1',
-        expansion: {
-          filesystem: {
-            entries: [{ path: '/outside/kept', access: 'write', scope: 'subtree' }],
-          },
-        },
-        justification: 'Write generated files.',
-      });
-      await store.settleSandboxBoundaryRequest({
-        sessionId: 'session-1',
-        requestId: 'approved-before-explore',
-        decision: 'allow',
-      });
-
-      const explore = await store.setExecutionBoundaryKind('session-1', 'managed', {
-        permissionMode: 'explore',
-      });
-      assert.equal(explore.kind, 'managed');
-      if (explore.kind === 'managed') assert.equal(explore.profile.name, 'read-only');
-
-      const restored = await store.setExecutionBoundaryKind('session-1', 'managed', {
-        permissionMode: 'ask',
-      });
-      assert.equal(restored.kind, 'managed');
-      if (restored.kind === 'managed') {
-        assert.equal(canReadPath(restored.profile, '/outside/kept/file.txt'), true);
-      }
-    } finally {
-      store.close();
-    }
-  });
-
-  test('reads the header projection and execution boundary from one authority snapshot', async () => {
-    const store = createSqliteSessionMetadataStore(':memory:', { now: nextNow(275) });
-    try {
-      await store.create(fullHeader());
-      await store.setExecutionBoundaryKind('session-1', 'bypass', {
-        permissionMode: 'bypass',
       });
 
       const snapshot = await store.readSessionAuthoritySnapshot('session-1');
 
       assert.equal(snapshot.record.header.permissionMode, 'bypass');
       assert.equal(snapshot.boundary.kind, 'bypass');
-      assert.equal(snapshot.boundary.revision, 1);
-    } finally {
-      store.close();
-    }
-  });
-
-  test('rolls back a boundary kind and header projection as one transaction', async () => {
-    let armed = false;
-    const store = createSqliteSessionMetadataStore(':memory:', {
-      failpoint: (point) => {
-        if (armed && point === 'after_sandbox_boundary_write') {
-          throw new Error('injected boundary projection failure');
-        }
-      },
-    });
-    try {
-      await store.create(fullHeader());
-      armed = true;
-
-      await assert.rejects(
-        () =>
-          store.setExecutionBoundaryKind('session-1', 'bypass', {
-            permissionMode: 'bypass',
-          }),
-        /injected boundary projection failure/,
-      );
-
-      assert.equal((await store.readExecutionBoundary('session-1')).kind, 'managed');
-      assert.equal((await store.read('session-1')).header.permissionMode, 'ask');
-    } finally {
-      store.close();
-    }
-  });
-
-  test('rolls back request settlement and boundary application as one transaction', async () => {
-    let armed = false;
-    const store = createSqliteSessionMetadataStore(':memory:', {
-      now: nextNow(300),
-      failpoint: (point) => {
-        if (armed && point === 'after_sandbox_boundary_write') {
-          throw new Error('injected boundary commit failure');
-        }
-      },
-    });
-    try {
-      await store.create(fullHeader());
-      await store.createSandboxBoundaryRequest({
-        sessionId: 'session-1',
-        requestId: 'atomic-request',
-        turnId: 'turn-1',
-        expansion: { network: { enabled: true } },
-        justification: 'Fetch a dependency.',
-      });
-
-      armed = true;
-      await assert.rejects(
-        () =>
-          store.settleSandboxBoundaryRequest({
-            sessionId: 'session-1',
-            requestId: 'atomic-request',
-            decision: 'allow',
-          }),
-        /injected boundary commit failure/,
-      );
-      armed = false;
-      assert.equal((await store.readExecutionBoundary('session-1')).revision, 0);
-
-      const recovered = await store.settleSandboxBoundaryRequest({
-        sessionId: 'session-1',
-        requestId: 'atomic-request',
-        decision: 'allow',
-      });
-      assert.equal(recovered.request.status, 'approved');
-      assert.equal(recovered.boundary.revision, 1);
-    } finally {
-      store.close();
-    }
-  });
-
-  test('projects only explicit denials from exact trusted continuation identities', async () => {
-    const store = createSqliteSessionMetadataStore(':memory:');
-    try {
-      await store.create(fullHeader());
-      for (const reason of [
-        'client_denied',
-        'turn_stopped',
-        'turn_terminal',
-        'host_restarted',
-      ] as const) {
-        await store.createSandboxBoundaryRequest({
-          sessionId: 'session-1',
-          requestId: reason,
-          turnId: 'turn-1',
-          runId: reason,
-          expansion: { network: { enabled: true } },
-          justification: 'Fetch a dependency.',
-        });
-        const settlement = await store.settleSandboxBoundaryRequest({
-          sessionId: 'session-1',
-          requestId: reason,
-          decision: 'deny',
-          ...(reason === 'client_denied' ? {} : { closureReason: reason }),
-        });
-        assert.equal(settlement.request.outcomeReason, reason);
-        assert.equal(
-          await store.hasExplicitSandboxBoundaryDenial([
-            { sessionId: 'session-1', runId: reason, turnId: 'turn-1' },
-          ]),
-          reason === 'client_denied',
-        );
-      }
-      for (const identity of [
-        {
-          sessionId: 'other-session',
-          runId: 'client_denied',
-          turnId: 'turn-1',
-        },
-        { sessionId: 'session-1', runId: 'other-run', turnId: 'turn-1' },
-        {
-          sessionId: 'session-1',
-          runId: 'client_denied',
-          turnId: 'other-turn',
-        },
-      ])
-        assert.equal(await store.hasExplicitSandboxBoundaryDenial([identity]), false);
-      assert.equal(await store.hasExplicitSandboxBoundaryDenial([]), false);
-      assert.equal(
-        await store.hasExplicitSandboxBoundaryDenial([
-          { sessionId: 'session-1', runId: 'turn_stopped', turnId: 'turn-1' },
-          { sessionId: 'session-1', runId: 'client_denied', turnId: 'turn-1' },
-        ]),
-        true,
-      );
-    } finally {
-      store.close();
-    }
-  });
-
-  test('ambiguous legacy denial blocks only its trusted chain, even after an explicit denial', async () => {
-    const directory = await mkdtemp(join(tmpdir(), 'maka-legacy-denial-'));
-    const path = join(directory, 'runtime.sqlite');
-    const store = createSqliteSessionMetadataStore(path);
-    try {
-      await store.create(fullHeader());
-      for (const runId of ['explicit', 'legacy', 'unknown']) {
-        await store.createSandboxBoundaryRequest({
-          sessionId: 'session-1',
-          requestId: runId,
-          turnId: 'turn-1',
-          runId,
-          expansion: { network: { enabled: true } },
-          justification: 'Use the network.',
-        });
-        await store.settleSandboxBoundaryRequest({
-          sessionId: 'session-1',
-          requestId: runId,
-          decision: 'deny',
-        });
-      }
-      const legacy = new DatabaseSync(path);
-      try {
-        legacy
-          .prepare("UPDATE sandbox_boundary_log SET outcome_reason = NULL WHERE run_id = 'legacy'")
-          .run();
-        legacy
-          .prepare(
-            "UPDATE sandbox_boundary_log SET outcome_reason = 'unknown_reason' WHERE run_id = 'unknown'",
-          )
-          .run();
-      } finally {
-        legacy.close();
-      }
-      const identity = (runId: string) => ({ sessionId: 'session-1', runId, turnId: 'turn-1' });
-      assert.equal(await store.hasExplicitSandboxBoundaryDenial([identity('unrelated')]), false);
-      assert.equal(await store.hasExplicitSandboxBoundaryDenial([identity('explicit')]), true);
-      for (const runId of ['legacy', 'unknown']) {
-        for (const chain of [
-          [identity('explicit'), identity(runId)],
-          [identity(runId), identity('explicit')],
-        ]) {
-          await assert.rejects(
-            store.hasExplicitSandboxBoundaryDenial(chain),
-            /cannot be attributed safely/,
-          );
-        }
-      }
-    } finally {
-      store.close();
-      await rm(directory, { recursive: true, force: true });
-    }
-  });
-
-  test('does not invent revisions for denial or an already-contained approval', async () => {
-    const store = createSqliteSessionMetadataStore(':memory:');
-    try {
-      await store.create(fullHeader());
-      await store.createSandboxBoundaryRequest({
-        sessionId: 'session-1',
-        requestId: 'denied-request',
-        turnId: 'turn-1',
-        expansion: { network: { enabled: true } },
-        justification: 'Fetch a dependency.',
-      });
-      const denied = await store.settleSandboxBoundaryRequest({
-        sessionId: 'session-1',
-        requestId: 'denied-request',
-        decision: 'deny',
-      });
-      assert.equal(denied.request.status, 'denied');
-      assert.equal(denied.boundary.revision, 0);
-
-      await store.createSandboxBoundaryRequest({
-        sessionId: 'session-1',
-        requestId: 'already-contained',
-        turnId: 'turn-1',
-        expansion: {
-          filesystem: {
-            entries: [{ path: '/workspace/repo/file.txt', access: 'read', scope: 'exact' }],
-          },
-        },
-        justification: 'Read a workspace file.',
-      });
-      const noop = await store.settleSandboxBoundaryRequest({
-        sessionId: 'session-1',
-        requestId: 'already-contained',
-        decision: 'allow',
-      });
-      assert.equal(noop.request.status, 'approved');
-      assert.equal(noop.request.outcomeReason, 'already_applied');
-      assert.equal(noop.changed, false);
-      assert.equal(noop.boundary.revision, 0);
-    } finally {
-      store.close();
-    }
-  });
-
-  test('records host restart when recovery denies an ownerless boundary request', async () => {
-    const store = createSqliteSessionMetadataStore(':memory:', { now: nextNow(700) });
-    try {
-      await store.create(fullHeader());
-      await store.createSandboxBoundaryRequest({
-        sessionId: 'session-1',
-        requestId: 'restart-request',
-        turnId: 'turn-1',
-        expansion: { network: { enabled: true } },
-        justification: 'Fetch a dependency.',
-      });
-
-      const recovered = await store.settleSandboxBoundaryRequest({
-        sessionId: 'session-1',
-        requestId: 'restart-request',
-        decision: 'deny',
-        closureReason: 'host_restarted',
-      });
-
-      assert.equal(recovered.request.status, 'denied');
-      assert.equal(recovered.request.outcomeReason, 'host_restarted');
-      assert.equal(recovered.boundary.revision, 0);
-      assert.deepEqual(await store.listPendingSandboxBoundaryRequests('session-1'), []);
-      // The closure stays re-readable after it stops being pending; that is
-      // what lets an interrupted recovery finish the job on its next attempt.
-      assert.deepEqual(
-        (await store.listSandboxBoundaryRestartClosures('session-1')).map((closure) => [
-          closure.requestId,
-          closure.turnId,
-        ]),
-        [['restart-request', 'turn-1']],
-      );
-    } finally {
-      store.close();
-    }
-  });
-
-  test('lists only host-restart closures, never other settlements', async () => {
-    const store = createSqliteSessionMetadataStore(':memory:', { now: nextNow(720) });
-    try {
-      await store.create(fullHeader());
-      for (const requestId of ['restart-closed', 'plain-denied', 'approved', 'still-pending']) {
-        await store.createSandboxBoundaryRequest({
-          sessionId: 'session-1',
-          requestId,
-          turnId: 'turn-1',
-          runId: 'run-1',
-          expansion: { network: { enabled: true } },
-          justification: `Request ${requestId}.`,
-        });
-      }
-      await store.settleSandboxBoundaryRequest({
-        sessionId: 'session-1',
-        requestId: 'restart-closed',
-        decision: 'deny',
-        closureReason: 'host_restarted',
-      });
-      await store.settleSandboxBoundaryRequest({
-        sessionId: 'session-1',
-        requestId: 'plain-denied',
-        decision: 'deny',
-      });
-      await store.settleSandboxBoundaryRequest({
-        sessionId: 'session-1',
-        requestId: 'approved',
-        decision: 'allow',
-      });
-
-      const closures = await store.listSandboxBoundaryRestartClosures('session-1');
-      assert.deepEqual(
-        closures.map((closure) => closure.requestId),
-        ['restart-closed'],
-      );
-      assert.equal(closures[0]?.runId, 'run-1');
-    } finally {
-      store.close();
-    }
-  });
-
-  test('keeps request provenance durable and rejects a reuse that changes it', async () => {
-    const store = createSqliteSessionMetadataStore(':memory:', { now: nextNow(740) });
-    try {
-      await store.create(fullHeader());
-      const created = await store.createSandboxBoundaryRequest({
-        sessionId: 'session-1',
-        requestId: 'request-1',
-        turnId: 'turn-7',
-        runId: 'run-9',
-        expansion: { network: { enabled: true } },
-        justification: 'Fetch a dependency.',
-      });
-      assert.equal(created.turnId, 'turn-7');
-      assert.equal(created.runId, 'run-9');
-
-      // Same id, same content: idempotent re-create returns the same row.
-      const again = await store.createSandboxBoundaryRequest({
-        sessionId: 'session-1',
-        requestId: 'request-1',
-        turnId: 'turn-7',
-        runId: 'run-9',
-        expansion: { network: { enabled: true } },
-        justification: 'Fetch a dependency.',
-      });
-      assert.deepEqual(again, created);
-
-      await assert.rejects(
-        store.createSandboxBoundaryRequest({
-          sessionId: 'session-1',
-          requestId: 'request-1',
-          turnId: 'turn-8',
-          runId: 'run-9',
-          expansion: { network: { enabled: true } },
-          justification: 'Fetch a dependency.',
-        }),
-        /identity was reused/,
-      );
-    } finally {
-      store.close();
-    }
-  });
-
-  test('lists only pending sandbox boundary requests for resume', async () => {
-    const store = createSqliteSessionMetadataStore(':memory:');
-    try {
-      await store.create(fullHeader());
-      for (const requestId of ['keep-pending', 'settle-denied'] as const) {
-        await store.createSandboxBoundaryRequest({
-          sessionId: 'session-1',
-          requestId,
-          turnId: 'turn-1',
-          expansion: { network: { enabled: true } },
-          justification: `Request ${requestId}.`,
-        });
-      }
-      await store.settleSandboxBoundaryRequest({
-        sessionId: 'session-1',
-        requestId: 'settle-denied',
-        decision: 'deny',
-      });
-
-      assert.deepEqual(
-        (await store.listPendingSandboxBoundaryRequests('session-1')).map(
-          (request) => request.requestId,
-        ),
-        ['keep-pending'],
-      );
+      assert.equal(snapshot.boundary.revision, 0);
     } finally {
       store.close();
     }
@@ -3450,12 +2736,12 @@ describe('SqliteSessionMetadataStore', () => {
     }
   });
 
-  test('commits configuration and sandbox boundary as one compare-and-set transaction', async () => {
+  test('commits configuration in direct execution mode as one compare-and-set transaction', async () => {
     let armed = false;
     const store = createSqliteSessionMetadataStore(':memory:', {
       now: nextNow(20),
       failpoint: (point) => {
-        if (armed && point === 'after_sandbox_boundary_write') {
+        if (armed && point === 'after_session_row_write') {
           throw new Error('boundary failpoint');
         }
       },
@@ -3483,7 +2769,7 @@ describe('SqliteSessionMetadataStore', () => {
           status: 'active',
           blockedReason: undefined,
           parentSessionId: undefined,
-          permissionMode: 'ask',
+          permissionMode: 'auto_review',
         }),
       );
 
@@ -3493,10 +2779,9 @@ describe('SqliteSessionMetadataStore', () => {
         /boundary failpoint/,
       );
       armed = false;
-      assert.equal((await store.read('configured-session')).header.permissionMode, 'ask');
+      assert.equal((await store.read('configured-session')).header.permissionMode, 'auto_review');
       assert.deepEqual(await store.readExecutionBoundary('configured-session'), {
-        kind: 'managed',
-        profile: createWorkspaceWritePermissionProfile(),
+        kind: 'bypass',
         revision: 0,
       });
 
@@ -3509,7 +2794,7 @@ describe('SqliteSessionMetadataStore', () => {
       assert.deepEqual(updated.header.labels, ['configured']);
       assert.deepEqual(await store.readExecutionBoundary('configured-session'), {
         kind: 'bypass',
-        revision: 1,
+        revision: 0,
       });
       await assert.rejects(
         store.updateSessionConfiguration('configured-session', configuration),
@@ -3553,7 +2838,7 @@ describe('SqliteSessionMetadataStore', () => {
           connectionLocked: true,
           model: 'openrouter/free',
           thinkingLevel: undefined,
-          permissionMode: 'ask',
+          permissionMode: 'auto_review',
           collaborationMode: 'agent',
           orchestrationMode: 'default',
           labels: [],
@@ -3613,73 +2898,6 @@ describe('SqliteSessionMetadataStore', () => {
     }
   });
 });
-
-function boundarySettlementWorker(
-  path: string,
-  requestId: string,
-  holdAfterBoundaryWrite?: SharedArrayBuffer,
-): {
-  ready: Promise<void>;
-  attempting: Promise<void>;
-  holding: Promise<void>;
-  settled: Promise<SandboxBoundarySettlement>;
-  start(): void;
-  terminate(): Promise<number>;
-} {
-  const startSettlement = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT);
-  const worker = new Worker(
-    new URL('./fixtures/settle-sandbox-boundary-worker.js', import.meta.url),
-    {
-      workerData: {
-        path,
-        requestId,
-        startSettlement,
-        ...(holdAfterBoundaryWrite ? { holdAfterBoundaryWrite } : {}),
-      },
-    },
-  );
-  const ready = promiseWithResolvers<void>();
-  const attempting = promiseWithResolvers<void>();
-  const holding = promiseWithResolvers<void>();
-  const settled = promiseWithResolvers<SandboxBoundarySettlement>();
-  worker.on(
-    'message',
-    (
-      message:
-        | { type: 'ready' }
-        | { type: 'attempting' }
-        | { type: 'holding' }
-        | { type: 'settled'; settlement: SandboxBoundarySettlement }
-        | { type: 'failed'; message: string },
-    ) => {
-      if (message.type === 'ready') ready.resolve();
-      else if (message.type === 'attempting') attempting.resolve();
-      else if (message.type === 'holding') holding.resolve();
-      else if (message.type === 'settled') settled.resolve(message.settlement);
-      else {
-        const error = new Error(message.message);
-        ready.reject(error);
-        attempting.reject(error);
-        holding.reject(error);
-        settled.reject(error);
-      }
-    },
-  );
-  worker.on('error', (error) => {
-    ready.reject(error);
-    attempting.reject(error);
-    holding.reject(error);
-    settled.reject(error);
-  });
-  return {
-    ready: ready.promise,
-    attempting: attempting.promise,
-    holding: holding.promise,
-    settled: settled.promise,
-    start: () => releaseWorker(startSettlement),
-    terminate: () => worker.terminate(),
-  };
-}
 
 function releaseWorker(signal: SharedArrayBuffer): void {
   const state = new Int32Array(signal);
@@ -4277,7 +3495,7 @@ function fullHeader(overrides: Partial<SessionHeader> = {}): SessionHeader {
     model: 'gpt-5',
     toolProfile: 'headless-coding-v1',
     thinkingLevel: 'high',
-    permissionMode: 'ask',
+    permissionMode: 'auto_review',
     collaborationMode: 'agent',
     orchestrationMode: 'swarm',
     schemaVersion: 1,

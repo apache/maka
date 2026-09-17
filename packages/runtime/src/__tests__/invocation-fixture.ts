@@ -69,7 +69,7 @@ export function testInvocationOpening(
     ...rest,
     configuration: {
       cwd: '/tmp',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       collaborationMode: 'agent',
       orchestrationMode: 'default',
       orchestrationSource: 'session',

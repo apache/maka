@@ -623,7 +623,7 @@ function sessionInput(name: string) {
     llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
     llmConnectionSlug: 'fake',
     model: 'fake-model',
-    permissionMode: 'ask',
+    permissionMode: 'auto_review',
   } as const;
 }
 
@@ -644,7 +644,7 @@ function runHeader(sessionId: string, runId: string, createdAt: number, invocati
       },
       configuration: {
         cwd: '/tmp/workspace',
-        permissionMode: 'ask' as const,
+        permissionMode: 'auto_review' as const,
         collaborationMode: 'agent' as const,
         orchestrationMode: 'default' as const,
         orchestrationSource: 'session' as const,

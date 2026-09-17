@@ -153,7 +153,7 @@ describe('SQLite runtime schema migration', () => {
           'claim-v1', 'session', 'source-invocation', 'source-run', 'source-turn', 1,
           'sha256:source', 'sha256:boundary-v1', '{}', 1, 'sha256:replay-v1',
           'session', 'target-invocation-v1', 'target-run-v1', 'target-turn-v1',
-          '{"runId": "target-run-v1", "invocationId": "target-invocation-v1", "sessionId": "session", "turnId": "target-turn-v1", "status": "created", "backendKind": "fake", "llmConnectionSlug": "connection-1", "modelId": "model-1", "cwd": "/workspace", "permissionMode": "ask", "createdAt": 1, "updatedAt": 1}',
+          '{"runId": "target-run-v1", "invocationId": "target-invocation-v1", "sessionId": "session", "turnId": "target-turn-v1", "status": "created", "backendKind": "fake", "llmConnectionSlug": "connection-1", "modelId": "model-1", "cwd": "/workspace", "permissionMode": "auto_review", "createdAt": 1, "updatedAt": 1}',
           1, NULL, NULL, 1
         );
         PRAGMA user_version = 14;

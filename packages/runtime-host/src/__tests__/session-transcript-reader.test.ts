@@ -69,7 +69,7 @@ for (const coordination of [false, true])
         llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
         llmConnectionSlug: 'fake',
         model: 'fake-model',
-        permissionMode: 'ask' as const,
+        permissionMode: 'auto_review' as const,
       };
       const created = coordination
         ? await stores.sessionStore.createStableSession({
@@ -441,7 +441,7 @@ test('pages the ledger without materializing Turns it takes no rows from', async
       llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     const expected: StoredMessage[] = [];
     for (let turn = 0; turn < 5; turn++) {
@@ -952,7 +952,7 @@ async function withNestedTranscript(
       llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     let ts = 0;
     const append = (
@@ -1031,7 +1031,7 @@ test('cuts a byte-sized page back to the last whole Turn on it', async () => {
       llmConnectionId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     await seedLargeTurns(stores, session.id);
 
@@ -1099,7 +1099,7 @@ test('cuts a guest page where it cuts an owner page', async () => {
       llmConnectionId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     await seedLargeTurns(stores, session.id);
 

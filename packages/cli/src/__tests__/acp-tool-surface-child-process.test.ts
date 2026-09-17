@@ -102,6 +102,12 @@ test('official SDK receives one authoritative builtin tool result before end_tur
               cwd: harness.workspaceRoot,
               mcpServers: [],
             });
+            // This provider fixture exercises direct ACP tool-result delivery.
+            await context.request(methods.agent.session.setConfigOption, {
+              sessionId: created.sessionId,
+              configId: 'permission_mode',
+              value: 'bypass',
+            });
             assert.deepEqual(
               await context.request(methods.agent.session.prompt, {
                 sessionId: created.sessionId,

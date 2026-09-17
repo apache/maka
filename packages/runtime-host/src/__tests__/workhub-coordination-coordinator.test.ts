@@ -218,7 +218,7 @@ describe('Host WorkHub Coordination coordinator', () => {
         name: 'Payments',
         llmConnectionSlug: 'test',
         model: 'test',
-        permissionMode: 'ask',
+        permissionMode: 'auto_review',
       });
       const candidates = await workhub.handlers['workhub.coordination.candidates']({}, CONTEXT);
       assert.ok(candidates.ok);
@@ -343,7 +343,7 @@ describe('Host WorkHub Coordination coordinator', () => {
           `UPDATE session_metadata
            SET payload_json = json_set(
              json_remove(payload_json, '$.toolProfile'),
-             '$.permissionMode', 'ask',
+             '$.permissionMode', 'auto_review',
              '$.collaborationMode', 'plan',
              '$.orchestrationMode', 'graph'
            )
@@ -398,15 +398,28 @@ describe('Host WorkHub Coordination coordinator', () => {
         admission,
       );
       assert.equal((await workhub.handlers['workhub.coordination.resolve']({}, CONTEXT)).ok, true);
-      await store.setExecutionBoundaryKind(WORKHUB_COORDINATION_SESSION_ID, 'managed', {
-        permissionMode: 'explore',
+      const initial = await store.readHeaderRecordSnapshot(WORKHUB_COORDINATION_SESSION_ID);
+      await store.updateSessionConfiguration(WORKHUB_COORDINATION_SESSION_ID, {
+        expectedVersion: initial.revision,
+        lifecycle: { kind: 'preserve' },
+        configuration: {
+          backend: initial.header.backend,
+          llmConnectionSlug: initial.header.llmConnectionSlug,
+          connectionLocked: initial.header.connectionLocked,
+          model: initial.header.model,
+          thinkingLevel: initial.header.thinkingLevel,
+          permissionMode: 'auto_review',
+          collaborationMode: initial.header.collaborationMode ?? 'agent',
+          orchestrationMode: initial.header.orchestrationMode ?? 'default',
+          labels: initial.header.labels,
+        },
       });
       const record = await store.readHeaderRecordSnapshot(WORKHUB_COORDINATION_SESSION_ID);
       await store.updateHeaderVersioned(
         WORKHUB_COORDINATION_SESSION_ID,
         {
           toolProfile: 'workhub-coordination-v1',
-          permissionMode: 'explore',
+          permissionMode: 'auto_review',
         },
         record.revision,
       );
@@ -445,7 +458,7 @@ describe('Host WorkHub Coordination coordinator', () => {
           name: 'Ordinary collision',
           llmConnectionSlug: 'test-connection',
           model: 'test-model',
-          permissionMode: 'ask',
+          permissionMode: 'auto_review',
           role: WORKHUB_COORDINATION_SESSION_ROLE,
         },
       });
@@ -494,7 +507,7 @@ describe('Host WorkHub Coordination coordinator', () => {
         name: 'Keep me',
         llmConnectionSlug: 'test-connection',
         model: 'test-model',
-        permissionMode: 'ask',
+        permissionMode: 'auto_review',
       });
       const initial = await coordinator(root, store).handlers['workhub.coordination.resolve'](
         {},
@@ -551,7 +564,7 @@ describe('Host WorkHub Coordination coordinator', () => {
         name: 'Keep me',
         llmConnectionSlug: 'test-connection',
         model: 'test-model',
-        permissionMode: 'ask',
+        permissionMode: 'auto_review',
       });
       assert.equal(
         (await coordinator(root, store).handlers['workhub.coordination.resolve']({}, CONTEXT)).ok,
@@ -736,7 +749,7 @@ describe('Host WorkHub Coordination coordinator', () => {
         name: 'Payments',
         llmConnectionSlug: 'test-connection',
         model: 'test-model',
-        permissionMode: 'ask',
+        permissionMode: 'auto_review',
       });
       const assignments: string[] = [];
       const first = coordinator(root, store, () => undefined, undefined, undefined, undefined, {
@@ -834,7 +847,7 @@ describe('Host WorkHub Coordination coordinator', () => {
         name: 'Payments',
         llmConnectionSlug: 'test-connection',
         model: 'test-model',
-        permissionMode: 'ask',
+        permissionMode: 'auto_review',
       });
       const workhub = coordinator(root, store, () => undefined, undefined, undefined, undefined, {
         assign: async () => {
@@ -879,7 +892,7 @@ describe('Host WorkHub Coordination coordinator', () => {
         name: 'Payments',
         llmConnectionSlug: 'test-connection',
         model: 'test-model',
-        permissionMode: 'ask',
+        permissionMode: 'auto_review',
       });
       assert.equal(
         (await coordinator(root, store).handlers['workhub.coordination.resolve']({}, CONTEXT)).ok,
@@ -1002,7 +1015,7 @@ describe('Host WorkHub Coordination coordinator', () => {
         name: 'Terminal only',
         llmConnectionSlug: 'test-connection',
         model: 'test-model',
-        permissionMode: 'ask',
+        permissionMode: 'auto_review',
       });
       await persistTestAssignment(
         store,
@@ -1101,14 +1114,14 @@ describe('Host WorkHub Coordination coordinator', () => {
         name: 'Payments',
         llmConnectionSlug: 'test-connection',
         model: 'test-model',
-        permissionMode: 'ask',
+        permissionMode: 'auto_review',
       });
       const destination = await store.create({
         cwd: root,
         name: 'Login',
         llmConnectionSlug: 'test-connection',
         model: 'test-model',
-        permissionMode: 'ask',
+        permissionMode: 'auto_review',
       });
       const workhub = coordinator(root, store, () => undefined, undefined, undefined, undefined, {
         retireDelegation: async () => assert.fail('a stale correction must not retire work'),
@@ -1190,7 +1203,7 @@ describe('Host WorkHub Coordination coordinator', () => {
         name: 'Payments',
         llmConnectionSlug: 'test-connection',
         model: 'test-model',
-        permissionMode: 'ask',
+        permissionMode: 'auto_review',
       });
       targetId = target.id;
       let retireCalls = 0;
@@ -1295,7 +1308,7 @@ describe('Host WorkHub Coordination coordinator', () => {
         name: 'Payments',
         llmConnectionSlug: 'test-connection',
         model: 'test-model',
-        permissionMode: 'ask',
+        permissionMode: 'auto_review',
       });
       const workhub = coordinator(root, store, () => undefined, undefined, undefined, admission, {
         assign: (input) =>
@@ -1371,7 +1384,7 @@ describe('Host WorkHub Coordination coordinator', () => {
         name: 'Payments',
         llmConnectionSlug: 'test-connection',
         model: 'test-model',
-        permissionMode: 'ask',
+        permissionMode: 'auto_review',
       });
       targetId = target.id;
       let resumeCalls = 0;
@@ -1439,7 +1452,7 @@ describe('Host WorkHub Coordination coordinator', () => {
         name: 'Payments',
         llmConnectionSlug: 'test-connection',
         model: 'test-model',
-        permissionMode: 'ask',
+        permissionMode: 'auto_review',
       });
       let recovering = true;
       const workhub = coordinator(root, store, () => undefined, undefined, undefined, undefined, {
@@ -1515,7 +1528,7 @@ describe('Host WorkHub Coordination coordinator', () => {
         name: 'Payments',
         llmConnectionSlug: 'test-connection',
         model: 'test-model',
-        permissionMode: 'ask',
+        permissionMode: 'auto_review',
       });
       const admission = new SessionAdmissionGate();
       let injected = false;
@@ -1636,7 +1649,7 @@ describe('Host WorkHub Coordination coordinator', () => {
         name: 'Payments',
         llmConnectionSlug: 'test-connection',
         model: 'test-model',
-        permissionMode: 'ask',
+        permissionMode: 'auto_review',
       });
       targetId = target.id;
       // The exact crash seam: the pending cancellation succeeds and the durable
@@ -1743,7 +1756,7 @@ describe('Host WorkHub Coordination coordinator', () => {
         name: 'Payments',
         llmConnectionSlug: 'test-connection',
         model: 'test-model',
-        permissionMode: 'ask',
+        permissionMode: 'auto_review',
       });
       let failStopRequest = true;
       const stores = new Proxy(store, {
@@ -1845,7 +1858,7 @@ describe('Host WorkHub Coordination coordinator', () => {
         name: 'Payments',
         llmConnectionSlug: 'test-connection',
         model: 'test-model',
-        permissionMode: 'ask',
+        permissionMode: 'auto_review',
       });
       const workhub = coordinator(root, store, () => undefined, undefined, undefined, undefined, {
         assign: persistTestAssignmentAction(store, (input) => `${input.actionId}-turn`),
@@ -1960,7 +1973,7 @@ describe('Host WorkHub Coordination coordinator', () => {
         name: 'Payments',
         llmConnectionSlug: 'test-connection',
         model: 'test-model',
-        permissionMode: 'ask',
+        permissionMode: 'auto_review',
       });
       const workhub = coordinator(root, store, () => undefined, undefined, undefined, undefined, {
         assign: persistTestAssignmentAction(store, 'payments-turn'),
@@ -2062,7 +2075,7 @@ describe('Host WorkHub Coordination coordinator', () => {
             name,
             llmConnectionSlug: 'test-connection',
             model: 'test-model',
-            permissionMode: 'ask',
+            permissionMode: 'auto_review',
           }),
         );
       }
@@ -2334,7 +2347,7 @@ function coordinator(
         llmConnectionId: 'test-connection-id',
         llmConnectionSlug: 'test-connection',
         model: 'test-model',
-        permissionMode: 'explore',
+        permissionMode: 'auto_review',
         collaborationMode: 'agent',
         orchestrationMode: 'default',
       })),

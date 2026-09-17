@@ -31,7 +31,6 @@ import {
 import { projectSessionTodoItemsForDisplay, type SessionTodoItem } from '@maka/core/session-todo';
 import { markPersisted } from '@maka/core/persisted-value';
 import {
-  type ActiveInteractionRequestEvent,
   type SessionEvent,
   type ShellRunSnapshotResult,
   type ShellRunUpdate,
@@ -48,10 +47,7 @@ import type { PermissionMode } from '@maka/core/permission';
 
 import { mergeShellRunUpdate } from '@maka/core/shell-run-result';
 import { isActiveShellRunStatus } from '@maka/core/shell-run';
-import { executionBoundaryDisplayMode } from '@maka/core/sandbox-boundary';
-import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
-import type { SkillInvocationResult } from '@maka/core/skill-invocation';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import type { InteractionFormResponse } from '@maka/core/interaction';
 import type { ContextDiagnostics } from '@maka/runtime/context-diagnostics';
@@ -222,7 +218,6 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
   // exists. Cleared by `startNewSession` so a previous Session's elevation
   // cannot leak into a fresh one (#3020).
   #permissionMode: PermissionMode | undefined;
-  #activeBoundaryDisplayMode: PermissionMode | undefined;
   #orchestrationMode: OrchestrationMode;
   #channel: RuntimeHostSessionChannel | undefined;
   #hiddenTranscriptThroughTurnId: string | undefined;
@@ -350,7 +345,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     this.#assertCurrentSession(sessionId, sessionGeneration);
     const channel = await this.#ensureChannel(sessionId);
     this.#assertCurrentSession(sessionId, sessionGeneration);
-    this.#adoptLoadedConfiguration(configuration);
+    this.#adoptConfiguration(configuration);
     const turnId = options.turnId ?? this.#newId();
     this.#claimedTurnIds.add(turnId);
     const events = channel.eventsForTurn(turnId);
@@ -380,7 +375,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
         turnId,
         runId: started.runId,
         events,
-        summary: projectSessionCatalogSummary(configuration.session),
+        summary: projectSessionCatalogSummary(configuration),
         ...(skillInvocation ? { skillInvocation } : {}),
       };
     } catch (error) {
@@ -534,7 +529,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     this.#assertCurrentSession(sessionId, sessionGeneration);
     await this.#ensureChannel(sessionId);
     this.#assertCurrentSession(sessionId, sessionGeneration);
-    this.#adoptLoadedConfiguration(configuration);
+    this.#adoptConfiguration(configuration);
     const modelText = options.modelText ?? text;
     try {
       return await this.#request('turn.message.submit', {
@@ -594,17 +589,6 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
       text: result.retracted.map((entry) => entry.content.text).join('\n\n'),
       messageIds: result.retracted.map((entry) => entry.messageId),
     };
-  }
-
-  async respondToSandboxBoundary(response: SandboxBoundaryResponse): Promise<void> {
-    const sessionId = this.#requireSession('respond to permission');
-    const pending = this.#channel?.pendingInteraction(response.requestId);
-    const answered = await this.#request('interaction.answer', {
-      sessionId,
-      interactionId: response.requestId,
-      answer: { kind: 'sandbox_boundary', decision: response.decision },
-    });
-    if (pending) this.#channel?.publishInteractionAnswer(answered, pending);
   }
 
   async respondToUserQuestion(response: UserQuestionResponse): Promise<void> {
@@ -689,10 +673,6 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     if (this.#sessionId) {
       const session = await this.#updateConfiguration(this.#sessionId, { permissionMode: mode });
       this.#permissionMode = session.permissionMode;
-      const boundary = await this.#request('session.execution_boundary.query', {
-        sessionId: this.#sessionId,
-      });
-      this.#activeBoundaryDisplayMode = executionBoundaryDisplayMode(boundary);
       return;
     }
     this.#permissionMode = mode;
@@ -803,7 +783,6 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     this.#hiddenTranscriptThroughTurnId = isSideConversationSession(session.labels)
       ? session.branchOfTurnId
       : undefined;
-    this.#activeBoundaryDisplayMode = executionBoundaryDisplayMode(boundary);
     const attachedTurnId = opened.attachedTurnId ?? opened.channel.firstObservedTurnId;
     opened.channel.activate(attachedTurnId);
     return {
@@ -1058,7 +1037,6 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     // opt-in; `setPermissionMode` can still raise it before the first prompt
     // creates the Session.
     this.#permissionMode = undefined;
-    this.#activeBoundaryDisplayMode = undefined;
     void this.#refreshProspectivePermissionMode();
     void this.#replaceChannel(undefined);
   }
@@ -1231,9 +1209,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
   }
 
   getPermissionMode(): PermissionMode | undefined {
-    return (
-      this.#activeBoundaryDisplayMode ?? this.#permissionMode ?? this.#prospectivePermissionMode
-    );
+    return this.#permissionMode ?? this.#prospectivePermissionMode;
   }
 
   /**
@@ -1408,22 +1384,10 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     this.#orchestrationMode = session.orchestrationMode;
   }
 
-  async #loadConfiguration(sessionId: string): Promise<LoadedSessionConfiguration> {
-    const [session, boundary] = await Promise.all([
-      getRuntimeHostSession(this.#connection, sessionId),
-      this.#request('session.execution_boundary.query', { sessionId }),
-    ]);
+  async #loadConfiguration(sessionId: string): Promise<SessionCatalogProjection> {
+    const session = await getRuntimeHostSession(this.#connection, sessionId);
     if (!session) throw new Error(`Session not found: ${sessionId}`);
-    return {
-      session,
-      boundaryDisplayMode:
-        boundary.kind === 'external' ? undefined : executionBoundaryDisplayMode(boundary),
-    };
-  }
-
-  #adoptLoadedConfiguration(configuration: LoadedSessionConfiguration): void {
-    this.#adoptConfiguration(configuration.session);
-    this.#activeBoundaryDisplayMode = configuration.boundaryDisplayMode;
+    return session;
   }
 
   #assertCurrentSession(sessionId: string, sessionGeneration: number): void {
@@ -1540,7 +1504,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
       }
       opened.channel.seedTerminalCut(opened.terminalTurn);
     }
-    let configuration: LoadedSessionConfiguration;
+    let configuration: SessionCatalogProjection;
     try {
       configuration = await this.#loadConfiguration(sessionId);
     } catch {
@@ -1555,7 +1519,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
       await opened.channel.close().catch(() => undefined);
       return;
     }
-    this.#adoptLoadedConfiguration(configuration);
+    this.#adoptConfiguration(configuration);
     this.#channelGeneration += 1;
     await this.#replaceChannel(opened.channel);
     const turn = {
@@ -1566,7 +1530,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
         : {}),
       events: opened.channel.eventsForTurn(turnId),
       messages: visibleTranscriptMessages(opened.messages, this.#hiddenTranscriptThroughTurnId),
-      summary: projectSessionCatalogSummary(configuration.session),
+      summary: projectSessionCatalogSummary(configuration),
     } satisfies MakaAttachedSessionTurn;
     for (const listener of this.#startedTurnListeners) listener(turn);
     opened.channel.activate(turnId);
@@ -1765,11 +1729,6 @@ function workspaceTargetForCreate(
     return { kind: 'host_path', path: input.cwd };
   }
   return current.target!;
-}
-
-interface LoadedSessionConfiguration {
-  session: SessionCatalogProjection;
-  boundaryDisplayMode: PermissionMode | undefined;
 }
 
 function representableSession(item: SessionCatalogItem): SessionCatalogProjection[] {

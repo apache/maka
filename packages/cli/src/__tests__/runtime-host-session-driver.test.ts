@@ -110,7 +110,7 @@ describe('Runtime Host Maka Session driver', () => {
       llmConnectionId: 'connection-1',
       llmConnectionSlug: 'openai-main',
       model: 'gpt-5',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
 
     const queried = await driver.queryTodo!('session-id');
@@ -144,7 +144,7 @@ describe('Runtime Host Maka Session driver', () => {
       llmConnectionId: 'connection-1',
       llmConnectionSlug: 'openai-main',
       model: 'gpt-5',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
 
     const changes: string[] = [];
@@ -216,7 +216,7 @@ describe('Runtime Host Maka Session driver', () => {
         llmConnectionId: 'connection-1',
         llmConnectionSlug: 'openai-main',
         model: 'gpt-5',
-        permissionMode: 'ask',
+        permissionMode: 'auto_review',
       }),
       /requires an explicit Project/,
     );
@@ -251,7 +251,7 @@ describe('Runtime Host Maka Session driver', () => {
       llmConnectionId: 'connection-1',
       llmConnectionSlug: 'openai-main',
       model: 'gpt-5',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
 
     // Channel adoption publishes the snapshot's goal without any RPC.
@@ -334,7 +334,7 @@ describe('Runtime Host Maka Session driver', () => {
       llmConnectionId: 'connection-1',
       llmConnectionSlug: 'openai-main',
       model: 'gpt-5',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
 
     // Clean path: one control request carrying the snapshot revision, no query.
@@ -465,7 +465,7 @@ describe('Runtime Host Maka Session driver', () => {
         llmConnectionId: 'connection-1',
         llmConnectionSlug: 'openai-main',
         model: 'gpt-5',
-        permissionMode: 'ask',
+        permissionMode: 'auto_review',
       });
 
       assert.deepEqual(
@@ -480,7 +480,7 @@ describe('Runtime Host Maka Session driver', () => {
             connectionSlug: 'openai-main',
             model: 'gpt-5',
           },
-          permissionMode: 'ask',
+          permissionMode: 'auto_review',
         },
       );
     }
@@ -978,7 +978,7 @@ describe('Runtime Host Maka Session driver', () => {
       llmConnectionId: 'connection-1',
       llmConnectionSlug: 'openai-main',
       model: 'gpt-5',
-      prospectivePermissionMode: 'ask',
+      prospectivePermissionMode: 'auto_review',
       newId: () => `session-${++nextId}`,
     });
 
@@ -987,14 +987,14 @@ describe('Runtime Host Maka Session driver', () => {
       llmConnectionId: 'connection-1',
       llmConnectionSlug: 'openai-main',
       model: 'gpt-5',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     connection.executionBoundary = { kind: 'bypass', revision: 2 };
     await driver.setPermissionMode('bypass');
     assert.equal(driver.getPermissionMode?.(), 'bypass');
 
     await driver.startNewSession();
-    assert.equal(driver.getPermissionMode?.(), 'ask');
+    assert.equal(driver.getPermissionMode?.(), 'auto_review');
 
     // The fresh Session's boundary is managed again once it exists.
     connection.executionBoundary = { kind: 'managed', access: 'writable', revision: 3 };
@@ -2963,7 +2963,7 @@ class FakeConnection {
         kind: 'committed',
         session: sessionProjection({
           revision: update.expectedRevision + 1,
-          permissionMode: update.patch.permissionMode ?? 'ask',
+          permissionMode: update.patch.permissionMode ?? 'auto_review',
         }),
       } as OperationOutput<K>;
     }
@@ -3271,7 +3271,7 @@ function sessionProjection(
     llmConnectionSlug: 'openai-main',
     connectionLocked: true,
     model: 'gpt-5',
-    permissionMode: 'ask',
+    permissionMode: 'auto_review',
     collaborationMode: 'agent',
     orchestrationMode: 'default',
     ...overrides,

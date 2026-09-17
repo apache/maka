@@ -23,18 +23,25 @@
 // Mode + Tool categories
 // ============================================================================
 
-export const PERMISSION_MODES = ['explore', 'ask', 'bypass'] as const;
+export const PERMISSION_MODES = ['bypass', 'auto_review'] as const;
 export type PermissionMode = (typeof PERMISSION_MODES)[number];
 
-/**
- * A mode that was removed but still appears in records written before the
- * removal. It never had behavior of its own — `execute` compiled to the same
- * profile as `ask`, displayed as `ask`, and produced the same execution
- * boundary — so folding it costs nothing and is not a downgrade.
- */
-const RETIRED_PERMISSION_MODES: Readonly<Record<string, PermissionMode>> = {
-  execute: 'ask',
-};
+/** Retired sandbox modes remain readable in historical records. */
+const RETIRED_PERMISSION_MODES = {
+  execute: 'auto_review',
+  ask: 'auto_review',
+  explore: 'auto_review',
+} as const satisfies Readonly<Record<string, PermissionMode>>;
+
+/** Immutable execution facts retain the mode that actually governed the run. */
+export type RecordedPermissionMode = PermissionMode | keyof typeof RETIRED_PERMISSION_MODES;
+
+export function isRecordedPermissionMode(value: unknown): value is RecordedPermissionMode {
+  return (
+    isPermissionMode(value) ||
+    (typeof value === 'string' && Object.hasOwn(RETIRED_PERMISSION_MODES, value))
+  );
+}
 
 /**
  * A permission mode read back from a persisted record, or `undefined` when the
@@ -42,14 +49,13 @@ const RETIRED_PERMISSION_MODES: Readonly<Record<string, PermissionMode>> = {
  *
  * Decoders use this instead of {@link isPermissionMode} so a retired mode
  * stays readable: the record is old, not malformed, and refusing it would make
- * the Session, run or task it belongs to unopenable. New input and wire values
- * use the strict check — nothing should still be *sending* a retired mode.
+ * the Session, run or task it belongs to unopenable. New configuration input
+ * uses the strict check; immutable execution facts retain their recorded mode.
  */
 export function decodePersistedPermissionMode(value: unknown): PermissionMode | undefined {
-  if (typeof value !== 'string') return undefined;
-  const retired = RETIRED_PERMISSION_MODES[value];
-  if (retired !== undefined) return retired;
-  return isPermissionMode(value) ? value : undefined;
+  if (!isRecordedPermissionMode(value)) return undefined;
+  if (isPermissionMode(value)) return value;
+  return RETIRED_PERMISSION_MODES[value];
 }
 
 export const APPROVALS_REVIEWERS = ['user', 'auto_review'] as const;

@@ -59,9 +59,9 @@ const DEFAULT_CONFIG_OPTIONS: Array<Extract<SessionConfigOption, { type: 'select
     id: 'permission_mode',
     name: 'Permission mode',
     category: '_maka/permission_mode',
-    currentValue: 'ask',
+    currentValue: 'auto_review',
     options: [
-      { value: 'ask', name: 'Ask' },
+      { value: 'auto_review', name: 'Auto review' },
       { value: 'bypass', name: 'Bypass' },
     ],
   },
@@ -1909,7 +1909,7 @@ describe('ACP Session registry', () => {
     let subscriptionOpens = 0;
     const created = catalogSession('session-configured', '/workspace', {
       thinkingLevel: 'high',
-      permissionMode: 'explore',
+      permissionMode: 'auto_review',
       collaborationMode: 'plan',
       orchestrationMode: 'swarm',
     });
@@ -1939,7 +1939,7 @@ describe('ACP Session registry', () => {
       sessionId: 'session-configured',
       configOptions: configOptions(
         {
-          permission_mode: 'explore',
+          permission_mode: 'auto_review',
           thinking_level: 'high',
           collaboration_mode: 'plan',
           orchestration_mode: 'swarm',
@@ -3436,7 +3436,7 @@ function catalogSession(
     llmConnectionSlug: 'default',
     connectionLocked: false,
     model: 'default',
-    permissionMode: 'ask',
+    permissionMode: 'auto_review',
     collaborationMode: 'agent',
     orchestrationMode: 'default',
     ...overrides,

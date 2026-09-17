@@ -21,28 +21,13 @@ import { withTimeout } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { fork, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import {
-  appendFile,
-  chmod,
-  mkdir,
-  mkdtemp,
-  readFile,
-  readdir,
-  rm,
-  writeFile,
-} from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { createServer, type Server } from 'node:http';
 import { connect, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { test } from 'node:test';
-import { TOOL_BOUNDARY_PROTOCOL_V1 } from '@maka/core/runtime-event';
-import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
-import {
-  runtimeInvocationOutcome,
-  type RuntimeInvocationRecord,
-} from '@maka/core/runtime-invocation';
+import { type RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 import { seedInvocation } from '@maka/runtime/test-only/invocation-fixture';
 import {
   aggregateMessageContents,
@@ -61,12 +46,7 @@ import {
   classifyTerminalRuntimeLedger,
   commitTerminalRunWithRuntimeFact,
 } from '@maka/runtime/terminal-run-commit';
-import {
-  FAKE_ASK_USER_QUESTION_PROMPT,
-  FAKE_WAIT_FOR_STEERING_PROMPT,
-  FakeBackend,
-} from '@maka/runtime/test-only/fake-backend';
-import { type MakaTool, type MakaToolContext } from '@maka/runtime/tool-runtime';
+import { FakeBackend } from '@maka/runtime/test-only/fake-backend';
 import {
   openInteractiveExecutionStoresForRead,
   openInteractiveExecutionStoresForWrite,
@@ -96,14 +76,12 @@ import {
   RUNTIME_HOST_COMPATIBILITY_EPOCH,
   RUNTIME_HOST_PROTOCOL_VERSION,
   type ClientFrame,
-  type ConnectionCatalogQueryResult,
   type InteractionPendingSnapshot,
   type SubscriptionFrame,
   type TurnMessageSubmitInput,
   type TurnSnapshot,
   type TurnStartResult,
 } from '../../protocol/index.js';
-import { SessionAdmissionGate } from '../../server/session-admission-gate.js';
 import { continuationSafetyDigest } from '../../server/root-turn-coordinator.js';
 import { FramedTransport } from '../../transport/framed-transport.js';
 import { removePosixEndpointDirectories } from './endpoint-hygiene.js';
@@ -155,7 +133,7 @@ export class ExecutionFixture {
         llmConnectionId: FAKE_CONNECTION_ID,
         llmConnectionSlug: 'fake',
         model: 'fake-model',
-        permissionMode: 'ask',
+        permissionMode: 'auto_review',
       });
       return session.id;
     } finally {
@@ -198,7 +176,7 @@ export class ExecutionFixture {
           configuration: {
             cwd: this.root,
             workspaceIdentity: workspace.workspaceIdentity,
-            permissionMode: 'ask',
+            permissionMode: 'auto_review',
             collaborationMode: 'agent',
             orchestrationMode: 'default',
             orchestrationSource: 'session',
@@ -504,7 +482,7 @@ export class ExecutionFixture {
         llmConnectionId: FAKE_CONNECTION_ID,
         llmConnectionSlug: 'fake',
         model: 'fake-model',
-        permissionMode: 'explore',
+        permissionMode: 'auto_review',
         collaborationMode: 'agent',
         orchestrationMode: 'default',
         subagentParent: {
@@ -566,7 +544,7 @@ export class ExecutionFixture {
             },
             configuration: {
               cwd: this.root,
-              permissionMode: 'explore',
+              permissionMode: 'auto_review',
               collaborationMode: 'agent',
               orchestrationMode: 'default',
               orchestrationSource: 'session',
@@ -671,7 +649,7 @@ export class ExecutionFixture {
           },
           configuration: {
             cwd: this.root,
-            permissionMode: 'explore',
+            permissionMode: 'auto_review',
             collaborationMode: 'agent',
             orchestrationMode: 'default',
             orchestrationSource: 'session',
@@ -837,7 +815,7 @@ export class ExecutionFixture {
             },
             configuration: {
               cwd: this.root,
-              permissionMode: 'ask',
+              permissionMode: 'auto_review',
               collaborationMode: 'agent',
               orchestrationMode: 'default',
               orchestrationSource: 'session',
@@ -1059,7 +1037,7 @@ export class ExecutionFixture {
             },
             configuration: {
               cwd: this.root,
-              permissionMode: 'ask',
+              permissionMode: 'auto_review',
               collaborationMode: 'agent',
               orchestrationMode: 'default',
               orchestrationSource: 'session',
@@ -1327,7 +1305,7 @@ export async function withExecutionRoot(
       llmConnectionId: FAKE_CONNECTION_ID,
       llmConnectionSlug: 'fake',
       model: 'fake-model',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     sessionId = session.id;
   } finally {

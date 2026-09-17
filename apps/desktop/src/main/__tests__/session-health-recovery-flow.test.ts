@@ -83,7 +83,7 @@ const LEGACY_SESSION = {
   llmConnectionSlug: CONNECTION.slug,
   connectionLocked: true,
   model: CHOICE.model,
-  permissionMode: 'ask',
+  permissionMode: 'auto_review',
 } satisfies SessionSummary;
 
 let mountedRoot: Root | undefined;

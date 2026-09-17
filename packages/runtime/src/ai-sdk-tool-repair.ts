@@ -20,8 +20,6 @@
 import { z } from 'zod';
 
 import type { RepairableAiSdkToolCall } from './model-adapter.js';
-import { SandboxCommandError } from './sandbox/errors.js';
-import { REQUEST_SANDBOX_BOUNDARY_TOOL_NAME } from './sandbox-boundary-tool.js';
 import {
   formatSyntheticToolErrorText,
   formatToolArgsViolationText,
@@ -61,7 +59,6 @@ export function repairMakaToolCall(input: {
     input: JSON.stringify({
       tool: requestedName,
       error: describeUnrepairableToolCall(input),
-      ...(isProviderSandboxBoundaryAttempt(input.toolCall) ? { sandboxBoundaryAttempt: true } : {}),
     }),
   };
 }
@@ -108,23 +105,7 @@ function parseToolCallInput(raw: unknown): unknown {
   }
 }
 
-export function isProviderSandboxBoundaryAttempt(toolCall: {
-  toolName: string;
-  input: unknown;
-}): boolean {
-  const toolName = toolCall.toolName.toLowerCase();
-  if (toolName === REQUEST_SANDBOX_BOUNDARY_TOOL_NAME) return true;
-  if (toolName !== 'bash') return false;
-  const parsed = parseToolCallInput(toolCall.input);
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return false;
-  const boundaryIntent = (parsed as Record<string, unknown>).boundary_intent;
-  return boundaryIntent !== undefined && boundaryIntent !== 'current';
-}
-
-export function buildInvalidMakaTool(): MakaTool<
-  { tool?: string; error?: string; sandboxBoundaryAttempt?: true },
-  never
-> {
+export function buildInvalidMakaTool(): MakaTool<{ tool?: string; error?: string }, never> {
   return {
     name: INVALID_TOOL_NAME,
     description:
@@ -132,20 +113,10 @@ export function buildInvalidMakaTool(): MakaTool<
     parameters: z.object({
       tool: z.string().optional(),
       error: z.string().optional(),
-      sandboxBoundaryAttempt: z.literal(true).optional(),
     }),
-    impl: ({ tool, error, sandboxBoundaryAttempt }) => {
+    impl: ({ tool, error }) => {
       const requested = tool ? ` "${tool}"` : '';
       const message = `模型请求了不可用或格式错误的工具${requested}：${error || 'tool call could not be parsed'}`;
-      if (sandboxBoundaryAttempt) {
-        throw new SandboxCommandError({
-          domain: 'command',
-          stage: 'validation',
-          reason: 'invalid_boundary_declaration',
-          recoverable: true,
-          message,
-        });
-      }
       throw new Error(message);
     },
   };

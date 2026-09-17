@@ -27,22 +27,13 @@ import {
   normalizeReviseBeforeTurnInput,
   normalizeRuntimeHostBranchFromTurnInput,
   normalizeRuntimeHostReviseBeforeTurnInput,
-  normalizeSandboxBoundaryResponse,
   normalizeSessionSendCommand,
   normalizeStopSessionInput,
   normalizeUserQuestionResponse,
 } from '../permission-response-guard.js';
 
 describe('permission response IPC boundary', () => {
-  it('accepts only bounded permission and question responses', () => {
-    assert.deepEqual(
-      normalizeSandboxBoundaryResponse({
-        requestId: 'permission-1',
-        decision: 'allow',
-        rememberForTurn: true,
-      }),
-      { requestId: 'permission-1', decision: 'allow' },
-    );
+  it('accepts only bounded capability and question responses', () => {
     assert.deepEqual(
       normalizeUserQuestionResponse({
         requestId: 'question-1',
@@ -66,9 +57,6 @@ describe('permission response IPC boundary', () => {
       { requestId: 'x'.repeat(129), decision: 'deny' },
       { requestId: 'permission-1', decision: 'approve' },
     ];
-    for (const response of invalidPermissionResponses) {
-      assert.throws(() => normalizeSandboxBoundaryResponse(response), /sandbox boundary response/);
-    }
     for (const response of invalidPermissionResponses) {
       assert.throws(
         () => normalizeClientCapabilityResponse(response),

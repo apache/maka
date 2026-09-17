@@ -967,7 +967,7 @@ describe('tool_result_preview live projection', () => {
         turnId: 'child-turn',
         runId: 'child-run',
         status: 'completed',
-        permissionMode: 'explore',
+        permissionMode: 'auto_review',
         summary: 'done',
         artifactIds: [],
       },
@@ -1067,7 +1067,7 @@ function previewedSubagentTurn(): LiveTurnProjection {
       turnId: 'child-turn',
       runId: 'child-run',
       status: 'running',
-      permissionMode: 'explore',
+      permissionMode: 'auto_review',
     },
     ts: 101,
   });

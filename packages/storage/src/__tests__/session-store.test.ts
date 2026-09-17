@@ -269,14 +269,14 @@ describe('SQLite SessionStore', () => {
         agentName: 'Explore',
         turnId: 'child-turn-1',
         status: 'completed',
-        permissionMode: 'ask',
+        permissionMode: 'auto_review',
         summary: 'done',
         artifactIds: [],
       },
     } as const satisfies StoredMessage;
     let sessionId: string;
     try {
-      const session = await store.create(makeInput({ permissionMode: 'ask' }));
+      const session = await store.create(makeInput({ permissionMode: 'auto_review' }));
       sessionId = session.id;
       await store.appendMessage(session.id, currentMessage);
       await assert.rejects(
@@ -308,13 +308,13 @@ describe('SQLite SessionStore', () => {
 
     const reopened = createSessionStore(root);
     try {
-      assert.equal((await reopened.readHeaderSnapshot(sessionId!)).permissionMode, 'ask');
+      assert.equal((await reopened.readHeaderSnapshot(sessionId!)).permissionMode, 'auto_review');
       const [message] = await reopened.readMessages(sessionId!);
       assert.equal(
         message?.type === 'tool_result' && message.content.kind === 'subagent'
           ? message.content.permissionMode
           : undefined,
-        'ask',
+        'auto_review',
       );
     } finally {
       await reopened.close?.();
@@ -871,6 +871,7 @@ describe('SQLite SessionStore', () => {
       DROP INDEX session_metadata_by_external_origin;
       ALTER TABLE session_metadata DROP COLUMN external_adapter_id;
       ALTER TABLE session_metadata DROP COLUMN external_source_session_id;
+      ALTER TABLE message_admissions DROP COLUMN authenticated_user_requests_json;
       UPDATE session_metadata_schema SET version = 22 WHERE scope = 'session_metadata';
     `);
     legacy.close();
@@ -1185,7 +1186,7 @@ function makeInput(overrides: Partial<CreateSessionInput> = {}): CreateSessionIn
     cwd: '/tmp/cwd',
     llmConnectionSlug: 'test-connection',
     model: 'test-model',
-    permissionMode: 'ask',
+    permissionMode: 'auto_review',
     name: 'Session',
     labels: [],
     ...overrides,

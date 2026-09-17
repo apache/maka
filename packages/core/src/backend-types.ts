@@ -34,13 +34,11 @@ import type {
   MessageContent,
   QuoteRef,
   SessionEvent,
-  SandboxBoundaryRequestEvent,
   FormRequestEvent,
   UserQuestionRequestEvent,
 } from './events.js';
 import type { InteractionClosureReason, InteractionFormResult } from './interaction.js';
 import type { RuntimeEvent } from './runtime-event.js';
-import type { SandboxBoundaryResponse, SandboxBoundarySettlement } from './sandbox-boundary.js';
 import type { StoredMessage, PersistedBackendKind } from './session.js';
 import type { RuntimeInvocationRecord } from './runtime-invocation.js';
 import type { UserQuestionResponse } from './user-question.js';
@@ -146,11 +144,6 @@ export interface HostedFormSettlement {
   applyClosure(reason: Exclude<InteractionClosureReason, 'timed_out'>): Promise<void>;
 }
 
-export interface HostedSandboxBoundarySettlement {
-  applyDecision(settlement: SandboxBoundarySettlement): Promise<void>;
-  applyClosure(reason: Exclude<InteractionClosureReason, 'timed_out'>): Promise<void>;
-}
-
 /**
  * Optional producer capability scoped to one exact hosted Run. Admission must
  * complete before a backend publishes the request or starts any local winner.
@@ -170,14 +163,12 @@ export interface HostedInteractionBridge {
   }): Promise<void>;
   /** Withdraw one exact producer-owned form without closing the surrounding Run. */
   withdrawFormRequest(requestId: string): Promise<void>;
-  admitSandboxBoundaryRequest(input: {
-    request: SandboxBoundaryRequestEvent;
-    settlement: HostedSandboxBoundarySettlement;
-  }): Promise<void>;
 }
 
 /** One leased steering message: queue identity + canonical user content. */
 export interface SteeringLease {
+  /** Host-authenticated human text; generated steering cannot grant authority. */
+  authenticatedUserRequests?: readonly string[];
   /** Stable user-message identity shared with the durable steering event. */
   messageId: string;
   /** Ephemeral delivery lease identity used only for ack/nack settlement. */
@@ -231,7 +222,9 @@ export type BackendSessionEvent = Exclude<
         | 'permission_request'
         | 'permission_answer_ack'
         | 'permission_closure_ack'
-        | 'permission_decision_ack';
+        | 'permission_decision_ack'
+        | 'sandbox_boundary_request'
+        | 'sandbox_boundary_decision_ack';
     }
   >
 >;
@@ -248,7 +241,6 @@ export interface AgentBackend {
   send(input: BackendSendInput): AsyncIterable<SessionEvent>;
   compactHistory?(input: BackendCompactHistoryInput): Promise<BackendCompactHistoryResult>;
   stop(reason: 'user_stop' | 'redirect', mode?: BackendStopMode): Promise<void>;
-  respondToSandboxBoundary(response: SandboxBoundaryResponse): Promise<void>;
   respondToUserQuestion?(response: UserQuestionResponse): Promise<void>;
   dispose(): Promise<void>;
 }

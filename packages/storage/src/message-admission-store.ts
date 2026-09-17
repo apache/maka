@@ -40,6 +40,8 @@ import {
 const SAFE_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 
 export interface PendingMessageAdmission {
+  /** Host-authenticated human text, independent of prepared model content. */
+  readonly authenticatedUserRequests?: readonly string[];
   readonly sessionId: string;
   readonly turnId: string;
   readonly runId: string;
@@ -123,6 +125,13 @@ export interface MessageAdmissionStore {
 export function normalizePendingMessageAdmission(
   admission: PendingMessageAdmission,
 ): PendingMessageAdmission {
+  if (
+    admission.authenticatedUserRequests !== undefined &&
+    (!Array.isArray(admission.authenticatedUserRequests) ||
+      admission.authenticatedUserRequests.some((text) => typeof text !== 'string'))
+  ) {
+    throw new Error('Invalid authenticated user request');
+  }
   for (const [name, value] of [
     ['Session', admission.sessionId],
     ['Turn', admission.turnId],
@@ -195,6 +204,7 @@ export function samePendingMessageAdmission(
   const a = normalizePendingMessageAdmission(left);
   const b = normalizePendingMessageAdmission(right);
   return (
+    isDeepStrictEqual(a.authenticatedUserRequests, b.authenticatedUserRequests) &&
     a.sessionId === b.sessionId &&
     a.turnId === b.turnId &&
     a.runId === b.runId &&

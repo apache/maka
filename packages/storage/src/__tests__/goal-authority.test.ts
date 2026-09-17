@@ -143,7 +143,7 @@ test('Session retirement atomically removes its Goal authority', async () => {
           cwd: capability.canonicalPath,
           llmConnectionSlug: 'fake',
           model: 'fake-model',
-          permissionMode: 'ask',
+          permissionMode: 'auto_review',
           name,
         }),
       ),

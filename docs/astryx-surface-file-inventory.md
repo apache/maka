@@ -6,7 +6,7 @@ Generated against `@astryxdesign/core@0.5.2` (194 component exports).
 
 Wiki bar: Design Conventions · API Use-the-System · Theming · Container Padding.
 
-**Totals:** 282 files — blocker 0, reimplementation 0, polish 4, aligned 278.
+**Totals:** 281 files — blocker 0, reimplementation 0, polish 4, aligned 277.
 
 ## Exclusions (explicit)
 
@@ -40,7 +40,7 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/application/contracts/settings-presentation/settings-section.tsx` | other | Divider, HStack, Heading, Item, Text, VStack | aligned — uses Astryx (Divider, HStack, Heading, Item, Text, VStack) | aligned |
 | `apps/desktop/src/renderer/application/contracts/workbar-edge-toggle.tsx` | shell-chrome-or-panel | Button | aligned — uses Astryx (Button) | aligned |
 | `apps/desktop/src/renderer/cascade-layers.css` | styles | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
-| `apps/desktop/src/renderer/chat-composer-region.tsx` | shell-chrome-or-panel | Banner, Button | aligned — uses Astryx (Banner, Button) | aligned |
+| `apps/desktop/src/renderer/chat-composer-region.tsx` | shell-chrome-or-panel | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/chat-message-surface.tsx` | shell-chrome-or-panel | Skeleton | aligned — uses Astryx (Skeleton) | aligned |
 | `apps/desktop/src/renderer/chat-recovery-notice.tsx` | shell-chrome-or-panel | Banner, Button | aligned — uses Astryx (Banner, Button) | aligned |
 | `apps/desktop/src/renderer/composer-mentions.tsx` | shell-chrome-or-panel | none | aligned — no raw controls; no Astryx JSX usage | aligned |
@@ -285,7 +285,6 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `packages/ui/src/prompt-anchor-rail.tsx` | ui-composition | Button, HoverCard | aligned — uses Astryx (Button, HoverCard) | aligned |
 | `packages/ui/src/quote-ref-chip.tsx` | ui-composition | Button, IconButton | aligned — uses Astryx (Button, IconButton) | aligned |
 | `packages/ui/src/relative-time.tsx` | ui-composition | none | aligned — no raw controls; no Astryx JSX usage | aligned |
-| `packages/ui/src/sandbox-boundary-prompt.tsx` | ui-composition | Button | aligned — uses Astryx (Button) | aligned |
 | `packages/ui/src/scheduled-task-form-dialog.tsx` | module-hub | Button, DateTimeInput, Dialog, DialogHeader, DropdownMenu, DropdownMenuItem, FormLayout, HStack, Layout, LayoutContent, LayoutFooter, Selector, Text, TextArea, TextInput | aligned — uses Astryx (Button, DateTimeInput, Dialog, DialogHeader, DropdownMenu, DropdownMenuItem, FormLayout, HStack) | aligned |
 | `packages/ui/src/scheduled-task-inspector.tsx` | module-hub | Button, Divider, HStack, Heading, List, ListItem, MetadataList, MetadataListItem, StackItem, StatusDot, Switch, Text, VStack | aligned — uses Astryx (Button, Divider, HStack, Heading, List, ListItem, MetadataList, MetadataListItem) | aligned |
 | `packages/ui/src/scheduled-task-panel.tsx` | module-hub | Button, Divider, DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuItem, EmptyState, List, ListItem, SegmentedControl, SegmentedControlItem, Selector, StatusDot, Text, TextInput, Toolbar | aligned — uses Astryx (Button, Divider, DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuItem, EmptyState, List, ListItem) | aligned |

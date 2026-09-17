@@ -484,7 +484,7 @@ test('Rust build caches publish immutable source generations only from the defau
     .map((name) => [name, readWorkflow(name)])
     .filter(([, workflow]) => workflow.includes('tool: kache@0.16.0'));
 
-  assert.equal(workflows.length, 6);
+  assert.equal(workflows.length, 5);
   for (const [name, workflow] of workflows) {
     assert.match(workflow, /echo "revision=\$\(git rev-parse HEAD\)"/u, name);
     const primaryKeys = [...workflow.matchAll(/^\s+key: (kache-[^\n]+)$/gmu)].map(([, key]) => key);
@@ -546,7 +546,6 @@ test('pull request triggers stay on an explicit allowlist', () => {
     'runtime-host-owner-platform.yml',
     'runtime-host-peer-admission.yml',
     'windows-recovery.yml',
-    'windows-sandbox-w0.yml',
   ]);
 });
 
@@ -841,19 +840,6 @@ test('the packaged Windows gate workflow is itself a release-contract input', ()
   );
 });
 
-test('the packaged Windows gate triggers on the worker copy step it cannot import', () => {
-  // The seven `packages/` entries this used to restate are held by
-  // `windows-package-source-closure.test.mjs`, which computes the filter's
-  // `packages/` half from the import closure and fails in both directions.
-  // This one is outside that half: the desktop app copies the built worker in,
-  // so no import reaches it and only naming it keeps it on the lane.
-  assert.ok(
-    readWorkflow('release-windows-check.yml').includes(
-      "      - 'apps/desktop/scripts/copy-runtime-filesystem-worker.mjs'",
-    ),
-  );
-});
-
 test('the packaged Linux gate verifies under a virtual display', () => {
   // The last thing `verify:linux` does is launch the extracted AppImage's
   // renderer over CDP. A headless runner has no display, so a step that dropped
@@ -867,18 +853,6 @@ test('the packaged Linux gate verifies under a virtual display', () => {
   for (const run of runs) {
     assert.match(run, /run: xvfb-run\b/u, run);
   }
-});
-
-test('pull-request and release lanes share the packaged sandbox lifecycle verifier', () => {
-  for (const name of ['release-windows-check.yml', 'release.yml']) {
-    assert.match(readWorkflow(name), /npm run verify:windows-x64/u, name);
-  }
-
-  const verifier = readFileSync(new URL('verify-windows-x64.mjs', import.meta.url), 'utf8');
-  assert.match(
-    verifier,
-    /await verifyPackagedWindowsSandboxLifecycle\(sandboxExecutable, \{ run \}\)/u,
-  );
 });
 
 test('the Gitoxide gate owns repository admission changes', () => {

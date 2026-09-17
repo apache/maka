@@ -45,7 +45,7 @@ async function createSession(workspaceRoot: string, name = 'Exported'): Promise<
       cwd: workspaceRoot,
       llmConnectionSlug: CONNECTION_SLUG,
       model: MODEL,
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       name,
     });
     return header.id;
@@ -204,14 +204,14 @@ test('carries the subagent subtree and its artifact bytes across', async () => {
         cwd: source.workspaceRoot,
         llmConnectionSlug: CONNECTION_SLUG,
         model: MODEL,
-        permissionMode: 'ask',
+        permissionMode: 'auto_review',
       });
       parentId = parent.id;
       const child = await store.createSubagent({
         cwd: source.workspaceRoot,
         llmConnectionSlug: CONNECTION_SLUG,
         model: MODEL,
-        permissionMode: 'ask',
+        permissionMode: 'auto_review',
         subagentParent: {
           kind: 'subagent' as const,
           parentSessionId: parent.id,

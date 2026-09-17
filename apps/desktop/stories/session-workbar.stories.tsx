@@ -111,7 +111,7 @@ const TOOL_PICKER_SOURCE_SESSION: SessionSummary = {
   llmConnectionSlug: 'anthropic-main',
   connectionLocked: false,
   model: 'claude-sonnet-4-5',
-  permissionMode: 'ask',
+  permissionMode: 'auto_review',
 };
 const SIDE_CHAT_SESSION: SessionSummary = {
   ...TOOL_PICKER_SOURCE_SESSION,
@@ -913,7 +913,6 @@ function bridge(options: {
         permissionMode: mode,
       }),
       regenerateTurn: async () => undefined,
-      respondToSandboxBoundary: async () => undefined,
       respondToClientCapability: async () => undefined,
       respondToUserQuestion: async () => undefined,
       respondToUserForm: async () => undefined,

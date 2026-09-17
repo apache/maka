@@ -39,7 +39,7 @@ export async function createCoordinationSession(
       role: WORKHUB_COORDINATION_SESSION_ROLE,
       llmConnectionSlug: 'test',
       model: 'test',
-      permissionMode: 'explore',
+      permissionMode: 'auto_review',
       toolProfile: 'workhub-coordination-v1',
     },
   });

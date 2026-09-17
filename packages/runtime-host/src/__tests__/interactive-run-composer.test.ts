@@ -123,8 +123,8 @@ test('scoped Tool resolution receives the complete stable Host binding', () => {
   );
 });
 
-test('Full access composes Bash without a boundary declaration and without the widening tool', () => {
-  const bashKeys = (permissionMode: 'bypass' | 'ask' | undefined) => {
+test('Both modes expose the same direct Bash schema without sandbox tools', () => {
+  const bashKeys = (permissionMode: 'bypass' | 'auto_review' | undefined) => {
     const composer = createFixtureComposer({
       builtinTools: unusedManagedShellBuiltinTools(),
       ...(permissionMode
@@ -152,18 +152,11 @@ test('Full access composes Bash without a boundary declaration and without the w
     widening: false,
     enforced: false,
   });
-  for (const mode of ['ask', undefined] as const) {
+  for (const mode of ['auto_review', undefined] as const) {
     assert.deepEqual(bashKeys(mode), {
-      keys: [
-        'command',
-        'timeout_ms',
-        'run_in_background',
-        'pty',
-        'boundary_intent',
-        'required_boundary',
-      ],
-      widening: true,
-      enforced: true,
+      keys: ['command', 'timeout_ms', 'run_in_background', 'pty'],
+      widening: false,
+      enforced: false,
     });
   }
 });

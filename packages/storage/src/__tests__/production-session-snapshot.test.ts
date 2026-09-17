@@ -366,7 +366,7 @@ function sessionInput(): CreateSessionInput {
     cwd: '/tmp/workspace',
     llmConnectionSlug: 'fake',
     model: 'fake-model',
-    permissionMode: 'ask',
+    permissionMode: 'auto_review',
     name: 'Portable Session',
     labels: [],
   };

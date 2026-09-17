@@ -42,7 +42,7 @@ test('creates a bot-mode Session through the Host-owned default model route', as
   const client = botClient({
     createSession: async (input) => {
       creates.push(input);
-      return session(input.sessionId, { permissionMode: 'explore' });
+      return session(input.sessionId, { permissionMode: 'auto_review' });
     },
   });
   const adapter = createRuntimeHostBotSessionAdapter({
@@ -76,68 +76,28 @@ test('creates a bot-mode Session through the Host-owned default model route', as
   ]);
 });
 
-test('prepares a bound Session without exposing Host configuration revisions to the Bot', async () => {
-  const updates: unknown[] = [];
-  const client = botClient({
-    getSession: async () => session('bot-session-1', { permissionMode: 'ask' }),
-    updateSessionConfiguration: async (sessionId, patch) => {
-      updates.push({ sessionId, patch });
-      return session(sessionId, { permissionMode: 'explore' });
-    },
-  });
-  const adapter = createRuntimeHostBotSessionAdapter({
-    client,
-    resolveCreateTarget: hostPathCreateTarget,
-    emitSessionsChanged() {},
-  });
-
-  assert.equal(await adapter.prepareSession('bot-session-1'), 'ready');
-  assert.deepEqual(updates, [
-    { sessionId: 'bot-session-1', patch: { permissionMode: 'explore' } },
-  ]);
-
-  const unavailable = createRuntimeHostBotSessionAdapter({
-    client: botClient({ getSession: async () => null }),
-    resolveCreateTarget: hostPathCreateTarget,
-    emitSessionsChanged() {},
-  });
-  await assert.rejects(
-    unavailable.prepareSession('removed-session'),
-    BotSessionUnavailableError,
-  );
+test('prepares bound Sessions without changing their permission mode', async () => {
+  for (const permissionMode of ['bypass', 'auto_review'] as const) {
+    const adapter = createRuntimeHostBotSessionAdapter({
+      client: botClient({
+        getSession: async () => session('bot-session-1', { permissionMode }),
+      }),
+      resolveCreateTarget: hostPathCreateTarget,
+      emitSessionsChanged() { assert.fail('Preparing a Bot must not change its permissions'); },
+    });
+    assert.equal(await adapter.prepareSession('bot-session-1'), 'ready');
+  }
 });
 
-test('rejects archived Sessions before and after a permission transition', async () => {
-  const initiallyArchived = createRuntimeHostBotSessionAdapter({
-    client: botClient({
-      getSession: async () =>
-        session('bot-session-1', { isArchived: true, status: 'active' }),
-    }),
-    resolveCreateTarget: hostPathCreateTarget,
-    emitSessionsChanged() {},
-  });
-  await assert.rejects(
-    initiallyArchived.prepareSession('bot-session-1'),
-    BotSessionUnavailableError,
-  );
-
-  const archivedDuringUpdate = createRuntimeHostBotSessionAdapter({
-    client: botClient({
-      getSession: async () => session('bot-session-1', { permissionMode: 'ask' }),
-      updateSessionConfiguration: async (sessionId) =>
-        session(sessionId, {
-          permissionMode: 'explore',
-          isArchived: true,
-          status: 'active',
-        }),
-    }),
-    resolveCreateTarget: hostPathCreateTarget,
-    emitSessionsChanged() {},
-  });
-  await assert.rejects(
-    archivedDuringUpdate.prepareSession('bot-session-1'),
-    BotSessionUnavailableError,
-  );
+test('rejects missing and archived Sessions', async () => {
+  for (const projection of [null, session('bot-session-1', { isArchived: true })]) {
+    const adapter = createRuntimeHostBotSessionAdapter({
+      client: botClient({ getSession: async () => projection }),
+      resolveCreateTarget: hostPathCreateTarget,
+      emitSessionsChanged() {},
+    });
+    await assert.rejects(adapter.prepareSession('bot-session-1'), BotSessionUnavailableError);
+  }
 });
 
 test('reconciles an uncertain Host Session create with its stable Session identity', async () => {
@@ -150,7 +110,7 @@ test('reconciles an uncertain Host Session create with its stable Session identi
           'response lost',
         );
       },
-      getSession: async (sessionId) => session(sessionId, { permissionMode: 'explore' }),
+      getSession: async (sessionId) => session(sessionId, { permissionMode: 'auto_review' }),
     }),
     resolveCreateTarget: hostPathCreateTarget,
     emitSessionsChanged() {},
@@ -400,7 +360,6 @@ function botClient(overrides: Partial<BotClient>): BotClient {
     getSession: unexpected,
     openSession: unexpected,
     startTurn: unexpected,
-    updateSessionConfiguration: unexpected,
     ...overrides,
   };
 }
@@ -430,7 +389,7 @@ function session(
     llmConnectionSlug: 'test-connection',
     connectionLocked: false,
     model: 'test-model',
-    permissionMode: 'ask',
+    permissionMode: 'auto_review',
     collaborationMode: 'agent',
     orchestrationMode: 'default',
     ...overrides,

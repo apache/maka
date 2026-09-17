@@ -73,8 +73,6 @@
     "package:cli:macos-arm64": "node scripts/package-macos-arm64-cli.mjs",
     "verify:cli:macos-arm64": "node scripts/verify-macos-arm64-cli.mjs",
     "test:product-release": "node --test scripts/product-release.test.mjs scripts/product-release-authority.test.mjs",
-    "generate:windows-cargo-notices": "node scripts/generate-windows-cargo-notices.mjs",
-    "check:windows-cargo-notices": "node scripts/generate-windows-cargo-notices.mjs --check",
     "generate:runtime-host-peer-dependencies": "node scripts/generate-runtime-host-peer-dependencies.mjs",
     "check:runtime-host-peer-dependencies": "node scripts/generate-runtime-host-peer-dependencies.mjs --check",
     "generate:runtime-host-peer-notices": "node scripts/generate-runtime-host-peer-notices.mjs",

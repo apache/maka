@@ -82,6 +82,18 @@ import {
   type HostOAuthExecutionBinding,
 } from './oauth-execution-authority.js';
 import { toRuntimePolicyProxy } from './runtime-policy-proxy.js';
+import { resolveSelectedModelContextWindow } from '@maka/runtime/context-budget-policy';
+import type { MakaTool } from '@maka/runtime/builtin-tools';
+import type { ModelToolSet } from '@maka/runtime/model-protocol';
+import type { AutoReviewContext } from './auto-review-context.js';
+
+import {
+  investigateAutoReview,
+  generateAutoReviewStep,
+  type AutoReviewStepResult,
+  type AutoReviewRequest,
+  type AutoReviewer,
+} from '@maka/runtime/auto-review';
 
 export interface HostGoalEvaluatorInput {
   readonly runtimePolicy: RuntimePolicyStoresWriter;
@@ -139,6 +151,74 @@ export interface HostSessionEffectModel {
 }
 
 export type HostSessionEffectModelInput = Omit<HostGoalEvaluatorInput, 'readSessionHeader'>;
+
+export function createHostAutoReviewer(
+  input: AuxiliaryModelCallAuthorityInput & {
+    readonly readReviewContext: (request: AutoReviewRequest) => Promise<AutoReviewContext>;
+    readonly reviewTools: readonly MakaTool[];
+  },
+): AutoReviewer {
+  const authority = createAuxiliaryModelCallAuthority(input);
+  return async (request) => {
+    const abortSignal = AbortSignal.any([request.abortSignal, AbortSignal.timeout(60_000)]);
+    const [snapshot, catalog] = await readDuringBackendCreation(
+      () =>
+        Promise.all([
+          input.runtimePolicy.runtimePolicy.getSnapshot(),
+          input.runtimePolicy.connectionCatalog.getSnapshot(),
+        ]),
+      abortSignal,
+    );
+    const configured = snapshot.policy.chatDefaults.autoReviewModel;
+    const connectionId = configured?.connectionId ?? catalog.defaultTarget?.connectionId;
+    const model = configured?.model ?? catalog.defaultTarget?.modelId;
+    const connection = catalog.connections.find((item) => item.connectionId === connectionId);
+    if (!connection || !model)
+      throw new Error('Configure an available Auto-review model in Settings');
+    const scopedRequest = { ...request, abortSignal };
+    const context = await readDuringBackendCreation(
+      () => input.readReviewContext(scopedRequest),
+      abortSignal,
+    );
+    const contextWindow =
+      resolveSelectedModelContextWindow(
+        {
+          ...connection,
+          defaultModel: model,
+          models: connection.models ? [...connection.models] : undefined,
+        },
+        model,
+      ) ?? 32_768;
+    // One UTF-8 byte per input token is conservative across languages; leave room
+    // for output, schema framing and provider-specific reasoning overhead.
+    const maxInputBytes = Math.min(128_000, Math.floor(Math.max(0, contextWindow - 4_096) * 0.75));
+    return investigateAutoReview({
+      request: scopedRequest,
+      context,
+      tools: input.reviewTools,
+      maxInputBytes,
+      generate: async (messages, reviewTools) => {
+        const result = await runHostAuxiliaryModelCall(authority, {
+          transportContextId: request.sessionId,
+          telemetrySessionId: request.sessionId,
+          header: {
+            llmConnectionId: connection.connectionId,
+            llmConnectionSlug: connection.slug,
+            model,
+            thinkingLevel: 'medium',
+          },
+          callKind: 'auto_review',
+          callId: `auto_review_${authority.newId()}`,
+          abortSignal,
+          buildRequest: () => ({ messages, reviewTools }),
+        });
+        if (!result.reviewStep)
+          throw new Error('Auto-review step returned no investigation result');
+        return result.reviewStep;
+      },
+    });
+  };
+}
 
 export interface HostPluginModel {
   generate(input: {
@@ -523,6 +603,12 @@ interface AuxiliaryModelCallAuthority {
 }
 
 type AuxiliaryModelRequest =
+  | {
+      readonly messages: readonly ModelMessage[];
+      readonly reviewTools: ModelToolSet;
+      readonly tools?: never;
+      readonly providerOptions?: never;
+    }
   | (ToolFreeModelCallContent & {
       readonly maxOutputTokens: number;
       readonly maxRetries?: number;
@@ -589,6 +675,7 @@ async function runHostAuxiliaryModelCall(
   readonly text: string;
   readonly finishReason?: string;
   readonly modelId: string;
+  readonly reviewStep?: AutoReviewStepResult;
 }> {
   const target = await readAuxiliaryPreflight(authority, input.abortSignal, () =>
     readDuringBackendCreation(
@@ -641,9 +728,11 @@ async function runHostAuxiliaryModelCall(
       modelId: target.model,
       startedAt,
     };
+    let reviewStep: AutoReviewStepResult | undefined;
     let result:
       | Awaited<ReturnType<typeof generateToolFreeModelCall>>
-      | Awaited<ReturnType<typeof generateProviderPrefixModelCall>>;
+      | Awaited<ReturnType<typeof generateProviderPrefixModelCall>>
+      | AutoReviewStepResult;
     try {
       result = await readDuringBackendCreation(() => {
         const runtime = resolveModelRuntime(target.connection, target.model);
@@ -662,20 +751,31 @@ async function runHostAuxiliaryModelCall(
           requestHeaders: target.requestHeaders,
           resolvedRuntime: runtime,
         });
-        return request.tools !== undefined
-          ? generateProviderPrefixModelCall({
+        return 'reviewTools' in request
+          ? generateAutoReviewStep({
               model,
-              ...request,
-              toolChoicePolicy: runtime.wire === 'anthropic-messages' ? 'omit' : 'none',
+              messages: request.messages,
+              tools: request.reviewTools,
               abortSignal: input.abortSignal,
-              providerOptions: request.providerOptions ?? providerOptions,
+              providerOptions,
+            }).then((step) => {
+              reviewStep = step;
+              return step;
             })
-          : generateToolFreeModelCall({
-              model,
-              ...request,
-              abortSignal: input.abortSignal,
-              providerOptions: request.providerOptions ?? providerOptions,
-            });
+          : request.tools !== undefined
+            ? generateProviderPrefixModelCall({
+                model,
+                ...request,
+                toolChoicePolicy: runtime.wire === 'anthropic-messages' ? 'omit' : 'none',
+                abortSignal: input.abortSignal,
+                providerOptions: request.providerOptions ?? providerOptions,
+              })
+            : generateToolFreeModelCall({
+                model,
+                ...request,
+                abortSignal: input.abortSignal,
+                providerOptions: request.providerOptions ?? providerOptions,
+              });
       }, input.abortSignal);
       const oauthFailure = readDeferredOAuthFailure?.();
       if (oauthFailure) throw oauthFailure;
@@ -717,6 +817,7 @@ async function runHostAuxiliaryModelCall(
     return {
       text: result.text,
       modelId: target.model,
+      ...(reviewStep ? { reviewStep } : {}),
       ...(result.finishReason ? { finishReason: result.finishReason } : {}),
     };
   } finally {

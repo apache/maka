@@ -52,7 +52,6 @@ import {
   IMPLEMENTATION_AGENT_DEFINITION,
   LOCAL_READ_AGENT_PROFILE,
 } from '@maka/runtime/agent-catalog';
-import { mcpProxyToolName } from '@maka/runtime/mcp-tools';
 import {
   RuntimeHostedRootConflictError,
   RuntimeHostedRootUnavailableError,
@@ -71,16 +70,13 @@ import type {
   BackendCompactHistoryInput,
   BackendSendInput,
 } from '@maka/core/backend-types';
-import { messageContentDigest, type SessionEvent } from '@maka/core/events';
+import { type SessionEvent } from '@maka/core/events';
 import {
   WORKHUB_COORDINATION_SESSION_ID,
   WORKHUB_COORDINATION_SESSION_ROLE,
 } from '@maka/core/session';
 import type { MakaTool } from '@maka/runtime/tool-runtime';
-import {
-  clientCapabilityConnectionIdentity,
-  clientCapabilityCoordinatorTestAdmission,
-} from './fixtures/client-capability.js';
+import { clientCapabilityConnectionIdentity } from './fixtures/client-capability.js';
 import { workHubDesktopCapabilityOffers } from './fixtures/workhub-capabilities.js';
 import {
   openInteractiveExecutionStoresForWrite,
@@ -822,7 +818,6 @@ test('startup recovery commits the catalog facts a crashed Turn wrote no project
 
 test('a failed exact Capability retry does not poison the parked continuation binding', async () => {
   const capabilities = new HostClientCapabilityCoordinator({
-    ...clientCapabilityCoordinatorTestAdmission(),
     activation: new RuntimePolicyActivationGate(),
     onModelToolsChanged: () => undefined,
   });
@@ -966,7 +961,6 @@ test('a failed exact Capability retry does not poison the parked continuation bi
 test('resume query preserves Session-before-activation lock ordering', async () => {
   const activation = new RuntimePolicyActivationGate();
   const capabilities = new HostClientCapabilityCoordinator({
-    ...clientCapabilityCoordinatorTestAdmission(),
     activation,
     onModelToolsChanged: () => undefined,
   });
@@ -1197,7 +1191,6 @@ test('turn.start resolves explicit Skills once before durable admission and repl
   let blocked = false;
   let observedCapabilityPreview = false;
   const capabilities = new HostClientCapabilityCoordinator({
-    ...clientCapabilityCoordinatorTestAdmission(),
     activation: new RuntimePolicyActivationGate(),
     onModelToolsChanged: () => undefined,
   });
@@ -1833,7 +1826,7 @@ test('linked child Sessions reject public safe-boundary continuation', async () 
       llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       collaborationMode: 'agent',
       orchestrationMode: 'default',
       subagentParent: {
@@ -1977,7 +1970,7 @@ test('worktree child Sessions reject roots outside managed child execution', asy
       llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
       collaborationMode: 'agent',
       orchestrationMode: 'default',
       subagentParent: {
@@ -2907,7 +2900,7 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
       llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     const sessionAdmission = new SessionAdmissionGate();
     const rootAdmissionOwner = new RootAdmissionOwner(stores.agentRunStore);
@@ -2982,8 +2975,6 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
       onPoison: () => {
         drainRequested = true;
       },
-      resolveSandboxBoundaryRootSession: async () => undefined,
-      onSandboxBoundaryGraphWake: async () => {},
     });
     const interactionAuthority: RuntimeInteractionAuthority = {
       bindRun: (identity) => {
@@ -3674,7 +3665,6 @@ test('WorkHub v2 requires binding evidence before admission while v1 stays unbou
     ['workhub-coordination-v2', true],
   ] as const) {
     const capabilities = new HostClientCapabilityCoordinator({
-      ...clientCapabilityCoordinatorTestAdmission(),
       activation: new RuntimePolicyActivationGate(),
       onModelToolsChanged: () => undefined,
     });
@@ -3703,7 +3693,7 @@ test('WorkHub v2 requires binding evidence before admission while v1 stays unbou
           model: 'fake-model',
           role: WORKHUB_COORDINATION_SESSION_ROLE,
           toolProfile,
-          permissionMode: toolProfile === 'workhub-coordination-v2' ? 'bypass' : 'explore',
+          permissionMode: toolProfile === 'workhub-coordination-v2' ? 'bypass' : 'auto_review',
         },
       });
       const turnId = 'workhub-binding-turn';
@@ -3747,7 +3737,6 @@ test('active WorkHub authority reads the admitted v2 input and refuses other or 
     const successorRelease = [deferred<void>(), deferred<void>()];
     const preparedRouting: Array<{ turnId: string; text: string }> = [];
     const capabilities = new HostClientCapabilityCoordinator({
-      ...clientCapabilityCoordinatorTestAdmission(),
       activation: new RuntimePolicyActivationGate(),
       onModelToolsChanged: () => undefined,
     });
@@ -3818,7 +3807,7 @@ test('active WorkHub authority reads the admitted v2 input and refuses other or 
           model: 'fake-model',
           role: WORKHUB_COORDINATION_SESSION_ROLE,
           toolProfile,
-          permissionMode: toolProfile === 'workhub-coordination-v2' ? 'bypass' : 'explore',
+          permissionMode: toolProfile === 'workhub-coordination-v2' ? 'bypass' : 'auto_review',
         },
       });
       const submit = (
@@ -3966,7 +3955,6 @@ test('active WorkHub authority reads the admitted v2 input and refuses other or 
 
 test('Client Capability ambiguity fails before durable root admission', async () => {
   const clientCapabilities = new HostClientCapabilityCoordinator({
-    ...clientCapabilityCoordinatorTestAdmission(),
     activation: new RuntimePolicyActivationGate(),
     onModelToolsChanged: () => undefined,
   });
@@ -4046,7 +4034,6 @@ test('an exact active retry preserves the Client Capability admission binding', 
   timeout: 20_000,
 }, async () => {
   const clientCapabilities = new HostClientCapabilityCoordinator({
-    ...clientCapabilityCoordinatorTestAdmission(),
     activation: new RuntimePolicyActivationGate(),
     onModelToolsChanged: () => undefined,
   });
@@ -4142,7 +4129,6 @@ test('mixed-Client queued follow-ups use separate Session successors without con
   timeout: 20_000,
 }, async () => {
   const clientCapabilities = new HostClientCapabilityCoordinator({
-    ...clientCapabilityCoordinatorTestAdmission(),
     activation: new RuntimePolicyActivationGate(),
     onModelToolsChanged: () => undefined,
   });
@@ -4287,7 +4273,6 @@ async function assertSessionSuccessorCapabilityDegradation(
   affinity: 'call' | 'turn',
 ): Promise<void> {
   const clientCapabilities = new HostClientCapabilityCoordinator({
-    ...clientCapabilityCoordinatorTestAdmission(),
     activation: new RuntimePolicyActivationGate(),
     onModelToolsChanged: () => undefined,
   });
@@ -4491,7 +4476,6 @@ test('an exact terminal retry does not require a live Client Capability binding'
   timeout: 20_000,
 }, async () => {
   const clientCapabilities = new HostClientCapabilityCoordinator({
-    ...clientCapabilityCoordinatorTestAdmission(),
     activation: new RuntimePolicyActivationGate(),
     onModelToolsChanged: () => undefined,
   });
@@ -5010,7 +4994,7 @@ test('post-start backend failure closes its owner without draining an unrelated 
       llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     const unrelatedTurnId = 'turn-unrelated-active-root';
     const unrelatedStarted = await fixture.interactiveTurns.handlers['turn.start'](
@@ -6178,7 +6162,7 @@ async function createFailureFixture(options: {
       : { llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc' }),
     llmConnectionSlug: 'fake',
     model: 'fake-model',
-    permissionMode: 'ask',
+    permissionMode: 'auto_review',
   });
   if (options.corruptSessionRole) {
     const database = new DatabaseSync(
@@ -6286,8 +6270,6 @@ async function createFailureFixture(options: {
         refreshCanonicalContinuity: (sessionId, admission) =>
           requireContinuity(continuity).refreshCanonical(sessionId, admission),
         onPoison: requestDrain,
-        resolveSandboxBoundaryRootSession: async () => undefined,
-        onSandboxBoundaryGraphWake: async () => {},
       })
     : undefined;
   const backends = new BackendRegistry();
@@ -6797,8 +6779,6 @@ class LinkedChildAuthorityBackend implements AgentBackend {
     this.releaseWait?.();
   }
 
-  async respondToSandboxBoundary(): Promise<void> {}
-
   async dispose(): Promise<void> {
     this.releaseWait?.();
   }
@@ -6846,7 +6826,6 @@ class StepCapProbeBackend implements AgentBackend {
   }
 
   async stop(): Promise<void> {}
-  async respondToSandboxBoundary(): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -6878,8 +6857,6 @@ class BlockingRootBackend implements AgentBackend {
   release(): void {
     this.#released.resolve();
   }
-
-  async respondToSandboxBoundary(): Promise<void> {}
 
   async dispose(): Promise<void> {
     this.release();
@@ -6921,7 +6898,6 @@ class ContextFailureBackend implements AgentBackend {
   }
 
   async stop(): Promise<void> {}
-  async respondToSandboxBoundary(): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -6959,7 +6935,6 @@ class BlockingContextRecoveryBackend implements AgentBackend {
     this.stopCount += 1;
     this.releaseCompact();
   }
-  async respondToSandboxBoundary(): Promise<void> {}
   async dispose(): Promise<void> {
     this.releaseCompact();
   }
@@ -7035,7 +7010,6 @@ class GraphFollowupRecoveryBackend implements AgentBackend {
     this.releaseFollowup();
   }
 
-  async respondToSandboxBoundary(): Promise<void> {}
   async dispose(): Promise<void> {
     this.releaseGraphTurn();
     this.releaseFollowup();
@@ -7118,8 +7092,6 @@ class QueuedAdmissionBackend implements AgentBackend {
     this.admissionTrigger.resolve();
   }
 
-  async respondToSandboxBoundary(): Promise<void> {}
-
   async dispose(): Promise<void> {
     this.admissionTrigger.resolve();
   }
@@ -7172,8 +7144,6 @@ class StopReleasedAdmissionBackend implements AgentBackend {
   async stop(): Promise<void> {
     this.stopped.resolve();
   }
-
-  async respondToSandboxBoundary(): Promise<void> {}
 
   async dispose(): Promise<void> {
     this.stopped.resolve();
@@ -7246,8 +7216,6 @@ class RunningAdmissionBackend implements AgentBackend {
     this.stopRequested.resolve();
   }
 
-  async respondToSandboxBoundary(): Promise<void> {}
-
   async dispose(): Promise<void> {
     this.settled.resolve();
   }
@@ -7302,8 +7270,6 @@ class AdmissionThenFailureBackend implements AgentBackend {
 
   async stop(): Promise<void> {}
 
-  async respondToSandboxBoundary(): Promise<void> {}
-
   async dispose(): Promise<void> {
     this.fail.resolve();
   }
@@ -7333,8 +7299,6 @@ class TerminalThenCleanupBackend implements AgentBackend {
   }
 
   async stop(): Promise<void> {}
-
-  async respondToSandboxBoundary(): Promise<void> {}
 
   async dispose(): Promise<void> {
     this.releaseCleanup();
@@ -7405,8 +7369,6 @@ class PendingQuestionBackend implements AgentBackend {
     this.settled.resolve();
   }
 
-  async respondToSandboxBoundary(): Promise<void> {}
-
   async dispose(): Promise<void> {
     this.settled.resolve();
   }
@@ -7454,8 +7416,6 @@ class TakeoverClosureBackend implements AgentBackend {
   async stop(): Promise<void> {
     this.stopStarted.resolve();
   }
-
-  async respondToSandboxBoundary(): Promise<void> {}
 
   async dispose(): Promise<void> {
     this.sendReleased.resolve();
@@ -7533,8 +7493,6 @@ class QuestionWaitingBackend implements AgentBackend {
     this.resolveAnswer?.(null);
     this.releaseAfterAnswer?.();
   }
-
-  async respondToSandboxBoundary(): Promise<void> {}
 
   async dispose(): Promise<void> {
     await this.stop();

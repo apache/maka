@@ -50,7 +50,7 @@ test('atomically commits one WorkHub assignment and target admission', async () 
       name: 'Payments',
       llmConnectionSlug: 'test',
       model: 'test',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     const request = assignmentRequest('action-one', target.id, 'Payments', 'target-turn');
     const first = await store.assignWorkHubMessage(request);
@@ -110,7 +110,7 @@ test('atomically binds delegated text and copied attachments while preserving so
       name: 'Payments',
       llmConnectionSlug: 'test',
       model: 'test',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     const base = assignmentRequest('delegated-content', target.id, 'Payments', 'target-turn');
     const sourceAttachment = {
@@ -230,14 +230,14 @@ test('scans every target Message lifecycle once and preserves Coordination order
       name: 'Payments',
       llmConnectionSlug: 'test',
       model: 'test',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     const unrelated = await store.create({
       cwd: root,
       name: 'Login',
       llmConnectionSlug: 'test',
       model: 'test',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     const oldest = assignmentRequest('target-oldest', target.id, 'Payments', 'oldest-turn');
     const middle = assignmentRequest('target-middle', target.id, 'Payments', 'middle-turn');
@@ -279,7 +279,7 @@ test('keeps target assignments reachable when their Message lifecycle changes', 
       name: 'Payments',
       llmConnectionSlug: 'test',
       model: 'test',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     const requests = ['transition-first', 'transition-second', 'transition-third']
       .map((actionId) => assignmentRequest(actionId, target.id, target.name, `${actionId}-turn`))
@@ -318,14 +318,14 @@ test('ignores ordinary WorkHub-shaped Message ids without hiding a real linkage'
       name: 'Payments',
       llmConnectionSlug: 'test',
       model: 'test',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     const unrelated = await store.create({
       cwd: root,
       name: 'Login',
       llmConnectionSlug: 'test',
       model: 'test',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     const real = assignmentRequest('real-target-action', target.id, target.name, 'real-turn');
     const other = assignmentRequest(
@@ -386,7 +386,7 @@ test('retires a link on every terminal record and on no other outcome', async ()
       name: 'Payments',
       llmConnectionSlug: 'test',
       model: 'test',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     const requests = Object.fromEntries(
       ['plain', 'superseded', 'aborted', 'stopped', 'not-owned'].map((actionId) => [
@@ -499,7 +499,7 @@ test('rolls create_new Session back when assignment validation fails', async () 
             name: 'Actual name',
             llmConnectionSlug: 'test',
             model: 'test',
-            permissionMode: 'ask',
+            permissionMode: 'auto_review',
           },
         },
       }),
@@ -525,7 +525,7 @@ test('rejects a stale display identity for a new delegation', async () => {
       name: 'Payments',
       llmConnectionSlug: 'test',
       model: 'test',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     const request = assignmentRequest('stale-action', target.id, 'Old name', 'target-turn');
 
@@ -551,14 +551,14 @@ test('atomically commits a replacement assignment with the old-link supersession
       name: 'Payments',
       llmConnectionSlug: 'test',
       model: 'test',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     const destination = await store.create({
       cwd: root,
       name: 'Login before rename',
       llmConnectionSlug: 'test',
       model: 'test',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     const original = assignmentRequest('original-action', source.id, 'Payments', 'source-turn');
     await store.assignWorkHubMessage(original);
@@ -634,14 +634,14 @@ test('an aborted replacement cannot later commit a supersession', async () => {
       name: 'Payments',
       llmConnectionSlug: 'test',
       model: 'test',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     const destination = await store.create({
       cwd: root,
       name: 'Login',
       llmConnectionSlug: 'test',
       model: 'test',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     const original = assignmentRequest('original-aborted', source.id, 'Payments', 'source-turn');
     await store.assignWorkHubMessage(original);
@@ -720,14 +720,14 @@ test('an unresolved stop claim blocks replacement while not_owned releases the l
       name: 'Payments',
       llmConnectionSlug: 'test',
       model: 'test',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     const destination = await store.create({
       cwd: root,
       name: 'Login',
       llmConnectionSlug: 'test',
       model: 'test',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     const original = assignmentRequest('stop-source', source.id, 'Payments', 'source-turn');
     await store.assignWorkHubMessage(original);

@@ -559,7 +559,7 @@ async function createFixture(options: { recoverAdmissions?: boolean } = {}): Pro
     llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
     llmConnectionSlug: 'fake',
     model: 'fake-model',
-    permissionMode: 'ask',
+    permissionMode: 'auto_review',
   });
   const admission = new SessionAdmissionGate();
   const rootAdmissions = new RootAdmissionOwner(stores.agentRunStore);
@@ -632,8 +632,6 @@ async function createFixture(options: { recoverAdmissions?: boolean } = {}): Pro
     onPoison: () => {
       requestedDrain = true;
     },
-    resolveSandboxBoundaryRootSession: async () => undefined,
-    onSandboxBoundaryGraphWake: async () => {},
   });
   const backends = new BackendRegistry();
   backends.register('ai-sdk', (context) => new FakeBackend(context));

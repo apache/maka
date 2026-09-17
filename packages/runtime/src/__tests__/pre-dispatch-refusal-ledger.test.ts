@@ -314,14 +314,6 @@ const REFUSAL_PATHS: Array<{
       return settle(h, clientCapabilityTool(), {}, { runtime, toolCallId: 'call_boundary_read' });
     },
   },
-  {
-    name: 'client-capability blocked by the execution boundary',
-    expect: /require the Bypass execution boundary/,
-    drive: (h) => {
-      // The default test boundary is `external`, not `bypass`.
-      return settle(h, clientCapabilityTool(), {}, { toolCallId: 'call_boundary_blocked' });
-    },
-  },
 ];
 
 for (const path of REFUSAL_PATHS) {
@@ -345,21 +337,6 @@ for (const path of REFUSAL_PATHS) {
     assert.ok(refused?.responseEvent, 'the refusal left no response fact');
   });
 }
-
-test('client-capability refusal carries actionable bypass metadata', async () => {
-  const h = harness();
-  await settle(h, clientCapabilityTool(), {}, { toolCallId: 'call_boundary_metadata' });
-
-  const result = h.events.find(
-    (event) => event.type === 'tool_result' && event.toolUseId === 'call_boundary_metadata',
-  );
-  assert.deepEqual(
-    result?.type === 'tool_result' && result.content.kind === 'text'
-      ? result.content.sandboxFailure
-      : undefined,
-    { reason: 'requires_bypass', source: 'client_capability' },
-  );
-});
 
 test('arguments the schema rejects leave a matched call/response pair on the generic lane', async () => {
   const h = harness();

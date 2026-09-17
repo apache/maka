@@ -21,7 +21,7 @@ import { withTimeout } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { fork, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { link, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { link, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { test } from 'node:test';
@@ -280,14 +280,14 @@ async function seedExecutionRoot(
       llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     const otherSession = await stores.sessionStore.create({
       cwd: root,
       llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     const openedArtifacts = await openInteractiveArtifactStoreForWrite(owner.lease);
     artifacts = openedArtifacts;

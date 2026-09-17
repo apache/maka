@@ -2101,7 +2101,7 @@ export const Composer = forwardRef<
               {props.onPermissionModeChange ? (
                 <PermissionModeSelect
                   appearance="icon"
-                  activeMode={props.permissionMode ?? 'ask'}
+                  activeMode={props.permissionMode ?? 'auto_review'}
                   onSelect={(mode) => {
                     void props.onPermissionModeChange?.(mode);
                   }}

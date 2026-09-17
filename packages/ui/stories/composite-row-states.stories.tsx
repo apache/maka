@@ -20,7 +20,7 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import type { SessionSummary } from '@maka/core/session';
 import { userEvent } from 'storybook/test';
-import { SessionRail, type SessionRailStoryProps } from './session-rail-harness.js';
+import { SessionRail, } from './session-rail-harness.js';
 
 // Compares the resting, hover and focus states of two DIFFERENT row components
 // — Astryx's side-nav item and its list item — as the sidebar composes them.
@@ -52,7 +52,7 @@ const COMPOSITE_ROW_SESSIONS: SessionSummary[] = [
     llmConnectionSlug: 'fixture',
     connectionLocked: false,
     model: 'fixture-model',
-    permissionMode: 'ask',
+    permissionMode: 'auto_review',
   },
   {
     id: 'interaction-default',
@@ -66,7 +66,7 @@ const COMPOSITE_ROW_SESSIONS: SessionSummary[] = [
     llmConnectionSlug: 'fixture',
     connectionLocked: false,
     model: 'fixture-model',
-    permissionMode: 'ask',
+    permissionMode: 'auto_review',
   },
 ];
 

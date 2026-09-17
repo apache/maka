@@ -27,14 +27,13 @@ import {
 } from '../run-command-core.js';
 
 // Subprocess entry for the run-command process-contract tests: real piped
-// stdin, SIGINT delivered by the operating system and observed as an exit
-// code, and the fail-closed sandbox boundary reaching a non-interactive run.
+// stdin and SIGINT delivered by the operating system and observed as an exit
+// code.
 // Ordinary command semantics are covered in process through the same adapter
 // seam — keep this fixture limited to what a real child process is genuinely
 // needed for.
 const scenario = process.env.MAKA_RUN_FIXTURE_SCENARIO ?? 'echo';
 let observer: MakaRunContextInput['runOutcomeObserver'];
-let boundaryDenied = false;
 let releaseStop: (() => void) | undefined;
 let releaseGraphWait: (() => void) | undefined;
 
@@ -51,43 +50,16 @@ const summary: SessionSummary = {
   llmConnectionSlug: 'fixture',
   connectionLocked: true,
   model: 'fixture-model',
-  permissionMode: 'ask',
+  permissionMode: 'auto_review',
   collaborationMode: 'agent',
   orchestrationMode: 'default',
 };
 
 const runtime: MakaRunRuntime = {
   createSession: async () => summary,
-  readExecutionBoundary: async () => ({ kind: 'managed', access: 'writable', revision: 0 }),
-  setExecutionBoundaryKind: async () => {},
+  readExecutionBoundary: async () => ({ kind: 'bypass', revision: 0 }),
+  setPermissionMode: async () => {},
   async *sendMessage(_sessionId, input): AsyncIterable<SessionEvent> {
-    if (scenario === 'sandbox-boundary') {
-      yield {
-        type: 'sandbox_boundary_request',
-        id: 'event-boundary',
-        turnId: input.turnId,
-        ts: 1,
-        requestId: 'boundary-1',
-        toolUseId: 'tool-boundary',
-        justification: 'Read an external file.',
-        expansion: {
-          filesystem: {
-            entries: [{ path: '/outside/file.txt', access: 'read', scope: 'exact' }],
-          },
-        },
-      };
-      if (!boundaryDenied) throw new Error('sandbox boundary request was not denied');
-      // A completed outcome with output makes the fail-closed exit code
-      // load-bearing: only the boundary-failure classification may turn
-      // this run into exit 1 with empty stdout.
-      await observer?.({
-        outcomeId: 'run-fixture',
-        status: 'completed',
-        finalOutput: 'should not be emitted',
-        sandboxBoundary: 'none',
-      });
-      return;
-    }
     if (scenario === 'graph-wait' && input.turnOrchestration?.mode !== 'graph') {
       throw new Error('expected graph orchestration');
     }
@@ -111,9 +83,6 @@ const runtime: MakaRunRuntime = {
         scenario === 'graph-wait' ? 'initial graph supervisor output' : `prompt=${input.text}`,
       sandboxBoundary: 'none',
     });
-  },
-  respondToSandboxBoundary: async (_sessionId, response) => {
-    boundaryDenied = response.decision === 'deny' && response.requestId === 'boundary-1';
   },
   stopSession: async () => {
     releaseStop?.();

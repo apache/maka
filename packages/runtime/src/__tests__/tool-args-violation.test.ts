@@ -277,56 +277,6 @@ test('ToolRuntime validates without rewriting arguments at permission and implem
   assert.deepEqual(result, expected);
 });
 
-test('a sandbox denial names the tool that widens the boundary', async () => {
-  const messages: StoredMessage[] = [];
-  const events: SessionEvent[] = [];
-  const runtime = createTestToolRuntime({
-    sessionId: 'session-1',
-    header: header(),
-    connection: connection(),
-    modelId: 'mock-model',
-    appendMessage: async (message) => {
-      messages.push(message);
-    },
-    newId: nextId(),
-    now: () => 1,
-    getPermissionPauseTarget: () => null,
-  });
-  const tool: MakaTool = {
-    name: 'Bash',
-    description: 'test',
-    parameters: z.object({ command: z.string() }),
-    impl: async () => {
-      throw Object.assign(new Error('denied'), {
-        code: 1,
-        stdout: '',
-        stderr: 'operation not permitted',
-        reason: 'sandbox_denial',
-        sandboxed: true,
-        sandboxType: 'macos-seatbelt',
-      });
-    },
-  };
-
-  const { result } = await runtime.settleToolCall({
-    tool,
-    turnId: 'turn-1',
-    toolCallId: 'tool-denied',
-    input: { command: 'cat /etc/hosts' },
-    abortSignal: new AbortController().signal,
-    eventSink: {
-      push: (event) => events.push(event),
-      pushAndWaitUntilConsumed: async (event) => {
-        events.push(event);
-      },
-    },
-  });
-
-  // Naming the marker without the tool that acts on it is a dead end: the model
-  // is told a boundary can be widened and not by what.
-  assert.match((result as { error?: string }).error ?? '', /request_sandbox_boundary/);
-});
-
 describe('unrepairable tool calls', () => {
   test('an unknown tool name is answered with the names that exist', () => {
     const repaired = repairMakaToolCall({

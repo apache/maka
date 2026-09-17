@@ -52,7 +52,7 @@ test('one Host Goal is shared across clients with CAS control and crash-clear re
       llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     let acquired = 0;
     let released = 0;
@@ -252,7 +252,7 @@ test('session retirement forgets a terminal Goal without recreating deleted auth
       llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     const active = activeGoalRecord(session.id, {
       sessionId: session.id,
@@ -385,7 +385,7 @@ test('a retired context read cannot replace the new Goal token baseline', async 
     llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
     llmConnectionSlug: 'fake',
     model: 'fake-model',
-    permissionMode: 'ask',
+    permissionMode: 'auto_review',
   });
   const appendUsage = (id: string, total: number) =>
     stores.sessionStore.appendMessage(session.id, {
@@ -462,7 +462,7 @@ test('restart settles the durable current Goal execution through Hosted Executio
       llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     const execution = {
       sessionId: session.id,
@@ -504,7 +504,7 @@ test('restart settles the durable current Goal execution through Hosted Executio
         },
         configuration: {
           cwd: capability.canonicalPath,
-          permissionMode: 'ask',
+          permissionMode: 'auto_review',
           collaborationMode: 'agent',
           orchestrationMode: 'default',
           orchestrationSource: 'session',
@@ -585,7 +585,7 @@ test('restart replaces a stale current execution with the current durable Goal i
       llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     const execution = {
       sessionId: session.id,
@@ -673,7 +673,7 @@ test('new user evidence replaces the pending continuation in one authority commi
       llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     const initial = activeGoalRecord(session.id, {
       sessionId: session.id,
@@ -805,7 +805,7 @@ test('goal.arm creates one Goal per Session and refuses a second while it is unf
       llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     const coordinator = new HostGoalCoordinator({
       store: goalStore,
@@ -921,7 +921,7 @@ test('a Goal armed but never carried by a Turn does not start itself after a res
       llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     const armingHost = new HostGoalCoordinator({
       store: goalStore,
@@ -1024,7 +1024,7 @@ test('resuming an armed Goal drives it, and a restart puts that drive back', asy
       llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     let admitted = 0;
     let evaluated = 0;
@@ -1171,7 +1171,7 @@ test('an arm admitted before the drain creates no Goal after it', async () => {
       llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
-      permissionMode: 'ask',
+      permissionMode: 'auto_review',
     });
     const sessionAdmission = new SessionAdmissionGate();
     const host = new HostGoalCoordinator({

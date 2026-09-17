@@ -22,7 +22,6 @@ import type {
   AgentGraphOperatorProvisionResult,
 } from '@maka/core/agent-graph-topology';
 import type {
-  CreateSandboxBoundaryRequest,
   ExecutionBoundary,
   SandboxBoundaryRequest,
   SandboxBoundarySettlement,
@@ -437,9 +436,7 @@ export interface SessionAuthorityStore extends SessionStore, MessageAdmissionSto
     initialBoundary?: ExecutionBoundary,
   ): Promise<{ header: SessionHeader } & AgentGraphOperatorProvisionResult>;
   readExecutionBoundary(sessionId: string): Promise<ExecutionBoundary>;
-  createSandboxBoundaryRequest(
-    input: CreateSandboxBoundaryRequest,
-  ): Promise<SandboxBoundaryRequest>;
+
   readSandboxBoundaryRequest(
     sessionId: string,
     requestId: string,
@@ -453,14 +450,6 @@ export interface SessionAuthorityStore extends SessionStore, MessageAdmissionSto
   settleSandboxBoundaryRequest(
     input: SettleSandboxBoundaryRequest,
   ): Promise<SandboxBoundarySettlement>;
-  setExecutionBoundaryKind(
-    sessionId: string,
-    kind: 'managed' | 'bypass',
-    projection?: {
-      permissionMode: SessionHeader['permissionMode'];
-      labels?: readonly string[];
-    },
-  ): Promise<ExecutionBoundary>;
   probeStableSessionCreate(
     sessionId: string,
     requestFingerprint: string,

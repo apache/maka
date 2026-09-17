@@ -35,14 +35,10 @@ import {
 } from './web-search.js';
 import { defaultLocalMemorySettings, normalizeLocalMemorySettings } from './local-memory.js';
 import type { PermissionMode } from './permission.js';
+import { DEFAULT_SESSION_PERMISSION_MODE } from './session.js';
 import { decodePersistedPermissionMode } from './permission.js';
 import type { UsageProvenance } from './usage-ledger-merge.js';
-import {
-  UI_LOCALE_PREFERENCES,
-  isUiLocalePreference,
-  normalizeUiLocalePreference,
-  type UiLocalePreference,
-} from './ui-locale.js';
+import { normalizeUiLocalePreference, type UiLocalePreference } from './ui-locale.js';
 import { normalizeSubagentSettings, type SubagentSettings } from './subagent-settings.js';
 import { isPetPackId } from './pet.js';
 
@@ -485,19 +481,11 @@ export interface PrivacySettings {
   incognitoActive: boolean;
 }
 
-/**
- * `explore` is excluded — it's reserved for Deep Research sessions and
- * Bot-incoming guards and is never a mode the user picks, in the composer
- * dropdown or here. Derived from the canonical PERMISSION_MODES (not a
- * hand-copied literal) so adding a future mode updates every consumer —
- * the Settings picker, the composer picker (@maka/ui re-exports this
- * list as PERMISSION_MODE_ORDER), and the settings validation — in one
- * place.
- */
-export type ChatDefaultPermissionMode = Extract<PermissionMode, 'ask' | 'bypass'>;
+/** Both execution modes are available to new and existing sessions. */
+export type ChatDefaultPermissionMode = PermissionMode;
 
 export const CHAT_DEFAULT_PERMISSION_MODES: readonly ChatDefaultPermissionMode[] = [
-  'ask',
+  'auto_review',
   'bypass',
 ];
 
@@ -508,9 +496,11 @@ export function isChatDefaultPermissionMode(value: unknown): value is ChatDefaul
   );
 }
 
-/** Seeds new sessions' starting permission mode (Settings → 通用 → 默认权限模式). */
+/** Seeds new sessions and controls the permanent WorkHub session. */
 export interface ChatDefaultsSettings {
   permissionMode: ChatDefaultPermissionMode;
+  /** Independent tool reviewer; null follows the default model connection. */
+  autoReviewModel?: { connectionId: string; model: string } | null;
   /** Applies only when a new task is created. */
   codeModeEnabled?: boolean;
   /**
@@ -1139,16 +1129,27 @@ function defaultProjectPreferencesSettings(): ProjectPreferencesSettings {
 }
 
 function defaultChatDefaultsSettings(): ChatDefaultsSettings {
-  return { permissionMode: 'ask' };
+  return { permissionMode: DEFAULT_SESSION_PERMISSION_MODE };
 }
 
-// Closed-enum fail-closed, same reasoning as appearance.palette /
-// personalization.uiLocale above: an unknown/garbage persisted value
-// (corrupted settings.json, a downgraded build reading a newer schema)
-// must not reach session-creation code as a `PermissionMode` the picker
-// doesn't recognize -- fall back to the safest default instead.
+// Unknown persisted modes use the product default; retired sandbox modes
+// migrate to Auto review so existing restricted sessions are not widened.
 function normalizeChatDefaultsSettings(settings: ChatDefaultsSettings): ChatDefaultsSettings {
   return {
+    ...(settings.autoReviewModel === null
+      ? { autoReviewModel: null }
+      : settings.autoReviewModel &&
+          typeof settings.autoReviewModel.connectionId === 'string' &&
+          settings.autoReviewModel.connectionId.trim() &&
+          typeof settings.autoReviewModel.model === 'string' &&
+          settings.autoReviewModel.model.trim()
+        ? {
+            autoReviewModel: {
+              connectionId: settings.autoReviewModel.connectionId.trim(),
+              model: settings.autoReviewModel.model.trim(),
+            },
+          }
+        : {}),
     ...(settings.codeModeEnabled === true ? { codeModeEnabled: true } : {}),
     // Same fail-closed reasoning as the mode below: a garbage persisted level
     // drops to "no preference" (the model's own default) rather than reaching
@@ -1156,11 +1157,11 @@ function normalizeChatDefaultsSettings(settings: ChatDefaultsSettings): ChatDefa
     thinkingLevel: isThinkingLevel(settings.thinkingLevel) ? settings.thinkingLevel : undefined,
     // A retired mode is decoded (not rejected) so an existing settings file
     // keeps working; knowing which modes are retired lives in one place.
-    // Anything that decodes to a mode outside the pickable set — including
-    // `explore`, which only a product mode confers — still falls back.
     permissionMode: (() => {
       const mode = decodePersistedPermissionMode(settings.permissionMode);
-      return mode !== undefined && isChatDefaultPermissionMode(mode) ? mode : 'ask';
+      return mode !== undefined && isChatDefaultPermissionMode(mode)
+        ? mode
+        : DEFAULT_SESSION_PERMISSION_MODE;
     })(),
   };
 }

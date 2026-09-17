@@ -20,7 +20,7 @@
 
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { dirname, join, relative, resolve, sep } from 'node:path';
+import { dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const scriptPath = fileURLToPath(import.meta.url);
@@ -439,7 +439,6 @@ export function planTests(changedFiles, options = {}) {
       e2e: true,
       full: true,
       releaseContract: true,
-      runtimeSandbox: graph.dirs.includes('packages/cli'),
       // A complete functional suite is still the default release/main gate.
       // Stress multipliers and native child-process lock probes run only when
       // their owning storage seam changes; making --full imply stress turned
@@ -545,11 +544,6 @@ export function planTests(changedFiles, options = {}) {
     e2e: files.some((path) => isE2eProductPath(path)),
     full: false,
     releaseContract: cliPackage || files.some((path) => isReleaseContractPath(path)),
-    // packages/cli/src/__tests__/runtime-host-session-driver.test.ts executes real sandboxed
-    // shell tools, so the bubblewrap + user-namespace setup is required whenever
-    // the cli workspace runs in the dependency closure, not only for direct
-    // cli/runtime edits (e.g. a storage-only change still selects cli via runtime).
-    runtimeSandbox: workspaces.includes('packages/cli'),
     // The released forward roll: a build under test reads durable state a
     // published predecessor wrote. Selected by the decoders and the operation
     // vocabulary they decode against, plus the SQLite schemas.
@@ -578,7 +572,6 @@ export function formatGitHubOutputs(plan) {
     `deepseek_harness_toolchain=${plan.deepseekHarnessToolchain}`,
     `e2e=${plan.e2e}`,
     `runtime_host=${plan.runtimeHost}`,
-    `runtime_sandbox=${plan.runtimeSandbox}`,
     `release_contract=${plan.releaseContract}`,
     `state_root_compat=${plan.stateRootCompat}`,
     `storage_stress=${plan.storageStress}`,

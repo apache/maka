@@ -1188,6 +1188,7 @@ export interface TokenUsageEvent extends BaseEvent, TokenUsageFields {
  * raw user text; the backend wraps it in a steering envelope for the model.
  */
 export interface SteeringMessageEvent extends BaseEvent {
+  authenticatedUserRequests?: readonly string[];
   type: 'steering_message';
   messageId: string;
   content: MessageContent;

@@ -72,7 +72,7 @@ describe('ToolRuntime turn-close outcome identity', () => {
 
     const ask: MakaTool = {
       name: 'AskUserQuestion',
-      description: 'ask',
+      description: 'auto_review',
       parameters: {},
       recoveryMode: 'never_auto_retry',
       impl: (_args, context) => {
@@ -155,7 +155,7 @@ function header(): SessionHeader {
     llmConnectionSlug: 'connection-1',
     connectionLocked: true,
     model: 'model-1',
-    permissionMode: 'ask',
+    permissionMode: 'auto_review',
     schemaVersion: 1,
   };
 }

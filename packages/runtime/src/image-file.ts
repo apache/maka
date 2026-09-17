@@ -36,13 +36,15 @@ export function isSupportedImagePath(path: string): boolean {
 
 export async function readWorkspaceImage(
   path: string,
+  abortSignal?: AbortSignal,
 ): Promise<{ bytes: Uint8Array; mimeType: ImageMimeType }> {
+  abortSignal?.throwIfAborted();
   const size = await stat(path).catch(() => {
     throw new Error('Image could not be read.');
   });
   if (!size.isFile()) throw new Error('Image path is not a file.');
   if (size.size > MAX_READ_IMAGE_BYTES) throw imageTooLargeError();
-  const bytes = await readFile(path).catch(() => {
+  const bytes = await readFile(path, { signal: abortSignal }).catch(() => {
     throw new Error('Image could not be read.');
   });
   return validateImageBytes(bytes);

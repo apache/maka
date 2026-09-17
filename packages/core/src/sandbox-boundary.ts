@@ -28,10 +28,7 @@ import {
   FILE_SYSTEM_ACCESS_MODES,
   FILE_SYSTEM_PATH_MATCHES,
   FILE_SYSTEM_SPECIAL_PATHS,
-  createReadOnlyPermissionProfile,
-  createWorkspaceWritePermissionProfile,
   isProtectedMetadataPath,
-  isReadOnlyPermissionProfile,
   type FileSystemPathMatch,
   type FileSystemSandboxEntry,
   type PermissionProfileManaged,
@@ -108,11 +105,6 @@ export interface CreateSandboxBoundaryRequest {
 }
 
 export type SandboxBoundaryDecision = 'allow' | 'deny';
-
-export interface SandboxBoundaryResponse {
-  readonly requestId: string;
-  readonly decision: SandboxBoundaryDecision;
-}
 
 export const SANDBOX_BOUNDARY_CLOSURE_REASONS = [
   'turn_stopped',
@@ -219,23 +211,12 @@ export function executionBoundaryDisplayMode(
 ): PermissionMode | undefined {
   if (boundary.kind === 'external') return undefined;
   if (boundary.kind === 'bypass') return 'bypass';
-  const readOnly =
-    'profile' in boundary
-      ? isReadOnlyPermissionProfile(boundary.profile)
-      : boundary.access === 'read_only';
-  return readOnly ? 'explore' : 'ask';
+  return 'auto_review';
 }
 
-export function createGenesisExecutionBoundary(mode: PermissionMode): ExecutionBoundary {
-  if (mode === 'bypass') return { kind: 'bypass', revision: 0 };
-  return {
-    kind: 'managed',
-    profile:
-      mode === 'explore'
-        ? createReadOnlyPermissionProfile()
-        : createWorkspaceWritePermissionProfile(),
-    revision: 0,
-  };
+/** Execution is always direct; review is a separate session permission. */
+export function createGenesisExecutionBoundary(_mode: PermissionMode): ExecutionBoundary {
+  return { kind: 'bypass', revision: 0 };
 }
 
 export function createManagedExecutionBoundary(

@@ -1212,101 +1212,7 @@ for (const backend of ['Local', 'Memory'] as const) {
       });
     },
   );
-  test(
-    backend + ': model configuration and no-op updates preserve approved sandbox authority',
-    async () => {
-      await withProvider(make(), async ({ sessionStore: s }, root) => {
-        const session = await s.create({
-          ...sessionInput(root),
-          llmConnectionId: 'test-connection',
-          thinkingLevel: 'high',
-        });
-        await s.createSandboxBoundaryRequest({
-          sessionId: session.id,
-          requestId: 'approved',
-          turnId: 'turn',
-          expansion: {
-            filesystem: {
-              entries: [{ path: '/outside/approved', scope: 'subtree', access: 'read' }],
-            },
-          },
-          justification: 'Read approved files.',
-        });
-        await s.settleSandboxBoundaryRequest({
-          sessionId: session.id,
-          requestId: 'approved',
-          decision: 'allow',
-        });
-        const approved = await s.readExecutionBoundary(session.id);
-        assert.equal(approved.revision, 1);
-        let snapshot = await s.readHeaderRecordSnapshot(session.id);
-        const configuration = sessionConfiguration(snapshot.header);
-        const updated = await s.updateSessionConfiguration(session.id, {
-          expectedVersion: snapshot.revision,
-          configuration: { ...configuration, model: 'new-model' },
-          lifecycle: { kind: 'preserve' },
-        });
-        assert.equal(updated.header.model, 'new-model');
-        assert.deepEqual(await s.readExecutionBoundary(session.id), approved);
-        snapshot = await s.readHeaderRecordSnapshot(session.id);
-        const noop = await s.updateSessionConfiguration(session.id, {
-          expectedVersion: snapshot.revision,
-          configuration: sessionConfiguration(snapshot.header),
-          lifecycle: { kind: 'preserve' },
-        });
-        assert.deepEqual(noop, snapshot);
-        assert.deepEqual(await s.setExecutionBoundaryKind(session.id, 'managed'), approved);
-        assert.deepEqual(await s.readHeaderRecordSnapshot(session.id), snapshot);
-        await assert.rejects(
-          s.updateSessionConfiguration(session.id, {
-            expectedVersion: snapshot.revision - 1,
-            configuration: { ...configuration, permissionMode: 'bypass' },
-            lifecycle: { kind: 'preserve' },
-          }),
-          SessionMetadataVersionConflictError,
-        );
-        assert.deepEqual(await s.readExecutionBoundary(session.id), approved);
-      });
-    },
-  );
-  test(backend + ': temporary Explore and Bypass restore approved Auto authority', async () => {
-    await withProvider(make(), async ({ sessionStore: s }, root) => {
-      const session = await s.create(sessionInput(root));
-      await s.createSandboxBoundaryRequest({
-        sessionId: session.id,
-        requestId: 'approved',
-        turnId: 'turn',
-        expansion: {
-          filesystem: {
-            entries: [{ path: '/outside/approved', scope: 'subtree', access: 'read' }],
-          },
-        },
-        justification: 'Read approved files.',
-      });
-      await s.settleSandboxBoundaryRequest({
-        sessionId: session.id,
-        requestId: 'approved',
-        decision: 'allow',
-      });
-      const approved = await s.readExecutionBoundary(session.id);
-      for (const permissionMode of ['explore', 'bypass'] as const) {
-        await s.setExecutionBoundaryKind(
-          session.id,
-          permissionMode === 'bypass' ? 'bypass' : 'managed',
-          { permissionMode },
-        );
-        const restored = await s.setExecutionBoundaryKind(session.id, 'managed', {
-          permissionMode: 'ask',
-        });
-        assert.deepEqual({ ...restored, revision: approved.revision }, approved);
-      }
-      const before = await sessionAuthority(s, session.id);
-      await assert.rejects(
-        s.setExecutionBoundaryKind(session.id, 'bypass', { permissionMode: 'ask' }),
-      );
-      assert.deepEqual(await sessionAuthority(s, session.id), before);
-    });
-  });
+
   test(
     backend + ': configuration cannot clear an unrelated block or invalid timestamp',
     async () => {
@@ -2318,7 +2224,7 @@ function sessionInput(root: string) {
     name: 'Target',
     llmConnectionSlug: 'test',
     model: 'test',
-    permissionMode: 'ask' as const,
+    permissionMode: 'auto_review' as const,
   };
 }
 function newAssignment(root: string, actionId: string): WorkHubMessageAssignmentRequest {

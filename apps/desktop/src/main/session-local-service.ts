@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { DEFAULT_SESSION_PERMISSION_MODE } from '@maka/core/session';
 import { createHash, randomUUID } from 'node:crypto';
 import { stat } from 'node:fs/promises';
 import type { IpcMain } from 'electron';
@@ -550,7 +551,7 @@ export function registerDesktopSessionLocalIpc(deps: {
               ...(input.llmConnectionId ? { llmConnectionId: input.llmConnectionId } : {}),
             }),
         connectionLocked: false,
-        permissionMode: creation.permissionMode ?? 'ask',
+        permissionMode: creation.permissionMode ?? DEFAULT_SESSION_PERMISSION_MODE,
         collaborationMode: creation.collaborationMode,
         orchestrationMode: creation.orchestrationMode,
         thinkingLevel: creation.thinkingLevel,

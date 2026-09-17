@@ -193,7 +193,7 @@ function sessionProjection(
     llmConnectionSlug: 'default',
     connectionLocked: false,
     model: 'default',
-    permissionMode: 'ask',
+    permissionMode: 'auto_review',
     collaborationMode: 'agent',
     orchestrationMode: 'default',
     ...overrides,

@@ -24,12 +24,6 @@ import { build } from 'esbuild';
 const defaultRepoRoot = resolve(import.meta.dirname, '..');
 const sourceExtensions = ['.ts', '.tsx', '.mts', '.cts', '.js', '.mjs', '.cjs', '.json'];
 
-export const windowsPackageSourceEntrypoints = [
-  'packages/runtime/src/filesystem-worker/index.ts',
-  'packages/runtime/src/filesystem-worker/worker-entry.ts',
-  'packages/runtime/src/sandbox/index.ts',
-];
-
 /**
  * Workspace sources `entryPoints` reach, transitively, resolved through the
  * workspace `exports` map back to `src` rather than to built `dist`. Two lanes
@@ -39,11 +33,7 @@ export const windowsPackageSourceEntrypoints = [
  *
  * Static imports only, which is the limit of what "generated, not curated"
  * buys here: a process boundary is invisible to it. `root-authority.test.ts`
- * forks `fixtures/root-initialization-race.js` and
- * `filesystem-worker/worker-entry.ts` is bundled rather than imported, so
- * neither appears in a closure that starts from them. Both are free of `win32`
- * today, which is why the filters derived from this are complete — not because
- * the derivation guarantees it.
+ * forks `fixtures/root-initialization-race.js`, which is not reached by static imports.
  */
 export async function collectWorkspaceSourceClosure(entryPoints, repoRoot = defaultRepoRoot) {
   const workspaces = loadWorkspacePackages(repoRoot);

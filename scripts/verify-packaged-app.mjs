@@ -22,7 +22,6 @@ import { createHash } from 'node:crypto';
 import { createReadStream, readFileSync } from 'node:fs';
 import { access, mkdir, readFile, readdir } from 'node:fs/promises';
 import { createRequire } from 'node:module';
-import { createServer } from 'node:net';
 import { join, resolve, sep } from 'node:path';
 import {
   ASSET_LICENSED_RENDERER_PACKAGES,
@@ -1035,7 +1034,6 @@ export async function assertPackagedResources(
     'app.asar',
     'bundled-tools.json',
     ...(requireCanonicalIcon ? [join('assets', 'icon.png')] : []),
-    join('workers', 'filesystem-worker.js'),
     ...(requireDirectPeerArtifact
       ? [
           join('runtime-host-peer', 'maka_runtime_host_peer.node'),
@@ -1067,12 +1065,7 @@ export async function assertPackagedResources(
     join('licenses', 'renderer', 'ALLOGO_LICENSE.txt'),
     join('licenses', 'renderer', 'SEMI_ICONS_LICENSE.txt'),
     join('licenses', 'renderer', 'MINGCUTE_APACHE_LICENSE.txt'),
-    ...(requireWindowsSandbox
-      ? [
-          join('windows-sandbox', 'maka-windows-sandbox.exe'),
-          join('licenses', 'cargo', 'THIRD_PARTY_NOTICES.txt'),
-        ]
-      : []),
+    ...(requireWindowsSandbox ? [] : []),
   ];
   for (const path of required) {
     await requirePath(join(resourcesPath, path));

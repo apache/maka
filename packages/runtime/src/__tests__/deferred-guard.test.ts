@@ -50,7 +50,7 @@ function header(): SessionHeader {
     llmConnectionSlug: 'c',
     connectionLocked: true,
     model: 'm',
-    permissionMode: 'ask',
+    permissionMode: 'auto_review',
     schemaVersion: 1,
   };
 }
