@@ -232,6 +232,21 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
       ? status.latestVersion
       : updateInfoVersion(latestInfo);
 
+  const resolveErrorOperation = (): Extract<AppUpdateStatus, { state: 'error' }>['operation'] => {
+    if (status.state === 'installing') return 'install';
+    if (
+      activeDownload ||
+      activeVerification ||
+      status.state === 'available' ||
+      status.state === 'downloading' ||
+      status.state === 'verifying' ||
+      status.state === 'downloaded'
+    ) {
+      return 'download';
+    }
+    return 'check';
+  };
+
   const publishError = (
     operation: Extract<AppUpdateStatus, { state: 'error' }>['operation'],
     error: unknown,
@@ -339,11 +354,7 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
       });
   });
   updater.on('error', (error) => {
-    const operation = status.state === 'installing'
-      ? 'install'
-      : status.state === 'available' || status.state === 'downloading' || status.state === 'verifying'
-        ? 'download'
-        : 'check';
+    const operation = resolveErrorOperation();
     if (operation === 'install') rollbackInstallHandoff();
     // A check failure with retry attempts still owed is transient: hold it
     // back and let the scheduled retry produce the final word. Download and
@@ -385,7 +396,7 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
       }
       if (checkAttemptsRemaining <= 0) {
         checkAttemptsRemaining = 0;
-        return status.state === 'error' ? status : publishError('check', error);
+        return status.state === 'error' ? status : publishError(resolveErrorOperation(), error);
       }
       checkAttemptsRemaining -= 1;
       // Back off briefly, then re-check. The 'error' listener holds the
@@ -401,7 +412,7 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
             return;
           }
           resolve(attempt().catch((retryError) =>
-            status.state === 'error' ? status : publishError('check', retryError),
+            status.state === 'error' ? status : publishError(resolveErrorOperation(), retryError),
           ));
         }, UPDATE_CHECK_RETRY_DELAY_MS);
       });
