@@ -21,6 +21,7 @@ import * as sessionCopyAttempts from './session-copy-attempt.js';
 import { readSettledMessages } from './platform/desktop/session-message-settlement.js';
 import { getDesktopConversationCopy } from './locales/conversation-copy.js';
 import { localizedShellErrorMessage } from './locales/shell-copy.js';
+import type { MessageListUpdater } from './session-workspace-actions.js';
 import { isSessionWorkspaceUnavailableError, showSessionWorkspaceUnavailableToast } from './session-workspace-errors.js';
 import {
   createRevisionActions,
@@ -41,17 +42,20 @@ type DesktopRevisionActionsDeps = Omit<
   | 'reviseBeforeTurn'
   | 'abandonSessionCopy'
   | 'readSettledMessages'
+  | 'reportSessionWorkspaceUnavailable'
   | 'localizedShellErrorMessage'
-  | 'isSessionWorkspaceUnavailableError'
-  | 'showSessionWorkspaceUnavailableToast'
   | 'acquireCopyAttempt'
   | 'startCopyAttempt'
   | 'abandonCopyAttempt'
   | 'completeCopyAttempt'
   | 'commitRevisionDraft'
+  | 'setMessages'
 > & {
   /** The shell's draft state is bound to the concrete desktop draft type. */
   commitRevisionDraft(draft: TurnRevisionDraft | null): void;
+  /** The shell's updater accepts a reactive `next` form; the lifecycle only
+   * ever passes a settled readonly array. */
+  setMessages: MessageListUpdater;
 };
 
 export interface AppShellRevisionActions {
@@ -79,6 +83,7 @@ export function createAppShellRevisionActions(
   const actions = createRevisionActions({
     ...deps,
     commitRevisionDraft: (draft) => deps.commitRevisionDraft(draft as TurnRevisionDraft),
+    setMessages: (messages) => deps.setMessages([...messages]),
     copy: getDesktopConversationCopy(deps.uiLocale).actions,
     reviseBeforeTurn: (sourceSessionId, input) =>
       window.maka.sessions.reviseBeforeTurn(sourceSessionId, input),
