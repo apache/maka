@@ -74,7 +74,7 @@ import type {
   SessionListFilter,
 } from '@maka/core/runtime-inputs';
 import type { UserQuestionResponse } from '@maka/core/user-question';
-import type { PermissionMode } from '@maka/core/permission';
+import { decodePersistedPermissionMode, type PermissionMode } from '@maka/core/permission';
 import { DEFAULT_TOOL_MODE, type ToolMode } from '@maka/core/tool-mode';
 import type {
   CreateSandboxBoundaryRequest,
@@ -5119,7 +5119,7 @@ function invocationListingFacts(invocation: RuntimeInvocationRecord): {
   const failureClass = runtimeInvocationFailureClass(invocation);
   return {
     status: runtimeInvocationOutcome(invocation) ?? 'running',
-    permissionMode: invocation.opening.configuration.permissionMode,
+    permissionMode: decodePersistedPermissionMode(invocation.opening.configuration.permissionMode)!,
     createdAt: invocation.openedAt,
     updatedAt: completedAt ?? invocation.openedAt,
     ...(completedAt !== undefined ? { completedAt } : {}),

@@ -80,6 +80,55 @@ describe('SqliteRuntimeStore', () => {
     });
   });
 
+  it('reopens historical permission facts without rewriting their canonical bytes', async () => {
+    await withStore(async (store, dbPath) => {
+      const opening = continuationClaim().targetOpening;
+      const event = buildInvocationOpenedEvent({
+        id: 'historical-opening',
+        run: {
+          sessionId: 'session-1',
+          invocationId: 'invocation-1',
+          runId: 'run-1',
+          turnId: 'turn-1',
+        },
+        openedAt: 1,
+        opening: { ...opening, source: { kind: 'fresh' } },
+      });
+      await store.appendRuntimeEvent(event.sessionId, event.runId, event);
+      store.close();
+      const database = new DatabaseSync(dbPath);
+      try {
+        const historical = {
+          ...event,
+          content: {
+            ...event.content!,
+            configuration: { ...opening.configuration, permissionMode: 'ask' },
+          },
+        } as RuntimeEvent;
+        const payload = encodeCanonicalRuntimeEvent(historical).json;
+        database
+          .prepare('UPDATE runtime_events SET payload_json = ? WHERE event_id = ?')
+          .run(payload, event.id);
+        const reopened = createSqliteRuntimeStore(dbPath);
+        try {
+          const [read] = await reopened.readRuntimeEvents(event.sessionId, event.runId);
+          assert.deepEqual(read, historical);
+          assert.equal(encodeCanonicalRuntimeEvent(read!).json, payload);
+          assert.equal(
+            database
+              .prepare('SELECT payload_json FROM runtime_events WHERE event_id = ?')
+              .get(event.id)?.payload_json,
+            payload,
+          );
+        } finally {
+          reopened.close();
+        }
+      } finally {
+        database.close();
+      }
+    });
+  });
+
   it('refuses every post-terminal append as the typed sealed-run boundary', async () => {
     await withStore(async (store) => {
       const opening = functionCallEvent({
@@ -1092,7 +1141,7 @@ describe('SqliteRuntimeStore', () => {
                 ...claim.targetOpening,
                 configuration: {
                   ...claim.targetOpening.configuration,
-                  permissionMode: 'execute',
+                  permissionMode: 'invalid-mode',
                 },
               } as unknown as ContinuationClaimV1['targetOpening'],
             },
@@ -1108,7 +1157,7 @@ describe('SqliteRuntimeStore', () => {
           SET target_opening_json = json_set(
             target_opening_json,
             '$.configuration.permissionMode',
-            'execute'
+            'invalid-mode'
           )
           WHERE claim_id = 'claim-1';
         `);
@@ -1116,11 +1165,9 @@ describe('SqliteRuntimeStore', () => {
         database.close();
       }
 
-      // A persisted Run header used to be widened on read. The opening fact has
-      // no legacy layer and none is wanted: a claim whose frozen opening cannot
-      // be read cannot authenticate the start event it exists to authenticate,
-      // and admitting one against a guessed opening would be the failure this
-      // record is meant to prevent.
+      // Unknown modes cannot authenticate a frozen opening. Historical modes
+      // remain readable verbatim; silently rewriting any opening would change
+      // the immutable evidence this claim authenticates.
       await assert.rejects(
         store.readContinuationClaimByBoundary(claim.boundaryDigest),
         /Invalid RuntimeEvent invocation_opened schema/,
