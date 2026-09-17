@@ -19,6 +19,7 @@
     "./tool-artifacts": "./dist/tool-artifacts.js",
     "./model-factory": "./dist/model-factory.js",
     "./model-runtime": "./dist/model-runtime.js",
+    "./managed-mutation-transform": "./dist/managed-mutation-transform.js",
     "./context-budget": "./dist/context-budget.js",
     "./test-connection": "./dist/test-connection.js",
     "./model-fetcher": "./dist/model-fetcher.js",

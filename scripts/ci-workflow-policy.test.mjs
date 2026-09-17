@@ -884,6 +884,21 @@ test('pull-request and release lanes share the packaged sandbox lifecycle verifi
 test('the Gitoxide gate owns repository admission changes', () => {
   const workflow = readWorkflow('gitoxide-helper-admission.yml');
 
+  for (const path of [
+    'packages/runtime-host/src/server/gitoxide-runtime-mutation-internal.ts',
+    'packages/runtime-host/src/server/gitoxide-workspace-baseline-owner-internal.ts',
+    'packages/runtime-host/src/server/gitoxide-candidate-settlement-internal.ts',
+    'packages/runtime-host/src/server/gitoxide-mutation-admission-internal.ts',
+    'packages/runtime-host/src/__tests__/fixtures/gitoxide-file-execution-child.ts',
+    'packages/runtime/src/tool-runtime.ts',
+    'packages/runtime/src/__tests__/tool-runtime-durable-boundary.test.ts',
+  ]) {
+    assert.equal(workflow.split(`'${path}'`).length - 1, 2);
+  }
+  assert.ok(
+    workflow.includes('packages/runtime/dist/__tests__/tool-runtime-durable-boundary.test.js'),
+  );
+
   assert.match(
     workflow,
     /'packages\/runtime-host\/src\/server\/gitoxide-repository-admission-authority-internal\.ts'/u,

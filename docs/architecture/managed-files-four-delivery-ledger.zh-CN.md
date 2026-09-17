@@ -6,14 +6,14 @@
 | 交付 | 主要不变量 | 状态 |
 | --- | --- | --- |
 | 1 | managed T1 后只经限定 authority 结算 | 已提取，Windows 独立构建和定向测试通过 |
-| 2 | accepted Git 内容、candidate 与接受证明一致 | 待提取 |
+| 2 | accepted Git 内容、candidate 与接受证明一致 | 已提取，独立构建和定向验证通过；完整 CI 未宣称通过 |
 | 3 | 创建前固定 managed intent 与 Host capability | 待提取 |
 | 4 | 同一 causal boundary 恢复且不重跑已完成 mutation | 待提取 |
 
 ## 文件与测试归属
 
 以下覆盖来源增量全部 94 个路径。多编号表示必须按功能块提取，不允许整文件或跨边界
-commit 搬运；后三项是待核对的分配计划，不表示已经完成提取。
+commit 搬运；原表是分配计划，PR2 的实际提取见文末，PR3/4 尚未提取。
 
 | 来源路径 | 交付 |
 | --- | --- |
@@ -136,3 +136,23 @@ commit 搬运；后三项是待核对的分配计划，不表示已经完成提�
 - Core、Storage、Runtime 独立 build 通过；13 个代码/测试文件 Biome format 通过。
 - 路径比较实际仅三个预期差异；其余十个代码/测试文件与冻结来源完全一致。
 - 当前 main 的 package-lock.json 和依赖版本未改变。
+
+## 交付 2 的实际提取
+
+- 新分支 `codex/gitoxide-file-execution-delivery` 堆叠在 PR1 `0de112e99`，
+  不包含其他 integration 历史。
+- `ab9534444`、`eac82a400`：authentic import → baseline acceptance → reopen。
+- `c6f2709c2`、`3a6824a92`：真实 child exit 与 candidate/T2 exact binding。
+- `a7bdc4344`、`52f152632`、`c66dcedd2`：exact absence、no-op、deterministic failure。
+- `c418f419d`：accepted-ref predecessor 校验；因此 readVersion 在 PR2 加入，而非等到 PR4。
+- `e73319f9a`、`9cca39e27`：mutation admission 与 Runtime 适配器，测试携带真实 ToolRuntime。
+- `7f534eeff` 只取 helper 长 ref/Windows 修正，不取 Desktop 接线。
+- candidate-settlement、mutation-admission、runtime-mutation 三个文件取最终来源；
+  baseline owner 取 9cca 的完整执行边界，排除最终来源 recoverCandidate/inspectContinuation。
+- 原 gitoxide-baseline-reopen-child 取 9cca 的 636 行文件执行部分，改名
+  gitoxide-file-execution-child；未携带 backend、catalog、continuation、startup mode。
+- 三平台 helper workflow 消费这些测试，并触发于新 owner、fixture、Runtime 和 Storage。
+- Core session、schema、Host protocol、Desktop、lockfile 均不改动。
+- 验证：Rust 76 passed；Host 45 passed/6 Windows skip；Runtime/Storage 121 passed；
+  新 workflow filter 两项 passed。完整 workflow policy 的 Windows shared-comparison
+  fixture 仍非绿，详见交付合同。

@@ -33,6 +33,8 @@ use unicode_normalization::UnicodeNormalization;
 
 const PROTOCOL_VERSION: u8 = 1;
 const MANAGED_TREE_POLICY_VERSION: u8 = 3;
+const IMPORT_INTENT_REF: &str = "refs/maka/import-intent";
+const MAX_IMPORT_INTENT_BYTES: u64 = 64 * 1024;
 const MAX_ENCODED_CONTENT_BYTES: u64 = MAX_IMPORT_FILE_BYTES.div_ceil(3) * 4;
 const MAX_REQUEST_BYTES: u64 = MAX_ENCODED_CONTENT_BYTES + 64 * 1024;
 const MAX_REPOSITORY_METADATA_BYTES: u64 = 1024 * 1024;
@@ -81,6 +83,10 @@ const HELPER_ERROR_REASONS_V1: &[&str] = &[
     "commit_object_limit_exceeded",
     "baseline_commit_write_failed",
     "baseline_publish_failed",
+    "import_intent_mismatch",
+    "import_intent_unavailable",
+    "import_intent_invalid",
+    "import_intent_write_failed",
     "baseline_ref_outside_maka_namespace",
     "base_commit_unavailable",
     "base_commit_identity_mismatch",
@@ -163,11 +169,36 @@ const HELPER_ERROR_REASONS_V1: &[&str] = &[
     rename_all_fields = "camelCase"
 )]
 enum Request {
+    ReconcileAcceptedRef {
+        protocol_version: u8,
+        repository_path: PathBuf,
+        accepted_commit_oid: String,
+        accepted_tree_oid: String,
+        expected_previous_commit_oid: String,
+        managed_tree_policy_version: u8,
+    },
+    ReopenRepository {
+        protocol_version: u8,
+        repository_path: PathBuf,
+        accepted_commit_oid: String,
+        accepted_tree_oid: String,
+        managed_tree_policy_version: u8,
+    },
     InspectRepository {
         protocol_version: u8,
         repository_path: PathBuf,
     },
     ImportSourceHead {
+        request_fingerprint: Option<String>,
+        protocol_version: u8,
+        source_repository_path: PathBuf,
+        expected_source_head_commit_oid: String,
+        destination_repository_path: PathBuf,
+        baseline_ref: String,
+        managed_tree_policy_version: u8,
+    },
+    VerifySourceImport {
+        request_fingerprint: Option<String>,
         protocol_version: u8,
         source_repository_path: PathBuf,
         expected_source_head_commit_oid: String,
@@ -192,12 +223,30 @@ enum Request {
         accepted_commit_oid: String,
         path: String,
         managed_tree_policy_version: u8,
+        #[serde(default)]
+        allow_missing: bool,
     },
 }
 
 #[derive(Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum Response<'a> {
+    #[serde(rename_all = "camelCase")]
+    AcceptedRefReconciled {
+        protocol_version: u8,
+        object_format: &'static str,
+        accepted_commit_oid: String,
+        accepted_tree_oid: String,
+        managed_tree_policy_version: u8,
+    },
+    #[serde(rename_all = "camelCase")]
+    RepositoryReopened {
+        protocol_version: u8,
+        object_format: &'static str,
+        accepted_commit_oid: String,
+        accepted_tree_oid: String,
+        managed_tree_policy_version: u8,
+    },
     #[serde(rename_all = "camelCase")]
     RepositoryInspected {
         protocol_version: u8,
@@ -267,6 +316,15 @@ enum Response<'a> {
         managed_tree_policy_version: u8,
     },
     #[serde(rename_all = "camelCase")]
+    TreeFileAbsent {
+        protocol_version: u8,
+        object_format: &'static str,
+        accepted_commit_oid: String,
+        accepted_tree_oid: String,
+        path: String,
+        managed_tree_policy_version: u8,
+    },
+    #[serde(rename_all = "camelCase")]
     TreeFileRead {
         protocol_version: u8,
         object_format: &'static str,
@@ -306,6 +364,39 @@ fn main() -> ExitCode {
 fn run() -> Result<ExitCode, &'static str> {
     let request = read_request()?;
     match request {
+        Request::ReconcileAcceptedRef {
+            protocol_version,
+            repository_path,
+            accepted_commit_oid,
+            accepted_tree_oid,
+            expected_previous_commit_oid,
+            managed_tree_policy_version,
+        } => {
+            assert_protocol_version(protocol_version)?;
+            reopen_repository(
+                repository_path,
+                accepted_commit_oid,
+                accepted_tree_oid,
+                managed_tree_policy_version,
+                Some(expected_previous_commit_oid),
+            )
+        }
+        Request::ReopenRepository {
+            protocol_version,
+            repository_path,
+            accepted_commit_oid,
+            accepted_tree_oid,
+            managed_tree_policy_version,
+        } => {
+            assert_protocol_version(protocol_version)?;
+            reopen_repository(
+                repository_path,
+                accepted_commit_oid,
+                accepted_tree_oid,
+                managed_tree_policy_version,
+                None,
+            )
+        }
         Request::InspectRepository {
             protocol_version,
             repository_path,
@@ -314,6 +405,7 @@ fn run() -> Result<ExitCode, &'static str> {
             inspect_repository(repository_path)
         }
         Request::ImportSourceHead {
+            request_fingerprint,
             protocol_version,
             source_repository_path,
             expected_source_head_commit_oid,
@@ -328,6 +420,28 @@ fn run() -> Result<ExitCode, &'static str> {
                 destination_repository_path,
                 baseline_ref,
                 managed_tree_policy_version,
+                false,
+                request_fingerprint,
+            )
+        }
+        Request::VerifySourceImport {
+            request_fingerprint,
+            protocol_version,
+            source_repository_path,
+            expected_source_head_commit_oid,
+            destination_repository_path,
+            baseline_ref,
+            managed_tree_policy_version,
+        } => {
+            assert_protocol_version(protocol_version)?;
+            import_source_head(
+                source_repository_path,
+                expected_source_head_commit_oid,
+                destination_repository_path,
+                baseline_ref,
+                managed_tree_policy_version,
+                true,
+                request_fingerprint,
             )
         }
         Request::CreateCandidate {
@@ -359,6 +473,7 @@ fn run() -> Result<ExitCode, &'static str> {
             accepted_commit_oid,
             path,
             managed_tree_policy_version,
+            allow_missing,
         } => {
             assert_protocol_version(protocol_version)?;
             read_tree_file(
@@ -366,6 +481,7 @@ fn run() -> Result<ExitCode, &'static str> {
                 accepted_commit_oid,
                 path,
                 managed_tree_policy_version,
+                allow_missing,
             )
         }
     }
@@ -433,6 +549,11 @@ fn inspect_repository(repository_path: PathBuf) -> Result<ExitCode, &'static str
 
 fn open_repository(repository_path: PathBuf) -> Result<gix::Repository, &'static str> {
     let mut metadata_budget = admit_repository_metadata(&repository_path)?;
+    // Keep Windows' extended-length path for downstream ref-lock rename operations.
+    // Admit the original path first so normalization cannot bypass metadata policy.
+    #[cfg(windows)]
+    let repository_path =
+        fs::canonicalize(repository_path).map_err(|_| "repository_open_failed")?;
     let repository = managed_open_options()
         .open(repository_path)
         .map_err(|_| "repository_open_failed")?
@@ -639,11 +760,26 @@ fn import_source_head(
     destination_repository_path: PathBuf,
     baseline_ref: String,
     managed_tree_policy_version: u8,
+    verify_only: bool,
+    request_fingerprint: Option<String>,
 ) -> Result<ExitCode, &'static str> {
     use gix::bstr::ByteSlice;
 
+    if request_fingerprint.as_ref().is_some_and(|value| {
+        value.len() != 71
+            || !value.starts_with("sha256:")
+            || !value.as_bytes()[7..]
+                .iter()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(byte))
+    }) {
+        return Err("import_intent_invalid");
+    }
+
     if !baseline_ref.starts_with("refs/maka/") {
         return Err("baseline_ref_outside_maka_namespace");
+    }
+    if baseline_ref == IMPORT_INTENT_REF {
+        return Err("invalid_baseline_ref");
     }
     gix::refs::FullName::try_from(baseline_ref.as_str()).map_err(|_| "invalid_baseline_ref")?;
     if managed_tree_policy_version != MANAGED_TREE_POLICY_VERSION {
@@ -697,10 +833,141 @@ fn import_source_head(
     drop(stats);
 
     assert_import_destination_parent(&destination_repository_path)?;
+    // The baseline commit binds the tree, not the original source commit or request.
+    // Persist that identity separately before copying any source objects. This is
+    // recovery evidence in the private repository, never a filesystem-delete capability.
+    let canonical_destination = fs::canonicalize(
+        destination_repository_path
+            .parent()
+            .ok_or("import_destination_parent_untrusted")?,
+    )
+    .map_err(|_| "import_destination_parent_untrusted")?
+    .join(
+        destination_repository_path
+            .file_name()
+            .ok_or("import_destination_parent_untrusted")?,
+    );
+    let intent = serde_json::to_vec(&(
+        "maka-source-import-intent-v1",
+        request_fingerprint,
+        fs::canonicalize(source.git_dir()).map_err(|_| "repository_open_failed")?,
+        expected_source_head.to_string(),
+        source_tree.to_string(),
+        canonical_destination,
+        &baseline_ref,
+        managed_tree_policy_version,
+    ))
+    .map_err(|_| "import_intent_invalid")?;
+    if intent.len() as u64 > MAX_IMPORT_INTENT_BYTES {
+        return Err("import_intent_invalid");
+    }
+    if verify_only {
+        let metadata = fs::symlink_metadata(&destination_repository_path)
+            .map_err(|_| "repository_open_failed")?;
+        if !metadata.is_dir()
+            || metadata.file_type().is_symlink()
+            || is_windows_reparse_point(&metadata)
+        {
+            return Err("repository_open_failed");
+        }
+        let destination = open_repository(destination_repository_path)?;
+        if !destination.is_bare() || destination.object_hash() != gix::hash::Kind::Sha1 {
+            return Err("repository_open_failed");
+        }
+        let intent_reference = destination
+            .find_reference(IMPORT_INTENT_REF)
+            .map_err(|_| "import_intent_unavailable")?;
+        let intent_id = intent_reference
+            .try_id()
+            .ok_or("import_intent_invalid")?
+            .detach();
+        let stored_intent = load_verified_object(
+            &destination,
+            intent_id,
+            gix::objs::Kind::Blob,
+            MAX_IMPORT_INTENT_BYTES,
+            "import_intent_unavailable",
+            "import_intent_invalid",
+            "import_intent_invalid",
+            "import_intent_invalid",
+        )?;
+        if stored_intent.data != intent {
+            return Err("import_intent_mismatch");
+        }
+        let commit_id = read_direct_commit_ref(
+            &destination,
+            &baseline_ref,
+            "accepted_ref_not_direct",
+            "accepted_ref_target_invalid",
+        )?;
+        let commit = load_verified_object(
+            &destination,
+            commit_id,
+            gix::objs::Kind::Commit,
+            MANAGED_TREE_POLICY_V3.max_commit_object_bytes,
+            "base_commit_unavailable",
+            "base_commit_unavailable",
+            "commit_object_limit_exceeded",
+            "base_commit_identity_mismatch",
+        )?;
+        let expected_commit = format!(
+            "tree {source_tree}\nauthor Maka Workspace Service <workspace@maka.invalid> 946684800 +0000\ncommitter Maka Workspace Service <workspace@maka.invalid> 946684800 +0000\n\nmaka managed workspace baseline v2"
+        );
+        if commit.data != expected_commit.as_bytes() {
+            return Err("base_commit_identity_mismatch");
+        }
+        let mut verified_stats = ManagedTreeStats::default();
+        walk_verified_source_tree(
+            &destination,
+            None,
+            source_tree,
+            "",
+            0,
+            MANAGED_TREE_POLICY_V3,
+            &mut verified_stats,
+        )?;
+        if verified_stats.files != expected_files || verified_stats.bytes != expected_bytes {
+            return Err("source_tree_observation_mismatch");
+        }
+        if read_direct_commit_ref(
+            &destination,
+            &baseline_ref,
+            "accepted_ref_not_direct",
+            "accepted_ref_target_invalid",
+        )? != commit_id
+        {
+            return Err("accepted_ref_target_invalid");
+        }
+        write_response(&Response::SourceImported {
+            protocol_version: PROTOCOL_VERSION,
+            object_format: "sha1",
+            source_head_commit_oid: expected_source_head.to_string(),
+            source_tree_oid: source_tree.to_string(),
+            baseline_commit_oid: commit_id.to_string(),
+            baseline_tree_oid: source_tree.to_string(),
+            baseline_ref,
+            managed_tree_policy_version: MANAGED_TREE_POLICY_VERSION,
+            files_imported: verified_stats.files,
+            bytes_imported: verified_stats.bytes,
+        });
+        return Ok(ExitCode::SUCCESS);
+    }
     let destination = claim_fresh_import_destination(&destination_repository_path)?;
     if destination.object_hash() != gix::hash::Kind::Sha1 {
         return Err("import_destination_object_format_mismatch");
     }
+    let intent_id = destination
+        .write_blob(&intent)
+        .map_err(|_| "import_intent_write_failed")?
+        .detach();
+    destination
+        .reference(
+            IMPORT_INTENT_REF,
+            intent_id,
+            gix::refs::transaction::PreviousValue::MustNotExist,
+            "maka source import intent",
+        )
+        .map_err(|_| "import_intent_write_failed")?;
 
     let mut copy_stats = ManagedTreeStats::default();
     walk_verified_source_tree(
@@ -753,6 +1020,105 @@ fn import_source_head(
         files_imported: copy_stats.files,
         bytes_imported: copy_stats.bytes,
     });
+    Ok(ExitCode::SUCCESS)
+}
+
+fn reopen_repository(
+    repository_path: PathBuf,
+    accepted_commit_oid: String,
+    accepted_tree_oid: String,
+    managed_tree_policy_version: u8,
+    expected_previous_commit_oid: Option<String>,
+) -> Result<ExitCode, &'static str> {
+    if managed_tree_policy_version != MANAGED_TREE_POLICY_VERSION {
+        return Err("unsupported_managed_tree_policy");
+    }
+    assert_import_destination_parent(&repository_path)?;
+    let metadata = fs::symlink_metadata(&repository_path).map_err(|_| "repository_open_failed")?;
+    if !metadata.is_dir()
+        || metadata.file_type().is_symlink()
+        || is_windows_reparse_point(&metadata)
+    {
+        return Err("repository_open_failed");
+    }
+    let repository = open_repository(repository_path)?;
+    if !repository.is_bare() {
+        return Err("repository_open_failed");
+    }
+    let (commit, tree) = accepted_commit_identity(&repository, &accepted_commit_oid)?;
+    if tree.to_string() != accepted_tree_oid {
+        return Err("base_tree_identity_mismatch");
+    }
+    let read_ref = || {
+        read_direct_commit_ref(
+            &repository,
+            "refs/maka/accepted",
+            "accepted_ref_not_direct",
+            "accepted_ref_target_invalid",
+        )
+    };
+    let previous = expected_previous_commit_oid
+        .as_ref()
+        .map(|value| {
+            gix::ObjectId::from_hex(value.as_bytes()).map_err(|_| "invalid_base_commit_oid")
+        })
+        .transpose()?;
+    let observed = read_ref()?;
+    if observed != commit && Some(observed) != previous {
+        return Err("accepted_ref_target_invalid");
+    }
+    // Reopen proves the entire accepted tree, not just that its root object exists.
+    let mut stats = ManagedTreeStats::default();
+    walk_verified_source_tree(
+        &repository,
+        None,
+        tree,
+        "",
+        0,
+        MANAGED_TREE_POLICY_V3,
+        &mut stats,
+    )?;
+    if observed != commit {
+        // Never dereference a symbolic ref that appeared after observation.
+        use gix::refs::transaction::{Change, LogChange, PreviousValue, RefEdit};
+        let result = repository.edit_reference(RefEdit {
+            name: "refs/maka/accepted"
+                .try_into()
+                .map_err(|_| "accepted_ref_target_invalid")?,
+            deref: false,
+            change: Change::Update {
+                expected: PreviousValue::MustExistAndMatch(gix::refs::Target::Object(observed)),
+                new: gix::refs::Target::Object(commit),
+                log: LogChange {
+                    message: "maka accepted projection".into(),
+                    ..Default::default()
+                },
+            },
+        });
+        if result.is_err() && read_ref()? != commit {
+            return Err("accepted_ref_target_invalid");
+        }
+    }
+    if read_ref()? != commit {
+        return Err("accepted_ref_target_invalid");
+    }
+    if expected_previous_commit_oid.is_some() {
+        write_response(&Response::AcceptedRefReconciled {
+            protocol_version: PROTOCOL_VERSION,
+            object_format: "sha1",
+            accepted_commit_oid: commit.to_string(),
+            accepted_tree_oid: tree.to_string(),
+            managed_tree_policy_version: MANAGED_TREE_POLICY_VERSION,
+        });
+    } else {
+        write_response(&Response::RepositoryReopened {
+            protocol_version: PROTOCOL_VERSION,
+            object_format: "sha1",
+            accepted_commit_oid: commit.to_string(),
+            accepted_tree_oid: tree.to_string(),
+            managed_tree_policy_version: MANAGED_TREE_POLICY_VERSION,
+        });
+    }
     Ok(ExitCode::SUCCESS)
 }
 
@@ -1474,6 +1840,7 @@ fn read_tree_file(
     accepted_commit_oid: String,
     path: String,
     managed_tree_policy_version: u8,
+    allow_missing: bool,
 ) -> Result<ExitCode, &'static str> {
     if managed_tree_policy_version != MANAGED_TREE_POLICY_VERSION {
         return Err("unsupported_managed_tree_policy");
@@ -1500,18 +1867,33 @@ fn read_tree_file(
         )?
         .try_into_tree()
         .map_err(|_| "tree_file_invalid")?;
-        let entry = tree
-            .iter()
-            .find_map(|entry| match entry {
-                Ok(entry) if entry.filename() == component.as_bytes() => Some(Ok(entry)),
-                Ok(_) => None,
-                Err(_) => Some(Err("tree_file_lookup_failed")),
-            })
-            .ok_or("tree_file_unavailable")??;
+        // Complete the verified tree scan before proving a negative lookup.
+        // Missing/corrupt objects and malformed entries are never absence.
+        let mut found = None;
+        for entry in tree.iter() {
+            let entry = entry.map_err(|_| "tree_file_lookup_failed")?;
+            if entry.filename() == component.as_bytes() {
+                found = Some((entry.mode().kind(), entry.object_id()));
+            }
+        }
+        let Some((kind, oid)) = found else {
+            if !allow_missing {
+                return Err("tree_file_unavailable");
+            }
+            write_response(&Response::TreeFileAbsent {
+                protocol_version: PROTOCOL_VERSION,
+                object_format: "sha1",
+                accepted_commit_oid: accepted_commit.to_string(),
+                accepted_tree_oid: accepted_tree.to_string(),
+                path,
+                managed_tree_policy_version: MANAGED_TREE_POLICY_VERSION,
+            });
+            return Ok(ExitCode::SUCCESS);
+        };
         if index + 1 == components.len() {
-            final_entry = Some((entry.mode().kind(), entry.object_id()));
-        } else if entry.mode().kind() == gix::objs::tree::EntryKind::Tree {
-            tree_oid = entry.object_id();
+            final_entry = Some((kind, oid));
+        } else if kind == gix::objs::tree::EntryKind::Tree {
+            tree_oid = oid;
         } else {
             return Err("tree_file_invalid");
         }

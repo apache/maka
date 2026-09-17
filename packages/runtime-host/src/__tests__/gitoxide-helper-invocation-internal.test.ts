@@ -38,6 +38,7 @@ import {
   importSourceHeadWithGitoxideHelperInternal,
   inspectRepositoryWithGitoxideHelperInternal,
   readTreeFileWithGitoxideHelperInternal,
+  reconcileAcceptedRefWithGitoxideHelperInternal,
   runGitoxideOperationWithinDeadlineInternal,
 } from '../server/gitoxide-helper-invocation-internal.js';
 
@@ -47,6 +48,22 @@ interface AdmittedHelper {
 }
 
 let admittedHelperPromise: Promise<AdmittedHelper | undefined> | undefined;
+
+test('readonly reopen attestation cannot authorize accepted-ref writes', async () => {
+  const helper = await admitHelperPath(process.execPath, ['reopen_repository']);
+  await assert.rejects(
+    reconcileAcceptedRefWithGitoxideHelperInternal({
+      ...helper,
+      repositoryPath: tmpdir(),
+      acceptedCommitOid: 'a'.repeat(40),
+      acceptedTreeOid: 'b'.repeat(40),
+      expectedPreviousCommitOid: 'c'.repeat(40),
+    }),
+    (error) =>
+      error instanceof GitoxideHelperArtifactAuthorityError &&
+      error.code === 'gitoxide_helper_release_claim_unsupported',
+  );
+});
 
 test('uses bounded mutation/import deadlines distinct from repository inspection', () => {
   assert.deepEqual(GITOXIDE_HELPER_OPERATION_TIMEOUTS_INTERNAL, {
@@ -402,6 +419,48 @@ test('rejects a direct-read response whose blob identity does not match its cont
   );
 });
 
+test('rejects unsolicited or mismatched absence responses', {
+  skip: process.platform === 'win32',
+}, async (t) => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'maka-gitoxide-absence-correlation-')));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const repositoryPath = await createRepository(t, 'sha1');
+  for (const [index, override] of [
+    {},
+    { path: 'other.txt' },
+    { acceptedCommitOid: 'c'.repeat(40) },
+    { content: 'not absent' },
+  ].entries()) {
+    const helperPath = join(root, `absence-helper-${index}`);
+    const response = JSON.stringify({
+      protocolVersion: 1,
+      kind: 'tree_file_absent',
+      objectFormat: 'sha1',
+      acceptedCommitOid: 'a'.repeat(40),
+      acceptedTreeOid: 'b'.repeat(40),
+      path: 'new.txt',
+      managedTreePolicyVersion: 3,
+      ...override,
+    });
+    await writeFile(helperPath, `#!/bin/sh\n/bin/cat >/dev/null\nprintf '%s\\n' '${response}'\n`);
+    await chmod(helperPath, 0o755);
+    const helper = await admitHelperPath(helperPath, ['read_tree_file']);
+    await assert.rejects(
+      readTreeFileWithGitoxideHelperInternal({
+        ...helper,
+        repositoryPath,
+        acceptedCommitOid: 'a'.repeat(40),
+        path: 'new.txt',
+        managedTreePolicyVersion: 3,
+        ...(index === 0 ? {} : { allowMissing: true as const }),
+      }),
+      (error) =>
+        error instanceof GitoxideHelperInvocationError &&
+        error.code === 'gitoxide_helper_invocation_protocol_invalid',
+    );
+  }
+});
+
 test('keeps the Rust and TypeScript helper error protocol exhaustive', async () => {
   const rustSource = await readFile(
     new URL('../../../../native/gitoxide-helper/src/main.rs', import.meta.url),
@@ -588,6 +647,7 @@ async function admitHelperPath(
     | 'import_source_head'
     | 'create_candidate'
     | 'read_tree_file'
+    | 'reopen_repository'
   )[] = ['inspect_repository', 'import_source_head'],
 ): Promise<AdmittedHelper> {
   const helperPath = await realpath(configuredHelperPath);

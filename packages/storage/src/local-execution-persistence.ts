@@ -86,6 +86,7 @@ export const localExecutionPersistenceProvider: ExecutionPersistenceProvider = O
               store.readWorkspaceHead(workspaceId, epochId),
             readEpoch: (workspaceId: string, epochId: string) =>
               store.readWorkspaceEpoch(workspaceId, epochId),
+            readVersion: (versionId: string) => store.readWorkspaceVersion(versionId),
             readReservation: (instanceId: string) =>
               readActiveManagedMutationInternal(store, instanceId),
           };

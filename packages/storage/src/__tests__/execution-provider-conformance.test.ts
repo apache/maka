@@ -91,10 +91,12 @@ test('Local: workspace authority shares group revocation without exposing raw pe
       'readEpoch',
       'readHead',
       'readReservation',
+      'readVersion',
     ]);
     await assert.rejects(authority.commitBaseline({}), /Unrecognized proof/u);
     await stores.sessionStore.close?.();
     await assert.rejects(authority.readHead('absent-workspace', 'absent-epoch'));
+    await assert.rejects(authority.readVersion('absent-version'));
     await assert.rejects(authority.commitBaseline({}));
     await assert.rejects(openExecutionWorkspaceAuthorityInternal(stores, verifiers));
   });

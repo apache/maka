@@ -20,7 +20,8 @@ workspace authority 结算；不可调用 checkout Write/Edit 实现，不可回
 - Storage group 选择一次 proof verifier，固定函数快照，禁止换 owner。
 - authority facade 不暴露 SQLite handle；每次调用都进入现有 group runner。
   close 停止新调用并 drain 已进入调用。伪造 group、已关闭 group、Memory provider 均拒绝。
-- `readVersion` 属于后续 continuation 的历史证据读取，本交付不扩大权限。
+- `readVersion` 不属于 PR1；PR2 的 accepted-ref predecessor 校验及后续 continuation
+  需要历史证据读取，分别随真实消费者加入和验证。
 - `PreparedManagedMutation.commitOutcome` 是受信 composition 接口，不是来自工具参数的权限。
   Runtime 深比较返回的完整 durable event；Storage 独立约束 writer 与事务。
   本切片不宣称该接口能够鉴别恶意的进程内 Host 实现。

@@ -27,12 +27,15 @@ import {
   createCandidateWithGitoxideHelperInternal,
   GITOXIDE_HELPER_OPERATION_TIMEOUTS_INTERNAL,
   importSourceHeadWithGitoxideHelperInternal,
+  verifySourceImportWithGitoxideHelperInternal,
   inspectCanonicalRepositoryWithGitoxideHelperInternal,
   readTreeFileWithGitoxideHelperInternal,
+  reopenRepositoryWithGitoxideHelperInternal,
   type GitoxideCandidateNoChangeV1,
   type GitoxideCandidatePublishedV1,
   type GitoxideSourceImportObservationV1,
   type GitoxideTreeFileReadV1,
+  type GitoxideTreeFileAbsentV1,
   type GitoxideRepositoryRejectionV1,
 } from './gitoxide-helper-invocation-internal.js';
 
@@ -91,6 +94,7 @@ interface AdmissionCapabilityRecord {
 }
 
 interface AcceptedRepositoryCapabilityRecord {
+  readonly importObservation?: Readonly<GitoxideSourceImportObservationV1>;
   readonly acceptedRepositoryOwnerToken: object;
   readonly invocationOwnerToken: object;
   readonly helperCapability: GitoxideHelperInvocationCapability;
@@ -179,17 +183,33 @@ export function requireGitoxideRepositoryAdmissionInternal(
   return requireAdmissionRecord(admissionOwnerToken, capability).state;
 }
 
-export async function importAdmittedGitoxideRepositoryInternal(input: {
+interface AdmittedImportInput {
+  readonly requestFingerprint?: `sha256:${string}`;
   readonly admissionOwnerToken: object;
   readonly repositoryCapability: GitoxideRepositoryAdmissionCapability;
   readonly acceptedRepositoryOwnerToken: object;
   readonly destinationRepositoryPath: string;
   readonly abortSignal?: AbortSignal;
-}): Promise<
+}
+
+export function importAdmittedGitoxideRepositoryInternal(input: AdmittedImportInput) {
+  return observeAdmittedImport(input, importSourceHeadWithGitoxideHelperInternal);
+}
+
+/** Read-only recovery after publication; partial or changed destinations are never repaired. */
+export function verifyAdmittedGitoxideImportInternal(input: AdmittedImportInput) {
+  return observeAdmittedImport(input, verifySourceImportWithGitoxideHelperInternal);
+}
+
+async function observeAdmittedImport(
+  input: AdmittedImportInput,
+  observe: typeof importSourceHeadWithGitoxideHelperInternal,
+): Promise<
   GitoxideSourceImportObservationV1 & {
     readonly acceptedRepositoryCapability: GitoxideAcceptedRepositoryCapability;
   }
 > {
+  input = { ...input };
   const admission = requireAdmissionRecord(input.admissionOwnerToken, input.repositoryCapability);
   const source = admission.state;
   requireGitoxideHelperOperationsInternal(
@@ -197,11 +217,12 @@ export async function importAdmittedGitoxideRepositoryInternal(input: {
     admission.helperCapability,
     ['create_candidate', 'read_tree_file'],
   );
-  const result = await importSourceHeadWithGitoxideHelperInternal({
+  const result = await observe({
     invocationOwnerToken: admission.invocationOwnerToken,
     capability: admission.helperCapability,
     sourceRepositoryPath: source.repositoryPath,
     expectedSourceHeadCommitOid: source.headCommitOid,
+    requestFingerprint: input.requestFingerprint,
     destinationRepositoryPath: input.destinationRepositoryPath,
     baselineRef: ACCEPTED_REPOSITORY_REF,
     managedTreePolicyVersion: source.managedTreePolicyVersion,
@@ -216,6 +237,7 @@ export async function importAdmittedGitoxideRepositoryInternal(input: {
     );
   }
   const acceptedRepositoryCapability = issueAcceptedRepositoryCapability({
+    importObservation: Object.freeze({ ...result }),
     acceptedRepositoryOwnerToken: input.acceptedRepositoryOwnerToken,
     invocationOwnerToken: admission.invocationOwnerToken,
     helperCapability: admission.helperCapability,
@@ -226,6 +248,59 @@ export async function importAdmittedGitoxideRepositoryInternal(input: {
     managedTreePolicyVersion: result.managedTreePolicyVersion,
   });
   return Object.freeze({ ...result, acceptedRepositoryCapability });
+}
+
+/** Read only owner-issued evidence; a caller-supplied import response is not authority. */
+export function requireGitoxideImportedRepositoryInternal(
+  ownerToken: object,
+  capability: GitoxideAcceptedRepositoryCapability,
+) {
+  const record = requireAcceptedRepositoryRecord(ownerToken, capability);
+  if (!record.importObservation)
+    throw new GitoxideRepositoryAdmissionAuthorityError(
+      'gitoxide_repository_admission_capability_invalid',
+    );
+  const artifact = requireGitoxideHelperArtifactIdentityInternal(
+    record.invocationOwnerToken,
+    record.helperCapability,
+  );
+  return Object.freeze({
+    ...record.importObservation,
+    repositoryPath: record.repositoryPath,
+    helperArtifactSha256: artifact.sha256,
+  });
+}
+
+/** Reissues a process-local handle only after checking the caller's durable accepted identity. */
+export async function reopenGitoxideRepositoryInternal(input: {
+  invocationOwnerToken: object;
+  helperCapability: GitoxideHelperInvocationCapability;
+  acceptedRepositoryOwnerToken: object;
+  repositoryPath: string;
+  acceptedCommitOid: string;
+  acceptedTreeOid: string;
+  abortSignal?: AbortSignal;
+}): Promise<GitoxideAcceptedRepositoryCapability> {
+  requireGitoxideHelperOperationsInternal(input.invocationOwnerToken, input.helperCapability, [
+    'reopen_repository',
+    'create_candidate',
+    'read_tree_file',
+  ]);
+  await reopenRepositoryWithGitoxideHelperInternal({
+    ...input,
+    capability: input.helperCapability,
+  });
+  input.abortSignal?.throwIfAborted();
+  return issueAcceptedRepositoryCapability({
+    acceptedRepositoryOwnerToken: input.acceptedRepositoryOwnerToken,
+    invocationOwnerToken: input.invocationOwnerToken,
+    helperCapability: input.helperCapability,
+    repositoryPath: input.repositoryPath,
+    acceptedRef: ACCEPTED_REPOSITORY_REF,
+    acceptedCommitOid: input.acceptedCommitOid,
+    acceptedTreeOid: input.acceptedTreeOid,
+    managedTreePolicyVersion: MANAGED_TREE_POLICY_VERSION,
+  });
 }
 
 export async function createGitoxideCandidateInternal(input: {
@@ -311,17 +386,28 @@ export async function createGitoxideCandidateInternal(input: {
   return Object.freeze({ ...result, candidateOutcomeCapability });
 }
 
-export async function readGitoxideTreeFileInternal(input: {
+interface AcceptedTreeFileReadInput {
   readonly acceptedRepositoryOwnerToken: object;
   readonly acceptedRepositoryCapability: GitoxideAcceptedRepositoryCapability;
   readonly path: string;
   readonly abortSignal?: AbortSignal;
-}): Promise<GitoxideTreeFileReadV1> {
+}
+
+export function readGitoxideTreeFileInternal(
+  input: AcceptedTreeFileReadInput & { readonly allowMissing: true },
+): Promise<GitoxideTreeFileReadV1 | GitoxideTreeFileAbsentV1>;
+export function readGitoxideTreeFileInternal(
+  input: AcceptedTreeFileReadInput,
+): Promise<GitoxideTreeFileReadV1>;
+export async function readGitoxideTreeFileInternal(
+  original: AcceptedTreeFileReadInput & { readonly allowMissing?: boolean },
+): Promise<GitoxideTreeFileReadV1 | GitoxideTreeFileAbsentV1> {
+  const input = { ...original };
   const managed = requireAcceptedRepositoryRecord(
     input.acceptedRepositoryOwnerToken,
     input.acceptedRepositoryCapability,
   );
-  const result = await readTreeFileWithGitoxideHelperInternal({
+  const request = {
     invocationOwnerToken: managed.invocationOwnerToken,
     capability: managed.helperCapability,
     repositoryPath: managed.repositoryPath,
@@ -329,7 +415,11 @@ export async function readGitoxideTreeFileInternal(input: {
     path: input.path,
     managedTreePolicyVersion: managed.managedTreePolicyVersion,
     abortSignal: input.abortSignal,
-  });
+  };
+  const result =
+    input.allowMissing === true
+      ? await readTreeFileWithGitoxideHelperInternal({ ...request, allowMissing: true })
+      : await readTreeFileWithGitoxideHelperInternal(request);
   if (
     result.acceptedCommitOid !== managed.acceptedCommitOid ||
     result.acceptedTreeOid !== managed.acceptedTreeOid
@@ -339,6 +429,24 @@ export async function readGitoxideTreeFileInternal(input: {
     );
   }
   return result;
+}
+
+/** Exposes immutable identity, never the invocation capability or mutable owner state. */
+export function requireGitoxideAcceptedIdentityInternal(
+  ownerToken: object,
+  capability: GitoxideAcceptedRepositoryCapability,
+) {
+  const record = requireAcceptedRepositoryRecord(ownerToken, capability);
+  const artifact = requireGitoxideHelperArtifactIdentityInternal(
+    record.invocationOwnerToken,
+    record.helperCapability,
+  );
+  return Object.freeze({
+    repositoryPath: record.repositoryPath,
+    helperArtifactSha256: artifact.sha256,
+    baseCommitOid: record.acceptedCommitOid,
+    baseTreeOid: record.acceptedTreeOid,
+  });
 }
 
 export function requireGitoxideCandidateOutcomeForAcceptedRepositoryInternal(input: {

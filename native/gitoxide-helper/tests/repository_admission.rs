@@ -532,6 +532,199 @@ fn imports_an_exact_source_head_into_a_fresh_managed_repository() {
 }
 
 #[test]
+fn reopen_validates_the_exact_accepted_tree_without_reimporting() {
+    let fixture = RepositoryFixture::sha1_with_commit();
+    let destination = fixture.root.join("managed-reopen.git");
+    let source_head = fixture.git_output(["rev-parse", "HEAD"]);
+    let imported = invoke_import(&fixture.root, &source_head, &destination);
+    assert!(imported.status.success());
+    let imported: serde_json::Value = serde_json::from_slice(&imported.stdout).unwrap();
+    let commit = imported["baselineCommitOid"].as_str().unwrap();
+    git_bare_output(&destination, ["update-ref", "refs/maka/accepted", commit]);
+    let request = serde_json::json!({
+        "operation": "reopen_repository", "protocolVersion": 1,
+        "repositoryPath": destination, "acceptedCommitOid": commit,
+        "acceptedTreeOid": imported["baselineTreeOid"], "managedTreePolicyVersion": 3,
+    });
+    let reopened = invoke_request(request.clone());
+    assert!(
+        reopened.status.success(),
+        "{}",
+        String::from_utf8_lossy(&reopened.stdout)
+    );
+    let response: serde_json::Value = serde_json::from_slice(&reopened.stdout).unwrap();
+    assert_eq!(response["kind"], "repository_reopened");
+    assert_eq!(response["acceptedCommitOid"], commit);
+    let mut wrong_tree = request.clone();
+    wrong_tree["acceptedTreeOid"] = serde_json::json!("0".repeat(40));
+    assert_helper_error(&invoke_request(wrong_tree), "base_tree_identity_mismatch");
+    let alias = fixture.root.join("reopen-alias.git");
+    create_directory_alias(&destination, &alias);
+    let mut aliased = request;
+    aliased["repositoryPath"] = serde_json::json!(alias);
+    assert_helper_error(&invoke_request(aliased), "repository_open_failed");
+    assert_eq!(
+        git_bare_output(&destination, ["rev-parse", "refs/maka/accepted"]),
+        commit
+    );
+}
+
+#[test]
+fn import_retry_rejects_a_new_source_commit_with_the_same_tree() {
+    let fixture = RepositoryFixture::sha1_with_commit();
+    let destination = fixture.root.join("original-intent.git");
+    let original = fixture.git_output(["rev-parse", "HEAD"]);
+    let tree = fixture.git_output(["rev-parse", "HEAD^{tree}"]);
+    assert!(
+        invoke_import(&fixture.root, &original, &destination)
+            .status
+            .success()
+    );
+    fixture.git_output([
+        "commit",
+        "--allow-empty",
+        "-m",
+        "new identity, unchanged tree",
+    ]);
+    let changed = fixture.git_output(["rev-parse", "HEAD"]);
+    assert_ne!(original, changed);
+    assert_eq!(tree, fixture.git_output(["rev-parse", "HEAD^{tree}"]));
+    let before = fs::read(destination.join("refs/maka/baseline")).unwrap();
+    let result = invoke_request(serde_json::json!({
+        "protocolVersion": 1, "operation": "verify_source_import",
+        "sourceRepositoryPath": fixture.root, "expectedSourceHeadCommitOid": changed,
+        "destinationRepositoryPath": destination, "baselineRef": "refs/maka/baseline",
+        "managedTreePolicyVersion": 3,
+    }));
+    assert_helper_error(&result, "import_intent_mismatch");
+    assert_eq!(
+        fs::read(destination.join("refs/maka/baseline")).unwrap(),
+        before
+    );
+}
+
+#[test]
+fn verifies_completed_import_in_a_fresh_helper_without_rewriting_it() {
+    let fixture = RepositoryFixture::sha1_with_commit();
+    let destination = fixture.root.join("verify-import.git");
+    let source_head = fixture.git_output(["rev-parse", "HEAD"]);
+    let imported = invoke_import(&fixture.root, &source_head, &destination);
+    assert!(imported.status.success());
+    let expected: serde_json::Value = serde_json::from_slice(&imported.stdout).unwrap();
+    let before = fs::read(destination.join("refs/maka/baseline")).unwrap();
+    let verified = invoke_request(serde_json::json!({
+        "protocolVersion": 1, "operation": "verify_source_import",
+        "sourceRepositoryPath": fixture.root,
+        "expectedSourceHeadCommitOid": source_head,
+        "destinationRepositoryPath": destination,
+        "baselineRef": "refs/maka/baseline", "managedTreePolicyVersion": 3,
+    }));
+    assert!(
+        verified.status.success(),
+        "{}",
+        String::from_utf8_lossy(&verified.stdout)
+    );
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&verified.stdout).unwrap(),
+        expected
+    );
+    assert_eq!(
+        fs::read(destination.join("refs/maka/baseline")).unwrap(),
+        before
+    );
+}
+
+#[test]
+fn import_verification_rejects_partial_or_tampered_artifacts_without_repair() {
+    for damage in [
+        "missing_ref",
+        "missing_blob",
+        "foreign_commit",
+        "symbolic_ref",
+        "missing_intent",
+        "symbolic_intent",
+        "oversized_intent",
+    ] {
+        let fixture = RepositoryFixture::sha1_with_commit();
+        let destination = fixture.root.join("verify-damaged.git");
+        let source_head = fixture.git_output(["rev-parse", "HEAD"]);
+        assert!(
+            invoke_import(&fixture.root, &source_head, &destination)
+                .status
+                .success()
+        );
+        let ref_path = destination.join("refs/maka/baseline");
+        match damage {
+            "missing_ref" => fs::remove_file(&ref_path).unwrap(),
+            "missing_blob" => {
+                let oid = fixture.git_output(["rev-parse", "HEAD:hello.txt"]);
+                fs::remove_file(destination.join("objects").join(&oid[..2]).join(&oid[2..]))
+                    .unwrap();
+            }
+            "foreign_commit" => {
+                let relative = PathBuf::from("objects")
+                    .join(&source_head[..2])
+                    .join(&source_head[2..]);
+                fs::create_dir_all(destination.join(&relative).parent().unwrap()).unwrap();
+                fs::copy(
+                    fixture.root.join(".git").join(&relative),
+                    destination.join(relative),
+                )
+                .unwrap();
+                fs::write(&ref_path, format!("{source_head}\n")).unwrap();
+            }
+            "symbolic_ref" => fs::write(&ref_path, "ref: refs/heads/other\n").unwrap(),
+            "missing_intent" => {
+                fs::remove_file(destination.join("refs/maka/import-intent")).unwrap()
+            }
+            "symbolic_intent" => fs::write(
+                destination.join("refs/maka/import-intent"),
+                "ref: refs/maka/baseline\n",
+            )
+            .unwrap(),
+            "oversized_intent" => {
+                let blob_path = fixture.root.join("oversized-intent.txt");
+                fs::write(&blob_path, vec![b'x'; 65 * 1024]).unwrap();
+                let output = Command::new("git")
+                    .arg("--git-dir")
+                    .arg(&destination)
+                    .args(["hash-object", "-w"])
+                    .arg(&blob_path)
+                    .output()
+                    .unwrap();
+                assert!(output.status.success());
+                fs::write(destination.join("refs/maka/import-intent"), &output.stdout).unwrap();
+            }
+            _ => unreachable!(),
+        }
+        let before = fs::read(&ref_path).ok();
+        let intent_before = fs::read(destination.join("refs/maka/import-intent")).ok();
+        let result = invoke_request(serde_json::json!({
+            "protocolVersion": 1, "operation": "verify_source_import",
+            "sourceRepositoryPath": fixture.root, "expectedSourceHeadCommitOid": source_head,
+            "destinationRepositoryPath": destination, "baselineRef": "refs/maka/baseline",
+            "managedTreePolicyVersion": 3,
+        }));
+        assert_eq!(result.status.code(), Some(1), "damage {damage}");
+        assert_eq!(fs::read(&ref_path).ok(), before);
+        assert_eq!(
+            fs::read(destination.join("refs/maka/import-intent")).ok(),
+            intent_before
+        );
+        if damage == "missing_blob" {
+            let oid = fixture.git_output(["rev-parse", "HEAD:hello.txt"]);
+            assert!(
+                !destination
+                    .join("objects")
+                    .join(&oid[..2])
+                    .join(&oid[2..])
+                    .exists()
+            );
+        }
+    }
+}
+
+#[test]
 fn publishes_and_exactly_retries_an_operation_candidate_without_advancing_accepted() {
     let fixture = RepositoryFixture::sha1_with_commit();
     let source_head = fixture.git_output(["rev-parse", "HEAD"]);
@@ -592,6 +785,94 @@ fn publishes_and_exactly_retries_an_operation_candidate_without_advancing_accept
     assert!(retry.status.success());
     let retry: serde_json::Value = serde_json::from_slice(&retry.stdout).unwrap();
     assert_eq!(retry, first);
+}
+
+#[test]
+fn publishes_candidate_when_ref_lock_crosses_windows_max_path() {
+    let fixture = RepositoryFixture::sha1_with_commit();
+    let plain_root = fixture.root.to_string_lossy().replace(r"\\?\", "");
+    let root = PathBuf::from(plain_root);
+    let padding = 185usize.saturating_sub(root.to_string_lossy().len() + 1);
+    let destination = root.join("d".repeat(padding.max(1)));
+    let imported = invoke_import(
+        &root,
+        &fixture.git_output(["rev-parse", "HEAD"]),
+        &destination,
+    );
+    assert!(
+        imported.status.success(),
+        "{}",
+        String::from_utf8_lossy(&imported.stdout)
+    );
+    let imported: serde_json::Value = serde_json::from_slice(&imported.stdout).unwrap();
+    let request = serde_json::json!({
+        "protocolVersion": 1, "operation": "create_candidate", "repositoryPath": destination,
+        "acceptedRef": "refs/maka/baseline", "expectedBaseCommitOid": imported["baselineCommitOid"],
+        "expectedBaseTreeOid": imported["baselineTreeOid"],
+        "candidateRef": format!("refs/maka/candidates/{}", "d".repeat(64)),
+        "path": "hello.txt", "contentBase64": "cmVzdWx0Cg==", "managedTreePolicyVersion": 3,
+    });
+    let first = invoke_request(request.clone());
+    assert!(
+        first.status.success(),
+        "{} {}",
+        String::from_utf8_lossy(&first.stdout),
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let retry = invoke_request(request);
+    assert!(retry.status.success());
+    assert_eq!(first.stdout, retry.stdout);
+}
+
+#[test]
+fn reconciles_only_the_expected_predecessor_and_converges_concurrent_retries() {
+    let fixture = RepositoryFixture::sha1_with_commit();
+    let destination = fixture.root.join("reconcile.git");
+    let source = fixture.git_output(["rev-parse", "HEAD"]);
+    let imported = invoke_import(&fixture.root, &source, &destination);
+    assert!(imported.status.success());
+    let imported: serde_json::Value = serde_json::from_slice(&imported.stdout).unwrap();
+    let base = imported["baselineCommitOid"].as_str().unwrap();
+    git_bare_output(&destination, ["update-ref", "refs/maka/accepted", base]);
+    let candidate = invoke_request(serde_json::json!({
+        "protocolVersion": 1, "operation": "create_candidate", "repositoryPath": destination,
+        "acceptedRef": "refs/maka/accepted", "expectedBaseCommitOid": base,
+        "expectedBaseTreeOid": imported["baselineTreeOid"],
+        "candidateRef": "refs/maka/candidates/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "path": "result.txt", "contentBase64": "cmVzdWx0Cg==", "managedTreePolicyVersion": 3,
+    }));
+    assert!(candidate.status.success());
+    let candidate: serde_json::Value = serde_json::from_slice(&candidate.stdout).unwrap();
+    let request = serde_json::json!({
+        "protocolVersion": 1, "operation": "reconcile_accepted_ref", "repositoryPath": destination,
+        "expectedPreviousCommitOid": base,
+        "acceptedCommitOid": candidate["candidateCommitOid"],
+        "acceptedTreeOid": candidate["candidateTreeOid"], "managedTreePolicyVersion": 3,
+    });
+    let mut wrong = request.clone();
+    wrong["expectedPreviousCommitOid"] = serde_json::json!("0".repeat(40));
+    assert_helper_error(&invoke_request(wrong), "accepted_ref_target_invalid");
+    assert_eq!(
+        git_bare_output(&destination, ["rev-parse", "refs/maka/accepted"]),
+        base
+    );
+    let first = spawn_request(request.clone());
+    let second = spawn_request(request.clone());
+    for child in [first, second] {
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        let response: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(response["kind"], "accepted_ref_reconciled");
+    }
+    assert!(invoke_request(request).status.success());
+    assert_eq!(
+        git_bare_output(&destination, ["rev-parse", "refs/maka/accepted"]),
+        candidate["candidateCommitOid"].as_str().unwrap()
+    );
 }
 
 #[test]
@@ -1318,6 +1599,46 @@ fn refuses_to_read_a_tree_file_from_an_unavailable_commit_identity() {
 }
 
 #[test]
+fn proves_path_absence_without_treating_missing_objects_as_absence() {
+    let fixture = RepositoryFixture::sha1_with_commit();
+    let head = fixture.git_output(["rev-parse", "HEAD"]);
+    let tree = fixture.git_output(["rev-parse", "HEAD^{tree}"]);
+    let request = serde_json::json!({
+        "protocolVersion": 1, "operation": "read_tree_file",
+        "repositoryPath": fixture.root, "acceptedCommitOid": head,
+        "path": "new/nested.txt", "managedTreePolicyVersion": 3,
+        "allowMissing": true,
+    });
+    let output = invoke_request(request.clone());
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let response: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        response,
+        serde_json::json!({
+            "protocolVersion": 1, "kind": "tree_file_absent", "objectFormat": "sha1",
+            "acceptedCommitOid": head, "acceptedTreeOid": tree,
+            "path": "new/nested.txt", "managedTreePolicyVersion": 3,
+        })
+    );
+    let mut strict = request.clone();
+    strict.as_object_mut().unwrap().remove("allowMissing");
+    assert_helper_error(&invoke_request(strict), "tree_file_unavailable");
+    fs::remove_file(
+        fixture
+            .root
+            .join(".git/objects")
+            .join(&tree[..2])
+            .join(&tree[2..]),
+    )
+    .unwrap();
+    assert_helper_error(&invoke_request(request), "tree_file_unavailable");
+}
+
+#[test]
 fn imports_maka_attributes_under_managed_tree_policy_v3() {
     let fixture = RepositoryFixture::sha1_with_commit();
     fs::write(
@@ -1360,6 +1681,29 @@ fn imports_maka_attributes_under_managed_tree_policy_v3() {
     assert_eq!(response["sourceTreeOid"], source_tree);
     assert_eq!(response["baselineTreeOid"], source_tree);
     assert_eq!(response["managedTreePolicyVersion"], 3);
+}
+
+#[test]
+fn absence_lookup_rejects_file_parents_and_missing_target_blobs() {
+    let fixture = RepositoryFixture::sha1_with_commit();
+    let head = fixture.git_output(["rev-parse", "HEAD"]);
+    let request = serde_json::json!({
+        "protocolVersion": 1, "operation": "read_tree_file", "repositoryPath": fixture.root,
+        "acceptedCommitOid": head, "path": "hello.txt/child", "managedTreePolicyVersion": 3, "allowMissing": true,
+    });
+    assert_helper_error(&invoke_request(request.clone()), "tree_file_invalid");
+    let blob = fixture.git_output(["rev-parse", "HEAD:hello.txt"]);
+    fs::remove_file(
+        fixture
+            .root
+            .join(".git/objects")
+            .join(&blob[..2])
+            .join(&blob[2..]),
+    )
+    .unwrap();
+    let mut missing_blob = request;
+    missing_blob["path"] = serde_json::json!("hello.txt");
+    assert_helper_error(&invoke_request(missing_blob), "tree_file_unavailable");
 }
 
 #[test]

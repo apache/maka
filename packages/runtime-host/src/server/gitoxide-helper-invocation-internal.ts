@@ -57,6 +57,10 @@ export const GITOXIDE_HELPER_ERROR_REASONS_V1 = Object.freeze([
   'commit_object_limit_exceeded',
   'baseline_commit_write_failed',
   'baseline_publish_failed',
+  'import_intent_mismatch',
+  'import_intent_unavailable',
+  'import_intent_invalid',
+  'import_intent_write_failed',
   'baseline_ref_outside_maka_namespace',
   'base_commit_unavailable',
   'base_commit_identity_mismatch',
@@ -228,6 +232,16 @@ export interface GitoxideTreeFileReadV1 {
   readonly managedTreePolicyVersion: 3;
 }
 
+export interface GitoxideTreeFileAbsentV1 {
+  readonly kind: 'tree_file_absent';
+  readonly protocolVersion: 1;
+  readonly objectFormat: 'sha1';
+  readonly acceptedCommitOid: string;
+  readonly acceptedTreeOid: string;
+  readonly path: string;
+  readonly managedTreePolicyVersion: 3;
+}
+
 export type GitoxideHelperInvocationErrorCode =
   | 'gitoxide_helper_invocation_invalid'
   | 'gitoxide_helper_invocation_spawn_failed'
@@ -377,7 +391,8 @@ function invocationTimedOut(): GitoxideHelperInvocationError {
   );
 }
 
-export async function importSourceHeadWithGitoxideHelperInternal(input: {
+interface SourceImportInput {
+  readonly requestFingerprint?: `sha256:${string}`;
   readonly invocationOwnerToken: object;
   readonly capability: GitoxideHelperInvocationCapability;
   readonly sourceRepositoryPath: string;
@@ -386,7 +401,21 @@ export async function importSourceHeadWithGitoxideHelperInternal(input: {
   readonly baselineRef: string;
   readonly managedTreePolicyVersion: 3;
   readonly abortSignal?: AbortSignal;
-}): Promise<GitoxideSourceImportObservationV1> {
+}
+
+export function importSourceHeadWithGitoxideHelperInternal(input: SourceImportInput) {
+  return observeSourceImport(input, 'import_source_head');
+}
+
+export function verifySourceImportWithGitoxideHelperInternal(input: SourceImportInput) {
+  return observeSourceImport(input, 'verify_source_import');
+}
+
+async function observeSourceImport(
+  input: SourceImportInput,
+  operation: 'import_source_head' | 'verify_source_import',
+): Promise<GitoxideSourceImportObservationV1> {
+  input = { ...input };
   const deadlineAt =
     performance.now() + GITOXIDE_HELPER_OPERATION_TIMEOUTS_INTERNAL.importSourceHeadMs;
   const { artifact, sourceRepositoryPath } = await runGitoxideOperationWithinDeadlineInternal({
@@ -394,13 +423,15 @@ export async function importSourceHeadWithGitoxideHelperInternal(input: {
     abortSignal: input.abortSignal,
     operation: async () => {
       requireGitoxideHelperOperationsInternal(input.invocationOwnerToken, input.capability, [
-        'import_source_head',
+        operation,
       ]);
       if (
         !isAbsolute(input.sourceRepositoryPath) ||
         !isAbsolute(input.destinationRepositoryPath) ||
         !SHA1_OID_PATTERN.test(input.expectedSourceHeadCommitOid) ||
-        !MAKA_REF_PATTERN.test(input.baselineRef)
+        !MAKA_REF_PATTERN.test(input.baselineRef) ||
+        (input.requestFingerprint !== undefined &&
+          !/^sha256:[0-9a-f]{64}$/.test(input.requestFingerprint))
       ) {
         throw new GitoxideHelperInvocationError(
           'gitoxide_helper_invocation_invalid',
@@ -426,9 +457,10 @@ export async function importSourceHeadWithGitoxideHelperInternal(input: {
   const request = Buffer.from(
     JSON.stringify({
       protocolVersion: artifact.protocolVersion,
-      operation: 'import_source_head',
+      operation,
       sourceRepositoryPath,
       expectedSourceHeadCommitOid: input.expectedSourceHeadCommitOid,
+      requestFingerprint: input.requestFingerprint,
       destinationRepositoryPath: input.destinationRepositoryPath,
       baselineRef: input.baselineRef,
       managedTreePolicyVersion: input.managedTreePolicyVersion,
@@ -551,7 +583,107 @@ export async function createCandidateWithGitoxideHelperInternal(input: {
   });
 }
 
-export async function readTreeFileWithGitoxideHelperInternal(input: {
+interface AcceptedRepositoryIdentityInput {
+  readonly invocationOwnerToken: object;
+  readonly capability: GitoxideHelperInvocationCapability;
+  readonly repositoryPath: string;
+  readonly acceptedCommitOid: string;
+  readonly acceptedTreeOid: string;
+  readonly abortSignal?: AbortSignal;
+}
+
+export function reopenRepositoryWithGitoxideHelperInternal(
+  input: AcceptedRepositoryIdentityInput,
+): Promise<void> {
+  return verifyAcceptedRepository(input);
+}
+
+export function reconcileAcceptedRefWithGitoxideHelperInternal(
+  input: AcceptedRepositoryIdentityInput & { readonly expectedPreviousCommitOid: string },
+): Promise<void> {
+  return verifyAcceptedRepository(input, input.expectedPreviousCommitOid);
+}
+
+async function verifyAcceptedRepository(
+  input: AcceptedRepositoryIdentityInput,
+  expectedPreviousCommitOid?: string,
+): Promise<void> {
+  const operation =
+    expectedPreviousCommitOid === undefined ? 'reopen_repository' : 'reconcile_accepted_ref';
+  const deadlineAt =
+    performance.now() + GITOXIDE_HELPER_OPERATION_TIMEOUTS_INTERNAL.importSourceHeadMs;
+  const artifact = await runGitoxideOperationWithinDeadlineInternal({
+    deadlineAt,
+    abortSignal: input.abortSignal,
+    operation: async () => {
+      requireGitoxideHelperOperationsInternal(input.invocationOwnerToken, input.capability, [
+        operation,
+      ]);
+      if (
+        !isAbsolute(input.repositoryPath) ||
+        !SHA1_OID_PATTERN.test(input.acceptedCommitOid) ||
+        !SHA1_OID_PATTERN.test(input.acceptedTreeOid) ||
+        (expectedPreviousCommitOid !== undefined &&
+          !SHA1_OID_PATTERN.test(expectedPreviousCommitOid))
+      ) {
+        throw invocationInvalid('Gitoxide reopen identity is invalid');
+      }
+      return verifyGitoxideHelperArtifactForInvocationInternal(
+        input.invocationOwnerToken,
+        input.capability,
+      );
+    },
+  });
+  // Do not realpath away a symlink/junction before the helper validates the path.
+  const request = Buffer.from(
+    JSON.stringify({
+      operation,
+      protocolVersion: 1,
+      repositoryPath: input.repositoryPath,
+      acceptedCommitOid: input.acceptedCommitOid,
+      acceptedTreeOid: input.acceptedTreeOid,
+      managedTreePolicyVersion: 3,
+      ...(expectedPreviousCommitOid === undefined ? {} : { expectedPreviousCommitOid }),
+    }),
+  );
+  if (request.length > MAX_REQUEST_BYTES) throw invocationInvalid('Gitoxide request is too large');
+  const outcome = await invokeHelper({
+    executablePath: artifact.executablePath,
+    request,
+    deadlineAt,
+    abortSignal: input.abortSignal,
+  });
+  let value: unknown;
+  try {
+    value = JSON.parse(outcome.stdout.toString('utf8'));
+  } catch {
+    throw protocolInvalid('Gitoxide reopen response is not JSON');
+  }
+  if (outcome.signal !== null) throw protocolInvalid('Gitoxide reopen exited from a signal');
+  if (outcome.exitCode === 1 && isHelperError(value)) throw operationFailed('reopen', value.reason);
+  if (
+    outcome.exitCode !== 0 ||
+    !hasExactKeys(value, [
+      'kind',
+      'protocolVersion',
+      'objectFormat',
+      'acceptedCommitOid',
+      'acceptedTreeOid',
+      'managedTreePolicyVersion',
+    ]) ||
+    value.kind !==
+      (operation === 'reopen_repository' ? 'repository_reopened' : 'accepted_ref_reconciled') ||
+    value.protocolVersion !== 1 ||
+    value.objectFormat !== 'sha1' ||
+    value.acceptedCommitOid !== input.acceptedCommitOid ||
+    value.acceptedTreeOid !== input.acceptedTreeOid ||
+    value.managedTreePolicyVersion !== 3
+  ) {
+    throw protocolInvalid('Gitoxide reopen response does not match accepted identity');
+  }
+}
+
+interface TreeFileReadInput {
   readonly invocationOwnerToken: object;
   readonly capability: GitoxideHelperInvocationCapability;
   readonly repositoryPath: string;
@@ -559,7 +691,18 @@ export async function readTreeFileWithGitoxideHelperInternal(input: {
   readonly path: string;
   readonly managedTreePolicyVersion: 3;
   readonly abortSignal?: AbortSignal;
-}): Promise<GitoxideTreeFileReadV1> {
+}
+
+export function readTreeFileWithGitoxideHelperInternal(
+  input: TreeFileReadInput & { readonly allowMissing: true },
+): Promise<GitoxideTreeFileReadV1 | GitoxideTreeFileAbsentV1>;
+export function readTreeFileWithGitoxideHelperInternal(
+  input: TreeFileReadInput,
+): Promise<GitoxideTreeFileReadV1>;
+export async function readTreeFileWithGitoxideHelperInternal(
+  original: TreeFileReadInput & { readonly allowMissing?: boolean },
+): Promise<GitoxideTreeFileReadV1 | GitoxideTreeFileAbsentV1> {
+  const input = { ...original };
   const deadlineAt =
     performance.now() + GITOXIDE_HELPER_OPERATION_TIMEOUTS_INTERNAL.acceptedTreeReadMs;
   if (!isBoundedPathTransport(input.path)) {
@@ -570,6 +713,7 @@ export async function readTreeFileWithGitoxideHelperInternal(input: {
     JSON.stringify({
       protocolVersion: prepared.artifact.protocolVersion,
       operation: 'read_tree_file',
+      ...(input.allowMissing === true ? { allowMissing: true } : {}),
       repositoryPath: prepared.repositoryPath,
       acceptedCommitOid: input.acceptedCommitOid,
       path: input.path,
@@ -1053,9 +1197,20 @@ function decodeTreeFileOutcome(
     readonly acceptedCommitOid: string;
     readonly path: string;
     readonly managedTreePolicyVersion: 3;
+    readonly allowMissing?: boolean;
   },
-): GitoxideTreeFileReadV1 {
+): GitoxideTreeFileReadV1 | GitoxideTreeFileAbsentV1 {
   const value = parseHelperOutcome(outcome);
+  if (
+    outcome.exitCode === 0 &&
+    expected.allowMissing === true &&
+    isTreeFileAbsent(value) &&
+    value.acceptedCommitOid === expected.acceptedCommitOid &&
+    value.path === expected.path &&
+    value.managedTreePolicyVersion === expected.managedTreePolicyVersion
+  ) {
+    return Object.freeze(value);
+  }
   if (
     outcome.exitCode === 0 &&
     isTreeFileRead(value) &&
@@ -1148,6 +1303,28 @@ function isTreeFileRead(value: unknown): value is GitoxideTreeFileReadV1 {
     isNonNegativeSafeInteger(value.bytesRead) &&
     value.bytesRead <= MAX_TREE_FILE_BYTES &&
     Buffer.byteLength(value.content, 'utf8') === value.bytesRead &&
+    value.managedTreePolicyVersion === 3
+  );
+}
+
+function isTreeFileAbsent(value: unknown): value is GitoxideTreeFileAbsentV1 {
+  return (
+    hasExactKeys(value, [
+      'protocolVersion',
+      'kind',
+      'objectFormat',
+      'acceptedCommitOid',
+      'acceptedTreeOid',
+      'path',
+      'managedTreePolicyVersion',
+    ]) &&
+    value.protocolVersion === 1 &&
+    value.kind === 'tree_file_absent' &&
+    value.objectFormat === 'sha1' &&
+    isSha1(value.acceptedCommitOid) &&
+    isSha1(value.acceptedTreeOid) &&
+    typeof value.path === 'string' &&
+    isBoundedPathTransport(value.path) &&
     value.managedTreePolicyVersion === 3
   );
 }
