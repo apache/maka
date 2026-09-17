@@ -496,9 +496,6 @@ export interface PrivacySettings {
  */
 export type ChatDefaultPermissionMode = Extract<PermissionMode, 'ask' | 'bypass'>;
 
-/** Initial preference for new sessions; persisted choices take precedence. */
-export const DEFAULT_CHAT_PERMISSION_MODE: ChatDefaultPermissionMode = 'bypass';
-
 export const CHAT_DEFAULT_PERMISSION_MODES: readonly ChatDefaultPermissionMode[] = [
   'ask',
   'bypass',
@@ -1142,7 +1139,7 @@ function defaultProjectPreferencesSettings(): ProjectPreferencesSettings {
 }
 
 function defaultChatDefaultsSettings(): ChatDefaultsSettings {
-  return { permissionMode: DEFAULT_CHAT_PERMISSION_MODE };
+  return { permissionMode: 'bypass' };
 }
 
 // Closed-enum fail-closed, same reasoning as appearance.palette /

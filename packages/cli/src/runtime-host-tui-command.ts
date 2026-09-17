@@ -17,7 +17,6 @@
  * under the License.
  */
 
-import { DEFAULT_CHAT_PERMISSION_MODE } from '@maka/core/settings';
 import { parseNoRealConnectionError } from '@maka/core/connection-error-copy';
 import type { UiLocale } from '@maka/core/ui-locale';
 import { SessionActivityRegistry } from '@maka/runtime/goal-turn-lifecycle';
@@ -191,7 +190,7 @@ async function runFirstRunOnboarding(
       locale,
       model: '',
       connectionSlug: '',
-      permissionMode: DEFAULT_CHAT_PERMISSION_MODE,
+      permissionMode: 'bypass',
       firstRun: true,
       turnActivity: {
         activities: new SessionActivityRegistry(),

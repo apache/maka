@@ -35,7 +35,7 @@ import type {
   QuoteRef,
 } from '@maka/core/events';
 import type { OrchestrationMode } from '@maka/core/orchestration';
-import { DEFAULT_CHAT_PERMISSION_MODE, type ChatDefaultPermissionMode } from '@maka/core/settings';
+import type { ChatDefaultPermissionMode } from '@maka/core/settings';
 import type { UiLocale, UiLocalePreference } from '@maka/core/ui-locale';
 import { collapseSessionRevisions } from '@maka/core/session-revisions';
 import { isLinkedSubagentSession } from '@maka/core/session';
@@ -568,7 +568,7 @@ function AppShellContent({
   const newTaskPermissionMode =
     newTaskPermissionChoice ??
     taskEntry.selectors.selectedHost?.chatDefaults.permissionMode ??
-    DEFAULT_CHAT_PERMISSION_MODE;
+    'bypass';
   const setNewTaskPermissionMode = setNewTaskPermissionChoice;
   useEffect(() => {
     if (!appearanceHydrated) return;

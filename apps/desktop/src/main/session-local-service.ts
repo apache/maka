@@ -22,7 +22,6 @@ import { stat } from 'node:fs/promises';
 import type { IpcMain } from 'electron';
 import { AttachmentIngestBlockedError, MAX_ATTACHMENT_COUNT } from '@maka/core/attachments';
 import type { CreateSessionRequestInput } from '@maka/core/runtime-inputs';
-import { DEFAULT_CHAT_PERMISSION_MODE } from '@maka/core/settings';
 import {
   RuntimeHostOperationError,
   RuntimeHostRequestInterruptedError,
@@ -551,7 +550,7 @@ export function registerDesktopSessionLocalIpc(deps: {
               ...(input.llmConnectionId ? { llmConnectionId: input.llmConnectionId } : {}),
             }),
         connectionLocked: false,
-        permissionMode: creation.permissionMode ?? DEFAULT_CHAT_PERMISSION_MODE,
+        permissionMode: creation.permissionMode ?? 'bypass',
         collaborationMode: creation.collaborationMode,
         orchestrationMode: creation.orchestrationMode,
         thinkingLevel: creation.thinkingLevel,
