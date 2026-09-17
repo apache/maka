@@ -1,3 +1,16 @@
+diff --git a/node_modules/@astryxdesign/core/dist/Chat/ChatComposerInput.d.ts b/node_modules/@astryxdesign/core/dist/Chat/ChatComposerInput.d.ts
+index 90022b3..f1d8008 100644
+--- a/node_modules/@astryxdesign/core/dist/Chat/ChatComposerInput.d.ts
++++ b/node_modules/@astryxdesign/core/dist/Chat/ChatComposerInput.d.ts
+@@ -62,6 +62,8 @@ export type ChatComposerTriggerItem = SearchableItem;
+ export type ChatComposerTrigger = {
+     /** Character that activates this trigger menu (e.g. '@', '/') */
+     character: string;
++    /** Optional element to align the menu with instead of the caret. */
++    menuAnchorRef?: {readonly current: HTMLElement | null};
+     /**
+      * Search source providing items for this trigger.
+      * Reuses the same SearchSource interface as Typeahead \u2014
 diff --git a/node_modules/@astryxdesign/core/dist/Chat/ChatComposerInput.js b/node_modules/@astryxdesign/core/dist/Chat/ChatComposerInput.js
 index 5046603..f34333e 100644
 --- a/node_modules/@astryxdesign/core/dist/Chat/ChatComposerInput.js
@@ -127,7 +140,7 @@ diff --git a/node_modules/@astryxdesign/core/dist/Chat/ChatToolCalls.js b/node_m
            }, getToolCallKey(call)))
          })
 diff --git a/node_modules/@astryxdesign/core/dist/Chat/useTriggerMenu.js b/node_modules/@astryxdesign/core/dist/Chat/useTriggerMenu.js
-index e1d2ebd..dcb9189 100644
+index e1d2ebd..957168d 100644
 --- a/node_modules/@astryxdesign/core/dist/Chat/useTriggerMenu.js
 +++ b/node_modules/@astryxdesign/core/dist/Chat/useTriggerMenu.js
 @@ -47,6 +47,45 @@ const styles = {
@@ -208,7 +221,21 @@ index e1d2ebd..dcb9189 100644
            return {
              trigger,
              query,
-@@ -306,15 +351,15 @@ export function useTriggerMenu(options) {
+@@ -189,7 +234,12 @@ export function useTriggerMenu(options) {
+   // Anchor the popover to the cursor position (not the entire input).
+   // We append a zero-size span to document.body positioned at the cursor
+   // rect — outside the contentEditable to avoid splitting text nodes.
+-  const setAnchor = useCallback(() => {
++  const setAnchor = useCallback((trigger) => {
++    if (trigger.menuAnchorRef?.current) {
++      removeAnchorSpan();
++      popover.triggerRef(trigger.menuAnchorRef.current);
++      return;
++    }
+     const editable = editableRef.current;
+     if (!editable) {
+       return;
+@@ -306,15 +356,15 @@ export function useTriggerMenu(options) {
      if (!editable) {
        return;
      }
@@ -228,7 +255,7 @@ index e1d2ebd..dcb9189 100644
        if (state.isActive) {
          reset();
        }
-@@ -322,9 +367,9 @@ export function useTriggerMenu(options) {
+@@ -322,9 +372,9 @@ export function useTriggerMenu(options) {
      }
      const {
        trigger,
@@ -240,6 +267,25 @@ index e1d2ebd..dcb9189 100644
      if (!state.isActive || state.activeTrigger !== trigger) {
        triggerStartRef.current = triggerStart;
        setState(prev => ({
+@@ -334,7 +384,7 @@ export function useTriggerMenu(options) {
+         query,
+         highlightedIndex: 0
+       }));
+-      setAnchor();
++      setAnchor(trigger);
+       searchItems(trigger, query);
+       popover.show();
+     } else if (state.query !== query) {
+@@ -503,7 +553,8 @@ export function useTriggerMenu(options) {
+       placement: 'above',
+       alignment: 'start',
+       offset: spacingVars['--spacing-1'],
+-      xstyle: styles.popoverSurface
++      xstyle: styles.popoverSurface,
++      style: trigger?.menuAnchorRef ? {width: 'anchor-size(width)'} : undefined
+     });
+   }, [popover, listboxId, state, selectItem, getItemId, t]);
+   return {
 diff --git a/node_modules/@astryxdesign/core/dist/CodeBlock/tokenizer.js b/node_modules/@astryxdesign/core/dist/CodeBlock/tokenizer.js
 index eac4c4b..a21c0c4 100644
 --- a/node_modules/@astryxdesign/core/dist/CodeBlock/tokenizer.js
@@ -747,7 +793,7 @@ index 693d728..7d5724e 100644
  }
 \ No newline at end of file
 diff --git a/node_modules/@astryxdesign/core/src/Chat/ChatComposerInput.tsx b/node_modules/@astryxdesign/core/src/Chat/ChatComposerInput.tsx
-index 5a6a56b..df6a47f 100644
+index 5a6a56b..9ca7923 100644
 --- a/node_modules/@astryxdesign/core/src/Chat/ChatComposerInput.tsx
 +++ b/node_modules/@astryxdesign/core/src/Chat/ChatComposerInput.tsx
 @@ -28,6 +28,7 @@ import {
@@ -758,7 +804,16 @@ index 5a6a56b..df6a47f 100644
    useImperativeHandle,
    type ReactNode,
    type KeyboardEvent,
-@@ -402,7 +403,7 @@ export function ChatComposerInput(props: ChatComposerInputProps) {
+@@ -106,6 +107,8 @@ export type ChatComposerTriggerItem = SearchableItem;
+ export type ChatComposerTrigger = {
+   /** Character that activates this trigger menu (e.g. '@', '/') */
+   character: string;
++  /** Optional element to align the menu with instead of the caret. */
++  menuAnchorRef?: {readonly current: HTMLElement | null};
+   /**
+    * Search source providing items for this trigger.
+    * Reuses the same SearchSource interface as Typeahead \u2014
+@@ -402,7 +405,7 @@ export function ChatComposerInput(props: ChatComposerInputProps) {
      };
    }, [inputControlRef]);
  
@@ -840,7 +895,7 @@ diff --git a/node_modules/@astryxdesign/core/src/Chat/ChatToolCalls.tsx b/node_m
              ))}
            </div>
 diff --git a/node_modules/@astryxdesign/core/src/Chat/useTriggerMenu.tsx b/node_modules/@astryxdesign/core/src/Chat/useTriggerMenu.tsx
-index 6eefd4a..a3eba69 100644
+index 6eefd4a..f596bf6 100644
 --- a/node_modules/@astryxdesign/core/src/Chat/useTriggerMenu.tsx
 +++ b/node_modules/@astryxdesign/core/src/Chat/useTriggerMenu.tsx
 @@ -167,7 +167,56 @@ const styles = stylex.create({
@@ -933,7 +988,21 @@ index 6eefd4a..a3eba69 100644
            return {trigger, query, triggerStart: i};
          }
        }
-@@ -486,23 +536,24 @@ export function useTriggerMenu(
+@@ -334,7 +384,12 @@ export function useTriggerMenu(
+   // Anchor the popover to the cursor position (not the entire input).
+   // We append a zero-size span to document.body positioned at the cursor
+   // rect — outside the contentEditable to avoid splitting text nodes.
+-  const setAnchor = useCallback(() => {
++  const setAnchor = useCallback((trigger: ChatComposerTrigger) => {
++    if (trigger.menuAnchorRef?.current) {
++      removeAnchorSpan();
++      popover.triggerRef(trigger.menuAnchorRef.current);
++      return;
++    }
+     const editable = editableRef.current;
+     if (!editable) {
+       return;
+@@ -486,23 +541,24 @@ export function useTriggerMenu(
        return;
      }
  
@@ -963,6 +1032,23 @@ index 6eefd4a..a3eba69 100644
  
      if (!state.isActive || state.activeTrigger !== trigger) {
        triggerStartRef.current = triggerStart;
+@@ -513,7 +569,7 @@ export function useTriggerMenu(
+         query,
+         highlightedIndex: 0,
+       }));
+-      setAnchor();
++      setAnchor(trigger);
+       searchItems(trigger, query);
+       popover.show();
+     } else if (state.query !== query) {
+@@ -712,6 +768,7 @@ export function useTriggerMenu(
+         alignment: 'start',
+         offset: spacingVars['--spacing-1'],
+         xstyle: styles.popoverSurface,
++        style: trigger?.menuAnchorRef ? {width: 'anchor-size(width)'} : undefined,
+       },
+     );
+   }, [popover, listboxId, state, selectItem, getItemId, t]);
 diff --git a/node_modules/@astryxdesign/core/src/DropdownMenu/DropdownMenuItem.tsx b/node_modules/@astryxdesign/core/src/DropdownMenu/DropdownMenuItem.tsx
 index 21bad6a..8e2a03a 100644
 --- a/node_modules/@astryxdesign/core/src/DropdownMenu/DropdownMenuItem.tsx

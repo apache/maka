@@ -44,6 +44,23 @@
   max-width: min(420px, calc(100vw - var(--space-6)));
 }
 
+/* Keep the Session picker calm and readable, including with one result. */
+.astryx-trigger-menu:has(.maka-composer-session-option) {
+  max-width: none;
+  max-height: min(320px, 50vh);
+  padding: var(--space-1-5);
+}
+
+.astryx-trigger-menu [role='option']:has(.maka-composer-session-option) {
+  min-height: 36px;
+  padding: var(--space-2) var(--space-2-5);
+  border-radius: var(--radius-full);
+}
+
+.astryx-trigger-menu [role='option'][aria-selected='true']:has(.maka-composer-session-option) {
+  background: var(--muted);
+}
+
 .maka-composer-mention-icon {
   flex: 0 0 auto;
   margin-inline-end: var(--space-2);

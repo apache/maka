@@ -550,6 +550,7 @@ export const Composer = forwardRef<
   } & ComposerGoalProps
 >(function Composer(props, ref) {
   const formRef = useRef<HTMLFormElement>(null);
+  const composerAnchorRef = useRef<HTMLDivElement>(null);
   /** Astryx's imperative handle on the contentEditable input. */
   const inputHandleRef = useRef<ChatComposerInputHandle>(null);
   /** ChatComposerInput's root, from which the editable node is resolved. */
@@ -1064,6 +1065,7 @@ export const Composer = forwardRef<
     if (props.onSearchMentionFiles || props.onPickSessionReference) {
       list.push({
         character: '@',
+        menuAnchorRef: composerAnchorRef,
         searchSource: sources.files,
         menuLabel:
           props.sessionReferences !== undefined && props.onPickSessionReference !== undefined
@@ -1081,7 +1083,7 @@ export const Composer = forwardRef<
             return (
               <>
                 <MessagesSquare size={ICON_SIZE.control} aria-hidden="true" className="maka-composer-mention-icon" />
-                <span className="maka-composer-mention-name">{session.name}</span>
+                <span className="maka-composer-mention-name maka-composer-session-option">{session.name}</span>
               </>
             );
           }
@@ -1602,16 +1604,9 @@ export const Composer = forwardRef<
    * Skill is a chip in the draft itself, visible where it will be sent from.
    */
   const drawerTokenCount =
-    (props.pendingSessionReferences?.length ?? 0) +
-    (props.pendingQuotes?.length ?? 0) +
+    (props.pendingQuotes?.filter((quote) => !quote.sourceSessionId).length ?? 0) +
     (props.pendingAttachments?.length ?? 0) +
     (props.pendingDirectories?.length ?? 0);
-  // Session references are a single-line context token, unlike attachments
-  // and directory previews which still need the full drawer treatment.
-  const sessionReferenceDrawer =
-    drawerTokenCount > 0 &&
-    (props.pendingQuotes?.length ?? 0) === drawerTokenCount &&
-    props.pendingQuotes?.every((quote) => Boolean(quote.sourceSessionId)) === true;
   /** The last staged image opened from a chip (Lightbox media shape). Kept
    *  mounted after close — see the Lightbox render — so only the open flag
    *  drives visibility. */
@@ -1805,6 +1800,7 @@ export const Composer = forwardRef<
         onSubmit={submit}
       >
         <AstryxChatComposer
+          ref={composerAnchorRef}
           className="maka-composer-astryx"
           data-maka-contract="composer-inner"
           // Unreachable, and required. The shell only submits its own value,
@@ -1818,12 +1814,7 @@ export const Composer = forwardRef<
           drawer={drawerTokenCount > 0 ? (
             <ChatComposerDrawer
               className="maka-composer-drawer"
-              data-maka-session-reference-only={sessionReferenceDrawer ? 'true' : undefined}
-              // A Session reference is already a compact, always-visible
-              // context token. Omitting count keeps the drawer's disclosure
-              // control out of this single-reference presentation while
-              // preserving the public ChatComposerDrawer contract.
-              count={sessionReferenceDrawer ? undefined : drawerTokenCount}
+              count={drawerTokenCount}
               label={copy.stagedContext}
               defaultIsCollapsed={props.contextDrawerDefaultCollapsed}
               // The collapse band's tooltip (composer.css ::after) follows the
@@ -1869,29 +1860,10 @@ export const Composer = forwardRef<
                     onRemove={props.onRemoveDirectory ? () => props.onRemoveDirectory?.(index) : undefined}
                   />
                 ))}
-                {props.pendingSessionReferences?.map((session) => (
-                  <Tooltip
-                    key={`pending-session:${session.id}`}
-                    content={`${session.name} · ${getConversationCopy(locale).messages.sessionSnapshotPending}`}
-                    focusTrigger="always"
-                  >
-                    <Token
-                      size="sm"
-                      className="maka-composer-session-token"
-                      icon={<MessagesSquare aria-hidden="true" />}
-                      label={getConversationCopy(locale).messages.sessionSnapshotLabel(session.name)}
-                      onRemove={props.onRemovePendingSessionReference
-                        ? () => props.onRemovePendingSessionReference?.(session.id)
-                        : undefined}
-                    />
-                  </Tooltip>
-                ))}
-                {props.pendingQuotes?.map((quote, index) => (
+                {props.pendingQuotes?.map((quote, index) => quote.sourceSessionId ? null : (
                   <Token
                     key={`${quote.sourceTurnId ?? 'quote'}-${index}`}
                     size="sm"
-                    className={quote.sourceSessionId ? 'maka-composer-session-token' : undefined}
-                    icon={quote.sourceSessionId ? <MessagesSquare aria-hidden="true" /> : undefined}
                     label={quote.label?.trim() || stripQuoteHeadingMarkers(quote.text.slice(0, 48)) || copy.pastedQuoteLabel}
                     onRemove={props.onRemoveQuote ? () => props.onRemoveQuote?.(index) : undefined}
                   />
@@ -1972,6 +1944,38 @@ export const Composer = forwardRef<
                 event.stopPropagation();
               }}
             >
+              {((props.pendingSessionReferences?.length ?? 0) > 0 || props.pendingQuotes?.some((quote) => quote.sourceSessionId)) && (
+                <div className="maka-composer-session-references" role="group" aria-label={copy.stagedContext}>
+                  {props.pendingSessionReferences?.map((session) => (
+                    <Tooltip
+                      key={session.id}
+                      content={`${getConversationCopy(locale).messages.sessionSnapshotLabel(session.name)} · ${getConversationCopy(locale).messages.sessionSnapshotPending}`}
+                      focusTrigger="always"
+                    >
+                      <Token
+                        size="md"
+                        className="maka-composer-session-token"
+                        icon={<MessagesSquare size={16} aria-hidden="true" />}
+                        label={session.name}
+                        description={getConversationCopy(locale).messages.sessionSnapshotPending}
+                        onRemove={props.onRemovePendingSessionReference
+                          ? () => props.onRemovePendingSessionReference?.(session.id)
+                          : undefined}
+                      />
+                    </Tooltip>
+                  ))}
+                  {props.pendingQuotes?.map((quote, index) => quote.sourceSessionId ? (
+                    <Token
+                      key={`session-quote:${index}`}
+                      size="md"
+                      className="maka-composer-session-token"
+                      icon={<MessagesSquare size={16} aria-hidden="true" />}
+                      label={quote.sourceSessionName ?? quote.label ?? ''}
+                      onRemove={props.onRemoveQuote ? () => props.onRemoveQuote?.(index) : undefined}
+                    />
+                  ) : null)}
+                </div>
+              )}
               <ChatComposerInput
                 ref={inputRootRef}
                 handleRef={inputHandleRef}

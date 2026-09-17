@@ -184,6 +184,10 @@ The short, multiline, tall and completion submission stories in
 
 The other component changes preserve host-owned state and semantics:
 
+- `ChatComposerTrigger.menuAnchorRef` lets the Session picker align with the
+  composer instead of a caret-sized anchor. Popover's existing anchor sizing
+  keeps its rows aligned on resize without a second positioning observer.
+  Other triggers retain their caret placement.
 - `ChatLayout.autoScroll` forwards the existing hook's `enabled` option so
   Maka's transcript authority can own scrolling without competing with the
   dependency's auto-follow listeners and writes.
