@@ -17,13 +17,14 @@
  * under the License.
  */
 
-import { useEffect, useId, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState, type KeyboardEvent } from 'react';
 import type { UserQuestionRequestEvent } from '@maka/core/events';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import {
   Button,
   ChatComposer,
   ChatComposerInput,
+  isImeKeyEvent,
   type ChatComposerInputHandle,
 } from '@astryxdesign/core';
 import { ChoicePanel } from './choice-panel.js';
@@ -51,7 +52,6 @@ export function UserQuestionPrompt(props: {
   const [responsePending, setResponsePending] = useState(false);
   const responsePendingRef = useRef(false);
   const activeRequestIdRef = useRef(props.request.requestId);
-  const restoreTextRef = useRef<string | null>(null);
   const inputRef = useRef<ChatComposerInputHandle>(null);
   const mountedRef = useMountedRef();
 
@@ -92,12 +92,6 @@ export function UserQuestionPrompt(props: {
   }
 
   function onAnswerChange(value: string) {
-    if (restoreTextRef.current !== null) {
-      const restore = restoreTextRef.current;
-      restoreTextRef.current = null;
-      setAnswerText(restore);
-      return;
-    }
     setAnswerText(value);
     if (value.trim() && draft?.kind === 'option') updateDraft(null);
   }
@@ -109,19 +103,13 @@ export function UserQuestionPrompt(props: {
     setAnswerText(next?.kind === 'other' ? next.value : '');
   }
 
-  // The input clears itself right after this returns, so the target question's
-  // text is restored from the trailing onChange. When the submit is blocked or
-  // fails on the last question, the submitted text stays put — wiping it would
-  // make a failed submit impossible to retry.
-  function onInputSubmit(value: string) {
-    const committed = commitDrafts(value);
-    const target = interactionDisabled || isLast ? questionIndex : questionIndex + 1;
-    const next = committed[target];
-    restoreTextRef.current = next?.kind === 'other' ? next.value : '';
-    setDrafts(committed);
-    if (interactionDisabled) return;
-    if (isLast) void submit(committed);
-    else setQuestionIndex(target);
+  // Enter submits through the onKeyDown seam rather than the input's built-in
+  // submit, which clears the editor even when the response fails or is still
+  // pending — the typed answer must stay editable for retry.
+  function onInputKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    if (event.key !== 'Enter' || event.shiftKey || isImeKeyEvent(event.nativeEvent)) return;
+    event.preventDefault();
+    confirm();
   }
 
   function confirm() {
@@ -157,11 +145,10 @@ export function UserQuestionPrompt(props: {
     >
       <ChatComposer
         className="maka-composer-astryx"
-        // The input slot below carries its own onSubmit; the shell's submit
-        // path gates on the composer's internal value, which stays empty for a
-        // controlled input, so nothing may reach this callback.
+        // onSubmit is required but unreachable: the shell gates it on its own
+        // internal value, which stays empty for a controlled input, and the
+        // input below owns Enter through onKeyDown anyway.
         onSubmit={() => {}}
-        isDisabled={interactionDisabled}
         placeholder={copy.otherPlaceholder}
         status={responseError ? { type: 'error', message: responseError } : undefined}
         input={
@@ -184,7 +171,10 @@ export function UserQuestionPrompt(props: {
               handleRef={inputRef}
               value={answerText}
               onChange={onAnswerChange}
-              onSubmit={onInputSubmit}
+              onKeyDown={onInputKeyDown}
+              isDisabled={interactionDisabled}
+              hasHistory={false}
+              pasteAsToken={false}
               label={copy.otherAriaLabel}
             />
           </div>

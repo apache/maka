@@ -117,5 +117,36 @@ export const KeyboardChoices: Story = {
     await waitFor(() => expect(document.activeElement).toBe(input));
     await userEvent.type(input, '123');
     expect(input).toHaveTextContent('123');
+    // Enter inside the input commits the typed answer and advances.
+    await userEvent.keyboard('{Enter}');
+    await waitFor(() => expect(canvas.getByRole('heading', { name: '是否同步发布公告？' })).toBeInTheDocument());
+  },
+};
+
+// Real path: chat → AskUserQuestion → a typed answer on the last question → the
+// Host rejects the response; the error shows and the answer stays editable for
+// retry rather than being wiped by the submit.
+export const SubmitFailure: Story = {
+  args: {
+    request: REQUEST,
+    onRespond: () => Promise.reject(new Error('Temporary Host failure')),
+    onStop: () => {},
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() =>
+      expect(document.activeElement).toBe(canvasElement.querySelector('.maka-choice-panel')));
+    await userEvent.keyboard('1{Enter}');
+    await waitFor(() => expect(canvas.getByRole('heading', { name: '上线时间怎么安排？' })).toBeInTheDocument());
+    await waitFor(() =>
+      expect(document.activeElement).toBe(canvasElement.querySelector('.maka-choice-panel')));
+    await userEvent.keyboard('1{Enter}');
+    await waitFor(() => expect(canvas.getByRole('heading', { name: '是否同步发布公告？' })).toBeInTheDocument());
+    const input = canvas.getByRole('textbox');
+    await userEvent.click(input);
+    await userEvent.type(input, '下周再说');
+    await userEvent.keyboard('{Enter}');
+    await waitFor(() => expect(canvas.getByRole('alert')).toHaveTextContent('Temporary Host failure'));
+    expect(input).toHaveTextContent('下周再说');
   },
 };

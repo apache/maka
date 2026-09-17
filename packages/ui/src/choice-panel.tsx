@@ -43,7 +43,7 @@ export function ChoicePanel(props: {
   function onKeyDown(event: KeyboardEvent<HTMLDivElement>) {
     if (event.defaultPrevented || event.nativeEvent.isComposing || event.altKey || event.metaKey || event.ctrlKey || props.disabled) return;
     const target = event.target as HTMLElement;
-    if (target.closest('input:not([type="radio"]), textarea, [contenteditable="true"]')) return;
+    if (target.closest('input, textarea, [contenteditable="true"]')) return;
     const digit = /^[1-9]$/.test(event.key) ? Number(event.key) - 1 : -1;
     const index = props.options.findIndex((option) => option.value === props.value);
     if (digit >= 0 && digit < props.options.length) {
@@ -55,12 +55,12 @@ export function ChoicePanel(props: {
         : (index + (event.key === 'ArrowDown' ? 1 : -1) + props.options.length) % props.options.length;
       props.onChange(props.options[next]!.value);
     } else if (event.key === 'Enter' && !target.closest('button, a')) {
-      event.preventDefault(); if (props.value) props.onConfirm();
+      event.preventDefault(); props.onConfirm();
     } else if (event.key === 'Escape') {
       event.preventDefault(); props.onEscape();
     }
   }
-  return <div className="maka-choice-panel" ref={root} tabIndex={-1} role="listbox" aria-label={props.label} onKeyDown={onKeyDown}>
+  return <div className="maka-choice-panel" ref={root} tabIndex={0} role="listbox" aria-label={props.label} onKeyDown={onKeyDown}>
     {props.options.map((option, index) => {
       const selected = option.value === props.value;
       return <Item key={option.value} role="option" label={option.label} description={option.description}
@@ -70,7 +70,7 @@ export function ChoicePanel(props: {
           props.onChange(option.value);
           root.current?.focus();
         }}
-        startContent={<Badge variant={selected ? 'info' : 'neutral'} label={index + 1} aria-hidden="true" />}
+        startContent={index < 9 ? <Badge variant={selected ? 'info' : 'neutral'} label={index + 1} aria-hidden="true" /> : undefined}
         style={option.accentColor ? { '--_item-label-color': option.accentColor } as CSSProperties : undefined} />;
     })}
     {props.children}

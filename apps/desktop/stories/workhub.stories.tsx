@@ -444,7 +444,8 @@ export const KeyboardTargetSelection: Story = {
     await userEvent.click(editor); await userEvent.type(editor, '需要进一步说明'); await userEvent.keyboard('{Enter}');
     await waitFor(() => expect(context.canvasElement.querySelector('.maka-form-interaction-prompt')).toBeInTheDocument());
     await userEvent.keyboard('{ArrowDown}{ArrowDown}');
-    await waitFor(() => expect(within(context.canvasElement).getAllByRole('option')[1]).toHaveAttribute('aria-selected', 'true'));
+    const formPrompt = context.canvasElement.querySelector('.maka-form-interaction-prompt') as HTMLElement;
+    await waitFor(() => expect(within(formPrompt).getAllByRole('option')[1]).toHaveAttribute('aria-selected', 'true'));
     await userEvent.keyboard('{Escape}');
     await waitFor(() => expect(context.canvasElement.querySelector('.maka-form-interaction-prompt')).toBeNull());
     expect(writes.form).toHaveBeenLastCalledWith(sessionId, expect.objectContaining({ action: 'cancel' }));
@@ -472,9 +473,13 @@ export const QuestionLifecycle: Story = {
     await waitFor(() => expect(canvas.getByRole('heading', { name: '首批发布范围选哪个？' })).toBeInTheDocument());
     expect(canvasElement.querySelector('.workhub-delegation-status')).toHaveTextContent('等待');
     expect(canvasElement.querySelector('.maka-turn-processing')).toBeNull();
+    // The panel's digit/Enter shortcuts live on its own keydown, so focus must
+    // have landed there before keys are sent.
+    const prompt = canvasElement.querySelector('.maka-user-question-prompt') as HTMLElement;
+    await waitFor(() => expect(document.activeElement).toBe(prompt.querySelector('.maka-choice-panel')));
     await userEvent.keyboard('2{Enter}');
     await waitFor(() => expect(canvas.getByRole('alert')).toHaveTextContent('Temporary Host failure'));
-    await waitFor(() => expect(canvas.getAllByRole('option')[1]).toHaveAttribute('aria-selected', 'true'));
+    await waitFor(() => expect(within(prompt).getAllByRole('option')[1]).toHaveAttribute('aria-selected', 'true'));
     await userEvent.keyboard('{Enter}');
     await waitFor(() => expect(canvasElement.querySelector('.maka-user-question-prompt')).toBeNull());
     expect(canvasElement.querySelector('.workhub-delegation-status')).toHaveTextContent('已完成');

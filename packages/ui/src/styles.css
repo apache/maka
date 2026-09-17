@@ -1202,3 +1202,5 @@
 .maka-message-status-time { display: inline-flex; align-items: center; gap: 4px; }
 
 .maka-choice-panel { outline: none; }
+
+.maka-choice-panel:focus-visible { outline: var(--focus-ring-width) solid var(--focus-ring); outline-offset: var(--focus-ring-offset); }
