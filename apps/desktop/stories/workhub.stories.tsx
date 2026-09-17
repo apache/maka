@@ -423,8 +423,9 @@ export const TargetModelRepair: Story = {
     const prompt = await within(canvasElement).findByText(/qwen3\.8-27b-sglang.*已不可用/);
     expect(prompt).toBeVisible();
     await userEvent.click(within(canvasElement).getByRole('button', { name: '替代模型' }));
-    expect(within(canvasElement.ownerDocument.body).getByRole('listbox', { name: '替代模型' })).toBeVisible();
-    expect(within(canvasElement.ownerDocument.body).getByRole('option', { name: /Qwen 3.8 32B/ })).toBeVisible();
+    const page = within(canvasElement.ownerDocument.body);
+    await waitFor(() => expect(page.getByRole('listbox', { name: '替代模型' })).toBeVisible());
+    await waitFor(() => expect(page.getByRole('option', { name: /Qwen 3.8 32B/ })).toBeVisible());
   },
 };
 
