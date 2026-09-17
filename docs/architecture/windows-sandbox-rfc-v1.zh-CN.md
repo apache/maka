@@ -177,7 +177,7 @@ Maka 外已失陷的同用户进程。sandboxed code 从第一条指令开始按
 
 ### 6.5 预览实现状态（2026-08-24）
 
-首个预览切片——打包的 Windows 11 x64 AppContainer 后端 [#2961](https://github.com/apache/maka/pull/2961) 已于 2026-08-17 合并，强制上述保证的一个子集。本节把文档与已交付代码对齐，使 RFC 不 overclaim：§6.3/§6.4 中尚未强制的保证在此显式标为后续门禁。标注 `(#3722)` 的条目（Runtime Host 父进程 wait handle、64 次 soak、恶意 child 矩阵）与标注 `(#3174)` 的条目（readiness probe 与 private desktop 放置）落在对应后续 PR，而非已合并的 #2961 切片；其余未标注条目由 #2961 当前强制。其余保证已设计但明确作为后续门禁暂缓，由 [#2142](https://github.com/apache/maka/issues/2142) 的 Phase 4 跟踪。
+首个预览切片——打包的 Windows 11 x64 AppContainer 后端 [#2961](https://github.com/apache/maka/pull/2961) 已于 2026-08-17 合并，强制上述保证的一个子集。本节把文档与已交付代码对齐，使 RFC 不 overclaim：§6.3/§6.4 中尚未强制的保证在此显式标为后续门禁。标注 `(#3722)` 的条目（Runtime Host 父进程 wait handle、64 次 soak、恶意 child 矩阵）与标注 `(#3174)` 的条目（readiness probe 与 private desktop 放置）落在对应后续 PR，而非已合并的 #2961 切片；其余未标注条目由 #2961 当前强制。尚未强制的保证已设计但明确作为后续门禁暂缓，由 [#2142](https://github.com/apache/maka/issues/2142) 的 Phase 4 跟踪。
 
 **已强制（未标注者由 #2961 合并强制）：**
 

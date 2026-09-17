@@ -34,7 +34,7 @@ owners:
 
 - Status: implementation baseline selected; first preview slice ([#2961](https://github.com/apache/maka/pull/2961)) merged 2026-08-17; product integration continuing under release validation (preview scope in §6.5)
 - Tracking: Windows Phase 4 in [issue #2142](https://github.com/apache/maka/issues/2142)
-- Updated: 2026-09-15
+- Updated: 2026-08-18
 - Owners: `@maka/runtime` sandbox boundary and Runtime Host execution composition
 - Chinese version: [windows-sandbox-rfc-v1.zh-CN.md](./windows-sandbox-rfc-v1.zh-CN.md)
 
