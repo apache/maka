@@ -109,6 +109,7 @@ export function UserQuestionPrompt(props: {
   function onInputKeyDown(event: KeyboardEvent<HTMLDivElement>) {
     if (event.key !== 'Enter' || event.shiftKey || isImeKeyEvent(event.nativeEvent)) return;
     event.preventDefault();
+    if (event.altKey || event.metaKey || event.ctrlKey) return;
     confirm();
   }
 

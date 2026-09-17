@@ -443,8 +443,9 @@ export const KeyboardTargetSelection: Story = {
     await waitFor(() => expect(context.canvasElement.querySelector('.maka-form-interaction-prompt')).toBeNull());
     await userEvent.click(editor); await userEvent.type(editor, '需要进一步说明'); await userEvent.keyboard('{Enter}');
     await waitFor(() => expect(context.canvasElement.querySelector('.maka-form-interaction-prompt')).toBeInTheDocument());
-    await userEvent.keyboard('{ArrowDown}{ArrowDown}');
     const formPrompt = context.canvasElement.querySelector('.maka-form-interaction-prompt') as HTMLElement;
+    await waitFor(() => expect(document.activeElement).toBe(formPrompt.querySelector('.maka-choice-panel')));
+    await userEvent.keyboard('{ArrowDown}{ArrowDown}');
     await waitFor(() => expect(within(formPrompt).getAllByRole('option')[1]).toHaveAttribute('aria-selected', 'true'));
     await userEvent.keyboard('{Escape}');
     await waitFor(() => expect(context.canvasElement.querySelector('.maka-form-interaction-prompt')).toBeNull());
@@ -466,6 +467,8 @@ export const TargetSelectionFailure: Story = {
   },
 };
 
+// Real path: WorkHub asks its Host a question; the first response fails on the
+// wire, the selection survives, and Enter retries to completion.
 export const QuestionLifecycle: Story = {
   render: () => <Surface question failFirst />,
   play: async ({ canvasElement }) => {

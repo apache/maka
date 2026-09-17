@@ -19,6 +19,7 @@
 
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import type { UserQuestionRequestEvent } from '@maka/core/events';
+import type { UserQuestionResponse } from '@maka/core/user-question';
 import { expect, userEvent, within, waitFor } from 'storybook/test';
 import { UserQuestionPrompt } from '@maka/ui';
 
@@ -123,16 +124,23 @@ export const KeyboardChoices: Story = {
   },
 };
 
-// Real path: chat → AskUserQuestion → a typed answer on the last question → the
-// Host rejects the response; the error shows and the answer stays editable for
+const responses: UserQuestionResponse[] = [];
+
+// Real path: WorkHub → AskUserQuestion → a typed answer on the last question →
+// the Host rejects the response. WorkHub rethrows into the prompt (chat toasts
+// instead), so the alert shows in place and the answer stays editable for
 // retry rather than being wiped by the submit.
 export const SubmitFailure: Story = {
   args: {
     request: REQUEST,
-    onRespond: () => Promise.reject(new Error('Temporary Host failure')),
+    onRespond: (response) => {
+      responses.push(response);
+      return Promise.reject(new Error('Temporary Host failure'));
+    },
     onStop: () => {},
   },
   play: async ({ canvasElement }) => {
+    responses.length = 0;
     const canvas = within(canvasElement);
     await waitFor(() =>
       expect(document.activeElement).toBe(canvasElement.querySelector('.maka-choice-panel')));
@@ -148,5 +156,6 @@ export const SubmitFailure: Story = {
     await userEvent.keyboard('{Enter}');
     await waitFor(() => expect(canvas.getByRole('alert')).toHaveTextContent('Temporary Host failure'));
     expect(input).toHaveTextContent('下周再说');
+    expect(responses.at(-1)).toMatchObject({ requestId: 'prototype-request', answers: ['仅邀请用户', '本周', '下周再说'] });
   },
 };

@@ -17,8 +17,8 @@
  * under the License.
  */
 
-import { useEffect, useRef, type ReactNode, type CSSProperties, type KeyboardEvent } from 'react';
-import { Badge, Item } from '@astryxdesign/core';
+import { useEffect, useId, useRef, type ReactNode, type CSSProperties, type KeyboardEvent } from 'react';
+import { Badge, Item, isImeKeyEvent } from '@astryxdesign/core';
 
 export interface ChoicePanelOption {
   readonly value: string;
@@ -39,13 +39,15 @@ export function ChoicePanel(props: {
   children?: ReactNode;
 }) {
   const root = useRef<HTMLDivElement>(null);
+  const listId = useId();
   useEffect(() => { root.current?.focus(); }, []);
+  const selectedIndex = props.options.findIndex((option) => option.value === props.value);
   function onKeyDown(event: KeyboardEvent<HTMLDivElement>) {
-    if (event.defaultPrevented || event.nativeEvent.isComposing || event.altKey || event.metaKey || event.ctrlKey || props.disabled) return;
+    if (event.defaultPrevented || isImeKeyEvent(event.nativeEvent) || event.altKey || event.metaKey || event.ctrlKey || props.disabled) return;
     const target = event.target as HTMLElement;
     if (target.closest('input, textarea, [contenteditable="true"]')) return;
     const digit = /^[1-9]$/.test(event.key) ? Number(event.key) - 1 : -1;
-    const index = props.options.findIndex((option) => option.value === props.value);
+    const index = selectedIndex;
     if (digit >= 0 && digit < props.options.length) {
       event.preventDefault(); props.onChange(props.options[digit]!.value);
     } else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
@@ -60,17 +62,25 @@ export function ChoicePanel(props: {
       event.preventDefault(); props.onEscape();
     }
   }
-  return <div className="maka-choice-panel" ref={root} tabIndex={0} role="listbox" aria-label={props.label} onKeyDown={onKeyDown}>
+  return <div className="maka-choice-panel" ref={root} tabIndex={props.disabled ? -1 : 0} role="listbox" aria-label={props.label}
+    aria-activedescendant={selectedIndex >= 0 ? `${listId}-option-${selectedIndex}` : undefined}
+    aria-disabled={props.disabled || undefined}
+    onKeyDown={onKeyDown}
+    // The composer's body click focuses the input; clicking between options
+    // must keep focus on the panel so the digit/arrow keys keep working.
+    onClick={(event) => { event.stopPropagation(); root.current?.focus({ preventScroll: true }); }}>
     {props.options.map((option, index) => {
       const selected = option.value === props.value;
-      return <Item key={option.value} role="option" label={option.label} description={option.description}
+      return <Item key={option.value} id={`${listId}-option-${index}`} role="option"
+        label={<span>{option.label}</span>}
+        description={option.description ? <span>{option.description}</span> : undefined}
         isSelected={selected} isDisabled={props.disabled}
         onClick={props.disabled ? undefined : (event) => {
           event.stopPropagation();
           props.onChange(option.value);
-          root.current?.focus();
+          root.current?.focus({ preventScroll: true });
         }}
-        startContent={index < 9 ? <Badge variant={selected ? 'info' : 'neutral'} label={index + 1} aria-hidden="true" /> : undefined}
+        startContent={index < 9 ? <Badge variant={selected ? 'info' : 'neutral'} label={<span>{index + 1}</span>} aria-hidden="true" /> : undefined}
         style={option.accentColor ? { '--_item-label-color': option.accentColor } as CSSProperties : undefined} />;
     })}
     {props.children}
