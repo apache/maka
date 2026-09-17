@@ -1516,8 +1516,10 @@ export const LongSystemNotes: Story = {
   }} />,
   play: async ({ canvasElement }) => {
     await document.fonts.ready;
+    await waitFor(() => {
+      expect(canvasElement.querySelectorAll('.maka-chat-system-message').length).toBe(4);
+    });
     const notes = canvasElement.querySelectorAll<HTMLElement>('.maka-chat-system-message');
-    expect(notes.length).toBe(4);
     for (const note of notes) {
       const bounds = note.getBoundingClientRect();
       const range = document.createRange();
