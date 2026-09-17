@@ -20,7 +20,7 @@
 import { useEffect, useRef, type ReactNode, type CSSProperties, type KeyboardEvent } from 'react';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
-import { RadioList, RadioListItem, Kbd, Text } from '@astryxdesign/core';
+import { Badge, Item, Text } from '@astryxdesign/core';
 
 export interface ChoicePanelOption {
   readonly value: string;
@@ -65,13 +65,15 @@ export function ChoicePanel(props: {
       event.preventDefault(); props.onEscape();
     }
   }
-  return <div className="maka-choice-panel" ref={root} tabIndex={-1} onKeyDown={onKeyDown}>
-    <RadioList label={props.label} isLabelHidden value={props.value} isDisabled={props.disabled} onChange={props.onChange}>
-      {props.options.map((option, index) => <RadioListItem key={option.value} value={option.value}
-        label={option.label} description={option.description}
-        style={option.accentColor ? { '--_item-label-color': option.accentColor } as CSSProperties : undefined}
-        endContent={index < 9 ? <Kbd keys={String(index + 1)} aria-hidden="true" /> : undefined} />)}
-    </RadioList>
+  return <div className="maka-choice-panel" ref={root} tabIndex={-1} role="listbox" aria-label={props.label} onKeyDown={onKeyDown}>
+    {props.options.map((option, index) => {
+      const selected = option.value === props.value;
+      return <Item key={option.value} role="option" label={option.label} description={option.description}
+        isSelected={selected} isDisabled={props.disabled}
+        onClick={props.disabled ? undefined : () => { props.onChange(option.value); root.current?.focus(); }}
+        startContent={<Badge variant={selected ? 'info' : 'neutral'} label={index + 1} aria-hidden="true" />}
+        style={option.accentColor ? { '--_item-label-color': option.accentColor } as CSSProperties : undefined} />;
+    })}
     <Text as="p" type="supporting" color="secondary" className="maka-choice-hint">{hint}</Text>
     {props.children}
   </div>;

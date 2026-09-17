@@ -20,12 +20,17 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import type { UserQuestionRequestEvent } from '@maka/core/events';
 import type { UserQuestionResponse } from '@maka/core/user-question';
-import { Button, TextInput } from '@astryxdesign/core';
+import {
+  Button,
+  ChatComposer,
+  ChatComposerDrawer,
+  ChatComposerInput,
+  type ChatComposerInputHandle,
+} from '@astryxdesign/core';
 import { ChoicePanel } from './choice-panel.js';
 import { useMountedRef } from './use-mounted-ref.js';
 import {
   buildUserQuestionResponse,
-  canLeaveQuestion,
   createQuestionDrafts,
   type QuestionAnswerDraft,
 } from './user-question-prompt-state.js';
@@ -42,10 +47,13 @@ export function UserQuestionPrompt(props: {
   const titleId = useId();
   const [questionIndex, setQuestionIndex] = useState(0);
   const [drafts, setDrafts] = useState<QuestionAnswerDraft[]>(() => createQuestionDrafts(props.request.questions));
+  const [answerText, setAnswerText] = useState('');
   const [responseError, setResponseError] = useState<string>();
   const [responsePending, setResponsePending] = useState(false);
   const responsePendingRef = useRef(false);
   const activeRequestIdRef = useRef(props.request.requestId);
+  const restoreTextRef = useRef<string | null>(null);
+  const inputRef = useRef<ChatComposerInputHandle>(null);
   const mountedRef = useMountedRef();
 
   useEffect(() => {
@@ -53,6 +61,7 @@ export function UserQuestionPrompt(props: {
     setResponseError(undefined);
     setQuestionIndex(0);
     setDrafts(createQuestionDrafts(props.request.questions));
+    setAnswerText('');
     responsePendingRef.current = false;
     setResponsePending(false);
   }, [props.request.requestId, props.request.questions]);
@@ -60,32 +69,77 @@ export function UserQuestionPrompt(props: {
   const question = props.request.questions[questionIndex];
   if (!question) return null;
   const draft = drafts[questionIndex] ?? null;
-  const selectedValue = draft?.kind === 'option' ? `option:${draft.optionIndex}` : draft?.kind === 'other' ? 'other' : '';
+  const selectedValue = draft?.kind === 'option' ? `option:${draft.optionIndex}` : '';
   const interactionDisabled = Boolean(props.stopPending) || responsePending;
-  const canContinue = canLeaveQuestion(draft) && !interactionDisabled;
+  const canContinue = (answerText.trim().length > 0 || draft?.kind === 'option') && !interactionDisabled;
   const isLast = questionIndex === props.request.questions.length - 1;
 
   function updateDraft(next: QuestionAnswerDraft) {
     setDrafts((current) => current.map((candidate, index) => index === questionIndex ? next : candidate));
   }
 
-  function select(value: string) {
-    if (value === 'other') {
-      updateDraft({ kind: 'other', value: draft?.kind === 'other' ? draft.value : '' });
-      return;
-    }
-    const optionIndex = Number(value.slice('option:'.length));
-    updateDraft({ kind: 'option', optionIndex });
+  // The input text is the free-form answer: it outranks a committed "other"
+  // draft, and clearing it drops that draft entirely.
+  function commitDrafts(text: string): QuestionAnswerDraft[] {
+    const trimmed = text.trim();
+    return drafts.map((candidate, index) => index !== questionIndex ? candidate
+      : trimmed ? { kind: 'other', value: trimmed }
+      : candidate?.kind === 'other' ? null : candidate);
   }
 
-  async function submit() {
-    if (responsePendingRef.current || !canLeaveQuestion(draft)) return;
+  function select(value: string) {
+    updateDraft({ kind: 'option', optionIndex: Number(value.slice('option:'.length)) });
+    setAnswerText('');
+  }
+
+  function onAnswerChange(value: string) {
+    if (restoreTextRef.current !== null) {
+      const restore = restoreTextRef.current;
+      restoreTextRef.current = null;
+      setAnswerText(restore);
+      return;
+    }
+    setAnswerText(value);
+    if (value.trim() && draft?.kind === 'option') updateDraft(null);
+  }
+
+  function moveTo(nextIndex: number, committed: QuestionAnswerDraft[]) {
+    setDrafts(committed);
+    setQuestionIndex(nextIndex);
+    const next = committed[nextIndex];
+    setAnswerText(next?.kind === 'other' ? next.value : '');
+  }
+
+  // The input clears itself right after this returns, so the target question's
+  // text is restored from the trailing onChange. When the submit is blocked or
+  // fails on the last question, the submitted text stays put — wiping it would
+  // make a failed submit impossible to retry.
+  function onInputSubmit(value: string) {
+    const committed = commitDrafts(value);
+    const target = interactionDisabled || isLast ? questionIndex : questionIndex + 1;
+    const next = committed[target];
+    restoreTextRef.current = next?.kind === 'other' ? next.value : '';
+    setDrafts(committed);
+    if (interactionDisabled) return;
+    if (isLast) void submit(committed);
+    else setQuestionIndex(target);
+  }
+
+  function confirm() {
+    if (!canContinue) return;
+    const committed = commitDrafts(answerText);
+    if (isLast) void submit(committed);
+    else moveTo(questionIndex + 1, committed);
+  }
+
+  async function submit(committed: QuestionAnswerDraft[]) {
+    if (responsePendingRef.current) return;
     const requestId = props.request.requestId;
     responsePendingRef.current = true;
     setResponsePending(true);
     setResponseError(undefined);
     try {
-      await props.onRespond(buildUserQuestionResponse(props.request, drafts));
+      await props.onRespond(buildUserQuestionResponse(props.request, committed));
     } catch (reason) {
       if (mountedRef.current && activeRequestIdRef.current === requestId) setResponseError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -102,43 +156,45 @@ export function UserQuestionPrompt(props: {
       role="region"
       aria-labelledby={titleId}
     >
-      <div className="maka-composer-interaction-inner agents-parchment-paper-surface">
-        <header className="maka-interaction-header">
-          <div className="maka-interaction-title-row">
-            <h2 className="maka-interaction-title" id={titleId}>{question.question}</h2>
-            {props.request.questions.length > 1 ? <span className="maka-question-progress">{questionIndex + 1} / {props.request.questions.length}</span> : null}
-          </div>
-        </header>
-
-        {responseError && <p role="alert">{responseError}</p>}
-        <div className="maka-question-options">
-          <ChoicePanel
-            key={questionIndex}
-            label={question.question}
-            value={selectedValue}
-            disabled={interactionDisabled}
-            onChange={select}
-            onConfirm={() => { if (canContinue) { if (isLast) void submit(); else setQuestionIndex((current) => current + 1); } }}
-            onEscape={() => select('other')}
-            options={[...question.options.map((option, index) => ({ value: `option:${index}`, label: option.label, description: option.description })), { value: 'other', label: copy.other, description: copy.otherDescription }]}
-          />
-          {draft?.kind === 'other' ? (
-            <div className="maka-question-other-answer">
-              <TextInput
-                label={copy.otherAriaLabel}
-                isLabelHidden
-                placeholder={copy.otherPlaceholder}
-                value={draft.value}
-                isDisabled={interactionDisabled}
-                onChange={(value) => updateDraft({ kind: 'other', value })}
-                width="100%"
-                hasAutoFocus
+      <ChatComposer
+        className="maka-composer-astryx"
+        // The input slot below carries its own onSubmit; the shell's submit
+        // path gates on the composer's internal value, which stays empty for a
+        // controlled input, so nothing may reach this callback.
+        onSubmit={() => {}}
+        isDisabled={interactionDisabled}
+        placeholder={copy.otherPlaceholder}
+        status={responseError ? { type: 'error', message: responseError } : undefined}
+        drawer={
+          <ChatComposerDrawer>
+            <div className="maka-question-drawer">
+              <div className="maka-interaction-title-row">
+                <h2 className="maka-interaction-title" id={titleId}>{question.question}</h2>
+                {props.request.questions.length > 1 ? <span className="maka-question-progress">{questionIndex + 1} / {props.request.questions.length}</span> : null}
+              </div>
+              <ChoicePanel
+                key={questionIndex}
+                label={question.question}
+                value={selectedValue}
+                disabled={interactionDisabled}
+                onChange={select}
+                onConfirm={confirm}
+                onEscape={() => inputRef.current?.focus()}
+                options={question.options.map((option, index) => ({ value: `option:${index}`, label: option.label, description: option.description }))}
               />
             </div>
-          ) : null}
-        </div>
-
-        <footer className="maka-interaction-actions maka-question-actions">
+          </ChatComposerDrawer>
+        }
+        input={
+          <ChatComposerInput
+            handleRef={inputRef}
+            value={answerText}
+            onChange={onAnswerChange}
+            onSubmit={onInputSubmit}
+            label={copy.otherAriaLabel}
+          />
+        }
+        footerActions={<>
           <Button
             variant="ghost"
             isDisabled={props.stopPending}
@@ -149,19 +205,20 @@ export function UserQuestionPrompt(props: {
             <Button
               variant="ghost"
               isDisabled={interactionDisabled}
-              onClick={() => setQuestionIndex((current) => current - 1)}
+              onClick={() => moveTo(questionIndex - 1, commitDrafts(answerText))}
               label={copy.previous}
             />
           ) : null}
+        </>}
+        sendButton={
           <Button
             variant="primary"
-            className="maka-question-submit"
             isDisabled={!canContinue}
-            onClick={() => (isLast ? void submit() : setQuestionIndex((current) => current + 1))}
+            onClick={confirm}
             label={responsePending ? copy.submitting : isLast ? copy.submit : copy.next}
           />
-        </footer>
-      </div>
+        }
+      />
     </section>
   );
 }

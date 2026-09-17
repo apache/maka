@@ -107,13 +107,15 @@ export const KeyboardChoices: Story = {
     await waitFor(() =>
       expect(document.activeElement).toBe(canvasElement.querySelector('.maka-choice-panel')));
     await userEvent.keyboard('2');
-    await waitFor(() => expect(canvas.getByRole('radio', { name: '公开测试' })).toBeChecked());
+    await waitFor(() => expect(canvas.getByRole('option', { name: /公开测试/ })).toHaveAttribute('aria-selected', 'true'));
     await userEvent.keyboard('{Enter}');
     await waitFor(() => expect(canvas.getByRole('heading', { name: '上线时间怎么安排？' })).toBeInTheDocument());
+    // Escape moves focus to the answer input — the free-form answer is typed
+    // straight into the composer.
     await userEvent.keyboard('{Escape}');
     const input = canvas.getByRole('textbox');
+    await waitFor(() => expect(document.activeElement).toBe(input));
     await userEvent.type(input, '123');
-    expect(input).toHaveValue('123');
-    await waitFor(() => expect(canvas.getByRole('radio', { name: '其他' })).toBeChecked());
+    expect(input).toHaveTextContent('123');
   },
 };
