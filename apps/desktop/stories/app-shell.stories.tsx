@@ -2884,8 +2884,11 @@ export const HistoryAtTheTopStillLandsAboveTheReader: Story = {
       expect(settled.distance, JSON.stringify(settled)).toBeLessThanOrEqual(4);
     });
     // The one position where the browser declines to anchor, and the one the
-    // load-earlier control sits at.
+    // load-earlier control sits at. Rows mounted by the scroll still carry the
+    // cold Markdown layout — measure the anchor only after they settle, the
+    // same rule as the tail state above.
     scrollAsReader(root, 0);
+    await waitFor(() => expect(document.querySelector('.maka-markdown-pending')).toBeNull(), { timeout: 10_000 });
     await painted(4);
     const before = firstResidentTurnId();
     const reading = anchorInView();
