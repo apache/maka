@@ -26,15 +26,17 @@ import type { PendingAttachment } from './composer-attachments.js';
 /**
  * Snapshot of the composer's staged context, read fresh at every use: the
  * staging hooks bind their mutators to the active session's draft key, which
- * moves across the revision commit (source → branch child).
+ * moves across the revision commit (source → branch child). Restoring and
+ * clearing take an explicit owner key so the lifecycle can re-key the staged
+ * quotes across that commit; attachments never enter the plates — a revision
+ * copy excludes the revised turn, so no target-owned refs exist to stage
+ * (#5109 review) and the lifecycle reads the plate only for conflict gates.
  */
 export type RevisionStagedContext = {
   quotes: readonly QuoteRef[];
   attachments: readonly PendingAttachment[];
   restoreQuotes(ownerKey: string, quotes: readonly QuoteRef[]): void;
-  restoreAttachments(ownerKey: string, attachments: readonly AttachmentRef[]): void;
-  removeQuote(index: number): void;
-  removeAttachment(index: number): void;
+  clearQuotes(ownerKey: string): void;
 };
 
 /** The edit-and-resend source context a staged plate must match verbatim. */
@@ -106,61 +108,20 @@ export function revisionStagedContextUnchanged(
 }
 
 /**
- * True when the plates hold anything beyond the edit's own restage — user
- * additions cannot silently mix into the replacement submit. Pending
- * directories have no snapshot here; the caller refuses through its own
- * pending-context check.
- */
-export function revisionStagedContextHasAdditions(
-  source: RevisionStagedSource,
-  stagedQuotes: readonly QuoteRef[],
-  stagedAttachments: readonly PendingAttachment[],
-): boolean {
-  return stagedQuotes.length > source.originalQuotes.length ||
-    stagedAttachments.length > source.originalAttachments.length;
-}
-
-/**
- * Stage the selected message's quotes and attachments into the composer
- * plates: the carried context becomes visible and explicitly removable
- * (#5109). Returns the source snapshot the draft records for the unchanged
- * comparison. Refuses nothing — the caller has already established that the
- * plates were empty of user-staged context.
+ * The pre-send gate for a revision replacement: 'unchanged' blocks a no-op
+ * retry that would duplicate the source turn verbatim; 'conflict' blocks a
+ * send mixing user-staged context into the restored set (pending directories
+ * have no plate snapshot — flagged through pendingContext with an empty
+ * attachment plate).
  */
 export function stageRevisionSourceContext(
-  staged: RevisionStagedContext,
+  staged: Pick<RevisionStagedContext, 'restoreQuotes'>,
   ownerKey: string,
-  message: { quotes?: readonly QuoteRef[]; attachments?: readonly AttachmentRef[] },
+  message: { quotes?: readonly QuoteRef[] },
 ): RevisionStagedSource {
   const sourceQuotes = [...(message.quotes ?? [])];
-  const sourceAttachments = [...(message.attachments ?? [])];
   if (sourceQuotes.length > 0) staged.restoreQuotes(ownerKey, sourceQuotes);
-  if (sourceAttachments.length > 0) staged.restoreAttachments(ownerKey, sourceAttachments);
-  return { originalQuotes: sourceQuotes, originalAttachments: sourceAttachments };
-}
-
-/**
- * Swap the staged source-owned attachment refs for the copied message's
- * target-owned ones after the revision commit: the branch child transcript
- * carries the rewritten refs, so the replacement submit only claims files
- * the new Session owns. The branch child must be the active surface — the
- * staging mutators bind to its draft key.
- */
-export function restageRevisionAttachments(
-  staged: RevisionStagedContext,
-  copiedMessages: readonly StoredMessage[],
-  sourceTurnId: string,
-  targetSessionId: string,
-): void {
-  const copiedMessage = copiedMessages.find(
-    (message): message is Extract<StoredMessage, { type: 'user' }> =>
-      message.type === 'user' && message.turnId === sourceTurnId,
-  );
-  const rewritten = [...(copiedMessage?.attachments ?? [])];
-  for (let index = staged.attachments.length - 1; index >= 0; index -= 1) {
-    staged.removeAttachment(index);
-  }
-  if (rewritten.length > 0) staged.restoreAttachments(targetSessionId, rewritten);
+  return { originalQuotes: sourceQuotes, originalAttachments: [] };
 }
 
 /**
@@ -191,22 +152,16 @@ export function revisionSendGate(
 }
 
 /**
- * Unstage everything the edit staged and restore what it displaced — the
- * cancel path. The plates hold only the edit's items, because editing is
+ * Unstage everything the edit staged, wherever the commit left it — the
+ * cancel path. The plates hold only the edit's items under the two draft
+ * keys (source before the commit, branch child after), because editing is
  * refused while the user has own context staged.
  */
 export function clearRevisionStagedContext(
-  staged: RevisionStagedContext,
-  previousQuotes: readonly QuoteRef[],
-  ownerKey: string,
+  staged: Pick<RevisionStagedContext, 'clearQuotes'>,
+  ownerKeys: readonly string[],
 ): void {
-  for (let index = staged.attachments.length - 1; index >= 0; index -= 1) {
-    staged.removeAttachment(index);
-  }
-  for (let index = staged.quotes.length - 1; index >= 0; index -= 1) {
-    staged.removeQuote(index);
-  }
-  if (previousQuotes.length > 0) staged.restoreQuotes(ownerKey, previousQuotes);
+  for (const ownerKey of new Set(ownerKeys)) staged.clearQuotes(ownerKey);
 }
 
 /** Localized strings an edit-and-resend surface needs from its own catalog. */
@@ -214,13 +169,15 @@ export interface RevisionEditCopy {
   revisionUnavailableTitle: string;
   revisionAlreadyActive: string;
   revisionDraftAttachmentConflict: string;
+  revisionDraftQuoteConflict: string;
+  revisionAttachmentsUnsupported: string;
+  revisionMixedContextUnsupported: string;
   revisionTransformedTextUnsupported: string;
   revisionStartedTitle: string;
   revisionStartedDescription: string;
   revisionReadyTitle: string;
   revisionReadyDescription: string;
   revisionUnchanged: string;
-  revisionAttachmentsUnsupported: string;
   operationFailedTitle: string;
   operationFailedFallback: string;
 }
@@ -365,16 +322,24 @@ export function createRevisionActions<
       });
       return;
     }
+    if ((userMessage.attachments?.length ?? 0) > 0) {
+      // Attachments are session-owned refs, and a revision copy excludes the
+      // revised turn, so no target-owned rewrite exists to restage — the
+      // replacement would claim files the branch child does not own (#5109
+      // review). The edit refuses instead of promising a restage that cannot
+      // happen.
+      toastApi.info(copy.revisionUnavailableTitle, copy.revisionAttachmentsUnsupported);
+      return;
+    }
 
-    // Quotes and the selected message's own attachments restage into the
-    // composer plates (#5109): the plates make the carried context visible
-    // and explicitly removable, and the copy commit later rewrites the
-    // attachment refs (prepareRevisionSend swaps them in). The edit refuses
-    // while the user has own context staged, so the plates end up holding
-    // exactly the source context.
+    // The selected message's quotes restage into the composer plate (#5109):
+    // the plate makes the carried context visible and explicitly removable,
+    // and the commit re-keys it onto the branch child (prepareRevisionSend).
+    // The edit refuses while the user has own context staged, so the plate
+    // ends up holding exactly the source context.
     const staged = stagedContext();
     if (staged.quotes.length > 0) {
-      toastApi.info(copy.revisionUnavailableTitle, copy.revisionDraftAttachmentConflict);
+      toastApi.info(copy.revisionUnavailableTitle, copy.revisionDraftQuoteConflict);
       return;
     }
     if (userMessage.displayText !== undefined && userMessage.displayText !== userMessage.text) {
@@ -493,7 +458,7 @@ export function createRevisionActions<
     if (gate !== 'pass') {
       toastApi.info(
         copy.revisionReadyTitle,
-        gate === 'unchanged' ? copy.revisionUnchanged : copy.revisionAttachmentsUnsupported,
+        gate === 'unchanged' ? copy.revisionUnchanged : copy.revisionMixedContextUnsupported,
       );
       return false;
     }
@@ -567,18 +532,14 @@ export function createRevisionActions<
         await rollbackPreparedRevision(startedDraft, newSession.id, text, selectionIsCurrent);
         return false;
       }
-      // The copy rewrote the retained slice's attachment refs to the branch
-      // child: swap the staged source-owned refs for the copied message's
-      // target-owned ones. The branch child is the active surface here, so
-      // the staging mutators already bind to its draft key.
-      if (startedDraft.originalAttachments.length > 0) {
-        restageRevisionAttachments(
-          stagedContext(),
-          preparedMessages,
-          startedDraft.sourceTurnId,
-          newSession.id,
-        );
-      }
+      // Re-key the restored quotes onto the branch child: the plates read the
+      // active session's draft key, and the replacement send reads them live
+      // (#5109 review). The refs are pure data staged from the draft snapshot
+      // — a revision copy excludes the revised turn, so the copied transcript
+      // cannot be their source. Re-keyed only after every rollback check has
+      // passed, so a failed preparation leaves the plate on the source key.
+      staged.restoreQuotes(newSession.id, startedDraft.originalQuotes);
+      staged.clearQuotes(startedDraft.sourceSessionId);
       setMessages(preparedMessages);
       composerRef.current?.focus();
       toastApi.info(copy.revisionReadyTitle, copy.revisionReadyDescription);
@@ -619,9 +580,10 @@ export function createRevisionActions<
     if (cleanupSessionId) await abandonRevisionCopy(draft);
     else env.completeCopyAttempt(revisionCopyKey(draft.sourceSessionId, draft.sourceTurnId), draft.copyId);
     commitRevisionDraft(null);
-    // Unstage everything the edit staged (#5109). The plates hold only the
-    // edit's items: beginEdit refuses while the user has own context staged.
-    clearRevisionStagedContext(stagedContext(), [], draft.sourceSessionId);
+    // Unstage everything the edit staged (#5109), under both draft keys: the
+    // plate starts on the source key and the commit re-keys it onto the
+    // branch child. The edit refuses while the user has own context staged.
+    clearRevisionStagedContext(stagedContext(), [draft.sourceSessionId, draft.draftSessionId]);
     composerRef.current?.setDraft(draft.sourceSessionId, draft.previousComposerText);
     if (draft.draftSessionId !== draft.sourceSessionId) {
       composerRef.current?.clearDraft(draft.draftSessionId);

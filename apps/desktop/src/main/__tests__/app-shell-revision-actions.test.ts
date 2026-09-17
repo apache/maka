@@ -39,10 +39,9 @@ function createActions(input: { messages: StoredMessage[] }) {
   let composerText = '';
   const staged: {
     quotes: unknown[];
-    attachments: unknown[];
     restoredQuotes: unknown[][];
-    restoredAttachments: unknown[][];
-  } = { quotes: [], attachments: [], restoredQuotes: [], restoredAttachments: [] };
+    clearedKeys: string[];
+  } = { quotes: [], restoredQuotes: [], clearedKeys: [] };
   const revisionDraftRef: { current: unknown } = { current: null };
   const actions = createAppShellRevisionActions({
     uiLocale: 'en' as never,
@@ -64,20 +63,14 @@ function createActions(input: { messages: StoredMessage[] }) {
     hasPendingAttachments: () => false,
     stagedContext: () => ({
       quotes: staged.quotes,
-      attachments: staged.attachments,
+      attachments: [],
       restoreQuotes: (_ownerKey: string, quotes: unknown[]) => {
         staged.restoredQuotes.push(quotes);
         staged.quotes.push(...quotes);
       },
-      restoreAttachments: (_ownerKey: string, refs: unknown[]) => {
-        staged.restoredAttachments.push(refs);
-        staged.attachments.push(...refs);
-      },
-      removeQuote: (index: number) => {
-        staged.quotes.splice(index, 1);
-      },
-      removeAttachment: (index: number) => {
-        staged.attachments.splice(index, 1);
+      clearQuotes: (ownerKey: string) => {
+        staged.clearedKeys.push(ownerKey);
+        staged.quotes.length = 0;
       },
     }),
     openSessionInChat: () => {},
@@ -126,32 +119,31 @@ describe('app-shell revision actions with structured context (#5109)', () => {
     assert.equal(h.composerState.text, 'plain follow-up');
   });
 
-  it('stages a source message attachments for the replacement submit', () => {
-    const attachmentRef = {
-      kind: 'image',
-      name: 'chart.png',
-      mimeType: 'image/png',
-      bytes: 10,
-      ref: { kind: 'session_file', sessionId: 'session-1', relativePath: 'a.png' },
-    };
+  it('refuses editing a message that carries attachments (#5109 review)', () => {
     const h = createActions({
-      messages: [userMessage('turn-1', 'with image', { attachments: [attachmentRef] })],
+      messages: [
+        userMessage('turn-1', 'with image', {
+          attachments: [
+            {
+              kind: 'image',
+              name: 'chart.png',
+              mimeType: 'image/png',
+              bytes: 10,
+              ref: { kind: 'session_file', sessionId: 'session-1', relativePath: 'a.png' },
+            },
+          ],
+        }),
+      ],
     });
 
     h.beginEditUserMessage('turn-1');
 
-    const draft = h.drafts.at(-1) as { originalAttachments?: unknown[] } | undefined;
-    assert.ok(draft, 'an attachment-bearing source message is editable now');
-    assert.deepEqual(
-      draft?.originalAttachments,
-      [attachmentRef],
-      'the draft records the source attachments for the unchanged comparison',
+    assert.equal(
+      h.drafts.at(-1),
+      undefined,
+      'a revision copy excludes the revised turn, so no target-owned attachment rewrite exists to restage',
     );
-    assert.deepEqual(
-      h.staged.restoredAttachments.at(-1),
-      [attachmentRef],
-      'the source attachments stage into the composer as retained refs',
-    );
+    assert.equal(h.composerState.text, '', 'the composer stays untouched');
   });
 
   it('stages a source message quotes into the composer', () => {

@@ -69,9 +69,9 @@ export interface AppShellRevisionActions {
  *
  * If normal send fails after a revision was prepared, that version remains
  * active with the edited text and a second send retries there instead of
- * creating another version. The lifecycle itself lives in
- * `@maka/ui/revision-staged-context`; this assembler injects the bridge, the
- * locale catalog, and the copy-attempt tracker.
+ * creating another version. The lifecycle itself lives in `@maka/ui`; this
+ * assembler injects the bridge, the locale catalog, and the copy-attempt
+ * tracker.
  */
 export function createAppShellRevisionActions(
   deps: DesktopRevisionActionsDeps,
