@@ -65,9 +65,7 @@ test('retains process lifetime before a standalone startup dialog can close', ()
 });
 
 test('registers one shared quit cleanup before the initial Host handoff', () => {
-  const hostStart = bootSource.indexOf(
-    'runtimeHostManager = await startLocalRuntimeHostManager',
-  );
+  const hostStart = bootSource.indexOf('runtimeHostManager = await startLocalRuntimeHostManager');
   const quitRegistration = bootSource.indexOf('app.on("before-quit", quitCoordinator.handleBeforeQuit)');
   const workBoardDeclaration = bootSource.indexOf('let workBoardIpc:');
   assert.ok(workBoardDeclaration >= 0 && workBoardDeclaration < quitRegistration);
@@ -84,13 +82,8 @@ test('drains startup resources before cancellation quit or fatal presentation', 
   const callback = bootSource.slice(callbackStart, bootSource.indexOf('\n);', callbackStart));
   assert.ok(callback.indexOf('if (!runtimeHostManager) return;') < callback.indexOf('app.quit()'));
 
-  const hostStart = bootSource.indexOf(
-    'runtimeHostManager = await startLocalRuntimeHostManager',
-  );
-  const failure = bootSource.slice(
-    hostStart,
-    bootSource.indexOf('// Runtime Host is the only', hostStart),
-  );
+  const hostStart = bootSource.indexOf('runtimeHostManager = await startLocalRuntimeHostManager');
+  const failure = bootSource.slice(hostStart, bootSource.indexOf('// Runtime Host is the only', hostStart));
   const cleanup = failure.indexOf('await closeRuntimeHostDesktop()');
   assert.ok(cleanup >= 0 && cleanup < failure.indexOf('app.quit()'));
   assert.ok(cleanup < failure.indexOf('throw error'));

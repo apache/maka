@@ -19,51 +19,41 @@
 
 import {
   createRuntimeHostStartupTaskRegistry,
-  type RuntimeHostStartupTaskImplementations,
-  type RuntimeHostStartupTaskName,
 } from './runtime-host-startup-tasks.js';
 import { resolveShellEnv } from './shell-env.js';
 
-type RuntimeHostPostStartupTaskName = Exclude<
-  RuntimeHostStartupTaskName,
-  'resolve-shell-env' | 'legacy-runtime-host-sequence'
->;
+type RuntimeHostPostStartupTasks =
+  (typeof import('./runtime-host-legacy-boot.js'))['runtimeHostPostStartupTasks'];
+type RuntimeHostPostStartupTaskName = keyof RuntimeHostPostStartupTasks;
 
-let postStartupTasks: Pick<
-  RuntimeHostStartupTaskImplementations,
-  RuntimeHostPostStartupTaskName
->;
+let postStartupTasks: RuntimeHostPostStartupTasks;
 
 function runPostStartupTask(
   name: RuntimeHostPostStartupTaskName,
 ): () => unknown | Promise<unknown> {
-  return () => {
-    const task = postStartupTasks?.[name];
-    if (!task) throw new Error(`startup task is unavailable before legacy boot: ${name}`);
-    return task();
-  };
+  return () => postStartupTasks[name]();
 }
 
 const startupTasks = createRuntimeHostStartupTaskRegistry({
-  'resolve-shell-env': resolveShellEnv,
   'legacy-runtime-host-sequence': async () => {
     const legacyBoot = await import('./runtime-host-legacy-boot.js');
     postStartupTasks = legacyBoot.runtimeHostPostStartupTasks;
   },
-  'restore-guest-session-mounts': runPostStartupTask('restore-guest-session-mounts'),
-  'recover-local-runtime-host-access': runPostStartupTask('recover-local-runtime-host-access'),
-  'start-enabled-runtime-host-profiles': runPostStartupTask(
-    'start-enabled-runtime-host-profiles',
-  ),
   'offer-unavailable-default-runtime-host': runPostStartupTask(
     'offer-unavailable-default-runtime-host',
   ),
+  'recover-local-runtime-host-access': runPostStartupTask('recover-local-runtime-host-access'),
+  'refresh-client-settings': runPostStartupTask('refresh-client-settings'),
+  'resolve-shell-env': resolveShellEnv,
+  'restore-guest-session-mounts': runPostStartupTask('restore-guest-session-mounts'),
+  'resume-mcp-logins': runPostStartupTask('resume-mcp-logins'),
   'start-desktop-background-services': runPostStartupTask(
     'start-desktop-background-services',
   ),
+  'start-enabled-runtime-host-profiles': runPostStartupTask(
+    'start-enabled-runtime-host-profiles',
+  ),
   'start-mcp': runPostStartupTask('start-mcp'),
-  'resume-mcp-logins': runPostStartupTask('resume-mcp-logins'),
-  'refresh-client-settings': runPostStartupTask('refresh-client-settings'),
 });
 
 await startupTasks.runAll();

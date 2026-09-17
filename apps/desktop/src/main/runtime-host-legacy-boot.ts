@@ -260,10 +260,6 @@ import { registerRuntimeHostSkillsIpc } from "./runtime-host-skills-ipc-main.js"
 import { registerRuntimeHostUsageIpc } from "./runtime-host-usage-ipc-main.js";
 import { registerRuntimeHostWorkspaceIpc } from "./runtime-host-workspace-ipc-main.js";
 import {
-  type RuntimeHostStartupTaskImplementations,
-  type RuntimeHostStartupTaskName,
-} from './runtime-host-startup-tasks.js';
-import {
   registerSettingsBotsIpc,
   type SettingsBotsIpcHandle,
 } from "./settings-bots-ipc-main.js";
@@ -287,11 +283,6 @@ import {
   requireDesktopTargetScope,
   type DesktopTargetScope,
 } from "../shared/runtime-host-identity.js";
-
-type RuntimeHostPostStartupTaskName = Exclude<
-  RuntimeHostStartupTaskName,
-  'resolve-shell-env' | 'legacy-runtime-host-sequence'
->;
 
 const MANAGED_UPDATE_RECONNECT_TIMEOUT_MS = 10_000;
 const buildInfo = resolveBuildInfo(app.isPackaged, app.getAppPath());
@@ -1493,16 +1484,6 @@ sessionLocal.wake();
 windowsAppTray.start();
 
 export const runtimeHostPostStartupTasks = {
-  'restore-guest-session-mounts': () =>
-    guestSessionMountService.start().catch((error: unknown) => {
-      console.error('[runtime-host] shared Sessions could not be restored:', error);
-    }),
-  'recover-local-runtime-host-access': () =>
-    localRuntimeHostRemoteAccess.recover().catch((error: unknown) => {
-      console.error('[runtime-host] interrupted Local Host setup could not be recovered:', error);
-    }),
-  'start-enabled-runtime-host-profiles': () =>
-    runtimeHostProfileService.startEnabledProfiles(),
   'offer-unavailable-default-runtime-host': () => {
     const unavailableDefault = runtimeHostStartup.unavailable.get(
       runtimeHostStartup.preferences.defaultProfileId,
@@ -1525,25 +1506,24 @@ export const runtimeHostPostStartupTasks = {
     }
     return undefined;
   },
-  'start-desktop-background-services': () => {
-    const stopComputerUseSession = (sessionId: string): void => {
-      const ref = parseDesktopSessionResourceKey(sessionId);
-      void runtimeHostManager
-        ?.stopSession(ref)
-        .catch((error) => console.error("[runtime-host] stop failed:", error));
-    };
-    native.computerUsePip.setStopHandler(stopComputerUseSession);
-    native.computerUseStatusItem.setStopHandler(stopComputerUseSession);
-    updateService.start();
-  },
-  'start-mcp': () =>
-    ensureMcpReady()
-      .then(() => mcpCapabilityPublisher.refreshIfChanged())
-      .catch((error) => console.error("[runtime-host] MCP startup failed:", error)),
+  'recover-local-runtime-host-access': () =>
+    localRuntimeHostRemoteAccess.recover().catch((error: unknown) => {
+      console.error('[runtime-host] interrupted Local Host setup could not be recovered:', error);
+    }),
+  'refresh-client-settings': () =>
+    clientSettingsEffects
+      .refresh(false)
+      .catch((error) =>
+        console.error("[runtime-host] Client settings startup failed:", error),
+      ),
+  'restore-guest-session-mounts': () =>
+    guestSessionMountService.start().catch((error: unknown) => {
+      console.error('[runtime-host] shared Sessions could not be restored:', error);
+    }),
   // A login round persists its verifier and callback port; if the app
   // restarted mid-round, rebind the listener so the browser's redirect still
-  // lands instead of hitting a dead port. The detached dependency means this
-  // begins after MCP startup is dispatched, without waiting for it to settle.
+  // lands instead of hitting a dead port. Registration order dispatches this
+  // after MCP startup without waiting for it to settle; both tasks are detached.
   'resume-mcp-logins': () =>
     mcpConfigStore
       .get()
@@ -1568,13 +1548,24 @@ export const runtimeHostPostStartupTasks = {
       .catch((error) =>
         console.error("[runtime-host] MCP login resume scan failed:", error),
       ),
-  'refresh-client-settings': () =>
-    clientSettingsEffects
-      .refresh(false)
-      .catch((error) =>
-        console.error("[runtime-host] Client settings startup failed:", error),
-      ),
-} satisfies Pick<RuntimeHostStartupTaskImplementations, RuntimeHostPostStartupTaskName>;
+  'start-desktop-background-services': () => {
+    const stopComputerUseSession = (sessionId: string): void => {
+      const ref = parseDesktopSessionResourceKey(sessionId);
+      void runtimeHostManager
+        ?.stopSession(ref)
+        .catch((error) => console.error("[runtime-host] stop failed:", error));
+    };
+    native.computerUsePip.setStopHandler(stopComputerUseSession);
+    native.computerUseStatusItem.setStopHandler(stopComputerUseSession);
+    updateService.start();
+  },
+  'start-enabled-runtime-host-profiles': () =>
+    runtimeHostProfileService.startEnabledProfiles(),
+  'start-mcp': () =>
+    ensureMcpReady()
+      .then(() => mcpCapabilityPublisher.refreshIfChanged())
+      .catch((error) => console.error("[runtime-host] MCP startup failed:", error)),
+};
 
 function registerHostClientIpc(
   client: DesktopRuntimeHostClient,

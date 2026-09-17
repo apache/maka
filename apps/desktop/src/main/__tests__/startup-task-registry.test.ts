@@ -42,10 +42,10 @@ const historicalSequence: readonly RuntimeHostStartupTaskName[] = [
   'refresh-client-settings',
 ];
 
-test('production registration derives the historical startup sequence from the graph', async () => {
+test('production registration derives the historical sequence independently of implementation key order', async () => {
   const events: RuntimeHostStartupTaskName[] = [];
   const tasks = Object.fromEntries(
-    historicalSequence.map((name) => [name, () => void events.push(name)]),
+    [...historicalSequence].reverse().map((name) => [name, () => void events.push(name)]),
   ) as unknown as Record<RuntimeHostStartupTaskName, () => void>;
 
   await createRuntimeHostStartupTaskRegistry(tasks, { observe: () => {} }).runAll();

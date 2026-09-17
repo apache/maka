@@ -40,42 +40,42 @@ export const runtimeHostStartupTaskPlan = [
   {
     name: 'recover-local-runtime-host-access',
     phase: 'background',
-    dependencies: ['restore-guest-session-mounts'],
+    dependencies: ['legacy-runtime-host-sequence'],
     execution: 'detached',
   },
   {
     name: 'start-enabled-runtime-host-profiles',
     phase: 'background',
-    dependencies: ['recover-local-runtime-host-access'],
+    dependencies: ['legacy-runtime-host-sequence'],
     execution: 'detached',
   },
   {
     name: 'offer-unavailable-default-runtime-host',
     phase: 'background',
-    dependencies: ['start-enabled-runtime-host-profiles'],
+    dependencies: ['legacy-runtime-host-sequence'],
     execution: 'detached',
   },
   {
     name: 'start-desktop-background-services',
     phase: 'background',
-    dependencies: ['offer-unavailable-default-runtime-host'],
+    dependencies: ['legacy-runtime-host-sequence'],
   },
   {
     name: 'start-mcp',
     phase: 'background',
-    dependencies: ['start-desktop-background-services'],
+    dependencies: ['legacy-runtime-host-sequence'],
     execution: 'detached',
   },
   {
     name: 'resume-mcp-logins',
     phase: 'background',
-    dependencies: ['start-mcp'],
+    dependencies: ['legacy-runtime-host-sequence'],
     execution: 'detached',
   },
   {
     name: 'refresh-client-settings',
     phase: 'background',
-    dependencies: ['resume-mcp-logins'],
+    dependencies: ['legacy-runtime-host-sequence'],
     execution: 'detached',
   },
 ] as const satisfies readonly StartupTaskDefinition[];
@@ -83,7 +83,7 @@ export const runtimeHostStartupTaskPlan = [
 export type RuntimeHostStartupTaskName =
   (typeof runtimeHostStartupTaskPlan)[number]['name'];
 
-export type RuntimeHostStartupTaskImplementations = Record<
+type RuntimeHostStartupTaskImplementations = Record<
   RuntimeHostStartupTaskName,
   () => unknown | Promise<unknown>
 >;

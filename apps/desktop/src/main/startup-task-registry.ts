@@ -77,8 +77,10 @@ export function createStartupTaskRegistry<Name extends string>(
     }
   }
 
-  const tasks = new Map<Name, () => unknown | Promise<unknown>>();
-  const registrationOrder = new Map<Name, number>();
+  const tasks = new Map<
+    Name,
+    { readonly order: number; readonly run: () => unknown | Promise<unknown> }
+  >();
   const now = options.now ?? Date.now;
   const observe = (event: StartupTaskEvent<Name>): void => {
     try {
@@ -88,13 +90,12 @@ export function createStartupTaskRegistry<Name extends string>(
     }
   };
 
-  const register = <Result>(name: Name, run: () => Result | Promise<Result>): void => {
+  const register = (name: Name, run: () => unknown | Promise<unknown>): void => {
     if (!definitionsByName.has(name)) throw new Error(`unknown startup task: ${name}`);
     if (tasks.has(name)) {
       throw new Error(`duplicate startup task registration: ${name}`);
     }
-    registrationOrder.set(name, registrationOrder.size);
-    tasks.set(name, run as () => unknown | Promise<unknown>);
+    tasks.set(name, { order: tasks.size, run });
   };
 
   const orderedNames = (): readonly Name[] => {
@@ -116,7 +117,7 @@ export function createStartupTaskRegistry<Name extends string>(
     }
 
     const byRegistrationOrder = (left: Name, right: Name): number =>
-      registrationOrder.get(left)! - registrationOrder.get(right)!;
+      tasks.get(left)!.order - tasks.get(right)!.order;
     const ready = definitions
       .filter((definition) => definition.dependencies.length === 0)
       .map((definition) => definition.name)
@@ -170,7 +171,7 @@ export function createStartupTaskRegistry<Name extends string>(
 
   const execute = async (name: Name): Promise<void> => {
     const definition = definitionsByName.get(name)!;
-    const run = tasks.get(name)!;
+    const { run } = tasks.get(name)!;
     const execution = definition.execution ?? 'foreground';
     const startedAt = now();
     observe({
