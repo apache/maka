@@ -170,6 +170,7 @@ test('unknown Client Capability loads, invokes, and rebinds after UDS reconnect'
         }
         await accept({ kind: 'none' });
         return {
+          outcome: frame.arguments.prefix === 'failure' ? 'error' : 'success',
           content: [
             {
               type: 'text',
@@ -240,7 +241,13 @@ test('unknown Client Capability loads, invokes, and rebinds after UDS reconnect'
 
     const result = await tool.impl({ prefix: 'from-uds' }, toolContext);
     assert.deepEqual(result, {
+      outcome: 'success',
       content: [{ type: 'text', text: `from-uds:${largeValue}` }],
+    });
+    const failed = await tool.impl({ prefix: 'failure' }, toolContext);
+    assert.deepEqual(failed, {
+      outcome: 'error',
+      content: [{ type: 'text', text: `failure:${largeValue}` }],
     });
     await client.status();
     await assert.rejects(
@@ -277,7 +284,13 @@ test('unknown Client Capability loads, invokes, and rebinds after UDS reconnect'
         assert.equal(frame.toolCallId, toolCallId);
         await accept({ kind: 'none' });
         return {
-          content: [{ type: 'text', text: `reconnected:${String(frame.arguments.prefix)}` }],
+          outcome: 'success',
+          content: [
+            {
+              type: 'text',
+              text: `reconnected:${String(frame.arguments.prefix)}`,
+            },
+          ],
         };
       },
     });
@@ -291,6 +304,7 @@ test('unknown Client Capability loads, invokes, and rebinds after UDS reconnect'
     );
     assert.ok(reconnectedTool);
     assert.deepEqual(await reconnectedTool.impl({ prefix: 'from-uds' }, toolContext), {
+      outcome: 'success',
       content: [{ type: 'text', text: 'reconnected:from-uds' }],
     });
   } finally {

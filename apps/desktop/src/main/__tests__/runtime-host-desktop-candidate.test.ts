@@ -613,12 +613,14 @@ test('refreshes native capabilities with a new immutable provider snapshot', asy
   };
 
   assert.deepEqual(await host.invokeCapability(frame), {
+    outcome: 'success',
     content: [{ type: 'text', text: 'old' }],
   });
   implementation = 'new';
   await controls?.refreshClientCapabilities();
   assert.equal(host.capabilityRegistrations, 2);
   assert.deepEqual(await host.invokeCapability(frame), {
+    outcome: 'success',
     content: [{ type: 'text', text: 'new' }],
   });
 
@@ -797,7 +799,7 @@ test('isolates an invalid dynamic MCP tool without dropping the Host connection'
       serverId: 'desktop_mcp',
       toolName: 'healthy_mcp',
     }),
-    { content: [{ type: 'text', text: 'healthy' }] },
+    { outcome: 'success', content: [{ type: 'text', text: 'healthy' }] },
   );
 
   await candidate.close();

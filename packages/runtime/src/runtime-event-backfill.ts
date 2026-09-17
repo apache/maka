@@ -286,6 +286,7 @@ export function backfillRuntimeEventsFromStoredMessages(
             name: call?.toolName ?? '',
             result: message.content,
             isError: message.isError,
+            ...(message.outcome ? { outcome: message.outcome } : {}),
             ...(message.providerExecuted !== undefined
               ? { providerExecuted: message.providerExecuted }
               : {}),

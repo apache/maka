@@ -2031,7 +2031,8 @@ function projectSessionEvent(
         type: event.type,
         ...identity,
         ...(event.operationId === undefined ? {} : { operationId: event.operationId }),
-        status: event.isError ? 'errored' : 'completed',
+        status:
+          event.outcome === 'aborted' ? 'interrupted' : event.isError ? 'errored' : 'completed',
         ...(event.isError && event.content.kind === 'text' && event.content.sandboxFailure
           ? { sandboxFailureReason: event.content.sandboxFailure.reason }
           : {}),

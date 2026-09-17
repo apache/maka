@@ -128,6 +128,7 @@ function projectMcpTool(tool: McpToolDescriptor, wireServerId: string) {
 
 function projectMcpResult(result: McpCallResult): ClientCapabilityCallResult {
   return {
+    outcome: 'success',
     content: result.content.map((block) => structuredClone(block)),
     ...(result.structuredContent === undefined
       ? {}

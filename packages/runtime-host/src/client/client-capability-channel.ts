@@ -304,6 +304,7 @@ export class ClientCapabilityChannel {
     this.#invocations.set(frame.invocationId, invocation);
     void this.#runInvocation(frame.invocationId, invocation, async (options) =>
       decodeClientCapabilityResult({
+        outcome: 'success',
         content: [],
         structuredContent: await registration.provider.callService!(frame, options),
       }),

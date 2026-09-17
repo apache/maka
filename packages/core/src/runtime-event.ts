@@ -34,6 +34,7 @@
  */
 
 import { isWorkHubActionReceipt, type WorkHubActionReceipt } from './workhub-action-result.js';
+import { isToolCallOutcome } from './tool-result-status.js';
 import { isModelRetryDecision, type ModelRetryDecision } from './model-failure.js';
 
 import {
@@ -226,6 +227,7 @@ export interface RuntimeEventFunctionResponseContent {
   name: string;
   result: unknown;
   isError?: boolean;
+  outcome?: import('./tool-result-status.js').ToolCallOutcome;
   providerExecuted?: boolean;
   /** Raw provider result retained for provider-native replay; never rendered directly. */
   providerOutput?: unknown;
@@ -756,7 +758,7 @@ const FUNCTION_CALL_CONTENT_SHAPE = defineObjectShape<RuntimeEventFunctionCallCo
 );
 const FUNCTION_RESPONSE_CONTENT_SHAPE = defineObjectShape<RuntimeEventFunctionResponseContent>()(
   ['kind', 'id', 'name', 'result'],
-  ['isError', 'providerExecuted', 'providerOutput', 'modelProjection'],
+  ['isError', 'outcome', 'providerExecuted', 'providerOutput', 'modelProjection'],
 );
 const ERROR_CONTENT_SHAPE = defineObjectShape<RuntimeEventErrorContent>()(
   ['kind', 'message'],
@@ -1112,6 +1114,9 @@ function isRuntimeEventContent(value: unknown): value is RuntimeEventContent {
         typeof value.name === 'string' &&
         Object.hasOwn(value, 'result') &&
         (value.isError === undefined || typeof value.isError === 'boolean') &&
+        (value.outcome === undefined ||
+          (isToolCallOutcome(value.outcome) &&
+            (value.outcome !== 'success') === (value.isError === true))) &&
         (value.providerExecuted === undefined || typeof value.providerExecuted === 'boolean') &&
         (value.modelProjection === undefined ||
           decodesDurableToolResultProjection(value.modelProjection))

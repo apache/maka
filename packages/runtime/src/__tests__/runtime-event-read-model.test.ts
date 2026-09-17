@@ -293,6 +293,36 @@ function equivalentLegacyMessages(): StoredMessage[] {
 }
 
 describe('projectRuntimeEventsToStoredMessages', () => {
+  test('preserves declared aborts while projecting old result events unchanged', () => {
+    const oldEvents = baseEvents();
+    const oldResult = projectRuntimeEventsToStoredMessages(oldEvents, {
+      invocations: [invocation],
+    }).messages.find((message) => message.type === 'tool_result');
+    assert.equal(oldResult?.type === 'tool_result' && oldResult.outcome, undefined);
+
+    const events = oldEvents.map(
+      (event): RuntimeEvent =>
+        event.id === 'evt-tool-result'
+          ? {
+              ...event,
+              content: {
+                kind: 'function_response',
+                id: 'tool-1',
+                name: 'Read',
+                result: { kind: 'text', text: 'file contents' },
+                isError: true,
+                outcome: 'aborted',
+              },
+            }
+          : event,
+    );
+    const result = projectRuntimeEventsToStoredMessages(events, {
+      invocations: [invocation],
+    }).messages.find((message) => message.type === 'tool_result');
+    assert.equal(result?.type === 'tool_result' && result.isError, true);
+    assert.equal(result?.type === 'tool_result' && result.outcome, 'aborted');
+  });
+
   test('streaming projection is equivalent to the batch read model', () => {
     const events = baseEvents();
     const streamed = createRuntimeEventStoredMessageProjector({ invocations: [invocation] });

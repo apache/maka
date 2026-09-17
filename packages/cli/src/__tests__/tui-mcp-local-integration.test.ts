@@ -125,6 +125,7 @@ test('local TUI discovers, publishes, invokes, republishes, and closes one MCP c
     assert.deepEqual(
       await firstTool.impl({ value: 'before reconnect' }, toolContext(hostRoot, 'call-1')),
       {
+        outcome: 'success',
         content: [{ type: 'text', text: 'before reconnect' }],
         structuredContent: { echoed: 'before reconnect' },
       },
@@ -148,6 +149,7 @@ test('local TUI discovers, publishes, invokes, republishes, and closes one MCP c
     assert.deepEqual(
       await replacementTool.impl({ value: 'after reconnect' }, toolContext(hostRoot, 'call-2')),
       {
+        outcome: 'success',
         content: [{ type: 'text', text: 'after reconnect' }],
         structuredContent: { echoed: 'after reconnect' },
       },

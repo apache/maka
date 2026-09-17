@@ -1225,6 +1225,7 @@ function projectFunctionResponse(
     ts: event.ts,
     toolUseId,
     isError: event.content.isError === true,
+    ...(event.content.outcome ? { outcome: event.content.outcome } : {}),
     content: resultContent,
     ...(event.content.providerExecuted !== undefined
       ? { providerExecuted: event.content.providerExecuted }

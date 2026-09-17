@@ -322,6 +322,21 @@ interface ComputerToolResult {
   includeScreenshotInModelOutput?: boolean;
 }
 
+type SettledComputerToolResult = ComputerToolResult &
+  (
+    | { outcome: 'success'; error?: never }
+    | { outcome: 'error'; error: ComputerUseErrorCode }
+    | { outcome: 'aborted'; error: 'user_stopped' }
+  );
+
+function settleComputerResult(result: ComputerToolResult): SettledComputerToolResult {
+  if (result.error === 'user_stopped')
+    return { ...result, error: 'user_stopped', outcome: 'aborted' };
+  if (result.error) return { ...result, error: result.error, outcome: 'error' };
+  const { error: _error, ...content } = result;
+  return { ...content, outcome: 'success' };
+}
+
 export const COMPUTER_USE_MODEL_SCREENSHOT_POLICY = {
   list_apps: 'never',
   launch_app: 'never',
@@ -1460,7 +1475,7 @@ export function buildComputerUseTools(deps: {
     }
   }
 
-  const tool: MakaTool<ComputerParams, ComputerToolResult> = {
+  const rawTool: MakaTool<ComputerParams, ComputerToolResult> = {
     name: 'maka_computer',
     displayName: 'Maka Computer',
     // The kind every other builtin declares, and the reason `'computer'` is on
@@ -1579,7 +1594,8 @@ export function buildComputerUseTools(deps: {
       args,
       { abortSignal, sessionId, turnId, toolCallId, emitProgress },
     ): Promise<ComputerToolResult> => {
-      if (abortSignal.aborted) return { text: 'computer aborted before start' };
+      if (abortSignal.aborted)
+        return { text: 'computer aborted before start', error: 'user_stopped' };
       const input = snapshotComputerParams(computerParams.parse(args));
       const includeScreenshotInModelOutput = shouldSendScreenshotToModel(input);
       // Before anything is claimed against a frame or dispatched: an argument
@@ -1650,6 +1666,7 @@ export function buildComputerUseTools(deps: {
               }
             }
             return {
+              error: 'permission_missing',
               text: 'maka_computer failed: permission_missing — Accessibility not granted (System Settings → Privacy & Security → Accessibility)',
             };
           }
@@ -1657,6 +1674,7 @@ export function buildComputerUseTools(deps: {
           if (input.action === 'element_sequence') {
             if (!deps.backend.runSemantic || !deps.backend.captureObservation) {
               return {
+                error: 'unsupported_action',
                 text:
                   'maka_computer.element_sequence failed: unsupported_action — ' +
                   `${MISSING_CAPABILITY} Send the steps one at a time with click_element or ` +
@@ -1665,6 +1683,7 @@ export function buildComputerUseTools(deps: {
             }
             if (!tcc.screenRecording) {
               return {
+                error: 'permission_missing',
                 text: 'maka_computer.element_sequence failed: permission_missing — Screen Recording not granted (System Settings → Privacy & Security → Screen Recording)',
               };
             }
@@ -1869,7 +1888,11 @@ export function buildComputerUseTools(deps: {
             return {
               text: `${headline}${persistedTail}`,
               modelText: `${headline}\n${stepLines}${modelTail}`,
-              ...(stopped && isComputerUseErrorCode(stopped) ? { error: stopped } : {}),
+              ...(stopped
+                ? {
+                    error: isComputerUseErrorCode(stopped) ? stopped : 'outcome_unknown',
+                  }
+                : {}),
               ...(final?.screenshot
                 ? {
                     screenshot: {
@@ -1883,6 +1906,7 @@ export function buildComputerUseTools(deps: {
           if (input.action === 'launch_app') {
             if (!deps.backend.launchApp) {
               return {
+                error: 'unsupported_action',
                 text:
                   'maka_computer.launch_app failed: unsupported_action — ' +
                   `${MISSING_CAPABILITY} Ask the user to open the application, then call ` +
@@ -1913,6 +1937,7 @@ export function buildComputerUseTools(deps: {
           if (input.action === 'list_apps') {
             if (!deps.backend.listApps) {
               return {
+                error: 'unsupported_action',
                 text:
                   'maka_computer.list_apps failed: unsupported_action — ' +
                   `${MISSING_CAPABILITY} Name the application directly in action:"observe" ` +
@@ -2014,6 +2039,7 @@ export function buildComputerUseTools(deps: {
             const record = observations.get(sessionId);
             if (!deps.backend.observeApp || !record?.appId) {
               return {
+                error: 'no_active_frame',
                 text: 'maka_computer.wait failed: no_active_frame — a condition is checked against the window you last observed, and there is none yet. Observe first, or wait with only a duration.',
               };
             }
@@ -2042,6 +2068,7 @@ export function buildComputerUseTools(deps: {
                   };
                 }
                 return {
+                  error: 'target_missing',
                   text: 'maka_computer.wait failed: target_missing — the window being waited on is no longer there',
                 };
               }
@@ -2084,6 +2111,7 @@ export function buildComputerUseTools(deps: {
           if (input.action === 'observe') {
             if (!deps.backend.observeApp) {
               return {
+                error: 'unsupported_action',
                 text:
                   'maka_computer.observe failed: unsupported_action — ' +
                   `${MISSING_CAPABILITY} Nothing on this computer can be read or driven; ` +
@@ -2112,6 +2140,7 @@ export function buildComputerUseTools(deps: {
             const includeScreenshot = input.include_screenshot ?? false;
             if (includeScreenshot && !tcc.screenRecording) {
               return {
+                error: 'permission_missing',
                 text:
                   'maka_computer.observe failed: permission_missing — Screen Recording not ' +
                   'granted (System Settings → Privacy & Security → Screen Recording). ' +
@@ -2146,6 +2175,7 @@ export function buildComputerUseTools(deps: {
             const resolvedApp = await resolveAppName(input.app, abortSignal);
             if (resolvedApp && 'ambiguous' in resolvedApp) {
               return {
+                error: 'ambiguous_target',
                 text:
                   `maka_computer.observe failed: ambiguous_target — "${input.app}" matches ` +
                   `${resolvedApp.ambiguous.join(', ')}. Name one of them.`,
@@ -2271,6 +2301,7 @@ export function buildComputerUseTools(deps: {
           if (input.action === 'screenshot') {
             if (!deps.backend.observeApp) {
               return {
+                error: 'unsupported_action',
                 text:
                   'maka_computer.screenshot failed: unsupported_action — ' +
                   `${MISSING_CAPABILITY} Use action:"observe", which returns the same window ` +
@@ -2279,6 +2310,7 @@ export function buildComputerUseTools(deps: {
             }
             if (!tcc.screenRecording) {
               return {
+                error: 'permission_missing',
                 text:
                   'maka_computer.screenshot failed: permission_missing — ' +
                   'Screen Recording not granted ' +
@@ -2305,7 +2337,10 @@ export function buildComputerUseTools(deps: {
               );
             }
             if (!screenshotObservation.screenshot) {
-              return { text: 'maka_computer.screenshot failed: capture_failed' };
+              return {
+                text: 'maka_computer.screenshot failed: capture_failed',
+                error: 'capture_failed',
+              };
             }
             return {
               text: JSON.stringify({
@@ -2341,6 +2376,7 @@ export function buildComputerUseTools(deps: {
           ) {
             if (!deps.backend.runSemantic) {
               return {
+                error: 'unsupported_action',
                 text:
                   `maka_computer.${input.action} failed: unsupported_action — ` +
                   `${MISSING_CAPABILITY} No element offers it either; report the limit instead ` +
@@ -2349,6 +2385,7 @@ export function buildComputerUseTools(deps: {
             }
             if (!tcc.screenRecording) {
               return {
+                error: 'permission_missing',
                 text: `maka_computer.${input.action} failed: permission_missing — Screen Recording not granted (System Settings → Privacy & Security → Screen Recording)`,
               };
             }
@@ -2619,6 +2656,7 @@ export function buildComputerUseTools(deps: {
           if (requiresActionLease) {
             if (!tcc.screenRecording) {
               return {
+                error: 'permission_missing',
                 text: `maka_computer.${action.type} failed: permission_missing — Screen Recording not granted (System Settings → Privacy & Security → Screen Recording)`,
               };
             }
@@ -2631,6 +2669,7 @@ export function buildComputerUseTools(deps: {
           const capturing = action.type === 'screenshot';
           if (capturing && !tcc.screenRecording) {
             return {
+              error: 'permission_missing',
               text: 'maka_computer failed: permission_missing — Screen Recording not granted (System Settings → Privacy & Security → Screen Recording)',
             };
           }
@@ -2788,6 +2827,11 @@ export function buildComputerUseTools(deps: {
         ],
       };
     },
+  };
+  const tool: MakaTool<ComputerParams, ComputerToolResult> = {
+    ...rawTool,
+    resultOutcome: (output) => (output as SettledComputerToolResult).outcome,
+    impl: async (args, context) => settleComputerResult(await rawTool.impl(args, context)),
   };
   const debug = deps.debug;
   if (debug) {
