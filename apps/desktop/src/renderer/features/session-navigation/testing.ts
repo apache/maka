@@ -51,6 +51,7 @@ export {
 } from './model/session-selection.js';
 export {
   readSessionListViewMode,
+  SESSION_LIST_EXPANDED_DEFAULT_WIDTH,
   writeSessionListViewMode,
 } from './model/session-list-layout.js';
 export { createSessionRailLayoutStore } from './model/session-rail-layout-store.js';

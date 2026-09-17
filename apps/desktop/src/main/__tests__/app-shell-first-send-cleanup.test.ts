@@ -252,9 +252,10 @@ describe('composer first-send cleanup', () => {
     assert.equal(settingsUpdates, 0);
   });
 
-  it('does not re-send a consumed permission choice on the next task', async () => {
+  it('retains the permission choice across refused and throwing first sends, then consumes it on success', async () => {
     const createInputs: unknown[] = [];
     let cleared = 0;
+    const removed: string[] = [];
     const restoreWindow = installWindow({
       newTasks: {
         create: async (_target: unknown, input: unknown) => {
@@ -263,20 +264,19 @@ describe('composer first-send cleanup', () => {
         },
       },
       sessions: {
-        submitMessage: async () => ({
-          ok: true,
-          attachments: [],
-          skillInvocation: { loaded: [], failed: [] },
-        }),
+        remove: async (id: string) => { removed.push(id); },
+        submitMessage: async () => {
+          if (createInputs.length === 1) {
+            return { ok: false, reason: 'skill_invocation_failed', skillInvocation: { loaded: [], failed: [] } };
+          }
+          if (createInputs.length === 2) throw new Error('First submission failed');
+          return { ok: true, attachments: [], skillInvocation: { loaded: [], failed: [] } };
+        },
       },
     });
 
     try {
-      // The choice is keyed by Host/project target, not by draft, so task B on
-      // the same target sees whatever task A left behind. Consuming it on a
-      // successful create is what keeps a one-task elevation from becoming a
-      // standing one.
-      let choice: 'bypass' | undefined = 'bypass';
+      let choice: 'ask' | undefined = 'ask';
       const deps = () => ({
         ...createActionsDeps(),
         newChatPermissionChoice: choice,
@@ -285,15 +285,24 @@ describe('composer first-send cleanup', () => {
           choice = undefined;
         },
       });
-      assert.equal(await createAppShellChatActions(deps()).send('task A'), true);
+      assert.equal(await createAppShellChatActions(deps()).send('task A'), false);
+      assert.equal(choice, 'ask');
+      assert.deepEqual(removed, ['session-1']);
+      assert.equal(await createAppShellChatActions(deps()).send('retry task A'), false);
+      assert.equal(choice, 'ask');
+      assert.deepEqual(removed, ['session-1', 'session-2']);
+      assert.equal(await createAppShellChatActions(deps()).send('retry task A again'), true);
+      assert.equal(choice, undefined);
       assert.equal(await createAppShellChatActions(deps()).send('task B'), true);
     } finally {
       restoreWindow();
     }
 
     assert.equal(cleared, 1);
-    assert.equal((createInputs[0] as { permissionMode?: unknown }).permissionMode, 'bypass');
-    assert.ok(!('permissionMode' in (createInputs[1] as Record<string, unknown>)));
+    assert.equal((createInputs[0] as { permissionMode?: unknown }).permissionMode, 'ask');
+    assert.equal((createInputs[1] as { permissionMode?: unknown }).permissionMode, 'ask');
+    assert.equal((createInputs[2] as { permissionMode?: unknown }).permissionMode, 'ask');
+    assert.ok(!('permissionMode' in (createInputs[3] as Record<string, unknown>)));
   });
 
   it('creates the first session on the selected Runtime Host and project', async () => {

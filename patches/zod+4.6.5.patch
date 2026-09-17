@@ -1,22 +1,22 @@
 diff --git a/node_modules/zod/src/v4/core/memoizer.ts b/node_modules/zod/src/v4/core/memoizer.ts
-index 61eb6bf..c2989c1 100644
+index c2145c0..6fc6cde 100644
 --- a/node_modules/zod/src/v4/core/memoizer.ts
 +++ b/node_modules/zod/src/v4/core/memoizer.ts
-@@ -196,9 +196,6 @@ const memo: $ZodMemoizer = {
-
+@@ -240,9 +240,6 @@ const memo: $ZodMemoizer = {
    attach(inst) {
      let isRecursiveInst: boolean | undefined;
--    // `bucket` memoized for one parse; a recursive schema is re-entered many times and its bucket never changes
+     let rechecked = false;
+-    // a recursive schema is re-entered many times per parse and its bucket never changes
 -    let lastCtx: object | undefined;
--    let lastBucket: Map<object, Entry> | undefined;
-
+-    let lastBucket: WeakMap<object, Entry> | undefined;
+ 
      // Wraps `parse` in a deferred so it sees the container's final parse. Core's own deferred copies `parse` into `run` when there are no checks, and it ran first, so `run` is patched to match; with checks, `run` reads `parse` dynamically.
      inst._zod.deferred ??= [];
-@@ -225,14 +222,7 @@ const memo: $ZodMemoizer = {
+@@ -272,14 +269,7 @@ const memo: $ZodMemoizer = {
            (ctx as WithState)[STATE] = state;
          }
-
--        let bucket: Map<object, Entry>;
+ 
+-        let bucket: WeakMap<object, Entry>;
 -        if (lastCtx === ctx) {
 -          bucket = lastBucket!;
 -        } else {
@@ -25,13 +25,13 @@ index 61eb6bf..c2989c1 100644
 -          lastBucket = bucket;
 -        }
 +        const bucket = bucketFor(state, inst);
-
+ 
          const hit = bucket.get(input);
          if (hit) {
-@@ -248,12 +238,18 @@ const memo: $ZodMemoizer = {
+@@ -295,12 +285,18 @@ const memo: $ZodMemoizer = {
            return payload;
          }
-
+ 
 +        const previousHandoff = handoff;
          handoff = bucket;
          const depth = open.length;
@@ -48,25 +48,25 @@ index 61eb6bf..c2989c1 100644
 +          // A container that rejected its input outright allocated nothing.
 +          entry = open.length > depth ? open.pop()! : undefined;
 +        }
-
+ 
          // Both paths written out so the sync one allocates no closure. It runs once per node, and capturing here cost more than everything else combined.
          if (result instanceof Promise) {
 diff --git a/node_modules/zod/v4/core/memoizer.cjs b/node_modules/zod/v4/core/memoizer.cjs
-index b659b44..c8d5ff5 100644
+index cab19c2..732d2f4 100644
 --- a/node_modules/zod/v4/core/memoizer.cjs
 +++ b/node_modules/zod/v4/core/memoizer.cjs
-@@ -187,9 +187,6 @@ const memo = {
-     attach(inst) {
+@@ -251,9 +251,6 @@ const memo = {
          var _a;
          let isRecursiveInst;
--        // `bucket` memoized for one parse; a recursive schema is re-entered many times and its bucket never changes
+         let rechecked = false;
+-        // a recursive schema is re-entered many times per parse and its bucket never changes
 -        let lastCtx;
 -        let lastBucket;
          // Wraps `parse` in a deferred so it sees the container's final parse. Core's own deferred copies `parse` into `run` when there are no checks, and it ran first, so `run` is patched to match; with checks, `run` reads `parse` dynamically.
          (_a = inst._zod).deferred ?? (_a.deferred = []);
          inst._zod.deferred.push(() => {
-@@ -213,15 +210,7 @@ const memo = {
-                     state = { buckets: new Map(), backEdges: undefined };
+@@ -282,15 +279,7 @@ const memo = {
+                     state = { buckets: new WeakMap(), backEdges: undefined };
                      ctx[STATE] = state;
                  }
 -                let bucket;
@@ -82,7 +82,7 @@ index b659b44..c8d5ff5 100644
                  const hit = bucket.get(input);
                  if (hit) {
                      payload.value = hit.value;
-@@ -237,12 +226,19 @@ const memo = {
+@@ -306,12 +295,19 @@ const memo = {
                      }
                      return payload;
                  }
@@ -107,21 +107,21 @@ index b659b44..c8d5ff5 100644
                  if (result instanceof Promise) {
                      return result.then((r) => {
 diff --git a/node_modules/zod/v4/core/memoizer.js b/node_modules/zod/v4/core/memoizer.js
-index ce6e4b3..5081884 100644
+index 393fb06..222d470 100644
 --- a/node_modules/zod/v4/core/memoizer.js
 +++ b/node_modules/zod/v4/core/memoizer.js
-@@ -180,9 +180,6 @@ const memo = {
-     attach(inst) {
+@@ -221,9 +221,6 @@ const memo = {
          var _a;
          let isRecursiveInst;
--        // `bucket` memoized for one parse; a recursive schema is re-entered many times and its bucket never changes
+         let rechecked = false;
+-        // a recursive schema is re-entered many times per parse and its bucket never changes
 -        let lastCtx;
 -        let lastBucket;
          // Wraps `parse` in a deferred so it sees the container's final parse. Core's own deferred copies `parse` into `run` when there are no checks, and it ran first, so `run` is patched to match; with checks, `run` reads `parse` dynamically.
          (_a = inst._zod).deferred ?? (_a.deferred = []);
          inst._zod.deferred.push(() => {
-@@ -206,15 +203,7 @@ const memo = {
-                     state = { buckets: new Map(), backEdges: undefined };
+@@ -252,15 +249,7 @@ const memo = {
+                     state = { buckets: new WeakMap(), backEdges: undefined };
                      ctx[STATE] = state;
                  }
 -                let bucket;
@@ -137,7 +137,7 @@ index ce6e4b3..5081884 100644
                  const hit = bucket.get(input);
                  if (hit) {
                      payload.value = hit.value;
-@@ -230,12 +219,19 @@ const memo = {
+@@ -276,12 +265,19 @@ const memo = {
                      }
                      return payload;
                  }

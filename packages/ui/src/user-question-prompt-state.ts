@@ -28,10 +28,6 @@ export function createQuestionDrafts(questions: readonly UserQuestion[]): Questi
   return questions.map(() => null);
 }
 
-export function canLeaveQuestion(draft: QuestionAnswerDraft): boolean {
-  return draft?.kind !== 'other' || draft.value.trim().length > 0;
-}
-
 export function buildUserQuestionResponse(
   request: UserQuestionRequest,
   drafts: readonly QuestionAnswerDraft[],

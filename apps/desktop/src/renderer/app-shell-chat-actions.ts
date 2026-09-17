@@ -319,7 +319,7 @@ export function createAppShellChatActions(deps: {
       return false;
     }
     let optimisticSessionId: string | undefined;
-    let optimisticMessageId: string | undefined;
+    const messageId = crypto.randomUUID();
     // #1433: the composer creates the session BEFORE it sends, so a first
     // send that never lands has to take the session with it. Set the moment
     // creation succeeds, cleared the moment the send does — while it holds a
@@ -342,7 +342,6 @@ export function createAppShellChatActions(deps: {
       }
     };
     try {
-      const messageId = crypto.randomUUID();
       async function submitIntoSession(sessionId: string, messageId: string) {
         const attachmentItems =
           pending?.length
@@ -401,7 +400,6 @@ export function createAppShellChatActions(deps: {
           return false;
         }
         optimisticSessionId = session.id;
-        optimisticMessageId = messageId;
         // Stage the first row before activation. `setActiveId` projects this
         // session-owned transient in the same state transition that replaces
         // the new-chat surface, so the empty-session Maka hero cannot paint
@@ -412,9 +410,6 @@ export function createAppShellChatActions(deps: {
           ...copiedArray('quotes', quotes),
           inlineReferences: [],
         });
-        // Consumed: the choice is now the created Session's, not the next
-        // draft's. A failed create leaves it in place so a retry keeps it.
-        if (newChatPermissionChoice) clearNewChatPermissionChoice();
         // Main owns observation-before-dispatch. This only selects the local
         // surface; saving a draft never waits for the Host's event stream.
         await activateSessionForFirstSend(session.id);
@@ -429,6 +424,10 @@ export function createAppShellChatActions(deps: {
           return false;
         }
         unsentSessionId = undefined;
+        // A refused first send deletes the Session, so its draft choice must
+        // survive for retry. Clear only while this Session still owns the UI.
+        if (newChatPermissionChoice && activeIdRef.current === session.id)
+          clearNewChatPermissionChoice();
         // The callback fires only when this send's first message projected;
         // an unreconciled first message stays unreported.
         if (submitted.kind === 'projected')
@@ -438,7 +437,6 @@ export function createAppShellChatActions(deps: {
       }
       if (!onFollowLatest(initialSessionId)) return false;
       optimisticSessionId = initialSessionId;
-      optimisticMessageId = messageId;
       publishTransientUserMessage(initialSessionId, {
         id: messageId, text: options.displayText ?? text, transientPlacement: 'current_turn',
         ...copiedArray('directoryReferences', directoryReferences),
@@ -466,8 +464,8 @@ export function createAppShellChatActions(deps: {
           })) ||
         (!initialSessionId && isNewChatSendSurfaceActive(sendOwner));
       await discardUnsentSession();
-      if (optimisticSessionId && optimisticMessageId) {
-        removeTransientMessage(optimisticSessionId, optimisticMessageId);
+      if (optimisticSessionId) {
+        removeTransientMessage(optimisticSessionId, messageId);
       }
       // Which surface is allowed to hear about this failure. The id alone is
       // not it: `selectNavigation` never clears `activeId` (nav-selection.ts),
