@@ -67,6 +67,9 @@
 
 export type EditMatchStrategy = 'exact' | 'line-trimmed' | 'whitespace' | 'escape';
 
+/** An explicit matcher rejection, not an unexpected implementation failure. */
+export class EditMatchRejectedError extends Error {}
+
 export interface EditMatch {
   /** The full new file content after the replacement. */
   content: string;
@@ -105,10 +108,12 @@ export function computeEditedSource(
   const MAX_FUZZY_SOURCE_LINES = 50_000;
 
   if (oldString === newString) {
-    throw new Error(`No changes to apply in ${where}: old_string and new_string are identical`);
+    throw new EditMatchRejectedError(
+      `No changes to apply in ${where}: old_string and new_string are identical`,
+    );
   }
   if (oldString === '') {
-    throw new Error(`old_string must not be empty in ${where}`);
+    throw new EditMatchRejectedError(`old_string must not be empty in ${where}`);
   }
 
   // Exact match first — counted via indexOf so a large file is not split into an
@@ -118,18 +123,20 @@ export function computeEditedSource(
     return finish(source, oldString, newString, 'exact');
   }
   if (exactCount > 1) {
-    throw new Error(`old_string is not unique in ${where} (${exactCount} matches)`);
+    throw new EditMatchRejectedError(
+      `old_string is not unique in ${where} (${exactCount} matches)`,
+    );
   }
 
   // Exact failed — entering fuzzy territory. Apply fuzzy-only guards up front so
   // a too-short, binary, or oversized input is rejected before any scanning.
   if (oldString.trim().length < MIN_FUZZY_OLD_STRING_LENGTH) {
-    throw new Error(
+    throw new EditMatchRejectedError(
       `old_string is too short for a non-exact match in ${where}; provide a longer, exact snippet`,
     );
   }
   if (source.indexOf(String.fromCharCode(0)) !== -1) {
-    throw new Error(
+    throw new EditMatchRejectedError(
       `Refusing a non-exact match in ${where}: the file looks binary (contains a NUL byte). Re-read it and pass exact text.`,
     );
   }
@@ -137,7 +144,7 @@ export function computeEditedSource(
     source.length > MAX_FUZZY_SOURCE_CHARS ||
     countOccurrences(source, '\n') + 1 > MAX_FUZZY_SOURCE_LINES
   ) {
-    throw new Error(
+    throw new EditMatchRejectedError(
       `Refusing a non-exact match in ${where}: the file is too large to fuzzy-match safely. Re-read it and pass exact text.`,
     );
   }
@@ -154,25 +161,25 @@ export function computeEditedSource(
     const spans = dedupeInContent(source, finder(source, oldString));
     if (spans.length === 0) continue;
     if (spans.length > 1) {
-      throw new Error(
+      throw new EditMatchRejectedError(
         `old_string matched ${spans.length} different ${name} candidates in ${where}; provide more exact context to disambiguate`,
       );
     }
     const span = spans[0];
     if (source.indexOf(span) !== source.lastIndexOf(span)) {
-      throw new Error(
+      throw new EditMatchRejectedError(
         `old_string matched a ${name} span that occurs more than once in ${where}; provide more exact context to disambiguate`,
       );
     }
     if (isDisproportionate(span, oldString)) {
-      throw new Error(
+      throw new EditMatchRejectedError(
         `Refusing ${name} match in ${where}: the matched span is much larger than old_string. Re-read the file and pass the exact text to replace.`,
       );
     }
     return finish(source, span, newString, name);
   }
 
-  throw new Error(
+  throw new EditMatchRejectedError(
     `old_string not found in ${where}; it must match the file's text including whitespace and indentation`,
   );
 

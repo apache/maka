@@ -25,9 +25,19 @@ import { createAgentGraphControlStore } from './agent-graph-control-store.js';
 import { createSqliteGoalAuthority } from './goal-authority.js';
 import { createSqliteInteractionStore } from './interaction-store.js';
 import type { ExecutionPersistenceProvider } from './execution-persistence-provider.js';
+import type { ExecutionWorkspaceProofVerifiers } from './execution-workspace-authority-internal.js';
+import {
+  adoptNonWorkspaceStateForWorkspaceAuthorityInternal,
+  commitWorkspaceBaselineInternal,
+  commitWorkspaceSuccessorInternal,
+  commitManagedMutationTerminalInternal,
+  readActiveManagedMutationInternal,
+  registerWorkspaceSuccessorCandidateVerifierInternal,
+  registerManagedMutationNoEffectVerifierInternal,
+} from './workspace-version-authority-internal.js';
 
 export const localExecutionPersistenceProvider: ExecutionPersistenceProvider = Object.freeze({
-  async open({ canonicalPath }: { canonicalPath: string }) {
+  async open({ canonicalPath, rootId }: { canonicalPath: string; rootId: string }) {
     const closes: Array<() => void | Promise<void>> = [];
     let closing: Promise<void> | undefined;
     const close = () =>
@@ -60,6 +70,26 @@ export const localExecutionPersistenceProvider: ExecutionPersistenceProvider = O
       closes.push(() => interactionStore.close());
       await Promise.all([sessionStore.ready(), agentRunStore.ready?.(), interactionStore.ready()]);
       return {
+        async openWorkspaceAuthority(verifiers: ExecutionWorkspaceProofVerifiers) {
+          const store = runtime.runtimeEventStore;
+          adoptNonWorkspaceStateForWorkspaceAuthorityInternal(store, rootId);
+          registerWorkspaceSuccessorCandidateVerifierInternal(store, verifiers.successor);
+          registerManagedMutationNoEffectVerifierInternal(store, verifiers.noEffect);
+          return {
+            commitBaseline: async (proof: object) =>
+              commitWorkspaceBaselineInternal(store, verifiers.baseline(proof)),
+            commitSuccessor: (input: Parameters<typeof commitWorkspaceSuccessorInternal>[1]) =>
+              commitWorkspaceSuccessorInternal(store, input),
+            commitNoEffect: (input: Parameters<typeof commitManagedMutationTerminalInternal>[1]) =>
+              commitManagedMutationTerminalInternal(store, input),
+            readHead: (workspaceId: string, epochId: string) =>
+              store.readWorkspaceHead(workspaceId, epochId),
+            readEpoch: (workspaceId: string, epochId: string) =>
+              store.readWorkspaceEpoch(workspaceId, epochId),
+            readReservation: (instanceId: string) =>
+              readActiveManagedMutationInternal(store, instanceId),
+          };
+        },
         sessionStore,
         agentRunStore,
         runtimeEventStore: runtime.runtimeEventStore,

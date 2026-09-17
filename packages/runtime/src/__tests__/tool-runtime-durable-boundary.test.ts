@@ -31,8 +31,209 @@ import type {
   ToolPreparedCommit,
 } from '../runtime-commit-sink.js';
 import { ToolRuntime, type MakaTool } from '../tool-runtime.js';
+import { MANAGED_MUTATION_EXECUTION_PROFILE_V1_DIGEST } from '@maka/core/runtime-event';
+import { canonicalToolArgsHash } from '../runtime-commit-sink.js';
+
+function managedMutation() {
+  return {
+    protocol: 'managed_mutation_v2' as const,
+    repositoryId: `repository_${'1'.repeat(32)}`,
+    workspaceId: `workspace_${'1'.repeat(32)}`,
+    workspaceEpochId: `epoch_${'1'.repeat(32)}`,
+    workspaceInstanceId: `instance_${'1'.repeat(32)}`,
+    objectFormat: 'sha1' as const,
+    baseWorkspaceVersionId: `version_${'1'.repeat(32)}`,
+    baseAcceptedEventId: 'base-event',
+    baseHeadRevision: 1,
+    baseCommitOid: 'a'.repeat(40),
+    baseTreeOid: 'b'.repeat(40),
+    expectedPath: 'hello.txt',
+    pathPolicyVersion: 3 as const,
+    executionProfileDigest: MANAGED_MUTATION_EXECUTION_PROFILE_V1_DIGEST,
+  };
+}
 
 describe('ToolRuntime durable boundary', () => {
+  for (const failure of ['missing', 'changed', 'throw'] as const) {
+    it(`does not publish or fall back when managed owner outcome is ${failure}`, async () => {
+      let genericWrites = 0;
+      const args = { path: 'hello.txt', content: 'new\n' };
+      const harness = makeHarness(
+        {
+          commitToolPrepared: async () => ({ created: true, runtimeEventSeq: 1 }),
+          commitToolOutcome: async () => {
+            genericWrites++;
+            return { created: true, runtimeEventSeq: 2 };
+          },
+        },
+        undefined,
+        'run-1',
+        {
+          prepareManagedMutation: async () => ({
+            mutation: managedMutation(),
+            baseContent: 'old\n',
+            canonicalArgsHash: canonicalToolArgsHash('Write', args),
+            commitOutcome: async (outcome, result) => {
+              assert.ok(Object.isFrozen(result));
+              assert.ok(Object.isFrozen(result?.providerResult));
+              if (failure === 'throw') throw new Error('owner lost');
+              if (failure === 'missing') return undefined as never;
+              return { ...outcome.runtimeEvent, ts: outcome.runtimeEvent.ts + 1 };
+            },
+          }),
+        },
+      );
+      await assert.rejects(
+        harness.execute(
+          {
+            ...tool(() => {
+              throw new Error('checkout forbidden');
+            }),
+            name: 'Write',
+          },
+          undefined,
+          args,
+        ),
+        /T2 runtime commit failed/,
+      );
+      assert.equal(genericWrites, 0);
+      assert.equal(harness.events.filter((event) => event.type === 'tool_result').length, 0);
+    });
+  }
+
+  it('finishes a bounded pure managed operation when cancellation arrives after T1', async () => {
+    const controller = new AbortController();
+    const args = { path: 'hello.txt', content: 'new\n' };
+    let managedWrites = 0;
+    let reads = 0;
+    const harness = makeHarness(
+      {
+        commitToolPrepared: async () => {
+          controller.abort();
+          return { created: true, runtimeEventSeq: 1 };
+        },
+        commitToolOutcome: async () => {
+          throw new Error('generic T2 forbidden');
+        },
+      },
+      undefined,
+      'run-1',
+      {
+        readPermissionMode: async () => {
+          if (++reads > 1) throw new Error('late boundary read');
+          return 'ask';
+        },
+        prepareManagedMutation: async () => ({
+          mutation: managedMutation(),
+          baseContent: 'old\n',
+          canonicalArgsHash: canonicalToolArgsHash('Write', args),
+          commitOutcome: async (outcome) => {
+            managedWrites++;
+            return outcome.runtimeEvent;
+          },
+        }),
+      },
+    );
+    await harness.execute(
+      {
+        ...tool(() => {
+          throw new Error('checkout forbidden');
+        }),
+        name: 'Write',
+      },
+      controller.signal,
+      args,
+    );
+    assert.equal(managedWrites, 1);
+    assert.equal(reads, 1);
+  });
+
+  it('rejects managed boundary-read failure before creating a reservation', async () => {
+    let prepared = 0;
+    const harness = makeHarness(
+      {
+        commitToolPrepared: async () => {
+          prepared++;
+          return { created: true, runtimeEventSeq: 1 };
+        },
+        commitToolOutcome: async () => {
+          throw new Error('generic T2 forbidden');
+        },
+      },
+      undefined,
+      'run-1',
+      {
+        readExecutionBoundary: async () => {
+          throw new Error('boundary unavailable');
+        },
+        prepareManagedMutation: async () => {
+          throw new Error('must not prepare');
+        },
+      },
+    );
+    await assert.rejects(
+      harness.execute(
+        {
+          ...tool(() => {
+            throw new Error('checkout forbidden');
+          }),
+          name: 'Write',
+        },
+        undefined,
+        { path: 'hello.txt', content: 'new' },
+      ),
+      /boundary unavailable/,
+    );
+    assert.equal(prepared, 0);
+  });
+
+  it('routes managed Write through accepted content and owner T2, never the checkout implementation', async () => {
+    const order: string[] = [];
+    const harness = makeHarness(
+      {
+        commitToolPrepared: async (input) => {
+          assert.equal(
+            input.dispatchRuntimeEvent.actions?.toolDispatch?.managedMutation?.expectedPath,
+            'hello.txt',
+          );
+          order.push('t1');
+          return { created: true, runtimeEventSeq: 1 };
+        },
+        commitToolOutcome: async () => {
+          throw new Error('generic T2 forbidden');
+        },
+      },
+      order,
+      'run-1',
+      {
+        prepareManagedMutation: async () => ({
+          mutation: managedMutation(),
+          baseContent: 'old\n',
+          canonicalArgsHash: canonicalToolArgsHash('Write', {
+            path: 'hello.txt',
+            content: 'new\n',
+          }),
+          commitOutcome: async (outcome, transformed) => {
+            assert.equal(transformed?.content, 'new\n');
+            order.push('managed-t2');
+            return outcome.runtimeEvent;
+          },
+        }),
+      },
+    );
+    const result = await harness.execute(
+      {
+        ...tool(() => {
+          throw new Error('checkout forbidden');
+        }),
+        name: 'Write',
+      },
+      undefined,
+      { path: 'hello.txt', content: 'new\n' },
+    );
+    assert.deepEqual(order, ['t1', 'managed-t2', 'published-result']);
+    assert.equal((result as { kind: string }).kind, 'file_diff');
+  });
   it('does not invoke the tool or publish a result when T1 fails', async () => {
     let implementationCalls = 0;
     const harness = makeHarness({
@@ -746,13 +947,17 @@ function makeHarness(
   return {
     messages,
     events,
-    execute: async (target: MakaTool, abortSignal: AbortSignal = new AbortController().signal) =>
+    execute: async (
+      target: MakaTool,
+      abortSignal: AbortSignal = new AbortController().signal,
+      input: unknown = {},
+    ) =>
       (
         await runtime.settleToolCall({
           tool: target,
           turnId: 'turn-1',
           toolCallId: 'provider-call-1',
-          input: {},
+          input,
           abortSignal,
           eventSink: {
             push: (event) => {

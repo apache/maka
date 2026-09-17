@@ -24,6 +24,7 @@ import { join } from 'node:path';
 import { after, test } from 'node:test';
 import { RunSealedError } from '@maka/core/runtime-event-store';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
+import type { WorkspaceBaselineAuthorityInput } from '@maka/core/workspace-version-authority';
 import { buildInvocationOpenedEvent } from '@maka/core/runtime-invocation';
 import { RuntimeTranscriptOversizedTurnError } from '../runtime-transcript-query.js';
 import { invocationOpening } from './fixtures/invocation-opening.js';
@@ -37,6 +38,7 @@ import type { GoalAuthorityRecord } from '@maka/core/goal';
 import { WORKHUB_COORDINATION_SESSION_ID as HUB } from '@maka/core/session';
 import { createMemoryExecutionPersistenceProvider } from '../test-only/memory-execution-persistence.js';
 import { localExecutionPersistenceProvider } from '../local-execution-persistence.js';
+import { openExecutionWorkspaceAuthorityInternal } from '../execution-workspace-authority-internal.js';
 import type { ExecutionPersistenceProvider } from '../execution-persistence-provider.js';
 import {
   openInteractiveExecutionStoresForWrite,
@@ -73,7 +75,232 @@ import {
 } from './fixtures/control-directory-hygiene.js';
 
 after(removeTrackedControlDirectories);
+test('Local: workspace authority shares group revocation without exposing raw persistence', async () => {
+  await withProvider(localExecutionPersistenceProvider, async (stores) => {
+    const rejectProof = () => {
+      throw new Error('Unrecognized proof');
+    };
+    const verifiers = { baseline: rejectProof, successor: rejectProof, noEffect: rejectProof };
+    const authority = await openExecutionWorkspaceAuthorityInternal(stores, verifiers);
+    assert.equal(await authority.readHead('absent-workspace', 'absent-epoch'), undefined);
+    assert.equal(await authority.readReservation('absent-instance'), undefined);
+    assert.deepEqual(Object.keys(authority).sort(), [
+      'commitBaseline',
+      'commitNoEffect',
+      'commitSuccessor',
+      'readEpoch',
+      'readHead',
+      'readReservation',
+    ]);
+    await assert.rejects(authority.commitBaseline({}), /Unrecognized proof/u);
+    await stores.sessionStore.close?.();
+    await assert.rejects(authority.readHead('absent-workspace', 'absent-epoch'));
+    await assert.rejects(authority.commitBaseline({}));
+    await assert.rejects(openExecutionWorkspaceAuthorityInternal(stores, verifiers));
+  });
+});
+
 type Stores = Awaited<ReturnType<typeof openInteractiveExecutionStoresForWrite>>;
+test('Local: workspace proof owner is fixed and verified baseline survives group reopen', async () => {
+  await withProvider(localExecutionPersistenceProvider, async (stores, root, owner) => {
+    await stores.sessionStore.create(sessionInput(root));
+    const proof = Object.freeze({});
+    const baseline: WorkspaceBaselineAuthorityInput = {
+      epochOpenedEventId: 'workspace-epoch-test',
+      baselineAcceptedEventId: 'workspace-baseline-test',
+      committedAt: 1,
+      epoch: {
+        repositoryId: 'repository_' + '1'.repeat(32),
+        workspaceId: 'workspace_' + '2'.repeat(32),
+        workspaceEpochId: 'epoch_' + '3'.repeat(32),
+        workspaceInstanceId: 'instance_' + '4'.repeat(32),
+        mode: 'managed_worktree',
+        objectFormat: 'sha1',
+        sourceCommitOid: '1'.repeat(40),
+        sourceTreeOid: '2'.repeat(40),
+        materializationProfileDigest: `sha256:${'3'.repeat(64)}`,
+        materializationSemantics: 'git_tree_materialized_with_fixed_config_v1',
+        policyHash: `sha256:${'4'.repeat(64)}`,
+      },
+      baseline: {
+        workspaceVersionId: 'version_' + '5'.repeat(32),
+        commitOid: '5'.repeat(40),
+        treeOid: '2'.repeat(40),
+        treeDeltaDigest: `sha256:${'6'.repeat(64)}`,
+        changedFileCount: 0,
+        deletedFileCount: 0,
+      },
+    };
+    const rejectProof = () => {
+      throw new Error('Unrecognized proof');
+    };
+    const verifiers = {
+      baseline: (candidate: object) => {
+        assert.equal(candidate, proof);
+        return baseline;
+      },
+      successor: rejectProof,
+      noEffect: rejectProof,
+    };
+    const [authority, same] = await Promise.all([
+      openExecutionWorkspaceAuthorityInternal(stores, verifiers),
+      openExecutionWorkspaceAuthorityInternal(stores, verifiers),
+    ]);
+    assert.equal(authority, same);
+    await assert.rejects(
+      openExecutionWorkspaceAuthorityInternal(stores, { ...verifiers }),
+      /already selected/u,
+    );
+    verifiers.baseline = rejectProof;
+    const accepted = await authority.commitBaseline(proof);
+    assert.equal(accepted.created, true);
+    assert.deepEqual(
+      await authority.readHead(baseline.epoch.workspaceId, baseline.epoch.workspaceEpochId),
+      accepted.head,
+    );
+    await stores.sessionStore.close!();
+    const reopened = await openInteractiveExecutionStoresForWrite(owner.lease);
+    try {
+      const reader = await openExecutionWorkspaceAuthorityInternal(reopened, verifiers);
+      assert.deepEqual(
+        await reader.readHead(baseline.epoch.workspaceId, baseline.epoch.workspaceEpochId),
+        accepted.head,
+      );
+      await assert.rejects(
+        authority.readHead(baseline.epoch.workspaceId, baseline.epoch.workspaceEpochId),
+      );
+    } finally {
+      await reopened.sessionStore.close!();
+    }
+  });
+});
+
+test('workspace authority rejects forged groups and unsupported providers without fallback', async () => {
+  const rejectProof = () => {
+    throw new Error('Unrecognized proof');
+  };
+  const verifiers = { baseline: rejectProof, successor: rejectProof, noEffect: rejectProof };
+  await assert.rejects(
+    openExecutionWorkspaceAuthorityInternal({}, verifiers),
+    /Unrecognized execution stores/u,
+  );
+  await withProvider(createMemoryExecutionPersistenceProvider(), async (stores) => {
+    await assert.rejects(
+      openExecutionWorkspaceAuthorityInternal(stores, verifiers),
+      /no workspace authority/u,
+    );
+    assert.deepEqual(await stores.sessionStore.listHeaders(), []);
+  });
+});
+
+test('Local: workspace calls participate in group close drain', async () => {
+  let enter!: () => void;
+  let release!: () => void;
+  const entered = new Promise<void>((resolve) => {
+    enter = resolve;
+  });
+  const released = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const provider: ExecutionPersistenceProvider = {
+    async open(input) {
+      const persistence = await localExecutionPersistenceProvider.open(input);
+      return {
+        ...persistence,
+        async openWorkspaceAuthority(verifiers) {
+          const backend = await persistence.openWorkspaceAuthority!(verifiers);
+          return {
+            ...backend,
+            async readHead(workspaceId, epochId) {
+              enter();
+              await released;
+              return backend.readHead(workspaceId, epochId);
+            },
+          };
+        },
+      };
+    },
+  };
+  await withProvider(provider, async (stores) => {
+    const rejectProof = () => {
+      throw new Error('Unrecognized proof');
+    };
+    const authority = await openExecutionWorkspaceAuthorityInternal(stores, {
+      baseline: rejectProof,
+      successor: rejectProof,
+      noEffect: rejectProof,
+    });
+    const reading = authority.readHead('workspace', 'epoch');
+    await entered;
+    let closed = false;
+    const closing = stores.sessionStore.close!().then(() => {
+      closed = true;
+    });
+    try {
+      await assert.rejects(authority.readReservation('instance'));
+      assert.equal(closed, false);
+    } finally {
+      release();
+    }
+    assert.equal(await reading, undefined);
+    await closing;
+  });
+});
+
+test('Local: workspace authority is revoked when the root owner closes', async () => {
+  await withProvider(localExecutionPersistenceProvider, async (stores, _root, owner) => {
+    const rejectProof = () => {
+      throw new Error('Verifier must not run after revocation');
+    };
+    const verifiers = { baseline: rejectProof, successor: rejectProof, noEffect: rejectProof };
+    const authority = await openExecutionWorkspaceAuthorityInternal(stores, verifiers);
+    await owner.close();
+    await assert.rejects(authority.commitBaseline({}), StorageRootAuthorityError);
+    await assert.rejects(authority.readHead('workspace', 'epoch'), StorageRootAuthorityError);
+    await assert.rejects(authority.readReservation('instance'), StorageRootAuthorityError);
+    await assert.rejects(
+      openExecutionWorkspaceAuthorityInternal(stores, verifiers),
+      StorageRootAuthorityError,
+    );
+  });
+});
+
+test('workspace authority does not retry an uncertain backend open or replace its owner', async () => {
+  let attempts = 0;
+  const provider: ExecutionPersistenceProvider = {
+    async open(input) {
+      const persistence = await localExecutionPersistenceProvider.open(input);
+      return {
+        ...persistence,
+        async openWorkspaceAuthority() {
+          attempts++;
+          throw new Error('uncertain workspace open');
+        },
+      };
+    },
+  };
+  await withProvider(provider, async (stores) => {
+    const rejectProof = () => {
+      throw new Error('Unrecognized proof');
+    };
+    const verifiers = { baseline: rejectProof, successor: rejectProof, noEffect: rejectProof };
+    await assert.rejects(
+      openExecutionWorkspaceAuthorityInternal(stores, verifiers),
+      /uncertain workspace open/u,
+    );
+    await assert.rejects(
+      openExecutionWorkspaceAuthorityInternal(stores, verifiers),
+      /uncertain workspace open/u,
+    );
+    await assert.rejects(
+      openExecutionWorkspaceAuthorityInternal(stores, { ...verifiers }),
+      /already selected/u,
+    );
+    assert.equal(attempts, 1);
+    assert.deepEqual(await stores.sessionStore.listHeaders(), []);
+  });
+});
+
 for (const backend of ['Local', 'Memory'] as const) {
   const make = () =>
     backend === 'Local'

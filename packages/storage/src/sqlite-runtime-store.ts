@@ -2065,7 +2065,7 @@ export class SqliteRuntimeStore
       (input, rootId) => this.#commitWorkspaceBaseline(input, rootId),
       (input, rootId) => this.#commitWorkspaceSuccessor(input, rootId),
       (input, rootId) => this.#commitManagedMutationTerminal(input, rootId),
-      (rootId) => this.#bindWorkspaceStorageRoot(rootId),
+      (rootId, mode) => this.#bindWorkspaceStorageRoot(rootId, mode),
       (workspaceInstanceId) => this.#readActiveManagedMutation(workspaceInstanceId),
     );
   }
@@ -2110,7 +2110,7 @@ export class SqliteRuntimeStore
     });
   }
 
-  #bindWorkspaceStorageRoot(rootId: string): void {
+  #bindWorkspaceStorageRoot(rootId: string, mode?: 'adopt_non_workspace_state'): void {
     this.transaction(() => {
       const existing = this.#readWorkspaceStorageRootBinding();
       if (existing) {
@@ -2121,7 +2121,19 @@ export class SqliteRuntimeStore
         }
         return;
       }
-      if (this.#databaseHasLogicalStateBeforeRootBinding()) {
+      if (mode === 'adopt_non_workspace_state') {
+        // Inspect immutable evidence, not just deletable projections. The scan,
+        // projection verification and binding insert share this write transaction.
+        const authority = this.readCanonicalWorkspaceAuthoritySync();
+        if (
+          authority.baselines.length > 0 ||
+          authority.successors.length > 0 ||
+          authority.activeManagedMutations.length > 0
+        ) {
+          throw new Error('Cannot adopt unbound workspace authority');
+        }
+        this.assertWorkspaceProjectionsMatchSync(authority);
+      } else if (this.#databaseHasLogicalStateBeforeRootBinding()) {
         throw new Error('Unbound operational data require explicit storage-root adoption');
       }
       this.db

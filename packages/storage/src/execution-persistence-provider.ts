@@ -29,6 +29,10 @@ import type {
 } from './execution-stores.js';
 import type { InteractionStoreWriter } from './interaction-store.js';
 import type { GoalAuthorityRepository } from './goal-authority.js';
+import type {
+  ExecutionWorkspaceAuthority,
+  ExecutionWorkspaceProofVerifiers,
+} from './execution-workspace-authority-internal.js';
 
 /** Graph and Session creation/retirement share one transaction authority. */
 export interface ExecutionGraphStore
@@ -51,6 +55,10 @@ export interface ExecutionGraphStore
  * in authenticated, lease-scoped capabilities.
  */
 export interface ExecutionPersistence {
+  /** Optional capability of this same consistency domain; never falls back to local SQLite. */
+  openWorkspaceAuthority?(
+    verifiers: ExecutionWorkspaceProofVerifiers,
+  ): Promise<ExecutionWorkspaceAuthority>;
   readonly sessionStore: ExecutionSessionWriter;
   readonly agentRunStore: ExecutionAgentRunWriter;
   readonly runtimeEventStore: ExecutionRuntimeEventWriter;

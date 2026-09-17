@@ -19,6 +19,11 @@
 
 import type { AgentRunEvent, AgentRunEventType, AgentRunProjectionKey } from '@maka/core/agent-run';
 import type { RuntimeEvent, ToolBoundaryProtocol } from '@maka/core/runtime-event';
+import { registerExecutionWorkspaceAuthorityInternal } from './execution-workspace-authority-internal.js';
+export {
+  openExecutionWorkspaceAuthorityInternal as openExecutionWorkspaceAuthority,
+  type ExecutionWorkspaceAuthority,
+} from './execution-workspace-authority-internal.js';
 import type { RuntimeContinuationAuthorityStore } from '@maka/core/runtime-event-store';
 import type { ImmutableRuntimePrefixProofV1 } from '@maka/core/runtime-boundary';
 import type { RuntimeTranscriptQueries } from './runtime-transcript-query.js';
@@ -789,6 +794,11 @@ async function createExecutionStoresForWrite(
     },
   };
   freezeExecutionStoresFacade(stores);
+  registerExecutionWorkspaceAuthorityInternal(
+    stores,
+    run,
+    persistence.openWorkspaceAuthority?.bind(persistence),
+  );
   executionStoresWriterKinds.set(stores, kind);
   executionStoresWritersByLease.set(lease, stores);
   return stores;

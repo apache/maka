@@ -29,7 +29,7 @@ type WorkspaceBaselineAuthorityWriter = (
   input: WorkspaceBaselineAuthorityInput,
   rootId: string,
 ) => Promise<WorkspaceBaselineCommitResult>;
-type WorkspaceStorageRootBinder = (rootId: string) => void;
+type WorkspaceStorageRootBinder = (rootId: string, mode?: 'adopt_non_workspace_state') => void;
 export interface WorkspaceSuccessorCommitInput {
   /** Opaque capability issued by the repository candidate owner. */
   candidateOutcome: object;
@@ -240,5 +240,19 @@ export function bindWorkspaceBaselineAuthorityStoreRootInternal(
     throw new Error('Invalid durable storage-root identity');
   }
   registration.bindStorageRoot(rootId);
+  registration.boundRootId = rootId;
+}
+
+/** Explicit opt-in for the root owner; never adopt existing workspace authority. */
+export function adoptNonWorkspaceStateForWorkspaceAuthorityInternal(
+  store: object,
+  rootId: string,
+): void {
+  const registration = workspaceBaselineAuthorityWriters.get(store);
+  if (!registration) throw new Error('Workspace baseline authority writer is unavailable');
+  if (!/^[a-f0-9]{64}$/u.test(rootId)) {
+    throw new Error('Invalid durable storage-root identity');
+  }
+  registration.bindStorageRoot(rootId, 'adopt_non_workspace_state');
   registration.boundRootId = rootId;
 }

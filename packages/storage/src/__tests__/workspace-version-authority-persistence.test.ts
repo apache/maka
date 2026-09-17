@@ -18,6 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -39,6 +40,7 @@ import {
 } from '../sqlite-runtime-store.js';
 import { SQLITE_RUNTIME_SCHEMA_VERSION } from '../sqlite-runtime-schema.js';
 import {
+  adoptNonWorkspaceStateForWorkspaceAuthorityInternal,
   bindWorkspaceBaselineAuthorityStoreRootInternal,
   commitManagedMutationTerminalInternal,
   commitWorkspaceBaselineInternal,
@@ -729,6 +731,160 @@ describe('workspace version persistence authority', () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it('explicitly adopts ordinary history without changing it, then persists the root identity', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-workspace-explicit-adoption-'));
+    const dbPath = join(root, 'runtime.sqlite');
+    const store = createSqliteRuntimeStore(dbPath);
+    try {
+      const event: RuntimeEvent = {
+        id: 'existing-user-message',
+        sessionId: 'existing-session',
+        invocationId: 'existing-invocation',
+        runId: 'existing-run',
+        turnId: 'existing-turn',
+        ts: 1,
+        partial: false,
+        role: 'user',
+        author: 'user',
+        content: { kind: 'text', text: 'Keep my ordinary conversation' },
+      };
+      await store.appendRuntimeEvent(event.sessionId, event.runId, event);
+      adoptNonWorkspaceStateForWorkspaceAuthorityInternal(store, TEST_STORAGE_ROOT_ID);
+      const accepted = await commitWorkspaceBaselineInternal(store, baselineInput());
+      assert.equal(accepted.created, true);
+      const raw = new DatabaseSync(dbPath);
+      try {
+        const row = raw
+          .prepare('SELECT payload_json FROM runtime_events WHERE event_id = ?')
+          .get(event.id) as { payload_json: string };
+        assert.deepEqual(JSON.parse(row.payload_json), event);
+      } finally {
+        raw.close();
+      }
+      store.close();
+      const reopened = createSqliteRuntimeStore(dbPath);
+      try {
+        adoptNonWorkspaceStateForWorkspaceAuthorityInternal(reopened, TEST_STORAGE_ROOT_ID);
+        assert.throws(
+          () => adoptNonWorkspaceStateForWorkspaceAuthorityInternal(reopened, 'b'.repeat(64)),
+          /different durable storage root/u,
+        );
+        assert.equal(
+          (await commitWorkspaceBaselineInternal(reopened, baselineInput())).created,
+          false,
+        );
+      } finally {
+        reopened.close();
+      }
+    } finally {
+      store.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  for (const stopAt of ['before_binding', 'after_binding'] as const) {
+    it(`reopens after a real process exits ${stopAt} during explicit adoption`, {
+      timeout: 20_000,
+    }, async () => {
+      const root = await mkdtemp(join(tmpdir(), 'maka-workspace-adoption-crash-'));
+      const dbPath = join(root, 'runtime.sqlite');
+      try {
+        const child = spawnSync(
+          process.execPath,
+          [
+            '--input-type=module',
+            '-e',
+            `
+          import { createSqliteRuntimeStore } from ${JSON.stringify(new URL('../sqlite-runtime-store.js', import.meta.url).href)};
+          import { adoptNonWorkspaceStateForWorkspaceAuthorityInternal } from ${JSON.stringify(new URL('../workspace-version-authority-internal.js', import.meta.url).href)};
+          const store = createSqliteRuntimeStore(process.env.MAKA_ADOPTION_DB, {
+            failpoint(point) {
+              if (point === 'after_workspace_canonical_scan' && process.env.MAKA_ADOPTION_STOP === 'before_binding') process.exit(77);
+            }
+          });
+          await store.appendRuntimeEvent('session', 'run', {
+            id: 'ordinary-before-crash', sessionId: 'session', invocationId: 'invocation',
+            runId: 'run', turnId: 'turn', ts: 1, partial: false, role: 'user', author: 'user',
+            content: { kind: 'text', text: 'preserve across adoption crash' }
+          });
+          adoptNonWorkspaceStateForWorkspaceAuthorityInternal(store, ${JSON.stringify(TEST_STORAGE_ROOT_ID)});
+          process.exit(77);
+        `,
+          ],
+          {
+            env: { ...process.env, MAKA_ADOPTION_DB: dbPath, MAKA_ADOPTION_STOP: stopAt },
+            encoding: 'utf8',
+            timeout: 10_000,
+            windowsHide: true,
+          },
+        );
+        assert.ifError(child.error);
+        assert.equal(child.status, 77, child.stderr);
+        const raw = new DatabaseSync(dbPath);
+        try {
+          assert.equal(
+            raw.prepare('SELECT COUNT(*) AS count FROM runtime_storage_root_binding').get()?.count,
+            stopAt === 'after_binding' ? 1 : 0,
+          );
+        } finally {
+          raw.close();
+        }
+        const reopened = createSqliteRuntimeStore(dbPath);
+        try {
+          assert.equal(
+            (await reopened.readRuntimeEvents('session', 'run'))[0]?.id,
+            'ordinary-before-crash',
+          );
+          adoptNonWorkspaceStateForWorkspaceAuthorityInternal(reopened, TEST_STORAGE_ROOT_ID);
+          assert.equal(
+            (await commitWorkspaceBaselineInternal(reopened, baselineInput())).created,
+            true,
+          );
+        } finally {
+          reopened.close();
+        }
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    });
+  }
+
+  for (const residue of ['complete', 'ledger-only', 'projection-only', 'partial-ledger'] as const) {
+    it(`refuses explicit adoption of ${residue} workspace residue without inserting a binding`, async () => {
+      await withDatabase(async ({ dbPath, store }) => {
+        await commitWorkspaceBaselineInternal(store, baselineInput());
+        const raw = new DatabaseSync(dbPath);
+        try {
+          // Simulate damaged on-disk state, not a supported ledger mutation.
+          raw.exec('PRAGMA foreign_keys = OFF');
+          raw.exec('DELETE FROM runtime_storage_root_binding');
+          if (residue === 'ledger-only') {
+            raw.exec(`
+              DELETE FROM runtime_workspace_heads;
+              DELETE FROM runtime_workspace_versions;
+              DELETE FROM runtime_workspace_epochs;
+            `);
+          } else if (residue === 'projection-only') {
+            raw.exec('DELETE FROM runtime_events');
+          } else if (residue === 'partial-ledger') {
+            const { epochOpenedEvent } = buildWorkspaceBaselineAuthorityEvents(baselineInput());
+            raw.prepare('DELETE FROM runtime_events WHERE event_id = ?').run(epochOpenedEvent.id);
+          }
+          assert.throws(
+            () => adoptNonWorkspaceStateForWorkspaceAuthorityInternal(store, 'b'.repeat(64)),
+            /workspace (authority|RuntimeEvent|version projection)/iu,
+          );
+          assert.equal(
+            raw.prepare('SELECT COUNT(*) AS count FROM runtime_storage_root_binding').get()?.count,
+            0,
+          );
+        } finally {
+          raw.close();
+        }
+      });
+    });
+  }
 
   for (const failpoint of [
     'after_workspace_epoch_event_insert',

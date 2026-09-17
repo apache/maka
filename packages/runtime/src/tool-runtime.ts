@@ -18,6 +18,13 @@
  */
 
 import { decodeCanonicalToolResultContent } from '@maka/core/tool-result-record-schema';
+import { isDeepStrictEqual } from 'node:util';
+import { encodeCanonicalRuntimeEvent } from '@maka/core/canonical-runtime-event';
+import {
+  transformManagedMutation,
+  ManagedMutationRejectedError,
+  type ManagedMutationTransformResult,
+} from './managed-mutation-transform.js';
 import { projectAgentSwarmResult } from '@maka/core/agent-swarm';
 import { projectToolActivityArgs } from '@maka/core/tool-activity-args';
 import { resolveCollaborationPermissionMode } from '@maka/core/collaboration';
@@ -75,7 +82,12 @@ import { computerUseModelCallArgs } from '@maka/core/computer-use';
 import type { SessionHeader } from '@maka/core/session';
 import type { ToolInvocationRecord } from '@maka/core/usage-stats/types';
 import { redactSecrets } from '@maka/core/redaction';
-import { TOOL_BOUNDARY_PROTOCOL_V1, type RuntimeEvent } from '@maka/core/runtime-event';
+import {
+  TOOL_BOUNDARY_PROTOCOL_V1,
+  MANAGED_MUTATION_EXECUTION_PROFILE_V1_SPEC,
+  type RuntimeEvent,
+  type RuntimeEventManagedWorkspaceMutationV2,
+} from '@maka/core/runtime-event';
 
 import { recordToolArtifactsSafely, type ToolArtifactRecorder } from './tool-artifacts.js';
 import { computerActionFields, describeComputerUseArgsViolation } from './computer-use-codec.js';
@@ -101,6 +113,7 @@ import {
   buildToolOperationId,
   canonicalToolArgsHash,
   type RuntimeCommitSink,
+  type ToolOutcomeCommit,
   type ToolRecoveryMode,
 } from './runtime-commit-sink.js';
 import { AdmissionLimiter } from './admission-limiter.js';
@@ -152,6 +165,23 @@ export interface DurableSessionEventSink {
 export interface ToolSettlement {
   result: unknown;
   providerError?: string;
+}
+
+export interface PreparedManagedMutation {
+  readonly mutation: RuntimeEventManagedWorkspaceMutationV2;
+  readonly baseContent: string | null;
+  readonly canonicalArgsHash: string;
+  /** Commit through the workspace owner and return the exact persisted response. */
+  commitOutcome(
+    outcome: ToolOutcomeCommit,
+    result: ManagedMutationTransformResult | null,
+  ): Promise<RuntimeEvent>;
+}
+
+interface ManagedMutationExecution {
+  readonly admission: PreparedManagedMutation;
+  result?: ManagedMutationTransformResult;
+  terminalKind?: 'no_workspace_change' | 'operation_failed_no_effect';
 }
 
 export type MakaToolPreparationContext = Pick<
@@ -358,6 +388,13 @@ function composeChildAbortSignal(
 }
 
 export interface ToolRuntimeInput {
+  /** Explicit managed session composition; never inferred from tool names alone. */
+  prepareManagedMutation?: (input: {
+    sessionId: string;
+    toolName: 'Write' | 'Edit';
+    args: unknown;
+    abortSignal: AbortSignal;
+  }) => Promise<PreparedManagedMutation>;
   /** Runtime-owned projection of explicit denials in authenticated continuation ancestors. */
   inheritedSandboxBoundaryDenied?: boolean;
   sessionId: string;
@@ -1399,6 +1436,42 @@ export class ToolRuntime {
     let clientCapabilityBoundary: ExecutionBoundary | undefined;
     let clientCapabilityPermissionMode: PermissionMode | undefined;
     let preparedExecution: PreparedMakaToolExecution | undefined;
+    let managedExecution: ManagedMutationExecution | undefined;
+    if (this.input.prepareManagedMutation && (tool.name === 'Write' || tool.name === 'Edit')) {
+      // Complete all environmental preflight before T1. Managed execution is
+      // a pure transform, not a call into the checkout-backed tool impl.
+      if (!this.input.runtimeCommitSink || tool.hostAdmission || tool.prepareExecution)
+        throw new RuntimeCommitBoundaryError(
+          'T1',
+          new Error('Invalid managed mutation composition'),
+        );
+      clientCapabilityBoundary = await this.readExecutionBoundary();
+      clientCapabilityPermissionMode = await this.livePermissionMode(clientCapabilityBoundary);
+      const prepared = await this.input.prepareManagedMutation({
+        sessionId: this.input.sessionId,
+        toolName: tool.name,
+        args: structuredClone(executionArgs),
+        abortSignal: ctx.abortSignal,
+      });
+      const hash = canonicalToolArgsHash(tool.name, executionArgs);
+      if (
+        !prepared ||
+        typeof prepared.commitOutcome !== 'function' ||
+        prepared.canonicalArgsHash !== hash ||
+        canonicalToolArgsHash(tool.name, persistedArgs) !== hash ||
+        prepared.mutation?.expectedPath !== (executionArgs as { path?: unknown })?.path ||
+        (prepared.baseContent !== null && typeof prepared.baseContent !== 'string')
+      )
+        throw new RuntimeCommitBoundaryError('T1', new Error('Invalid managed mutation admission'));
+      managedExecution = {
+        admission: Object.freeze({
+          mutation: Object.freeze(structuredClone(prepared.mutation)),
+          canonicalArgsHash: hash,
+          baseContent: prepared.baseContent,
+          commitOutcome: prepared.commitOutcome.bind(prepared),
+        }),
+      };
+    }
     if (tool.hostAdmission === 'client_capability') {
       try {
         clientCapabilityBoundary = await this.readExecutionBoundary();
@@ -1486,6 +1559,7 @@ export class ToolRuntime {
         tool,
         startEvent: buildCallEvent('dispatch'),
         persistedArgs,
+        managedExecution,
         abortSignal: ctx.abortSignal,
         ...(invocationId ? { invocationId } : {}),
         ...(runId ? { runId } : {}),
@@ -1622,14 +1696,42 @@ export class ToolRuntime {
             ? preparedExecution.execute(toolContext)
             : tool.impl(structuredClone(executionArgs) as never, toolContext);
         const prepareOperationValue = async () => {
-          const result = await invokeTool();
+          let result: unknown;
+          let managedFailure: string | undefined;
+          if (managedExecution) {
+            try {
+              const transformed = transformManagedMutation({
+                toolName: tool.name as 'Write' | 'Edit',
+                canonicalPath: managedExecution.admission.mutation.expectedPath,
+                baseContent: managedExecution.admission.baseContent,
+                args: executionArgs,
+              });
+              managedExecution.result = transformed;
+              if (!transformed.changed) managedExecution.terminalKind = 'no_workspace_change';
+              result = transformed.providerResult;
+            } catch (error) {
+              if (!(error instanceof ManagedMutationRejectedError)) throw error;
+              managedFailure = formatSyntheticToolErrorText(error);
+              managedExecution.terminalKind = 'operation_failed_no_effect';
+              result = Object.freeze({ error: managedFailure });
+            }
+          } else result = await invokeTool();
+          const resultLimit = managedExecution
+            ? Math.min(
+                ctx.maxResultBytes ?? Infinity,
+                MANAGED_MUTATION_EXECUTION_PROFILE_V1_SPEC.resultSnapshot.maxBytes,
+              )
+            : ctx.maxResultBytes;
           if (
-            ctx.maxResultBytes !== undefined &&
-            serializedByteLength(result, ctx.maxResultBytes) > ctx.maxResultBytes
+            resultLimit !== undefined &&
+            serializedByteLength(result, resultLimit) > resultLimit
           ) {
             throw new ToolResultLimitError();
           }
-          const content = coerceResultContent(result);
+          const content: ToolResultContent =
+            managedFailure === undefined
+              ? coerceResultContent(result)
+              : Object.freeze({ kind: 'text', text: managedFailure });
           const projected = this.projectToolResult(tool, turnId, toolUseId, executionArgs, result);
           const modelProjection = isPromiseLike(projected) ? await projected : projected;
           return {
@@ -1742,6 +1844,9 @@ export class ToolRuntime {
       }
     } catch (err) {
       if (err instanceof RuntimeCommitBoundaryError) throw err;
+      // T1 fixed the writer. Unknown transform/projection/publication failures
+      // must not invent a second result or invoke generic T2.
+      if (managedExecution) throw new RuntimeCommitBoundaryError('T2', err);
       if (isInteractionControlError(err)) throw err;
       output.flush();
       const sandboxError = serializeSandboxError(err);
@@ -1889,6 +1994,7 @@ export class ToolRuntime {
     tool: MakaTool;
     startEvent: ToolStartEvent;
     persistedArgs: unknown;
+    managedExecution?: ManagedMutationExecution;
     abortSignal: AbortSignal;
     invocationId?: string;
     runId?: string;
@@ -1953,7 +2059,9 @@ export class ToolRuntime {
       ...(Object.keys(stateDelta).length > 0 ? { actions: { stateDelta } } : {}),
     };
     const canonicalArgsHash = canonicalToolArgsHash(input.tool.name, input.persistedArgs);
-    const recoveryMode = input.tool.recoveryMode ?? 'never_auto_retry';
+    const recoveryMode = input.managedExecution
+      ? 'reconcile'
+      : (input.tool.recoveryMode ?? 'never_auto_retry');
     const dispatchEvent: RuntimeEvent = {
       id: `${operationId}_dispatch`,
       invocationId,
@@ -1975,6 +2083,9 @@ export class ToolRuntime {
           toolName: input.tool.name,
           canonicalArgsHash,
           recoveryMode,
+          ...(input.managedExecution
+            ? { managedMutation: input.managedExecution.admission.mutation }
+            : {}),
         },
       },
       refs: {
@@ -1989,6 +2100,7 @@ export class ToolRuntime {
       },
     };
     try {
+      if (input.managedExecution) encodeCanonicalRuntimeEvent(dispatchEvent);
       this.assertDurableDispatchNotAborted(input.tool.name, input.abortSignal);
       const prepared = await sink.commitToolPrepared({
         operationId,
@@ -2058,20 +2170,42 @@ export class ToolRuntime {
           this.input.now(),
         );
         try {
-          await sink.commitToolOutcome({
+          const outcome = {
             operationId,
             journalEventId: `${operationId}_outcome`,
             runtimeEvent: responseEvent,
             committedAt: responseEvent.ts,
-          });
+          };
+          if (input.managedExecution) {
+            const managed = input.managedExecution;
+            if (managed.terminalKind)
+              responseEvent.actions = {
+                ...responseEvent.actions,
+                managedMutationTerminal: {
+                  protocol: 'managed_mutation_terminal_v1',
+                  operationId,
+                  dispatchEventId: dispatchEvent.id,
+                  workspaceInstanceId: managed.admission.mutation.workspaceInstanceId,
+                  terminalKind: managed.terminalKind,
+                },
+              };
+            const expected = encodeCanonicalRuntimeEvent(responseEvent).event;
+            const durable = await managed.admission.commitOutcome(
+              { ...outcome, runtimeEvent: structuredClone(expected) },
+              managed.result ?? null,
+            );
+            if (!isDeepStrictEqual(durable, expected))
+              throw new Error('Managed durable outcome differs from Runtime result');
+          } else await sink.commitToolOutcome(outcome);
         } catch (error) {
           try {
-            await input.tool.compensateDurableOutcomeCommitFailure?.({
-              result,
-              isError,
-              sessionId: this.input.sessionId,
-              operationId,
-            });
+            if (!input.managedExecution)
+              await input.tool.compensateDurableOutcomeCommitFailure?.({
+                result,
+                isError,
+                sessionId: this.input.sessionId,
+                operationId,
+              });
           } catch {
             // T2 remains authoritative. Compensation is deliberately best-effort
             // and must never replace the persistence failure that triggered it.
