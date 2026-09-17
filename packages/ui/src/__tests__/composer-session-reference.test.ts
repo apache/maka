@@ -60,8 +60,8 @@ for (const [locale, label, captured, truncated] of [
 
 test('quote provenance omits invalid dates and does not call complete content truncated', () => {
   for (const sourceCapturedAt of [-1, NaN, Infinity, 8.64e15 + 1]) {
-    assert.equal(quoteProvenanceSummary({ ...quote, sourceCapturedAt }), undefined);
+    assert.equal(quoteProvenanceSummary({ ...quote, sourceCapturedAt }, 'en'), undefined);
   }
-  assert.equal(quoteProvenanceSummary({ ...quote, sourceTruncated: false }), 'captured 1970-01-01T00:00:00.000Z');
-  assert.equal(quoteProvenanceSummary({ text: 'ordinary quote' }), undefined);
+  assert.equal(quoteProvenanceSummary({ ...quote, sourceTruncated: false }, 'en'), 'captured 1970-01-01T00:00:00.000Z');
+  assert.equal(quoteProvenanceSummary({ text: 'ordinary quote' }, 'en'), undefined);
 });

@@ -33,7 +33,7 @@ export function stripQuoteHeadingMarkers(text: string): string {
 }
 
 /** Human-readable provenance kept with a cross-session snapshot QuoteRef. */
-export function quoteProvenanceSummary(quote: QuoteRef, locale: UiLocale = 'en'): string | undefined {
+export function quoteProvenanceSummary(quote: QuoteRef, locale: UiLocale): string | undefined {
   if (!quote.sourceSessionId || quote.sourceCapturedAt === undefined) return undefined;
   if (!Number.isFinite(quote.sourceCapturedAt) || quote.sourceCapturedAt < 0 || quote.sourceCapturedAt > 8.64e15) return undefined;
   const capturedAt = new Date(quote.sourceCapturedAt).toISOString();
