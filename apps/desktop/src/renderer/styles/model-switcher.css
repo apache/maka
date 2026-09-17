@@ -93,6 +93,9 @@
    p99=44), and the rare path-style ids ellipsize at the start. Scoped by the
    option class renderModelPickerOption emits. */
 .astryx-selector-popup:has(.modelPickerOption) {
+  /* min-width keeps the painted card covering the trigger-sized layer, whose
+     leftover strip would otherwise swallow clicks without dismissing. */
+  min-width: 100%;
   width: fit-content;
   max-width: min(340px, 92vw);
 }

@@ -354,6 +354,12 @@ export const Composer = forwardRef<
     modelChoices?: ChatModelChoice[];
     /** Model-picker surface; 'wheel' is the collapsed WorkHub's inline picker, and any non-popover surface drops the thinking picker to a bottom sheet. */
     pickerPresentation?: 'popover' | 'bottom-sheet' | 'wheel';
+    /**
+     * Close the model/thinking pickers' open surfaces while an interaction
+     * prompt occludes the composer — a bottom sheet stays a modal dialog even
+     * inside a `hidden` subtree, which would inert the whole window.
+     */
+    pickersReadOnly?: boolean;
     /** Maximum input height in the upstream editor's row units. */
     maxInputRows?: number;
     /** Whether this Session already has conversation history whose provider prompt cache may be rebuilt by a switch. */
@@ -2130,6 +2136,7 @@ export const Composer = forwardRef<
                 {props.activeSession ? (
                   <ChatModelSwitcher
                     presentation={props.pickerPresentation}
+                    isReadOnly={props.pickersReadOnly}
                     activeSession={props.activeSession}
                     activeModelConnectionId={props.activeModelConnectionId}
                     activeModelConnectionSlug={props.activeModelConnectionSlug}
@@ -2149,6 +2156,7 @@ export const Composer = forwardRef<
                   <NewChatModelPicker
                     label={modelChipLabel}
                     presentation={props.pickerPresentation}
+                    isReadOnly={props.pickersReadOnly}
                     choices={props.modelChoices ?? []}
                     currentValue={
                       props.newChatModel
@@ -2175,6 +2183,7 @@ export const Composer = forwardRef<
                     levels={props.activeThinkingLevels ?? []}
                     current={props.activeThinkingLevel}
                     presentation={thinkingPresentation}
+                    isReadOnly={props.pickersReadOnly}
                     onChange={props.onThinkingLevelChange}
                     disabled={!modelSwitchAvailability.available}
                     disabledReason={thinkingSwitcherDisabledReason}
@@ -2184,6 +2193,7 @@ export const Composer = forwardRef<
                     levels={props.newChatThinkingLevels ?? []}
                     current={props.newChatThinkingLevel}
                     presentation={thinkingPresentation}
+                    isReadOnly={props.pickersReadOnly}
                     onChange={props.onNewChatThinkingLevelChange}
                   />
                 )}

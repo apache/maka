@@ -31,11 +31,11 @@ import type { ProviderType } from '@maka/core/llm-connections';
 import type { ModelMenuGroup } from './chat-model-helpers.js';
 import {
   buildModelPickerOptions,
-  modelChoiceValueForPicker,
   renderModelPickerOption,
   renderModelPickerValue,
   type ModelPickerLeadingOption,
 } from './model-picker-internals.js';
+import { modelChoiceValue } from './chat-model-helpers.js';
 import { useUiLocale } from './locale-context.js';
 import { getSharedUiCopy } from './shared-ui-copy.js';
 import { usePendingSelection } from './use-pending-selection.js';
@@ -57,13 +57,16 @@ export interface ModelPickerProps {
   ariaLabel: string;
 }
 
+const slugScopedValue = (choice: ModelMenuGroup['choices'][number]) =>
+  modelChoiceValue(choice.connectionSlug, choice.model);
+
 export function ModelPicker(props: ModelPickerProps) {
   const locale = useUiLocale();
   const copy = getSharedUiCopy(locale).modelPicker;
 
   const options = useMemo(
     () =>
-      buildModelPickerOptions(props.groups, props.leadingOption, modelChoiceValueForPicker, {
+      buildModelPickerOptions(props.groups, props.leadingOption, slugScopedValue, {
         locale,
         renderProviderMark: props.renderProviderMark,
       }),

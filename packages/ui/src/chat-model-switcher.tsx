@@ -45,6 +45,7 @@ import {
 } from './chat-model-helpers.js';
 import {
   buildModelPickerOptions,
+  providerMarkIcon,
   renderModelPickerOption,
   renderModelPickerValue,
 } from './model-picker-internals.js';
@@ -63,18 +64,6 @@ const SWITCH_WARNING_VALUE = '__maka_model_switch_warning__';
 
 const exactChoiceValue = (choice: ChatModelChoice) =>
   exactModelChoiceValue(choice.connectionId, choice.connectionSlug, choice.model);
-
-function providerMarkIcon(
-  providerType: ProviderType | undefined,
-  renderProviderMark: ((type: ProviderType) => ReactNode) | undefined,
-): ReactNode {
-  if (!providerType || !renderProviderMark) return undefined;
-  return (
-    <span className="modelPickerProviderMark" data-provider={providerType} aria-hidden="true">
-      {renderProviderMark(providerType)}
-    </span>
-  );
-}
 
 function wheelOptions(
   groups: readonly ModelMenuGroup[],
@@ -101,6 +90,8 @@ export function ThinkingLevelSelector(props: {
   current?: ThinkingLevel;
   /** Same surface as the model picker; compact windows that cannot fit an anchored popup use 'bottom-sheet'. */
   presentation?: 'popover' | 'bottom-sheet';
+  /** Force any open surface closed while an interaction prompt occludes the composer. */
+  isReadOnly?: boolean;
   onChange?(level: ThinkingLevel | undefined): void | Promise<void>;
   disabled?: boolean;
   /** Why the control is locked (mid-turn etc.); Selector exposes it as the disabled tooltip. */
@@ -116,9 +107,13 @@ export function ThinkingLevelSelector(props: {
     [copy.defaultLevel, copy.level, props.levels],
   );
 
+  const currentValue = props.current ?? DEFAULT_THINKING_LEVEL;
+  const selection = usePendingSelection(currentValue, (value) =>
+    props.onChange?.(value === DEFAULT_THINKING_LEVEL ? undefined : (value as ThinkingLevel)),
+  );
+
   if (!hasVariants) return null;
 
-  const currentValue = props.current ?? DEFAULT_THINKING_LEVEL;
   const currentLabel = options.find((option) => option.value === currentValue)?.label ?? copy.defaultLevel;
 
   return (
@@ -126,19 +121,17 @@ export function ThinkingLevelSelector(props: {
       label={`${copy.thinkingLevel}: ${currentLabel}`}
       isLabelHidden
       options={options}
-      value={currentValue}
+      value={selection.value}
       variant="ghost"
       size="sm"
       placement="above"
       presentation={props.presentation}
+      isReadOnly={props.isReadOnly}
       isDisabled={props.disabled}
       disabledMessage={props.disabledReason}
+      placeholder={currentLabel}
       className="maka-thinking-level-selector"
-      onChange={(value) => {
-        void props.onChange?.(
-          value === DEFAULT_THINKING_LEVEL ? undefined : (value as ThinkingLevel),
-        );
-      }}
+      onChange={selection.onChange}
     />
   );
 }
@@ -163,6 +156,8 @@ export function ChatModelSwitcher(props: {
    * closed.
    */
   openNonce?: number;
+  /** Force any open surface closed while an interaction prompt occludes the composer. */
+  isReadOnly?: boolean;
   /** Hide a stale display-only row while the Session requires identity recovery. */
   hideUnavailableCurrentOption?: boolean;
   renderProviderMark?(type: ProviderType): ReactNode;
@@ -210,7 +205,7 @@ export function ChatModelSwitcher(props: {
       { locale, renderProviderMark: props.renderProviderMark },
     );
     // Switching can abandon a provider prompt cache — a property of the pending
-    // action, announced as a disabled first row whenever the panel opens.
+    // action, shown as a disabled first row whenever the panel opens.
     if (props.hasConversationHistory === true) {
       list.unshift({ value: SWITCH_WARNING_VALUE, label: copy.switchWarning, disabled: true });
     }
@@ -239,6 +234,13 @@ export function ChatModelSwitcher(props: {
   useEffect(() => {
     if (props.openNonce) setWheelOpen(true);
   }, [props.openNonce]);
+  // A wheel left open survives its unmount (the layer's hide callback never
+  // fires) — reset it on session and presentation flips so a remount does not
+  // reopen it spontaneously.
+  useEffect(() => {
+    if (props.presentation !== 'wheel') setWheelOpen(false);
+  }, [props.presentation]);
+  useEffect(() => setWheelOpen(false), [props.activeSession.id]);
   if (props.presentation === 'wheel') {
     const wheelList = wheelOptions(grouped, locale);
     if (!currentKnownChoice && currentValue && !props.hideUnavailableCurrentOption) {
@@ -248,7 +250,7 @@ export function ChatModelSwitcher(props: {
       <>
         <ModelWheelPicker
           options={wheelList}
-          value={currentValue}
+          value={selection.value}
           label={displayLabel}
           ariaLabel={`${copy.switchAriaLabel}: ${displayLabel}`}
           icon={providerMarkIcon(props.currentProviderType, props.renderProviderMark)}
@@ -257,9 +259,7 @@ export function ChatModelSwitcher(props: {
           disabled={disabled}
           open={wheelOpen}
           onOpenChange={setWheelOpen}
-          onValueChange={(value) => {
-            if (value !== currentValue) selection.onChange(value);
-          }}
+          onValueChange={selection.onChange}
         />
         <span
           className="maka-visually-hidden maka-model-switch-announcement"
@@ -287,6 +287,7 @@ export function ChatModelSwitcher(props: {
       placement="above"
       presentation={props.presentation}
       isDisabled={disabled}
+      isReadOnly={props.isReadOnly}
       disabledMessage={props.disabledReason}
       isDefaultOpen={Boolean(props.openNonce)}
       placeholder={displayLabel}
@@ -302,15 +303,15 @@ export function ChatModelSwitcher(props: {
  * Home / empty-state model picker (no active session yet). Unlike
  * `ChatModelSwitcher` — which is bound to a live session and switches THAT
  * session's model — this one just records which model the next new chat should
- * start with. Reuses the model chip's look: a chevronless ghost button like
- * the ＋ and permission controls beside it — the hover wash and tooltip are
- * the menu affordance. The thinking level for new chats is a separate
- * right-footer control owned by the Composer.
+ * start with. The thinking level for new chats is a separate right-footer
+ * control owned by the Composer.
  */
 export function NewChatModelPicker(props: {
   label: string;
   /** Same surfaces as ChatModelSwitcher; the collapsed WorkHub window passes 'wheel'. */
   presentation?: 'popover' | 'bottom-sheet' | 'wheel';
+  /** Force any open surface closed while an interaction prompt occludes the composer. */
+  isReadOnly?: boolean;
   choices: ChatModelChoice[];
   currentValue?: string;
   currentProviderType?: ProviderType;
@@ -337,7 +338,7 @@ export function NewChatModelPicker(props: {
     () => buildModelPickerOptions(
       grouped,
       !currentKnownChoice && currentValue
-        ? { label: props.label, value: currentValue, providerType: props.currentProviderType }
+        ? { label: props.label, value: currentValue, providerType: props.currentProviderType, disabled: true }
         : undefined,
       exactChoiceValue,
       { locale, renderProviderMark: props.renderProviderMark },
@@ -345,15 +346,18 @@ export function NewChatModelPicker(props: {
     [grouped, currentKnownChoice, currentValue, props.label, props.currentProviderType,
       locale, props.renderProviderMark],
   );
-  const selection = usePendingSelection(currentValue, async (value) => {
+  // The only producer is synchronous state (pending new-chat model), so the
+  // pick shows through `currentValue` on the same render — no pending state.
+  const pick = (value: string) => {
+    if (value === currentValue) return Promise.resolve();
     const choice = choiceByValue.get(value);
-    if (!choice) return;
-    await props.onPick({
+    if (!choice) return Promise.resolve();
+    return Promise.resolve(props.onPick({
       llmConnectionId: choice.connectionId,
       llmConnectionSlug: choice.connectionSlug,
       model: choice.model,
-    });
-  });
+    }));
+  };
   if (props.presentation === 'wheel') {
     const wheelList = wheelOptions(grouped, locale);
     if (!currentKnownChoice && currentValue) {
@@ -362,15 +366,13 @@ export function NewChatModelPicker(props: {
     return (
       <ModelWheelPicker
         options={wheelList}
-        value={selection.value}
+        value={currentValue}
         label={props.label}
         ariaLabel={copy.newChatAriaLabel(props.label)}
         icon={providerMarkIcon(props.currentProviderType, props.renderProviderMark)}
         tooltip={copy.newChatTitle(props.label)}
         triggerClassName="maka-new-chat-model-selector"
-        onValueChange={(value) => {
-          if (value !== currentValue) selection.onChange(value);
-        }}
+        onValueChange={pick}
       />
     );
   }
@@ -379,15 +381,17 @@ export function NewChatModelPicker(props: {
       label={copy.newChatAriaLabel(props.label)}
       isLabelHidden
       options={options}
-      value={selection.value}
+      value={currentValue}
       hasSearch
       searchPlaceholder={searchPlaceholder}
       variant="ghost"
       size="sm"
       placement="above"
+      presentation={props.presentation}
+      isReadOnly={props.isReadOnly}
       placeholder={props.label}
       className="maka-new-chat-model-selector"
-      onChange={selection.onChange}
+      onChange={pick}
       renderOption={renderModelPickerOption}
       renderValue={renderModelPickerValue}
     />

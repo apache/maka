@@ -20,26 +20,16 @@
 import type { ReactNode } from 'react';
 import {
   SelectorOption,
-  type SelectorDivider,
   type SelectorOptionData,
+  type SelectorOptionType,
+  type SelectorSection,
 } from '@astryxdesign/core/Selector';
 import type { ProviderType } from '@maka/core/llm-connections';
 import type { UiLocale } from '@maka/core/ui-locale';
 import {
   type ModelMenuGroup,
   modelChoiceDescription,
-  modelChoiceValue,
 } from './chat-model-helpers.js';
-
-export type ModelPickerOption = SelectorOptionData;
-
-export interface ModelPickerSection {
-  type: 'section';
-  title: string;
-  options: ModelPickerOption[];
-}
-
-export type ModelPickerSelectorOption = ModelPickerOption | SelectorDivider | ModelPickerSection;
 
 export interface ModelPickerLeadingOption {
   value: string;
@@ -49,6 +39,18 @@ export interface ModelPickerLeadingOption {
 }
 
 type ModelChoiceValueFn = (choice: ModelMenuGroup['choices'][number]) => string;
+
+export function providerMarkIcon(
+  providerType: ProviderType | undefined,
+  renderProviderMark: ((type: ProviderType) => ReactNode) | undefined,
+): ReactNode {
+  if (!providerType || !renderProviderMark) return undefined;
+  return (
+    <span className="modelPickerProviderMark" data-provider={providerType} aria-hidden="true">
+      {renderProviderMark(providerType)}
+    </span>
+  );
+}
 
 /**
  * Shapes Maka's provider catalog into Astryx Selector's public option model:
@@ -68,30 +70,24 @@ export function buildModelPickerOptions(
     locale: UiLocale;
     renderProviderMark?(type: ProviderType): ReactNode;
   },
-): ModelPickerSelectorOption[] {
-  const providerIcon = (type: ProviderType | undefined) =>
-    type && extras.renderProviderMark ? (
-      <span className="modelPickerProviderMark" data-provider={type} aria-hidden="true">
-        {extras.renderProviderMark(type)}
-      </span>
-    ) : undefined;
-  const sections: ModelPickerSection[] = groups.map((group) => ({
+): SelectorOptionType[] {
+  const sections: SelectorSection[] = groups.map((group) => ({
     type: 'section',
     title: group.heading,
     options: group.choices.map((choice) => ({
       value: toValue(choice),
       label: choice.label,
-      icon: providerIcon(group.providerType),
+      icon: providerMarkIcon(group.providerType, extras.renderProviderMark),
       description: modelChoiceDescription(choice, extras.locale),
     })),
   }));
 
   if (!leadingOption) return sections;
 
-  const option: ModelPickerOption = {
+  const option: SelectorOptionData = {
     value: leadingOption.value,
     label: leadingOption.label,
-    icon: providerIcon(leadingOption.providerType),
+    icon: providerMarkIcon(leadingOption.providerType, extras.renderProviderMark),
     disabled: leadingOption.disabled,
   };
   return sections.length > 0 ? [option, { type: 'divider' }, ...sections] : [option];
@@ -134,5 +130,3 @@ export function renderModelPickerValue(option: SelectorOptionData): ReactNode {
   );
 }
 
-export const modelChoiceValueForPicker: ModelChoiceValueFn = (choice) =>
-  modelChoiceValue(choice.connectionSlug, choice.model);

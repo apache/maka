@@ -25,6 +25,7 @@ import { parseHTML } from 'linkedom';
 import type { ChatModelChoice } from '@maka/core/chat-model-choice';
 import type { SessionSummary } from '@maka/core/session';
 import { Composer, type ComposerHandle } from '../composer.js';
+import { ThinkingLevelSelector } from '../chat-model-switcher.js';
 import { deriveComposerModelSwitchAvailability } from '../composer-helpers.js';
 import { LocaleProvider } from '../locale-context.js';
 
@@ -225,5 +226,38 @@ test('the recovery handle opens the existing exact account-and-model picker', as
   } finally {
     await act(() => root.unmount());
     Object.assign(globalThis, original);
+  }
+});
+
+test('the thinking picker survives levels arriving after mount', async () => {
+  // Thinking levels resolve asynchronously; a picker that mounts variantless
+  // must not change its hook count when they land.
+  const { document, window } = parseHTML('<div id="root"></div>');
+  window.matchMedia = () =>
+    ({ matches: false, addEventListener() {}, removeEventListener() {} }) as unknown as MediaQueryList;
+  Object.assign(globalThis, {
+    document,
+    window,
+    Element: window.Element,
+    HTMLElement: window.HTMLElement,
+    IS_REACT_ACT_ENVIRONMENT: true,
+  });
+  const container = document.querySelector('#root');
+  assert.ok(container);
+  const root = createRoot(container);
+  try {
+    const render = (levels: ('low' | 'high')[]) =>
+      act(() => root.render(
+        <LocaleProvider locale="en"><ThinkingLevelSelector levels={levels} onChange={() => undefined} /></LocaleProvider>,
+      ));
+    await render([]);
+    await render(['low', 'high']);
+    assert.equal(
+      document.querySelector('.maka-thinking-level-selector') !== null,
+      true,
+      'the selector mounts once variants exist',
+    );
+  } finally {
+    await act(() => root.unmount());
   }
 });

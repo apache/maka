@@ -342,6 +342,7 @@ export function WorkHubRoot() {
               activeModelConnectionSlug={session?.llmConnectionSlug}
               modelChoices={controller.choices}
               pickerPresentation={showConversation ? 'popover' : 'wheel'}
+              pickersReadOnly={Boolean(controller.activeQuestion || controller.activeForm)}
               maxInputRows={progress && !editingProgress ? 1 : showConversation ? undefined : 6}
               onModelChange={controller.changeModel}
               modelSwitchAvailability={controller.configuringModel ? { available: false, pending: true, reason: 'pending' } : undefined}
