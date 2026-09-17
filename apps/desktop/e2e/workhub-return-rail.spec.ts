@@ -82,20 +82,20 @@ test('a pending WorkHub question preserves docked placement, choices and focus a
   await hub.locator(COMPOSER_INPUT).fill(FAKE_ASK_USER_QUESTION_PROMPT);
   await awaitSendReady(hub);
   await hub.locator(COMPOSER_INPUT).press('Enter');
-  await expect(hub.getByRole('radio', { name: /公开测试/ })).toBeVisible();
+  await expect(hub.getByRole('option', { name: /公开测试/ })).toBeVisible();
   await expect(hub.locator('.workHubLive')).toHaveAttribute('data-placement', 'docked');
   // Reload rehydrates the pending question through Host interaction queries.
   await hub.reload();
-  const choice = hub.getByRole('radio', { name: /公开测试/ });
+  const choice = hub.getByRole('option', { name: /公开测试/ });
   await expect(choice).toBeVisible();
   await expect(hub.locator('.workHubLive')).toHaveAttribute('data-placement', 'docked');
   await choice.click();
   await app.evaluate(async ({ app }) => { if (process.platform === 'darwin') await app.dock!.show(); });
   await hub.evaluate(() => window.maka.workHubPresentation.detach());
   await expect(hub.locator('.workHubLive')).toHaveAttribute('data-placement', 'floating');
-  await expect(choice).toBeChecked();
+  await expect(choice).toHaveAttribute('aria-selected', 'true');
   await expect.poll(() => hub.locator('.maka-choice-panel').evaluate((panel) => panel.contains(document.activeElement))).toBe(true);
   await hub.evaluate(() => window.maka.workHubPresentation.dock());
   await expect(hub.locator('.workHubLive')).toHaveAttribute('data-placement', 'docked');
-  await expect(choice).toBeChecked();
+  await expect(choice).toHaveAttribute('aria-selected', 'true');
 });

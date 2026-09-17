@@ -12,7 +12,7 @@ index 90022b3..f1d8008 100644
       * Search source providing items for this trigger.
       * Reuses the same SearchSource interface as Typeahead \u2014
 diff --git a/node_modules/@astryxdesign/core/dist/Chat/ChatComposerInput.js b/node_modules/@astryxdesign/core/dist/Chat/ChatComposerInput.js
-index 5046603..f34333e 100644
+index 87dfdea..e2041ce 100644
 --- a/node_modules/@astryxdesign/core/dist/Chat/ChatComposerInput.js
 +++ b/node_modules/@astryxdesign/core/dist/Chat/ChatComposerInput.js
 @@ -22,7 +22,7 @@
@@ -24,20 +24,20 @@ index 5046603..f34333e 100644
  import { createPortal } from 'react-dom';
  import * as stylex from '@stylexjs/stylex';
  import "../theme/tokens.stylex.js";
-@@ -207,7 +207,7 @@ export function ChatComposerInput(props) {
+@@ -261,7 +261,7 @@ export function ChatComposerInput(props) {
        inputControlRef.current = null;
      };
-   }, [inputControlRef]);
+   }, [inputControlRef, focusEditableAtEnd]);
 -  useEffect(() => {
 +  useLayoutEffect(() => {
      if (controlledValue === undefined || !editableRef.current) {
        return;
      }
 diff --git a/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.d.ts b/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.d.ts
-index ff34874..0f5ae14 100644
+index ff34874..28aaaab 100644
 --- a/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.d.ts
 +++ b/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.d.ts
-@@ -69,6 +69,15 @@ export interface ChatLayoutProps extends BaseProps<HTMLDivElement> {
+@@ -69,8 +69,17 @@ export interface ChatLayoutProps extends BaseProps<HTMLDivElement> {
       * @default 'balanced'
       */
      density?: Density;
@@ -51,10 +51,13 @@ index ff34874..0f5ae14 100644
 +     */
 +    autoScroll?: boolean;
  }
- export declare function ChatLayout({ children, composer, density, emptyState, scrollButton, scrollRef: externalScrollRef, xstyle, className, style, 'data-testid': testId, ref, ...rest }: ChatLayoutProps): import("react").JSX.Element;
+-export declare function ChatLayout({ children, composer, density, emptyState, scrollButton, scrollRef: externalScrollRef, xstyle, className, style, 'data-testid': testId, ref, ...rest }: ChatLayoutProps): import("react").JSX.Element;
++export declare function ChatLayout({ children, composer, density, emptyState, scrollButton, scrollRef: externalScrollRef, xstyle, className, style, 'data-testid': testId, autoScroll, ref, ...rest }: ChatLayoutProps): import("react").JSX.Element;
  export declare namespace ChatLayout {
+     var displayName: string;
+ }
 diff --git a/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.js b/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.js
-index ff9b9fa..f681cd0 100644
+index ff9b9fa..28afe4e 100644
 --- a/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.js
 +++ b/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.js
 @@ -85,7 +85,8 @@ const styles = {
@@ -63,7 +66,7 @@ index ff9b9fa..f681cd0 100644
      keRtuK: "x67t5t6",
 -    kZKoxP: "xpyat2d",
 +    kZKoxP: "x5yr21d",
-+    kY2c9j: "maka-x-blur-behind",
++    kY2c9j: "x8knxv4",
      kX1K2I: "xw26lqc",
      kAExgp: "x1bv1mxo",
      $$css: true
@@ -109,9 +112,10 @@ index ff9b9fa..f681cd0 100644
    const newMsgs = useChatNewMessages({
      isLocked: scroll.isLocked,
 diff --git a/node_modules/@astryxdesign/core/dist/Chat/ChatToolCalls.js b/node_modules/@astryxdesign/core/dist/Chat/ChatToolCalls.js
+index 3c457d1..7d5a11a 100644
 --- a/node_modules/@astryxdesign/core/dist/Chat/ChatToolCalls.js
 +++ b/node_modules/@astryxdesign/core/dist/Chat/ChatToolCalls.js
-@@ -122,6 +122,7 @@
+@@ -140,6 +140,7 @@ function CallRow({
    const row = /*#__PURE__*/_jsxs("div", {
      role: hasDetail ? 'button' : undefined,
      tabIndex: hasDetail ? 0 : undefined,
@@ -119,7 +123,7 @@ diff --git a/node_modules/@astryxdesign/core/dist/Chat/ChatToolCalls.js b/node_m
      "aria-expanded": hasDetail ? isDetailOpen : undefined,
      "aria-controls": hasDetail && isDetailOpen ? detailId : undefined,
      onClick: toggleDetail,
-@@ -278,6 +279,10 @@
+@@ -279,6 +280,10 @@ export function ChatToolCalls(props) {
    const contentId = useId();
    const isControlled = controlledExpanded !== undefined;
    const isExpanded = isControlled ? controlledExpanded : internalExpanded;
@@ -130,7 +134,7 @@ diff --git a/node_modules/@astryxdesign/core/dist/Chat/ChatToolCalls.js b/node_m
    const toggle = useCallback(() => {
      const next = !isExpanded;
      if (!isControlled) {
-@@ -417,7 +422,7 @@
+@@ -412,7 +417,7 @@ export function ChatToolCalls(props) {
            ...{
              className: "x78zum5 xdt5ytf x7a5moj xtedp8i"
            },
@@ -140,10 +144,10 @@ diff --git a/node_modules/@astryxdesign/core/dist/Chat/ChatToolCalls.js b/node_m
            }, getToolCallKey(call)))
          })
 diff --git a/node_modules/@astryxdesign/core/dist/Chat/useTriggerMenu.js b/node_modules/@astryxdesign/core/dist/Chat/useTriggerMenu.js
-index e1d2ebd..957168d 100644
+index 47d4e52..0a73bc0 100644
 --- a/node_modules/@astryxdesign/core/dist/Chat/useTriggerMenu.js
 +++ b/node_modules/@astryxdesign/core/dist/Chat/useTriggerMenu.js
-@@ -47,6 +47,45 @@ const styles = {
+@@ -48,6 +48,45 @@ const styles = {
  // Helpers
  // =============================================================================
  
@@ -189,7 +193,7 @@ index e1d2ebd..957168d 100644
  function getTextBeforeCursor(editable) {
    const selection = window.getSelection();
    if (!selection || selection.rangeCount === 0) {
-@@ -61,21 +100,27 @@ function getTextBeforeCursor(editable) {
+@@ -62,21 +101,27 @@ function getTextBeforeCursor(editable) {
    }
    const node = range.startContainer;
    if (node.nodeType === Node.TEXT_NODE) {
@@ -221,7 +225,7 @@ index e1d2ebd..957168d 100644
            return {
              trigger,
              query,
-@@ -189,7 +234,12 @@ export function useTriggerMenu(options) {
+@@ -190,7 +235,12 @@ export function useTriggerMenu(options) {
    // Anchor the popover to the cursor position (not the entire input).
    // We append a zero-size span to document.body positioned at the cursor
    // rect — outside the contentEditable to avoid splitting text nodes.
@@ -235,7 +239,7 @@ index e1d2ebd..957168d 100644
      const editable = editableRef.current;
      if (!editable) {
        return;
-@@ -306,15 +356,15 @@ export function useTriggerMenu(options) {
+@@ -307,15 +357,15 @@ export function useTriggerMenu(options) {
      if (!editable) {
        return;
      }
@@ -255,7 +259,7 @@ index e1d2ebd..957168d 100644
        if (state.isActive) {
          reset();
        }
-@@ -322,9 +372,9 @@ export function useTriggerMenu(options) {
+@@ -323,9 +373,9 @@ export function useTriggerMenu(options) {
      }
      const {
        trigger,
@@ -267,7 +271,7 @@ index e1d2ebd..957168d 100644
      if (!state.isActive || state.activeTrigger !== trigger) {
        triggerStartRef.current = triggerStart;
        setState(prev => ({
-@@ -334,7 +384,7 @@ export function useTriggerMenu(options) {
+@@ -335,7 +385,7 @@ export function useTriggerMenu(options) {
          query,
          highlightedIndex: 0
        }));
@@ -276,7 +280,7 @@ index e1d2ebd..957168d 100644
        searchItems(trigger, query);
        popover.show();
      } else if (state.query !== query) {
-@@ -503,7 +553,8 @@ export function useTriggerMenu(options) {
+@@ -507,7 +557,8 @@ export function useTriggerMenu(options) {
        placement: 'above',
        alignment: 'start',
        offset: spacingVars['--spacing-1'],
@@ -284,25 +288,10 @@ index e1d2ebd..957168d 100644
 +      xstyle: styles.popoverSurface,
 +      style: trigger?.menuAnchorRef ? {width: 'anchor-size(width)'} : undefined
      });
-   }, [popover, listboxId, state, selectItem, getItemId, t]);
+   }, [popover, listboxId, state, selectItem, getItemId, highlightOnHover, t]);
    return {
-diff --git a/node_modules/@astryxdesign/core/dist/CodeBlock/tokenizer.js b/node_modules/@astryxdesign/core/dist/CodeBlock/tokenizer.js
-index eac4c4b..a21c0c4 100644
---- a/node_modules/@astryxdesign/core/dist/CodeBlock/tokenizer.js
-+++ b/node_modules/@astryxdesign/core/dist/CodeBlock/tokenizer.js
-@@ -39,7 +39,9 @@ function buildLanguage(lang) {
-     return cached;
-   }
-   const def = buildLanguageUncached(lang);
--  langCache.set(lang, def);
-+  if (def !== null) {
-+    langCache.set(lang, def);
-+  }
-   return def;
- }
- function buildLanguageUncached(lang) {
 diff --git a/node_modules/@astryxdesign/core/dist/CodeBlock/CodeBlock.js b/node_modules/@astryxdesign/core/dist/CodeBlock/CodeBlock.js
-index 4765e55..a93b859 100644
+index fcc2513..0f2b8f8 100644
 --- a/node_modules/@astryxdesign/core/dist/CodeBlock/CodeBlock.js
 +++ b/node_modules/@astryxdesign/core/dist/CodeBlock/CodeBlock.js
 @@ -218,15 +218,8 @@ function renderLines(lines, highlightSet, renderLineContent, lineNumbers, chunkS
@@ -322,6 +311,21 @@ index 4765e55..a93b859 100644
        children: /*#__PURE__*/_jsx(CodeChunk, {
          lines: chunkLines,
          startIndex: start,
+diff --git a/node_modules/@astryxdesign/core/dist/CodeBlock/tokenizer.js b/node_modules/@astryxdesign/core/dist/CodeBlock/tokenizer.js
+index eac4c4b..1ade6f9 100644
+--- a/node_modules/@astryxdesign/core/dist/CodeBlock/tokenizer.js
++++ b/node_modules/@astryxdesign/core/dist/CodeBlock/tokenizer.js
+@@ -39,7 +39,9 @@ function buildLanguage(lang) {
+     return cached;
+   }
+   const def = buildLanguageUncached(lang);
+-  langCache.set(lang, def);
++  if (def !== null) {
++    langCache.set(lang, def);
++  }
+   return def;
+ }
+ function buildLanguageUncached(lang) {
 diff --git a/node_modules/@astryxdesign/core/dist/DropdownMenu/DropdownMenuItem.d.ts b/node_modules/@astryxdesign/core/dist/DropdownMenu/DropdownMenuItem.d.ts
 index 82ae62c..a97eff5 100644
 --- a/node_modules/@astryxdesign/core/dist/DropdownMenu/DropdownMenuItem.d.ts
@@ -349,7 +353,7 @@ index 82ae62c..a97eff5 100644
      var displayName: string;
  }
 diff --git a/node_modules/@astryxdesign/core/dist/DropdownMenu/DropdownMenuItem.js b/node_modules/@astryxdesign/core/dist/DropdownMenu/DropdownMenuItem.js
-index 446e25b..00eb8b3 100644
+index 1975140..bf6cb77 100644
 --- a/node_modules/@astryxdesign/core/dist/DropdownMenu/DropdownMenuItem.js
 +++ b/node_modules/@astryxdesign/core/dist/DropdownMenu/DropdownMenuItem.js
 @@ -91,6 +91,7 @@ const itemSizeStyles = {
@@ -536,10 +540,10 @@ index 36ed303..0184370 100644
  Markdown.displayName = 'Markdown';
 \ No newline at end of file
 diff --git a/node_modules/@astryxdesign/core/dist/SideNav/SideNavItem.d.ts b/node_modules/@astryxdesign/core/dist/SideNav/SideNavItem.d.ts
-index 158ada1..fe7be94 100644
+index c55f046..09efbbe 100644
 --- a/node_modules/@astryxdesign/core/dist/SideNav/SideNavItem.d.ts
 +++ b/node_modules/@astryxdesign/core/dist/SideNav/SideNavItem.d.ts
-@@ -68,6 +68,12 @@ export interface SideNavItemProps extends BaseProps<HTMLElement> {
+@@ -70,6 +70,12 @@ export interface SideNavItemProps extends BaseProps<HTMLElement> {
       * renders inside the primary link or button.
       */
      endContent?: ReactNode;
@@ -552,7 +556,7 @@ index 158ada1..fe7be94 100644
      /**
       * Row-level secondary controls (icon buttons, menus) rendered as siblings
       * of the primary element at the trailing edge of the row — after the
-@@ -137,7 +143,7 @@ export interface SideNavItemProps extends BaseProps<HTMLElement> {
+@@ -139,7 +145,7 @@ export interface SideNavItemProps extends BaseProps<HTMLElement> {
   * </SideNavItem>
   * ```
   */
@@ -562,10 +566,10 @@ index 158ada1..fe7be94 100644
      var displayName: string;
  }
 diff --git a/node_modules/@astryxdesign/core/dist/SideNav/SideNavItem.js b/node_modules/@astryxdesign/core/dist/SideNav/SideNavItem.js
-index 3d2cf00..c5c0d55 100644
+index b56c9d5..463f665 100644
 --- a/node_modules/@astryxdesign/core/dist/SideNav/SideNavItem.js
 +++ b/node_modules/@astryxdesign/core/dist/SideNav/SideNavItem.js
-@@ -232,6 +232,7 @@ export function SideNavItem({
+@@ -234,6 +234,7 @@ export function SideNavItem({
    href,
    onClick,
    endContent,
@@ -573,7 +577,7 @@ index 3d2cf00..c5c0d55 100644
    actions,
    children,
    collapsible: itemCollapsible,
-@@ -547,7 +548,7 @@ export function SideNavItem({
+@@ -550,7 +551,7 @@ export function SideNavItem({
    const item = /*#__PURE__*/_jsxs("div", {
      ref: itemRef,
      ...stylex.props(styles.root, xstyle),
@@ -583,27 +587,19 @@ index 3d2cf00..c5c0d55 100644
        role: "group",
        "aria-labelledby": `${id}-label`,
 diff --git a/node_modules/@astryxdesign/core/dist/astryx.css b/node_modules/@astryxdesign/core/dist/astryx.css
-index 0159f32..4067864 100644
+index f7c1792..0180bb3 100644
 --- a/node_modules/@astryxdesign/core/dist/astryx.css
 +++ b/node_modules/@astryxdesign/core/dist/astryx.css
-@@ -564,7 +564,7 @@
+@@ -577,7 +577,7 @@
    .xk2sxw7:focus-within:not(#\#):not(#\#){border-color:var(--color-error)}
    .xyq33ac:focus-within:not(#\#):not(#\#){border-color:var(--color-success)}
    .xa1yw2k:focus-within:not(#\#):not(#\#){border-color:var(--color-warning)}
 -  .xafswnp.xafswnp:where(.x1iwu4tg:has(:focus-visible) *):not(#\#):not(#\#){outline:var(--focus-outline-width) var(--focus-outline-style) var(--focus-outline-color)}
 +  :where(.x1iwu4tg:has(:focus-visible)) .xafswnp.xafswnp:not(#\#):not(#\#){outline:var(--focus-outline-width) var(--focus-outline-style) var(--focus-outline-color)}
    .x1dordxg:focus-within:not(#\#):not(#\#){overflow:visible}
+   .xb0m1lw:has(> div > .astryx-layout-content):not(#\#):not(#\#){margin-inline:0}
    .x16s19ga:has(:focus-visible):not(#\#):not(#\#){outline:var(--focus-outline-width) var(--focus-outline-style) var(--focus-outline-color)}
-   .x64lkcz:focus:not(#\#):not(#\#){border-color:var(--color-error)}
-@@ -1280,6 +1280,7 @@
-   .x1yn0g08:not(#\#):not(#\#):not(#\#){word-break:break-all}
-   .x13faqbe:not(#\#):not(#\#):not(#\#){word-break:break-word}
-   .x1lldw8n:not(#\#):not(#\#):not(#\#){word-break:normal}
-+  .maka-x-blur-behind:not(#\#):not(#\#):not(#\#){z-index:-1}
-   .x1ja2u2z:not(#\#):not(#\#):not(#\#){z-index:0}
-   .x1vjfegm:not(#\#):not(#\#):not(#\#){z-index:1}
-   .xfo81ep:not(#\#):not(#\#):not(#\#){z-index:1000}
-@@ -1321,7 +1322,7 @@
+@@ -1364,7 +1364,7 @@
    .x7s97pk:focus-visible:not(#\#):not(#\#):not(#\#){outline-offset:2px}
    .x13aywxo:focus-visible:not(#\#):not(#\#):not(#\#){outline-offset:var(--button-focus-offset)}
    .x1vwwbsn:focus-visible:not(#\#):not(#\#):not(#\#){outline-offset:var(--focus-outline-offset)}
@@ -612,7 +608,7 @@ index 0159f32..4067864 100644
    .x1jhp3zv:focus-visible:not(#\#):not(#\#):not(#\#){outline-style:var(--focus-outline-style)}
    .x1vidyx5:focus-visible:not(#\#):not(#\#):not(#\#){outline-width:var(--focus-outline-width)}
    .x1n6uwha:is([dir="rtl"] *):not(#\#):not(#\#):not(#\#){padding-inline-end:max(var(--spacing-4),env(safe-area-inset-left,0px))}
-@@ -1780,8 +1781,8 @@
+@@ -1843,8 +1843,8 @@
    .x5lhr3w:not(#\#):not(#\#):not(#\#):not(#\#){width:var(--x-width)}
    .x1wp2rvj.x1wp2rvj:where(.x139im0d:last-child *):not(#\#):not(#\#):not(#\#):not(#\#){border-bottom-width:0}
    .x132qfvm:focus-within:not(#\#):not(#\#):not(#\#):not(#\#){height:auto}
@@ -793,7 +789,7 @@ index 693d728..7d5724e 100644
  }
 \ No newline at end of file
 diff --git a/node_modules/@astryxdesign/core/src/Chat/ChatComposerInput.tsx b/node_modules/@astryxdesign/core/src/Chat/ChatComposerInput.tsx
-index 5a6a56b..9ca7923 100644
+index a45cc2f..75d0bf4 100644
 --- a/node_modules/@astryxdesign/core/src/Chat/ChatComposerInput.tsx
 +++ b/node_modules/@astryxdesign/core/src/Chat/ChatComposerInput.tsx
 @@ -28,6 +28,7 @@ import {
@@ -804,7 +800,7 @@ index 5a6a56b..9ca7923 100644
    useImperativeHandle,
    type ReactNode,
    type KeyboardEvent,
-@@ -106,6 +107,8 @@ export type ChatComposerTriggerItem = SearchableItem;
+@@ -114,6 +115,8 @@ export type ChatComposerTriggerItem = SearchableItem;
  export type ChatComposerTrigger = {
    /** Character that activates this trigger menu (e.g. '@', '/') */
    character: string;
@@ -813,9 +809,9 @@ index 5a6a56b..9ca7923 100644
    /**
     * Search source providing items for this trigger.
     * Reuses the same SearchSource interface as Typeahead \u2014
-@@ -402,7 +405,7 @@ export function ChatComposerInput(props: ChatComposerInputProps) {
+@@ -465,7 +468,7 @@ export function ChatComposerInput(props: ChatComposerInputProps) {
      };
-   }, [inputControlRef]);
+   }, [inputControlRef, focusEditableAtEnd]);
  
 -  useEffect(() => {
 +  useLayoutEffect(() => {
@@ -823,10 +819,26 @@ index 5a6a56b..9ca7923 100644
        return;
      }
 diff --git a/node_modules/@astryxdesign/core/src/Chat/ChatLayout.tsx b/node_modules/@astryxdesign/core/src/Chat/ChatLayout.tsx
-index d45a912..efec9fd 100644
+index d45a912..7dba080 100644
 --- a/node_modules/@astryxdesign/core/src/Chat/ChatLayout.tsx
 +++ b/node_modules/@astryxdesign/core/src/Chat/ChatLayout.tsx
-@@ -177,7 +177,15 @@ const styles = stylex.create({
+@@ -96,6 +96,15 @@ export interface ChatLayoutProps extends BaseProps<HTMLDivElement> {
+    * @default 'balanced'
+    */
+   density?: Density;
++  /**
++   * Whether the layout's own auto-follow runs. Forwards `useChatStreamScroll`'s
++   * published `enabled` option, for hosts that position the transcript
++   * themselves; off, the layout installs no scroll listeners and never writes
++   * `scrollTop`, so the host is the only writer.
++   *
++   * @default true
++   */
++  autoScroll?: boolean;
+ }
+ 
+ // =============================================================================
+@@ -177,7 +186,15 @@ const styles = stylex.create({
      pointerEvents: 'none',
      backdropFilter: 'blur(12px)',
      WebkitBackdropFilter: 'blur(12px)',
@@ -843,7 +855,7 @@ index d45a912..efec9fd 100644
      maskImage: 'linear-gradient(to bottom, transparent, black 36px)',
      WebkitMaskImage: 'linear-gradient(to bottom, transparent, black 36px)',
    },
-@@ -210,18 +218,16 @@ const styles = stylex.create({
+@@ -210,18 +227,16 @@ const styles = stylex.create({
      paddingInline: spacingVars['--spacing-4'],
    },
  
@@ -863,10 +875,34 @@ index d45a912..efec9fd 100644
      maskImage: 'linear-gradient(to bottom, transparent, black 48px)',
      WebkitMaskImage: 'linear-gradient(to bottom, transparent, black 48px)',
    },
+@@ -279,6 +294,7 @@ export function ChatLayout({
+   className,
+   style,
+   'data-testid': testId,
++  autoScroll = true,
+   ref,
+   ...rest
+ }: ChatLayoutProps) {
+@@ -289,7 +305,13 @@ export function ChatLayout({
+   const isSelfScrolling = !externalScrollRef;
+ 
+   // --- Default scroll behavior ---
+-  const scroll = useChatStreamScroll({scrollRef: scrollContainerRef});
++  const scroll = useChatStreamScroll({
++    scrollRef: scrollContainerRef,
++    // maka: forward the hook's own published switch. Off, it installs no
++    // listeners and moves nothing, which is what a host needs when the host is
++    // the one positioning the transcript.
++    enabled: autoScroll,
++  });
+   const newMsgs = useChatNewMessages({
+     isLocked: scroll.isLocked,
+     onResize: scroll.scrollIfLocked,
 diff --git a/node_modules/@astryxdesign/core/src/Chat/ChatToolCalls.tsx b/node_modules/@astryxdesign/core/src/Chat/ChatToolCalls.tsx
+index 68a424e..d4f0c5e 100644
 --- a/node_modules/@astryxdesign/core/src/Chat/ChatToolCalls.tsx
 +++ b/node_modules/@astryxdesign/core/src/Chat/ChatToolCalls.tsx
-@@ -399,6 +399,7 @@
+@@ -413,6 +413,7 @@ function CallRow({call}: {call: ChatToolCallItem}) {
      <div
        role={hasDetail ? 'button' : undefined}
        tabIndex={hasDetail ? 0 : undefined}
@@ -874,7 +910,7 @@ diff --git a/node_modules/@astryxdesign/core/src/Chat/ChatToolCalls.tsx b/node_m
        aria-expanded={hasDetail ? isDetailOpen : undefined}
        aria-controls={hasDetail && isDetailOpen ? detailId : undefined}
        onClick={toggleDetail}
-@@ -548,6 +549,10 @@
+@@ -547,6 +548,10 @@ export function ChatToolCalls(props: ChatToolCallsProps) {
    const contentId = useId();
    const isControlled = controlledExpanded !== undefined;
    const isExpanded = isControlled ? controlledExpanded : internalExpanded;
@@ -885,30 +921,43 @@ diff --git a/node_modules/@astryxdesign/core/src/Chat/ChatToolCalls.tsx b/node_m
  
    const toggle = useCallback(() => {
      const next = !isExpanded;
-@@ -674,7 +679,7 @@
+@@ -674,9 +679,10 @@ export function ChatToolCalls(props: ChatToolCallsProps) {
          )}>
          <div {...stylex.props(styles.groupContentInner)}>
            <div {...stylex.props(styles.list)}>
 -            {calls.map(call => (
-+            {(isExpanded || hasExpanded) && calls.map(call => (
-               <CallRow key={getToolCallKey(call)} call={call} />
-             ))}
+-              <CallRow key={getToolCallKey(call)} call={call} />
+-            ))}
++            {(isExpanded || hasExpanded) &&
++              calls.map(call => (
++                <CallRow key={getToolCallKey(call)} call={call} />
++              ))}
            </div>
+         </div>
+       </div>
 diff --git a/node_modules/@astryxdesign/core/src/Chat/useTriggerMenu.tsx b/node_modules/@astryxdesign/core/src/Chat/useTriggerMenu.tsx
-index 6eefd4a..f596bf6 100644
+index 764be45..10a2de9 100644
 --- a/node_modules/@astryxdesign/core/src/Chat/useTriggerMenu.tsx
 +++ b/node_modules/@astryxdesign/core/src/Chat/useTriggerMenu.tsx
-@@ -167,7 +167,56 @@ const styles = stylex.create({
+@@ -168,7 +168,68 @@ const styles = stylex.create({
  // Helpers
  // =============================================================================
  
 -function getTextBeforeCursor(editable: HTMLDivElement): string | null {
-+const blockDisplays = new Set(['block', 'flex', 'flow-root', 'grid', 'list-item', 'table']);
++const blockDisplays = new Set([
++  'block',
++  'flex',
++  'flow-root',
++  'grid',
++  'list-item',
++  'table',
++]);
 +
 +function createsLineBoundary(node: Node): boolean {
 +  return (
 +    node instanceof HTMLBRElement ||
-+    (node instanceof HTMLElement && blockDisplays.has(window.getComputedStyle(node).display))
++    (node instanceof HTMLElement &&
++      blockDisplays.has(window.getComputedStyle(node).display))
 +  );
 +}
 +
@@ -931,7 +980,11 @@ index 6eefd4a..f596bf6 100644
 +function getCharacterBeforeNode(editable: HTMLDivElement, node: Node): string {
 +  let current: Node | null = node;
 +  while (current && current !== editable) {
-+    for (let sibling = current.previousSibling; sibling; sibling = sibling.previousSibling) {
++    for (
++      let sibling = current.previousSibling;
++      sibling;
++      sibling = sibling.previousSibling
++    ) {
 +      const character = getTrailingContextCharacter(sibling);
 +      if (character) {
 +        return character;
@@ -956,7 +1009,7 @@ index 6eefd4a..f596bf6 100644
    const selection = window.getSelection();
    if (!selection || selection.rangeCount === 0) {
      return null;
-@@ -183,7 +232,9 @@ function getTextBeforeCursor(editable: HTMLDivElement): string | null {
+@@ -184,7 +245,9 @@ function getTextBeforeCursor(editable: HTMLDivElement): string | null {
  
    const node = range.startContainer;
    if (node.nodeType === Node.TEXT_NODE) {
@@ -967,15 +1020,14 @@ index 6eefd4a..f596bf6 100644
    }
  
    return null;
-@@ -199,16 +250,15 @@ function findActiveTrigger(
- } | null {
+@@ -201,15 +264,16 @@ function findActiveTrigger(
    for (let i = textBeforeCursor.length - 1; i >= 0; i--) {
      const char = textBeforeCursor[i];
--
+ 
 -    if (char === ' ' || char === '\n') {
 -      return null;
 -    }
--
+ 
      for (const trigger of triggers) {
        if (char === trigger.character) {
          const prevChar = i > 0 ? textBeforeCursor[i - 1] : null;
@@ -988,7 +1040,7 @@ index 6eefd4a..f596bf6 100644
            return {trigger, query, triggerStart: i};
          }
        }
-@@ -334,7 +384,12 @@ export function useTriggerMenu(
+@@ -335,7 +399,12 @@ export function useTriggerMenu(
    // Anchor the popover to the cursor position (not the entire input).
    // We append a zero-size span to document.body positioned at the cursor
    // rect — outside the contentEditable to avoid splitting text nodes.
@@ -1002,7 +1054,7 @@ index 6eefd4a..f596bf6 100644
      const editable = editableRef.current;
      if (!editable) {
        return;
-@@ -486,23 +541,24 @@ export function useTriggerMenu(
+@@ -487,23 +556,24 @@ export function useTriggerMenu(
        return;
      }
  
@@ -1032,7 +1084,7 @@ index 6eefd4a..f596bf6 100644
  
      if (!state.isActive || state.activeTrigger !== trigger) {
        triggerStartRef.current = triggerStart;
-@@ -513,7 +569,7 @@ export function useTriggerMenu(
+@@ -514,7 +584,7 @@ export function useTriggerMenu(
          query,
          highlightedIndex: 0,
        }));
@@ -1041,19 +1093,39 @@ index 6eefd4a..f596bf6 100644
        searchItems(trigger, query);
        popover.show();
      } else if (state.query !== query) {
-@@ -712,6 +768,7 @@ export function useTriggerMenu(
+@@ -716,6 +786,7 @@ export function useTriggerMenu(
          alignment: 'start',
          offset: spacingVars['--spacing-1'],
          xstyle: styles.popoverSurface,
 +        style: trigger?.menuAnchorRef ? {width: 'anchor-size(width)'} : undefined,
        },
      );
-   }, [popover, listboxId, state, selectItem, getItemId, t]);
+   }, [popover, listboxId, state, selectItem, getItemId, highlightOnHover, t]);
+diff --git a/node_modules/@astryxdesign/core/src/CodeBlock/CodeBlock.tsx b/node_modules/@astryxdesign/core/src/CodeBlock/CodeBlock.tsx
+index 6bb384b..683642d 100644
+--- a/node_modules/@astryxdesign/core/src/CodeBlock/CodeBlock.tsx
++++ b/node_modules/@astryxdesign/core/src/CodeBlock/CodeBlock.tsx
+@@ -386,14 +386,9 @@ function renderLines(
+   for (let start = 0; start < lines.length; start += chunkSize) {
+     const end = Math.min(start + chunkSize, lines.length);
+     const chunkLines = lines.slice(start, end);
+-    const estimatedHeight = `${chunkLines.length}lh`;
+ 
+     chunks.push(
+-      <div
+-        key={start}
+-        {...mergeProps(stylex.props(styles.lineChunk), {
+-          style: {containIntrinsicBlockSize: `auto ${estimatedHeight}`},
+-        })}>
++      <div key={start} style={{contain: 'layout style paint'}}>
+         <CodeChunk
+           lines={chunkLines}
+           startIndex={start}
 diff --git a/node_modules/@astryxdesign/core/src/DropdownMenu/DropdownMenuItem.tsx b/node_modules/@astryxdesign/core/src/DropdownMenu/DropdownMenuItem.tsx
-index 21bad6a..8e2a03a 100644
+index 3fad1b4..e7d1e89 100644
 --- a/node_modules/@astryxdesign/core/src/DropdownMenu/DropdownMenuItem.tsx
 +++ b/node_modules/@astryxdesign/core/src/DropdownMenu/DropdownMenuItem.tsx
-@@ -111,6 +111,12 @@ export interface DropdownMenuItemProps extends Pick<
+@@ -113,6 +113,12 @@ export interface DropdownMenuItemProps extends Pick<
     * @default true
     */
    hasCloseOnSelect?: boolean;
@@ -1066,7 +1138,7 @@ index 21bad6a..8e2a03a 100644
    /**
     * Visual variant. `'destructive'` renders the label, description, and icon in
     * the error color for dangerous actions (e.g. Delete). @default 'default'
-@@ -134,6 +140,7 @@ export interface DropdownMenuItemProps extends Pick<
+@@ -136,6 +142,7 @@ export interface DropdownMenuItemProps extends Pick<
   */
  export function DropdownMenuItem({
    icon,
@@ -1074,7 +1146,7 @@ index 21bad6a..8e2a03a 100644
    label,
    description,
    onClick,
-@@ -168,6 +175,7 @@ export function DropdownMenuItem({
+@@ -170,6 +177,7 @@ export function DropdownMenuItem({
    return (
      <Item
        role="menuitem"
@@ -1082,8 +1154,28 @@ index 21bad6a..8e2a03a 100644
        tabIndex={isDisabled ? undefined : -1}
        onPointerMove={handlePointerMove}
        startContent={
+diff --git a/node_modules/@astryxdesign/core/src/List/List.tsx b/node_modules/@astryxdesign/core/src/List/List.tsx
+index 5b63cd6..76627fe 100644
+--- a/node_modules/@astryxdesign/core/src/List/List.tsx
++++ b/node_modules/@astryxdesign/core/src/List/List.tsx
+@@ -151,6 +151,7 @@ export function List({
+   className,
+   style,
+   'data-testid': testId,
++  'aria-label': ariaLabel,
+   ref,
+   ...props
+ }: ListProps) {
+@@ -170,6 +171,7 @@ export function List({
+       // is part of its contract and wins on conflict.
+       {...props}
+       data-testid={testId}
++      aria-label={ariaLabel}
+       // Only when this component renders the header — writing `undefined`
+       // unconditionally would erase a label a consumer pointed at their own
+       // heading.
 diff --git a/node_modules/@astryxdesign/core/src/Markdown/Markdown.tsx b/node_modules/@astryxdesign/core/src/Markdown/Markdown.tsx
-index 0ba2449..939ddf9 100644
+index 0ba2449..1a9fbd7 100644
 --- a/node_modules/@astryxdesign/core/src/Markdown/Markdown.tsx
 +++ b/node_modules/@astryxdesign/core/src/Markdown/Markdown.tsx
 @@ -9,7 +9,7 @@
@@ -1115,7 +1207,7 @@ index 0ba2449..939ddf9 100644
    onLinkClick,
    sources,
    citationStyle = 'label',
-@@ -1644,18 +1650,14 @@ export function Markdown({
+@@ -1644,7 +1650,10 @@ export function Markdown({
  
    // Smooth bursty streamed chunks into a steady character-by-character reveal.
    // When not streaming, the hook returns children unchanged (no-op).
@@ -1127,18 +1219,7 @@ index 0ba2449..939ddf9 100644
  
    const incrementalStateRef = useRef<IncrementalState>(
      createIncrementalState(),
-   );
--  // Reset incremental cache when the autolink option toggles — cached
--  // settled blocks were parsed with the previous setting.
--  const prevAutolinkRef = useRef(autolink);
--  if (prevAutolinkRef.current !== autolink) {
--    incrementalStateRef.current = createIncrementalState();
--    prevAutolinkRef.current = autolink;
--  }
- 
-   const blocks = useMemo(() => {
-     if (display === 'inline') {
-@@ -1666,15 +1668,15 @@ export function Markdown({
+@@ -1666,15 +1675,15 @@ export function Markdown({
          incrementalStateRef.current = createIncrementalState();
          return [];
        }
@@ -1157,7 +1238,7 @@ index 0ba2449..939ddf9 100644
  
    // Assign each top-level heading the slug that parseOutlineFromMarkdown
    // would derive for it, so Outline hash links built from the same source
-@@ -1701,9 +1703,9 @@ export function Markdown({
+@@ -1701,9 +1710,9 @@ export function Markdown({
      if (display !== 'inline') {
        return [];
      }
@@ -1169,7 +1250,7 @@ index 0ba2449..939ddf9 100644
  
    // Track recent boundaries for stacked fade-in animation.
    // The number of spans needed = ceil(animationDuration / tickInterval).
-@@ -1719,20 +1721,43 @@ export function Markdown({
+@@ -1719,20 +1728,43 @@ export function Markdown({
      return Math.min(Math.ceil(duration / tickMs), 12);
    }, [token]);
  
@@ -1227,7 +1308,7 @@ index 0ba2449..939ddf9 100644
  
    const cursor: StreamingCursor = {
      offset: 0,
-@@ -1774,10 +1799,6 @@ export function Markdown({
+@@ -1774,10 +1806,6 @@ export function Markdown({
        </span>
      );
  
@@ -1238,7 +1319,7 @@ index 0ba2449..939ddf9 100644
      return renderedInline;
    }
  
-@@ -1821,12 +1842,6 @@ export function Markdown({
+@@ -1821,12 +1849,6 @@ export function Markdown({
      </div>
    );
  
@@ -1252,10 +1333,10 @@ index 0ba2449..939ddf9 100644
  }
  
 diff --git a/node_modules/@astryxdesign/core/src/SideNav/SideNavItem.tsx b/node_modules/@astryxdesign/core/src/SideNav/SideNavItem.tsx
-index 1197085..67271f5 100644
+index 6c581d4..d3a9857 100644
 --- a/node_modules/@astryxdesign/core/src/SideNav/SideNavItem.tsx
 +++ b/node_modules/@astryxdesign/core/src/SideNav/SideNavItem.tsx
-@@ -346,6 +346,12 @@ export interface SideNavItemProps extends BaseProps<HTMLElement> {
+@@ -348,6 +348,12 @@ export interface SideNavItemProps extends BaseProps<HTMLElement> {
     * renders inside the primary link or button.
     */
    endContent?: ReactNode;
@@ -1268,7 +1349,7 @@ index 1197085..67271f5 100644
    /**
     * Row-level secondary controls (icon buttons, menus) rendered as siblings
     * of the primary element at the trailing edge of the row — after the
-@@ -432,6 +438,7 @@ export function SideNavItem({
+@@ -434,6 +440,7 @@ export function SideNavItem({
    href,
    onClick,
    endContent,
@@ -1276,7 +1357,7 @@ index 1197085..67271f5 100644
    actions,
    children,
    collapsible: itemCollapsible,
-@@ -792,6 +799,7 @@ export function SideNavItem({
+@@ -799,6 +806,7 @@ export function SideNavItem({
    const item = (
      <div ref={itemRef} {...stylex.props(styles.root, xstyle)}>
        {itemElement}

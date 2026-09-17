@@ -69,7 +69,31 @@ let refreshedMetadata: ModelsDevMetadata | undefined;
  * and read Host-resolved catalog entries rather than their own merge.
  */
 export function installRefreshedModelMetadata(metadata: ModelsDevMetadata | undefined): void {
+  if (metadata !== undefined) assertWireTokenLimits(metadata);
   refreshedMetadata = metadata;
+}
+
+/**
+ * The wire carries a token limit only as a positive integer
+ * (decodeConnectionModel), so a table installed here must already be in that
+ * domain: one model outside it fails the Host's own output validation and
+ * takes the whole catalog page down. Refusing at install keeps the snapshot
+ * this build shipped, with the offending model named.
+ */
+function assertWireTokenLimits(table: ModelsDevMetadata): void {
+  for (const [providerType, models] of Object.entries(table)) {
+    for (const [modelId, metadata] of Object.entries(models)) {
+      for (const key of ['contextWindow', 'inputLimit', 'maxOutputTokens'] as const) {
+        const value = metadata[key];
+        if (value === undefined) continue;
+        if (!Number.isSafeInteger(value) || value < 1) {
+          throw new Error(
+            `model metadata ${providerType}/${modelId} has an invalid ${key}: ${String(value)}`,
+          );
+        }
+      }
+    }
+  }
 }
 
 function activeMetadata(): ModelsDevMetadata {

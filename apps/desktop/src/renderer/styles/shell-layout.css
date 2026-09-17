@@ -187,22 +187,16 @@
    were too narrow to carry their meaning without tooltips. The titlebar keeps
    the explicit expand action, so the navigation column can close all the way.
 
-   Keyed off the shell's own collapsed flag — the wrapper carried a second copy
-   of it until this rule read the one `.appFrame` already publishes and the
-   hairlines already use.
-
-   It overrides the VARIABLE, not the wrapper's width, because the wrapper is no
-   longer the only reader: the titlebar starts its session breadcrumb at this
-   column's right edge. Setting the width here instead would leave the titlebar
-   reading the expanded value while the column sat collapsed. */
-.appFrame[data-sidebar-state='collapsed'] {
-  --maka-sidenav-width: 0px;
-}
+   The frame publishes `--maka-sidenav-width` itself; the titlebar reads it for
+   its first grid track, so nothing here may write it — an inline `0` was once
+   shadowed into `calc()` and dropped the whole track list. */
 
 /* `visibility`, rather than opacity, removes the hidden rail's buttons from
    focus navigation and accessibility hit testing. SideNav stays mounted so its
    imperative collapse handle can restore both the boolean and the resizable
-   width when the titlebar's expand button is pressed. */
+   width when the titlebar's expand button is pressed. Keyed off the collapsed
+   flag `.appFrame` already publishes — the same one the hairlines use — rather
+   than a second copy on the wrapper. */
 .appFrame[data-sidebar-state='collapsed'] .maka-sidenav-motion {
   visibility: hidden;
   pointer-events: none;

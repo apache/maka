@@ -951,7 +951,8 @@ const windowsAppTray = createWindowsAppTray({
   enabled: !e2eFixture && !isIsolatedE2e,
   locale: desktopLocale,
   createTray: () => {
-    const icon = nativeImage.createFromPath(readableAppIconPath('default'));
+    // Match the packaged app icon; 'default' is the legacy mascot artwork.
+    const icon = nativeImage.createFromPath(readableAppIconPath('sky'));
     if (icon.isEmpty()) throw new Error('Maka tray artwork is unavailable');
     return new Tray(icon);
   },

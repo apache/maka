@@ -515,7 +515,7 @@ it('settles only the verified prefix when restored content was rewritten', () =>
     settledText: 'prefix sk-123456789012345',
   }));
 
-  assert.match(markup, />prefix </);
+  assert.match(markup, />prefix ?</);
   assert.doesNotMatch(markup, /redacted|NEW/);
 });
 
@@ -526,6 +526,6 @@ it('never settles half of a rewritten Unicode code point', () => {
     settledText: 'same 😀 old',
   }));
 
-  assert.match(markup, />same </);
+  assert.match(markup, />same ?</);
   assert.doesNotMatch(markup, /😃|NEW|�/u);
 });

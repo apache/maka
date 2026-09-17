@@ -55,6 +55,10 @@ test('the recovery handle opens the existing exact account-and-model picker', as
   const original = {
     document: globalThis.document,
     window: globalThis.window,
+    Element: globalThis.Element,
+    HTMLElement: globalThis.HTMLElement,
+    HTMLBRElement: globalThis.HTMLBRElement,
+    Node: globalThis.Node,
     matchMedia: globalThis.matchMedia,
     requestAnimationFrame: globalThis.requestAnimationFrame,
     cancelAnimationFrame: globalThis.cancelAnimationFrame,
@@ -68,10 +72,36 @@ test('the recovery handle opens the existing exact account-and-model picker', as
     writingMode: 'horizontal-tb',
     getPropertyValue: () => '',
   }) as unknown as CSSStyleDeclaration;
+  window.matchMedia = () =>
+    ({ matches: false, addEventListener() {}, removeEventListener() {} }) as unknown as MediaQueryList;
+  window.getSelection = () =>
+    ({
+      rangeCount: 0,
+      isCollapsed: true,
+      anchorNode: null,
+      focusNode: null,
+      removeAllRanges() {},
+      addRange() {},
+      getRangeAt: () => {
+        throw new Error('no range');
+      },
+    }) as unknown as Selection;
+  document.createRange = () =>
+    ({
+      selectNodeContents() {},
+      collapse() {},
+      cloneRange() {
+        return this;
+      },
+    }) as unknown as Range;
   Object.assign(globalThis, {
     document,
     window,
-    matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }),
+    Element: window.Element,
+    HTMLElement: window.HTMLElement,
+    HTMLBRElement: window.HTMLBRElement,
+    Node: window.Node,
+    matchMedia: window.matchMedia,
     requestAnimationFrame: () => 1,
     cancelAnimationFrame() {},
     IS_REACT_ACT_ENVIRONMENT: true,

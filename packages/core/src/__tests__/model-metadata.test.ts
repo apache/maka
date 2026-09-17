@@ -22,6 +22,7 @@ import { describe, it } from 'node:test';
 import {
   installRefreshedModelMetadata,
   lookupModelMetadata,
+  modelMetadataIdsForProvider,
   openAiAdapterApiProtocol,
   providerReportsCompleteModelCatalog,
   resolveModelVisionSupport,
@@ -70,6 +71,37 @@ describe('OpenAI Codex OAuth metadata', () => {
       assert.equal(fallback.inputLimit, undefined);
     } finally {
       installRefreshedModelMetadata(undefined);
+    }
+  });
+});
+
+describe('model-metadata token limits', () => {
+  it('refuses to install a table whose limits the wire cannot carry', () => {
+    assert.throws(
+      () =>
+        installRefreshedModelMetadata({
+          openai: { 'gpt-image-9': { displayName: 'Image', contextWindow: 0 } },
+        }),
+      /openai\/gpt-image-9.*contextWindow/u,
+    );
+    // The refusal leaves the active table untouched: the bundled snapshot
+    // keeps serving.
+    assert.equal(lookupModelMetadata('openai', 'gpt-5.6-sol').inputLimit, 922_000);
+  });
+
+  it('commits no limit outside the wire domain in any bundled or static layer', () => {
+    for (const providerType of Object.keys(PROVIDER_REGISTRY) as ProviderType[]) {
+      for (const id of modelMetadataIdsForProvider(providerType)) {
+        const metadata = lookupModelMetadata(providerType, id);
+        for (const key of ['contextWindow', 'inputLimit', 'maxOutputTokens'] as const) {
+          const value = metadata[key];
+          if (value === undefined) continue;
+          assert.ok(
+            Number.isSafeInteger(value) && value >= 1,
+            `${providerType}/${id} ${key} must be a positive integer, got ${String(value)}`,
+          );
+        }
+      }
     }
   });
 });

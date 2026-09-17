@@ -91,6 +91,18 @@ export function installTranscriptDom(options: { viewportHeight?: number; boxHeig
         if (options?.top !== undefined) this.scrollTop = options.top;
       },
     },
+    scrollTo: {
+      configurable: true,
+      value(this: HTMLElement, options?: ScrollToOptions) {
+        if (options?.top !== undefined) this.scrollTop = options.top;
+      },
+    },
+    scrollBy: {
+      configurable: true,
+      value(this: HTMLElement, options?: ScrollToOptions) {
+        if (options?.top !== undefined) this.scrollTop += options.top;
+      },
+    },
   });
   // LinkeDOM's compareDocumentPosition returns browser bitmasks without naming them.
   Object.assign(window.Node, {
