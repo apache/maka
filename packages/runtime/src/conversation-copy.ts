@@ -36,6 +36,7 @@ import {
   MODEL_CALL_ATTEMPT_EVENT_TYPE,
 } from '@maka/core/model-call-attempt';
 import { TOOL_RECOVERY_DECISION_FACT_KIND } from '@maka/core/tool-recovery-fact';
+import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
 import {
   buildHistoryCompactCheckpoint,
   historyCompactSourceDigest,
@@ -652,10 +653,15 @@ export async function cloneConversationRuntimeLedger(
     finished.add(sourceId);
   };
   for (const sourceId of clonedEventBySourceId.keys()) finishTarget(sourceId);
+  // The identity rewrite changes a copied call's canonical args, so the paired
+  // dispatch's recorded hash stops authenticating them and the copied ledger
+  // fails its own T1 re-scan. Collect the rewritten args per (invocation,
+  // tool call) and re-authenticate the dispatches after the rewrite pass.
+  const rewrittenArgsHashes = new Map<string, string>();
   for (const event of clonedEventBySourceId.values()) {
     if (event.content?.kind === 'function_call' && event.content.name === 'Read') {
       const args = event.content.args;
-      if (args && typeof args === 'object' && 'path' in args && typeof args.path === 'string')
+      if (args && typeof args === 'object' && 'path' in args && typeof args.path === 'string') {
         event.content = {
           ...event.content,
           args: {
@@ -667,6 +673,11 @@ export async function cloneConversationRuntimeLedger(
             ),
           },
         };
+        rewrittenArgsHashes.set(
+          `${event.invocationId}\u0000${event.content.id}`,
+          canonicalToolArgsHash(event.content.name, event.content.args),
+        );
+      }
     }
     if (event.content?.kind === 'text')
       event.content.text = rewriteCopiedText(event.content.text, references, clonedEventBySourceId);
@@ -677,7 +688,25 @@ export async function cloneConversationRuntimeLedger(
           ...event.content,
           args: { ...args, ref: rewriteLedgerArchiveText(args.ref, references) },
         };
+        rewrittenArgsHashes.set(
+          `${event.invocationId}\u0000${event.content.id}`,
+          canonicalToolArgsHash(event.content.name, event.content.args),
+        );
       }
+    }
+  }
+  if (rewrittenArgsHashes.size > 0) {
+    for (const event of clonedEventBySourceId.values()) {
+      const dispatch = event.actions?.toolDispatch;
+      if (dispatch?.canonicalArgsHash === undefined) continue;
+      const rewrittenHash = rewrittenArgsHashes.get(
+        `${event.invocationId}\u0000${dispatch.providerToolCallId}`,
+      );
+      if (rewrittenHash === undefined) continue;
+      event.actions = {
+        ...event.actions,
+        toolDispatch: { ...dispatch, canonicalArgsHash: rewrittenHash },
+      };
     }
   }
   const preparedPlans = flattenedPlans.map((plan) => {
