@@ -185,12 +185,58 @@ describe('openAiAdapterApiProtocol', () => {
     assert.equal(openAiAdapterApiProtocol('minimax-m3', 'opencode-go'), 'openai-chat');
   });
 
+  it('routes official Meta Muse Spark 1.3 through Responses', () => {
+    assert.equal(openAiAdapterApiProtocol('muse-spark-1.3', 'meta'), 'openai-responses');
+    assert.equal(
+      openAiAdapterApiProtocol('muse-spark-1.3-contributor', 'meta'),
+      'openai-responses',
+    );
+    assert.equal(openAiAdapterApiProtocol('muse-spark-1.2', 'meta'), 'openai-chat');
+    assert.equal(openAiAdapterApiProtocol('muse-spark-1.3', 'opencode'), 'openai-chat');
+  });
+
   it('routes only Qwen3.8 Max through Alibaba Token Plan Responses', () => {
     for (const providerType of ['alibaba-token-plan-cn', 'alibaba-token-plan'] as const) {
       assert.equal(openAiAdapterApiProtocol('qwen3.8-max', providerType), 'openai-responses');
       assert.equal(openAiAdapterApiProtocol('qwen3.7-max', providerType), 'openai-chat');
     }
     assert.equal(openAiAdapterApiProtocol('qwen3.8-max', 'alibaba-cn'), 'openai-chat');
+  });
+});
+
+describe('Meta Muse Spark 1.3 metadata', () => {
+  it('keeps Standard and Contributor data policy and reasoning levels distinct', () => {
+    const standard = lookupModelMetadata('meta', 'muse-spark-1.3');
+    const contributor = lookupModelMetadata('meta', 'muse-spark-1.3-contributor');
+
+    assert.equal(standard.displayName, 'Muse Spark 1.3');
+    assert.match(standard.description ?? '', /not used to train Meta models/);
+    assert.equal(contributor.displayName, 'Muse Spark 1.3 Contributor');
+    assert.match(contributor.description ?? '', /may be used to train Meta models/);
+    assert.equal(standard.contextWindow, 1_048_576);
+    assert.equal(contributor.contextWindow, 1_048_576);
+    assert.equal(standard.structuredOutput, true);
+    assert.equal(contributor.structuredOutput, true);
+    assert.deepEqual(standard.thinkingOptions, {
+      efforts: ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
+    });
+    assert.deepEqual(contributor.thinkingOptions, {
+      efforts: ['minimal', 'low', 'medium', 'high', 'xhigh'],
+    });
+    assert.deepEqual(standard.capabilities, {
+      chat: true,
+      vision: true,
+      reasoning: true,
+      functionCalling: true,
+      parallelToolCalls: true,
+      webSearch: true,
+    });
+    assert.deepEqual(contributor.capabilities, standard.capabilities);
+    assert.deepEqual(standard.modalities, {
+      input: ['text', 'image', 'video', 'audio', 'pdf'],
+      output: ['text'],
+    });
+    assert.deepEqual(contributor.modalities, standard.modalities);
   });
 });
 

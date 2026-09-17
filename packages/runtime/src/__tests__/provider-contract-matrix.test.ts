@@ -152,8 +152,13 @@ async function runGeneratedDiscovery(
     discovery: NonNullable<ProviderContractGeneratedCell['discovery']>;
   },
 ): Promise<void> {
-  const sample = row.sampleModelId;
   const discovery = cell.discovery;
+  const sample =
+    discovery.filter === 'muse-spark'
+      ? (PROVIDER_REGISTRY[row.providerType].fallbackModels.find((id) =>
+          /^muse-spark-/i.test(id),
+        ) ?? row.sampleModelId)
+      : row.sampleModelId;
   // `array-or-data` (mistral) means the same endpoint may answer either
   // `{data:[...]}` or a bare array; both fixtures must parse to the exact id.
   const payloadShapes: ReadonlyArray<'data-object' | 'bare-array'> =
@@ -188,6 +193,10 @@ async function runGeneratedDiscovery(
         [sample],
         `${where} should return exactly the scripted exact id`,
       );
+      if (discovery.filter === 'muse-spark') {
+        assert.equal(models[0]?.apiProtocol, 'openai-responses');
+        assert.equal(models[0]?.capabilities?.chat, true);
+      }
     }
   }
 }
@@ -301,6 +310,17 @@ function discoveryPayload(
       data: [
         { id: sample, type: 'language' },
         { id: 'contract-decoy-embedding', type: 'embedding' },
+      ],
+    };
+  }
+  if (filter === 'muse-spark') {
+    return {
+      object: 'list',
+      data: [
+        { id: sample, object: 'model', created: 1, owned_by: 'meta' },
+        { id: 'muse-spark-1.2', object: 'model', created: 1, owned_by: 'meta' },
+        { id: 'muse-image-1.0', object: 'model', created: 1, owned_by: 'meta' },
+        { id: 'muse-voice-transcribe-1.0', object: 'model', created: 1, owned_by: 'meta' },
       ],
     };
   }

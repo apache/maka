@@ -109,7 +109,7 @@ export type ProviderModelDiscovery =
       query?: Readonly<Record<string, string>>;
       responseShape?: 'array-or-data';
       modelProtocols?: 'commandcode';
-      filter?: 'language-models' | 'tool-capable';
+      filter?: 'language-models' | 'muse-spark' | 'tool-capable';
     }
   | {
       kind: 'fireworks';
@@ -920,6 +920,24 @@ const providerRegistry = {
     catalogGroup: 'api',
     signupUrl: 'https://aistudio.google.com/app/apikey',
     catalogOrder: 11,
+  },
+  meta: {
+    label: 'Meta Model API',
+    menuLabel: 'Meta',
+    baseUrl: 'https://api.meta.ai/v1',
+    authKind: 'api_key',
+    fallbackModels: ['muse-spark-1.3', 'muse-spark-1.3-contributor'],
+    status: 'ready',
+    runtimeAdapter: {
+      kind: 'openai-compatible',
+      name: 'provider',
+      responses: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
+    },
+    modelDiscovery: { kind: 'protocol', filter: 'muse-spark' },
+    category: 'overseas',
+    catalogGroup: 'api',
+    signupUrl: 'https://dev.meta.ai/',
+    catalogOrder: 11.5,
   },
   deepseek: {
     label: 'DeepSeek',

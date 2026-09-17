@@ -193,6 +193,64 @@ describe('responses wire contract', () => {
     assert.deepEqual(sessionHeaders, ['session-opencode-go']);
   });
 
+  test('calls both Meta Muse Spark 1.3 tiers through the official Responses endpoint', async () => {
+    const requests: Array<{
+      url: string;
+      authorization: string | null;
+      body: Record<string, unknown>;
+    }> = [];
+    const fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      const request = new Request(url, init);
+      requests.push({
+        url: request.url,
+        authorization: request.headers.get('authorization'),
+        body: JSON.parse(await request.text()) as Record<string, unknown>,
+      });
+      return Response.json({
+        id: 'meta-response',
+        object: 'response',
+        status: 'completed',
+        output: [],
+        usage: { input_tokens: 1, output_tokens: 1 },
+      });
+    }) as typeof globalThis.fetch;
+
+    for (const modelId of ['muse-spark-1.3', 'muse-spark-1.3-contributor'] as const) {
+      const connection = conn('meta');
+      const model = getAIModel({ connection, apiKey: 'meta-test-key', modelId, fetch });
+      await model.doGenerate({
+        prompt: [{ role: 'user', content: [{ type: 'text', text: 'ping' }] }],
+        providerOptions: buildProviderOptions(connection, modelId, 'high'),
+      });
+    }
+
+    assert.deepEqual(
+      requests.map(({ url, authorization, body }) => ({
+        url,
+        authorization,
+        model: body.model,
+        store: body.store,
+        include: body.include,
+      })),
+      [
+        {
+          url: 'https://api.meta.ai/v1/responses',
+          authorization: 'Bearer meta-test-key',
+          model: 'muse-spark-1.3',
+          store: false,
+          include: ['reasoning.encrypted_content'],
+        },
+        {
+          url: 'https://api.meta.ai/v1/responses',
+          authorization: 'Bearer meta-test-key',
+          model: 'muse-spark-1.3-contributor',
+          store: false,
+          include: ['reasoning.encrypted_content'],
+        },
+      ],
+    );
+  });
+
   test('sends OpenCode Go and Free session identities through their model adapters', async () => {
     const requests: Array<{ url: string; sessionHeader: string | null }> = [];
     const fetch = (async (url: string | URL | Request, init?: RequestInit) => {
@@ -347,6 +405,17 @@ describe('responses wire contract', () => {
       contract: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
     });
 
+    const meta = resolveModelRuntime({ providerType: 'meta' }, 'muse-spark-1.3');
+    assert.equal(meta.wire, 'openai-responses');
+    assert.deepEqual(meta.reasoningReplay, {
+      kind: 'responses',
+      contract: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
+    });
+    assert.equal(
+      resolveModelRuntime({ providerType: 'meta' }, 'muse-spark-1.3-contributor').wire,
+      'openai-responses',
+    );
+
     const relay = resolveModelRuntime(
       { providerType: 'openai-responses-compatible' },
       'relay-model',
@@ -397,6 +466,10 @@ describe('responses wire contract', () => {
     });
 
     assert.deepEqual(configured, [
+      {
+        providerType: 'meta',
+        contract: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
+      },
       {
         providerType: 'deepseek',
         contract: { adapter: 'open-responses', reasoningReplay: 'plaintext-content' },

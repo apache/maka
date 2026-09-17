@@ -33,7 +33,7 @@
 import type { ProviderType } from '@maka/core/llm-connections';
 import { GenericProviderMark } from '../features/connection-settings';
 import type { ReactElement } from 'react';
-import { siMinimax } from 'simple-icons';
+import { siMeta, siMinimax } from 'simple-icons';
 import alibabaBrandMark from '../assets/provider-brands/alibabacloud.svg';
 import cerebrasBrandMark from '../assets/provider-brands/cerebras.svg';
 import cohereBrandMark from '../assets/provider-brands/cohere.svg';
@@ -344,6 +344,14 @@ function MiniMaxMark(): ReactElement {
   );
 }
 
+function MetaMark(): ReactElement {
+  return (
+    <svg viewBox="0 0 24 24" role="img" aria-hidden="true">
+      <path fill={`#${siMeta.hex}`} d={siMeta.path} />
+    </svg>
+  );
+}
+
 // Vendored unchanged from @lobehub/icons-static-svg@1.91.0:
 // https://github.com/lobehub/lobe-icons/blob/32f4083f7a20b67ecdc7b29c0af031ada5a29c52/packages/static-svg/icons/ollama.svg
 // Lobe Icons is MIT licensed; this path is consumed verbatim, not redrawn here.
@@ -410,6 +418,8 @@ export function ProviderBrandMark({ type }: { type: ProviderType }): ReactElemen
       return <GenericProviderMark />;
     case 'google':
       return <Gemini />;
+    case 'meta':
+      return <MetaMark />;
     case 'deepseek':
       return <DeepSeek />;
     case 'moonshot':

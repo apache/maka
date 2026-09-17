@@ -192,6 +192,7 @@ export function openAiAdapterApiProtocol(
 ): 'openai-responses' | 'openai-chat' {
   const id = modelId.trim();
   return (providerType === 'deepseek' && deepSeekModelSupportsResponses(id)) ||
+    (providerType === 'meta' && /^muse-spark-1\.3(?:-contributor)?$/.test(id)) ||
     (providerType === 'opencode-go' && id === 'muse-spark-1.2-contributor') ||
     ((providerType === 'alibaba-token-plan-cn' || providerType === 'alibaba-token-plan') &&
       id === 'qwen3.8-max') ||
@@ -419,6 +420,45 @@ function buildStaticModelMetadata(active: ModelsDevMetadata): ModelsDevMetadata 
       },
     },
     google: GOOGLE_MODEL_OVERRIDES,
+    meta: {
+      'muse-spark-1.3': {
+        displayName: 'Muse Spark 1.3',
+        description: 'Standard tier; prompts and completions are not used to train Meta models',
+        lifecycle: 'active',
+        contextWindow: 1_048_576,
+        structuredOutput: true,
+        lastUpdated: '2026-09-02',
+        capabilities: {
+          chat: true,
+          vision: true,
+          reasoning: true,
+          functionCalling: true,
+          parallelToolCalls: true,
+          webSearch: true,
+        },
+        thinkingOptions: { efforts: ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'] },
+        modalities: { input: ['text', 'image', 'video', 'audio', 'pdf'], output: ['text'] },
+      },
+      'muse-spark-1.3-contributor': {
+        displayName: 'Muse Spark 1.3 Contributor',
+        description:
+          'Discounted Contributor tier; prompts and completions may be used to train Meta models',
+        lifecycle: 'active',
+        contextWindow: 1_048_576,
+        structuredOutput: true,
+        lastUpdated: '2026-09-02',
+        capabilities: {
+          chat: true,
+          vision: true,
+          reasoning: true,
+          functionCalling: true,
+          parallelToolCalls: true,
+          webSearch: true,
+        },
+        thinkingOptions: { efforts: ['minimal', 'low', 'medium', 'high', 'xhigh'] },
+        modalities: { input: ['text', 'image', 'video', 'audio', 'pdf'], output: ['text'] },
+      },
+    },
     cohere: {
       'command-a-plus-05-2026': {
         thinkingOptions: { toggle: true, offBehavior: 'cohere-thinking-disabled' },

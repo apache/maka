@@ -20,6 +20,7 @@
 import assert from 'node:assert/strict';
 import { after, describe, test } from 'node:test';
 import type { LlmConnection } from '@maka/core/llm-connections';
+import { buildModelCatalogEntries } from '@maka/core/model-catalog';
 import { runConnectionModelDiscoveryEffect } from '../model-fetcher.js';
 import { discoverModels } from './model-discovery-fixture.js';
 
@@ -309,6 +310,64 @@ describe('model discovery', () => {
       { ok: false, error: { kind: 'invalid_response' } },
     );
     assert.equal(repeatedRequests, 2);
+  });
+
+  test('Meta discovery keeps supported 1.3 chat models and excludes other model families', async () => {
+    const requests: Array<{ url: string; authorization: string | undefined }> = [];
+    const server = await startJsonServer((request, response) => {
+      requests.push({ url: request.url ?? '', authorization: request.headers.authorization });
+      respondJson(response, 200, {
+        object: 'list',
+        data: [
+          { id: 'muse-spark-1.3', object: 'model', created: 1, owned_by: 'meta' },
+          {
+            id: 'muse-spark-1.3-contributor',
+            object: 'model',
+            created: 1,
+            owned_by: 'meta',
+          },
+          { id: 'muse-spark-1.2', object: 'model', created: 1, owned_by: 'meta' },
+          { id: 'muse-image-1.0', object: 'model', created: 1, owned_by: 'meta' },
+          { id: 'muse-voice-transcribe-1.0', object: 'model', created: 1, owned_by: 'meta' },
+        ],
+      });
+    });
+    const outcome = await runConnectionModelDiscoveryEffect(
+      {
+        providerType: 'meta',
+        baseUrl: `${server.url}/v1`,
+        defaultModel: 'muse-spark-1.3',
+      },
+      'meta-api-key',
+      { fetch: globalThis.fetch },
+    );
+
+    assert.deepEqual(requests, [{ url: '/v1/models', authorization: 'Bearer meta-api-key' }]);
+    assert.ok(outcome.ok);
+    const models = outcome.models;
+    assert.deepEqual(models, [
+      {
+        id: 'muse-spark-1.3',
+        apiProtocol: 'openai-responses',
+        capabilities: { chat: true },
+      },
+      {
+        id: 'muse-spark-1.3-contributor',
+        apiProtocol: 'openai-responses',
+        capabilities: { chat: true },
+      },
+    ]);
+    assert.deepEqual(
+      buildModelCatalogEntries({
+        providerType: 'meta',
+        models: [...models],
+        modelSource: 'fetched',
+      }).map(({ id, canUseAsChatDefault }) => ({ id, canUseAsChatDefault })),
+      [
+        { id: 'muse-spark-1.3', canUseAsChatDefault: true },
+        { id: 'muse-spark-1.3-contributor', canUseAsChatDefault: true },
+      ],
+    );
   });
 
   test('discovery classifies HTTP authentication failure without secrets or fallback models', async () => {
