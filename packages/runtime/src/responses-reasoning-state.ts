@@ -126,6 +126,20 @@ export function safePlaintextResponsesReasoningItemId(value: unknown): string | 
   return isSafeItemId(value) ? value : undefined;
 }
 
+/**
+ * Provider stream metadata is forwarded verbatim into durable providerOptions
+ * in a few places (e.g. Anthropic redacted thinking). `makaResponses` is a
+ * Maka-owned namespace — a provider must not be able to write replay state it
+ * did not earn through the declared contract.
+ */
+export function withoutMakaResponsesState<T extends Record<string, unknown>>(
+  providerOptions: T,
+): T {
+  if (!(STATE_KEY in providerOptions)) return providerOptions;
+  const { [STATE_KEY]: _dropped, ...rest } = providerOptions;
+  return rest as T;
+}
+
 function reconstructSummaryParts(
   text: string,
   state: PlaintextResponsesReasoningState,

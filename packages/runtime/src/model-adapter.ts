@@ -54,6 +54,7 @@ export type {
 import { resolveModelRuntime, type ResolvedModelRuntime } from './model-runtime.js';
 import {
   plaintextResponsesReasoningProviderOptions,
+  withoutMakaResponsesState,
   safePlaintextResponsesReasoningItemId,
 } from './responses-reasoning-state.js';
 import { classifyError, providerModelFailure } from './provider-error-classification.js';
@@ -863,7 +864,7 @@ function anthropicRedactedThinkingProviderOptionsFromChunk(
   if (!anthropic || typeof anthropic !== 'object' || Array.isArray(anthropic)) return undefined;
   const redactedData = (anthropic as { redactedData?: unknown }).redactedData;
   return typeof redactedData === 'string'
-    ? (meta as NonNullable<ModelMessage['providerOptions']>)
+    ? withoutMakaResponsesState(meta as NonNullable<ModelMessage['providerOptions']>)
     : undefined;
 }
 

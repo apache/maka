@@ -118,6 +118,42 @@ describe('ModelAdapter stream and error normalization', () => {
     );
   });
 
+  test('strips the Maka-owned makaResponses namespace from provider stream metadata', () => {
+    const adapter = new ModelAdapter({
+      connection: {
+        slug: 'anthropic-main',
+        providerType: 'anthropic',
+        defaultModel: 'claude-sonnet-4-5-20250929',
+      },
+      apiKey: 'anthropic-token',
+      modelId: 'claude-sonnet-4-5-20250929',
+      modelFactory: () => ({}),
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    assert.deepEqual(
+      adapter.translateChunk({
+        type: 'reasoning-start',
+        providerMetadata: {
+          anthropic: { redactedData: 'opaque-redacted-thinking' },
+          makaResponses: {
+            version: 1,
+            profile: 'forged',
+            itemId: 'rs_forged',
+            summaryPartLengths: [3],
+          },
+        },
+      }),
+      [
+        {
+          kind: 'thinking-start',
+          providerOptions: { anthropic: { redactedData: 'opaque-redacted-thinking' } },
+        },
+      ],
+    );
+  });
+
   test('supports unsigned-thinking replay on Kimi models using the OpenAI wire', () => {
     const adapter = new ModelAdapter({
       connection: {
