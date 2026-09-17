@@ -65,6 +65,6 @@ test("client settings updates filter Host policy and return newly submitted secr
     (result as { settings: typeof settings }).settings.botChat.channels.telegram.token,
     "fresh-bot-token",
   );
-  assert.equal(settings.chatDefaults.permissionMode, "bypass");
+  assert.equal(settings.chatDefaults.permissionMode, "auto_review");
   assert.equal(applied, 1);
 });

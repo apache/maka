@@ -168,7 +168,7 @@ describe('Maka ACP child process', () => {
           assert.deepEqual(
             (first.configOptions ?? []).map((option) => [option.id, option.currentValue]),
             [
-              ['permission_mode', 'bypass'],
+              ['permission_mode', 'auto_review'],
               ['collaboration_mode', 'agent'],
               ['orchestration_mode', 'default'],
             ],
@@ -181,7 +181,7 @@ describe('Maka ACP child process', () => {
           assert.deepEqual(
             (configured.configOptions ?? []).map((option) => [option.id, option.currentValue]),
             [
-              ['permission_mode', 'bypass'],
+              ['permission_mode', 'auto_review'],
               ['collaboration_mode', 'plan'],
               ['orchestration_mode', 'default'],
             ],
@@ -249,7 +249,7 @@ describe('Maka ACP child process', () => {
           assert.deepEqual(
             (created.configOptions ?? []).map(({ id, currentValue }) => [id, currentValue]),
             [
-              ['permission_mode', 'bypass'],
+              ['permission_mode', 'auto_review'],
               ['thinking_level', 'default'],
               ['collaboration_mode', 'agent'],
               ['orchestration_mode', 'default'],
