@@ -49,11 +49,13 @@ import type { ClientCapabilityResponse } from '@maka/core/client-capability-gran
 import type { PermissionMode } from '@maka/core/permission';
 import type { SessionSummary, StoredMessage } from '@maka/core/session';
 import type { UiLocale } from '@maka/core/ui-locale';
+import { AttachmentIngestBlockedError, type AttachmentIngestBlockedCode } from '@maka/core/attachments';
 import type { ChatModelChoice } from '@maka/core/chat-model-choice';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import type { InteractionFormResponse } from '@maka/core/interaction';
 import type { ContextCompactResult } from '@maka/runtime-host/protocol';
 import { useWorkbarServices } from '../../services-context.js';
+import { getShellCopy } from '../../../../locales/shell-copy.js';
 import type { WorkbarIngestInput } from '../../ports.js';
 import {
   abandonPendingCompanionCopy,
@@ -250,6 +252,11 @@ function transcriptRecordsTerminalTurn(
     }
   }
   return false;
+}
+
+/** The main composer's copy for an attachment the send path refused. */
+function attachmentBlockedMessage(code: AttachmentIngestBlockedCode, locale: UiLocale): string {
+  return getShellCopy(locale).sessionSettingsActions.attachmentIngestBlocked[code];
 }
 
 /**
@@ -1311,7 +1318,11 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
           send_failed: errors.sendFailed,
           send_rejected: errors.sendRejected,
         };
-        setError(byCode[result.code]);
+        setError(
+          result.attachmentBlocked
+            ? attachmentBlockedMessage(result.attachmentBlocked, localeRef.current)
+            : byCode[result.code],
+        );
         activeTurnIdRef.current = null;
         releaseAdmission(admission);
       }
@@ -1483,15 +1494,22 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       }
       setError(null);
       return true;
-    } catch {
+    } catch (failure) {
       if (mountedRef.current) {
+        // An attachment the send path refused (unreadable, too large, …) is a
+        // stable answer, not a transient failure: name the rule instead of
+        // inviting a retry.
+        const message =
+          failure instanceof AttachmentIngestBlockedError
+            ? attachmentBlockedMessage(failure.code, localeRef.current)
+            : copyRef.current.errors.sendFailed;
         if (placement === 'current_turn' && pendingAdmissionRef.current === admission) {
-          releaseAdmission(admission, copyRef.current.errors.sendFailed);
+          releaseAdmission(admission, message);
         } else if (
           admissionOutcomeForMessage(admission.events, admission.messageId)?.kind !== 'retracted'
         ) {
           dropOptimisticUserMessage(admission.messageId);
-          setError(copyRef.current.errors.sendFailed);
+          setError(message);
         }
       }
       return false;

@@ -25,6 +25,7 @@ import {
   type InteractionQueues,
   type LiveTurnProjection,
 } from '@maka/ui';
+import type { AttachmentIngestBlockedCode } from '@maka/core/attachments';
 import type { PermissionMode } from '@maka/core/permission';
 import type { ChatModelChoice } from '@maka/core/chat-model-choice';
 import type { QuoteRef, SessionEvent } from '@maka/core/events';
@@ -329,7 +330,12 @@ export type CompanionTurnResult =
   | { status: 'sent'; forkId: string; turnId: string; steered: true; messageId: string }
   | { status: 'pending'; forkId: string; messageId: string }
   | { status: 'disposed' }
-  | { status: 'error'; code: CompanionErrorCode };
+  | {
+      status: 'error';
+      code: CompanionErrorCode;
+      /** Set when `send_rejected` was an attachment the send path refused. */
+      attachmentBlocked?: AttachmentIngestBlockedCode;
+    };
 
 export interface PerformCompanionTurnDeps extends EnsureCompanionForkDeps {
   /** The fork's id if one already exists (subsequent turns skip creation). */
@@ -395,6 +401,9 @@ export async function performCompanionTurn(
   if (!result.ok) {
     if (result.reason === 'outcome_unknown' && result.messageId) {
       return { status: 'pending', forkId, messageId: result.messageId };
+    }
+    if (result.reason === 'attachment_blocked' && 'code' in result) {
+      return { status: 'error', code: 'send_rejected', attachmentBlocked: result.code };
     }
     return { status: 'error', code: 'send_rejected' };
   }

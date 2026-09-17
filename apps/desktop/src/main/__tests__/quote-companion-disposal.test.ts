@@ -158,6 +158,24 @@ describe('quote companion disposal fencing', () => {
     );
   });
 
+  it('keeps the attachment code when the first send is refused for an attachment (#5279)', async () => {
+    const defaults = createFakeWorkbarServices();
+    const sideChat = {
+      ...defaults.sideChat,
+      send: async () => ({
+        ok: false as const,
+        reason: 'attachment_blocked' as const,
+        code: 'item_unreadable' as const,
+      }),
+    };
+
+    assert.deepEqual(await performCompanionTurn(turnDeps(sideChat)), {
+      status: 'error',
+      code: 'send_rejected',
+      attachmentBlocked: 'item_unreadable',
+    });
+  });
+
   it('does not start a send when the panel was disposed after fork setup', async () => {
     let sends = 0;
     let armed = 0;

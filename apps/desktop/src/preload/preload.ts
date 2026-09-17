@@ -28,7 +28,7 @@ import type {
   WorkHubPrepareAttachmentsResult,
 } from '../shared/workhub-conversation.js';
 import type { SessionObservationMessage } from '../shared/session-execution-projection.js';
-import { contextBridge, ipcRenderer } from 'electron';
+import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import { workHubControlBridge } from './workhub-control.js';
 import { workHubPresentationBridge } from './workhub-presentation.js';
 import {
@@ -3167,6 +3167,20 @@ const makaBridge = {
   },
   attachments: {
     pickDirectory: () => ipcRenderer.invoke('directories:pick'),
+    // The renderer hands over the dropped or pasted File objects, never paths:
+    // only a File backed by something the user dropped or pasted has a path,
+    // and main answers nothing but whether each one is a directory.
+    detectDirectories(files: readonly File[]): Promise<boolean[]> {
+      const paths = files.map((file) => {
+        try {
+          return webUtils.getPathForFile(file);
+        } catch {
+          return '';
+        }
+      });
+      if (!paths.some(Boolean)) return Promise.resolve(paths.map(() => false));
+      return ipcRenderer.invoke('attachments:detectDirectories', paths);
+    },
     pickFiles(): Promise<
       | {
           ok: true;

@@ -287,6 +287,7 @@ export function attachmentKindFromMimeType(
 
 export type AttachmentIngestBlockedCode =
   | 'item_too_large'
+  | 'item_unreadable'
   | 'items_invalid'
   | 'count_limit'
   | 'duplicate_source'

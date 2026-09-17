@@ -20,6 +20,9 @@
 import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
+import { AttachmentIngestBlockedError } from '@maka/core/attachments';
+import { getShellCopy } from '../../renderer/locales/shell-copy.js';
+import { getDesktopConversationCopy } from '../../renderer/locales/conversation-copy.js';
 import { parseHTML } from 'linkedom';
 import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
@@ -1747,6 +1750,63 @@ test('keeps the active Side Conversation streaming when Stop retracts a queued s
     assert.equal(await steerResult, false);
     await Promise.resolve();
   });
+});
+
+async function steerAgainstFailure(failure: Error): Promise<string | null | undefined> {
+  const { container, send, steer, hostTurn } = await renderOwnershipProbe({
+    send: async () => ({ ok: true as const, turnId: 'old-turn' }),
+    submitFollowUp: async () => {
+      throw failure;
+    },
+  });
+  await act(async () => {
+    assert.equal(await send('initial prompt'), true);
+    hostTurn('old-turn');
+    await Promise.resolve();
+  });
+  await waitUntil(() => container.firstElementChild?.getAttribute('data-streaming') === 'true');
+  await act(async () => {
+    assert.equal(await steer('see this folder'), false);
+    await Promise.resolve();
+  });
+  return container.firstElementChild?.getAttribute('data-error');
+}
+
+test('names the attachment rule when the Host refuses a steer for an attachment (#5279)', async () => {
+  assert.equal(
+    await steerAgainstFailure(new AttachmentIngestBlockedError('item_unreadable')),
+    getShellCopy('en').sessionSettingsActions.attachmentIngestBlocked.item_unreadable,
+  );
+});
+
+test('keeps the generic send failure for a steer refused for any other reason', async () => {
+  assert.equal(
+    await steerAgainstFailure(new Error('Runtime Host refused the follow-up Message')),
+    getDesktopConversationCopy('en').quoteCompanion.errors.sendFailed,
+  );
+});
+
+async function firstSendAgainst(result: Awaited<ReturnType<WorkbarServices['sideChat']['send']>>) {
+  const { container, send } = await renderOwnershipProbe({ send: async () => result });
+  await act(async () => {
+    assert.equal(await send('see this folder'), false);
+    await Promise.resolve();
+  });
+  return container.firstElementChild?.getAttribute('data-error');
+}
+
+test('names the attachment rule when the Host refuses the first send for an attachment (#5279)', async () => {
+  assert.equal(
+    await firstSendAgainst({ ok: false, reason: 'attachment_blocked', code: 'item_unreadable' }),
+    getShellCopy('en').sessionSettingsActions.attachmentIngestBlocked.item_unreadable,
+  );
+});
+
+test('keeps the generic rejection for a first send refused for any other reason', async () => {
+  assert.equal(
+    await firstSendAgainst({ ok: false, reason: 'skill_invocation_failed' }),
+    getDesktopConversationCopy('en').quoteCompanion.errors.sendRejected,
+  );
 });
 
 test('stops the active Side Conversation after retracting its queued steer', async () => {
