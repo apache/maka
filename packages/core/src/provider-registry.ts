@@ -49,7 +49,7 @@ export type ProviderResponsesContract =
     }
   | {
       readonly adapter: 'open-responses';
-      readonly reasoningReplay: 'plaintext-content' | 'plaintext-summary' | 'none';
+      readonly reasoningReplay: 'plaintext-content' | 'plaintext-summary';
       readonly compatibility?: OpenResponsesCompatibilityProfile;
     };
 
