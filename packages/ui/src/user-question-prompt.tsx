@@ -70,7 +70,6 @@ export function UserQuestionPrompt(props: {
   const draft = drafts[questionIndex] ?? null;
   const selectedValue = draft?.kind === 'option' ? `option:${draft.optionIndex}` : '';
   const interactionDisabled = Boolean(props.stopPending) || responsePending;
-  const canContinue = (answerText.trim().length > 0 || draft?.kind === 'option') && !interactionDisabled;
   const isLast = questionIndex === props.request.questions.length - 1;
 
   function updateDraft(next: QuestionAnswerDraft) {
@@ -114,7 +113,7 @@ export function UserQuestionPrompt(props: {
   }
 
   function confirm() {
-    if (!canContinue) return;
+    if (interactionDisabled) return;
     const committed = commitDrafts(answerText);
     if (isLast) void submit(committed);
     else moveTo(questionIndex + 1, committed);
@@ -199,7 +198,7 @@ export function UserQuestionPrompt(props: {
         sendButton={
           <Button
             variant="primary"
-            isDisabled={!canContinue}
+            isDisabled={interactionDisabled}
             onClick={confirm}
             label={responsePending ? copy.submitting : isLast ? copy.submit : copy.next}
           />

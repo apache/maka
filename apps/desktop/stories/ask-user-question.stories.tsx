@@ -107,6 +107,9 @@ export const KeyboardChoices: Story = {
     // a product one, so wait for the panel to actually hold focus first.
     await waitFor(() =>
       expect(document.activeElement).toBe(canvasElement.querySelector('.maka-choice-panel')));
+    // A question may be left unanswered: Next stays enabled with nothing
+    // selected and the response carries a null answer.
+    expect(canvas.getByRole('button', { name: '下一题' })).toBeEnabled();
     await userEvent.keyboard('2');
     await waitFor(() => expect(canvas.getByRole('option', { name: /公开测试/ })).toHaveAttribute('aria-selected', 'true'));
     await userEvent.keyboard('{Enter}');
