@@ -114,6 +114,7 @@ export interface InteractionRequesterProjection {
 export interface InteractionFormOption {
   readonly value: string;
   readonly label: string;
+  readonly description?: string;
 }
 
 interface InteractionFormFieldBase {
@@ -151,6 +152,7 @@ export type InteractionFormField =
       readonly kind: 'single_select';
       readonly options: readonly InteractionFormOption[];
       readonly default?: string;
+      readonly presentation?: 'model_picker';
     })
   | (InteractionFormFieldBase & {
       readonly kind: 'multi_select';
@@ -379,7 +381,10 @@ const FORM_REQUESTER_SHAPE = defineObjectShape<InteractionRequesterProjection>()
   ['name'],
   ['source'],
 );
-const FORM_OPTION_SHAPE = defineObjectShape<InteractionFormOption>()(['value', 'label'], []);
+const FORM_OPTION_SHAPE = defineObjectShape<InteractionFormOption>()(
+  ['value', 'label'],
+  ['description'],
+);
 const FORM_STRING_FIELD_SHAPE = defineObjectShape<
   Extract<InteractionFormField, { kind: 'string' }>
 >()(
@@ -394,7 +399,7 @@ const FORM_BOOLEAN_FIELD_SHAPE = defineObjectShape<
 >()(['kind', 'name', 'label', 'required'], ['description', 'default']);
 const FORM_SINGLE_SELECT_FIELD_SHAPE = defineObjectShape<
   Extract<InteractionFormField, { kind: 'single_select' }>
->()(['kind', 'name', 'label', 'required', 'options'], ['description', 'default']);
+>()(['kind', 'name', 'label', 'required', 'options'], ['description', 'default', 'presentation']);
 const FORM_MULTI_SELECT_FIELD_SHAPE = defineObjectShape<
   Extract<InteractionFormField, { kind: 'multi_select' }>
 >()(
@@ -754,6 +759,15 @@ function projectInteractionFormField(field: InteractionFormField): InteractionFo
   const options = field.options.map((option) => ({
     ...option,
     label: projectInteractionReviewText(option.label, INTERACTION_FORM_FIELD_LABEL_MAX_BYTES),
+    ...(option.description === undefined
+      ? {}
+      : {
+          description: projectInteractionReviewText(
+            option.description,
+            INTERACTION_FORM_FIELD_DESCRIPTION_MAX_BYTES,
+            true,
+          ),
+        }),
   }));
   if (new Set(options.map((option) => option.label)).size !== options.length) {
     throw new Error('Form option labels collide after safe projection');
@@ -1041,6 +1055,15 @@ function decodeFormField(value: unknown): InteractionFormField {
       ...common,
       kind: 'single_select',
       options,
+      ...(record.presentation === undefined
+        ? {}
+        : {
+            presentation: oneOf(
+              record.presentation,
+              ['model_picker'] as const,
+              'single-select presentation',
+            ),
+          }),
       ...(record.default === undefined
         ? {}
         : {
@@ -1113,6 +1136,15 @@ function decodeFormOptions(value: unknown): readonly InteractionFormOption[] {
           'form option label',
           INTERACTION_FORM_FIELD_LABEL_MAX_BYTES,
         ),
+        ...(record.description === undefined
+          ? {}
+          : {
+              description: boundedText(
+                record.description,
+                'form option description',
+                INTERACTION_FORM_FIELD_DESCRIPTION_MAX_BYTES,
+              ),
+            }),
       });
     },
   );

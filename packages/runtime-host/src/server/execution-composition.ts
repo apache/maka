@@ -2058,7 +2058,11 @@ export async function createExecutionRuntimeHostComposition(
     });
     const workHubTargetExecution = new HostWorkHubTargetExecutionAuthority({
       readSession: (sessionId) => stores.sessionStore.readHeaderRecordSnapshot(sessionId),
-      runtimePolicy: runtimePolicyStores.operations,
+      runtimePolicy: {
+        resolveExecutionConnection: (locator) =>
+          runtimePolicyStores.operations.resolveExecutionConnection(locator),
+        connectionCatalog: runtimePolicyStores.connectionCatalog,
+      },
       requestForm: (input) => interactions.requestForm(input),
       updateModel: async (input, operationContext) => {
         const outcome = await sessionCatalog.handlers['session.configuration.update'](

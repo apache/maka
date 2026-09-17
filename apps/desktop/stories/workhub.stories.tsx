@@ -136,8 +136,16 @@ function makeServices(failFirst: boolean, withHistory: boolean | 'usage', colore
             ? '任务“支付回调幂等性”使用的模型“qwen3.8-27b-sglang”已不可用。请选择替代模型以继续。'
             : '选择要继续的工作', requester: { name: 'WorkHub' },
           fields: [{ kind: 'single_select', name: repairModel ? 'targetModel' : 'target', label: repairModel ? '替代模型' : '工作 / 工作区', required: true,
+            ...(repairModel ? { presentation: 'model_picker' as const } : {}),
             options: repairModel
-              ? [{ value: 'qwen3.8-32b', label: 'Qwen 3.8 32B' }, { value: 'deepseek-v4-pro', label: 'DeepSeek V4 Pro' }]
+              ? [
+                  { value: 'qwen3.8-32b', label: 'Qwen 3.8 32B', description: 'Coding Plan' },
+                  { value: 'deepseek-v4-pro', label: 'DeepSeek V4 Pro', description: 'DeepSeek' },
+                  { value: 'claude-sonnet-4.5', label: 'Claude Sonnet 4.5', description: 'Anthropic' },
+                  { value: 'gpt-5.4', label: 'GPT-5.4', description: 'OpenAI' },
+                  { value: 'gemini-3-pro', label: 'Gemini 3 Pro', description: 'Google' },
+                  { value: 'kimi-k2.5', label: 'Kimi K2.5', description: 'Moonshot' },
+                ]
               : [{ value: 'candidate-0', label: '支付回调幂等性 / maka' }, { value: 'candidate-1', label: '发布检查清单 / desktop' }] }] };
         messages = [...messages, { type: 'user', id: input.turnId, turnId: input.turnId, ts: 4, text: input.text }];
         interactionUpdate?.({ sessionId, interactions: [pendingForm] });
@@ -414,8 +422,9 @@ export const TargetModelRepair: Story = {
     await userEvent.keyboard('{Enter}');
     const prompt = await within(canvasElement).findByText(/qwen3\.8-27b-sglang.*已不可用/);
     expect(prompt).toBeVisible();
-    expect(within(canvasElement).getByRole('option', { name: 'Qwen 3.8 32B' })).toBeVisible();
-    expect(within(canvasElement).getByRole('option', { name: 'DeepSeek V4 Pro' })).toBeVisible();
+    await userEvent.click(within(canvasElement).getByRole('button', { name: '替代模型' }));
+    expect(within(canvasElement.ownerDocument.body).getByRole('listbox', { name: '替代模型' })).toBeVisible();
+    expect(within(canvasElement.ownerDocument.body).getByRole('option', { name: /Qwen 3.8 32B/ })).toBeVisible();
   },
 };
 

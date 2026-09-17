@@ -1107,8 +1107,9 @@ describe('Interaction decoding and validity', () => {
           name: 'environment',
           label: 'Environment',
           required: true,
+          presentation: 'model_picker',
           options: [
-            { value: 'staging', label: 'Staging' },
+            { value: 'staging', label: 'Staging', description: 'Local provider' },
             { value: 'production', label: 'Production' },
           ],
           default: 'staging',
@@ -1173,8 +1174,13 @@ describe('Interaction decoding and validity', () => {
           label: '\u0007 password=field-secret',
           description: '\nclient_secret=description-secret',
           required: true,
+          presentation: 'model_picker',
           options: [
-            { value: 'production', label: '\u202e token=option-secret' },
+            {
+              value: 'production',
+              label: '\u202e token=option-secret',
+              description: '\npassword=option-description-secret',
+            },
             { value: 'staging', label: 'Staging' },
           ],
         },
@@ -1192,12 +1198,20 @@ describe('Interaction decoding and validity', () => {
       label: '\\u{7} password=[redacted]',
       description: '\\u{A}client_secret=[redacted]',
       required: true,
+      presentation: 'model_picker',
       options: [
-        { value: 'production', label: '\\u{202E} token=[redacted]' },
+        {
+          value: 'production',
+          label: '\\u{202E} token=[redacted]',
+          description: '\\u{A}password=[redacted]',
+        },
         { value: 'staging', label: 'Staging' },
       ],
     });
-    assert.doesNotMatch(JSON.stringify(projected), /message-secret|requester-secret|source-secret/);
+    assert.doesNotMatch(
+      JSON.stringify(projected),
+      /message-secret|requester-secret|source-secret|option-description-secret/,
+    );
   });
 
   test('drops string defaults that cannot be represented without changing canonical semantics', () => {

@@ -22,7 +22,11 @@ import {
   INTERACTION_FORM_FIELD_LABEL_MAX_BYTES,
   INTERACTION_FORM_MAX_OPTIONS,
 } from '@maka/core/interaction';
-import { authorizeConnectionModel, connectionEnabledModelIds } from '@maka/core/llm-connections';
+import {
+  authorizeConnectionModel,
+  connectionEnabledModelIds,
+  providerMenuLabel,
+} from '@maka/core/llm-connections';
 import { isModelExplicitlyUnsupportedForChat } from '@maka/core/model-catalog';
 import { thinkingVariantsForConnection } from '@maka/core/model-thinking';
 import { WORKHUB_COORDINATION_SESSION_ID } from '@maka/core/session';
@@ -51,7 +55,9 @@ export interface WorkHubTargetExecutionAuthorityOptions {
   readonly runtimePolicy: Pick<
     RuntimePolicyStoresWriter['operations'],
     'resolveExecutionConnection'
-  >;
+  > & {
+    readonly connectionCatalog: Pick<RuntimePolicyStoresWriter['connectionCatalog'], 'getSnapshot'>;
+  };
   readonly requestForm: HostInteractionCoordinator['requestForm'];
   readonly updateModel: (
     input: {
@@ -66,6 +72,7 @@ export interface WorkHubTargetExecutionAuthorityOptions {
 interface ReplacementModel {
   readonly value: string;
   readonly label: string;
+  readonly description: string;
   readonly target: Extract<SessionModelTarget, { readonly kind: 'explicit' }>;
 }
 
@@ -89,7 +96,7 @@ export class HostWorkHubTargetExecutionAuthority implements WorkHubTargetExecuti
     input: WorkHubTargetExecutionPreparationInput,
     context: ConnectionContext,
   ): Promise<void> {
-    for (let attempt = 0; attempt < 2; attempt++) {
+    for (let attempt = 0; attempt < 3; attempt++) {
       const readiness = await this.#readiness(input.targetSessionId);
       if (readiness.kind === 'ready') return;
       if (readiness.replacements.length === 0) {
@@ -125,7 +132,12 @@ export class HostWorkHubTargetExecutionAuthority implements WorkHubTargetExecuti
               name: 'targetModel',
               label: `Model for ${input.targetSessionName}`,
               required: true,
-              options: readiness.replacements.map(({ value, label }) => ({ value, label })),
+              presentation: 'model_picker',
+              options: readiness.replacements.map(({ value, label, description }) => ({
+                value,
+                label,
+                description,
+              })),
             },
           ],
         }),
@@ -153,8 +165,7 @@ export class HostWorkHubTargetExecutionAuthority implements WorkHubTargetExecuti
         context,
       );
       if (updated === 'committed') {
-        await this.assertReady(input.targetSessionId);
-        return;
+        if ((await this.#readiness(input.targetSessionId)).kind === 'ready') return;
       }
     }
     throw new WorkHubActionEffectFailure(
@@ -186,45 +197,72 @@ export class HostWorkHubTargetExecutionAuthority implements WorkHubTargetExecuti
             connectionSlug: header.llmConnectionSlug,
           },
     );
-    if (resolved.kind !== 'ready') {
-      throw new WorkHubActionEffectFailure(
-        'operation_unavailable',
-        `Target task model connection is not ready: ${resolved.kind}`,
-      );
+    if (resolved.kind === 'ready') {
+      const current = authorizeConnectionModel(resolved.connection, header.model);
+      if (current && !isModelExplicitlyUnsupportedForChat(current)) return { kind: 'ready' };
     }
-    const current = authorizeConnectionModel(resolved.connection, header.model);
-    if (current && !isModelExplicitlyUnsupportedForChat(current)) return { kind: 'ready' };
-    const replacements = connectionEnabledModelIds(resolved.connection)
-      .flatMap((modelId): ReplacementModel[] => {
-        const model = authorizeConnectionModel(resolved.connection, modelId);
-        if (!model || isModelExplicitlyUnsupportedForChat(model)) return [];
-        if (
-          header.thinkingLevel !== undefined &&
-          !thinkingVariantsForConnection(
+    const catalog = await this.#options.runtimePolicy.connectionCatalog.getSnapshot();
+    const resolvedConnections = await Promise.all(
+      catalog.connections.map((connection) =>
+        this.#options.runtimePolicy.resolveExecutionConnection({
+          kind: 'bound',
+          connectionId: connection.connectionId,
+          connectionSlug: connection.slug,
+        }),
+      ),
+    );
+    const replacements = resolvedConnections
+      .flatMap((candidate): ReplacementModel[] => {
+        if (candidate.kind !== 'ready') return [];
+        const connection = candidate.connection;
+        return connectionEnabledModelIds(connection).flatMap((modelId): ReplacementModel[] => {
+          const model = authorizeConnectionModel(connection, modelId);
+          if (!model || isModelExplicitlyUnsupportedForChat(model)) return [];
+          if (
+            header.thinkingLevel !== undefined &&
+            !thinkingVariantsForConnection(
+              {
+                providerType: connection.providerType,
+                modelOverrides: connection.modelOverrides,
+              },
+              modelId,
+            ).includes(header.thinkingLevel)
+          ) {
+            return [];
+          }
+          const target = {
+            kind: 'explicit' as const,
+            connectionId: connection.connectionId,
+            connectionSlug: connection.slug,
+            model: modelId,
+          };
+          const connectionLabel =
+            connection.name.trim() || providerMenuLabel(connection.providerType) || connection.slug;
+          const modelLabel = model.displayName?.trim() || modelId;
+          return [
             {
-              providerType: resolved.connection.providerType,
-              modelOverrides: resolved.connection.modelOverrides,
+              value: createHash('sha256')
+                .update(`${target.connectionId}\0${target.connectionSlug}\0${target.model}`, 'utf8')
+                .digest('hex'),
+              label: boundedUtf8(modelLabel, INTERACTION_FORM_FIELD_LABEL_MAX_BYTES),
+              description: boundedUtf8(connectionLabel, INTERACTION_FORM_FIELD_LABEL_MAX_BYTES),
+              target,
             },
-            modelId,
-          ).includes(header.thinkingLevel)
-        ) {
-          return [];
-        }
-        const target = {
-          kind: 'explicit' as const,
-          connectionId: resolved.connection.connectionId,
-          connectionSlug: resolved.connection.slug,
-          model: modelId,
-        };
-        return [
-          {
-            value: createHash('sha256')
-              .update(`${target.connectionId}\0${target.connectionSlug}\0${target.model}`, 'utf8')
-              .digest('hex'),
-            label: boundedUtf8(modelId, INTERACTION_FORM_FIELD_LABEL_MAX_BYTES),
-            target,
-          },
-        ];
+          ];
+        });
+      })
+      .sort((left, right) => {
+        const isSameConnection = (candidate: ReplacementModel) =>
+          header.llmConnectionId
+            ? candidate.target.connectionId === header.llmConnectionId
+            : candidate.target.connectionSlug === header.llmConnectionSlug;
+        const leftSameConnection = isSameConnection(left) ? 0 : 1;
+        const rightSameConnection = isSameConnection(right) ? 0 : 1;
+        return (
+          leftSameConnection - rightSameConnection ||
+          left.description.localeCompare(right.description) ||
+          left.label.localeCompare(right.label)
+        );
       })
       .slice(0, INTERACTION_FORM_MAX_OPTIONS);
     return { kind: 'model_repair_required', record, replacements };

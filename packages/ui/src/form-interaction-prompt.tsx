@@ -30,6 +30,7 @@ import {
 } from './form-interaction-prompt-state.js';
 import { useUiLocale } from './locale-context.js';
 import { ChoicePanel } from './choice-panel.js';
+import { ModelWheelPicker } from './model-wheel-picker.js';
 import { useMountedRef } from './use-mounted-ref.js';
 
 export function FormInteractionPrompt(props: {
@@ -140,13 +141,31 @@ function ActiveFormInteractionPrompt(props: {
                 ) : null}
                 {props.request.fields.length === 1 && field.kind === 'single_select' && field.required ? (
                   <>
-                    <ChoicePanel label={field.label} options={field.options}
-                      value={typeof draft.value === 'string' ? draft.value : ''}
-                      disabled={responsePending || props.stopPending}
-                      onChange={(value) => updateDraft(index, { ...draft, value })}
-                      onConfirm={accept}
-                      onEscape={() => void respond({ requestId: props.request.requestId, action: 'cancel' })} />
-                    <Text as="p" type="supporting" color="secondary" className="maka-choice-hint">{copy.keyboardHint}</Text>
+                    {field.presentation === 'model_picker' ? (
+                      <ModelWheelPicker
+                        options={field.options.map((option) => ({
+                          value: option.value,
+                          label: option.label,
+                          ...(option.description ? { heading: option.description } : {}),
+                        }))}
+                        value={typeof draft.value === 'string' ? draft.value : undefined}
+                        label={field.options.find((option) => option.value === draft.value)?.label ?? field.label}
+                        ariaLabel={field.label}
+                        size="md"
+                        disabled={responsePending || props.stopPending}
+                        onValueChange={(value) => updateDraft(index, { ...draft, value })}
+                      />
+                    ) : (
+                      <>
+                        <ChoicePanel label={field.label} options={field.options}
+                          value={typeof draft.value === 'string' ? draft.value : ''}
+                          disabled={responsePending || props.stopPending}
+                          onChange={(value) => updateDraft(index, { ...draft, value })}
+                          onConfirm={accept}
+                          onEscape={() => void respond({ requestId: props.request.requestId, action: 'cancel' })} />
+                        <Text as="p" type="supporting" color="secondary" className="maka-choice-hint">{copy.keyboardHint}</Text>
+                      </>
+                    )}
                   </>
                 ) : draft.included ? renderFormControl({
                   field,
