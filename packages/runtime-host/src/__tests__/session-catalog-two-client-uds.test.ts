@@ -230,16 +230,33 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
       assert.deepEqual(researchSession.labels, ['customer-label', DEEP_RESEARCH_SESSION_LABEL]);
       assert.equal(researchSession.permissionMode, 'explore');
 
+      const sandboxChoice = requireSessionProjection(
+        await desktop.request('session.create', {
+          ...createInput,
+          sessionId: 'explicit-sandbox-session',
+          permissionMode: 'ask',
+        }),
+      );
+      assert.equal(sandboxChoice.permissionMode, 'ask');
+
       const policy = await tui.request('runtime.policy.query', {});
       const changedPolicy = await tui.request('runtime.policy.mutate', {
         expectedRevision: policy.revision,
         operation: {
           kind: 'set_chat_defaults',
-          value: { permissionMode: 'bypass' },
+          value: { permissionMode: 'ask' },
         },
       });
       assert.equal(changedPolicy.kind, 'committed');
       assert.deepEqual(await tui.request('session.create', createInput), created);
+
+      const inheritedSandbox = requireSessionProjection(
+        await desktop.request('session.create', {
+          ...createInput,
+          sessionId: 'inherited-sandbox-session',
+        }),
+      );
+      assert.equal(inheritedSandbox.permissionMode, 'ask');
 
       const subscription = await tui.openSessionSubscription({
         sessionId: created.id,

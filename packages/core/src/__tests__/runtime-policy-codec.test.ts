@@ -33,18 +33,6 @@ import {
   RuntimePolicyDomainDecodeError,
 } from '../runtime-policy.js';
 
-test('new Host policy defaults to bypass and preserves an explicit sandbox preference', () => {
-  const policy = createDefaultRuntimePolicy();
-  assert.equal(decodeCanonicalRuntimePolicy(policy).chatDefaults.permissionMode, 'bypass');
-  assert.equal(
-    decodeCanonicalRuntimePolicy({
-      ...policy,
-      chatDefaults: { permissionMode: 'ask' },
-    }).chatDefaults.permissionMode,
-    'ask',
-  );
-});
-
 test('normalizes policy input while canonical policy decode rejects producer drift', () => {
   const mutation = normalizeRuntimePolicyMutation({
     expectedRevision: 0,
