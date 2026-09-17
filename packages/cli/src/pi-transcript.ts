@@ -172,7 +172,14 @@ const LIVE_TOOL_BUFFER_MAX_CHARS = 64 * 1024;
 const LIVE_TOOL_BUFFER_MAX_CHUNKS = 512;
 
 export type MakaPiTranscriptEntry =
-  | { kind: 'user'; messageId: string; text: string; transient?: boolean }
+  | {
+      kind: 'user';
+      messageId: string;
+      text: string;
+      transient?: boolean;
+      /** Restored-quote count the message rode in on; rendered as a trace line. */
+      quotes?: number;
+    }
   | { kind: 'legacy_automation'; text: string }
   | { kind: 'goal_continuation'; text: string }
   | { kind: 'assistant'; messageId: string; text: string }
@@ -1089,10 +1096,12 @@ function storedMessagesToTranscriptEntries(
         } else if (message.origin?.kind === 'goal') {
           entries.push({ kind: 'goal_continuation', text: message.displayText ?? message.text });
         } else {
+          const restoredQuotes = message.quotes?.length;
           entries.push({
             kind: 'user',
             messageId: message.id,
             text: message.displayText ?? message.text,
+            ...(restoredQuotes ? { quotes: restoredQuotes } : {}),
           });
         }
         break;
@@ -1581,8 +1590,15 @@ function renderTranscriptEntryBlock(entry: MakaPiTranscriptEntry, width: number)
   const contentWidth = Math.max(1, width - 2);
   const lines = (() => {
     switch (entry.kind) {
-      case 'user':
-        return renderUserBlock(entry.text, contentWidth);
+      case 'user': {
+        const lines = renderUserBlock(entry.text, contentWidth);
+        // A quote-only submit stores no text: without this trace the sent
+        // context would leave no row at all — an answer to an invisible
+        // prompt (#5109 review).
+        if (entry.quotes === undefined) return lines;
+        const hint = `· ${entry.quotes} restored quote${entry.quotes === 1 ? '' : 's'}`;
+        return [...lines, ...renderUserBlock(hint, contentWidth)];
+      }
       case 'legacy_automation':
         return renderLegacyAutomationBlock(entry.text, contentWidth);
       case 'goal_continuation':

@@ -7014,10 +7014,12 @@ Slug openai-work<cursor>
     ]);
 
     // After the explicit clear an empty draft is truly empty: no submit.
+    // The submit consumed the staging, so the clear reports the truth —
+    // there is nothing left to discard (#5109 review).
     terminal.input('/quotes clear');
     terminal.input('\r');
     await waitFor(() =>
-      plainTerminalOutput(terminal.output()).includes('Restored quotes discarded'),
+      plainTerminalOutput(terminal.output()).includes('No restored quotes are staged'),
     );
     terminal.input('\r');
     await delay(200);
@@ -7082,6 +7084,148 @@ Slug openai-work<cursor>
     await waitFor(() =>
       plainTerminalOutput(terminal.output()).includes('No restored quotes are staged'),
     );
+
+    exitMaka(terminal);
+    await Promise.race([
+      run,
+      delay(CLOSE_BUDGET_MS).then(() => {
+        throw new Error('TUI did not close during test cleanup');
+      }),
+    ]);
+  });
+
+  test('restages quotes when the Host blocks the replacement submit', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new BlockedQuotedRewindDriver(
+      {
+        loaded: [],
+        failed: [{ request: 'typo', reason: 'not_found' }],
+        receipts: [],
+      },
+      [{ turnId: 'turn-1', label: 'first question' }],
+    );
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    terminal.input('/rewind');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('first question'));
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('quotes:1'));
+    terminal.input('resend this');
+    terminal.input('\r');
+    await waitFor(() => driver.submittedQuotes.length === 1);
+
+    // The Host refuses the dispatch (blocked disposition): the quotes return
+    // to the staging for the retry, exactly as a failed admission would.
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('Could not load skills'));
+    terminal.input('retry then');
+    terminal.input('\r');
+    await waitFor(() => driver.submittedQuotes.length === 2);
+    assert.deepEqual(driver.submittedQuotes[1], [
+      { text: 'a large pasted excerpt', label: 'earlier turn', sourceTurnId: 'turn-0' },
+    ]);
+
+    exitMaka(terminal);
+    await Promise.race([
+      run,
+      delay(CLOSE_BUDGET_MS).then(() => {
+        throw new Error('TUI did not close during test cleanup');
+      }),
+    ]);
+  });
+
+  test('renders and submits multiple staged quotes in rewind order', async () => {
+    const terminal = new FakeTerminal();
+    // Two quotes per rewind: the count, the listing, and the submit must all
+    // carry the rewind's order.
+    const driver = new TwoQuoteRewindDriver([{ turnId: 'turn-1', label: 'first question' }]);
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    terminal.input('/rewind');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('first question'));
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('quotes:2'));
+
+    // /quotes lists both, in rewind order. The rewind refilled the editor
+    // with the discarded prompt; Ctrl+C clears it so /quotes is not appended
+    // to it.
+    terminal.input('\x03');
+    terminal.input('/quotes');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('Staged quotes:'));
+    const transcript = plainTerminalOutput(terminal.output());
+    const firstAt = transcript.indexOf('first excerpt');
+    const secondAt = transcript.indexOf('second excerpt');
+    assert.ok(firstAt !== -1 && secondAt > firstAt, 'listing keeps rewind order');
+
+    // The replacement submit carries both refs, in the same order.
+    terminal.input('resend with both');
+    terminal.input('\r');
+    await waitFor(() => driver.submittedQuotes.length === 1);
+    assert.deepEqual(driver.submittedQuotes[0], [
+      { text: 'first excerpt', label: 'earlier turn', sourceTurnId: 'turn-0' },
+      { text: 'second excerpt', label: 'later turn', sourceTurnId: 'turn-0' },
+    ]);
+
+    exitMaka(terminal);
+    await Promise.race([
+      run,
+      delay(CLOSE_BUDGET_MS).then(() => {
+        throw new Error('TUI did not close during test cleanup');
+      }),
+    ]);
+  });
+
+  test('lists staged quotes mid-turn through the local disposition', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new MidTurnQuotesDriver([{ turnId: 'turn-1', label: 'first question' }]);
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    terminal.input('/rewind');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('first question'));
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('quotes:1'));
+
+    // A running Turn claims busy; /quotes is composer-side staging and must
+    // still route through the local mid-turn disposition.
+    driver.startBlockingTurn();
+    await waitFor(() => terminal.progressStates.at(-1) === true);
+    terminal.input('/quotes');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('a large pasted excerpt'));
+    assert.ok(
+      plainTerminalOutput(terminal.output()).includes('Staged quotes:'),
+      'the mid-turn listing renders the staged quotes',
+    );
+
+    driver.turnGate.resolve();
+    await waitFor(() => terminal.progressStates.at(-1) === false);
 
     exitMaka(terminal);
     await Promise.race([
@@ -12368,12 +12512,87 @@ class PerRewindQuotedDriver extends HeldSubmitQuotedDriver {
   }
 }
 
+/** The Host answers the replacement submit with a `blocked` disposition —
+ * the Skills the message named could not be resolved — instead of a Turn. */
+class BlockedQuotedRewindDriver extends QuotedRewindDriver {
+  readonly skillInvocation: SkillInvocationResult;
+
+  constructor(skillInvocation: SkillInvocationResult, targets: RewindTarget[]) {
+    super(targets);
+    this.skillInvocation = skillInvocation;
+  }
+
+  override async submitMessage(
+    text: string,
+    options: MakaSubmitMessageOptions,
+  ): Promise<TurnMessageSubmitResult | undefined> {
+    this.submittedQuotes.push(options.quotes);
+    return { disposition: 'blocked', skillInvocation: this.skillInvocation };
+  }
+}
+
+/** One rewind stages two quotes, so ordering and count are observable. */
+class TwoQuoteRewindDriver extends QuotedRewindDriver {
+  override async rewindToTurn(turnId: string): Promise<MakaSessionRewindResult> {
+    const result = await super.rewindToTurn(turnId);
+    return {
+      ...result,
+      quotes: [
+        { text: 'first excerpt', label: 'earlier turn', sourceTurnId: 'turn-0' },
+        { text: 'second excerpt', label: 'later turn', sourceTurnId: 'turn-0' },
+      ],
+    };
+  }
+}
+
+/** A running Turn plus a rewound prompt that refills nothing: /quotes must
+ * still route through the local mid-turn disposition with a clean editor. */
+class MidTurnQuotesDriver extends QuotedRewindDriver {
+  readonly turnGate = deferred<void>();
+  #startedTurnListener: ((turn: MakaAttachedSessionTurn) => void) | undefined;
+
+  override subscribeStartedTurns(listener: (turn: MakaAttachedSessionTurn) => void): () => void {
+    this.#startedTurnListener = listener;
+    return () => {
+      if (this.#startedTurnListener === listener) this.#startedTurnListener = undefined;
+    };
+  }
+
+  startBlockingTurn(): void {
+    const gate = this.turnGate;
+    this.#startedTurnListener?.({
+      sessionId: this.getSessionId()!,
+      turnId: 'turn-host',
+      messages: [
+        storedUserMessage('user-host', 'turn-host', 'host question'),
+        storedAssistantMessage('assistant-host', 'turn-host', 'host answer'),
+      ],
+      summary: fakeSessionSummary(this.getSessionId()!),
+      events: (async function* () {
+        await gate.promise;
+        yield {
+          type: 'complete',
+          id: 'complete-host',
+          turnId: 'turn-host',
+          ts: 3,
+          stopReason: 'end_turn',
+        } satisfies SessionEvent;
+      })(),
+    });
+  }
+
+  override async rewindToTurn(turnId: string): Promise<MakaSessionRewindResult> {
+    const result = await super.rewindToTurn(turnId);
+    return { ...result, prompt: '' };
+  }
+}
+
 /**
  * Holds `busy` from underneath an open picker: publishSuccessor-style, a
  * Host-started turn begins (and blocks on `turnGate`) while the rewind picker
  * is already open, so a selection lands on runControl's busy early return.
  */
-class BusyAfterPickerOpenDriver extends RewindDriver {
+class BusyAfterPickerOpenDriver extends QuotedRewindDriver {
   readonly turnGate = deferred<void>();
   #startedTurnListener: ((turn: MakaAttachedSessionTurn) => void) | undefined;
 

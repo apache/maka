@@ -605,10 +605,11 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   let pendingAttachedTurn: AttachedTurnContext | undefined;
   const resolvedInteractionIds = new Set<string>();
   // Quotes restored by a rewind (#5109) wait here for the next submit. The
-  // staging is keyed to the session it was restored in, so every switch path
-  // invalidates it without each of them having to clear it explicitly; a
-  // submit that admitted the message consumes it, a refused or failed one
-  // keeps it for the retry.
+  // staging is keyed to the session it was restored in, so it only renders
+  // while that session is active, and every session change clears it
+  // outright (applySwitchResult) — a switch must not be able to resurrect
+  // the quotes into a later submit unnoticed; a refused or failed submit
+  // keeps them for the retry.
   let stagedRewindQuotes: NonNullable<MakaSessionRewindResult['quotes']> = [];
   let stagedQuotesSessionId: string | null = null;
   let stagedGeneration = 0;
@@ -1842,6 +1843,12 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   }: MakaSessionSwitchResult): Promise<void> => {
     resetTranscriptViewer();
     closeTodoOverlay();
+    // Every session change invalidates the staged rewind quotes outright:
+    // keying the staging to its session only hides it while the user is
+    // elsewhere, and a silent resurrection on return would send context the
+    // user can no longer see (#5109 review). The rewind re-stages its own
+    // quotes after this returns.
+    clearStagedQuotes();
     adoptSessionMetadata(summary, false);
     replaceTranscript(messages);
     syncInteractionOverlays();
@@ -4295,6 +4302,17 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       midTurn: 'local',
       run: (parts: string[]) => {
         if (parts.length === 2 && parts[1] === 'clear') {
+          // Nothing staged (or the staged quotes already left on an in-flight
+          // submit): say so instead of claiming a discard that did nothing.
+          if (effectiveStagedQuotes().length === 0) {
+            state.entries.push({
+              kind: 'notice',
+              level: 'info',
+              text: TUI_REWIND_COPY[locale].quotesNone,
+            });
+            requestRender();
+            return;
+          }
           clearStagedQuotes();
           state.entries.push({
             kind: 'notice',
