@@ -17,10 +17,11 @@
  * under the License.
  */
 
-import { BrowserWindow, View, WebContentsView, globalShortcut, ipcMain, screen, systemPreferences } from 'electron';
+import { BrowserWindow, View, WebContentsView, globalShortcut, ipcMain, screen, shell, systemPreferences } from 'electron';
 import type { WorkHubHost, WorkHubMainNavigation, WorkHubPresentationSnapshot } from '../shared/workhub-presentation.js';
 import { parseDesktopSessionKey } from '../shared/runtime-host-identity.js';
 import { loadMainRenderer, resolveMainRendererEntry } from './main-renderer-loader.js';
+import { isExternalUrl } from './external-link-guard.js';
 import { installMainWindowPermissionPolicy } from './main-window-permission-policy.js';
 import { focusWindow, showWindowInactive, type WindowRevealMode } from './window-reveal.js';
 
@@ -144,8 +145,17 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     releaseView = typeof release === 'function' ? release : undefined;
     view.webContents.once('destroyed', releaseViewRegistration);
     installMainWindowPermissionPolicy(view.webContents, entry.url);
-    view.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
-    view.webContents.on('will-navigate', (event) => event.preventDefault());
+    // Keep remote pages out of the WorkHub renderer while preserving the
+    // user-facing assistant-link contract used by the main Desktop window.
+    // WorkHub is a local conversation surface, not the embedded browser.
+    view.webContents.setWindowOpenHandler(({ url }) => {
+      if (isExternalUrl(url)) void shell.openExternal(url);
+      return { action: 'deny' };
+    });
+    view.webContents.on('will-navigate', (event, url) => {
+      event.preventDefault();
+      if (isExternalUrl(url)) void shell.openExternal(url);
+    });
     view.webContents.on('will-frame-navigate', (event) => event.preventDefault());
     view.webContents.on('will-attach-webview', (event) => event.preventDefault());
     const contents = view.webContents;
