@@ -425,6 +425,7 @@ test('keeps archived-project pins visible once in both grouping modes', () => {
       const task = document.querySelector(`[data-session-id="${archivedProjectTask.id}"]`);
       assert.ok(task);
       assert.ok(task.closest('[aria-hidden="true"]'), 'unpinned tasks stay folded away');
+      assert.ok(task.closest('[inert]'), 'folded unpinned tasks are not interactive');
       assert.equal(
         task.closest('.maka-project-row')?.querySelectorAll('.maka-session-row').length,
         1,
@@ -434,42 +435,54 @@ test('keeps archived-project pins visible once in both grouping modes', () => {
   }
 });
 
-test('a project whose only task is pinned describes itself as empty', () => {
-  const pinnedSession: SessionSummary = {
-    ...session,
-    id: 'session-pinned',
-    name: 'Pinned task',
-    isFlagged: true,
-  };
-  const markup = renderToStaticMarkup(
-    <LocaleProvider locale="en">
-      <Rail
-        sessions={[pinnedSession]}
-        groups={[{ id: project.id, label: project.name, project, sessions: [pinnedSession] }]}
-        groupVariant="project"
-        projectActions={projectActions}
-      />
-    </LocaleProvider>,
-  );
+for (const state of ['active', 'archived'] as const) {
+  test(`an ${state} project whose only task is pinned describes itself as empty`, () => {
+    const pinnedProject: ProjectRecord = {
+      ...project,
+      archivedAt: state === 'archived' ? Date.UTC(2026, 8, 16) : undefined,
+    };
+    const pinnedSession: SessionSummary = {
+      ...session,
+      id: 'session-pinned',
+      name: 'Pinned task',
+      projectId: pinnedProject.id,
+      isFlagged: true,
+    };
+    const markup = renderToStaticMarkup(
+      <LocaleProvider locale="en">
+        <Rail
+          sessions={[pinnedSession]}
+          groups={[{
+            id: pinnedProject.id,
+            label: pinnedProject.name,
+            project: pinnedProject,
+            sessions: [pinnedSession],
+          }]}
+          groupVariant="project"
+          projectActions={projectActions}
+        />
+      </LocaleProvider>,
+    );
 
-  const { document } = parseHTML(markup);
-  const projectRow = document.querySelector('.maka-project-row');
-  assert.ok(projectRow);
-  const navigation = projectRow.querySelector<HTMLButtonElement>(':scope > div > button');
-  assert.ok(navigation);
-  assert.equal(navigation.getAttribute('aria-controls'), null, 'no disclosure without a subtree');
-  const describedBy = navigation.getAttribute('aria-describedby');
-  assert.ok(describedBy);
-  const description = document.getElementById(describedBy);
-  assert.ok(description);
-  assert.match(
-    description.getAttribute('aria-label') ?? '',
-    /\b0 tasks\b/,
-    'the hover description counts what the row actually shows',
-  );
-  const action = document.querySelector('button[aria-label="Maka project actions"]');
-  assert.ok(action);
-});
+    const { document } = parseHTML(markup);
+    const projectRow = document.querySelector('.maka-project-row');
+    assert.ok(projectRow);
+    const navigation = projectRow.querySelector<HTMLButtonElement>(':scope > div > button');
+    assert.ok(navigation);
+    assert.equal(navigation.getAttribute('aria-controls'), null, 'no disclosure without a subtree');
+    const describedBy = navigation.getAttribute('aria-describedby');
+    assert.ok(describedBy);
+    const description = document.getElementById(describedBy);
+    assert.ok(description);
+    assert.match(
+      description.getAttribute('aria-label') ?? '',
+      /\b0 tasks\b/,
+      'the hover description counts what the row actually shows',
+    );
+    const action = document.querySelector('button[aria-label="Maka project actions"]');
+    assert.ok(action);
+  });
+}
 
 test('keeps project running totals aligned with renderer-local task streaming', () => {
   const locallyStreaming = {
