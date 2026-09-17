@@ -3368,7 +3368,7 @@ function WorkbarInShell(props: { longTitle?: boolean; onShare?: () => void; work
   const [layout, dispatch] = useReducer(reduceWorkbarLayout, workbarLayoutWithOneFace);
   const resizable = useResizable({
     defaultSize: props.workbarWidth ?? layout.rightWidth,
-    minSizePx: 320, maxSizePx: 760,
+    minSize: 320, maxSize: 760,
     onSizeChange: (size) => dispatch({ type: 'resize', placement: 'right', size }),
   });
   const workbarWidth = props.workbarWidth ?? layout.rightWidth;

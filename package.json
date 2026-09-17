@@ -132,9 +132,6 @@
     "@ai-sdk/code-mode": {
       "run": "2.1.4"
     },
-    "@astryxdesign/core": {
-      "react-dom": "19.2.8"
-    },
     "@modelcontextprotocol/sdk": {
       "@hono/node-server": "2.0.12"
     }
