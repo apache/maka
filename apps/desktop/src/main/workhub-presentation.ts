@@ -141,24 +141,27 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     container.setVisible(false);
     container.addChildView(view);
     view.setBackgroundColor('#00000000');
-    const release = deps.onViewCreated?.(view.webContents, container);
+    const contents = view.webContents;
+    const release = deps.onViewCreated?.(contents, container);
     releaseView = typeof release === 'function' ? release : undefined;
-    view.webContents.once('destroyed', releaseViewRegistration);
-    installMainWindowPermissionPolicy(view.webContents, entry.url);
+    contents.once('destroyed', releaseViewRegistration);
+    installMainWindowPermissionPolicy(contents, entry.url);
     // Keep remote pages out of the WorkHub renderer while preserving the
     // user-facing assistant-link contract used by the main Desktop window.
     // WorkHub is a local conversation surface, not the embedded browser.
-    view.webContents.setWindowOpenHandler(({ url }) => {
-      if (isExternalUrl(url)) void shell.openExternal(url);
+    contents.setWindowOpenHandler(({ url }) => {
+      if (isExternalUrl(url)) void shell.openExternal(url).catch(() => {});
       return { action: 'deny' };
     });
-    view.webContents.on('will-navigate', (event, url) => {
+    contents.on('will-navigate', (event, url) => {
+      // Let the initial Vite dev-server or packaged entry load settle in place.
+      const current = contents.getURL();
+      if (current === url) return;
       event.preventDefault();
-      if (isExternalUrl(url)) void shell.openExternal(url);
+      if (isExternalUrl(url)) void shell.openExternal(url).catch(() => {});
     });
-    view.webContents.on('will-frame-navigate', (event) => event.preventDefault());
-    view.webContents.on('will-attach-webview', (event) => event.preventDefault());
-    const contents = view.webContents;
+    contents.on('will-frame-navigate', (event) => event.preventDefault());
+    contents.on('will-attach-webview', (event) => event.preventDefault());
     contents.once('render-process-gone', (_event, details) => {
       if (!ownsWebContents(contents)) return;
       disposeView();
@@ -166,7 +169,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
       changed();
       reportError(new Error(`WorkHub renderer exited: ${details.reason}`));
     });
-    void loadMainRenderer(view.webContents, entry, 'workhub').catch(reportError);
+    void loadMainRenderer(contents, entry, 'workhub').catch(reportError);
     changed();
     return view;
   }

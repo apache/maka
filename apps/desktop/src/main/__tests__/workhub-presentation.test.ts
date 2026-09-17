@@ -78,6 +78,8 @@ async function harness(animate = false, displayFrequency = 60, revealMode: Windo
       this.captures++;
       return { toDataURL: () => 'data:image/png;base64,workhub-frame' };
     }
+    currentUrl = '';
+    getURL() { return this.currentUrl; }
     windowOpenHandler?: (details: { url: string }) => { action: string };
     setWindowOpenHandler(handler: (details: { url: string }) => { action: string }) { this.windowOpenHandler = handler; }
     loadURL() { return Promise.resolve(); }
@@ -188,7 +190,12 @@ test('hands safe WorkHub links to the OS while keeping the view local', async ()
   assert.equal(windowOpenHandler({ url: 'file:///Users/example/.ssh/id_rsa' }).action, 'deny');
   assert.deepEqual(h.externalUrls, ['https://example.com/']);
 
+  contents.currentUrl = 'http://localhost:5173/';
   let navigationPrevented = false;
+  contents.emit('will-navigate', { preventDefault: () => { navigationPrevented = true; } }, contents.currentUrl);
+  assert.equal(navigationPrevented, false);
+  assert.deepEqual(h.externalUrls, ['https://example.com/']);
+
   contents.emit('will-navigate', { preventDefault: () => { navigationPrevented = true; } }, 'https://example.org/');
   assert.equal(navigationPrevented, true);
   assert.deepEqual(h.externalUrls, ['https://example.com/', 'https://example.org/']);
