@@ -539,10 +539,8 @@ export const Composer = forwardRef<
   const inputRootRef = useRef<HTMLDivElement>(null);
   /** Selection to restore after a toolbar control changes composer settings. */
   const thinkingSelectionRef = useRef<{ range: Range; value: string } | null>(null);
-  /** Distinguishes a menu close after selection from cancel/light dismiss. */
+  /** 恢复排队期间，编辑器重新获得焦点不能清掉待恢复选区。 */
   const thinkingRestorePendingRef = useRef(false);
-  /** Suppresses the trigger focus returned by a cancelled menu close. */
-  const suppressThinkingTriggerFocusRef = useRef(false);
   function editableNode(): HTMLElement | null {
     return inputRootRef.current?.querySelector<HTMLElement>('[contenteditable="true"]') ?? null;
   }
@@ -575,17 +573,6 @@ export const Composer = forwardRef<
     selection?.removeAllRanges();
     selection?.addRange(pending.range);
   }
-  function handleThinkingMenuOpenChange(open: boolean) {
-    if (open) {
-      suppressThinkingTriggerFocusRef.current = false;
-      // A cancelled menu must never seed the next interaction. Pointer opens
-      // may already have captured the range before the trigger takes focus.
-      if (!thinkingSelectionRef.current) rememberThinkingSelection();
-      return;
-    }
-    suppressThinkingTriggerFocusRef.current = true;
-    if (!thinkingRestorePendingRef.current) thinkingSelectionRef.current = null;
-  }
   function changeThinkingLevel(
     level: import('@maka/core/model-thinking').ThinkingLevel | undefined,
     onChange?: (next: import('@maka/core/model-thinking').ThinkingLevel | undefined) => void | Promise<void>,
@@ -594,7 +581,8 @@ export const Composer = forwardRef<
     const hasSelection = thinkingSelectionRef.current !== null;
     thinkingRestorePendingRef.current = hasSelection;
     const result = onChange?.(level);
-    if (hasSelection) {
+    // 窄窗底部面板会在退场后归还焦点，届时再恢复，避免被面板抢回。
+    if (hasSelection && thinkingPresentation === 'popover') {
       window.requestAnimationFrame(() => {
         restoreThinkingSelection();
         thinkingRestorePendingRef.current = false;
@@ -607,24 +595,26 @@ export const Composer = forwardRef<
     if (!form) return undefined;
     const rememberForThinkingControl = (event: Event) => {
       const target = event.target as Element | null;
-      const selector = target?.closest?.('.maka-thinking-level-selector');
+      const selector = target?.closest?.('.maka-thinking-level-selector [role="combobox"]');
       if (selector) {
-        if (
-          event.type === 'pointerdown' &&
-          selector.getAttribute('aria-disabled') !== 'true' &&
-          !(selector as HTMLButtonElement).disabled
-        ) {
-          suppressThinkingTriggerFocusRef.current = false;
-          rememberThinkingSelection();
-        } else if (event.type === 'keydown') {
-          const key = (event as unknown as globalThis.KeyboardEvent).key;
-          if (key === 'Enter' || key === ' ' || key === 'ArrowDown') {
-            suppressThinkingTriggerFocusRef.current = false;
-          }
-        } else if (
-          event.type === 'focusin' &&
-          !suppressThinkingTriggerFocusRef.current
-        ) {
+        if (event.type === 'focusin' && thinkingRestorePendingRef.current) {
+          window.requestAnimationFrame(() => {
+            restoreThinkingSelection();
+            thinkingRestorePendingRef.current = false;
+          });
+          return;
+        }
+        const key = event.type === 'keydown'
+          ? (event as unknown as globalThis.KeyboardEvent).key : undefined;
+        const activating = event.type === 'pointerdown'
+          || key === 'Enter' || key === ' ' || key === 'ArrowDown' || key === 'ArrowUp';
+        if (activating
+          && selector.getAttribute('aria-disabled') !== 'true'
+          && selector.getAttribute('aria-readonly') !== 'true'
+          && !(selector as HTMLButtonElement).disabled) {
+          // 每次主动打开前重新捕获，取消菜单后不能复用上一次选区。
+          thinkingSelectionRef.current = null;
+          thinkingRestorePendingRef.current = false;
           rememberThinkingSelection();
         }
       } else if (target?.closest?.('[contenteditable="true"]')) {
@@ -2288,7 +2278,6 @@ export const Composer = forwardRef<
                     current={props.activeThinkingLevel}
                     presentation={thinkingPresentation}
                     isReadOnly={props.pickersReadOnly}
-                    onOpenChange={handleThinkingMenuOpenChange}
                     onChange={(level) => changeThinkingLevel(level, props.onThinkingLevelChange)}
                     disabled={!modelSwitchAvailability.available}
                     disabledReason={thinkingSwitcherDisabledReason}
@@ -2299,7 +2288,6 @@ export const Composer = forwardRef<
                     current={props.newChatThinkingLevel}
                     presentation={thinkingPresentation}
                     isReadOnly={props.pickersReadOnly}
-                    onOpenChange={handleThinkingMenuOpenChange}
                     onChange={(level) => changeThinkingLevel(level, props.onNewChatThinkingLevelChange)}
                   />
                 )}

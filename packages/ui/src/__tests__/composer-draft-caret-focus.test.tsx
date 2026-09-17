@@ -275,8 +275,31 @@ function harness() {
       });
     },
     async click(element: HTMLElement) {
-      await act(() => {
+      await act(async () => {
         element.dispatchEvent(new window.Event('click', { bubbles: true }));
+      });
+    },
+    async keyDown(element: HTMLElement, key: string) {
+      const event = new window.Event('keydown', { bubbles: true, cancelable: true });
+      Object.defineProperty(event, 'key', { value: key });
+      await act(async () => { element.dispatchEvent(event); });
+    },
+    async openThinking(element: HTMLElement, input: 'pointer' | 'keyboard') {
+      if (input === 'keyboard') {
+        await this.keyDown(element, 'ArrowDown');
+      } else {
+        await this.pointerDown(element);
+        await this.click(element);
+      }
+    },
+    async lightDismiss(trigger: HTMLElement) {
+      const popover = document.getElementById(trigger.getAttribute('aria-controls')!)?.closest('[popover]');
+      assert.ok(popover);
+      // linkedom 没有原生 popover 关闭行为，模拟浏览器的 toggle 通知。
+      await act(async () => {
+        popover.dispatchEvent(Object.assign(new window.Event('toggle'), {
+          oldState: 'open', newState: 'closed',
+        }));
       });
     },
     async flushAnimationFrames() {
@@ -378,86 +401,87 @@ test('a session swap leaves focus on the row that caused it', async () => {
   );
 });
 
-test('changing thinking level keeps the draft caret', async () => {
-  const dom = harness();
-  const props = {
-    ...withDraft('session-a', 'draft in the middle'),
-    draftKey: 'session-a',
-    activeSession: {
-      id: 'session-a',
-      llmConnectionId: 'connection-a',
-      llmConnectionSlug: 'connection-a',
-      model: 'model-a',
-    } as never,
-    activeThinkingLevels: ['low'] as never,
-    activeThinkingLevel: undefined,
-    onThinkingLevelChange: () => undefined,
-  };
-  await dom.render(props);
-  await dom.focus(dom.editable());
-  await dom.setCaret(6);
+for (const input of ['pointer', 'keyboard'] as const) {
+  test(`changing thinking level keeps the draft caret (${input})`, async () => {
+    const dom = harness();
+    const props = {
+      ...withDraft('session-a', 'draft in the middle'),
+      draftKey: 'session-a',
+      activeSession: {
+        id: 'session-a',
+        llmConnectionId: 'connection-a',
+        llmConnectionSlug: 'connection-a',
+        model: 'model-a',
+      } as never,
+      activeThinkingLevels: ['low'] as never,
+      activeThinkingLevel: undefined,
+      onThinkingLevelChange: () => undefined,
+    };
+    await dom.render(props);
+    await dom.focus(dom.editable());
+    await dom.setCaret(6);
 
-  const selector = document.querySelector('.maka-thinking-level-selector');
-  assert.ok(selector, 'the thinking-level selector did not render');
-  await dom.pointerDown(selector as HTMLElement);
-  await dom.click(selector as HTMLElement);
+    const selector = document.querySelector('.maka-thinking-level-selector [role="combobox"]');
+    assert.ok(selector, 'the thinking-level selector did not render');
+    await dom.openThinking(selector as HTMLElement, input);
 
-  const options = [...document.querySelectorAll('[role="menuitemradio"]')];
-  const low = options.find((option) => option.textContent?.includes('Low'));
-  assert.ok(low, 'the thinking-level menu did not render the low option');
-  // A browser can collapse a contenteditable selection when focus moves into
-  // the menu. The production code must restore the range captured before that
-  // interaction rather than accepting the collapsed start position.
-  await dom.setCaret(0);
-  await dom.click(low as HTMLElement);
-  await dom.render({ ...props, activeThinkingLevel: 'low' as never });
-  await dom.flushAnimationFrames();
-  document.querySelector('[role="menu"]')?.remove();
+    const options = [...document.querySelectorAll('[role="option"]')];
+    const low = options.find((option) => option.textContent?.includes('Low'));
+    assert.ok(low, 'the thinking-level menu did not render the low option');
+    // A browser can collapse a contenteditable selection when focus moves into
+    // the menu. The production code must restore the range captured before that
+    // interaction rather than accepting the collapsed start position.
+    await dom.setCaret(0);
+    await dom.click(low as HTMLElement);
+    await dom.render({ ...props, activeThinkingLevel: 'low' as never });
+    await dom.flushAnimationFrames();
 
-  const caret = dom.selected.at(-1);
-  if (!caret) throw new Error('the thinking-level change removed the draft selection');
-  assert.equal(caret.startContainer, dom.editable().firstChild);
-  assert.equal(caret.startOffset, 6);
-});
+    const caret = dom.selected.at(-1);
+    if (!caret) throw new Error('the thinking-level change removed the draft selection');
+    assert.equal(caret.startContainer, dom.editable().firstChild);
+    assert.equal(caret.startOffset, 6);
+  });
 
-test('cancelling a thinking menu recaptures a caret moved before the next choice', async () => {
-  const dom = harness();
-  const props = {
-    ...withDraft('session-a', 'draft in the middle'),
-    draftKey: 'session-a',
-    activeSession: {
-      id: 'session-a',
-      llmConnectionId: 'connection-a',
-      llmConnectionSlug: 'connection-a',
-      model: 'model-a',
-    } as never,
-    activeThinkingLevels: ['low'] as never,
-    activeThinkingLevel: undefined,
-    onThinkingLevelChange: () => undefined,
-  };
-  await dom.render(props);
-  await dom.focus(dom.editable());
-  await dom.setCaret(6);
+  test(`cancelling a thinking menu recaptures a caret moved before the next choice (${input})`, async () => {
+    const dom = harness();
+    const props = {
+      ...withDraft('session-a', 'draft in the middle'),
+      draftKey: 'session-a',
+      activeSession: {
+        id: 'session-a',
+        llmConnectionId: 'connection-a',
+        llmConnectionSlug: 'connection-a',
+        model: 'model-a',
+      } as never,
+      activeThinkingLevels: ['low'] as never,
+      activeThinkingLevel: undefined,
+      onThinkingLevelChange: () => undefined,
+    };
+    await dom.render(props);
+    await dom.focus(dom.editable());
+    await dom.setCaret(6);
 
-  const selector = document.querySelector('.maka-thinking-level-selector');
-  assert.ok(selector, 'the thinking-level selector did not render');
-  await dom.pointerDown(selector as HTMLElement);
-  await dom.click(selector as HTMLElement);
-  await dom.click(dom.outside());
+    const selector = document.querySelector('.maka-thinking-level-selector [role="combobox"]');
+    assert.ok(selector, 'the thinking-level selector did not render');
+    await dom.openThinking(selector as HTMLElement, input);
+    if (input === 'keyboard') await dom.keyDown(selector as HTMLElement, 'Escape');
+    else await dom.lightDismiss(selector as HTMLElement);
+    assert.equal(selector.getAttribute('aria-expanded'), 'false');
 
-  await dom.setCaret(2);
-  await dom.pointerDown(selector as HTMLElement);
-  await dom.click(selector as HTMLElement);
-  const low = [...document.querySelectorAll('[role="menuitemradio"]')].find((option) =>
-    option.textContent?.includes('Low'),
-  );
-  assert.ok(low, 'the thinking-level menu did not render the low option');
-  await dom.click(low as HTMLElement);
-  await dom.render({ ...props, activeThinkingLevel: 'low' as never });
-  await dom.flushAnimationFrames();
+    await dom.setCaret(2);
+    await dom.openThinking(selector as HTMLElement, input);
+    const low = [...document.querySelectorAll('[role="option"]')].find((option) =>
+      option.textContent?.includes('Low'),
+    );
+    assert.ok(low, 'the thinking-level menu did not render the low option');
+    await dom.click(low as HTMLElement);
+    await dom.render({ ...props, activeThinkingLevel: 'low' as never });
+    await dom.flushAnimationFrames();
 
-  const caret = dom.selected.at(-1);
-  if (!caret) throw new Error('the thinking-level change removed the draft selection');
-  assert.equal(caret.startContainer, dom.editable().firstChild);
-  assert.equal(caret.startOffset, 2);
-});
+    const caret = dom.selected.at(-1);
+    if (!caret) throw new Error('the thinking-level change removed the draft selection');
+    assert.equal(caret.startContainer, dom.editable().firstChild);
+    assert.equal(caret.startOffset, 2);
+  });
+
+}
