@@ -1284,6 +1284,32 @@ describe('WorkHub Coordination Action Gate', () => {
     assert.equal(effects.assignments.length, 1);
   });
 
+  test('replays the same action when only its Coordination execution identity changes', async () => {
+    const effects = fakeEffects([session('payments')]);
+    const gate = new WorkHubCoordinationActionGate(effects);
+    const snapshot = await gate.candidates();
+    const input = {
+      actionId: 'delegate-after-host-retry',
+      coordinationRunId: 'coordination-run-before-crash',
+      userText: 'Continue payments',
+      candidateSetId: snapshot.candidateSetId,
+      proposal: {
+        disposition: 'delegate_existing' as const,
+        candidateRef: snapshot.candidates[0]!.candidateRef,
+      },
+    };
+
+    const first = await gate.act(input, CONTEXT, 'coordination-turn-before-crash');
+    const replay = await gate.act(
+      { ...input, coordinationRunId: 'coordination-run-after-crash' },
+      CONTEXT,
+      'coordination-turn-after-crash',
+    );
+
+    assert.deepEqual(replay, first);
+    assert.equal(effects.assignments.length, 1);
+  });
+
   test('rejects a changed candidate when replaying an action after restart', async () => {
     const effects = fakeEffects([session('payments'), session('login')]);
     const gate = new WorkHubCoordinationActionGate(effects);

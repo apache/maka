@@ -328,7 +328,7 @@ export class WorkHubCoordinationActionGate {
       );
     }
     const fingerprint = actionFingerprint(input);
-    const requestFingerprint = digest(input);
+    const requestFingerprint = actionRequestFingerprint(input);
     const replay = this.#actions.get(input.actionId);
     if (replay) {
       if (replay.requestFingerprint !== requestFingerprint) {
@@ -1265,6 +1265,14 @@ function actionFingerprint(input: WorkHubAdmittedAction): `sha256:${string}` {
     ...common,
     disposition: proposal.operation === 'stop' ? 'stop_work' : 'resume_work',
   });
+}
+
+function actionRequestFingerprint(input: WorkHubAdmittedAction): `sha256:${string}` {
+  // Coordination execution identity changes when the Host retries the same
+  // durable action after a process failure. It authorizes where a repair Form
+  // is shown, but is not part of the user's proposal or replay identity.
+  const { coordinationRunId: _coordinationRunId, ...proposal } = input;
+  return digest(proposal);
 }
 
 function replacementActionFingerprint(
