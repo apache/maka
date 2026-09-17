@@ -36,6 +36,7 @@ import {
   asarLookupPath,
   assertPackagedDependencyClosure,
   assertPackagedResources,
+  verifyPackagedNotificationPermission,
 } from './verify-packaged-app.mjs';
 
 test('Windows file rules keep test code and renderer side-files out of the app', async (t) => {
@@ -338,13 +339,19 @@ test('accepts the Intel Mach-O architecture for an x64 package', async () => {
   await rename(resources, join(app, 'Contents', 'Resources'));
   // The archive and update configuration are real; macOS command output and
   // app launches are the system boundaries this portable test substitutes.
-  await verifyPackagedMacApp(app, {
+  let notificationArch = 'x86_64';
+  const required = [];
+  const verificationOptions = {
     expectedArch: 'x64',
     channel: 'nightly',
     environment: { MAKA_DESKTOP_NIGHTLY_VERSION: version },
-    requirePath: async () => {},
+    requirePath: async (path) => {
+      required.push(path);
+    },
     smokeFilesystemWorker: async () => {},
-    smokeRenderer: async () => {},
+    smokeRenderer: async (_executable, options) => {
+      assert.equal(options.verifyNotifications, true);
+    },
     run: async (command, args) => {
       if (command === 'plutil') {
         const values = {
@@ -355,7 +362,10 @@ test('accepts the Intel Mach-O architecture for an x64 package', async () => {
         assert.ok(Object.hasOwn(values, args[1]));
         return { stdout: `${values[args[1]]}\n` };
       }
-      if (command === 'lipo') return { stdout: 'x86_64\n' };
+      if (command === 'lipo')
+        return {
+          stdout: args[1].endsWith('notification-settings.node') ? notificationArch : 'x86_64',
+        };
       if (
         ['codesign', 'spctl', 'xcrun', join(app, 'Contents', 'MacOS', 'Maka')].includes(command)
       ) {
@@ -363,6 +373,103 @@ test('accepts the Intel Mach-O architecture for an x64 package', async () => {
       }
       throw new Error(`Unexpected command: ${command}`);
     },
+  };
+  await verifyPackagedMacApp(app, verificationOptions);
+  const addon = join(
+    app,
+    'Contents',
+    'Resources',
+    'app.asar.unpacked',
+    'dist',
+    'native',
+    'notification-settings.node',
+  );
+  assert.ok(required.includes(addon));
+  notificationArch = 'arm64';
+  await assert.rejects(
+    verifyPackagedMacApp(app, verificationOptions),
+    /Notification addon must contain only x64/,
+  );
+  await assert.rejects(
+    verifyPackagedMacApp(app, {
+      ...verificationOptions,
+      requirePath: async (path) => {
+        if (path === addon) throw new Error('missing notification addon');
+      },
+    }),
+    /missing notification addon/,
+  );
+});
+
+describe('packaged notification permission IPC', () => {
+  const snapshot = (status = 'not_determined', overrides = {}) => ({
+    platform: 'darwin',
+    permissions: {
+      notifications: {
+        id: 'notifications',
+        source: 'platform',
+        status,
+        checkedAt: 123,
+        canRequest: false,
+        canOpenSettings: true,
+        ...overrides,
+      },
+    },
+  });
+
+  test('runs overlapping reads and a fresh read through the renderer bridge', async () => {
+    const { runInNewContext } = await import('node:vm');
+    const pending = Promise.withResolvers();
+    let calls = 0;
+    const verification = verifyPackagedNotificationPermission('renderer', {
+      evaluate: async (url, expression, options) => {
+        assert.equal(url, 'renderer');
+        assert.equal(options.awaitPromise, true);
+        return runInNewContext(expression, {
+          window: {
+            maka: {
+              permissions: {
+                getSnapshot() {
+                  calls++;
+                  return calls <= 8 ? pending.promise : Promise.resolve(snapshot('denied'));
+                },
+              },
+            },
+          },
+        });
+      },
+    });
+    assert.equal(calls, 8);
+    pending.resolve(snapshot('granted'));
+    await verification;
+    assert.equal(calls, 9);
+  });
+
+  test('accepts all supported native authorization outcomes without assuming a fresh identity', async () => {
+    for (const status of ['not_determined', 'denied', 'granted']) {
+      await verifyPackagedNotificationPermission('renderer', {
+        evaluate: async () => Array.from({ length: 9 }, () => snapshot(status)),
+      });
+    }
+  });
+
+  test('rejects native load/query failures, fixture values, and incomplete IPC results', async () => {
+    for (const result of [
+      undefined,
+      [],
+      Array.from({ length: 8 }, () => snapshot()),
+      Array.from({ length: 9 }, () => snapshot('unknown', { reason: 'query timed out' })),
+      Array.from({ length: 9 }, () => snapshot('granted', { source: 'static' })),
+      Array.from({ length: 9 }, () => snapshot('granted', { source: 'electron' })),
+      Array.from({ length: 9 }, () => snapshot('granted', { canRequest: true })),
+    ]) {
+      await assert.rejects(
+        verifyPackagedNotificationPermission('renderer', {
+          evaluate: async () => result,
+        }),
+        /Packaged notification IPC/,
+      );
+    }
   });
 });
 

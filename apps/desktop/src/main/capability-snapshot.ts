@@ -39,6 +39,7 @@ import { type AppSettings } from '@maka/core/settings';
 import type { CuBackendId } from '@maka/computer-use';
 import type { BotStatus } from '@maka/runtime/bots';
 import type { computerUseServiceHealth } from './computer-use-host.js';
+import { notificationPermissionSnapshot } from './notification-permission.js';
 import {
   mapMediaAccessStatus,
   mediaPermissionActions,
@@ -47,22 +48,32 @@ import {
 
 const MAC_TCC_PERMISSIONS: OsPermissionId[] = ['accessibility', 'screen_recording', 'automation'];
 
-export function buildPermissionSnapshot(now = Date.now(), platform: NodeJS.Platform = process.platform): PermissionSnapshot {
+export async function buildPermissionSnapshot(now = Date.now(), platform: NodeJS.Platform = process.platform): Promise<PermissionSnapshot> {
+  const snapshot = buildCapabilityPermissionSnapshot(now, platform);
+  return {
+    ...snapshot,
+    permissions: {
+      ...snapshot.permissions,
+      notifications: await notificationPermissionSnapshot(now, platform, Notification.isSupported()),
+      automation: automationSnapshot(now, platform),
+    },
+  };
+}
+
+export function buildCapabilityPermissionSnapshot(now = Date.now(), platform: NodeJS.Platform = process.platform) {
   return {
     checkedAt: now,
     platform,
     permissions: {
       accessibility: accessibilitySnapshot(now, platform),
       screen_recording: mediaPermissionSnapshot('screen_recording', 'screen', now, platform),
-      notifications: notificationSnapshot(now, platform),
-      automation: automationSnapshot(now, platform),
     },
   };
 }
 
 export function buildCapabilitySnapshotCollection(input: {
   settings: AppSettings;
-  permissions: PermissionSnapshot;
+  permissions: ReturnType<typeof buildCapabilityPermissionSnapshot>;
   botStatuses: Record<BotProvider, BotStatus>;
   computerUse?: {
     backendId: CuBackendId | 'none';
@@ -125,7 +136,7 @@ function computerUseCapability(
     backendId: CuBackendId | 'none';
     health: ReturnType<typeof computerUseServiceHealth>;
   } | undefined,
-  permissions: PermissionSnapshot['permissions'],
+  permissions: ReturnType<typeof buildCapabilityPermissionSnapshot>['permissions'],
   now: number,
 ): CapabilitySnapshot {
   // Any selected executor is an executor. Naming one here made the capability
@@ -279,26 +290,6 @@ function mediaPermissionSnapshot(
     console.warn('[capability] media probe failed:', error instanceof Error ? error.message : error);
     return unknownPermission(id, now, platform === 'darwin');
   }
-}
-
-function notificationSnapshot(now: number, platform: NodeJS.Platform): OsPermissionSnapshot {
-  const supported = Notification.isSupported();
-  return {
-    id: 'notifications',
-    status: supported ? 'unknown' : 'unsupported',
-    source: 'electron',
-    checkedAt: now,
-    reason: supported
-      ? platform === 'darwin'
-        ? 'notifications_status_unreadable_macos'
-        : 'notifications_status_unreadable'
-      : 'notifications_unsupported',
-    canOpenSettings: platform === 'darwin',
-    // Showing a Notification is not an authorization API and does not report
-    // whether macOS delivered or suppressed it. Never present that probe as a
-    // successful permission request.
-    canRequest: false,
-  };
 }
 
 function automationSnapshot(now: number, platform: NodeJS.Platform): OsPermissionSnapshot {

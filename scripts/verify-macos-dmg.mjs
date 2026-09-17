@@ -164,14 +164,24 @@ export async function verifyPackagedMacApp(
   const executable = join(contents, 'MacOS', executableName);
   const filesystemWorker = join(resources, 'workers', 'filesystem-worker.js');
   const appAsar = join(resources, 'app.asar');
+  const notificationAddon = join(
+    resources,
+    'app.asar.unpacked',
+    'dist',
+    'native',
+    'notification-settings.node',
+  );
 
   await requirePath(executable);
+  await requirePath(notificationAddon);
   await assertPackagedResources(resources, { requirePath, forbidPath });
   await assertPackagedUpdateConfiguration(resources, { channel });
   await assertPackagedDependencyClosure(resources);
 
   const executableArchitectures = await run('lipo', ['-archs', executable]);
   assertSingleArchitecture(executableArchitectures.stdout, 'Maka executable', expectedArch);
+  const notificationArchitectures = await run('lipo', ['-archs', notificationAddon]);
+  assertSingleArchitecture(notificationArchitectures.stdout, 'Notification addon', expectedArch);
   await run('codesign', ['--verify', '--deep', '--strict', '--verbose=2', appPath]);
   await run('spctl', ['--assess', '--type', 'execute', '--verbose=4', appPath]);
   await run('xcrun', ['stapler', 'validate', appPath]);
@@ -188,7 +198,7 @@ export async function verifyPackagedMacApp(
     },
   });
   await smokeFilesystemWorker(executable, filesystemWorker, { workingDirectory, run });
-  await smokeRenderer(executable, { workingDirectory });
+  await smokeRenderer(executable, { workingDirectory, verifyNotifications: true });
 }
 
 export async function verifyMacosDmg(

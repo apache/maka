@@ -146,6 +146,44 @@ Recording changes require restarting the development app. Without
 `MAKA_DEV_TCC`, the permission overlay still runs, but its drag target is the
 npm Electron bundle, which macOS will not accept as a durable grant.
 
+## macOS notification authorization
+
+The Permission Center reads `UNUserNotificationCenter` through a Node-API
+module loaded in the Electron main process. The query belongs to the running
+application bundle: plain Electron, Maka Dev, and packaged Maka have distinct
+notification identities. Never query an independent command-line helper and
+report its authorization as Maka's.
+
+`build:main` and the dev launcher compile `native/notification-settings.mm`
+using Xcode Command Line Tools and the pinned `node-api-headers` development
+dependency. Other platforms skip this build. The module uses Node-API 8 and is
+unpacked from ASAR so electron-builder can sign and load it with the app.
+Knip excludes only this generated `.node` import from source resolution;
+the real-package verifier checks its unpacked location, architecture, and IPC loading.
+
+Queries run off the JS thread with a three-second native callback deadline,
+without requesting authorization, sending a notification, or replacing
+Electron's notification delegate. Overlapping notification reads share pending
+native work; settlement clears that work so a later refresh reads the current
+setting. Capability and health snapshots read only accessibility and screen
+recording, and never wait for notification authorization.
+Denied and not-yet-requested remain distinct; provisional authorization permits
+only quiet delivery. Query/load failures remain unknown with a diagnostic.
+Authorization does not guarantee a banner, sound, or delivery during Focus.
+
+After producing the release DMG, run the existing macOS package verifier:
+
+```sh
+npm run verify:macos -- arm64
+```
+
+This verifies the real signed/notarized Maka bundle, launches it with isolated
+profile storage, and reads the production permissions IPC concurrently and again
+after settlement. It accepts granted, denied, or not-determined authorization,
+but rejects unknown/error and fixture results. It does not grant permission or
+change system notification settings; isolated profile storage does not change
+the application's macOS notification identity.
+
 ## Three layers
 
 | Layer | Path | Role |

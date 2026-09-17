@@ -699,9 +699,44 @@ export function isolatedUserEnv(homeDirectory, { temporaryDirectory = homeDirect
   };
 }
 
+export async function verifyPackagedNotificationPermission(
+  rendererUrl,
+  { evaluate = evaluateInRenderer } = {},
+) {
+  const snapshots = await evaluate(
+    rendererUrl,
+    `(async () => {
+    const snapshots = await Promise.all(Array.from({ length: 8 },
+      () => window.maka.permissions.getSnapshot()));
+    snapshots.push(await window.maka.permissions.getSnapshot());
+    return snapshots;
+  })()`,
+    { awaitPromise: true, timeoutMs: 15_000 },
+  );
+  if (!Array.isArray(snapshots) || snapshots.length !== 9) {
+    throw new Error('Packaged notification IPC returned no snapshots.');
+  }
+  for (const snapshot of snapshots) {
+    const notification = snapshot?.permissions?.notifications;
+    if (
+      snapshot?.platform !== 'darwin' ||
+      notification?.id !== 'notifications' ||
+      notification.source !== 'platform' ||
+      !['not_determined', 'denied', 'granted'].includes(notification.status) ||
+      notification.canRequest !== false ||
+      notification.canOpenSettings !== true ||
+      !Number.isFinite(notification.checkedAt)
+    ) {
+      throw new Error(
+        `Packaged notification IPC did not return native authorization: ${JSON.stringify(snapshot)}`,
+      );
+    }
+  }
+}
+
 export async function smokePackagedRenderer(
   executable,
-  { workingDirectory, verifyMaximizeRestore = false } = {},
+  { workingDirectory, verifyMaximizeRestore = false, verifyNotifications = false } = {},
 ) {
   const home = join(workingDirectory, 'home');
   const userData = join(workingDirectory, 'user-data');
@@ -733,6 +768,9 @@ export async function smokePackagedRenderer(
     const port = await waitForDevToolsPort(child);
     const target = await findRendererTarget(port, child);
     await waitForUsableRenderer(target.webSocketDebuggerUrl, child);
+    if (verifyNotifications) {
+      await verifyPackagedNotificationPermission(target.webSocketDebuggerUrl);
+    }
     if (verifyMaximizeRestore) {
       await exercisePackagedRendererMaximizeRestore(target, child);
     }
