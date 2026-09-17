@@ -345,7 +345,7 @@ export class ClientPluginRuntime {
 
   async reconcile(snapshot: MakaClientPluginSnapshot): Promise<void> {
     if (this.#closed) throw new Error('Client Plugin Runtime is closed');
-    if (snapshot.revision === this.#revision || snapshot.revision === this.#failure?.revision) return;
+    if (snapshot.revision === this.#revision) return;
     const staged: PluginInstance[] = [];
     const slots = new MakaClientSlotCore();
     try {

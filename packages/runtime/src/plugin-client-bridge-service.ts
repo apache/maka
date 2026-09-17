@@ -282,23 +282,21 @@ export class PluginClientBridgeService extends Service {
             settle = () => resolve({ done: true, value: undefined });
           });
           pending.add(settle);
-          let result: IteratorResult<unknown>;
           try {
-            result = await Promise.race([iterator.next(), stopped]);
+            const result = await Promise.race([iterator.next(), stopped]);
+            if (closed || result.done) {
+              await close();
+              return Object.freeze({ done: true, value: undefined });
+            }
+            const value = await Promise.race([
+              validateSchema(entry.definition.item, result.value, `Client Stream ${name} item`),
+              stopped.then(() => undefined),
+            ]);
+            if (closed) return Object.freeze({ done: true, value: undefined });
+            return Object.freeze({ done: false, value });
           } finally {
             pending.delete(settle);
           }
-          if (closed || result.done) {
-            await close();
-            return Object.freeze({ done: true, value: undefined });
-          }
-          const value = await validateSchema(
-            entry.definition.item,
-            result.value,
-            `Client Stream ${name} item`,
-          );
-          if (closed) return Object.freeze({ done: true, value: undefined });
-          return Object.freeze({ done: false, value });
         },
         close,
       });

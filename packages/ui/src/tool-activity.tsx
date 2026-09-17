@@ -505,6 +505,11 @@ function standardToolCall(
     ...diffStats(itemDiffs(item)),
     resultDetail: (
       <ToolDetailReveal>
+        <ToolCallDetail
+          item={item}
+          activityObserved={activityObserved}
+          onSwitchToBypassAndRetry={onSwitchToBypassAndRetry}
+        />
         <MakaClientSlotOutlet
           name="conversation.tool.detail"
           owner={{
@@ -516,13 +521,6 @@ function standardToolCall(
           }}
           options={{
             entryKey: item.toolName,
-            fallback: (
-              <ToolCallDetail
-                item={item}
-                activityObserved={activityObserved}
-                onSwitchToBypassAndRetry={onSwitchToBypassAndRetry}
-              />
-            ),
           }}
         />
       </ToolDetailReveal>

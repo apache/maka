@@ -303,3 +303,54 @@ test('Client Remote is generation-fenced and streams are connection-owned', asyn
     await pluginRoot.fiber.dispose();
   }
 });
+
+test('concurrent Client stream opens reserve the per-connection limit before awaiting', async () => {
+  const releases: Array<() => void> = [];
+  const platform = {
+    openClientRemoteStream: () =>
+      new Promise((resolve) => {
+        releases.push(() =>
+          resolve({
+            identity: {
+              entryId: 'entry',
+              scopeId: 'profile',
+              extensionId: 'fixture',
+              generation: 1,
+            },
+            next: async () => ({ done: true, value: undefined }),
+            close: async () => {},
+          }),
+        );
+      }),
+  } as unknown as HostPluginPlatform;
+  const coordinator = new HostPluginPlatformCoordinator(platform);
+  const context = {
+    connectionId: 'renderer-concurrent',
+    hostEpoch: 'host',
+    principal: 'owner',
+    acquireResidency: () => ({ release() {} }),
+  };
+  const input = {
+    authorityEpoch: 1,
+    revision: `sha256-${'1'.repeat(64)}`,
+    entryId: 'entry',
+    extensionId: 'fixture',
+    generation: 1,
+    contentDigest: `sha256-${'2'.repeat(64)}`,
+    clientDigest: `sha256-${'3'.repeat(64)}`,
+    method: 'fixture.stream',
+    input: null,
+  };
+  const opened = Array.from({ length: 40 }, () =>
+    coordinator.handlers['plugin.client.remote.stream.open'](input, context),
+  );
+  assert.equal(releases.length, 32);
+  for (const release of releases) release();
+  const results = await Promise.all(opened);
+  assert.equal(results.filter((result) => result.ok).length, 32);
+  assert.equal(
+    results.filter((result) => !result.ok && result.error.code === 'operation_conflict').length,
+    8,
+  );
+  coordinator.releaseConnection(context.connectionId);
+});

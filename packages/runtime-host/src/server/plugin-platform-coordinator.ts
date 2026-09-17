@@ -66,6 +66,7 @@ export class HostPluginPlatformCoordinator {
       reading: boolean;
     }
   >();
+  readonly #pendingStreamOpens = new Map<string, number>();
 
   readonly handlers: PluginPlatformOperationHandlerMap = {
     'plugin.client.query': (input) => this.#client(input),
@@ -111,20 +112,26 @@ export class HostPluginPlatformCoordinator {
     input: PluginClientRemoteCallInput,
     context: ConnectionContext,
   ): Promise<OperationOutcome<'plugin.client.remote.stream.open'>> {
+    const connectionId = context.connectionId;
+    const active = [...this.#streams.values()].filter(
+      (stream) => stream.connectionId === connectionId,
+    ).length;
+    const pending = this.#pendingStreamOpens.get(connectionId) ?? 0;
+    if (active + pending >= 32) {
+      return failed('operation_conflict', 'Plugin Client Remote stream limit reached');
+    }
+    this.#pendingStreamOpens.set(connectionId, pending + 1);
     try {
-      if (
-        [...this.#streams.values()].filter(
-          ({ connectionId }) => connectionId === context.connectionId,
-        ).length >= 32
-      ) {
-        return failed('operation_conflict', 'Plugin Client Remote stream limit reached');
-      }
       const binding = await this.platform.openClientRemoteStream(input, context.inputClosedSignal);
       const streamId = randomUUID();
-      this.#streams.set(streamId, { connectionId: context.connectionId, binding, reading: false });
+      this.#streams.set(streamId, { connectionId, binding, reading: false });
       return { ok: true, result: { streamId } };
     } catch (error) {
       return failure(error);
+    } finally {
+      const remaining = (this.#pendingStreamOpens.get(connectionId) ?? 1) - 1;
+      if (remaining === 0) this.#pendingStreamOpens.delete(connectionId);
+      else this.#pendingStreamOpens.set(connectionId, remaining);
     }
   }
 

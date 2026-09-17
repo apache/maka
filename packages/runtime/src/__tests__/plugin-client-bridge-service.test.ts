@@ -152,6 +152,37 @@ test('closing a non-cooperative producer releases an outstanding pull', {
   await root.fiber.dispose();
 });
 
+test('retirement interrupts non-cooperative stream item validation', {
+  timeout: 1000,
+}, async () => {
+  const root = new Context();
+  const service = new PluginClientBridgeService(root);
+  let validating!: () => void;
+  const validationStarted = new Promise<void>((resolve) => {
+    validating = resolve;
+  });
+  const dispose = plugin(root, 'profile', 'validated-stream', 1).clientBridge.stream({
+    name: 'fixture.validated-stream',
+    item: {
+      '~standard': {
+        validate: () => {
+          validating();
+          return new Promise(() => {});
+        },
+      },
+    },
+    open: async function* () {
+      yield 'item';
+    },
+  });
+  const stream = await service.open({ extensionId: 'fixture' }, 'fixture.validated-stream', null);
+  const pending = stream.next();
+  await validationStarted;
+  await dispose();
+  assert.equal((await pending).done, true);
+  await root.fiber.dispose();
+});
+
 test('retirement cancels uncooperative RPC and stream opens, and prepared calls never switch registrations', {
   timeout: 2000,
 }, async () => {

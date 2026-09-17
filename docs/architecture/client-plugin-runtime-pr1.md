@@ -25,6 +25,10 @@ typed, recursively extensible Slot graph and a compatibility-governed public UI
 SDK. The Host Remote and product-event follow-up contract is documented in
 `client-plugin-remote-events-pr3.md`.
 
+Installing a package with a Host entry is equivalent to installing arbitrary native code: its
+module runs in the main Node.js process with the process's filesystem, child-process, and network
+privileges. Only install Host plugins from sources trusted to execute with those privileges.
+
 ## Unified package
 
 `maka.extension.json` may declare a Host entry, a Client entry, or both:
@@ -128,7 +132,7 @@ Maka currently exposes these deliberately small, product-native seams:
 | `conversation.header.actions` | list / session | Actions in the active conversation context header. |
 | `conversation.turn.footer` | list / session | Actions below an assistant Turn. |
 | `conversation.composer.toolbar` | list / session-maybe | Controls in the Composer toolbar. |
-| `conversation.tool.detail` | keyed / session | Tool detail rendering keyed by Tool name. |
+| `conversation.tool.detail` | keyed / session | Additional Tool detail keyed by Tool name; host-owned permission and sandbox status always remains visible. |
 
 A contribution can declare child Slots in the same registration. Those children
 exist only while the parent registration is live, and the parent component alone

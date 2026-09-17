@@ -75,7 +75,7 @@ import { DirectoryReferenceChip } from './directory-reference-chip.js';
 import { redactSecrets } from './redact.js';
 import { useAttachmentImageSource } from './attachment-image.js';
 import { resolvePreviewKind } from './artifact-preview-registry.js';
-import { MakaClientSlotOutlet } from './client-plugin-slots.js';
+import { MakaClientSlotOutlet, useMakaClientSlotOccupied } from './client-plugin-slots.js';
 
 export function LocalizedChatMessage({
   accessibleLabel,
@@ -477,6 +477,7 @@ export const TurnView = memo(function TurnView(props: {
 }) {
   const locale = useUiLocale();
   const copy = getConversationCopy(locale).messages;
+  const hasTurnFooterContribution = useMakaClientSlotOccupied('conversation.turn.footer');
   const { turn } = props;
   // Derive disclosure entries and reply identity together, only when this
   // turn's timeline changes. Rendering and copy share the original reply item.
@@ -803,7 +804,8 @@ export const TurnView = memo(function TurnView(props: {
                 ))}
               </Marker>
             )}
-            {ownsTurnChrome && (props.liveStreaming || props.footerActions?.length) ? (
+            {ownsTurnChrome &&
+            (props.liveStreaming || props.footerActions?.length || hasTurnFooterContribution) ? (
               <TurnFooter
                 turnId={turn.turnId}
                 actions={props.liveStreaming ? [] : props.footerActions ?? []}

@@ -159,6 +159,36 @@ test('Client Runtime stage/swap keeps the previous UI when a candidate fails', a
   assert.deepEqual(effects, ['one:setup', 'one:dispose']);
 });
 
+test('Client Runtime retries the same snapshot revision after a transient apply failure', async () => {
+  const root = new MakaClientRoot();
+  let attempts = 0;
+  let runtime!: ClientPluginRuntime;
+  runtime = new ClientPluginRuntime({
+    root,
+    staticModules: {},
+    loadBundle: async (plugin) =>
+      runtime.registerBundle({
+        id: plugin.extensionId,
+        factory: () => ({
+          apply(ctx: MakaClientPluginContext) {
+            attempts++;
+            if (attempts === 1) throw new Error('transient apply failure');
+            ctx.slots.register({ name: 'root' }, ({ children }) => (
+              <section data-recovered="true">{children}</section>
+            ));
+          },
+        }),
+      }),
+  });
+  const candidate = snapshot(7, descriptor('retry', 1));
+  await runtime.reconcile(candidate);
+  assert.match(runtime.inspect().failure?.diagnostic ?? '', /transient apply failure/u);
+  await runtime.reconcile(candidate);
+  assert.equal(attempts, 2);
+  assert.match(render(root), /data-recovered="true"/u);
+  await runtime.close();
+});
+
 test('Client Runtime re-materializes consumers when a dependency generation changes', async () => {
   const root = new MakaClientRoot();
   let runtime!: ClientPluginRuntime;
