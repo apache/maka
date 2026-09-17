@@ -70,6 +70,10 @@ import {
   type ToolUsageQuery,
 } from './telemetry-repo.js';
 import { createSqlitePricingStore, createSqliteTelemetryRepo } from './sqlite-usage-store.js';
+import {
+  createOtlpTelemetryExporter,
+  type OtlpTelemetryExporter,
+} from './otlp-telemetry-exporter.js';
 
 const readerBrand: unique symbol = Symbol('InteractiveUsageStoresReader');
 const writerBrand: unique symbol = Symbol('InteractiveUsageStoresWriter');
@@ -322,6 +326,7 @@ export async function openInteractiveUsageStoresForWrite(
       repos.modelCalls,
       repos.pricing,
       repos.screen,
+      createOtlpTelemetryExporter(),
     );
     writers.add(stores);
     writerByLease.set(lease, stores);
@@ -369,6 +374,7 @@ function createWriterFacade(
   modelCalls: ModelCallLedger,
   pricing: PricingStore,
   screen: ReturnType<typeof createUsageScreenReader>,
+  exporter: OtlpTelemetryExporter | undefined,
 ): InteractiveUsageStoresWriter {
   const run = <T>(operation: () => T | Promise<T>): Promise<T> =>
     runWithStorageRootLease(lease, 'interactive', 'write', async () => operation());
@@ -453,6 +459,7 @@ function createWriterFacade(
       run(() => telemetry.flush()),
       run(() => modelCalls.flush()),
       run(() => pricing.flush()),
+      exporter?.flush() ?? Promise.resolve(),
     ]);
     throwDeduplicatedFailures('Interactive usage store flush failed', [
       ...failures,
@@ -472,6 +479,7 @@ function createWriterFacade(
           telemetry.close(),
           modelCalls.close(),
           pricing.close(),
+          exporter?.close() ?? Promise.resolve(),
         ]);
         throwDeduplicatedFailures('Interactive usage stores close failed', [
           ...failures,
@@ -500,9 +508,15 @@ function createWriterFacade(
       latestLlmRuntimeProbe: (connectionSlug, modelId) =>
         read(() => telemetry.latestLlmRuntimeProbe(connectionSlug, modelId)),
       recordLlmCall: (record) =>
-        admitSessionUsageMutation(record.sessionId, () => telemetry.insertLlmCall(record)),
+        admitSessionUsageMutation(record.sessionId, async () => {
+          await telemetry.insertLlmCall(record);
+          void exporter?.exportLlmCall(record);
+        }),
       recordToolInvocation: (record) =>
-        admitSessionUsageMutation(record.sessionId, () => telemetry.insertToolInvocation(record)),
+        admitSessionUsageMutation(record.sessionId, async () => {
+          await telemetry.insertToolInvocation(record);
+          void exporter?.exportToolInvocation(record);
+        }),
     },
     modelCalls: {
       modelCallSummary: (query, now) => read(() => modelCalls.summary(query, now)),
