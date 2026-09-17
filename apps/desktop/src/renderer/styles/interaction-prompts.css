@@ -141,13 +141,6 @@
   border-radius: var(--radius-control);
 }
 
-/* The shared model wheel paints in a layer. Reserve its three-row footprint in
-   forms so the wheel does not cover the request or the form actions. */
-.maka-form-interaction-prompt .maka-model-wheel-anchor[data-open='true'] {
-  width: min(264px, 55vw);
-  height: var(--maka-model-wheel-height);
-}
-
 .maka-form-interaction-field-heading {
   display: flex;
   align-items: baseline;

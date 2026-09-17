@@ -21,6 +21,7 @@ import { useId, useRef, useState } from 'react';
 import type { FormRequestEvent } from '@maka/core/events';
 import type { InteractionFormField, InteractionFormResponse } from '@maka/core/interaction';
 import { Button, CheckboxInput, RadioList, RadioListItem, Text, TextInput } from '@astryxdesign/core';
+import { Selector, type SelectorOptionType, type SelectorSection } from '@astryxdesign/core/Selector';
 import { getConversationCopy } from './conversation-copy.js';
 import {
   buildInteractionFormResponse,
@@ -30,7 +31,7 @@ import {
 } from './form-interaction-prompt-state.js';
 import { useUiLocale } from './locale-context.js';
 import { ChoicePanel } from './choice-panel.js';
-import { ModelWheelPicker } from './model-wheel-picker.js';
+import { renderModelPickerOption, renderModelPickerValue } from './model-picker-internals.js';
 import { useMountedRef } from './use-mounted-ref.js';
 
 export function FormInteractionPrompt(props: {
@@ -142,18 +143,19 @@ function ActiveFormInteractionPrompt(props: {
                 {props.request.fields.length === 1 && field.kind === 'single_select' && field.required ? (
                   <>
                     {field.presentation === 'model_picker' ? (
-                      <ModelWheelPicker
-                        options={field.options.map((option) => ({
-                          value: option.value,
-                          label: option.label,
-                          ...(option.description ? { heading: option.description } : {}),
-                        }))}
-                        value={typeof draft.value === 'string' ? draft.value : undefined}
-                        label={field.options.find((option) => option.value === draft.value)?.label ?? field.label}
-                        ariaLabel={field.label}
+                      <Selector
+                        label={field.label}
+                        isLabelHidden
+                        options={modelPickerOptions(field.options)}
+                        value={typeof draft.value === 'string' ? draft.value : ''}
+                        hasSearch
                         size="md"
-                        disabled={responsePending || props.stopPending}
-                        onValueChange={(value) => updateDraft(index, { ...draft, value })}
+                        placement="above"
+                        isDisabled={responsePending || props.stopPending}
+                        className="maka-form-model-picker"
+                        onChange={(value) => updateDraft(index, { ...draft, value })}
+                        renderOption={renderModelPickerOption}
+                        renderValue={renderModelPickerValue}
                       />
                     ) : (
                       <>
@@ -210,6 +212,27 @@ function ActiveFormInteractionPrompt(props: {
       </div>
     </section>
   );
+}
+
+function modelPickerOptions(
+  options: Extract<InteractionFormField, { kind: 'single_select' }>['options'],
+): SelectorOptionType[] {
+  const ungrouped = options.filter((option) => !option.description);
+  const groups = new Map<string, typeof options>();
+  for (const option of options) {
+    if (!option.description) continue;
+    groups.set(option.description, [...(groups.get(option.description) ?? []), option]);
+  }
+  return [
+    ...ungrouped.map(({ value, label }) => ({ value, label })),
+    ...[...groups].map(
+      ([title, choices]): SelectorSection => ({
+        type: 'section',
+        title,
+        options: choices.map(({ value, label }) => ({ value, label })),
+      }),
+    ),
+  ];
 }
 
 function formFieldConstraint(
