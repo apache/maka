@@ -33,14 +33,9 @@
 
 import { type ReactNode, useEffect, useMemo, useState } from 'react';
 import { Button as UiButton } from '@astryxdesign/core';
-import {
-  DropdownMenu,
-  DropdownMenuRadioGroup,
-  DropdownMenuRadioItem,
-} from '@astryxdesign/core/DropdownMenu';
 import { Selector } from '@astryxdesign/core/Selector';
 import { ModelWheelPicker, type ModelWheelOption } from './model-wheel-picker.js';
-import { ICON_SIZE, Check, Settings } from './icons.js';
+import { ICON_SIZE, Settings } from './icons.js';
 import {
   type ChatModelChoice,
   exactModelChoiceValue,
@@ -95,19 +90,20 @@ function wheelOptions(
   );
 }
 
-const currentCheck = <Check size={ICON_SIZE.control} aria-hidden="true" />;
-
 /**
- * Standalone thinking-level picker. Hidden when the active model has no
- * variants — the control does not appear as a disabled husk or change the
- * model menu's shape.
+ * Standalone thinking-level picker — the same ghost Selector as the model
+ * switcher beside it, minus the search (a handful of levels never needs it).
+ * Hidden when the active model has no variants — the control does not appear
+ * as a disabled husk or change the model picker's shape.
  */
 export function ThinkingLevelSelector(props: {
   levels: readonly ThinkingLevel[];
   current?: ThinkingLevel;
+  /** Same surface as the model picker; compact windows that cannot fit an anchored popup use 'bottom-sheet'. */
+  presentation?: 'popover' | 'bottom-sheet';
   onChange?(level: ThinkingLevel | undefined): void | Promise<void>;
   disabled?: boolean;
-  /** Why the control is locked (mid-turn etc.); replaces the action tooltip so the reason is discoverable, matching the model switcher beside it. */
+  /** Why the control is locked (mid-turn etc.); Selector exposes it as the disabled tooltip. */
   disabledReason?: string;
 }) {
   const copy = getConversationCopy(useUiLocale()).model;
@@ -126,40 +122,24 @@ export function ThinkingLevelSelector(props: {
   const currentLabel = options.find((option) => option.value === currentValue)?.label ?? copy.defaultLevel;
 
   return (
-    <DropdownMenu
+    <Selector
+      label={`${copy.thinkingLevel}: ${currentLabel}`}
+      isLabelHidden
+      options={options}
+      value={currentValue}
+      variant="ghost"
+      size="sm"
       placement="above"
-      hasChevron={false}
-      className="maka-composer-quiet-menu maka-thinking-level-menu"
-      button={{
-        label: currentLabel,
-        variant: 'ghost',
-        size: 'sm',
-        isDisabled: props.disabled,
-        tooltip: props.disabledReason ?? copy.changeThinkingLevel,
-        className: 'maka-thinking-level-selector',
-        'aria-label': `${copy.thinkingLevel}: ${currentLabel}`,
+      presentation={props.presentation}
+      isDisabled={props.disabled}
+      disabledMessage={props.disabledReason}
+      className="maka-thinking-level-selector"
+      onChange={(value) => {
+        void props.onChange?.(
+          value === DEFAULT_THINKING_LEVEL ? undefined : (value as ThinkingLevel),
+        );
       }}
-    >
-      <DropdownMenuRadioGroup
-        value={currentValue}
-        label={`${copy.thinkingLevel}: ${currentLabel}`}
-        onChange={(value) => {
-          void props.onChange?.(
-            value === DEFAULT_THINKING_LEVEL ? undefined : (value as ThinkingLevel),
-          );
-        }}
-      >
-        {options.map((option) => (
-          <DropdownMenuRadioItem
-            key={option.value}
-            value={option.value}
-            label={option.label}
-            endContent={option.value === currentValue ? currentCheck : undefined}
-            isDisabled={props.disabled}
-          />
-        ))}
-      </DropdownMenuRadioGroup>
-    </DropdownMenu>
+    />
   );
 }
 

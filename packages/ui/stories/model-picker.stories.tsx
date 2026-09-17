@@ -358,10 +358,10 @@ export const ThinkingLevelSeparate: Story = {
     );
   },
   play: async ({ canvasElement }) => {
-    const thinking = within(canvasElement).getByRole('button', { name: /思考级别/ });
+    const thinking = within(canvasElement).getByRole('combobox', { name: /思考级别/ });
     await userEvent.click(thinking);
-    const medium = await within(document.body).findByRole('menuitemradio', { name: '中' });
-    await expect(medium).toHaveAttribute('aria-checked', 'true');
+    const medium = await within(document.body).findByRole('option', { name: '中' });
+    await expect(medium).toHaveAttribute('aria-selected', 'true');
   },
 };
 
@@ -511,9 +511,10 @@ export const StaleCurrentModel: Story = {
 };
 
 // The collapsed floating WorkHub window is ~96px tall and cannot fit a popup,
-// so its model picker keeps the inline wheel it was built for. The frame
-// carries the production `workHubLive` collapsed/floating data attributes so
-// the same CSS applies as in the real window.
+// so its model picker presents as a bottom sheet pinned inside the window —
+// the same searchable grouped list as everywhere else. The frame carries the
+// production `workHubLive` collapsed/floating data attributes so the same CSS
+// applies as in the real window.
 const COLLAPSED_ACTIVE = MANY_CHOICES[4]!;
 
 function CollapsedWindowFrame(props: { height?: number; caption: string; children: ReactNode }) {
@@ -550,11 +551,12 @@ const collapsedSession = {
   permissionMode: 'ask',
 } satisfies SessionSummary;
 
-// Real path: collapsed floating WorkHub — the model picker keeps its inline
-// wheel, the surface the wheel was built for.
+// Real path: collapsed floating WorkHub. The model picker keeps its inline
+// wheel — the surface the wheel was built for — while the thinking picker
+// beside it presents as a bottom sheet, since it has no wheel variant.
 export const CollapsedWindowWheel: Story = {
   render: () => (
-    <CollapsedWindowFrame height={140} caption="收起态：模型仍是滚轮">
+    <CollapsedWindowFrame height={140} caption="收起态：模型仍是滚轮，思考档位用 bottom-sheet">
       <ChatModelSwitcher
         presentation="wheel"
         activeSession={collapsedSession}
@@ -563,6 +565,12 @@ export const CollapsedWindowWheel: Story = {
         choices={MANY_CHOICES}
         openNonce={1}
         renderProviderMark={providerMark}
+        onChange={() => undefined}
+      />
+      <ThinkingLevelSelector
+        levels={THINKING_LEVELS}
+        current="low"
+        presentation="bottom-sheet"
         onChange={() => undefined}
       />
     </CollapsedWindowFrame>

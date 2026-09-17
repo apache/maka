@@ -236,19 +236,19 @@ export const ThinkingLevelPicker: Story = {
   play: async ({ canvasElement }) => {
     Object.values(writes).forEach((spy) => spy.mockClear());
     const canvas = within(canvasElement); const page = within(canvasElement.ownerDocument.body);
-    await waitFor(() => expect(canvas.getByRole('button', { name: '思考级别: 默认' })).toBeEnabled());
+    await waitFor(() => expect(canvas.getByRole('combobox', { name: '思考级别: 默认' })).toBeEnabled());
     const usage = canvas.getByRole('button', { name: '打开用量追踪' });
     await waitFor(() => expect(usage.textContent).toContain('1%'));
-    await userEvent.click(canvas.getByRole('button', { name: '思考级别: 默认' }));
-    await userEvent.click(page.getByRole('menuitemradio', { name: /^高$/ }));
-    await waitFor(() => expect(canvas.getByRole('button', { name: '思考级别: 高' })).toBeEnabled());
+    await userEvent.click(canvas.getByRole('combobox', { name: '思考级别: 默认' }));
+    await userEvent.click(page.getByRole('option', { name: /^高$/ }));
+    await waitFor(() => expect(canvas.getByRole('combobox', { name: '思考级别: 高' })).toBeEnabled());
     await expect(writes.model).toHaveBeenCalledWith(sessionId, expect.objectContaining({ thinkingLevel: 'high' }));
-    await userEvent.click(canvas.getByRole('button', { name: '思考级别: 高' }));
-    await userEvent.click(page.getByRole('menuitemradio', { name: /^默认$/ }));
-    await waitFor(() => expect(canvas.getByRole('button', { name: '思考级别: 默认' })).toBeEnabled());
+    await userEvent.click(canvas.getByRole('combobox', { name: '思考级别: 高' }));
+    await userEvent.click(page.getByRole('option', { name: /^默认$/ }));
+    await waitFor(() => expect(canvas.getByRole('combobox', { name: '思考级别: 默认' })).toBeEnabled());
     await expect(writes.model).toHaveBeenLastCalledWith(sessionId, expect.objectContaining({ expectedRevision: 2, thinkingLevel: null }));
-    await userEvent.click(canvas.getByRole('button', { name: '思考级别: 默认' }));
-    await expect(page.getByRole('menuitemradio', { name: /^默认$/ })).toHaveAttribute('aria-checked', 'true');
+    await userEvent.click(canvas.getByRole('combobox', { name: '思考级别: 默认' }));
+    await expect(page.getByRole('option', { name: /^默认$/ })).toHaveAttribute('aria-selected', 'true');
   },
 };
 // Real path: a floating WorkHub progress card → edit its composer → open the model picker.

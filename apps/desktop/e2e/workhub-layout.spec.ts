@@ -233,17 +233,17 @@ test('WorkHub uses its coordination model and shared attachment composer', async
   await expect(editor).toHaveText('Keep this draft while folding the conversation.');
   await workhub.getByRole('button', { name: /打开用量追踪|Open usage trace/ }).click();
   await expect(page.getByRole('button', { name: /展开任务工作栏|Expand task workbar/ })).toBeVisible();
-  const thinking = workhub.getByRole('button', { name: /思考级别|Thinking level/ });
+  const thinking = workhub.getByRole('combobox', { name: /思考级别|Thinking level/ });
   await expect(thinking).toBeEnabled();
   await thinking.click();
-  const thinkingMenu = workhub.getByRole('menu');
-  await expect(thinkingMenu).toBeVisible();
+  const thinkingSheet = workhub.getByRole('dialog');
+  await expect(thinkingSheet).toBeVisible();
   await workhub.screenshot({ animations: 'disabled', path: testInfo.outputPath('floating-thinking-levels.png') });
-  await expect.poll(() => thinkingMenu.evaluate((element) => {
+  await expect.poll(() => thinkingSheet.evaluate((element) => {
     const rect = element.getBoundingClientRect();
     return rect.top >= 0 && rect.bottom <= innerHeight;
   })).toBe(true);
-  await workhub.getByRole('menuitemradio', { name: /^(高|High)$/ }).click();
+  await thinkingSheet.getByRole('option', { name: /^(高|High)$/ }).click();
   await expect(thinking).toContainText(/高|High/);
   await expect.poll(() => workhub.evaluate(async (id) => (await window.maka.workHub.getSession(id)).thinkingLevel, sessionId)).toBe('high');
   await workhub.screenshot({ animations: 'disabled', path: testInfo.outputPath('floating-composer-controls.png') });

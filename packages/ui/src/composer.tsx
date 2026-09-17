@@ -352,7 +352,7 @@ export const Composer = forwardRef<
     activeModelLabel?: string;
     activeProviderType?: ProviderType;
     modelChoices?: ChatModelChoice[];
-    /** Model-picker surface; 'wheel' is the collapsed WorkHub's inline picker. */
+    /** Model-picker surface; 'wheel' is the collapsed WorkHub's inline picker, and any non-popover surface drops the thinking picker to a bottom sheet. */
     pickerPresentation?: 'popover' | 'bottom-sheet' | 'wheel';
     /** Maximum input height in the upstream editor's row units. */
     maxInputRows?: number;
@@ -545,6 +545,12 @@ export const Composer = forwardRef<
     });
   const modelSwitchAvailabilityRef = useRef(modelSwitchAvailability);
   modelSwitchAvailabilityRef.current = modelSwitchAvailability;
+  // Any non-popover model surface means a window too small for an anchored
+  // popup; the thinking picker has no wheel, so it drops to a bottom sheet.
+  const thinkingPresentation =
+    props.pickerPresentation && props.pickerPresentation !== 'popover'
+      ? 'bottom-sheet'
+      : 'popover';
   useLayoutEffect(() => setModelPickerNonce(0), [props.activeSession?.id]);
   const [pendingImportAction, setPendingImportAction] = useState<ComposerImportActionId | null>(null);
   const composerMountedRef = useMountedRef();
@@ -2168,6 +2174,7 @@ export const Composer = forwardRef<
                   <ThinkingLevelSelector
                     levels={props.activeThinkingLevels ?? []}
                     current={props.activeThinkingLevel}
+                    presentation={thinkingPresentation}
                     onChange={props.onThinkingLevelChange}
                     disabled={!modelSwitchAvailability.available}
                     disabledReason={thinkingSwitcherDisabledReason}
