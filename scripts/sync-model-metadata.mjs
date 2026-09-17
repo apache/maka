@@ -131,7 +131,7 @@ export async function main(argv = process.argv) {
   );
   for (const [provider, overrides] of Object.entries(generatedModelProviderOverrides)) {
     lines.push(
-      `  ${JSON.stringify(provider)}: ${JSON.stringify(normalizeRuntimeOverrides(overrides))},`,
+      `  ${JSON.stringify(provider)}: ${JSON.stringify(normalizeRuntimeOverrides(provider, overrides))},`,
     );
   }
   lines.push('};', '');
@@ -532,7 +532,7 @@ async function assertGeneratedOutputs(metadataPath, pricingPath, source) {
     Object.fromEntries(
       Object.entries(source.projection.providerOverrides).map(([provider, overrides]) => [
         provider,
-        normalizeRuntimeOverrides(overrides),
+        normalizeRuntimeOverrides(provider, overrides),
       ]),
     ),
     `${metadataPath} is stale; run npm run sync:model-metadata`,
@@ -577,13 +577,23 @@ function toModelProviderOverride(providerId, modelId, override) {
   return { npm: override.npm, ...(override.api ? { api: override.api } : {}) };
 }
 
-function normalizeRuntimeOverrides(overrides) {
+// An npm package name says which SDK speaks to the endpoint, not which
+// reasoning carrier the provider actually returns. Only providers whose
+// registry entry declares a reviewed `openai-responses` protocolAdapter may
+// mint the encrypted-content contract; the catalog contract test pins this
+// set against PROVIDER_REGISTRY so a new declaration forces an update here.
+const ENCRYPTED_RESPONSES_PROVIDERS = new Set(['github-copilot', 'opencode', 'opencode-go']);
+
+function normalizeRuntimeOverrides(provider, overrides) {
   const adapters = {
     '@ai-sdk/anthropic': { kind: 'anthropic', auth: 'api-key', normalizeBaseUrl: true },
     '@ai-sdk/google': { kind: 'google', normalizeBaseUrl: false },
     '@ai-sdk/openai': {
       kind: 'openai',
-      responses: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
+      responses: {
+        adapter: 'openai',
+        reasoningReplay: ENCRYPTED_RESPONSES_PROVIDERS.has(provider) ? 'encrypted-content' : 'none',
+      },
     },
     '@ai-sdk/openai-compatible': { kind: 'openai-compatible', name: 'provider' },
   };
