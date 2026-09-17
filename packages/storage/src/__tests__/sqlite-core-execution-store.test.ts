@@ -333,6 +333,10 @@ describe('SQLite core execution stores', () => {
 
       const database = new DatabaseSync(join(root, 'runtime.sqlite'));
       database.exec(`
+        -- Recreate the old schema, before Usage screen invalidation referenced this column.
+        DROP TRIGGER core_agent_runs_screen_insert;
+        DROP TRIGGER core_agent_runs_screen_update;
+        DROP TRIGGER core_agent_runs_screen_delete;
         DROP INDEX core_agent_runs_model_call_high_water;
         ALTER TABLE core_agent_runs DROP COLUMN latest_model_call_sequence;
         UPDATE operational_schema_migrations SET version = 3 WHERE scope = 'core_execution';

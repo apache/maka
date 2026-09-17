@@ -33,6 +33,7 @@ const featureRoot = join(rendererRoot, 'features', 'app-update');
 const uiPackageRoot = resolve(desktopRoot, '..', '..', 'packages', 'ui');
 const uiRoot = join(uiPackageRoot, 'src');
 const sourceCache = new Map<string, string>();
+const astCache = new Map<string, ReturnType<typeof parse>>();
 const analysisCache = new Map<string, ReturnType<typeof analyzeRendererSource>>();
 
 function sourceOf(path: string): string {
@@ -49,6 +50,19 @@ function analysisOf(path: string): ReturnType<typeof analyzeRendererSource> {
   const analysis = analyzeRendererSource(sourceOf(path), path);
   analysisCache.set(path, analysis);
   return analysis;
+}
+
+function astOf(path: string): ReturnType<typeof parse> {
+  const cached = astCache.get(path);
+  if (cached) return cached;
+  const ast = parse(sourceOf(path), {
+    createImportExpressions: true,
+    sourceType: 'module',
+    sourceFilename: path,
+    plugins: ['typescript', 'jsx'],
+  });
+  astCache.set(path, ast);
+  return ast;
 }
 
 function sourceFiles(root: string): string[] {
@@ -81,13 +95,8 @@ function productSourceLabel(path: string): string {
   return `packages/ui/${relative(uiPackageRoot, path).replace(/\\/g, '/')}`;
 }
 
-function jsxBindings(source: string, file: string, exportedName: string) {
-  const ast = parse(source, {
-    createImportExpressions: true,
-    sourceType: 'module',
-    sourceFilename: file,
-    plugins: ['typescript', 'jsx'],
-  });
+function jsxBindings(file: string, exportedName: string) {
+  const ast = astOf(file);
   const imports = new Map<string, string>();
   const namespaces = new Map<string, string>();
   const openings: string[] = [];
@@ -152,16 +161,10 @@ function jsxBindings(source: string, file: string, exportedName: string) {
 }
 
 function moduleEntryBindings(
-  source: string,
   file: string,
   matches: (dependency: string) => boolean,
 ): string[] {
-  const ast = parse(source, {
-    createImportExpressions: true,
-    sourceType: 'module',
-    sourceFilename: file,
-    plugins: ['typescript', 'jsx'],
-  });
+  const ast = astOf(file);
   const bindings: string[] = [];
 
   function importedName(value: { type: string; name?: string; value?: string }): string {
@@ -220,25 +223,22 @@ function moduleEntryBindings(
   return bindings;
 }
 
-function featureEntryImports(source: string, file: string): string[] {
+function featureEntryImports(file: string): string[] {
   return moduleEntryBindings(
-    source,
     file,
     (dependency) => dependency.includes('features/app-update'),
   );
 }
 
-function desktopAppUpdateAdapterBindings(source: string, file: string): string[] {
+function desktopAppUpdateAdapterBindings(file: string): string[] {
   return moduleEntryBindings(
-    source,
     file,
     (dependency) => dependency.includes('platform/desktop/create-app-update-services'),
   );
 }
 
-function sidebarProjectionEntryBindings(source: string, file: string): string[] {
+function sidebarProjectionEntryBindings(file: string): string[] {
   return moduleEntryBindings(
-    source,
     file,
     (dependency) =>
       dependency === '@maka/ui' ||
@@ -295,9 +295,8 @@ describe('App Update feature boundary', () => {
   test('pins the production entry surface to its composition and leaf owners', () => {
     const imports: string[] = [];
     for (const path of productionRendererSources()) {
-      const source = sourceOf(path);
       const owner = relative(desktopRoot, path).replace(/\\/g, '/');
-      for (const imported of featureEntryImports(source, path)) {
+      for (const imported of featureEntryImports(path)) {
         imports.push(`${owner}: ${imported}`);
       }
     }
@@ -313,9 +312,8 @@ describe('App Update feature boundary', () => {
   test('keeps the Desktop adapter exclusively owned by feature-services composition', () => {
     const bindings: string[] = [];
     for (const path of productionRendererSources()) {
-      const source = sourceOf(path);
       const owner = relative(desktopRoot, path).replace(/\\/g, '/');
-      for (const binding of desktopAppUpdateAdapterBindings(source, path)) {
+      for (const binding of desktopAppUpdateAdapterBindings(path)) {
         bindings.push(`${owner}: ${binding}`);
       }
     }
@@ -327,8 +325,7 @@ describe('App Update feature boundary', () => {
   test('pins sidebar projection runtime bindings to its provider and footer owners', () => {
     const bindings: string[] = [];
     for (const path of [...productionRendererSources(), ...productionUiSources()]) {
-      const source = sourceOf(path);
-      for (const binding of sidebarProjectionEntryBindings(source, path)) {
+      for (const binding of sidebarProjectionEntryBindings(path)) {
         bindings.push(`${productSourceLabel(path)}: ${binding}`);
       }
     }
@@ -376,26 +373,24 @@ describe('App Update feature boundary', () => {
     const aboutReaders: string[] = [];
     const sidebarProviderOwners: string[] = [];
     for (const path of productionRendererSources()) {
-      const source = sourceOf(path);
-      for (const dependency of jsxBindings(source, path, 'AppUpdateProvider')) {
+      for (const dependency of jsxBindings(path, 'AppUpdateProvider')) {
         if (dependency.includes('features/app-update')) {
           providerOwners.push(relative(desktopRoot, path).replace(/\\/g, '/'));
         }
       }
-      for (const dependency of jsxBindings(source, path, 'AppUpdateAboutProjectionConsumer')) {
+      for (const dependency of jsxBindings(path, 'AppUpdateAboutProjectionConsumer')) {
         if (dependency.includes('features/app-update')) {
           aboutReaders.push(relative(desktopRoot, path).replace(/\\/g, '/'));
         }
       }
-      for (const dependency of jsxBindings(source, path, 'SidebarUpdateProjectionProvider')) {
+      for (const dependency of jsxBindings(path, 'SidebarUpdateProjectionProvider')) {
         if (dependency === '@maka/ui') {
           sidebarProviderOwners.push(productSourceLabel(path));
         }
       }
     }
     for (const path of productionUiSources()) {
-      const source = sourceOf(path);
-      for (const dependency of jsxBindings(source, path, 'SidebarUpdateProjectionProvider')) {
+      for (const dependency of jsxBindings(path, 'SidebarUpdateProjectionProvider')) {
         if (dependency.includes('sidebar-update-projection-context')) {
           sidebarProviderOwners.push(productSourceLabel(path));
         }

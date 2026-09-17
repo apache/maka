@@ -417,23 +417,12 @@ function projectToolModePlan(
   plan: ToolAvailabilityPlan,
   toolMode: ToolMode,
   execTool: MakaTool,
-  nested: ReadonlyMap<string, MakaTool>,
 ): ToolAvailabilityPlan {
   if (toolMode === 'direct') return plan;
-  const catalog = requestCompositionToolSchemas([...nested.values()], [...nested.keys()]);
-  const projectedExec = {
-    ...execTool,
-    description: [
-      execTool.description,
-      'This is the only callable tool. Call the following tools from inside exec.',
-      'After tool_search, return its result and use the refreshed catalog in the next exec call.',
-      JSON.stringify(catalog),
-    ].join('\n'),
-  };
   return {
     ...plan,
     providerTools: [
-      projectedExec,
+      execTool,
       ...plan.providerTools.filter((tool) => tool.name === INVALID_TOOL_NAME),
     ],
     activeTools: [execTool.name],
@@ -443,6 +432,18 @@ function projectToolModePlan(
     currentRepairToolNames: () => [execTool.name],
     diagnostics: () => undefined,
   };
+}
+
+function renderCodeModeCatalogPrompt(nested: ReadonlyMap<string, MakaTool>): string {
+  // The aggregate catalog can exceed the evidence codec's bound for one tool
+  // description. Keep exec's schema fixed; requestSystemPrompt and its hash
+  // carry this step's exact, refreshable nested surface instead.
+  const catalog = requestCompositionToolSchemas([...nested.values()], [...nested.keys()]);
+  return [
+    'Code Mode: exec is the only callable tool. Call the following tools from inside exec.',
+    'After tool_search, return its result and use the refreshed catalog in the next exec call.',
+    JSON.stringify(catalog),
+  ].join('\n');
 }
 
 function nestableToolSnapshot(
@@ -1100,16 +1101,7 @@ export class AiSdkTurn {
       }
       const basePlan = snapshot.runtime.prepare(this.activeTools, requiredOrchestrationTools);
       const nestedTools = nestableToolSnapshot(basePlan.providerTools, basePlan.activeTools);
-      const plan = projectToolModePlan(
-        basePlan,
-        toolMode,
-        codeModeExecTool,
-        toolRuntime.hasSandboxBoundaryDenial()
-          ? new Map(
-              [...nestedTools].filter(([name]) => name !== REQUEST_SANDBOX_BOUNDARY_TOOL_NAME),
-            )
-          : nestedTools,
-      );
+      const plan = projectToolModePlan(basePlan, toolMode, codeModeExecTool);
       const modelTools: ModelToolSet = {};
       for (const tool of plan.providerTools) {
         modelTools[tool.name] = tool.providerTool
@@ -1470,21 +1462,38 @@ export class AiSdkTurn {
           if (sandboxBoundaryFinalizationStep) {
             toolRuntime.forceSandboxBoundaryFinalization();
           }
-          const requestSystemPrompt = joinPromptFragments([
+          const requestSystemPromptBase = joinPromptFragments([
             systemPrompt,
             finalChildSummaryStep ? CHILD_STEP_BUDGET_FINALIZATION_PROMPT : undefined,
             toolRuntime.hasSandboxBoundaryDenial() ? SANDBOX_BOUNDARY_DENIED_FOR_TURN : undefined,
             sandboxBoundaryFinalizationStep ? SANDBOX_BOUNDARY_FINALIZATION_PROMPT : undefined,
           ]);
-          const resolveDispatch = (
-            active: readonly string[] | undefined,
-          ): DispatchRequestShape => ({
-            systemPromptChars: requestSystemPrompt?.length ?? 0,
-            activeTools:
+          const codeModeCatalogPrompt =
+            toolMode === 'code_mode'
+              ? renderCodeModeCatalogPrompt(
+                  toolRuntime.hasSandboxBoundaryDenial()
+                    ? new Map(
+                        [...nestedTools].filter(
+                          ([name]) => name !== REQUEST_SANDBOX_BOUNDARY_TOOL_NAME,
+                        ),
+                      )
+                    : nestedTools,
+                )
+              : undefined;
+          const resolveDispatch = (active: readonly string[] | undefined): DispatchRequestShape => {
+            const activeTools =
               finalChildSummaryStep || sandboxBoundaryFinalizationStep
                 ? []
-                : boundaryAwareToolNames(active ?? plan.currentRepairToolNames()),
-          });
+                : boundaryAwareToolNames(active ?? plan.currentRepairToolNames());
+            const effectiveSystemPrompt = joinPromptFragments([
+              requestSystemPromptBase,
+              activeTools.includes(codeModeExecTool.name) ? codeModeCatalogPrompt : undefined,
+            ]);
+            return {
+              systemPromptChars: effectiveSystemPrompt?.length ?? 0,
+              activeTools,
+            };
+          };
           const dynamicContextMessages: ModelMessage[] = (resolvedSystemPrompt.contexts ?? []).map(
             ({ text }) => ({ role: 'user', content: text }),
           );
@@ -1503,6 +1512,12 @@ export class AiSdkTurn {
             : undefined;
           const projectedMessages = shaped?.messages ?? contextualRequestMessages;
           const activeToolsForRequest = resolveDispatch(shaped?.activeTools).activeTools;
+          const requestSystemPrompt = joinPromptFragments([
+            requestSystemPromptBase,
+            activeToolsForRequest.includes(codeModeExecTool.name)
+              ? codeModeCatalogPrompt
+              : undefined,
+          ]);
           // A finalization step resolves an empty tool set, so its request
           // legitimately drops several thousand schema tokens with no fold,
           // prune or image omission. Maka shaped that request; the provider did
@@ -1703,16 +1718,10 @@ export class AiSdkTurn {
                   part = { text: '' };
                   stepThinkingParts.push(part);
                 }
-                const nextPartText = part.text + event.text;
-                if (
-                  event.reasoningSummaryText !== undefined &&
-                  event.reasoningSummaryText !== nextPartText
-                ) {
-                  throw new Error(
-                    'Streamed plaintext Responses reasoning does not match final provider summary',
-                  );
-                }
-                part.text = nextPartText;
+                // The provider's final summary is the authoritative text the
+                // durable part boundaries describe; adopt it when the
+                // streamed deltas diverge so replay stays self-consistent.
+                part.text = event.reasoningSummaryText ?? part.text + event.text;
                 if (event.providerOptions !== undefined) {
                   part.providerOptions = event.providerOptions;
                 }
@@ -2782,7 +2791,14 @@ export class AiSdkTurn {
       // `runtimeContext` may be a budget/history-search slice; the tool-turn
       // thinking skip is a whole-history invariant, so seed it from the full
       // prior ledger so a sliced-in tool-turn thinking still gets skipped.
-      { toolActivityTurnIds: collectToolActivityTurnIds(priorRuntimeContext) },
+      {
+        toolActivityTurnIds: collectToolActivityTurnIds(priorRuntimeContext),
+        // Transcript repair can preserve an assistant-only opening from either
+        // an imported or a native legacy Session. Ordinary provider requests
+        // admit both at the first valid user head; explicit continuations use
+        // their separately admitted boundary.
+        allowRepairedAssistantPrefix: input.continuation !== undefined,
+      },
     );
     const hasProviderHistoryCompactCheckpoint =
       projectedHistoryCompactCheckpoint !== undefined &&

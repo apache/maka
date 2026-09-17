@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { app, BrowserWindow, dialog, nativeTheme, screen, shell, webFrameMain } from 'electron';
+import { app, BrowserWindow, dialog, nativeTheme, screen, shell, type View, webFrameMain } from 'electron';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { appIconForTheme, type AppSettings } from '@maka/core/settings';
@@ -55,8 +55,11 @@ export interface MainWindowController {
   reloadMainRenderer(): Promise<boolean>;
   send(channel: string, ...args: unknown[]): void;
   /** Subscribe an app-owned renderer to existing application broadcasts. */
-  registerAuxiliaryRenderer(contents: Electron.WebContents): () => void;
+  registerAuxiliaryRenderer(contents: Electron.WebContents, parent?: View): () => void;
   ownsRenderer(contents: Electron.WebContents): boolean;
+  isMainRenderer(contents: Electron.WebContents): boolean;
+  browserParentForRenderer(contents: Electron.WebContents): View | undefined;
+  setBrowserViewParentResolver(resolve: (sessionId: string) => View | undefined): void;
   // PR-SHOW-AFTER-FIRST-COMMIT: reveal the hidden window after the renderer's
   // first React commit. Idempotent + e2e-fixture-safe (see notifyRendererReady).
   notifyRendererReady(
@@ -109,17 +112,25 @@ interface MainWindowControllerDeps {
 }
 
 let mainWindow: BrowserWindow | null = null;
-const auxiliaryRenderers = new Set<Electron.WebContents>();
+const auxiliaryRenderers = new Map<Electron.WebContents, View | undefined>();
 
-function registerAuxiliaryRenderer(contents: Electron.WebContents): () => void {
+function registerAuxiliaryRenderer(contents: Electron.WebContents, parent?: View): () => void {
   if (contents.isDestroyed()) return () => undefined;
-  auxiliaryRenderers.add(contents);
+  auxiliaryRenderers.set(contents, parent);
   const release = () => {
     auxiliaryRenderers.delete(contents);
     contents.removeListener('destroyed', release);
   };
   contents.once('destroyed', release);
   return release;
+}
+
+function browserParentForRenderer(contents: Electron.WebContents): View | undefined {
+  if (contents.isDestroyed()) return undefined;
+  if (mainWindow && !mainWindow.isDestroyed() && contents === mainWindow.webContents) {
+    return mainWindow.contentView;
+  }
+  return auxiliaryRenderers.get(contents);
 }
 
 function ownsRenderer(contents: Electron.WebContents): boolean {
@@ -131,7 +142,7 @@ let browserViews: BrowserViewManager<BrowserViewController> | undefined;
 
 /** Broadcast existing app events once to each live owned renderer, even if the main window is closed. */
 export function safeSendToRenderer(channel: string, ...args: unknown[]): void {
-  const recipients = new Set(auxiliaryRenderers);
+  const recipients = new Set(auxiliaryRenderers.keys());
   if (mainWindow && !mainWindow.isDestroyed()) recipients.add(mainWindow.webContents);
   for (const contents of recipients) {
     if (!contents.isDestroyed()) contents.send(channel, ...args);
@@ -181,6 +192,7 @@ const titleBarOverlayOptions = (
 export function createMainWindowController(deps: MainWindowControllerDeps): MainWindowController {
   const { workspaceRoot, e2eFixture, settingsStore } = deps;
   const liveBrowserScopes = new Map<string, { hostId: string; targetEpoch: string }>();
+  let browserViewParentResolver: ((sessionId: string) => View | undefined) | undefined;
 
   // PR-SHOW-AFTER-FIRST-COMMIT: windows launched hidden (`hidden` covers
   // e2e-fixture capture and E2E — see main.ts) must never be revealed;
@@ -239,8 +251,9 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
     if (!browserViews) {
       browserViews = new BrowserViewManager<BrowserViewController>({
         create: (sessionId) => {
-          if (!mainWindow) throw new Error('Embedded browser used before the window is ready.');
-          return new BrowserViewController(mainWindow, sessionId, (sid, state) => {
+          const parent = browserViewParentResolver?.(sessionId);
+          if (!parent) throw new Error('Embedded browser used without an active renderer parent.');
+          return new BrowserViewController(parent, sessionId, (sid, state) => {
             const ref = parseDesktopSessionResourceKey(sid);
             safeSendToRenderer(
               'browser:state',
@@ -529,9 +542,6 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
       clearShowFallbackTimer();
       deps.onClose?.();
       if (saveTimer) clearTimeout(saveTimer);
-      // The window owns the embedded-browser views (children of its contentView);
-      // tear them down so their WebContents close with it instead of leaking.
-      void browserViews?.disposeAll();
       if (!mainWindow) return;
       const final: SavedBounds = mainWindow.isMaximized()
         ? { ...mainWindow.getNormalBounds(), isMaximized: true }
@@ -628,6 +638,11 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
     send: safeSendToRenderer,
     registerAuxiliaryRenderer,
     ownsRenderer,
+    browserParentForRenderer,
+    isMainRenderer: (contents) => !!mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents === contents,
+    setBrowserViewParentResolver(resolve) {
+      browserViewParentResolver = resolve;
+    },
     notifyRendererReady(sender, senderFrame) {
       if (!mainWindow || mainWindow.isDestroyed() || sender !== mainWindow.webContents) return;
       const recovery = rendererRecoveryReadiness;

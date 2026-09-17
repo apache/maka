@@ -39,7 +39,7 @@ import { Collapsible } from '@astryxdesign/core/Collapsible';
 import {
   Button,
   FormLayout,
-  ModelWheelPicker,
+  Selector,
   TextInput,
   useMountedRef,
   useUiLocale,
@@ -50,6 +50,7 @@ import { PasswordInput } from './password-input';
 import { providerDisplay } from './provider-display';
 import { useActionGuard } from './use-action-guard';
 import {
+  CommandCodeBrowserLoginSection,
   OnboardingStepForm,
   getProviderSettingsCopy,
   providerPanelActionErrorMessage,
@@ -69,6 +70,7 @@ import {
   initialOnboardingModelIds,
   shouldShowManagedOnboardingOutcomeUnknown,
   stableOnboardingModels,
+  providerRequiresAcknowledgement,
   validateAddProviderDraft,
   type AddProviderIssue,
 } from './provider-add-submission';
@@ -127,14 +129,19 @@ export function AddProviderForm(props: {
   const [requestHeaders, setRequestHeaders] = useState<RequestHeaderDraft[]>([]);
   const [requestBodyText, setRequestBodyText] = useState('');
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  // The acknowledgement rides the existing form state rather than a state of
+  // its own: this file sits in the frozen renderer zone, where a new hook call
+  // is debt the architecture gate refuses.
   const [formState, setFormState] = useState<{
     readonly managedPhase: ManagedOnboardingPhase;
     readonly error: ProviderFormError | null;
+    readonly acknowledged: boolean;
   }>(() => ({
     managedPhase: { kind: 'input' },
     error: null,
+    acknowledged: false,
   }));
-  const { managedPhase, error } = formState;
+  const { managedPhase, error, acknowledged } = formState;
   const [busy, setBusy] = useState(false);
   const submitGuard = useActionGuard<'submit'>();
   const addProviderMountedRef = useMountedRef();
@@ -143,9 +150,29 @@ export function AddProviderForm(props: {
   const requiresBaseUrl = !defaults.baseUrl && !isCloudflareWorkersAi;
   const showsDefaultModel = recommendedDefaultModel.trim() === '';
   const isExperimental = defaults.status === 'phase3-experimental';
+  const needsAcknowledgement = providerRequiresAcknowledgement(props.providerType);
   const supportsApiKey = providerAuthSupportsApiKey(props.providerType);
   const requiresApiKey = providerAuthRequiresSecret(props.providerType) && supportsApiKey;
   const usesApiKeyDialog = usesQuickApiKeyDialog(props.providerType);
+  // Pasting stays the primary path. Command Code GO alone can also mint a key
+  // through a browser sign-in (the same login the CLI performs); the section
+  // under the field only fills the field, so everything after — validation,
+  // creation, discovery — is the paste path. The ordinary Command Code card
+  // stays a plain API-key form.
+  const commandCodeBrowserLogin = props.bridge.commandCodeBrowserLogin;
+  const browserLoginSection =
+    props.providerType === 'commandcode-go' && commandCodeBrowserLogin ? (
+      <CommandCodeBrowserLoginSection
+        bridge={commandCodeBrowserLogin}
+        baseUrl={baseUrl}
+        isDisabled={busy}
+        onCredentials={(credentials) => {
+          setApiKey(credentials.apiKey);
+          resetManagedVerification();
+          clearFieldError('apiKey');
+        }}
+      />
+    ) : undefined;
 
   function setManagedPhase(next: ManagedOnboardingPhase) {
     setFormState((current) => ({ ...current, managedPhase: next }));
@@ -184,6 +211,7 @@ export function AddProviderForm(props: {
     if (issue.field === 'apiKey') return copy.keyRequired(display.name);
     if (issue.field === 'accountId') return copy.cloudflareAccount;
     if (issue.field === 'baseUrl') return copy.endpointRequired;
+    if (issue.reason === 'acknowledgement') return copy.transportAcknowledgeRequired;
     return copy.accountLogin;
   }
 
@@ -321,6 +349,13 @@ export function AddProviderForm(props: {
   async function submit() {
     if (submitGuard.current !== null) return;
     setError(null);
+    // Ahead of every route this form takes. The managed-onboarding branch
+    // below returns before `validateAddProviderDraft` runs, and the quick
+    // API-key dialog reaches this same function, so a check placed only in
+    // the draft rule would never fire for the provider that has one.
+    if (needsAcknowledgement && !acknowledged) {
+      return setError({ field: 'form', message: copy.transportAcknowledgeRequired });
+    }
     const normalizedApiKey = apiKey.trim();
     const normalizedCloudflareAccountId = cloudflareAccountId.trim();
     const normalizedDefaultModel = defaultModel.trim();
@@ -356,6 +391,7 @@ export function AddProviderForm(props: {
       apiKey,
       cloudflareAccountId,
       baseUrl,
+      acknowledged,
     });
     if (issue) return setError({ field: issue.field, message: issueMessage(issue) });
     submitGuard.begin('submit');
@@ -399,6 +435,35 @@ export function AddProviderForm(props: {
     event.preventDefault();
     void submit();
   }
+
+  // Rendered by every route this form can take. The quick API-key dialog
+  // returns its own subtree, so a notice placed only in the full form would
+  // never reach the provider that states one.
+  const transportAcknowledgement = needsAcknowledgement ? (
+    <VStack gap={2}>
+      <Banner
+        status="warning"
+        title={copy.transportNoticeTitle}
+        description={copy.transportNoticeDetail} />
+      <CheckboxList
+        label={copy.transportNoticeTitle}
+        isLabelHidden
+        value={acknowledged ? ['acknowledged'] : []}
+        onChange={(next) => {
+          const ticked = next.includes('acknowledged');
+          setFormState((current) => ({
+            ...current,
+            acknowledged: ticked,
+            error: current.error?.field === 'form' ? null : current.error,
+          }));
+        }}
+        isDisabled={busy}
+        density="compact"
+      >
+        <CheckboxListItem value="acknowledged" label={copy.transportAcknowledgeLabel} />
+      </CheckboxList>
+    </VStack>
+  ) : null;
 
   const advancedRequestEditor = (
     <Collapsible
@@ -584,19 +649,16 @@ export function AddProviderForm(props: {
             ))}
           </CheckboxList>
         )}
-        <VStack gap={1}>
-          <Text weight="semibold">{copy.onboardingDefaultModel}</Text>
-          <Text type="supporting" color="secondary">{copy.onboardingDefaultModelHelp}</Text>
-          <ModelWheelPicker
-            ariaLabel={copy.onboardingDefaultModel}
-            label={selectedOptions.find((option) => option.value === managedPhase.defaultId)?.label ?? copy.onboardingSelectModel}
-            options={selectedOptions}
-            value={managedPhase.defaultId}
-            onValueChange={(defaultId) => setManagedPhase({ ...managedPhase, defaultId })}
-            disabled={busy || selectedOptions.length === 0}
-            size="md"
-          />
-        </VStack>
+        <Selector
+          label={copy.onboardingDefaultModel}
+          description={copy.onboardingDefaultModelHelp}
+          options={selectedOptions}
+          value={managedPhase.defaultId}
+          onChange={(defaultId: string) => setManagedPhase({ ...managedPhase, defaultId })}
+          isDisabled={busy || selectedOptions.length === 0}
+          placeholder={copy.onboardingSelectModel}
+          width="100%"
+        />
         <div role="status" aria-live="polite">
           {busy ? <Text type="supporting">{copy.saving}</Text> : null}
         </div>
@@ -626,6 +688,7 @@ export function AddProviderForm(props: {
     return (
       <VStack as="form" gap={4} onSubmit={submitApiKey}>
         {managedStepper}
+        {transportAcknowledgement}
         <FormLayout>
           <PasswordInput
             value={apiKey}
@@ -648,6 +711,7 @@ export function AddProviderForm(props: {
           />
           {advancedRequestEditor}
         </FormLayout>
+        {browserLoginSection}
         <div role="status" aria-live="polite">
           {busy ? (
             <Text type="supporting">
@@ -685,6 +749,7 @@ export function AddProviderForm(props: {
           title={copy.accountTitle}
           description={copy.accountDetail} />
       )}
+      {transportAcknowledgement}
       <FormLayout>
         {supportsApiKey && (
           <PasswordInput

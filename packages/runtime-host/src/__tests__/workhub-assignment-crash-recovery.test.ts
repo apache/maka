@@ -51,6 +51,7 @@ import type {
 import type { WorkHubAdmittedAction } from '../server/workhub-coordination-action-gate.js';
 import { connectClient, waitForTerminalTurn } from './fixtures/execution-host-suite.js';
 import { removePosixEndpointDirectories } from './fixtures/endpoint-hygiene.js';
+import { workHubDesktopCapabilityOffers } from './fixtures/workhub-capabilities.js';
 
 type Notice =
   | { type: 'ready'; hostEpoch: string }
@@ -426,6 +427,7 @@ test('real Host uses the independent Memory provider for messages, history and W
       { sessionId: 'memory-task', transcript: { kind: 'tail', maxBytes: 16384 } },
       TIMEOUT,
     );
+    await subscription.ready();
     try {
       const history = subscription.transcriptBootstrap;
       assert.ok(history);
@@ -505,20 +507,7 @@ async function connectFixtureClient(
   const client = await connectClient(root);
   try {
     await client.replaceClientCapabilities({
-      offers: () => [
-        {
-          offerId: 'desktop-workhub',
-          version: '0',
-          affinity: 'session',
-          hostPathAccess: 'none',
-          label: 'Desktop WorkHub',
-          tools: ['control', 'tasks'].map((name) => ({
-            serverId: 'desktop_workhub',
-            name,
-            inputSchema: { type: 'object', additionalProperties: false },
-          })),
-        },
-      ],
+      offers: () => [...workHubDesktopCapabilityOffers()],
       call: async () => {
         throw new Error('The held fake model must not dispatch a Desktop WorkHub tool');
       },

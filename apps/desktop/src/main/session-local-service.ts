@@ -550,7 +550,7 @@ export function registerDesktopSessionLocalIpc(deps: {
               ...(input.llmConnectionId ? { llmConnectionId: input.llmConnectionId } : {}),
             }),
         connectionLocked: false,
-        permissionMode: creation.permissionMode ?? 'ask',
+        permissionMode: creation.permissionMode ?? 'bypass',
         collaborationMode: creation.collaborationMode,
         orchestrationMode: creation.orchestrationMode,
         thinkingLevel: creation.thinkingLevel,

@@ -247,16 +247,24 @@ non-text image must match one of these paths; executable and archive magic is
 rejected even if a path is listed here.
 
 - `.github/assets/*.png`: the README hero images rendered from the website, recorded above.
+- `.github/assets/workhub-turn-admission/receipts-*.png`: light/dark Storybook screenshots of Maka's coordination receipts, contributed as visual review evidence in pull request #4993 (commit `a41d3ac4a`).
+- `website/src/assets/incubator.png`: unmodified Apache Incubator logo from `https://www.apache.org/logos/res/incubator/default.png`, used as ASF trademark branding; its origin is also recorded in `website/README.md`. SHA-256: `e7ec2b8078606a77c36c3b9e295409c80dc28266118e32c61548f01cd59c0f0d`.
+- `website/src/assets/social.*.png`: social previews rendered from Maka's own website by `website/scripts/readme-hero.mjs`, using the same copy, styles and licensed fonts as the README heroes.
 - `apps/desktop/assets/icon.png`: the AI-generated application mark recorded above.
 - `apps/desktop/assets/app-icons/*.png`: `mono.png` is the contributor-submitted grayscale derivative of the application mark from pull request #3431; the remaining variants are reproducibly rendered from the Apache-licensed geometry and palette in `scripts/generate-app-icons.py` and byte-checked by `scripts/generate-app-icons.test.mjs`.
 - `apps/desktop/build/*.png`: contributor-submitted DMG artwork from pull request #3817; that contribution records Codex as review and verification assistance, not as the source of the artwork.
 - `apps/desktop/resources/status/*.png`: the status images recorded above and reproducibly rendered by `scripts/generate-cu-status-icons.mjs`.
 - `docs/images/**/*.png`: screenshots of Maka's own user interface committed as review evidence, including pull requests #3584 and #3588.
-- `packages/core/src/__tests__/foreign-session.test.ts`: Apache-licensed source fixture containing a literal NUL, bidi override, and zero-width character to verify imported-session sanitization.
 - `packages/runtime-host/src/protocol/artifact.ts`: Apache-licensed protocol source containing literal C0 and DEL characters in the control-character rejection expression.
-- `packages/storage/src/__tests__/foreign-session-store.test.ts`: Apache-licensed storage fixture containing literal bidi and bell characters to verify durable imported-title sanitization.
 - `packages/storage/src/__tests__/mcp-config-store.test.ts`: Apache-licensed validation fixture containing a literal control character in a rejected MCP tool name.
 - `packages/storage/test-fixtures/v0.1.6-operational-state/runtime.sqlite`: migration fixture created through Maka's public storage APIs at tag `v0.1.6`; its exact origin and SHA-256 are recorded in the adjacent `README.md`.
+- `patches/@xterm+xterm+6.0.0.patch`: MIT-licensed xterm.js patch attributed in root `LICENSE`; upstream context includes literal terminal control characters whose bytes must be preserved for patch application.
+
+### Website build dependency boundary
+
+The private `website` workspace uses Astro's optional sharp image processor while building the static website. The lockfile records external `@img/sharp-libvips-*`, `@img/sharp-win32-*` and `@img/sharp-wasm32` packages containing LGPL-3.0-or-later libvips; their code and binaries are not included in the source archive or the static website output. Install them through the root `npm ci`, then build with `npm --workspace @maka/website run build`.
+
+[ASF Category X policy](https://www.apache.org/legal/resolved.html#prohibited) allows external build tools when they do not affect the product's licensing, but prohibits distributing their source or binaries. A lockfile describes dependency resolution, not the contents of the source archive. The source verifier checks the manifests and payloads actually included; it does not approve external dependencies for runtime use or redistribution. After installation, the candidate workflow checks Desktop and CLI dependency notices through `scripts/generate-third-party-notices.mjs` and the existing shipped dependency closure, including renderer dependencies even when declared as development dependencies. External-tool usage and provenance still require release review.
 
 ## Bootstrap generative tooling
 

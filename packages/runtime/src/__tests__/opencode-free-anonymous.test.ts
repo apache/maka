@@ -34,6 +34,7 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { generateText } from 'ai';
 import type { LlmConnection } from '@maka/core/llm-connections';
+import { PROVIDER_REGISTRY } from '@maka/core/provider-registry';
 import { getAIModel } from '@maka/runtime/model-factory';
 
 import { testConnection } from '@maka/runtime/test-connection';
@@ -167,6 +168,94 @@ describe('opencode-free anonymous runtime', () => {
     assert.equal(result.ok, true);
     assert.equal(result.modelTested, 'nemotron-3-ultra-free');
     assert.deepEqual(requestedModels, ['custom-broken-free', 'nemotron-3-ultra-free']);
+  });
+
+  test('does not probe a quarantined enabled model', async () => {
+    const requestedModels: string[] = [];
+    const connection: LlmConnection = {
+      slug: 'opencode-free',
+      name: 'OpenCode Free',
+      providerType: 'opencode-free',
+      defaultModel: 'muse-spark-1.2-contributor-free',
+      enabledModelIds: ['muse-spark-1.2-contributor-free'],
+      enabled: true,
+      createdAt: 0,
+      updatedAt: 0,
+    };
+    const fakeFetch: typeof globalThis.fetch = async (_input, init) => {
+      const body = JSON.parse(String(init?.body)) as { model: string };
+      requestedModels.push(body.model);
+      return new Response(
+        JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'ok' } }] }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    };
+
+    const result = await testConnection(connection, '', undefined, { fetch: fakeFetch });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.modelTested, 'nemotron-3-ultra-free');
+    assert.deepEqual(requestedModels, ['nemotron-3-ultra-free']);
+  });
+
+  test('keeps a quarantined default from blocking the healthy fallback', async () => {
+    const requestedModels: string[] = [];
+    const connection: LlmConnection = {
+      slug: 'opencode-free',
+      name: 'OpenCode Free',
+      providerType: 'opencode-free',
+      defaultModel: 'x-preview-f-free',
+      enabledModelIds: ['x-preview-f-free'],
+      enabled: true,
+      createdAt: 0,
+      updatedAt: 0,
+    };
+    const fakeFetch: typeof globalThis.fetch = async (_input, init) => {
+      const body = JSON.parse(String(init?.body)) as { model: string };
+      requestedModels.push(body.model);
+      return new Response(
+        JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'ok' } }] }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    };
+
+    const result = await testConnection(connection, '', undefined, { fetch: fakeFetch });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.modelTested, 'nemotron-3-ultra-free');
+    assert.deepEqual(requestedModels, ['nemotron-3-ultra-free']);
+  });
+
+  test('returns no model to test when every candidate is quarantined', async () => {
+    const defaults = PROVIDER_REGISTRY['opencode-free'];
+    const originalFallbackModels = defaults.fallbackModels;
+    const originalBrokenModelIds = defaults.brokenModelIds;
+    defaults.fallbackModels = [];
+    defaults.brokenModelIds = ['muse-spark-1.2-contributor-free'];
+
+    try {
+      const connection: LlmConnection = {
+        slug: 'opencode-free',
+        name: 'OpenCode Free',
+        providerType: 'opencode-free',
+        defaultModel: 'muse-spark-1.2-contributor-free',
+        enabledModelIds: ['muse-spark-1.2-contributor-free'],
+        enabled: true,
+        createdAt: 0,
+        updatedAt: 0,
+      };
+      const fakeFetch: typeof globalThis.fetch = async () => {
+        throw new Error('no request expected');
+      };
+
+      const result = await testConnection(connection, '', undefined, { fetch: fakeFetch });
+
+      assert.equal(result.ok, false);
+      assert.equal(result.errorMessage, 'No model to test');
+    } finally {
+      defaults.fallbackModels = originalFallbackModels;
+      defaults.brokenModelIds = originalBrokenModelIds;
+    }
   });
 
   test('tests an explicit model once without probing fallbacks', async () => {

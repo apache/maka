@@ -88,7 +88,7 @@ painted on resume without another write. It fails against the unpatched bundle.
 Delete when upstream routes selection changes through its paused-render
 contract and both bundle regressions pass without the patch.
 
-## `@earendil-works/pi-tui@0.84.4`
+## `@earendil-works/pi-tui@0.85.1`
 
 
 Editor undo snapshots deep-clone all stored paste strings for each typed word,
@@ -101,7 +101,7 @@ that product code can configure.
 
 Delete the patch when upstream shares immutable paste strings across undo snapshots.
 
-## `zod@4.5.4`
+## `zod@4.6.5`
 
 Recursive schemas retain their last parse context and bucket in schema closures,
 keeping the input and output graphs alive for the schema's lifetime. Containers
@@ -158,7 +158,7 @@ Streaming tool-call association for gateways that reuse or omit `index` / `id`
 
 Delete when that guard passes against an unpatched package.
 
-## `@astryxdesign/core@0.5.2`
+## `@astryxdesign/core@0.6.1`
 
 The shared code tokenizer caches only valid language definitions. Caching `null`
 for arbitrary unsupported fence labels grows a process-lifetime map; a short

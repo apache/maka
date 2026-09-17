@@ -23,7 +23,7 @@ import {
 } from '../../../browser-storage.js';
 import {
   persistableSessionWorkbarPanels,
-  readSessionWorkbarPanels,
+  parseSessionWorkbarPanels,
   reduceWorkbarPanels,
   type SessionWorkbarPanelsState,
   type SessionWorkbarPlacement,
@@ -142,7 +142,7 @@ export function readSessionBottomPanelOpen(): boolean {
 
 export function loadWorkbarLayout(activeSessionId?: string): WorkbarLayoutState {
   return {
-    panels: readSessionWorkbarPanels(),
+    panels: parseSessionWorkbarPanels(safeLocalStorageGet('maka-session-workbar-panels-v3')),
     activeSessionId,
     collapsedBySession: readSessionWorkbarCollapsed(),
     bottomOpen: readSessionBottomPanelOpen(),

@@ -337,7 +337,7 @@ describe('ClaudeCodeSessionAdapter', () => {
       const adapter = new ClaudeCodeSessionAdapter({ claudeHome: home });
 
       assert.deepEqual(await adapter.listSessions(), [
-        { id: sessionId, name: sessionId, cwd: '', updatedAt: mtimeMs },
+        { id: sessionId, name: sessionId, cwd: CWD, updatedAt: mtimeMs },
       ]);
       await assert.rejects(adapter.readSession(sessionId), /record exceeds 67108864 bytes/u);
     });
@@ -609,20 +609,74 @@ describe('ClaudeCodeSessionAdapter', () => {
     });
   });
 
-  test('uses a custom title outside the catalog head and tail windows', async () => {
+  test('the catalog does not read past its head window to find a prompt', async () => {
+    // Listing memory has its own fixed byte budget. A large opening record may
+    // hide the first prompt from the summary, but importing the Session still
+    // reads it under the separate transcript limits.
     await withClaudeHome(async (home) => {
-      const sessionId = 'aaaaaaaa-0000-4000-8000-000000000034';
+      const sessionId = 'aaaaaaaa-0000-4000-8000-000000000037';
       await seed(home, sessionId, [
-        userRecord('first prompt'),
-        { type: 'progress', padding: 'x'.repeat(5 * 1024 * 1024) },
-        { type: 'custom-title', customTitle: 'Middle title' },
-        { type: 'progress', padding: 'y'.repeat(128 * 1024) },
-        assistantRecord({ text: 'done', stopReason: 'end_turn' }),
+        { type: 'file-history-snapshot', padding: 'x'.repeat(400 * 1024) },
+        userRecord('THE FIRST PROMPT'),
+        { type: 'progress', padding: 'y'.repeat(1024 * 1024) },
+        {
+          ...assistantRecord({ text: 'done', stopReason: 'end_turn' }),
+          timestamp: '2026-08-01T00:00:00.000Z',
+        },
       ]);
       const adapter = new ClaudeCodeSessionAdapter({ claudeHome: home });
 
-      assert.equal((await adapter.listSessions())[0]?.name, 'Middle title');
-      assert.equal((await adapter.readSession(sessionId)).metadata.name, 'Middle title');
+      assert.deepEqual((await adapter.listSessions())[0], {
+        id: sessionId,
+        name: sessionId,
+        cwd: CWD,
+        createdAt: Date.parse('2026-08-01T00:00:00.000Z'),
+        updatedAt: Date.parse('2026-08-01T00:00:00.000Z'),
+      });
+      assert.equal((await adapter.readSession(sessionId)).metadata.name, 'THE FIRST PROMPT');
+    });
+  });
+
+  test('an oversized summary without cwd does not claim a workspace', async () => {
+    await withClaudeHome(async (home) => {
+      const sessionId = 'aaaaaaaa-0000-4000-8000-000000000039';
+      await seed(home, sessionId, [
+        { type: 'file-history-snapshot', padding: 'x'.repeat(600 * 1024) },
+      ]);
+      const adapter = new ClaudeCodeSessionAdapter({ claudeHome: home });
+
+      assert.deepEqual(await adapter.listSessions({ cwd: CWD }), []);
+    });
+  });
+
+  test('an oversized summary matches a hyphenated workspace without decoding its project key', async () => {
+    await withClaudeHome(async (home) => {
+      const sessionId = 'aaaaaaaa-0000-4000-8000-000000000036';
+      const cwd = '/workspace/my-project';
+      const dir = join(home, 'projects', cwd.replace(/\//gu, '-'));
+      await mkdir(dir, { recursive: true });
+      await writeFile(
+        join(dir, `${sessionId}.jsonl`),
+        `${JSON.stringify({ ...userRecord('x'.repeat(600 * 1024)), cwd })}\n`,
+      );
+
+      assert.deepEqual(
+        await new ClaudeCodeSessionAdapter({ claudeHome: home }).listSessions({ cwd }),
+        [
+          {
+            id: sessionId,
+            name: sessionId,
+            cwd,
+            updatedAt: (await stat(join(dir, `${sessionId}.jsonl`))).mtimeMs,
+          },
+        ],
+      );
+      assert.deepEqual(
+        await new ClaudeCodeSessionAdapter({ claudeHome: home }).listSessions({
+          cwd: '/workspace/my/project',
+        }),
+        [],
+      );
     });
   });
 
@@ -766,6 +820,36 @@ describe('ClaudeCodeSessionAdapter', () => {
       // A blank box is not a filter.
       assert.equal((await adapter.listSessions({ text: '  ' })).length, 2);
       assert.equal((await adapter.listSessions()).length, 2);
+    });
+  });
+
+  test('reads only enough ordered transcript summaries to fill each catalog page', async () => {
+    await withClaudeHome(async (home) => {
+      const ids = [
+        'aaaaaaaa-0000-4000-8000-000000000034',
+        'aaaaaaaa-0000-4000-8000-000000000035',
+        'aaaaaaaa-0000-4000-8000-000000000036',
+      ];
+      for (const id of ids) {
+        await seed(home, id, [
+          userRecord(id),
+          assistantRecord({ text: 'ok', stopReason: 'end_turn' }),
+        ]);
+      }
+      const adapter = new ClaudeCodeSessionAdapter({ claudeHome: home });
+
+      const first = await adapter.listSessionPage({ limit: 2 });
+      const cursor = first.items.at(-1)?.nextCursor;
+      assert.ok(cursor);
+      const second = await adapter.listSessionPage({ cursor, limit: 2 });
+      assert.equal(first.items.length, 2);
+      assert.equal(first.hasMore, true);
+      assert.equal(second.items.length, 1);
+      assert.equal(second.hasMore, false);
+      assert.deepEqual(
+        new Set([...first.items, ...second.items].map(({ summary }) => summary.id)),
+        new Set(ids),
+      );
     });
   });
 

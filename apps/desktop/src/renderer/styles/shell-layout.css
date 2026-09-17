@@ -187,22 +187,16 @@
    were too narrow to carry their meaning without tooltips. The titlebar keeps
    the explicit expand action, so the navigation column can close all the way.
 
-   Keyed off the shell's own collapsed flag — the wrapper carried a second copy
-   of it until this rule read the one `.appFrame` already publishes and the
-   hairlines already use.
-
-   It overrides the VARIABLE, not the wrapper's width, because the wrapper is no
-   longer the only reader: the titlebar starts its session breadcrumb at this
-   column's right edge. Setting the width here instead would leave the titlebar
-   reading the expanded value while the column sat collapsed. */
-.appFrame[data-sidebar-state='collapsed'] {
-  --maka-sidenav-width: 0px;
-}
+   The frame publishes `--maka-sidenav-width` itself; the titlebar reads it for
+   its first grid track, so nothing here may write it — an inline `0` was once
+   shadowed into `calc()` and dropped the whole track list. */
 
 /* `visibility`, rather than opacity, removes the hidden rail's buttons from
    focus navigation and accessibility hit testing. SideNav stays mounted so its
    imperative collapse handle can restore both the boolean and the resizable
-   width when the titlebar's expand button is pressed. */
+   width when the titlebar's expand button is pressed. Keyed off the collapsed
+   flag `.appFrame` already publishes — the same one the hairlines use — rather
+   than a second copy on the wrapper. */
 .appFrame[data-sidebar-state='collapsed'] .maka-sidenav-motion {
   visibility: hidden;
   pointer-events: none;
@@ -448,23 +442,6 @@ dialog:modal {
   padding-bottom: 0;
 }
 
-/* Right-hand cluster of the titlebar row. It is the strip's last grid column —
-   it used to be absolutely positioned against the detail panel, which is why
-   the chat header had to reserve its width by hand, and then a `margin-left:
-   auto` flex item, which only reached the right edge as long as it was the last
-   child. Naming the column keeps it there when the breadcrumb beside it is
-   absent. Which views render it at all is decided in app-shell.tsx, not by a
-   `display: none` override reaching in from `[data-agents-view]`. */
-.maka-workspace-top-actions {
-  grid-column: 3;
-  justify-self: end;
-  -webkit-app-region: no-drag;
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1-5);
-  color: var(--muted-foreground);
-}
-
 /* Titlebar chrome glyph ink is set where the glyph is: `ChromeIcon`
    (app-shell-chrome-actions.tsx) renders Astryx Icon with `color="secondary"`,
    and Icon puts `color: var(--color-icon-secondary)` on the svg ITSELF. A
@@ -474,8 +451,7 @@ dialog:modal {
    over-reached onto button label text, which these buttons happen not to have.
 
    `.maka-titlebar-action` needs no `no-drag` of its own: every one of these
-   buttons lives inside `.maka-shell-topbar-rail` or
-   `.maka-workspace-top-actions`, and each of those carves out a rect covering
+   buttons lives inside `.maka-shell-topbar-rail`, which carves out a rect covering
    its children. A per-button rule (plus a `*` descendant rule for the icons)
    only duplicated that. */
 

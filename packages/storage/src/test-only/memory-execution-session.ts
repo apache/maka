@@ -416,17 +416,20 @@ export function createMemorySessionStore(
     createStableSession: async (request, initial) =>
       write('session.createStable', (s) => stable(s, root, request, initial)),
     probeStableSessionCreate: async (id, fingerprint) => read((s) => probe(s, id, fingerprint)),
-    createImportedSession: async (input, values, origin) =>
-      write('session.import', (s) => {
-        const h = {
-          ...buildSessionHeader(root, input),
-          externalOrigin: copy(origin),
-          transcriptLedgerVersion: 0 as const,
-        };
+    createImportedSession: async (input, values, origin, options) => {
+      const canonicalValues = values.map((value) => decodeCanonicalMessage(copy(value)));
+      const h = {
+        ...buildSessionHeader(root, input),
+        externalOrigin: copy(origin),
+        transcriptLedgerVersion: 0 as const,
+      };
+      options?.onCommitStarted?.();
+      return write('session.import', (s) => {
         insert(s, h);
-        append(s, h.id, values);
+        append(s, h.id, canonicalValues);
         return requireHeader(s, h.id).header;
-      }),
+      });
+    },
     lookupExternalSessionImports: async (adapterId, sourceIds, limit) =>
       read((s) =>
         sourceIds.map((sourceSessionId) => {

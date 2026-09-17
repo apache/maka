@@ -169,6 +169,20 @@ export interface RuntimeEventStore {
    * rather than moved out from under anyone.
    */
   resequenceSessionEventOrdinals(sessionId: string): Promise<void>;
+  /**
+   * Recall's narrowing over the ledger: the Sessions among `sessionIds` whose
+   * event payloads contain one of the folded `terms`, plus every Session with
+   * an in-flight partial stream. A superset of the Sessions that project a
+   * matching message — the caller projects each one and re-runs the real
+   * predicate. Stores without this fast path leave recall to read every
+   * transcript.
+   */
+  listSessionsWithRuntimeEventText?(
+    sessionIds: readonly string[],
+    terms: readonly string[],
+  ): Promise<string[]>;
+  /** Events of kinds that project to searchable messages, for recall's idf term. */
+  countRuntimeEventMessages?(sessionIds: readonly string[]): Promise<number>;
 }
 
 /** One invocation by run id, through the store's fast path when it has one. */

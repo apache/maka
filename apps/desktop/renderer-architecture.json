@@ -250,7 +250,6 @@
     "src/renderer/features/workbar/controller/use-workbar-controller.ts -> src/renderer/browser-storage",
     "src/renderer/features/workbar/controller/use-workbar-controller.ts -> src/renderer/side-chat-command",
     "src/renderer/features/workbar/model/workbar-layout.ts -> src/renderer/browser-storage",
-    "src/renderer/features/workbar/model/workbar-tabs.ts -> src/renderer/browser-storage",
     "src/renderer/features/workbar/tools/artifacts/artifact-pane.tsx -> src/renderer/open-path",
     "src/renderer/features/workbar/tools/side-chat/quote-companion-core.ts -> src/renderer/model-connection-errors",
     "src/renderer/features/workbar/tools/side-chat/quote-companion-core.ts -> src/renderer/session-copy-attempt",
@@ -338,7 +337,7 @@
           "@maka/ui": 1
         },
         "importSpecifiers": 9,
-        "nonTriviaTokens": 3616
+        "nonTriviaTokens": 3603
       },
       "src/renderer/app-shell-chrome-actions.tsx": {
         "importDeclarations": 2,
@@ -504,7 +503,7 @@
           "react": 1
         },
         "importSpecifiers": 18,
-        "nonTriviaTokens": 3718
+        "nonTriviaTokens": 3677
       },
       "src/renderer/app-shell-overlays.tsx": {
         "importDeclarations": 4,
@@ -611,7 +610,7 @@
           "@maka/ui": 1
         },
         "importSpecifiers": 1,
-        "nonTriviaTokens": 2725
+        "nonTriviaTokens": 2687
       },
       "src/renderer/app-shell-session-start-actions.ts": {
         "importDeclarations": 2,
@@ -833,6 +832,7 @@
           "./settings/provider-brand-marks": 1,
           "./settings/provider-display": 1,
           "./settings/runtime-host-ssh-terminal-dialog.js": 1,
+          "./shell/frame-style": 1,
           "./stale-sessions": 1,
           "./use-active-execution-boundary": 1,
           "./use-app-shell-composer-quotes": 1,
@@ -862,7 +862,7 @@
           "react": 1
         },
         "importSpecifiers": 88,
-        "nonTriviaTokens": 13242
+        "nonTriviaTokens": 13093
       },
       "src/renderer/use-app-shell-composer-quotes.ts": {
         "importDeclarations": 2,
@@ -2596,9 +2596,9 @@
         "hookCalls": {
           "useEffect": 5,
           "useMountedRef": 1,
-          "useRef": 5,
+          "useRef": 4,
           "useRuntimeHostSettingsTarget": 1,
-          "useState": 18,
+          "useState": 15,
           "useUiLocale": 1
         },
         "lifecycleMethods": {},

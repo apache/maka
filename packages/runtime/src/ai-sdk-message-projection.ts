@@ -284,31 +284,18 @@ export class AiSdkMessageProjection {
         replaySupport.responsesReasoning.kind === 'plaintext-item'
       ) {
         const decoded = decodePlaintextResponsesReasoningState(item.providerOptions);
-        if (decoded.kind === 'missing') return undefined;
-        if (decoded.kind === 'unsupported-version') return undefined;
-        if (decoded.kind === 'malformed') {
-          if (
-            decoded.profile !== undefined &&
-            decoded.profile !== replaySupport.responsesReasoning.profile
-          ) {
-            return undefined;
-          }
-          throw new Error('Malformed durable plaintext Responses reasoning state');
-        }
-        const state = decoded.state;
-        if (state.profile !== replaySupport.responsesReasoning.profile) {
+        if (decoded.kind !== 'valid') return undefined;
+        if (decoded.state.profile !== replaySupport.responsesReasoning.profile) {
           return undefined;
         }
+        const providerOptions = replayPlaintextResponsesProviderOptions({
+          providerOptionsKey: replaySupport.responsesReasoning.providerOptionsKey,
+          state: decoded.state,
+          text: item.text,
+        });
+        if (!providerOptions) return undefined;
         return {
-          part: {
-            type: 'reasoning' as const,
-            text: item.text,
-            providerOptions: replayPlaintextResponsesProviderOptions({
-              providerOptionsKey: replaySupport.responsesReasoning.providerOptionsKey,
-              state,
-              text: item.text,
-            }),
-          },
+          part: { type: 'reasoning' as const, text: item.text, providerOptions },
         };
       }
       if (replaySupport.responsesReasoning === 'plaintext-content') {
@@ -394,17 +381,20 @@ export class AiSdkMessageProjection {
     ) => {
       const calls = exchanges.map(({ call }) => call);
       const content: unknown[] = [];
+      const replayReasoning = (reasoning ?? [])
+        .map((item) => ({ eventId: item.eventId, replay: reasoningReplay(item) }))
+        .filter(
+          (entry): entry is { eventId: string; replay: ReplayReasoning } =>
+            entry.replay !== undefined,
+        );
       const eventIds = [
-        ...(reasoning ?? []).map((item) => item.eventId),
+        ...replayReasoning.map((entry) => entry.eventId),
         ...(text ? [text.eventId] : []),
         ...calls.map((call) => call.eventId),
         ...replayFacts.flatMap((fact) => fact.eventIds),
       ];
-      const replayReasoning = reasoning
-        ?.map(reasoningReplay)
-        .filter((item): item is ReplayReasoning => item !== undefined);
-      for (const item of replayReasoning ?? []) {
-        if (item.part) content.push(item.part);
+      for (const { replay } of replayReasoning) {
+        if (replay.part) content.push(replay.part);
       }
       // Provider-owned tools execute before the grounded assistant text in the
       // same provider step. Preserve that chronology for Responses item
@@ -452,9 +442,9 @@ export class AiSdkMessageProjection {
             : {}),
         });
       }
-      const replayProviderOptions = replayReasoning?.find(
-        (item) => item.providerOptions !== undefined,
-      )?.providerOptions;
+      const replayProviderOptions = replayReasoning.find(
+        (entry) => entry.replay.providerOptions !== undefined,
+      )?.replay.providerOptions;
       if (content.length > 0 || replayProviderOptions) {
         push(
           {

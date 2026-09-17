@@ -56,6 +56,7 @@ import {
 } from './runtime-host-cli-context.js';
 import type {
   ConnectionIdentity,
+  MakaExternalSessionSurface,
   MakaPiTuiTurnActivitySurface,
   ModelChoice,
   SessionRecapGenerator,
@@ -114,6 +115,7 @@ export interface RuntimeHostTuiContext {
   };
   readonly recap: SessionRecapGenerator;
   readonly onboarding: ReturnType<typeof createRuntimeHostOnboardingSurface>;
+  readonly externalSessions: MakaExternalSessionSurface;
   readonly mcp?: TuiMcpManagement;
   readonly profile: RuntimeHostProfile;
   close(): Promise<void>;
@@ -127,6 +129,30 @@ export interface CreateRuntimeHostTuiContextInput {
   readonly resumeSessionId?: string;
   readonly hostProfileId?: string;
   readonly projectId?: string;
+}
+
+export function createRuntimeHostExternalSessionSurface(
+  connection: RuntimeHostConnection,
+  getCurrentWorkspace: () => WorkspaceTarget | undefined,
+): MakaExternalSessionSurface {
+  return {
+    listScopes: () => (getCurrentWorkspace() ? ['current_workspace', 'all'] : ['all']),
+    listSources: async () =>
+      (await connection.request('external-session.source.query', {})).adapterIds,
+    listSessions: async ({ adapterId, scope, cursor, text }) => {
+      const currentWorkspace = getCurrentWorkspace();
+      if (scope === 'current_workspace' && !currentWorkspace) {
+        throw new Error('The current Session workspace is unavailable');
+      }
+      return connection.request('external-session.catalog.query', {
+        adapterId,
+        ...(scope === 'current_workspace' ? { workspace: currentWorkspace } : {}),
+        ...(cursor ? { cursor } : {}),
+        ...(text ? { text } : {}),
+      });
+    },
+    importSession: (request) => connection.request('external-session.import', request),
+  };
 }
 
 export async function createRuntimeHostTuiContext(
@@ -261,6 +287,9 @@ export async function createRuntimeHostTuiContext(
       agentGraphHistory: createRuntimeHostAgentGraphHistory(connection),
       recap: createRuntimeHostRecapGenerator(connection),
       onboarding,
+      externalSessions: createRuntimeHostExternalSessionSurface(connection, () =>
+        driver.getWorkspaceTarget(),
+      ),
       ...(mcp ? { mcp } : {}),
       profile: connected.profile,
       close: () => closeRuntimeHostTuiContext(onboarding, mcp, owner, connected.close),

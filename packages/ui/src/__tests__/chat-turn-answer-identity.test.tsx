@@ -27,6 +27,7 @@ import { parseHTML } from 'linkedom';
 import { LocalizedChatMessage, TurnView } from '../chat-turn.js';
 import { LocaleProvider } from '../locale-context.js';
 import type { TurnTimelineItem, TurnViewModel } from '../materialize.js';
+import { applyThinkingDelta } from '../thinking-stream.js';
 
 const originalGlobals = {
   document: globalThis.document,
@@ -230,6 +231,27 @@ test('preserves currency in a settled collapsed reasoning preview', async () => 
   const header = container.querySelector('[data-slot="activity-card-header"]');
   assert.ok(header);
   assert.match(header.textContent ?? '', /cost is \$5, not x \+ 1/);
+});
+
+test('expanded truncated reasoning shows the current tail without replaying its marker', async () => {
+  const { container, root } = domRoot();
+  let thinking = applyThinkingDelta('', 'Earlier observations. '.repeat(8) + 'Current observation.', { locale: 'en', maxTotalChars: 128 });
+  const renderThinking = () => renderTurn(root, turnWith([{
+    kind: 'thinking', messageId: 'thinking-1', live: true,
+    text: thinking.text, truncated: thinking.truncated,
+  }]));
+  await renderThinking();
+  const header = container.querySelector('[data-slot="activity-card-header"]');
+  assert.ok(header);
+  await act(() => { header.dispatchEvent(new window.Event('click', { bubbles: true })); });
+  const body = container.querySelector('.maka-chat-reasoning-content');
+  assert.ok(body);
+  assert.match(body.textContent ?? '', /Current observation\./);
+  thinking = applyThinkingDelta(thinking.text, '\nNewest observation.', { locale: 'en', maxTotalChars: 128, redactionState: thinking.redactionState });
+  await renderThinking();
+  assert.equal(container.querySelector('.maka-chat-reasoning-content'), body);
+  assert.match(body.textContent ?? '', /Newest observation\./);
+  assert.match(body.textContent ?? '', /Current observation\./);
 });
 
 test('preserves a model-authored single newline in plain reasoning', async () => {
@@ -866,5 +888,5 @@ test('uses a generic process label when no duration is recorded, and localizes k
   await renderTurn(root, turn);
   assert.equal(container.querySelector('.maka-processing-summary')?.textContent, 'Execution process');
   await act(() => root.render(<LocaleProvider locale="zh-CN"><TurnView turn={{ ...turn, durationMs: 213_000 }} /></LocaleProvider>));
-  assert.equal(container.querySelector('.maka-processing-summary')?.textContent, '用时 3分 33秒');
+  assert.equal(container.querySelector('.maka-processing-summary')?.textContent, '用时 3 分 33 秒');
 });

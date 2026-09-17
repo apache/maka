@@ -11,10 +11,10 @@
     "readme-hero": "astro build && node scripts/readme-hero.mjs"
   },
   "devDependencies": {
-    "@playwright/test": "^1.62.1",
+    "@playwright/test": "^1.63.0",
     "@fontsource-variable/geist": "^5.3.0",
     "@fontsource-variable/geist-mono": "^5.3.0",
-    "astro": "^7.2.10",
+    "astro": "^7.3.2",
     "cookie": "2.0.1"
   }
 }

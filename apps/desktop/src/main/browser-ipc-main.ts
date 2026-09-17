@@ -17,7 +17,8 @@
  * under the License.
  */
 
-import { ipcMain } from 'electron';
+import { BrowserWindow, ipcMain } from 'electron';
+import { isWorkHubCoordinationSessionId } from '@maka/core/session';
 import { createBrowserViewHost } from './browser/automation-host.js';
 import { provideBrowserViewHost } from './browser/browser-host.js';
 import { releaseBrowserSession, revokeHiddenBrowserActions } from './browser/session.js';
@@ -36,20 +37,124 @@ interface BrowserIpcDeps {
 }
 
 export interface BrowserIpcController {
+  refreshVisibility(): void;
   retireTarget(scope: DesktopTargetScope): Promise<void>;
 }
 
 export function registerBrowserIpc(deps: BrowserIpcDeps): BrowserIpcController {
-  let shownBrowserSessionId: string | null = null;
-  let selectionDocumentId: string | undefined;
-  let selectionGeneration = 0;
-  provideBrowserViewHost(createBrowserViewHost(deps.mainWindowController.getBrowserViews(), () => shownBrowserSessionId));
+  interface RendererSelection {
+    documentId?: string;
+    generation: number;
+    sessionId: string | null;
+  }
 
-  const hideActiveSession = (): void => {
-    shownBrowserSessionId = null;
-    deps.mainWindowController.getBrowserViews().hideAllExcept(null);
-    revokeHiddenBrowserActions(null);
+  const selections = new Map<Electron.WebContents, RendererSelection>();
+  const observedRenderers = new WeakSet<Electron.WebContents>();
+  const views = deps.mainWindowController.getBrowserViews();
+
+  const isCoordination = (sessionId: string): boolean =>
+    isWorkHubCoordinationSessionId(parseDesktopSessionResourceKey(sessionId).sessionId);
+
+  // Coordination has one persistent conversation owner and may also be
+  // presented by Main. Only its native page moves; automation keeps its owner.
+  const ownerForSession = (sessionId: string): Electron.WebContents | undefined => {
+    let owner: Electron.WebContents | undefined;
+    for (const [contents, selection] of selections) {
+      if (selection.sessionId !== sessionId || !deps.mainWindowController.ownsRenderer(contents)) continue;
+      if (!deps.mainWindowController.isMainRenderer(contents)) return contents;
+      owner = contents;
+    }
+    return owner;
   };
+
+  const isSessionShown = (sessionId: string): boolean => {
+    const owner = ownerForSession(sessionId);
+    if (!owner) return false;
+    const parent = deps.mainWindowController.browserParentForRenderer(owner);
+    const window = BrowserWindow.fromWebContents(owner);
+    return !!parent?.getVisible() && !!window && !window.isDestroyed() &&
+      window.isVisible() && !window.isMinimized();
+  };
+  const canRunInBackground = (sessionId: string): boolean => {
+    const owner = ownerForSession(sessionId);
+    if (!owner || !deps.mainWindowController.browserParentForRenderer(owner)) return false;
+    const ref = parseDesktopSessionResourceKey(sessionId);
+    return isWorkHubCoordinationSessionId(ref.sessionId) && deps.isHostActive(ref);
+  };
+  const revokeHiddenActions = (): void => {
+    for (const sessionId of views.sessionIds()) views.get(sessionId)?.refreshRendering();
+    revokeHiddenBrowserActions((sessionId) => isSessionShown(sessionId) || canRunInBackground(sessionId));
+  };
+
+  const relinquishSession = (contents: Electron.WebContents): void => {
+    const selection = selections.get(contents);
+    const sessionId = selection?.sessionId;
+    if (!selection || !sessionId) return;
+    const view = views.get(sessionId);
+    const parent = deps.mainWindowController.browserParentForRenderer(contents);
+    selection.sessionId = null;
+    if (view && parent && view.hasParent(parent)) {
+      view.park();
+    }
+  };
+
+  const clearRendererSelection = (contents: Electron.WebContents): void => {
+    relinquishSession(contents);
+    selections.delete(contents);
+    revokeHiddenActions();
+  };
+
+  const observeRenderer = (contents: Electron.WebContents): void => {
+    if (observedRenderers.has(contents)) return;
+    observedRenderers.add(contents);
+    const parent = deps.mainWindowController.browserParentForRenderer(contents);
+    const window = BrowserWindow.fromWebContents(contents);
+    const parkPresentedPages = () => {
+      if (!parent) return;
+      for (const sessionId of views.sessionIds()) {
+        const view = views.get(sessionId);
+        if (view?.hasParent(parent) && !view.hasOwner(parent)) view.park();
+      }
+    };
+    window?.on('close', parkPresentedPages);
+    window?.on('hide', revokeHiddenActions);
+    window?.on('minimize', revokeHiddenActions);
+    window?.on('show', revokeHiddenActions);
+    window?.on('restore', revokeHiddenActions);
+    contents.on('render-process-gone', () => clearRendererSelection(contents));
+    contents.once('destroyed', () => {
+      window?.removeListener('close', parkPresentedPages);
+      window?.removeListener('hide', revokeHiddenActions);
+      window?.removeListener('minimize', revokeHiddenActions);
+      window?.removeListener('show', revokeHiddenActions);
+      window?.removeListener('restore', revokeHiddenActions);
+      const owned = views.sessionIds().filter((sessionId) =>
+        parent && views.get(sessionId)?.hasOwner(parent),
+      );
+      clearRendererSelection(contents);
+      void Promise.all(owned.map((sessionId) => releaseBrowserSession(sessionId)));
+    });
+  };
+
+  const ownedRenderer = (
+    event: Electron.IpcMainEvent | Electron.IpcMainInvokeEvent,
+  ): Electron.WebContents | undefined => {
+    const frame = event.senderFrame;
+    if (
+      !frame || frame.frameToken !== event.sender.mainFrame.frameToken ||
+      !deps.mainWindowController.ownsRenderer(event.sender)
+    ) return undefined;
+    observeRenderer(event.sender);
+    return event.sender;
+  };
+
+  deps.mainWindowController.setBrowserViewParentResolver((sessionId) => {
+    const owner = ownerForSession(sessionId);
+    return owner
+      ? deps.mainWindowController.browserParentForRenderer(owner)
+      : undefined;
+  });
+  provideBrowserViewHost(createBrowserViewHost(views, isSessionShown, canRunInBackground));
 
   const requireBrowserTarget = (scope: unknown, target: unknown): string | undefined => {
     const host = requireDesktopTargetScope(scope);
@@ -59,109 +164,169 @@ export function registerBrowserIpc(deps: BrowserIpcDeps): BrowserIpcController {
       : undefined;
   };
 
-  const rendererFrame = (event: Electron.IpcMainEvent): string | undefined => {
-    const frame = event.senderFrame;
-    return frame?.frameToken === event.sender.mainFrame.frameToken
-      ? frame.frameToken
-      : undefined;
-  };
-
-  const advanceSelection = (documentId: unknown, generation: unknown): boolean => {
+  const advanceSelection = (
+    contents: Electron.WebContents,
+    documentId: unknown,
+    generation: unknown,
+  ): RendererSelection | undefined => {
     if (
       typeof documentId !== 'string' || documentId.length === 0 ||
       typeof generation !== 'number' || !Number.isSafeInteger(generation) || generation <= 0
     ) {
-      return false;
+      return undefined;
     }
-    if (documentId !== selectionDocumentId) {
-      selectionDocumentId = documentId;
-      selectionGeneration = 0;
-      hideActiveSession();
-    }
-    if (generation <= selectionGeneration) return false;
-    selectionGeneration = generation;
-    return true;
+    const selection = selections.get(contents);
+    // Only document-ready may rotate this identity. A delayed async resolution
+    // from the previous document must not reclaim the renderer after reload.
+    if (!selection || documentId !== selection.documentId) return undefined;
+    if (generation <= selection.generation) return undefined;
+    selection.generation = generation;
+    return selection;
   };
 
-  const isCurrentSelection = (documentId: unknown, generation: unknown): boolean =>
-    documentId === selectionDocumentId && generation === selectionGeneration;
+  const isCurrentSelection = (
+    contents: Electron.WebContents,
+    documentId: unknown,
+    generation: unknown,
+  ): boolean => {
+    const selection = selections.get(contents);
+    return !!selection && documentId === selection.documentId && generation === selection.generation;
+  };
+
+  const claimSession = (
+    contents: Electron.WebContents,
+    selection: RendererSelection,
+    sessionId: string | null,
+  ): void => {
+    const previousOwner = sessionId ? ownerForSession(sessionId) : undefined;
+    if (previousOwner && previousOwner !== contents && (!isCoordination(sessionId!) ||
+      deps.mainWindowController.isMainRenderer(previousOwner) === deps.mainWindowController.isMainRenderer(contents))) return;
+    if (selection.sessionId && selection.sessionId !== sessionId) relinquishSession(contents);
+    if (!sessionId) {
+      selection.sessionId = null;
+      revokeHiddenActions();
+      return;
+    }
+    selection.sessionId = sessionId;
+    if (isCoordination(sessionId) && !deps.mainWindowController.isMainRenderer(contents)) {
+      const parent = deps.mainWindowController.browserParentForRenderer(contents);
+      if (parent) views.get(sessionId)?.setOwner(parent);
+    }
+    revokeHiddenActions();
+  };
+
+  const selectedTarget = (
+    event: Electron.IpcMainEvent | Electron.IpcMainInvokeEvent,
+    scope: unknown,
+    target: unknown,
+  ): string | undefined => {
+    const contents = ownedRenderer(event);
+    if (!contents) return undefined;
+    const sessionId = requireBrowserTarget(scope, target);
+    return sessionId && deps.mainWindowController.browserParentForRenderer(contents) &&
+      selections.get(contents)?.sessionId === sessionId
+      ? sessionId
+      : undefined;
+  };
 
   ipcMain.on('browser:document-ready', (event, documentId: unknown) => {
-    if (!rendererFrame(event) || typeof documentId !== 'string' || documentId.length === 0) return;
-    if (documentId === selectionDocumentId) return;
-    selectionDocumentId = documentId;
-    selectionGeneration = 0;
-    hideActiveSession();
+    const contents = ownedRenderer(event);
+    if (!contents || typeof documentId !== 'string' || documentId.length === 0) return;
+    const selection = selections.get(contents);
+    if (documentId === selection?.documentId) return;
+    relinquishSession(contents);
+    selections.set(contents, { documentId, generation: 0, sessionId: null });
+    revokeHiddenActions();
   });
 
   ipcMain.on('browser:active-session', (event, scope: unknown, sessionId: unknown, documentId: unknown, generation: unknown) => {
-    const frame = rendererFrame(event);
-    if (!frame || !advanceSelection(documentId, generation)) return;
+    const contents = ownedRenderer(event);
+    if (!contents) return;
+    const selection = advanceSelection(contents, documentId, generation);
+    if (!selection) return;
     try {
-      shownBrowserSessionId = requireBrowserTarget(scope, sessionId) ?? null;
+      claimSession(contents, selection, requireBrowserTarget(scope, sessionId) ?? null);
     } catch {
-      hideActiveSession();
-      return;
+      claimSession(contents, selection, null);
     }
-    deps.mainWindowController.getBrowserViews().hideAllExcept(shownBrowserSessionId);
-    revokeHiddenBrowserActions(shownBrowserSessionId);
   });
   ipcMain.on('browser:hide-active-session', (event, documentId: unknown, generation: unknown) => {
-    const frame = rendererFrame(event);
-    if (frame && advanceSelection(documentId, generation)) hideActiveSession();
+    const contents = ownedRenderer(event);
+    if (!contents) return;
+    const selection = advanceSelection(contents, documentId, generation);
+    if (selection) claimSession(contents, selection, null);
   });
 
   ipcMain.on('browser:setViewport', (event, scope: unknown, input: { sessionId?: unknown; rect?: BrowserViewRect | null }, documentId: unknown, generation: unknown) => {
-    const frame = rendererFrame(event);
-    if (!frame || !isCurrentSelection(documentId, generation)) return;
-    let target: string | undefined;
+    const contents = ownedRenderer(event);
+    if (!contents || !isCurrentSelection(contents, documentId, generation)) return;
+    let target: ReturnType<typeof selectedTarget>;
     try {
-      target = requireBrowserTarget(scope, input?.sessionId);
+      target = selectedTarget(event, scope, input?.sessionId);
     } catch {
       return;
     }
-    if (!target || target !== shownBrowserSessionId) return;
-    deps.mainWindowController.getBrowserViews().setViewport(target, input.rect ?? null);
+    if (!target) return;
+    const view = views.get(target);
+    const parent = deps.mainWindowController.browserParentForRenderer(contents);
+    if (!view || !parent) return;
+    if (input.rect) {
+      view.setParent(parent);
+      view.setViewport(input.rect);
+    } else if (view.hasParent(parent)) {
+      view.park();
+    }
   });
 
-  ipcMain.handle('browser:navigate', async (_event, scope: unknown, target: unknown, url: unknown) => {
-    const resourceKey = requireBrowserTarget(scope, target);
-    if (!resourceKey || resourceKey !== shownBrowserSessionId) return;
-    await deps.mainWindowController.getBrowserViews().getOrCreate(resourceKey).navigate(String(url ?? ''));
+  ipcMain.handle('browser:capture-page', (event, scope: unknown, target: unknown) => {
+    const selected = selectedTarget(event, scope, target);
+    const parent = deps.mainWindowController.browserParentForRenderer(event.sender);
+    const view = selected ? views.get(selected) : undefined;
+    return parent && view?.hasParent(parent) ? view.capturePage() : undefined;
   });
-  ipcMain.handle('browser:back', (_event, scope: unknown, target: unknown) => {
-    const resourceKey = requireBrowserTarget(scope, target);
-    if (resourceKey === shownBrowserSessionId) deps.mainWindowController.getBrowserViews().get(resourceKey)?.goBack();
+
+  ipcMain.handle('browser:navigate', async (event, scope: unknown, target: unknown, url: unknown) => {
+    const selected = selectedTarget(event, scope, target);
+    if (!selected) return;
+    await views.getOrCreate(selected).navigate(String(url ?? ''));
   });
-  ipcMain.handle('browser:forward', (_event, scope: unknown, target: unknown) => {
-    const resourceKey = requireBrowserTarget(scope, target);
-    if (resourceKey === shownBrowserSessionId) deps.mainWindowController.getBrowserViews().get(resourceKey)?.goForward();
+  ipcMain.handle('browser:back', (event, scope: unknown, target: unknown) => {
+    const selected = selectedTarget(event, scope, target);
+    if (selected) views.get(selected)?.goBack();
   });
-  ipcMain.handle('browser:reload', (_event, scope: unknown, target: unknown) => {
-    const resourceKey = requireBrowserTarget(scope, target);
-    if (resourceKey === shownBrowserSessionId) deps.mainWindowController.getBrowserViews().get(resourceKey)?.reload();
+  ipcMain.handle('browser:forward', (event, scope: unknown, target: unknown) => {
+    const selected = selectedTarget(event, scope, target);
+    if (selected) views.get(selected)?.goForward();
   });
-  ipcMain.handle('browser:stop', (_event, scope: unknown, target: unknown) => {
-    const resourceKey = requireBrowserTarget(scope, target);
-    if (resourceKey === shownBrowserSessionId) deps.mainWindowController.getBrowserViews().get(resourceKey)?.stop();
+  ipcMain.handle('browser:reload', (event, scope: unknown, target: unknown) => {
+    const selected = selectedTarget(event, scope, target);
+    if (selected) views.get(selected)?.reload();
   });
-  ipcMain.handle('browser:get-state', (_event, scope: unknown, target: unknown) => {
-    const resourceKey = requireBrowserTarget(scope, target);
-    return resourceKey
-      ? deps.mainWindowController.getBrowserViews().get(resourceKey)?.state() ?? null
-      : null;
+  ipcMain.handle('browser:stop', (event, scope: unknown, target: unknown) => {
+    const selected = selectedTarget(event, scope, target);
+    if (selected) views.get(selected)?.stop();
   });
-  ipcMain.handle('browser:close-page', async (_event, scope: unknown, target: unknown) => {
-    const resourceKey = requireBrowserTarget(scope, target);
-    if (resourceKey === shownBrowserSessionId) await releaseBrowserSession(resourceKey);
+  ipcMain.handle('browser:get-state', (event, scope: unknown, target: unknown) => {
+    if (!ownedRenderer(event)) return null;
+    // A remounted panel reads its page before the workspace selects the session.
+    const sessionId = requireBrowserTarget(scope, target);
+    return sessionId ? views.get(sessionId)?.state() ?? null : null;
+  });
+  ipcMain.handle('browser:close-page', async (event, scope: unknown, target: unknown) => {
+    const selected = selectedTarget(event, scope, target);
+    if (selected) await releaseBrowserSession(selected);
   });
 
   return {
+    refreshVisibility: revokeHiddenActions,
     async retireTarget(scope) {
-      const views = deps.mainWindowController.getBrowserViews();
-      if (shownBrowserSessionId && belongsToTarget(shownBrowserSessionId, scope)) {
-        hideActiveSession();
+      for (const selection of selections.values()) {
+        const sessionId = selection.sessionId;
+        if (!sessionId || !belongsToTarget(sessionId, scope)) continue;
+        selection.sessionId = null;
+        views.get(sessionId)?.setViewport(null);
       }
+      revokeHiddenActions();
       const retired = views.sessionIds().filter((sessionId) => {
         return belongsToTarget(sessionId, scope);
       });
