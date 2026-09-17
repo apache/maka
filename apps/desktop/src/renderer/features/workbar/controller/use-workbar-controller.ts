@@ -895,6 +895,10 @@ export function useWorkbarController(
       ),
     [familySessionForSideChat, input.sessions, sideConversations.panels],
   );
+  const retainedFamilySessionId =
+    !activeSessionId && input.layoutSessionId && activeSideConversationPanels.length > 0
+      ? familySessionForSideChat?.id
+      : undefined;
   return {
     commands,
     LiveContextUsageProbe,
@@ -903,7 +907,7 @@ export function useWorkbarController(
       hiddenSessionIds: hiddenCompanionForkIds,
     },
     host: {
-      activeId: input.available ? activeSessionId : undefined,
+      activeId: input.available ? activeSessionId ?? retainedFamilySessionId : undefined,
       projectId: input.projectId,
       projectAliases: input.projectAliases,
       rightCollapsed: layout.workbarCollapsed,

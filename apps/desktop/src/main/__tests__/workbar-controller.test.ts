@@ -1037,6 +1037,11 @@ describe('useWorkbarController', () => {
       ...input(undefined, createFakeToastApi(), [parent]),
       layoutSessionId: child.id,
     }));
+    assert.equal(
+      controller().host.activeId,
+      parent.id,
+      'the retained Side Chat must keep its Workbar surface mounted during the catalog gap',
+    );
     assert.equal(controller().host.quotes?.some((panel) => panel.id === panelId), true);
     assert.equal(
       controller().host.panelsState.right.tabs.some(
@@ -1046,6 +1051,7 @@ describe('useWorkbarController', () => {
     );
 
     await act(async () => renderController(root, services, input(child, createFakeToastApi(), [parent, child])));
+    assert.equal(controller().host.activeId, child.id);
     assert.equal(controller().host.quotes?.some((panel) => panel.id === panelId), true);
   });
 
