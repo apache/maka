@@ -66,7 +66,7 @@ async function captureIdentity(path: string): Promise<{ dev: string; ino: string
   return { dev: String(s.dev), ino: String(s.ino) };
 }
 
-/** Limit actual descriptor writes, including the old string overload. */
+/** 限制真实写入长度；保留字符串重载以便将同一测试移植到修复前验证失败。 */
 function limitWriteSize(t: TestContext, handle: FileHandle, maxBytes: number): void {
   const write = handle.write.bind(handle);
   t.mock.method(
@@ -92,6 +92,7 @@ function limitWriteSize(t: TestContext, handle: FileHandle, maxBytes: number): v
   );
 }
 
+// #5370：成功必须意味着所有 UTF-8 字节落盘，不能把短写当成完整写入。
 describe('complete descriptor writes', () => {
   test('short writes preserve every UTF-8 byte after reading an existing file', async (t) => {
     const cwd = await temporaryDirectory('maka-short-write-');
