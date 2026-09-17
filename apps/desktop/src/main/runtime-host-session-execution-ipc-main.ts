@@ -405,15 +405,10 @@ export function registerRuntimeHostSessionExecutionIpc(
         if (opened.snapshot.session.isArchived) {
           throw new Error(`Cannot read an archived Runtime Host Session: ${normalizedSessionId}`);
         }
-        // Current Host transcripts contain committed rows only; live text
-        // deltas are carried separately and must never become snapshot text.
+        // The durable page contains committed rows only. Active stream markers
+        // can lag a committed completion, so they cannot exclude durable text.
         const durablePage = await opened.decodeTranscriptPage(opened.transcriptBootstrap.durable);
-        // Exclude any assistant row whose text stream is still active, even
-        // if a persisted partial checkpoint is present in the durable tail.
-        const activeMessageIds = new Set(opened.activeAssistantStreams.map((stream) => stream.messageId));
-        const messages = durablePage.messages
-          .map((entry) => entry.message)
-          .filter((message) => message.type !== 'assistant' || !activeMessageIds.has(message.id));
+        const messages = durablePage.messages.map((entry) => entry.message);
         const snapshot = createSessionSnapshot(
           messages.sort((left, right) => left.ts - right.ts),
           {

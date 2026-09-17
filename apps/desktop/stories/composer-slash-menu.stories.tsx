@@ -235,6 +235,32 @@ function ContextSwitchHarness(): React.ReactElement {
   );
 }
 
+let releaseSessionSearch: (() => void) | undefined;
+let holdSessionSearch = false;
+const sessionSuggestions = [{ id: 'source-session', name: 'Reference source' }];
+
+function SessionPickerHarness(): React.ReactElement {
+  return (
+    <div style={{ display: 'grid', alignItems: 'end', height: 520, width: 900, maxWidth: '100%', padding: 24 }}>
+      <Composer
+        draftKey="story-session-picker-width"
+        onSearchMentionFiles={async () => {
+          if (holdSessionSearch) {
+            holdSessionSearch = false;
+            await new Promise<void>((resolve) => { releaseSessionSearch = resolve; });
+            releaseSessionSearch = undefined;
+          }
+          return [];
+        }}
+        sessionReferences={sessionSuggestions}
+        onPickSessionReference={() => {}}
+        onSend={() => {}}
+        onStop={() => {}}
+      />
+    </div>
+  );
+}
+
 const meta = {
   title: 'Product/Composer Slash Menu',
   component: SlashMenuHarness,
@@ -256,6 +282,32 @@ function editor(canvasElement: HTMLElement): HTMLElement {
 function overlay(): ReturnType<typeof within> {
   return within(document.body);
 }
+
+export const SessionPickerKeepsItsWidth: Story = {
+  render: () => <SessionPickerHarness />,
+  play: async ({ canvasElement }) => {
+    holdSessionSearch = true;
+    const composer = editor(canvasElement);
+    const surface = canvasElement.querySelector<HTMLElement>('.maka-composer-astryx');
+    if (!surface) throw new Error('composer surface is missing');
+    const assertWidth = (menu: HTMLElement) => {
+      expect(Math.abs(menu.getBoundingClientRect().width - surface.getBoundingClientRect().width))
+        .toBeLessThan(2);
+    };
+    await userEvent.click(composer);
+    await userEvent.keyboard('@');
+    const menu = await overlay().findByRole('listbox', { name: '工作区文件和会话' });
+    await waitFor(() => expect(within(menu).getByRole('status')).toBeVisible());
+    assertWidth(menu);
+    await waitFor(() => expect(releaseSessionSearch).toBeDefined());
+    releaseSessionSearch?.();
+    await waitFor(() => expect(within(menu).getByRole('option', { name: 'Reference source' })).toBeVisible());
+    assertWidth(menu);
+    await userEvent.keyboard('no-matching-session-zzzz');
+    await waitFor(() => expect(within(menu).getByText('未找到文件或会话')).toBeVisible());
+    assertWidth(menu);
+  },
+};
 
 async function openMenu(canvasElement: HTMLElement): Promise<HTMLElement> {
   const composer = editor(canvasElement);

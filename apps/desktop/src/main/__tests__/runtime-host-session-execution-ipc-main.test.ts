@@ -2232,7 +2232,7 @@ test('returns the attachment_blocked envelope when an approved source has expire
   assert.deepEqual(result, { ok: false, reason: "attachment_blocked", code: "source_expired" });
 });
 
-test('Session snapshot IPC uses committed text, keeps truncation, and tolerates close failure', async () => {
+test('Session snapshot IPC keeps committed text despite a lagging active marker', async () => {
   const ipc = ipcHarness();
   let closes = 0;
   const opened = runtimeHostSessionFixture({
@@ -2245,14 +2245,16 @@ test('Session snapshot IPC uses committed text, keeps truncation, and tolerates 
       queue: { hostEpoch: 'host-1', queueRevision: 0, steering: [], followup: [] },
       interactions: { pending: [] },
     },
-    activeAssistantStreams: [{ kind: 'text', turnId: 'turn-1', messageId: 'streaming' }],
+    activeAssistantStreams: [
+      { kind: 'text', turnId: 'turn-1', messageId: 'settled' },
+      { kind: 'text', turnId: 'turn-1', messageId: 'streaming' },
+    ],
     transcript: Promise.resolve([]),
     events: (async function* () {})(),
     async decodeTranscriptPage() {
       return {
         messages: [
           { identity: 1, message: { type: 'user', id: 'user-1', turnId: 'turn-1', ts: 1, text: 'committed question' } },
-          { identity: 2, message: { type: 'assistant', id: 'streaming', turnId: 'turn-1', ts: 2, text: 'unfinished ans', modelId: 'test-model' } },
           { identity: 3, message: { type: 'assistant', id: 'settled', turnId: 'turn-0', ts: 0, text: 'settled answer', modelId: 'test-model' } },
         ],
         nextCursor: 'older-page',

@@ -44,8 +44,12 @@
   max-width: min(420px, calc(100vw - var(--space-6)));
 }
 
-/* Keep the Session picker calm and readable, including with one result. */
-.astryx-trigger-menu:has(.maka-composer-session-option) {
+/* The menu label remains present while results load or are empty. */
+.astryx-trigger-menu:is(
+  [aria-label='Workspace files and sessions'],
+  [aria-label='工作区文件和会话'],
+  [aria-label='工作區檔案和作業階段']
+) {
   max-width: none;
   max-height: min(320px, 50vh);
   padding: var(--space-1-5);
