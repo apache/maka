@@ -3926,7 +3926,9 @@ test('conversation copy re-authenticates a rewritten paging Read against its dis
       ts: 6,
     });
 
-    const source = await new RuntimeReadModel({ runtimeEventStore }).getSessionView('session-source');
+    const source = await new RuntimeReadModel({ runtimeEventStore }).getSessionView(
+      'session-source',
+    );
     const firstTurnMessages = source.messages.filter(
       (message) => 'turnId' in message && message.turnId === 'turn-1',
     );
@@ -3960,12 +3962,9 @@ test('conversation copy re-authenticates a rewritten paging Read against its dis
     const copiedCall = targetEvents.find((event) => event.content?.kind === 'function_call');
     assert.ok(copiedCall?.content?.kind === 'function_call');
     const copiedArgs = copiedCall.content.args as { path: string };
-    assert.notEqual(
-      copiedArgs.path,
-      sourcePath,
-      'the copied Read names the copied tool result',
-    );
-    const dispatch = targetEvents.find((event) => event.actions?.toolDispatch)?.actions?.toolDispatch;
+    assert.notEqual(copiedArgs.path, sourcePath, 'the copied Read names the copied tool result');
+    const dispatch = targetEvents.find((event) => event.actions?.toolDispatch)?.actions
+      ?.toolDispatch;
     assert.ok(dispatch);
     assert.equal(
       dispatch.canonicalArgsHash,
