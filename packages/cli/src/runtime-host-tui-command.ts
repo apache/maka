@@ -22,7 +22,6 @@ import type { UiLocale } from '@maka/core/ui-locale';
 import { SessionActivityRegistry } from '@maka/runtime/goal-turn-lifecycle';
 import { HostHandoffCancelledError } from '@maka/runtime-host/client';
 import { runtimeHostProfileUsesHostWorkspace } from '@maka/runtime-host/profile-kind';
-import { createForeignSessionStore } from '@maka/storage/foreign-session-store';
 import { formatMakaResumeHint } from './cli-invocation.js';
 import {
   connectRuntimeHostCli,
@@ -52,7 +51,6 @@ export interface RunRuntimeHostTuiInput {
 
 export async function runRuntimeHostTui(input: RunRuntimeHostTuiInput): Promise<number> {
   const ownerCopy = getTuiHostOwnerCopy(input.locale);
-  const foreignSessions = createForeignSessionStore();
   const contextInput = {
     ...(process.stdin.isTTY ? { handoffSurface: createCliHostHandoffSurface(input.locale) } : {}),
     clientDataRoot: input.clientDataRoot,
@@ -109,6 +107,7 @@ export async function runRuntimeHostTui(input: RunRuntimeHostTuiInput): Promise<
       onboarding: context.onboarding,
       ...(context.mcp ? { mcp: context.mcp } : {}),
       recap: context.recap,
+      externalSessions: context.externalSessions,
       hostControl: {
         status: () => describeTuiHost({ ...context, locale: input.locale }),
         prepare: async (action, confirm) => {
@@ -132,7 +131,7 @@ export async function runRuntimeHostTui(input: RunRuntimeHostTuiInput): Promise<
             sessionListScope: 'all' as const,
             clientPathAuthority: 'none' as const,
           }
-        : { foreignSessions }),
+        : {}),
       subscribeShellRunUpdates: (listener) => context.driver.subscribeShellRunUpdates(listener),
       listShellRunUpdates: (sessionId) => context.driver.listShellRunUpdates(sessionId),
       onProcessExit: input.onProcessExit,
@@ -191,7 +190,7 @@ async function runFirstRunOnboarding(
       locale,
       model: '',
       connectionSlug: '',
-      permissionMode: 'ask',
+      permissionMode: 'bypass',
       firstRun: true,
       turnActivity: {
         activities: new SessionActivityRegistry(),
@@ -221,6 +220,7 @@ function createFirstRunSessionDriver(): MakaSessionDriver {
   };
   return {
     getSessionId: () => null,
+    getWorkspaceTarget: () => undefined,
     listSessions: async () => [],
     preparePrompt: unavailable,
     submitMessage: unavailable,

@@ -27,7 +27,8 @@ import { PROVIDER_REGISTRY, type LlmConnection } from '@maka/core/llm-connection
 import { anthropic } from '@ai-sdk/anthropic';
 import { generateText, isStepCount, streamText, tool, type ModelMessage } from 'ai';
 import { z } from 'zod';
-import { fetchProviderModels, runConnectionModelDiscoveryEffect } from '../model-fetcher.js';
+import { runConnectionModelDiscoveryEffect } from '../model-fetcher.js';
+import { discoverModels } from './model-discovery-fixture.js';
 import { resetStreamUsageFallbackMemory } from '../stream-usage-fallback-fetch.js';
 import { buildProviderOptions, getAIModel } from '../model-factory.js';
 import { resolveOAuthSubscriptionAccessToken } from '../subscription-credentials.js';
@@ -990,7 +991,7 @@ describe('models.dev provider conformance', () => {
       createdAt: 1,
       updatedAt: 1,
     };
-    connection.models = await fetchProviderModels(connection, 'github-account-token');
+    connection.models = await discoverModels(connection, 'github-account-token');
     assert.deepEqual(connection.models.map((model) => model.id).sort(), [
       'claude-sonnet-4.6',
       'gpt-5.4',
@@ -1346,7 +1347,7 @@ describe('models.dev provider conformance', () => {
       updatedAt: 1,
     };
 
-    assert.deepEqual(await fetchProviderModels(connection, 'opencode-test-key'), [{ id: modelId }]);
+    assert.deepEqual(await discoverModels(connection, 'opencode-test-key'), [{ id: modelId }]);
     const result = await generateText({
       model: getAIModel({ connection, apiKey: 'opencode-test-key', modelId }),
       prompt: 'Call echo with hello.',
@@ -1842,7 +1843,7 @@ describe('models.dev provider conformance', () => {
       updatedAt: 1,
     };
 
-    const models = await fetchProviderModels(connection, 'hf-test-token');
+    const models = await discoverModels(connection, 'hf-test-token');
     assert.deepEqual(models, [{ id: discoveredModelId, capabilities: { functionCalling: true } }]);
 
     const result = await generateText({

@@ -45,7 +45,8 @@ test('archived-only history boots into a usable new task', async ({ window: page
         return 'archived';
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        if (message.includes(`Session ${id} has a live derived effect`)) return message;
+        // IPC carries the Host's raw ID, not the renderer's host-qualified ID.
+        if (message.endsWith(' has a live derived effect')) return message;
         throw error;
       }
     }, sessionId), { timeout: 20_000 }).toBe('archived');

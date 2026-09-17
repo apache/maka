@@ -616,7 +616,7 @@ Apache License
 
 ================================================================================
 
-Package: @earendil-works/pi-tui@0.84.4
+Package: @earendil-works/pi-tui@0.85.1
 Declared license: MIT
 Selected license: MIT
 Repository: git+https://github.com/earendil-works/pi.git#packages/tui
@@ -664,7 +664,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 ================================================================================
 
-Package: @formatjs/icu-messageformat-parser@3.5.17
+Package: @formatjs/icu-messageformat-parser@3.5.18
 Declared license: MIT
 Selected license: MIT
 Repository: https://github.com/formatjs/formatjs.git#packages/icu-messageformat-parser
@@ -700,7 +700,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 ================================================================================
 
-Package: @larksuiteoapi/node-sdk@1.73.0
+Package: @larksuiteoapi/node-sdk@1.73.3
 Declared license: MIT
 Selected license: MIT
 Repository: https://github.com/larksuite/node-sdk.git
@@ -1224,7 +1224,7 @@ limitations under the License.
 
 ================================================================================
 
-Package: @openai/agents-core@0.17.0
+Package: @openai/agents-core@0.18.0
 Declared license: MIT
 Selected license: MIT
 Repository: https://github.com/openai/openai-agents-js
@@ -1723,7 +1723,7 @@ SOFTWARE.
 
 ================================================================================
 
-Package: @types/node@26.4.0
+Package: @types/node@26.5.1
 Declared license: MIT
 Selected license: MIT
 Repository: https://github.com/DefinitelyTyped/DefinitelyTyped.git#types/node
@@ -4739,7 +4739,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 ================================================================================
 
-Package: intl-messageformat@11.2.14
+Package: intl-messageformat@11.2.15
 Declared license: BSD-3-Clause
 Selected license: BSD-3-Clause
 Repository: git@github.com:formatjs/formatjs.git
@@ -7265,7 +7265,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ================================================================================
 
-Package: socks@2.8.9
+Package: socks@2.8.10
 Declared license: MIT
 Selected license: MIT
 Repository: git+https://github.com/JoshGlazebrook/socks.git
@@ -7361,7 +7361,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 ================================================================================
 
-Package: systeminformation@5.33.8
+Package: systeminformation@5.33.10
 Declared license: MIT
 Selected license: MIT
 Repository: git+https://github.com/sebhildebrandt/systeminformation.git
@@ -7474,7 +7474,7 @@ SOFTWARE.
 
 ================================================================================
 
-Package: undici@8.10.1
+Package: undici@8.10.2
 Declared license: MIT
 Selected license: MIT
 Repository: git+https://github.com/nodejs/undici.git
@@ -7504,7 +7504,7 @@ SOFTWARE.
 
 ================================================================================
 
-Package: undici-types@8.3.0
+Package: undici-types@8.9.0
 Declared license: MIT
 Selected license: MIT
 Repository: git+https://github.com/nodejs/undici.git
@@ -7859,7 +7859,7 @@ THIS SOFTWARE.
 
 ================================================================================
 
-Package: yaml@2.9.0
+Package: yaml@2.9.1
 Declared license: ISC
 Selected license: ISC
 Repository: github:eemeli/yaml
@@ -7934,7 +7934,7 @@ ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 ================================================================================
 
-Package: zod@4.5.4
+Package: zod@4.6.5
 Declared license: MIT
 Selected license: MIT
 Repository: git+https://github.com/colinhacks/zod.git

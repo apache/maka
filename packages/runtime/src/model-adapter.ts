@@ -54,6 +54,7 @@ export type {
 import { resolveModelRuntime, type ResolvedModelRuntime } from './model-runtime.js';
 import {
   plaintextResponsesReasoningProviderOptions,
+  withoutMakaResponsesState,
   safePlaintextResponsesReasoningItemId,
 } from './responses-reasoning-state.js';
 import { classifyError, providerModelFailure } from './provider-error-classification.js';
@@ -183,11 +184,13 @@ export class ModelAdapter {
             ? 'encrypted-content'
             : this.runtime.reasoningReplay.contract.reasoningReplay === 'plaintext-content'
               ? 'plaintext-content'
-              : {
-                  kind: 'plaintext-item',
-                  profile: requireResponsesReplayProfile(this.runtime),
-                  providerOptionsKey: requireResponsesProviderOptionsKey(this.runtime),
-                },
+              : this.runtime.reasoningReplay.contract.reasoningReplay === 'plaintext-summary'
+                ? {
+                    kind: 'plaintext-item',
+                    profile: requireResponsesReplayProfile(this.runtime),
+                    providerOptionsKey: requireResponsesProviderOptionsKey(this.runtime),
+                  }
+                : 'none',
     };
   }
 
@@ -861,19 +864,17 @@ function anthropicRedactedThinkingProviderOptionsFromChunk(
   if (!anthropic || typeof anthropic !== 'object' || Array.isArray(anthropic)) return undefined;
   const redactedData = (anthropic as { redactedData?: unknown }).redactedData;
   return typeof redactedData === 'string'
-    ? (meta as NonNullable<ModelMessage['providerOptions']>)
+    ? withoutMakaResponsesState(meta as NonNullable<ModelMessage['providerOptions']>)
     : undefined;
 }
 
-function openAiResponsesReasoningProviderOptionsFromChunk(
+function responsesReasoningProviderOptionsFromChunk(
   chunk: AiSdkStreamChunk,
   runtime: ResolvedModelRuntime,
 ): NonNullable<ModelMessage['providerOptions']> | undefined {
+  if (runtime.reasoningReplay.kind !== 'responses') return undefined;
   const meta = chunk.providerMetadata;
-  if (
-    runtime.reasoningReplay.kind === 'responses' &&
-    runtime.reasoningReplay.contract.reasoningReplay === 'plaintext-summary'
-  ) {
+  if (runtime.reasoningReplay.contract.reasoningReplay === 'plaintext-summary') {
     if (chunk.type !== 'reasoning' && chunk.type !== 'reasoning-end') return undefined;
     const providerOptionsKey = runtime.responsesProviderOptionsKey;
     const provider =
@@ -908,6 +909,9 @@ function openAiResponsesReasoningProviderOptionsFromChunk(
       throw new Error('Plaintext Responses reasoning summary exceeds durable state bounds');
     }
     return providerOptions;
+  }
+  if (runtime.reasoningReplay.contract.reasoningReplay !== 'encrypted-content') {
+    return undefined;
   }
   if (!meta || typeof meta !== 'object') return undefined;
   const openai = (meta as { openai?: unknown }).openai;
@@ -1054,7 +1058,7 @@ function translateChunk(
               : undefined;
       const signature = reasoningSignatureFromChunk(chunk);
       const responsesProviderOptions = runtime
-        ? openAiResponsesReasoningProviderOptionsFromChunk(chunk, runtime)
+        ? responsesReasoningProviderOptionsFromChunk(chunk, runtime)
         : undefined;
       const reasoningPartId = reasoningPartIdFromChunk(chunk);
       const reasoningSummaryText = plaintextSummaryTextFromChunk(chunk, runtime);
@@ -1092,7 +1096,7 @@ function translateChunk(
     case 'reasoning-end': {
       const signature = reasoningSignatureFromChunk(chunk);
       const responsesProviderOptions = runtime
-        ? openAiResponsesReasoningProviderOptionsFromChunk(chunk, runtime)
+        ? responsesReasoningProviderOptionsFromChunk(chunk, runtime)
         : undefined;
       const reasoningPartId = reasoningPartIdFromChunk(chunk);
       const reasoningSummaryText = plaintextSummaryTextFromChunk(chunk, runtime);

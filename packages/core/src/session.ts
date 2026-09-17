@@ -802,6 +802,24 @@ export function isUserVisibleSessionSystemNote(kind: string): boolean {
   return isRuntimeSystemNoteKind(kind);
 }
 
+/**
+ * Whether a transcript row contributes to imported conversation text.
+ *
+ * An imported transcript replays as text alone: another runtime's tool calls
+ * belong to its protocol, and a note, a turn state or a token count is not
+ * something anyone said. What is left — the user's words and the model's — is
+ * the conversation, and it is the whole of what a copy of that Session is
+ * worth. Import and the Ledger conversion both measure a transcript against
+ * this one projection, so a transcript either side would call empty is refused
+ * before it is persisted rather than published as an empty history.
+ */
+export function isConversationTextMessage(message: StoredMessage): boolean {
+  if (message.type === 'user') return true;
+  return (
+    message.type === 'assistant' && typeof message.text === 'string' && message.text.length > 0
+  );
+}
+
 export interface AssistantMessage {
   type: 'assistant';
   interrupted?: true;

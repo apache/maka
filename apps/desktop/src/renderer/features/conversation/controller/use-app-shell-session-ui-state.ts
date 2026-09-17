@@ -24,7 +24,7 @@ import { currentTranscriptRange } from './transcript-reading-position.js';
 import { createAppShellSessionUiStateController, type AppShellSessionUiStateController } from '../model/session-ui-state.js';
 
 interface TranscriptSource {
-  range(): { readonly sessionId: string; readonly hasOlder: boolean; readonly hasNewer: boolean };
+  range(): { readonly sessionId: string; readonly hasOlder: boolean };
   snapshot(): { readonly messages: readonly StoredMessage[]; readonly ready: boolean };
 }
 
@@ -35,8 +35,7 @@ export type TranscriptPublisher<Controller> = (
   onReady: () => void,
 ) => void;
 
-/** The rendered messages and gap flags are a single publication. The source
- * may advance during reader input, but only the scroll authority admits it. */
+/** The rendered messages and the earlier-history flag are a single publication. */
 export function useAppShellSessionUiState<
   Controller extends { readonly store: TranscriptSource },
   Session extends SessionSummary & { localState?: string; shared?: boolean },
@@ -84,12 +83,10 @@ export function useAppShellSessionUiState<
       isCurrent: () => boolean,
       onReady: () => void,
     ) {
-      controller.transcriptViewportNavigation.commitRange(sessionId, () => {
-        if (!isCurrent()) return;
-        const snapshot = rangeController.store.snapshot();
-        if (!snapshot.ready || !commitTranscript(sessionId, [...snapshot.messages], rangeController)) return;
-        onReady();
-      });
+      if (!isCurrent()) return;
+      const snapshot = rangeController.store.snapshot();
+      if (!snapshot.ready || !commitTranscript(sessionId, [...snapshot.messages], rangeController)) return;
+      onReady();
     },
   }));
 

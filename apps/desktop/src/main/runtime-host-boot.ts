@@ -82,6 +82,8 @@ import { createSettingsStore } from "@maka/storage/settings-store";
 import { resolveStorageRoot } from "@maka/storage/root-authority";
 
 import { createMcpOAuthController } from "./mcp-oauth-controller.js";
+import { CommandCodeBrowserLoginController } from "./commandcode-browser-login.js";
+import { registerCommandCodeLoginIpc } from "./commandcode-login-ipc-main.js";
 import { createWorkHubControl } from './workhub-control.js';
 import { createWorkHubPresentation } from './workhub-presentation.js';
 import { createWorkHubRuntime } from './workhub-runtime.js';
@@ -127,6 +129,7 @@ import {
   resolveE2eFixture,
   seedE2eFixture,
 } from "./e2e-fixture.js";
+import { PARTIAL_HISTORY_TRANSCRIPT_BYTES } from "./e2e-fixture/seed-helpers.js";
 import { createKeepSystemAwakeController } from "./keep-system-awake.js";
 import { isDarkAppearance } from "./theme-source.js";
 import {
@@ -633,6 +636,11 @@ function localSessionTarget(state: RuntimeHostDesktopTargetState): DesktopSessio
     ...(state.readiness === 'ready' ? { client: state.candidate.client, submit: (input) => state.candidate.submitLocalMessage(input) } : {}) };
 }
 const oauthPresentation = new RuntimeHostOAuthPresentation((url) => shell.openExternal(url));
+// Desktop-local by construction: the Studio page posts the key to a loopback
+// port beside the browser, so the listener cannot live in a (possibly remote) Host.
+const commandCodeLoginController = new CommandCodeBrowserLoginController({
+  openExternal: (url) => shell.openExternal(url),
+});
 const runtimeHostProfileService = createDesktopRuntimeHostProfileService({
   clientDataRoot: userDataDir,
   startup: runtimeHostStartup,
@@ -942,7 +950,7 @@ const workHubPresentation = createWorkHubPresentation({
   mainModuleDirectory: import.meta.dirname,
   viteDevServerUrl: process.env.VITE_DEV_SERVER_URL,
   preloadPath: join(import.meta.dirname, '..', 'preload', 'preload.cjs'),
-  onViewCreated: (contents, view) => mainWindowController.registerAuxiliaryRenderer(contents, view),
+  onViewCreated: (contents, container) => mainWindowController.registerAuxiliaryRenderer(contents, container),
   onVisibilityChanged: () => browserIpc.refreshVisibility(),
 });
 workHubPresentation.registerIpc();
@@ -951,7 +959,8 @@ const windowsAppTray = createWindowsAppTray({
   enabled: !e2eFixture && !isIsolatedE2e,
   locale: desktopLocale,
   createTray: () => {
-    const icon = nativeImage.createFromPath(readableAppIconPath('default'));
+    // Match the packaged app icon; 'default' is the legacy mascot artwork.
+    const icon = nativeImage.createFromPath(readableAppIconPath('sky'));
     if (icon.isEmpty()) throw new Error('Maka tray artwork is unavailable');
     return new Tray(icon);
   },
@@ -1270,6 +1279,9 @@ const startLocalRuntimeHostManager = () => startRuntimeHostDesktopManager(
     },
     emitSessionsChanged,
     cacheTranscript: (scope, snapshot) => sessionLocal.cacheTranscript(scope, snapshot),
+    ...(e2eFixture?.scenario === "chat-partial-history"
+      ? { transcriptHistoryBytes: PARTIAL_HISTORY_TRANSCRIPT_BYTES }
+      : {}),
     completeDesktopInteractionTurn,
     createSessionCopyCleanup: ({ removeSession, resumeSessionCopy }) =>
       createSessionCopyCleanupAuthority({
@@ -1945,6 +1957,7 @@ function registerPersistentClientIpc(): void {
     mainWindowController,
     resolveLocale: () => desktopLocale.resolve(),
   });
+  registerCommandCodeLoginIpc({ ipcMain, controller: commandCodeLoginController });
   registerDesktopRuntimeHostProfileIpc(ipcMain, runtimeHostProfileService);
   registerDesktopGuestSessionMountIpc(
     ipcMain,
@@ -2183,6 +2196,8 @@ function closeRuntimeHostDesktop(): Promise<void> {
 }
 
 async function disposeRuntimeHostDesktop(): Promise<void> {
+  // Any in-flight browser sign-in ends here with the app; its loopback port goes with it.
+  commandCodeLoginController.dispose();
   sessionLocal.close();
   powerMonitor.off("resume", wakePeerRecoveryAfterResume);
   clientSettingsWatcher.stop();

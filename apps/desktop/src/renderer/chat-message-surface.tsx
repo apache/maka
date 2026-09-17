@@ -62,9 +62,7 @@ interface ChatMessageSurfaceProps extends Omit<
   | 'liveTurns'
   | 'shellRunUpdates'
   | 'goalIndicator'
-  | 'onPrefetchHistory'
-  | 'onRetainWindow'
->, Required<Pick<ComponentProps<typeof ChatView>, 'onPrefetchHistory' | 'onRetainWindow'>> {
+> {
   /**
    * #1985: the live projection and the shell-run records are the only session
    * UI state that changes per streamed token, and this surface is their only

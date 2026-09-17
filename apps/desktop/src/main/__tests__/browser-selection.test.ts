@@ -28,6 +28,7 @@ describe('browser selection ordering', () => {
     const pending = deferred<{ scope: string; sessionId: string }>();
     const events: string[] = [];
     const selection = createBrowserSelectionCoordinator(() => pending.promise, {
+      capturePage: async () => undefined,
       show: (_documentId, generation, session) => events.push(`show:${generation}:${session.sessionId}`),
       hide: (_documentId, generation) => events.push(`hide:${generation}`),
       setViewport: () => undefined,
@@ -41,7 +42,7 @@ describe('browser selection ordering', () => {
     assert.deepEqual(events, ['hide:2']);
   });
 
-  it('binds viewport delivery to the newest resolved selection generation', async () => {
+  it('binds capture and viewport delivery to the newest resolved selection generation', async () => {
     const sessions = new Map([
       ['desktop-a', deferred<{ scope: string; sessionId: string }>()],
       ['desktop-b', deferred<{ scope: string; sessionId: string }>()],
@@ -50,6 +51,10 @@ describe('browser selection ordering', () => {
     const selection = createBrowserSelectionCoordinator(
       (sessionId) => sessions.get(sessionId)?.promise ?? Promise.reject(new Error('missing')),
       {
+        capturePage: async (session) => {
+          events.push(`capture:${session.sessionId}`);
+          return 'backdrop';
+        },
         show: (_documentId, generation, session) => events.push(`show:${generation}:${session.sessionId}`),
         hide: (_documentId, generation) => events.push(`hide:${generation}`),
         setViewport: (_documentId, generation, session) =>
@@ -59,13 +64,17 @@ describe('browser selection ordering', () => {
     );
 
     selection.setActiveSession('desktop-a');
+    const staleCapture = selection.capturePage('desktop-a');
     selection.setViewport({ sessionId: 'desktop-a', rect: null });
     selection.setActiveSession('desktop-b');
+    const currentCapture = selection.capturePage('desktop-b');
     selection.setViewport({ sessionId: 'desktop-b', rect: null });
     sessions.get('desktop-b')?.resolve({ scope: 'host-b', sessionId: 'runtime-b' });
     sessions.get('desktop-a')?.resolve({ scope: 'host-a', sessionId: 'runtime-a' });
     await flush();
 
-    assert.deepEqual(events, ['show:2:runtime-b', 'viewport:2:runtime-b']);
+    assert.equal(await staleCapture, undefined);
+    assert.equal(await currentCapture, 'backdrop');
+    assert.deepEqual(events, ['show:2:runtime-b', 'capture:runtime-b', 'viewport:2:runtime-b']);
   });
 });
