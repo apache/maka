@@ -56,6 +56,10 @@ export class ManagedArtifactPreview {
 
   constructor(private readonly ttlMs = PREVIEW_TTL_MS) {}
 
+  openScope(scope: string): void {
+    this.retiredScopes.delete(scope);
+  }
+
   async releaseUrl(url: string): Promise<void> {
     const lease = [...this.leases].find((entry) => entry.url === url);
     if (lease) await this.release(lease);

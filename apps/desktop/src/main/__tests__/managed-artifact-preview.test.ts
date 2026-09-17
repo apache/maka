@@ -85,6 +85,8 @@ test('isolates leases by origin and rejects credentials for another preview', as
     await assert.rejects(fetch(first.url));
     assert.equal(await (await fetch(second.url)).text(), 'second');
     await assert.rejects(service.prepare('host1', client(), 's1', 'a1'), /closed/);
+    service.openScope('host1');
+    assert.equal(await (await fetch((await service.prepare('host1', client(), 's1', 'a1')).url)).text(), html);
     await service.revoke('host2', 's1', 'a1');
     await assert.rejects(fetch(second.url));
   } finally { await service.close(); }

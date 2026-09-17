@@ -545,47 +545,63 @@ test('tears down the whole candidate when the Host connection closes', async () 
   assert.equal(host.closeCalls, 1);
 });
 
-test('closes managed Artifact previews when the Host connection closes', async () => {
+test('closes old managed Artifact previews and reopens the scope after reconnect', async () => {
   const ipc = ipcHarness();
-  const host = connectionHarness('preview-closed');
+  const firstHost = connectionHarness('preview-first');
   const preview = new ManagedArtifactPreview();
   const bytes = Buffer.from('<!doctype html><title>Preview</title>');
-  const candidate = await createDesktopRuntimeHostCandidate(host.connection, {
+  const candidateDeps = {
     ...deps(ipc),
-    registerClientIpc: (_client, _ipc, _controls, _target, scope) =>
-      () => preview.closeScope(scope.targetEpoch),
-  });
+    registerClientIpc: (_client, _ipc, _controls, _target, scope) => {
+      preview.openScope(scope.targetEpoch);
+      return () => preview.closeScope(scope.targetEpoch);
+    },
+  } satisfies DesktopRuntimeHostCandidateDeps;
+  const firstCandidate = await createDesktopRuntimeHostCandidate(firstHost.connection, candidateDeps);
+  let secondCandidate: Awaited<ReturnType<typeof createDesktopRuntimeHostCandidate>> | undefined;
+  const source = {
+    getArtifact: async () => ({
+      id: 'artifact-1',
+      sessionId: 'session-1',
+      turnId: 'turn-1',
+      createdAt: 0,
+      name: 'preview.html',
+      kind: 'html' as const,
+      sizeBytes: bytes.length,
+      source: 'tool_result' as const,
+    }),
+    streamArtifact: async (_sessionId: string, _artifactId: string, write: (chunk: Uint8Array) => Promise<void>) => {
+      await write(bytes);
+      return bytes.length;
+    },
+  };
 
   try {
     const endpoint = await preview.prepare(
       TEST_TARGET_EPOCH,
-      {
-        getArtifact: async () => ({
-          id: 'artifact-1',
-          sessionId: 'session-1',
-          turnId: 'turn-1',
-          createdAt: 0,
-          name: 'preview.html',
-          kind: 'html',
-          sizeBytes: bytes.length,
-          source: 'tool_result',
-        }),
-        streamArtifact: async (_sessionId, _artifactId, write) => {
-          await write(bytes);
-          return bytes.length;
-        },
-      },
+      source,
       'session-1',
       'artifact-1',
     );
     assert.equal(await (await fetch(endpoint.url)).text(), bytes.toString());
 
-    host.disconnect();
-    await candidate.closed;
+    firstHost.disconnect();
+    await firstCandidate.closed;
 
     await assert.rejects(fetch(endpoint.url));
+
+    const secondHost = connectionHarness('preview-second');
+    secondCandidate = await createDesktopRuntimeHostCandidate(secondHost.connection, candidateDeps);
+    const replacement = await preview.prepare(
+      TEST_TARGET_EPOCH,
+      source,
+      'session-1',
+      'artifact-1',
+    );
+    assert.equal(await (await fetch(replacement.url)).text(), bytes.toString());
   } finally {
-    await candidate.close();
+    await firstCandidate.close();
+    await secondCandidate?.close();
     await preview.close();
   }
 });
