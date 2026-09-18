@@ -363,7 +363,18 @@ describe('ShellRunProcessManager', () => {
         ref = initial.ref;
         assert.equal(initial.status, 'running');
         assert.equal(initial.pid, undefined);
-        await waitForPtyText(manager, ref, /READY/, 15_000);
+        // PTY delivery can split READY from its trailing newline. Wait for both
+        // before taking the baseline for an observation with no new output.
+        await waitForShellRun(
+          manager,
+          ref,
+          (result) =>
+            result.output?.mode === 'pty' &&
+            result.output.screen === 'READY' &&
+            result.output.cursor.x === 0 &&
+            result.output.cursor.y === 1,
+          15_000,
+        );
         const before = await store.readShellRun('session-1', 'shell-run-1');
         assert.equal(before.pid, undefined);
         assert.ok(driver);

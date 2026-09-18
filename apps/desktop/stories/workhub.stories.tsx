@@ -512,6 +512,7 @@ export const FilterWorkConversations: Story = {
     await userEvent.keyboard('{Enter}');
     await waitFor(() => expect(canvasElement.querySelectorAll('.maka-turn[data-turn-id]')).toHaveLength(2));
     await userEvent.click(canvas.getByRole('button', { name: '显示全部对话' }));
+    await waitFor(() => expect(canvasElement.querySelectorAll('.maka-turn[data-turn-id]')).toHaveLength(4));
     await userEvent.click(rail);
     await waitFor(() => expect(canvasElement.querySelector('[data-search-highlight="true"]')).toHaveTextContent('请检查发布检查清单。'));
     expect(canvasElement.querySelectorAll('.maka-turn[data-turn-id]')).toHaveLength(4);
