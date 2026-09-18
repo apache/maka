@@ -182,9 +182,9 @@ export function lookupModelRuntimeOverride(
  * The request wire a model served over the OpenAI adapter must use.
  *
  * Provider/model routing facts live here even when the concrete Responses SDK
- * and replay policy are delegated to a Runtime profile. This is the single
- * declared source of the default protocol split, expressed through the
- * {@link ModelInfo.apiProtocol} seam.
+ * and replay policy are declared on the provider's `ProviderRuntimeAdapter`.
+ * This is the single declared source of the default protocol split, expressed
+ * through the {@link ModelInfo.apiProtocol} seam.
  */
 export function openAiAdapterApiProtocol(
   modelId: string,

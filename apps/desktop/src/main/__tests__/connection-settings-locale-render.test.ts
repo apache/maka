@@ -134,6 +134,8 @@ after(async () => {
 const localeCases = [
   {
     locale: 'zh-CN', direct: '直连', transit: '成员转发', save: '保存供应商',
+    transportNotice: '这个供应商走官方 CLI 的私有通道',
+    transportRequired: '请先勾选上面的确认再添加。',
     slugErrors: {
       required: '请填写连接标识',
       format: '连接标识只能包含小写字母、数字和连字符',
@@ -143,6 +145,8 @@ const localeCases = [
   },
   {
     locale: 'zh-TW', direct: '直接連線', transit: '成員轉送', save: '儲存供應商',
+    transportNotice: '這個供應商走官方 CLI 的私有通道',
+    transportRequired: '請先勾選上面的確認再新增。',
     slugErrors: {
       required: '請填寫連線標識',
       format: '連線標識只能包含小寫字母、數字和連字號',
@@ -152,6 +156,8 @@ const localeCases = [
   },
   {
     locale: 'en', direct: 'Direct', transit: 'Member transit', save: 'Save provider',
+    transportNotice: "This provider uses the official CLI's private transport",
+    transportRequired: 'Tick the acknowledgement above before adding.',
     slugErrors: {
       required: 'Enter a connection identifier',
       format: 'Connection identifiers use lowercase letters, digits, and hyphens',
@@ -263,6 +269,53 @@ for (const copy of localeCases) {
       assert.deepEqual(calls, [], 'invalid identifiers must not reach the provider bridge');
     });
   }
+
+  /**
+   * Mounted rather than asserted through the draft rule alone: Command Code GO
+   * takes the quick API-key dialog, which returns its own subtree and submits
+   * through a route that returns before that rule runs. A test of the rule
+   * stays green while the notice never renders and the check never fires.
+   */
+  test(`${copy.locale}: Command Code GO states its transport and refuses until answered`, async () => {
+    const harness = installRenderer();
+    const calls: string[] = [];
+    const bridge = {
+      create: async () => { calls.push('create'); throw new Error('unexpected create'); },
+      fetchModels: async () => { calls.push('fetchModels'); throw new Error('unexpected discovery'); },
+    } as unknown as ConnectionsBridge;
+    await harness.render(copy.locale, createElement(components.AddProviderForm, {
+      bridge, providerType: 'commandcode-go', existingSlugs: [],
+      onCancel: unexpectedCall, onCreated: unexpectedCall,
+    }));
+
+    const checkbox = harness.document.querySelector<HTMLInputElement>('input[type="checkbox"]');
+    assert.ok(checkbox, 'the transport acknowledgement never rendered');
+    assert.equal(checkbox.checked, false);
+    assert.ok(
+      harness.document.body.textContent?.includes(copy.transportNotice),
+      'the transport notice never rendered',
+    );
+
+    // This route submits through the form rather than an `onClick`, and a
+    // bare `button.click()` does not submit here — asserting on it would pass
+    // while nothing ran.
+    const form = harness.document.querySelector('form');
+    assert.ok(form, 'missing add-provider form');
+    assert.ok(
+      [...harness.document.querySelectorAll('button')].some(
+        (button) => button.textContent === copy.save,
+      ),
+      'missing save button',
+    );
+    await act(async () => {
+      form.dispatchEvent(new globalThis.Event('submit', { bubbles: true, cancelable: true }));
+    });
+    assert.deepEqual(calls, [], 'an unanswered acknowledgement must not reach the provider bridge');
+    assert.ok(
+      harness.document.body.textContent?.includes(copy.transportRequired),
+      'refusing the add must say why',
+    );
+  });
 }
 
 test('zh-TW: expanded Peer Mesh members render localized route states', async () => {
