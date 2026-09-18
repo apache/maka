@@ -77,6 +77,7 @@ import type {
 import type { PlanSessionState } from '@maka/core/plan';
 import type { SearchErrorReason, SearchRequest, SearchResult } from '@maka/core/search';
 import type { SessionChangedEvent, SessionSummary, StoredMessage, TurnRecord } from '@maka/core/session';
+import type { SessionSnapshot } from '@maka/core/session-reference';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { E2eFixtureState } from '@maka/core/e2e-fixture';
 import type {
@@ -1257,6 +1258,8 @@ export interface MakaBridge {
       }) => void,
     ): () => void;
     listTurns(sessionId: string): Promise<TurnRecord[]>;
+    /** Read a bounded, redacted tail from another same-Host Session. */
+    readSnapshot(sessionId: string, options?: { maxChars?: number }): Promise<SessionSnapshot>;
     /** Sampled prompt-rail landmarks, or where the one Turn `turnId` sits. */
     listTurnLandmarks(
       sessionId: string,

@@ -94,6 +94,11 @@ interface ChatComposerRegionProps
     | 'mentionSkillsUnavailable'
     | 'mentionSkillsLoading'
     | 'onSearchMentionFiles'
+    | 'sessionReferences'
+    | 'onPickSessionReference'
+    | 'pendingSessionReferences'
+    | 'onRemovePendingSessionReference'
+    | 'waitForSessionReference'
     | 'pendingDirectories'
     | 'onRemoveDirectory'
     | 'onPickDirectory'
@@ -282,6 +287,11 @@ export function ChatComposerRegion({
           mentionSkillsUnavailable={mentions?.mentionSkillsUnavailable}
           mentionSkillsLoading={mentions?.mentionSkillsLoading}
           onSearchMentionFiles={mentions?.searchMentionFiles}
+          sessionReferences={mentions?.sessionReferences}
+          onPickSessionReference={mentions?.onPickSessionReference}
+          pendingSessionReferences={mentions?.pendingSessionReferences}
+          onRemovePendingSessionReference={mentions?.onRemovePendingSessionReference}
+          waitForSessionReference={mentions?.waitForSessionReference}
           {...directoryComposerProps}
           onPickDirectory={
             directoryPickerEnabled ? directoryComposerProps.onPickDirectory : undefined
@@ -322,6 +332,14 @@ export function ChatComposerRegion({
                 onClick={boundaryUnreadableNotice.onRetry}
               />} />
           </div>
+        )}
+        {mentions?.sessionReferenceError && active && !onboardingComposerHidden && !activeInteraction && (
+          <Banner
+            status="warning"
+            role="alert"
+            title={mentions.sessionReferenceError.title}
+            description={mentions.sessionReferenceError.detail}
+          />
         )}
         {activeSandboxBoundary && (
           <SandboxBoundaryPrompt

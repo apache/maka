@@ -1,3 +1,16 @@
+diff --git a/node_modules/@astryxdesign/core/dist/Chat/ChatComposerInput.d.ts b/node_modules/@astryxdesign/core/dist/Chat/ChatComposerInput.d.ts
+index 90022b3..f1d8008 100644
+--- a/node_modules/@astryxdesign/core/dist/Chat/ChatComposerInput.d.ts
++++ b/node_modules/@astryxdesign/core/dist/Chat/ChatComposerInput.d.ts
+@@ -62,6 +62,8 @@ export type ChatComposerTriggerItem = SearchableItem;
+ export type ChatComposerTrigger = {
+     /** Character that activates this trigger menu (e.g. '@', '/') */
+     character: string;
++    /** Optional element to align the menu with instead of the caret. */
++    menuAnchorRef?: {readonly current: HTMLElement | null};
+     /**
+      * Search source providing items for this trigger.
+      * Reuses the same SearchSource interface as Typeahead \u2014
 diff --git a/node_modules/@astryxdesign/core/dist/Chat/ChatComposerInput.js b/node_modules/@astryxdesign/core/dist/Chat/ChatComposerInput.js
 index 87dfdea..e2041ce 100644
 --- a/node_modules/@astryxdesign/core/dist/Chat/ChatComposerInput.js
@@ -131,7 +144,7 @@ index 3c457d1..7d5a11a 100644
            }, getToolCallKey(call)))
          })
 diff --git a/node_modules/@astryxdesign/core/dist/Chat/useTriggerMenu.js b/node_modules/@astryxdesign/core/dist/Chat/useTriggerMenu.js
-index 47d4e52..99b7dfa 100644
+index 47d4e52..0a73bc0 100644
 --- a/node_modules/@astryxdesign/core/dist/Chat/useTriggerMenu.js
 +++ b/node_modules/@astryxdesign/core/dist/Chat/useTriggerMenu.js
 @@ -48,6 +48,45 @@ const styles = {
@@ -180,7 +193,7 @@ index 47d4e52..99b7dfa 100644
  function getTextBeforeCursor(editable) {
    const selection = window.getSelection();
    if (!selection || selection.rangeCount === 0) {
-@@ -62,7 +101,12 @@ function getTextBeforeCursor(editable) {
+@@ -62,21 +101,27 @@ function getTextBeforeCursor(editable) {
    }
    const node = range.startContainer;
    if (node.nodeType === Node.TEXT_NODE) {
@@ -194,7 +207,39 @@ index 47d4e52..99b7dfa 100644
    }
    return null;
  }
-@@ -307,15 +351,15 @@ export function useTriggerMenu(options) {
+ function findActiveTrigger(textBeforeCursor, triggers) {
+   for (let i = textBeforeCursor.length - 1; i >= 0; i--) {
+     const char = textBeforeCursor[i];
+-    if (char === ' ' || char === '\n') {
+-      return null;
+-    }
+     for (const trigger of triggers) {
+       if (char === trigger.character) {
+         const prevChar = i > 0 ? textBeforeCursor[i - 1] : null;
+         if (prevChar === null || prevChar === ' ' || prevChar === '\n') {
+           const query = textBeforeCursor.slice(i + 1);
++          // A bare @ plus one space may browse the list. Once a name
++          // starts, whitespace ends the query so ordinary prose keeps Enter.
++          // Newlines always end a trigger; slash keeps single-token grammar.
++          if (/[\r\n]/u.test(query) || (/\s/u.test(query) && !(trigger.character === '@' && query === ' '))) return null;
+           return {
+             trigger,
+             query,
+@@ -190,7 +235,12 @@ export function useTriggerMenu(options) {
+   // Anchor the popover to the cursor position (not the entire input).
+   // We append a zero-size span to document.body positioned at the cursor
+   // rect — outside the contentEditable to avoid splitting text nodes.
+-  const setAnchor = useCallback(() => {
++  const setAnchor = useCallback((trigger) => {
++    if (trigger.menuAnchorRef?.current) {
++      removeAnchorSpan();
++      popover.triggerRef(trigger.menuAnchorRef.current);
++      return;
++    }
+     const editable = editableRef.current;
+     if (!editable) {
+       return;
+@@ -307,15 +357,15 @@ export function useTriggerMenu(options) {
      if (!editable) {
        return;
      }
@@ -214,7 +259,7 @@ index 47d4e52..99b7dfa 100644
        if (state.isActive) {
          reset();
        }
-@@ -323,9 +367,9 @@ export function useTriggerMenu(options) {
+@@ -323,9 +373,9 @@ export function useTriggerMenu(options) {
      }
      const {
        trigger,
@@ -226,6 +271,25 @@ index 47d4e52..99b7dfa 100644
      if (!state.isActive || state.activeTrigger !== trigger) {
        triggerStartRef.current = triggerStart;
        setState(prev => ({
+@@ -335,7 +385,7 @@ export function useTriggerMenu(options) {
+         query,
+         highlightedIndex: 0
+       }));
+-      setAnchor();
++      setAnchor(trigger);
+       searchItems(trigger, query);
+       popover.show();
+     } else if (state.query !== query) {
+@@ -507,7 +557,8 @@ export function useTriggerMenu(options) {
+       placement: 'above',
+       alignment: 'start',
+       offset: spacingVars['--spacing-1'],
+-      xstyle: styles.popoverSurface
++      xstyle: styles.popoverSurface,
++      style: trigger?.menuAnchorRef ? {width: 'anchor-size(width)'} : undefined
+     });
+   }, [popover, listboxId, state, selectItem, getItemId, highlightOnHover, t]);
+   return {
 diff --git a/node_modules/@astryxdesign/core/dist/CodeBlock/CodeBlock.js b/node_modules/@astryxdesign/core/dist/CodeBlock/CodeBlock.js
 index fcc2513..0f2b8f8 100644
 --- a/node_modules/@astryxdesign/core/dist/CodeBlock/CodeBlock.js
@@ -725,7 +789,7 @@ index 693d728..7d5724e 100644
  }
 \ No newline at end of file
 diff --git a/node_modules/@astryxdesign/core/src/Chat/ChatComposerInput.tsx b/node_modules/@astryxdesign/core/src/Chat/ChatComposerInput.tsx
-index a45cc2f..c09c80f 100644
+index a45cc2f..75d0bf4 100644
 --- a/node_modules/@astryxdesign/core/src/Chat/ChatComposerInput.tsx
 +++ b/node_modules/@astryxdesign/core/src/Chat/ChatComposerInput.tsx
 @@ -28,6 +28,7 @@ import {
@@ -736,7 +800,16 @@ index a45cc2f..c09c80f 100644
    useImperativeHandle,
    type ReactNode,
    type KeyboardEvent,
-@@ -465,7 +466,7 @@ export function ChatComposerInput(props: ChatComposerInputProps) {
+@@ -114,6 +115,8 @@ export type ChatComposerTriggerItem = SearchableItem;
+ export type ChatComposerTrigger = {
+   /** Character that activates this trigger menu (e.g. '@', '/') */
+   character: string;
++  /** Optional element to align the menu with instead of the caret. */
++  menuAnchorRef?: {readonly current: HTMLElement | null};
+   /**
+    * Search source providing items for this trigger.
+    * Reuses the same SearchSource interface as Typeahead \u2014
+@@ -465,7 +468,7 @@ export function ChatComposerInput(props: ChatComposerInputProps) {
      };
    }, [inputControlRef, focusEditableAtEnd]);
  
@@ -863,7 +936,7 @@ index 68a424e..d4f0c5e 100644
          </div>
        </div>
 diff --git a/node_modules/@astryxdesign/core/src/Chat/useTriggerMenu.tsx b/node_modules/@astryxdesign/core/src/Chat/useTriggerMenu.tsx
-index 764be45..136c7bc 100644
+index 764be45..10a2de9 100644
 --- a/node_modules/@astryxdesign/core/src/Chat/useTriggerMenu.tsx
 +++ b/node_modules/@astryxdesign/core/src/Chat/useTriggerMenu.tsx
 @@ -168,7 +168,68 @@ const styles = stylex.create({
@@ -947,7 +1020,41 @@ index 764be45..136c7bc 100644
    }
  
    return null;
-@@ -487,23 +550,24 @@ export function useTriggerMenu(
+@@ -201,15 +264,16 @@ function findActiveTrigger(
+   for (let i = textBeforeCursor.length - 1; i >= 0; i--) {
+     const char = textBeforeCursor[i];
+ 
+-    if (char === ' ' || char === '\n') {
+-      return null;
+-    }
+ 
+     for (const trigger of triggers) {
+       if (char === trigger.character) {
+         const prevChar = i > 0 ? textBeforeCursor[i - 1] : null;
+         if (prevChar === null || prevChar === ' ' || prevChar === '\n') {
+           const query = textBeforeCursor.slice(i + 1);
++          // A bare @ plus one space may browse the list. Once a name
++          // starts, whitespace ends the query so ordinary prose keeps Enter.
++          // Newlines always end a trigger; slash keeps single-token grammar.
++          if (/[\r\n]/u.test(query) || (/\s/u.test(query) && !(trigger.character === '@' && query === ' '))) return null;
+           return {trigger, query, triggerStart: i};
+         }
+       }
+@@ -335,7 +399,12 @@ export function useTriggerMenu(
+   // Anchor the popover to the cursor position (not the entire input).
+   // We append a zero-size span to document.body positioned at the cursor
+   // rect — outside the contentEditable to avoid splitting text nodes.
+-  const setAnchor = useCallback(() => {
++  const setAnchor = useCallback((trigger: ChatComposerTrigger) => {
++    if (trigger.menuAnchorRef?.current) {
++      removeAnchorSpan();
++      popover.triggerRef(trigger.menuAnchorRef.current);
++      return;
++    }
+     const editable = editableRef.current;
+     if (!editable) {
+       return;
+@@ -487,23 +556,24 @@ export function useTriggerMenu(
        return;
      }
  
@@ -977,6 +1084,23 @@ index 764be45..136c7bc 100644
  
      if (!state.isActive || state.activeTrigger !== trigger) {
        triggerStartRef.current = triggerStart;
+@@ -514,7 +584,7 @@ export function useTriggerMenu(
+         query,
+         highlightedIndex: 0,
+       }));
+-      setAnchor();
++      setAnchor(trigger);
+       searchItems(trigger, query);
+       popover.show();
+     } else if (state.query !== query) {
+@@ -716,6 +786,7 @@ export function useTriggerMenu(
+         alignment: 'start',
+         offset: spacingVars['--spacing-1'],
+         xstyle: styles.popoverSurface,
++        style: trigger?.menuAnchorRef ? {width: 'anchor-size(width)'} : undefined,
+       },
+     );
+   }, [popover, listboxId, state, selectItem, getItemId, highlightOnHover, t]);
 diff --git a/node_modules/@astryxdesign/core/src/CodeBlock/CodeBlock.tsx b/node_modules/@astryxdesign/core/src/CodeBlock/CodeBlock.tsx
 index 6bb384b..683642d 100644
 --- a/node_modules/@astryxdesign/core/src/CodeBlock/CodeBlock.tsx
