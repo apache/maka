@@ -34,7 +34,7 @@
  */
 import { isNativeSurfaceOccluded } from '../../../../application/contracts/native-surface-occlusion.js';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ICON_SIZE, ChevronLeft, ChevronRight, Globe, RotateCw, X } from '@maka/ui/icons';
+import { ICON_SIZE, ChevronLeft, ChevronRight, Globe, Maximize2, Minimize2, RotateCw, X } from '@maka/ui/icons';
 import { normalizeBrowserAddressInput, type BrowserState } from '@maka/core/browser';
 import {
   IconButton,
@@ -68,7 +68,7 @@ function browserAddressFailureCopy(reason: 'unsupported_scheme' | 'invalid_url',
   }
 }
 
-export function BrowserPanel(props: { sessionId: string; hidden: boolean }) {
+export function BrowserPanel(props: { sessionId: string; hidden: boolean; focused?: boolean; onToggleFocus?: () => void; onPreviewExit?: () => void }) {
   const { browser } = useWorkbarServices();
   const { sessionId, hidden } = props;
   const toast = useToast();
@@ -119,6 +119,9 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean }) {
   // size is unchanged, which a ResizeObserver would miss; a getBoundingClientRect
   // per frame is negligible and the IPC only fires when the rect changes.
   const showView = !hidden && state.hasPage;
+  useEffect(() => {
+    if (props.focused && !state.hasPage && !state.loading) props.onPreviewExit?.();
+  }, [props.focused, props.onPreviewExit, state.hasPage, state.loading]);
   useEffect(() => {
     // Capture the injected capability because this passive cleanup may run
     // after its provider has started tearing down the host composition.
@@ -198,6 +201,7 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean }) {
   return (
     <div
       className="maka-browser-panel"
+      data-preview-focused={props.focused || undefined}
       data-maka-assistant-exclude="browser"
       role="region"
       aria-label={state.title ? copy.panelAriaWithTitle(state.title) : copy.panelAria}
@@ -269,15 +273,29 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean }) {
           </>
         )}
         endContent={(
+          <div className="maka-browser-toolbar-actions">
+          {props.onToggleFocus && state.hasPage && (
+            <Tooltip content={props.focused ? copy.restorePreview : copy.focusPreview}>
+              <IconButton
+                label={props.focused ? copy.restorePreview : copy.focusPreview}
+                icon={props.focused ? <Minimize2 size={ICON_SIZE.chrome} aria-hidden /> : <Maximize2 size={ICON_SIZE.chrome} aria-hidden />}
+                aria-pressed={Boolean(props.focused)}
+                variant="ghost"
+                size="sm"
+                onClick={props.onToggleFocus}
+              />
+            </Tooltip>
+          )}
           <Tooltip content={copy.close}>
             <IconButton
               label={copy.closeAria}
               icon={<X size={ICON_SIZE.chrome} aria-hidden />}
               variant="ghost"
               size="sm"
-              onClick={() => void browser.close(sessionId)}
+              onClick={() => { props.onPreviewExit?.(); void browser.close(sessionId); }}
             />
           </Tooltip>
+          </div>
         )}
       />
       <div className="maka-browser-strip" ref={stripRef}>

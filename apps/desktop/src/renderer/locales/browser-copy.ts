@@ -40,6 +40,8 @@ export type BrowserCopy = {
   addressPlaceholder: string;
   closeAria: string;
   close: string;
+  focusPreview: string;
+  restorePreview: string;
   title: string;
   description: string;
 };
@@ -66,6 +68,8 @@ const BROWSER_COPY = {
     addressPlaceholder: '输入网址并回车',
     closeAria: '关闭浏览器页面',
     close: '关闭页面',
+    focusPreview: '聚焦网页',
+    restorePreview: '还原分栏',
     title: '嵌入式浏览器',
     description: '输入网址打开页面，或让助手帮你导航并操作。',
   },
@@ -90,6 +94,8 @@ const BROWSER_COPY = {
     addressPlaceholder: '輸入網址並回車',
     closeAria: '關閉瀏覽器頁面',
     close: '關閉頁面',
+    focusPreview: '聚焦網頁',
+    restorePreview: '還原分欄',
     title: '嵌入式瀏覽器',
     description: '輸入網址開啟頁面，或讓助手幫你導航並操作。',
   },
@@ -114,6 +120,8 @@ const BROWSER_COPY = {
     addressPlaceholder: 'Enter an address and press Enter',
     closeAria: 'Close browser page',
     close: 'Close page',
+    focusPreview: 'Focus webpage',
+    restorePreview: 'Restore split view',
     title: 'Embedded browser',
     description: 'Enter an address, or ask the assistant to navigate and interact with a page.',
   },

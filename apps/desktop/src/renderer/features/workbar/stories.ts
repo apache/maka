@@ -31,3 +31,4 @@
  */
 
 export { WorkbarSurface } from './ui/workbar-surface.js';
+export type { WorkbarHostModel } from './ui/workbar-host.js';
