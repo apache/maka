@@ -61,6 +61,7 @@ import {
 } from './stream-graph-schedule-reconcile.js';
 import {
   AGENT_GRAPH_CLIENT_TERMINAL_PAGE_SIZE,
+  MAX_OUTPUT_PREVIEW_CODE_POINTS,
   advanceMaterializedAgentGraphClientProjection,
   buildAgentGraphClientSnapshot,
   decodeAgentGraphTerminalCursor,
@@ -92,6 +93,7 @@ import { buildAgentSwarmStatusTool, projectAgentSwarmStatus } from './agent-swar
 
 const DEFAULT_MAX_NEW_ACTIVATIONS = 32;
 const MAX_CLIENT_PROJECTION_COMMIT_ATTEMPTS = 4;
+const OUTPUT_DELTA_PROJECTION_INTERVAL_MS = 100;
 
 export interface AgentGraphCoordinatorSessionStore {
   listForRecovery(): Promise<SessionHeader[]>;
@@ -160,6 +162,15 @@ interface GraphDriver {
   stopTask?: Promise<void>;
   clientProjectionTask?: Promise<void>;
   clientProjectionDirty: boolean;
+  outputProjectionFlushScheduled: boolean;
+  pendingOutputDeltas: Map<
+    string,
+    {
+      event: AgentGraphSupervisorRuntimeEvent;
+      activationHadError: boolean;
+      sampleStartedAt: number;
+    }
+  >;
   runtimeFailureRunIds: Set<string>;
   lastResult?: AgentGraphScheduleReconciliationResult;
   lastError?: unknown;
@@ -835,7 +846,9 @@ export class AgentGraphCoordinator {
           if (event.event.type === 'complete' || event.event.type === 'abort') {
             driver.runtimeFailureRunIds.delete(event.claim.targetRunId);
           }
-          if (isMaterializedGraphClientEvent(event.event.type)) {
+          if (event.event.type === 'text_delta') {
+            this.#queueOutputDelta(driver, event, activationHadError);
+          } else if (isMaterializedGraphClientEvent(event.event.type)) {
             this.#queueClientProjectionUpdate(driver, async () => {
               const advancement = await this.#advanceClientProjection(
                 driver,
@@ -1138,8 +1151,77 @@ export class AgentGraphCoordinator {
       });
   }
 
+  #queueOutputDelta(
+    driver: GraphDriver,
+    event: AgentGraphSupervisorRuntimeEvent,
+    activationHadError: boolean,
+  ): void {
+    const operatorId = event.claim.targetOperatorId;
+    const pending = driver.pendingOutputDeltas.get(operatorId);
+    if (pending && pending.event.event.type === 'text_delta' && event.event.type === 'text_delta') {
+      const previous = pending.event.event;
+      const current = event.event;
+      if (
+        pending.event.claim.targetRunId === event.claim.targetRunId &&
+        previous.messageId === current.messageId &&
+        ((previous.startOffset === undefined && current.startOffset === undefined) ||
+          (previous.startOffset !== undefined &&
+            current.startOffset === previous.startOffset + previous.text.length))
+      ) {
+        const joined = Array.from(previous.text + current.text);
+        const truncated = joined.length > MAX_OUTPUT_PREVIEW_CODE_POINTS + 1;
+        pending.event = {
+          ...event,
+          event: {
+            ...current,
+            text: truncated
+              ? joined.slice(-(MAX_OUTPUT_PREVIEW_CODE_POINTS + 1)).join('')
+              : joined.join(''),
+            startOffset: truncated ? undefined : previous.startOffset,
+          },
+        };
+      } else {
+        pending.event = event;
+        pending.sampleStartedAt = event.event.ts;
+      }
+      pending.activationHadError ||= activationHadError;
+      return;
+    }
+    const next = { event, activationHadError, sampleStartedAt: event.event.ts };
+    driver.pendingOutputDeltas.set(operatorId, next);
+    this.#scheduleOutputProjectionFlush(driver);
+  }
+
+  #scheduleOutputProjectionFlush(driver: GraphDriver): void {
+    if (driver.outputProjectionFlushScheduled) return;
+    driver.outputProjectionFlushScheduled = true;
+    this.#queueClientProjectionUpdate(driver, async () => {
+      try {
+        await new Promise<void>((resolve) => {
+          setTimeout(resolve, OUTPUT_DELTA_PROJECTION_INTERVAL_MS);
+        });
+        const pending = [...driver.pendingOutputDeltas.values()];
+        driver.pendingOutputDeltas.clear();
+        for (const delta of pending) {
+          await this.#advanceClientProjection(
+            driver,
+            delta.event,
+            delta.activationHadError,
+            delta.sampleStartedAt,
+          );
+        }
+      } finally {
+        driver.outputProjectionFlushScheduled = false;
+        if (driver.pendingOutputDeltas.size > 0) {
+          this.#scheduleOutputProjectionFlush(driver);
+        }
+      }
+    });
+  }
+
   async #waitForClientProjectionUpdates(driver: GraphDriver): Promise<void> {
-    await driver.clientProjectionTask?.catch(() => {
+    const task = driver.clientProjectionTask;
+    await task?.catch(() => {
       // A best-effort repair or later durable observation may repair this
       // derived read side; graph authority never depends on it.
     });
@@ -1160,6 +1242,7 @@ export class AgentGraphCoordinator {
     driver: GraphDriver,
     event: AgentGraphSupervisorRuntimeEvent,
     activationHadError: boolean,
+    sampleStartedAt?: number,
   ): Promise<{ before: AgentGraphClientSnapshot; after: AgentGraphClientSnapshot } | undefined> {
     for (let attempt = 0; attempt < MAX_CLIENT_PROJECTION_COMMIT_ATTEMPTS; attempt += 1) {
       const graph = await this.#input.controlStore.readAgentGraphClientProjection(driver.graphId);
@@ -1188,6 +1271,7 @@ export class AgentGraphCoordinator {
         inspection,
         event,
         activationHadError,
+        sampleStartedAt,
       );
       if (!advanced) return undefined;
       try {
@@ -1210,13 +1294,15 @@ export class AgentGraphCoordinator {
           // stop race). Only the authoritative RuntimeEvent fold populates the
           // immutable terminal-history table.
           terminalActivities: [],
-          activityRecords: [
-            {
-              recordId: advanced.activity.recordId,
-              eventTime: advanced.activity.eventTime,
-            },
-          ],
-          incrementalRecordId: advanced.activity.recordId,
+          activityRecords: advanced.activity
+            ? [
+                {
+                  recordId: advanced.activity.recordId,
+                  eventTime: advanced.activity.eventTime,
+                },
+              ]
+            : [],
+          ...(advanced.activity ? { incrementalRecordId: advanced.activity.recordId } : {}),
         });
         if (committed.snapshotVersion === advanced.snapshot.snapshotVersion) {
           this.#notifyClientChanged(driver, 'runtime_activity');
@@ -1559,6 +1645,8 @@ export class AgentGraphCoordinator {
       closed: false,
       reconciliationReaders: 0,
       clientProjectionDirty: false,
+      outputProjectionFlushScheduled: false,
+      pendingOutputDeltas: new Map(),
       runtimeFailureRunIds: new Set(),
       yieldWaiters: new Set(),
     };
@@ -1759,7 +1847,6 @@ function isMaterializedGraphClientEvent(
   type: AgentGraphSupervisorRuntimeEvent['event']['type'],
 ): boolean {
   return ![
-    'text_delta',
     'thinking_delta',
     'tool_output_delta',
     'tool_progress',
