@@ -665,7 +665,6 @@ export interface ToolStartEvent extends BaseEvent, ToolActivityIdentity {
   type: 'tool_start';
   /** Trusted tool registration metadata, persisted with the call. */
   presentation?: 'internal';
-  resultPresentation?: 'public_message';
   toolUseId: string;
   toolName: string;
   /** Bounded correlation for a shell-run observation without transporting full tool args. */

@@ -775,9 +775,7 @@ export type StoredMessage = (
   | WorkHubCoordinationMessage
   | SystemNoteMessage
 ) & {
-  /** Host-derived presentation only; model history remains unchanged. */ presentation?:
-    | 'internal'
-    | 'public';
+  /** Host-derived presentation only; model history remains unchanged. */ presentation?: 'internal';
 };
 
 export interface UserMessage extends MessageContent {
@@ -1539,8 +1537,7 @@ function decodeMessage(
   decodeToolResultContent: (content: unknown) => ToolResultContent,
 ): StoredMessage {
   if (isRecord(value) && value.presentation !== undefined) {
-    if (value.presentation !== 'internal' && value.presentation !== 'public')
-      throw new Error('Invalid message presentation');
+    if (value.presentation !== 'internal') throw new Error('Invalid message presentation');
     const { presentation, ...content } = value;
     return { ...decodeMessage(content, decodeToolResultContent), presentation };
   }

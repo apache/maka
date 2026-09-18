@@ -76,7 +76,7 @@ export function registerWorkHubVoice(client: DesktopRuntimeHostClient, ipc: Pick
       const fact = compactVoiceLogEvent(kind, data);
       if (!fact) return;
       kind = fact.kind; data = fact.data;
-      if (['delegation','delegation_receipt','task_result','delivery_uncertain'].includes(kind)) jev?.fact(randomUUID(), { kind, ...data });
+      if (['delegation','delegation_receipt'].includes(kind)) jev?.fact(randomUUID(), { kind, ...data });
       const eventId = randomUUID();
       const observedAt = Date.now();
       const text = JSON.stringify(data);
@@ -119,7 +119,7 @@ export function registerWorkHubVoice(client: DesktopRuntimeHostClient, ipc: Pick
       }
       return pending;
     };
-    const submitWork: WorkHubVoiceProviderOptions['submit'] = (text, turnId = randomUUID(), displayText, _kind, userTurnId = turnId) => {
+    const submitWork: WorkHubVoiceProviderOptions['submit'] = (text, turnId = randomUUID(), displayText, userTurnId = turnId) => {
       const prior = workAdmissions.get(turnId);
       if (prior) return prior;
       const admitted = (async () => {
@@ -144,10 +144,10 @@ export function registerWorkHubVoice(client: DesktopRuntimeHostClient, ipc: Pick
         if (wire?.type === 'turn.done') void jev?.tick();
       }
     };
-    const enqueueOutput = async (sourceId: string, text: string, kind: 'question' | 'failure', turnId?: string) => {
+    const enqueueOutput = async (sourceId: string, text: string, turnId?: string) => {
       if (abort.signal.aborted) return;
       if (turnId && voiceRequests.has(turnId))
-        await client.enqueueWorkHubVoice({ id: sourceId, text, kind, requestId: turnId });
+        await client.enqueueWorkHubVoice({ id: sourceId, text, kind: 'question', requestId: turnId });
     };
     const voice = provider.create({
       submit: submitWork,
@@ -235,9 +235,9 @@ export function registerWorkHubVoice(client: DesktopRuntimeHostClient, ipc: Pick
               const update = projector.accept(frame);
               for (const item of update.events) {
                 if (item.type === 'user_question_request')
-                  await enqueueOutput(item.id, item.questions.map(q => q.question).join(' '), 'question', item.turnId);
+                  await enqueueOutput(item.id, item.questions.map(q => q.question).join(' '), item.turnId);
                 if (item.type === 'form_request')
-                  await enqueueOutput(item.id, `${item.message}. The form is available in WorkHub.`, 'question', item.turnId);
+                  await enqueueOutput(item.id, `${item.message}. The form is available in WorkHub.`, item.turnId);
               }
               if (update.terminalTurn?.status === 'failed')
                 send({ type: 'maka.error', message: update.terminalTurn.failureMessage ?? 'WorkHub could not complete its current turn.' });

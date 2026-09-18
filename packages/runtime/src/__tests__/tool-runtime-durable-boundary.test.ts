@@ -190,7 +190,7 @@ describe('ToolRuntime durable boundary', () => {
     assert.equal(outcomes[0]?.runtimeEvent.refs?.operationId, prepared[0]?.operationId);
   });
 
-  it('persists tool presentation before execution and a public receipt only with successful T2', async () => {
+  it('persists internal tool presentation in T1 and its result in T2', async () => {
     const prepared: ToolPreparedCommit[] = [];
     const outcomes: ToolOutcomeCommit[] = [];
     const harness = makeHarness({
@@ -203,21 +203,16 @@ describe('ToolRuntime durable boundary', () => {
         return { created: true, runtimeEventSeq: 2 };
       },
     });
-    const publication = { publication: { id: 'answer', text: 'Concrete result' } };
+    const result = { id: 'answer', status: 'accepted' };
     await harness.execute({
-      ...tool(() => publication),
+      ...tool(() => result),
       presentation: 'internal',
-      resultPresentation: 'public_message',
     });
     assert.equal(prepared[0]!.runtimeEvent.actions?.stateDelta?.presentation, 'internal');
-    assert.equal(
-      prepared[0]!.runtimeEvent.actions?.stateDelta?.resultPresentation,
-      'public_message',
-    );
     assert.deepEqual(
       outcomes[0]!.runtimeEvent.content?.kind === 'function_response' &&
         outcomes[0]!.runtimeEvent.content.result,
-      { kind: 'json', value: publication },
+      { kind: 'json', value: result },
     );
   });
 

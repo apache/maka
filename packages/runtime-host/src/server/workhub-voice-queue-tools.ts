@@ -58,7 +58,7 @@ export function createWorkHubVoiceQueueTools(): readonly MakaTool[] {
         .enum(['turns', 'events'])
         .optional()
         .describe(
-          'Default: turns, one user or assistant native turn per record. Choose events to inspect interruptions, delegation, task results or delivery facts. Supplying kind also selects events.',
+          'Default: turns, one user or assistant native turn per record. Choose events to inspect interruptions, delegation or delivery facts. Supplying kind also selects events.',
         ),
       callId: z
         .string()
@@ -70,7 +70,7 @@ export function createWorkHubVoiceQueueTools(): readonly MakaTool[] {
         .string()
         .optional()
         .describe(
-          'Exact event kind, for example transcript, transcript_delta, delegation, task_result, reply_prepared or delivery_sent. Supplying kind selects event records instead of conversation turns.',
+          'Exact event kind, for example transcript, transcript_delta, delegation, reply_prepared or delivery_sent. Supplying kind selects event records instead of conversation turns.',
         ),
       query: z
         .string()
@@ -180,7 +180,7 @@ export function createWorkHubVoiceQueueTools(): readonly MakaTool[] {
       categoryHint: 'custom_tool',
       recoveryMode: 'never_auto_retry',
       description:
-        'Return a result or question to its original voice delegation by requestId. Use a stable id for this reply. This is the native correlated return channel, independent of the supplemental list. Repeating the same id and content is idempotent. Admission does not prove the user heard it.',
+        'Send a reply or question based on information already available to WorkHub, correlated by the original voice requestId. This tool does not retrieve child-task results. Use a stable id for this reply. This is the explicit WorkHub reply channel, independent of the supplemental list. Repeating the same id and content is idempotent. Admission does not prove the user heard it.',
       parameters: reply,
       impl: async (input, context) => {
         const output = reply.parse(input);

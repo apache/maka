@@ -19,7 +19,7 @@
 
 /** Provider-independent contract. Credentials, wire formats and task-call translation belong to the adapter. */
 export interface WorkHubVoiceProviderOptions {
-  submit(text: string, id?: string, displayText?: string, kind?: 'delegation', userTurnId?: string): Promise<{ status: 'accepted' | 'rejected'; turnId?: string; reason?: string }>;
+  submit(text: string, id?: string, displayText?: string, userTurnId?: string): Promise<{ status: 'accepted' | 'rejected'; turnId?: string; reason?: string }>;
   /** Emit normalized turn/control events, never provider-specific payloads. */
   observe(event: Record<string, unknown>): void;
   record(kind: string, data: Record<string, unknown>): void;

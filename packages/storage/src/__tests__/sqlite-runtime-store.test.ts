@@ -587,7 +587,6 @@ describe('SqliteRuntimeStore', () => {
           stateDelta: {
             activityKind: 'edit',
             presentation: 'internal',
-            resultPresentation: 'public_message',
           },
         },
       });

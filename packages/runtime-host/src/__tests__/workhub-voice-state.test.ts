@@ -87,11 +87,7 @@ test('a ranking does not delete candidates added after its snapshot', async () =
   const f = await fixture();
   try {
     await f.store.update({ upsert: [item('A')] });
-    await new WorkHubVoiceStateStore(f.store.path).enqueue({
-      kind: 'update',
-      id: 'B',
-      text: 'New report',
-    });
+    await new WorkHubVoiceStateStore(f.store.path).update({ upsert: [item('B', 'New report')] });
     const result = await f.store.update({ order: ['A'] });
     assert.deepEqual(
       result.queue.map((i) => i.id),
@@ -230,7 +226,6 @@ test('one request can prepare multiple speech items and revise them through the 
       context,
     );
     assert.deepEqual((await f.store.read()).queue, planets);
-    assert.equal(tool.resultPresentation, undefined);
     await tool.impl({ upsert: [{ id: 'p2', text: 'Revised planet' }] }, context);
     assert.equal((await f.store.read()).queue[1]!.text, 'Revised planet');
     const original = planets[0]!;
@@ -752,10 +747,15 @@ test('correlated replies are durable, isolated from list edits, and never reserv
       f.store.enqueue({ ...input, id: 'unknown', requestId: 'missing' }),
       /Unknown voice request/,
     );
-    await assert.rejects(f.store.update({ upsert: [item('result')] }), /Native replies/);
+    await assert.rejects(f.store.update({ upsert: [item('result')] }), /WorkHub replies/);
     await assert.rejects(
-      f.store.enqueue({ id: 'result', kind: 'question', text: 'collision' }),
-      /Native reply ID/,
+      f.store.enqueue({
+        id: 'result',
+        kind: 'question',
+        text: 'collision',
+        requestId: input.requestId,
+      }),
+      /identity reused/,
     );
     await f.store.update({ upsert: [item('supplement')], remove: ['result'] });
     const response = state.responses![0]!;

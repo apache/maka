@@ -20,7 +20,7 @@
 import { randomUUID } from 'node:crypto';
 import type { VoiceQueueItem, VoiceDeliveryInput, WorkHubVoiceState } from '@maka/runtime-host/protocol';
 
-/** Single-item consumer of approved prepared speech; native replies remain independent. */
+/** Single-item consumer of approved prepared speech; WorkHub replies remain independent. */
 export class WorkHubVoiceOutlet {
   private stopped = false;
   private running = false;
@@ -53,7 +53,7 @@ export class WorkHubVoiceOutlet {
       const state = await this.options.read();
       if (this.stopped) return;
       this.options.snapshot?.(state);
-      // Native delegation results return immediately; voice owns conversational timing.
+      // Explicit WorkHub replies are forwarded directly; voice owns conversational timing.
       // They never enter the supplemental list or its idle admission fence.
       for (const item of state.responses ?? []) {
         if (this.stopped) return;
@@ -63,12 +63,12 @@ export class WorkHubVoiceOutlet {
         if (!reserved.deliveries.some(d => d.deliveryId === delivery.deliveryId && d.status === 'reserved')) continue;
         this.attempted.add(item.id);
         try {
-          if (!this.options.sendReply) throw new Error('Native reply transport unavailable');
+          if (!this.options.sendReply) throw new Error('WorkHub reply transport unavailable');
           await this.options.sendReply(item.text, item.reply.id, delivery.deliveryId);
           await this.record(delivery, 'sent');
         } catch (error) {
           await this.record(delivery, 'uncertain').catch(() => {});
-          this.options.onError(`Native voice reply could not be confirmed: ${String(error)}`);
+          this.options.onError(`WorkHub voice reply could not be confirmed: ${String(error)}`);
         }
       }
       const blocked = state.deliveries.find(item => !item.reply && item.callId === this.options.callId && (item.status === 'reserved' || item.status === 'uncertain'));

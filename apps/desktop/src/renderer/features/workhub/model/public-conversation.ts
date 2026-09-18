@@ -20,28 +20,15 @@
 import type { StoredMessage } from '@maka/core/session';
 import type { LiveTurnProjection } from '@maka/ui';
 
-/** Render Host-published records. Raw voice-coordination streams are internal. */
+/** Hide internal tool records and active voice-coordination streams. */
 export function workHubPublicConversation(messages: readonly StoredMessage[], liveTurn?: LiveTurnProjection) {
-  const seen = new Map<string, number>();
-  const visibleMessages: StoredMessage[] = [];
-  for (const message of messages) {
-    if (message.presentation === 'internal') continue;
-    const previous = seen.get(message.id);
-    if (previous === undefined) {
-      seen.set(message.id, visibleMessages.length);
-      visibleMessages.push(message);
-    } else if (message.type === 'assistant' && message.presentation === 'public') {
-      // A later maintenance turn may revise an unsent publication in place.
-      visibleMessages[previous] = message;
-    }
-  }
+  const visibleMessages = messages.filter(message => message.presentation !== 'internal');
   if (!liveTurn) return { messages: visibleMessages, liveTurn };
   const inputs = messages.filter(message => message.type === 'user' && message.turnId === liveTurn.turnId);
   const steering = [...(liveTurn.pendingSteering ?? []), ...liveTurn.steps.flatMap(step => step.leadingSteering ?? [])];
   const isVoiceSource = (source: string | undefined) => source === 'voice_request' || source === 'voice_maintenance';
   const internal = inputs.some(message => message.type === 'user' && isVoiceSource(message.workhubSource)) || steering.some(message => isVoiceSource(message.content.workhubSource));
-  // Until the input's structured source arrives, expose no raw output. Formal
-  // publications remain visible in the Host's active transcript overlay.
+  // Until the input's structured source arrives, expose no raw stream.
   if (!inputs.length || internal) return { messages: visibleMessages, liveTurn: undefined };
   return { messages: visibleMessages, liveTurn };
 }

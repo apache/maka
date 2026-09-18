@@ -280,8 +280,6 @@ interface ProjectionState {
   toolNameByUseId: Map<string, string>;
   permissionRequestById: Map<string, PermissionRequestProjectionMetadata>;
   internalTools: Set<string>;
-  publishingTools: Set<string>;
-  publications: Map<string, number>;
   /**
    * Thinking awaiting its assistant text row, keyed by the step message id
    * (function of the event's providerEventId / storedMessageId — the same id the
@@ -320,8 +318,6 @@ export function createRuntimeEventStoredMessageProjector(
     diagnostics: [],
     toolNameByUseId: new Map(),
     internalTools: new Set(),
-    publishingTools: new Set(),
-    publications: new Map(),
     permissionRequestById: new Map(),
     thinkingByMessageId: new Map(),
     contentOrderByMessageId: new Map(),
@@ -1105,8 +1101,6 @@ function projectFunctionCall(
   }
   state.toolNameByUseId.set(toolUseId, event.content.name);
   if (event.actions?.stateDelta?.presentation === 'internal') state.internalTools.add(toolUseId);
-  if (event.actions?.stateDelta?.resultPresentation === 'public_message')
-    state.publishingTools.add(toolUseId);
   messages.push({
     type: 'tool_call',
     ...(state.internalTools.has(toolUseId) ? { presentation: 'internal' as const } : {}),
@@ -1252,49 +1246,6 @@ function projectFunctionResponse(
   });
   // Only a successful result from a Host-registered publishing tool can create
   // a public message. The persisted receipt is shared by live and history views.
-  if (
-    !event.content.isError &&
-    state.publishingTools.has(toolUseId) &&
-    resultContent.kind === 'json'
-  ) {
-    const value = resultContent.value as {
-      publication?: { id?: unknown; text?: unknown };
-      publications?: Array<{ id?: unknown; text?: unknown }>;
-    } | null;
-    const publications = Array.isArray(value?.publications)
-      ? value.publications.slice(0, 64)
-      : value?.publication
-        ? [value.publication]
-        : [];
-    for (const publication of publications) {
-      if (
-        publication &&
-        typeof publication.id === 'string' &&
-        /^[A-Za-z0-9_-]{1,128}$/.test(publication.id) &&
-        typeof publication.text === 'string' &&
-        publication.text.length > 0 &&
-        publication.text.length <= 32_000
-      ) {
-        const previous = state.publications.get(publication.id);
-        if (previous !== undefined) {
-          const message = messages[previous]!;
-          if (message.type === 'assistant')
-            messages[previous] = { ...message, text: publication.text };
-        } else {
-          state.publications.set(publication.id, messages.length);
-          messages.push({
-            type: 'assistant',
-            id: `workhub-public-${publication.id}`,
-            turnId: event.turnId,
-            ts: event.ts,
-            text: publication.text,
-            modelId: '',
-            presentation: 'public',
-          });
-        }
-      }
-    }
-  }
   return true;
 }
 

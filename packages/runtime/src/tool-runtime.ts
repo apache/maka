@@ -182,7 +182,6 @@ export interface MakaTool<P = any, R = unknown> {
   displayName?: string;
   /** Host-owned UI routing, independent of the tool name and model arguments. */
   presentation?: 'internal';
-  resultPresentation?: 'public_message';
   /** Stable semantic category used by UI presentation; never carries styling. */
   activityKind?: ToolActivityKind;
   /** Optional trusted category override for custom tools. */
@@ -1190,7 +1189,6 @@ export class ToolRuntime {
       toolName: tool.name,
       ...activityIdentity,
       ...(tool.presentation ? { presentation: tool.presentation } : {}),
-      ...(tool.resultPresentation ? { resultPresentation: tool.resultPresentation } : {}),
       ...(tool.activityKind ? { activityKind: tool.activityKind } : {}),
       args: structuredClone(persistedArgs),
       ...(ctx.providerOptions !== undefined
@@ -1919,8 +1917,6 @@ export class ToolRuntime {
       throw new RuntimeCommitBoundaryError('T1', new Error('Tool start has no operation id'));
     const stateDelta: Record<string, unknown> = {};
     if (input.startEvent.presentation) stateDelta.presentation = input.startEvent.presentation;
-    if (input.startEvent.resultPresentation)
-      stateDelta.resultPresentation = input.startEvent.resultPresentation;
     if (input.startEvent.activityKind !== undefined)
       stateDelta.activityKind = input.startEvent.activityKind;
     if (input.startEvent.displayName !== undefined)

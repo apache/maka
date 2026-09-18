@@ -34,15 +34,11 @@ function fixture(response = new Response('v=0\r\nanswer', { status: 200 }), crea
   let finish!: () => void;
   let wake: (() => void) | undefined;
   const frames: SubscriptionFrame[] = [];
-  const childFrames: SubscriptionFrame[] = [];
   const done = new Promise<void>(resolve => { finish = resolve; });
   const push = (frame: SubscriptionFrame) => { frames.push(frame); wake?.(); };
-  let childWake: (() => void) | undefined;
-  const pushChild = (frame: SubscriptionFrame) => { childFrames.push(frame); childWake?.(); };
   const owner = Object.assign(new EventEmitter(), { isDestroyed: () => false, send: (_channel: string, message: unknown) => sent.push(message) }) as unknown as WebContents;
   let opened = 0;
   let history: unknown[] = [];
-  const childHistory = new Map<string, unknown[]>();
   const openedSessions: string[] = [];
   const client = {
     rootId: 'local-root',
@@ -56,9 +52,9 @@ function fixture(response = new Response('v=0\r\nanswer', { status: 200 }), crea
       admitted.push(input);
       return { turnId: (input as { turnId: string }).turnId };
     },
-    openSession: async (sessionId: string) => { openedSessions.push(sessionId); const primary = opened++ === 0; const pinned = sessionId === 'maka_workhub_coordination' ? history : childHistory.get(sessionId) ?? history; return ({
+    openSession: async (sessionId: string) => { openedSessions.push(sessionId); const primary = opened++ === 0; const pinned = history; return ({
       snapshot: { rootTurn: null, interactions: { pending: [] }, queue: { hostEpoch: 'test', queueRevision: 0, entries: [] } }, activeAssistantStreams: [], loadTranscript: async () => pinned,
-      events: { async *[Symbol.asyncIterator]() { const queue = primary ? frames : childFrames; while (!observationClosed) { if (queue.length) yield queue.shift()!; else await Promise.race([done, new Promise<void>(resolve => { if (primary) wake = resolve; else childWake = resolve; })]); } } },
+      events: { async *[Symbol.asyncIterator]() { const queue = frames; while (!observationClosed) { if (queue.length) yield queue.shift()!; else await Promise.race([done, new Promise<void>(resolve => { wake = resolve; })]); } } },
       close: async () => { if (primary) { observationClosed = true; finish(); } },
     } as unknown as DesktopRuntimeHostSession); },
   } as unknown as DesktopRuntimeHostClient;
@@ -70,7 +66,7 @@ function fixture(response = new Response('v=0\r\nanswer', { status: 200 }), crea
     })) },
   });
   const invoke = (name: string, ...args: unknown[]) => handlers.get(`workhub:voice:${name}`)!({ sender: owner } as IpcMainInvokeEvent, ...args);
-  return { client, setChildHistory: (id: string, rows: unknown[]) => childHistory.set(id, rows), queued, pushChild, openedSessions, setHistory: (next: unknown[]) => { history = next; }, setCorrection: (work: string, workId: string) => { correction = { queue: [{ id: workId, text: work, context: '' }], deliveries: [] }; }, push, invoke, handlers, owner, admitted, observations, sent, dispose, get observationClosed() { return observationClosed; } };
+  return { client, queued, openedSessions, setHistory: (next: unknown[]) => { history = next; }, setCorrection: (work: string, workId: string) => { correction = { queue: [{ id: workId, text: work, context: '' }], deliveries: [] }; }, push, invoke, handlers, owner, admitted, observations, sent, dispose, get observationClosed() { return observationClosed; } };
 }
 const offer = { id: '00000000-0000-0000-0000-000000000001', sdp: 'v=0\r\noffer' };
 test('native connection requires prepared capture and closes its observation', async () => {
@@ -137,8 +133,8 @@ test('only forwarded voice requests register and enter WorkHub with high priorit
     options.observe!({ kind: 'work_update', id: 'process', text: 'Scanning' });
     await new Promise(resolve => setTimeout(resolve, 700));
     assert.deepEqual(registered, []); assert.ok(f.observations.every(input=>input.entries.every(entry=>entry.kind==='call_started')));
-    await options.submit('Change to Top5', 'request', '改成 Top5', 'delegation', 'native-user');
-    await options.submit('Change to Top5', 'request', '改成 Top5', 'delegation', 'native-user');
+    await options.submit('Change to Top5', 'request', '改成 Top5', 'native-user');
+    await options.submit('Change to Top5', 'request', '改成 Top5', 'native-user');
     assert.deepEqual(registered, ['request']); assert.equal(f.admitted.length, 1);
     const admitted = f.admitted[0] as { source: string; text: string; displayText: string };
     assert.equal(admitted.source, 'voice'); assert.equal(admitted.displayText, '改成 Top5');
@@ -158,10 +154,9 @@ const projection = (turnId: string, status: 'running' | 'completed' | 'failed' =
     interactions: { pending: [] }, queue: { hostEpoch: 'test', queueRevision: 0, entries: [] },
   },
 } as unknown as SubscriptionFrame);
-test('history and live context synchronization exclude maintenance, unknown sources and echoed voice requests', async () => {
-  let options!: import('../workhub-voice-provider.js').WorkHubVoiceProviderOptions;
+test('WorkHub transcript changes do not automatically send speech or replies', async () => {
   const contexts: string[] = [];
-  const f = fixture(undefined, input => { options = input; return { connect: async () => 'answer', accept: () => {}, appendContext: async (input: { text: string }) => { contexts.push(input.text); }, sendReply: async () => {}, sendSpeech: async () => {}, close: input.onClose }; });
+  const f = fixture(undefined, input => { return { connect: async () => 'answer', accept: () => {}, sendReply: async text => { contexts.push(text); }, sendSpeech: async text => { contexts.push(text); }, close: input.onClose }; });
   const rows = (suffix: string) => [
     { type: 'user', id: `maintenance-${suffix}`, turnId: suffix, text: 'PRIVATE_MAINTENANCE', workhubSource: 'voice_maintenance' },
     { type: 'user', id: `unknown-${suffix}`, turnId: suffix, text: 'UNKNOWN_SOURCE' },
@@ -172,7 +167,6 @@ test('history and live context synchronization exclude maintenance, unknown sour
   try {
     f.setHistory(rows('old'));
     await f.invoke('prepare'); await f.invoke('connect', offer);
-    assert.equal('initialItems' in options, false);
     f.setHistory([...rows('old'), ...rows('new')]);
     f.push(projection('new', 'running'));
     await tick(); await tick();
@@ -203,7 +197,7 @@ test('desktop observes only WorkHub and does not recollect or echo native task r
   try {
     f.setHistory(linkedTask);
     await f.invoke('prepare'); await f.invoke('connect', offer);
-    f.setHistory([{ type: 'user', id: 'result', turnId: 'result-turn', text: 'Task result', workhubSource: 'task_result' },
+    f.setHistory([{ type: 'user', id: 'result', turnId: 'result-turn', text: 'Task result' },
       { type: 'assistant', id: 'output', turnId: 'result-turn', text: 'Private result processing' }]);
     f.push(projection('result-turn'));
     await tick(); await tick();
@@ -216,7 +210,7 @@ test('desktop observes only WorkHub and does not recollect or echo native task r
 
 test('WorkHub subscription loss reconnects without closing the voice model',async()=>{
   let mediaClosed=false;
-  const f=fixture(undefined,input=>({connect:async()=> 'answer',accept:()=>{},appendContext:async()=>{},sendReply:async()=>{},sendSpeech:async()=>{},close:()=>{mediaClosed=true;input.onClose();}}));
+  const f=fixture(undefined,input=>({connect:async()=> 'answer',accept:()=>{},sendReply:async()=>{},sendSpeech:async()=>{},close:()=>{mediaClosed=true;input.onClose();}}));
   const open=f.client.openSession.bind(f.client); let subscriptions=0;
   f.client.openSession=async id=>{
     const handle=await open(id); subscriptions++;

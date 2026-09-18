@@ -423,38 +423,6 @@
     }
   },
   {
-    "name": "有来源的结果",
-    "input": {
-      "facts": [
-        {
-          "kind": "transcript",
-          "role": "user",
-          "text": "读一下灯塔清单文件。"
-        },
-        {
-          "kind": "task_result",
-          "status": "completed",
-          "text": "已读取灯塔清单.txt，文件内容：明天检查灯泡。"
-        }
-      ],
-      "queue": [
-        {
-          "id": "a",
-          "text": "灯塔清单里写的是：明天检查灯泡。",
-          "context": "WorkHub 已读取文件，向用户报告结果。"
-        }
-      ],
-      "responses": [],
-      "deliveries": []
-    },
-    "expected": {
-      "gap": false,
-      "items": {
-        "a": "inject"
-      }
-    }
-  },
-  {
     "name": "三条混合",
     "input": {
       "facts": [
@@ -694,39 +662,6 @@
     },
     "expected": {
       "gap": true,
-      "items": {}
-    }
-  },
-  {
-    "name": "真实已完成无需新任务",
-    "input": {
-      "facts": [
-        {
-          "kind": "transcript",
-          "role": "user",
-          "text": "建周报.md。"
-        },
-        {
-          "kind": "delegation",
-          "text": "创建周报.md"
-        },
-        {
-          "kind": "task_result",
-          "status": "completed",
-          "text": "周报.md已创建"
-        },
-        {
-          "kind": "transcript",
-          "role": "assistant",
-          "text": "周报.md已经创建完成。"
-        }
-      ],
-      "queue": [],
-      "responses": [],
-      "deliveries": []
-    },
-    "expected": {
-      "gap": false,
       "items": {}
     }
   },

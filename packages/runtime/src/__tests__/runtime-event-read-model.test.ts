@@ -2792,42 +2792,31 @@ test('Coordination receipts materialize as host facts, never assistant output', 
   );
 });
 
-test('atomic voice publications project each public item and revise by stable identity', () => {
-  const call = (id: string) =>
-    ev({
-      role: 'model',
-      author: 'agent',
-      content: { kind: 'function_call', id, name: 'voice_queue_update', args: {} },
-      actions: { stateDelta: { presentation: 'internal', resultPresentation: 'public_message' } },
-    });
-  const result = (id: string, publications: Array<{ id: string; text: string }>) =>
-    ev({
-      role: 'tool',
-      author: 'tool',
-      content: {
-        kind: 'function_response',
-        id,
-        name: 'voice_queue_update',
-        result: { kind: 'json', value: { publications } },
-      },
-    });
+test('internal voice tool results do not manufacture assistant messages', () => {
   const out = projectRuntimeEventsToStoredMessages(
     [
-      call('one'),
-      result('one', [
-        { id: 'A', text: 'first' },
-        { id: 'B', text: 'second' },
-      ]),
-      call('two'),
-      result('two', [{ id: 'A', text: 'revised' }]),
+      ev({
+        role: 'model',
+        author: 'agent',
+        content: { kind: 'function_call', id: 'one', name: 'voice_queue_update', args: {} },
+        actions: { stateDelta: { presentation: 'internal' } },
+      }),
+      ev({
+        role: 'tool',
+        author: 'tool',
+        content: {
+          kind: 'function_response',
+          id: 'one',
+          name: 'voice_queue_update',
+          result: { kind: 'json', value: { status: 'accepted' } },
+        },
+      }),
     ],
     { invocations: [invocation] },
   );
+  assert.equal(out.messages.filter((item) => item.type === 'assistant').length, 0);
   assert.deepEqual(
-    out.messages.filter((item) => item.type === 'assistant').map((item) => [item.id, item.text]),
-    [
-      ['workhub-public-A', 'revised'],
-      ['workhub-public-B', 'second'],
-    ],
+    out.messages.map((item) => item.presentation),
+    ['internal', 'internal'],
   );
 });

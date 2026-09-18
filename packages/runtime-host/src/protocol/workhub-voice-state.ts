@@ -66,7 +66,7 @@ export interface VoiceDeliveryInput extends Omit<VoiceDelivery, 'status'> {
 }
 export interface WorkHubVoiceState {
   queue: VoiceQueueItem[];
-  /** Correlated native replies, independent of the supplemental speech list. */
+  /** Explicit WorkHub replies, independent of the supplemental speech list. */
   responses?: VoiceQueueItem[];
   deliveries: VoiceDelivery[];
   receivedObservationId?: string;
@@ -75,8 +75,8 @@ export interface WorkHubVoiceState {
 export interface VoiceEnqueueInput {
   id: string;
   text: string;
-  kind: 'answer' | 'update' | 'status' | 'question' | 'failure';
-  requestId?: string;
+  kind: 'answer' | 'update' | 'question' | 'failure';
+  requestId: string;
 }
 
 export function decodeVoiceRequest(value: unknown): VoiceRequest {
@@ -152,24 +152,15 @@ export function decodeVoiceQueueItem(value: unknown): VoiceQueueItem {
 }
 export function decodeVoiceEnqueue(value: unknown): VoiceEnqueueInput {
   const record = requireRecord(value, 'Voice output');
-  const v = requireExactRecord(record, 'Voice output', [
-    'id',
-    'text',
-    'kind',
-    ...['requestId'].filter((key) => Object.hasOwn(record, key)),
-  ]);
-  if (!['answer', 'update', 'status', 'question', 'failure'].includes(String(v.kind)))
+  const v = requireExactRecord(record, 'Voice output', ['id', 'text', 'kind', 'requestId']);
+  if (!['answer', 'update', 'question', 'failure'].includes(String(v.kind)))
     throw new Error('Invalid voice output kind');
-  if (v.kind === 'answer' && v.requestId === undefined)
-    throw new Error('A voice answer requires requestId');
   const { id, text } = decodeVoiceQueueItem({ id: v.id, text: v.text, context: '' });
   return {
     id,
     text,
     kind: v.kind as VoiceEnqueueInput['kind'],
-    ...(v.requestId !== undefined
-      ? { requestId: requireEntityId(v.requestId, 'Voice reply request') }
-      : {}),
+    requestId: requireEntityId(v.requestId, 'Voice reply request'),
   };
 }
 export function decodeVoiceDelivery(value: unknown): VoiceDeliveryInput {

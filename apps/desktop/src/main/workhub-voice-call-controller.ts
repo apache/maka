@@ -64,7 +64,6 @@ export class WorkHubVoiceCallController {
     return !this.stopped && this.nativeTurn?.status !== 'created' && !this.outputActive &&
       (!this.awaitingReply || Boolean(this.nativeUserId && this.backendUserIds.has(this.nativeUserId)));
   }
-  get idle(): boolean { return this.mediaAvailable && !this.pendingSpeech; }
   get canInject(): boolean { return !this.uncertainDeliveryId && !this.pendingSpeech && this.mediaAvailable; }
   get injectionRevision(): number { return this.intent; }
   get currentTurn(): Readonly<{ id: string; role: 'user' | 'assistant'; status: 'created' | 'done' }> | undefined {

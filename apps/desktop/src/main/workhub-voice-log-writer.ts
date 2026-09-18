@@ -24,7 +24,6 @@ import type { VoiceLogInput, WorkHubVoiceObservation, WorkHubVoiceState } from '
 export class WorkHubVoiceLogWriter {
   private pending: VoiceLogInput[] = [];
   private writing?: Promise<void>;
-  private closed = false;
   constructor(private readonly options: {
     callId: string;
     write(input: WorkHubVoiceObservation): Promise<WorkHubVoiceState>;
@@ -46,5 +45,5 @@ export class WorkHubVoiceLogWriter {
       await this.writing;
     }
   }
-  async close(): Promise<void> { this.closed = true; await this.drain(); }
+  async close(): Promise<void> { await this.drain(); }
 }

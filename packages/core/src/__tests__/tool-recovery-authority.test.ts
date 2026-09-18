@@ -179,25 +179,24 @@ describe('recovery persistence authority', () => {
   });
 
   it('accepts only the closed tool-presentation values on function calls', () => {
-    const internalPublication = callEvent({
+    const internalTool = callEvent({
       actions: {
         stateDelta: {
           activityKind: 'edit',
           presentation: 'internal',
-          resultPresentation: 'public_message',
         },
       },
     });
-    assert.deepEqual(validateToolLedgerEventLane(internalPublication), {
+    assert.deepEqual(validateToolLedgerEventLane(internalTool), {
       ok: true,
       lane: 'function_call',
     });
 
     for (const stateDelta of [
       { presentation: 'public' },
-      { resultPresentation: 'internal' },
+      { obsoleteMetadata: 'internal' },
       { presentation: true },
-      { resultPresentation: true },
+      { obsoleteMetadata: true },
     ]) {
       assert.deepEqual(validateToolLedgerEventLane(callEvent({ actions: { stateDelta } })), {
         ok: false,

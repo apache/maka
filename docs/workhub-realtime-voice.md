@@ -57,10 +57,18 @@ from the host, so it does not depend on a provider's event format.
 
 WorkHub keeps its normal task coordination responsibilities. Voice delegations enter a durable
 inbox, use the existing start/steer path and return through the original request ID.
-Task delegation, child supervision and result handling remain owned by the main WorkHub runtime. The voice layer does not scan child transcripts, poll child completion or inject synthetic task-result messages into WorkHub. It transports replies WorkHub explicitly publishes through `voice_reply`.
+Main retains its existing task delegation and child lifecycle behavior; this integration adds no completion callback to WorkHub. The voice layer does not scan child transcripts, poll child completion or inject synthetic task-result messages into WorkHub. It transports replies WorkHub explicitly publishes through `voice_reply`.
 
 Voice transcript fragments are persisted while streaming and consolidated at turn end.
 The current `voice-queue.sqlite` database owns the voice history, pending list, delivery receipts and review cursor. Old JSON files are not imported; older or unknown persisted state shapes are rejected without rewriting them. There is no experimental-format migration.
+
+The active call graph has three independent paths:
+
+- Provider `submit` → register the voice request → durable inbox → WorkHub admission/steering. Its receipt confirms acceptance only.
+- WorkHub `voice_reply` (or an active WorkHub question/form) → correlated replies → provider `sendReply`. This is an explicit reply transport, not a child-result collector. Plain WorkHub output is not automatically spoken.
+- Completed voice turns/log facts → Jev → optional WorkHub maintenance → `voice_queue_update` → checked list item → provider `sendSpeech`.
+
+There is no child completion → synthetic result → WorkHub path. Tests must not assume one. Both voice paths require a separately registered provider.
 
 The ordered list contains prepared speech, not all outstanding tasks. The consumer sends
 one approved item at a time while voice is idle. Delivery reservations and exact-snapshot
@@ -71,7 +79,7 @@ Jev checks recent completed facts and the current list asynchronously after turn
 state changes. New input invalidates previous approval. It identifies missing work and
 classifies items as inject, discard or rework. Discards match the exact observed item;
 rework remains blocked while WorkHub maintains the list. Old model results cannot approve
-newer state. Native task replies bypass this supplemental-list gate.
+newer state. Explicit WorkHub replies bypass this supplemental-list gate.
 
 The checker currently uses TypeSafe's official endpoint. Configure `TYPESAFE_API_KEY`,
 `MAKA_TYPESAFE_KEY_FILE`, or `~/.config/maka/typesafe.key` locally. No key belongs in the
@@ -84,8 +92,8 @@ voice and inbox suites. `node scripts/voice/jev-scenarios.mjs` explicitly
 runs a paid real-model replay using local credentials; it is not a CI test and model
 outputs can fail its expectations.
 
-Known limitations: WorkHub maintenance and task-result handling can take tens of
-seconds; late native replies can cause speech after a conversational stop; the semantic
+Known limitations: this integration has no automatic child-task completion → WorkHub → voice return path. `voice_reply` only transports information WorkHub already has; it does not retrieve results or wake WorkHub on task completion. WorkHub maintenance can take tens of
+seconds; late explicit replies can cause speech after a conversational stop; the semantic
 checker can misclassify missing work or delete a still-needed item. A conversational
 stop is not a transport disconnect. Provider integration requires separate real-media
 validation; generic fake-provider tests do not establish real speech quality.

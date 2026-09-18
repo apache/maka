@@ -452,7 +452,7 @@ export class WorkHubVoiceStateStore {
     });
   }
 
-  /** Only an explicitly classified output can enter the queue; process status never speaks. */
+  /** Publish a WorkHub reply correlated to a registered voice request. */
   enqueue(input: VoiceEnqueueInput): Promise<WorkHubVoiceState> {
     return this.#locked(async () => {
       const output = decodeVoiceEnqueue(input);
@@ -464,36 +464,26 @@ export class WorkHubVoiceStateStore {
   }
 
   #enqueue(state: StoredVoiceState, output: VoiceEnqueueInput): void {
-    if (output.kind === 'status') return;
-    if (output.requestId) {
-      const request = state.requests?.find((item) => item.id === output.requestId);
-      if (!request) throw new Error('Unknown voice request');
-      const item = decodeVoiceQueueItem({
-        id: output.id,
-        text: output.text,
-        context: '',
-        reply: { ...request, kind: output.kind },
-      });
-      const responses = (state.responses ??= []);
-      const previous = [...responses, ...state.deliveries].find((old) => old.id === item.id);
-      if (previous) {
-        if (previous.text !== item.text || !isDeepStrictEqual(previous.reply, item.reply))
-          throw new Error('Voice reply identity reused with different content');
-        return;
-      }
-      if (state.queue.some((old) => old.id === item.id))
-        throw new Error('Voice reply ID belongs to the supplemental list');
-      if (responses.length >= 256) throw new Error('Too many pending voice replies');
-      responses.push(item);
+    const request = state.requests?.find((item) => item.id === output.requestId);
+    if (!request) throw new Error('Unknown voice request');
+    const item = decodeVoiceQueueItem({
+      id: output.id,
+      text: output.text,
+      context: '',
+      reply: { ...request, kind: output.kind },
+    });
+    const responses = (state.responses ??= []);
+    const previous = [...responses, ...state.deliveries].find((old) => old.id === item.id);
+    if (previous) {
+      if (previous.text !== item.text || !isDeepStrictEqual(previous.reply, item.reply))
+        throw new Error('Voice reply identity reused with different content');
       return;
     }
-    const item = decodeVoiceQueueItem({ id: output.id, text: output.text, context: '' });
-    if (state.responses?.some((reply) => reply.id === item.id))
-      throw new Error('Native reply ID belongs to the response channel');
-    if (state.deliveries.some((entry) => entry.id === item.id)) return;
-    const existing = state.queue.findIndex((entry) => entry.id === item.id);
-    if (existing >= 0) state.queue[existing] = item;
-    else state.queue.push(item);
+    if (state.queue.some((old) => old.id === item.id))
+      throw new Error('Voice reply ID belongs to the supplemental list');
+    if (responses.length >= 256) throw new Error('Too many pending voice replies');
+    responses.push(item);
+    return;
   }
 
   /** Merge ID operations against live state. Consumption and unseen additions never reject a ranking. */
@@ -504,7 +494,7 @@ export class WorkHubVoiceStateStore {
       if (
         upsert.some((item) => item.reply || state.responses?.some((reply) => reply.id === item.id))
       )
-        throw new Error('Native replies do not belong in the supplemental list');
+        throw new Error('WorkHub replies do not belong in the supplemental list');
       for (const ids of [upsert.map((item) => item.id), input.order ?? [], input.remove ?? []]) {
         if (
           new Set(ids).size !== ids.length ||
@@ -598,7 +588,7 @@ export class WorkHubVoiceStateStore {
       if (state.review?.status === 'admitted') return;
       const latestFact = Number(
         this.database!.prepare(`SELECT COALESCE(MAX(seq),0) AS n FROM voice_log
-        WHERE call_id = ? AND kind IN ('transcript','transcript_delta','interruption','delegation','task_result','delivery_uncertain','jev_review')`).get(
+        WHERE call_id = ? AND kind IN ('transcript','transcript_delta','interruption','delegation','delivery_uncertain','jev_review')`).get(
           callId,
         )!.n,
       );

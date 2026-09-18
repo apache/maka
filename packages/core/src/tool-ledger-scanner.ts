@@ -615,8 +615,6 @@ function matchesFunctionCallActions(actions: RuntimeEvent['actions']): boolean {
           return typeof stateDelta[key] === 'string';
         case 'presentation':
           return stateDelta[key] === 'internal';
-        case 'resultPresentation':
-          return stateDelta[key] === 'public_message';
         default:
           return false;
       }
