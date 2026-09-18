@@ -44,6 +44,7 @@ import {
   type RuntimeInvocationRecord,
 } from '@maka/core/runtime-invocation';
 import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
+import { scanToolLedger } from '@maka/core/tool-ledger-scanner';
 import { createSqliteAgentRunStore } from '@maka/storage/agent-run-store';
 import { createWorkspaceRuntimeStore } from '@maka/storage/runtime-event-persistence';
 import { sectionedSummary } from './history-compact-test-fixtures.js';
@@ -3836,6 +3837,142 @@ test('conversation copy reproduces the source fold rather than re-deciding it', 
     assert.doesNotMatch(JSON.stringify(reduced.events), /SECRET_ARCHIVED_TOOL_RESULT_BODY/);
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('conversation copy re-authenticates a rewritten paging Read against its dispatch', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-conversation-paging-read-copy-'));
+  try {
+    const runStore = createSqliteAgentRunStore(root);
+    const runtimeEventStore = createWorkspaceRuntimeStore(root);
+    // The model paged a truncated tool result: the Read names the source
+    // Session's tool-result event directly, and a T1 dispatch authenticated
+    // those exact args.
+    const sourcePath = 'maka://runtime/tool-results/event-result';
+    const sourceEvents = [
+      invocationOpenedEvent({
+        runId: 'run-first',
+        invocationId: 'invocation-run-first',
+        turnId: 'turn-1',
+        cwd: root,
+      }),
+      runtimeEvent({
+        id: 'event-user',
+        runId: 'run-first',
+        invocationId: 'invocation-run-first',
+        role: 'user',
+        author: 'user',
+        content: { kind: 'text', text: 'first turn' },
+      }),
+      runtimeEvent({
+        id: 'event-call',
+        runId: 'run-first',
+        invocationId: 'invocation-run-first',
+        ts: 1.5,
+        role: 'model',
+        author: 'agent',
+        content: { kind: 'function_call', id: 'tool-1', name: 'Read', args: { path: sourcePath } },
+      }),
+      runtimeEvent({
+        id: 'event-dispatch',
+        runId: 'run-first',
+        invocationId: 'invocation-run-first',
+        ts: 1.6,
+        actions: {
+          toolDispatch: {
+            protocol: 't1_after_preflight_v1',
+            operationId: 'operation-1',
+            providerToolCallId: 'tool-1',
+            toolName: 'Read',
+            canonicalArgsHash: canonicalToolArgsHash('Read', { path: sourcePath }),
+            recoveryMode: 'reconcile',
+          },
+        },
+        refs: { operationId: 'operation-1', toolCallId: 'tool-1' },
+      }),
+      runtimeEvent({
+        id: 'event-result',
+        runId: 'run-first',
+        invocationId: 'invocation-run-first',
+        ts: 2,
+        role: 'tool',
+        author: 'tool',
+        content: {
+          kind: 'function_response',
+          id: 'tool-1',
+          name: 'Read',
+          result: { kind: 'text', text: 'paged body' },
+        },
+        refs: { operationId: 'operation-1', toolCallId: 'tool-1' },
+      }),
+      runtimeEvent({
+        id: 'event-terminal',
+        runId: 'run-first',
+        invocationId: 'invocation-run-first',
+        ts: 3,
+        status: 'completed',
+      }),
+    ];
+    // Durable tool facts only enter through the atomic tool boundary writer.
+    await runtimeEventStore.importConversationCopyRuntimeEvents('session-source', [
+      { runId: 'run-first', events: sourceEvents },
+    ]);
+    await runStore.appendEvent('session-source', 'run-first', {
+      type: 'model_stream_completed',
+      id: 'completed-first',
+      runId: 'run-first',
+      sessionId: 'session-source',
+      turnId: 'turn-1',
+      ts: 6,
+    });
+
+    const source = await new RuntimeReadModel({ runtimeEventStore }).getSessionView(
+      'session-source',
+    );
+    const firstTurnMessages = source.messages.filter(
+      (message) => 'turnId' in message && message.turnId === 'turn-1',
+    );
+    await cloneConversationRuntimeLedger({
+      plan: await prepareTestCopyPlan(source, firstTurnMessages, runStore, runtimeEventStore),
+      copiedMessages: firstTurnMessages,
+      referenceMap: {
+        mode: 'exact',
+        linkedChildren: { mode: 'reject' },
+        sourceSessionId: 'session-source',
+        targetSessionId: 'session-target',
+        artifactIds: new Map(),
+        relativePaths: new Map(),
+      },
+      runStore,
+      runtimeEventStore,
+      newId: () => crypto.randomUUID(),
+    });
+
+    const [targetRun] = await runtimeEventStore.listSessionInvocations('session-target');
+    assert.ok(targetRun);
+    const targetEvents = await runtimeEventStore.readRuntimeEvents(
+      'session-target',
+      targetRun.runId,
+    );
+    // The copied ledger must survive its own T1 re-scan: the rewrite renames
+    // the tool result the Read points at, so the paired dispatch has to
+    // authenticate the rewritten args, not the source's.
+    const scan = scanToolLedger(targetEvents);
+    assert.equal(scan.hasCorruption, false, JSON.stringify(scan.issues));
+    const copiedCall = targetEvents.find((event) => event.content?.kind === 'function_call');
+    assert.ok(copiedCall?.content?.kind === 'function_call');
+    const copiedArgs = copiedCall.content.args as { path: string };
+    assert.notEqual(copiedArgs.path, sourcePath, 'the copied Read names the copied tool result');
+    const dispatch = targetEvents.find((event) => event.actions?.toolDispatch)?.actions
+      ?.toolDispatch;
+    assert.ok(dispatch);
+    assert.equal(
+      dispatch.canonicalArgsHash,
+      canonicalToolArgsHash('Read', copiedArgs),
+      'the paired dispatch authenticates the rewritten args',
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true }).catch(() => {});
   }
 });
 
