@@ -18,6 +18,7 @@
         ".storybook/node-crypto-boundary.ts",
         "stories/**/*.@(ts|tsx)",
         "scripts/browser-observe-act-smoke.mjs",
+        "scripts/client-plugin-p1-smoke.mjs",
         "scripts/workhub-browser-presentation-smoke.mjs",
         "src/renderer/astryx-theme/maka.d.ts",
         "src/renderer/astryx-theme/makaTheme.ts"
