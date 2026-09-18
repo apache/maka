@@ -193,6 +193,26 @@
 .maka-quote-chip-remove > svg,
 .maka-quote-chip-remove svg { width: var(--icon-meta); height: var(--icon-meta); }
 
+/* Marks that the excerpt carries a note. The note itself lives in the
+   structured tooltip and in the model-facing content, not in the chip line. */
+.maka-quote-chip-comment-icon { width: var(--icon-meta); height: var(--icon-meta); flex: 0 0 auto; color: var(--muted-foreground); }
+
+/* The structured read of a quote — what was selected, then what the user said
+   about it — shared by the staged token's tooltip and the chip on a sent
+   message so neither surface can drift from the other. */
+.maka-quote-tooltip { display: flex; max-width: 320px; flex-direction: column; gap: var(--space-1); }
+.maka-quote-tooltip-row { display: flex; flex-direction: column; gap: 2px; }
+.maka-quote-tooltip-label { font: var(--maka-text-supporting); color: var(--muted-foreground); }
+.maka-quote-tooltip-value { color: var(--foreground); overflow-wrap: anywhere; white-space: pre-wrap; }
+
+/* Annotation panel. One surface for the transcript's overlay layer and the
+   composer's popover, so the same note reads the same wherever it is written. */
+.maka-quote-comment-panel { display: flex; width: 320px; max-width: 100%; flex-direction: column; gap: var(--space-2); padding: var(--space-3); border-radius: var(--radius-surface); background: var(--color-background-popover); box-shadow: inset 0 0 0 1px var(--foreground-alpha-12); }
+.maka-quote-comment-panel-excerpt { display: flex; max-height: 96px; flex-direction: column; gap: 2px; overflow-y: auto; }
+.maka-quote-comment-panel-excerpt-label { font: var(--maka-text-supporting); color: var(--muted-foreground); }
+.maka-quote-comment-panel-excerpt-text { color: var(--muted-foreground); overflow-wrap: anywhere; white-space: pre-wrap; }
+.maka-quote-comment-panel-count { text-align: right; }
+
 .maka-session-todo-empty {
   margin: 0;
 }

@@ -18,7 +18,7 @@
  */
 
 import { useCallback, useRef, useState } from 'react';
-import type { QuoteRef } from '@maka/core/events';
+import { QUOTE_COMMENT_MAX_LENGTH, type QuoteRef } from '@maka/core/events';
 
 const MAX_QUOTE_CHARS = 32_000;
 
@@ -47,6 +47,7 @@ export function useComposerQuotes(options: { readonly draftKey: string }) {
     text: string;
     turnId?: string;
     label?: string;
+    comment?: string;
     sourceSessionId?: string;
     sourceSessionName?: string;
     sourceCapturedAt?: number;
@@ -54,9 +55,11 @@ export function useComposerQuotes(options: { readonly draftKey: string }) {
   }): void => {
     const text = input.text.slice(0, MAX_QUOTE_CHARS).trim();
     if (!text) return;
+    const comment = input.comment?.slice(0, QUOTE_COMMENT_MAX_LENGTH).trim();
     const quote: QuoteRef = {
       text,
       ...(input.label ? { label: input.label } : {}),
+      ...(comment ? { comment } : {}),
       ...(input.turnId ? { sourceTurnId: input.turnId } : {}),
       ...(input.sourceSessionId ? { sourceSessionId: input.sourceSessionId } : {}),
       ...(input.sourceSessionName ? { sourceSessionName: input.sourceSessionName } : {}),
@@ -66,6 +69,17 @@ export function useComposerQuotes(options: { readonly draftKey: string }) {
     bucket.push(quote);
     publish();
   }, [bucket, options.draftKey, publish]);
+
+  const updateQuoteComment = useCallback((index: number, comment: string): void => {
+    const next = comment.slice(0, QUOTE_COMMENT_MAX_LENGTH).trim();
+    const quote = bucket[index];
+    if (!quote) return;
+    // An emptied note removes the field rather than keeping the old one:
+    // the excerpt is still staged, it simply carries nothing now.
+    const { comment: _previous, ...rest } = quote;
+    bucket[index] = next ? { ...rest, comment: next } : rest;
+    publish();
+  }, [bucket, publish]);
 
   const removeQuote = useCallback((index: number): void => {
     bucket.splice(index, 1);
@@ -93,6 +107,7 @@ export function useComposerQuotes(options: { readonly draftKey: string }) {
   return {
     pendingQuotes,
     addQuote,
+    updateQuoteComment,
     removeQuote,
     clearQuotes,
     clearAllQuotes,

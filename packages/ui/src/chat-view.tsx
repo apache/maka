@@ -43,6 +43,7 @@ import {
   type PromptAnchorRailTurn,
 } from './prompt-anchor-rail.js';
 import { useMessageSelectionQuote } from './use-message-selection-quote.js';
+import { QuoteCommentPanel } from './quote-comment-panel.js';
 import type { DeepResearchClientProgress } from '@maka/core/deep-research-run';
 import type { ProviderType } from '@maka/core/llm-connections';
 import type { SessionSummary, StoredMessage } from '@maka/core/session';
@@ -117,6 +118,12 @@ import {
  * `layoutMs` reads 27–33ms here, no higher than at 2000px.
  */
 const MEASURE_AHEAD_MARGIN = 4000;
+
+/**
+ * Height the annotation panel is laid out for, used only to keep it inside the
+ * window when the excerpt it hangs from sits near the bottom edge.
+ */
+const QUOTE_ANNOTATION_PANEL_HEIGHT = 260;
 
 export interface LiveContentActivationSnapshot {
   turnId: string;
@@ -344,12 +351,15 @@ export function ChatView(props: {
   onPromptSuggestion?(prompt: string): void;
   /**
    * Codex/Cursor-style "quote this": when set, selecting text in the transcript
-   * surfaces a floating action that hands the excerpt (+ its turn) to the host,
-   * which stages it as a quote chip on the composer. Omitted by hosts that
-   * don't compose quotes. Only selections that resolve to a turn are offered,
-   * so `turnId` always arrives.
+   * surfaces a floating action that opens this view's annotation panel over the
+   * selection. Submitting hands the excerpt (+ its turn and any note the user
+   * wrote) to the host, which stages it as a quote chip on the composer;
+   * cancelling hands the excerpt over with no note, so quoting stays a
+   * one-click gesture for anyone who does not want to annotate. Omitted by
+   * hosts that don't compose quotes. Only selections that resolve to a turn are
+   * offered, so `turnId` always arrives.
    */
-  onQuoteSelection?(input: { text: string; turnId: string }): void;
+  onQuoteSelection?(input: { text: string; turnId: string; comment?: string }): void;
   /**
    * Codex/Cursor-style "ask in side panel": when set, selecting text in the
    * transcript surfaces a second floating action that hands the excerpt (+ its
@@ -614,9 +624,18 @@ export function ChatView(props: {
     scrollRef,
     Boolean(props.onQuoteSelection || props.onAskAboutSelection),
   );
+  // The excerpt the annotation panel is open over, held apart from the live
+  // selection so writing a note cannot move the quote it belongs to.
+  const [annotatingSelection, setAnnotatingSelection] = useState<{
+    text: string;
+    turnId: string;
+  } | null>(null);
   const selectionActionsLayer = useLayer({
     mode: 'fixed',
-    lightDismiss: true,
+    // While a note is being written the layer stops answering clicks and
+    // Escape: the panel's own two buttons are how it closes, here and in the
+    // composer's popover, so a stray gesture cannot drop a half-written note.
+    lightDismiss: annotatingSelection === null,
     onHide: clearSelectionQuote,
   });
   useEffect(() => {
@@ -630,6 +649,13 @@ export function ChatView(props: {
   const hasConversationHeaderActions = useMakaClientSlotOccupied(
     'conversation.header.actions',
   );
+  /** Ends the gesture: the layer closes and the excerpt the host just took is
+   *  no longer selected, so the bar cannot offer it a second time. */
+  function dismissSelectionActions(): void {
+    setAnnotatingSelection(null);
+    clearSelectionQuote();
+    window.getSelection()?.removeAllRanges();
+  }
 
   if (!props.activeSession) {
     const conversationItems = props.conversationItems ?? [];
@@ -967,54 +993,89 @@ export function ChatView(props: {
         </ChatMessageList>
         {selectionQuote && (props.onQuoteSelection || props.onAskAboutSelection) ? (
           selectionActionsLayer.render(
-            <div
-              className="maka-quote-actions"
-              // Keep the live selection alive while clicking an action.
-              onMouseDown={(event) => event.preventDefault()}
-            >
-              {/* No icons: the labels already name the actions, so an icon
-                  beside each one encodes the same thing twice and buys the
-                  width back from the text the layer is covering. */}
-              <ButtonGroup
-                label={selectionActionsLabel}
-                size="sm"
-                elevation="med"
+            annotatingSelection ? (
+              <div
+                className="maka-quote-annotation-layer"
+                // Keep the live selection alive while the note is written.
+                onMouseDown={(event) => event.preventDefault()}
               >
-                {props.onQuoteSelection ? (
-                  <Button
-                    type="button"
-                    label={copy.quoteSelection}
-                    onClick={() => {
-                      props.onQuoteSelection?.({
-                        text: selectionQuote.text,
-                        turnId: selectionQuote.turnId,
-                      });
-                      clearSelectionQuote();
-                      window.getSelection()?.removeAllRanges();
-                    }}
-                  />
-                ) : null}
-                {props.onAskAboutSelection ? (
-                  <Button
-                    type="button"
-                    label={copy.askInSidePanel}
-                    onClick={() => {
-                      props.onAskAboutSelection?.({
-                        text: selectionQuote.text,
-                        turnId: selectionQuote.turnId,
-                      });
-                      clearSelectionQuote();
-                      window.getSelection()?.removeAllRanges();
-                    }}
-                  />
-                ) : null}
-              </ButtonGroup>
-            </div>,
-            {
-              x: selectionQuote.anchor.x,
-              y: Math.max(8, selectionQuote.anchor.y - 42),
-              style: { transform: 'translateX(-50%)' },
-            },
+                <QuoteCommentPanel
+                  quote={{
+                    text: annotatingSelection.text,
+                    sourceTurnId: annotatingSelection.turnId,
+                  }}
+                  title={copy.quoteCommentTitle}
+                  submitLabel={copy.quoteSelection}
+                  skipLabel={copy.quoteCommentSkip}
+                  onSubmit={(comment) => {
+                    props.onQuoteSelection?.({ ...annotatingSelection, comment });
+                    dismissSelectionActions();
+                  }}
+                  onSkip={() => {
+                    props.onQuoteSelection?.(annotatingSelection);
+                    dismissSelectionActions();
+                  }}
+                />
+              </div>
+            ) : (
+              <div
+                className="maka-quote-actions"
+                // Keep the live selection alive while clicking an action.
+                onMouseDown={(event) => event.preventDefault()}
+              >
+                {/* No icons: the labels already name the actions, so an icon
+                    beside each one encodes the same thing twice and buys the
+                    width back from the text the layer is covering. */}
+                <ButtonGroup
+                  label={selectionActionsLabel}
+                  size="sm"
+                  elevation="med"
+                >
+                  {props.onQuoteSelection ? (
+                    <Button
+                      type="button"
+                      label={copy.quoteSelection}
+                      onClick={() =>
+                        setAnnotatingSelection({
+                          text: selectionQuote.text,
+                          turnId: selectionQuote.turnId,
+                        })
+                      }
+                    />
+                  ) : null}
+                  {props.onAskAboutSelection ? (
+                    <Button
+                      type="button"
+                      label={copy.askInSidePanel}
+                      onClick={() => {
+                        props.onAskAboutSelection?.({
+                          text: selectionQuote.text,
+                          turnId: selectionQuote.turnId,
+                        });
+                        clearSelectionQuote();
+                        window.getSelection()?.removeAllRanges();
+                      }}
+                    />
+                  ) : null}
+                </ButtonGroup>
+              </div>
+            ),
+            annotatingSelection
+              ? {
+                  x: selectionQuote.anchor.x,
+                  // Below the excerpt, clamped so the panel's lower edge stays
+                  // inside the window when a selection sits near the bottom.
+                  y: Math.min(
+                    selectionQuote.anchor.y + 12,
+                    Math.max(8, window.innerHeight - QUOTE_ANNOTATION_PANEL_HEIGHT),
+                  ),
+                  style: { transform: 'translateX(-50%)' },
+                }
+              : {
+                  x: selectionQuote.anchor.x,
+                  y: Math.max(8, selectionQuote.anchor.y - 42),
+                  style: { transform: 'translateX(-50%)' },
+                },
           )
         ) : null}
       </div>

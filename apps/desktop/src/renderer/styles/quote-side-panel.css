@@ -39,6 +39,15 @@
   animation: maka-quote-actions-in var(--duration-quick) var(--ease-out-strong);
 }
 
+/* The annotation panel that replaces the action bar once "引用" is chosen. It
+   carries its own surface (see .maka-quote-comment-panel), so this wrapper only
+   keeps the overlay out of the window's drag region. */
+.maka-quote-annotation-layer {
+  display: block;
+  max-width: min(320px, calc(100vw - 16px));
+  -webkit-app-region: no-drag;
+}
+
 @keyframes maka-quote-actions-in {
   from {
     opacity: 0;
