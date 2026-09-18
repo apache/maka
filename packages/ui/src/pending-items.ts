@@ -55,6 +55,17 @@ export function removePending<T>(map: PendingByKey<T>, key: string, index: numbe
   return { ...map, [key]: current.filter((_, i) => i !== index) };
 }
 
+/** Replace one staged item in place, keeping its position in the staging order. */
+export function updatePending<T>(
+  map: PendingByKey<T>,
+  key: string,
+  index: number,
+  update: (item: T) => T,
+): PendingByKey<T> {
+  const current = map[key] ?? [];
+  return { ...map, [key]: current.map((item, i) => (i === index ? update(item) : item)) };
+}
+
 export function removePendingItems<T>(
   map: PendingByKey<T>,
   key: string,
