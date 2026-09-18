@@ -146,6 +146,35 @@ async function settleSource(
   await waitForTerminalTurn(client, sessionId, turn.turnId);
 }
 
+test('branches a stored title that predates the current sanitizer', async () => {
+  await withExecutionRoot(async (fixture) => {
+    const host = await fixture.startHost();
+    const client = await connectClient(fixture.root);
+    try {
+      await settleSource(client, fixture.sessionId);
+    } finally {
+      await client.close();
+      await fixture.stopHost(host);
+    }
+    // U+2066 (LRI) was admitted by older sanitizers and is stripped by the
+    // current one, so the stored title is no longer canonical.
+    await seedHeader(fixture, fixture.sessionId, {
+      name: 'Review\u2066 project',
+      titleIsManual: false,
+    });
+    await fixture.startHost();
+    const restarted = await connectClient(fixture.root);
+    try {
+      const first = await branch(restarted, fixture.sessionId);
+      assert.equal(first.name, 'Review project (1)');
+      assert.equal((await branch(restarted, first.id)).name, 'Review project (2)');
+      assert.equal((await read(restarted, fixture.sessionId)).name, 'Review\u2066 project');
+    } finally {
+      await restarted.close();
+    }
+  });
+});
+
 test('ordinary branches keep distinct durable names without stacking suffixes', async () => {
   await withExecutionRoot(async (fixture) => {
     const collisionId = await fixture.seedSession();

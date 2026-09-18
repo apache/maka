@@ -20,7 +20,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { isDeepResearchSession } from '@maka/core/deep-research';
 import { SIDE_CONVERSATION_SESSION_LABEL } from '@maka/core/side-conversation';
-import { SESSION_NAME_MAX_CODE_POINTS } from '@maka/core/session-name';
+import { SESSION_NAME_MAX_CODE_POINTS, normalizeUserSessionName } from '@maka/core/session-name';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { ExecutionBoundary } from '@maka/core/sandbox-boundary';
 import type { CreateSessionInput } from '@maka/core/runtime-inputs';
@@ -949,10 +949,15 @@ function nextBranchName(
   // Only persisted provenance establishes that a suffix was generated here.
   // Legacy auto-titled branches may have literal numeric endings. A rename
   // invalidates the recorded name, while revisions retain its provenance.
-  const base =
+  const literal =
     !source.titleIsManual && source.branchNameOrigin?.name === source.name
       ? source.branchNameOrigin.base
       : source.name;
+  // A stored title is only ever checked to be a string, and the sanitizer has
+  // tightened since some were written, whereas the origin fields must be
+  // canonical. Re-run the sanitizer so a legacy title can still be branched.
+  const normalized = normalizeUserSessionName(literal);
+  const base = normalized.ok ? normalized.value : literal;
   const codePoints = Array.from(base);
   const names = new Set(headers.map((header) => header.name));
   for (let index = 1; ; index += 1) {
