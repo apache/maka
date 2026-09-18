@@ -61,6 +61,7 @@ export const MODELS_DEV_PROVIDERS = {
   'minimax-coding-plan': 'minimax-coding-plan',
   mistral: 'mistral',
   moonshot: 'moonshotai-cn',
+  'moonshot-global': 'moonshotai',
   nvidia: 'nvidia',
   'ollama-cloud': 'ollama-cloud',
   openai: 'openai',
@@ -264,13 +265,16 @@ export function projectModelsDevModel(
       throw new Error(`models.dev model ${providerId}/${modelId} has an unsupported shape`);
     }
   }
+  const contextWindow = projectTokenLimit(providerId, modelId, model.limit?.context);
+  const inputLimit = projectTokenLimit(providerId, modelId, model.limit?.input);
+  const maxOutputTokens = projectTokenLimit(providerId, modelId, model.limit?.output);
   return {
     displayName: model.name,
     ...(model.description !== undefined ? { description: model.description } : {}),
     lifecycle,
-    contextWindow: model.limit?.context,
-    ...(model.limit?.input !== undefined ? { inputLimit: model.limit.input } : {}),
-    maxOutputTokens: model.limit?.output,
+    ...(contextWindow === undefined ? {} : { contextWindow }),
+    ...(inputLimit === undefined ? {} : { inputLimit }),
+    ...(maxOutputTokens === undefined ? {} : { maxOutputTokens }),
     ...(model.knowledge !== undefined ? { knowledgeCutoff: model.knowledge } : {}),
     ...(model.structured_output !== undefined ? { structuredOutput: model.structured_output } : {}),
     ...(model.last_updated !== undefined ? { lastUpdated: model.last_updated } : {}),
@@ -297,6 +301,25 @@ export function projectModelsDevModel(
         }
       : {}),
   };
+}
+
+/**
+ * models.dev declares 0 on models whose workload has no token limit (image,
+ * audio, video): "not applicable", not a window of zero tokens. The wire
+ * carries a limit only as a positive integer, so 0 projects to an absent
+ * field. Any other value outside that domain is an upstream shape change and
+ * fails loudly, like every other unsupported shape here.
+ */
+function projectTokenLimit(
+  providerId: string,
+  modelId: string,
+  value: number | undefined,
+): number | undefined {
+  if (value === undefined || value === 0) return undefined;
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`models.dev model ${providerId}/${modelId} has an unsupported shape`);
+  }
+  return value;
 }
 
 function lifecycleForStatus(

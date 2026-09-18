@@ -17,40 +17,33 @@
  * under the License.
  */
 
-import { useEffect, useImperativeHandle, useRef, useState, type Dispatch, type Ref, type SetStateAction } from 'react';
+import { useEffect, useImperativeHandle, useState, type Ref } from 'react';
 import type { StoredMessage } from '@maka/core/session';
 import type { AppShellSessionUiStateController } from '../model/session-ui-state.js';
 import {
-  captureTranscriptReadingAnchor,
   createTranscriptRestoreLifecycle,
   currentTranscriptRange,
-  loadTranscriptHistory,
-  newestDurablePromptSequence,
   prepareTranscriptForSend,
-  refreshTranscriptTurnLandmarks,
   restoreSessionTranscriptRange,
-  type TranscriptHistoryGate,
-  type TranscriptHistoryGates,
-  type TranscriptHistoryPending,
-  type TranscriptHistoryRequest,
 } from './transcript-reading-position.js';
 
-type RangeController = NonNullable<Parameters<typeof restoreSessionTranscriptRange<StoredMessage>>[0]['controller']> & {
-  loadBefore(maxBytes?: number, anchorTurnId?: string): Promise<void>;
-  loadAfter(maxBytes?: number, anchorTurnId?: string): Promise<void>;
-  loadLatest(): Promise<void>;
-};
+type RangeController = NonNullable<Parameters<typeof restoreSessionTranscriptRange<StoredMessage>>[0]['controller']>;
 
-interface TurnIndex {
-  sessionId: string;
-  throughSequence: number | null;
-  turns: readonly { turnId: string; sequence: number; label: string }[];
+export interface TranscriptTurnLandmark {
+  readonly turnId: string;
+  readonly sequence: number;
+  readonly label: string;
+}
+
+export interface TranscriptTurnIndex {
+  readonly sessionId: string;
+  readonly turns: readonly TranscriptTurnLandmark[];
 }
 
 export interface TranscriptReadingPositionCommands {
-  prepareSend(sessionId: string): Promise<boolean>;
+  prepareSend(sessionId: string): boolean;
   captureAnchor(turnId?: string): void;
-  loadHistory(target: TranscriptHistoryRequest['target'], anchorTurnId?: string): Promise<void>;
+  loadEarlier(throughSequence?: number): Promise<void>;
 }
 
 /** The conversation owns restoration lifetime; the shell supplies explicit ports. */
@@ -58,31 +51,24 @@ export function TranscriptReadingPositionController(props: {
   commands: Ref<TranscriptReadingPositionCommands>;
   sessionId?: string;
   profileId?: string;
-  landmarkSessionId?: string | null;
   currentSessionId: { current: string | undefined };
   rangeController: { current: RangeController | undefined };
   messages: readonly StoredMessage[];
   searchTarget: Parameters<typeof restoreSessionTranscriptRange>[0]['searchTarget'];
   clearSearchTarget(): void;
   sessionUi: AppShellSessionUiStateController;
-  turnIndex: TurnIndex | undefined;
-  setTurnIndex: Dispatch<SetStateAction<TurnIndex | undefined>>;
-  listTurnLandmarks: Parameters<typeof refreshTranscriptTurnLandmarks<TurnIndex['turns'][number]>>[0]['list'];
-  setHistoryPending: Dispatch<SetStateAction<TranscriptHistoryPending | undefined>>;
-  historyPageBytes: number;
+  /** The Session whose Turn index this viewer may read; `null` for none. */
+  landmarkSessionId: string | null;
+  listTurnLandmarks(
+    sessionId: string,
+    turnId: string | null,
+  ): Promise<{ readonly landmarks: readonly TranscriptTurnLandmark[] }>;
+  setTurnIndex(index: TranscriptTurnIndex | undefined): void;
   onRestoreError(error: unknown, sessionId: string): void;
-  onNavigationError(error: unknown, sessionId: string): void;
 }) {
   const [lifecycle] = useState(createTranscriptRestoreLifecycle);
-  const historyGates = useRef<TranscriptHistoryGates>(new WeakMap());
   const isCurrent = (sessionId: string, controller: object) =>
     props.currentSessionId.current === sessionId && props.rangeController.current === controller;
-  const cancelHistory = (sessionId: string) => {
-    const controller = props.rangeController.current;
-    if (currentTranscriptRange(controller, sessionId) === undefined) return;
-    if (controller) historyGates.current.delete(controller);
-    props.setHistoryPending((current) => current?.sessionId === sessionId ? undefined : current);
-  };
   const cancel = (sessionId: string, clearAnchor = false) => {
     lifecycle.cancel(sessionId);
     if (props.searchTarget?.sessionId === sessionId) props.clearSearchTarget();
@@ -93,83 +79,51 @@ export function TranscriptReadingPositionController(props: {
   };
   useImperativeHandle(props.commands, () => ({
     prepareSend(sessionId) {
-      cancelHistory(sessionId);
       return prepareTranscriptForSend({
-        sessionId, currentSessionId: props.currentSessionId,
-        controller: props.rangeController, cancel,
+        sessionId, currentSessionId: props.currentSessionId, cancel,
         followLatest: props.sessionUi.transcriptViewportNavigation.followLatest,
       });
     },
     captureAnchor(turnId) {
       const { sessionId } = props;
-      const controller = props.rangeController.current;
       if (!sessionId || props.currentSessionId.current !== sessionId) return;
-      const previous = props.sessionUi.transcriptReadingAnchorBySessionRef.current[sessionId];
       props.sessionUi.setTranscriptRestoreUnavailable(sessionId, undefined);
-      captureTranscriptReadingAnchor({
-        sessionId, currentSessionId: props.currentSessionId.current, turnId, controller,
-        setAnchor: props.sessionUi.setTranscriptReadingAnchor,
-      });
-      const range = currentTranscriptRange(controller, sessionId);
-      if (range === undefined) return;
-      const sequence = turnId ? controller?.store.sequenceForTurn(turnId) : undefined;
-      // The send command already cleared its bookmark before publishing the
-      // pin. Its empty-anchor acknowledgement is not another reader intent.
-      if (previous?.turnId === turnId && previous?.sequence === (sequence ?? undefined)) return;
-      let navigation: Promise<void> | undefined;
-      cancelHistory(sessionId);
-      if (turnId) navigation = controller?.setReadingAnchor(sequence ?? null, turnId);
-      else if (!turnId && previous && !range.hasNewer) {
-        cancel(sessionId, true);
-        navigation = controller?.loadLatest();
-      }
-      void navigation?.catch((error) => {
-        if (controller && isCurrent(sessionId, controller)) props.onNavigationError(error, sessionId);
-      });
+      props.sessionUi.setTranscriptReadingAnchor(sessionId, turnId ? { turnId } : undefined);
     },
-    async loadHistory(target, anchorTurnId) {
+    async loadEarlier(throughSequence) {
       const controller = props.rangeController.current;
       const { sessionId } = props;
       if (!controller || !sessionId || !isCurrent(sessionId, controller)) return;
-      cancel(sessionId, target === 'latest');
-      // A direct latest command must enter the range controller now, so it
-      // invalidates older pages rather than waiting behind a paging gate.
-      if (target === 'latest' || historyGates.current.get(controller)?.active?.target === 'latest') {
-        cancelHistory(sessionId);
-      }
-      const gates = historyGates.current;
-      const gate: TranscriptHistoryGate = gates.get(controller) ?? { pending: false };
-      gates.set(controller, gate);
-      await loadTranscriptHistory({
-        gates, sessionId, request: { target, anchorTurnId }, controller,
-        maxBytes: props.historyPageBytes,
-        isCurrent: () => isCurrent(sessionId, controller) && gates.get(controller) === gate,
-        setPending: props.setHistoryPending,
-        onError: (error) => props.onNavigationError(error, sessionId),
-      });
+      await controller.loadEarlier(throughSequence);
     },
   }));
 
-  const newestPrompt = newestDurablePromptSequence(props.rangeController.current, props.sessionId);
-  const landmarkSessionId = props.landmarkSessionId === null
-    ? undefined
-    : props.landmarkSessionId ?? props.sessionId;
-  useEffect(() => refreshTranscriptTurnLandmarks({
-    sessionId: landmarkSessionId,
-    newestDurablePromptSequence: newestPrompt,
-    current: props.turnIndex,
-    list: props.listTurnLandmarks,
-    isCurrent: (sessionId) => props.currentSessionId.current === sessionId,
-    setIndex: props.setTurnIndex,
-  }), [props.sessionId, landmarkSessionId, newestPrompt, props.turnIndex]);
   useEffect(() => () => {
     lifecycle.deactivate();
   }, [props.sessionId, props.profileId, lifecycle]);
+  const landmarkSessionId = props.landmarkSessionId === props.sessionId ? props.landmarkSessionId : null;
+  // New Turns land in the resident tail, so the index is read once per Session
+  // and only once some history lies outside the resident range.
+  const range = currentTranscriptRange(props.rangeController.current, props.sessionId);
+  const hasOlder = range?.hasOlder ?? false;
+  // A reopen reads the index again, so a lookup that failed does not stay failed.
+  const generation = range?.ready ? range.generation : undefined;
   useEffect(() => {
-    if (props.searchTarget) {
-      cancelHistory(props.searchTarget.sessionId);
+    // The shell shows an index only for the Session it names, so a reread keeps
+    // the previous one on screen until it answers.
+    if (!landmarkSessionId || !hasOlder) {
+      props.setTurnIndex(undefined);
+      return;
     }
-  }, [props.searchTarget?.nonce]);
+    let disposed = false;
+    void props.listTurnLandmarks(landmarkSessionId, null).then(
+      (snapshot) => {
+        if (!disposed) props.setTurnIndex({ sessionId: landmarkSessionId, turns: snapshot.landmarks });
+      },
+      () => undefined,
+    );
+    return () => { disposed = true; };
+  }, [landmarkSessionId, hasOlder, generation]);
   useEffect(() => restoreSessionTranscriptRange({
     lifecycle,
     sessionId: props.sessionId,
@@ -180,7 +134,11 @@ export function TranscriptReadingPositionController(props: {
       : undefined,
     controller: props.rangeController.current,
     isCurrent,
-    isLiveTurn: (sessionId, turnId) => props.sessionUi.liveTurnBySessionRef.current[sessionId]?.turnId === turnId,
+    lookupTurn: landmarkSessionId
+      ? async (sessionId, turnId) =>
+        (await props.listTurnLandmarks(sessionId, turnId)).landmarks
+          .find((landmark) => landmark.turnId === turnId)?.sequence
+      : undefined,
     setReadingAnchor: props.sessionUi.setTranscriptReadingAnchor,
     onRestoreUnavailable: props.sessionUi.setTranscriptRestoreUnavailable,
     onError: props.onRestoreError,

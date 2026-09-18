@@ -65,7 +65,10 @@ export interface RuntimeHostSessionSubscriptionOwnerDeps {
 interface SubscriptionAttempt {
   readonly handle: DesktopRuntimeHostSession;
   readonly pendingFrames: SubscriptionFrame[];
-  readonly failed: Promise<Error>;
+  preparationFailure?: {
+    readonly promise: Promise<Error>;
+    readonly resolve: (error: Error) => void;
+  };
   pendingFrameBytes: number;
   replica?: DesktopTranscriptReplica;
   phase: 'preparing' | 'active' | 'retiring';
@@ -167,8 +170,9 @@ export class RuntimeHostSessionSubscriptionOwner {
       this.#attempt = attempt;
       previous.replica?.close();
       await previous.handle.close().catch(() => undefined);
-      await this.#drainPendingFrames(attempt);
       attempt.phase = 'active';
+      attempt.preparationFailure = undefined;
+      await attempt.handle.ready();
     } catch (error) {
       const failure = asError(error);
       if (attempt && this.#attempt === attempt) {
@@ -248,8 +252,9 @@ export class RuntimeHostSessionSubscriptionOwner {
         activate();
         this.#candidate = undefined;
         this.#attempt = attempt;
-        await this.#drainPendingFrames(attempt);
         attempt.phase = "active";
+        attempt.preparationFailure = undefined;
+        await attempt.handle.ready();
       } catch (error) {
         if (this.#candidate === attempt) this.#candidate = undefined;
         if (this.#attempt === attempt) this.#attempt = undefined;
@@ -282,20 +287,16 @@ export class RuntimeHostSessionSubscriptionOwner {
       throw ownerClosed();
     }
 
-    let fail!: (error: Error) => void;
-    const failed = new Promise<Error>((resolve) => {
-      fail = resolve;
-    });
     const attempt: SubscriptionAttempt = {
       handle,
       pendingFrames: [],
-      failed,
+      preparationFailure: createPreparationFailure(),
       pendingFrameBytes: 0,
       phase: "preparing",
       fail(error) {
         if (attempt.failure) return;
         attempt.failure = error;
-        fail(error);
+        attempt.preparationFailure?.resolve(error);
       },
     };
     if (this.#candidate) {
@@ -320,7 +321,7 @@ export class RuntimeHostSessionSubscriptionOwner {
           (replica) => ({ kind: "replica" as const, replica }),
           (error: unknown) => ({ kind: "failure" as const, error: asError(error) }),
         ),
-        failed.then((error) => ({ kind: "failure" as const, error })),
+        attempt.preparationFailure!.promise.then((error) => ({ kind: "failure" as const, error })),
       ]);
       if (loaded.kind === "failure") throw loaded.error;
       attempt.replica = loaded.replica;
@@ -353,7 +354,7 @@ export class RuntimeHostSessionSubscriptionOwner {
         (activate) => ({ kind: 'ready' as const, activate }),
         (error: unknown) => ({ kind: 'failure' as const, error: asError(error) }),
       ),
-      attempt.failed.then((error) => ({ kind: 'failure' as const, error })),
+      attempt.preparationFailure!.promise.then((error) => ({ kind: 'failure' as const, error })),
     ]);
     if (result.kind === 'failure') throw result.error;
     return result.activate;
@@ -366,7 +367,12 @@ export class RuntimeHostSessionSubscriptionOwner {
         if (frame.kind === "subscription.closed") {
           throw subscriptionClosedError(frame.reason);
         }
-        if (attempt.phase !== 'active') {
+        if (attempt.phase === 'preparing') {
+          // The Host holds frames until `ready()`, so one arriving here is a
+          // broken contract rather than a consumer falling behind.
+          throw new Error('Runtime Host sent a Session frame before the subscriber was ready');
+        }
+        if (attempt.phase === 'retiring') {
           const frameBytes = Buffer.byteLength(JSON.stringify(frame), 'utf8');
           if (
             attempt.pendingFrames.length >= MAX_PENDING_FRAMES ||
@@ -421,6 +427,14 @@ export class RuntimeHostSessionSubscriptionOwner {
   }
 }
 
+function createPreparationFailure(): NonNullable<SubscriptionAttempt['preparationFailure']> {
+  // Keep both roots together so activation can release the completed race results.
+  // In particular, the attempt's fail method must not capture this resolver.
+  let resolve!: (error: Error) => void;
+  const promise = new Promise<Error>((settle) => { resolve = settle; });
+  return { promise, resolve };
+}
+
 function subscriptionClosedError(
   reason: "slow_consumer" | "session_removed" | 'access_revoked',
 ): Error {
@@ -442,14 +456,13 @@ function subscriptionClosedError(
 
 function isRecoverableSubscriptionFailure(error: unknown): boolean {
   if (error instanceof RuntimeHostOperationError) {
-    return error.operation === "session.transcript.page" && error.code === "not_found";
+    return error.operation === 'session.transcript.page' && error.code === 'not_found';
   }
   if (!(error instanceof RuntimeHostSubscriptionError)) return false;
   return (
-    error.reason === "slow_consumer" ||
-    error.reason === "sequence_gap" ||
-    error.reason === "projection_revision_invalid" ||
-    error.reason === "transcript_release_failed"
+    error.reason === 'slow_consumer' ||
+    error.reason === 'sequence_gap' ||
+    error.reason === 'projection_revision_invalid'
   );
 }
 

@@ -32,13 +32,10 @@ import {
   type Terminal,
 } from '@earendil-works/pi-tui';
 import type { PermissionMode } from '@maka/core/permission';
+import type { ExternalSessionLimit } from '@maka/core/external-session';
 import { CurrentTodoStore, TodoOverlay, renderTodoIndicator } from './pi-tui-todo.js';
 import { isThinkingLevel, type ThinkingLevel } from '@maka/core/model-thinking';
-import {
-  deriveConnectionSlug,
-  type ModelInfo,
-  type ProviderType,
-} from '@maka/core/llm-connections';
+import { deriveConnectionSlug, type ProviderType } from '@maka/core/llm-connections';
 import type { OrchestrationMode } from '@maka/core/orchestration';
 import type {
   SkillInvocationFailureReason,
@@ -61,12 +58,6 @@ import {
   resolveUiMessageCatalog,
   type UiLocale,
 } from '@maka/core/ui-locale';
-import {
-  buildForeignSessionHandoffMessage,
-  foreignSessionHandoffDisplayText,
-  foreignSourceLabel,
-  type ForeignSessionSummary,
-} from '@maka/core/foreign-session';
 import type { ContextDiagnostics } from '@maka/runtime/context-diagnostics';
 import type { GoalTurnOutcome } from '@maka/runtime/goal-continuation';
 import type { TurnOrchestration } from '@maka/core/runtime-inputs';
@@ -74,12 +65,12 @@ import type { SessionActivityLease } from '@maka/runtime/goal-turn-lifecycle';
 import { listApiKeyOnboardableProviders } from './onboarding-catalog.js';
 import type {
   ConnectionIdentity,
-  MakaForeignSessionReader,
+  MakaExternalSessionSurface,
+  ExternalSessionCatalogScope,
   MakaOnboardingSurface,
   MakaPiTuiTurnActivitySurface,
   MakaPiTuiHostControl,
   ModelChoice,
-  OnboardingIdentityChoice,
   OnboardingProviderEntry,
   SessionRecapGenerator,
 } from './pi-tui-contracts.js';
@@ -88,6 +79,7 @@ import type { InvocableSkillEntry } from '@maka/runtime/skill-invocation';
 import type {
   AgentGraphClientSnapshot,
   AgentGraphEpochSummary,
+  ExternalSessionCatalogItem,
   TurnResumeParkReason,
 } from '@maka/runtime-host/protocol';
 import type { AgentGraphEpochDirectory } from '@maka/runtime-host/client';
@@ -176,6 +168,7 @@ import {
   getTuiPickerCopy,
   modelPickerItems,
   onboardingFailureMessage,
+  onboardingOAuthFailureMessage,
   permissionModePickerItems,
   skillPickerItems,
   thinkingLevelPickerItems,
@@ -307,13 +300,8 @@ export interface MakaPiTuiInput {
   resumeCwd?: string;
   /** Whether a failed startup resume may continue with a fresh Session. */
   resumeFailure?: 'start_fresh' | 'exit';
-  /**
-   * Read-only store of sessions from other coding agents (Claude Code,
-   * Codex). When present, the session picker lists foreign sessions for the
-   * current cwd; selecting one distills it into a handoff digest and opens a
-   * fresh Maka session seeded with it. Omitting it hides the feature.
-   */
-  foreignSessions?: MakaForeignSessionReader;
+  /** Host-owned catalog and importer shared with Desktop. */
+  externalSessions?: MakaExternalSessionSurface;
   /** Initial Session picker scope when Session paths are not Client-local. */
   sessionListScope?: 'current' | 'all';
   /** Whether editor path completion may inspect the Client filesystem. */
@@ -324,6 +312,46 @@ interface TaskbarProgressEnvironment {
   readonly platform: NodeJS.Platform;
   readonly override?: string;
   readonly windowsTerminalSession?: string;
+}
+
+function externalSourceLabel(adapterId: string): string {
+  switch (adapterId) {
+    case 'claude-code':
+      return 'Claude Code';
+    case 'codex':
+      return 'Codex';
+    case 'opencode':
+      return 'OpenCode';
+    default:
+      return adapterId;
+  }
+}
+
+function externalImportErrorCode(
+  error: unknown,
+): 'commit_outcome_unknown' | 'model_unavailable' | 'source_unreadable' | undefined {
+  if (typeof error !== 'object' || error === null) return 'commit_outcome_unknown';
+  const value = error as {
+    readonly operation?: unknown;
+    readonly code?: unknown;
+    readonly mode?: unknown;
+    readonly dispatch?: unknown;
+  };
+  if (value.operation !== undefined && value.operation !== 'external-session.import') {
+    return undefined;
+  }
+  if (value.mode === 'command' && value.dispatch === 'not_dispatched') return undefined;
+  if (value.mode === 'command' && value.dispatch === 'dispatched') {
+    return 'commit_outcome_unknown';
+  }
+  if (
+    value.code === 'commit_outcome_unknown' ||
+    value.code === 'model_unavailable' ||
+    value.code === 'source_unreadable'
+  ) {
+    return value.code;
+  }
+  return value.code === undefined ? 'commit_outcome_unknown' : undefined;
 }
 
 export function resolveTaskbarProgress(
@@ -376,6 +404,9 @@ interface TuiRewindCopy {
   readonly doneKeptDraft: string;
   readonly noTargets: string;
   readonly busy: string;
+  readonly unsupportedQuotes: string;
+  readonly unsupportedAttachments: string;
+  readonly unsupportedDirectoryReferences: string;
   readonly pickerHint: string;
 }
 
@@ -403,7 +434,33 @@ interface TuiConnectionIdentityCopy {
 }
 
 interface TuiSessionActionsCopy {
-  readonly foreignScanFailed: string;
+  readonly externalCatalogFailed: string;
+  readonly externalImport: string;
+  readonly externalImportDescription: string;
+  readonly externalSourceTitle: string;
+  readonly externalSessionTitle: string;
+  readonly externalLoadMore: string;
+  readonly externalAllWorkspaces: string;
+  readonly externalCurrentWorkspace: string;
+  readonly externalEmpty: string;
+  readonly externalUnavailable: string;
+  readonly externalImportedCount: string;
+  readonly externalImportedActionsTitle: string;
+  readonly externalOpenLatestImported: string;
+  readonly externalImportAgain: string;
+  readonly externalImportBusy: string;
+  readonly externalImportFailed: string;
+  readonly externalImportModelUnavailable: string;
+  readonly externalImportSourceUnreadable: string;
+  readonly externalImportLimit: string;
+  readonly externalImportLimitTranscriptBytes: string;
+  readonly externalImportLimitRecordBytes: string;
+  readonly externalImportLimitRecords: string;
+  readonly externalImportLimitConvertedBytes: string;
+  readonly externalImportLimitMessages: string;
+  readonly externalImportUncertain: string;
+  readonly externalOpenFailed: string;
+  readonly externalOpenLatestFailed: string;
   readonly newSessionFailed: string;
 }
 
@@ -422,6 +479,31 @@ const TUI_CONNECTION_IDENTITY_COPY = resolveUiMessageCatalog(
 const TUI_SESSION_ACTIONS_COPY = resolveUiMessageCatalog(
   defineUiMessageCatalog<TuiSessionActionsCopy>()(TUI_COPY_RESOURCES['session-actions']),
 );
+
+/**
+ * What the exhausted bound is called, in the user's language.
+ *
+ * The limit kinds are protocol tokens; a reader told the session exceeds the
+ * `record_bytes` limit has been handed an implementation detail instead of an
+ * explanation.
+ */
+function externalImportLimitLabel(
+  copy: TuiSessionActionsCopy,
+  kind: ExternalSessionLimit['kind'],
+): string {
+  switch (kind) {
+    case 'transcript_bytes':
+      return copy.externalImportLimitTranscriptBytes;
+    case 'record_bytes':
+      return copy.externalImportLimitRecordBytes;
+    case 'records':
+      return copy.externalImportLimitRecords;
+    case 'converted_bytes':
+      return copy.externalImportLimitConvertedBytes;
+    case 'messages':
+      return copy.externalImportLimitMessages;
+  }
+}
 
 function sessionConnectionIdentityNotice(
   session: Pick<SessionSummary, 'llmConnectionId' | 'llmConnectionSlug'>,
@@ -1347,9 +1429,8 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     })().catch(reportError);
   };
 
-  // Onboarding wizard (#1098 UX redesign): one overlay spans provider search
-  // → API key → model curation, keeping every prompt/verifying/failure/saving/
-  // success notice beside the input field instead of the transcript entry flow.
+  // Onboarding wizard (#1098 UX redesign): one overlay spans provider search,
+  // authentication, model curation, and success without transcript notices.
   let wizardOverlay: OverlayHandle | undefined;
   let wizard: OnboardingWizard | undefined;
   // The user's supplied key from the key step ('' reuses the stored secret for an
@@ -1362,11 +1443,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // The existing connection the picked provider resolved to, so saving edits
   // it in place (a Desktop-created relay may live under a custom slug).
   let wizardTarget: OnboardingProviderEntry['target'] | undefined;
-  // The identity step's answer for a create target. Null halves keep the wire
-  // target bare so any Host vintage accepts it; an edited slug/name rides on
-  // the target and gets `slug_taken` back when it loses.
-  let wizardIdentity: OnboardingIdentityChoice = { slug: null, name: null };
-  let wizardModels: readonly ModelInfo[] = [];
+  let wizardOAuthAbort: AbortController | undefined;
   // Authoritative ready model choices for `/model`. A startup snapshot refreshed
   // in place after `/setup` saves so newly configured models are immediately
   // available — the single source the picker and connection/model lookups read.
@@ -1395,7 +1472,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     currentModelChoice()?.contextWindow ??
     (onInitialTarget() ? input.modelContextWindow : undefined);
   // The Host resolved these when it projected the choice — including a relay's
-  // declared `relayModelProfiles[model].thinkingLevels`. A model no choice
+  // declared `modelOverrides[model].thinkingLevels`. A model no choice
   // describes offers none rather than a locally guessed list.
   const currentThinkingLevels = (): readonly ThinkingLevel[] =>
     currentModelChoice()?.thinkingLevels ?? [];
@@ -2130,7 +2207,27 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     state.entries.push(pendingNotice);
     requestRender();
     try {
-      const result = await input.driver.rewindToTurn(turnId);
+      const result = await input.driver.rewindToTurn(turnId).catch((error: unknown) => {
+        // The driver refuses rewind with a machine code when the selected
+        // turn carries structured context the TUI cannot restore (#5109).
+        // Render the localized catalog copy for that code instead of the
+        // driver's English fallback.
+        const code = (error as { code?: unknown })?.code;
+        if (
+          code === 'rewind_unsupported_quotes' ||
+          code === 'rewind_unsupported_attachments' ||
+          code === 'rewind_unsupported_directory_references'
+        ) {
+          const localized =
+            code === 'rewind_unsupported_quotes'
+              ? TUI_REWIND_COPY[locale].unsupportedQuotes
+              : code === 'rewind_unsupported_attachments'
+                ? TUI_REWIND_COPY[locale].unsupportedAttachments
+                : TUI_REWIND_COPY[locale].unsupportedDirectoryReferences;
+          throw new Error(localized);
+        }
+        throw error;
+      });
       await applySwitchResult(result);
       await discardCurrentSidePair();
       // Record the discarded turn's prompt in the editor history before
@@ -2426,6 +2523,8 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   };
 
   const closeWizard = (): void => {
+    wizardOAuthAbort?.abort();
+    wizardOAuthAbort = undefined;
     wizardAttempt += 1; // drop any in-flight verify/save before clearing the slots
     wizardOverlay?.hide();
     wizardOverlay = undefined;
@@ -2433,8 +2532,110 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     wizardApiKey = '';
     wizardBaseUrl = '';
     wizardTarget = undefined;
-    wizardIdentity = { slug: null, name: null };
-    wizardModels = [];
+  };
+
+  const discoverWizardOAuthModels = (
+    targetWizard: OnboardingWizard,
+    attempt: number,
+    target: Extract<OnboardingProviderEntry['target'], { readonly kind: 'existing' }>,
+  ): void => {
+    if (!input.onboarding) return;
+    void input.onboarding.verify({ target }).then(
+      (result) => {
+        if (closed || wizard !== targetWizard || attempt !== wizardAttempt) return;
+        if (result.kind !== 'ok') {
+          targetWizard.setOAuthModelError(onboardingFailureMessage(result, locale));
+          requestRender();
+          return;
+        }
+        targetWizard.setModels(result.models);
+        requestRender();
+      },
+      () => {
+        if (closed || wizard !== targetWizard || attempt !== wizardAttempt) return;
+        targetWizard.setOAuthModelError(onboardingFailureMessage({ kind: 'unavailable' }, locale));
+        requestRender();
+      },
+    );
+  };
+
+  const startWizardOAuth = (): void => {
+    const target = wizardTarget;
+    const targetWizard = wizard;
+    if (!target || !targetWizard) return;
+    if (!input.onboarding?.loginOAuth) {
+      targetWizard.setOAuthError(pickerCopy.onboardingUnavailable);
+      requestRender();
+      return;
+    }
+    wizardOAuthAbort?.abort();
+    const abort = new AbortController();
+    wizardOAuthAbort = abort;
+    const attempt = ++wizardAttempt;
+    requestRender();
+    void input.onboarding
+      .loginOAuth({
+        target,
+        signal: abort.signal,
+        onPresentation: (presentation) => {
+          if (closed || wizard !== targetWizard || attempt !== wizardAttempt) return;
+          targetWizard.setOAuthPresentation(presentation);
+          requestRender();
+        },
+      })
+      .then(
+        (result) => {
+          if (wizardOAuthAbort === abort) wizardOAuthAbort = undefined;
+          if (closed || wizard !== targetWizard || attempt !== wizardAttempt) return;
+          if (result.kind === 'unconfirmed') {
+            targetWizard.setOAuthUnconfirmed();
+            requestRender();
+            return;
+          }
+          if (result.kind === 'cancelled') {
+            targetWizard.setOAuthCancelled();
+            wizardAttempt += 1;
+            requestRender();
+            return;
+          }
+          if (result.kind === 'failed') {
+            const message = onboardingOAuthFailureMessage(result.reason, locale);
+            if (result.reason === 'slug_taken' && target.kind === 'create') {
+              targetWizard.setIdentityError(message);
+            } else {
+              targetWizard.setOAuthError(message);
+            }
+            requestRender();
+            return;
+          }
+          const existingTarget = {
+            kind: 'existing' as const,
+            connectionId: result.connection.connectionId,
+          };
+          // Authentication is the durable create/reauthorize commit point. All
+          // later work addresses that exact Connection and never repeats OAuth.
+          wizardTarget = existingTarget;
+          targetWizard.setOAuthAuthenticated();
+          requestRender();
+          discoverWizardOAuthModels(targetWizard, attempt, existingTarget);
+        },
+        () => {
+          if (wizardOAuthAbort === abort) wizardOAuthAbort = undefined;
+          if (closed || wizard !== targetWizard || attempt !== wizardAttempt) return;
+          targetWizard.setOAuthError(onboardingOAuthFailureMessage('unavailable', locale));
+          requestRender();
+        },
+      );
+  };
+
+  const continueWizardOAuth = (): void => {
+    const target = wizardTarget;
+    const targetWizard = wizard;
+    if (!targetWizard || target?.kind !== 'existing') return;
+    const attempt = ++wizardAttempt;
+    targetWizard.setOAuthAuthenticated();
+    requestRender();
+    discoverWizardOAuthModels(targetWizard, attempt, target);
   };
 
   // Key submit from the wizard. Slash commands route as commands (so /exit
@@ -2471,7 +2672,6 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
           requestRender();
           return;
         }
-        wizardModels = result.models;
         wizard.setModels(result.models); // advance to the models step
         requestRender();
       },
@@ -2596,15 +2796,12 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         // reselects the same catalog row. A late save may converge only the
         // exact target object captured by its own submit.
         wizardTarget = { ...provider.target };
-        wizardIdentity = { slug: null, name: null };
         wizardApiKey = '';
         wizardBaseUrl = '';
-        wizardModels = [];
         wizardAttempt += 1; // a new pick supersedes any in-flight attempt
         requestRender();
       },
       onSubmitIdentity: (identity) => {
-        wizardIdentity = identity;
         if (wizardTarget?.kind === 'create') {
           wizardTarget = {
             kind: 'create',
@@ -2620,6 +2817,29 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         requestRender();
       },
       onSubmitKey: submitWizardKey,
+      onStartOAuth: startWizardOAuth,
+      onCancelOAuth: () => {
+        wizard?.setOAuthCancelling();
+        wizardOAuthAbort?.abort();
+        requestRender();
+      },
+      onContinueOAuth: continueWizardOAuth,
+      onReturnToProviders: () => {
+        const targetWizard = wizard;
+        const attempt = ++wizardAttempt;
+        requestRender();
+        if (!targetWizard || !input.onboarding) return;
+        void input.onboarding.listProviders().then(
+          (providers) => {
+            if (closed || wizard !== targetWizard || attempt !== wizardAttempt) return;
+            targetWizard.setProviders(providers);
+            requestRender();
+          },
+          () => {
+            // Keep the cached list usable if refreshing the saved account fails.
+          },
+        );
+      },
       onSubmitModels: submitWizardModels,
       onCancel: () => {
         closeWizard();
@@ -2878,7 +3098,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
             (summaries) => ({ summaries }),
             (error: unknown) => ({ error }),
           )
-        : Promise.resolve({ summaries: [] as ForeignSessionSummary[] }),
+        : Promise.resolve({ adapterIds: [] as readonly string[] }),
     ]);
     const availability = new Map(availabilityEntries);
     const ensureAvailabilityForScope = async (scope: 'current' | 'all'): Promise<void> => {
@@ -2906,16 +3126,8 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       state.entries.push({
         kind: 'notice',
         level: 'error',
-        text: formatUiMessage(
-          TUI_SESSION_ACTIONS_COPY[locale].foreignScanFailed,
-          { detail },
-          locale,
-        ),
+        text: TUI_SESSION_ACTIONS_COPY[locale].externalCatalogFailed,
       });
-    } else {
-      for (const summary of foreignScan.summaries) {
-        foreignByValue.set(`foreign:${summary.source}:${summary.id}`, summary);
-      }
     }
     let overlay: OverlayHandle | undefined;
     let sessionSearch: SessionSearchOverlay | undefined;
@@ -2977,10 +3189,9 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         overlay?.hide();
       };
       const onSelect = (item: SelectItem) => {
-        const foreign = foreignByValue.get(item.value);
-        if (foreign) {
+        if (item.value === 'external:import' && 'adapterIds' in externalSourceQuery) {
           closeOverlay();
-          void importForeignSession(foreign);
+          showExternalSourcePicker(externalSourceQuery.adapterIds);
           return;
         }
         const itemAvailability = availability.get(item.value);
@@ -3134,41 +3345,6 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     await discardCurrentSidePair();
     requestRender();
     return true;
-  };
-
-  // Import a foreign (Claude Code / Codex) session: read its digest, open a
-  // fresh Maka session, and seed the first turn with an untrusted handoff
-  // envelope. Mirrors submitPreparedUserPrompt: claim `busy` + an activity lease
-  // SYNCHRONOUSLY before the async read so no other turn (a Goal auto-
-  // continuation, or a user Enter) can start during it and make the import a
-  // silent no-op. runAgentTurn re-asserts busy for the turn; on any failure the
-  // finally releases the lease. The handoff is the model-facing `sendText`; a
-  // short line shows in the transcript.
-  const importForeignSession = async (summary: ForeignSessionSummary): Promise<void> => {
-    if (busy || input.foreignSessions === undefined) return;
-    busy = true;
-    const activity = beginActivity();
-    editor.disableSubmit = true;
-    let handedOff = false;
-    try {
-      const digest = await input.foreignSessions.readDigest(summary);
-      if (closed) return;
-      if (!(await newSession())) return;
-      submitMessage(foreignSessionHandoffDisplayText(digest), 'current_turn', {
-        modelText: buildForeignSessionHandoffMessage(digest),
-      });
-      handedOff = true;
-    } catch (error) {
-      if (closed) return;
-      reportError(error);
-    } finally {
-      if (!handedOff) {
-        busy = false;
-        editor.disableSubmit = false;
-        requestRender();
-      }
-      activity.finish();
-    }
   };
 
   const showHelp = () => {

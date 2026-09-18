@@ -40,8 +40,15 @@ import {
 import type { RuntimeHostManagedServiceTarget } from './runtime-host-service-manager.js';
 import { hasEphemeralRuntimeHostPeerPort } from './runtime-host-peer-artifact.js';
 import type { RuntimeHostInstalledUpdateExpectedSource } from './runtime-host-installed-update-coordinator.js';
+import {
+  installedUpdateHelpText,
+  isRuntimeHostHelpTopic,
+  runtimeHostCommandHelpText,
+  runtimeHostHelpText,
+} from './runtime-host-help.js';
 
 type RuntimeHostCliError = { kind: 'error'; message: string; exitCode: number };
+type RuntimeHostCliHelp = { kind: 'help'; text: string };
 
 export type RuntimeHostUpdateSelector =
   | { readonly kind: 'channel'; readonly channel: 'latest' | 'next' }
@@ -142,6 +149,8 @@ export type RuntimeHostCliCommand =
       bindPairingToClient?: true;
       repairRootAfterRemount?: true;
       updateExisting?: true;
+      reuseExistingEnvironment?: true;
+      allowInterruptActiveTasks?: true;
       clientDataRoot?: string;
       rootPath?: string;
       projectDirectoryRoots?: { label: string; path: string }[];
@@ -238,6 +247,8 @@ export type RuntimeHostCliCommand =
       operatorDeploymentId?: string;
       expectedTarget: RuntimeHostManagedServiceTarget;
       expectedHost?: RuntimeHostExpectedHost;
+      expectedConfigFingerprint?: string;
+      expectedSourceVersion?: string;
       selector?: RuntimeHostUpdateSelector;
       allowManualUpdate?: true;
       allowInterruptActiveTasks?: true;
@@ -374,9 +385,19 @@ export type RuntimeHostCliCommand =
       expectedRootId: string;
     }
   | { kind: 'runtime-host-profile-remove'; id: string }
+  | RuntimeHostCliHelp
   | RuntimeHostCliError;
 
-export function parseRuntimeHostCommand(argv: string[]): RuntimeHostCliCommand {
+export function parseRuntimeHostCommand(
+  argv: string[],
+  cliCommand = 'maka',
+): RuntimeHostCliCommand {
+  if (!argv[0] || argv[0] === '--help' || argv[0] === '-h') {
+    return { kind: 'help', text: runtimeHostHelpText(cliCommand) };
+  }
+  if ((argv[1] === '--help' || argv[1] === '-h') && isRuntimeHostHelpTopic(argv[0])) {
+    return { kind: 'help', text: runtimeHostCommandHelpText(cliCommand, argv[0]) };
+  }
   if (argv[0] === 'activate' || argv[0] === 'connect') {
     return parseManagedRootFramedCommand(argv[0], argv.slice(1));
   }
@@ -393,11 +414,7 @@ export function parseRuntimeHostCommand(argv: string[]): RuntimeHostCliCommand {
     return parseCapabilityProviderCommand(argv.slice(1));
   }
   if (argv[0] === 'profile') return parseProfileCommand(argv.slice(1));
-  return error(
-    argv[0]
-      ? `Unexpected runtime-host command: ${argv[0]}`
-      : 'runtime-host requires the activate, connect, serve, setup, service, access, project, plugin, profile, or capability-provider command',
-  );
+  return error(`Unexpected runtime-host command: ${argv[0]}`);
 }
 
 function parseManagedRootFramedCommand(
@@ -440,7 +457,13 @@ function parseManagedRootFramedCommand(
   };
 }
 
-export function parseRuntimeHostInstalledUpdateCommand(argv: string[]): RuntimeHostCliCommand {
+export function parseRuntimeHostInstalledUpdateCommand(
+  argv: string[],
+  cliCommand = 'maka',
+): RuntimeHostCliCommand {
+  if (argv[0] === '--help' || argv[0] === '-h') {
+    return { kind: 'help', text: installedUpdateHelpText(cliCommand) };
+  }
   let target: string | undefined;
   let allowInterruptActiveTasks = false;
   for (let index = 0; index < argv.length; index += 1) {
@@ -702,6 +725,8 @@ function parseSetupCommand(argv: string[]): RuntimeHostCliCommand {
   let bindPairingToClient = false;
   let repairRootAfterRemount = false;
   let updateExisting = false;
+  let reuseExistingEnvironment = false;
+  let allowInterruptActiveTasks = false;
   let clientDataRoot: string | undefined;
   let enableDirectPeer = false;
   const coordinationRelays: string[] = [];
@@ -750,6 +775,14 @@ function parseSetupCommand(argv: string[]): RuntimeHostCliCommand {
         if (repairRootAfterRemount) return error('Duplicate --repair-root-after-remount');
         repairRootAfterRemount = true;
       },
+      '--allow-interrupt-active-tasks': () => {
+        if (allowInterruptActiveTasks) return error('Duplicate --allow-interrupt-active-tasks');
+        allowInterruptActiveTasks = true;
+      },
+      '--reuse-existing-environment': () => {
+        if (reuseExistingEnvironment) return error('Duplicate --reuse-existing-environment');
+        reuseExistingEnvironment = true;
+      },
       '--update-existing': () => {
         if (updateExisting) return error('Duplicate --update-existing');
         updateExisting = true;
@@ -757,6 +790,21 @@ function parseSetupCommand(argv: string[]): RuntimeHostCliCommand {
     },
   });
   if ('kind' in options) return options;
+  if (
+    reuseExistingEnvironment &&
+    ((lifecycle as string) !== 'on_demand' ||
+      updateExisting ||
+      enableDirectPeer ||
+      deferPairingCommit ||
+      bindPairingToClient)
+  ) {
+    return error(
+      '--reuse-existing-environment requires on-demand local setup without update or remote pairing options',
+    );
+  }
+  if (allowInterruptActiveTasks && !updateExisting) {
+    return error('--allow-interrupt-active-tasks requires --update-existing');
+  }
   if (!principalId || !/^[A-Za-z0-9_.:-]{1,128}$/u.test(principalId)) {
     return error('runtime-host setup requires a valid --principal');
   }
@@ -777,6 +825,8 @@ function parseSetupCommand(argv: string[]): RuntimeHostCliCommand {
     ...(bindPairingToClient ? { bindPairingToClient: true } : {}),
     ...(repairRootAfterRemount ? { repairRootAfterRemount: true } : {}),
     ...(updateExisting ? { updateExisting: true } : {}),
+    ...(reuseExistingEnvironment ? { reuseExistingEnvironment: true } : {}),
+    ...(allowInterruptActiveTasks ? { allowInterruptActiveTasks: true } : {}),
     ...(clientDataRoot ? { clientDataRoot } : {}),
     ...(enableDirectPeer ? { directPeer: { coordinationRelays } } : {}),
   };
@@ -851,6 +901,7 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
   let updateTarget: string | undefined;
   let expectedHost: RuntimeHostExpectedHost | undefined;
   let expectedConfigFingerprint: string | undefined;
+  let expectedSourceVersion: string | undefined;
   const flagOptions: Readonly<Record<string, () => void | RuntimeHostCliError>> =
     action === 'uninstall'
       ? {
@@ -905,6 +956,17 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
             },
           }
         : {}),
+      ...(action === 'update'
+        ? {
+            '--expected-source-version': (value: string) => {
+              if (expectedSourceVersion !== undefined)
+                return error('Duplicate --expected-source-version');
+              if (!isProductReleaseVersion(value))
+                return error('--expected-source-version must be an exact package version');
+              expectedSourceVersion = value;
+            },
+          }
+        : {}),
       ...(action === 'update' || action === 'restart'
         ? {
             '--expected-host-json': (value: string) => {
@@ -915,7 +977,7 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
             },
           }
         : {}),
-      ...(action === 'configure'
+      ...(action === 'configure' || action === 'update'
         ? {
             '--expected-config-fingerprint': (value: string) => {
               if (expectedConfigFingerprint !== undefined) {
@@ -998,8 +1060,11 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
     };
   }
   if (action === 'update') {
-    if (expectedHost && !options.managedRootId) {
-      return error('--expected-host-json requires --managed-root-id');
+    if (
+      (expectedHost || expectedSourceVersion || expectedConfigFingerprint) &&
+      !options.managedRootId
+    ) {
+      return error('Observed Host and deployment fences require --managed-root-id');
     }
     const selector =
       updateTarget === undefined ? undefined : parseUpdateSelector(updateTarget, 'update');
@@ -1025,6 +1090,8 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
         : {}),
       expectedTarget: options.expectedTarget!,
       ...(expectedHost ? { expectedHost } : {}),
+      ...(expectedConfigFingerprint ? { expectedConfigFingerprint } : {}),
+      ...(expectedSourceVersion ? { expectedSourceVersion } : {}),
       ...(selector ? { selector } : {}),
       ...(allowManualUpdate ? { allowManualUpdate: true } : {}),
       ...(allowInterruptActiveTasks ? { allowInterruptActiveTasks: true } : {}),

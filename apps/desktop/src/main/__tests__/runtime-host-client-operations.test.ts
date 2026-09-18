@@ -99,8 +99,6 @@ test('resolves WorkHub coordination through the dedicated Host operation', async
   const { client, requests } = clientWithResponses([
     { sessionId: 'maka_workhub_coordination' },
     { candidateSetId: `sha256:${'a'.repeat(64)}`, candidates: [] },
-    { disposition: 'answer_here', coordinationTurnId: 'action-turn' },
-    { turnId: 'summary-turn' },
   ]);
 
   assert.deepEqual(await client.resolveWorkHubCoordinationSession(), {
@@ -110,41 +108,9 @@ test('resolves WorkHub coordination through the dedicated Host operation', async
     candidateSetId: `sha256:${'a'.repeat(64)}`,
     candidates: [],
   });
-  assert.deepEqual(
-    await client.actWorkHubCoordination({
-      actionId: 'action',
-      userText: 'Question',
-      proposal: { disposition: 'answer_here' },
-    }),
-    { disposition: 'answer_here', coordinationTurnId: 'action-turn' },
-  );
-  assert.deepEqual(
-    await client.recordWorkHubCoordination({
-      turnId: 'summary-turn',
-      userText: 'Request',
-      assistantText: 'Summary',
-    }),
-    { turnId: 'summary-turn' },
-  );
   assert.deepEqual(requests, [
     { operation: 'workhub.coordination.resolve', input: {} },
     { operation: 'workhub.coordination.candidates', input: {} },
-    {
-      operation: 'workhub.coordination.act',
-      input: {
-        actionId: 'action',
-        userText: 'Question',
-        proposal: { disposition: 'answer_here' },
-      },
-    },
-    {
-      operation: 'workhub.coordination.record',
-      input: {
-        turnId: 'summary-turn',
-        userText: 'Request',
-        assistantText: 'Summary',
-      },
-    },
   ]);
 });
 
@@ -428,6 +394,33 @@ test('rebuilds a Runtime Policy mutation from each fresh CAS projection', async 
   );
 });
 
+test('stops a guarded Runtime Policy retry after its semantic basis changes', async () => {
+  const initial = createDefaultRuntimePolicy();
+  const changed = {
+    ...initial,
+    externalAgents: { antigravity: { executable: '/chosen/by/another/client' } },
+  };
+  const { client, requests } = clientWithResponses([
+    { revision: 1, policy: initial },
+    { kind: 'revision_conflict', expectedRevision: 1, actualRevision: 2 },
+    { revision: 2, policy: changed },
+  ]);
+
+  const result = await client.updateRuntimePolicyIf(
+    (policy) => policy.externalAgents.antigravity.executable === '',
+    () => ({
+      kind: 'set_external_agents',
+      value: { antigravity: { executable: '/managed/agent' } },
+    }),
+  );
+
+  assert.deepEqual(result, { revision: 2, policy: changed });
+  assert.equal(
+    requests.filter(({ operation }) => operation === 'runtime.policy.mutate').length,
+    1,
+  );
+});
+
 test('treats empty configuration patches as read-only lookups', async () => {
   const unlocked = session('session-1', 10, { connectionLocked: false });
   const { client, requests } = clientWithResponses([
@@ -451,7 +444,6 @@ test('treats empty configuration patches as read-only lookups', async () => {
     },
   ]);
 });
-
 
 test('binds message controls to the current Host Epoch', async () => {
   const { client, requests } = clientWithResponses([

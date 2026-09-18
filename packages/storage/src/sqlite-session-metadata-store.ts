@@ -17,12 +17,26 @@
  * under the License.
  */
 
+import {
+  SessionMetadataConflictError,
+  SessionMetadataVersionConflictError,
+  type VersionedSessionIdentity,
+  type SessionConfigurationMetadataUpdate,
+} from './session-store-contract.js';
+export {
+  SessionMetadataConflictError,
+  SessionMetadataVersionConflictError,
+  type VersionedSessionIdentity,
+  type SessionConfigurationMetadataUpdate,
+} from './session-store-contract.js';
+
 import { createRequire } from 'node:module';
 import { createHash } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { existsSync, mkdirSync } from 'node:fs';
 import { isDeepStrictEqual } from 'node:util';
+import { isCanonicalReadOnlyPermissionProfile } from '@maka/core/permission-profile';
 import type { DatabaseSync } from 'node:sqlite';
 import {
   AGENT_GRAPH_CLIENT_PROJECTION_SCHEMA_VERSION,
@@ -116,15 +130,17 @@ import {
   type ProvenRootMessageHandoff,
   type ProvenSteeringMessageHandoff,
 } from './message-admission-store.js';
+import { rootTurnSourceMessagePayloadsEqual } from './agent-run-store-contract.js';
 import { normalizeSubmittedTurnIntent } from './submitted-turn-intent.js';
 import {
   messageContentDigest,
   messageContentsEqual,
   normalizeMessageContent,
+  type MessageContent,
 } from '@maka/core/events';
-import {
-  type AgentGraphIntentAdmissionSnapshot,
-  type AgentGraphTimelineMetadataSnapshot,
+import type {
+  AgentGraphIntentAdmissionSnapshot,
+  AgentGraphTimelineMetadataSnapshot,
 } from '@maka/core/agent-graph-timeline';
 import {
   AGENT_GRAPH_SUPERVISOR_WAKE_SCHEMA_VERSION,
@@ -135,18 +151,20 @@ import {
   type CompleteAgentGraphSupervisorWakeAttemptRequest,
   type SupersedeAgentGraphSupervisorWakesRequest,
 } from '@maka/core/agent-graph-supervisor-wake';
-import { type SessionListFilter } from '@maka/core/runtime-inputs';
+import type { SessionListFilter } from '@maka/core/runtime-inputs';
 import {
   assertSafeSessionId,
-  decodePersistedSessionHeader,
-  normalizeSessionHeader,
   SessionNotFoundError,
   type ExternalSessionImportLookupResult,
+  type CoordinationTranscriptReference,
+  type CoordinationTranscriptIndexRecord,
+  type CoordinationTranscriptIndexState,
   type SessionMessageScanPage,
   type SessionMessageScanRecord,
   type SessionMessageScanRequest,
   type SessionTranscriptMessageLookupRequest,
-} from './session-store.js';
+} from './session-store-contract.js';
+import { decodePersistedSessionHeader, normalizeSessionHeader } from './session-store.js';
 import {
   isDiscardableConversationCopy,
   isValidConversationCopyTransition,
@@ -161,6 +179,11 @@ import {
   SQLITE_SESSION_MESSAGE_CHUNK_MARKER,
 } from './sqlite-session-metadata-schema.js';
 import type { OperationalStateDatabaseLease } from './operational-state-store.js';
+import {
+  assertFoldedSearchTerm,
+  recallFoldedMatchClause,
+  registerRecallFoldFunction,
+} from './recall-fold.js';
 import {
   buildSqliteSessionCatalogPageQuery,
   type SqliteSessionCatalogCursor,
@@ -180,6 +203,14 @@ const WORKHUB_TARGET_LINKAGE_MAX_SESSIONS = 256;
 function decodeStoredMessage(value: unknown): StoredMessage {
   return decodePersistedStoredMessage(markPersisted<StoredMessage>(value));
 }
+
+/**
+ * Message types that carry user-visible content. Coordination records are
+ * excluded here so a candidate scan never reads them, matching the projection
+ * the recall predicate applies afterwards.
+ */
+const SEARCHABLE_MESSAGE_TYPES = ['user', 'assistant', 'tool_call', 'tool_result'] as const;
+const SEARCHABLE_MESSAGE_TYPE_PLACEHOLDERS = SEARCHABLE_MESSAGE_TYPES.map(() => '?').join(', ');
 
 const require = createRequire(import.meta.url);
 const AGENT_GRAPH_CONTROL_DELETE_TABLES = SQLITE_AGENT_GRAPH_CONTROL_TABLES.filter(
@@ -333,11 +364,6 @@ export interface SessionAuthoritySnapshot {
   boundary: ExecutionBoundary;
 }
 
-export interface VersionedSessionIdentity {
-  readonly sessionId: string;
-  readonly expectedVersion: number;
-}
-
 export type SessionRemovalProbe =
   | { readonly kind: 'present'; readonly record: SessionMetadataRecord }
   | { readonly kind: 'removed' }
@@ -383,35 +409,9 @@ export type StableSessionMetadataCreateResult =
       readonly reason: 'identity_mismatch' | 'removed';
     };
 
-export interface SessionConfigurationMetadataUpdate {
-  readonly expectedVersion: number;
-  readonly configuration: {
-    readonly backend: SessionHeader['backend'];
-    readonly llmConnectionId: string;
-    readonly llmConnectionSlug: string;
-    readonly connectionLocked: boolean;
-    readonly model: string;
-    readonly thinkingLevel: SessionHeader['thinkingLevel'];
-    readonly permissionMode: SessionHeader['permissionMode'];
-    readonly collaborationMode: NonNullable<SessionHeader['collaborationMode']>;
-    readonly orchestrationMode: NonNullable<SessionHeader['orchestrationMode']>;
-    readonly labels: readonly string[];
-  };
-  readonly lifecycle:
-    | { readonly kind: 'preserve' }
-    | {
-        readonly kind: 'clear_connection_block';
-        readonly statusUpdatedAt: number;
-      };
-}
-
 export interface IdempotentAgentGraphOperatorMetadataResult
   extends AgentGraphOperatorProvisionResult {
   record: SessionMetadataRecord;
-}
-
-export class SessionMetadataConflictError extends Error {
-  readonly name: string = 'SessionMetadataConflictError';
 }
 
 export class StoredSessionMessageIncompatibleError extends Error {
@@ -427,27 +427,24 @@ export class StoredSessionMessageIncompatibleError extends Error {
   }
 }
 
-export class SessionMetadataVersionConflictError extends SessionMetadataConflictError {
-  readonly name = 'SessionMetadataVersionConflictError';
-
-  constructor(
-    readonly sessionId: string,
-    readonly expectedVersion: number,
-    readonly actualVersion: number,
-  ) {
-    super(
-      `Session metadata version conflict for ${sessionId}: expected ${expectedVersion}, found ${actualVersion}`,
-    );
-  }
-}
-
-export class AgentGraphIntentClaimConflictError extends SessionMetadataConflictError {
-  readonly name = 'AgentGraphIntentClaimConflictError';
-}
-
-export class AgentGraphScheduleUpdateConflictError extends SessionMetadataConflictError {
-  readonly name = 'AgentGraphScheduleUpdateConflictError';
-}
+import {
+  AgentGraphIntentClaimConflictError,
+  AgentGraphScheduleUpdateConflictError,
+} from './session-store-contract.js';
+export {
+  AgentGraphIntentClaimConflictError,
+  AgentGraphScheduleUpdateConflictError,
+} from './session-store-contract.js';
+import {
+  assertGraphLookupIdentity,
+  assertAgentGraphSupervisorWakeClaim,
+  assertAgentGraphSupervisorWakeAttempt,
+  assertAgentGraphSupervisorWakeCompletion,
+  assertAgentGraphClientProjectionRequest,
+  encodeProjectionPayload,
+  assertGraphEventTime,
+  assertGraphIntentId,
+} from './graph-control-values.js';
 
 export function createSqliteSessionMetadataStore(
   path: string,
@@ -470,6 +467,7 @@ export class SqliteSessionMetadataStore {
     if (options.databaseLease) {
       this.databaseLease = options.databaseLease;
       this.db = options.databaseLease.database;
+      registerRecallFoldFunction(this.db);
       this.now = options.now ?? Date.now;
       return;
     }
@@ -478,6 +476,7 @@ export class SqliteSessionMetadataStore {
     try {
       configureSqliteSessionMetadataDatabase(database);
       migrateSqliteSessionMetadataDatabase(database);
+      registerRecallFoldFunction(database);
     } catch (error) {
       database.close();
       throw error;
@@ -1186,10 +1185,16 @@ export class SqliteSessionMetadataStore {
     return record;
   }
 
-  async readCatalogRecord(sessionId: string): Promise<SessionMetadataCatalogRecord> {
+  async readCatalogRecord(
+    sessionId: string,
+    roleScope: 'ordinary' | 'recoverable' = 'ordinary',
+  ): Promise<SessionMetadataCatalogRecord> {
     this.assertOpen();
     assertSafeSessionId(sessionId);
-    const role = sqliteOrdinarySessionRolePredicate();
+    const role =
+      roleScope === 'recoverable'
+        ? sqliteRecoverableSessionRolePredicate()
+        : sqliteOrdinarySessionRolePredicate();
     const row = this.db
       .prepare(
         `
@@ -1760,9 +1765,13 @@ export class SqliteSessionMetadataStore {
       assignment.id !== `wha_${suffix}` ||
       assignment.targetMessageId !== `whm_${suffix}` ||
       assignment.delegationId !== `whd_${suffix}` ||
+      !workHubAssignmentAttachmentsMatchTarget(assignment) ||
       !messageContentsEqual(
         admission.content,
-        normalizeMessageContent({ text: assignment.userText }),
+        normalizeMessageContent({
+          text: assignment.delegationText ?? assignment.userText,
+          ...(assignment.targetAttachments ? { attachments: assignment.targetAttachments } : {}),
+        }),
       ) ||
       admission.submittedContentDigest !== messageContentDigest(admission.content) ||
       admission.submittedPlacement !== 'current_turn' ||
@@ -2369,23 +2378,31 @@ export class SqliteSessionMetadataStore {
           admission.runId === steeringProof.admissionRunId &&
           admission.admittedAt === steeringProof.admittedAt &&
           messageContentsEqual(admission.content, steeringProof.content);
+        // Root admission commits before this mutable queue projection is retired. A crash
+        // between those writes can therefore leave the same Message looking like steering
+        // for its predecessor even though the successor Root already owns it.
+        const provenSuccessorRootHandoff =
+          admission !== undefined &&
+          fallback !== undefined &&
+          rootTurnSourceMessagePayloadsEqual(admission, fallback);
         if (admission !== undefined && steeringProof !== undefined && !provenCrossTurnSteering) {
           throw new SessionMetadataConflictError('Proven steering admission identity conflict');
         }
         if (
           admission !== undefined &&
-          admission.turnId !== input.turnId &&
-          admission.disposition !== 'followup' &&
-          !provenCrossTurnSteering
+          fallback !== undefined &&
+          !rootTurnSourceMessagePayloadsEqual(admission, fallback)
         ) {
-          throw new SessionMetadataConflictError('Message admission Turn conflict');
+          throw new SessionMetadataConflictError('Message admission fallback payload conflict');
         }
         if (
           admission !== undefined &&
-          fallback !== undefined &&
-          !messageContentsEqual(admission.content, fallback.content)
+          admission.turnId !== input.turnId &&
+          admission.disposition !== 'followup' &&
+          !provenCrossTurnSteering &&
+          !provenSuccessorRootHandoff
         ) {
-          throw new SessionMetadataConflictError('Message admission fallback content conflict');
+          throw new SessionMetadataConflictError('Message admission Turn conflict');
         }
         if (
           !admission &&
@@ -2545,7 +2562,11 @@ export class SqliteSessionMetadataStore {
     });
   }
 
-  async reorderMessageAdmissions(sessionId: string, messageIds: readonly string[]): Promise<void> {
+  async reorderMessageAdmissions(
+    sessionId: string,
+    messageIds: readonly string[],
+    disposition: 'steering' | 'followup' = 'followup',
+  ): Promise<void> {
     this.assertOpen();
     assertSafeSessionId(sessionId);
     const unique = [...new Set(messageIds)];
@@ -2561,15 +2582,15 @@ export class SqliteSessionMetadataStore {
           `
           SELECT message_id
           FROM message_admissions
-          WHERE session_id = ? AND disposition = 'followup'
+          WHERE session_id = ? AND disposition = ?
           ORDER BY queue_order, sequence
         `,
         )
-        .all(sessionId) as Array<{ message_id?: unknown }>;
+        .all(sessionId, disposition) as Array<{ message_id: string }>;
       const current = rows.map((row) => row.message_id);
       const currentIds = new Set(current);
       if (
-        current.length !== unique.length ||
+        (disposition === 'followup' && current.length !== unique.length) ||
         unique.some((messageId) => !currentIds.has(messageId))
       ) {
         throw new SessionMetadataConflictError('Message admission reorder identity conflict');
@@ -2581,12 +2602,216 @@ export class SqliteSessionMetadataStore {
         WHERE session_id = ? AND message_id = ?
       `,
       );
-      unique.forEach((messageId, index) => update.run(index, sessionId, messageId));
+      // Older steering may already be in flight. Keep those entries in their
+      // slots so recovery never interleaves them with a newly reordered batch.
+      const selected = new Set(unique);
+      let next = 0;
+      current.forEach((messageId, index) => {
+        const orderedId = selected.has(messageId) ? unique[next++]! : messageId;
+        update.run(index, sessionId, orderedId);
+      });
     });
+  }
+
+  async readCoordinationTranscriptIndexState(): Promise<CoordinationTranscriptIndexState> {
+    this.assertOpen();
+    return this.db
+      .prepare(`SELECT (SELECT MAX(sequence) FROM coordination_transcript_index) AS highWater,
+      (SELECT MAX(source_sequence) FROM coordination_transcript_index WHERE source = 'legacy') AS legacy,
+      (SELECT MAX(source_sequence) FROM coordination_transcript_index WHERE source = 'runtime') AS runtime`)
+      .get() as unknown as CoordinationTranscriptIndexState;
+  }
+
+  async appendCoordinationTranscriptIndex(
+    records: readonly CoordinationTranscriptReference[],
+  ): Promise<void> {
+    this.assertOpen();
+    if (records.length > 64) throw new Error('Coordination transcript index batch exceeds limit');
+    this.transaction(() => {
+      let sequence =
+        (
+          this.db
+            .prepare('SELECT MAX(sequence) AS value FROM coordination_transcript_index')
+            .get() as { value: number | null }
+        ).value ?? -1;
+      const insert = this.db.prepare(`INSERT INTO coordination_transcript_index
+        (sequence, source, source_sequence) VALUES (?, ?, ?)
+        ON CONFLICT(source, source_sequence) DO NOTHING`);
+      for (const record of records) {
+        if (!Number.isSafeInteger(record.sourceSequence) || record.sourceSequence < 0)
+          throw new Error('Invalid Coordination source sequence');
+        const result = insert.run(sequence + 1, record.source, record.sourceSequence);
+        if (result.changes) sequence++;
+      }
+    });
+  }
+
+  async readCoordinationTranscriptIndex(request: {
+    direction: 'older' | 'newer';
+    throughSequence: number;
+    position: number;
+    limit: number;
+  }): Promise<readonly CoordinationTranscriptIndexRecord[]> {
+    this.assertOpen();
+    if (!Number.isSafeInteger(request.limit) || request.limit < 1 || request.limit > 64)
+      throw new Error('Invalid Coordination transcript index limit');
+    const older = request.direction === 'older';
+    return this.db
+      .prepare(`SELECT sequence, source, source_sequence AS sourceSequence
+      FROM coordination_transcript_index WHERE sequence <= ? AND sequence ${older ? '<=' : '>='} ?
+      ORDER BY sequence ${older ? 'DESC' : 'ASC'} LIMIT ?`)
+      .all(
+        request.throughSequence,
+        request.position,
+        request.limit,
+      ) as unknown as CoordinationTranscriptIndexRecord[];
   }
 
   async readMessages(sessionId: string): Promise<StoredMessage[]> {
     return this.readMessagesWith(sessionId, decodeStoredMessage);
+  }
+
+  /**
+   * Narrows recall to the pre-ledger Sessions whose transcript rows contain
+   * one of the folded terms. The answer is a superset of the true matches,
+   * never an answer: the caller projects each candidate Session and re-runs the
+   * real predicate on the projected, redacted text.
+   *
+   * Only Sessions the ledger does not yet own are scanned here. A Session with
+   * `transcriptLedgerVersion` 1 is projected from `runtime_events`, and its
+   * rows in these tables are a frozen copy of what the conversion read, so the
+   * ledger scan already covers it. Sessions still awaiting conversion, and
+   * imports still being prepared, keep their transcript here.
+   *
+   * Folding is ASCII `lower()` in SQL plus an unconditional match on every
+   * record that fold cannot reproduce — see `recall-fold.ts`. Terms must arrive
+   * folded; a raw term is rejected rather than quietly mismatched.
+   *
+   * Two scans rather than one condition, because the two storage forms need
+   * different reads. An inline record is matched directly; a record above the
+   * chunk threshold keeps only a marker in `record_json` and has to be
+   * reassembled from its chunks first. SQLite concatenates chunk blobs
+   * byte-wise, which restores characters a chunk boundary split in half.
+   *
+   * Returns `undefined` when a chunked record cannot be reassembled, which
+   * declines the fast path rather than answering with fewer candidates.
+   */
+  async listLegacyTranscriptCandidateSessions(
+    sessionIds: readonly string[],
+    terms: readonly string[],
+  ): Promise<string[] | undefined> {
+    this.assertOpen();
+    if (sessionIds.length === 0 || terms.length === 0) return [];
+    for (const sessionId of sessionIds) assertSafeSessionId(sessionId);
+    for (const term of terms) assertFoldedSearchTerm(term);
+
+    const sessions = sessionIds.map(() => '?').join(', ');
+    const inlineMatch = recallFoldedMatchClause('message.record_json', terms.length);
+    const chunkedMatch = recallFoldedMatchClause('chunked.body', terms.length);
+
+    return this.readTransaction(() => {
+      // A payload row whose chunks do not reassemble to the bytes it recorded
+      // would be matched on a body shorter than the record, which is the one
+      // way this scan could return less than a superset: the term could sit in
+      // the part that is missing. A short body is as unusable as no body at
+      // all, so both decline the fast path rather than quietly answering with
+      // fewer candidates.
+      const unreadable = this.db
+        .prepare(
+          `
+          SELECT count(*) AS total
+          FROM session_message_payloads AS payload
+          WHERE payload.session_id IN (${sessions})
+            AND COALESCE(
+                  octet_length((SELECT group_concat(CAST(chunk.data AS TEXT), '' ORDER BY chunk.chunk_index)
+                                  FROM session_message_chunks AS chunk
+                                 WHERE chunk.session_id = payload.session_id
+                                   AND chunk.sequence = payload.sequence)),
+                  -1
+                ) <> payload.record_bytes
+        `,
+        )
+        .get(...sessionIds) as { total?: unknown } | undefined;
+      if (typeof unreadable?.total === 'number' && unreadable.total > 0) return undefined;
+
+      const rows = this.db
+        .prepare(
+          `
+          WITH legacy AS (
+            SELECT metadata.session_id
+            FROM session_metadata AS metadata
+            WHERE metadata.session_id IN (${sessions})
+              AND COALESCE(json_extract(metadata.payload_json, '$.transcriptLedgerVersion'), -1) <> 1
+          ),
+          chunked AS (
+            SELECT payload.session_id, payload.sequence,
+                   (SELECT group_concat(CAST(chunk.data AS TEXT), '' ORDER BY chunk.chunk_index)
+                      FROM session_message_chunks AS chunk
+                     WHERE chunk.session_id = payload.session_id
+                       AND chunk.sequence = payload.sequence) AS body
+              FROM session_message_payloads AS payload
+             WHERE payload.session_id IN (SELECT session_id FROM legacy)
+          )
+          SELECT DISTINCT message.session_id
+          FROM session_messages AS message
+          LEFT JOIN session_message_payloads AS payload
+            ON payload.session_id = message.session_id AND payload.sequence = message.sequence
+          WHERE message.session_id IN (SELECT session_id FROM legacy)
+            AND message.message_type IN (${SEARCHABLE_MESSAGE_TYPE_PLACEHOLDERS})
+            AND payload.sequence IS NULL
+            AND (${inlineMatch})
+          UNION
+          SELECT DISTINCT message.session_id
+          FROM session_messages AS message
+          JOIN chunked
+            ON chunked.session_id = message.session_id AND chunked.sequence = message.sequence
+          WHERE message.message_type IN (${SEARCHABLE_MESSAGE_TYPE_PLACEHOLDERS})
+            AND chunked.body IS NOT NULL
+            AND (${chunkedMatch})
+        `,
+        )
+        .all(
+          ...sessionIds,
+          ...SEARCHABLE_MESSAGE_TYPES,
+          ...terms,
+          ...SEARCHABLE_MESSAGE_TYPES,
+          ...terms,
+        ) as Array<{ session_id?: unknown }>;
+      return rows.map((row) => {
+        if (typeof row.session_id !== 'string') {
+          throw new Error('Session search candidate is missing its Session');
+        }
+        return row.session_id;
+      });
+    });
+  }
+
+  /**
+   * How many pre-ledger transcript rows could project to a searchable message,
+   * for recall's idf term. Counted by message type rather than by projecting,
+   * so it is cheap and identical whichever path recall takes to find its hits;
+   * Sessions the ledger owns are counted from `runtime_events` instead.
+   */
+  async countLegacyTranscriptMessages(sessionIds: readonly string[]): Promise<number> {
+    this.assertOpen();
+    if (sessionIds.length === 0) return 0;
+    for (const sessionId of sessionIds) assertSafeSessionId(sessionId);
+    const sessions = sessionIds.map(() => '?').join(', ');
+    return this.readTransaction(() => {
+      const row = this.db
+        .prepare(
+          `
+          SELECT count(*) AS total
+          FROM session_messages AS message
+          JOIN session_metadata AS metadata ON metadata.session_id = message.session_id
+          WHERE message.session_id IN (${sessions})
+            AND COALESCE(json_extract(metadata.payload_json, '$.transcriptLedgerVersion'), -1) <> 1
+            AND message.message_type IN (${SEARCHABLE_MESSAGE_TYPE_PLACEHOLDERS})
+        `,
+        )
+        .get(...sessionIds, ...SEARCHABLE_MESSAGE_TYPES) as { total?: unknown } | undefined;
+      return typeof row?.total === 'number' ? row.total : 0;
+    });
   }
 
   async readMessagesAfter(
@@ -4497,7 +4722,7 @@ export class SqliteSessionMetadataStore {
           `Managed sandbox boundary history is invalid: ${sessionId}`,
         );
       }
-      if (!isCanonicalReadOnlySandboxProfile(boundary.profile)) return boundary.profile;
+      if (!isCanonicalReadOnlyPermissionProfile(boundary.profile)) return boundary.profile;
     }
     return requireManagedProfile(createGenesisExecutionBoundary('ask'));
   }
@@ -4760,7 +4985,7 @@ export class SqliteSessionMetadataStore {
       kind === 'managed'
         ? projectedMode === 'explore'
           ? requireManagedProfile(createGenesisExecutionBoundary('explore'))
-          : current.kind === 'managed' && !isCanonicalReadOnlySandboxProfile(current.profile)
+          : current.kind === 'managed' && !isCanonicalReadOnlyPermissionProfile(current.profile)
             ? current.profile
             : this.readLatestAutoSandboxProfileSync(sessionId)
         : undefined;
@@ -6186,28 +6411,6 @@ function requireManagedProfile(
   return boundary.profile;
 }
 
-function isCanonicalReadOnlySandboxProfile(
-  profile: Extract<ExecutionBoundary, { kind: 'managed' }>['profile'],
-): boolean {
-  const { name: _profileName, ...profilePolicy } = profile;
-  const { name: _canonicalName, ...canonicalPolicy } = requireManagedProfile(
-    createGenesisExecutionBoundary('explore'),
-  );
-  return isDeepStrictEqual(profilePolicy, canonicalPolicy);
-}
-
-function assertGraphLookupIdentity(value: string, name: string): void {
-  if (
-    typeof value !== 'string' ||
-    value.length === 0 ||
-    value.length > 256 ||
-    value.trim() !== value ||
-    /[\u0000-\u001f\u007f]/.test(value)
-  ) {
-    throw new Error(`Invalid agent graph ${name}`);
-  }
-}
-
 function assertSafeBoundaryRequestId(value: string): void {
   if (!/^[A-Za-z0-9_-]{1,128}$/.test(value)) {
     throw new Error('Invalid sandbox boundary request id');
@@ -6224,109 +6427,6 @@ function assertSandboxBoundaryProvenanceId(value: string, name: string): void {
   ) {
     throw new Error(`Invalid sandbox boundary ${name}`);
   }
-}
-
-function assertAgentGraphSupervisorWakeClaim(request: ClaimAgentGraphSupervisorWakeRequest): void {
-  if (request.schemaVersion !== AGENT_GRAPH_SUPERVISOR_WAKE_SCHEMA_VERSION) {
-    throw new Error('Invalid agent graph supervisor wake schema');
-  }
-  assertGraphLookupIdentity(request.graphId, 'graph id');
-  assertGraphLookupIdentity(request.wakeId, 'supervisor wake id');
-  assertGraphLookupIdentity(request.snapshotVersion, 'snapshot version');
-  assertSafeSessionId(request.rootSessionId);
-}
-
-function assertAgentGraphSupervisorWakeAttempt(
-  request: BeginAgentGraphSupervisorWakeAttemptRequest,
-): void {
-  assertGraphLookupIdentity(request.graphId, 'graph id');
-  assertGraphLookupIdentity(request.wakeId, 'supervisor wake id');
-  assertGraphLookupIdentity(request.attemptId, 'supervisor wake attempt id');
-  assertGraphLookupIdentity(request.turnId, 'supervisor wake turn id');
-}
-
-function assertAgentGraphSupervisorWakeCompletion(
-  request: CompleteAgentGraphSupervisorWakeAttemptRequest,
-): void {
-  assertGraphLookupIdentity(request.graphId, 'graph id');
-  assertGraphLookupIdentity(request.wakeId, 'supervisor wake id');
-  assertGraphLookupIdentity(request.attemptId, 'supervisor wake attempt id');
-  if (
-    request.status !== 'waiting_permission' &&
-    request.status !== 'delivered' &&
-    request.status !== 'superseded' &&
-    request.status !== 'retryable_failed'
-  ) {
-    throw new Error('Invalid agent graph supervisor wake completion status');
-  }
-  if (
-    (request.status === 'retryable_failed' || request.status === 'superseded') &&
-    (!request.failureReason?.trim() || request.failureReason.length > 4_000)
-  ) {
-    throw new Error('Agent graph supervisor wake failure reason must be non-empty and bounded');
-  }
-}
-
-function assertAgentGraphClientProjectionRequest(
-  request: CommitAgentGraphClientProjectionRequest,
-): void {
-  if (
-    request.schemaVersion !== AGENT_GRAPH_CLIENT_PROJECTION_SCHEMA_VERSION ||
-    (request.expectedSnapshotVersion !== null &&
-      typeof request.expectedSnapshotVersion !== 'string') ||
-    typeof request.replaceOperators !== 'boolean' ||
-    !Array.isArray(request.operators) ||
-    !Array.isArray(request.terminalActivities) ||
-    !Array.isArray(request.activityRecords)
-  ) {
-    throw new Error('Invalid agent graph client projection request');
-  }
-  assertGraphLookupIdentity(request.graphId, 'graph id');
-  assertSafeSessionId(request.rootSessionId);
-  if (request.expectedSnapshotVersion !== null) {
-    assertGraphLookupIdentity(request.expectedSnapshotVersion, 'expected snapshot version');
-  }
-  assertGraphLookupIdentity(request.snapshotVersion, 'snapshot version');
-  const operatorIds = new Set<string>();
-  for (const operator of request.operators) {
-    assertGraphLookupIdentity(operator.operatorId, 'operator id');
-    if (operatorIds.has(operator.operatorId)) {
-      throw new Error(`Duplicate agent graph client operator ${operator.operatorId}`);
-    }
-    operatorIds.add(operator.operatorId);
-  }
-  const terminalIds = new Set<string>();
-  for (const terminal of request.terminalActivities) {
-    assertGraphLookupIdentity(terminal.recordId, 'terminal record id');
-    assertGraphEventTime(terminal.eventTime);
-    if (terminalIds.has(terminal.recordId)) {
-      throw new Error(`Duplicate agent graph terminal activity ${terminal.recordId}`);
-    }
-    terminalIds.add(terminal.recordId);
-  }
-  const activityIds = new Set<string>();
-  for (const record of request.activityRecords) {
-    assertGraphLookupIdentity(record.recordId, 'activity record id');
-    assertGraphEventTime(record.eventTime);
-    if (activityIds.has(record.recordId)) {
-      throw new Error(`Duplicate agent graph activity ${record.recordId}`);
-    }
-    activityIds.add(record.recordId);
-  }
-  if (request.incrementalRecordId !== undefined) {
-    assertGraphLookupIdentity(request.incrementalRecordId, 'incremental record id');
-    if (request.expectedSnapshotVersion === null || !activityIds.has(request.incrementalRecordId)) {
-      throw new Error('Invalid incremental agent graph projection record');
-    }
-  }
-}
-
-function encodeProjectionPayload(payload: unknown, name: string): string {
-  const encoded = JSON.stringify(payload);
-  if (encoded === undefined) {
-    throw new Error(`Invalid agent graph ${name} payload`);
-  }
-  return encoded;
 }
 
 function decodeAgentGraphClientProjectionRow(
@@ -6368,18 +6468,6 @@ function decodeAgentGraphClientOperatorProjectionRow(
     payload: JSON.parse(row.payloadJson) as unknown,
     materializedAt: row.materializedAt,
   };
-}
-
-function assertGraphEventTime(value: number): void {
-  if (!Number.isSafeInteger(value) || value < 0) {
-    throw new Error('Invalid agent graph terminal activity event time');
-  }
-}
-
-function assertGraphIntentId(value: string): void {
-  if (!/^graph_intent_[a-f0-9]{32}$/.test(value)) {
-    throw new Error('Invalid agent graph intent id');
-  }
 }
 
 function decodeStoredMessageRow(
@@ -6466,6 +6554,28 @@ function isWorkHubActionOperation(value: unknown): value is WorkHubActionOperati
   );
 }
 
+function workHubAssignmentAttachmentsMatchTarget(
+  assignment: WorkHubDelegationAssignedMessage,
+): boolean {
+  const source = assignment.attachments ?? [];
+  const target = assignment.targetAttachments ?? [];
+  return (
+    source.length === target.length &&
+    source.every((attachment, index) => {
+      const copied = target[index]!;
+      const { ref: sourceRef, ...sourceMetadata } = attachment;
+      const { ref: targetRef, ...targetMetadata } = copied;
+      return (
+        sourceRef.kind === 'session_file' &&
+        sourceRef.sessionId === WORKHUB_COORDINATION_SESSION_ID &&
+        targetRef.kind === 'session_file' &&
+        targetRef.sessionId === assignment.targetSessionId &&
+        isDeepStrictEqual(sourceMetadata, targetMetadata)
+      );
+    })
+  );
+}
+
 function sameWorkHubAssignmentRequest(
   existing: WorkHubDelegationAssignedMessage,
   requested: WorkHubDelegationAssignedMessage,
@@ -6478,6 +6588,8 @@ function sameWorkHubAssignmentRequest(
       targetSessionId: existing.targetSessionId,
       disposition: existing.disposition,
       userText: existing.userText,
+      delegationText: existing.delegationText,
+      attachments: existing.attachments ?? [],
       create: existing.create,
       replacesActionId: existing.replacesActionId,
       replacesDelegationId: existing.replacesDelegationId,
@@ -6489,6 +6601,8 @@ function sameWorkHubAssignmentRequest(
       targetSessionId: requested.targetSessionId,
       disposition: requested.disposition,
       userText: requested.userText,
+      delegationText: requested.delegationText,
+      attachments: requested.attachments ?? [],
       create: requested.create,
       replacesActionId: requested.replacesActionId,
       replacesDelegationId: requested.replacesDelegationId,

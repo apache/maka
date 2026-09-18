@@ -107,6 +107,7 @@ import {
   mcpDraftProtocolPreference,
   mcpDraftFromConfig,
   presentMcpNegotiatedProtocol,
+  mcpWriteFailureMessage,
   type McpEditorDraft,
 } from './mcp-page-model';
 import { settingsActionErrorMessage } from './settings/settings-error-copy';
@@ -296,9 +297,10 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
       if (mounted.current && !cancelledInstalls.current.has(entry.id)) {
         reportRuntimeHostError(
           copy.errors.install(entry.name),
-          settingsActionErrorMessage(error, locale),
+          mcpWriteFailureMessage(error, copy) ?? settingsActionErrorMessage(error, locale),
           defaultRuntimeHostDiagnosticTarget(error),
         );
+        await reload();
       }
     } finally {
       const wasCancelled = cancelledInstalls.current.delete(entry.id);
@@ -325,10 +327,10 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
       if (mounted.current) {
         reportRuntimeHostError(
           copy.errors.cancelInstall(entry.name),
-          settingsActionErrorMessage(error, locale),
+          mcpWriteFailureMessage(error, copy) ?? settingsActionErrorMessage(error, locale),
           defaultRuntimeHostDiagnosticTarget(error),
         );
-        void reload();
+        await reload();
       }
     } finally {
       if (mounted.current) setInstallPhases((current) => omitKey(current, entry.id));
@@ -362,9 +364,12 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
       if (mounted.current) {
         reportRuntimeHostError(
           copy.errors.save,
-          settingsActionErrorMessage(error, locale),
+          mcpWriteFailureMessage(error, copy) ?? settingsActionErrorMessage(error, locale),
           defaultRuntimeHostDiagnosticTarget(error),
         );
+        // A rejected mutation may already have replaced mcp.json. Refresh
+        // both the configured rows and statuses before another user action.
+        await reload();
       }
     } finally {
       if (mounted.current) setBusy(null);
@@ -392,9 +397,10 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
       if (mounted.current) {
         reportRuntimeHostError(
           copy.errors.import,
-          settingsActionErrorMessage(error, locale),
+          mcpWriteFailureMessage(error, copy) ?? settingsActionErrorMessage(error, locale),
           defaultRuntimeHostDiagnosticTarget(error),
         );
+        await reload();
       }
     } finally {
       if (mounted.current) setBusy(null);
@@ -412,9 +418,10 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
       if (mounted.current) {
         reportRuntimeHostError(
           copy.errors.update,
-          settingsActionErrorMessage(error, locale),
+          mcpWriteFailureMessage(error, copy) ?? settingsActionErrorMessage(error, locale),
           defaultRuntimeHostDiagnosticTarget(error),
         );
+        await reload();
       }
     } finally {
       if (mounted.current) setBusy(null);
@@ -477,9 +484,10 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
       if (mounted.current) {
         reportRuntimeHostError(
           copy.errors.remove,
-          settingsActionErrorMessage(error, locale),
+          mcpWriteFailureMessage(error, copy) ?? settingsActionErrorMessage(error, locale),
           defaultRuntimeHostDiagnosticTarget(error),
         );
+        await reload();
       }
     } finally {
       if (mounted.current) setBusy(null);

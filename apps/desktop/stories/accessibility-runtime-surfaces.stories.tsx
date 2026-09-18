@@ -46,7 +46,7 @@ type Story = StoryObj<typeof meta>;
 
 const unsubscribe = () => () => undefined;
 const noop = () => undefined;
-const terminalWrite = fn(async () => null);
+const terminalWrite = fn(async () => undefined);
 const sshWrite = fn(async () => undefined);
 const browserNavigate = fn(async () => undefined);
 const registerDirectory = fn(async () => ({
@@ -89,12 +89,12 @@ function WorkbarToolSurface(props: { kind: 'terminal' | 'browser' | 'files'; hid
           sessionId="runtime-surface"
           hidden={props.hidden ?? false}
           onDismissPanel={noop}
+          onToggleRightPanel={noop}
           panelsState={createSessionWorkbarPanelsState(props.backgroundFiles ? openStaticSessionWorkbarTab(right, 'review') : right)}
           rightCollapsed={false}
           bottomOpen={false}
           onActivateTab={noop}
           onCloseTab={noop}
-          onCloseTabs={noop}
           onOpenLauncher={noop}
           onRequestOpenTab={noop}
           confirmBypass={async () => true}
@@ -108,10 +108,13 @@ export const ActiveTerminal: Story = {
   decorators: [
     withWorkbarServices({
       terminal: {
+        recover: async () => ({ resources: [], closes: [] }),
+        subscribeCloseChanges: () => () => undefined,
+        subscribeUpdates: () => () => undefined,
         start: async () => {
           throw new Error('not used by this story');
         },
-        stop: async () => null,
+        stop: async () => undefined,
         attach: async () => ({
           sessionId: 'runtime-surface',
           ref: 'pty:storybook',
@@ -202,8 +205,8 @@ export const BrowserLoaded: Story = {
           hasPage: true,
         }),
         subscribeState: unsubscribe,
-        subscribeLive: unsubscribe,
         setViewport: () => undefined,
+        capturePage: async () => undefined,
         back: async () => undefined,
         forward: async () => undefined,
         stop: async () => undefined,
@@ -292,6 +295,7 @@ export const HtmlArtifact: Story = {
         readBinary: async () => ({ ok: false, reason: 'unsupported_mime' }),
         delete: async () => undefined,
         openPath: async () => ({ ok: false, reason: 'missing' }),
+        showInFolder: async () => ({ ok: false, reason: 'missing' }),
         saveAs: async () => ({ ok: false, reason: 'canceled' }),
       },
     }),

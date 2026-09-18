@@ -71,6 +71,8 @@ const DARK_THEME_SENTINEL_STORY_IDS = new Set([
   'product-settings-pages--appearance',
   'product-settings-pages--bot-chat-needs-attention',
   'product-shell-official-appshell--default-layout',
+  'product-workhub--standard-composer',
+  'product-workhub--progress-model-picker',
 ]);
 const FORCED_COLORS_STORY_IDS = new Set([
   'product-settings-pages--general-forced-colors-focus-ring',
@@ -155,6 +157,20 @@ export function catalogJobs(
   const jobs = Object.values(entries)
     .filter((entry) => entry?.type === 'story' && typeof entry.id === 'string')
     .flatMap((entry) => {
+      // These diagnostics must wrap in both locales at the reading measure
+      // and in a narrow Desktop window; toolbar defaults cover neither matrix.
+      if (entry.id === 'product-shell-official-appshell--long-system-notes') {
+        return ['zh-CN', 'en'].flatMap((locale) =>
+          [RENDER_VIEWPORT, NARROW_RENDER_VIEWPORT].map((viewport) => ({
+            storyId: entry.id,
+            colorScheme: 'light',
+            forcedColors: 'none',
+            palette: 'default',
+            locale,
+            viewport,
+          })),
+        );
+      }
       const hasFullPaletteCoverage = fullPaletteStoryIds.has(entry.id);
       const entryPalettes = hasFullPaletteCoverage ? palettes : ['default'];
       const colorSchemes =
@@ -178,17 +194,26 @@ export function storyUrl(baseUrl, job) {
   const url = new URL('/iframe.html', baseUrl);
   url.searchParams.set('id', job.storyId);
   url.searchParams.set('viewMode', 'story');
-  url.searchParams.set('globals', `colorScheme:${job.colorScheme};palette:${job.palette}`);
+  url.searchParams.set(
+    'globals',
+    `colorScheme:${job.colorScheme};palette:${job.palette}${job.locale ? `;locale:${job.locale}` : ''}`,
+  );
   return url.href;
 }
 
 export function storyViewport(storyId) {
+  // Full desktop width verifies WorkHub reaches the shared transcript measure.
+  if (storyId === 'product-workhub--colored-work-history') return { width: 1600, height: 900 };
+  // The progress card also uses viewport-relative picker sizing inside its
+  // native 360px WebContents; a narrow wrapper alone does not reproduce that.
+  if (storyId === 'product-workhub--progress-model-picker') return { width: 360, height: 900 };
   return storyId.includes('narrow') ? NARROW_RENDER_VIEWPORT : RENDER_VIEWPORT;
 }
 
 export function jobLabel(job) {
   const forcedColors = job.forcedColors === 'active' ? '/forced-colors' : '';
-  return `${job.storyId} (${job.colorScheme}/${job.palette}${forcedColors})`;
+  const scenario = job.locale ? `/${job.locale}/${job.viewport.width}px` : '';
+  return `${job.storyId} (${job.colorScheme}/${job.palette}${forcedColors}${scenario})`;
 }
 
 export function isExpectedConsoleError(storyId, message) {
@@ -214,7 +239,7 @@ export async function smokeStory(page, baseUrl, job, options = {}) {
 
   try {
     await page.addInitScript(installStorybookRenderProbe, { storyId: job.storyId });
-    await page.setViewportSize(storyViewport(job.storyId));
+    await page.setViewportSize(job.viewport ?? storyViewport(job.storyId));
     await page.emulateMedia({ colorScheme: job.colorScheme, forcedColors: job.forcedColors });
     await page.goto(storyUrl(baseUrl, job), { waitUntil: 'load' });
 

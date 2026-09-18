@@ -29,22 +29,22 @@ import type {
   DesktopTranscriptReplicaSnapshot,
 } from './desktop-transcript-replica.js';
 
-interface TranscriptBatchIdentity {
-  readonly navigationVersion?: number;
+export interface TranscriptBatchIdentity {
   readonly sessionId: string;
   readonly generation: string;
   readonly hostEpoch: string;
 }
 
-interface TranscriptBatchContent {
+/** One part of an answer; `ready` marks its last part. */
+export interface TranscriptBatchContent {
   readonly durableThrough: number | null;
   readonly durable: readonly DesktopSequencedTranscriptMessage[];
-  readonly overlay: readonly StoredMessage[];
-  readonly evictedDurableSequences: readonly number[];
-  readonly completedOverlayMessageIds: readonly string[];
-  readonly hasOlder: boolean;
-  readonly hasNewer: boolean;
+  readonly hasOlder?: boolean;
+  readonly beginsAtTurnBoundary?: boolean;
+  readonly earlierThan?: number;
+  readonly coversFrom?: number | null;
   readonly reset: boolean;
+  readonly ready: boolean;
 }
 
 export function encodeDesktopTranscriptSnapshot(
@@ -53,12 +53,10 @@ export function encodeDesktopTranscriptSnapshot(
   return encodeDesktopTranscriptBatches(snapshot, {
     durableThrough: snapshot.durableThrough,
     durable: snapshot.durable,
-    overlay: snapshot.overlay,
-    evictedDurableSequences: [],
-    completedOverlayMessageIds: [],
     hasOlder: snapshot.hasOlder,
-    hasNewer: snapshot.hasNewer,
+    beginsAtTurnBoundary: snapshot.beginsAtTurnBoundary,
     reset: true,
+    ready: true,
   });
 }
 
@@ -69,30 +67,20 @@ export function encodeDesktopTranscriptChange(
   return encodeDesktopTranscriptBatches(identity, {
     durableThrough: change.durableThrough,
     durable: change.durableUpserts,
-    overlay: [],
-    evictedDurableSequences: change.evictedDurableSequences,
-    completedOverlayMessageIds: change.completedOverlayMessageIds,
-    hasOlder: change.hasOlder,
-    hasNewer: change.hasNewer,
+    coversFrom: change.coversFrom,
     reset: false,
+    ready: true,
   });
 }
 
-function* encodeDesktopTranscriptBatches(
+export function* encodeDesktopTranscriptBatches(
   identity: TranscriptBatchIdentity,
   content: TranscriptBatchContent,
 ): Iterable<DesktopTranscriptBatchPayload> {
   const fragments = encodeMessages(content);
   let fragment = fragments.next();
-  let evictedIndex = 0;
-  let completedIndex = 0;
   let first = true;
-  while (
-    !fragment.done ||
-    evictedIndex < content.evictedDurableSequences.length ||
-    completedIndex < content.completedOverlayMessageIds.length ||
-    first
-  ) {
+  while (!fragment.done || first) {
     const batchFragments: DesktopTranscriptFragment[] = [];
     let rawBytes = 0;
     while (!fragment.done) {
@@ -104,68 +92,39 @@ function* encodeDesktopTranscriptBatches(
       rawBytes += bytes;
       fragment = fragments.next();
     }
-    const evictedDurableSequences = content.evictedDurableSequences.slice(
-      evictedIndex,
-      evictedIndex + 256,
-    );
-    evictedIndex += evictedDurableSequences.length;
-    const completedOverlayMessageIds: string[] = [];
-    let identityBytes = 0;
-    while (completedIndex < content.completedOverlayMessageIds.length) {
-      const messageId = content.completedOverlayMessageIds[completedIndex]!;
-      const bytes = Buffer.byteLength(messageId, 'utf8');
-      if (
-        completedOverlayMessageIds.length >= 256 ||
-        (completedOverlayMessageIds.length > 0 &&
-          identityBytes + bytes > DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES)
-      ) {
-        break;
-      }
-      completedOverlayMessageIds.push(messageId);
-      identityBytes += bytes;
-      completedIndex += 1;
-    }
-    const ready =
-      fragment.done === true &&
-      evictedIndex === content.evictedDurableSequences.length &&
-      completedIndex === content.completedOverlayMessageIds.length;
+    const last = fragment.done === true;
     yield {
-      ...identity,
+      ...(content.earlierThan === undefined ? {} : { earlierThan: content.earlierThan }),
+      ...(content.coversFrom === undefined ? {} : { coversFrom: content.coversFrom }),
+      sessionId: identity.sessionId,
+      generation: identity.generation,
+      hostEpoch: identity.hostEpoch,
       durableThrough: content.durableThrough,
       fragments: batchFragments,
-      evictedDurableSequences,
-      completedOverlayMessageIds,
-      hasOlder: content.hasOlder,
-      hasNewer: content.hasNewer,
+      ...(content.hasOlder === undefined || !(last && content.ready) ? {} : { hasOlder: content.hasOlder }),
+      ...(content.beginsAtTurnBoundary === undefined || !(last && content.ready)
+        ? {}
+        : { beginsAtTurnBoundary: content.beginsAtTurnBoundary }),
       reset: content.reset && first,
-      ready,
+      ready: last && content.ready,
     };
     first = false;
   }
 }
 
 function* encodeMessages(content: TranscriptBatchContent): Generator<DesktopTranscriptFragment> {
-  for (const entry of content.durable) {
-    yield* encodeMessage('durable', entry.sequence, null, entry.message);
-  }
-  for (const [order, message] of content.overlay.entries()) {
-    yield* encodeMessage('overlay', message.id, order, message);
-  }
+  for (const entry of content.durable) yield* encodeMessage(entry.sequence, entry.message);
 }
 
 function* encodeMessage(
-  source: 'durable' | 'overlay',
-  identity: number | string,
-  order: number | null,
+  sequence: number,
   message: StoredMessage,
 ): Generator<DesktopTranscriptFragment> {
   const bytes = Buffer.from(JSON.stringify(message), 'utf8');
   for (let byteOffset = 0; byteOffset < bytes.byteLength; ) {
     const end = Math.min(byteOffset + DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES, bytes.byteLength);
     yield {
-      source,
-      identity,
-      order,
+      sequence,
       byteOffset,
       totalBytes: bytes.byteLength,
       data: Uint8Array.from(bytes.subarray(byteOffset, end)),

@@ -54,6 +54,7 @@ import { SettingsField, SettingsRow } from './settings-section';
  */
 export function SettingsExpandableRow(props: {
   label: ReactNode;
+  assistantTarget?: string;
   /** The settled value, shown while collapsed. */
   value: ReactNode;
   /** Label for the affordance that opens the editor (更改 / 设置 / 编辑).
@@ -71,11 +72,12 @@ export function SettingsExpandableRow(props: {
    */
   end?: ReactNode;
   /**
-   * Content that sits beside the built-in trigger while collapsed — a model
-   * row's enable switch, say. Unlike `end`, this keeps the trigger and the
-   * focus return that goes with it.
+   * Content that sits beside the built-in trigger while collapsed, after it —
+   * a model row's enable switch, say, which reads as the row's last control.
+   * Unlike `end`, this keeps the trigger and the focus return that goes with
+   * it.
    */
-  beforeAction?: ReactNode;
+  afterAction?: ReactNode;
   isEditing: boolean;
   isDisabled?: boolean;
   /** Save stays disabled until the draft actually differs from the value. */
@@ -124,9 +126,9 @@ export function SettingsExpandableRow(props: {
         align="start"
         end={props.end ?? (
           <>
-            {props.beforeAction}
             <Button
               ref={triggerRef}
+              data-maka-assistant-target={props.assistantTarget ? `${props.assistantTarget}.edit` : undefined}
               variant="ghost"
               size="sm"
               isDisabled={props.isDisabled}
@@ -134,6 +136,7 @@ export function SettingsExpandableRow(props: {
               label={props.actionLabel ?? ''}
               aria-label={props.actionAriaLabel}
             />
+            {props.afterAction}
           </>
         )}
       />
@@ -154,6 +157,7 @@ export function SettingsExpandableRow(props: {
           <Button
             variant="primary"
             isDisabled={props.isDisabled || props.canSave === false}
+            data-maka-assistant-target={props.assistantTarget ? `${props.assistantTarget}.save` : undefined}
             clickAction={() => props.onSave()}
             label={props.saveLabel}
           />

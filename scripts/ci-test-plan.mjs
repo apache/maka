@@ -101,6 +101,7 @@ const RELEASE_CONTRACT_FILES = new Set([
 // and none of the decoders, so a trigger listing only decoders would not have
 // run on the very change it exists to catch.
 const DURABLE_STATE_DECODER_FILES = new Set([
+  'packages/core/src/goal.ts',
   'packages/runtime-host/src/protocol/operations.ts',
   'packages/runtime-host/src/server/access-authority.ts',
   'packages/runtime-host/src/server/access-credential-store.ts',
@@ -109,6 +110,18 @@ const DURABLE_STATE_DECODER_FILES = new Set([
   'packages/storage/src/state-root-composition.ts',
   'scripts/qualify-released-cli-state-root.mjs',
   'scripts/released-cli-state-root-fixture.mjs',
+]);
+
+// The DeepSeek Harness is an external linux/amd64 tree whose admission
+// authority is a fingerprint of its installed contents. Changes to any build
+// input or to that authority must rebuild the exact tree in hosted CI and
+// compare its manifest digest with the committed value.
+const DEEPSEEK_HARNESS_TOOLCHAIN_FILES = new Set([
+  'packages/eval/harbor/deepseek-harness-toolchain/package.json',
+  'packages/eval/harbor/deepseek-harness-toolchain/package-lock.json',
+  'packages/eval/harbor/deepseek-harness-toolchain/patch-subprocess-local.mjs',
+  'packages/eval/src/toolchain-verification.ts',
+  'scripts/prepare-deepseek-harness-toolchain.mjs',
 ]);
 
 const TYPECHECK_ONLY_FILES = new Set([
@@ -206,8 +219,11 @@ const SITE_SENTENCE_FILES = new Set(['README.md', 'README.zh-CN.md']);
 // evidence that the run it drives still works.
 const E2E_DRIVING_SCRIPTS = new Set([
   'apps/desktop/scripts/browser-observe-act-smoke.mjs',
+  'apps/desktop/scripts/workhub-browser-presentation-smoke.mjs',
   'scripts/audit-alignment.mjs',
   'scripts/ax-tree-audit.mjs',
+  'scripts/fixture-env.mjs',
+  'scripts/run-desktop-e2e-parallel.mjs',
 ]);
 
 // Scripts / paths that can break the built Storybook catalog. Product stories
@@ -409,12 +425,17 @@ export function planTests(changedFiles, options = {}) {
   const full = forceFull || files.some((path) => FULL_SUITE_FILES.has(path));
   if (full) {
     const workspaces = [...graph.dirs];
+    const workflow = files.includes('.github/workflows/ci.yml');
     return {
-      appIcons: true,
+      // Neither verdict follows a dependency bump, but the workflow file owns
+      // both steps' commands, so editing it still runs them.
+      appIcons: forceFull || workflow || files.some((path) => isAppIconPath(path)),
       asfSource: true,
       astryxSurface: true,
       cliPackage: true,
       code: true,
+      deepseekHarnessToolchain:
+        forceFull || workflow || files.some((path) => DEEPSEEK_HARNESS_TOOLCHAIN_FILES.has(path)),
       e2e: true,
       full: true,
       releaseContract: true,
@@ -517,6 +538,7 @@ export function planTests(changedFiles, options = {}) {
     astryxSurface: files.some((path) => isAstryxSurfaceInventoryPath(path)),
     cliPackage,
     code,
+    deepseekHarnessToolchain: files.some((path) => DEEPSEEK_HARNESS_TOOLCHAIN_FILES.has(path)),
     // Electron E2E + alignment audit (same job). Product desktop/ui sources and
     // e2e drivers only — a storage/runtime change must not drag cold Electron
     // boots, and packages/ui unit-test-only PRs must not either.
@@ -553,6 +575,7 @@ export function formatGitHubOutputs(plan) {
     `astryx_surface=${plan.astryxSurface}`,
     `cli_package=${plan.cliPackage}`,
     `code=${plan.code}`,
+    `deepseek_harness_toolchain=${plan.deepseekHarnessToolchain}`,
     `e2e=${plan.e2e}`,
     `runtime_host=${plan.runtimeHost}`,
     `runtime_sandbox=${plan.runtimeSandbox}`,

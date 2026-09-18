@@ -17,6 +17,13 @@
  * under the License.
  */
 
+import { assertMaximalJsonPages } from './fixtures/json-pages.js';
+import {
+  RUNTIME_RESOURCE_PAGE_MAX_ITEMS,
+  type RuntimeResourceQueryInput,
+  type RuntimeResourceQueryResult,
+} from '../protocol/index.js';
+
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { SHELL_RUN_SOURCE_TOOL_CALL_ID_MAX_BYTES } from '@maka/core/shell-run';
@@ -25,7 +32,11 @@ import {
   type ShellRunStateResult,
   type ShellRunUpdate,
 } from '@maka/core/events';
-import type { ShellRunBashInput, ShellRunWriteInput } from '@maka/runtime/shell-run-contract';
+import type {
+  ShellRunBashInput,
+  ShellRunPtySnapshot,
+  ShellRunWriteInput,
+} from '@maka/runtime/shell-run-contract';
 import { ShellPreferenceError } from '@maka/runtime/shell-detect';
 import { SessionNotFoundError } from '@maka/storage/session-store';
 import { RUNTIME_RESOURCE_RESULT_MAX_BYTES } from '../protocol/runtime-resource.js';
@@ -227,7 +238,8 @@ describe('Host Runtime Resource coordinator', () => {
     assert.equal(!revoked.ok && revoked.error.code, 'not_found');
   });
 
-  test('drains for canonical state failure but keeps projection failure scoped to its query', async () => {
+  test('drains for canonical state failure but keeps projection failure scoped to its query', async (t) => {
+    t.mock.method(console, 'error', () => {});
     const harness = createHarness();
     harness.updates = [
       resourceUpdate(0, {
@@ -255,6 +267,39 @@ describe('Host Runtime Resource coordinator', () => {
     assert.equal(!unavailable.ok && unavailable.error.code, 'internal_failure');
     assert.equal(harness.drainCount, 1);
     assert.equal(harness.terminateCount, 0);
+  });
+
+  test('logs a bounded redacted canonical state failure before draining', async (t) => {
+    const logs: string[] = [];
+    let drainCount = 0;
+    let logCountAtDrain = 0;
+    t.mock.method(console, 'error', (...args: unknown[]) => {
+      logs.push(args.map(String).join(' '));
+    });
+    const harness = createHarness({
+      requestDrain: () => {
+        drainCount += 1;
+        logCountAtDrain = logs.length;
+      },
+    });
+    harness.stateReadFailure = new Error(
+      `canonical state unavailable api_key=sk-secretvalue123 ${'x'.repeat(16 * 1024)}`,
+    );
+
+    const result = await harness.coordinator.handlers['runtime.resource.query'](
+      { kind: 'list_start', sessionId: SESSION_ID },
+      connection('connection-1'),
+    );
+
+    assert.equal(result.ok, false);
+    assert.equal(!result.ok && result.error.code, 'internal_failure');
+    assert.equal(drainCount, 1);
+    assert.equal(logCountAtDrain, 1);
+    assert.equal(logs.length, 1);
+    assert.match(logs[0] ?? '', /canonical state unavailable/);
+    assert.match(logs[0] ?? '', /\[redacted\]/i);
+    assert.doesNotMatch(logs[0] ?? '', /sk-secretvalue123/);
+    assert.ok(Buffer.byteLength(logs[0] ?? '', 'utf8') < 9 * 1024);
   });
 
   test('fences PTY control by connection and retains only exact sequence retries', async () => {
@@ -332,6 +377,39 @@ describe('Host Runtime Resource coordinator', () => {
     assert.equal(harness.writeCount, 2);
   });
 
+  test('repairs a stale active record through the manager when no live PTY exists', async () => {
+    const harness = createHarness();
+    harness.livePty = null;
+
+    const acquired = await harness.coordinator.handlers['runtime.resource.controller.acquire'](
+      { sessionId: SESSION_ID, ref: RUNTIME_REF, controllerId: 'controller-1' },
+      connection('connection-1'),
+    );
+
+    assert.equal(acquired.ok, false);
+    assert.equal(!acquired.ok && acquired.error.code, 'operation_conflict');
+    assert.deepEqual(harness.inspectCalls, [{ sessionId: SESSION_ID, ref: RUNTIME_REF }]);
+  });
+
+  test('maps a missing durable record to not_found without draining on acquire', async () => {
+    const harness = createHarness();
+    harness.livePty = null;
+    const missing = new Error(
+      'Runtime background task not found in this session',
+    ) as NodeJS.ErrnoException;
+    missing.code = 'ENOENT';
+    harness.inspectFailure = missing;
+
+    const acquired = await harness.coordinator.handlers['runtime.resource.controller.acquire'](
+      { sessionId: SESSION_ID, ref: RUNTIME_REF, controllerId: 'controller-1' },
+      connection('connection-1'),
+    );
+
+    assert.equal(acquired.ok, false);
+    assert.equal(!acquired.ok && acquired.error.code, 'not_found');
+    assert.equal(harness.drainCount, 0);
+  });
+
   test('starts an interactive login shell inside the canonical Session workspace', async () => {
     const harness = createHarness();
     const started = await harness.coordinator.handlers['runtime.resource.start'](
@@ -385,12 +463,12 @@ describe('Host Runtime Resource coordinator', () => {
     harness.finishBackground({ successful: true });
   });
 
-  test('stops a launched one-shot command when the initial inspection fails', async () => {
-    // The command is live once runBackgroundBash returns; if the post-launch
-    // snapshot then fails, the operation must report failure AND stop the
-    // process, so a client retry cannot double-execute (#3210 review).
+  test('stops a launched one-shot command when the start reply cannot be honored', async () => {
+    // The command is live once runBackgroundBash returns; if the launch result
+    // cannot be encoded for the reply, the operation must report failure AND
+    // stop the process, so a client retry cannot double-execute (#3210 review).
     const harness = createHarness();
-    harness.inspectFailure = new Error('snapshot encode failed');
+    harness.malformedStartResult = true;
     const started = await harness.coordinator.handlers['runtime.resource.start'](
       { sessionId: SESSION_ID, launchId: 'user-command-1', command: 'sleep 3600' },
       connection('connection-1'),
@@ -399,7 +477,50 @@ describe('Host Runtime Resource coordinator', () => {
     assert.equal(started.ok, false);
     assert.ok(harness.lastBackgroundInput);
     assert.equal(harness.stopCount, 1);
+    assert.equal(harness.drainCount, 1);
     harness.finishBackground({ successful: false });
+  });
+
+  test('bounds the start reply when a one-shot command finishes inside the launch', async () => {
+    // A one-shot that reaches terminal status inside runBackgroundBash comes
+    // back as a full pipes snapshot; the reply must still fit the wire limit.
+    const harness = createHarness();
+    const terminalResult: ShellRunSnapshotResult = {
+      ...pipeSnapshot(0),
+      mode: 'pipes',
+      status: 'completed',
+      exitCode: 0,
+      completedAt: 2,
+      output: {
+        mode: 'pipes',
+        stdout: 'x'.repeat(50 * 1024),
+        stderr: 'y'.repeat(50 * 1024),
+        stdoutTruncated: false,
+        stderrTruncated: false,
+        redacted: false,
+      },
+    };
+    harness.backgroundResult = terminalResult;
+
+    const started = await harness.coordinator.handlers['runtime.resource.start'](
+      { sessionId: SESSION_ID, launchId: 'user-command-big', command: 'printf big' },
+      connection('connection-1'),
+    );
+
+    assert.equal(started.ok, true);
+    if (!started.ok) return;
+    assert.ok(started.result.resource.output !== undefined);
+    assert.equal(
+      started.result.resource.output?.mode === 'pipes' &&
+        started.result.resource.output.stdoutTruncated,
+      true,
+    );
+    assert.ok(
+      Buffer.byteLength(JSON.stringify(started.result), 'utf8') <=
+        RUNTIME_RESOURCE_RESULT_MAX_BYTES,
+    );
+    assert.equal(harness.stopCount, 0);
+    assert.equal(harness.drainCount, 0);
   });
 
   test('starts the legacy WSL shim with a Linux-visible login shell', async () => {
@@ -590,8 +711,7 @@ describe('Host Runtime Resource coordinator', () => {
       { sessionId: SESSION_ID, ref: RUNTIME_REF },
       secondConnection,
     );
-    assert.equal(stopped.ok, true);
-    assert.equal(stopped.ok && stopped.result.resource.status, 'cancelled');
+    assert.deepEqual(stopped.ok && stopped.result, {});
     const retried = await harness.coordinator.handlers['runtime.resource.controller.control'](
       control,
       firstConnection,
@@ -702,20 +822,64 @@ describe('Host Runtime Resource coordinator', () => {
     assert.equal(!missing.ok && missing.error.code, 'not_found');
     assert.equal(harness.stopCount, 0);
   });
+
+  test('drains when the admitted mutable Session read fails', async () => {
+    const harness = createHarness();
+    harness.sessionReadFailureAt = 2;
+
+    const started = await harness.coordinator.handlers['runtime.resource.start'](
+      { sessionId: SESSION_ID, launchId: 'session-read-failure' },
+      connection('connection-1'),
+    );
+
+    assert.equal(started.ok, false);
+    assert.equal(!started.ok && started.error.code, 'internal_failure');
+    assert.equal(harness.drainCount, 1);
+    assert.equal(harness.lastBackgroundInput, undefined);
+  });
+});
+
+test('rejects a queued resource start when drain detaches from the active Session admission', async () => {
+  const harness = createHarness();
+  let release!: () => void;
+  let entered!: () => void;
+  const blocker = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const started = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const active = harness.sessionAdmission.run(SESSION_ID, async () => {
+    entered();
+    await blocker;
+    // Invoke from inside the active async context after the resource launch is queued.
+    harness.sessionAdmission.detach(() => harness.coordinator.beginDrain());
+  });
+  await started;
+  const resource = harness.coordinator.runBackgroundBash(backgroundInput());
+  const observed = assert.rejects(resource, /Runtime resources are draining/);
+  release();
+  await Promise.all([active, observed]);
+  assert.equal(harness.lastBackgroundInput, undefined);
+  assert.equal(harness.terminateCount, 1);
+  assert.equal(harness.activeResidencies, 0);
 });
 
 function createHarness(
-  options: Pick<
-    HostRuntimeResourceCoordinatorInput,
-    'resolveShell' | 'sessionAccessAuthority'
+  options: Partial<
+    Pick<
+      HostRuntimeResourceCoordinatorInput,
+      'requestDrain' | 'resolveShell' | 'sessionAccessAuthority'
+    >
   > = {},
 ) {
   let backgroundCompletion: ShellRunBashInput['onCompletion'];
   let currentSnapshot = ptySnapshot();
-  let lastStartedSnapshot: ShellRunSnapshotResult | undefined;
   const state = {
     updates: [resourceUpdate(0)],
     sessionState: 'active' as 'active' | 'archived' | 'missing',
+    sessionReadCount: 0,
+    sessionReadFailureAt: undefined as number | undefined,
     writeCount: 0,
     stopCount: 0,
     terminateCount: 0,
@@ -725,6 +889,12 @@ function createHarness(
     pointReadBarrier: undefined as Promise<void> | undefined,
     pointReadStarted: undefined as (() => void) | undefined,
     stateReadFailure: undefined as Error | undefined,
+    malformedStartResult: false as boolean,
+    backgroundResult: undefined as
+      | Awaited<ReturnType<HostRuntimeResourceCoordinatorInput['manager']['runBackgroundBash']>>
+      | undefined,
+    livePty: undefined as ShellRunPtySnapshot | null | undefined,
+    inspectCalls: [] as { sessionId: string; ref: string }[],
     inspectFailure: undefined as Error | undefined,
     activeResidencies: 0,
     lastBackgroundInput: undefined as ShellRunBashInput | undefined,
@@ -742,12 +912,15 @@ function createHarness(
       state.lastBackgroundInput = input;
       backgroundCompletion = input.onCompletion;
       if (input.pty) {
-        lastStartedSnapshot = currentSnapshot;
         const { output: _output, ...snapshot } = currentSnapshot;
         return snapshot;
       }
-      lastStartedSnapshot = { ...pipeSnapshot(0), cmd: input.command };
-      return compactState(0);
+      if (state.malformedStartResult) {
+        // A launch result the start reply cannot encode must still stop the
+        // process so a client retry cannot double-execute.
+        return {} as never;
+      }
+      return state.backgroundResult ?? compactState(0);
     },
     readRuntimeResource: async () => currentSnapshot,
     stopBackgroundTask: async () => {
@@ -795,17 +968,21 @@ function createHarness(
         },
       };
     },
-    inspectResource: async () => {
+    getLivePtySnapshot: (sessionId, ref) =>
+      state.livePty !== undefined
+        ? state.livePty
+        : {
+            sessionId,
+            ref,
+            sequence: 0,
+            buffer: '',
+            size: { cols: currentSnapshot.output.cols, rows: currentSnapshot.output.rows },
+          },
+    inspectResource: async (sessionId, ref) => {
+      state.inspectCalls.push({ sessionId, ref });
       if (state.inspectFailure) throw state.inspectFailure;
-      return structuredClone(lastStartedSnapshot ?? currentSnapshot);
+      return currentSnapshot;
     },
-    getLivePtySnapshot: (sessionId, ref) => ({
-      sessionId,
-      ref,
-      sequence: 0,
-      buffer: '',
-      size: { cols: currentSnapshot.output.cols, rows: currentSnapshot.output.rows },
-    }),
     terminateAll: async () => {
       state.terminateCount += 1;
     },
@@ -824,11 +1001,18 @@ function createHarness(
         state.pointReadStarted?.();
         await state.pointReadBarrier;
         if (state.stateReadFailure) throw state.stateReadFailure;
-        return structuredClone(state.updates.find((update) => update.result.ref === ref) ?? null);
+        return structuredClone(
+          state.updates.find((update) => update.result.ref === ref) ??
+            (ref === RUNTIME_REF ? ptyUpdate() : null),
+        );
       },
     },
     sessionHeaders: {
       readHeader: async (sessionId) => {
+        state.sessionReadCount += 1;
+        if (state.sessionReadCount === state.sessionReadFailureAt) {
+          throw new Error('Session state unavailable');
+        }
         if (state.sessionState === 'missing') throw new SessionNotFoundError(sessionId);
         return {
           cwd: '/workspace',
@@ -911,6 +1095,16 @@ function resourceUpdate(index: number, overrides: Partial<ShellRunUpdate> = {}):
   };
 }
 
+function ptyUpdate(): ShellRunUpdate {
+  return {
+    sessionId: SESSION_ID,
+    ownership: { kind: 'local' },
+    sourceTurnId: 'turn-pty',
+    sourceToolCallId: 'tool-pty',
+    result: ptySnapshot(),
+  };
+}
+
 function compactState(index: number): ShellRunStateResult {
   const { output: _output, ...state } = pipeSnapshot(index);
   return state;
@@ -970,3 +1164,56 @@ function pipeOutput(stdout: string): Extract<ShellRunSnapshotResult['output'], {
 function shellRef(index: number): string {
   return `maka://runtime/background-tasks/shell-${index}`;
 }
+
+test('Runtime Resource pages include output projections and their Session header in the byte budget', async () => {
+  const harness = createHarness();
+  harness.updates = Array.from({ length: 20 }, (_, index) =>
+    resourceUpdate(index, {
+      result: pipeSnapshot(index, '文"\\🙂'.repeat(600)),
+    }),
+  );
+  const expected = [];
+  for (const update of harness.updates) {
+    const outcome = await harness.coordinator.handlers['runtime.resource.query'](
+      { kind: 'get', sessionId: SESSION_ID, ref: update.result.ref },
+      connection('connection-1'),
+    );
+    assert.ok(outcome.ok && outcome.result.kind === 'resource' && outcome.result.resource);
+    expected.push(outcome.result.resource);
+  }
+  expected.sort((a, b) => a.result.ref.localeCompare(b.result.ref));
+  const pages: Extract<RuntimeResourceQueryResult, { kind: 'page' }>[] = [];
+  let input: RuntimeResourceQueryInput = { kind: 'list_start', sessionId: SESSION_ID };
+  let end = 0;
+  do {
+    const outcome = await harness.coordinator.handlers['runtime.resource.query'](
+      input,
+      connection('connection-1'),
+    );
+    assert.ok(outcome.ok && outcome.result.kind === 'page');
+    const page = outcome.result;
+    assert.ok(page.resources.length > 0);
+    pages.push(page);
+    end += page.resources.length;
+    assert.equal(page.nextCursor, end < expected.length ? String(end) : null);
+    if (page.nextCursor === null) break;
+    input = {
+      kind: 'list_continue',
+      sessionId: SESSION_ID,
+      revision: page.revision,
+      cursor: page.nextCursor,
+    };
+  } while (end < expected.length);
+  assert.ok(pages.length > 1);
+  assert.ok(pages[0]!.resources.length < RUNTIME_RESOURCE_PAGE_MAX_ITEMS);
+  assertMaximalJsonPages(pages, expected, {
+    maxBytes: RUNTIME_RESOURCE_RESULT_MAX_BYTES,
+    maxItems: RUNTIME_RESOURCE_PAGE_MAX_ITEMS,
+    items: (page) => page.resources,
+    candidate: (page, resources, end) => ({
+      ...page,
+      resources,
+      nextCursor: end < expected.length ? String(end) : null,
+    }),
+  });
+});

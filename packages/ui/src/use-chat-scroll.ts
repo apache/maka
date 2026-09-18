@@ -18,59 +18,98 @@
  */
 
 /**
- * The transcript's scroll commands, and the seam that hands the scroller to the
- * authority that owns it (`transcript-scroll-authority.ts`).
+ * The transcript's scroll commands, and the seam that hands the scroller and
+ * the virtualized list to the authority that owns every write to it
+ * (`transcript-scroll-authority.tsx`).
  *
- * A command is one-shot — jump to a turn the reader picked, ask for the history
- * above them — and it releases the pin first, because the authority writes
- * nothing while the pin is released and so a command can never be fighting a
- * policy. That was the shape every previous round of this code had.
- *
- * What decides whether the reader wants either thing is never re-derived here.
- * "They have left the tail" is the pin, and the pin has one owner. Nothing here
- * compensates for content that lands above them either; `overflow-anchor: auto`
- * does that continuously, and for free.
+ * A command is one-shot — jump to a turn the reader picked — and the authority
+ * carries it out. Turns are addressed by their index in the virtualized
+ * transcript.
  */
 
-import { useEffect, useRef, useState, type RefObject } from 'react';
-import type { StoredMessage } from '@maka/core/session';
-import { useTranscriptScrollAuthority } from './transcript-scroll-authority.js';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type RefObject,
+} from 'react';
+import type { VirtualizerHandle } from 'virtua';
+import {
+  useTranscriptScrollAuthority,
+  type TranscriptLayout,
+  type TranscriptTurnListChange,
+} from './transcript-scroll-authority.js';
 import type { TranscriptViewportNavigation } from './transcript-viewport-navigation.js';
+
+const SEARCH_HIGHLIGHT_MS = 2200;
+
+export function classifyTurnListChange(
+  previous: readonly string[],
+  next: readonly string[],
+): TranscriptTurnListChange {
+  if (previous.length <= next.length && previous.every((turnId, index) => next[index] === turnId)) {
+    return previous.length === next.length ? 'same' : 'append';
+  }
+  const added = next.length - previous.length;
+  return added > 0 && previous.every((turnId, index) => next[added + index] === turnId)
+    ? 'prepend'
+    : 'reset';
+}
 
 export function useChatScroll(input: {
   scrollRef: RefObject<HTMLElement | null>;
+  virtualizerRef: RefObject<VirtualizerHandle | null>;
   sessionId?: string;
-  messages: readonly StoredMessage[];
+  /** One entry per virtualized item, in order. */
+  turnIds: readonly string[];
   /**
    * A turn to reveal, and where its requester wants it. `center` with the
-   * app's scroll motion is the reveal a search result wants; `start` is for a
-   * requester that is already aiming this turn itself and only needs the
-   * reveal to agree with it, instantly and at the same edge.
+   * app's scroll motion is the reveal a search result wants; `start` lands
+   * instantly at the top edge.
    */
-  target?: { turnId: string; nonce: number; align?: 'start' | 'center' };
+  target?: { turnId: string; nonce: number; preserveFocus?: boolean; align?: 'start' | 'center' };
   restoreTarget?: { turnId: string; unavailable?: boolean };
-  onTargetHandled?(nonce: number): void;
   viewportNavigation?: TranscriptViewportNavigation;
   onReadingAnchorChange?(turnId?: string): void;
   behavior: ScrollBehavior;
-  hasOlderHistory?: boolean;
-  onLoadEarlierHistory?(anchorTurnId?: string): Promise<void> | void;
-  hasNewerHistory?: boolean;
-  onLoadLaterHistory?(anchorTurnId?: string): Promise<void> | void;
+  /** `useTranscriptStartMargin`'s live measurement, for reads within a commit. */
+  measureStartMargin(): number;
 }) {
   const [highlightedTurnId, setHighlightedTurnId] = useState<string | null>(null);
   const authority = useTranscriptScrollAuthority();
-  const loadEarlierRef = useRef(input.onLoadEarlierHistory);
-  loadEarlierRef.current = input.onLoadEarlierHistory;
-  const canLoadEarlier = input.onLoadEarlierHistory !== undefined;
-  const loadLaterRef = useRef(input.onLoadLaterHistory);
-  loadLaterRef.current = input.onLoadLaterHistory;
-  const canLoadLater = input.onLoadLaterHistory !== undefined;
+  const turnIdsRef = useRef(input.turnIds);
+  turnIdsRef.current = input.turnIds;
+
+  /**
+   * `virtua` caches measured heights by position. Growth at the tail leaves
+   * every position where it was, growth at the front is what `shift` moves the
+   * cache for, and any other change — a filter, a replaced transcript — leaves
+   * no position meaning what it did, so the virtualizer starts a new cache.
+   */
+  const list = useRef<{
+    turnIds: readonly string[];
+    sessionId?: string;
+    change: TranscriptTurnListChange;
+    generation: number;
+  }>({ turnIds: input.turnIds, sessionId: input.sessionId, change: 'same', generation: 0 });
+  if (list.current.turnIds !== input.turnIds || list.current.sessionId !== input.sessionId) {
+    const previous = list.current;
+    const change = previous.sessionId === input.sessionId
+      ? classifyTurnListChange(previous.turnIds, input.turnIds)
+      : 'reset';
+    list.current = {
+      turnIds: input.turnIds,
+      sessionId: input.sessionId,
+      change,
+      generation: change === 'reset' ? previous.generation + 1 : previous.generation,
+    };
+  }
+
   const handledTarget = useRef<string | null>(null);
   const anchorChangeRef = useRef(input.onReadingAnchorChange);
   anchorChangeRef.current = input.onReadingAnchorChange;
-  const targetHandledRef = useRef(input.onTargetHandled);
-  targetHandledRef.current = input.onTargetHandled;
   const reportReadingAnchor = useRef<(() => void) | undefined>(undefined);
   const reportedAnchor = useRef<{ sessionId?: string; turnId?: string } | undefined>(undefined);
   const activation = useRef<{ sessionId?: string; restoreTurnId?: string } | undefined>(undefined);
@@ -100,26 +139,56 @@ export function useChatScroll(input: {
           restoreUnavailable,
         )
       : null;
+  const highlightClear = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => () => clearTimeout(highlightClear.current), []);
+
+  const measureStartMarginRef = useRef(input.measureStartMargin);
+  measureStartMarginRef.current = input.measureStartMargin;
+  const [layout] = useState((): TranscriptLayout => ({
+    turnAt(scrollTop) {
+      const handle = input.virtualizerRef.current;
+      const turnIds = turnIdsRef.current;
+      if (!handle || turnIds.length === 0) return undefined;
+      return turnIds[Math.min(handle.findItemIndex(scrollTop), turnIds.length - 1)];
+    },
+    offsetOf(turnId) {
+      const handle = input.virtualizerRef.current;
+      const index = turnIdsRef.current.indexOf(turnId);
+      if (!handle || index === -1) return undefined;
+      return measureStartMarginRef.current() + handle.getItemOffset(index);
+    },
+    reveal(turnId, options) {
+      const index = turnIdsRef.current.indexOf(turnId);
+      if (index !== -1) input.virtualizerRef.current?.scrollToIndex(index, options);
+    },
+  }));
 
   // A passive effect, not a layout one: the scroller is Astryx's layout root,
   // an ancestor, and React attaches a parent's ref after its children's layout
-  // effects have already run. The growth signal is a ResizeObserver delivery,
-  // which lands after passive effects, so this is still installed in time.
-  useEffect(() => authority.attach(input.scrollRef.current), [authority, input.scrollRef]);
+  // effects have already run.
+  useEffect(
+    () => authority.attach(input.scrollRef.current, layout),
+    [authority, input.scrollRef, layout],
+  );
 
   // A new conversation either resumes a semantic reading position or arrives
   // at its tail. Releasing before an async fill is essential: an empty
   // transcript clamps every pixel offset to zero, but it cannot erase a Turn
-  // identity.
-  useEffect(() => {
+  // identity. Runs before the command below so it is not followed by a tail
+  // write.
+  useLayoutEffect(() => {
     if (activation.current?.restoreTurnId) authority.releasePin();
     else authority.pinToTail();
   }, [input.sessionId]);
 
+  useLayoutEffect(() => {
+    authority.turnsChanged(list.current.change);
+  }, [authority, input.turnIds]);
+
   useEffect(() => input.viewportNavigation?.subscribe((sessionId) => {
     if (activation.current?.sessionId !== sessionId) return;
-    // A send supersedes both a captured bookmark and a search frame that has
-    // not landed yet. Consume that frame before the authority reports the pin.
+    // A send supersedes both a captured bookmark and a search that has not
+    // landed yet.
     handledTarget.current = commandTarget.current;
     activation.current = { sessionId };
     commandTarget.current = null;
@@ -127,19 +196,17 @@ export function useChatScroll(input: {
   }), [authority, input.viewportNavigation]);
 
   useEffect(() => {
-    const report = (): void => {
-      const snapshot = authority.getSnapshot();
-      // A release is part of both navigation commands. Until the command has
-      // actually landed, neither an intermediate bounded range nor an empty
-      // one says anything new about where the reader intended to be.
+    const report = (measure: boolean): void => {
+      // Until a command has landed, the viewport says nothing about where the
+      // reader intended to be.
       if (commandTarget.current && handledTarget.current !== commandTarget.current) return;
-      const turnId = snapshot.pinned
+      if (authority.getSnapshot().positioning) return;
+      const turnId = authority.getSnapshot().pinned
         ? undefined
-        : firstVisibleTurnId(input.scrollRef.current);
-      // An empty bounded range has no new reading position. In particular,
-      // releasing the pin before a remembered range loads must not erase the
-      // Turn that caused that range to be requested.
-      if (!snapshot.pinned && !turnId) return;
+        : measure ? authority.measureReadingTurn() : authority.getSnapshot().readingTurnId;
+      // Releasing the pin before the transcript fills must not erase the Turn
+      // the reader is being taken to.
+      if (!authority.getSnapshot().pinned && !turnId) return;
       const previous = reportedAnchor.current;
       if (
         previous !== undefined &&
@@ -149,100 +216,28 @@ export function useChatScroll(input: {
       reportedAnchor.current = { sessionId: input.sessionId, turnId };
       anchorChangeRef.current?.(turnId);
     };
-    reportReadingAnchor.current = report;
-    report();
-    let previousPin = authority.getSnapshot().pinned;
-    const stopWatchingPolicy = authority.subscribe(() => {
-      const pinned = authority.getSnapshot().pinned;
-      // Geometry can change the return-to-tail affordance without changing
-      // reading intent. Reporting its visible Turn would turn an arriving
-      // range into a new history command and cancel the range's own sender.
-      if (pinned === previousPin) return;
-      previousPin = pinned;
-      report();
-    });
-    const stopWatchingReader = authority.subscribeToReaderScroll(report);
+    const reportNow = (): void => report(true);
+    reportReadingAnchor.current = reportNow;
+    reportNow();
+    const stop = authority.subscribe(() => report(false));
     return () => {
-      if (reportReadingAnchor.current === report) reportReadingAnchor.current = undefined;
-      stopWatchingPolicy();
-      stopWatchingReader();
+      if (reportReadingAnchor.current === reportNow) reportReadingAnchor.current = undefined;
+      stop();
     };
-  }, [authority, input.scrollRef, input.sessionId]);
+  }, [authority, input.sessionId]);
 
   useEffect(() => {
-    const root = input.scrollRef.current;
-    if (!root) return;
-    const canLoad = (direction: 'up' | 'down'): boolean => direction === 'up'
-      ? input.hasOlderHistory === true && canLoadEarlier
-      : input.hasNewerHistory === true && canLoadLater;
-    // Asking twice is the loader's problem, not this one's: it refuses a
-    // request while one is in flight, and asking for history the reader
-    // already has is idempotent anyway.
-    const requestHistory = (direction: 'up' | 'down'): void => {
-      activation.current = { sessionId: input.sessionId };
-      commandTarget.current = null;
-      authority.releasePin();
-      // A wheel at either edge moves nothing, so no scroll event refreshes the
-      // anchor and the restore effect would load around an evicted Turn.
-      reportReadingAnchor.current?.();
-      const anchorTurnId = direction === 'up'
-        ? firstVisibleTurnId(root)
-        : lastVisibleTurnId(root);
-      // The browser anchors the reader against everything that lands above
-      // them, with one exception: it declines while the scroller sits at zero,
-      // which is exactly where a wheel asks for history. One pixel is the whole
-      // fix — measured in Chromium, an insert of 501px above the reader moves
-      // `scrollTop` by 501 at an offset of 1 and by 0 at an offset of 0.
-      if (direction === 'up' && root.scrollTop < 1) root.scrollTop = 1;
-      const load = direction === 'up' ? loadEarlierRef.current : loadLaterRef.current;
-      void Promise.resolve(load?.(anchorTurnId)).catch(() => undefined);
-    };
-    /** Close enough to the requested edge that the reader is about to reach it. */
-    const nearEdge = (direction: 'up' | 'down'): boolean =>
-      (direction === 'up'
-        ? root.scrollTop
-        : root.scrollHeight - root.clientHeight - root.scrollTop)
-      <= Math.max(640, root.clientHeight * 2);
-    // Nearness alone does not mean the reader wants history — on a transcript
-    // shorter than about three viewports the tail is inside this band too, so
-    // following it would ask on every write, and content landing above would
-    // ask again on every anchoring correction until there was no history left.
-    // Which movements were the reader's is not re-derived here; the authority
-    // watches the scroller and says so.
-    const stopWatchingReader = authority.subscribeToReaderScroll((direction) => {
-      if (canLoad(direction) && nearEdge(direction)) requestHistory(direction);
-    });
-    // At either bounded edge a wheel cannot move the scroller, so no scroll
-    // event follows. The gesture still asks for the adjacent page. Do not steal
-    // a wheel from a nested tool output that can consume it itself.
-    const onWheel = (event: WheelEvent): void => {
-      if (event.deltaY === 0) return;
-      const direction = event.deltaY < 0 ? 'up' : 'down';
-      if (!canLoad(direction) || !nearEdge(direction)) return;
-      for (const target of event.composedPath()) {
-        if (target === root) break;
-        if (!(target instanceof HTMLElement)) continue;
-        const overflowY = getComputedStyle(target).overflowY;
-        if (!['auto', 'scroll', 'overlay'].includes(overflowY)) continue;
-        const remaining = direction === 'up'
-          ? target.scrollTop
-          : target.scrollHeight - target.clientHeight - target.scrollTop;
-        if (target.scrollHeight > target.clientHeight && remaining > 0) return;
-      }
-      requestHistory(direction);
-    };
-    root.addEventListener('wheel', onWheel, { passive: true });
-    return () => {
-      stopWatchingReader();
-      root.removeEventListener('wheel', onWheel);
-    };
-  }, [authority, input.hasOlderHistory, input.hasNewerHistory, canLoadEarlier, canLoadLater,
-    input.scrollRef, input.sessionId]);
+    authority.measureReadingTurn();
+  }, [authority, input.turnIds]);
 
-  useEffect(() => {
+  // Runs on every render: a target can arrive with any render, and is handed
+  // to the authority once. A Turn not in the list yet is taken to when it
+  // arrives.
+  useLayoutEffect(() => {
     const explicitTarget = input.target?.turnId
       ? {
           kind: 'search' as const,
+          preserveFocus: input.target.preserveFocus,
           turnId: input.target.turnId,
           nonce: input.target.nonce,
           align: input.target.align ?? ('center' as const),
@@ -258,86 +253,103 @@ export function useChatScroll(input: {
       : undefined);
     if (!target) return;
     if (explicitTarget) activation.current = { sessionId: input.sessionId };
-    // This effect re-runs on every transcript update so a target that arrives
-    // before its turn still lands. It stops for good once the turn is on
-    // screen — repeating the release afterwards would take the tail away from
-    // a reader who had already scrolled back to it.
     const chosen = target.kind === 'search'
       ? `search:${input.sessionId ?? ''}:${target.turnId}:${target.nonce}`
       : restoreCommandKey(input.sessionId, target.turnId, target.unavailable);
     if (handledTarget.current === chosen) return;
-    authority.releasePin();
-    const frame = window.requestAnimationFrame(() => {
-      if (commandTarget.current !== chosen) return;
-      const root = input.scrollRef.current;
-      if (!root) return;
-      const element = root.querySelector(`[data-turn-id="${CSS.escape(target.turnId)}"]`);
-      if (!element || !('scrollIntoView' in element)) {
-        if (target.kind !== 'restore' || !target.unavailable) return;
-        handledTarget.current = chosen;
-        activation.current = { sessionId: input.sessionId };
-        if (!firstVisibleTurnId(root)) authority.pinToTail();
-        reportReadingAnchor.current?.();
-        return;
-      }
-      handledTarget.current = chosen;
-      const targetElement = element as HTMLElement;
-      const alignToStart = target.kind !== 'search' || target.align === 'start';
-      targetElement.scrollIntoView({
-        // A reveal that agrees with a requester already aiming this turn has to
-        // be instant too: an animated one is a second writer moving the
-        // scroller for a second after the requester has landed it.
-        behavior: alignToStart ? 'auto' : input.behavior,
-        block: alignToStart ? 'start' : 'center',
-      });
-      // A command can land at the browser's existing offset and therefore
-      // produce no scroll event. Reuse the authority-backed reporter so that
-      // switching away still retains the position the command established.
+    handledTarget.current = chosen;
+    if (target.kind === 'restore' && target.unavailable && !input.turnIds.includes(target.turnId)) {
+      activation.current = { sessionId: input.sessionId };
+      authority.releasePin();
+      if (!authority.measureReadingTurn()) authority.pinToTail();
       reportReadingAnchor.current?.();
-      if (target.kind === 'restore') return;
-      targetElement.setAttribute('tabindex', '-1');
-      targetElement.focus({ preventScroll: true });
-      setHighlightedTurnId(target.turnId);
-      targetHandledRef.current?.(target.nonce);
-    });
-    const clear = target.kind === 'search'
-      ? window.setTimeout(() => {
+      return;
+    }
+    if (target.kind === 'restore') {
+      authority.navigate({ turnId: target.turnId, align: 'start' });
+      return;
+    }
+    const center = target.align === 'center';
+    authority.navigate({
+      turnId: target.turnId,
+      align: target.align,
+      smooth: center && input.behavior === 'smooth',
+      onSettled: () => {
+        const row = input.scrollRef.current?.querySelector<HTMLElement>(
+          `[data-turn-id="${CSS.escape(target.turnId)}"]`,
+        );
+        if (row && !target.preserveFocus) {
+          row.setAttribute('tabindex', '-1');
+          row.focus({ preventScroll: true });
+        }
+        setHighlightedTurnId(target.turnId);
+        clearTimeout(highlightClear.current);
+        highlightClear.current = setTimeout(() => {
           setHighlightedTurnId((current) => (current === target.turnId ? null : current));
-        }, 2200)
-      : undefined;
-    return () => {
-      window.cancelAnimationFrame(frame);
-      if (clear !== undefined) window.clearTimeout(clear);
-    };
-  }, [
-    input.target?.turnId,
-    input.target?.nonce,
-    input.restoreTarget?.turnId,
-    input.restoreTarget?.unavailable,
-    input.behavior,
-    input.sessionId,
-    input.messages,
-    input.scrollRef,
-  ]);
+        }, SEARCH_HIGHLIGHT_MS);
+      },
+    });
+  });
+
+  const revealTurnAtStart = useCallback((turnId: string, arrival: PromiseLike<unknown>): void => {
+    authority.navigate({ turnId, align: 'start', arrival });
+  }, [authority]);
 
   return {
     highlightedTurnId,
+    /** The Turn a pending or landing command is about; its row must stay mounted. */
+    commandTurnId: input.target?.turnId ?? activation.current?.restoreTurnId,
+    revealTurnAtStart,
+    /** Moves the virtualizer's measurement cache with the list; see `list` above. */
+    measurement: {
+      shift: list.current.change === 'prepend',
+      generation: list.current.generation,
+    },
   };
 }
 
-function firstVisibleTurnId(root: HTMLElement | null): string | undefined {
-  if (!root) return undefined;
-  const rootTop = root.getBoundingClientRect().top;
-  return [...root.querySelectorAll<HTMLElement>('[data-turn-id]')]
-    .find((turn) => turn.getBoundingClientRect().bottom > rootTop)
-    ?.dataset.turnId;
-}
-
-function lastVisibleTurnId(root: HTMLElement): string | undefined {
-  const rootBottom = root.getBoundingClientRect().bottom;
-  return [...root.querySelectorAll<HTMLElement>('[data-turn-id]')]
-    .findLast((turn) => turn.getBoundingClientRect().top < rootBottom)
-    ?.dataset.turnId;
+/**
+ * The virtualizer's offset within the scroller's content. Content above the
+ * virtualizer that changes height moves the reader unless the offset is
+ * written back, because native scroll anchoring is off.
+ */
+export function useTranscriptStartMargin(
+  scrollRef: RefObject<HTMLElement | null>,
+): {
+  startMargin: number;
+  listRef: (element: HTMLElement | null) => void;
+  measureStartMargin: () => number;
+} {
+  const authority = useTranscriptScrollAuthority();
+  const [list, setList] = useState<HTMLElement | null>(null);
+  const [startMargin, setStartMargin] = useState(0);
+  const measureStartMargin = useCallback((): number => {
+    const root = scrollRef.current;
+    if (!root || !list) return 0;
+    return list.getBoundingClientRect().top - root.getBoundingClientRect().top + root.scrollTop;
+  }, [list, scrollRef]);
+  useLayoutEffect(() => {
+    const root = scrollRef.current;
+    if (!root || !list) return;
+    let previous: number | undefined;
+    const measure = (): void => {
+      const next = measureStartMargin();
+      if (next === previous) return;
+      const { pinned, positioning } = authority.getSnapshot();
+      // A positioning places its Turn from the live margin itself.
+      if (previous !== undefined && !pinned && !positioning && root.scrollTop > previous) {
+        root.scrollTop += next - previous;
+      }
+      previous = next;
+      setStartMargin(next);
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(root);
+    if (root.firstElementChild) observer.observe(root.firstElementChild);
+    return () => observer.disconnect();
+  }, [authority, list, measureStartMargin, scrollRef]);
+  return { startMargin, listRef: setList, measureStartMargin };
 }
 
 function restoreCommandKey(

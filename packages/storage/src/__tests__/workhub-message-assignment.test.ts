@@ -26,7 +26,6 @@ import { test } from 'node:test';
 import { messageContentDigest, normalizeMessageContent } from '@maka/core/events';
 import {
   WORKHUB_COORDINATION_SESSION_ID,
-  WORKHUB_COORDINATION_SESSION_ROLE,
   type WorkHubDelegationAssignedMessage,
   type WorkHubDelegationReplacementAbortedMessage,
   type WorkHubDelegationStopRequestedMessage,
@@ -35,6 +34,11 @@ import {
 } from '@maka/core/session';
 import { createSqliteAgentRunStore } from '../agent-run-store.js';
 import { createSessionStore, isSessionNotFoundError } from '../session-store.js';
+import {
+  createCoordinationSession,
+  assignmentRequest,
+  type AssignmentRequest,
+} from './fixtures/workhub-assignment.js';
 
 test('atomically commits one WorkHub assignment and target admission', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-workhub-assignment-'));
@@ -90,6 +94,126 @@ test('atomically commits one WorkHub assignment and target admission', async () 
     assert.deepEqual(await store.readActiveWorkHubAssignmentsByTarget([target.id]), [
       request.assignment,
     ]);
+  } finally {
+    await store.close?.();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('atomically binds delegated text and copied attachments while preserving source authority', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-workhub-delegated-content-'));
+  let store = createSessionStore(root);
+  try {
+    await createCoordinationSession(store, root);
+    const target = await store.create({
+      cwd: root,
+      name: 'Payments',
+      llmConnectionSlug: 'test',
+      model: 'test',
+      permissionMode: 'ask',
+    });
+    const base = assignmentRequest('delegated-content', target.id, 'Payments', 'target-turn');
+    const sourceAttachment = {
+      kind: 'other' as const,
+      name: 'requirements.txt',
+      mimeType: 'text/plain',
+      bytes: 12,
+      ref: {
+        kind: 'session_file' as const,
+        sessionId: WORKHUB_COORDINATION_SESSION_ID,
+        relativePath: 'source-file',
+      },
+    };
+    const targetAttachment = {
+      ...sourceAttachment,
+      ref: { kind: 'session_file' as const, sessionId: target.id, relativePath: 'copied-file' },
+    };
+    const content = normalizeMessageContent({
+      text: 'Fix the payment retry state',
+      attachments: [targetAttachment],
+    });
+    const request = {
+      ...base,
+      assignment: {
+        ...base.assignment,
+        userText: 'Continue Payments and explain the result here',
+        delegationText: content.text,
+        attachments: [sourceAttachment],
+        targetAttachments: [targetAttachment],
+      },
+      admission: {
+        ...base.admission,
+        content,
+        submittedContentDigest: messageContentDigest(content),
+      },
+    };
+    const wrongContent = normalizeMessageContent({
+      text: request.assignment.userText,
+      attachments: [targetAttachment],
+    });
+    await assert.rejects(
+      store.assignWorkHubMessage({
+        ...request,
+        admission: {
+          ...request.admission,
+          content: wrongContent,
+          submittedContentDigest: messageContentDigest(wrongContent),
+        },
+      }),
+      /Invalid WorkHub assignment identity/,
+    );
+    await assert.rejects(
+      store.assignWorkHubMessage({
+        ...request,
+        assignment: { ...request.assignment, targetAttachments: [sourceAttachment] },
+      }),
+      /Invalid WorkHub assignment identity/,
+    );
+    assert.equal(await store.readWorkHubAssignment(request.assignment.actionId), undefined);
+    assert.equal(
+      await store.readMessageAdmission(target.id, request.admission.messageId),
+      undefined,
+    );
+    assert.equal((await store.assignWorkHubMessage(request)).kind, 'assigned');
+    assert.deepEqual(
+      (await store.readMessageAdmission(target.id, request.admission.messageId))?.content,
+      content,
+    );
+    await store.close?.();
+    store = createSessionStore(root);
+    assert.deepEqual((await store.assignWorkHubMessage(request)).assignment, request.assignment);
+    const changed = normalizeMessageContent({ ...content, text: 'Different delegated work' });
+    await assert.rejects(
+      store.assignWorkHubMessage({
+        ...request,
+        assignment: { ...request.assignment, delegationText: changed.text },
+        admission: {
+          ...request.admission,
+          content: changed,
+          submittedContentDigest: messageContentDigest(changed),
+        },
+      }),
+      /different assignment/,
+    );
+    await assert.rejects(
+      store.assignWorkHubMessage({
+        ...request,
+        assignment: {
+          ...request.assignment,
+          attachments: [
+            {
+              ...sourceAttachment,
+              ref: { ...sourceAttachment.ref, relativePath: 'another-source' },
+            },
+          ],
+        },
+      }),
+      /different assignment/,
+    );
+    assert.deepEqual(
+      await store.readWorkHubAssignment(request.assignment.actionId),
+      request.assignment,
+    );
   } finally {
     await store.close?.();
     await rm(root, { recursive: true, force: true });
@@ -688,25 +812,6 @@ test('an unresolved stop claim blocks replacement while not_owned releases the l
   }
 });
 
-async function createCoordinationSession(
-  store: ReturnType<typeof createSessionStore>,
-  root: string,
-): Promise<void> {
-  await store.createStableSession({
-    sessionId: WORKHUB_COORDINATION_SESSION_ID,
-    requestFingerprint: `sha256:${'a'.repeat(64)}`,
-    input: {
-      cwd: root,
-      name: 'WorkHub',
-      role: WORKHUB_COORDINATION_SESSION_ROLE,
-      llmConnectionSlug: 'test',
-      model: 'test',
-      permissionMode: 'explore',
-      toolProfile: 'workhub-coordination-v1',
-    },
-  });
-}
-
 function terminalSuffix(delegationId: string): string {
   return createHash('sha256').update(delegationId, 'utf8').digest('hex').slice(0, 48);
 }
@@ -752,50 +857,4 @@ async function handOffToRootTurn(
     messageIds: [request.admission.messageId],
     turnId: request.admission.turnId,
   });
-}
-
-type AssignmentRequest = ReturnType<typeof assignmentRequest>;
-
-function assignmentRequest(
-  actionId: string,
-  targetSessionId: string,
-  targetSessionName: string,
-  targetTurnId: string,
-) {
-  const suffix = createHash('sha256').update(actionId, 'utf8').digest('hex').slice(0, 48);
-  const content = normalizeMessageContent({ text: 'Continue payment work' });
-  const assignment: WorkHubDelegationAssignedMessage = {
-    type: 'workhub_coordination',
-    id: `wha_${suffix}`,
-    turnId: actionId,
-    ts: 10,
-    schemaVersion: 1,
-    kind: 'delegation_assigned',
-    actionId,
-    actionFingerprint: `sha256:${'c'.repeat(64)}`,
-    coordinationTurnId: actionId,
-    targetSessionId,
-    targetSessionName,
-    targetTurnId,
-    targetMessageId: `whm_${suffix}`,
-    delegationId: `whd_${suffix}`,
-    disposition: 'delegate_existing',
-    userText: content.text,
-  };
-  return {
-    assignment,
-    admission: {
-      sessionId: targetSessionId,
-      turnId: targetTurnId,
-      runId: `whr_${suffix}`,
-      messageId: assignment.targetMessageId,
-      content,
-      submittedContentDigest: messageContentDigest(content),
-      submittedPlacement: 'current_turn' as const,
-      placement: 'current_turn' as const,
-      disposition: 'steering' as const,
-      skillInvocation: { loaded: [], failed: [], receipts: [] },
-      admittedAt: 10,
-    },
-  };
 }

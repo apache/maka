@@ -20,7 +20,12 @@
 import { MODEL_FAILURE_MESSAGE_MAX_BYTES } from '@maka/core/model-failure';
 import { truncateUtf8 } from '@maka/core/diagnostic-log';
 import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
-import type { AssistantStepContentKind, StoredMessage, TurnStatus } from '@maka/core/session';
+import type {
+  AssistantStepContentKind,
+  StoredMessage,
+  TurnStatus,
+  WorkHubCoordinationActionMessage,
+} from '@maka/core/session';
 import type { RuntimeEvent, RuntimeEventStatus } from '@maka/core/runtime-event';
 import type { ToolActivityKind, ToolResultContent } from '@maka/core/events';
 import { markPersisted } from '@maka/core/persisted-value';
@@ -50,6 +55,7 @@ const SETTLED_SANDBOX_BOUNDARY_STATUSES: readonly SettledSandboxBoundaryStatus[]
   );
 import type { CanonicalPermissionOutcomeRecord } from './interaction-authority.js';
 import { isArchivedToolResultPlaceholder } from './tool-result-archive.js';
+import { truncateToolOutput } from './tool-output.js';
 
 export type RuntimeEventReadModelDiagnosticCode =
   | 'partial_skipped'
@@ -99,6 +105,21 @@ export function isContinuationStartRuntimeEvent(event: RuntimeEvent): boolean {
   );
 }
 
+export function projectRuntimeEventCoordinationReceipt(
+  event: RuntimeEvent,
+): WorkHubCoordinationActionMessage | undefined {
+  if (!event.actions?.coordination) return undefined;
+  return {
+    type: 'workhub_coordination',
+    kind: 'action_receipt',
+    schemaVersion: 1,
+    id: event.id,
+    turnId: event.turnId,
+    ts: event.ts,
+    receipt: event.actions.coordination,
+  };
+}
+
 /**
  * Whether the event can affect the StoredMessage projection or the state needed
  * to construct one. Pure control-plane facts are intentionally absent so a
@@ -106,6 +127,7 @@ export function isContinuationStartRuntimeEvent(event: RuntimeEvent): boolean {
  */
 export function affectsRuntimeEventStoredMessageProjection(event: RuntimeEvent): boolean {
   return (
+    event.actions?.coordination !== undefined ||
     event.content !== undefined ||
     isTerminalRuntimeEvent(event) ||
     event.actions?.permissionRequest !== undefined ||
@@ -154,6 +176,71 @@ export interface ProjectRuntimeEventsToStoredMessagesOptions {
     | readonly RuntimeInvocationRecord[]
     | Readonly<Record<string, RuntimeInvocationRecord>>;
   canonicalPermissionOutcomes?: ReadonlyMap<string, CanonicalPermissionOutcomeRecord>;
+  projectToolResult?: (event: RuntimeEvent, decoded: ToolResultContent) => ToolResultContent;
+  onMessage?: (message: StoredMessage, sourceEventId: string) => void;
+}
+
+export interface RuntimeEventStoredMessageProjector {
+  push(event: RuntimeEvent): void;
+  finish(): RuntimeEventReadModelProjection;
+  readonly permissionRequestIds: readonly string[];
+}
+
+/**
+ * Keep a completed local terminal result useful but bounded in transcript views.
+ * The durable RuntimeEvent remains untouched and the marker names its retained
+ * result, so readers can fetch the full output without repeating the command.
+ */
+/**
+ * The marker `projectTranscriptToolResult` writes into a truncated terminal
+ * output, as a whole line. It is projection text with no stored counterpart,
+ * so recall removes it before matching; keep this in step with the marker
+ * `truncateToolOutput` builds and the hint below.
+ */
+export const TRANSCRIPT_TOOL_RESULT_SYNTHETIC_TEXT_PATTERN =
+  /^\.\.\.\d+ (?:lines|bytes) truncated\. Read \{"path":"maka:\/\/runtime\/tool-results\/[^"\n]*"\} for the retained output; follow next to continue\. Otherwise work from the kept output above\.$/gmu;
+
+export function projectTranscriptToolResult(
+  event: RuntimeEvent,
+  content: ToolResultContent,
+): ToolResultContent {
+  if (
+    content.kind !== 'terminal' ||
+    content.output.mode !== 'pipes' ||
+    !hasLocalTerminalModelProjection(event)
+  ) {
+    return content;
+  }
+  const recoveryHint = `Read ${JSON.stringify({
+    path: `maka://runtime/tool-results/${encodeURIComponent(event.id)}`,
+  })} for the retained output; follow next to continue.`;
+  const options = { maxBytes: 1024, maxLines: 20, direction: 'tail' as const, recoveryHint };
+  const stdout = truncateToolOutput(content.output.stdout, options);
+  const stderr = truncateToolOutput(content.output.stderr, options);
+  if (!stdout.truncated && !stderr.truncated) return content;
+  return {
+    ...content,
+    output: {
+      ...content.output,
+      stdout: stdout.content,
+      stderr: stderr.content,
+      stdoutTruncated: content.output.stdoutTruncated || stdout.truncated,
+      stderrTruncated: content.output.stderrTruncated || stderr.truncated,
+    },
+  };
+}
+
+function hasLocalTerminalModelProjection(event: RuntimeEvent): boolean {
+  const content = event.content;
+  if (content?.kind !== 'function_response' || content.providerExecuted) return false;
+  const projection = content.modelProjection;
+  return (
+    projection?.kind === 'json' &&
+    projection.value !== null &&
+    typeof projection.value === 'object' &&
+    'kind' in projection.value &&
+    projection.value.kind === 'terminal'
+  );
 }
 
 export interface ArchivedToolResultReadModelStatus {
@@ -177,22 +264,21 @@ export interface RuntimeEventTerminalFactResult {
   diagnostics: RuntimeEventReadModelDiagnostic[];
 }
 
+interface PermissionRequestProjectionMetadata {
+  requestId: string;
+  toolUseId: string;
+  toolName: string;
+  sessionId: string;
+  runId: string;
+  turnId: string;
+  hint?: string;
+}
+
 interface ProjectionState {
   invocations: Map<string, RuntimeInvocationRecord>;
   diagnostics: RuntimeEventReadModelDiagnostic[];
   toolNameByUseId: Map<string, string>;
-  permissionRequestById: Map<
-    string,
-    {
-      requestId: string;
-      toolUseId: string;
-      toolName: string;
-      sessionId: string;
-      runId: string;
-      turnId: string;
-      hint?: string;
-    }
-  >;
+  permissionRequestById: Map<string, PermissionRequestProjectionMetadata>;
   /**
    * Thinking awaiting its assistant text row, keyed by the step message id
    * (function of the event's providerEventId / storedMessageId — the same id the
@@ -201,6 +287,8 @@ interface ProjectionState {
    */
   thinkingByMessageId: Map<string, PendingThinking[]>;
   contentOrderByMessageId: Map<string, AssistantStepContentKind[]>;
+  projectToolResult?: (event: RuntimeEvent, decoded: ToolResultContent) => ToolResultContent;
+  sourceOrder: number;
 }
 
 interface PendingThinking {
@@ -209,12 +297,21 @@ interface PendingThinking {
   text: string;
   signature?: string;
   providerOptions?: Record<string, unknown>;
+  sourceOrder: number;
 }
 
 export function projectRuntimeEventsToStoredMessages(
   events: readonly RuntimeEvent[],
   options: ProjectRuntimeEventsToStoredMessagesOptions,
 ): RuntimeEventReadModelProjection {
+  const projector = createRuntimeEventStoredMessageProjector(options);
+  for (const event of events) projector.push(event);
+  return projector.finish();
+}
+
+export function createRuntimeEventStoredMessageProjector(
+  options: ProjectRuntimeEventsToStoredMessagesOptions,
+): RuntimeEventStoredMessageProjector {
   const state: ProjectionState = {
     invocations: normalizeInvocations(options.invocations),
     diagnostics: [],
@@ -222,6 +319,8 @@ export function projectRuntimeEventsToStoredMessages(
     permissionRequestById: new Map(),
     thinkingByMessageId: new Map(),
     contentOrderByMessageId: new Map(),
+    ...(options.projectToolResult ? { projectToolResult: options.projectToolResult } : {}),
+    sourceOrder: -1,
   };
   const messages: StoredMessage[] = [];
   /**
@@ -232,19 +331,69 @@ export function projectRuntimeEventsToStoredMessages(
    * handled are exactly that event's rows. A durable reader numbers its pages
    * from this, which is why it is recorded here rather than rediscovered.
    */
-  const sourceEventIds: string[] = [];
-  let reading: RuntimeEvent | undefined;
-  const attributeEmitted = (): void => {
-    while (sourceEventIds.length < messages.length) sourceEventIds.push(reading!.id);
+  const messageSources: Array<{
+    eventId: string;
+    sourceOrder: number;
+    sourcePosition: number;
+    emittedOrder: number;
+  }> = [];
+  const diagnosticSources: Array<{
+    sourceOrder: number;
+    sourcePosition: number;
+    emittedOrder: number;
+  }> = [];
+  const deferredPermissionAcceptances: Array<{
+    event: RuntimeEvent;
+    ledgerRequest: PermissionRequestProjectionMetadata | undefined;
+    sourceOrder: number;
+    messagePosition: number;
+    diagnosticPosition: number;
+  }> = [];
+  const permissionRequestIds = new Set<string>();
+  const endedInvocationIds = new Set<string>();
+  let nextSourceOrder = 0;
+  let finished: RuntimeEventReadModelProjection | undefined;
+  const attributeEmitted = (
+    event: RuntimeEvent,
+    sourceOrder: number,
+    firstSourcePosition: number,
+  ): number => {
+    let sourcePosition = firstSourcePosition;
+    while (messageSources.length < messages.length) {
+      const message = messages[messageSources.length]!;
+      messageSources.push({
+        eventId: event.id,
+        sourceOrder,
+        sourcePosition,
+        emittedOrder: messageSources.length,
+      });
+      sourcePosition += 1;
+      options.onMessage?.(message, event.id);
+    }
+    return sourcePosition;
+  };
+  const attributeDiagnostics = (sourceOrder: number, firstSourcePosition: number): number => {
+    let sourcePosition = firstSourcePosition;
+    while (diagnosticSources.length < state.diagnostics.length) {
+      diagnosticSources.push({
+        sourceOrder,
+        sourcePosition,
+        emittedOrder: diagnosticSources.length,
+      });
+      sourcePosition += 1;
+    }
+    return sourcePosition;
   };
 
-  for (const event of events) {
-    attributeEmitted();
-    reading = event;
+  const projectEvent = (event: RuntimeEvent, sourceOrder: number): void => {
+    let nextMessagePosition = 0;
+    let nextDiagnosticPosition = 0;
+    state.sourceOrder = sourceOrder;
     recordStepContentOrder(event, state);
     if (isPartialRuntimeEvent(event)) {
       diagnostic(state, event, 'partial_skipped', 'partial RuntimeEvent skipped');
-      continue;
+      attributeDiagnostics(sourceOrder, nextDiagnosticPosition);
+      return;
     }
 
     let projected = false;
@@ -282,6 +431,12 @@ export function projectRuntimeEventsToStoredMessages(
           }
           break;
       }
+    }
+
+    const coordinationReceipt = projectRuntimeEventCoordinationReceipt(event);
+    if (coordinationReceipt) {
+      messages.push(coordinationReceipt);
+      projected = true;
     }
 
     if (event.actions?.permissionRequest) {
@@ -324,12 +479,17 @@ export function projectRuntimeEventsToStoredMessages(
     }
 
     if (event.actions?.permissionAnswerAccepted) {
-      projectCanonicalPermissionOutcome(
-        event,
-        state,
-        messages,
-        options.canonicalPermissionOutcomes,
-      );
+      nextMessagePosition = attributeEmitted(event, sourceOrder, nextMessagePosition);
+      nextDiagnosticPosition = attributeDiagnostics(sourceOrder, nextDiagnosticPosition);
+      const requestId = event.actions.permissionAnswerAccepted.requestId;
+      permissionRequestIds.add(requestId);
+      deferredPermissionAcceptances.push({
+        event: permissionAcceptanceProjectionEvent(event),
+        ledgerRequest: state.permissionRequestById.get(requestId),
+        sourceOrder,
+        messagePosition: nextMessagePosition++,
+        diagnosticPosition: nextDiagnosticPosition++,
+      });
       projected = true;
     }
 
@@ -414,6 +574,7 @@ export function projectRuntimeEventsToStoredMessages(
       projected = projectTokenUsage(event, state, messages) || projected;
     }
 
+    if (isTerminalRuntimeEvent(event)) endedInvocationIds.add(event.invocationId);
     if (isTerminalRuntimeEvent(event) && !event.actions?.handoffPause) {
       projected = projectTerminalTurnState(event, state, messages) || projected;
     }
@@ -441,21 +602,93 @@ export function projectRuntimeEventsToStoredMessages(
         );
       }
     }
-  }
+    attributeEmitted(event, sourceOrder, nextMessagePosition);
+    attributeDiagnostics(sourceOrder, nextDiagnosticPosition);
+  };
 
-  for (const pendingItems of state.thinkingByMessageId.values()) {
-    for (const pending of pendingItems) {
-      diagnostic(
+  const push = (event: RuntimeEvent): void => {
+    if (finished) throw new Error('RuntimeEvent StoredMessage projector is already finished');
+    projectEvent(event, nextSourceOrder++);
+  };
+
+  const finish = (): RuntimeEventReadModelProjection => {
+    if (finished) return finished;
+
+    for (const acceptance of deferredPermissionAcceptances) {
+      const before = messages.length;
+      projectCanonicalPermissionOutcome(
+        acceptance.event,
         state,
-        pending.event,
-        'unsupported_event',
-        'thinking content has no assistant text row with a matching message id',
+        messages,
+        options.canonicalPermissionOutcomes,
+        acceptance.ledgerRequest,
       );
+      if (messages.length > before) {
+        attributeEmitted(acceptance.event, acceptance.sourceOrder, acceptance.messagePosition);
+      }
+      attributeDiagnostics(acceptance.sourceOrder, acceptance.diagnosticPosition);
     }
-  }
 
-  attributeEmitted();
-  return { messages, diagnostics: state.diagnostics, sourceEventIds };
+    const orderedDiagnostics = state.diagnostics
+      .map((diagnostic, index) => ({ diagnostic, source: diagnosticSources[index]! }))
+      .sort(
+        (left, right) =>
+          left.source.sourceOrder - right.source.sourceOrder ||
+          left.source.sourcePosition - right.source.sourcePosition ||
+          left.source.emittedOrder - right.source.emittedOrder,
+      );
+    state.diagnostics.splice(
+      0,
+      state.diagnostics.length,
+      ...orderedDiagnostics.map(({ diagnostic }) => diagnostic),
+    );
+
+    // Before its invocation ends, thinking may still get its text in a later
+    // event, so an unended prefix leaves it without a row rather than a defect.
+    for (const pendingItems of state.thinkingByMessageId.values()) {
+      for (const pending of pendingItems) {
+        if (!endedInvocationIds.has(pending.event.invocationId)) continue;
+        diagnostic(
+          state,
+          pending.event,
+          'unsupported_event',
+          'thinking content has no assistant text row with a matching message id',
+        );
+      }
+    }
+
+    const ordered = messages
+      .map((message, index) => ({ message, source: messageSources[index]! }))
+      .sort(
+        (left, right) =>
+          left.source.sourceOrder - right.source.sourceOrder ||
+          left.source.sourcePosition - right.source.sourcePosition ||
+          left.source.emittedOrder - right.source.emittedOrder,
+      );
+    finished = {
+      messages: ordered.map(({ message }) => message),
+      diagnostics: state.diagnostics,
+      sourceEventIds: ordered.map(({ source }) => source.eventId),
+    };
+    deferredPermissionAcceptances.length = 0;
+    messageSources.length = 0;
+    diagnosticSources.length = 0;
+    state.invocations.clear();
+    state.toolNameByUseId.clear();
+    state.permissionRequestById.clear();
+    state.thinkingByMessageId.clear();
+    state.contentOrderByMessageId.clear();
+    state.projectToolResult = undefined;
+    return finished;
+  };
+
+  return {
+    push,
+    finish,
+    get permissionRequestIds(): readonly string[] {
+      return [...permissionRequestIds];
+    },
+  };
 }
 
 /**
@@ -725,6 +958,7 @@ function projectText(
       turnId: event.turnId,
       ts: event.ts,
       text: event.content.text,
+      ...(event.content.interrupted ? { interrupted: true } : {}),
       ...(event.content.providerOptions !== undefined
         ? { providerOptions: structuredClone(event.content.providerOptions) }
         : {}),
@@ -817,6 +1051,7 @@ function projectThinking(
     event,
     messageId,
     text: event.content.text,
+    sourceOrder: state.sourceOrder,
     ...(event.content.signature !== undefined ? { signature: event.content.signature } : {}),
     ...(event.content.providerOptions !== undefined
       ? { providerOptions: structuredClone(event.content.providerOptions) }
@@ -962,7 +1197,7 @@ function projectFunctionResponse(
     );
   }
   if (event.content.name) state.toolNameByUseId.set(toolUseId, event.content.name);
-  const resultContent: ToolResultContent = archivedPlaceholder
+  const decodedResult: ToolResultContent = archivedPlaceholder
     ? {
         kind: 'archived_tool_result',
         status: 'not_loaded',
@@ -980,6 +1215,9 @@ function projectFunctionResponse(
         reason: archivedPlaceholder.reason,
       }
     : normalizedResult!;
+  const resultContent = state.projectToolResult
+    ? state.projectToolResult(event, decodedResult)
+    : decodedResult;
   messages.push({
     type: 'tool_result',
     id: stableMessageId(event, state, 'tool_result'),
@@ -1097,10 +1335,10 @@ function projectCanonicalPermissionOutcome(
   state: ProjectionState,
   messages: StoredMessage[],
   outcomes: ReadonlyMap<string, CanonicalPermissionOutcomeRecord> | undefined,
+  ledgerRequest: PermissionRequestProjectionMetadata | undefined,
 ): void {
   const accepted = event.actions?.permissionAnswerAccepted;
   if (!accepted) return;
-  const ledgerRequest = state.permissionRequestById.get(accepted.requestId);
   const canonical = outcomes?.get(accepted.requestId);
   const toolUseId = event.refs?.toolCallId;
   if (!canonical || !toolUseId) {
@@ -1150,6 +1388,22 @@ function projectCanonicalPermissionOutcome(
     ...(outcome.riskLevel !== undefined ? { riskLevel: outcome.riskLevel } : {}),
     ...(ledgerRequest?.hint !== undefined ? { hint: ledgerRequest.hint } : {}),
   });
+}
+
+function permissionAcceptanceProjectionEvent(event: RuntimeEvent): RuntimeEvent {
+  return {
+    id: event.id,
+    sessionId: event.sessionId,
+    invocationId: event.invocationId,
+    runId: event.runId,
+    turnId: event.turnId,
+    ts: event.ts,
+    partial: event.partial,
+    role: event.role,
+    author: event.author,
+    actions: { permissionAnswerAccepted: event.actions!.permissionAnswerAccepted! },
+    ...(event.refs?.toolCallId ? { refs: { toolCallId: event.refs.toolCallId } } : {}),
+  };
 }
 
 function projectTokenUsage(

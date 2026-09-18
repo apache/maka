@@ -24,40 +24,250 @@ import { fileURLToPath } from 'node:url';
 import { runInNewContext } from 'node:vm';
 import test from 'node:test';
 import { build } from 'esbuild';
+import { deferred, waitFor } from '@maka/core/test-only/async-primitives';
 import type { StoredMessage } from '@maka/core/session';
 import type { MakaBridge } from '../../preload/bridge-contract.js';
-import type { DesktopTranscriptBatch, DesktopTranscriptRangeRequest } from '../../preload/transcript-contract.js';
-import { createDesktopWorkHubCoordinationPort } from '../../renderer/workhub-coordination-port.js';
+import type { DesktopTranscriptBatch } from '../../preload/transcript-contract.js';
+import { createDesktopWorkHubServices } from '../../renderer/platform/desktop/create-workhub-services.js';
 import { desktopSessionKey } from '../../shared/runtime-host-identity.js';
-import { encodeDesktopTranscriptSnapshot } from '../desktop-transcript-ipc.js';
+import type { WorkHubPrepareAttachmentsResult } from '../../shared/workhub-conversation.js';
+import { encodeDesktopTranscriptBatches, encodeDesktopTranscriptSnapshot } from '../desktop-transcript-ipc.js';
+import { AttachmentIngestBlockedError } from '@maka/core/attachments';
+import type { AttachmentRef } from '@maka/core/events';
+import { MESSAGE_QUEUE_MAX_ENTRIES } from '@maka/runtime-host/protocol';
 
-// Keep the real preload's navigation defaults and filtering in this consumer
-// regression; the IPC stub models the observer's authoritative reset reply.
-test('Coordination tail recovery converges through the preload with a fragmented sparse tail', { timeout: 5_000 }, async () => {
+test('WorkHub upload references round-trip through idle answers, both queue modes and attachment reads', async (t) => {
+  const owner = {
+    hostId: 'upload-host', targetEpoch: 'upload-epoch', profileId: 'local',
+    profileName: 'Local', profileKind: 'local', profileAccess: 'owner', readiness: 'ready',
+  };
+  const nativeSessionId = 'maka_workhub_coordination';
+  const sessionId = desktopSessionKey({ hostId: owner.hostId, sessionId: nativeSessionId });
+  const uploaded: AttachmentRef = {
+    kind: 'doc', name: 'brief.txt', mimeType: 'text/plain', bytes: 5,
+    ref: { kind: 'session_file', sessionId: nativeSessionId, relativePath: 'brief.txt' },
+  };
+  let preparationResult: WorkHubPrepareAttachmentsResult = {
+    ok: true,
+    attachments: [uploaded],
+  };
+  const sent: Array<{ channel: string; attachments: AttachmentRef[] }> = [];
+  let bridge!: MakaBridge;
+  const bundle = await build({
+    entryPoints: [fileURLToPath(new URL('../../../src/preload/preload.ts', import.meta.url))],
+    bundle: true, write: false, platform: 'node', format: 'cjs', external: ['electron'],
+  });
+  const require = createRequire(import.meta.url);
+  runInNewContext(bundle.outputFiles[0]!.text, {
+    require: (id: string) => id === 'electron' ? {
+      contextBridge: { exposeInMainWorld(name: string, value: MakaBridge) { if (name === 'maka') bridge = value; } },
+      ipcRenderer: {
+        on() {}, off() {}, send() {},
+        async invoke(channel: string, ...args: unknown[]) {
+          if (channel === 'runtime-host:activeIdentity') return owner;
+          if (channel === 'runtime-host:identities') return [owner];
+          assert.equal((args[0] as typeof owner).hostId, owner.hostId);
+          if (channel === 'workhub:prepareAttachments') {
+            assert.deepEqual(structuredClone(args[1]), [{ name: 'brief.txt', mimeType: 'text/plain', base64: 'aGVsbG8=' }]);
+            return preparationResult;
+          }
+          if (channel === 'workhub:answer') {
+            const input = args[1] as { attachments: AttachmentRef[]; turnId: string };
+            sent.push({ channel, attachments: input.attachments });
+            return { kind: 'admitted', turnId: input.turnId };
+          }
+          assert.equal(args[1], nativeSessionId);
+          if (channel === 'sessions:submitMessage') {
+            const command = args[3] as { retainedAttachments: AttachmentRef[] };
+            sent.push({ channel, attachments: command.retainedAttachments });
+            return { ok: true, disposition: args[2] === 'current_turn' ? 'steering' : 'followup', attachments: [uploaded] };
+          }
+          if (channel === 'attachments:readBytes') return { ok: true, base64: 'aGVsbG8=' };
+          throw new Error(`Unexpected channel: ${channel}`);
+        },
+      },
+    } : require(id),
+    process: { env: {} }, Buffer, console, setTimeout, clearTimeout, TextEncoder, TextDecoder,
+    Uint8Array, btoa, crypto: globalThis.crypto,
+  });
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: { location: { search: '?surface=workhub' } } });
+  t.after(() => {
+    if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow);
+    else Reflect.deleteProperty(globalThis, 'window');
+  });
+  const services = createDesktopWorkHubServices(bridge);
+  const attachments = await services.prepareAttachments(sessionId, [
+    { file: new File(['hello'], 'brief.txt', { type: 'text/plain' }) },
+  ]);
+  assert.equal(attachments[0]!.ref.kind, 'session_file');
+  assert.equal(attachments[0]!.ref.kind === 'session_file' && attachments[0]!.ref.sessionId, sessionId);
+  assert.equal((await services.answer(sessionId, { turnId: 'idle-answer', text: 'read this', attachments })).kind, 'admitted');
+  for (const placement of ['next_turn', 'current_turn'] as const) {
+    assert.equal(await services.enqueueMessage(sessionId, `message-${placement}`, 'read this', attachments, placement), 'admitted');
+  }
+  assert.deepEqual(structuredClone(sent.map(({ attachments }) => attachments)), [[uploaded], [uploaded], [uploaded]]);
+  assert.equal((await services.readAttachmentBytes(sessionId, 'brief.txt')).ok, true);
+  preparationResult = { ok: false, code: 'item_too_large' };
+  await assert.rejects(
+    services.prepareAttachments(sessionId, [
+      { file: new File(['hello'], 'brief.txt', { type: 'text/plain' }) },
+    ]),
+    (error: unknown) => {
+      assert.ok(error instanceof AttachmentIngestBlockedError);
+      assert.equal(error.code, 'item_too_large');
+      return true;
+    },
+  );
+  const foreign = [{ ...uploaded, ref: { ...uploaded.ref, kind: 'session_file' as const, sessionId: desktopSessionKey({ hostId: 'foreign-host', sessionId: nativeSessionId }), relativePath: 'brief.txt' } }];
+  await assert.rejects(services.answer(sessionId, { turnId: 'foreign', text: 'read this', attachments: foreign }), /another Host or Session/);
+  await assert.rejects(services.enqueueMessage(sessionId, 'foreign', 'read this', foreign, 'next_turn'), /another Host or Session/);
+});
+
+test('WorkHub projects a delegated Turn result from one Turn read without opening the target transcript', async (t) => {
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: { location: { search: '?surface=workhub' } } });
+  t.after(() => {
+    if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow);
+    else Reflect.deleteProperty(globalThis, 'window');
+  });
+  const sessionId = desktopSessionKey({ hostId: 'owner-host', sessionId: 'target-session' });
+  const intermediate: StoredMessage = {
+    type: 'assistant', id: 'intermediate', turnId: 'owned-turn', ts: 1,
+    modelId: 'model', text: 'Intermediate answer that must not be cached.',
+  };
+  const final: StoredMessage = {
+    type: 'assistant', id: 'final', turnId: 'owned-turn', ts: 2,
+    modelId: 'model', text: 'The delegated task finished with this exact result.',
+  };
+  const turnReads: string[] = [];
+  const services = createDesktopWorkHubServices({
+    attachments: {},
+    sessions: {
+      async list() {
+        return [{
+          id: sessionId, name: 'Target task', isFlagged: false, isArchived: false,
+          labels: [], hasUnread: true, status: 'active', runningTurnIds: [], revision: 1,
+        }];
+      },
+      async listTurns() {
+        return [{ turnId: 'owned-turn', firstSequence: 1, status: 'completed', statusSource: 'recorded' }];
+      },
+      async queryMessageExecutions() {
+        return { resolutions: [{ messageId: 'delegated-message', state: 'owned', turnId: 'owned-turn', runId: 'run' }] };
+      },
+    },
+    transcripts: {
+      async readTurn(requestedSessionId: string, turnId: string) {
+        assert.equal(requestedSessionId, sessionId);
+        turnReads.push(turnId);
+        return [intermediate, final];
+      },
+      async open() {
+        assert.fail('a result projection is not a reader of the target Session');
+      },
+    },
+  } as unknown as Parameters<typeof createDesktopWorkHubServices>[0]);
+  const reference = {
+    id: 'delegation-record', targetSessionId: sessionId,
+    targetMessageId: 'delegated-message', targetTurnId: 'initial-turn',
+  };
+
+  assert.deepEqual(await services.delegationFeedback([reference]), [{
+    id: 'delegation-record', state: 'completed', resultPreview: final.text,
+  }]);
+  assert.equal((await services.delegationFeedback([reference]))[0]?.resultPreview, final.text);
+  assert.deepEqual(turnReads, ['owned-turn'], 'the final result is cached');
+});
+
+test('WorkHub batches more than the message execution query limit per target Session', async (t) => {
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: { location: { search: '?surface=workhub' } } });
+  t.after(() => {
+    if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow);
+    else Reflect.deleteProperty(globalThis, 'window');
+  });
+  const sessionId = desktopSessionKey({ hostId: 'owner-host', sessionId: 'target-session' });
+  const querySizes: number[] = [];
+  const services = createDesktopWorkHubServices({
+    attachments: {},
+    sessions: {
+      async list() {
+        return [{
+          id: sessionId, name: 'Target task', isFlagged: false, isArchived: false,
+          labels: [], hasUnread: false, status: 'active', runningTurnIds: [], revision: 1,
+        }];
+      },
+      async listTurns() { return []; },
+      async queryMessageExecutions(_sessionId: string, messageIds: string[]) {
+        querySizes.push(messageIds.length);
+        if (messageIds.length > MESSAGE_QUEUE_MAX_ENTRIES) throw new Error('query limit exceeded');
+        return { resolutions: messageIds.map((messageId) => ({ messageId, state: 'pending' as const })) };
+      },
+    },
+  } as unknown as Parameters<typeof createDesktopWorkHubServices>[0]);
+  const references = Array.from({ length: MESSAGE_QUEUE_MAX_ENTRIES + 1 }, (_, index) => ({
+    id: `delegation-${index}`, targetSessionId: sessionId,
+    targetMessageId: `message-${index}`, targetTurnId: `turn-${index}`,
+  }));
+
+  assert.deepEqual((await services.delegationFeedback(references)).map(({ state }) => state),
+    references.map(() => 'accepted'));
+  assert.deepEqual(querySizes, [MESSAGE_QUEUE_MAX_ENTRIES, 1]);
+});
+
+test('WorkHub does not infer live running when the Session catalog is unavailable', async (t) => {
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: { location: { search: '?surface=workhub' } } });
+  t.after(() => {
+    if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow);
+    else Reflect.deleteProperty(globalThis, 'window');
+  });
+  const sessionId = desktopSessionKey({ hostId: 'owner-host', sessionId: 'target-session' });
+  const services = createDesktopWorkHubServices({
+    attachments: {},
+    sessions: {
+      async list() { throw new Error('catalog unavailable'); },
+      async listTurns() {
+        return [{ turnId: 'owned-turn', firstSequence: 1, status: 'running', statusSource: 'recorded' }];
+      },
+      async queryMessageExecutions() {
+        return { resolutions: [{ messageId: 'delegated-message', state: 'owned', turnId: 'owned-turn', runId: 'run' }] };
+      },
+    },
+  } as unknown as Parameters<typeof createDesktopWorkHubServices>[0]);
+
+  assert.equal((await services.delegationFeedback([{
+    id: 'delegation-record', targetSessionId: sessionId,
+    targetMessageId: 'delegated-message', targetTurnId: 'initial-turn',
+  }]))[0]?.state, 'recovering');
+});
+
+// Keep the real preload in this consumer regression; the IPC stub models the
+// observer's earlier-history answer to a load-earlier command.
+test('WorkHub loads earlier history through the preload with a fragmented answer', { timeout: 5_000 }, async (t) => {
   const owner = {
     hostId: 'owner-host', targetEpoch: 'owner-epoch', profileId: 'local',
     profileName: 'Local', profileKind: 'local', profileAccess: 'owner', readiness: 'ready',
   };
   const sessionId = desktopSessionKey({ hostId: owner.hostId, sessionId: 'coordination' });
-  const snapshot = {
-    sessionId: 'coordination', generation: 'generation-1', hostEpoch: 'epoch-1',
-    durableThrough: 8, overlay: [], hasOlder: true, hasNewer: false,
+  const identity = { sessionId: 'coordination', generation: 'generation-1', hostEpoch: 'epoch-1' };
+  const tail: StoredMessage = {
+    type: 'user', id: 'tail-message', turnId: 'tail-turn', ts: 8, text: 'Tail coordination record',
   };
-  const message: StoredMessage = {
-    type: 'user', id: 'latest-message', turnId: 'latest-turn', ts: 7,
-    text: 'Latest coordination record '.repeat(8_000),
+  const earlier: StoredMessage = {
+    type: 'user', id: 'earlier-message', turnId: 'earlier-turn', ts: 7,
+    text: 'Earlier coordination record '.repeat(8_000),
   };
-  const requests: DesktopTranscriptRangeRequest[] = [];
-  const projections: string[][] = [];
+  const earlierReads: unknown[] = [];
+  const projections: Array<{ ids: string[]; hasOlder: boolean }> = [];
   const partialProjectionCounts: number[] = [];
-  const errors: unknown[] = [];
   let bridge: MakaBridge | undefined;
   let consumerId: string;
   let deliverySequence = 0;
   let deliverDirect: ((batch: DesktopTranscriptBatch) => void) | undefined;
   const listeners = new Map<string, (...args: unknown[]) => void>();
-  let finishResponse!: () => void;
-  const responseDelivered = new Promise<void>((resolve) => { finishResponse = resolve; });
+  const responseDelivered = deferred<void>();
   const deliver = (batch: Omit<DesktopTranscriptBatch, 'deliverySequence'>) => {
     listeners.get(`sessions:transcript:${consumerId}`)?.({}, owner, {
       ...batch, deliverySequence: ++deliverySequence,
@@ -73,44 +283,47 @@ test('Coordination tail recovery converges through the preload with a fragmented
       if (channel === 'session-local:transcript') return null;
       if (channel === 'sessions:transcript:open') {
         consumerId = args[2] as string;
-        for (const batch of encodeDesktopTranscriptSnapshot({ ...snapshot, navigationVersion: 0, durable: [] })) {
-          deliver(batch);
-        }
-        return { ...snapshot, readThroughMessageId: null };
+        assert.equal(args[3], 'history');
+        for (const batch of encodeDesktopTranscriptSnapshot({
+          beginsAtTurnBoundary: true,
+          ...identity, durableThrough: 8, hasOlder: true,
+          durable: [{ sequence: 8, message: tail }],
+        })) deliver(batch);
+        return { kind: 'ready', value: { ...identity, readThroughMessageId: null } };
       }
-      if (channel === 'sessions:transcript:load-around') {
-        const request = args[1] as DesktopTranscriptRangeRequest;
-        requests.push(request);
+      if (channel === 'sessions:transcript:load-earlier') {
+        earlierReads.push(args[1]);
+        assert.equal(args[1], consumerId);
         // Bound a regressed request loop so the test reports its cause.
-        if (requests.length >= 3) return new Promise(() => {});
+        if (earlierReads.length >= 2) return new Promise(() => {});
         await new Promise<void>((resolve) => setImmediate(resolve));
         try {
-          for (const batch of encodeDesktopTranscriptSnapshot({
-            ...snapshot, navigationVersion: request.navigationVersion,
-            durable: [{ sequence: 7, message }],
+          for (const batch of encodeDesktopTranscriptBatches(identity, {
+            durableThrough: 8, durable: [{ sequence: 7, message: earlier }],
+            earlierThan: 8, hasOlder: false, reset: false, ready: true,
           })) {
             deliver(batch);
             if (!batch.ready) {
               partialProjectionCounts.push(projections.length);
-              // A rejected ready/reset must not publish a partial valid snapshot
-              // or clear the load guard, even if a caller bypasses preload filtering.
+              // A batch from another replica generation must not publish a
+              // partial answer or complete it.
               deliverDirect?.({
-                ...batch, navigationVersion: 0, fragments: [], ready: true,
-                deliverySequence: ++deliverySequence,
-              });
-              deliverDirect?.({
-                ...batch, generation: 'unrelated-generation', reset: false, fragments: [], ready: true,
+                ...batch, generation: 'unrelated-generation', fragments: [], ready: true,
                 deliverySequence: ++deliverySequence,
               });
               partialProjectionCounts.push(projections.length);
             }
           }
         } finally {
-          finishResponse();
+          responseDelivered.resolve();
         }
         return;
       }
-      if (channel === 'sessions:transcript:ack' || channel === 'sessions:transcript:close') return;
+      if (
+        channel === 'sessions:transcript:ack' ||
+        channel === 'sessions:transcript:acknowledge-tail' ||
+        channel === 'sessions:transcript:close'
+      ) return;
       throw new Error(`Unexpected channel: ${channel}`);
     },
   };
@@ -130,34 +343,118 @@ test('Coordination tail recovery converges through the preload with a fragmented
     Uint8Array, crypto: globalThis.crypto,
   });
   assert.ok(bridge);
-  const port = createDesktopWorkHubCoordinationPort({
-    sessionId,
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: { location: { search: '?surface=workhub' } } });
+  t.after(() => {
+    if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow);
+    else Reflect.deleteProperty(globalThis, 'window');
+  });
+  const services = createDesktopWorkHubServices({
+    ...bridge,
     transcripts: {
-      open(requestedSessionId, handler, registerCancellation) {
+      ...bridge.transcripts,
+      open(requestedSessionId, handler, registerCancellation, mode) {
         deliverDirect = handler;
-        return bridge!.transcripts.open(requestedSessionId, handler, registerCancellation);
+        return bridge!.transcripts.open(requestedSessionId, handler, registerCancellation, mode);
       },
     },
-    record: async (input) => ({ turnId: input.turnId }),
-    candidates: async () => assert.fail('unused'),
-    act: async () => assert.fail('unused'),
   });
-  const handle = await port.open(
-    (turns) => projections.push(turns.map((turn) => turn.messageId)),
-    (error) => errors.push(error),
+  const handle = await services.openTranscript(
+    sessionId,
+    (snapshot) => projections.push({ ids: snapshot.messages.map((message) => message.id), hasOlder: snapshot.hasOlder }),
+    new AbortController().signal,
+    (error) => { throw error; },
   );
   try {
-    await responseDelivered;
+    await waitFor(() => projections.length === 1, { timeoutMs: 5_000 });
+    await handle.loadEarlier();
+    await responseDelivered.promise;
     await new Promise<void>((resolve) => setImmediate(resolve));
-    assert.deepEqual(errors, []);
-    assert.equal(requests.length, 1);
-    assert.equal(requests[0]!.navigationVersion, 1);
-    assert.equal(requests[0]!.intent, 'followTail');
-    assert.equal(requests[0]!.anchorSequence, null);
-    assert.equal(requests[0]!.maxBytes, 512 * 1024);
-    assert.deepEqual(partialProjectionCounts, [0, 0]);
-    assert.deepEqual(projections, [['latest-message']]);
+    assert.equal(earlierReads.length, 1);
+    assert.ok(partialProjectionCounts.length > 0, 'the answer has to span more than one batch');
+    assert.ok(partialProjectionCounts.every((count) => count === 1));
+    assert.deepEqual(projections, [
+      { ids: ['tail-message'], hasOlder: true },
+      { ids: ['earlier-message', 'tail-message'], hasOlder: false },
+    ]);
+    await handle.loadEarlier();
+    assert.equal(earlierReads.length, 1, 'nothing is read once no earlier history remains');
   } finally {
     await handle.close();
   }
 });
+
+
+// Exercise the production adapter with the same cached handle shape returned by
+// preload, and both orderings of initial read failure versus observation readiness.
+for (const initial of ['failure-before-ready', 'failure-after-ready', 'cached'] as const) {
+  test(`WorkHub read reconnects through observation readiness: ${initial}`, async (t) => {
+    const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+    Object.defineProperty(globalThis, 'window', { configurable: true, value: { location: { search: '?surface=workhub' } } });
+    t.after(() => {
+      if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow);
+      else Reflect.deleteProperty(globalThis, 'window');
+    });
+    const sessionId = desktopSessionKey({ hostId: 'owner-host', sessionId: 'coordination' });
+    let openCount = 0;
+    let closedCount = 0;
+    let onReady!: () => void;
+    let onPhase!: (phase: 'pending' | 'ready') => void;
+    let latest: readonly StoredMessage[] = [];
+    const opening = deferred<void>();
+    const errors: unknown[] = [];
+    const services = createDesktopWorkHubServices({
+      attachments: {},
+      sessions: {
+        subscribeEvents(_sessionId, _onEvent, phase) {
+          onReady = () => phase!('ready');
+          onPhase = phase!;
+          return () => {};
+        },
+      } satisfies Pick<MakaBridge['sessions'], 'subscribeEvents'>,
+      transcripts: {
+        async open(_sessionId, onBatch) {
+          const attempt = ++openCount;
+          if (attempt === 1 && initial !== 'cached') {
+            await opening.promise;
+            throw new Error('transient initial open failure');
+          }
+          const cached = attempt === 1;
+          const identity = {
+            sessionId: 'coordination', generation: cached ? 'cached:epoch-1' : `live-${attempt}`,
+            hostEpoch: 'epoch-1',
+          };
+          for (const batch of encodeDesktopTranscriptSnapshot({
+            beginsAtTurnBoundary: true,
+            ...identity, durableThrough: 1, hasOlder: false,
+            durable: [{ sequence: 1, message: { type: 'user', id: cached ? 'cached-message' : 'live-message', turnId: 'turn-1', ts: 1, text: cached ? 'Cached history' : 'Live history' } }],
+          })) onBatch({ ...batch, deliverySequence: 1 });
+          const unavailable = async () => { throw new Error('Reconnect the Host to load uncached history'); };
+          return {
+            ...identity, readThroughMessageId: null,
+            acknowledgeTail: async () => {},
+            loadEarlier: unavailable,
+            close: async () => { closedCount++; },
+          };
+        },
+      } satisfies Pick<MakaBridge['transcripts'], 'open'>,
+    } as unknown as Parameters<typeof createDesktopWorkHubServices>[0]);
+    const handle = await services.openTranscript(sessionId, (snapshot) => { latest = snapshot.messages; }, new AbortController().signal, (error) => errors.push(error));
+    const unsubscribe = services.observe(sessionId, () => {}, (error) => errors.push(error), handle.observationChanged);
+    try {
+      if (initial === 'failure-after-ready') onReady();
+      opening.resolve();
+      if (initial !== 'cached') await waitFor(() => errors.length > 0, { timeoutMs: 5_000 });
+      else assert.deepEqual(latest.map(({ id }) => id), ['cached-message']);
+      onPhase('pending');
+      onPhase('ready');
+      await waitFor(() => latest.some(({ id }) => id === 'live-message'), { timeoutMs: 5_000 });
+      assert.equal(openCount, 2);
+      assert.equal(closedCount, initial === 'cached' ? 1 : 0);
+      assert.equal(errors.length, initial === 'cached' ? 0 : 1);
+    } finally {
+      unsubscribe();
+      await handle.close();
+    }
+  });
+}

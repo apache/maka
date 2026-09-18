@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import type { UsageScreenQuery, UsageScreenRequest } from '@maka/core/settings';
+
 import {
   useEffect,
   useEffectEvent,
@@ -42,6 +44,7 @@ import { ICON_SIZE, ArrowLeft } from '@maka/ui/icons';
 import type {
   AppSettings,
   RuntimeHostAppSettings,
+  RuntimeHostSettingsUpdateGuard,
   ChatDefaultPermissionMode,
   SettingsSection,
   ThemePalette,
@@ -64,6 +67,7 @@ import type { UiLocalePreference } from '@maka/core/ui-locale';
 import { createDefaultSettings, DEFAULT_APP_ICON } from '@maka/core/settings';
 import { Banner, Selector, useMountedRef, useToast, useUiLocale } from '@maka/ui';
 import { ProvidersPanel } from './providers-panel';
+import { ExternalAgentsSettingsPage } from '../features/external-agent-settings/index.js';
 import { SubagentSettingsPage } from './subagent-settings-page';
 import { safeLocalStorageSet } from '../browser-storage';
 import { ProjectsSettingsPage } from './projects-settings-page';
@@ -86,8 +90,9 @@ import {
 } from './settings-nav';
 import { getSettingsNavigationCopy } from '../locales/settings-navigation-copy.js';
 import { SettingRow } from './settings-rows';
-import { SettingsPage } from './settings-section';
+import { SettingsPage, SettingsSection as SettingsSectionBlock } from './settings-section';
 import { settingsActionErrorMessage } from './settings-error-copy';
+import { SessionBundleTasks } from '../features/session-bundle';
 import { ImportTasksSettingsPage } from './import-tasks-settings-page';
 import { TasksSettingsPage, type ArchivedTasksBridge } from './tasks-settings-page';
 import { UsageScopeMount, UsageSettingsPage, type UsageScopeHandle } from './usage-settings-page';
@@ -387,11 +392,19 @@ function SettingsSurfaceContent(
   // Settings surface. `usageScopeRef.fenceTarget()` rejects an in-flight old-Host
   // load synchronously at a Host change, before React re-renders the new target.
   const usageScopeRef = useRef<UsageScopeHandle>(null);
+  const readUsage = (range: UsageRange | Extract<UsageScreenRequest, {kind: 'activity'}>, query?: UsageScreenQuery) =>
+    selectedRuntimeHost ? window.maka.settings.usageStats(range, selectedRuntimeHost, query) : Promise.resolve(null);
   const usageServices = {
-    loadUsageStats: (range: UsageRange) =>
-      selectedRuntimeHost
-        ? window.maka.settings.usageStats(range, selectedRuntimeHost)
-        : Promise.resolve(null),
+    loadUsageStats: async (range: UsageRange, query?: UsageScreenQuery) => {
+      const result = await readUsage(range, query);
+      if (result && 'kind' in result && result.kind !== 'screen_response_too_large') throw new Error('Invalid Usage screen response');
+      return result;
+    },
+    loadUsageActivity: async (input: Extract<UsageScreenRequest, {kind: 'activity'}>) => {
+      const result = await readUsage(input);
+      if (!result || !('kind' in result)) throw new Error('Invalid Usage activity response');
+      return result;
+    },
     updateUsageSettings: (patch: Partial<AppSettings['usage']>) =>
       updateSettings({ usage: patch }).then((result) => result.settings.usage),
   };
@@ -449,7 +462,7 @@ function SettingsSurfaceContent(
     );
     return () => props.onSelectedRuntimeHostProfileIdChange(undefined);
   }, [props.onSelectedRuntimeHostProfileIdChange, selectedProfileId, showsRuntimeHost]);
-  const sectionNeedsSettings = ['general', 'subagents', 'memory', 'search'].includes(section);
+  const sectionNeedsSettings = ['general', 'subagents', 'memory', 'search', 'external-agents'].includes(section);
   const sectionNeedsConnections = ['general', 'models', 'subagents', 'daily-review'].includes(section);
   const runtimeHostAvailabilityStatus: RuntimeHostAvailabilityStatus =
     selectedRuntimeHost
@@ -596,7 +609,10 @@ function SettingsSurfaceContent(
     }
   }
 
-  async function updateSettings(patch: Parameters<typeof window.maka.settings.update>[0]) {
+  async function updateSettings(
+    patch: Parameters<typeof window.maka.settings.update>[0],
+    guard?: RuntimeHostSettingsUpdateGuard,
+  ) {
     const uiLocaleTicket = props.uiLocaleUpdateGate.begin(
       patch.personalization?.uiLocale !== undefined,
     );
@@ -617,7 +633,7 @@ function SettingsSurfaceContent(
         ? undefined
         : ++clientSettingsTicketRef.current;
       const result = host
-        ? await window.maka.settings.update(patch, host)
+        ? await window.maka.settings.update(patch, host, guard)
         : await window.maka.settings.updateClient(patch);
       if (hostTicket && !runtimeHostRequestAuthority.isCurrentTarget(hostTicket)) {
         throw new Error(copy.runtimeHostUnavailable);
@@ -834,7 +850,7 @@ function SettingsSurfaceContent(
   }
 
   return (
-    <div className="settingsSurface" data-modal="true">
+    <div className="settingsSurface" data-modal="true" data-maka-assistant-section={section}>
       <Layout
         height="fill"
         padding={0}
@@ -853,6 +869,7 @@ function SettingsSurfaceContent(
               topContent={(
                 isNarrowSettings
                   ? <IconButton
+                      data-maka-assistant-target="settings.close"
                       variant="ghost"
                       label={copy.backToApp}
                       tooltip={copy.backToApp}
@@ -860,6 +877,7 @@ function SettingsSurfaceContent(
                       onClick={props.onClose}
                     />
                   : <Button
+                      data-maka-assistant-target="settings.close"
                       className="settingsBackButton"
                       variant="ghost"
                       width="100%"
@@ -874,6 +892,7 @@ function SettingsSurfaceContent(
                   {items.map((item) => (
                     <SideNavItem
                       key={item.id}
+                      data-maka-assistant-target={`settings.${item.id}`}
                       label={item.label}
                       icon={<item.Icon size={ICON_SIZE.chrome} aria-hidden="true" />}
                       isSelected={section === item.id}
@@ -1002,6 +1021,10 @@ function SettingsSurfaceContent(
                         >
                           <SettingsPageBody
                             section={section}
+                            // A bundle names a path on THIS machine, so the
+                            // feature is offered only while the Local Host is
+                            // the target -- never beside a Remote one.
+                            isLocalRuntimeHost={selectedRuntimeHostEntry?.profile.kind === 'local'}
                             settings={settings}
                             connections={connections}
                             connectionsBridge={connectionsBridge}
@@ -1057,6 +1080,7 @@ function SettingsSurfaceContent(
 
 function SettingsPageBody(props: {
   section: SettingsSection;
+  isLocalRuntimeHost: boolean;
   settings: AppSettings;
   connections: ProjectedLlmConnection[];
   connectionsBridge: RuntimeHostSettingsConnectionsBridge | undefined;
@@ -1075,7 +1099,10 @@ function SettingsPageBody(props: {
   themePref: ThemePreference;
   themePalette: ThemePalette;
   onRefreshConnections(): Promise<void>;
-  onUpdateSettings(patch: Parameters<typeof window.maka.settings.update>[0]): Promise<UpdateAppSettingsResult>;
+  onUpdateSettings(
+    patch: Parameters<typeof window.maka.settings.update>[0],
+    guard?: RuntimeHostSettingsUpdateGuard,
+  ): Promise<UpdateAppSettingsResult>;
   onReloadSettings(): Promise<void>;
   onReloadClientSettings(): Promise<void>;
   onRetryRuntimeHost(): Promise<void>;
@@ -1117,6 +1144,8 @@ function SettingsPageBody(props: {
           />
         </SettingsPage>
       );
+    case 'external-agents':
+      return <ExternalAgentsSettingsPage settings={props.settings} onUpdate={props.onUpdateSettings} />;
     case 'subagents':
       return (
         <SubagentSettingsPage
@@ -1187,10 +1216,21 @@ function SettingsPageBody(props: {
       return <TasksSettingsPage {...props.archivedTasks} />;
     case 'import-tasks':
       return (
-        <ImportTasksSettingsPage
-          onImported={props.onTaskImported}
-          onOpenImported={props.onOpenSession}
-        />
+        <SettingsPage as="section">
+          <SessionBundleTasks
+            isLocalTarget={props.isLocalRuntimeHost}
+            sessions={props.archivedTasks.sessions}
+            renderSection={({ children, ...section }) => (
+              <SettingsSectionBlock {...section}>{children}</SettingsSectionBlock>
+            )}
+          >
+            <ImportTasksSettingsPage
+              onImported={props.onTaskImported}
+              onOpenImported={props.onOpenSession}
+              offersBundleSource={props.isLocalRuntimeHost}
+            />
+          </SessionBundleTasks>
+        </SettingsPage>
       );
     case 'data':
       return (

@@ -17,39 +17,15 @@
  * under the License.
  */
 
-/**
- * The tool-result archive is one capability, not three optional fields (#2026).
- *
- * When the context budget prunes a large tool result, the placeholder that
- * replaces it is a runtime-generated protocol value naming `ArchiveRead` as the
- * way back to the content. Writer, replay reader, ref-addressed reader and that
- * decoder tool therefore share one authority: a host either archives and can
- * read back, or does neither. Splitting them across backend options and tool
- * options made "writer on, decoder absent" representable, and it shipped twice
- * (#2025 and the child-agent path).
- *
- * Hosts supply only storage. The decoder travels with the capability and is
- * bound by the backend, so which host remembered to register a tool is no
- * longer part of the question.
- */
-
-import { ARCHIVE_READ_TOOL_NAME, buildArchiveReadTool } from './archive-read-tool.js';
 import type { ArchivedToolResultReason } from './tool-result-archive.js';
-import type { ToolResultArchiveReader } from './tool-result-archive.js';
-import type { ToolResultArchiveResourceReader } from './tool-result-archive-resource.js';
+import {
+  readToolResultArchiveResource,
+  type ToolResultArchiveResourceReader,
+} from './tool-result-archive-resource.js';
 import type { MakaTool } from './tool-runtime.js';
 import type { ModelProjectionTransition } from '@maka/core/model-projection-transition';
+import { READ_DESCRIPTION, readParameters, resolveReadInput } from './read-page.js';
 
-export { ARCHIVE_READ_TOOL_NAME };
-
-/**
- * What the writer is handed for one pruned body.
- *
- * One shape, not a union over the two prune paths: since both now commit the
- * same durable projection transition (#4283), both address the same
- * `function_response` RuntimeEvent and hand over the same serialized body, and
- * a union would only preserve the shape of the authorities they replaced.
- */
 export interface ToolResultArchiveRecorderInput {
   sessionId: string;
   runtimeEventId: string;
@@ -81,64 +57,51 @@ export type ToolResultArchiveRecorder = (
   input: ToolResultArchiveRecorderInput,
 ) => Promise<ToolResultArchiveLocation | void> | ToolResultArchiveLocation | void;
 
-/** Host-owned storage for one archive authority. */
 export interface ToolResultArchiveServices {
-  /** Persists legacy bytes or verifies ledger reconstruction before the transition commit. */
   archiveToolResult: ToolResultArchiveRecorder;
-  /** Replay hydration, addressed by the originating runtime event. */
-  readToolResultArchive: ToolResultArchiveReader;
-  /**
-   * Ref-addressed read backing `ArchiveRead`. A `maka://archive/...` ref carries
-   * only artifact id, hash and size — no runtime-event identity — so this read
-   * must never synthesize one to satisfy the stricter replay path above.
-   *
-   * It MUST reject a read whose `sessionId` does not own the artifact. The
-   * runtime passes down the invoking session's id but cannot verify ownership
-   * itself, so this is the only place the session boundary is enforced, and the
-   * argument that the decoder grants a child no reach it lacked rests on it.
-   */
   readArchivedToolResultResource: ToolResultArchiveResourceReader['readArchivedToolResultResource'];
 }
 
-/**
- * One indivisible archive authority. Build it through
- * {@link createToolResultArchiveCapability}: the decoder is derived from the
- * same services the writer uses, so "archives, but the placeholder names a tool
- * nobody bound" has no spelling. A capability whose readers merely fail is of
- * course still constructible — but that failure is legible to the model and the
- * host, which is what the old missing-tool state never was.
- */
 export interface ToolResultArchiveCapability {
   readonly services: ToolResultArchiveServices;
-  readonly archiveReadTool: MakaTool;
 }
 
 export function createToolResultArchiveCapability(
   services: ToolResultArchiveServices,
 ): ToolResultArchiveCapability {
-  return Object.freeze({
-    services: Object.freeze({ ...services }),
-    archiveReadTool: buildArchiveReadTool({
-      readArchivedToolResultResource: services.readArchivedToolResultResource,
-    }),
-  });
+  return Object.freeze({ services: Object.freeze({ ...services }) });
 }
 
-/**
- * Add the decoder to a session's tool set when — and only when — that session
- * archives.
- *
- * No in-tree host binds `ArchiveRead` any more, so the dedup guard exists for
- * tool sets this runtime does not own: an embedder's custom tool, or an agent
- * definition that names it. Such a tool wins, which also means it — not this
- * capability — is what the placeholder's ref will be handed to. Advertising two
- * tools under one name would be worse.
- */
 export function bindToolResultArchiveDecoder(
   tools: readonly MakaTool[],
   capability: ToolResultArchiveCapability | undefined,
 ): MakaTool[] {
   if (!capability) return [...tools];
-  if (tools.some((tool) => tool.name === ARCHIVE_READ_TOOL_NAME)) return [...tools];
-  return [...tools, capability.archiveReadTool];
+  const existing = tools.find((tool) => tool.name === 'Read');
+  const read: MakaTool = {
+    ...existing,
+    name: 'Read',
+    activityKind: 'read',
+    description: existing
+      ? existing.description + ' Also accepts Maka tool-result paths returned in this session.'
+      : 'Read a Maka tool-result address returned in this session. offset and limit are optional zero-based line pagination. Use the returned next object to continue. File access is not available.',
+    parameters: readParameters,
+    impl: async (input, ctx) => {
+      const { path } = resolveReadInput(input);
+      const prefix = 'maka://runtime/tool-results/';
+      if (!path.startsWith(prefix)) {
+        if (existing) return existing.impl(input, ctx);
+        throw new Error(
+          'This Read tool only reads Maka tool-result addresses returned in this session. File access is not available.',
+        );
+      }
+      return readToolResultArchiveResource(
+        capability.services,
+        ctx.sessionId,
+        input,
+        ctx.abortSignal,
+      );
+    },
+  };
+  return [...tools.filter((tool) => tool.name !== 'Read'), read];
 }

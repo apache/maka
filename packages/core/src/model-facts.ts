@@ -19,19 +19,14 @@
 
 import { providerDefaultsOf, type ProviderType } from './provider-registry.js';
 import { isModelModality } from './llm-connections.js';
-import type { ModelFactField, ModelInfo } from './llm-connections.js';
-import {
-  CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION,
-  type ConnectionCatalogEntry,
-  type ConnectionCatalogSnapshot,
-} from './runtime-policy.js';
+import type { ModelInfo } from './llm-connections.js';
 
 export const MODEL_FACTS_SCHEMA_VERSION = 1 as const;
 export const MODEL_FACT_KEY_MAX_LENGTH = 512;
 export const MODEL_FACTS_MAX_OVERRIDES = 512;
 
 export type ModelFactOverride = Readonly<
-  Omit<Partial<Omit<ModelInfo, 'id' | 'modalities' | 'factOverriddenFields'>>, 'modalities'> & {
+  Omit<Partial<Omit<ModelInfo, 'id' | 'modalities'>>, 'modalities'> & {
     readonly modalities?: Readonly<Partial<ModelInfo['modalities']>>;
   }
 >;
@@ -223,113 +218,4 @@ function isPositiveBoundedInteger(value: unknown): value is number {
 }
 function isRecord(value: unknown): value is Record<string, any> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-export function applyModelFactOverride(
-  model: ModelInfo,
-  override: ModelFactOverride | undefined,
-): ModelInfo {
-  if (!override) return { ...model };
-  const overriddenFields = new Set<ModelFactField>(model.factOverriddenFields);
-  for (const field of Object.keys(override) as ModelFactField[]) overriddenFields.add(field);
-  // An authoritative context-window correction must not leave a stale,
-  // narrower provider input limit to silently win in the runtime resolver.
-  if (override.contextWindow !== undefined && override.inputLimit === undefined) {
-    overriddenFields.add('inputLimit');
-  }
-  // Modalities are merged per direction: a partial override changes only the
-  // direction it names and preserves the provider's other direction.
-  const modalities = override.modalities
-    ? {
-        input: override.modalities.input ?? model.modalities?.input ?? ['text'],
-        output: override.modalities.output ?? model.modalities?.output ?? ['text'],
-      }
-    : model.modalities;
-  const { modalities: _ignoredModalities, ...scalarOverride } = override;
-  return {
-    ...model,
-    ...scalarOverride,
-    id: model.id,
-    factOverriddenFields: [...overriddenFields],
-    ...(override.contextWindow === undefined || override.inputLimit !== undefined
-      ? {}
-      : { inputLimit: override.contextWindow }),
-    ...(override.capabilities === undefined
-      ? {}
-      : { capabilities: { ...model.capabilities, ...override.capabilities } }),
-    ...(modalities === undefined ? {} : { modalities }),
-  } satisfies ModelInfo;
-}
-
-type ModelFactConnectionLike = {
-  readonly providerType: ProviderType;
-  readonly defaultModel?: string;
-  readonly models?: readonly ModelInfo[];
-  readonly enabledModelIds?: readonly string[];
-};
-
-export function applyModelFactOverridesToConnection<T extends ModelFactConnectionLike>(
-  connection: T,
-  overrides: ModelFactOverrides,
-): T {
-  const providerModels = (connection.models ?? []).map((model) =>
-    applyModelFactOverride(
-      model,
-      lookupModelFactOverride(overrides, connection.providerType, model.id),
-    ),
-  );
-  const existing = new Set(providerModels.map((model) => model.id));
-  const enabled = new Set(
-    connection.enabledModelIds ??
-      (connection.defaultModel === undefined ? [] : [connection.defaultModel]),
-  );
-  const overrideOnly = [...enabled]
-    .filter((modelId) => !existing.has(modelId))
-    .map(
-      (modelId) =>
-        [modelId, lookupModelFactOverride(overrides, connection.providerType, modelId)] as const,
-    )
-    .filter((entry): entry is readonly [string, ModelFactOverride] => entry[1] !== undefined);
-
-  // Keep enabled models addressable even when the provider inventory fills the
-  // wire bound. Unenabled provider rows are the only entries eligible for
-  // eviction; the persisted inventory remains untouched.
-  const protectedProviderCount = providerModels.filter((model) => enabled.has(model.id)).length;
-  const reserve = Math.min(
-    overrideOnly.length,
-    Math.max(0, CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION - protectedProviderCount),
-  );
-  const targetProviderCount = CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION - reserve;
-  const models = providerModels.slice();
-  while (models.length > targetProviderCount) {
-    let evict = -1;
-    for (let index = models.length - 1; index >= 0; index -= 1) {
-      if (!enabled.has(models[index]!.id)) {
-        evict = index;
-        break;
-      }
-    }
-    if (evict < 0) break;
-    models.splice(evict, 1);
-  }
-  for (const [modelId, override] of overrideOnly.slice(0, reserve)) {
-    models.push(applyModelFactOverride({ id: modelId }, override));
-  }
-  return { ...connection, models } as T;
-}
-
-export function applyModelFactOverridesToCatalogSnapshot(
-  snapshot: ConnectionCatalogSnapshot,
-  overrides: ModelFactOverrides,
-): ConnectionCatalogSnapshot {
-  return {
-    ...snapshot,
-    connections: snapshot.connections.map(
-      (connection) =>
-        applyModelFactOverridesToConnection(
-          connection,
-          overrides,
-        ) as unknown as ConnectionCatalogEntry,
-    ),
-  };
 }

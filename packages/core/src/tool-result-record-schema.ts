@@ -163,6 +163,15 @@ export function decodeCanonicalToolResultContent(value: unknown): ToolResultCont
   return value;
 }
 
+/**
+ * The captions this decoder writes for a retired explore-agent result that
+ * kept no report of its own. They are projection text, not stored text, so a
+ * search over stored records must not be asked to find them; recall strips
+ * whole lines matching this before it matches.
+ */
+export const EXPLORE_AGENT_FALLBACK_TEXT_PATTERN =
+  /^(?:Inspected \d+ files|Historical repository scan result)$/gmu;
+
 export function decodePersistedToolResultContent(
   persisted: PersistedValue<ToolResultContent>,
 ): ToolResultContent {
@@ -247,7 +256,8 @@ function isNonShellToolResultContent(value: unknown): value is ToolResultContent
         isFiniteNumber(value.originalEstimatedTokens) &&
         isFiniteNumber(value.originalBytes) &&
         isFiniteNumber(value.rewriteVersion) &&
-        (value.reason === 'stale_tool_result_pruned_before_compact' ||
+        (value.reason === 'tool_result_pruned' ||
+          value.reason === 'stale_tool_result_pruned_before_compact' ||
           value.reason === 'active_current_turn_tool_result_pruned_before_next_step')
       );
     case 'image':

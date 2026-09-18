@@ -18,10 +18,16 @@
  */
 
 import {
+  EXTERNAL_SESSION_CWD_MAX_BYTES,
+  EXTERNAL_SESSION_LIMIT_KINDS,
+  type ExternalSessionLimit,
+} from '@maka/core/external-session';
+import {
   requireCount,
   requireEncodedByteLimit,
   requireEntityId,
   requireExactRecord,
+  requireRecord,
   requireShapedRecord,
   requireUtf8String,
 } from './codec.js';
@@ -37,12 +43,12 @@ export const EXTERNAL_SESSION_PAGE_MAX_ITEMS = 16;
  *  matcher would accept can always reach it. */
 export const EXTERNAL_SESSION_QUERY_TEXT_MAX_BYTES = 800;
 export const EXTERNAL_SESSION_RESULT_MAX_BYTES = 72 * 1024;
-export const EXTERNAL_SESSION_CWD_MAX_BYTES = 4 * 1024;
+export { EXTERNAL_SESSION_CWD_MAX_BYTES };
 export const EXTERNAL_SESSION_NAME_MAX_BYTES = 320;
 export const EXTERNAL_SESSION_SOURCE_SESSION_ID_MAX_BYTES = 512;
 export const EXTERNAL_SESSION_SOURCE_MAX_ITEMS = 16;
 export const EXTERNAL_SESSION_IMPORTED_SESSION_IDS_MAX_ITEMS = 8;
-const EXTERNAL_SESSION_CURSOR_MAX_BYTES = 32;
+const EXTERNAL_SESSION_CURSOR_MAX_BYTES = 512;
 
 const QUERY_ERRORS = [
   'host_not_ready',
@@ -52,6 +58,7 @@ const QUERY_ERRORS = [
   'persistence_failed',
   'internal_failure',
 ] as const;
+const CATALOG_QUERY_ERRORS = [...QUERY_ERRORS, 'source_limit_exceeded'] as const;
 const IMPORT_ERRORS = [
   ...QUERY_ERRORS,
   'not_found',
@@ -102,9 +109,10 @@ export interface ExternalSessionImportInput {
   readonly sourceSessionId: string;
 }
 
-export interface ExternalSessionImportResult {
-  readonly session: SessionCatalogItem;
-}
+/** A completed import command may refuse the source before any Session is written. */
+export type ExternalSessionImportResult<Session extends SessionCatalogItem = SessionCatalogItem> =
+  | { readonly kind: 'imported'; readonly session: Session }
+  | { readonly kind: 'source_limit_exceeded'; readonly limit: ExternalSessionLimit };
 
 export const EXTERNAL_SESSION_OPERATION_SPECS = {
   'external-session.source.query': defineOperation<
@@ -121,12 +129,12 @@ export const EXTERNAL_SESSION_OPERATION_SPECS = {
   'external-session.catalog.query': defineHostPathOperation<
     ExternalSessionCatalogQueryInput,
     ExternalSessionCatalogQueryResult,
-    (typeof QUERY_ERRORS)[number]
+    (typeof CATALOG_QUERY_ERRORS)[number]
   >(
     {
       mode: 'query',
       availability: 'ready',
-      errors: QUERY_ERRORS,
+      errors: CATALOG_QUERY_ERRORS,
       decodeInput: decodeExternalSessionCatalogQueryInput,
       decodeOutput: decodeExternalSessionCatalogQueryResult,
     },
@@ -232,8 +240,27 @@ export function decodeExternalSessionImportInput(value: unknown): ExternalSessio
 }
 
 export function decodeExternalSessionImportResult(value: unknown): ExternalSessionImportResult {
-  const result = requireExactRecord(value, 'external Session import result', ['session']);
-  const decoded = { session: decodeSessionCatalogItem(result.session) };
+  const result = requireRecord(value, 'external Session import result');
+  if (result.kind === 'source_limit_exceeded') {
+    requireExactRecord(result, 'external Session import limit result', ['kind', 'limit']);
+    const limit = requireExactRecord(result.limit, 'external Session import limit', [
+      'kind',
+      'max',
+    ]);
+    if (!EXTERNAL_SESSION_LIMIT_KINDS.some((kind) => kind === limit.kind)) {
+      throw invalidProtocolFrame('Invalid external Session import limit kind');
+    }
+    const max = requireCount(limit.max, 'external Session import limit maximum');
+    if (max === 0) throw invalidProtocolFrame('Invalid external Session import limit maximum');
+    return {
+      kind: 'source_limit_exceeded',
+      limit: { kind: limit.kind as ExternalSessionLimit['kind'], max },
+    };
+  }
+  if (result.kind !== 'imported')
+    throw invalidProtocolFrame('Invalid external Session import result kind');
+  requireExactRecord(result, 'external Session import result', ['kind', 'session']);
+  const decoded = { kind: 'imported' as const, session: decodeSessionCatalogItem(result.session) };
   requireEncodedByteLimit(
     decoded,
     'external Session import result',
@@ -328,7 +355,7 @@ function cursor(value: unknown): string {
     'external Session cursor',
     EXTERNAL_SESSION_CURSOR_MAX_BYTES,
   );
-  if (!/^\d+$/.test(decoded) || !Number.isSafeInteger(Number(decoded))) {
+  if (!/^[A-Za-z0-9][A-Za-z0-9:_-]*$/.test(decoded)) {
     throw invalidProtocolFrame('Invalid external Session cursor');
   }
   return decoded;

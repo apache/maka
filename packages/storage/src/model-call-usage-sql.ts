@@ -40,7 +40,7 @@ export const CACHE_READ_TOKENS = `
  */
 export const PRICED_COST = `CASE WHEN cost_basis = 'priced' THEN COALESCE(cost_usd, 0) ELSE 0 END`;
 
-/** Mirrors `usageStatusForAttempt`: only a provider failure is an error. */
+/** Only a provider failure is an error. */
 const ERROR_ROW = `status = 'failed'`;
 
 export const TOKEN_SUMS = `

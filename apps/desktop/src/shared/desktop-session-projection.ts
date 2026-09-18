@@ -48,6 +48,16 @@ export interface DesktopSessionSummary extends SessionSummary {
 
 export type DesktopSessionSummaryInput = SessionSummary & { readonly revision: number; readonly localState?: 'pending' | 'cached'; readonly localCreatedAt?: number };
 
+export type DesktopSessionUpdateFailureCode =
+  | 'session_busy'
+  | 'operation_conflict'
+  | 'operation_unavailable'
+  | 'not_found';
+
+export type DesktopSessionUpdateResult<Session> =
+  | { readonly ok: true; readonly session: Session }
+  | { readonly ok: false; readonly code: DesktopSessionUpdateFailureCode };
+
 export interface DesktopSessionHost extends DesktopHostRef {
   readonly profileId: string;
   readonly profileName: string;
@@ -132,6 +142,17 @@ export function projectDesktopStoredMessage(
         : message;
     case 'workhub_coordination':
       if (message.kind === 'delegation_superseded') return message;
+      if (message.kind === 'action_receipt') {
+        const result = message.receipt.result;
+        if (!('targetSessionId' in result)) return message;
+        return {
+          ...message,
+          receipt: {
+            ...message.receipt,
+            result: { ...result, targetSessionId: projectSessionId(host, result.targetSessionId) },
+          },
+        };
+      }
       return {
         ...message,
         targetSessionId: projectSessionId(host, message.targetSessionId),
@@ -252,17 +273,18 @@ export function projectDesktopDailyReviewSummary(
   };
 }
 
-export function projectDesktopUsageStats(
+export function projectDesktopUsageActivity(
   host: DesktopHostRef,
-  stats: UsageStats,
-): UsageStats {
-  return {
-    ...stats,
-    logs: stats.logs.map((log) => ({
-      ...log,
-      ...(log.sessionId === undefined
-        ? {}
-        : { sessionId: projectSessionId(host, log.sessionId) }),
-    })),
-  };
+  logs: UsageStats['logs'],
+): UsageStats['logs'] {
+  return logs.map((log) => ({
+    ...log,
+    ...(log.sessionId === undefined
+      ? {}
+      : { sessionId: projectSessionId(host, log.sessionId) }),
+  }));
+}
+
+export function projectDesktopUsageStats(host: DesktopHostRef, stats: UsageStats): UsageStats {
+  return { ...stats, logs: projectDesktopUsageActivity(host, stats.logs) };
 }

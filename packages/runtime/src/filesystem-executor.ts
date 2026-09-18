@@ -29,6 +29,7 @@
 // "full access" stricter than ask mode, which grants :slash_tmp outright (#2083).
 
 import { Buffer } from 'node:buffer';
+import { readPage } from './read-page.js';
 import { lstat, realpath, stat } from 'node:fs/promises';
 import { isAbsolute } from 'node:path';
 import type { ExecutionBoundary } from '@maka/core/sandbox-boundary';
@@ -50,7 +51,7 @@ import type {
 } from './filesystem-worker/client.js';
 import { isSupportedImagePath, type ImageMimeType } from './image-file.js';
 import type { FilesystemWorkerResult } from './filesystem-worker/protocol.js';
-import { operationAccess } from './filesystem-worker/protocol.js';
+import { FilesystemWorkerOperationSchema, operationAccess } from './filesystem-worker/protocol.js';
 import { resolveCanonicalDirectoryEntryTarget } from './path-containment.js';
 import { normalizeSandboxBoundaryPath } from './sandbox-boundary-path.js';
 import { SandboxCommandError } from './sandbox/errors.js';
@@ -210,6 +211,8 @@ export function createBoundaryFilesystemExecutor(
     call: FilesystemBackendExecuteInput,
     expectedIdentity?: FilesystemTargetIdentity,
   ): Promise<FilesystemResult> {
+    if (call.operation.kind === 'read')
+      FilesystemWorkerOperationSchema.parse({ ...call.operation, cwd: call.cwd });
     const worker = workerFor(call.executionBoundary);
     if (!worker) {
       // The local backend consumes the same identity authority as the worker
@@ -390,13 +393,14 @@ function createWorkspaceFilesystemExecutor(
           const result = await workspace.readFile({
             cwd,
             path,
-            ...(operation.offset !== undefined ? { offset: operation.offset } : {}),
-            ...(operation.limit !== undefined ? { limit: operation.limit } : {}),
           });
           if ('bytes' in result) {
             return { kind: 'read_image', bytes: result.bytes, mimeType: result.mimeType };
           }
-          return { kind: 'read', content: result.content };
+          return {
+            kind: 'read',
+            ...readPage(result.content, operation, undefined, operation.continuation),
+          };
         }
         case 'write': {
           const { path } = await workspace.resolveWritablePath({
@@ -675,7 +679,7 @@ function createWorkspaceFilesystemExecutor(
             label: 'Grep',
             scope,
           });
-          const { matches } = await workspace.grepFiles({
+          const result = await workspace.grepFiles({
             cwd,
             pattern: operation.pattern,
             path,
@@ -685,7 +689,7 @@ function createWorkspaceFilesystemExecutor(
             timeoutMs: operation.timeoutMs,
             ...(abortSignal ? { abortSignal } : {}),
           });
-          return { kind: 'grep', matches };
+          return { kind: 'grep', ...result };
         }
       }
     },

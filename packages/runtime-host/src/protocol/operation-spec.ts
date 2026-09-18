@@ -28,13 +28,18 @@ export type HostOperationErrorCode =
   | 'not_found'
   | 'session_archived'
   | 'session_busy'
+  | 'transcript_preparing'
+  | 'candidate_set_stale'
   | 'operation_conflict'
   | 'capability_unavailable'
+  | 'slug_taken'
   | 'invalid_request'
   // External-session import: no usable model connection to attach the task to.
   | 'model_unavailable'
   // External-session import: the source could not be read or converted.
   | 'source_unreadable'
+  // External-session catalog: the source exceeds an adapter-owned read bound.
+  | 'source_limit_exceeded'
   | 'projection_incomplete'
   | 'stale_cursor'
   | 'persistence_failed'

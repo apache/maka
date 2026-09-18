@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { deferred, waitFor } from '@maka/core/test-only/async-primitives';
+import { deferred, type Deferred, waitFor } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -29,9 +29,17 @@ import { promisify } from 'node:util';
 import { test } from 'node:test';
 import { z } from 'zod';
 import {
+  DEFAULT_BASH_TIMEOUT_MS,
+  MAX_FOREGROUND_BASH_TIMEOUT_MS,
+} from '@maka/runtime/shell-run-contract';
+import {
   clientCapabilityConnectionIdentity,
   clientCapabilityCoordinatorTestAdmission,
 } from './fixtures/client-capability.js';
+import {
+  WORKHUB_BROWSER_TOOL_NAMES,
+  workHubDesktopCapabilityOffers,
+} from './fixtures/workhub-capabilities.js';
 import {
   createBypassExecutionBoundary,
   createManagedExecutionBoundary,
@@ -44,6 +52,8 @@ import {
   decodeRunCompositionSnapshot,
 } from '@maka/core/run-composition';
 import { readInvocation, testInvocationRecord } from '@maka/runtime/test-only/invocation-fixture';
+import { WORKHUB_COORDINATION_SESSION_ID } from '@maka/core/session';
+import { messageContentDigest } from '@maka/core/events';
 import { runtimeInvocationOutcome } from '@maka/core/runtime-invocation';
 import { agentRunCompositionFromEvents } from '@maka/core/agent-run';
 import type { BackendCompactHistoryInput } from '@maka/core/backend-types';
@@ -97,11 +107,11 @@ import {
   createHostGoalEvaluator,
   createHostMemoryExtractionModel,
   createHostSessionEffectModel,
+  createHostWorkHubRoutingModel,
 } from '../server/execution-model-authority.js';
 import {
   createHostAiSdkBackend,
   prepareHostAiSdkBackend,
-  resolveCollaborationPermissionMode,
   type HostAiSdkBackendInput,
 } from '../server/execution-model-composition.js';
 import {
@@ -149,8 +159,7 @@ const MAX_IMPLEMENTATION_CHILD_REQUESTS =
 const HEADLESS_CODING_V1_PROMPT_HASH =
   'sha256:b2773282ac4755dc8d8a663eafdec68c3fa6f5680ec8557d261b5f723672b467';
 const HEADLESS_CODING_V1_TOOLS_HASH =
-  // ArchiveRead now describes both ledger and legacy resource references.
-  'sha256:22809de022f9c46186cae986eda23438efe9dbe6856b57abb0613ea48b51ad9c';
+  'sha256:9ef90b13f64829ae5baba777e929177838b59c9ed73e12a8c0b24c418ea2e473';
 const execFileAsync = promisify(execFile);
 test('backend creation resolves a bound Session by immutable Connection identity', async () => {
   let observedRef: unknown;
@@ -519,6 +528,337 @@ test('production Host executes Bash against the current live sandbox boundary', 
     }
   }
 });
+
+test('permission widening through the Host reaches the next ordinary Turn tool call', async () => {
+  await runPermissionUpdateHostRegression('ordinary_session');
+});
+
+test('permission widening through the Host reaches a tool call in an active Goal continuation', async () => {
+  await runPermissionUpdateHostRegression('active_goal');
+});
+
+async function runPermissionUpdateHostRegression(
+  scenario: 'ordinary_session' | 'active_goal',
+): Promise<void> {
+  const scenarioSlug = scenario.replace('_', '-');
+  const base = await mkdtemp(join(tmpdir(), `maka-host-permission-${scenario}-`));
+  const root = join(base, 'interactive');
+  const project = join(base, 'project');
+  const provider = await startProvider();
+  const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(owner);
+  if (!owner) return;
+  const context: ConnectionContext = {
+    hostEpoch: `permission-${scenario}-epoch`,
+    connectionId: `permission-${scenario}-client`,
+    principal: 'local_os_user',
+    acquireResidency: () => ({ release() {} }),
+  };
+  const capabilityConnectionId = `permission-${scenario}-capability`;
+  const capabilityContext: ConnectionContext = {
+    ...context,
+    connectionId: capabilityConnectionId,
+  };
+  const calls: Array<Extract<ClientCapabilityHostFrame, { kind: 'client.capability.call' }>> = [];
+  let admitted = 0;
+  let composition: Awaited<ReturnType<typeof createExecutionRuntimeHostComposition>> | undefined;
+  let capabilityConnection:
+    | ReturnType<HostClientCapabilityCoordinator['attachConnection']>
+    | undefined;
+  let releaseActiveRequest: (() => void) | undefined;
+  try {
+    await mkdir(project);
+    const policy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+    const created = await policy.connectionCatalog.create({
+      expectedCatalogRevision: 0,
+      connection: {
+        slug: `permission-${scenarioSlug}-provider`,
+        name: `Permission ${scenario} provider`,
+        providerType: 'moonshot',
+        baseUrl: provider.baseUrl,
+        enabled: true,
+        enabledModelIds: [MODEL_ID],
+      },
+    });
+    assert.equal(created.kind, 'committed');
+    if (created.kind !== 'committed') return;
+    const modelConnection = created.snapshot.connections[0];
+    assert.ok(modelConnection);
+    if (!modelConnection) return;
+    assert.equal(
+      (
+        await policy.credentialVault.set({
+          locator: {
+            scope: 'connection',
+            connectionId: modelConnection.connectionId,
+            kind: 'api_key',
+          },
+          expected: null,
+          secret: API_KEY,
+        })
+      ).kind,
+      'committed',
+    );
+    await publishConnectionModel(policy, modelConnection.connectionId, MODEL_ID, 32_768);
+
+    const execution = await openInteractiveExecutionStoresForWrite(owner.lease);
+    const session = await execution.sessionStore.create({
+      cwd: project,
+      llmConnectionId: modelConnection.connectionId,
+      llmConnectionSlug: `permission-${scenarioSlug}-provider`,
+      model: MODEL_ID,
+      permissionMode: 'explore',
+    });
+    composition = await createExecutionRuntimeHostComposition({
+      owner,
+      hostEpoch: context.hostEpoch,
+      acquireResidency: context.acquireResidency,
+      retainUntilProcessExit: () => undefined,
+      requestDrain: () => undefined,
+    });
+    await composition.recover();
+    const clientCapabilities = composition.clientCapabilities as
+      | HostClientCapabilityCoordinator
+      | undefined;
+    assert.ok(clientCapabilities);
+    if (!clientCapabilities) return;
+
+    capabilityConnection = clientCapabilities.attachConnection(
+      clientCapabilityConnectionIdentity(capabilityConnectionId),
+      {
+        send: async (frame) => {
+          if (frame.kind === 'client.capability.call') {
+            calls.push(frame);
+            queueMicrotask(() => {
+              capabilityConnection?.accept({
+                kind: 'client.capability.accepted',
+                invocationId: frame.invocationId,
+                admissionEvidence: { kind: 'none' },
+              });
+            });
+          } else if (frame.kind === 'client.capability.admitted') {
+            admitted += 1;
+            queueMicrotask(() => {
+              capabilityConnection?.accept({
+                kind: 'client.capability.result',
+                invocationId: frame.invocationId,
+                result: {
+                  content: [{ type: 'text', text: CLIENT_CAPABILITY_RESULT_TEXT }],
+                },
+              });
+            });
+          }
+        },
+      },
+    );
+    const registered = await composition.handlers['client.capability.replace'](
+      {
+        registrationId: `permission-${scenario}-registration`,
+        offers: [
+          {
+            offerId: 'hosted-browser',
+            version: '0',
+            affinity: 'session',
+            hostPathAccess: 'cwd',
+            label: 'Hosted Browser',
+            tools: [
+              {
+                serverId: 'hosted_browser',
+                name: 'navigate',
+                description: 'Navigate the hosted browser.',
+                inputSchema: {
+                  type: 'object',
+                  properties: { url: { type: 'string' } },
+                  required: ['url'],
+                  additionalProperties: false,
+                },
+              },
+            ],
+          },
+        ],
+      },
+      capabilityContext,
+    );
+    assert.equal(registered.ok, true);
+    assert.deepEqual(await clientCapabilities.bindSession(session.id, capabilityConnectionId), {
+      ok: true,
+    });
+    const snapshot = clientCapabilities.snapshotForSession(session.id);
+    assert.ok(snapshot);
+    if (!snapshot) return;
+    const group = snapshot.groups[0];
+    const tool = snapshot.tools[0];
+    snapshot.release();
+    assert.ok(group);
+    assert.ok(tool);
+    if (!group || !tool) return;
+    const providerControl = provider.configurePermissionUpdateFlow({
+      scenario,
+      groupId: group.id,
+      toolName: tool.name,
+    });
+    releaseActiveRequest = providerControl.releaseActiveRequest;
+
+    let exercisedRunId: string;
+    if (scenario === 'ordinary_session') {
+      const firstTurnId = 'permission-ordinary-running-turn';
+      const firstStarted = await startTurn(
+        composition,
+        session.id,
+        firstTurnId,
+        'Keep this Turn active while permission changes.',
+        context,
+      );
+      await settleWithin(providerControl.activeRequestStarted);
+      await commitBypassPermissionUpdate(composition, execution, session.id, context);
+      providerControl.releaseActiveRequest();
+      const firstTerminal = await waitForTerminal(
+        composition,
+        session.id,
+        firstTurnId,
+        firstStarted,
+        context,
+      );
+      assert.equal(firstTerminal.status, 'completed');
+
+      const nextTurnId = 'permission-ordinary-next-turn';
+      const nextTerminal = await waitForTerminal(
+        composition,
+        session.id,
+        nextTurnId,
+        await startTurn(
+          composition,
+          session.id,
+          nextTurnId,
+          'Use the connected browser capability.',
+          context,
+        ),
+        context,
+      );
+      assert.equal(nextTerminal.status, 'completed');
+      exercisedRunId = nextTerminal.runId;
+    } else {
+      const armed = await composition.handlers['goal.arm'](
+        {
+          sessionId: session.id,
+          condition: 'Use the connected browser capability once.',
+          maxIterations: 3,
+          tokenBudget: null,
+        },
+        context,
+      );
+      assert.equal(armed.ok, true);
+      if (!armed.ok) return;
+      const carryingTurnId = 'permission-goal-carrying-turn';
+      const carryingStarted = await startTurn(
+        composition,
+        session.id,
+        carryingTurnId,
+        'Begin the active Goal.',
+        context,
+      );
+      const carryingTerminal = waitForTerminal(
+        composition,
+        session.id,
+        carryingTurnId,
+        carryingStarted,
+        context,
+      );
+      await settleWithin(providerControl.activeRequestStarted);
+      assert.equal((await carryingTerminal).status, 'completed');
+      const activeGoalRun = (
+        await execution.runtimeEventStore.listSessionInvocations(session.id)
+      ).find(
+        (run) =>
+          run.terminalEvent === undefined &&
+          run.opening.root.kind === 'goal' &&
+          run.opening.root.goalId === armed.result.goal.goalId,
+      );
+      assert.ok(activeGoalRun, 'Goal continuation did not hold an active Run');
+      if (!activeGoalRun) return;
+      assert.equal(activeGoalRun.opening.configuration.permissionMode, 'explore');
+      exercisedRunId = activeGoalRun.runId;
+
+      await commitBypassPermissionUpdate(composition, execution, session.id, context);
+      providerControl.releaseActiveRequest();
+      await waitForGoalStatus(composition, session.id, 'achieved', context);
+    }
+
+    assert.equal((await execution.sessionStore.readHeader(session.id)).permissionMode, 'bypass');
+    assert.equal((await execution.sessionStore.readExecutionBoundary(session.id)).kind, 'bypass');
+    assert.equal(admitted, 1);
+    assert.equal(calls.length, 1);
+    assert.deepEqual(calls[0]?.arguments, {
+      url: 'https://example.test/permission-update',
+    });
+    const events = await execution.runtimeEventStore.readRuntimeEvents(session.id, exercisedRunId);
+    assert.ok(
+      events.some(
+        (event) =>
+          event.content?.kind === 'function_response' &&
+          event.content.name === tool.name &&
+          JSON.stringify(event.content.result).includes(CLIENT_CAPABILITY_RESULT_TEXT),
+      ),
+    );
+  } finally {
+    releaseActiveRequest?.();
+    try {
+      await capabilityConnection?.close();
+    } finally {
+      try {
+        await composition?.close();
+      } finally {
+        try {
+          await owner.close();
+        } finally {
+          try {
+            await provider.close();
+          } finally {
+            await rm(base, { recursive: true, force: true });
+          }
+        }
+      }
+    }
+  }
+}
+
+async function commitBypassPermissionUpdate(
+  composition: Awaited<ReturnType<typeof createExecutionRuntimeHostComposition>>,
+  execution: Awaited<ReturnType<typeof openInteractiveExecutionStoresForWrite>>,
+  sessionId: string,
+  context: ConnectionContext,
+): Promise<void> {
+  const current = await execution.sessionStore.readHeaderRecordSnapshot(sessionId);
+  const updated = await composition.handlers['session.configuration.update'](
+    {
+      sessionId,
+      expectedRevision: current.revision,
+      patch: { permissionMode: 'bypass' },
+    },
+    context,
+  );
+  assert.equal(updated.ok, true, JSON.stringify(updated));
+  if (!updated.ok) return;
+  assert.equal(updated.result.kind, 'committed');
+  if (updated.result.kind !== 'committed' || 'kind' in updated.result.session) return;
+  assert.equal(updated.result.session.permissionMode, 'bypass');
+}
+
+async function waitForGoalStatus(
+  composition: Awaited<ReturnType<typeof createExecutionRuntimeHostComposition>>,
+  sessionId: string,
+  status: 'achieved',
+  context: ConnectionContext,
+): Promise<void> {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const queried = await composition.handlers['goal.query']({ sessionId }, context);
+    assert.equal(queried.ok, true);
+    if (queried.ok && queried.result.goal?.status === status) return;
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`Hosted Goal did not reach ${status}`);
+}
 
 test('backend creation admits the enabled bootstrap DeepSeek model before discovery', async () => {
   const modelId = 'deepseek-v4-flash';
@@ -1064,6 +1404,7 @@ test('Codex OAuth history compaction falls back to a text checkpoint after nativ
             id: modelId,
             capabilities: { chat: true, functionCalling: true },
             contextWindow: 32_768,
+            inputLimit: 31_744,
             maxOutputTokens: 1_024,
           },
         ],
@@ -1787,6 +2128,367 @@ test('production backend preserves coordinator Client Capability semantics acros
   }
 });
 
+test('cold WorkHub recovery waits for Desktop tools across pending-message and admitted-root crash cuts', {
+  timeout: 30_000,
+}, async () => {
+  for (const crashCut of ['pending-message', 'admitted-root'] as const) {
+    const base = await mkdtemp(join(tmpdir(), 'maka-workhub-cold-recovery-'));
+    const root = join(base, 'interactive');
+    const provider = await startProvider();
+    const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+    let owner = await tryAcquireInteractiveRootOwner(capability);
+    assert.ok(owner);
+    const residencies = new HostResidencyRegistry();
+    const sessionId = WORKHUB_COORDINATION_SESSION_ID;
+    const context: ConnectionContext = {
+      hostEpoch: 'workhub-recovery-epoch',
+      connectionId: 'desktop',
+      principal: 'local_os_user',
+      acquireResidency: () => residencies.acquire('operation'),
+    };
+    let composition: Awaited<ReturnType<typeof createExecutionRuntimeHostComposition>> | undefined;
+    let drained = false;
+    const routingInputs: Array<{ turnId: string; userText: string }> = [];
+    const createComposition = () =>
+      createExecutionRuntimeHostComposition(
+        {
+          owner: owner!,
+          hostEpoch: context.hostEpoch,
+          acquireResidency: (label) => residencies.acquire(label),
+          retainUntilProcessExit: () => undefined,
+          requestDrain: () => {
+            drained = true;
+            composition?.beginDrain();
+          },
+          waitForResidencies: () => residencies.waitForEmpty(),
+          waitForResidenciesExcept: (label) => residencies.waitForEmptyExcept(label),
+        },
+        { bootstrapRuntimePolicy: false },
+        {
+          workHubRoutingModel: {
+            decide: async ({ turnId, userText }) => {
+              routingInputs.push({ turnId, userText });
+              return { kind: 'routing', disposition: 'answer_here' };
+            },
+          },
+        },
+      );
+    const registerDesktop = async (
+      registrationId: string,
+      names: string[],
+      connectionId = context.connectionId,
+      handlers: Pick<
+        HostClientCapabilityCoordinator['handlers'],
+        'client.capability.replace'
+      > = composition!.handlers,
+    ) => {
+      const result = await handlers['client.capability.replace'](
+        {
+          registrationId,
+          offers: workHubDesktopCapabilityOffers(names),
+        },
+        { ...context, connectionId },
+      );
+      assert.ok(result.ok, JSON.stringify(result));
+    };
+    try {
+      const policy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+      const created = await policy.connectionCatalog.create({
+        expectedCatalogRevision: 0,
+        connection: {
+          slug: 'recovery-deepseek',
+          name: 'Recovery DeepSeek',
+          providerType: 'deepseek',
+          baseUrl: provider.baseUrl,
+          enabled: true,
+          enabledModelIds: ['deepseek-v4-flash'],
+        },
+      });
+      assert.equal(created.kind, 'committed');
+      if (created.kind !== 'committed') throw new Error('Connection creation failed');
+      const connectionId = created.snapshot.connections[0]!.connectionId;
+      await policy.credentialVault.set({
+        locator: { scope: 'connection', connectionId, kind: 'api_key' },
+        expected: null,
+        secret: API_KEY,
+      });
+      await publishConnectionModel(policy, connectionId, 'deepseek-v4-flash');
+      const catalog = await policy.connectionCatalog.getSnapshot();
+      const selected = await policy.connectionCatalog.setDefaultTarget({
+        expectedCatalogRevision: catalog.revision,
+        target: { connectionId, modelId: 'deepseek-v4-flash' },
+      });
+      assert.equal(selected.kind, 'committed');
+      composition = await createComposition();
+      await composition.recover();
+      const capabilities = composition.clientCapabilities;
+      assert.ok(capabilities instanceof HostClientCapabilityCoordinator);
+      const desktop = capabilities.attachConnection(clientCapabilityConnectionIdentity('desktop'), {
+        send: async () => {},
+      });
+      await registerDesktop('before-crash', ['control', 'tasks']);
+      // Disconnect after binding succeeds, before its caller can admit the root.
+      // Reconnect only after admission, before the real backend composes tools.
+      const bindSession = capabilities.bindSession.bind(capabilities);
+      let disconnected = false;
+      capabilities.bindSession = async (...args) => {
+        const result = await bindSession(...args);
+        if (args[0] === sessionId && !disconnected) {
+          assert.ok(result.ok);
+          await desktop.close();
+          assert.equal(capabilities.snapshotForSession(sessionId), undefined);
+          disconnected = true;
+        }
+        return result;
+      };
+      const bindDurableRoot = capabilities.bindDurableRoot.bind(capabilities);
+      let reconnected = false;
+      capabilities.bindDurableRoot = async (input) => {
+        if (input.sessionId === sessionId && disconnected && !reconnected) {
+          capabilities.attachConnection(clientCapabilityConnectionIdentity('desktop'), {
+            send: async () => {},
+          });
+          // Avoid the public replacement handler's pending-admission retry while
+          // this admission is still preparing its backend.
+          await registerDesktop(
+            'reconnected',
+            ['control', 'tasks'],
+            'desktop',
+            capabilities.handlers,
+          );
+          reconnected = true;
+        }
+        await bindDurableRoot(input);
+      };
+      const resolved = await composition.handlers['workhub.coordination.resolve']({}, context);
+      assert.ok(resolved.ok, JSON.stringify(resolved));
+      const initialTurnId = randomUUID();
+      const started = await composition.handlers['workhub.coordination.answer'](
+        { turnId: initialTurnId, text: 'Initial request' },
+        context,
+      );
+      assert.ok(started.ok, JSON.stringify(started));
+      const initial = await composition.handlers['turn.query'](
+        { sessionId, turnId: initialTurnId },
+        context,
+      );
+      assert.ok(initial.ok, JSON.stringify(initial));
+      const terminal = await waitForTerminal(
+        composition,
+        sessionId,
+        initialTurnId,
+        initial.result,
+        context,
+      );
+      assert.equal(terminal.status, 'completed');
+      assert.equal(disconnected && reconnected, true);
+      await composition.close();
+      composition = undefined;
+      await owner.close();
+      owner = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(owner);
+
+      // The terminal root is durable; the successor may or may not have
+      // committed its root admission when the process stops.
+      const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+      const prior = await stores.agentRunStore.readRootTurnAdmission(sessionId, initialTurnId);
+      assert.ok(
+        prior?.execution.kind === 'workhub_coordination' && prior.execution.capabilityBinding,
+      );
+      const capabilityBinding = prior.execution.capabilityBinding;
+      const content = { text: 'Recovered follow-up' };
+      const messageId = randomUUID();
+      const digest = messageContentDigest(content);
+      await stores.sessionStore.commitMessageAdmission({
+        sessionId,
+        turnId: initialTurnId,
+        runId: terminal.runId,
+        messageId,
+        content,
+        submittedContentDigest: digest,
+        placement: 'next_turn',
+        submittedPlacement: 'next_turn',
+        disposition: 'followup',
+        skillInvocation: { loaded: [], failed: [], receipts: [] },
+        admittedAt: Date.now(),
+      });
+      if (crashCut === 'admitted-root') {
+        await stores.agentRunStore.admitRootTurn({
+          sessionId,
+          turnId: randomUUID(),
+          proposedRunId: randomUUID(),
+          previousRootTurnId: initialTurnId,
+          proposedUserMessageId: messageId,
+          execution: {
+            kind: 'workhub_coordination',
+            inputDigest: digest,
+            capabilityBinding,
+            routingDecision: { kind: 'routing', disposition: 'answer_here' },
+          },
+          normalizedInput: content,
+          sourceMessages: [
+            {
+              messageId,
+              content,
+              submittedContentDigest: digest,
+              submittedPlacement: 'next_turn',
+              skillInvocation: { loaded: [], failed: [], receipts: [] },
+              placement: 'next_turn',
+              disposition: 'followup',
+            },
+          ],
+          admittedAt: Date.now(),
+        });
+      }
+      routingInputs.length = 0;
+      const requestsBeforeRecovery = provider.requests.length;
+      composition = await createComposition();
+      await composition.recover();
+      assert.equal(drained, false, 'Host recovery reaches ready without a Desktop');
+      assert.equal(provider.requests.length, requestsBeforeRecovery);
+      const recoveredCapabilities = composition.clientCapabilities;
+      assert.ok(recoveredCapabilities instanceof HostClientCapabilityCoordinator);
+      const hostileFrames: ClientCapabilityHostFrame[] = [];
+      composition.clientCapabilities!.attachConnection(
+        clientCapabilityConnectionIdentity(
+          'hostile',
+          'unrelated-client',
+          'unrelated-principal',
+          'capability_provider',
+          { principalId: 'unrelated-owner', clientInstanceId: 'unrelated-desktop' },
+        ),
+        {
+          send: async (frame) => {
+            hostileFrames.push(frame);
+          },
+        },
+      );
+      await registerDesktop('hostile-reg', ['control', 'tasks'], 'hostile');
+      assert.equal(
+        provider.requests.length,
+        requestsBeforeRecovery,
+        'an unrelated provider cannot activate the recovered Turn',
+      );
+      assert.equal(recoveredCapabilities.snapshotForSession(sessionId), undefined);
+
+      composition.clientCapabilities!.attachConnection(
+        clientCapabilityConnectionIdentity('desktop'),
+        { send: async () => {} },
+      );
+      await registerDesktop('incomplete-desktop', ['control']);
+      assert.equal(
+        provider.requests.length,
+        requestsBeforeRecovery,
+        'one missing required tool keeps the successor durable and pending',
+      );
+      await registerDesktop('capable-desktop', ['control', 'tasks']);
+      const recoveredStores = await openInteractiveExecutionStoresForWrite(owner.lease);
+      await waitFor(
+        async () => {
+          const admissions =
+            await recoveredStores.agentRunStore.listRootTurnAdmissionsForRecovery(sessionId);
+          const successor = admissions.at(-1);
+          if (!successor || successor.turnId === initialTurnId) return false;
+          const query = await composition!.handlers['turn.query'](
+            { sessionId, turnId: successor.turnId },
+            context,
+          );
+          return query.ok && query.result.status === 'completed';
+        },
+        { timeoutMs: 5_000, pollMs: 10 },
+      );
+      const requests = provider.requests
+        .slice(requestsBeforeRecovery)
+        .filter((request) => Array.isArray(request.body.tools));
+      assert.equal(requests.length, 1, 'the recovered successor executes exactly once');
+      for (const name of [
+        'mcp__desktop_workhub__control',
+        'mcp__desktop_workhub__tasks',
+        ...WORKHUB_BROWSER_TOOL_NAMES.map((name) => `mcp__desktop_browser__${name}`),
+      ]) {
+        assert.ok(responsesToolNames(requests[0]?.body).includes(name));
+      }
+      const users = (await readLedgerMessages(recoveredStores.runtimeEventStore, sessionId)).filter(
+        (message) => message.type === 'user',
+      );
+      assert.deepEqual(
+        users.map((message) => message.text),
+        ['Initial request', 'Recovered follow-up'],
+      );
+      assert.equal(
+        hostileFrames.some((frame) => frame.kind === 'client.capability.call'),
+        false,
+      );
+      const snapshot = recoveredCapabilities.snapshotForSession(sessionId);
+      assert.deepEqual(snapshot?.registrationIds, ['capable-desktop']);
+      snapshot?.release();
+      const admissions =
+        await recoveredStores.agentRunStore.listRootTurnAdmissionsForRecovery(sessionId);
+      const successor = admissions.at(-1)!;
+      assert.ok(successor.execution.kind === 'workhub_coordination');
+      assert.equal(successor.execution.capabilityBinding, capabilityBinding);
+      assert.deepEqual(
+        routingInputs.map(({ userText }) => userText),
+        crashCut === 'pending-message' ? ['Recovered follow-up'] : [],
+        'only a not-yet-admitted recovered Message receives a fresh routing decision',
+      );
+      assert.deepEqual(successor.execution.routingDecision, {
+        kind: 'routing',
+        disposition: 'answer_here',
+      });
+      if (crashCut === 'pending-message') {
+        // The recovered WorkHub keeps its permanent Session but new turns
+        // must follow the current switch rather than its creation-time default.
+        const currentPolicy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+        const originalMode = (await recoveredStores.sessionStore.readHeader(sessionId)).toolMode;
+        for (const enabled of [true, false]) {
+          const snapshot = await currentPolicy.runtimePolicy.getSnapshot();
+          const changed = await currentPolicy.runtimePolicy.mutate({
+            expectedRevision: snapshot.revision,
+            operation: {
+              kind: 'set_chat_defaults',
+              value: { ...snapshot.policy.chatDefaults, codeModeEnabled: enabled },
+            },
+          });
+          assert.equal(changed.kind, 'committed');
+          const turnId = randomUUID();
+          const started = await composition.handlers['workhub.coordination.answer'](
+            { turnId, text: `Code Mode ${enabled ? 'on' : 'off'}` },
+            context,
+          );
+          assert.ok(started.ok, JSON.stringify(started));
+          const query = await composition.handlers['turn.query']({ sessionId, turnId }, context);
+          assert.ok(query.ok, JSON.stringify(query));
+          const terminal = await waitForTerminal(
+            composition,
+            sessionId,
+            turnId,
+            query.result,
+            context,
+          );
+          assert.equal(terminal.status, 'completed');
+          const run = await readInvocation(recoveredStores, sessionId, terminal.runId!);
+          assert.equal(run.opening.configuration.toolMode, enabled ? 'code_mode' : 'direct');
+          assert.equal(
+            responsesToolNames(provider.requests.at(-1)?.body).includes('exec'),
+            enabled,
+          );
+          assert.equal(
+            (await recoveredStores.sessionStore.readHeader(sessionId)).toolMode,
+            originalMode,
+          );
+        }
+      }
+      assert.equal(drained, false);
+    } finally {
+      await composition?.close();
+      await owner?.close();
+      await provider.close();
+      await rm(base, { recursive: true, force: true });
+    }
+  }
+});
+
 test('hosted execution freezes the headless coding provider wire contract', async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-hosted-profile-wire-'));
   const root = join(base, 'interactive');
@@ -1884,17 +2586,32 @@ test('hosted execution freezes the headless coding provider wire contract', asyn
     assert.equal(stableHash(instructions), HEADLESS_CODING_V1_PROMPT_HASH);
     assert.equal(stableHash(tools), HEADLESS_CODING_V1_TOOLS_HASH);
     assert.deepEqual(responsesToolNames(request?.body), [
-      'ArchiveRead',
       'Bash',
       'Edit',
       'Glob',
       'Grep',
       'Read',
+      'StopBackgroundTask',
       'Write',
+      'WriteStdin',
     ]);
     const bash = (tools as Array<Record<string, unknown>>).find((tool) => tool.name === 'Bash');
     assert.ok(bash);
-    assert.doesNotMatch(JSON.stringify(bash), /run_in_background|pty/u);
+    // The Eval session runs with Full access: the product Bash, minus the
+    // boundary declaration that Full access has nothing to enforce.
+    assert.deepEqual(
+      Object.keys((bash.parameters as { properties: Record<string, unknown> }).properties),
+      ['command', 'timeout_ms', 'run_in_background', 'pty'],
+    );
+    assert.match(
+      String(bash.description),
+      new RegExp(
+        `timeout ${DEFAULT_BASH_TIMEOUT_MS}ms, maximum ${MAX_FOREGROUND_BASH_TIMEOUT_MS}ms`,
+        'u',
+      ),
+    );
+    assert.doesNotMatch(String(bash.description), /sandbox boundary/u);
+    assert.equal(responsesToolNames(request?.body).includes('request_sandbox_boundary'), false);
 
     const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
     assert.equal(
@@ -1992,6 +2709,7 @@ test('production Host executes a canonical ai-sdk Session against a real provide
         baseUrl: provider.baseUrl,
         enabled: true,
         enabledModelIds: [MODEL_ID],
+        modelOverrides: { [MODEL_ID]: { compactionThreshold: 3_072 } },
       },
     });
     assert.equal(created.kind, 'committed');
@@ -2010,16 +2728,6 @@ test('production Host executes a canonical ai-sdk Session against a real provide
     });
     assert.equal(configured.kind, 'committed');
     await publishConnectionModel(policy, connection.connectionId, MODEL_ID);
-    // The fetched /models value is metadata only. This explicit model-facts
-    // declaration is the Maka compaction target used by the long-session flow.
-    await writeFile(
-      join(root, 'model-facts.json'),
-      JSON.stringify({
-        schemaVersion: 1,
-        overrides: { [`moonshot:${MODEL_ID}`]: { contextWindow: 3_072 } },
-      }),
-      'utf8',
-    );
     let policySnapshot = await policy.runtimePolicy.getSnapshot();
     const personalized = await policy.runtimePolicy.mutate({
       expectedRevision: policySnapshot.revision,
@@ -2174,7 +2882,6 @@ test('production Host executes a canonical ai-sdk Session against a real provide
     // must never see WebSearch in the effective root tool surface. Non-direct
     // bound tools stay deferred behind tool_search until activated.
     assert.deepEqual(toolNames(request?.body), [
-      'ArchiveRead',
       'AskUserQuestion',
       'Bash',
       'Edit',
@@ -2682,10 +3389,8 @@ test('production Host executes a durable runnable child with an exact tool ceili
       'implementation',
     ]);
     // A child now carries the archive decoder alongside its allowlist (#2026).
-    // Its own placeholders name `ArchiveRead`, so the ceiling that governs
-    // agent-permission tools cannot be the thing that decides whether the child
-    // can read back a result the runtime itself pruned.
-    assert.deepEqual(toolNames(requests[2]?.body), ['ArchiveRead', 'Glob', 'Grep', 'Read']);
+    // The existing Read also resolves Session-scoped tool results.
+    assert.deepEqual(toolNames(requests[2]?.body), ['Glob', 'Grep', 'Read']);
     assert.doesNotMatch(JSON.stringify(requests[2]?.body), /## Response format/u);
     assert.ok(toolNames(requests[3]?.body).includes('agent_spawn'));
 
@@ -2882,7 +3587,6 @@ test('production Host publishes and retires an implementation child patch', asyn
       'implementation',
     ]);
     const childToolNames = [
-      'ArchiveRead',
       'Bash',
       'Edit',
       'Glob',
@@ -3094,6 +3798,102 @@ test('Host auxiliary calls preserve resolved DeepSeek reasoning settings', async
     assert.equal(request.url, '/v1/responses');
     assert.equal(request.authorization, `Bearer ${API_KEY}`);
     assert.deepEqual(request.body.reasoning, { effort: 'high' });
+  } finally {
+    await owner.close();
+    await provider.close();
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+test('WorkHub routing reuses the saved Session model and calls Intent before bounded Recall', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-host-workhub-routing-'));
+  const provider = await startProvider();
+  const capability = await resolveStorageRoot({
+    path: join(base, 'interactive'),
+    kind: 'interactive',
+  });
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(owner);
+  if (!owner) return;
+  try {
+    const policy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+    const usage = await openInteractiveUsageStoresForWrite(owner.lease);
+    const execution = await openInteractiveExecutionStoresForWrite(owner.lease);
+    const created = await policy.connectionCatalog.create({
+      expectedCatalogRevision: 0,
+      connection: {
+        slug: 'workhub-routing-provider',
+        name: 'WorkHub routing provider',
+        providerType: 'deepseek',
+        baseUrl: provider.baseUrl,
+        enabled: true,
+        enabledModelIds: ['deepseek-v4-flash'],
+      },
+    });
+    assert.equal(created.kind, 'committed');
+    if (created.kind !== 'committed') return;
+    const connection = created.snapshot.connections[0]!;
+    await policy.credentialVault.set({
+      locator: { scope: 'connection', connectionId: connection.connectionId, kind: 'api_key' },
+      expected: null,
+      secret: API_KEY,
+    });
+    await publishConnectionModel(policy, connection.connectionId, 'deepseek-v4-flash');
+    const session = await execution.sessionStore.create({
+      cwd: capability.canonicalPath,
+      llmConnectionId: connection.connectionId,
+      llmConnectionSlug: connection.slug,
+      model: 'deepseek-v4-flash',
+      thinkingLevel: 'high',
+      permissionMode: 'ask',
+    });
+    const model = createHostWorkHubRoutingModel({
+      runtimePolicy: policy,
+      oauthCredentials: new HostOAuthExecutionAuthority(policy),
+      usage,
+      requestDrain: () => assert.fail('WorkHub routing telemetry must not drain the Host'),
+    });
+    let candidateReads = 0;
+    const decision = await model.decide({
+      turnId: 'routing-turn',
+      header: session,
+      userText: '继续支付重试的工作',
+      transcript: [{ role: 'assistant', text: '上一轮已定位支付重试。' }],
+      resolveCandidates: async () => {
+        candidateReads += 1;
+        return {
+          candidateSetId: `sha256:${'a'.repeat(64)}`,
+          candidates: [
+            {
+              candidateRef: 'whc_payments',
+              sessionName: 'Payments',
+              workspaceName: 'payments',
+              state: 'active',
+              recency: 'today',
+            },
+          ],
+        };
+      },
+      abortSignal: new AbortController().signal,
+    });
+    assert.deepEqual(decision, {
+      kind: 'routing',
+      disposition: 'delegate_existing',
+      candidateSetId: `sha256:${'a'.repeat(64)}`,
+      candidateRef: 'whc_payments',
+    });
+    assert.equal(candidateReads, 1);
+    const requests = provider.requests.slice(-2);
+    assert.equal(requests.length, 2);
+    assert.ok(requests.every((request) => request.authorization === `Bearer ${API_KEY}`));
+    assert.ok(
+      requests.every((request) => JSON.stringify(request.body).includes('deepseek-v4-flash')),
+    );
+    const outbound = JSON.stringify(requests);
+    assert.doesNotMatch(outbound, /session-secret|\/Users\/a404/u);
+    const logs = await usage.telemetry.logs({ range: 'all' });
+    assert.ok(logs.rows.some((row) => row.callKind === 'workhub_intent'));
+    assert.ok(logs.rows.some((row) => row.callKind === 'workhub_recall'));
   } finally {
     await owner.close();
     await provider.close();
@@ -3997,7 +4797,14 @@ test('the headless coding profile freezes the Eval prompt and tool ceiling', asy
       },
     } as unknown as HostMemoryCoordinator,
     sessionTodo: {} as SessionTodoToolStore,
-    builtinTools: {},
+    builtinTools: {
+      shellRuns: {
+        runForegroundBash: () => Promise.reject(new Error('not used')),
+        runBackgroundBash: () => Promise.reject(new Error('not used')),
+      },
+      backgroundTasks: { stopBackgroundTask: () => Promise.reject(new Error('not used')) },
+      ptyControls: { writeStdin: () => Promise.reject(new Error('not used')) },
+    },
     toolProfile: 'headless-coding-v1',
     parentAgentTools: buildParentAgentTools(),
     scheduledTaskTool: {
@@ -4010,7 +4817,17 @@ test('the headless coding profile freezes the Eval prompt and tool ceiling', asy
 
   assert.deepEqual(
     composition.tools.map(({ name }) => name),
-    ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'apply_patch'],
+    [
+      'Bash',
+      'StopBackgroundTask',
+      'WriteStdin',
+      'Read',
+      'Write',
+      'Edit',
+      'Glob',
+      'Grep',
+      'apply_patch',
+    ],
   );
   assert.equal(composition.toolAvailability, undefined);
   assert.equal(
@@ -4349,7 +5166,6 @@ function backendCreationFixture(input: {
       recordToolArtifacts: async () => undefined,
       toolResultArchive: createToolResultArchiveCapability({
         archiveToolResult: async () => ({ artifactId: 'fixture-tool-result-archive' }),
-        readToolResultArchive: async () => ({ ok: false, reason: 'not_found' }),
         readArchivedToolResultResource: async () => ({ ok: false, reason: 'not_found' }),
       }),
     },
@@ -4659,6 +5475,15 @@ interface ManagedSandboxPaths {
 type ProviderFlow =
   | { readonly kind: 'default' }
   | {
+      readonly kind: 'permission_update';
+      readonly scenario: 'ordinary_session' | 'active_goal';
+      readonly groupId: string;
+      readonly toolName: string;
+      readonly activeRequestStarted: Deferred<void>;
+      readonly activeRequestRelease: Deferred<void>;
+      goalEvaluationCount: number;
+    }
+  | {
       readonly kind: 'managed_bash';
       readonly sandboxPaths?: ManagedSandboxPaths;
     }
@@ -4679,6 +5504,14 @@ type ProviderFlow =
 async function startProvider(): Promise<{
   readonly baseUrl: string;
   readonly requests: ProviderRequest[];
+  configurePermissionUpdateFlow(input: {
+    scenario: 'ordinary_session' | 'active_goal';
+    groupId: string;
+    toolName: string;
+  }): {
+    readonly activeRequestStarted: Promise<void>;
+    releaseActiveRequest(): void;
+  };
   configureManagedBashFlow(sandboxPaths?: ManagedSandboxPaths): void;
   configureClientCapability(input: { groupId: string; toolName: string }): void;
   configureProjectionImageFlow(toolName: string): void;
@@ -4708,6 +5541,22 @@ async function startProvider(): Promise<{
   return {
     baseUrl: `http://127.0.0.1:${address.port}/v1`,
     requests,
+    configurePermissionUpdateFlow: (input) => {
+      if (flow.kind !== 'default') throw new Error('Provider flow is already configured');
+      const activeRequestStarted = deferred<void>();
+      const activeRequestRelease = deferred<void>();
+      flow = {
+        kind: 'permission_update',
+        ...input,
+        activeRequestStarted,
+        activeRequestRelease,
+        goalEvaluationCount: 0,
+      };
+      return {
+        activeRequestStarted: activeRequestStarted.promise,
+        releaseActiveRequest: () => activeRequestRelease.resolve(),
+      };
+    },
     configureManagedBashFlow: (sandboxPaths) => {
       if (flow.kind !== 'default') throw new Error('Provider flow is already configured');
       flow = {
@@ -4762,7 +5611,20 @@ async function handleProviderRequest(
     body,
   });
   if (request.url === '/v1/responses') {
-    respondProviderResponsesText(response, RESPONSE_TEXT);
+    const serialized = JSON.stringify(body);
+    if (serialized.includes('Classify one WorkHub request')) {
+      respondProviderResponsesJsonText(
+        response,
+        JSON.stringify({ kind: 'routing', mode: 'continue' }),
+      );
+    } else if (serialized.includes('Rank the supplied opaque WorkHub candidates')) {
+      respondProviderResponsesJsonText(
+        response,
+        JSON.stringify({ kind: 'ranked', candidateRefs: ['whc_payments'] }),
+      );
+    } else {
+      respondProviderResponsesText(response, RESPONSE_TEXT);
+    }
     return;
   }
   if (body.stream !== true) {
@@ -4771,6 +5633,11 @@ async function handleProviderRequest(
       serialized,
     );
     const isHistoryCompaction = /context summarization assistant/.test(serialized);
+    const isGoalEvaluation = /goal evaluation judge/.test(serialized);
+    const goalEvaluation =
+      flow.kind === 'permission_update' && flow.scenario === 'active_goal' && isGoalEvaluation
+        ? ++flow.goalEvaluationCount
+        : 0;
     response.writeHead(200, { 'content-type': 'application/json' });
     response.end(
       JSON.stringify({
@@ -4791,9 +5658,20 @@ async function handleProviderRequest(
                     requestedItems: [],
                     incidentalItems: [],
                   })
-                : isHistoryCompaction
-                  ? COMPACT_SUMMARY_TEXT
-                  : SUMMARY_TEXT,
+                : goalEvaluation > 0
+                  ? JSON.stringify({
+                      met: goalEvaluation > 1,
+                      impossible: false,
+                      progress: true,
+                      waiting: false,
+                      reason:
+                        goalEvaluation > 1
+                          ? 'The permission update reached the continuation tool.'
+                          : 'Continue with the permission-sensitive tool call.',
+                    })
+                  : isHistoryCompaction
+                    ? COMPACT_SUMMARY_TEXT
+                    : SUMMARY_TEXT,
             },
             finish_reason: 'stop',
           },
@@ -4804,6 +5682,36 @@ async function handleProviderRequest(
     return;
   }
   const streamRequestIndex = requests.filter((candidate) => candidate.body.stream === true).length;
+  if (flow.kind === 'permission_update' && streamRequestIndex === 1) {
+    if (flow.scenario === 'ordinary_session') {
+      flow.activeRequestStarted.resolve();
+      await flow.activeRequestRelease.promise;
+    }
+    respondProviderText(response, RESPONSE_TEXT);
+    return;
+  }
+  if (flow.kind === 'permission_update' && streamRequestIndex === 2) {
+    if (flow.scenario === 'active_goal') {
+      flow.activeRequestStarted.resolve();
+      await flow.activeRequestRelease.promise;
+    }
+    assert.ok(toolNames(body).includes('tool_search'));
+    respondProviderToolCall(response, streamRequestIndex, 'tool_search', {
+      query: flow.toolName,
+    });
+    return;
+  }
+  if (flow.kind === 'permission_update' && streamRequestIndex === 3) {
+    assert.ok(toolNames(body).includes(flow.toolName));
+    respondProviderToolCall(response, streamRequestIndex, flow.toolName, {
+      url: 'https://example.test/permission-update',
+    });
+    return;
+  }
+  if (flow.kind === 'permission_update') {
+    respondProviderText(response, RESPONSE_TEXT);
+    return;
+  }
   if (flow.kind === 'projection_image' && streamRequestIndex === 1) {
     assert.ok(toolNames(body).includes(flow.toolName));
     respondProviderToolCall(response, streamRequestIndex, flow.toolName, {});
@@ -4894,7 +5802,7 @@ async function handleProviderRequest(
     return;
   }
   if (flow.kind === 'child_agent' && streamRequestIndex === 3) {
-    assert.deepEqual(toolNames(body), ['ArchiveRead', 'Glob', 'Grep', 'Read']);
+    assert.deepEqual(toolNames(body), ['Glob', 'Grep', 'Read']);
     respondProviderText(response, CHILD_AGENT_RESULT_TEXT);
     return;
   }
@@ -4905,7 +5813,6 @@ async function handleProviderRequest(
   }
   if (flow.kind === 'implementation_child_agent' && streamRequestIndex === 3) {
     assert.deepEqual(toolNames(body), [
-      'ArchiveRead',
       'Bash',
       'Edit',
       'Glob',
@@ -4943,7 +5850,7 @@ async function handleProviderRequest(
   if (flow.kind === 'implementation_child_agent' && streamRequestIndex === 6) {
     flow.ptyReadCount = 1;
     respondProviderToolCall(response, streamRequestIndex, 'Read', {
-      ref: requireRuntimeResourceRef(body),
+      path: requireRuntimeResourceRef(body),
     });
     return;
   }
@@ -4961,7 +5868,7 @@ async function handleProviderRequest(
         );
         flow.ptyReadCount += 1;
         respondProviderToolCall(response, streamRequestIndex, 'Read', {
-          ref: requireRuntimeResourceRef(body),
+          path: requireRuntimeResourceRef(body),
         });
         return;
       }
@@ -5057,6 +5964,29 @@ function respondProviderResponsesText(response: ServerResponse, text: string): v
   ];
   response.writeHead(200, { 'content-type': 'text/event-stream' });
   response.end(`${events.map((event) => `data: ${JSON.stringify(event)}`).join('\n\n')}\n\n`);
+}
+
+function respondProviderResponsesJsonText(response: ServerResponse, text: string): void {
+  response.writeHead(200, { 'content-type': 'application/json' });
+  response.end(
+    JSON.stringify({
+      id: 'resp-workhub-routing',
+      object: 'response',
+      created_at: 1,
+      status: 'completed',
+      model: 'deepseek-v4-flash',
+      output: [
+        {
+          type: 'message',
+          id: 'msg-workhub-routing',
+          status: 'completed',
+          role: 'assistant',
+          content: [{ type: 'output_text', text, annotations: [], logprobs: [] }],
+        },
+      ],
+      usage: { input_tokens: 11, output_tokens: 5, total_tokens: 16 },
+    }),
+  );
 }
 
 function respondProviderText(response: ServerResponse, text: string, promptTokens = 11): void {

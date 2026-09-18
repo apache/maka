@@ -36,7 +36,7 @@ export interface PlaintextResponsesReasoningState {
 export type PlaintextResponsesReasoningStateDecodeResult =
   | { readonly kind: 'missing' }
   | { readonly kind: 'unsupported-version'; readonly version: number }
-  | { readonly kind: 'malformed'; readonly profile?: string }
+  | { readonly kind: 'malformed' }
   | { readonly kind: 'valid'; readonly state: PlaintextResponsesReasoningState };
 
 export function plaintextResponsesReasoningProviderOptions(
@@ -71,7 +71,7 @@ export function decodePlaintextResponsesReasoningState(
   }
   const baseInvalid = record.version !== STATE_VERSION || !profile || !itemId;
   if (baseInvalid) {
-    return { kind: 'malformed', ...(profile ? { profile } : {}) };
+    return { kind: 'malformed' };
   }
   if (
     !isSafeSummaryPartLengths(record.summaryPartLengths) ||
@@ -79,7 +79,7 @@ export function decodePlaintextResponsesReasoningState(
       (key) => !['version', 'profile', 'itemId', 'summaryPartLengths'].includes(key),
     )
   ) {
-    return { kind: 'malformed', ...(profile ? { profile } : {}) };
+    return { kind: 'malformed' };
   }
   return {
     kind: 'valid',
@@ -107,11 +107,13 @@ export function replayPlaintextResponsesProviderOptions(input: {
   providerOptionsKey: string;
   state: PlaintextResponsesReasoningState;
   text: string;
-}): NonNullable<ModelMessage['providerOptions']> {
+}): NonNullable<ModelMessage['providerOptions']> | undefined {
+  const reasoningSummary = reconstructSummaryParts(input.text, input.state);
+  if (!reasoningSummary) return undefined;
   return {
     [input.providerOptionsKey]: {
       itemId: input.state.itemId,
-      reasoningSummary: reconstructSummaryParts(input.text, input.state),
+      reasoningSummary,
       // Presence is meaningful to @ai-sdk/open-responses: null prevents its
       // fallback from copying the canonical text into content when the
       // provider replays reasoning through summary instead.
@@ -124,20 +126,31 @@ export function safePlaintextResponsesReasoningItemId(value: unknown): string | 
   return isSafeItemId(value) ? value : undefined;
 }
 
+/**
+ * Provider stream metadata is forwarded verbatim into durable providerOptions
+ * in a few places (e.g. Anthropic redacted thinking). `makaResponses` is a
+ * Maka-owned namespace — a provider must not be able to write replay state it
+ * did not earn through the declared contract.
+ */
+export function withoutMakaResponsesState<T extends Record<string, unknown>>(
+  providerOptions: T,
+): T {
+  if (!(STATE_KEY in providerOptions)) return providerOptions;
+  const { [STATE_KEY]: _dropped, ...rest } = providerOptions;
+  return rest as T;
+}
+
 function reconstructSummaryParts(
   text: string,
   state: PlaintextResponsesReasoningState,
-): Array<{ type: 'summary_text'; text: string }> {
+): Array<{ type: 'summary_text'; text: string }> | undefined {
   let offset = 0;
   const parts = state.summaryPartLengths.map((length) => {
     const part = { type: 'summary_text' as const, text: text.slice(offset, offset + length) };
     offset += length;
     return part;
   });
-  if (offset !== text.length) {
-    throw new Error('Durable plaintext Responses reasoning summary boundaries do not match text');
-  }
-  return parts;
+  return offset === text.length ? parts : undefined;
 }
 
 function isSafeItemId(value: unknown): value is string {

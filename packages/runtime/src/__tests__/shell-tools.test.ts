@@ -229,7 +229,24 @@ describe('Bash provider-facing result projection', () => {
   });
 });
 
-describe('shapeTerminalResult sandbox denial projection', () => {
+describe('shapeTerminalResult projection', () => {
+  test('preserves foreground command output verbatim', () => {
+    const command = 'curl -H "Authorization: Bearer token-value" example.test';
+    const stdout = 'Authorization: Bearer token-value';
+    const stderr = 'api_key=token-value';
+    const result = shapeTerminalResult({
+      cwd: '/ws',
+      command,
+      result: { exitCode: 7, stdout, stderr },
+    });
+
+    assert.equal(result.cmd, command);
+    assert.ok(result.output.mode === 'pipes');
+    assert.equal(result.output.stdout, stdout);
+    assert.equal(result.output.stderr, stderr);
+    assert.equal(result.output.redacted, false);
+  });
+
   test('surfaces sandboxDenial when a sandboxed command fails with a denial message', () => {
     const result = shapeTerminalResult({
       cwd: '/ws',

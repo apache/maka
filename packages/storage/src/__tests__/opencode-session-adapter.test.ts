@@ -19,12 +19,16 @@
 
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { decodeCanonicalMessage } from '@maka/core/session';
+import {
+  ExternalSessionCatalogCursorError,
+  ExternalSessionLimitError,
+} from '@maka/core/external-session';
 import { createExternalSessionAdapterRegistry } from '../external-session-adapters.js';
 import {
   OPENCODE_SESSION_ADAPTER_ID,
@@ -130,6 +134,48 @@ describe('OpenCodeSessionAdapter', () => {
     });
   });
 
+  test('pages the filtered catalog before returning rows to the Host', async () => {
+    await withOpenCodeHome(async (home) => {
+      await seed(home);
+      const db = new DatabaseSync(join(home, 'opencode.db'));
+      try {
+        const insert = db.prepare(
+          'INSERT INTO session (id, parent_id, directory, title, time_created, time_updated, time_archived) VALUES (?, NULL, ?, ?, ?, ?, ?)',
+        );
+        for (let index = 1; index <= 40; index += 1) {
+          insert.run(
+            `ses_page_${index}`,
+            index % 2 === 0 ? '/repo' : '/other',
+            `Page ${index}`,
+            index,
+            index,
+            null,
+          );
+        }
+        insert.run('ses_created_fallback', '/repo', 'Newest fallback', 10_000, null, null);
+        insert.run('ses_archived', '/repo', 'Archived', 20_000, 20_000, 1);
+      } finally {
+        db.close();
+      }
+      const adapter = new OpenCodeSessionAdapter({ opencodeHome: home });
+      const first = await adapter.listSessionPage({ cwd: '/repo', limit: 3 });
+      const cursor = first.items.at(-1)?.nextCursor;
+      assert.ok(cursor);
+      const second = await adapter.listSessionPage({ cwd: '/repo', cursor, limit: 3 });
+      const summaries = [...first.items, ...second.items].map(({ summary }) => summary);
+      assert.equal(first.items.length, 3);
+      assert.equal(second.items.length, 3);
+      assert.equal(first.items[0]?.summary.id, 'ses_created_fallback');
+      assert.equal(first.items[0]?.summary.updatedAt, 10_000);
+      assert.equal(new Set(summaries.map(({ id }) => id)).size, 6);
+      assert.ok(!summaries.some(({ id }) => id === 'ses_archived'));
+      await assert.rejects(
+        adapter.listSessionPage({ cwd: '/other', cursor, limit: 3 }),
+        (error: unknown) => error instanceof ExternalSessionCatalogCursorError,
+      );
+    });
+  });
+
   test('child sessions are neither listed nor readable as conversations', async () => {
     await withOpenCodeHome(async (home) => {
       const fixture = await seed(home, (f) => {
@@ -139,6 +185,22 @@ describe('OpenCodeSessionAdapter', () => {
       const adapter = new OpenCodeSessionAdapter({ opencodeHome: home });
       assert.deepEqual(await adapter.listSessions(), []);
       await assert.rejects(adapter.readSession(fixture.session.id), /child of another session/u);
+    });
+  });
+
+  test('a root Session with no directory is both listed and importable', async () => {
+    await withOpenCodeHome(async (home) => {
+      const fixture = await seed(home);
+      const db = new DatabaseSync(join(home, 'opencode.db'));
+      try {
+        db.prepare('UPDATE session SET directory = NULL WHERE id = ?').run(fixture.session.id);
+      } finally {
+        db.close();
+      }
+      const adapter = new OpenCodeSessionAdapter({ opencodeHome: home });
+
+      assert.equal((await adapter.listSessions())[0]?.cwd, '');
+      assert.equal((await adapter.readSession(fixture.session.id)).metadata.cwd, '');
     });
   });
 
@@ -163,6 +225,114 @@ describe('OpenCodeSessionAdapter', () => {
       assert.ok(kinds.has('tool_result'));
       assert.ok(kinds.has('turn_state'));
     });
+  });
+
+  test('excludes synthetic OpenCode user text before provenance is erased', async () => {
+    await withOpenCodeHome(async (home) => {
+      const fixture = await seed(home, (f) => {
+        f.messages = [{ id: 'm_user', time_created: 1, data: { role: 'user' } }];
+        f.parts = [
+          {
+            id: 'p_synthetic',
+            message_id: 'm_user',
+            time_created: 1,
+            data: { type: 'text', text: 'automatic summary instruction', synthetic: true },
+          },
+          {
+            id: 'p_human',
+            message_id: 'm_user',
+            time_created: 2,
+            data: { type: 'text', text: 'human prompt' },
+          },
+        ];
+        return f;
+      });
+      const session = await new OpenCodeSessionAdapter({ opencodeHome: home }).readSession(
+        fixture.session.id,
+      );
+      const user = session.messages.find((message) => message.type === 'user');
+      assert.equal(user?.text, 'human prompt');
+      assert.ok(!JSON.stringify(session.messages).includes('automatic summary instruction'));
+    });
+  });
+
+  test('rejects row and UTF-8 byte overflow without publishing a partial transcript', async () => {
+    await withOpenCodeHome(async (home) => {
+      const fixture = await seed(home, (f) => {
+        f.messages = [{ id: 'm_user', time_created: 1, data: { role: 'user' } }];
+        f.parts = [
+          {
+            id: 'p_1',
+            message_id: 'm_user',
+            time_created: 1,
+            data: { type: 'text', text: '中'.repeat(100) },
+          },
+        ];
+        return f;
+      });
+      const rowBound = new OpenCodeSessionAdapter({ opencodeHome: home, maxRows: 1 });
+      await assert.rejects(
+        rowBound.readSession(fixture.session.id),
+        (error) => error instanceof ExternalSessionLimitError && error.limit.kind === 'records',
+      );
+      const byteBound = new OpenCodeSessionAdapter({ opencodeHome: home, maxRawBytes: 128 });
+      await assert.rejects(
+        byteBound.readSession(fixture.session.id),
+        (error) =>
+          error instanceof ExternalSessionLimitError && error.limit.kind === 'record_bytes',
+      );
+    });
+  });
+
+  test('rejects aggregate source bytes even when every individual row fits', async () => {
+    await withOpenCodeHome(async (home) => {
+      const fixture = await seed(home, (f) => {
+        f.messages = [{ id: 'm_user', time_created: 1, data: { role: 'user' } }];
+        f.parts = Array.from({ length: 3 }, (_, index) => ({
+          id: `p_${index}`,
+          message_id: 'm_user',
+          time_created: index + 1,
+          data: { type: 'text', text: 'x'.repeat(80) },
+        }));
+        return f;
+      });
+      await assert.rejects(
+        new OpenCodeSessionAdapter({ opencodeHome: home, maxRawBytes: 180 }).readSession(
+          fixture.session.id,
+        ),
+        (error) =>
+          error instanceof ExternalSessionLimitError && error.limit.kind === 'transcript_bytes',
+      );
+    });
+  });
+
+  test('rejects canonical output that exceeds the conversion budget', async () => {
+    await withOpenCodeHome(async (home) => {
+      const fixture = await seed(home);
+      await assert.rejects(
+        new OpenCodeSessionAdapter({ opencodeHome: home, maxConvertedBytes: 10 }).readSession(
+          fixture.session.id,
+        ),
+        (error) =>
+          error instanceof ExternalSessionLimitError && error.limit.kind === 'converted_bytes',
+      );
+    });
+  });
+
+  test('does not follow an opencode database symlink outside the configured home', async () => {
+    const outside = await mkdtemp(join(tmpdir(), 'maka-opencode-outside-'));
+    try {
+      const fixture = await seed(outside);
+      await withOpenCodeHome(async (home) => {
+        await symlink(join(outside, 'opencode.db'), join(home, 'opencode.db'));
+        const adapter = new OpenCodeSessionAdapter({ opencodeHome: home });
+        assert.equal(await adapter.detect(), false);
+        assert.deepEqual(await adapter.listSessions(), []);
+        await assert.rejects(adapter.readSession(fixture.session.id), /database is unavailable/u);
+      });
+    } finally {
+      await rm(outside, { recursive: true, force: true });
+    }
   });
 
   test('pairs every tool result with the call it answers', async () => {
@@ -471,7 +641,7 @@ async function seed(
     db.exec(`
       CREATE TABLE session (
         id text PRIMARY KEY, project_id text, workspace_id text, parent_id text,
-        slug text, directory text NOT NULL, path text, title text,
+        slug text, directory text, path text, title text,
         version text, time_created integer, time_updated integer,
         time_compacting integer, time_archived integer
       );

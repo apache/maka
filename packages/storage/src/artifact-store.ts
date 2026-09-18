@@ -18,6 +18,7 @@
  */
 
 import { createHash, randomUUID } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import { type BigIntStats, constants as fsConstants } from 'node:fs';
 import {
   access,
@@ -138,6 +139,12 @@ export interface ConversationArtifactCopyInput {
   readonly sourceSessionId: string;
   readonly targetSessionId: string;
   readonly turnIds: readonly string[];
+  /**
+   * Default: reject an existing target. Retriable attachment consumers may
+   * explicitly reuse a copy only after its ownership, metadata and payload
+   * match the current source under the Artifact writer lock. Never overwrites.
+   */
+  readonly existingTarget?: 'reject' | 'reuse_verified';
   readonly excludeArtifactIds?: readonly string[];
   /**
    * Source-Session artifact ids to copy in addition to the turn-scoped
@@ -407,6 +414,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
         prepared,
         input.targetSessionId,
         targetId,
+        input.existingTarget === 'reuse_verified',
       );
       artifactIds.set(record.id, created.id);
       relativePaths.set(record.relativePath, created.relativePath);
@@ -418,6 +426,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
     prepared: PreparedArtifactRead,
     targetSessionId: string,
     targetId: string,
+    reuseVerified: boolean,
   ): Promise<ArtifactRecord> {
     const source = prepared.record;
     const name = sanitizeArtifactName(source.name);
@@ -426,17 +435,35 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
     validateRelativeArtifactPath(relativePath);
     return this.enqueueMutation(async () => {
       await this.prepareMutationUnlocked();
-      if (this.records.some((record) => record.id === targetId)) {
-        throw new Error(`Artifact target already exists: ${targetId}`);
+      const expected: ArtifactRecord = {
+        ...source,
+        id: targetId,
+        sessionId: targetSessionId,
+        name,
+        relativePath,
+      };
+      const existing = this.records.find((record) => record.id === targetId);
+      if (existing) {
+        if (!reuseVerified) throw new Error(`Artifact target already exists: ${targetId}`);
+        // Recheck the source after acquiring the writer lock, not just the
+        // selection made before it. Validation and reuse cannot race another
+        // Artifact writer's removal/replacement of either record or payload.
+        const currentSource = this.records.find((record) => record.id === source.id);
+        if (!isDeepStrictEqual(currentSource, source) || !isDeepStrictEqual(existing, expected)) {
+          throw artifactReplayConflict(targetId);
+        }
+        const sourceRead = await this.prepareRecordRead(source, source.sizeBytes);
+        const targetRead = await this.prepareRecordRead(existing, existing.sizeBytes);
+        if (!sourceRead.ok || !targetRead.ok) throw artifactReplayConflict(targetId);
+        const sourceDigest = await hashPreparedArtifact(sourceRead);
+        const targetDigest = await hashPreparedArtifact(targetRead);
+        if (sourceDigest === undefined || sourceDigest !== targetDigest) {
+          throw artifactReplayConflict(targetId);
+        }
+        return { ...existing };
       }
       return this.publishNewArtifactUnlocked(
-        {
-          ...source,
-          id: targetId,
-          sessionId: targetSessionId,
-          name,
-          relativePath,
-        },
+        expected,
         (targetPath) => copyFile(prepared.path, targetPath, fsConstants.COPYFILE_EXCL),
         source.sizeBytes,
       );
@@ -506,6 +533,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
       const directories = new Set<string>();
       const discharged: string[] = [];
       let failedPaths = 0;
+      let realArtifactRoot: string | undefined;
       try {
         for (const relativePath of selected) {
           if (
@@ -515,10 +543,33 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
             discharged.push(relativePath);
             continue;
           }
-          const target = join(this.artifactRoot, relativePath);
+          const entry = await resolveArtifactRemovalEntry(this.artifactRoot, relativePath);
+          if (!entry) {
+            discharged.push(relativePath);
+            continue;
+          }
+          realArtifactRoot ??= await ensureRealDirectory(this.artifactRoot);
+          if (!isInsideOrSamePath(realArtifactRoot, dirname(entry.unlinkPath))) {
+            failedPaths += 1;
+            continue;
+          }
+          const artifactIds = new Set([
+            ...artifactIdsFromUpgradeOrphanPath(relativePath),
+            ...artifactIdsFromUpgradeOrphanPath(entry.unlinkPath),
+          ]);
+          if (
+            artifactIds.size > 0 &&
+            (await this.hasClaimedRemovalIdentityUnlocked(
+              [...artifactIds],
+              entry.comparisonIdentity,
+            ))
+          ) {
+            discharged.push(relativePath);
+            continue;
+          }
           try {
-            await unlink(target);
-            directories.add(dirname(target));
+            await unlink(entry.unlinkPath);
+            directories.add(dirname(entry.unlinkPath));
           } catch (error) {
             if (!isNotFound(error)) {
               failedPaths += 1;
@@ -537,6 +588,19 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
         failedPaths,
       };
     });
+  }
+
+  private async hasClaimedRemovalIdentityUnlocked(
+    artifactIds: readonly string[],
+    comparisonIdentity: string,
+  ): Promise<boolean> {
+    for (const relativePath of this.metadataRepository.readRelativePathsByCaseFoldedArtifactIds(
+      artifactIds,
+    )) {
+      const entry = await resolveArtifactRemovalEntry(this.artifactRoot, relativePath);
+      if (entry?.comparisonIdentity === comparisonIdentity) return true;
+    }
+    return false;
   }
 
   private async replayExistingArtifactUnlocked(
@@ -969,6 +1033,39 @@ async function openRealTarget(path: string) {
   }
 }
 
+/** Bounded-memory verification of an exact stored payload, including its size. */
+async function hashPreparedArtifact(prepared: PreparedArtifactRead): Promise<string | undefined> {
+  let handle;
+  try {
+    handle = await openRealTarget(prepared.path);
+    const before = await handle.stat({ bigint: true });
+    if (!before.isFile() || before.size !== BigInt(prepared.record.sizeBytes)) return undefined;
+    const buffer = Buffer.alloc(64 * 1024);
+    const hash = createHash('sha256');
+    let total = 0;
+    while (true) {
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, total);
+      if (bytesRead === 0) break;
+      total += bytesRead;
+      if (total > prepared.record.sizeBytes) return undefined;
+      hash.update(buffer.subarray(0, bytesRead));
+    }
+    const after = await handle.stat({ bigint: true });
+    if (
+      total !== prepared.record.sizeBytes ||
+      before.size !== after.size ||
+      before.mtimeNs !== after.mtimeNs ||
+      before.ctimeNs !== after.ctimeNs
+    )
+      return undefined;
+    return hash.digest('hex');
+  } catch {
+    return undefined;
+  } finally {
+    await handle?.close();
+  }
+}
+
 async function readPreparedBytes(
   prepared: PreparedArtifactRead,
 ): Promise<{ readonly ok: true; readonly bytes: Buffer } | ArtifactReadFailure> {
@@ -1211,6 +1308,20 @@ function symlinkEntryIdentity(entryStat: BigIntStats): string {
     entryStat.ctimeNs,
     entryStat.mtimeNs,
   ].join(':');
+}
+
+function artifactIdsFromUpgradeOrphanPath(relativePath: string): readonly string[] {
+  const name = basename(relativePath);
+  const artifactIds: string[] = [];
+  for (
+    let separator = name.indexOf('-');
+    separator > 0;
+    separator = name.indexOf('-', separator + 1)
+  ) {
+    const artifactId = name.slice(0, separator);
+    if (isCanonicalArtifactEntityId(artifactId)) artifactIds.push(artifactId);
+  }
+  return artifactIds;
 }
 
 function isInsideOrSamePath(root: string, target: string): boolean {

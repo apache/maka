@@ -29,6 +29,7 @@ import type { RuntimeEventStore } from '@maka/core/runtime-event-store';
 import { isRuntimeHandoffPause, type RuntimeHandoffIntent } from '@maka/core/runtime-handoff';
 import { RunHandoffGate, type RunHandoffRequest } from './run-handoff-gate.js';
 import { preserveHandoffOpening } from './runtime-resume.js';
+import { runtimeInvocationRouteForHeader } from './runtime-invocation-route.js';
 import type {
   RequestCompositionSnapshot,
   RequestCompositionSnapshotInput,
@@ -273,7 +274,6 @@ export class AgentRun {
   private failureClass: string | undefined;
   private failureMessage: string | undefined;
   private lastTs = 0;
-  private sawCompletion = false;
   private finalStatus: { status: SessionStatus; blockedReason?: SessionBlockedReason } | undefined;
   private turnFailed = false;
   private finalized = false;
@@ -337,8 +337,17 @@ export class AgentRun {
         acceptedInput.header.orchestrationMode,
         acceptedInput.userInput.turnOrchestration,
       );
+    if (
+      acceptedInput.userInput.toolMode !== undefined &&
+      !isToolMode(acceptedInput.userInput.toolMode)
+    ) {
+      throw new Error(`Invalid tool mode: ${String(acceptedInput.userInput.toolMode)}`);
+    }
     const requestedToolMode =
-      acceptedInput.effectiveToolMode ?? acceptedInput.userInput.toolMode ?? DEFAULT_TOOL_MODE;
+      acceptedInput.effectiveToolMode ??
+      acceptedInput.header.toolMode ??
+      acceptedInput.userInput.toolMode ??
+      DEFAULT_TOOL_MODE;
     if (!isToolMode(requestedToolMode)) {
       throw new Error(`Invalid tool mode: ${String(requestedToolMode)}`);
     }
@@ -944,7 +953,7 @@ export class AgentRun {
     };
   }
 
-  async begin(): Promise<AgentRunBeginResult> {
+  private async beginUserTurn(): Promise<RuntimeEvent> {
     // Owed from here, not from after the opening: `openInvocation` can leave the
     // invocation open and still throw, and `finalize` reopens what it can.
     this.initialRuntimeEventPending = true;
@@ -953,6 +962,17 @@ export class AgentRun {
     this.lastTs = this.input.now();
     const initialRuntimeEvent = await this.recordInitialRuntimeEvent(this.lastTs);
 
+    return initialRuntimeEvent;
+  }
+
+  /** Host actions share Turn facts and finalization without activating a provider. */
+  async beginCoordination(): Promise<void> {
+    await this.beginUserTurn();
+    await this.input.hooks.updateStatus(this.sessionId, 'running', undefined, this.lastTs);
+  }
+
+  async begin(): Promise<AgentRunBeginResult> {
+    const initialRuntimeEvent = await this.beginUserTurn();
     this.active = await this.input.hooks.reserveRun(this.sessionId, this.header, this);
 
     await this.input.hooks.updateStatus(this.sessionId, 'running', undefined, this.lastTs);
@@ -1144,7 +1164,6 @@ export class AgentRun {
       (ev.type === 'complete' || ev.type === 'abort') && !this.turnFailed;
     const turnStatus = terminalSessionEvent ? turnStatusFromEvent(ev) : undefined;
     if (terminalSessionEvent) {
-      this.sawCompletion = true;
       if (ev.type === 'abort' && !this.abortSource) this.abortSource = ev.reason;
       if (ev.type === 'complete' && ev.stopReason === 'user_stop' && !this.abortSource)
         this.abortSource = 'user_stop';
@@ -1424,22 +1443,7 @@ export class AgentRun {
     const opening: RuntimeEventInvocationOpenedContent = {
       kind: 'invocation_opened',
       protocol: 'invocation_opened_v1',
-      route:
-        this.header.llmConnectionId === undefined
-          ? {
-              provenance: 'unknown',
-              backendKind: this.header.backend,
-              llmConnectionSlug: this.header.llmConnectionSlug,
-              modelId: this.header.model,
-            }
-          : {
-              provenance: 'runtime',
-              backendKind: this.header.backend,
-              llmConnectionId: this.header.llmConnectionId,
-              llmConnectionSlug: this.header.llmConnectionSlug,
-              modelId: this.header.model,
-              ...(providerStateIdentity ? { providerStateIdentity } : {}),
-            },
+      route: runtimeInvocationRouteForHeader(this.header, providerStateIdentity),
       configuration: {
         cwd: this.header.cwd,
         permissionMode: this.header.permissionMode,

@@ -35,8 +35,9 @@ import assert from 'node:assert/strict';
 import type { LlmConnection } from '@maka/core/llm-connections';
 import { generateText, isStepCount, streamText, tool } from 'ai';
 import { z } from 'zod';
-import { fetchProviderModels } from '../model-fetcher.js';
+import { discoverModels } from './model-discovery-fixture.js';
 import { buildProviderOptions, getAIModel } from '../model-factory.js';
+import { COMMANDCODE_CLI_VERSION } from '../commandcode-cli-language-model.js';
 import { buildSubscriptionModelFetch } from '../subscription-model-fetch.js';
 import {
   readBody,
@@ -69,6 +70,16 @@ export const PROVIDER_CONTRACT_OVERRIDE_BINDINGS: readonly ProviderContractOverr
     title:
       'GitHub Copilot discovers the account model and completes a reasoning tool loop on its exact wire',
     run: runGitHubCopilotWire,
+  },
+  {
+    keys: [
+      'commandcode-go:exact-model-id',
+      'commandcode-go:tool-loop',
+      'commandcode-go:reasoning-replay',
+    ],
+    title:
+      'Command Code GO completes a reasoning tool loop on /alpha/generate, replaying reasoning and paired tool results as CLI blocks',
+    run: runCommandCodeCliWire,
   },
   {
     keys: ['fireworks-ai:discovery'],
@@ -167,6 +178,24 @@ export const PROVIDER_CONTRACT_OVERRIDE_BINDINGS: readonly ProviderContractOverr
         modelId: 'ark-code-latest',
         apiKey: 'volcengine-agent-plan-test-key',
         statelessReasoning: true,
+      }),
+  },
+  {
+    keys: [
+      'moonshot-global:exact-model-id',
+      'moonshot-global:tool-loop',
+      'moonshot-global:reasoning-replay',
+    ],
+    title: 'Moonshot Global replays Kimi summary-only reasoning items across a Responses tool loop',
+    run: () =>
+      runOpenAIResponsesWire({
+        providerType: 'moonshot-global',
+        slug: 'moonshot-global',
+        name: 'Moonshot Global',
+        basePath: '/v1',
+        modelId: 'kimi-k3',
+        apiKey: 'moonshot-global-test-key',
+        summaryReasoning: true,
       }),
   },
   {
@@ -331,7 +360,7 @@ async function runCloudflareDiscovery(): Promise<void> {
     updatedAt: 1,
   };
 
-  assert.deepEqual(await fetchProviderModels(connection, 'cloudflare-test-token'), [
+  assert.deepEqual(await discoverModels(connection, 'cloudflare-test-token'), [
     { id: '@cf/meta/llama-text' },
   ]);
 }
@@ -376,7 +405,7 @@ async function runGitHubCopilotDiscovery(): Promise<void> {
     });
   });
 
-  const models = await fetchProviderModels(
+  const models = await discoverModels(
     {
       slug: 'github-copilot',
       name: 'GitHub Copilot',
@@ -522,7 +551,7 @@ async function runGitHubCopilotWire(): Promise<void> {
     createdAt: 1,
     updatedAt: 1,
   };
-  const models = await fetchProviderModels(connection, 'github-account-token');
+  const models = await discoverModels(connection, 'github-account-token');
   connection.models = models;
   const modelFetch = buildSubscriptionModelFetch({
     connection,
@@ -731,7 +760,7 @@ async function runFireworksDiscovery(): Promise<void> {
     updatedAt: 1,
   };
 
-  const models = await fetchProviderModels(connection, 'fireworks-test-key');
+  const models = await discoverModels(connection, 'fireworks-test-key');
   assert.deepEqual(models, [
     {
       id: 'accounts/acme/models/custom-agent',
@@ -863,7 +892,7 @@ async function assertOllamaModelContract(
   };
 
   assert.deepEqual(
-    await fetchProviderModels(connection, ''),
+    await discoverModels(connection, ''),
     discoveredModelIds.map((id) => ({ id })),
   );
 
@@ -991,7 +1020,7 @@ async function runCohereDiscovery(): Promise<void> {
     updatedAt: 1,
   };
 
-  const models = await fetchProviderModels(connection, 'cohere-test-key');
+  const models = await discoverModels(connection, 'cohere-test-key');
   assert.deepEqual(models, [
     { id: modelId, contextWindow: 128_000 },
     { id: 'command-a-reasoning-08-2025', contextWindow: 256_000 },
@@ -1058,6 +1087,8 @@ async function runOpenAIResponsesWire(input: {
   apiKey: string;
   statelessReasoning?: boolean;
   plaintextReasoning?: boolean;
+  /** The provider's real carrier: a reasoning item with summary and no encrypted_content. */
+  summaryReasoning?: boolean;
 }): Promise<void> {
   const {
     providerType,
@@ -1068,8 +1099,9 @@ async function runOpenAIResponsesWire(input: {
     apiKey,
     statelessReasoning,
     plaintextReasoning,
+    summaryReasoning,
   } = input;
-  const hasReasoning = statelessReasoning || plaintextReasoning;
+  const hasReasoning = statelessReasoning || plaintextReasoning || summaryReasoning;
   const requestBodies: Array<Record<string, unknown>> = [];
   const server = await startJsonServer(async (request, response) => {
     assert.equal(request.method, 'POST');
@@ -1102,7 +1134,15 @@ async function runOpenAIResponsesWire(input: {
                     content: [{ type: 'reasoning_text', text: 'Use echo.' }],
                   },
                 ]
-              : []),
+              : summaryReasoning
+                ? [
+                    {
+                      type: 'reasoning',
+                      id: 'rs_relay_tool',
+                      summary: [{ type: 'summary_text', text: 'Use echo.' }],
+                    },
+                  ]
+                : []),
           {
             type: 'function_call',
             id: 'fc_relay_echo',
@@ -1188,6 +1228,22 @@ async function runOpenAIResponsesWire(input: {
         id: 'rs_relay_tool',
         summary: [],
         content: [{ type: 'reasoning_text', text: 'Use echo.' }],
+      },
+    );
+  }
+  if (summaryReasoning) {
+    // Replay does not depend on server-side retention, so the dialect sends
+    // no `store` field unless a compatibility profile forces one.
+    assert.equal(requestBodies[0]?.store, undefined);
+    assert.equal(requestBodies[1]?.store, undefined);
+    assert.deepEqual(
+      (requestBodies[1].input as Array<Record<string, unknown>>).find(
+        ({ type }) => type === 'reasoning',
+      ),
+      {
+        type: 'reasoning',
+        id: 'rs_relay_tool',
+        summary: [{ type: 'summary_text', text: 'Use echo.' }],
       },
     );
   }
@@ -1321,4 +1377,111 @@ async function runZenMuxSignedReasoningReplay(): Promise<void> {
       ],
     },
   );
+}
+
+async function runCommandCodeCliWire(): Promise<void> {
+  const modelId = 'deepseek/deepseek-v4.1-flash';
+  const requestBodies: Array<{ params: Record<string, unknown> }> = [];
+  const server = await startJsonServer(async (request, response) => {
+    if (request.method === 'GET') {
+      respondJson(response, 200, { object: 'list', data: [{ id: modelId }] });
+      return;
+    }
+    assert.equal(request.url, '/alpha/generate');
+    assert.equal(request.headers.authorization, 'Bearer cc-go-key');
+    assert.equal(request.headers['x-command-code-version'], COMMANDCODE_CLI_VERSION);
+    assert.equal(request.headers['x-cli-environment'], 'production');
+    requestBodies.push(JSON.parse(await readBody(request)) as { params: Record<string, unknown> });
+    response.writeHead(200, { 'content-type': 'text/event-stream' });
+    const events =
+      requestBodies.length === 1
+        ? [
+            { type: 'reasoning-delta', text: 'I should call echo with the requested text.' },
+            {
+              type: 'tool-call',
+              toolCallId: 'cc-call-1',
+              toolName: 'echo',
+              input: { text: 'hello' },
+            },
+            {
+              type: 'finish',
+              finishReason: 'tool-calls',
+              totalUsage: { inputTokens: 8, outputTokens: 4 },
+            },
+          ]
+        : [
+            { type: 'text-delta', text: 'Echoed hello.' },
+            {
+              type: 'finish',
+              finishReason: 'stop',
+              totalUsage: { inputTokens: 12, outputTokens: 3 },
+            },
+          ];
+    for (const event of events) response.write(`data: ${JSON.stringify(event)}\n\n`);
+    response.end('data: [DONE]\n\n');
+  });
+  const connection: LlmConnection = {
+    slug: 'commandcode-go',
+    name: 'Command Code GO',
+    providerType: 'commandcode-go',
+    baseUrl: server.url,
+    defaultModel: modelId,
+    enabled: true,
+    createdAt: 1,
+    updatedAt: 1,
+  };
+  connection.models = await discoverModels(connection, 'cc-go-key');
+
+  const result = await generateText({
+    model: getAIModel({ connection, apiKey: 'cc-go-key', modelId, fetch }),
+    // A model models.dev does not describe resolves no thinking level, so
+    // the effort rides the adapter's own provider-options key directly.
+    providerOptions: { 'commandcode-cli': { reasoningEffort: 'medium' } },
+    tools: {
+      echo: tool({
+        description: 'Echo text',
+        inputSchema: z.object({ text: z.string() }),
+        execute: async ({ text }) => ({ echoed: text }),
+      }),
+    },
+    stopWhen: isStepCount(3),
+    prompt: 'Echo hello',
+  });
+  assert.equal(result.text, 'Echoed hello.');
+
+  assert.equal(requestBodies.length, 2);
+  const [first, second] = requestBodies as [
+    { params: Record<string, unknown> },
+    { params: Record<string, unknown> },
+  ];
+  assert.equal(first.params.model, modelId);
+  assert.equal(first.params.reasoning_effort, 'medium');
+  assert.deepEqual(first.params.tools, [
+    {
+      type: 'function',
+      name: 'echo',
+      description: 'Echo text',
+      input_schema: (first.params.tools as Array<{ input_schema: unknown }>)[0]?.input_schema,
+    },
+  ]);
+  const replay = second.params.messages as Array<{
+    role: string;
+    content: Array<Record<string, unknown>>;
+  }>;
+  const assistant = replay.find((message) => message.role === 'assistant');
+  assert.ok(assistant, 'the second request replays the assistant turn');
+  assert.deepEqual(
+    assistant.content.map((block) => block.type),
+    ['reasoning', 'tool-call'],
+    'reasoning is replayed ahead of the paired tool call',
+  );
+  assert.equal(assistant.content[1]?.toolCallId, 'cc-call-1');
+  const toolMessage = replay.find((message) => message.role === 'tool');
+  assert.ok(toolMessage);
+  assert.deepEqual(toolMessage.content[0], {
+    type: 'tool-result',
+    toolCallId: 'cc-call-1',
+    toolName: 'echo',
+    output: { type: 'text', value: '{"echoed":"hello"}' },
+  });
 }

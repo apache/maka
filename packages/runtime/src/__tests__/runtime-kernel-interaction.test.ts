@@ -480,7 +480,7 @@ function runtimeFixture(options: RuntimeFixtureOptions = {}): {
             messageAuthority: {
               bindRun: (identity) => ({
                 ...identity,
-                pull: () => [],
+                pull: async () => [],
                 ack: () => {},
                 nack: () => {},
                 release: () => {

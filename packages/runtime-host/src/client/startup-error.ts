@@ -111,7 +111,7 @@ export function runtimeHostStartupError(
       );
     case 'startup_timeout':
       return new Error(
-        `No Runtime Host became ready before the startup deadline elapsed${electionDiagnosticSuffix(diagnostic)}. Retry; if this workspace needs longer to open (large workspaces can after an upgrade), set MAKA_RUNTIME_HOST_ELECTION_DEADLINE_MS to allow more time.`,
+        `Could not connect to a Runtime Host before the startup deadline elapsed${electionDiagnosticSuffix(diagnostic)}. Retry; the Host may still be starting or its local endpoint may be unavailable. If startup needs longer, set MAKA_RUNTIME_HOST_ELECTION_DEADLINE_MS to allow more time.`,
       );
     case 'host_unresponsive':
       return new Error(

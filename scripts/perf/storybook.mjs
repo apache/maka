@@ -41,8 +41,11 @@ async function scrollSteps(page) {
       const before = anchor.getBoundingClientRect().top;
       const intended = Math.min(240, root.scrollTop);
       if (!intended) throw new Error('Empty scrolling workload');
+      root.dispatchEvent(new WheelEvent('wheel', { deltaY: -intended, bubbles: true }));
       root.scrollBy({ top: -intended, behavior: 'instant' });
       root.dispatchEvent(new Event('scroll'));
+      if (root.style.overflowAnchor !== 'auto')
+        throw new Error('Reader input did not release tail following');
       await new Promise((resolve) => setTimeout(resolve, 100));
       result.push({ intended, moved: anchor.getBoundingClientRect().top - before });
     }
@@ -123,7 +126,7 @@ try {
       motion: 'reduce',
       repetitions: 10,
       conditions:
-        'Ten fresh story navigations for cold scrolling, then ten expand/scroll/close cycles in the final mounted story. Synthetic ComposedShell, no Host. Relative programmatic scrolling, 100ms geometry settling.',
+        'Ten fresh story navigations for cold scrolling, then ten expand/scroll/close cycles in the final mounted story. Synthetic ComposedShell, no Host. Synthetic wheel intent followed by relative programmatic scrolling, 100ms geometry settling.',
       limits:
         'DOM completion and anchor geometry are not screen-present timestamps or native wheel acceptance. Heap includes uncollected objects and previous document garbage; short repeated cycles alone do not prove a leak.',
     },

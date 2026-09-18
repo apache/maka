@@ -99,14 +99,16 @@ export class HostDailyReviewCoordinator {
       readonly promise: Promise<DailyReviewArchive>;
     }
   >();
-  readonly #abortControllers = new Set<AbortController>();
+  readonly #shutdown = new AbortController();
 
   #prepared = false;
   #started = false;
   #schedulerEnabled = false;
   #handoffHeld = false;
   #schedulerTask: Promise<void> | undefined;
-  #draining = false;
+  get #draining(): boolean {
+    return this.#shutdown.signal.aborted;
+  }
   #timer: unknown;
   #residency: RuntimeHostResidency | undefined;
   #closeTask: Promise<void> | undefined;
@@ -152,11 +154,8 @@ export class HostDailyReviewCoordinator {
 
   beginDrain(): void {
     if (this.#draining) return;
-    this.#draining = true;
+    this.#shutdown.abort(new DOMException('Runtime Host is draining', 'AbortError'));
     this.#stopScheduler();
-    for (const controller of this.#abortControllers) {
-      controller.abort(new DOMException('Runtime Host is draining', 'AbortError'));
-    }
   }
 
   holdForHandoff():
@@ -390,10 +389,13 @@ export class HostDailyReviewCoordinator {
       readonly replaceExisting: boolean;
     },
   ): Promise<DailyReviewArchive> {
+    const signal = this.#shutdown.signal;
+    signal.throwIfAborted();
     const summary = await this.#buildSummary(day, now);
     const existing = await this.#store.getArchive(archiveId);
     if (existing && !input.replaceExisting) return existing;
     const config = await this.#store.readConfig();
+    signal.throwIfAborted();
     const modelKey = modelKeyOverride || config.config.modelKey;
     const base = {
       id: archiveId,
@@ -413,57 +415,50 @@ export class HostDailyReviewCoordinator {
       });
     }
 
-    const controller = new AbortController();
-    this.#abortControllers.add(controller);
-    try {
-      const result = await this.#model.generate({
-        modelKey,
-        prompt: buildModelPrompt(summary, input.range),
-        abortSignal: controller.signal,
-      });
-      if (!result.ok) {
-        if (result.errorClass === 'aborted') {
-          throw (
-            controller.signal.reason ?? new DOMException('Daily Review was aborted', 'AbortError')
-          );
-        }
-        if (result.errorClass === 'persistence') {
-          this.#requestDrain();
-          throw new Error('Daily Review model accounting failed');
-        }
-        return this.#publish({
-          ...base,
-          status: result.errorClass === 'configuration' ? 'no_model' : 'failed',
-          sections: buildRuleBasedSections(summary, input.range),
-          errorMessage:
-            result.errorClass === 'configuration'
-              ? 'No executable analysis model is configured.'
-              : result.errorClass === 'timeout'
-                ? 'The analysis model timed out while generating this review.'
-                : 'The analysis model failed to generate this review.',
-        });
+    const result = await this.#model.generate({
+      modelKey,
+      prompt: buildModelPrompt(summary, input.range),
+      abortSignal: signal,
+    });
+    signal.throwIfAborted();
+    if (!result.ok) {
+      if (result.errorClass === 'aborted') {
+        throw signal.reason ?? new DOMException('Daily Review was aborted', 'AbortError');
       }
-      let sections: DailyReviewArchiveSectionContent;
-      try {
-        sections = parseSections(result.text);
-      } catch {
-        return this.#publish({
-          ...base,
-          modelKey: result.modelKey,
-          status: 'failed',
-          sections: buildRuleBasedSections(summary, input.range),
-          errorMessage: 'The analysis model returned an invalid review.',
-        });
+      if (result.errorClass === 'persistence') {
+        this.#requestDrain();
+        throw new Error('Daily Review model accounting failed');
       }
       return this.#publish({
         ...base,
-        modelKey: result.modelKey,
-        status: 'ok',
-        sections,
+        status: result.errorClass === 'configuration' ? 'no_model' : 'failed',
+        sections: buildRuleBasedSections(summary, input.range),
+        errorMessage:
+          result.errorClass === 'configuration'
+            ? 'No executable analysis model is configured.'
+            : result.errorClass === 'timeout'
+              ? 'The analysis model timed out while generating this review.'
+              : 'The analysis model failed to generate this review.',
       });
-    } finally {
-      this.#abortControllers.delete(controller);
     }
+    let sections: DailyReviewArchiveSectionContent;
+    try {
+      sections = parseSections(result.text);
+    } catch {
+      return this.#publish({
+        ...base,
+        modelKey: result.modelKey,
+        status: 'failed',
+        sections: buildRuleBasedSections(summary, input.range),
+        errorMessage: 'The analysis model returned an invalid review.',
+      });
+    }
+    return this.#publish({
+      ...base,
+      modelKey: result.modelKey,
+      status: 'ok',
+      sections,
+    });
   }
 
   async #publish(archive: DailyReviewArchive): Promise<DailyReviewArchive> {

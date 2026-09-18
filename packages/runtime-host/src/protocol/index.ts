@@ -101,7 +101,50 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 133 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 162 as const;
+// 162: Runtime Resource control and stop replies drop the unused resource
+// snapshot; start replies allow compact state. Older peers require snapshots.
+// 161: Session transcript reads return the whole transcript under a byte budget,
+// and every page says whether it stops between two Turns. The windowed read's
+// range edges are gone, and the Turn landmark query takes a Turn to look up, so
+// a peer older than this epoch asks for what this Host no longer answers.
+// 160: Usage queries add revision-consistent screens and revision-bound activity pages.
+// 159: External Session catalog queries distinguish adapter source limits from
+// persistence failures. Older Clients reject the new closed error code.
+// 158: Session transcripts advance per committed RuntimeEvent; the active overlay is gone.
+// 154: External Session import results distinguish committed Sessions from typed source limits.
+// 153: Sessions may select plugin executors and Plugin Platform queries expose them.
+// 152: Assistant completions and transcript rows preserve interrupted responses.
+// 151: WorkHub selects and delegates through a durable Host Form interaction.
+// 150: Message admission accepts an empty-text Message that carries a quote or
+// an attachment (#4804). Peers older than this epoch reject that frame at
+// admission, so the pair must refuse each other at the handshake.
+// 149: Connection model overrides retain disabled identities and separate capacity
+// from compaction. Catalog entries carry overrides; clients do not rebuild them.
+// 148: Model catalog entries include image support before a user override.
+// 147: OAuth create targets may carry a caller-selected Connection name and
+// slug, and slug collisions remain a closed typed error before or after
+// authorization. Older peers reject those strict input and output shapes.
+// 146: Code Mode settings and Session tool mode join the epoch-145 Host contract.
+// 145: Combine Antigravity setup with Session bundle Host operations and explicit
+// missing/archived Skill query refusals.
+// 144: Antigravity setup combined with explicit missing/archived Skill query refusals.
+// 143: Session bundle export and import are Host operations. Pre-merge Antigravity
+// builds also advertised 143 without this contract and remain incompatible.
+
+// 142: Invocable Skill queries expose missing and archived Session refusals explicitly.
+// 141: WorkHub root admissions bind model Intent/Recall decisions before actions.
+// 140: Plugin Platform queries expose scoped Command contribution projections.
+// Epoch-139 peers reject the added query view and result shape.
+// 139: WorkHub recovery preserves the Host-authenticated Desktop capability binding.
+// 138: Removes the unused steering display anchor from canonical MessageContent.
+// 137: Reserved by the former display anchor contract.
+// 136: WorkHub transient proposals distinguish routing dispositions from linked
+// operations. Older peers expect replace/stop_work/resume_work dispositions.
+// 135: WorkHub model Turns replace direct action proposals with active-Turn task tools.
+// 134: Coordination actions own real Runtime Turns. Removes the synthetic record
+// operation, projects typed action receipts and admitted action identities, and
+// distinguishes stale candidate refusals and resumable transcript preparation.
 // 133: WorkHub actions carry attachments and new-Work model/permission defaults.
 // Epoch-132 peers reject these additional fields on strict action shapes.
 // 132: new Tool Result archives use versioned ledger references, not Artifact payloads.

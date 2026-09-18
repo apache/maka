@@ -28,18 +28,11 @@ import type { SessionHeader } from '@maka/core/session';
 import type { AiSdkBackend } from '../ai-sdk-backend.js';
 import {
   createToolResultArchiveCapability,
+  bindToolResultArchiveDecoder,
   type ToolResultArchiveCapability,
 } from '../tool-result-archive-capability.js';
-import { buildToolResultArchiveResourceRef } from '../tool-result-archive-resource.js';
-import { ARCHIVED_TOOL_RESULT_REWRITE_VERSION } from '../tool-result-archive.js';
 import type { MakaToolContext } from '../tool-runtime.js';
 import { createTestAiSdkBackend } from './execution-boundary-test-helpers.js';
-
-// The pruned tool-result placeholder is a runtime-generated protocol value that
-// names `ArchiveRead` as the way back to the content. These tests observe the
-// tool surface the provider actually receives, not an internal array: the
-// defects in #2025 and on the child-agent path were both "the model was told to
-// call a tool that was never advertised to it".
 
 const ZERO_USAGE: LanguageModelV4Usage = {
   inputTokens: { total: 0, noCache: 0, cacheRead: 0, cacheWrite: 0 },
@@ -47,7 +40,7 @@ const ZERO_USAGE: LanguageModelV4Usage = {
 };
 
 describe('AiSdkBackend tool-result archive capability', () => {
-  test('advertises ArchiveRead when the session archives tool results', async () => {
+  test('advertises Read when the session archives tool results', async () => {
     const capturedTools: string[][] = [];
     const model = capturingModel(capturedTools);
 
@@ -60,12 +53,12 @@ describe('AiSdkBackend tool-result archive capability', () => {
     );
 
     assert.ok(
-      capturedTools[0]?.includes('ArchiveRead'),
+      capturedTools[0]?.includes('Read'),
       'a session that archives tool results must advertise the tool its placeholders name',
     );
   });
 
-  test('advertises no ArchiveRead when the session archives nothing', async () => {
+  test('advertises no Read when the session archives nothing', async () => {
     const capturedTools: string[][] = [];
     const model = capturingModel(capturedTools);
 
@@ -79,134 +72,35 @@ describe('AiSdkBackend tool-result archive capability', () => {
 
     assert.ok(capturedTools.length > 0, 'expected the model to be called');
     assert.ok(
-      !capturedTools[0]?.includes('ArchiveRead'),
+      !capturedTools[0]?.includes('Read'),
       'a session that never archives has nothing to decode, so the CLI stays free of the tool',
     );
   });
 
-  test('the decoder reads back what the writer archived', async () => {
-    // Indivisibility is about one authority, not two co-present fields: the
-    // tool the model is told to call must reach the storage the writer used.
-    const store = new Map<string, string>();
+  test('resource-only Read preserves Session scope and grants no file access', async () => {
+    const seen: string[] = [];
     const archive = createToolResultArchiveCapability({
-      archiveToolResult: async (event) => {
-        store.set(event.bodySha256, event.serializedResult);
-        return { artifactId: `artifact-${event.bodySha256.slice(0, 8)}` };
-      },
-      readToolResultArchive: async () => ({ ok: false, reason: 'not_found' }),
+      archiveToolResult: async () => ({ ledger: true }),
       readArchivedToolResultResource: async (input) => {
-        const serializedResult = store.get(input.bodySha256);
-        return serializedResult === undefined
-          ? { ok: false, reason: 'not_found' }
-          : { ok: true, serializedResult };
+        seen.push(input.sessionId);
+        return { ok: true, serializedResult: JSON.stringify({ content: 'first\nsecond' }) };
       },
     });
-
-    const serializedResult = JSON.stringify({ kind: 'text', text: 'the pruned body' });
-    const bodySha256 = 'a'.repeat(64);
-    const written = await archive.services.archiveToolResult({
-      sessionId: 'session-1',
-      runtimeEventId: 'event-1',
-      turnId: 'turn-1',
-      toolCallId: 'call-1',
-      toolName: 'Bash',
-      result: undefined,
-      serializedResult,
-      bodySha256,
-      originalEstimatedTokens: 1_000,
-      originalBytes: Buffer.byteLength(serializedResult),
-      rewriteVersion: ARCHIVED_TOOL_RESULT_REWRITE_VERSION,
-      reason: 'active_current_turn_tool_result_pruned_before_next_step',
-    });
-    assert.ok(written, 'the writer must report where it archived the body');
-    assert.ok(written.artifactId);
-
-    const page = (await archive.archiveReadTool.impl(
-      {
-        ref: buildToolResultArchiveResourceRef({
-          artifactId: written.artifactId,
-          bodySha256,
-          originalBytes: Buffer.byteLength(serializedResult),
-        }),
-        operation: 'read',
-      },
+    const read = bindToolResultArchiveDecoder([], archive)[0]!;
+    const page = await read.impl(
+      { path: 'maka://runtime/tool-results/event-1', offset: 1, limit: 1 },
       toolContext(),
-    )) as { ok: boolean; content: string };
-
-    assert.equal(page.ok, true, 'the ref the placeholder carries must resolve');
-    assert.equal(page.content, serializedResult);
-    // Kept from the built-in tool contract this replaced: the decoder is a read,
-    // which is what lets it travel to a read-only child.
-    assert.equal(archive.archiveReadTool.activityKind, 'read');
-  });
-
-  test('the decoder reads as the invoking session', async () => {
-    // A ref carries no session identity, so the session boundary is only as
-    // strong as the id the tool passes down from its own invocation context.
-    const seen: { sessionId: string }[] = [];
-    const archive = createToolResultArchiveCapability({
-      archiveToolResult: async () => ({ artifactId: 'artifact-1' }),
-      readToolResultArchive: async () => ({ ok: false, reason: 'not_found' }),
-      readArchivedToolResultResource: async (input) => {
-        seen.push({ sessionId: input.sessionId });
-        return { ok: true, serializedResult: JSON.stringify({ kind: 'agent_swarm', items: [] }) };
-      },
-    });
-
-    await archive.archiveReadTool.impl(
-      {
-        ref: buildToolResultArchiveResourceRef({
-          artifactId: `tool-result-archive-${'a'.repeat(32)}`,
-          bodySha256: 'b'.repeat(64),
-          originalBytes: 128,
-        }),
-        operation: 'inspect',
-      },
-      { ...toolContext(), sessionId: 'session-invoking' },
     );
-
-    assert.equal(seen[0]?.sessionId, 'session-invoking');
-  });
-
-  test('the decoder ignores itemId outside query instead of refusing the call', async () => {
-    const archive = createToolResultArchiveCapability({
-      archiveToolResult: async () => ({ artifactId: 'artifact-1' }),
-      readToolResultArchive: async () => ({ ok: false, reason: 'not_found' }),
-      readArchivedToolResultResource: async () => ({
-        ok: true,
-        serializedResult: JSON.stringify({ presets: [{ id: 'fast-reader' }] }),
-      }),
-    });
-    const parameters = archive.archiveReadTool.parameters as {
-      validate(
-        input: unknown,
-      ): Promise<{ success: true; value: unknown } | { success: false; error: unknown }>;
-    };
-    const parsed = await parameters.validate({
-      ref: buildToolResultArchiveResourceRef({
-        artifactId: `tool-result-archive-${'a'.repeat(32)}`,
-        bodySha256: 'b'.repeat(64),
-        originalBytes: 128,
-      }),
-      operation: 'inspect',
-      itemId: { malformed: true },
-      offset: 'not-a-number',
-      limit: -1,
-      ignored: true,
-    });
-
-    assert.equal(parsed.success, true);
-
-    const missingQueryItem = await parameters.validate({
-      ref: buildToolResultArchiveResourceRef({
-        artifactId: `tool-result-archive-${'a'.repeat(32)}`,
-        bodySha256: 'b'.repeat(64),
-        originalBytes: 128,
-      }),
-      operation: 'query',
-      ignored: true,
-    });
-    assert.equal(missingQueryItem.success, false, 'required branch fields still fail closed');
+    assert.equal((page as { content: string }).content, 'second');
+    assert.deepEqual(seen, ['session-1']);
+    await assert.rejects(
+      async () => read.impl({ path: '/etc/passwd' }, toolContext()),
+      /File access is not available/,
+    );
+    assert.equal(
+      bindToolResultArchiveDecoder([read], archive).filter((tool) => tool.name === 'Read').length,
+      1,
+    );
   });
 });
 
@@ -224,7 +118,6 @@ function toolContext(): MakaToolContext {
 function capability(): ToolResultArchiveCapability {
   return createToolResultArchiveCapability({
     archiveToolResult: async () => ({ artifactId: 'artifact-1' }),
-    readToolResultArchive: async () => ({ ok: false, reason: 'not_found' }),
     readArchivedToolResultResource: async () => ({ ok: false, reason: 'not_found' }),
   });
 }

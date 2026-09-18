@@ -28,11 +28,10 @@ import {
   DEFAULT_TERMINAL_FONT_SIZE,
   DEFAULT_UI_FONT_SIZE,
   normalizeTerminalFontSize,
-  normalizeUiFontSize,
   type ThemePalette,
   type ThemePreference,
 } from '@maka/core/settings';
-import { TYPE_SCALE_BASE_PX } from './astryx-theme/type-scale.js';
+import { applyDocumentThemeMode, applyDocumentThemePalette, applyDocumentUiFontSize } from './platform/desktop/document-appearance.js';
 import { safeLocalStorageGet, safeLocalStorageSet } from './browser-storage';
 import { compositeScrimOverBackground, parseCssRgbColor } from './titlebar-dim-color.js';
 
@@ -43,14 +42,6 @@ const DARK_CLASS = 'dark';
 // frame, same rationale as `maka-theme-v1`.
 const UI_FONT_SIZE_STORAGE_KEY = 'maka-ui-font-size-v1';
 const TERMINAL_FONT_SIZE_STORAGE_KEY = 'maka-terminal-font-size-v1';
-// The renderer type scale is generated from TYPE_SCALE_BASE_PX (the same
-// constant makaTheme.ts feeds into expandTypeScale) and every --font-size-*
-// token is rem, so the root font-size that reproduces a chosen base px is
-// `16 * px / base`. At the base that is the 16px browser default (no change);
-// other values scale what is rem-derived — text and Astryx's rem icon atoms —
-// while px-literal spacing and widths stay fixed.
-const BROWSER_ROOT_FONT_SIZE_PX = 16;
-
 let currentUiFontSize: number = DEFAULT_UI_FONT_SIZE;
 let currentTerminalFontSize: number = DEFAULT_TERMINAL_FONT_SIZE;
 const terminalFontSizeListeners = new Set<(size: number) => void>();
@@ -65,9 +56,8 @@ export function getUiFontSize(): number {
  * Clamps out-of-range / wrong-typed input to a sane value.
  */
 export function applyUiFontSize(size: number): void {
-  const next = normalizeUiFontSize(size);
+  const next = applyDocumentUiFontSize(size);
   currentUiFontSize = next;
-  document.documentElement.style.fontSize = `${(BROWSER_ROOT_FONT_SIZE_PX * next) / TYPE_SCALE_BASE_PX}px`;
   safeLocalStorageSet(UI_FONT_SIZE_STORAGE_KEY, String(next));
 }
 
@@ -149,21 +139,8 @@ export function applyTheme(pref: ThemePreference): () => void {
 }
 
 function setDarkClass(isDark: boolean): void {
-  const root = document.documentElement;
-  root.classList.toggle(DARK_CLASS, isDark);
-  // This is what picks the mode, not just what tells native form controls and
-  // scrollbars about it: every palette colour is a `light-dark()` pair that
-  // resolves against color-scheme (maka-tokens.css, DESIGN.md §8). It must stay
-  // in lockstep with the class — which also carries the mode to Astryx — and it
-  // must keep being set before the first paint (cached-theme-bootstrap.ts).
-  //
-  // Inside the app, Astryx's <Theme> re-declares color-scheme on its own
-  // wrapper from the class (astryx-theme-mode.ts), so the subtree turns over on
-  // that React commit rather than on this line. That is one repaint later and
-  // it is the whole switch, not half of it — which is the point: the palette
-  // and Astryx's own tokens can no longer disagree for a frame.
-  root.style.colorScheme = isDark ? 'dark' : 'light';
-  syncTitleBarOverlay(root);
+  applyDocumentThemeMode(isDark);
+  syncTitleBarOverlay(document.documentElement);
 }
 
 /**
@@ -198,17 +175,10 @@ export function setTitlebarModalDimmed(dimmed: boolean): void {
  * the class alone no longer switches anything.
  */
 export function applyThemePalette(palette: ThemePalette): void {
-  const root = document.documentElement;
-  if (palette === 'default') {
-    root.removeAttribute('data-maka-theme');
-  } else {
-    root.setAttribute('data-maka-theme', palette);
-  }
+  applyDocumentThemePalette(palette);
   safeLocalStorageSet('maka-theme-palette-v1', palette);
-  // Palette variants override --background independently of light/dark mode.
-  // Re-sync after changing the attribute so the native Windows controls never
-  // retain the previous palette's titlebar color.
-  syncTitleBarOverlay(root);
+  // Palette changes also update the main window's native controls.
+  syncTitleBarOverlay(document.documentElement);
 }
 
 function syncTitleBarOverlay(root: HTMLElement): void {

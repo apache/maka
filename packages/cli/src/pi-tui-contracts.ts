@@ -17,7 +17,6 @@
  * under the License.
  */
 
-import type { ForeignSessionDigest, ForeignSessionSummary } from '@maka/core/foreign-session';
 import type { ModelInfo, ProviderType } from '@maka/core/llm-connections';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { ConnectionOnboardingTarget } from '@maka/core/runtime-policy';
@@ -25,6 +24,10 @@ import type {
   ConnectionEffectFailureClass,
   ConnectionOnboardingSaveResult as RuntimeHostOnboardingSaveResult,
   ConnectionOnboardingVerifyResult as RuntimeHostOnboardingVerifyResult,
+  ExternalSessionCatalogItem,
+  ExternalSessionImportResult,
+  OAuthConnectionIdentity,
+  OAuthLoginFailureCode,
 } from '@maka/runtime-host/protocol';
 import type { MakaPiTuiTurnActivity } from './pi-tui-turn.js';
 
@@ -45,7 +48,7 @@ export interface ModelChoice {
   contextWindow?: number;
   /**
    * Thinking levels this model exposes, as the Host resolved them — a relay's
-   * declared `relayModelProfiles[model].thinkingLevels` included. Empty for a
+   * declared `modelOverrides[model].thinkingLevels` included. Empty for a
    * model that offers none; never absent, so no caller has to guess from a
    * bundled metadata copy of its own.
    */
@@ -62,6 +65,7 @@ export interface OnboardableProvider {
   providerType: ProviderType;
   label: string;
   requiresBaseUrl: boolean;
+  setupMethod: 'api_key' | 'oauth';
 }
 
 export type OnboardingIdentityChoice = {
@@ -154,8 +158,35 @@ export type OnboardingSaveResult =
     }
   | OnboardingFailure;
 
+export interface OnboardingOAuthPresentation {
+  readonly url: string;
+  readonly stateHint?: string;
+}
+
+export interface OnboardingOAuthInput {
+  readonly target: ConnectionOnboardingTarget;
+  readonly signal: AbortSignal;
+  readonly onPresentation: (presentation: OnboardingOAuthPresentation) => void;
+}
+
+export type OnboardingOAuthFailureReason =
+  | OAuthLoginFailureCode
+  | 'connection_not_found'
+  | 'operation_conflict'
+  | 'unavailable';
+
+export type OnboardingOAuthResult =
+  | { readonly kind: 'authenticated'; readonly connection: OAuthConnectionIdentity }
+  | { readonly kind: 'cancelled' }
+  | { readonly kind: 'unconfirmed' }
+  | { readonly kind: 'failed'; readonly reason: OnboardingOAuthFailureReason };
+
 export interface MakaOnboardingSurface {
   listProviders(): Promise<OnboardingProviderEntry[]>;
+  /** Observe a Host-owned OAuth attempt. An unconfirmed result retains the
+   * attempt for reconciliation when the same target is retried. Polling,
+   * cancellation convergence and presentation stay behind this interface. */
+  loginOAuth?(input: OnboardingOAuthInput): Promise<OnboardingOAuthResult>;
   verify(input: OnboardingVerifyInput): Promise<OnboardingVerifyResult>;
   save(input: OnboardingSaveInput): Promise<OnboardingSaveResult>;
 }
@@ -167,9 +198,25 @@ export interface SessionRecapGenerator {
   ): Promise<{ ok: true; text: string; raw: string } | { ok: false; error: string }>;
 }
 
-export interface MakaForeignSessionReader {
-  listSessions(options?: { cwd?: string }): Promise<ForeignSessionSummary[]>;
-  readDigest(summary: ForeignSessionSummary): Promise<ForeignSessionDigest>;
+export type ExternalSessionCatalogScope = 'current_workspace' | 'all';
+
+export interface MakaExternalSessionSurface {
+  /** Available catalog scopes in initial-display order. */
+  listScopes(): readonly [ExternalSessionCatalogScope, ...ExternalSessionCatalogScope[]];
+  listSources(): Promise<readonly string[]>;
+  listSessions(input: {
+    readonly adapterId: string;
+    readonly scope: ExternalSessionCatalogScope;
+    readonly cursor?: string;
+    readonly text?: string;
+  }): Promise<{
+    readonly sessions: readonly ExternalSessionCatalogItem[];
+    readonly nextCursor: string | null;
+  }>;
+  importSession(input: {
+    readonly adapterId: string;
+    readonly sourceSessionId: string;
+  }): Promise<ExternalSessionImportResult>;
 }
 
 export type MakaPiTuiTurnActivitySurface = MakaPiTuiTurnActivity;

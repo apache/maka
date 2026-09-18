@@ -21,6 +21,7 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import type { TUI } from '@earendil-works/pi-tui';
 import type { McpTestResult } from '@maka/core/mcp';
+import { AtomicFileWriteCommitUnknownError } from '@maka/storage/mcp-config-store';
 import { McpManagementOverlay } from '../pi-tui-mcp-status.js';
 import type {
   TuiMcpAction,
@@ -334,51 +335,54 @@ describe('MCP management overlay', () => {
   for (const locale of ['en', 'zh-CN'] as const) {
     const expected = editorCopy[locale];
 
-    test(`walks the guided add flow with ${locale} headings, labels, and hints`, () => {
-      const overlay = new McpManagementOverlay({
-        locale,
-        tui: fakeTui(),
-        surface: surface(listSnapshot()),
-        viewportRows: () => 14,
-        onClose: () => undefined,
-        onChange: () => undefined,
-      });
-      const rendered = () => overlay.render(100).map(stripAnsi).join('\n');
+    for (const protocolKey of ['2', '\r']) {
+      test(`walks the guided add flow with ${locale}, protocol key ${JSON.stringify(protocolKey)}, headings, labels, and hints`, () => {
+        const overlay = new McpManagementOverlay({
+          locale,
+          tui: fakeTui(),
+          surface: surface(listSnapshot()),
+          viewportRows: () => 14,
+          onClose: () => undefined,
+          onChange: () => undefined,
+        });
+        const rendered = () => overlay.render(100).map(stripAnsi).join('\n');
 
-      overlay.handleInput('a');
-      assert.ok(rendered().includes(expected.add));
-      overlay.handleInput('g');
-      let text = rendered();
-      assert.ok(text.includes(expected.serverId));
-      assert.ok(text.includes(expected.submitHint));
-      for (const char of 'demo') overlay.handleInput(char);
-      overlay.handleInput('\r');
-      assert.ok(rendered().includes(expected.transport));
-      overlay.handleInput('1');
-      text = rendered();
-      assert.ok(text.includes(expected.command));
-      for (const char of 'echo') overlay.handleInput(char);
-      overlay.handleInput('\r');
-      text = rendered();
-      assert.ok(text.includes(expected.args));
-      assert.ok(text.includes(expected.argsHint));
-      overlay.handleInput('\r');
-      assert.ok(rendered().includes(expected.protocol));
-      overlay.handleInput('2');
-      text = rendered();
-      assert.ok(text.includes(expected.cwd));
-      assert.ok(text.includes(expected.optionalHint));
-      overlay.handleInput('\r');
-      text = rendered();
-      assert.ok(text.includes(expected.env));
-      assert.ok(text.includes(expected.mapHint));
-      overlay.handleInput('\r');
-      text = rendered();
-      assert.ok(text.includes(expected.confirmAdd));
-      assert.ok(text.includes('demo · stdio · auto'));
-      assert.ok(text.includes('echo'));
-      assert.ok(text.includes(expected.confirmHint));
-    });
+        overlay.handleInput('a');
+        assert.ok(rendered().includes(expected.add));
+        overlay.handleInput('g');
+        let text = rendered();
+        assert.ok(text.includes(expected.serverId));
+        assert.ok(text.includes(expected.submitHint));
+        for (const char of 'demo') overlay.handleInput(char);
+        overlay.handleInput('\r');
+        assert.ok(rendered().includes(expected.transport));
+        overlay.handleInput('1');
+        text = rendered();
+        assert.ok(text.includes(expected.command));
+        for (const char of 'echo') overlay.handleInput(char);
+        overlay.handleInput('\r');
+        text = rendered();
+        assert.ok(text.includes(expected.args));
+        assert.ok(text.includes(expected.argsHint));
+        overlay.handleInput('\r');
+        assert.ok(rendered().includes(expected.protocol));
+        assert.ok(rendered().includes('auto (Enter)'));
+        overlay.handleInput(protocolKey);
+        text = rendered();
+        assert.ok(text.includes(expected.cwd));
+        assert.ok(text.includes(expected.optionalHint));
+        overlay.handleInput('\r');
+        text = rendered();
+        assert.ok(text.includes(expected.env));
+        assert.ok(text.includes(expected.mapHint));
+        overlay.handleInput('\r');
+        text = rendered();
+        assert.ok(text.includes(expected.confirmAdd));
+        assert.ok(text.includes('demo · stdio · auto'));
+        assert.ok(text.includes('echo'));
+        assert.ok(text.includes(expected.confirmHint));
+      });
+    }
 
     test(`renders the ${locale} remove confirmation with the server id`, () => {
       const overlay = new McpManagementOverlay({
@@ -433,6 +437,14 @@ describe('MCP management overlay', () => {
     [{ status: 'failed', reason: 'invalid-config' }, 'invalid-config'],
     [{ status: 'failed', reason: 'credential-cleanup-failed' }, 'credential-cleanup-failed'],
     [{ status: 'failed', reason: 'persist-failed' }, 'persist-failed'],
+    [
+      {
+        status: 'failed',
+        reason: 'commit-unknown',
+        cause: new AtomicFileWriteCommitUnknownError({ cause: new Error('directory sync failed') }),
+      },
+      'commit-unknown',
+    ],
     [{ status: 'failed', reason: 'manager-failed' }, 'manager-failed'],
     [{ status: 'applied', effect: 'published' }, 'published'],
     [{ status: 'applied', effect: 'pending_host' }, 'pending_host'],

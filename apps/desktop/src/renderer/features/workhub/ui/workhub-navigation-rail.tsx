@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { useContext, useState, type CSSProperties } from 'react';
+import { useContext, useRef, useState, type CSSProperties } from 'react';
 import type { WorkHubRailCopy } from '../../../locales/workhub-copy.js';
 import type { UiLocale } from '@maka/core/ui-locale';
 import { Button, dotForStatus, presentSessionStatus } from '@maka/ui';
@@ -29,7 +29,8 @@ import {
   type WorkHubWorkFilter,
 } from '../model/anchor-rail.js';
 
-import { WorkHubHighlightContext, workHubIdentityHue } from './workhub-work-identity.js';
+import { workHubLiveCopy } from '../locales/workhub-live-copy.js';
+import { WorkHubHighlightContext, useWorkHubIdentityHue } from './workhub-work-identity.js';
 
 export function WorkHubNavigationRail(props: {
   readonly locale: UiLocale;
@@ -37,9 +38,10 @@ export function WorkHubNavigationRail(props: {
   readonly focusSessionId?: string;
   readonly delegatedSessionIds: readonly string[];
   readonly copy: WorkHubRailCopy;
-  readonly onOpenSession: (sessionId: string) => void;
 }) {
   const highlight = useContext(WorkHubHighlightContext);
+  const workHubIdentityHue = useWorkHubIdentityHue(props.sessions.map((work) => work.target.sessionId));
+  const drag = useRef<{ pointerId: number; startX: number; scrollLeft: number; list: HTMLElement; moved: boolean } | undefined>(undefined);
   const [filter, setFilter] = useState<WorkHubWorkFilter>('all');
   const anchors = deriveWorkHubAnchors({
     sessions: props.sessions,
@@ -69,7 +71,41 @@ export function WorkHubNavigationRail(props: {
           />
         ))}
       </div>
-      <nav aria-label={props.copy.workNavigation}>
+      <nav
+        aria-label={props.copy.workNavigation}
+        onPointerDownCapture={(event) => {
+          drag.current = undefined;
+          const list = event.currentTarget.querySelector<HTMLElement>('.workhub-anchors');
+          if (event.button !== 0 || event.pointerType !== 'mouse' || !list?.contains(event.target as Node) || list.scrollWidth <= list.clientWidth) return;
+          drag.current = { pointerId: event.pointerId, startX: event.clientX, scrollLeft: list.scrollLeft, list, moved: false };
+        }}
+        onPointerMoveCapture={(event) => {
+          const gesture = drag.current;
+          if (!gesture || event.pointerId !== gesture.pointerId || !(event.buttons & 1)) return;
+          const distance = event.clientX - gesture.startX;
+          if (!gesture.moved && Math.abs(distance) < 5) return;
+          if (!gesture.moved) {
+            gesture.moved = true;
+            event.currentTarget.setPointerCapture(event.pointerId);
+            event.currentTarget.dataset.dragging = 'true';
+          }
+          event.preventDefault();
+          gesture.list.scrollLeft = gesture.scrollLeft - distance;
+        }}
+        onPointerUpCapture={(event) => { delete event.currentTarget.dataset.dragging; }}
+        onPointerCancel={(event) => {
+          drag.current = undefined;
+          delete event.currentTarget.dataset.dragging;
+        }}
+        onLostPointerCapture={(event) => { delete event.currentTarget.dataset.dragging; }}
+        onClickCapture={(event) => {
+          if (drag.current?.moved) {
+            event.preventDefault();
+            event.stopPropagation();
+          }
+          drag.current = undefined;
+        }}
+      >
         {anchors.length > 0 ? (
           <List className="workhub-anchors" density="compact" hasDividers>
             {anchors.map((anchor) => {
@@ -90,12 +126,12 @@ export function WorkHubNavigationRail(props: {
                   onMouseLeave={() => highlight.highlight(undefined)}
                   onFocus={() => highlight.highlight(anchor.target.sessionId)}
                   onBlur={() => highlight.highlight(undefined)}
-                  label={<span className="workhub-navigation-label">{anchor.sessionName}</span>}
-                  description={`${anchor.target.sessionId === props.focusSessionId ? props.copy.focused : anchor.projectName} · ${state}`}
+                  label={<span className="workhub-navigation-label" title={workHubLiveCopy[props.locale].navigationGesture}>{anchor.sessionName}</span>}
+                  description={<><span className="workhub-navigation-workspace">{anchor.projectName}</span>{` · ${anchor.target.sessionId === props.focusSessionId ? `${props.copy.focused} · ` : ''}${state}`}</>}
                   startContent={variant ? <StatusDot variant={variant} label={state} /> : undefined}
                   isSelected={anchor.target.sessionId === props.focusSessionId}
                   aria-current={anchor.target.sessionId === props.focusSessionId ? 'page' : undefined}
-                  onClick={() => props.onOpenSession(anchor.target.sessionId)}
+                  onClick={() => highlight.navigateWork({ sessionId: anchor.target.sessionId, name: anchor.sessionName })}
                 />
               );
             })}

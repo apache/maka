@@ -75,6 +75,7 @@ import {
   type EffectivePricingEntry,
   type ExternalSessionCatalogQueryInput,
   type ExternalSessionCatalogQueryResult,
+  type ExternalSessionImportResult,
   type ExternalSessionSourceQueryResult,
   type ClientCapabilityReplaceResult,
   type ClientCapabilityUnregisterResult,
@@ -211,11 +212,9 @@ export interface DesktopRuntimeHostSession {
   readonly activeAssistantStreams: readonly SessionAssistantStreamIdentity[];
   readonly transcriptBootstrap: SessionTranscriptBootstrap;
   readonly events: AsyncIterable<SubscriptionFrame>;
+  /** Frames are held by the Host until this resolves. */
+  ready(): Promise<void>;
   loadTranscript(): Promise<StoredMessage[]>;
-  loadTranscriptOverlay(
-    maxMessageBytes?: number,
-    accountAssemblyBytes?: (deltaBytes: number) => void,
-  ): Promise<StoredMessage[]>;
   decodeTranscriptPage(
     page: SessionTranscriptPage,
     maxMessageBytes?: number,
@@ -435,8 +434,16 @@ export class DesktopRuntimeHostClient {
   async updateRuntimePolicy(
     buildOperation: (policy: RuntimePolicy) => RuntimePolicyMutation,
   ): Promise<OperationOutput<"runtime.policy.query">> {
+    return this.updateRuntimePolicyIf(() => true, buildOperation);
+  }
+
+  async updateRuntimePolicyIf(
+    accepts: (policy: RuntimePolicy) => boolean,
+    buildOperation: (policy: RuntimePolicy) => RuntimePolicyMutation,
+  ): Promise<OperationOutput<"runtime.policy.query">> {
     for (let attempt = 0; attempt < MAX_OPTIMISTIC_ATTEMPTS; attempt += 1) {
       const current = await this.queryRuntimePolicy();
+      if (!accepts(current.policy)) return current;
       const result = await this.request("runtime.policy.mutate", {
         expectedRevision: current.revision,
         operation: buildOperation(current.policy),
@@ -544,6 +551,18 @@ export class DesktopRuntimeHostClient {
     input: OperationInput<"connection.onboarding.save">,
   ): Promise<OperationOutput<"connection.onboarding.save">> {
     return this.request("connection.onboarding.save", input);
+  }
+
+  startExternalAgentSetup(input: OperationInput<"external_agents.setup.start">): Promise<OperationOutput<"external_agents.setup.start">> {
+    return this.request("external_agents.setup.start", input);
+  }
+
+  queryExternalAgentSetup(attemptId: string): Promise<OperationOutput<"external_agents.setup.query">> {
+    return this.request("external_agents.setup.query", { attemptId });
+  }
+
+  cancelExternalAgentSetup(attemptId: string): Promise<OperationOutput<"external_agents.setup.cancel">> {
+    return this.request("external_agents.setup.cancel", { attemptId });
   }
 
   startOAuthLogin(
@@ -975,22 +994,28 @@ export class DesktopRuntimeHostClient {
     return this.request("workhub.coordination.resolve", {});
   }
 
+  async getWorkHubSession(): Promise<SessionCatalogProjection> {
+    return requireSessionProjection(await this.request('workhub.coordination.query', {}));
+  }
+
+  answerWorkHubCoordination(input: OperationInput<'workhub.coordination.answer'>) {
+    return this.request('workhub.coordination.answer', input);
+  }
+
+  configureWorkHubModel(input: OperationInput<'workhub.coordination.configureModel'>) {
+    return this.request('workhub.coordination.configureModel', input);
+  }
+
   listWorkHubCoordinationCandidates() {
     return this.request("workhub.coordination.candidates", {});
   }
 
-  actWorkHubCoordination(
-    input: OperationInput<"workhub.coordination.act">,
-  ): Promise<OperationOutput<"workhub.coordination.act">> {
-    return this.request("workhub.coordination.act", input);
+  selectAndDelegateWorkHubTarget(input: OperationInput<'workhub.coordination.selectAndDelegate'>) {
+    return this.request('workhub.coordination.selectAndDelegate', input);
   }
 
-
-
-  recordWorkHubCoordination(
-    input: OperationInput<"workhub.coordination.record">,
-  ): Promise<OperationOutput<"workhub.coordination.record">> {
-    return this.request("workhub.coordination.record", input);
+  actWorkHubCoordinationFromTurn(input: OperationInput<'workhub.coordination.actFromTurn'>) {
+    return this.request('workhub.coordination.actFromTurn', input);
   }
 
   listExternalSessionSources(): Promise<ExternalSessionSourceQueryResult> {
@@ -1006,9 +1031,25 @@ export class DesktopRuntimeHostClient {
   async importExternalSession(input: {
     readonly adapterId: string;
     readonly sourceSessionId: string;
-  }): Promise<SessionCatalogProjection> {
+  }): Promise<ExternalSessionImportResult<SessionCatalogProjection>> {
     const result = await this.request("external-session.import", input);
-    return requireSessionProjection(result.session);
+    return result.kind === 'imported'
+      ? { kind: 'imported', session: requireSessionProjection(result.session) }
+      : result;
+  }
+
+  exportSessionBundle(input: {
+    readonly sessionId: string;
+    readonly destination: string;
+    readonly expectedSubtreeDigest?: string;
+  }): Promise<{ readonly sessionCount: number; readonly compressedBytes: number }> {
+    return this.request("session-bundle.export", input);
+  }
+
+  importSessionBundle(input: {
+    readonly source: string;
+  }): Promise<{ readonly sessionCount: number; readonly artifactFiles: number }> {
+    return this.request("session-bundle.import", input);
   }
 
   updateSessionMetadata(
@@ -1329,11 +1370,14 @@ export class DesktopRuntimeHostClient {
 
   prepareHostRetirement(
     mode: RuntimeHostRetirementMode,
+    options?: { readonly timeoutMs?: number; readonly allowCooperativeHandoff?: boolean },
   ): Promise<RuntimeHostRetirementPreparation> {
     return prepareConnectedRuntimeHostRetirement(
       this.connection,
       mode,
-      RUNTIME_HOST_RETIREMENT_TIMEOUT_MS,
+      options?.timeoutMs ?? RUNTIME_HOST_RETIREMENT_TIMEOUT_MS,
+      undefined,
+      options,
     );
   }
 
@@ -1656,11 +1700,13 @@ export class DesktopRuntimeHostClient {
 
   async listSessionTurnLandmarks(
     sessionId: string,
+    turnId: string | null = null,
   ): Promise<OperationOutput<'session.turn_landmarks.query'>> {
     this.#assertOpen();
     return this.request('session.turn_landmarks.query', {
       sessionId,
-      maxLandmarks: 64,
+      maxLandmarks: turnId === null ? 64 : 1,
+      turnId,
     });
   }
 
@@ -1807,6 +1853,10 @@ class DesktopSessionHandle implements DesktopRuntimeHostSession {
     this.events = subscription;
   }
 
+  ready(): Promise<void> {
+    return this.subscription.ready();
+  }
+
   loadTranscript(): Promise<StoredMessage[]> {
     this.#transcriptTask ??= this.subscription.loadTranscript(decodeStoredMessage);
     return this.#transcriptTask;
@@ -1814,17 +1864,6 @@ class DesktopSessionHandle implements DesktopRuntimeHostSession {
 
   subscribePtyData(listener: Parameters<RuntimeHostSessionSubscription['subscribePtyData']>[0]): () => void {
     return this.subscription.subscribePtyData(listener);
-  }
-
-  loadTranscriptOverlay(
-    maxMessageBytes?: number,
-    accountAssemblyBytes?: (deltaBytes: number) => void,
-  ): Promise<StoredMessage[]> {
-    return this.subscription.loadTranscriptOverlay(
-      decodeStoredMessage,
-      maxMessageBytes,
-      accountAssemblyBytes,
-    );
   }
 
   decodeTranscriptPage(

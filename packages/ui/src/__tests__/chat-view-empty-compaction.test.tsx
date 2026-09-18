@@ -18,13 +18,17 @@
  */
 
 import assert from 'node:assert/strict';
-import test from 'node:test';
+import { test } from 'node:test';
+import { act, type ComponentProps } from 'react';
+import { createRoot } from 'react-dom/client';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { parseHTML } from 'linkedom';
 import type { SessionSummary } from '@maka/core/session';
 import { ChatSurfaceLayout } from '../chat-surface-layout.js';
 import { ChatView } from '../chat-view.js';
 import type { LiveTurnProjection } from '../live-turn-projection.js';
 import { LocaleProvider } from '../locale-context.js';
+import { renderTranscriptMarkup } from './transcript-test-dom.js';
 
 const activeSession = {
   id: 'session-1',
@@ -33,38 +37,183 @@ const activeSession = {
   labels: [] as string[],
 } as unknown as SessionSummary;
 
-function renderChat(liveTurn?: LiveTurnProjection): string {
-  return renderToStaticMarkup(
+function renderChat(liveTurn?: LiveTurnProjection, overrides: Partial<ComponentProps<typeof ChatView>> = {}): Promise<string> {
+  return renderTranscriptMarkup(
     <LocaleProvider locale="en">
       <ChatSurfaceLayout composer={null}>
         <ChatView
           messages={[]}
           activeSession={activeSession}
-          liveTurn={liveTurn}
+          liveTurns={liveTurn ? [liveTurn] : undefined}
           scrollBehavior="auto"
           onNew={() => undefined}
+          {...overrides}
         />
       </ChatSurfaceLayout>
     </LocaleProvider>,
   );
 }
 
-test('renders the live compaction row in a session with no settled messages', () => {
-  const markup = renderChat({
+test('renders the live compaction row in a session with no settled messages', async () => {
+  const markup = await renderChat({
     turnId: 'turn-compact',
-    phase: 'waiting',
     rootExecutionKind: 'context_compact',
     startedAt: 0,
     steps: [],
-  });
+  }, { activeTurn: { turnId: 'turn-compact', compacting: true } });
 
   // Before the fix, showEmptyState hid this overlaid row behind the empty hero
   // because it keyed off chat.length (0) and never saw the synthesized turn.
   assert.match(markup, /Compacting context/);
 });
 
-test('renders the empty hero when an empty session has no live compaction row', () => {
-  const markup = renderChat(undefined);
+test('retains tool and compaction evidence without activity after observation loss', async () => {
+  const messages = [{ type: 'user' as const, id: 'user', turnId: 'prior', text: 'Earlier request', ts: 1 }];
+  const tool: LiveTurnProjection = { turnId: 'tool-turn', steps: [{ stepId: 'step', tools: [
+    { toolUseId: 'bash', toolName: 'Bash', args: { command: 'echo retained' }, status: 'running' },
+  ] }] };
+  const compact: LiveTurnProjection = { turnId: 'compact', rootExecutionKind: 'context_compact', steps: [] };
+  for (const observed of [true, false, true]) {
+    const toolDocument = parseHTML(await renderChat(tool, { messages, activeTurn: observed ? { turnId: tool.turnId } : undefined })).document;
+    assert.equal(toolDocument.querySelector('.maka-tool-activity-card')?.getAttribute('data-activity-observed'), String(observed));
+    assert.match(toolDocument.querySelector('.maka-tool-activity-card')?.textContent ?? '', /echo retained/);
+    const compactDocument = parseHTML(await renderChat(compact, { messages, activeTurn: observed ? { turnId: compact.turnId, compacting: true } : undefined })).document;
+    assert.equal(compactDocument.querySelector('[data-compaction-state]')?.getAttribute('data-compaction-state'), observed ? 'running' : 'unavailable');
+    assert.equal(compactDocument.querySelectorAll('.maka-compaction-status .astryx-spinner').length, observed ? 1 : 0);
+  }
+  assert.equal(tool.steps[0]?.tools[0]?.status, 'running', 'availability never rewrites retained execution evidence');
+});
+
+test('shows one waiting indicator before a named live Turn reaches the transcript', async () => {
+  const liveTurn: LiveTurnProjection = { turnId: 'pending-turn', steps: [], unconfirmed: true };
+  const pending = { id: 'pending-user', hostTurnId: liveTurn.turnId, text: 'Please help', ts: 1000, transientPlacement: 'current_turn' as const };
+  for (const messages of [[], [{ type: 'user' as const, id: 'old-user', turnId: 'old-turn', text: 'Earlier request', ts: 1 }]]) {
+    const markup = await renderChat(liveTurn, { messages, transientMessages: [pending], activeTurn: { turnId: liveTurn.turnId! } });
+    assert.equal((markup.match(/class="maka-turn-processing"/g) ?? []).length, 1);
+    assert.match(markup, /Pondering/);
+    assert.match(markup, /Please help/);
+    assert.doesNotMatch(markup, /data-transcript-turn-id="pending-turn"/);
+  }
+  const committed = await renderChat(liveTurn, {
+    messages: [{ type: 'user', id: 'durable-user', turnId: liveTurn.turnId, text: pending.text, ts: pending.ts }],
+    activeTurn: { turnId: liveTurn.turnId! },
+  });
+  assert.equal((committed.match(/class="maka-turn-processing"/g) ?? []).length, 1);
+  assert.match(committed, /data-transcript-turn-id="pending-turn"/);
+});
+
+test('a new Host Turn owns its waiting footer while the previous answer remains buffered', async () => {
+  const oldTurn: LiveTurnProjection = {
+    turnId: 'old-turn', terminal: true,
+    steps: [{ stepId: 'old-answer', text: { text: 'Previous answer', complete: true, truncated: false }, tools: [] }],
+  };
+  const messages = [{ type: 'user' as const, id: 'old-user', turnId: 'old-turn', text: 'Earlier request', ts: 1 }];
+  const transientMessages = [{ id: 'new-user', hostTurnId: 'new-turn', text: 'New request', ts: 2, transientPlacement: 'current_turn' as const }];
+  for (const content of [oldTurn, undefined]) {
+    const markup = await renderChat(content, { messages, transientMessages, activeTurn: { turnId: 'new-turn' } });
+    const { document } = parseHTML(markup);
+    assert.equal(document.querySelectorAll('.maka-turn-processing').length, 1);
+    assert.equal(document.querySelector('[data-transcript-turn-id="old-turn"] .maka-turn-processing'), null);
+    assert.ok(markup.indexOf('New request') < markup.indexOf('maka-turn-processing'));
+    if (content) assert.match(markup, /Previous answer/);
+  }
+  const idle = await renderChat({ ...oldTurn, terminal: undefined }, { messages });
+  assert.doesNotMatch(idle, /maka-turn-processing/);
+});
+
+test('renders the empty hero when an empty session has no live compaction row', async () => {
+  const markup = await renderChat(undefined);
 
   assert.doesNotMatch(markup, /Compacting context/);
+});
+
+test('the pending Turn waits without a clock until the Turn start time reaches the client', async (t) => {
+  const now = 1_700_000_000_000;
+  t.mock.timers.enable({ apis: ['Date', 'setInterval'], now });
+  const original = {
+    document: globalThis.document, window: globalThis.window,
+    matchMedia: globalThis.matchMedia, requestAnimationFrame: globalThis.requestAnimationFrame,
+    cancelAnimationFrame: globalThis.cancelAnimationFrame,
+    ResizeObserver: globalThis.ResizeObserver,
+    MutationObserver: globalThis.MutationObserver,
+    IntersectionObserver: globalThis.IntersectionObserver,
+    IS_REACT_ACT_ENVIRONMENT: (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT,
+  };
+  const { document, window } = parseHTML('<div id="root"></div>');
+  Object.assign(globalThis, {
+    document, window,
+    matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }),
+    requestAnimationFrame: () => 1, cancelAnimationFrame() {}, IS_REACT_ACT_ENVIRONMENT: true,
+    ResizeObserver: class { observe() {} unobserve() {} disconnect() {} },
+    MutationObserver: class { observe() {} disconnect() {} },
+    IntersectionObserver: class { observe() {} unobserve() {} disconnect() {} },
+  });
+  const container = document.querySelector('#root')!;
+  const root = createRoot(container);
+  t.after(async () => { await act(() => root.unmount()); Object.assign(globalThis, original); });
+  const liveTurn: LiveTurnProjection = { turnId: 'pending-turn', steps: [], unconfirmed: true };
+  const pending = { id: 'pending-user', hostTurnId: liveTurn.turnId, text: 'Please help', ts: now, transientPlacement: 'current_turn' as const };
+  const render = async (overrides: Partial<ComponentProps<typeof ChatView>>) => {
+    await act(() => root.render(
+      <LocaleProvider locale="en">
+        <ChatSurfaceLayout composer={null}>
+          <ChatView messages={[]} activeSession={activeSession} liveTurns={liveTurn ? [liveTurn] : undefined}
+            activeTurn={{ turnId: liveTurn.turnId! }} transientMessages={[pending]} scrollBehavior="auto" onNew={() => undefined} {...overrides} />
+        </ChatSurfaceLayout>
+      </LocaleProvider>,
+    ));
+  };
+  await render({});
+  assert.equal(container.querySelectorAll('.maka-turn-processing').length, 1);
+  // No Turn start yet, so no clock.
+  assert.equal(container.querySelector('.maka-turn-elapsed'), null);
+  await act(() => t.mock.timers.tick(2_000));
+  assert.equal(container.querySelector('.maka-turn-elapsed'), null);
+  await render({
+    transientMessages: [],
+    messages: [{ type: 'user', id: 'durable-user', turnId: liveTurn.turnId, text: pending.text, ts: pending.ts }],
+  });
+  assert.equal(container.querySelectorAll('.maka-turn-processing').length, 1);
+  // The Turn's own start drives the clock.
+  assert.match(container.querySelector('.maka-turn-elapsed')?.textContent ?? '', /2s/);
+  await render({ liveTurns: undefined, activeTurn: undefined, transientMessages: [] });
+  assert.equal(container.querySelectorAll('.maka-turn-processing').length, 0);
+});
+
+
+test('ChatSurfaceLayout preserves the public emptyState for absent children', () => {
+  for (const children of [null, undefined, false, []]) {
+    const markup = renderToStaticMarkup(
+      <ChatSurfaceLayout composer={null} emptyState={<p>Empty layout</p>} children={children} />,
+    );
+    assert.match(markup, /Empty layout/);
+    assert.doesNotMatch(markup, /maka-prompt-rail-host/);
+  }
+});
+
+
+test('turn identity stays on its exact durable anchor and is absent from ordinary transcripts', async () => {
+  const messages = ['one', 'two'].map((turnId) => ({ type: 'user' as const, id: `user-${turnId}`, turnId, text: turnId, ts: 1 }));
+  const { document } = parseHTML(await renderChat(undefined, {
+    messages,
+    turnDecorations: new Map([['one', { header: <span>Workspace / Work</span>, accentColor: 'red', promptStatus: <span data-test-status>Running work</span> }]]),
+  }));
+  const one = document.querySelector('[data-transcript-turn-id="one"]')!;
+  assert.equal(one.getAttribute('data-turn-accent'), 'true');
+  assert.match(one.textContent!, /Workspace \/ Work/);
+  assert.equal(one.querySelectorAll('.maka-user-message [data-test-status]').length, 1);
+  assert.equal(document.querySelector('[data-transcript-turn-id="two"] [data-test-status]'), null);
+  assert.match(one.querySelector('.maka-message-meta')!.textContent!, /Running work/);
+  assert.equal(document.querySelector('[data-transcript-turn-id="two"]')!.getAttribute('data-turn-accent'), null);
+  assert.doesNotMatch(await renderChat(undefined, { messages }), /data-turn-accent|Workspace \/ Work/);
+});
+
+
+test('an initial optimistic prompt uses the same status projection as a durable prompt', async () => {
+  const { document } = parseHTML(await renderChat(undefined, {
+    messages: [], transientMessages: [{ id: 'pending', hostTurnId: 'choosing', text: 'Choose work', ts: 1, transientPlacement: 'current_turn' }],
+    turnDecorations: new Map([['choosing', { header: <></>, promptStatus: <span data-test-status>Waiting for user</span> }]]),
+  }));
+  assert.equal(document.querySelectorAll('[data-test-status]').length, 1);
+  assert.match(document.querySelector('.maka-message-meta')!.textContent!, /Waiting for user/);
 });

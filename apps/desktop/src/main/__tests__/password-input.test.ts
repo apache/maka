@@ -26,11 +26,9 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { parseHTML } from "linkedom";
 import { build } from "esbuild";
-import {
-  AstryxLocaleProvider,
-  LocaleProvider,
-  ToastProvider,
-} from "@maka/ui";
+import type { WebContents } from "electron";
+import { WorkHubSurface } from "../workhub-surface.js";
+import { AstryxLocaleProvider, LocaleProvider, ToastProvider } from "@maka/ui";
 import type * as PasswordInputModule from "../../renderer/settings/password-input.js";
 
 const REPO_ROOT = resolve(import.meta.dirname, "../../../../..");
@@ -41,8 +39,9 @@ const originalGlobals = {
   HTMLElement: globalThis.HTMLElement,
   Node: globalThis.Node,
   Event: globalThis.Event,
-  IS_REACT_ACT_ENVIRONMENT: (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
-    .IS_REACT_ACT_ENVIRONMENT,
+  IS_REACT_ACT_ENVIRONMENT: (
+    globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
+  ).IS_REACT_ACT_ENVIRONMENT,
 };
 
 let mountedRoot: Root | undefined;
@@ -69,13 +68,99 @@ test("mouse focus moving from the password draft to Eye does not commit and Eye 
   assert.equal(input.value, "complete-secret");
 });
 
+test("assistant observations exclude credentials and their controls before and after reveal", async (t) => {
+  const { document } = await renderPasswordInputs();
+  t.mock.method(HTMLElement.prototype, "getBoundingClientRect", () => ({
+    x: 10,
+    y: 10,
+    top: 10,
+    left: 10,
+    right: 210,
+    bottom: 50,
+    width: 200,
+    height: 40,
+  }));
+  const wc = {
+    executeJavaScript: async (script: string) =>
+      new Function(
+        "document",
+        "getComputedStyle",
+        "innerHeight",
+        "innerWidth",
+        `return ${script}`,
+      )(document, () => ({ visibility: "visible", opacity: "1" }), 720, 1158),
+  } as unknown as WebContents;
+  const surface = new WorkHubSurface();
+  const inputs = [...document.querySelectorAll("input")];
+  const showButtons = [
+    ...document.querySelectorAll<HTMLButtonElement>(
+      'button[aria-label="Show"]',
+    ),
+  ];
+  for (const reveal of [false, true]) {
+    if (reveal)
+      await act(async () => {
+        for (const button of showButtons) button.click();
+      });
+    assert.ok(
+      inputs.every((input) => input.type === (reveal ? "text" : "password")),
+    );
+    await surface.prepare(wc);
+    const nodes: {
+      nodeId: string;
+      backendDOMNodeId: number;
+      role: { value: string };
+      name: { value: string };
+      value: { value: string };
+    }[] = [];
+    const dom = (element: Element): Parameters<WorkHubSurface["filter"]>[0] => {
+      const id = nodes.length + 1;
+      nodes.push({
+        nodeId: String(id),
+        backendDOMNodeId: id,
+        role: { value: element.tagName === "INPUT" ? "textbox" : "button" },
+        name: {
+          value:
+            element.getAttribute("aria-label") ?? element.textContent ?? "",
+        },
+        value: { value: (element as HTMLInputElement).value ?? "" },
+      });
+      return {
+        nodeName: element.tagName,
+        backendNodeId: id,
+        attributes: [...element.attributes].flatMap(({ name, value }) => [
+          name,
+          value,
+        ]),
+        children: [...element.children].map(dom),
+      };
+    };
+    const root = {
+      nodeName: "HTML",
+      backendNodeId: 0,
+      children: [...document.children].map(dom),
+    };
+    const observation = surface.filter(root, { nodes });
+    assert.ok(
+      inputs.every((input) => !input.hasAttribute("data-maka-assistant-ref")),
+    );
+    assert.equal(JSON.stringify(observation).includes("secret"), false);
+    assert.deepEqual(
+      surface.list().map(({ name }) => name),
+      ["outside"],
+    );
+  }
+});
+
 test("keyboard focus stays inside through Eye and commits once when Tab leaves the group", async () => {
   const harness = await renderPasswordInputs();
   const input = harness.document.querySelector("input") as HTMLInputElement;
   const show = harness.document.querySelector(
     'button[aria-label="Show"]',
   ) as HTMLButtonElement;
-  const outside = harness.document.querySelector("#outside") as HTMLButtonElement;
+  const outside = harness.document.querySelector(
+    "#outside",
+  ) as HTMLButtonElement;
 
   harness.focusExit(input, show);
   assert.equal(harness.exits, 0);
@@ -177,7 +262,9 @@ async function renderPasswordInputs(): Promise<{
         locale: "en",
         children: createElement(AstryxLocaleProvider, {
           children: createElement(ToastProvider, {
-            children: createElement("div", {},
+            children: createElement(
+              "div",
+              {},
               createElement(PasswordInput, {
                 value: "complete-secret",
                 onChange() {},
@@ -263,6 +350,9 @@ function reactProps(element: Element): Record<string, unknown> {
     candidate.startsWith("__reactProps$"),
   );
   return key
-    ? ((element as unknown as Record<string, unknown>)[key] as Record<string, unknown>)
+    ? ((element as unknown as Record<string, unknown>)[key] as Record<
+        string,
+        unknown
+      >)
     : {};
 }

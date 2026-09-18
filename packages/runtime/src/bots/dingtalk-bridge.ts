@@ -56,6 +56,30 @@ const SEND_RETRY_DELAY_MAX_MS = 30_000;
 
 const DINGTALK_TOPIC_BOT_MESSAGES = '/v1.0/im/bot/messages/get';
 
+const DINGTALK_GROUP_SEND_PATH = '/v1.0/robot/groupMessages/send';
+const DINGTALK_SINGLE_SEND_PATH = '/v1.0/robot/oToMessages/batchSend';
+
+/**
+ * Route markers stamped onto `chatId` when a message is received, so the
+ * send side can pick an endpoint without re-deriving the conversation
+ * kind. Same approach as `qq-bridge.ts`, and for the same reason: the
+ * conversation kind is known exactly at receive time (DingTalk sends
+ * `conversationType`) and cannot be recovered later from the id alone.
+ *
+ * Guessing from DingTalk's own id shapes does not work — 1:1 and group
+ * `conversationId` values both begin with `cid`, so a prefix test sends
+ * every direct reply to the group endpoint.
+ */
+const DINGTALK_GROUP_CHAT_PREFIX = 'group:';
+const DINGTALK_SINGLE_CHAT_PREFIX = 'oto:';
+
+/**
+ * The discriminator this bridge used before chatIds carried a stamp.
+ * Retained only to route ids that predate stamping — see the unstamped
+ * branch of `pickDingTalkSendRoute`.
+ */
+const DINGTALK_LEGACY_GROUP_ID_PREFIX = 'cid';
+
 interface DingTalkConnectionOpenResponse {
   endpoint: string;
   ticket: string;
@@ -70,6 +94,12 @@ interface DingTalkStreamFrame {
 
 interface DingTalkBotMessagePayload {
   senderId?: string;
+  /**
+   * The org-scoped staff id of the sender. This is the only identifier
+   * `/v1.0/robot/oToMessages/batchSend` accepts in `userIds`: `senderId`
+   * (a `$:LWCP_v1:$…` handle) is rejected with `staffId.notExisted`.
+   */
+  senderStaffId?: string;
   senderNick?: string;
   conversationId?: string;
   conversationType?: '1' | '2'; // 1 = single chat, 2 = group
@@ -127,6 +157,18 @@ export function buildDingTalkSingleSendBody(
   };
 }
 
+/**
+ * Pure helper: route a send to the right DingTalk REST endpoint based on
+ * the chatId prefix that `dingTalkPayloadToEvent` stamps.
+ *
+ * Unstamped ids are chatIds recorded before this bridge stamped a prefix
+ * — persisted scheduled-task delivery targets and ids typed by hand into
+ * the scheduled task form. They keep the pre-stamping discriminator, so
+ * both of its outcomes survive: a `cid…` conversation id still goes to
+ * the group endpoint, and a bare staff id still goes to the 1:1 endpoint,
+ * which is where it was delivering successfully. That guess was only ever
+ * wrong for a 1:1 *conversation* id, and the stamped path now covers it.
+ */
 export function pickDingTalkSendRoute(
   chatId: string,
   robotCode: string,
@@ -137,13 +179,31 @@ export function pickDingTalkSendRoute(
 } | null {
   const targetId = chatId.trim();
   if (!targetId) return null;
-  const isGroup = targetId.startsWith('cid');
-  return {
-    path: isGroup ? '/v1.0/robot/groupMessages/send' : '/v1.0/robot/oToMessages/batchSend',
-    body: isGroup
-      ? buildDingTalkGroupSendBody(targetId, robotCode, text)
-      : buildDingTalkSingleSendBody(targetId, robotCode, text),
-  };
+  if (targetId.startsWith(DINGTALK_SINGLE_CHAT_PREFIX)) {
+    const staffId = targetId.slice(DINGTALK_SINGLE_CHAT_PREFIX.length).trim();
+    if (!staffId) return null;
+    return {
+      path: DINGTALK_SINGLE_SEND_PATH,
+      body: buildDingTalkSingleSendBody(staffId, robotCode, text),
+    };
+  }
+  if (targetId.startsWith(DINGTALK_GROUP_CHAT_PREFIX)) {
+    const openConversationId = targetId.slice(DINGTALK_GROUP_CHAT_PREFIX.length).trim();
+    if (!openConversationId) return null;
+    return {
+      path: DINGTALK_GROUP_SEND_PATH,
+      body: buildDingTalkGroupSendBody(openConversationId, robotCode, text),
+    };
+  }
+  return targetId.startsWith(DINGTALK_LEGACY_GROUP_ID_PREFIX)
+    ? {
+        path: DINGTALK_GROUP_SEND_PATH,
+        body: buildDingTalkGroupSendBody(targetId, robotCode, text),
+      }
+    : {
+        path: DINGTALK_SINGLE_SEND_PATH,
+        body: buildDingTalkSingleSendBody(targetId, robotCode, text),
+      };
 }
 
 /**
@@ -210,21 +270,38 @@ export function dingTalkPayloadToEvent(
   if (!payload || typeof payload !== 'object') return null;
   const content = payload.text?.content;
   if (typeof content !== 'string' || content.length === 0) return null;
-  const chatId = payload.conversationId;
+  const conversationId = payload.conversationId;
   const userId = payload.senderId;
-  if (typeof chatId !== 'string' || chatId.length === 0) return null;
+  if (typeof conversationId !== 'string' || conversationId.length === 0) return null;
   if (typeof userId !== 'string' || userId.length === 0) return null;
+  const isGroup = payload.conversationType === '2';
+  const staffId = typeof payload.senderStaffId === 'string' ? payload.senderStaffId.trim() : '';
+  // Stamp the route while the conversation kind is still known. A 1:1
+  // reply must address the sender's staff id, not the conversation, so
+  // that is what the chatId carries.
+  //
+  // When the payload omits `senderStaffId` there is nothing a 1:1 reply
+  // can be addressed to. Fall back to the bare conversationId so the
+  // message still reaches the agent under a stable per-conversation key,
+  // but a reply to it will take the unstamped `cid…` branch and fail at
+  // the group endpoint — the same dead end as before this change, not a
+  // working path.
+  const chatId = isGroup
+    ? `${DINGTALK_GROUP_CHAT_PREFIX}${conversationId}`
+    : staffId
+      ? `${DINGTALK_SINGLE_CHAT_PREFIX}${staffId}`
+      : conversationId;
   return {
     platform: 'dingtalk',
     userId,
     userName: payload.senderNick ?? userId,
     chatId,
-    isGroup: payload.conversationType === '2',
+    isGroup,
     text: content,
     // DingTalk Stream callbacks do not carry the original message id;
     // use a synthetic key so downstream contracts that key off
     // `sourceMessageId` still get a unique value.
-    sourceMessageId: `${chatId}:${receivedAt}`,
+    sourceMessageId: `${conversationId}:${receivedAt}`,
     receivedAt,
   };
 }
@@ -374,14 +451,11 @@ export class DingTalkBotBridge extends WsBridgeBase implements SendCapable {
   }
 
   /**
-   * DingTalk REST send. We treat any chatId with a `cidp` prefix as a
-   * group conversation; pure-numeric or other prefixes route to the
-   * single-user batch API. The caller (main.ts) already knows whether
-   * the bot conversation is a group via the BotMessageEvent.isGroup
-   * flag, but the bridge's `sendMessage` only sees the chatId — so we
-   * make a conservative split based on the `conversationType` hint
-   * baked into the chatId structure: group conversation IDs start with
-   * `cid` per DingTalk's open platform docs.
+   * DingTalk REST send. `sendMessage` only sees the chatId, so the
+   * conversation kind travels inside it: `dingTalkPayloadToEvent`
+   * stamps `group:` or `oto:` at receive time, where DingTalk's
+   * `conversationType` is still available, and
+   * `pickDingTalkSendRoute` decodes it here.
    */
   async sendMessage(
     chatId: string,

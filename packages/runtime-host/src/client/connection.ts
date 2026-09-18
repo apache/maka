@@ -134,6 +134,12 @@ export type RuntimeHostUnavailableReason =
   | 'handshake_failed'
   | 'epoch_mismatch';
 
+export interface RuntimeHostConnectionFailure {
+  readonly phase: 'registration' | 'connect';
+  /** An errno identifier only; never include messages or endpoint paths. */
+  readonly code?: string;
+}
+
 export type ConnectRuntimeHostResult =
   | {
       kind: 'connected';
@@ -165,6 +171,7 @@ export type ConnectRuntimeHostResult =
       kind: 'unavailable';
       reason: RuntimeHostUnavailableReason;
       registration?: HostRegistration;
+      connectionFailure?: RuntimeHostConnectionFailure;
     };
 
 export interface ConnectRemoteRuntimeHostInput {
@@ -347,6 +354,13 @@ interface QueuedDomainFrame {
 }
 
 type RequestTimeoutScope = 'request' | 'connection';
+
+// A Host response can reach the Client before the Host's transport write
+// promise resumes and retires that request. Leave one slot free so replacing
+// the observed response cannot transiently cross the Host's hard limit. The
+// Host serializes outbound writes, so at most one response occupies this
+// acknowledgement window.
+const CLIENT_MAX_IN_FLIGHT_DOMAIN_REQUESTS = RUNTIME_HOST_MAX_IN_FLIGHT_DOMAIN_REQUESTS - 1;
 
 class RuntimeHostConnectionImpl implements RuntimeHostConnection {
   readonly cooperativeHandoff?: true;
@@ -547,7 +561,7 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
   #drainDomainRequests(): void {
     while (
       !this.#terminalError &&
-      this.#inFlightDomainRequests < RUNTIME_HOST_MAX_IN_FLIGHT_DOMAIN_REQUESTS
+      this.#inFlightDomainRequests < CLIENT_MAX_IN_FLIGHT_DOMAIN_REQUESTS
     ) {
       const queued = this.#queuedDomainFrames.shift();
       if (!queued) return;
@@ -589,15 +603,45 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     return status;
   }
 
-  openSessionSubscription(
+  async openSessionSubscription(
     input: SubscriptionOpenInput,
     timeoutMs?: number,
+  ): Promise<RuntimeHostSessionSubscription> {
+    const deadline =
+      Date.now() + (timeoutMs === undefined ? 30_000 : requireTimeout(timeoutMs, 'timeoutMs'));
+    for (;;) {
+      try {
+        return await this.#openSessionSubscription(
+          input,
+          Math.max(1, deadline - Date.now()),
+          timeoutMs,
+        );
+      } catch (error) {
+        if (
+          !(error instanceof RuntimeHostOperationError) ||
+          error.code !== 'transcript_preparing' ||
+          input.transcript.kind !== 'tail' ||
+          this.#terminalError ||
+          Date.now() >= deadline
+        )
+          throw error;
+        // Each refusal committed a bounded, resumable index batch. Keep the
+        // caller in its loading state and yield before requesting more work.
+        await new Promise<void>((resolve) => setTimeout(resolve, 25));
+      }
+    }
+  }
+
+  #openSessionSubscription(
+    input: SubscriptionOpenInput,
+    openTimeoutMs: number,
+    requestTimeoutMs?: number,
   ): Promise<RuntimeHostSessionSubscription> {
     const expectedSessionId = input.sessionId;
     return this.#requestOperation(
       'subscription.open',
       input,
-      timeoutMs,
+      openTimeoutMs,
       (result) => {
         if (result.hostEpoch !== this.hostEpoch) {
           throw new RuntimeHostSubscriptionError(
@@ -620,18 +664,13 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
         const subscription = new ClientSessionSubscription(
           result,
           () => this.#closeSessionSubscription(result.subscriptionId),
-          (query) => this.request('session.transcript.page', query, timeoutMs),
+          (query) => this.request('session.transcript.page', query, requestTimeoutMs),
           async () => {
-            try {
-              await this.request(
-                'session.transcript.overlay.release',
-                { subscriptionId: result.subscriptionId },
-                timeoutMs,
-              );
-            } catch (error) {
-              this.#fail(asError(error));
-              throw error;
-            }
+            await this.request(
+              'subscription.ready',
+              { subscriptionId: result.subscriptionId },
+              requestTimeoutMs,
+            );
           },
         );
         this.#subscriptions.set(result.subscriptionId, subscription);
@@ -1181,6 +1220,7 @@ function finalizeConnectRuntimeHostResult(
       kind: 'unavailable',
       reason: result.reason,
       ...(result.registration ? { registration: result.registration } : {}),
+      ...(result.connectionFailure ? { connectionFailure: result.connectionFailure } : {}),
     };
   }
   return result;
@@ -1227,7 +1267,12 @@ export async function connectResolvedRuntimeHost(
     if (error instanceof RuntimeHostRegistrationError && error.code === 'invalid_registration') {
       return { kind: 'unavailable', reason: 'invalid_registration', endpointConnected: false };
     }
-    return { kind: 'unavailable', reason: 'connect_failed', endpointConnected: false };
+    return {
+      kind: 'unavailable',
+      reason: 'connect_failed',
+      endpointConnected: false,
+      connectionFailure: connectionFailure('registration', error),
+    };
   }
   if (!registration) {
     return { kind: 'unavailable', reason: 'not_registered', endpointConnected: false };
@@ -1261,6 +1306,7 @@ export async function connectResolvedRuntimeHost(
       reason: 'connect_failed',
       endpointConnected: false,
       registration,
+      connectionFailure: { phase: 'connect', code: 'ETIMEDOUT' },
     };
   }
   let transport: FramedTransport;
@@ -1279,6 +1325,7 @@ export async function connectResolvedRuntimeHost(
       reason: 'connect_failed',
       endpointConnected: false,
       registration,
+      connectionFailure: connectionFailure('connect', error),
     };
   }
   const handshakeDeadline = phaseDeadline(handshakeTimeoutMs, input.electionDeadline);
@@ -1676,7 +1723,7 @@ function openTransport(
       reject(
         exhaustsElection
           ? new ElectionDeadlineElapsedError()
-          : new Error('Timed out connecting to Runtime Host'),
+          : Object.assign(new Error('Timed out connecting to Runtime Host'), { code: 'ETIMEDOUT' }),
       );
     }, timeoutMs);
     const onConnect = () => {
@@ -1697,6 +1744,21 @@ function openTransport(
     socket.once('connect', onConnect);
     socket.once('error', onError);
   });
+}
+
+function connectionFailure(
+  phase: RuntimeHostConnectionFailure['phase'],
+  error: unknown,
+): RuntimeHostConnectionFailure {
+  const cause = error instanceof RuntimeHostRegistrationError ? error.cause : error;
+  const code =
+    cause instanceof Error && 'code' in cause && typeof cause.code === 'string'
+      ? cause.code
+      : undefined;
+  return {
+    phase,
+    ...(code && /^E[A-Z0-9_]{1,63}$/u.test(code) ? { code } : {}),
+  };
 }
 
 function requireTimeout(value: number, label: string): number {

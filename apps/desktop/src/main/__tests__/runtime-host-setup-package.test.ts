@@ -32,7 +32,7 @@ test('development setup lazily caches CLI archives by peer target unless overrid
   const repoRoot = resolve('/workspace');
   const directory = await mkdtemp(join(tmpdir(), 'maka-runtime-host-setup-package-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
-  const archive = join(directory, 'maka-agent-dev.tgz');
+  const archive = join(directory, 'maka-agent-0.2.0-dev-abcdef012345.tgz');
   await writeFile(archive, ARCHIVE_BYTES);
   const canonicalArchive = await realpath(archive);
   let builds = 0;
@@ -64,18 +64,20 @@ test('development setup lazily caches CLI archives by peer target unless overrid
       kind: 'development_archive',
       path: canonicalArchive,
       integrity: ARCHIVE_INTEGRITY,
+      displayVersion: '0.2.0-dev-abcdef012345',
     },
     {
       kind: 'development_archive',
       path: canonicalArchive,
       integrity: ARCHIVE_INTEGRITY,
+      displayVersion: '0.2.0-dev-abcdef012345',
     },
   ]);
   await resolvePackage.resolve('none');
   assert.equal(builds, 2);
   assert.deepEqual(targets, ['linux-x64', 'none']);
 
-  const override = join(directory, 'explicit.tgz');
+  const override = join(directory, 'maka-agent-0.3.0-dev-fedcba543210.tgz');
   await writeFile(override, ARCHIVE_BYTES);
   const resolveOverride = createRuntimeHostSetupPackageResolver({
     isPackaged: false,
@@ -87,6 +89,7 @@ test('development setup lazily caches CLI archives by peer target unless overrid
   assert.equal(snapshot.kind, 'development_archive');
   assert.notEqual(snapshot.path, await realpath(override));
   assert.equal(snapshot.integrity, ARCHIVE_INTEGRITY);
+  assert.equal(snapshot.displayVersion, '0.3.0-dev-fedcba543210');
   await writeFile(override, 'replacement archive');
   assert.deepEqual(await readFile(snapshot.path), ARCHIVE_BYTES);
   assert.deepEqual(await resolveOverride.resolve('none'), snapshot);

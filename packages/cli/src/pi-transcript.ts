@@ -18,6 +18,7 @@
  */
 
 import { Markdown, visibleWidth } from '@earendil-works/pi-tui';
+import { resolveReadInput } from '@maka/runtime/read-page';
 import type {
   ProviderRetryEvent,
   ProviderRetryScheduledEvent,
@@ -25,7 +26,7 @@ import type {
   SandboxBoundaryRequestEvent,
   UserQuestionRequestEvent,
   SessionEvent,
-  ShellRunSnapshotResult,
+  ShellRunStateResult,
   ToolOutputStream,
   ToolResultContent,
 } from '@maka/core/events';
@@ -391,7 +392,7 @@ export function applyShellRunUpdateToTranscript(
 /** Adds a local-only card for a `!<command>` resource without creating a model turn. */
 export function appendUserCommandToTranscript(
   state: MakaPiTranscriptState,
-  input: { commandId: string; command: string; result: ShellRunSnapshotResult },
+  input: { commandId: string; command: string; result: ShellRunStateResult },
 ): void {
   state.entries.push({
     kind: 'tool',
@@ -1359,10 +1360,9 @@ function systemNoteText(message: SystemNoteMessage): string | undefined {
         | undefined;
       const used = typeof data?.inputTokens === 'number' ? data.inputTokens : undefined;
       const prior = typeof data?.priorInputTokens === 'number' ? data.priorInputTokens : undefined;
-      if (used === undefined || prior === undefined) {
-        return 'The provider is dropping or rewriting context: content was appended but its reported usage did not grow. Declare a context window for this model so Maka compacts first.';
-      }
-      return `The provider is dropping or rewriting context: content was appended, and it counted ${used} input tokens against ${prior} before, which is no growth. Declare a context window for this model so Maka compacts first.`;
+      if (used === undefined || prior === undefined)
+        return "After content was appended, the provider-reported input token count did not grow; context may have been truncated or rewritten. If this persists, check that the model's actual context capacity and the connection settings agree.";
+      return `After content was appended, the provider-reported input token count did not grow; context may have been truncated or rewritten (${used} tokens versus ${prior} before). If this persists, check that the model's actual context capacity and the connection settings agree.`;
     }
     case 'context_overflow_after_compaction':
       return 'History was compacted and the provider still called this request too large. What remains also carries the system prompt, the tool schemas, the summary and the recent tail; shortening this message is the part you control.';
@@ -2140,8 +2140,15 @@ function findShellRunParent(
 /** The runtime-resource ref a tool call is aimed at, when the args carry one. */
 function readArgsRef(args: unknown): string | undefined {
   const ref =
-    args !== null && typeof args === 'object' ? (args as { ref?: unknown }).ref : undefined;
-  return typeof ref === 'string' && ref.length > 0 ? ref : undefined;
+    args !== null && typeof args === 'object'
+      ? ((args as { path?: unknown }).path ?? (args as { ref?: unknown }).ref)
+      : undefined;
+  if (typeof ref !== 'string' || !ref) return undefined;
+  try {
+    return resolveReadInput({ path: ref }).path;
+  } catch {
+    return undefined;
+  }
 }
 
 /**

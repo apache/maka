@@ -799,17 +799,17 @@ const SessionNavRow = memo(function SessionNavRow(props: {
         // whether or not it has a dot, so state reads as one column down the
         // rail instead of a mark that drifts with each title's length.
         icon={
-          signal ? (
-            <StatusDot
-              variant={signal.variant}
-              label={signal.label}
-              isPulsing={signal.isPulsing}
-              tooltip={signal.tooltip}
-              data-session-status={props.session.status}
-            />
-          ) : (
-            <span className="maka-session-row-signal-empty" aria-hidden="true" />
-          )
+          <span className="maka-session-row-signal">
+            {signal ? (
+              <StatusDot
+                variant={signal.variant}
+                label={signal.label}
+                isPulsing={signal.isPulsing}
+                tooltip={signal.tooltip}
+                data-session-status={props.session.status}
+              />
+            ) : null}
+          </span>
         }
         onClick={(event) => {
           // Shift- and ⌘-clicks are answered by the list, which has already
