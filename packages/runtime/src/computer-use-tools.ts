@@ -1459,6 +1459,67 @@ export function buildComputerUseTools(deps: {
     }
   }
 
+  async function executeBoundAction(input: {
+    state: CuaSessionState;
+    lease: CuaActionLease;
+    record: SessionObservationRecord;
+    binding: CuaBoundAction;
+    action: CuPresentationAction;
+    context: CuRunContext;
+    signal: AbortSignal;
+    generation: number;
+    dispatch(context: CuRunContext): Promise<CuRunResult>;
+  }): Promise<
+    | { blocked: ComputerToolResult; result?: never; finish?: never }
+    | { blocked?: never; result: CuRunResult; finish(result?: CuRunResult): void }
+  > {
+    const { state, lease, record, binding, action, signal } = input;
+    let result: CuRunResult | undefined;
+    let consumeFailure: BindingFailureReason | undefined;
+    let presentation: Awaited<ReturnType<typeof runWithPresentation>> | undefined;
+    try {
+      const blocked = validateActionLease(state, lease);
+      if (blocked) return { blocked };
+      const context = { ...input.context, boundAction: binding };
+      presentation = await runWithPresentation(
+        action,
+        context,
+        signal,
+        () => input.dispatch(context),
+        () => validateActionLease(state, lease),
+        input.generation,
+      );
+      if (presentation.blocked) return { blocked: presentation.blocked };
+      if (!presentation.result) {
+        presentation.finish();
+        return { blocked: bindingFailure('capture_failed', action.type) };
+      }
+      result = preservePartialDelivery(presentation.result);
+      applyTypedOutcomeState(state, result.outcome);
+      if (result.outcome.ok) {
+        const blocked = validateActionLease(state, lease);
+        if (blocked) {
+          presentation.finish();
+          return { blocked };
+        }
+      }
+    } finally {
+      // A path:none refusal retains its frame; a delivered or unknown attempt
+      // consumes it even if the backend throws.
+      if (dispatchedNothing(result)) {
+        consumeFailure = retireBoundAction(record, binding);
+      } else {
+        consumeFailure = consumeBoundAction(record, binding);
+        if (state.validateLease(lease).ok) state.reobserveRequired();
+      }
+    }
+    if (consumeFailure && !hasUncertainDeliveredOutcome(result)) {
+      presentation.finish();
+      return { blocked: refusalAfterDispatch(consumeFailure, result, action.type) };
+    }
+    return { result, finish: presentation.finish };
+  }
+
   const tool: MakaTool<ComputerParams, ComputerToolResult> = {
     name: 'maka_computer',
     displayName: 'Maka Computer',
@@ -1788,36 +1849,29 @@ export function buildComputerUseTools(deps: {
                 stopped = 'stale_frame';
                 break;
               }
-              const operationContext = { ...runCtx, boundAction: binding };
-              let stepResult: CuRunResult | undefined;
-              let presentation: Awaited<ReturnType<typeof runWithPresentation>> | undefined;
-              try {
-                presentation = await runWithPresentation(
-                  summarySemanticAction(semantic),
-                  operationContext,
-                  abortSignal,
-                  () =>
-                    deps.backend.runSemantic!(
-                      { ...semantic, observationId: record.backendObservationId! },
-                      abortSignal,
-                      operationContext,
-                    ),
-                  undefined,
-                  invocationGeneration,
-                );
-                if (presentation.blocked) return presentation.blocked;
-                stepResult = presentation.result;
-              } finally {
-                consumeBoundAction(record, binding);
-                state.reobserveRequired();
+              const backendAction = { ...semantic, observationId: record.backendObservationId };
+              const execution = await executeBoundAction({
+                state,
+                lease: actionLeaseResult.lease,
+                record,
+                binding,
+                action: summarySemanticAction(semantic),
+                context: runCtx,
+                signal: abortSignal,
+                generation: invocationGeneration,
+                dispatch: (context) =>
+                  deps.backend.runSemantic!(backendAction, abortSignal, context),
+              });
+              if (execution.blocked) {
+                stopped = execution.blocked.error ?? 'outcome_unknown';
+                done.push({ step: index + 1, label: step.label, ok: false });
+                emitProgress?.(done.length, input.steps.length);
+                break;
               }
-              presentation?.finish(stepResult);
-              if (!stepResult || !stepResult.outcome.ok) {
-                if (stepResult) applyTypedOutcomeState(state, stepResult.outcome);
-                stopped =
-                  stepResult && !stepResult.outcome.ok
-                    ? stepResult.outcome.error
-                    : 'capture_failed';
+              const stepResult = execution.result;
+              execution.finish(stepResult);
+              if (!stepResult.outcome.ok) {
+                stopped = stepResult.outcome.error;
                 done.push({ step: index + 1, label: step.label, ok: false });
                 emitProgress?.(done.length, input.steps.length);
                 break;
@@ -2442,58 +2496,22 @@ export function buildComputerUseTools(deps: {
               observationId: record.backendObservationId,
             };
             const summaryAction = summarySemanticAction(semanticAction);
-            let result: CuRunResult | undefined;
-            let consumeFailure: BindingFailureReason | undefined;
-            let presentation: Awaited<ReturnType<typeof runWithPresentation>> | undefined;
-            try {
-              if (!actionLease) return sessionFailure('no_active_frame', input.action);
-              const leaseFailure = validateActionLease(state, actionLease);
-              if (leaseFailure) return leaseFailure;
-              const operationContext = { ...runCtx, boundAction: binding };
-              presentation = await runWithPresentation(
-                summaryAction,
-                operationContext,
-                abortSignal,
-                () => deps.backend.runSemantic!(semanticAction, abortSignal, operationContext),
-                () => validateActionLease(state, actionLease),
-                invocationGeneration,
-              );
-              if (presentation.blocked) return presentation.blocked;
-              if (!presentation.result) return bindingFailure('capture_failed', input.action);
-              result = preservePartialDelivery(presentation.result);
-              applyTypedOutcomeState(state, result.outcome);
-              if (result.outcome.ok) {
-                const postDispatchFailure = validateActionLease(state, actionLease);
-                if (postDispatchFailure) {
-                  presentation.finish();
-                  return postDispatchFailure;
-                }
-              }
-            } finally {
-              // A refusal that never reached the window leaves the frame it was
-              // quoted against exactly as it was, so it keeps its frame and its
-              // lease. Consuming both is what turned one refusal into three
-              // calls: the action failed, the frame was thrown away, and the
-              // code was not one that hands back a fresh one — so the model's
-              // next call was `reobserve_required` and the one after it was the
-              // `observe` it should never have had to spend.
-              if (dispatchedNothing(result)) {
-                consumeFailure = retireBoundAction(record, binding);
-              } else {
-                consumeFailure = consumeBoundAction(record, binding);
-                if (actionLease && state.validateLease(actionLease).ok) {
-                  state.reobserveRequired();
-                }
-              }
-            }
-            if (consumeFailure && !hasUncertainDeliveredOutcome(result)) {
-              presentation?.finish();
-              return refusalAfterDispatch(consumeFailure, result, input.action);
-            }
-            if (!result) {
-              presentation?.finish();
-              return bindingFailure('capture_failed', input.action);
-            }
+            if (!actionLease) return sessionFailure('no_active_frame', input.action);
+            const execution = await executeBoundAction({
+              state,
+              lease: actionLease,
+              record,
+              binding,
+              action: summaryAction,
+              context: runCtx,
+              signal: abortSignal,
+              generation: invocationGeneration,
+              dispatch: (context) =>
+                deps.backend.runSemantic!(semanticAction, abortSignal, context),
+            });
+            if (execution.blocked) return execution.blocked;
+            const { result } = execution;
+            const presentation = execution;
             // One action removes its own target on purpose, and the machinery
             // below reads a missing target as an uncertain outcome.
             //
