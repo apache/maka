@@ -45,11 +45,13 @@
     "typecheck:stories": "tsc -p tsconfig.storybook.json --noEmit",
     "test:dist": "node --test --test-force-exit \"dist/main/**/*.test.js\" scripts/dev-app-runtime.test.mjs scripts/vite-workspace-packages.test.mjs",
     "e2e": "npm run build:with-deps && playwright test --config e2e/playwright.config.ts",
+    "measure": "npm run build:with-deps && playwright test --config perf/playwright.config.ts",
     "build:with-deps": "npm run build:workspace-deps && npm run build",
     "smoke:real-window": "npm run build:with-deps && node ../../scripts/desktop-real-window-smoke.mjs",
     "smoke:programmatic-window": "npm run build:with-deps && node ../../scripts/desktop-real-window-smoke.mjs --programmatic-only",
     "launch:fixture": "npm run build:with-deps && node ../../scripts/desktop-real-window-smoke.mjs --manual",
     "smoke:browser": "npm run build:workspace-deps && npm run build:main && npm run smoke:browser:run",
+    "smoke:workhub-browser:run": "electron scripts/workhub-browser-presentation-smoke.mjs",
     "smoke:browser:run": "electron scripts/browser-observe-act-smoke.mjs"
   },
   "dependencies": {
@@ -67,21 +69,21 @@
     "node-pty": "^1.2.0-beta.15",
     "qrcode": "^1.5.4",
     "ws": "^8.21.3",
-    "zod": "^4.5.4"
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@ant-design/icons-svg": "4.6.0",
-    "@astryxdesign/core": "0.5.2",
-    "@astryxdesign/theme-neutral": "0.5.2",
+    "@astryxdesign/core": "0.6.1",
+    "@astryxdesign/theme-neutral": "0.6.1",
     "@babel/parser": "7.29.7",
     "@fontsource-variable/geist": "^5.3.0",
     "@fontsource-variable/geist-mono": "^5.3.0",
     "@maka/ui": "0.1.0",
     "@modelcontextprotocol/sdk": "^1.26.0",
-    "@playwright/test": "^1.62.1",
-    "@storybook/react-vite": "^10.5.10",
-    "@types/react": "^19.2.18",
-    "@types/react-dom": "^19.2.5",
+    "@playwright/test": "^1.63.0",
+    "@storybook/react-vite": "^10.6.0",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
     "@types/ws": "^8.18.1",
     "@vitejs/plugin-react": "^6.1.1",
     "@xterm/addon-fit": "^0.11.0",
@@ -90,11 +92,11 @@
     "electron-builder": "26.15.3",
     "esbuild": "^0.28.1",
     "linkedom": "^0.18.13",
-    "react": "^19.2.1",
-    "react-dom": "^19.2.1",
-    "simple-icons": "16.29.0",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "simple-icons": "16.31.0",
     "storybook": "^10.4.6",
-    "vite": "^8.2.2"
+    "vite": "^8.3.0"
   },
   "maka": {
     "rendererBundledDependencies": [

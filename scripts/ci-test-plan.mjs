@@ -219,6 +219,7 @@ const SITE_SENTENCE_FILES = new Set(['README.md', 'README.zh-CN.md']);
 // evidence that the run it drives still works.
 const E2E_DRIVING_SCRIPTS = new Set([
   'apps/desktop/scripts/browser-observe-act-smoke.mjs',
+  'apps/desktop/scripts/workhub-browser-presentation-smoke.mjs',
   'scripts/audit-alignment.mjs',
   'scripts/ax-tree-audit.mjs',
   'scripts/fixture-env.mjs',

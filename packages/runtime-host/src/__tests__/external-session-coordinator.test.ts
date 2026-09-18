@@ -18,17 +18,25 @@
  */
 
 import { assertMaximalJsonPages } from './fixtures/json-pages.js';
-import { EXTERNAL_SESSION_PAGE_MAX_ITEMS } from '../protocol/index.js';
+import {
+  EXTERNAL_SESSION_NAME_MAX_BYTES,
+  EXTERNAL_SESSION_PAGE_MAX_ITEMS,
+  EXTERNAL_SESSION_SOURCE_SESSION_ID_MAX_BYTES,
+} from '../protocol/index.js';
 
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import {
   ExternalSessionAdapterRegistry,
+  ExternalSessionCatalogCursorError,
   ExternalSessionLimitError,
+  ExternalSessionNotFoundError,
   type ExternalSessionAdapter,
+  type ExternalSessionCatalogPageQuery,
+  type ExternalSessionSummary,
 } from '@maka/core/external-session';
 import { type SessionHeader } from '@maka/core/session';
 import { headerToSummary } from '@maka/runtime/session-manager';
@@ -84,12 +92,248 @@ test('discovers detected adapters and pages bounded source summaries', async () 
   assert.equal(second.result.nextCursor, null);
 });
 
+test('Codex filesystem keyset paging never repeats a row moved ahead of the cursor', async () => {
+  const codexHome = await mkdtemp(join(tmpdir(), 'maka-codex-catalog-keyset-'));
+  try {
+    const directory = join(codexHome, 'sessions', '2026', '09', '15');
+    await mkdir(directory, { recursive: true });
+    const paths: string[] = [];
+    for (let index = 0; index < 20; index += 1) {
+      const id = `snapshot-${String(index).padStart(2, '0')}`;
+      const path = join(directory, `rollout-2026-09-15T00-00-00-${id}.jsonl`);
+      await writeFile(
+        path,
+        `${JSON.stringify({
+          timestamp: '2026-09-15T00:00:00.000Z',
+          type: 'session_meta',
+          payload: { id, cwd: '/workspace/root', source: 'cli' },
+        })}\n${JSON.stringify({
+          timestamp: '2026-09-15T00:00:01.000Z',
+          type: 'event_msg',
+          payload: { type: 'user_message', message: id },
+        })}`,
+      );
+      const time = new Date(Date.UTC(2026, 8, 15, 0, 0, index));
+      await utimes(path, time, time);
+      paths.push(path);
+    }
+    const adapter = createExternalSessionAdapterRegistry({ codex: { codexHome } }).require('codex');
+    const fixture = coordinatorFixture([adapter]);
+    const first = await fixture.coordinator.handlers['external-session.catalog.query'](
+      { adapterId: 'codex' },
+      context,
+    );
+    assert.ok(first.ok);
+    assert.equal(first.result.sessions.length, 16);
+
+    const newest = new Date('2026-09-16T00:00:00Z');
+    await utimes(paths[1]!, newest, newest);
+    const second = await fixture.coordinator.handlers['external-session.catalog.query'](
+      { adapterId: 'codex', cursor: first.result.nextCursor ?? undefined },
+      context,
+    );
+    assert.ok(second.ok);
+    const ids = [...first.result.sessions, ...second.result.sessions].map(({ id }) => id);
+    assert.equal(new Set(ids).size, ids.length);
+    assert.deepEqual(
+      ids,
+      Array.from({ length: 20 }, (_, index) => 19 - index)
+        .filter((index) => index !== 1)
+        .map((index) => `snapshot-${String(index).padStart(2, '0')}`),
+    );
+  } finally {
+    await rm(codexHome, { recursive: true, force: true });
+  }
+});
+
+test('reports an invalid source-owned catalog cursor as invalid_request', async () => {
+  const codexHome = await mkdtemp(join(tmpdir(), 'maka-codex-invalid-catalog-cursor-'));
+  try {
+    await mkdir(join(codexHome, 'sessions'));
+    const adapter = createExternalSessionAdapterRegistry({ codex: { codexHome } }).require('codex');
+    const fixture = coordinatorFixture([adapter]);
+
+    assert.deepEqual(
+      await fixture.coordinator.handlers['external-session.catalog.query'](
+        { adapterId: 'codex', cursor: 'not-a-codex-cursor' },
+        context,
+      ),
+      {
+        ok: false,
+        error: {
+          code: 'invalid_request',
+          message: 'External Session catalog cursor is invalid',
+        },
+      },
+    );
+  } finally {
+    await rm(codexHome, { recursive: true, force: true });
+  }
+});
+
+test('Codex state keyset paging never repeats a row moved ahead of the cursor', async () => {
+  const codexHome = await mkdtemp(join(tmpdir(), 'maka-codex-state-catalog-snapshot-'));
+  try {
+    const directory = join(codexHome, 'sessions', '2026', '09', '15');
+    await mkdir(directory, { recursive: true });
+    const { DatabaseSync } = await import('node:sqlite');
+    const database = new DatabaseSync(join(codexHome, 'state_5.sqlite'));
+    try {
+      database.exec(`
+      PRAGMA journal_mode = WAL;
+      CREATE TABLE threads (
+        id TEXT PRIMARY KEY,
+        rollout_path TEXT NOT NULL,
+        cwd TEXT,
+        name TEXT,
+        created_at_ms INTEGER,
+        updated_at_ms INTEGER,
+        archived INTEGER,
+        source TEXT
+      )
+    `);
+      const insert = database.prepare(`
+      INSERT INTO threads (
+        id, rollout_path, cwd, name, created_at_ms, updated_at_ms, archived, source
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+      for (let index = 0; index < 20; index += 1) {
+        const id = `snapshot-${String(index).padStart(2, '0')}`;
+        const path = join(directory, `rollout-2026-09-15T00-00-00-${id}.jsonl`);
+        await writeFile(
+          path,
+          `${JSON.stringify({
+            timestamp: '2026-09-15T00:00:00.000Z',
+            type: 'session_meta',
+            payload: { id, cwd: '/workspace/root', source: 'cli' },
+          })}\n`,
+        );
+        insert.run(id, path, '/workspace/root', id, index, index, 0, 'cli');
+      }
+
+      const adapter = createExternalSessionAdapterRegistry({ codex: { codexHome } }).require(
+        'codex',
+      );
+      const fixture = coordinatorFixture([adapter]);
+      const first = await fixture.coordinator.handlers['external-session.catalog.query'](
+        { adapterId: 'codex' },
+        context,
+      );
+      assert.ok(first.ok);
+      assert.deepEqual(
+        first.result.sessions.map(({ id }) => id),
+        Array.from({ length: 16 }, (_, index) => `snapshot-${String(19 - index).padStart(2, '0')}`),
+      );
+
+      database.prepare('UPDATE threads SET updated_at_ms = ? WHERE id = ?').run(100, 'snapshot-01');
+      const second = await fixture.coordinator.handlers['external-session.catalog.query'](
+        { adapterId: 'codex', cursor: first.result.nextCursor ?? undefined },
+        context,
+      );
+      assert.ok(second.ok);
+      const ids = [...first.result.sessions, ...second.result.sessions].map(({ id }) => id);
+      assert.equal(new Set(ids).size, ids.length);
+      assert.deepEqual(
+        ids,
+        Array.from({ length: 20 }, (_, index) => 19 - index)
+          .filter((index) => index !== 1)
+          .map((index) => `snapshot-${String(index).padStart(2, '0')}`),
+      );
+    } finally {
+      database.close();
+    }
+  } finally {
+    await rm(codexHome, { recursive: true, force: true });
+  }
+});
+
+test('advances the catalog cursor by source rows when an adapter row is not wire-safe', async () => {
+  const summaries = Array.from({ length: 18 }, (_, index) => ({
+    id: index === 5 ? 'invalid\u0000source' : `source-${index}`,
+    name: `Source ${index}`,
+    cwd: '/external',
+    updatedAt: index,
+  }));
+  const adapter = adapterFixture();
+  adapter.listSessionPage = async (query) => catalogPageFixtureSummaries(summaries, query);
+  const fixture = coordinatorFixture([adapter]);
+
+  const first = await fixture.coordinator.handlers['external-session.catalog.query'](
+    { adapterId: 'codex' },
+    context,
+  );
+  assert.equal(first.ok, true);
+  if (!first.ok) assert.fail('Expected the first catalog page');
+  assert.equal(first.result.sessions.length, 15);
+  assert.equal(first.result.nextCursor, '16');
+
+  const second = await fixture.coordinator.handlers['external-session.catalog.query'](
+    { adapterId: 'codex', cursor: first.result.nextCursor ?? undefined },
+    context,
+  );
+  assert.equal(second.ok, true);
+  if (!second.ok) assert.fail('Expected the second catalog page');
+  assert.equal(second.result.nextCursor, null);
+  assert.deepEqual(
+    [...first.result.sessions, ...second.result.sessions].map(({ id }) => id),
+    summaries.filter(({ id }) => !id.includes('\u0000')).map(({ id }) => id),
+  );
+});
+
+test('maps malformed source-owned catalog cursors to invalid_request', async () => {
+  const adapter = adapterFixture();
+  const fixture = coordinatorFixture([adapter]);
+
+  for (const cursor of ['NaN', '-1', '1.5']) {
+    const outcome = await fixture.coordinator.handlers['external-session.catalog.query'](
+      { adapterId: 'codex', cursor },
+      context,
+    );
+    assert.equal(outcome.ok, false);
+    if (outcome.ok) assert.fail('Expected malformed cursor rejection');
+    assert.equal(outcome.error.code, 'invalid_request');
+  }
+});
+
+test('preserves typed source limits across the catalog Host boundary', async () => {
+  const adapter = adapterFixture();
+  adapter.listSessionPage = async () => {
+    throw new ExternalSessionLimitError('records', 2, 'private adapter details');
+  };
+  const fixture = coordinatorFixture([adapter]);
+
+  const outcome = await fixture.coordinator.handlers['external-session.catalog.query'](
+    { adapterId: 'codex' },
+    context,
+  );
+
+  assert.deepEqual(outcome, {
+    ok: false,
+    error: {
+      code: 'source_limit_exceeded',
+      message: 'External Session source exceeds the catalog read limit',
+    },
+  });
+  assert.deepEqual(
+    decodeResponseFrame({
+      requestId: 'catalog-limit',
+      operation: 'external-session.catalog.query',
+      ...outcome,
+    }),
+    {
+      requestId: 'catalog-limit',
+      operation: 'external-session.catalog.query',
+      ...outcome,
+    },
+  );
+});
+
 test('resolves a Project filter before calling the Host adapter', async () => {
   const adapter = adapterFixture();
   const filters: unknown[] = [];
-  adapter.listSessions = async (input) => {
+  adapter.listSessionPage = async (input) => {
     filters.push(input);
-    return [];
+    return { items: [], hasMore: false };
   };
   const fixture = coordinatorFixture([adapter]);
 
@@ -103,7 +347,13 @@ test('resolves a Project filter before calling the Host adapter', async () => {
   );
 
   assert.equal(result.ok, true);
-  assert.deepEqual(filters, [{ cwd: '/resolved-project', includeArchived: true }]);
+  assert.deepEqual(filters, [
+    {
+      cwd: '/resolved-project',
+      includeArchived: true,
+      limit: EXTERNAL_SESSION_PAGE_MAX_ITEMS + 1,
+    },
+  ]);
 });
 
 test('projects zero import state for never-imported source Sessions with one batch lookup', async () => {
@@ -176,7 +426,7 @@ test('reports an unresolved import independently from durable import history', a
           return {
             sourceSessionId,
             metadata: { name: 'Source 0', cwd: '/external' },
-            messages: [],
+            messages: [{ type: 'user', id: 'message-1', turnId: 'turn-1', ts: 1, text: 'hello' }],
           };
         },
       }),
@@ -214,14 +464,67 @@ test('reports an unresolved import independently from durable import history', a
   assert.equal((await importing).ok, true);
 });
 
+test('the largest row the wire bounds allow still shares a page', async () => {
+  // The page budget is a packing limit only because one row is bounded well
+  // below it, and that is what makes the over-budget branch unreachable. This
+  // builds the largest row the wire bounds permit — every field at its cap, with
+  // a full window of imported ids — and requires two of them to fit. Raising a
+  // field bound past the budget fails here, instead of quietly costing the
+  // catalog a row at runtime.
+  const maxId = (suffix: string) =>
+    `${'i'.repeat(EXTERNAL_SESSION_SOURCE_SESSION_ID_MAX_BYTES - 1)}${suffix}`;
+  // The inputs are far larger than any field bound, so what reaches the page is
+  // exactly the caps — which is what this test is about.
+  const longestRow = (suffix: string) => ({
+    id: maxId(suffix),
+    name: 'n'.repeat(1024 * 1024),
+    cwd: `/${'c'.repeat(1024 * 1024)}`,
+  });
+  const adapter = adapterFixture({ count: 2 });
+  adapter.listSessionPage = async (query) =>
+    catalogPageFixtureSummaries([longestRow('0'), longestRow('1')], query);
+  const fixture = coordinatorFixture([adapter], {
+    lookupExternalSessionImports: async (_adapterId, sourceSessionIds) =>
+      sourceSessionIds.map((sourceSessionId) => ({
+        sourceSessionId,
+        livePublishedImportCount: EXTERNAL_SESSION_IMPORTED_SESSION_IDS_MAX_ITEMS,
+        recentSessionIds: Array.from(
+          { length: EXTERNAL_SESSION_IMPORTED_SESSION_IDS_MAX_ITEMS },
+          () => 'r'.repeat(EXTERNAL_SESSION_SOURCE_SESSION_ID_MAX_BYTES),
+        ),
+      })),
+  });
+
+  const outcome = await fixture.coordinator.handlers['external-session.catalog.query'](
+    { adapterId: 'codex' },
+    context,
+  );
+
+  assert.equal(outcome.ok, true);
+  if (!outcome.ok) assert.fail('Expected a catalog page');
+  // Two rows share the page, so neither needed the over-budget branch.
+  assert.equal(outcome.result.sessions.length, 2);
+  assert.equal(outcome.result.sessions[0]?.name.length, EXTERNAL_SESSION_NAME_MAX_BYTES);
+  assert.equal(
+    outcome.result.sessions[0]?.importState.importedSessionIds.length,
+    EXTERNAL_SESSION_IMPORTED_SESSION_IDS_MAX_ITEMS,
+  );
+  assert.ok(
+    Buffer.byteLength(JSON.stringify(outcome.result), 'utf8') <= EXTERNAL_SESSION_RESULT_MAX_BYTES,
+  );
+});
+
 test('stops catalog pages before the encoded result limit', async () => {
   const adapter = adapterFixture({ count: 20 });
-  adapter.listSessions = async () =>
-    Array.from({ length: 20 }, (_, index) => ({
-      id: `source-${index}`,
-      name: `Source ${index}`,
-      cwd: `/${'\u0000'.repeat(4_000)}`,
-    }));
+  adapter.listSessionPage = async (query) =>
+    catalogPageFixtureSummaries(
+      Array.from({ length: 20 }, (_, index) => ({
+        id: `source-${index}`,
+        name: `Source ${index}`,
+        cwd: `/${'\u0000'.repeat(4_000)}`,
+      })),
+      query,
+    );
   const fixture = coordinatorFixture([adapter], {
     lookupExternalSessionImports: async (_adapterId, sourceSessionIds) =>
       sourceSessionIds.map((sourceSessionId) => ({
@@ -403,6 +706,39 @@ test('reports conversion errors before persistence and store uncertainty after e
   assert.equal(createAttempts, 0);
   assert.equal(conversionFailure.drainRequests(), 0);
 
+  const canonicalizationFailure = coordinatorFixture([
+    adapterFixture({
+      readSession: async (sourceSessionId) => ({
+        sourceSessionId,
+        metadata: { name: 'Invalid time', cwd: '/external' },
+        messages: [
+          {
+            type: 'user',
+            id: 'message-1',
+            turnId: 'turn-1',
+            ts: -1,
+            text: 'hello',
+          },
+        ],
+      }),
+    }),
+  ]);
+  assert.deepEqual(
+    await canonicalizationFailure.coordinator.handlers['external-session.import'](
+      { adapterId: 'codex', sourceSessionId: 'source-0' },
+      context,
+    ),
+    {
+      ok: false,
+      error: {
+        code: 'source_unreadable',
+        message: 'External Session could not be read or converted',
+      },
+    },
+  );
+  assert.equal(canonicalizationFailure.creates.length, 0);
+  assert.equal(canonicalizationFailure.drainRequests(), 0);
+
   const persistenceFailure = coordinatorFixture([adapterFixture()], {
     createImportedSession: async () => {
       throw new Error('commit acknowledgement lost');
@@ -423,6 +759,28 @@ test('reports conversion errors before persistence and store uncertainty after e
     },
   );
   assert.equal(persistenceFailure.drainRequests(), 1);
+});
+
+test('classifies source absence only through the adapter error authority', async () => {
+  for (const [error, code] of [
+    [new ExternalSessionNotFoundError(), 'not_found'],
+    [new Error('transcript not found'), 'source_unreadable'],
+  ] as const) {
+    const fixture = coordinatorFixture([
+      adapterFixture({
+        readSession: async () => {
+          throw error;
+        },
+      }),
+    ]);
+    const result = await fixture.coordinator.handlers['external-session.import'](
+      { adapterId: 'codex', sourceSessionId: 'source-0' },
+      context,
+    );
+    assert.equal(result.ok, false);
+    if (result.ok) assert.fail('Expected source read failure');
+    assert.equal(result.error.code, code);
+  }
 });
 
 test('carries visible Claude transcript limits through the import response before persistence', async () => {
@@ -710,7 +1068,9 @@ function coordinatorFixture(
     input,
     messages,
     externalOrigin,
+    options,
   ) => {
+    options?.onCommitStarted?.();
     sequence += 1;
     const header = {
       ...sessionHeader(`imported-${sequence}`, input.cwd, input.name ?? 'Imported'),
@@ -727,7 +1087,13 @@ function coordinatorFixture(
     return header;
   };
   const store: HostStore = {
-    createImportedSession: storeOverrides.createImportedSession ?? defaultCreate,
+    createImportedSession: async (input, messages, externalOrigin, options) => {
+      if (!storeOverrides.createImportedSession) {
+        return defaultCreate(input, messages, externalOrigin, options);
+      }
+      options?.onCommitStarted?.();
+      return storeOverrides.createImportedSession(input, messages, externalOrigin, options);
+    },
     lookupExternalSessionImports: async (adapterId, sourceSessionIds, recentSessionIdLimit) => {
       lookupCalls.push({ adapterId, sourceSessionIds, recentSessionIdLimit });
       return (
@@ -833,13 +1199,16 @@ function adapterFixture(
   return {
     id: options.id ?? 'codex',
     detect: async () => options.detected ?? true,
-    listSessions: async () =>
-      Array.from({ length: count }, (_, index) => ({
-        id: `source-${index}`,
-        name: `Source ${index}`,
-        cwd: '/external',
-        updatedAt: index,
-      })),
+    listSessionPage: async (query) =>
+      catalogPageFixtureSummaries(
+        Array.from({ length: count }, (_, index) => ({
+          id: `source-${index}`,
+          name: `Source ${index}`,
+          cwd: '/external',
+          updatedAt: index,
+        })),
+        query,
+      ),
     readSession:
       options.readSession ??
       (async (sourceSessionId) => ({
@@ -880,5 +1249,42 @@ function sessionHeader(id: string, cwd: string, name: string): SessionHeader {
     collaborationMode: 'agent',
     orchestrationMode: 'default',
     schemaVersion: 1,
+  };
+}
+
+/**
+ * One page of a fixture source, the way a real adapter answers a query.
+ *
+ * The fixture materialises its rows and slices them; a real adapter pages
+ * inside its own store, which is the property the coordinator's cursor is not
+ * allowed to depend on.
+ */
+function pageFixtureSummaries<T>(
+  summaries: readonly T[],
+  query: { readonly offset?: number; readonly limit?: number } = {},
+): readonly T[] {
+  const offset = query.offset ?? 0;
+  const limit = query.limit ?? summaries.length;
+  if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 0) {
+    throw new Error('Invalid external Session adapter page');
+  }
+  return summaries.slice(offset, offset + limit);
+}
+
+function catalogPageFixtureSummaries<T extends ExternalSessionSummary>(
+  summaries: readonly T[],
+  query: ExternalSessionCatalogPageQuery,
+) {
+  const offset = query.cursor === undefined ? 0 : Number(query.cursor);
+  if (!Number.isSafeInteger(offset) || offset < 0) {
+    throw new ExternalSessionCatalogCursorError();
+  }
+  const page = pageFixtureSummaries(summaries, { offset, limit: query.limit });
+  return {
+    items: page.map((summary, index) => ({
+      summary,
+      nextCursor: String(offset + index + 1),
+    })),
+    hasMore: offset + page.length < summaries.length,
   };
 }

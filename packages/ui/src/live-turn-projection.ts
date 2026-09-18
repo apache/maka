@@ -100,8 +100,8 @@ export interface LiveTurnProjection {
    * flight; the row disappears when the Turn settles (no durable turn state).
    */
   rootExecutionKind?: 'context_compact';
-  /** Event ts of the first authority word about this Turn; a stable ts for the
-   *  synthesized "compacting" row so reprojection does not churn identity. */
+  /** Event ts of the first authority word about this Turn, so a Turn the
+   *  transcript has not reached yet still has a stable start. */
   startedAt?: number;
   /** Steering acknowledged after the current content and awaiting its next provider step. */
   pendingSteering?: LiveSteeringProjection[];
@@ -197,6 +197,17 @@ export function applyLiveTurnEvent(
   locale: UiLocale,
 ): LiveTurnProjection | undefined;
 export function applyLiveTurnEvent(
+  current: LiveTurnProjection | undefined,
+  event: SessionEvent,
+  locale: UiLocale,
+): LiveTurnProjection | undefined {
+  const next = projectLiveTurnEvent(current, event, locale);
+  if (!next || next === current || next.startedAt !== undefined) return next;
+  const startedAt = current?.turnId === next.turnId ? current.startedAt : undefined;
+  return { ...next, startedAt: startedAt ?? event.ts };
+}
+
+function projectLiveTurnEvent(
   current: LiveTurnProjection | undefined,
   event: SessionEvent,
   locale: UiLocale,

@@ -18,7 +18,7 @@
  */
 
 import { realpath } from 'node:fs/promises';
-import type { SessionEvent, ShellRunSnapshotResult, ShellRunUpdate } from '@maka/core/events';
+import type { SessionEvent, ShellRunStateResult, ShellRunUpdate } from '@maka/core/events';
 import type { OrchestrationMode } from '@maka/core/orchestration';
 import type { PermissionMode } from '@maka/core/permission';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
@@ -35,6 +35,7 @@ import type {
   GoalProjection,
   TurnMessageQueryResult,
   TurnMessageSubmitResult,
+  WorkspaceTarget,
 } from '@maka/runtime-host/protocol';
 
 export interface MakaSessionMoveResult {
@@ -137,13 +138,15 @@ export function skillInvocationBlockedMessage(skillInvocation: SkillInvocationRe
 
 export interface MakaUserCommand {
   readonly commandId: string;
-  readonly result: ShellRunSnapshotResult;
+  readonly result: ShellRunStateResult;
   /** Returns the newest update that raced the initial card into the transcript. */
   takeRacedUpdate(): ShellRunUpdate['result'] | undefined;
 }
 
 export interface MakaSessionDriver {
   listSessions(): Promise<SessionSummary[]>;
+  /** The Host workspace currently attached to this shell, when one exists. */
+  getWorkspaceTarget(): WorkspaceTarget | undefined;
   /** Reads the current committed Todo projection for the attached Session. */
   queryTodo?(sessionId: string): Promise<{ sessionId: string; items: SessionTodoItem[] }>;
   getSessionResumeAvailability?(session: SessionSummary): Promise<SessionResumeAvailability>;

@@ -31,20 +31,26 @@ export type ProviderCatalogGroup = 'recommended' | 'plans' | 'api' | 'aggregator
 export type ApplyPatchProtocol = 'openai-structured' | 'codex-v4a-freeform';
 
 /**
- * Stable reference to provider execution policy implemented by `@maka/runtime`.
- * Core owns only this protocol-level delegation; SDK selection, replay
- * carriers, and request mutation remain Runtime implementation details.
+ * Provider-specific request mutation the Runtime applies to an
+ * `open-responses` SDK request before dispatch.
  */
-export type ProviderRuntimeProfileId = 'alibaba-token-plan';
+export type OpenResponsesCompatibilityProfile = 'alibaba-token-plan';
 
+/**
+ * The provider's declared reasoning contract on the Responses wire: which SDK
+ * dialect serializes the request and which carrier (if any) makes reasoning
+ * replayable. The union enumerates only verified pairings; a provider whose
+ * reasoning carries no replayable state declares `none`.
+ */
 export type ProviderResponsesContract =
   | {
       readonly adapter: 'openai';
-      readonly reasoningReplay: 'encrypted-content';
+      readonly reasoningReplay: 'encrypted-content' | 'none';
     }
   | {
       readonly adapter: 'open-responses';
-      readonly reasoningReplay: 'plaintext-content';
+      readonly reasoningReplay: 'plaintext-content' | 'plaintext-summary';
+      readonly compatibility?: OpenResponsesCompatibilityProfile;
     };
 
 type OpenAiCompatibleRuntimeAdapterBase = {
@@ -58,19 +64,10 @@ type OpenAiCompatibleRuntimeAdapterBase = {
   normalizeBaseUrl?: true;
 };
 
-type OpenAiCompatibleRuntimeAdapter = OpenAiCompatibleRuntimeAdapterBase &
-  (
-    | {
-        /** Presence enables a complete Core-owned Responses contract. */
-        responses?: ProviderResponsesContract;
-        runtimeProfile?: never;
-      }
-    | {
-        responses?: never;
-        /** Explicitly delegates concrete execution policy to `@maka/runtime`. */
-        runtimeProfile: ProviderRuntimeProfileId;
-      }
-  );
+type OpenAiCompatibleRuntimeAdapter = OpenAiCompatibleRuntimeAdapterBase & {
+  /** Presence enables a complete Core-owned Responses contract. */
+  responses?: ProviderResponsesContract;
+};
 
 type ProviderRuntimeAdapterDefinition =
   | {
@@ -84,10 +81,17 @@ type ProviderRuntimeAdapterDefinition =
    * Distinct from a provider that was never wired: see `retired`.
    */
   | { kind: 'unavailable' }
-  | { kind: 'openai'; apiProtocol?: 'openai-chat' | 'openai-responses' }
-  | { kind: 'openai-codex' }
+  | {
+      kind: 'openai';
+      apiProtocol?: 'openai-chat' | 'openai-responses';
+      /** The declared reasoning contract every Responses request on this adapter follows. */
+      responses: ProviderResponsesContract;
+    }
+  | { kind: 'openai-codex'; responses: ProviderResponsesContract }
   | { kind: 'google'; normalizeBaseUrl?: boolean }
   | { kind: 'cohere' }
+  /** The Command Code CLI's `/alpha/generate` wire, used by the GO plan. */
+  | { kind: 'commandcode-cli' }
   | OpenAiCompatibleRuntimeAdapter;
 
 export type ProviderRuntimeAdapter = ProviderRuntimeAdapterDefinition & {
@@ -859,7 +863,11 @@ const providerRegistry = {
     authKind: 'api_key',
     fallbackModels: [...volcengineAgentPlanModelIds],
     status: 'ready',
-    runtimeAdapter: { kind: 'openai', apiProtocol: 'openai-responses' },
+    runtimeAdapter: {
+      kind: 'openai',
+      apiProtocol: 'openai-responses',
+      responses: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
+    },
     modelDiscovery: {
       kind: 'fallback',
       reason:
@@ -889,7 +897,11 @@ const providerRegistry = {
     authKind: 'api_key',
     fallbackModels: ['gpt-5.5', 'gpt-5.5-pro', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5'],
     status: 'ready',
-    runtimeAdapter: { kind: 'openai', applyPatchProtocol: 'openai-structured' },
+    runtimeAdapter: {
+      kind: 'openai',
+      applyPatchProtocol: 'openai-structured',
+      responses: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
+    },
     modelDiscovery: { kind: 'protocol' },
     category: 'overseas',
     catalogGroup: 'api',
@@ -958,7 +970,11 @@ const providerRegistry = {
     authKind: 'api_key',
     fallbackModels: moonshotGlobalModelIds,
     status: 'ready',
-    runtimeAdapter: { kind: 'openai', apiProtocol: 'openai-responses' },
+    runtimeAdapter: {
+      kind: 'openai',
+      apiProtocol: 'openai-responses',
+      responses: { adapter: 'open-responses', reasoningReplay: 'plaintext-summary' },
+    },
     modelDiscovery: { kind: 'protocol' },
     category: 'overseas',
     catalogGroup: 'api',
@@ -1210,7 +1226,11 @@ const providerRegistry = {
     runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
     protocolAdapters: {
       'anthropic-messages': { kind: 'anthropic', auth: 'api-key', normalizeBaseUrl: true },
-      'openai-responses': { kind: 'openai', apiProtocol: 'openai-responses' },
+      'openai-responses': {
+        kind: 'openai',
+        apiProtocol: 'openai-responses',
+        responses: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
+      },
     },
     modelDiscovery: { kind: 'protocol' },
     category: 'overseas',
@@ -1227,7 +1247,11 @@ const providerRegistry = {
     runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
     protocolAdapters: {
       'anthropic-messages': { kind: 'anthropic', auth: 'api-key', normalizeBaseUrl: true },
-      'openai-responses': { kind: 'openai', apiProtocol: 'openai-responses' },
+      'openai-responses': {
+        kind: 'openai',
+        apiProtocol: 'openai-responses',
+        responses: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
+      },
     },
     modelDiscovery: { kind: 'protocol' },
     category: 'overseas',
@@ -1484,7 +1508,11 @@ const providerRegistry = {
     runtimeAdapter: {
       kind: 'openai-compatible',
       name: 'provider',
-      runtimeProfile: 'alibaba-token-plan',
+      responses: {
+        adapter: 'open-responses',
+        reasoningReplay: 'plaintext-summary',
+        compatibility: 'alibaba-token-plan',
+      },
     },
     modelDiscovery: { kind: 'protocol' },
     category: 'domestic',
@@ -1501,7 +1529,11 @@ const providerRegistry = {
     runtimeAdapter: {
       kind: 'openai-compatible',
       name: 'provider',
-      runtimeProfile: 'alibaba-token-plan',
+      responses: {
+        adapter: 'open-responses',
+        reasoningReplay: 'plaintext-summary',
+        compatibility: 'alibaba-token-plan',
+      },
     },
     modelDiscovery: { kind: 'protocol' },
     category: 'overseas',
@@ -1524,6 +1556,21 @@ const providerRegistry = {
     catalogGroup: 'plans',
     signupUrl: 'https://commandcode.ai/docs/plans/goat',
     catalogOrder: 41.5,
+  },
+  'commandcode-go': {
+    label: 'Command Code GO',
+    // The API root, not `/provider/v1`: generation posts to `/alpha/generate`
+    // and discovery reads `/provider/v1/models`, both under it.
+    baseUrl: 'https://api.commandcode.ai',
+    authKind: 'api_key',
+    fallbackModels: [],
+    status: 'ready',
+    runtimeAdapter: { kind: 'commandcode-cli' },
+    modelDiscovery: { kind: 'protocol', path: 'provider/v1/models' },
+    category: 'overseas',
+    catalogGroup: 'plans',
+    signupUrl: 'https://commandcode.ai/docs/plans/go',
+    catalogOrder: 41.6,
   },
   'cloudflare-workers-ai': {
     label: cloudflareWorkersAi.name,
@@ -1616,7 +1663,11 @@ const providerRegistry = {
     authKind: 'api_key',
     fallbackModels: [],
     status: 'ready',
-    runtimeAdapter: { kind: 'openai', apiProtocol: 'openai-responses' },
+    runtimeAdapter: {
+      kind: 'openai',
+      apiProtocol: 'openai-responses',
+      responses: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
+    },
     modelDiscovery: { kind: 'protocol' },
     category: 'custom',
     catalogGroup: 'aggregators',
@@ -1648,7 +1699,11 @@ const providerRegistry = {
         normalizeBaseUrl: true,
         includeBetaHeaders: false,
       },
-      'openai-responses': { kind: 'openai', apiProtocol: 'openai-responses' },
+      'openai-responses': {
+        kind: 'openai',
+        apiProtocol: 'openai-responses',
+        responses: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
+      },
     },
     modelDiscovery: { kind: 'protocol', auth: 'github-copilot' },
     category: 'oauth',
@@ -1683,7 +1738,10 @@ const providerRegistry = {
     authKind: 'oauth_token',
     fallbackModels: ['gpt-6-astra', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'],
     status: 'phase3-experimental',
-    runtimeAdapter: { kind: 'openai-codex' },
+    runtimeAdapter: {
+      kind: 'openai-codex',
+      responses: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
+    },
     modelDiscovery: { kind: 'protocol', auth: 'openai-codex' },
     category: 'oauth',
   },

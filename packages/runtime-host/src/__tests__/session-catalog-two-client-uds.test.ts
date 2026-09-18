@@ -112,7 +112,7 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
         createInput.sessionId,
       );
       assert.equal(created.id, createInput.sessionId);
-      assert.equal(created.permissionMode, 'ask');
+      assert.equal(created.permissionMode, 'bypass');
       assert.equal(created.labelsTruncated, false);
       assert.deepEqual(
         await desktop.request('runtime.resource.query', {
@@ -230,21 +230,39 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
       assert.deepEqual(researchSession.labels, ['customer-label', DEEP_RESEARCH_SESSION_LABEL]);
       assert.equal(researchSession.permissionMode, 'explore');
 
+      const sandboxChoice = requireSessionProjection(
+        await desktop.request('session.create', {
+          ...createInput,
+          sessionId: 'explicit-sandbox-session',
+          permissionMode: 'ask',
+        }),
+      );
+      assert.equal(sandboxChoice.permissionMode, 'ask');
+
       const policy = await tui.request('runtime.policy.query', {});
       const changedPolicy = await tui.request('runtime.policy.mutate', {
         expectedRevision: policy.revision,
         operation: {
           kind: 'set_chat_defaults',
-          value: { permissionMode: 'bypass' },
+          value: { permissionMode: 'ask' },
         },
       });
       assert.equal(changedPolicy.kind, 'committed');
       assert.deepEqual(await tui.request('session.create', createInput), created);
 
+      const inheritedSandbox = requireSessionProjection(
+        await desktop.request('session.create', {
+          ...createInput,
+          sessionId: 'inherited-sandbox-session',
+        }),
+      );
+      assert.equal(inheritedSandbox.permissionMode, 'ask');
+
       const subscription = await tui.openSessionSubscription({
         sessionId: created.id,
         transcript: { kind: 'none' },
       });
+      await subscription.ready();
       const iterator = subscription[Symbol.asyncIterator]();
       assert.equal(subscription.snapshot.session.metadataRevision, created.revision);
       await assert.rejects(
@@ -477,6 +495,7 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
         sessionId: created.id,
         transcript: { kind: 'none' },
       });
+      await retirementSubscription.ready();
       const retirementIterator = retirementSubscription[Symbol.asyncIterator]();
       const beforeArchive = await querySession(desktop, created.id);
       assert.equal(beforeArchive.status, 'active');

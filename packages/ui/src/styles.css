@@ -475,13 +475,23 @@
 /* Prose reads differently from chrome. Han glyphs fill the whole em box, so
    the 20px body leading that suits a control row leaves CJK paragraphs with
    no air between lines; 1.6 is the common CJK reading ratio. Inherited from
-   the document root: headings and fenced code declare their own leading and
-   keep it, inline code follows the line it sits in, which is what keeps that
-   line's box even. `text-autospace` puts the conventional hair space between
-   Han and Latin or digit runs when the model did not type one. */
+   the document root: headings declare their own leading and keep it, inline
+   code follows the line it sits in, which is what keeps that line's box even.
+   `text-autospace` puts the conventional hair space between Han and Latin or
+   digit runs when the model did not type one. */
 [data-maka-contract="markdown"] .astryx-markdown {
   line-height: 1.6;
   text-autospace: normal;
+}
+/* Only a fenced block's own lines declare the code leading. CodeBlock wraps
+   every 20 of them in a `content-visibility: auto` box whose placeholder is
+   `20lh`, and `lh` there resolves against what the box inherits — this prose
+   leading, 12% taller than the lines it stands in for. The block then shrinks
+   by 48px per chunk as Chromium lays each one out, which moves whatever the
+   reader is on below it. Astryx's own `:where(code, pre)` rule would carry the
+   leading down, but Maka strips that reset (scripts/build-astryx-theme.mjs). */
+[data-maka-contract="markdown"] .astryx-markdown pre {
+  line-height: var(--text-code-leading);
 }
 /* Han faces have no italic, so `*emphasis*` in Chinese renders as a synthetic
    shear of PingFang. Chinese typography marks emphasis with a dot under each
@@ -1202,5 +1212,7 @@
 .maka-message-status-time { display: inline-flex; align-items: center; gap: 4px; }
 
 .maka-choice-panel { outline: none; }
+
+.maka-choice-panel:focus-visible { outline: var(--focus-ring-width) solid var(--focus-ring); outline-offset: var(--focus-ring-offset); }
 
 .maka-choice-hint { margin: 8px 0; }

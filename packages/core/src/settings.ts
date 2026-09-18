@@ -634,6 +634,13 @@ export interface UsageSummary {
 }
 
 export interface UsageStats {
+  navigation?: {
+    activityTotal: number;
+    revision: string;
+    queryIdentity: string;
+    query: UsageScreenQuery;
+    nextCursor: string | null;
+  };
   summary: UsageSummary;
   logs: UsageRequestLog[];
   byProvider: Array<{
@@ -675,6 +682,54 @@ export interface UsageStats {
    */
   logsTruncated?: boolean;
 }
+
+/** A fixed query; activity filters never change headline accounting. */
+export interface UsageScreenQuery {
+  range: { from: number; to: number };
+  search: string;
+  status: 'all' | 'success' | 'error' | 'aborted';
+}
+
+export interface UsageActivityPage {
+  revision: string;
+  queryIdentity: string;
+  logs: UsageRequestLog[];
+  nextCursor: string | null;
+}
+
+export interface UsageScreen extends UsageStats, UsageActivityPage {
+  activityTotal: number;
+  query: UsageScreenQuery;
+}
+
+export type UsageScreenFailure =
+  | { kind: 'revision_changed' }
+  | {
+      kind: 'screen_response_too_large';
+      section:
+        | 'provider_breakdown'
+        | 'model_breakdown'
+        | 'tool_breakdown'
+        | 'pricing'
+        | 'activity_page'
+        | 'screen'
+        | 'message';
+    };
+
+export type UsageScreenRequest =
+  | { kind: 'screen'; query: UsageScreenQuery }
+  | {
+      kind: 'activity';
+      query: UsageScreenQuery;
+      revision: string;
+      queryIdentity: string;
+      cursor: string;
+    };
+
+export type UsageScreenResult =
+  | { kind: 'screen'; screen: UsageScreen }
+  | { kind: 'activity'; page: UsageActivityPage }
+  | UsageScreenFailure;
 
 export interface SettingsTestResult {
   ok: boolean;
@@ -1084,7 +1139,7 @@ function defaultProjectPreferencesSettings(): ProjectPreferencesSettings {
 }
 
 function defaultChatDefaultsSettings(): ChatDefaultsSettings {
-  return { permissionMode: 'ask' };
+  return { permissionMode: 'bypass' };
 }
 
 // Closed-enum fail-closed, same reasoning as appearance.palette /

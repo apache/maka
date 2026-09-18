@@ -51,12 +51,11 @@ const LAYOUT_PERSIST_DEBOUNCE_MS = 200;
 export function useWorkbarLayoutState(
   activeSessionId: string | undefined,
   authoritativeSessionIds: ReadonlySet<string> | undefined,
-  scope?: string,
 ) {
   const [state, dispatch] = useReducer(
     reduceWorkbarLayout,
     activeSessionId,
-    (sessionId) => loadWorkbarLayout(sessionId, scope),
+    loadWorkbarLayout,
   );
   // Bind the owner before this render commits. An effect-based mirror would
   // briefly show the previous Session's panel and could overwrite an open
@@ -189,25 +188,25 @@ export function useWorkbarLayoutState(
 
   useEffect(() => {
     const handle = window.setTimeout(() => {
-      persistWorkbarLayout(stateRef.current, 'right-size', scope);
+      persistWorkbarLayout(stateRef.current, 'right-size');
     }, LAYOUT_PERSIST_DEBOUNCE_MS);
     return () => window.clearTimeout(handle);
-  }, [state.rightWidth, scope]);
+  }, [state.rightWidth]);
   useEffect(() => {
-    persistWorkbarLayout(stateRef.current, 'right-visibility', scope);
-  }, [state.collapsedBySession, scope]);
+    persistWorkbarLayout(stateRef.current, 'right-visibility');
+  }, [state.collapsedBySession]);
   useEffect(() => {
     const handle = window.setTimeout(() => {
-      persistWorkbarLayout(stateRef.current, 'bottom-size', scope);
+      persistWorkbarLayout(stateRef.current, 'bottom-size');
     }, LAYOUT_PERSIST_DEBOUNCE_MS);
     return () => window.clearTimeout(handle);
-  }, [state.bottomHeight, scope]);
+  }, [state.bottomHeight]);
   useEffect(() => {
-    persistWorkbarLayout(stateRef.current, 'bottom-visibility', scope);
-  }, [state.bottomOpen, scope]);
+    persistWorkbarLayout(stateRef.current, 'bottom-visibility');
+  }, [state.bottomOpen]);
   useEffect(() => {
-    persistWorkbarLayout(stateRef.current, 'topology', scope);
-  }, [state.panels, scope]);
+    persistWorkbarLayout(stateRef.current, 'topology');
+  }, [state.panels]);
 
   const setWorkbarCollapsed = useCallback(
     (next: SetStateAction<boolean>) => {

@@ -17,13 +17,28 @@
  * under the License.
  */
 
-/** Settings catalog adapter for the shared magnetic model picker. */
+/**
+ * Product-specific model catalog composition over Astryx Selector.
+ *
+ * Maka owns provider/model shaping, provider marks, unknown-current display,
+ * and the selection action. Astryx owns search, empty results, option
+ * semantics, keyboard navigation, focus, scrolling, and popup behavior.
+ */
 
-import { type ReactNode } from 'react';
+import { useMemo, type ReactNode } from 'react';
+import { Selector } from '@astryxdesign/core/Selector';
 import type { ProviderType } from '@maka/core/llm-connections';
-import { type ModelMenuGroup, modelChoiceDescription, modelChoiceValue } from './chat-model-helpers.js';
-import { ModelWheelPicker, type ModelWheelOption } from './model-wheel-picker.js';
+import type { ModelMenuGroup } from './chat-model-helpers.js';
+import {
+  buildModelPickerOptions,
+  renderModelPickerOption,
+  renderModelPickerValue,
+  type ModelPickerLeadingOption,
+} from './model-picker-internals.js';
+import { modelChoiceValue } from './chat-model-helpers.js';
 import { useUiLocale } from './locale-context.js';
+import { getSharedUiCopy } from './shared-ui-copy.js';
+import { usePendingSelection } from './use-pending-selection.js';
 
 export interface ModelPickerProps {
   groups: readonly ModelMenuGroup[];
@@ -31,31 +46,62 @@ export interface ModelPickerProps {
   onValueChange(value: string): void | Promise<void>;
   renderProviderMark?(type: ProviderType): ReactNode;
   disabled?: boolean;
-  leadingOption?: { value: string; label: string; providerType?: ProviderType };
+  /**
+   * An ordinary option placed before the catalog for product values such as
+   * “not set” or a current model that is no longer listed. Astryx search treats
+   * it exactly like every other option.
+   */
+  leadingOption?: ModelPickerLeadingOption;
+  searchPlaceholder?: string;
   triggerClassName?: string;
   ariaLabel: string;
 }
 
+const slugScopedValue = (choice: ModelMenuGroup['choices'][number]) =>
+  modelChoiceValue(choice.connectionSlug, choice.model);
+
 export function ModelPicker(props: ModelPickerProps) {
   const locale = useUiLocale();
-  const choices = props.groups.flatMap((group) => group.choices);
-  const current = choices.find((choice) => modelChoiceValue(choice.connectionSlug, choice.model) === props.value);
-  const options: ModelWheelOption[] = props.groups.flatMap((group) => group.choices.map((choice) => ({
-    value: modelChoiceValue(choice.connectionSlug, choice.model),
-    label: choice.label,
-    heading: group.heading,
-    description: modelChoiceDescription(choice, locale),
-  })));
-  if (props.leadingOption) options.unshift(props.leadingOption);
-  const label = options.find((option) => option.value === props.value)?.label ?? props.value;
-  if (!options.some((option) => option.value === props.value)) {
-    options.unshift({ value: props.value, label, disabled: true });
-  }
-  const provider = current?.providerType ?? (props.leadingOption?.value === props.value ? props.leadingOption.providerType : undefined);
-  return <div className="maka-model-picker-root">
-    <ModelWheelPicker options={options} value={props.value} label={label}
-      ariaLabel={props.ariaLabel} size="md" disabled={props.disabled}
-      triggerClassName={props.triggerClassName} onValueChange={props.onValueChange}
-      icon={provider && props.renderProviderMark ? <span className="modelPickerProviderMark" data-provider={provider} aria-hidden="true">{props.renderProviderMark(provider)}</span> : undefined} />
-  </div>;
+  const copy = getSharedUiCopy(locale).modelPicker;
+
+  const options = useMemo(
+    () =>
+      buildModelPickerOptions(props.groups, props.leadingOption, slugScopedValue, {
+        locale,
+        renderProviderMark: props.renderProviderMark,
+      }),
+    [props.groups, props.leadingOption, locale, props.renderProviderMark],
+  );
+
+  // Reflect the pick immediately and hold it until the caller's write settles,
+  // then defer to the authoritative `value`. See usePendingSelection.
+  const selection = usePendingSelection(props.value, props.onValueChange);
+
+  // size=md matches the other settings-row selectors, so the size is a fact
+  // of the component, not a prop.
+  return (
+    <div className="maka-model-picker-root">
+      <Selector
+        label={props.ariaLabel}
+        isLabelHidden
+        options={options}
+        value={selection.value}
+        hasSearch
+        searchPlaceholder={props.searchPlaceholder ?? copy.searchPlaceholder}
+        size="md"
+        placement="above"
+        isDisabled={props.disabled}
+        className={props.triggerClassName}
+        // `onChange`, not `changeAction`: the async `changeAction` path wraps
+        // the caller's save in a transition and spins the trigger (Astryx's
+        // built-in optimistic `isBusy`) for the whole round-trip. On the
+        // fire-and-forget `onChange` path the trigger never enters that busy
+        // state; usePendingSelection shows the pick at once and settles it when
+        // the write finishes.
+        onChange={selection.onChange}
+        renderOption={renderModelPickerOption}
+        renderValue={renderModelPickerValue}
+      />
+    </div>
+  );
 }

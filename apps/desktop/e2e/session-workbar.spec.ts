@@ -222,8 +222,7 @@ test('Terminal survives navigation and reload, then stops on explicit close', as
   await sidebar.locator(`[data-session-id=${JSON.stringify(sessionId)}]`).click();
   await expect(terminal).toBeVisible();
   await expect(terminal).toHaveAttribute('data-terminal-ref', terminalRef!);
-  await page.getByRole('button', { name: '打开或关闭工作栏的面' }).click();
-  await page.getByRole('menu').getByRole('menuitem', { name: /终端/ }).click();
+  await page.locator('[role=tab][aria-selected=true] .maka-workbar-tab-close').click();
   await expect(terminal).toHaveCount(0);
   await expect.poll(async () =>
     (await page.evaluate((id) => window.maka.shellRuns.list(id), sessionId))
@@ -286,14 +285,9 @@ test('Side Chat survives collapse, confirms close, and cleans up on source switc
   await page.getByRole('button', { name: '展开任务工作栏' }).click();
   await expect(companion).toBeVisible();
 
-  // Closing is the same [+] menu that opens: the face already on screen carries
-  // a checkmark, and picking it again asks to close it.
+  // The tab's close affordance retains the native-backed conversation's confirmation flow.
   const closeActiveSideChat = async () => {
-    await page.getByRole('button', { name: '打开或关闭工作栏的面' }).first().click();
-    await page
-      .getByRole('menu')
-      .getByRole('menuitem', { name: '侧边对话', exact: true })
-      .click();
+    await page.locator('[role=tab][aria-selected=true] .maka-workbar-tab-close').click();
   };
   await closeActiveSideChat();
   const confirmation = page.getByRole('dialog');

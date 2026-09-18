@@ -1718,16 +1718,10 @@ export class AiSdkTurn {
                   part = { text: '' };
                   stepThinkingParts.push(part);
                 }
-                const nextPartText = part.text + event.text;
-                if (
-                  event.reasoningSummaryText !== undefined &&
-                  event.reasoningSummaryText !== nextPartText
-                ) {
-                  throw new Error(
-                    'Streamed plaintext Responses reasoning does not match final provider summary',
-                  );
-                }
-                part.text = nextPartText;
+                // The provider's final summary is the authoritative text the
+                // durable part boundaries describe; adopt it when the
+                // streamed deltas diverge so replay stays self-consistent.
+                part.text = event.reasoningSummaryText ?? part.text + event.text;
                 if (event.providerOptions !== undefined) {
                   part.providerOptions = event.providerOptions;
                 }
@@ -2797,7 +2791,14 @@ export class AiSdkTurn {
       // `runtimeContext` may be a budget/history-search slice; the tool-turn
       // thinking skip is a whole-history invariant, so seed it from the full
       // prior ledger so a sliced-in tool-turn thinking still gets skipped.
-      { toolActivityTurnIds: collectToolActivityTurnIds(priorRuntimeContext) },
+      {
+        toolActivityTurnIds: collectToolActivityTurnIds(priorRuntimeContext),
+        // Transcript repair can preserve an assistant-only opening from either
+        // an imported or a native legacy Session. Ordinary provider requests
+        // admit both at the first valid user head; explicit continuations use
+        // their separately admitted boundary.
+        allowRepairedAssistantPrefix: input.continuation !== undefined,
+      },
     );
     const hasProviderHistoryCompactCheckpoint =
       projectedHistoryCompactCheckpoint !== undefined &&

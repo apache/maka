@@ -32,6 +32,7 @@
  * It mounts only for sessions with a live view (see browser:live), so an
  * ordinary chat reserves no space.
  */
+import { isNativeSurfaceOccluded } from '../../../../application/contracts/native-surface-occlusion.js';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ICON_SIZE, ChevronLeft, ChevronRight, Globe, RotateCw, X } from '@maka/ui/icons';
 import { normalizeBrowserAddressInput, type BrowserState } from '@maka/core/browser';
@@ -73,6 +74,7 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean }) {
   const toast = useToast();
   const copy = getBrowserCopy(useUiLocale());
   const stripRef = useRef<HTMLDivElement>(null);
+  const [backdrop, setBackdrop] = useState<string>();
   const [state, setState] = useState<BrowserState>(EMPTY_STATE);
   // The address input is editable; it only snaps to the live URL when the user
   // is not mid-edit (tracked by focus) so typing is never clobbered by a
@@ -120,6 +122,7 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean }) {
   useEffect(() => {
     // Capture the injected capability because this passive cleanup may run
     // after its provider has started tearing down the host composition.
+    setBackdrop(undefined);
     if (!showView) {
       browser.setViewport({ sessionId, rect: null });
       return;
@@ -128,6 +131,9 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean }) {
     if (!el) return;
     let raf = 0;
     let last = '';
+    let active = true;
+    let covered = false;
+    let revision = 0;
     const tick = () => {
       const r = el.getBoundingClientRect();
       const rect = {
@@ -136,6 +142,23 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean }) {
         width: Math.round(r.width),
         height: Math.round(r.height),
       };
+      const occluded = isNativeSurfaceOccluded(r, el.ownerDocument);
+      if (occluded !== covered) {
+        covered = occluded;
+        const current = ++revision;
+        if (occluded) {
+          // Keep a still image behind the menu while the native layer yields
+          // input and painting. A late capture must not hide a restored page.
+          void browser.capturePage(sessionId).catch(() => undefined).then((image) => {
+            if (!active || current !== revision) return;
+            setBackdrop(image);
+          });
+          // Input must yield now, even while the optional capture is pending.
+          browser.setViewport({ sessionId, rect: null });
+        } else setBackdrop(undefined);
+        last = '';
+      }
+      if (occluded) { raf = requestAnimationFrame(tick); return; }
       const key = `${rect.x},${rect.y},${rect.width},${rect.height}`;
       if (key !== last) {
         last = key;
@@ -145,6 +168,7 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean }) {
     };
     raf = requestAnimationFrame(tick);
     return () => {
+      active = false;
       cancelAnimationFrame(raf);
       browser.setViewport({ sessionId, rect: null });
     };
@@ -257,6 +281,7 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean }) {
         )}
       />
       <div className="maka-browser-strip" ref={stripRef}>
+        {backdrop && <img className="maka-browser-backdrop" src={backdrop} alt="" aria-hidden draggable={false} />}
         {!state.hasPage && (
           <EmptyState
             icon={<Globe size={ICON_SIZE.empty} aria-hidden="true" />}

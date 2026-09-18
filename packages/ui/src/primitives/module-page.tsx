@@ -147,8 +147,8 @@ export function ModulePage({
   // would leave the list too little of it.
   const inspectorPanel = useResizable({
     defaultSize: 320,
-    minSizePx: 280,
-    maxSizePx: 420,
+    minSize: 280,
+    maxSize: 420,
     autoSaveId: inspectorAutoSaveId,
   });
 

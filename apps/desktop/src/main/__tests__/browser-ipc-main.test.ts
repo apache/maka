@@ -35,13 +35,19 @@ class FakeController {
   readonly navigations: string[] = [];
   disposed = false;
 
-  constructor(readonly parent: Electron.View, private readonly url: string) {}
+  private owner: Electron.View;
+  constructor(public parent: Electron.View, private readonly url: string) { this.owner = parent; }
+  hasOwner(parent: Electron.View): boolean { return this.owner === parent; }
+  setOwner(parent: Electron.View): void { this.owner = parent; }
+  park(): void { this.setViewport(null); this.setParent(this.owner); }
 
   hasParent(parent: Electron.View): boolean { return this.parent === parent; }
+  setParent(parent: Electron.View): void { this.parent = parent; }
   refreshRendering(): void {}
   beginBackgroundAction() { return { ready: Promise.resolve(), release: async () => {} }; }
   setViewport(rect: BrowserViewRect | null): void { this.viewports.push(rect); }
   navigate(url: string): Promise<void> { this.navigations.push(url); return Promise.resolve(); }
+  capturePage(): Promise<string> { return Promise.resolve('data:image/png;base64,page'); }
   goBack(): void {}
   goForward(): void {}
   reload(): void {}
@@ -146,6 +152,7 @@ test('browser IPC isolates owned renderer documents and their native parents', a
     };
     const mainWindowController = {
       getBrowserViews: () => manager,
+      isMainRenderer: (contents: Electron.WebContents) => contents === main as unknown as Electron.WebContents,
       ownsRenderer: (contents: Electron.WebContents) => !contents.isDestroyed() && owned.has(contents),
       browserParentForRenderer: (contents: Electron.WebContents) => owned.get(contents),
       setBrowserViewParentResolver: (resolve: typeof parentResolver) => { parentResolver = resolve; },
@@ -186,6 +193,8 @@ test('browser IPC isolates owned renderer documents and their native parents', a
     const workHubRect = { x: 4, y: 8, width: 220, height: 160 };
     emit('browser:setViewport', main, scope, { sessionId: 'main-session', rect: mainRect }, 'main-document', 1);
     await invoke('browser:navigate', main, scope, 'main-session', 'https://main.example/');
+    assert.equal(await invoke('browser:capture-page', main, scope, 'main-session'), 'data:image/png;base64,page');
+    assert.equal(await invoke('browser:capture-page', workHub, scope, 'main-session'), undefined);
     await invoke('browser:navigate', workHub, scope, 'workhub-session', 'https://workhub.example/');
     emit('browser:setViewport', workHub, scope, { sessionId: 'workhub-session', rect: workHubRect }, 'workhub-document', 1);
 
@@ -288,6 +297,24 @@ test('browser IPC isolates owned renderer documents and their native parents', a
     assert.equal(mainController.parent, mainParent);
     assert.deepEqual(mainController.viewports, [mainRect]);
 
+    // Main presents Coordination without taking its persistent conversation ownership.
+    emit('browser:active-session', workHub, scope, WORKHUB_COORDINATION_SESSION_ID, 'workhub-document', 5);
+    emit('browser:active-session', main, scope, WORKHUB_COORDINATION_SESSION_ID, 'main-document', 2);
+    emit('browser:setViewport', main, scope, { sessionId: WORKHUB_COORDINATION_SESSION_ID, rect: mainRect }, 'main-document', 2);
+    const coordinationController = controllers.get(coordinationKey)!;
+    assert.equal(coordinationController.parent, mainParent);
+    assert.equal(coordinationController.hasOwner(workHubParent), true);
+    mainWindow.emit('close');
+    assert.equal(coordinationController.parent, workHubParent, 'Main close parks rather than destroys the background page');
+    assert.equal(coordinationController.viewports.at(-1), null);
+    assert.equal(await browserViewHost().canDrive(coordinationKey, 'mutate'), true);
+    emit('browser:setViewport', main, scope, { sessionId: WORKHUB_COORDINATION_SESSION_ID, rect: mainRect }, 'main-document', 2);
+    emit('browser:active-session', main, scope, 'main-session', 'main-document', 3);
+    assert.equal(coordinationController.parent, workHubParent, 'switching Main to a Session hides only the Coordination presenter');
+    assert.equal(await browserViewHost().canDrive(coordinationKey, 'mutate'), true);
+    emit('browser:active-session', main, scope, WORKHUB_COORDINATION_SESSION_ID, 'main-document', 4);
+    emit('browser:setViewport', main, scope, { sessionId: WORKHUB_COORDINATION_SESSION_ID, rect: mainRect }, 'main-document', 4);
+
     // Renderer-process loss preserves the native page for reload. Even if the
     // replacement document reads it before selecting the Session, destroying
     // the owning WebContents must still release the page by its fixed parent.
@@ -300,6 +327,7 @@ test('browser IPC isolates owned renderer documents and their native parents', a
     workHub.destroy();
     await new Promise<void>((resolve) => setImmediate(resolve));
     assert.equal(workHubController.disposed, true);
+    assert.equal(coordinationController.disposed, true, 'destroying the owner releases its page even while Main presents it');
     assert.equal(controllers.get(mainKey), mainController, 'destroying WorkHub preserves the main browser session');
     assert.equal(mainController.disposed, false);
   } finally {

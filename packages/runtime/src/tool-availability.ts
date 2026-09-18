@@ -46,6 +46,10 @@ const DIRECT_TOOL_NAMES: ReadonlySet<string> = new Set([
   'WebFetch',
   'AskUserQuestion',
   'StopBackgroundTask',
+  // An active execution owns these tools; their schema must be visible so the
+  // model can maintain the Plan state without a deferred-search hop.
+  'update_plan',
+  'cancel_plan',
   // Existing carve-out pending the separate skill-discovery decision.
   'Skill',
   'SkillSearch',

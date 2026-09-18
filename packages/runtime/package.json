@@ -66,7 +66,6 @@
     "./goal-turn-lifecycle": "./dist/goal-turn-lifecycle.js",
     "./history-compact-checkpoint": "./dist/history-compact-checkpoint.js",
     "./history-compact-ledger": "./dist/history-compact-ledger.js",
-    "./history-tools": "./dist/history-tools.js",
     "./history-compact-summarizer": "./dist/history-compact-summarizer.js",
     "./openai-codex-history-compactor": "./dist/openai-codex-history-compactor.js",
     "./interaction-authority": "./dist/interaction-authority.js",
@@ -106,6 +105,7 @@
     "./plugin-tool-service": "./dist/plugin-tool-service.js",
     "./process-tree-terminator": "./dist/process-tree-terminator.js",
     "./provider-request-telemetry": "./dist/provider-request-telemetry.js",
+    "./recall-tools": "./dist/recall-tools.js",
     "./request-customization-fetch": "./dist/request-customization-fetch.js",
     "./request-shape": "./dist/request-shape.js",
     "./runtime-commit-sink": "./dist/runtime-commit-sink.js",
@@ -140,7 +140,8 @@
     "./web-fetch-tool": "./dist/web-fetch-tool.js",
     "./web-search-tool": "./dist/web-search-tool.js",
     "./xai-oauth-enrollment": "./dist/xai-oauth-enrollment.js",
-    "./session-import": "./dist/session-import.js"
+    "./session-import": "./dist/session-import.js",
+    "./recall-candidates": "./dist/recall-candidates.js"
   },
   "scripts": {
     "clean": "node ../../scripts/clean-paths.mjs dist tsconfig.tsbuildinfo src/telemetry/model-pricing.generated.ts",
@@ -159,10 +160,10 @@
     "@ai-sdk/openai": "4.0.66",
     "@ai-sdk/openai-compatible": "3.0.48",
     "@ai-sdk/provider": "4.0.14",
-    "@larksuiteoapi/node-sdk": "1.73.0",
+    "@larksuiteoapi/node-sdk": "1.73.3",
     "@maka/core": "0.1.0",
     "@mozilla/readability": "^0.6.0",
-    "@openai/agents-core": "0.17.0",
+    "@openai/agents-core": "0.18.0",
     "@slack/socket-mode": "^3.0.1",
     "@slack/web-api": "^8.1.1",
     "@wecom/aibot-node-sdk": "1.0.7",
@@ -177,13 +178,13 @@
     "minisearch": "7.2.0",
     "node-pty": "^1.2.0-beta.15",
     "qrcode": "^1.5.4",
-    "socks": "^2.8.9",
+    "socks": "^2.8.10",
     "socks-proxy-agent": "^10.1.0",
     "turndown": "^7.2.4",
-    "undici": "^8.10.1",
+    "undici": "^8.10.2",
     "ws": "^8.21.3",
-    "yaml": "^2.9.0",
-    "zod": "^4.5.4"
+    "yaml": "^2.9.1",
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@maka/storage": "0.1.0",
