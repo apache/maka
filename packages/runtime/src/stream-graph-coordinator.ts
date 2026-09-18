@@ -1220,14 +1220,11 @@ export class AgentGraphCoordinator {
   }
 
   async #waitForClientProjectionUpdates(driver: GraphDriver): Promise<void> {
-    while (driver.clientProjectionTask) {
-      const task = driver.clientProjectionTask;
-      await task.catch(() => {
-        // A best-effort repair or later durable observation may repair this
-        // derived read side; graph authority never depends on it.
-      });
-      if (driver.clientProjectionTask === task) return;
-    }
+    const task = driver.clientProjectionTask;
+    await task?.catch(() => {
+      // A best-effort repair or later durable observation may repair this
+      // derived read side; graph authority never depends on it.
+    });
   }
 
   async #repairClientProjectionBestEffort(driver: GraphDriver): Promise<void> {
