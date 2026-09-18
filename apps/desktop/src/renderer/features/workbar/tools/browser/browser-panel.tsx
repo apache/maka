@@ -120,9 +120,6 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean; focuse
   // per frame is negligible and the IPC only fires when the rect changes.
   const showView = !hidden && state.hasPage;
   useEffect(() => {
-    if (props.focused && !state.hasPage && !state.loading) props.onPreviewExit?.();
-  }, [props.focused, props.onPreviewExit, state.hasPage, state.loading]);
-  useEffect(() => {
     // Capture the injected capability because this passive cleanup may run
     // after its provider has started tearing down the host composition.
     setBackdrop(undefined);
@@ -274,7 +271,7 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean; focuse
         )}
         endContent={(
           <div className="maka-browser-toolbar-actions">
-          {props.onToggleFocus && state.hasPage && (
+          {props.onToggleFocus && (
             <Tooltip content={props.focused ? copy.restorePreview : copy.focusPreview}>
               <IconButton
                 label={props.focused ? copy.restorePreview : copy.focusPreview}

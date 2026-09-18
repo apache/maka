@@ -188,7 +188,7 @@ export function RecentTurnOverlay(props: {
   }, [expanded, props.minimized, liveItems?.at(-1)?.text]);
 
   return <div ref={rootRef} className="maka-recent-turn-overlay" data-expanded={!props.minimized && expanded || undefined}>
-    <ProgressCard label={label} status={label} active={running}
+    <ProgressCard label={label} status={props.minimized ? `${label} · ${copy.restore}` : label} active={running}
       summary={props.minimized || expanded ? undefined : boundedText(running
         ? liveItems?.at(-1)?.text || copy.waiting
         : settledText || (readError ? copy.readFailed : copy.noReply))}

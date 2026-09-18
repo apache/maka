@@ -29,7 +29,7 @@ import type { SessionTrace } from '@maka/core/session-trace';
 import type { ContextDiagnosticsResult } from '@maka/runtime-host/protocol';
 import { ChatSurfaceLayout, Composer, ToastProvider } from '@maka/ui';
 import { WorkbarHost, WorkbarServicesProvider } from '../src/renderer/features/workbar';
-import { WorkbarSurface, type WorkbarHostModel } from '../src/renderer/features/workbar/stories';
+import { WorkbarSurface, useWorkbarLayoutState, type WorkbarHostModel } from '../src/renderer/features/workbar/stories';
 import {
   createFakeWorkbarServices,
   createSessionWorkbarPanelsState,
@@ -1185,13 +1185,14 @@ const storyResizable = {
 } as WorkbarHostModel['rightResizable'];
 
 function FocusedHostFlow(props: { tab: 'files' | 'browser'; realComposer?: boolean; streaming?: boolean; stagedFile?: boolean; frameWidth?: number }) {
+  const layout = useWorkbarLayoutState(SESSION_ID, undefined);
   const [panels, setPanels] = useState(() => createSessionWorkbarPanelsState(
     openStaticSessionWorkbarTab(createSessionWorkbarTabsState(), props.tab),
   ));
   const model: WorkbarHostModel = {
     workspace: 'session', activeId: SESSION_ID, sourceSession: TOOL_PICKER_SOURCE_SESSION,
-    rightCollapsed: false, bottomOpen: false, hidden: false, rightWidth: 480, bottomHeight: 300,
-    panelsState: panels, rightResizable: storyResizable, bottomResizable: storyResizable,
+    rightCollapsed: false, bottomOpen: false, hidden: false, rightWidth: layout.workbarWidth, bottomHeight: 300,
+    panelsState: panels, rightResizable: layout.workbarResizable, bottomResizable: storyResizable,
     onActivateTab: (placement, tabId) => setPanels((state) => reduceWorkbarPanels(state, { type: 'activate', placement, tabId })),
     onCloseTab: (placement, tab) => setPanels((state) => reduceWorkbarPanels(state, { type: 'close', placement, tabIds: [tab.id] })),
     onOpenLauncher: noop, onRequestOpenTab: noop, onToggleRightPanel: noop, onDismissPanel: noop,
@@ -1199,7 +1200,7 @@ function FocusedHostFlow(props: { tab: 'files' | 'browser'; realComposer?: boole
   };
   return <ToastProvider><div className="maka-detail-with-artifacts" style={{
     height: '100dvh', width: props.frameWidth, '--maka-plate-titlebar-clearance': 'calc(var(--h-titlebar) - var(--agents-content-area-gap))',
-    '--maka-session-workbar-width': '480px',
+    '--maka-session-workbar-width': `${layout.workbarWidth}px`,
   } as CSSProperties}>
     <div className="mainColumn"><ChatSurfaceLayout composer={props.realComposer
       ? <Composer draftKey={SESSION_ID} streaming={props.streaming ?? true} onSend={noop} onStop={noop}
@@ -1683,6 +1684,54 @@ export const BrowserNavigationFailed: Story = {
 export const Files: Story = {
   decorators: [bridge()],
   render: () => <Workbar tab="files" />,
+};
+
+// Real path: drag the divider left in an empty Browser, then restore the same conversation and draft.
+export const BrowserDividerFocus: Story = {
+  decorators: [bridge({ browserState: EMPTY_BROWSER_STATE })],
+  render: () => <FocusedHostFlow tab="browser" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByRole('textbox', { name: '浏览器地址' });
+    const draft = canvas.getByRole('textbox', { name: 'Session draft' });
+    await userEvent.type(draft, 'Keep my divider draft');
+    const frame = canvasElement.querySelector<HTMLElement>('.maka-detail-with-artifacts')!;
+    const panel = canvasElement.querySelector<HTMLElement>('.maka-session-workbar[data-placement="right"]')!;
+    const separator = canvas.getByRole('separator', { name: '调整任务工作栏宽度' });
+    const initialWidth = panel.getBoundingClientRect().width;
+    const box = separator.getBoundingClientRect();
+    const point = { clientX: box.x + 2, clientY: box.y + box.height / 2 };
+    const target = document.elementFromPoint(point.clientX, point.clientY)!;
+    expect(separator.contains(target)).toBe(true);
+    const end = { clientX: frame.getBoundingClientRect().left + 180, clientY: point.clientY };
+    const pointer = userEvent.setup();
+    await pointer.pointer([
+      { keys: '[MouseLeft>]', target, coords: point },
+      { target, coords: end },
+    ]);
+    expect(frame).toHaveAttribute('data-preview-collapse-ready', 'true');
+    expect(frame).not.toHaveAttribute('data-preview-focused');
+    // Reversing direction before release must cancel the collapse intent.
+    await pointer.pointer([
+      { target, coords: point },
+      { keys: '[/MouseLeft]', target, coords: point },
+    ]);
+    expect(frame).not.toHaveAttribute('data-preview-focused');
+    expect(frame).not.toHaveAttribute('data-preview-resizing');
+    await pointer.pointer([
+      { keys: '[MouseLeft>]', target, coords: point },
+      { target, coords: end },
+      { keys: '[/MouseLeft]', target, coords: end },
+    ]);
+    await waitFor(() => expect(frame).toHaveAttribute('data-preview-focused', 'browser'));
+    expect(canvas.getByRole('textbox', { name: 'Session draft' })).toBe(draft);
+    expect(draft).toHaveValue('Keep my divider draft');
+    await canvas.findByRole('button', { name: '收起输入区' });
+    await userEvent.click(canvas.getByRole('button', { name: '还原分栏' }));
+    await waitFor(() => expect(panel.getBoundingClientRect().width).toBe(initialWidth));
+    expect(frame).not.toHaveAttribute('data-preview-focused');
+    expect(draft).toHaveValue('Keep my divider draft');
+  },
 };
 
 // Real path: session → Files → generated Markdown → focus, restore, or drag the input handle into the preview.

@@ -31,6 +31,10 @@ export function useFocusedPreview(input: {
   const [composerTarget, setComposerTarget] = useState<HTMLElement | null>(null);
   const [overlayHeight, setOverlayHeight] = useState(0);
   const surfaceRef = useRef<HTMLDivElement>(null);
+  const resizeRef = useRef<{
+    frame: HTMLElement; kind: PreviewKind; sessionId: string;
+    startWidth: number; width: number; previousWidth: string;
+  } | null>(null);
   const rightPanel = input.host.panelsState.right;
   const activeRightTab = rightPanel.tabs.find((tab) => tab.id === rightPanel.activeTabId);
   const focusedPreview = request && request.sessionId === input.host.activeId &&
@@ -80,8 +84,67 @@ export function useFocusedPreview(input: {
       ? null : { sessionId, kind });
   }
 
+  function finishResize() {
+    const drag = resizeRef.current;
+    if (!drag) return null;
+    resizeRef.current = null;
+    if (drag.previousWidth) drag.frame.style.setProperty('--maka-session-workbar-width', drag.previousWidth);
+    else drag.frame.style.removeProperty('--maka-session-workbar-width');
+    delete drag.frame.dataset.previewResizing;
+    delete drag.frame.dataset.previewCollapseReady;
+    return drag;
+  }
+
+  // A cancelled gesture, tab switch or unmount must not leave a temporary width.
+  useEffect(() => () => { finishResize(); }, [input.host.activeId, activeRightTab?.id, input.host.hidden, input.host.rightCollapsed]);
+
+  const rightResizable = {
+    ...input.host.rightResizable,
+    _onResizeStart: () => {
+      input.host.rightResizable._onResizeStart();
+      const frame = surfaceRef.current?.closest<HTMLElement>('.maka-detail-with-artifacts');
+      const kind = activeRightTab?.kind;
+      if (!frame || !input.host.activeId || focusedPreview || input.host.workspace === 'workhub' ||
+        rightPanel.launcherOpen || input.host.hidden || input.host.rightCollapsed ||
+        (kind !== 'browser' && kind !== 'files') ||
+        (kind === 'files' && !frame.querySelector('.maka-artifact-preview-screen'))) return;
+      const panel = frame.querySelector<HTMLElement>('.maka-session-workbar[data-placement="right"]');
+      if (!panel || panel.getBoundingClientRect().width >= frame.getBoundingClientRect().width) return;
+      const width = panel.getBoundingClientRect().width;
+      resizeRef.current = { frame, kind, sessionId: input.host.activeId, startWidth: width, width,
+        previousWidth: frame.style.getPropertyValue('--maka-session-workbar-width') };
+      frame.dataset.previewResizing = 'true';
+    },
+    _onResizeMove: (delta: number) => {
+      const drag = resizeRef.current;
+      if (!drag) { input.host.rightResizable._onResizeMove(delta); return; }
+      // Follow the divider beyond the ordinary panel cap. Only a completed
+      // gesture with less than 240px of conversation left enters focus mode.
+      drag.width = Math.max(input.host.rightResizable._minSizePx,
+        Math.min(drag.frame.clientWidth - 120, drag.startWidth + delta));
+      drag.frame.style.setProperty('--maka-session-workbar-width', `${drag.width}px`);
+      if (drag.width > drag.startWidth && drag.frame.clientWidth - drag.width <= 240) {
+        drag.frame.dataset.previewCollapseReady = 'true';
+      } else delete drag.frame.dataset.previewCollapseReady;
+    },
+    _onResizeEnd: () => {
+      const pending = resizeRef.current;
+      const focus = pending?.frame.dataset.previewCollapseReady === 'true';
+      const drag = finishResize();
+      if (drag && focus) {
+        setMinimized(false);
+        setRequest({ sessionId: drag.sessionId, kind: drag.kind });
+      } else if (drag) input.host.rightResizable._onResizeMove(drag.width - drag.startWidth);
+      input.host.rightResizable._onResizeEnd();
+    },
+    _onResizeCancel: () => {
+      finishResize();
+      input.host.rightResizable._onResizeCancel?.();
+    },
+  };
+
   return {
-    focusedPreview, minimized, activeRightTab, composerTarget, surfaceRef, setOverlayHeight, toggle,
+    focusedPreview, minimized, activeRightTab, composerTarget, surfaceRef, setOverlayHeight, toggle, rightResizable,
     minimize: () => {
       setMinimized(true);
       requestAnimationFrame(() => composerTarget?.querySelector<HTMLElement>('.maka-progress-card-primary')?.focus());

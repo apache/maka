@@ -46,6 +46,13 @@
   min-height: 0;
 }
 
+.maka-detail-with-artifacts[data-preview-resizing] .maka-session-workbar[data-placement="right"] {
+  transition: none;
+}
+.maka-detail-with-artifacts[data-preview-collapse-ready] > .maka-workbar-resize-handle-right {
+  background: var(--maka-brand);
+}
+
 .maka-detail-with-artifacts > .mainColumn .maka-chat-layout > :last-child > :last-child {
   position: relative;
 }
@@ -144,6 +151,18 @@
   grid-template-areas: "right";
   grid-template-columns: minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr);
+}
+
+/* Keep the native window controls and task title in their own row when the
+   preview expands across the conversation's former titlebar space. */
+.appFrame:has(.maka-detail-with-artifacts[data-preview-focused]) .maka-window-titlebar {
+  --maka-titlebar-workbar-reserve: 0px;
+}
+.appFrame .maka-detail-with-artifacts[data-preview-focused] .maka-session-workbar[data-placement="right"] > .maka-session-workbar-toolbar {
+  margin-top: var(--maka-plate-titlebar-clearance);
+}
+.appFrame .maka-detail-with-artifacts[data-preview-focused] .maka-session-workbar-panel[data-overlay][data-placement="right"] {
+  padding-top: calc(2 * var(--maka-plate-titlebar-clearance));
 }
 
 .maka-detail-with-artifacts[data-preview-focused] > .mainColumn {

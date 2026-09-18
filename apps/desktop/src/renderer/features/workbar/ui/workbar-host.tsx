@@ -166,7 +166,7 @@ export function WorkbarHost({ model: props }: { model: WorkbarHostModel }) {
       {props.activeId && !props.rightCollapsed && (
         <ResizeHandle
           className="maka-workbar-resize-handle maka-workbar-resize-handle-right"
-          resizable={props.rightResizable}
+          resizable={previewFocus.rightResizable}
           direction="horizontal"
           isReversed
           isAlwaysVisible={false}

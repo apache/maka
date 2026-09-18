@@ -18,7 +18,7 @@
  */
 
 import type { ReactNode, Ref } from 'react';
-import { IconButton } from '@astryxdesign/core';
+import { Button, IconButton } from '@astryxdesign/core';
 import { MakaWordmark } from './maka-wordmark.js';
 
 type ProgressCardAction = {
@@ -43,10 +43,11 @@ export function ProgressCard(props: {
   return <aside ref={props.ref} className={['maka-progress-card', props.className].filter(Boolean).join(' ')} aria-label={props.label}>
     <div className="maka-progress-card-header">
       <span className="maka-progress-card-brand"><MakaWordmark width={42} /></span>
-      <span className="maka-progress-card-status" role="status"><i data-active={props.active} aria-hidden="true" />{props.status}</span>
-      <IconButton className="maka-progress-card-action maka-progress-card-primary" size="sm" variant="ghost"
-        label={props.primaryAction.label} tooltip={props.primaryAction.label} icon={props.primaryAction.icon}
-        aria-expanded={props.primaryAction.expanded} aria-controls={props.primaryAction.controls} onClick={props.primaryAction.onClick} />
+      <Button className="maka-progress-card-primary" size="sm" variant="ghost"
+        label={props.primaryAction.label} endContent={props.primaryAction.icon}
+        aria-expanded={props.primaryAction.expanded} aria-controls={props.primaryAction.controls} onClick={props.primaryAction.onClick}>
+        <span className="maka-progress-card-status" role="status"><i data-active={props.active} aria-hidden="true" />{props.status}</span>
+      </Button>
       {props.secondaryAction && <IconButton className="maka-progress-card-action" size="sm" variant="ghost"
         label={props.secondaryAction.label} icon={props.secondaryAction.icon} onClick={props.secondaryAction.onClick} />}
     </div>
