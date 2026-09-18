@@ -201,7 +201,12 @@ export const zhCN: Copy = {
     },
     source: {
       h2: '从源码构建',
-      prerequisites: ['Node.js 22.19 或更高版本', 'npm 11', 'Git', 'ripgrep，供 Grep 工具调用'],
+      prerequisites: [
+        'Node.js 22.19 或更高版本，不含 23.0 至 23.7',
+        'npm 11',
+        'Git',
+        'ripgrep，供 Grep 工具调用',
+      ],
       clone: '第 1 步：克隆仓库',
       build: '第 2 步：安装依赖并构建全部 workspace',
       after:

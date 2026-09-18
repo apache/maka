@@ -37,7 +37,7 @@ release commit 中的 [DISCLAIMER-WIP](https://github.com/apache/maka/blob/main/
 
 ## 环境要求
 
-- Node.js 22.19.0 或更高版本；
+- Node.js 22.19.0 或更高版本，不含 23.0 至 23.7；
 - 使用 TUI 时需要支持交互输入的终端；
 - 执行 Agent Turn 时需要已经配置的模型连接；首次设置目前支持使用 API Key 的供应商。
 

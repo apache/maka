@@ -25,7 +25,7 @@ Maka Desktop、TUI 和 CLI 可以通过 TLS、SSH 或明确启用的明文 WebSo
 
 ## 设置 Linux 或 macOS Host
 
-在具备 Node.js 22.19 或更新版本的机器上，发布版 CLI 可以用一个命令安装并验证持久 Runtime Host。Linux 使用 systemd user service；macOS 使用 LaunchAgent，并要求该用户存在活跃的 GUI 登录会话：
+在具备 Node.js 22.19 或更新版本（不含 23.0 至 23.7）的机器上，发布版 CLI 可以用一个命令安装并验证持久 Runtime Host。Linux 使用 systemd user service；macOS 使用 LaunchAgent，并要求该用户存在活跃的 GUI 登录会话：
 
 ```sh
 npx --yes --package maka-agent@latest maka runtime-host setup \

@@ -39,7 +39,7 @@ includes the canonical work-in-progress disclaimer below directly from the relea
 
 ## Requirements
 
-- Node.js 22.19.0 or newer;
+- Node.js 22.19.0 or newer, excluding 23.0 through 23.7;
 - a terminal with interactive input for the TUI;
 - a configured model connection for agent turns; first-run setup currently supports API-key
   providers.
