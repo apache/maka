@@ -17,24 +17,20 @@
  * under the License.
  */
 
-import { useState, type KeyboardEvent } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   Button as UiButton,
+  ChatComposerInput,
   HStack,
-  Text,
-  TextArea as UiTextarea,
   VStack,
+  type ChatComposerInputHandle,
 } from '@astryxdesign/core';
-import { TextQuote } from './icons.js';
-import { QUOTE_COMMENT_MAX_LENGTH, type QuoteRef } from '@maka/core/events';
+import { QUOTE_COMMENT_MAX_LENGTH } from '@maka/core/events';
 import { cn } from './utils.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
-import { stripQuoteHeadingMarkers } from './quote-ref-chip.js';
 
 export interface QuoteCommentPanelProps {
-  /** The excerpt being annotated. Read-only here: the panel edits the note. */
-  quote: QuoteRef;
   /** Note already staged. Empty when the panel gates a fresh quote. */
   comment?: string;
   title: string;
@@ -62,16 +58,14 @@ export interface QuoteCommentPanelProps {
 export function QuoteCommentPanel(props: QuoteCommentPanelProps) {
   const copy = getConversationCopy(useUiLocale()).messages;
   const [draft, setDraft] = useState(props.comment ?? '');
-  const excerpt = stripQuoteHeadingMarkers(props.quote.text);
+  const inputRef = useRef<ChatComposerInputHandle>(null);
+
+  useEffect(() => {
+    inputRef.current?.focus();
+  }, []);
 
   function submit(): void {
     props.onSubmit(draft.slice(0, QUOTE_COMMENT_MAX_LENGTH).trim());
-  }
-
-  function onKeyDown(event: KeyboardEvent<HTMLTextAreaElement>): void {
-    if (event.key !== 'Enter' || !(event.metaKey || event.ctrlKey)) return;
-    event.preventDefault();
-    submit();
   }
 
   return (
@@ -81,23 +75,16 @@ export function QuoteCommentPanel(props: QuoteCommentPanelProps) {
       role="group"
       aria-label={props.title}
     >
-      <HStack gap={1} className="maka-quote-comment-panel-source">
-        <TextQuote aria-hidden="true" />
-        <Text type="supporting" maxLines={2}>
-          {props.quote.label ? `${props.quote.label}: ${excerpt}` : excerpt}
-        </Text>
-      </HStack>
-      <UiTextarea
+      <ChatComposerInput
+        handleRef={inputRef}
         label={copy.quoteCommentLabel}
-        isLabelHidden
         value={draft}
         onChange={(value) => setDraft(value.slice(0, QUOTE_COMMENT_MAX_LENGTH))}
-        onKeyDown={onKeyDown}
         placeholder={copy.quoteCommentPlaceholder}
-        rows={3}
-        maxLength={QUOTE_COMMENT_MAX_LENGTH}
-        hasAutoFocus
-        width="100%"
+        maxRows={4}
+        hasHistory={false}
+        pasteAsToken={false}
+        onSubmit={submit}
       />
       <HStack gap={2} hAlign="end">
         <UiButton variant="ghost" size="sm" label={props.skipLabel} onClick={props.onSkip} />

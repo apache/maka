@@ -286,9 +286,9 @@ export const ComposerTokenFallback: Story = {
     // Degraded, not anchored: the visible panel lives in the composer's
     // popover, not the transcript's annotation layer over the excerpt.
     expect(panel.closest('.maka-quote-annotation-layer')).toBeNull();
-    expect(panel.querySelector('textarea')).toHaveValue(
-      '按 debug 技能核对限流规则，再判断是否能降速继续。',
-    );
+    expect(
+      panel.querySelector('[contenteditable="true"]')?.textContent,
+    ).toBe('按 debug 技能核对限流规则，再判断是否能降速继续。');
   },
 };
 
@@ -336,13 +336,12 @@ export const TranscriptQuoteGesture: Story = {
     });
     await userEvent.click(quoteAction);
     const panel = await visiblePanel();
-    const noteField = panel.querySelector('textarea');
+    const noteField = panel.querySelector('[contenteditable="true"]');
     expect(noteField).toBeTruthy();
     // The layer's mousedown preventDefault keeps userEvent's focus-driven
-    // typing from reaching the field; drive the controlled input directly.
-    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
-    setter?.call(noteField, '按 debug 技能核对限流规则，再判断是否能降速继续。');
-    noteField?.dispatchEvent(new Event('input', { bubbles: true }));
+    // typing from reaching the field; drive the editable's input directly.
+    noteField!.textContent = '按 debug 技能核对限流规则，再判断是否能降速继续。';
+    noteField!.dispatchEvent(new InputEvent('input', { bubbles: true }));
     const submit = [...panel.querySelectorAll('button')].find(
       (candidate) => candidate.textContent === '引用',
     );
@@ -356,9 +355,9 @@ export const TranscriptQuoteGesture: Story = {
     // The token's editor anchors back at the excerpt, with the note prefilled.
     await userEvent.click(token);
     const reopened = await visiblePanel();
-    expect(reopened.querySelector('textarea')).toHaveValue(
-      '按 debug 技能核对限流规则，再判断是否能降速继续。',
-    );
+    expect(
+      reopened.querySelector('[contenteditable="true"]')?.textContent,
+    ).toBe('按 debug 技能核对限流规则，再判断是否能降速继续。');
   },
 };
 

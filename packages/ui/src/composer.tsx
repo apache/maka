@@ -1955,7 +1955,6 @@ export const Composer = forwardRef<
                       hasEscapeDismiss={false}
                       content={
                         <QuoteCommentPanel
-                          quote={quote}
                           comment={quote.comment}
                           title={copy.quoteCommentTitle}
                           submitLabel={copy.quoteCommentSave}
