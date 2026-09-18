@@ -94,11 +94,14 @@ export function SessionReviewPanel(props: {
     readSessionReviewBaseBranch(props.sessionId),
   );
   const revisionRef = useRef(0);
+  const displayedBaseBranchRef = useRef<string | null | undefined>(undefined);
   // Requests read the ref, not the state: adopting a resolved branch must not
   // re-run the load effect, and a Session switch must not race a stale value.
   const baseBranchRef = useRef(baseBranch);
 
   useEffect(() => {
+    displayedBaseBranchRef.current = undefined;
+    setVisibleFileCount(REVIEW_FILE_PAGE_SIZE);
     setBranches(null);
     setGitResult(null);
     setSwitching(false);
@@ -127,6 +130,7 @@ export function SessionReviewPanel(props: {
       ) {
         // The pinned branch is gone. Drop it and re-read once: the retry has no
         // selection left to reject, so this cannot loop.
+        if (nextGit.branches) setBranches(nextGit.branches);
         baseBranchRef.current = null;
         setBaseBranch(null);
         persistSessionReviewBaseBranch(props.sessionId, null);
@@ -141,6 +145,11 @@ export function SessionReviewPanel(props: {
         });
       }
       if (nextGit.ok) {
+        // Preserve expansion on refresh, but start each comparison at page one.
+        if (displayedBaseBranchRef.current !== nextGit.snapshot.baseBranch) {
+          setVisibleFileCount(REVIEW_FILE_PAGE_SIZE);
+          displayedBaseBranchRef.current = nextGit.snapshot.baseBranch;
+        }
         const adopted = resolveAdoptedBaseBranch(
           baseBranchRef.current,
           nextGit.snapshot,
@@ -270,7 +279,7 @@ export function SessionReviewPanel(props: {
               </>
             ) : null}
             <SessionReviewBaseBranchPicker
-              baseBranch={baseBranch}
+              baseBranch={baseBranch ?? gitSnapshot?.baseBranch ?? null}
               baseBranchOptions={branches.baseBranchOptions}
               isLoading={switching}
               label={copy.baseBranchLabel}

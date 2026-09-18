@@ -69,12 +69,12 @@ export async function readGitReview(
       ? undefined
       : resolveRequestedBaseBranch(requestedBaseBranch, baseBranchOptions);
     if (source === 'branch' && requestedBaseBranch != null && !requestedOption) {
-      return { ok: false, reason: 'invalid_base_branch' };
+      return { ok: false, reason: 'invalid_base_branch', branches };
     }
     const baseBranch =
       source === 'branch' && hasHead
         ? requestedOption?.value ??
-          (await resolveBaseBranch(repositoryRoot, currentBranch, baseBranchOptions, runGit))
+          (await resolveBaseBranch(repositoryRoot, baseBranchOptions, runGit))
         : null;
     const branchComparison =
       source === 'branch' && baseBranch
@@ -413,7 +413,6 @@ const BASE_BRANCH_PRIORITY = [
 // shared priority order covers repositories whose origin/HEAD is unset.
 async function resolveBaseBranch(
   repositoryRoot: string,
-  currentBranch: string | null,
   options: readonly GitReviewBaseBranchOption[],
   runGit: GitReviewCommandRunner,
 ): Promise<string | null> {
@@ -428,7 +427,6 @@ async function resolveBaseBranch(
     (candidate): candidate is string => Boolean(candidate),
   );
   for (const candidate of candidates) {
-    if (candidate === `refs/heads/${currentBranch}`) continue;
     if (options.some((option) => option.value === candidate) &&
         await gitRefExists(repositoryRoot, candidate, runGit)) return candidate;
   }

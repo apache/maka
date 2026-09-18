@@ -79,7 +79,10 @@ describe('Git Review snapshot authority', () => {
     }
     assert.deepEqual(
       await readGitReview(root, 'branch', undefined, 'missing-branch'),
-      { ok: false, reason: 'invalid_base_branch' },
+      { ok: false, reason: 'invalid_base_branch', branches: {
+        currentBranch: branch.snapshot.currentBranch,
+        baseBranchOptions: branch.snapshot.baseBranchOptions,
+      } },
     );
 
     const unstaged = await readGitReview(root, 'unstaged');
@@ -139,10 +142,18 @@ describe('Git Review snapshot authority', () => {
         option.value.startsWith('refs/heads/') || option.value.startsWith('refs/remotes/')));
     }
     assert.deepEqual(await readGitReview(root, 'branch', undefined, 'refs/tags/release'),
-      { ok: false, reason: 'invalid_base_branch' });
+      { ok: false, reason: 'invalid_base_branch', branches: { currentBranch: 'feature', baseBranchOptions: [
+        { label: 'main', value: 'refs/heads/main' },
+        { label: 'feature', value: 'refs/heads/feature' },
+        { label: 'release', value: 'refs/heads/release' },
+      ] } });
     await git(root, 'tag', 'tag-only');
     assert.deepEqual(await readGitReview(root, 'branch', undefined, 'tag-only'),
-      { ok: false, reason: 'invalid_base_branch' });
+      { ok: false, reason: 'invalid_base_branch', branches: { currentBranch: 'feature', baseBranchOptions: [
+        { label: 'main', value: 'refs/heads/main' },
+        { label: 'feature', value: 'refs/heads/feature' },
+        { label: 'release', value: 'refs/heads/release' },
+      ] } });
   });
 
   it('keeps local and remote refs with the same label distinct and rejects ambiguous legacy names', async () => {
@@ -161,7 +172,10 @@ describe('Git Review snapshot authority', () => {
     assert.deepEqual(remote.snapshot.files.map((file) => file.path), ['local.txt']);
     assert.equal(local.snapshot.baseBranchOptions.filter((option) => option.label === 'origin/release').length, 2);
     assert.deepEqual(await readGitReview(root, 'branch', undefined, 'origin/release'),
-      { ok: false, reason: 'invalid_base_branch' });
+      { ok: false, reason: 'invalid_base_branch', branches: {
+        currentBranch: local.snapshot.currentBranch,
+        baseBranchOptions: local.snapshot.baseBranchOptions,
+      } });
   });
 
   it('resolves the default branch without following a same-named tag', async () => {
@@ -256,7 +270,7 @@ describe('Git Review snapshot authority', () => {
     const result = await readGitReview(root, 'branch');
     assert.equal(result.ok, true);
     if (!result.ok) return;
-    assert.equal(result.snapshot.baseBranch, null);
+    assert.equal(result.snapshot.baseBranch, 'refs/heads/main');
     assert.deepEqual(
       result.snapshot.files.map((file) => file.path).sort(),
       ['base.txt', 'staged.txt'],

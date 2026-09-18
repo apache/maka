@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { useMemo } from 'react';
 import type { GitReviewBaseBranchOption } from '@maka/core/git-review';
 import { Selector } from '@astryxdesign/core/Selector';
 
@@ -37,6 +38,7 @@ export function SessionReviewBaseBranchPicker(props: {
   label: string;
   onSelect: (branch: string) => void;
 }) {
+  const options = useMemo(() => [...props.baseBranchOptions], [props.baseBranchOptions]);
   return (
     // The wrapper is what lets review.css cap the panel: Selector portals its
     // listbox next to the field, not inside the trigger it styles.
@@ -48,7 +50,7 @@ export function SessionReviewBaseBranchPicker(props: {
         size="sm"
         hasSearch
         isLoading={props.isLoading}
-        options={[...props.baseBranchOptions]}
+        options={options}
         value={props.baseBranch ?? undefined}
         onChange={props.onSelect}
         placeholder={props.label}

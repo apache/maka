@@ -88,7 +88,7 @@ export interface AstryxCopy {
   lightbox: { mediaViewer: string; previous: string; next: string };
   menus: { dropdown: string; more: string };
   multiSelector: { clearAll: string; selectAll: string };
-  /** Selector and MultiSelector render the same two search affordances. */
+  /** Selector and MultiSelector share search labels; result feedback is Selector-only. */
   search: { emptySearch: string; options: string; placeholder: string; resultCount: string };
   sideNav: {
     label: string;
@@ -165,7 +165,7 @@ export const ASTRYX_COPY_ZH: AstryxCopy = {
     options: '搜索选项',
     placeholder: '搜索…',
     emptySearch: '没有匹配的选项',
-    resultCount: '{count} 个选项',
+    resultCount: '{count, number} 个选项',
   },
   sideNav: {
     label: '侧边导航',
@@ -242,7 +242,7 @@ export const ASTRYX_COPY_ZH_TW: AstryxCopy = {
     options: '搜尋選項',
     placeholder: '搜尋…',
     emptySearch: '沒有符合的選項',
-    resultCount: '{count} 個選項',
+    resultCount: '{count, number} 個選項',
   },
   sideNav: {
     label: '側邊導航',

@@ -103,11 +103,11 @@ describe('session review base branch', () => {
     );
     assert.equal(
       resolveAdoptedBaseBranch(null, { baseBranch: 'refs/heads/main', baseBranchOptions: options }),
-      'refs/heads/main',
+      null,
     );
     // A resolved branch the backend would reject on the next read stays unpinned.
     assert.equal(
-      resolveAdoptedBaseBranch(null, {
+      resolveAdoptedBaseBranch('origin/gone', {
         baseBranch: 'origin/gone',
         baseBranchOptions: options,
       }),

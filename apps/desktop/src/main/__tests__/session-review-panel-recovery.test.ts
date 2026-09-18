@@ -29,6 +29,7 @@ import {
   WorkbarServicesProvider,
   SessionReviewPanel,
   persistSessionReviewBaseBranch,
+  readSessionReviewBaseBranch,
 } from '../../renderer/features/workbar/testing.js';
 
 test('a saved failing comparison keeps the picker available and can recover', async () => {
@@ -82,6 +83,63 @@ test('a saved failing comparison keeps the picker available and can recover', as
     assert.deepEqual(requests, ['refs/heads/gh-pages', 'refs/heads/main']);
     assert.doesNotMatch(container.textContent ?? '', /Could not read Git workspace changes/);
     assert.ok(container.querySelector<HTMLButtonElement>('.maka-session-review-base-branch button'));
+  } finally {
+    await act(async () => { root.unmount(); });
+    restore();
+  }
+});
+
+test('a disappeared saved branch clears the pin and retries with the dynamic default', async () => {
+  const { document, restore } = installDom();
+  const container = document.querySelector('#root');
+  assert.ok(container);
+  const root = createRoot(container);
+  const sessionId = 'disappeared-branch-session';
+  const requests: Array<string | undefined> = [];
+  const review: WorkbarServices['review'] = {
+    read: async ({ baseBranch }) => {
+      requests.push(baseBranch);
+      if (requests.length === 1) {
+        return { ok: false, reason: 'invalid_base_branch', branches: {
+          currentBranch: 'feature',
+          baseBranchOptions: [{ label: 'main', value: 'refs/heads/main' }],
+        } };
+      }
+      assert.equal(readSessionReviewBaseBranch(sessionId), null, 'clear storage before retrying');
+      return {
+        ok: true,
+        snapshot: {
+          currentBranch: 'feature',
+          baseBranchOptions: [{ label: 'main', value: 'refs/heads/main' }],
+          source: 'branch', repositoryRoot: '/repo',
+          baseBranch: 'refs/heads/main', revision: 'recovered',
+          files: [], additions: 0, deletions: 0, truncated: false,
+        },
+      };
+    },
+    subscribeSessionEvents: () => () => undefined,
+  };
+  const services = createFakeWorkbarServices({ review });
+  try {
+    persistSessionReviewBaseBranch(sessionId, 'refs/heads/gh-pages');
+    await act(async () => {
+      root.render(createElement(LocaleProvider, {
+        locale: 'en',
+        children: createElement(WorkbarServicesProvider, { services },
+          createElement(SessionReviewPanel, { sessionId, active: true })),
+      }));
+    });
+    assert.deepEqual(requests, ['refs/heads/gh-pages', undefined]);
+    assert.equal(readSessionReviewBaseBranch(sessionId), null, 'the resolved default must remain unpinned');
+    const trigger = container.querySelector<HTMLButtonElement>('.maka-session-review-base-branch button');
+    assert.ok(trigger, 'automatic recovery restores the comparison picker');
+    assert.match(trigger.textContent ?? '', /main/);
+    await act(async () => { trigger.click(); });
+    const selected = document.querySelector('[role="option"][aria-selected="true"]');
+    assert.equal(selected?.textContent, 'main', 'the resolved default is selected in the picker');
+    assert.equal(container.querySelector('[role="alert"]'), null, 'recovery leaves no error banner');
+    assert.doesNotMatch(container.textContent ?? '', /The selected comparison branch is unavailable|Could not read Git workspace changes/);
+    assert.equal(container.querySelector('[aria-busy="true"]'), null);
   } finally {
     await act(async () => { root.unmount(); });
     restore();
