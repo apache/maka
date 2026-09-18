@@ -61,6 +61,7 @@ import { getPermissionCenterCopy, type PermissionCenterCopy } from '../locales/p
 import { botStatusReasonCopy } from '../locales/settings-bot-copy';
 import { settingsActionErrorMessage } from './settings-error-copy';
 import {
+  runtimeHostSettingsKey,
   useRuntimeHostSettingsErrorReporter,
   useRuntimeHostSettingsTarget,
 } from './runtime-host-settings-target.js';
@@ -102,7 +103,6 @@ const OS_PERMISSION_ICONS: Record<OsPermissionId, ComponentType<LucideProps>> = 
 type PermissionStatusFilter = 'granted' | 'pending' | 'denied' | 'other';
 
 export function PermissionCenterPage(props: {
-  snapshotKey?: string;
   initialSnapshot?: PermissionCenterSnapshot;
   onSnapshot(key: string, snapshot: PermissionCenterSnapshot): void;
 }) {
@@ -134,12 +134,10 @@ export function PermissionCenterPage(props: {
     ])
       .then(([perm, caps]) => {
         if (cancelled) return;
-        if (props.snapshotKey) {
-          props.onSnapshot(props.snapshotKey, {
-            permissions: perm,
-            capabilities: caps,
-          });
-        }
+        props.onSnapshot(runtimeHostSettingsKey(host), {
+          permissions: perm,
+          capabilities: caps,
+        });
         setPermissions(perm);
         setCapabilities(caps);
         setLoading(false);
@@ -152,7 +150,7 @@ export function PermissionCenterPage(props: {
     return () => {
       cancelled = true;
     };
-  }, [host, locale, props.onSnapshot, props.snapshotKey, refreshTick]);
+  }, [host, locale, props.onSnapshot, refreshTick]);
 
   useEffect(() => {
     const refreshAfterSystemSettings = () => {

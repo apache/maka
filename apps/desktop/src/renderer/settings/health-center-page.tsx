@@ -35,7 +35,7 @@ import { settingsActionErrorMessage } from './settings-error-copy';
 import { SettingsPage, SettingsRow, SettingsSection } from './settings-section';
 import { SettingsSkeletonStack } from './settings-skeleton';
 import { dotForStatus } from '@maka/ui';
-import { useRuntimeHostSettingsTarget } from './runtime-host-settings-target.js';
+import { runtimeHostSettingsKey, useRuntimeHostSettingsTarget } from './runtime-host-settings-target.js';
 import {
   SettingsStatusSummaryFilter,
   type SettingsStatusSummaryOption,
@@ -57,7 +57,6 @@ import {
  * will be wired in PR-HC-2 once typed actions are exposed.
 */
 export function HealthCenterPage(props: {
-  snapshotKey?: string;
   initialSnapshot?: HealthSnapshot;
   onSnapshot(key: string, snapshot: HealthSnapshot): void;
 }) {
@@ -80,7 +79,7 @@ export function HealthCenterPage(props: {
       .getSnapshot(host)
       .then((next) => {
         if (cancelled) return;
-        if (props.snapshotKey) props.onSnapshot(props.snapshotKey, next);
+        props.onSnapshot(runtimeHostSettingsKey(host), next);
         setSnapshot(next);
         setLoading(false);
       })
@@ -92,7 +91,7 @@ export function HealthCenterPage(props: {
     return () => {
       cancelled = true;
     };
-  }, [host, locale, props.onSnapshot, props.snapshotKey, refreshTick]);
+  }, [host, locale, props.onSnapshot, refreshTick]);
 
   useEffect(() => {
     if (!snapshot) return;
@@ -113,6 +112,7 @@ export function HealthCenterPage(props: {
       <SettingsPage>
         <Banner
           status="error"
+          role="alert"
           title={copy.readFailed}
           description={error ?? copy.noData}
           endContent={<Button variant="primary" onClick={() => setRefreshTick((tick) => tick + 1)} label={copy.readAgain} />} />
@@ -140,6 +140,7 @@ export function HealthCenterPage(props: {
       {error ? (
         <Banner
           status="error"
+          role="alert"
           title={copy.readFailed}
           description={error}
           endContent={<Button variant="primary" onClick={() => setRefreshTick((tick) => tick + 1)} label={copy.readAgain} />}

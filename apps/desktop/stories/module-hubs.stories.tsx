@@ -18,7 +18,7 @@
  */
 
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import { expect } from 'storybook/test';
+import { expect, waitFor } from 'storybook/test';
 import type { DailyReviewArchive, DailyReviewSummary } from '@maka/core/daily-review';
 import type { ScheduledTask, ScheduledTaskRun } from '@maka/core/scheduled-task';
 import type { McpConfigFile, McpServerStatus } from '@maka/core/mcp';
@@ -46,6 +46,7 @@ import {
 import {
   createFakeModuleHubHostModel,
   createFakeModuleHubServices,
+  type ModuleHubServices,
 } from '../src/renderer/features/module-hub/testing';
 import { AppShellDetailPanel } from '../src/renderer/app-shell-detail-panel';
 import { McpPage } from '../src/renderer/mcp-page';
@@ -828,7 +829,13 @@ function ModuleHubHostSurface(props: {
   );
 }
 
-function ProductionModuleHubHostSurface() {
+function ProductionModuleHubHostSurface(props: {
+  initialSelection?: ComponentProps<typeof ModuleHubHostSurface>['selection'];
+  dailyReviewDay?: ModuleHubServices['dailyReview']['day'];
+}) {
+  const [selection, setSelection] = useState<NavSelection>(
+    props.initialSelection ?? { section: 'extensions', module: 'skills' },
+  );
   const [commandPort] = useState(createModuleHubCommandPort);
   const [services] = useState(() => {
     const defaults = createFakeModuleHubServices();
@@ -838,14 +845,21 @@ function ProductionModuleHubHostSurface() {
         list: async () => INSTALLED_SKILLS,
         listBundledCatalog: async () => BUNDLED_SKILLS,
       },
+      scheduledTasks: { ...defaults.scheduledTasks, list: async () => CONFIGURED_TASKS },
+      dailyReview: {
+        ...defaults.dailyReview,
+        day: props.dailyReviewDay ?? defaults.dailyReview.day,
+      },
     });
   });
   return (
-    <ModuleSurface agentsView="skills">
+    <ModuleSurface agentsView={selection.section === 'automations'
+      ? selection.module === 'daily-review' ? 'daily-review' : 'cron'
+      : 'skills'}>
       <ModuleHubServicesProvider services={services}>
         <ModuleHubProvider
-          selection={{ section: 'extensions', module: 'skills' }}
-          selectModule={noop}
+          selection={selection}
+          selectModule={setSelection}
           useSkillInChat={noop}
           openSession={noop}
           appendComposerText={noop}
@@ -919,6 +933,21 @@ export const HostAutomationsScheduledTasks: Story = {
   ),
 };
 
+let pendingDailyReviewReads: Array<{
+  resolve(result: { ok: true; data: DailyReviewSummary }): void;
+  reject(error: Error): void;
+}> = [];
+const delayedDailyReviewDay: ModuleHubServices['dailyReview']['day'] = () =>
+  new Promise((resolve, reject) => pendingDailyReviewReads.push({ resolve, reject }));
+
+async function finishDailyReviewRead(fail = false) {
+  await waitFor(() => expect(pendingDailyReviewReads.length).toBeGreaterThan(0));
+  for (const read of pendingDailyReviewReads.splice(0)) {
+    if (fail) read.reject(new Error('Snapshot request timeout'));
+    else read.resolve({ ok: true, data: DAILY_REVIEW_SUMMARY });
+  }
+}
+
 /**
  * Starts on Scheduled Tasks to observe the first switch; `play` leaves Daily
  * Review visible for the visual catalog. With autoplay disabled, the initial
@@ -926,9 +955,11 @@ export const HostAutomationsScheduledTasks: Story = {
  */
 // Real path: sidebar → 定时任务 → 每日回顾.
 export const HostAutomationsDailyReview: Story = {
+  beforeEach: () => { pendingDailyReviewReads = []; },
   render: () => (
-    <ModuleHubHostSurface
-      selection={{ section: 'automations', module: 'scheduled-tasks' }}
+    <ProductionModuleHubHostSurface
+      initialSelection={{ section: 'automations', module: 'scheduled-tasks' }}
+      dailyReviewDay={delayedDailyReviewDay}
     />
   ),
   play: async ({ canvasElement }) => {
@@ -937,11 +968,14 @@ export const HostAutomationsDailyReview: Story = {
       (candidate) => candidate.textContent?.includes('每日回顾') === true,
     );
     let lazyFallbacks = 0;
+    let skeletons = 0;
     let dailyReviewEntryAnimations = 0;
     const mutationObserver = new MutationObserver((records) => {
       for (const record of records) {
         for (const node of record.addedNodes) {
           if (!(node instanceof Element)) continue;
+          if (node.matches('[data-daily-review-loading]')) skeletons += 1;
+          skeletons += node.querySelectorAll('[data-daily-review-loading]').length;
           const fallbacks = [
             ...(node.matches('.maka-lazy-fallback') ? [node] : []),
             ...node.querySelectorAll('.maka-lazy-fallback'),
@@ -971,14 +1005,49 @@ export const HostAutomationsDailyReview: Story = {
     canvasElement.addEventListener('animationstart', onAnimationStart, true);
     try {
       dailyReview.click();
+      const loading = await waitForStorySelector<HTMLElement>(canvasElement, '[data-daily-review-loading]');
+      // A cold read has one stable loading state until the real service seam
+      // resolves. It must survive an actual paint, not a microtask-only mock.
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      expect(loading).toBeVisible();
+      expect(canvasElement.querySelector('.maka-daily-review-content')).toBeNull();
+      expect(skeletons).toBe(1);
+      await finishDailyReviewRead();
       const content = await waitForStorySelector<HTMLElement>(
         canvasElement,
         '.maka-daily-review-content',
       );
       await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      expect(canvasElement.querySelector('[data-daily-review-loading]')).toBeNull();
+      expect(getComputedStyle(content).animationName).toBe('none');
+
+      const scheduledTasks = await waitForStoryButton(canvasElement,
+        (candidate) => candidate.textContent?.includes('定时任务') === true);
+      scheduledTasks.click();
+      await waitForStorySelector(canvasElement, '[data-module="scheduled-tasks"]');
+      const revisit = await waitForStoryButton(canvasElement,
+        (candidate) => candidate.textContent?.includes('每日回顾') === true);
+      revisit.click();
+      await waitForStorySelector(canvasElement, '[data-module="daily-review"]');
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      expect(skeletons).toBe(1);
+      const cached = await waitForStorySelector<HTMLElement>(canvasElement, '.maka-daily-review-content');
+      expect(cached).toBeVisible();
+      expect(cached).toHaveAttribute('data-refreshing', 'true');
+      expect(canvasElement.querySelector('[data-daily-review-loading]')).toBeNull();
+      expect(skeletons).toBe(1);
+      await finishDailyReviewRead(true);
+      await waitFor(() => expect(cached).toHaveAttribute('aria-busy', 'false'));
+      expect(cached).toBeVisible();
+      const retry = await waitForStoryButton(canvasElement,
+        (candidate) => candidate.textContent?.trim() === '重试');
+      retry.click();
+      await finishDailyReviewRead();
+      await waitFor(() => expect(cached).toHaveAttribute('aria-busy', 'false'));
+      expect(skeletons).toBe(1);
       expect(lazyFallbacks).toBe(0);
       expect(dailyReviewEntryAnimations).toBe(0);
-      expect(getComputedStyle(content).animationName).toBe('none');
+      expect(getComputedStyle(cached).animationName).toBe('none');
     } finally {
       mutationObserver.disconnect();
       canvasElement.removeEventListener('animationstart', onAnimationStart, true);

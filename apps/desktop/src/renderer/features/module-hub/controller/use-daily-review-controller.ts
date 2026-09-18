@@ -17,7 +17,8 @@
  * under the License.
  */
 
-import { useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
+import { localDayBoundsAt } from '@maka/core/daily-review';
 import type {
   DailyReviewArchive,
   DailyReviewArchiveSummary,
@@ -67,7 +68,8 @@ export interface ActiveComposerClaim {
 
 /** Structural equivalent of the UI bridge; kept here so @maka/ui stays leaf-only. */
 export interface DailyReviewBridge {
-  fetchDay(offsetDays: number, daySpan?: number): Promise<DailyReviewSummary>;
+  readCachedDay?(offsetDays: number, daySpan?: number): DailyReviewSummary | undefined;
+  fetchDay(offsetDays: number, daySpan?: number, signal?: AbortSignal): Promise<DailyReviewSummary>;
   runOnce?(input: {
     range: DailyReviewRange;
     offsetDays?: number;
@@ -147,11 +149,30 @@ async function readCurrentDefaultHost<T>(
 export function createDailyReviewBridge(
   services: ModuleHubServices,
   locale: UiLocale,
-): DailyReviewBridge {
+): DailyReviewBridge & { invalidateCache(): void } {
   const copy = getShellRemainingCopy(locale).dailyReview;
+  // Every leaf mount starts on today. Keep only that snapshot, rather than
+  // retaining an unbounded history of date/range selections in the renderer.
+  let cachedToday: { dayStart: number; summary: DailyReviewSummary } | undefined;
+  let generation = 0;
+  let latestTodayRead = 0;
   return {
-    async fetchDay(offsetDays: number, daySpan?: number) {
-      return readCurrentDefaultHost(services, async (host) => {
+    invalidateCache() {
+      cachedToday = undefined;
+      generation += 1;
+    },
+    readCachedDay(offsetDays, daySpan = 1) {
+      if (offsetDays !== 0 || daySpan !== 1) return undefined;
+      if (cachedToday?.dayStart !== localDayBoundsAt(Date.now(), 0).fromMs) return undefined;
+      return cachedToday.summary;
+    },
+    async fetchDay(offsetDays: number, daySpan = 1, signal?: AbortSignal) {
+      const cachesToday = offsetDays === 0 && daySpan === 1;
+      const read = cachesToday ? ++latestTodayRead : 0;
+      const readGeneration = generation;
+      const dayStart = localDayBoundsAt(Date.now(), 0).fromMs;
+      const summary = await readCurrentDefaultHost(services, async (host) => {
+        signal?.throwIfAborted();
         const result = await services.dailyReview.day(
           offsetDays,
           daySpan,
@@ -160,6 +181,12 @@ export function createDailyReviewBridge(
         if (!result.ok) throw new Error(result.error.message);
         return result.data;
       });
+      signal?.throwIfAborted();
+      if (
+        cachesToday && read === latestTodayRead && readGeneration === generation
+        && dayStart === localDayBoundsAt(Date.now(), 0).fromMs
+      ) cachedToday = { dayStart, summary };
+      return summary;
     },
     runOnce(input) {
       return services.dailyReview.runOnce(input);
@@ -186,6 +213,13 @@ export function useDailyReviewController(
     () => createDailyReviewBridge(input.services, input.uiLocale),
     [input.services, input.uiLocale],
   );
+  useEffect(() => {
+    const unsubscribe = input.services.runtimeHosts.subscribeChanges(() => bridge.invalidateCache());
+    return () => {
+      unsubscribe();
+      bridge.invalidateCache();
+    };
+  }, [bridge, input.services.runtimeHosts]);
 
   return useMemo(() => {
     const copy = getShellCopy(input.uiLocale).commandActions;

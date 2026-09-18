@@ -28,6 +28,10 @@ import {
 import { useToast } from "@maka/ui";
 export interface SettingsHostTarget { readonly profileId: string; readonly hostId: string; }
 
+export function runtimeHostSettingsKey(host: SettingsHostTarget): string {
+  return `${host.profileId}:${host.hostId}`;
+}
+
 interface RuntimeHostSettingsTargetValue {
   readonly host: SettingsHostTarget;
   /**

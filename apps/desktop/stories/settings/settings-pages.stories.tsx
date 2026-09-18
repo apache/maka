@@ -3432,6 +3432,11 @@ export const PermissionCenterDiagnosticsExpanded: Story = {
     }
   },
 };
+/**
+ * Starts on About so play can observe navigation into the cached Permissions
+ * and Health pages. Play leaves Health visible for the visual catalog;
+ * disabling autoplay intentionally shows the initial About page.
+ */
 // Real path: 设置 → 健康 (also reachable from the topbar health action), with probes
 // reporting.
 export const HealthCenter: Story = {
@@ -3496,6 +3501,7 @@ export const HealthCenterRefreshFailed: Story = {
       expect(canvas.getByText('Z.AI Live')).toBeVisible();
       healthRefreshRead.reject();
       await canvas.findByText(copy.readFailed);
+      expect(canvas.getByRole('alert')).toHaveTextContent(copy.readFailed);
       expect(canvas.getByText('Z.AI Live')).toBeVisible();
       expect(refresh).not.toHaveAttribute('aria-busy', 'true');
 
@@ -3516,6 +3522,7 @@ export const HealthCenterRefreshFailed: Story = {
       await waitFor(() => expect(refresh).toHaveAttribute('aria-busy', 'true'));
       healthRefreshRead.reject();
       await canvas.findByText(copy.readFailed);
+      expect(canvas.getByRole('alert')).toHaveTextContent(copy.readFailed);
       expect(canvas.getByText('Z.AI Updated')).toBeVisible();
       expect(refresh).not.toHaveAttribute('aria-busy', 'true');
     } finally {

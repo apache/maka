@@ -24,10 +24,10 @@ import type {
   PermissionSnapshot,
 } from '@maka/core/capabilities';
 import type { HealthSnapshot } from '@maka/core/health';
-import type {
-  DesktopRuntimeHostProfileSnapshot,
-  DesktopRuntimeHostRef,
-} from '../../preload/bridge-contract.js';
+import type { DesktopRuntimeHostProfileSnapshot } from '../../preload/bridge-contract.js';
+import { runtimeHostSettingsKey } from '../application/contracts/settings-presentation/runtime-host-settings-target.js';
+
+export { runtimeHostSettingsKey };
 
 export interface RuntimeHostConnectionsSnapshot {
   readonly connections: ProjectedLlmConnection[];
@@ -63,10 +63,6 @@ export interface SettingsSnapshotCache {
     key: string,
     snapshot: PermissionCenterSnapshot,
   ): void;
-}
-
-export function runtimeHostSettingsKey(host: DesktopRuntimeHostRef): string {
-  return `${host.profileId}:${host.hostId}`;
 }
 
 /**

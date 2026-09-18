@@ -1061,7 +1061,6 @@ function SettingsSurfaceContent(
                             permissionCenterSnapshot={selectedRuntimeHostKey
                               ? snapshotCache.readRuntimeHostPermissionCenter(selectedRuntimeHostKey)
                               : undefined}
-                            snapshotKey={selectedRuntimeHostKey}
                             onHealthSnapshot={snapshotCache.commitRuntimeHostHealthRead}
                             onPermissionCenterSnapshot={snapshotCache.commitRuntimeHostPermissionCenterRead}
                             openProviderCatalog={providerCatalogRequested}
@@ -1125,7 +1124,6 @@ function SettingsPageBody(props: {
   archivedTasks: ArchivedTasksBridge;
   onTaskImported(session: DesktopSessionSummary): void;
   onRemoteHostAdded(profileId: string): void;
-  snapshotKey?: string;
   healthSnapshot?: HealthSnapshot;
   permissionCenterSnapshot?: PermissionCenterSnapshot;
   onHealthSnapshot: Parameters<typeof HealthCenterPage>[0]['onSnapshot'];
@@ -1260,7 +1258,6 @@ function SettingsPageBody(props: {
     case 'permissions':
       return (
         <PermissionCenterPage
-          snapshotKey={props.snapshotKey}
           initialSnapshot={props.permissionCenterSnapshot}
           onSnapshot={props.onPermissionCenterSnapshot}
         />
@@ -1268,7 +1265,6 @@ function SettingsPageBody(props: {
     case 'health':
       return (
         <HealthCenterPage
-          snapshotKey={props.snapshotKey}
           initialSnapshot={props.healthSnapshot}
           onSnapshot={props.onHealthSnapshot}
         />

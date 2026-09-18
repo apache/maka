@@ -81,6 +81,9 @@ reach it only through `testing.ts`.
 - The Daily Review page bridge is stable for one services/locale pair. Page
   feedback is live-surface fenced, while Command Palette commands remain usable
   off-page.
+- That bridge retains the last successful today snapshot across leaf mounts;
+  every mount still revalidates. Host lifecycle events and local-day rollover
+  invalidate it. Cancelled, superseded, and pre-invalidation reads cannot commit.
 - Daily Review paste captures the active Composer before its first await and
   validates the Session, navigation owner, and Composer handle before append and
   feedback.
