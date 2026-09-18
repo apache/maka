@@ -748,6 +748,24 @@ export function ChatView(props: {
   );
   useImperativeHandle(props.handleRef, () => ({ openQuoteAnnotation }), [openQuoteAnnotation]);
 
+  // The input owns the DOM selection while a note is written, so the
+  // excerpt's mark is painted instead: a named highlight over the same
+  // range, which focus cannot collapse.
+  const annotationTarget = editingQuote ?? annotatingSelection;
+  useEffect(() => {
+    const highlights = typeof CSS !== 'undefined' ? CSS.highlights : undefined;
+    if (!annotationTarget?.turnId || !highlights) return undefined;
+    const turn = scrollRef.current?.querySelector(
+      `[data-turn-id="${CSS.escape(annotationTarget.turnId)}"]`,
+    );
+    const range = turn ? findQuoteTextRange(turn, annotationTarget.text) : null;
+    if (!range) return undefined;
+    highlights.set('maka-quote-annotate', new Highlight(range));
+    return () => {
+      highlights.delete('maka-quote-annotate');
+    };
+  }, [annotationTarget, scrollRef]);
+
   // The panel hangs from the live quote once the restored selection settles
   // into one; until then the anchor measured at open time holds it. A
   // selection resolving to a different excerpt never moves the panel.
@@ -1067,10 +1085,6 @@ export function ChatView(props: {
                 >
                   <QuoteCommentPanel
                     key={editingQuote.index}
-                    quote={{
-                      text: editingQuote.text,
-                      sourceTurnId: editingQuote.turnId,
-                    }}
                     comment={editingQuote.comment}
                     title={conversationCopy.composer.quoteCommentTitle}
                     submitLabel={conversationCopy.composer.quoteCommentSave}
@@ -1089,10 +1103,6 @@ export function ChatView(props: {
                   onMouseDown={(event) => event.preventDefault()}
                 >
                   <QuoteCommentPanel
-                    quote={{
-                      text: annotatingSelection.text,
-                      sourceTurnId: annotatingSelection.turnId,
-                    }}
                     title={copy.quoteCommentTitle}
                     submitLabel={copy.quoteSelection}
                     skipLabel={copy.quoteCommentSkip}
