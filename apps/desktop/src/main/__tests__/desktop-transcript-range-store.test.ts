@@ -45,7 +45,10 @@ import {
   readSettledMessagesFrom,
 } from '../../renderer/platform/desktop/session-message-settlement.js';
 import { DesktopTranscriptReplica, type DesktopTranscriptReplicaChange } from '../desktop-transcript-replica.js';
-import { runtimeHostSessionFixture } from './runtime-host-session-test-fixture.js';
+import {
+  continuitySnapshot,
+  runtimeHostSessionFixture,
+} from './runtime-host-session-test-fixture.js';
 
 test('merges a settled tail without dropping earlier messages', () => {
   const earlier = assistantMessage('earlier', 'assistant-earlier');
@@ -734,8 +737,6 @@ test('bounds the default active transcript range by Turn identities', async () =
   const bootstrapPage = transcriptPage('older', null, messages.length - 1);
   const handle = runtimeHostSessionFixture({
     snapshot: continuitySnapshot(),
-    transcript: Promise.resolve([]),
-    events: { async *[Symbol.asyncIterator]() {} },
     transcriptBootstrap: { durable: bootstrapPage },
     decodeTranscriptPage: async () => ({ messages, nextCursor: null }),
     async close() {},
@@ -761,8 +762,6 @@ test('bounds the default active transcript range by presentation bytes', async (
   const bootstrapPage = transcriptPage('older', null, messages.length - 1);
   const handle = runtimeHostSessionFixture({
     snapshot: continuitySnapshot(),
-    transcript: Promise.resolve([]),
-    events: { async *[Symbol.asyncIterator]() {} },
     transcriptBootstrap: { durable: bootstrapPage },
     decodeTranscriptPage: async () => ({ messages, nextCursor: null }),
     async close() {},
@@ -792,8 +791,6 @@ test('keeps an oversized latest Turn visible after bootstrap eviction', async ()
   const bootstrapPage = transcriptPage('older', null, latest.identity);
   const handle = runtimeHostSessionFixture({
     snapshot: continuitySnapshot(),
-    transcript: Promise.resolve([]),
-    events: { async *[Symbol.asyncIterator]() {} },
     transcriptBootstrap: { durable: bootstrapPage },
     decodeTranscriptPage: async () => ({ messages: [older, latest], nextCursor: null }),
     async close() {},
@@ -825,8 +822,6 @@ test('keeps an oversized latest Turn visible before a trailing session note', as
   const bootstrapPage = transcriptPage('older', null, trailingNote.identity);
   const handle = runtimeHostSessionFixture({
     snapshot: continuitySnapshot(),
-    transcript: Promise.resolve([]),
-    events: { async *[Symbol.asyncIterator]() {} },
     transcriptBootstrap: { durable: bootstrapPage },
     decodeTranscriptPage: async () => ({ messages: [latest, trailingNote], nextCursor: null }),
     async close() {},
@@ -849,8 +844,6 @@ test('advances a projected transcript across hidden durable records', async () =
   let watermark = 1;
   const handle = runtimeHostSessionFixture({
     snapshot: continuitySnapshot(),
-    transcript: Promise.resolve([]),
-    events: { async *[Symbol.asyncIterator]() {} },
     transcriptBootstrap: { durable: bootstrapPage },
     transcriptWatermark: () => watermark,
     decodeTranscriptPage: async (page) => ({
@@ -899,8 +892,6 @@ test('keeps an oversized Turn visible when the watermark advances onto it', asyn
   let watermark = 0;
   const handle = runtimeHostSessionFixture({
     snapshot: continuitySnapshot(),
-    transcript: Promise.resolve([]),
-    events: { async *[Symbol.asyncIterator]() {} },
     transcriptBootstrap: { durable: bootstrapPage },
     transcriptWatermark: () => watermark,
     decodeTranscriptPage: async (page) => page === bootstrapPage
@@ -940,8 +931,6 @@ test('keeps an oversized settled Turn visible before a trailing session note', a
   let watermark = 0;
   const handle = runtimeHostSessionFixture({
     snapshot: continuitySnapshot(),
-    transcript: Promise.resolve([]),
-    events: { async *[Symbol.asyncIterator]() {} },
     transcriptBootstrap: { durable: bootstrapPage },
     transcriptWatermark: () => watermark,
     decodeTranscriptPage: async (page) => page === bootstrapPage
@@ -970,8 +959,6 @@ test('does not resurrect a discarded replica when a history page read is in flig
   const changes: DesktopTranscriptReplicaChange[] = [];
   const handle = runtimeHostSessionFixture({
     snapshot: continuitySnapshot(),
-    transcript: Promise.resolve([]),
-    events: { async *[Symbol.asyncIterator]() {} },
     transcriptBootstrap: { durable: bootstrapPage },
     decodeTranscriptPage: async (candidate) => candidate === bootstrapPage
       ? { messages: messages.slice(4), nextCursor: 'older' }
@@ -1016,8 +1003,6 @@ test('does not drive a discarded replica terminal when a contiguous catch-up is 
   let watermark = 4;
   const handle = runtimeHostSessionFixture({
     snapshot: continuitySnapshot(),
-    transcript: Promise.resolve([]),
-    events: { async *[Symbol.asyncIterator]() {} },
     transcriptBootstrap: { durable: bootstrapPage },
     transcriptWatermark: () => watermark,
     decodeTranscriptPage: async (candidate) => candidate === bootstrapPage
@@ -1068,8 +1053,6 @@ test('a transcript opened between catch-up pages can join the change that follow
   let watermark = 2;
   const handle = runtimeHostSessionFixture({
     snapshot: continuitySnapshot(),
-    transcript: Promise.resolve([]),
-    events: { async *[Symbol.asyncIterator]() {} },
     transcriptBootstrap: { durable: bootstrapPage },
     transcriptWatermark: () => watermark,
     decodeTranscriptPage: async (candidate) => candidate === bootstrapPage
@@ -1120,8 +1103,6 @@ test('transfers prepared transcript bytes into active replica accounting', async
   let accountedBytes = 0;
   const handle = runtimeHostSessionFixture({
     snapshot: continuitySnapshot(),
-    transcript: Promise.resolve([]),
-    events: { async *[Symbol.asyncIterator]() {} },
     decodeTranscriptPage: async (_page, _maxMessageBytes, accountAssemblyBytes) => {
       accountAssemblyBytes?.(messageBytes);
       accountAssemblyBytes?.(-messageBytes);
@@ -1148,7 +1129,6 @@ test('does not release resident bytes when preparation accounting rejects them',
   const handle = runtimeHostSessionFixture({
     snapshot: continuitySnapshot(),
     transcript: Promise.resolve([message]),
-    events: { async *[Symbol.asyncIterator]() {} },
     async close() {},
   });
 
@@ -1517,27 +1497,4 @@ function syntheticLargeTranscript(): Array<{ identity: number; message: StoredMe
       },
     ];
   }).flat();
-}
-
-function continuitySnapshot() {
-  return {
-    schemaVersion: SESSION_CONTINUITY_SCHEMA_VERSION,
-    session: {
-      sessionId: 'session-1',
-      metadataRevision: 1,
-      status: 'running' as const,
-      createdAt: 1,
-      isArchived: false,
-    },
-    projectionRevision: 1,
-    rootTurn: null,
-    goal: null,
-    queue: {
-      hostEpoch: 'host-1',
-      queueRevision: 0,
-      steering: [],
-      followup: [],
-    },
-    interactions: { pending: [] },
-  };
 }

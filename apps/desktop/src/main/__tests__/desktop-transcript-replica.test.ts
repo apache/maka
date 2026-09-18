@@ -20,13 +20,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { RuntimeHostSubscriptionError } from '@maka/runtime-host/client';
-import {
-  SESSION_CONTINUITY_SCHEMA_VERSION,
-  type SessionContinuitySnapshot,
-  type SessionTranscriptPage,
-} from '@maka/runtime-host/protocol';
 import { DesktopTranscriptReplica } from '../desktop-transcript-replica.js';
-import { runtimeHostSessionFixture } from './runtime-host-session-test-fixture.js';
+import {
+  continuitySnapshot,
+  runtimeHostSessionFixture,
+  transcriptPage,
+} from './runtime-host-session-test-fixture.js';
 
 test('latches a dead subscription instead of re-arming the catch-up read', async () => {
   const failure = new RuntimeHostSubscriptionError(
@@ -36,8 +35,6 @@ test('latches a dead subscription instead of re-arming the catch-up read', async
   let pageReads = 0;
   const handle = runtimeHostSessionFixture({
     snapshot: continuitySnapshot(),
-    transcript: Promise.resolve([]),
-    events: emptyEvents(),
     transcriptWatermark: () => 8,
     loadTranscriptPage: async () => {
       pageReads += 1;
@@ -61,13 +58,11 @@ test('retries a read on the next advance when the failure is not the subscriptio
   let pageReads = 0;
   const handle = runtimeHostSessionFixture({
     snapshot: continuitySnapshot(),
-    transcript: Promise.resolve([]),
-    events: emptyEvents(),
     transcriptWatermark: () => 8,
     loadTranscriptPage: async () => {
       pageReads += 1;
       if (pageReads === 1) throw new Error('transient read failure');
-      return page(8);
+      return transcriptPage('newer', 8);
     },
     decodeTranscriptPage: async (requested) => ({
       messages: [
@@ -100,10 +95,8 @@ test('follows the subscription watermark rather than an announced frame', async 
   let watermark = 4;
   const handle = runtimeHostSessionFixture({
     snapshot: continuitySnapshot(),
-    transcript: Promise.resolve([]),
-    events: emptyEvents(),
     transcriptWatermark: () => watermark,
-    loadTranscriptPage: async (input) => page(input.throughSequence),
+    loadTranscriptPage: async (input) => transcriptPage('newer', input.throughSequence),
     decodeTranscriptPage: async (requested) => ({
       messages: [
         {
@@ -134,44 +127,4 @@ test('follows the subscription watermark rather than an announced frame', async 
 
 function flushMicrotasks(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
-}
-
-function emptyEvents(): AsyncIterable<never> {
-  return (async function* () {})();
-}
-
-function page(throughSequence: number | null): SessionTranscriptPage {
-  return {
-    kind: 'page',
-    sessionId: 'session-1',
-    direction: 'newer',
-    throughSequence,
-    rawBytes: 1,
-    fragments: [],
-    nextCursor: null,
-    endsAtTurnBoundary: true,
-  };
-}
-
-function continuitySnapshot(): SessionContinuitySnapshot {
-  return {
-    schemaVersion: SESSION_CONTINUITY_SCHEMA_VERSION,
-    session: {
-      sessionId: 'session-1',
-      metadataRevision: 1,
-      status: 'running',
-      createdAt: 1,
-      isArchived: false,
-    },
-    projectionRevision: 1,
-    rootTurn: null,
-    goal: null,
-    queue: {
-      hostEpoch: 'host-1',
-      queueRevision: 0,
-      steering: [],
-      followup: [],
-    },
-    interactions: { pending: [] },
-  };
 }

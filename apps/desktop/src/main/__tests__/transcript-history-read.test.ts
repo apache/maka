@@ -232,7 +232,7 @@ async function openReplica(
   }, async () => undefined, (request) => readSessionTranscriptPage({ reader, state: opened.state, request }), async () => undefined);
   const decodeMessage = (value: unknown) => decodeStoredMessage(markPersisted<StoredMessage>(value));
   const replica = await DesktopTranscriptReplica.prepare(runtimeHostSessionFixture({
-    snapshot: subscription.snapshot, transcript: Promise.resolve([]), events: subscription,
+    snapshot: subscription.snapshot, events: subscription,
     transcriptBootstrap: opened.bootstrap,
     transcriptWatermark: () => subscription.transcriptWatermark,
     decodeTranscriptPage: (page, maxBytes, accountBytes) => subscription.decodeTranscriptPage(page, decodeMessage, maxBytes, accountBytes),

@@ -25,7 +25,6 @@ import type { SessionEvent } from '@maka/core/events';
 import type { SessionObservationMessage } from '../../shared/session-execution-projection.js';
 import type { StoredMessage } from '@maka/core/session';
 import {
-  SESSION_CONTINUITY_SCHEMA_VERSION,
   type SessionContinuitySnapshot,
   type SessionTranscriptPage,
   type SubscriptionFrame,
@@ -48,7 +47,11 @@ import {
   type RuntimeHostTranscriptTarget,
 } from "../runtime-host-session-observer.js";
 import { RuntimeHostSessionSubscriptionOwner } from '../runtime-host-session-subscription-owner.js';
-import { runtimeHostSessionFixture } from "./runtime-host-session-test-fixture.js";
+import {
+  AsyncFrameQueue,
+  continuitySnapshot,
+  runtimeHostSessionFixture,
+} from "./runtime-host-session-test-fixture.js";
 import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
 
 test('projects root lifecycle without fabricating content events', async (t) => {
@@ -56,7 +59,7 @@ test('projects root lifecycle without fabricating content events', async (t) => 
   const observer = new RuntimeHostSessionObserver({
     client: { openSession: async () => runtimeHostSessionFixture({
       snapshot: continuitySnapshot({ rootTurn: null }), activeAssistantStreams: [],
-      transcript: Promise.resolve([]), events, async close() { events.end(); },
+      events, async close() { events.end(); },
     }) },
     emitSessionsChanged() {},
   });
@@ -190,7 +193,6 @@ test("restores renderer observation after the Host connection is replaced", asyn
       openSession: async () => runtimeHostSessionFixture({
         snapshot: continuitySnapshot(),
         activeAssistantStreams: [],
-        transcript: Promise.resolve([]),
         events: firstEvents,
         async close() {
           firstEvents.end();
@@ -688,7 +690,6 @@ test('fences earlier transcript failures across same-source replica recovery', a
         const host = historyHost([0, 1, 2, 3, 4].map((index) => turnRow(index, `turn-${index}`)), { pageRows: 1 });
         return runtimeHostSessionFixture({
           snapshot: continuitySnapshot(),
-          transcript: Promise.resolve([]),
           events,
           transcriptBootstrap: host.bootstrap,
           decodeTranscriptPage: host.decodeTranscriptPage,
@@ -806,7 +807,6 @@ test('broadcasts durable admission and transcript changes from the same message'
       openSession: async () =>
         runtimeHostSessionFixture({
           snapshot: continuitySnapshot(),
-          transcript: Promise.resolve([]),
           events,
           loadTranscriptPage: async () => ({
             kind: 'page',
@@ -908,7 +908,7 @@ for (const resolution of ['owned', 'cancelled', 'pending', 'unavailable'] as con
               }],
             },
           }),
-          transcript: Promise.resolve([]), events, async close() { events.end(); },
+          events, async close() { events.end(); },
         }),
         queryMessageExecutions: async ({ messageIds }) => {
           queries.push([...messageIds]);
@@ -967,7 +967,6 @@ test('moves the read marker only as far as the Renderer window reports reaching'
       openSession: async () =>
         runtimeHostSessionFixture({
           snapshot: continuitySnapshot(),
-          transcript: Promise.resolve([]),
           events,
           loadTranscriptPage: async (input) => ({
             kind: 'page',
@@ -1239,7 +1238,6 @@ test('coalesces transcript changes into one bounded delta while renderer deliver
       openSession: async () =>
         runtimeHostSessionFixture({
           snapshot: continuitySnapshot(),
-          transcript: Promise.resolve([]),
           events,
           loadTranscriptPage: async (input) => ({
             kind: 'page',
@@ -1352,7 +1350,6 @@ test('delivers history in whole Turns within the budget and continues exactly on
       openSession: async () =>
         runtimeHostSessionFixture({
           snapshot: continuitySnapshot(),
-          transcript: Promise.resolve([]),
           events,
           transcriptBootstrap: host.bootstrap,
           loadTranscriptPage: host.loadTranscriptPage,
@@ -1418,7 +1415,6 @@ test('reads earlier history past its budget down to the requested Turn in one an
       openSession: async () =>
         runtimeHostSessionFixture({
           snapshot: continuitySnapshot(),
-          transcript: Promise.resolve([]),
           events,
           transcriptBootstrap: host.bootstrap,
           loadTranscriptPage: host.loadTranscriptPage,
@@ -1471,7 +1467,6 @@ test('keeps the history already delivered across a same-session recovery', async
         queues.push(events);
         return runtimeHostSessionFixture({
           snapshot: continuitySnapshot(),
-          transcript: Promise.resolve([]),
           events,
           transcriptBootstrap: host.bootstrap,
           loadTranscriptPage: host.loadTranscriptPage,
@@ -1531,7 +1526,6 @@ test('keeps the history already delivered across a replacement of the Host conne
           const host = historyHost(rows, { pageRows: 1 });
           return runtimeHostSessionFixture({
             snapshot: continuitySnapshot(),
-            transcript: Promise.resolve([]),
             events,
             transcriptBootstrap: host.bootstrap,
             loadTranscriptPage: host.loadTranscriptPage,
@@ -1595,7 +1589,6 @@ test('a tail transcript consumer still receives the replica snapshot', async () 
       openSession: async () =>
         runtimeHostSessionFixture({
           snapshot: continuitySnapshot(),
-          transcript: Promise.resolve([]),
           events,
           transcriptBootstrap: host.bootstrap,
           loadTranscriptPage: async (input) => {
@@ -1641,7 +1634,6 @@ test('reads every row of one Turn through the Host Turn index', async () => {
       openSession: async () =>
         runtimeHostSessionFixture({
           snapshot: continuitySnapshot(),
-          transcript: Promise.resolve([]),
           events,
           transcriptBootstrap: host.bootstrap,
           loadTranscriptPage: async (input) => {
@@ -1683,7 +1675,6 @@ test('does not let one backpressured transcript consumer block another', async (
       openSession: async () =>
         runtimeHostSessionFixture({
           snapshot: continuitySnapshot(),
-          transcript: Promise.resolve([]),
           events,
           loadTranscriptPage: async (input) => ({
             kind: 'page',
@@ -1788,7 +1779,6 @@ test('keeps a transcript consumer available after a delivery fails', async () =>
       openSession: async () =>
         runtimeHostSessionFixture({
           snapshot: settledSnapshot(),
-          transcript: Promise.resolve([]),
           events,
           loadTranscriptPage: async (input) => ({
             kind: 'page',
@@ -1931,7 +1921,6 @@ test("does not publish a terminal error while an owner-managed connection is rep
       openSession: async () => runtimeHostSessionFixture({
         snapshot: continuitySnapshot(),
         activeAssistantStreams: [],
-        transcript: Promise.resolve([]),
         events,
         async close() {
           closeCount += 1;
@@ -1959,7 +1948,6 @@ test("keeps a native Turn watched without a renderer and releases it at terminal
       openSession: async () => runtimeHostSessionFixture({
         snapshot: continuitySnapshot(),
         activeAssistantStreams: [],
-        transcript: Promise.resolve([]),
         events,
         async close() {
           closeCount += 1;
@@ -2093,7 +2081,6 @@ test("invalidates the transcript when another client starts a Turn", async () =>
           },
         }),
         activeAssistantStreams: [],
-        transcript: Promise.resolve([]),
         events,
         async close() {
           events.end();
@@ -2161,7 +2148,6 @@ test("abandons a watched Turn and removes it from the catalog when Guest access 
       openSession: async () => runtimeHostSessionFixture({
         snapshot: continuitySnapshot(),
         activeAssistantStreams: [],
-        transcript: Promise.resolve([]),
         events,
         async close() {
           closeCount += 1;
@@ -2291,7 +2277,6 @@ test("recovers when transcript paging loses the active subscription", async () =
         const events = first ? firstEvents : secondEvents;
         return runtimeHostSessionFixture({
           snapshot: continuitySnapshot(),
-          transcript: Promise.resolve([]),
           events,
           loadTranscriptPage: async () => {
             if (first) {
@@ -2474,7 +2459,6 @@ test("seeds a joining observer from the attempt that survives repeated catch-up 
           return runtimeHostSessionFixture({
             snapshot: continuitySnapshot(),
             activeAssistantStreams: [],
-            transcript: Promise.resolve([]),
             events: firstEvents,
             async close() {
               firstEvents.end();
@@ -2588,7 +2572,6 @@ test("reconciles terminal, Goal, interaction, and sidecar state after subscripti
               interactions: { pending: [firstInteraction] },
             }),
             activeAssistantStreams: [],
-            transcript: Promise.resolve([]),
             events: firstEvents,
             async close() {
               firstEvents.end();
@@ -2731,7 +2714,6 @@ test('replays durable admission before a terminal successor on subscription reco
         if (openCount === 1) {
           return runtimeHostSessionFixture({
             snapshot: continuitySnapshot(),
-            transcript: Promise.resolve([]),
             events: firstEvents,
             async close() {
               firstEvents.end();
@@ -2805,7 +2787,6 @@ test("shares one Host subscription and one delivery per renderer target", async 
           // Host has nothing left to send.
           snapshot: settledSnapshot(),
           activeAssistantStreams: [],
-          transcript: Promise.resolve([]),
           events,
           async close() {
             closeCount += 1;
@@ -2841,7 +2822,6 @@ test("releases the renderer destroyed listener when its last observer leaves", a
       openSession: async () => runtimeHostSessionFixture({
         snapshot: continuitySnapshot(),
         activeAssistantStreams: [],
-        transcript: Promise.resolve([]),
         events,
         async close() {
           events.end();
@@ -2876,7 +2856,6 @@ test("closes a Host handle that arrives after the observer is closed", async () 
   opened.resolve(runtimeHostSessionFixture({
     snapshot: continuitySnapshot(),
     activeAssistantStreams: [],
-    transcript: Promise.resolve([]),
     events: new AsyncFrameQueue(),
     async close() {
       closeCount += 1;
@@ -2916,7 +2895,6 @@ test("rehydrates pending interactions and publishes answer acknowledgements", as
             interactions: { pending: [pending] },
           }),
         activeAssistantStreams: [],
-        transcript: Promise.resolve([]),
         events,
         async close() {
           events.end();
@@ -2970,7 +2948,6 @@ test("publishes form answer acknowledgements for renderer queue retirement", asy
       openSession: async () => runtimeHostSessionFixture({
         snapshot: continuitySnapshot({ interactions: { pending: [pending] } }),
         activeAssistantStreams: [],
-        transcript: Promise.resolve([]),
         events: new AsyncFrameQueue(),
         async close() {},
       }),
@@ -3005,7 +2982,6 @@ test("projects Host queue revisions and newly delivered steering messages", asyn
       openSession: async () => runtimeHostSessionFixture({
         snapshot: continuitySnapshot(),
         activeAssistantStreams: [],
-        transcript: Promise.resolve([]),
         events,
         async close() {
           events.end();
@@ -3095,7 +3071,6 @@ test("publishes Host sidecar and graph invalidations without inventing Session s
       openSession: async () => runtimeHostSessionFixture({
         snapshot: continuitySnapshot(),
         activeAssistantStreams: [],
-        transcript: Promise.resolve([]),
         events,
         async close() {
           events.end();
@@ -3187,37 +3162,6 @@ test("publishes Host sidecar and graph invalidations without inventing Session s
   ]);
   await observer.close();
 });
-
-function continuitySnapshot(
-  overrides: Partial<SessionContinuitySnapshot> = {},
-): SessionContinuitySnapshot {
-  return {
-    schemaVersion: SESSION_CONTINUITY_SCHEMA_VERSION,
-    session: {
-      sessionId: "session-1",
-      metadataRevision: 1,
-      status: "running",
-      createdAt: 1,
-      isArchived: false,
-    },
-    projectionRevision: 1,
-    rootTurn: {
-      sessionId: "session-1",
-      turnId: "turn-1",
-      runId: "run-1",
-      status: "running",
-    },
-    goal: null,
-    queue: {
-      hostEpoch: "host-1",
-      queueRevision: 0,
-      steering: [],
-      followup: [],
-    },
-    interactions: { pending: [] },
-    ...overrides,
-  };
-}
 
 function activeText(messageId: string, turnId = 'turn-1') {
   return { kind: 'text' as const, turnId, messageId };
@@ -3323,39 +3267,6 @@ function eventTarget(
   };
 }
 
-class AsyncFrameQueue implements AsyncIterable<SubscriptionFrame> {
-  readonly #frames: SubscriptionFrame[] = [];
-  readonly #waiters: Array<
-    (result: IteratorResult<SubscriptionFrame>) => void
-  > = [];
-  nextCount = 0;
-  #ended = false;
-
-  push(frame: SubscriptionFrame): void {
-    const waiter = this.#waiters.shift();
-    if (waiter) waiter({ value: frame, done: false });
-    else this.#frames.push(frame);
-  }
-
-  end(): void {
-    this.#ended = true;
-    for (const waiter of this.#waiters.splice(0))
-      waiter({ value: undefined, done: true });
-  }
-
-  [Symbol.asyncIterator](): AsyncIterator<SubscriptionFrame> {
-    return {
-      next: () => {
-        this.nextCount += 1;
-        const frame = this.#frames.shift();
-        if (frame) return Promise.resolve({ value: frame, done: false });
-        if (this.#ended)
-          return Promise.resolve({ value: undefined, done: true });
-        return new Promise((resolve) => this.#waiters.push(resolve));
-      },
-    };
-  }
-}
 async function waitFor(predicate: () => boolean): Promise<void> {
   await pollFor(predicate, { attempts: 100, message: 'Timed out waiting for observer state' });
 }
@@ -3454,7 +3365,6 @@ test('a running Turn keeps its subscription after the last viewer leaves', async
   const handle = runtimeHostSessionFixture({
     snapshot: continuitySnapshot(),
     activeAssistantStreams: [activeText('message-1')],
-    transcript: Promise.resolve([]),
     events,
     async close() { events.end(); },
   });
@@ -3487,7 +3397,6 @@ test('the subscription is released once the running Turn ends with no viewer', a
   let closed = false;
   const handle = runtimeHostSessionFixture({
     snapshot: continuitySnapshot(),
-    transcript: Promise.resolve([]),
     events,
     async close() { closed = true; events.end(); },
   });

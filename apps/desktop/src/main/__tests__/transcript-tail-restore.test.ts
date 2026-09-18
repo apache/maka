@@ -20,17 +20,17 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { StoredMessage } from '@maka/core/session';
-import {
-  SESSION_CONTINUITY_SCHEMA_VERSION,
-  type SessionTranscriptPage,
-} from '@maka/runtime-host/protocol';
+import type { SessionTranscriptPage } from '@maka/runtime-host/protocol';
 import { DESKTOP_TRANSCRIPT_TAIL_MAX_BYTES } from '../../preload/transcript-contract.js';
 import {
   createTranscriptRestoreLifecycle,
   restoreSessionTranscriptRange,
 } from '../../renderer/features/conversation/testing.js';
 import { DesktopTranscriptReplica } from '../desktop-transcript-replica.js';
-import { runtimeHostSessionFixture } from './runtime-host-session-test-fixture.js';
+import {
+  continuitySnapshot,
+  runtimeHostSessionFixture,
+} from './runtime-host-session-test-fixture.js';
 
 test('a history page reaches an oversized earlier Turn without disturbing the tail', async () => {
   const fixture = await oversizedHistoryFixture();
@@ -325,19 +325,7 @@ async function oversizedHistoryFixture(options: { live?: boolean } = {}) {
   });
   let watermark: number | null = through;
   const handle = runtimeHostSessionFixture({
-    snapshot: {
-      schemaVersion: SESSION_CONTINUITY_SCHEMA_VERSION,
-      session: {
-        sessionId: 'session-1', metadataRevision: 1, status: 'running', createdAt: 1, isArchived: false,
-      },
-      projectionRevision: 1,
-      rootTurn: null,
-      goal: null,
-      queue: { hostEpoch: 'host-1', queueRevision: 0, steering: [], followup: [] },
-      interactions: { pending: [] },
-    },
-    transcript: Promise.resolve([]),
-    events: { async *[Symbol.asyncIterator]() {} },
+    snapshot: continuitySnapshot({ rootTurn: null }),
     transcriptBootstrap: { durable: bootstrapPage },
     transcriptWatermark: () => watermark,
     decodeTranscriptPage: async (candidate) => {

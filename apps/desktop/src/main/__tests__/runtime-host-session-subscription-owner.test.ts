@@ -21,15 +21,15 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { StoredMessage } from '@maka/core/session';
 import { deferred, waitFor as pollFor } from '@maka/core/test-only/async-primitives';
-import {
-  SESSION_CONTINUITY_SCHEMA_VERSION,
-  type SessionContinuitySnapshot,
-  type SessionTranscriptPage,
-  type SubscriptionFrame,
-} from '@maka/runtime-host/protocol';
+import type { SubscriptionFrame } from '@maka/runtime-host/protocol';
 import type { DesktopTranscriptReplica } from '../desktop-transcript-replica.js';
 import { RuntimeHostSessionSubscriptionOwner } from '../runtime-host-session-subscription-owner.js';
-import { runtimeHostSessionFixture } from './runtime-host-session-test-fixture.js';
+import {
+  AsyncFrameQueue,
+  continuitySnapshot,
+  runtimeHostSessionFixture,
+  transcriptPage,
+} from './runtime-host-session-test-fixture.js';
 
 test('dispatches a frame failure before the subscription iterator finishes closing', async () => {
   const returnGate = deferred<void>();
@@ -41,7 +41,6 @@ test('dispatches a frame failure before the subscription iterator finishes closi
       openSession: async () =>
         runtimeHostSessionFixture({
           snapshot: continuitySnapshot(),
-          transcript: Promise.resolve([]),
           events,
           async close() {},
         }),
@@ -85,7 +84,6 @@ test('reseeds an evicted replica on the same live subscription', async () => {
         opens += 1;
         return runtimeHostSessionFixture({
           snapshot: continuitySnapshot(),
-          transcript: Promise.resolve([]),
           events,
           transcriptBootstrap: { durable: transcriptPage('older', 2) },
           transcriptWatermark: () => watermark,
@@ -148,7 +146,6 @@ test('a reseed superseded by subscription recovery does not displace the new rep
         const events = opens === 1 ? firstEvents : secondEvents;
         return runtimeHostSessionFixture({
           snapshot: continuitySnapshot(),
-          transcript: Promise.resolve([]),
           events,
           transcriptBootstrap: { durable: transcriptPage('older', 2) },
           transcriptWatermark: () => 2,
@@ -201,22 +198,6 @@ test('a reseed superseded by subscription recovery does not displace the new rep
   await owner.close();
 });
 
-function transcriptPage(
-  direction: 'older' | 'newer',
-  throughSequence: number,
-): SessionTranscriptPage {
-  return {
-    kind: 'page',
-    sessionId: 'session-1',
-    direction,
-    throughSequence,
-    rawBytes: 1,
-    fragments: [],
-    nextCursor: null,
-    endsAtTurnBoundary: true,
-  };
-}
-
 function rowsThrough(
   throughSequence: number | null,
 ): { identity: number; message: StoredMessage }[] {
@@ -236,38 +217,6 @@ function rowsThrough(
     });
   }
   return rows;
-}
-
-class AsyncFrameQueue implements AsyncIterable<SubscriptionFrame> {
-  readonly #frames: SubscriptionFrame[] = [];
-  readonly #waiters: Array<(result: IteratorResult<SubscriptionFrame>) => void> = [];
-  #ended = false;
-
-  push(frame: SubscriptionFrame): void {
-    const waiter = this.#waiters.shift();
-    if (waiter) waiter({ value: frame, done: false });
-    else this.#frames.push(frame);
-  }
-
-  end(): void {
-    this.#ended = true;
-    for (const waiter of this.#waiters.splice(0)) waiter({ value: undefined, done: true });
-  }
-
-  [Symbol.asyncIterator](): AsyncIterator<SubscriptionFrame> {
-    return {
-      next: () => {
-        const frame = this.#frames.shift();
-        if (frame) return Promise.resolve({ value: frame, done: false });
-        if (this.#ended) return Promise.resolve({ value: undefined, done: true });
-        return new Promise((resolve) => this.#waiters.push(resolve));
-      },
-      return: () => {
-        this.#ended = true;
-        return Promise.resolve({ value: undefined, done: true });
-      },
-    };
-  }
 }
 
 class BlockingReturnQueue implements AsyncIterable<SubscriptionFrame> {
@@ -305,28 +254,5 @@ function transcriptFrame(sequence: number): SubscriptionFrame {
     sessionId: 'session-1',
     sequence,
     throughSequence: sequence,
-  };
-}
-
-function continuitySnapshot(): SessionContinuitySnapshot {
-  return {
-    schemaVersion: SESSION_CONTINUITY_SCHEMA_VERSION,
-    session: {
-      sessionId: 'session-1',
-      metadataRevision: 1,
-      status: 'running',
-      createdAt: 1,
-      isArchived: false,
-    },
-    projectionRevision: 1,
-    rootTurn: null,
-    goal: null,
-    queue: {
-      hostEpoch: 'host-1',
-      queueRevision: 0,
-      steering: [],
-      followup: [],
-    },
-    interactions: { pending: [] },
   };
 }
