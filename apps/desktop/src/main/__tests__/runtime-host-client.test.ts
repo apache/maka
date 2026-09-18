@@ -152,6 +152,8 @@ function subscription(
     activeAssistantStreams: [],
     transcriptBootstrap: { durable: emptyTranscriptPage(sessionId) },
     transcriptWatermark: null,
+    terminalError: undefined,
+    closedReason: undefined,
     snapshot: {
       schemaVersion: SESSION_CONTINUITY_SCHEMA_VERSION,
       session: {

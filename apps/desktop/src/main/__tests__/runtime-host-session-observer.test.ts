@@ -3754,3 +3754,179 @@ test('a later observer in the same renderer receives the accumulated active stre
   }
   await observer.close();
 });
+
+test('acknowledging the tail of a latched replica is a quiet no-op', async () => {
+  const events = new AsyncFrameQueue();
+  const fetchGate = deferred<void>();
+  const markers: string[] = [];
+  let fetches = 0;
+  let watermark = 2;
+  const observer = new RuntimeHostSessionObserver({
+    client: {
+      openSession: async () =>
+        runtimeHostSessionFixture({
+          snapshot: continuitySnapshot(),
+          events,
+          transcriptBootstrap: { durable: transcriptPage('older', 2) },
+          transcriptWatermark: () => watermark,
+          decodeTranscriptPage: async (page) => ({
+            messages:
+              page.direction === 'newer'
+                ? rowsThrough(page.throughSequence, 20).slice(3)
+                : rowsThrough(page.throughSequence, 20),
+            nextCursor: page.nextCursor,
+          }),
+          loadTranscriptPage: async () => {
+            fetches += 1;
+            if (fetches === 1) {
+              await fetchGate.promise;
+              return transcriptPage('newer', 4);
+            }
+            throw new RuntimeHostOperationError(
+              'session.transcript.page',
+              'not_found',
+              'subscription transcript context was lost',
+            );
+          },
+          async close() { events.end(); },
+        }),
+      setSessionReadMarker: async (_sessionId, messageId) => {
+        markers.push(messageId);
+        return undefined as never;
+      },
+    },
+    emitSessionsChanged() {},
+  });
+  await observer.observe('session-1', 'observer-1', eventTarget(1));
+  const opened = await observer.openTranscript('session-1', 'consumer-1', {
+    id: 7,
+    send(_channel, batch) {
+      queueMicrotask(() =>
+        observer.acknowledgeTranscript('consumer-1', batch.generation, batch.deliverySequence!, 7),
+      );
+    },
+    once() {},
+    off() {},
+  });
+
+  // Gate the first catch-up read, then land the next watermark move between
+  // the read loop's last check and its settle check so the failure hits the
+  // swallowed post-settle re-arm rather than the pump's advance.
+  watermark = 4;
+  events.push({
+    kind: 'subscription.transcript_advanced',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-session-1',
+    sessionId: 'session-1',
+    sequence: 1,
+    throughSequence: 4,
+  });
+  await pollFor(() => fetches === 1);
+  void fetchGate.promise.then(() => {
+    watermark = 6;
+  });
+  fetchGate.resolve(undefined);
+  // The re-armed read latches the replica; its rejection is swallowed, so the
+  // replica stays installed with only resident flipped.
+  await pollFor(() => fetches === 2);
+
+  assert.doesNotThrow(() =>
+    observer.acknowledgeTranscriptTail(
+      {
+        consumerId: 'consumer-1',
+        sessionId: 'session-1',
+        hostEpoch: opened.hostEpoch,
+        through: 6,
+      },
+      7,
+    ),
+  );
+  assert.deepEqual(markers, []);
+  await observer.close();
+});
+
+test('a latched replica reseeds through recovery for the next reader', async () => {
+  const firstEvents = new AsyncFrameQueue();
+  const fetchGate = deferred<void>();
+  let opens = 0;
+  let fetches = 0;
+  let watermark = 2;
+  const observer = new RuntimeHostSessionObserver({
+    client: {
+      openSession: async () => {
+        opens += 1;
+        const first = opens === 1;
+        const events = first ? firstEvents : new AsyncFrameQueue();
+        return runtimeHostSessionFixture({
+          snapshot: continuitySnapshot(),
+          events,
+          transcriptBootstrap: { durable: transcriptPage('older', 2) },
+          transcriptWatermark: () => watermark,
+          decodeTranscriptPage: async (page) => ({
+            messages:
+              page.direction === 'newer'
+                ? rowsThrough(page.throughSequence, 20).slice(3)
+                : rowsThrough(page.throughSequence, 20),
+            nextCursor: page.nextCursor,
+          }),
+          loadTranscriptPage: first
+            ? async () => {
+                fetches += 1;
+                if (fetches === 1) {
+                  await fetchGate.promise;
+                  return transcriptPage('newer', 4);
+                }
+                throw new RuntimeHostOperationError(
+                  'session.transcript.page',
+                  'not_found',
+                  'subscription transcript context was lost',
+                );
+              }
+            : undefined,
+          async close() { events.end(); },
+        });
+      },
+    },
+    emitSessionsChanged() {},
+  });
+  await observer.observe('session-1', 'observer-1', eventTarget(1));
+
+  // Same re-arm window as above: the watermark moves after the read loop's
+  // last check but before the settle check, so the dead-context failure is
+  // swallowed by the post-settle re-arm and the replica stays installed.
+  watermark = 4;
+  firstEvents.push({
+    kind: 'subscription.transcript_advanced',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-session-1',
+    sessionId: 'session-1',
+    sequence: 1,
+    throughSequence: 4,
+  });
+  await pollFor(() => fetches === 1);
+  void fetchGate.promise.then(() => {
+    watermark = 6;
+  });
+  fetchGate.resolve(undefined);
+  await pollFor(() => fetches === 2);
+
+  // The replica is latched and installed but reports resident === false, so
+  // the next reader takes the reseed path; its fetch hits the same dead
+  // transcript context, which routes through owner recovery onto a fresh
+  // subscription.
+  const batches: DesktopTranscriptBatch[] = [];
+  await observer.openTranscript('session-1', 'consumer-1', {
+    id: 7,
+    send(_channel, batch) {
+      batches.push(batch);
+      queueMicrotask(() =>
+        observer.acknowledgeTranscript('consumer-1', batch.generation, batch.deliverySequence!, 7),
+      );
+    },
+    once() {},
+    off() {},
+  });
+  assert.equal(opens, 2);
+  await pollFor(() => batches.some((batch) => batch.fragments.length > 0));
+  await observer.close();
+});

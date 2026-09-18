@@ -167,18 +167,6 @@ export class RuntimeHostSessionSubscriptionOwner {
         error instanceof RuntimeHostSubscriptionError ||
         error instanceof RuntimeHostOperationError
       ) {
-        // 'connection_closed' is the subscription's dead-state mask, not the
-        // reason it died — the pump's report of the real error is already
-        // queued on the same event, so let it land instead of racing it with
-        // a mask that could invert a recoverable failure into terminal.
-        if (
-          error instanceof RuntimeHostSubscriptionError &&
-          error.reason === 'connection_closed'
-        ) {
-          await new Promise((resolve) => setImmediate(resolve));
-          await this.waitUntilReady();
-          if (this.#attempt !== attempt) return undefined;
-        }
         this.#failAttempt(attempt, error);
         await this.waitUntilReady();
         return undefined;
@@ -393,7 +381,16 @@ export class RuntimeHostSessionSubscriptionOwner {
 
   #failAttempt(attempt: SubscriptionAttempt, error: unknown): void {
     if (this.#closed || (this.#attempt !== attempt && this.#candidate !== attempt)) return;
-    const failure = asError(error);
+    // A transcript read that raced the subscription's death only sees its
+    // dead-state mask ('connection_closed'); the subscription itself knows
+    // the real reason, and it is already recorded before the mask can fire.
+    const failure = asError(
+      attempt.handle.terminalError ??
+        (attempt.handle.closedReason === undefined
+          ? undefined
+          : subscriptionClosedError(attempt.handle.closedReason)) ??
+        error,
+    );
     if (attempt.phase !== 'active') {
       attempt.fail(failure);
     } else if (isRecoverableSubscriptionFailure(failure)) {

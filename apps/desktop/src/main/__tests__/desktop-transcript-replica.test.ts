@@ -84,6 +84,35 @@ test('latches a dead subscription instead of re-arming the catch-up read', async
   await handle.close();
 });
 
+test('does not latch a transient operation failure', async () => {
+  const failure = new RuntimeHostOperationError(
+    'session.transcript.page',
+    'internal_failure',
+    'transient host failure',
+  );
+  let pageReads = 0;
+  const handle = runtimeHostSessionFixture({
+    snapshot: continuitySnapshot(),
+    transcriptWatermark: () => 8,
+    loadTranscriptPage: async () => {
+      pageReads += 1;
+      if (pageReads === 1) throw failure;
+      return transcriptPage('newer', 8);
+    },
+    async close() {},
+  });
+  const replica = await DesktopTranscriptReplica.prepare(handle);
+
+  await assert.rejects(replica.advance(), (error) => error === failure);
+  // The same class of failure that kills a subscription is permanent, but a
+  // retryable operation failure must keep the replica retryable too.
+  await replica.advance();
+  assert.equal(pageReads, 2);
+  assert.equal(replica.resident, true);
+  assert.equal(replica.durableThrough, 8);
+  await handle.close();
+});
+
 test('retries a read on the next advance when the failure is not the subscription', async () => {
   let pageReads = 0;
   const handle = runtimeHostSessionFixture({
@@ -218,6 +247,7 @@ test('advance resolves quietly without reading once evicted', async () => {
   // a throw here would reach the pump and terminate the whole subscription.
   await replica.advance();
   assert.equal(pageReads, 0);
+  assert.equal(replica.durableThrough, null);
   assert.throws(() => replica.messages(), /evicted/);
   await handle.close();
 });

@@ -692,8 +692,10 @@ export class RuntimeHostSessionObserver {
       },
       // Runs inside the owner's staleness check. The pointer moves after the
       // only throwing steps, so a throw leaves the state on the evicted
-      // replica and the owner closes the orphan; the consumer resets and the
-      // budget pass then see the installed replica, like in activate().
+      // replica and the owner closes the orphan. Everything after the move —
+      // the projector feed, consumer resets, the budget pass — must stay
+      // non-throwing, or the state keeps a pointer to a replica the owner
+      // already closed.
       installReseededReplica: (replica) => {
         this.#cacheTranscript(replica.snapshot());
         replica.adoptResidentAccounting();

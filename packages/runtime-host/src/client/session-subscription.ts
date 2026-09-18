@@ -25,6 +25,7 @@ import {
   type SessionDomainChangedFrame,
   type SessionContinuitySnapshot,
   SESSION_TRANSCRIPT_PAGE_MAX_BYTES,
+  type SubscriptionClosedFrame,
   type SubscriptionFrame,
   type SubscriptionOpenResult,
   type SessionTranscriptBootstrap,
@@ -69,6 +70,13 @@ export interface RuntimeHostSessionSubscription extends AsyncIterable<Subscripti
   readonly transcriptBootstrap: SessionTranscriptBootstrap | null;
   /** Newest durable sequence the Host announced; updated before the frame is handed out. */
   readonly transcriptWatermark: number | null;
+  /**
+   * The subscription's own death certificate: the failure that terminated it,
+   * or the reason on a received `subscription.closed` frame. A transcript read
+   * racing the death only sees the dead-state mask; classify by this instead.
+   */
+  readonly terminalError: Error | undefined;
+  readonly closedReason: SubscriptionClosedFrame['reason'] | undefined;
   loadTranscript<T>(decodeMessage: (value: unknown) => T): Promise<T[]>;
   decodeTranscriptPage<T>(
     page: SessionTranscriptPage,
@@ -115,6 +123,12 @@ export class ClientSessionSubscription
   get transcriptWatermark(): number | null {
     return this.#latestTranscriptThroughSequence;
   }
+  get terminalError(): Error | undefined {
+    return this.#terminalError;
+  }
+  get closedReason(): SubscriptionClosedFrame['reason'] | undefined {
+    return this.#closedReason;
+  }
   readonly #queue: QueuedFrame[] = [];
   readonly #ptyListeners = new Set<(frame: SessionRuntimeResourcePtyDataFrame) => void>();
   readonly #sessionDomainListeners = new Set<(frame: SessionDomainChangedFrame) => void>();
@@ -128,6 +142,7 @@ export class ClientSessionSubscription
       }
     | undefined;
   #terminalError: Error | undefined;
+  #closedReason: SubscriptionClosedFrame['reason'] | undefined;
   #done = false;
   #doneAfterQueue = false;
   #closing = false;
@@ -363,7 +378,8 @@ export class ClientSessionSubscription
   }
 
   #assertTranscriptReadable(): void {
-    if (this.#closing || this.#done || this.#terminalError) {
+    if (this.#terminalError) throw this.#terminalError;
+    if (this.#closing || this.#done) {
       throw new RuntimeHostSubscriptionError(
         'connection_closed',
         'Session subscription closed during transcript loading',
@@ -492,7 +508,10 @@ export class ClientSessionSubscription
     }
 
     this.#offer(frame);
-    if (frame.kind === 'subscription.closed') this.#doneAfterQueue = true;
+    if (frame.kind === 'subscription.closed') {
+      this.#closedReason = frame.reason;
+      this.#doneAfterQueue = true;
+    }
   }
 
   finish(): void {

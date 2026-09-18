@@ -212,6 +212,11 @@ export interface DesktopRuntimeHostSession {
   readonly activeAssistantStreams: readonly SessionAssistantStreamIdentity[];
   readonly transcriptBootstrap: SessionTranscriptBootstrap;
   readonly transcriptWatermark: number | null;
+  /** The subscription's own death certificate: the failure that terminated it,
+   * or the reason on a received `subscription.closed` frame. Read this before
+   * trusting a `connection_closed` mask thrown by a racing transcript read. */
+  readonly terminalError: Error | undefined;
+  readonly closedReason: Extract<SubscriptionFrame, { kind: 'subscription.closed' }>['reason'] | undefined;
   readonly events: AsyncIterable<SubscriptionFrame>;
   /** Frames are held by the Host until this resolves. */
   ready(): Promise<void>;
@@ -1856,6 +1861,14 @@ class DesktopSessionHandle implements DesktopRuntimeHostSession {
 
   get transcriptWatermark(): number | null {
     return this.subscription.transcriptWatermark;
+  }
+
+  get terminalError(): Error | undefined {
+    return this.subscription.terminalError;
+  }
+
+  get closedReason(): Extract<SubscriptionFrame, { kind: 'subscription.closed' }>['reason'] | undefined {
+    return this.subscription.closedReason;
   }
 
   ready(): Promise<void> {

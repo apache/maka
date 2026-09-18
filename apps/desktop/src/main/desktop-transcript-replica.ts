@@ -406,12 +406,18 @@ export class DesktopTranscriptReplica {
       await this.#readToWatermark();
     } catch (error) {
       // A Runtime Host read failure is permanent for the subscription this
-      // replica is bound to. Latch it so later calls fail with the same error
+      // replica is bound to when it names a dead subscription or a gone
+      // transcript context. Latch it so later calls fail with the same error
       // instead of retrying a dead subscription — the owner decides whether
       // recovery means replacing this replica or the whole subscription.
+      // Transient operation failures stay retryable: the only caller that
+      // swallows a rejection is the post-settle re-arm, and latching there
+      // would turn a retryable blip into a sticky terminal on the next frame.
       if (
         error instanceof RuntimeHostSubscriptionError ||
-        error instanceof RuntimeHostOperationError
+        (error instanceof RuntimeHostOperationError &&
+          error.operation === 'session.transcript.page' &&
+          error.code === 'not_found')
       ) {
         this.#failure ??= error;
       }
