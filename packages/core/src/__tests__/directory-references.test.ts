@@ -23,6 +23,7 @@ import {
   aggregateMessageContents,
   decodeMessageContent,
   isDirectoryReference,
+  isQuoteRef,
   messageContentDigest,
   messageContentsEqual,
   normalizeMessageContent,
@@ -110,4 +111,61 @@ test('directory references survive queue aggregation, StoredMessage and RuntimeE
   assert.equal(event.content?.kind, 'text');
   if (event.content?.kind !== 'text') throw new Error('Expected text event');
   assert.deepEqual(event.content.directoryReferences, content.directoryReferences);
+});
+
+test('a quote annotation stays part of durable message identity', () => {
+  const quote = {
+    text: 'the deploy failed at step three',
+    label: 'Assistant',
+    comment: 'is this the retry path?',
+  };
+  const source = { text: 'look at this', quotes: [quote] };
+  const normalized = normalizeMessageContent(source);
+  const same = decodeMessageContent(JSON.parse(JSON.stringify(source)));
+  assert.deepEqual(normalized.quotes, [quote]);
+  assert.equal(messageContentsEqual(normalized, same), true);
+  assert.equal(messageContentDigest(normalized), messageContentDigest(same));
+  // The note is why the excerpt was quoted, so two messages that differ only
+  // by the note are not the same message.
+  const renoted = { ...source, quotes: [{ ...quote, comment: 'or a new failure' }] };
+  assert.equal(messageContentsEqual(normalized, renoted), false);
+  assert.notEqual(messageContentDigest(normalized), messageContentDigest(renoted));
+  source.quotes[0]!.comment = 'changed after the clone';
+  assert.equal(normalized.quotes?.[0]?.comment, 'is this the retry path?');
+  assert.equal(isQuoteRef({ ...quote, comment: 7 }), false);
+  assert.throws(() => decodeMessageContent({ text: 'look', quotes: [{ ...quote, comment: 7 }] }));
+});
+
+test('a quote annotation survives aggregation, StoredMessage and RuntimeEvent decoding', () => {
+  const content = aggregateMessageContents([
+    { text: 'look at this', quotes: [{ text: 'the deploy failed at step three', comment: 'why' }] },
+    { text: 'and this', quotes: [{ text: 'no automatic retry', comment: 'confirm' }] },
+  ]);
+  assert.deepEqual(content.quotes, [
+    { text: 'the deploy failed at step three', comment: 'why' },
+    { text: 'no automatic retry', comment: 'confirm' },
+  ]);
+  const stored = decodeCanonicalMessage({
+    type: 'user',
+    id: 'message-1',
+    turnId: 'turn-1',
+    ts: 1,
+    ...content,
+  });
+  if (stored.type !== 'user') throw new Error('Expected user message');
+  assert.deepEqual(stored.quotes, content.quotes);
+  const event = decodeRuntimeEvent({
+    id: 'event-1',
+    invocationId: 'invocation-1',
+    runId: 'run-1',
+    sessionId: 'session-1',
+    turnId: 'turn-1',
+    ts: 1,
+    partial: false,
+    role: 'user',
+    author: 'user',
+    content: { kind: 'text', ...content },
+  });
+  if (event.content?.kind !== 'text') throw new Error('Expected text event');
+  assert.deepEqual(event.content.quotes, content.quotes);
 });
