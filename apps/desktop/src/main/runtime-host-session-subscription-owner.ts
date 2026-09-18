@@ -52,6 +52,11 @@ export interface RuntimeHostSessionSubscriptionOwnerDeps {
     subscription: PreparedSessionSubscription,
     recovered: boolean,
   ): Promise<() => void>;
+  /**
+   * Installs a reseeded replica inside the owner's swap, synchronously and
+   * before the evicted replica closes — same atomicity activate() gets.
+   */
+  installReseededReplica(replica: DesktopTranscriptReplica): void;
   acceptFrame(frame: SubscriptionFrame): void | Promise<void>;
   recoveryStarted(error: Error): void;
   recoveryCompleted(error: Error): void;
@@ -134,24 +139,49 @@ export class RuntimeHostSessionSubscriptionOwner {
 
   /**
    * Rebuilds the transcript tail on the live subscription after the replica
-   * was evicted. Answers the new replica only when this call swapped it into
-   * the active attempt; a concurrent recovery installs its own replica through
-   * activation, so the caller must not install anything then.
+   * was evicted. The commit runs inside the staleness check — the caller's
+   * state moves to the new replica before the evicted one closes, so an
+   * installed replica is never a closed object. Answers the new replica only
+   * when this call swapped it in; a concurrent recovery installs its own
+   * replica through activation instead.
    */
   async reseedTranscriptReplica(): Promise<DesktopTranscriptReplica | undefined> {
     await this.waitUntilReady();
     if (this.#closed) return undefined;
     const attempt = this.#attempt;
-    if (!attempt || attempt.phase !== 'active') return undefined;
+    if (!attempt) return undefined;
     const evicted = attempt.replica;
     if (evicted?.resident) return undefined;
-    const replica = await DesktopTranscriptReplica.reseed(
-      attempt.handle,
-      this.#deps.transcriptReplicaOptions,
-    );
+    let replica: DesktopTranscriptReplica;
+    try {
+      replica = await DesktopTranscriptReplica.reseed(
+        attempt.handle,
+        this.#deps.transcriptReplicaOptions,
+      );
+    } catch (error) {
+      // A subscription-scoped read failure means this handle is dead; the
+      // attempt decides whether that means recovery or terminal, exactly like
+      // a pump-frame failure does. Generic read failures stay the caller's
+      // transient error.
+      if (
+        error instanceof RuntimeHostSubscriptionError ||
+        error instanceof RuntimeHostOperationError
+      ) {
+        this.#failAttempt(attempt, error);
+        await this.waitUntilReady();
+        return undefined;
+      }
+      throw error;
+    }
     if (this.#closed || this.#attempt !== attempt || attempt.replica !== evicted) {
       replica.close();
       return undefined;
+    }
+    try {
+      this.#deps.installReseededReplica(replica);
+    } catch (error) {
+      replica.close();
+      throw error;
     }
     attempt.replica = replica;
     evicted?.close();
@@ -162,12 +192,14 @@ export class RuntimeHostSessionSubscriptionOwner {
     let recoveryError = initialError;
     if (recoveryError) this.#deps.recoveryStarted(recoveryError);
     if (failed) {
+      // Detach before the first await: a concurrent reseed must observe the
+      // attempt as gone rather than swap a replica onto this corpse.
+      if (this.#attempt === failed) this.#attempt = undefined;
       const candidate = this.#candidate;
       this.#candidate = undefined;
       candidate?.fail(ownerClosed());
       candidate?.replica?.close();
       await candidate?.handle.close().catch(() => undefined);
-      if (this.#attempt === failed) this.#attempt = undefined;
       failed.replica?.close();
       await failed.handle.close().catch(() => undefined);
     }

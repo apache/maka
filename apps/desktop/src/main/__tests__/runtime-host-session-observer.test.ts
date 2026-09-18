@@ -51,6 +51,7 @@ import {
   AsyncFrameQueue,
   continuitySnapshot,
   runtimeHostSessionFixture,
+  transcriptPage,
 } from "./runtime-host-session-test-fixture.js";
 import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
 
@@ -3162,6 +3163,98 @@ test("publishes Host sidecar and graph invalidations without inventing Session s
   ]);
   await observer.close();
 });
+
+test('reseeds an evicted replica on the live subscription when a transcript opens', async () => {
+  const firstEvents = new AsyncFrameQueue();
+  const opensBy = new Map<string, number>();
+  let tailReads = 0;
+  const observer = new RuntimeHostSessionObserver({
+    client: {
+      openSession: async (sessionId: string) => {
+        opensBy.set(sessionId, (opensBy.get(sessionId) ?? 0) + 1);
+        return runtimeHostSessionFixture({
+          snapshot: continuitySnapshot(),
+          events: sessionId === 'session-1' ? firstEvents : new AsyncFrameQueue(),
+          transcriptBootstrap: {
+            durable: transcriptPage('older', sessionId === 'session-1' ? 2 : 0),
+          },
+          transcriptWatermark: () => 2,
+          decodeTranscriptPage: async (page) => ({
+            messages: rowsThrough(
+              page.throughSequence,
+              sessionId === 'session-1' ? 20 : 2000,
+            ),
+            nextCursor: page.nextCursor,
+          }),
+          loadTranscriptPage: async (input) => {
+            if (sessionId === 'session-1') tailReads += 1;
+            return transcriptPage(input.direction, input.throughSequence ?? 2);
+          },
+          async close() {},
+        });
+      },
+    },
+    emitSessionsChanged() {},
+    // session-2's preparation bytes alone exceed the budget: the accounting
+    // trims and then discards session-1's unprotected replica, then fails.
+    transcriptGlobalCacheMaxBytes: 1500,
+  });
+  await observer.observe('session-1', 'observer-1', eventTarget(1));
+  await assert.rejects(
+    observer.observe('session-2', 'observer-2', eventTarget(2)),
+    /global cache limit/,
+  );
+
+  const batches: DesktopTranscriptBatch[] = [];
+  const opened = await observer.openTranscript('session-1', 'consumer-1', {
+    id: 7,
+    send(_channel, batch) {
+      batches.push(batch);
+      queueMicrotask(() =>
+        observer.acknowledgeTranscript(
+          'consumer-1',
+          batch.generation,
+          batch.deliverySequence!,
+          7,
+        ),
+      );
+    },
+    once() {},
+    off() {},
+  });
+
+  assert.equal(
+    opensBy.get('session-1'),
+    1,
+    'the reseed must reuse the live subscription',
+  );
+  assert.equal(tailReads, 1);
+  await waitFor(() => batches.some((batch) => batch.reset));
+  const reset = batches.find((batch) => batch.reset)!;
+  assert.equal(reset.generation, opened.generation);
+  await observer.close();
+});
+
+function rowsThrough(
+  throughSequence: number | null,
+  textBytes: number,
+): { identity: number; message: StoredMessage }[] {
+  const rows: { identity: number; message: StoredMessage }[] = [];
+  for (let identity = 0; identity <= (throughSequence ?? 0); identity += 1) {
+    rows.push({
+      identity,
+      message: {
+        type: 'assistant',
+        id: `row-${identity}`,
+        turnId: 'turn-1',
+        ts: identity,
+        text: 'x'.repeat(textBytes),
+        modelId: 'test-model',
+      },
+    });
+  }
+  return rows;
+}
 
 function activeText(messageId: string, turnId = 'turn-1') {
   return { kind: 'text' as const, turnId, messageId };

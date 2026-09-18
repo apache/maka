@@ -19,13 +19,41 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { RuntimeHostSubscriptionError } from '@maka/runtime-host/client';
+import { deferred } from '@maka/core/test-only/async-primitives';
+import {
+  RuntimeHostOperationError,
+  RuntimeHostSubscriptionError,
+} from '@maka/runtime-host/client';
 import { DesktopTranscriptReplica } from '../desktop-transcript-replica.js';
 import {
   continuitySnapshot,
   runtimeHostSessionFixture,
   transcriptPage,
 } from './runtime-host-session-test-fixture.js';
+
+test('latches a dead transcript page read like a dead subscription', async () => {
+  const failure = new RuntimeHostOperationError(
+    'session.transcript.page',
+    'not_found',
+    'subscription transcript context was lost',
+  );
+  let pageReads = 0;
+  const handle = runtimeHostSessionFixture({
+    snapshot: continuitySnapshot(),
+    transcriptWatermark: () => 8,
+    loadTranscriptPage: async () => {
+      pageReads += 1;
+      throw failure;
+    },
+    async close() {},
+  });
+  const replica = await DesktopTranscriptReplica.prepare(handle);
+
+  await assert.rejects(replica.advance(), (error) => error === failure);
+  await assert.rejects(replica.advance(), (error) => error === failure);
+  assert.equal(pageReads, 1);
+  await handle.close();
+});
 
 test('latches a dead subscription instead of re-arming the catch-up read', async () => {
   const failure = new RuntimeHostSubscriptionError(
@@ -122,6 +150,74 @@ test('follows the subscription watermark rather than an announced frame', async 
   watermark = 9;
   await replica.advance();
   assert.equal(replica.durableThrough, 9);
+  await handle.close();
+});
+
+test('re-reads the watermark when it moves during a blocked fetch', async () => {
+  const fetchGate = deferred<void>();
+  let watermark = 4;
+  let pageReads = 0;
+  const handle = runtimeHostSessionFixture({
+    snapshot: continuitySnapshot(),
+    transcriptWatermark: () => watermark,
+    loadTranscriptPage: async (input) => {
+      pageReads += 1;
+      if (pageReads === 1) await fetchGate.promise;
+      return transcriptPage('newer', input.throughSequence);
+    },
+    decodeTranscriptPage: async (requested) => ({
+      messages: [
+        {
+          identity: requested.throughSequence ?? 0,
+          message: {
+            type: 'assistant',
+            id: `row-${requested.throughSequence}`,
+            turnId: 'turn-1',
+            ts: 1,
+            text: 'done',
+            modelId: 'test-model',
+          },
+        },
+      ],
+      nextCursor: null,
+    }),
+    async close() {},
+  });
+  const replica = await DesktopTranscriptReplica.prepare(handle);
+
+  const first = replica.advance();
+  watermark = 9;
+  const coalesced = replica.advance();
+  fetchGate.resolve(undefined);
+  await Promise.all([first, coalesced]);
+  // The mid-flight advance coalesced, but the catch-up's loop-top re-read and
+  // the one post-settle re-arm still carry it to the live watermark.
+  await replica.advance();
+  assert.equal(replica.durableThrough, 9);
+  assert.equal(pageReads, 2);
+  await handle.close();
+});
+
+test('tracks the watermark without reading once evicted', async () => {
+  let pageReads = 0;
+  const handle = runtimeHostSessionFixture({
+    snapshot: continuitySnapshot(),
+    transcriptWatermark: () => 8,
+    loadTranscriptPage: async () => {
+      pageReads += 1;
+      return transcriptPage('newer', 8);
+    },
+    async close() {},
+  });
+  const replica = await DesktopTranscriptReplica.prepare(handle);
+
+  replica.discard();
+  // A transcript_advanced frame arriving while evicted must resolve quietly —
+  // a throw here would reach the pump and terminate the whole subscription.
+  await replica.advance();
+  assert.equal(pageReads, 0);
+  assert.equal(replica.durableThrough, 8);
+  assert.throws(() => replica.messages(), /evicted/);
   await handle.close();
 });
 

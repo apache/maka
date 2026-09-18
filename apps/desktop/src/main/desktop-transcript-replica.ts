@@ -380,15 +380,18 @@ export class DesktopTranscriptReplica {
     return this.#catchUpTask;
   }
 
+  // A closed replica reports !resident, so the residency check must precede
+  // the liveness assert: the observer's global trim/discard pass can meet a
+  // replica that recovery just closed, and that must be a no-op, not a throw.
   trimDurable(targetResidentBytes: number): void {
-    this.#assertOpen();
     if (!this.#resident) return;
+    this.#assertOpen();
     this.#evictToBudget(targetResidentBytes);
   }
 
   discard(): void {
-    this.#assertOpen();
     if (!this.#resident) return;
+    this.#assertOpen();
     this.#resident = false;
     this.#clearDurable();
   }

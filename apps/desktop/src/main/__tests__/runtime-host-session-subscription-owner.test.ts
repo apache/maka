@@ -20,7 +20,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { StoredMessage } from '@maka/core/session';
-import { deferred, waitFor as pollFor } from '@maka/core/test-only/async-primitives';
+import {
+  type Deferred,
+  deferred,
+  waitFor as pollFor,
+} from '@maka/core/test-only/async-primitives';
+import { RuntimeHostOperationError } from '@maka/runtime-host/client';
 import type { SubscriptionFrame } from '@maka/runtime-host/protocol';
 import type { DesktopTranscriptReplica } from '../desktop-transcript-replica.js';
 import { RuntimeHostSessionSubscriptionOwner } from '../runtime-host-session-subscription-owner.js';
@@ -48,6 +53,7 @@ test('dispatches a frame failure before the subscription iterator finishes closi
     sessionId: 'session-1',
     now: Date.now,
     prepareActivation: async () => () => {},
+    installReseededReplica: () => {},
     acceptFrame: () => {
       throw injected;
     },
@@ -77,6 +83,8 @@ test('reseeds an evicted replica on the same live subscription', async () => {
   const events = new AsyncFrameQueue();
   let watermark = 2;
   let replica!: DesktopTranscriptReplica;
+  let prepBytes = 0;
+  const installs: DesktopTranscriptReplica[] = [];
   let opens = 0;
   const owner = new RuntimeHostSessionSubscriptionOwner({
     client: {
@@ -101,9 +109,20 @@ test('reseeds an evicted replica on the same live subscription', async () => {
     },
     sessionId: 'session-1',
     now: () => 0,
+    transcriptReplicaOptions: {
+      accountPreparationBytes: (deltaBytes) => {
+        prepBytes += deltaBytes;
+      },
+    },
     prepareActivation: async (subscription) => {
       replica = subscription.replica;
       return () => {};
+    },
+    installReseededReplica: (reseeded) => {
+      // The commit runs before the evicted replica closes: at install time it
+      // must still fail as evicted, not as closed.
+      assert.throws(() => replica.messages(), /was evicted/);
+      installs.push(reseeded);
     },
     acceptFrame: () => {},
     recoveryStarted: () => {},
@@ -123,9 +142,11 @@ test('reseeds an evicted replica on the same live subscription', async () => {
   assert.equal(opens, 1, 'reseed must reuse the live subscription');
   assert.ok(reseeded);
   assert.notEqual(reseeded, replica);
+  assert.deepEqual(installs, [reseeded]);
   assert.throws(() => replica.messages(), /is closed/);
   assert.equal(reseeded.resident, true);
   assert.equal(reseeded.durableThrough, 6);
+  assert.equal(prepBytes, reseeded.residentBytes);
   assert.deepEqual(
     reseeded.messages().map((message) => message.id),
     ['row-3', 'row-4', 'row-5', 'row-6'],
@@ -138,7 +159,9 @@ test('a reseed superseded by subscription recovery does not displace the new rep
   const secondEvents = new AsyncFrameQueue();
   const reseedFetch = deferred<void>();
   let opens = 0;
+  let prepBytes = 0;
   const replicas: DesktopTranscriptReplica[] = [];
+  const installs: DesktopTranscriptReplica[] = [];
   const owner = new RuntimeHostSessionSubscriptionOwner({
     client: {
       openSession: async () => {
@@ -165,10 +188,16 @@ test('a reseed superseded by subscription recovery does not displace the new rep
     },
     sessionId: 'session-1',
     now: () => 0,
+    transcriptReplicaOptions: {
+      accountPreparationBytes: (deltaBytes) => {
+        prepBytes += deltaBytes;
+      },
+    },
     prepareActivation: async (subscription) => {
       replicas.push(subscription.replica);
       return () => {};
     },
+    installReseededReplica: (replica) => installs.push(replica),
     acceptFrame: () => {},
     recoveryStarted: () => {},
     recoveryCompleted: () => {},
@@ -195,6 +224,145 @@ test('a reseed superseded by subscription recovery does not displace the new rep
   assert.equal(await reseeding, undefined);
   await owner.waitUntilReady();
   assert.equal(replicas.length, 2);
+  assert.equal(installs.length, 0);
+  // The superseded build is closed, not installed: only the recovery
+  // replica's resident bytes stay accounted.
+  assert.equal(prepBytes, replicas[1]!.residentBytes);
+  await owner.close();
+});
+
+test('routes a dead-subscription reseed read through subscription recovery', async () => {
+  const firstEvents = new AsyncFrameQueue();
+  const secondEvents = new AsyncFrameQueue();
+  let opens = 0;
+  const replicas: DesktopTranscriptReplica[] = [];
+  const installs: DesktopTranscriptReplica[] = [];
+  const owner = new RuntimeHostSessionSubscriptionOwner({
+    client: {
+      openSession: async () => {
+        opens += 1;
+        const events = opens === 1 ? firstEvents : secondEvents;
+        return runtimeHostSessionFixture({
+          snapshot: continuitySnapshot(),
+          events,
+          transcriptBootstrap: { durable: transcriptPage('older', 2) },
+          transcriptWatermark: () => 2,
+          decodeTranscriptPage: async (page) => ({
+            messages: rowsThrough(page.throughSequence),
+            nextCursor: page.nextCursor,
+          }),
+          // The transcript context on the live handle is gone — the class of
+          // failure subscription recovery exists to heal.
+          loadTranscriptPage: async () => {
+            throw new RuntimeHostOperationError(
+              'session.transcript.page',
+              'not_found',
+              'subscription transcript context was lost',
+            );
+          },
+          async close() {
+            events.end();
+          },
+        });
+      },
+    },
+    sessionId: 'session-1',
+    now: () => 0,
+    prepareActivation: async (subscription) => {
+      replicas.push(subscription.replica);
+      return () => {};
+    },
+    installReseededReplica: (replica) => installs.push(replica),
+    acceptFrame: () => {},
+    recoveryStarted: () => {},
+    recoveryCompleted: () => {},
+    recoveryFailed: () => {},
+    terminalFailure: (error) => {
+      throw error;
+    },
+  });
+  owner.start();
+  await owner.waitUntilReady();
+
+  replicas[0]!.discard();
+  const reseeded = await owner.reseedTranscriptReplica();
+
+  assert.equal(reseeded, undefined);
+  assert.equal(installs.length, 0);
+  // Recovery replaced the subscription instead of leaving the session on a
+  // dead handle.
+  assert.equal(opens, 2);
+  assert.equal(replicas.length, 2);
+  await owner.close();
+});
+
+test('serializes concurrent reseeds into exactly one swap', async () => {
+  const events = new AsyncFrameQueue();
+  const fetches: Array<Deferred<void>> = [];
+  let replica!: DesktopTranscriptReplica;
+  let prepBytes = 0;
+  const installs: DesktopTranscriptReplica[] = [];
+  const owner = new RuntimeHostSessionSubscriptionOwner({
+    client: {
+      openSession: async () =>
+        runtimeHostSessionFixture({
+          snapshot: continuitySnapshot(),
+          events,
+          transcriptBootstrap: { durable: transcriptPage('older', 2) },
+          transcriptWatermark: () => 4,
+          decodeTranscriptPage: async (page) => ({
+            messages: rowsThrough(page.throughSequence),
+            nextCursor: page.nextCursor,
+          }),
+          loadTranscriptPage: async () => {
+            const gate = deferred<void>();
+            fetches.push(gate);
+            await gate.promise;
+            return transcriptPage('older', 4);
+          },
+          async close() {
+            events.end();
+          },
+        }),
+    },
+    sessionId: 'session-1',
+    now: () => 0,
+    transcriptReplicaOptions: {
+      accountPreparationBytes: (deltaBytes) => {
+        prepBytes += deltaBytes;
+      },
+    },
+    prepareActivation: async (subscription) => {
+      replica = subscription.replica;
+      return () => {};
+    },
+    installReseededReplica: (replica) => installs.push(replica),
+    acceptFrame: () => {},
+    recoveryStarted: () => {},
+    recoveryCompleted: () => {},
+    recoveryFailed: () => {},
+    terminalFailure: (error) => {
+      throw error;
+    },
+  });
+  owner.start();
+  await owner.waitUntilReady();
+
+  replica.discard();
+  const first = owner.reseedTranscriptReplica();
+  const second = owner.reseedTranscriptReplica();
+  await pollFor(() => fetches.length === 2);
+  fetches[0]!.resolve(undefined);
+  fetches[1]!.resolve(undefined);
+
+  const results = await Promise.all([first, second]);
+  const winners = results.filter((reseeded) => reseeded !== undefined);
+  assert.equal(winners.length, 1);
+  assert.equal(installs.length, 1);
+  assert.equal(installs[0], winners[0]);
+  // The loser is closed, not installed: only the winner's resident bytes stay
+  // accounted.
+  assert.equal(prepBytes, installs[0]!.residentBytes);
   await owner.close();
 });
 
