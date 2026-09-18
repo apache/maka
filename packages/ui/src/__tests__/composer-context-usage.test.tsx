@@ -147,3 +147,72 @@ test('the context usage share resolves declared, then metered, then metadata win
     Object.assign(globalThis, original);
   }
 });
+
+test('the git branch chip shows the branch, the short sha when detached, and nothing without Git', async () => {
+  const original = {
+    document: globalThis.document,
+    window: globalThis.window,
+    IS_REACT_ACT_ENVIRONMENT: (globalThis as typeof globalThis & {
+      IS_REACT_ACT_ENVIRONMENT?: boolean;
+    }).IS_REACT_ACT_ENVIRONMENT,
+  };
+  const { document, window } = parseHTML('<div id="root"></div>');
+  window.getComputedStyle = () => ({
+    direction: 'ltr',
+    writingMode: 'horizontal-tb',
+    getPropertyValue: () => '',
+  }) as unknown as CSSStyleDeclaration;
+  Object.assign(globalThis, { document, window, IS_REACT_ACT_ENVIRONMENT: true });
+  const container = document.querySelector('#root');
+  assert.ok(container);
+  const root = createRoot(container);
+
+  const render = (branch?: { name?: string; shortSha?: string }) =>
+    root.render(
+      <LocaleProvider locale="en">
+        <Composer
+          {...(branch ? { gitBranch: branch } : {})}
+          onSend={() => undefined}
+          onStop={() => undefined}
+        />
+      </LocaleProvider>,
+    );
+
+  // The chip is a readout, not a control: nothing under it may be a button, so
+  // a click has nothing to land on.
+  const branchEl = () => container.querySelector('.maka-composer-git-branch');
+  const chipText = () => branchEl()?.textContent?.trim();
+
+  try {
+    // No `gitBranch` — a non-repository workspace — means no chip at all, not an
+    // empty one: absence of Git is the normal case and must not leave a husk.
+    await act(() => render(undefined));
+    assert.equal(chipText(), undefined, 'no chip may render outside a Git repository');
+
+    await act(() => render({ name: 'feature/chip' }));
+    assert.equal(chipText(), 'feature/chip', 'a named branch must render its name');
+    // The chip must be a readout, not a control: whatever carries the branch
+    // text may not be (or contain) a button, so a click has nothing to land on.
+    assert.equal(
+      branchEl()?.closest('button'),
+      null,
+      'the branch chip must not be a button — the branch is a readout, not an action',
+    );
+    assert.equal(
+      branchEl()?.tagName,
+      'SPAN',
+      'the chip must be a plain span, not a control',
+    );
+    // The full branch must survive on the element a truncating row can still
+    // name: `title` is what hover shows when the text had to be shortened.
+    assert.match(branchEl()?.getAttribute('title') ?? '', /feature\/chip/u);
+
+    // Detached HEAD: the branch name is unknown, so the short sha is the label.
+    await act(() => render({ shortSha: 'abc1234' }));
+    assert.equal(chipText(), 'abc1234', 'a detached HEAD must name itself through the short sha');
+    assert.equal(branchEl()?.closest('button'), null, 'a detached HEAD readout must not be a button');
+  } finally {
+    await act(() => root.unmount());
+    Object.assign(globalThis, original);
+  }
+});
