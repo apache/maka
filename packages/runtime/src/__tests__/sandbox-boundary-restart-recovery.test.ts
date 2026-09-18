@@ -27,6 +27,7 @@ import type { AgentRunEvent, EmittedAgentRunEvent } from '@maka/core/agent-run';
 import { buildInvocationOpenedEvent } from '@maka/core/runtime-invocation';
 import { runtimeInvocationFailureClass } from '../runtime-event-read-model.js';
 import type { CreateSessionInput } from '@maka/core/runtime-inputs';
+import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { SessionHeader, StoredMessage } from '@maka/core/session';
 import {
   type DurableAgentRunStore,
@@ -68,9 +69,10 @@ describe('sandbox boundary restart recovery on durable stores', () => {
         await manager(stores).recoverInterruptedSessions();
       });
 
-      await withStores(root, async ({ sessions, runtimeEvents }) => {
+      await withStores(root, async (stores) => {
+        const { sessions, runtimeEvents } = stores;
         assert.deepEqual(await sessions.listPendingSandboxBoundaryRequests(session.id), []);
-        const [turn] = await sessions.listTurns(session.id);
+        const [turn] = await manager(stores).listTurns(session.id);
         assert.equal(turn?.status, 'failed');
         assert.equal(turn?.errorClass, 'sandbox_boundary_closed_by_restart');
         const [invocation] = await runtimeEvents.listSessionInvocations(session.id);
@@ -115,15 +117,15 @@ describe('sandbox boundary restart recovery on durable stores', () => {
         await manager(stores).recoverInterruptedSessions();
       });
 
-      const failedStatesAfterFirst = await withStores(root, async ({ sessions, runtimeEvents }) => {
-        const [turn] = await sessions.listTurns(session.id);
+      const failedStatesAfterFirst = await withStores(root, async (stores) => {
+        const [turn] = await manager(stores).listTurns(session.id);
         assert.equal(turn?.errorClass, 'sandbox_boundary_closed_by_restart');
-        const [invocation] = await runtimeEvents.listSessionInvocations(session.id);
+        const [invocation] = await stores.runtimeEvents.listSessionInvocations(session.id);
         assert.equal(
           invocation && runtimeInvocationFailureClass(invocation),
           'sandbox_boundary_closed_by_restart',
         );
-        return countFailedTurnStates(await sessions.readMessages(session.id));
+        return countFailedTurnStates(await manager(stores).getMessages(session.id));
       });
 
       // A later restart re-reads the same durable closure and must change
@@ -132,11 +134,12 @@ describe('sandbox boundary restart recovery on durable stores', () => {
         await manager(stores).recoverInterruptedSessions();
       });
 
-      await withStores(root, async ({ sessions, runtimeEvents }) => {
-        const [turn] = await sessions.listTurns(session.id);
+      await withStores(root, async (stores) => {
+        const { sessions, runtimeEvents } = stores;
+        const [turn] = await manager(stores).listTurns(session.id);
         assert.equal(turn?.errorClass, 'sandbox_boundary_closed_by_restart');
         assert.equal(
-          countFailedTurnStates(await sessions.readMessages(session.id)),
+          countFailedTurnStates(await manager(stores).getMessages(session.id)),
           failedStatesAfterFirst,
         );
         const [invocation] = await runtimeEvents.listSessionInvocations(session.id);
@@ -208,26 +211,35 @@ function manager(stores: DurableStores): SessionManager {
   });
 }
 
+/**
+ * A turn whose invocation opened and never ended: the opening fact and the
+ * user's own event are on the ledger, and no terminal fact follows them.
+ */
 async function seedInterruptedTurn(
   sessions: SessionAuthorityStore,
   runs: DurableAgentRunStore,
   runtimeEvents: DurableRuntimeEventStore,
   sessionId: string,
 ): Promise<void> {
-  await sessions.appendMessages(sessionId, [
-    { type: 'user', id: 'turn-1-user', turnId: 'turn-1', ts: 9, text: 'build it' },
-    {
-      type: 'turn_state',
-      id: 'turn-1-state',
-      turnId: 'turn-1',
-      ts: 10,
-      status: 'running',
-      partialOutputRetained: false,
-    },
-  ]);
   await sessions.updateHeader(sessionId, { status: 'waiting_for_user' });
   await runtimeEvents.appendRuntimeEvent(sessionId, 'run-1', openingEvent(sessionId));
+  await runtimeEvents.appendRuntimeEvent(sessionId, 'run-1', userEvent(sessionId));
   await runs.appendEvent(sessionId, 'run-1', runEvent(sessionId));
+}
+
+function userEvent(sessionId: string): RuntimeEvent {
+  return {
+    id: 'run-1-user',
+    sessionId,
+    invocationId: 'run-1',
+    runId: 'run-1',
+    turnId: 'turn-1',
+    ts: 11,
+    partial: false,
+    role: 'user',
+    author: 'user',
+    content: { kind: 'text', text: 'build it' },
+  };
 }
 
 function countFailedTurnStates(messages: readonly StoredMessage[]): number {

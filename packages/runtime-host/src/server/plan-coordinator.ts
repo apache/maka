@@ -17,12 +17,17 @@
  * under the License.
  */
 
+import { JsonArrayPageBudget } from './json-array-page-budget.js';
+
 import { createHash } from 'node:crypto';
+import type { MessageContent } from '@maka/core/events';
 import {
   PlanConflictError,
   planUserControlMutationInput,
   type PlanEvent,
+  type PlanExecution,
   type PlanMutationResult,
+  type PlanSessionState,
 } from '@maka/core/plan';
 import type { SessionManager } from '@maka/runtime/session-manager';
 import {
@@ -69,7 +74,6 @@ export interface HostPlanCoordinatorInput {
   readonly sessionAdmission: SessionAdmissionGate;
   readonly isSessionActive: (sessionId: string) => boolean;
   readonly refreshContinuity: (sessionId: string, lease: SessionAdmissionLease) => Promise<void>;
-  readonly onProjectionChanged: (sessionId: string) => void;
   readonly requestDrain: () => void;
   readonly root: Pick<RootTurnCoordinator, 'startHostedExternalTransition'>;
 }
@@ -91,7 +95,6 @@ export class HostPlanCoordinator {
   readonly #sessionAdmission: SessionAdmissionGate;
   readonly #isSessionActive: (sessionId: string) => boolean;
   readonly #refreshContinuity: HostPlanCoordinatorInput['refreshContinuity'];
-  readonly #onProjectionChanged: HostPlanCoordinatorInput['onProjectionChanged'];
   readonly #requestDrain: () => void;
   readonly #root: HostPlanCoordinatorInput['root'];
 
@@ -102,7 +105,6 @@ export class HostPlanCoordinator {
     this.#sessionAdmission = input.sessionAdmission;
     this.#isSessionActive = input.isSessionActive;
     this.#refreshContinuity = input.refreshContinuity;
-    this.#onProjectionChanged = input.onProjectionChanged;
     this.#requestDrain = input.requestDrain;
     this.#root = input.root;
   }
@@ -132,7 +134,14 @@ export class HostPlanCoordinator {
             };
           }
           plan = outcome.result;
-          return { kind: 'ready', content: { text: planTurnPrompt(input, outcome.result) } };
+          // The execution request is the transition Turn's own durable user
+          // content, so it must carry the approved steps: nothing else the model
+          // can read exposes their ids, and update_plan requires all of them.
+          const state = await this.#store.readState(input.sessionId);
+          return {
+            kind: 'ready',
+            content: planTurnContent(input, outcome.result, state),
+          };
         },
       },
       context,
@@ -219,7 +228,6 @@ export class HostPlanCoordinator {
     }
     try {
       const result = await this.#applyControl(input);
-      this.#onProjectionChanged(input.sessionId);
       await this.#refreshContinuity(input.sessionId, lease);
       return { ok: true, result: projectControlResult(result) };
     } catch (error) {
@@ -308,16 +316,21 @@ function fitPage(
   offset: number,
 ): Extract<PlanQueryResult, { kind: 'page' }> {
   const items: PlanProjectionItem[] = [];
+  const budget = new JsonArrayPageBudget(PLAN_RESULT_MAX_BYTES, {
+    kind: 'page',
+    ...header,
+    items: [],
+    nextCursor: null,
+  });
   const limit = Math.min(allItems.length, offset + PLAN_PAGE_MAX_ITEMS);
   for (let index = offset; index < limit; index += 1) {
-    const candidate = [...items, structuredClone(allItems[index]!)];
-    const nextOffset = offset + candidate.length;
-    const page = planPage(header, candidate, nextOffset, allItems.length);
-    if (Buffer.byteLength(JSON.stringify(page), 'utf8') > PLAN_RESULT_MAX_BYTES) {
+    const item = structuredClone(allItems[index]!);
+    const nextOffset = offset + items.length + 1;
+    if (!budget.tryAppend(item, nextOffset < allItems.length ? String(nextOffset) : null)) {
       if (items.length === 0) throw new Error('Persisted Plan item exceeds its wire invariant');
       break;
     }
-    items.push(candidate.at(-1)!);
+    items.push(item);
   }
   return planPage(header, items, offset + items.length, allItems.length);
 }
@@ -406,12 +419,51 @@ function planTurnInputDigest(input: PlanTurnStartInput): `sha256:${string}` {
   return `sha256:${createHash('sha256').update(JSON.stringify(canonical)).digest('hex')}`;
 }
 
-function planTurnPrompt(input: PlanTurnStartInput, result: PlanControlResult): string {
-  if (input.kind === 'approve_proposal') {
-    if (result.executionId === null) {
-      throw new PlanConflictError('Plan approval did not create an execution');
-    }
-    return `Execute the approved plan execution ${result.executionId}.`;
+/**
+ * Builds the transition Turn's user content. The model reads the execution
+ * request — the approved steps and how to keep them current — while the
+ * transcript keeps the one-line action the user actually took.
+ */
+function planTurnContent(
+  input: PlanTurnStartInput,
+  result: PlanControlResult,
+  state: PlanSessionState,
+): MessageContent {
+  const executionId = input.kind === 'approve_proposal' ? result.executionId : input.executionId;
+  if (executionId === null) {
+    throw new PlanConflictError('Plan approval did not create an execution');
   }
-  return `Resume the approved plan execution ${input.executionId}.`;
+  const displayText = planTurnLine(input.kind, executionId);
+  const text = planExecutionRequest(state, input.kind, executionId);
+  return text === displayText ? { text } : { text, displayText };
+}
+
+function planTurnLine(kind: PlanTurnStartInput['kind'], executionId: string): string {
+  return kind === 'approve_proposal'
+    ? `Execute the approved plan execution ${executionId}.`
+    : `Resume the approved plan execution ${executionId}.`;
+}
+
+function planExecutionRequest(
+  state: PlanSessionState,
+  kind: PlanTurnStartInput['kind'],
+  executionId: string,
+): string {
+  const execution = state.executions.find((candidate) => candidate.executionId === executionId);
+  if (!execution) return planTurnLine(kind, executionId);
+  return renderExecutionRequest(kind, execution);
+}
+
+function renderExecutionRequest(
+  kind: PlanTurnStartInput['kind'],
+  execution: PlanExecution,
+): string {
+  return [
+    planTurnLine(kind, execution.executionId),
+    '',
+    'Steps:',
+    ...execution.steps.map((step) => `- ${step.id} [${step.status}] ${step.title}`),
+    '',
+    'Use update_plan to keep every step status current.',
+  ].join('\n');
 }

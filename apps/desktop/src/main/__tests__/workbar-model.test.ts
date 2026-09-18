@@ -18,7 +18,7 @@
  */
 
 import { createSessionCatalogController, selectAuthoritativeSessionIds } from '../../renderer/session-catalog-state.js';
-import { sessionIdSetsEqual } from '../../renderer/live-turn-snapshot.js';
+import { sessionIdSetsEqual } from '../../renderer/features/conversation/index.js';
 import assert from 'node:assert/strict';
 import { afterEach, describe, it } from 'node:test';
 import {
@@ -28,7 +28,7 @@ import {
   isSessionWorkbarCollapsed,
   persistWorkbarLayout,
   persistableSessionWorkbarPanels,
-  readSessionWorkbarPanels,
+  parseSessionWorkbarPanels,
   reduceWorkbarLayout,
   reduceWorkbarPanels,
   SESSION_BOTTOM_PANEL_MAX_HEIGHT,
@@ -183,7 +183,7 @@ describe('Workbar topology', () => {
         'maka-session-workbar-tab-v1': 'browser',
       }),
     );
-    assert.deepEqual(readSessionWorkbarPanels(), createSessionWorkbarPanelsState());
+    assert.deepEqual(parseSessionWorkbarPanels(localStorage.getItem('maka-session-workbar-panels-v3')), createSessionWorkbarPanelsState());
   });
 
   it('drops a retired tool kind left in v3 storage', () => {
@@ -208,7 +208,7 @@ describe('Workbar topology', () => {
         }),
       }),
     );
-    const state = readSessionWorkbarPanels();
+    const state = parseSessionWorkbarPanels(localStorage.getItem('maka-session-workbar-panels-v3'));
     assert.deepEqual(
       state.right.tabs.map((tab) => tab.id),
       ['workbar:review'],
@@ -326,6 +326,6 @@ describe('Workbar topology', () => {
         'maka-session-workbar-panels-v3': '{not-json',
       }),
     );
-    assert.deepEqual(readSessionWorkbarPanels(), createSessionWorkbarPanelsState());
+    assert.deepEqual(parseSessionWorkbarPanels(localStorage.getItem('maka-session-workbar-panels-v3')), createSessionWorkbarPanelsState());
   });
 });

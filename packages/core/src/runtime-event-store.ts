@@ -157,6 +157,32 @@ export interface RuntimeEventStore {
     upToEventSeq?: number;
   }): Promise<ImmutableRuntimePrefixV1>;
   readSessionRuntimeEvents(sessionId: string): Promise<RuntimeEvent[]>;
+  /**
+   * Renumber a Session's event ordinals in the order its invocations opened.
+   *
+   * Ordinals are minted at append time, which is the conversation's order for
+   * every run this build starts. It is not the order of a run converted from
+   * the legacy transcript: that turn was said before runs already on the
+   * ledger, and it is appended after them. The transcript conversion is the
+   * only caller and the only writer that can know this, and it runs while the
+   * Session still has no ordinal reader, so these numbers are recomputed
+   * rather than moved out from under anyone.
+   */
+  resequenceSessionEventOrdinals(sessionId: string): Promise<void>;
+  /**
+   * Recall's narrowing over the ledger: the Sessions among `sessionIds` whose
+   * event payloads contain one of the folded `terms`, plus every Session with
+   * an in-flight partial stream. A superset of the Sessions that project a
+   * matching message — the caller projects each one and re-runs the real
+   * predicate. Stores without this fast path leave recall to read every
+   * transcript.
+   */
+  listSessionsWithRuntimeEventText?(
+    sessionIds: readonly string[],
+    terms: readonly string[],
+  ): Promise<string[]>;
+  /** Events of kinds that project to searchable messages, for recall's idf term. */
+  countRuntimeEventMessages?(sessionIds: readonly string[]): Promise<number>;
 }
 
 /** One invocation by run id, through the store's fast path when it has one. */

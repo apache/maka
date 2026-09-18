@@ -30,7 +30,6 @@ export function settingsActionErrorMessage(error: unknown, locale: UiLocale): st
       : '';
   const classified = generalizedErrorMessageForLocale(new Error(raw), '', locale);
   if (classified) return classified;
-  const redacted = redactSecrets(raw).trim();
-  if (locale === 'zh-CN' && redacted && /[\u4E00-\u9FFF]/.test(redacted)) return redacted;
+  if (raw) console.error('[settings] operation failed:', redactSecrets(raw));
   return getSettingsSharedCopy(locale).unknownError;
 }

@@ -25,7 +25,7 @@ import {
   createRuntimeBoundaryCursor,
   runtimePrefixSegment,
   type ImmutableRuntimePrefixV1,
-  type RuntimeBoundaryCursorV1,
+  type RuntimeBoundaryCursor,
   type RuntimeBoundaryDigest,
   type RuntimePrefixSegmentV1,
 } from '@maka/core/runtime-boundary';
@@ -66,7 +66,7 @@ export type ContinuationReplaySegmentResult =
 export interface ContinuationReplayPlanV1 {
   protocol: 'continuation_replay_plan_v1';
   providerProjectionVersion: typeof PROVIDER_REPLAY_PROJECTION_VERSION;
-  boundary: RuntimeBoundaryCursorV1;
+  boundary: RuntimeBoundaryCursor;
   providerReplayDigest: RuntimeBoundaryDigest;
   segments: readonly ContinuationReplaySegmentV1[];
   runtimeContext: readonly RuntimeEvent[];
@@ -170,7 +170,9 @@ export function buildContinuationReplaySegment(input: {
     );
   }
 
-  const modelPlan = buildRuntimeEventModelReplayPlan(input.prefix.events);
+  const modelPlan = buildRuntimeEventModelReplayPlan(input.prefix.events, {
+    allowRepairedAssistantPrefix: true,
+  });
   const eventIndexes = new Map(
     input.prefix.events.map((event, index) => [event.id, index] as const),
   );

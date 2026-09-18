@@ -25,7 +25,19 @@ import { DatabaseSync } from 'node:sqlite';
 import { describe, it } from 'node:test';
 import { DEFAULT_TOOL_MODE } from '@maka/core/tool-mode';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
+import { encodeCanonicalRuntimeEvent } from '@maka/core/canonical-runtime-event';
 import { RunSealedError } from '@maka/core/runtime-event-store';
+import { buildInvocationOpenedEvent } from '@maka/core/runtime-invocation';
+import { readLogicalRuntimeExecution } from '@maka/core/runtime-logical-execution';
+import {
+  RuntimeTranscriptOversizedTurnError,
+  RuntimeTranscriptQuery,
+} from '../runtime-transcript-query.js';
+import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
+import {
+  acquireOperationalStateDatabase,
+  resolveOperationalStateDatabasePath,
+} from '../operational-state-store.js';
 import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
 import {
   buildImmutableRuntimePrefix,
@@ -43,6 +55,12 @@ import {
   createSqliteRuntimeStore,
   type SqliteRuntimeStoreFailpoint,
 } from '../sqlite-runtime-store.js';
+
+const PREFIX_PROOF_TEST_BUDGET = {
+  maxEvents: 64,
+  maxBytes: 1024 * 1024,
+  maxRecordBytes: 256 * 1024,
+};
 
 describe('SqliteRuntimeStore', () => {
   it('applies versioned migrations and reopens the same database without rewriting schema', async () => {
@@ -111,6 +129,184 @@ describe('SqliteRuntimeStore', () => {
     });
   });
 
+  it('bounds a transcript Turn by stored total and per-record bytes', async () => {
+    await withStore(async (store) => {
+      const run = {
+        sessionId: 'session-1',
+        invocationId: 'invocation-1',
+        runId: 'run-1',
+        turnId: 'turn-1',
+      };
+      await store.appendRuntimeEvent(
+        run.sessionId,
+        run.runId,
+        buildInvocationOpenedEvent({
+          id: 'oversized-opening',
+          run,
+          openedAt: 1,
+          opening: {
+            kind: 'invocation_opened',
+            protocol: 'invocation_opened_v1',
+            route: {
+              provenance: 'runtime',
+              backendKind: 'fake',
+              llmConnectionId: 'fake-connection',
+              llmConnectionSlug: 'fake',
+              modelId: 'fake-model',
+            },
+            configuration: {
+              cwd: '/tmp',
+              permissionMode: 'ask',
+              collaborationMode: 'agent',
+              orchestrationMode: 'default',
+              orchestrationSource: 'session',
+              toolMode: DEFAULT_TOOL_MODE,
+            },
+            root: { kind: 'user' },
+            source: { kind: 'fresh' },
+          },
+        }),
+      );
+      // Every character here is three stored bytes, so a budget read as UTF-16
+      // code units admits a Turn three times the size it was asked to bound.
+      const text = '本'.repeat(4_000);
+      await store.appendRuntimeEvent(run.sessionId, run.runId, {
+        id: 'oversized-prompt',
+        ...run,
+        ts: 2,
+        partial: false,
+        role: 'user',
+        author: 'user',
+        content: { kind: 'text', text },
+      });
+      await store.appendRuntimeEvent(run.sessionId, run.runId, {
+        id: 'oversized-terminal',
+        ...run,
+        ts: 3,
+        partial: false,
+        role: 'system',
+        author: 'system',
+        status: 'completed',
+        actions: { endInvocation: true },
+      });
+
+      const request = {
+        direction: 'newer' as const,
+        throughOrdinal: Number.MAX_SAFE_INTEGER,
+        position: 1,
+        maxEvents: 64,
+        maxRecordBytes: 64_000,
+      };
+      await assert.rejects(
+        store.readTranscriptRun(run.sessionId, { ...request, maxBytes: 6_000 }, (_run, events) => [
+          ...events,
+        ]),
+        (error: unknown) => error instanceof RuntimeTranscriptOversizedTurnError,
+      );
+      await assert.rejects(
+        store.readTranscriptRun(
+          run.sessionId,
+          { ...request, maxBytes: 64_000, maxRecordBytes: 6_000 },
+          (_run, events) => [...events],
+        ),
+        (error: unknown) => error instanceof RuntimeTranscriptOversizedTurnError,
+      );
+      await assert.rejects(
+        store.readTranscriptRun(
+          run.sessionId,
+          { ...request, maxEvents: 2, maxBytes: 64_000 },
+          (_run, events) => [...events],
+        ),
+        (error: unknown) => error instanceof RuntimeTranscriptOversizedTurnError,
+      );
+      const served = await store.readTranscriptRun(
+        run.sessionId,
+        { ...request, maxBytes: 64_000 },
+        (_run, events) => [...events],
+      );
+      assert.equal(served?.length, 3);
+    });
+  });
+
+  it('projects transcript RuntimeEvents from a bounded row iterator', async () => {
+    await withStore(async (store) => {
+      await appendSettledTurn(store, 1);
+
+      const projected = await store.readTranscriptRun(
+        'session-1',
+        {
+          direction: 'newer',
+          throughOrdinal: Number.MAX_SAFE_INTEGER,
+          position: 1,
+          maxEvents: 3,
+          maxBytes: 64_000,
+          maxRecordBytes: 32_000,
+        },
+        (run, events) => {
+          assert.equal(Array.isArray(events), false);
+          return {
+            invocationId: run.invocation.invocationId,
+            firstOrdinal: run.firstOrdinal,
+            lastOrdinal: run.lastOrdinal,
+            rows: [...events].map(({ ordinal, event }) => ({ ordinal, eventId: event.id })),
+          };
+        },
+      );
+
+      assert.deepEqual(projected, {
+        invocationId: 'invocation-1',
+        firstOrdinal: 1,
+        // The Session holds nothing after this Turn, so its run reaches the
+        // read's own bound rather than stopping at another Turn's first event.
+        lastOrdinal: Number.MAX_SAFE_INTEGER,
+        rows: [
+          { ordinal: 1, eventId: 'opened-1' },
+          { ordinal: 2, eventId: 'prompt-1' },
+          { ordinal: 3, eventId: 'terminal-1' },
+        ],
+      });
+    });
+  });
+
+  it('pages the transcript without reading rows the page does not contain', async () => {
+    await withStore(async (store, dbPath) => {
+      for (let turn = 0; turn < 4; turn += 1) await appendSettledTurn(store, turn);
+      store.close();
+      const db = new DatabaseSync(dbPath);
+      try {
+        const executed: { sql: string; bind: unknown[] }[] = [];
+        const query = new RuntimeTranscriptQuery(
+          watchStatements(db, executed),
+          () =>
+            ({
+              sessionId: 'session-1',
+            }) as unknown as RuntimeInvocationRecord,
+        );
+        const request = {
+          throughOrdinal: Number.MAX_SAFE_INTEGER,
+          position: 6,
+          maxEvents: 64,
+          maxBytes: 64_000,
+          maxRecordBytes: 64_000,
+        };
+        query.highWater('session-1');
+        query.run('session-1', { ...request, direction: 'older' }, (_run, events) => [...events]);
+        query.run('session-1', { ...request, direction: 'newer' }, (_run, events) => [...events]);
+        // A full scan is how a page starts costing the Session it sits in: the
+        // rows it walks are every Turn's, not the page's.
+        for (const { sql, bind } of executed) {
+          const plan = db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...(bind as [])) as unknown as {
+            detail: string;
+          }[];
+          const scans = plan.filter((step) => step.detail.startsWith('SCAN'));
+          assert.deepEqual(scans, [], `${scans[0]?.detail} in ${sql}`);
+        }
+      } finally {
+        db.close();
+      }
+    });
+  });
+
   it('assigns stable Session ordinals in commit order across Runs', async () => {
     await withStore(async (store, dbPath) => {
       const first = functionCallEvent({ id: 'ordinal-1', ts: 20 });
@@ -153,6 +349,65 @@ describe('SqliteRuntimeStore', () => {
       }
     });
   });
+  it('publishes RuntimeEvent commits once, after a committed transaction', async () => {
+    await withStore(async (store) => {
+      const commits: string[] = [];
+      store.subscribeRuntimeEventCommits((sessionId) => commits.push(sessionId));
+      const first = textEvent('batch-1');
+      const second = textEvent('batch-2');
+      await assert.rejects(
+        store.importRuntimeEventsBatch({
+          sessionId: first.sessionId,
+          runId: first.runId,
+          events: [first, { ...first, ts: 99 }],
+        }),
+      );
+      assert.deepEqual(await store.readSessionRuntimeEventEntries('session-1'), []);
+      assert.deepEqual(commits, []);
+      await store.importRuntimeEventsBatch({
+        sessionId: first.sessionId,
+        runId: first.runId,
+        events: [first, second],
+      });
+      assert.deepEqual(commits, ['session-1']);
+    });
+  });
+
+  it('publishes leased RuntimeEvent commits when the outermost transaction settles', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-sqlite-runtime-lease-'));
+    const outer = acquireOperationalStateDatabase(root);
+    const store = createSqliteRuntimeStore(resolveOperationalStateDatabasePath(root), {
+      databaseLease: acquireOperationalStateDatabase(root),
+    });
+    try {
+      const commits: string[] = [];
+      store.subscribeRuntimeEventCommits((sessionId) => commits.push(sessionId));
+      const appends: Promise<void>[] = [];
+      assert.throws(() =>
+        outer.transaction('write', () => {
+          appends.push(store.appendRuntimeEvent('session-1', 'run-1', textEvent('lost')));
+          throw new Error('roll back');
+        }),
+      );
+      await Promise.all(appends);
+      assert.deepEqual(commits, []);
+      assert.deepEqual(await store.readSessionRuntimeEventEntries('session-1'), []);
+
+      outer.transaction('write', () => {
+        for (const id of ['kept-1', 'kept-2']) {
+          appends.push(store.appendRuntimeEvent('session-1', 'run-1', textEvent(id)));
+        }
+        assert.deepEqual(commits, []);
+      });
+      assert.deepEqual(commits, ['session-1']);
+      await Promise.all(appends);
+    } finally {
+      store.close();
+      outer.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('makes a raw canonical-equivalent terminal durability retry idempotent', async () => {
     await withStore(async (store) => {
       const terminal: RuntimeEvent = {
@@ -872,6 +1127,230 @@ describe('SqliteRuntimeStore', () => {
       );
     });
   });
+
+  for (const initialKind of ['fresh', 'continuation'] as const) {
+    it(`authenticates repeated handoff under one ${initialKind} logical admission across reopen`, async () => {
+      await withStore(async (store, dbPath) => {
+        const manual = continuationClaim();
+        let source: RuntimeEvent;
+        const segments: ReturnType<typeof runtimePrefixSegment>[] = [];
+        if (initialKind === 'continuation') {
+          const ancestor = continuationSourcePrefix();
+          await persistImmutablePrefix(store, ancestor);
+          segments.push(runtimePrefixSegment(ancestor));
+          await store.claimContinuation({ claim: manual });
+          source = continuationStartEvent(manual);
+          await store.commitContinuationStart({ claim: manual, event: source });
+        } else {
+          source = {
+            ...continuationStartEvent(manual),
+            id: 'root-opening',
+            actions: undefined,
+            content: {
+              ...manual.targetOpening,
+              source: { kind: 'fresh' },
+              root: { kind: 'goal', goalId: 'original-goal' },
+              lineage: { parentRunId: 'owning-agent', parentTurnId: 'owning-turn' },
+            },
+          };
+          await store.appendRuntimeEvent(source.sessionId, source.runId, source);
+        }
+        const rootRunId = source.runId;
+        const logicalIdentity = {
+          sessionId: source.sessionId,
+          turnId: source.turnId,
+          runId: rootRunId,
+        };
+        let fullEventReads = 0;
+        const membershipStore = {
+          listSessionInvocations: store.listSessionInvocations.bind(store),
+          readRunInvocation: store.readRunInvocation.bind(store),
+          readContinuationClaimStateByBoundary:
+            store.readContinuationClaimStateByBoundary.bind(store),
+          readImmutableRuntimePrefixProof: (input: {
+            sessionId: string;
+            runId: string;
+            upToEventSeq?: number;
+          }) => store.readImmutableRuntimePrefixProof(input, PREFIX_PROOF_TEST_BUDGET),
+          readImmutableRuntimeEvents: async () => {
+            fullEventReads += 1;
+            throw new Error('membership read loaded full events');
+          },
+        };
+        for (let index = 0; index < 2; index += 1) {
+          const target = {
+            sessionId: source.sessionId,
+            turnId: source.turnId,
+            runId: `handoff-run-${index}`,
+            invocationId: `handoff-invocation-${index}`,
+          };
+          const claimId = `handoff-claim-${index}`;
+          const seal: RuntimeEvent = {
+            ...source,
+            id: `pause-${index}`,
+            content: undefined,
+            ts: 15 + index,
+            actions: {
+              endInvocation: true,
+              handoffPause: {
+                protocol: 'runtime_handoff_pause_v1',
+                handoffId: `handoff-${index}`,
+                remainingSteps: null,
+                hostEpoch: 'old-host',
+                rootRunId,
+                successorRunId: target.runId,
+                successorInvocationId: target.invocationId,
+                claimId,
+              },
+            },
+          };
+          await store.appendRuntimeEvent(seal.sessionId, seal.runId, seal);
+          assert.equal(
+            (await readLogicalRuntimeExecution(store, logicalIdentity))?.pendingHandoff?.claimId,
+            claimId,
+          );
+          assert.equal(
+            (
+              await readLogicalRuntimeExecution(membershipStore, logicalIdentity, undefined, {
+                mode: 'membership',
+              })
+            )?.pendingHandoff?.claimId,
+            claimId,
+          );
+          segments.push(
+            runtimePrefixSegment(
+              await store.readImmutableRuntimePrefix({
+                sessionId: source.sessionId,
+                runId: source.runId,
+              }),
+            ),
+          );
+          const boundary = createRuntimeBoundaryCursor(
+            segments as [(typeof segments)[number], ...typeof segments],
+          );
+          const proposed = continuationClaimForBoundary(boundary, { claimId, target });
+          assert.equal(source.content?.kind, 'invocation_opened');
+          const opening = source.content as ContinuationClaimV1['targetOpening'];
+          assert.equal(proposed.targetOpening.source.kind, 'continuation');
+          const claim: ContinuationClaimV1 = {
+            ...proposed,
+            targetOpening: {
+              ...opening,
+              source: {
+                ...(proposed.targetOpening.source as Extract<
+                  ContinuationClaimV1['targetOpening']['source'],
+                  { kind: 'continuation' }
+                >),
+                kind: 'handoff',
+                rootRunId,
+                claimId,
+                boundaryDigest: boundary.manifestDigest,
+              },
+            },
+          };
+          for (const targetOpening of [
+            { ...claim.targetOpening, root: { kind: 'user' as const } },
+            { ...claim.targetOpening, lineage: { parentRunId: 'stolen-owner' } },
+            { ...claim.targetOpening, configuration: { ...opening.configuration, cwd: '/other' } },
+          ]) {
+            if (JSON.stringify(targetOpening) === JSON.stringify(claim.targetOpening)) continue;
+            await assert.rejects(
+              store.claimContinuation({ claim: { ...claim, targetOpening } }),
+              /sealed source authority/,
+            );
+          }
+          await assert.rejects(
+            store.claimContinuation({
+              claim: {
+                ...claim,
+                target: { ...claim.target, invocationId: 'unauthorized-physical-target' },
+              },
+            }),
+            /sealed source authority/,
+          );
+          assert.equal((await store.claimContinuation({ claim })).kind, 'acquired');
+          assert.equal((await store.claimContinuation({ claim })).kind, 'existing');
+          assert.equal(
+            (await readLogicalRuntimeExecution(store, logicalIdentity))?.pendingHandoff?.claimId,
+            claimId,
+          );
+          source = continuationStartEvent(claim, { id: `handoff-start-${index}` });
+          await store.commitContinuationStart({ claim, event: source });
+          await store.commitContinuationStart({ claim, event: source });
+          const live = await readLogicalRuntimeExecution(store, logicalIdentity);
+          const membership = await readLogicalRuntimeExecution(
+            membershipStore,
+            logicalIdentity,
+            undefined,
+            { mode: 'membership' },
+          );
+          assert.equal(live?.root.runId, rootRunId);
+          assert.equal(live?.tip.runId, source.runId);
+          assert.equal(live?.pendingHandoff, undefined);
+          assert.deepEqual(membership?.runIds, live?.runIds);
+          assert.equal(membership?.root.runId, live?.root.runId);
+          assert.equal(membership?.tip.runId, live?.tip.runId);
+          assert.equal(membership?.pendingHandoff, undefined);
+          assert.equal(fullEventReads, 0);
+          if (index === 0) {
+            await assert.rejects(
+              readLogicalRuntimeExecution(
+                {
+                  ...membershipStore,
+                  readImmutableRuntimePrefixProof: async (input) => ({
+                    ...(await membershipStore.readImmutableRuntimePrefixProof(input)),
+                    prefixDigest:
+                      'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                  }),
+                },
+                logicalIdentity,
+                undefined,
+                { mode: 'membership' },
+              ),
+              /successor opened without its continuation claim/,
+            );
+          }
+          await assert.rejects(
+            store.appendRuntimeEvent(source.sessionId, 'rogue', {
+              ...source,
+              id: `rogue-${index}`,
+              runId: 'rogue',
+              invocationId: 'rogue',
+              content: { kind: 'text', text: 'unauthorized' },
+              actions: undefined,
+            }),
+            /target identity conflict/,
+          );
+        }
+        const terminal: RuntimeEvent = {
+          ...source,
+          id: 'logical-completion',
+          content: undefined,
+          status: 'completed',
+          actions: { endInvocation: true },
+        };
+        await store.appendRuntimeEvent(terminal.sessionId, terminal.runId, terminal);
+        store.close();
+        const reopened = createSqliteRuntimeStore(dbPath);
+        try {
+          const claims = await reopened.listContinuationClaimsForRecovery(source.sessionId);
+          assert.equal(claims.length, initialKind === 'fresh' ? 2 : 3);
+          assert.equal(claims.at(-1)?.claim.target.turnId, source.turnId);
+          assert.deepEqual(
+            (await reopened.readRuntimeEvents(source.sessionId, source.runId)).at(-1),
+            encodeCanonicalRuntimeEvent(terminal).event,
+          );
+          assert.equal(
+            (await readLogicalRuntimeExecution(reopened, logicalIdentity))?.tip.terminalEvent
+              ?.status,
+            'completed',
+          );
+        } finally {
+          reopened.close();
+        }
+      });
+    });
+  }
 
   it('rejects a continuation claim whose immediate source boundary is not durable', async () => {
     await withStore(async (store) => {
@@ -1640,10 +2119,34 @@ describe('SqliteRuntimeStore', () => {
         sessionId: 'session-1',
         runId: 'run-1',
       });
+      const proof = await store.readImmutableRuntimePrefixProof(
+        { sessionId: 'session-1', runId: 'run-1' },
+        PREFIX_PROOF_TEST_BUDGET,
+      );
+      const pinnedProof = await store.readImmutableRuntimePrefixProof(
+        { sessionId: 'session-1', runId: 'run-1', upToEventSeq: 1 },
+        PREFIX_PROOF_TEST_BUDGET,
+      );
 
       assert.equal(pinned.prefixDigest, beforePartial.prefixDigest);
       assert.equal(latest.position.lastEventSeq, 2);
       assert.notEqual(latest.prefixDigest, beforePartial.prefixDigest);
+      assert.equal(proof.prefixDigest, latest.prefixDigest);
+      assert.deepEqual(proof.position, latest.position);
+      assert.equal(proof.firstEvent.id, 'user-event-1');
+      assert.equal(proof.lastEvent.id, 'model-event-2');
+      assert.equal(pinnedProof.prefixDigest, pinned.prefixDigest);
+      assert.equal(pinnedProof.firstEvent.id, pinnedProof.lastEvent.id);
+      for (const [budget, message] of [
+        [{ ...PREFIX_PROOF_TEST_BUDGET, maxEvents: 1 }, /event limit/],
+        [{ ...PREFIX_PROOF_TEST_BUDGET, maxBytes: 1 }, /byte limit/],
+        [{ ...PREFIX_PROOF_TEST_BUDGET, maxRecordBytes: 1 }, /record byte limit/],
+      ] as const) {
+        await assert.rejects(
+          store.readImmutableRuntimePrefixProof({ sessionId: 'session-1', runId: 'run-1' }, budget),
+          message,
+        );
+      }
     });
   });
 
@@ -1791,6 +2294,13 @@ describe('SqliteRuntimeStore', () => {
             sessionId: 'session-1',
             runId: 'run-1',
           }),
+          /event_seq gap/,
+        );
+        await assert.rejects(
+          reopened.readImmutableRuntimePrefixProof(
+            { sessionId: 'session-1', runId: 'run-1' },
+            PREFIX_PROOF_TEST_BUDGET,
+          ),
           /event_seq gap/,
         );
       } finally {
@@ -2103,6 +2613,91 @@ function continuationStartEvent(
       },
     },
   };
+}
+
+/** A DatabaseSync that records what each statement was actually run with. */
+function watchStatements(
+  db: DatabaseSync,
+  executed: { sql: string; bind: unknown[] }[],
+): DatabaseSync {
+  return {
+    prepare(sql: string) {
+      const statement = db.prepare(sql);
+      const record =
+        <T>(call: (...bind: unknown[]) => T) =>
+        (...bind: unknown[]) => {
+          executed.push({ sql, bind });
+          return call(...bind);
+        };
+      return {
+        all: record((...bind) => statement.all(...(bind as []))),
+        get: record((...bind) => statement.get(...(bind as []))),
+        iterate: record((...bind) => statement.iterate(...(bind as []))),
+      };
+    },
+  } as unknown as DatabaseSync;
+}
+
+async function appendSettledTurn(store: Store, index: number): Promise<void> {
+  const run = {
+    sessionId: 'session-1',
+    invocationId: `invocation-${index}`,
+    runId: `run-${index}`,
+    turnId: `turn-${index}`,
+  };
+  await store.appendRuntimeEvent(
+    run.sessionId,
+    run.runId,
+    buildInvocationOpenedEvent({
+      id: `opened-${index}`,
+      run,
+      openedAt: index * 10,
+      opening: {
+        kind: 'invocation_opened',
+        protocol: 'invocation_opened_v1',
+        route: {
+          provenance: 'runtime',
+          backendKind: 'fake',
+          llmConnectionId: 'fake-connection',
+          llmConnectionSlug: 'fake',
+          modelId: 'fake-model',
+        },
+        configuration: {
+          cwd: '/tmp',
+          permissionMode: 'ask',
+          collaborationMode: 'agent',
+          orchestrationMode: 'default',
+          orchestrationSource: 'session',
+          toolMode: DEFAULT_TOOL_MODE,
+        },
+        root: { kind: 'user' },
+        source: { kind: 'fresh' },
+      },
+    }),
+  );
+  await store.appendRuntimeEvent(run.sessionId, run.runId, {
+    id: `prompt-${index}`,
+    ...run,
+    ts: index * 10 + 1,
+    partial: false,
+    role: 'user',
+    author: 'user',
+    content: { kind: 'text', text: `turn ${index}` },
+  });
+  await store.appendRuntimeEvent(run.sessionId, run.runId, {
+    id: `terminal-${index}`,
+    ...run,
+    ts: index * 10 + 2,
+    partial: false,
+    role: 'system',
+    author: 'system',
+    status: 'completed',
+    actions: { endInvocation: true },
+  });
+}
+
+function textEvent(id: string): RuntimeEvent {
+  return functionCallEvent({ id, content: { kind: 'text', text: id } });
 }
 
 function functionCallEvent(overrides: Partial<RuntimeEvent> = {}): RuntimeEvent {

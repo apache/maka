@@ -50,6 +50,8 @@ import { npmSpawnOptions } from './npm-spawn.mjs';
 const MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
 const PROCESS_TIMEOUT_MS = 90_000;
 const RUNTIME_HOST_SHUTDOWN_TIMEOUT_MS = 45_000;
+const RELEASE_SMOKE_IDLE_GRACE_MS = 2_000;
+let installedIdleGraceEnvVar;
 const MODEL_ID = 'maka-release-smoke-model';
 const CONNECTION_SLUG = 'maka-release-smoke';
 const API_KEY = 'maka-release-smoke-key';
@@ -141,6 +143,11 @@ async function validateInstalledProduct(root) {
     process.platform === 'win32'
       ? join(prefix, 'node_modules/maka-agent')
       : join(prefix, 'lib/node_modules/maka-agent');
+  const client = await importInstalled(
+    packageRoot,
+    'node_modules/@maka/runtime-host/dist/client/index.js',
+  );
+  installedIdleGraceEnvVar = client.IDLE_GRACE_MS_ENV_VAR;
   const baseEnvironment = isolatedEnvironment(join(root, 'home'));
   const maka = process.platform === 'win32' ? join(prefix, 'maka.cmd') : join(prefix, 'bin/maka');
   const cliEntrypoint = join(packageRoot, 'dist/cli.js');
@@ -175,8 +182,8 @@ async function validateInstalledProduct(root) {
   await smokeRuntimeHostPeerProtocol({ packageRoot, cliEntrypoint, root });
 
   // These flows own separate roots and each proves the packaged Host's idle
-  // retirement. Start both before awaiting so the same 30-second grace window
-  // is observed once in wall-clock time rather than twice in series.
+  // retirement. Start both before awaiting so the same grace window is
+  // observed once in wall-clock time rather than twice in series.
   logStep('checking the interactive TUI setup path');
   const interactiveTui = smokeInteractiveTui({
     packageRoot,
@@ -199,6 +206,14 @@ async function validateInstalledProduct(root) {
   if (smokeFailures.length > 1) {
     throw new AggregateError(smokeFailures, 'Installed CLI product flows both failed');
   }
+
+  logStep('checking npx invocation lifetime and durable schedule recovery after cache removal');
+  await smokeNpxScheduleRecovery({
+    packageRoot,
+    cliEntrypoint,
+    ptySpawn,
+    root: join(root, 'npx-schedule-recovery'),
+  });
 
   logStep('checking the managed Runtime Host lifecycle');
   await smokeRuntimeHostService({
@@ -818,6 +833,167 @@ async function smokeRuntimeHostService({ packageRoot, cliEntrypoint, ptySpawn, r
   );
 }
 
+async function smokeNpxScheduleRecovery({ packageRoot, cliEntrypoint, ptySpawn, root }) {
+  const home = join(root, 'home');
+  const workspace = join(root, 'workspace');
+  mkdirSync(workspace, { recursive: true });
+  const cache = join(root, 'npm-cache');
+  const cacheSlot = join(cache, '_npx', 'release-smoke');
+  const temporaryPackage = join(cacheSlot, 'node_modules', 'maka-agent');
+  // Use the already verified immutable candidate bytes, not a registry fetch
+  // or a symlink that resolves back to the persistent installation.
+  cpSync(packageRoot, temporaryPackage, { recursive: true, dereference: true });
+  const environment = { ...isolatedEnvironment(home), npm_config_cache: cache };
+  const dataRoots = await resolveInstalledDataRoots(packageRoot, environment, home);
+  const installation = await importInstalled(packageRoot, 'dist/runtime-host-cli-installation.js');
+  if (
+    !(await installation.isTemporaryNpxInstallation(temporaryPackage, {
+      environment,
+      homeDir: home,
+    }))
+  ) {
+    throw new Error('Release smoke cache layout is not recognized as a temporary npx package');
+  }
+  const client = await importInstalled(
+    packageRoot,
+    'node_modules/@maka/runtime-host/dist/client/index.js',
+  );
+  const protocol = await importInstalled(
+    packageRoot,
+    'node_modules/@maka/runtime-host/dist/protocol/index.js',
+  );
+  let observer;
+  let source;
+  let recovered;
+  let task;
+  const connect = async () => {
+    const result = await client.connectExistingRuntimeHost({
+      rootPath: dataRoots.workspaceRoot,
+      compositionId: protocol.INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
+      protocol: {
+        min: protocol.RUNTIME_HOST_PROTOCOL_VERSION,
+        max: protocol.RUNTIME_HOST_PROTOCOL_VERSION,
+      },
+      connectTimeoutMs: 10_000,
+      handshakeTimeoutMs: 10_000,
+    });
+    if (result.kind !== 'connected')
+      throw new Error(`Schedule smoke Host unavailable: ${result.kind}`);
+    observer = result.connection;
+    return result;
+  };
+  const assertSchedule = async () => {
+    const result = await observer.request('scheduled-task.query', { kind: 'get', taskId: task.id });
+    if (
+      result.kind !== 'task' ||
+      !result.task ||
+      JSON.stringify(scheduleFacts(result.task)) !== JSON.stringify(scheduleFacts(task))
+    ) {
+      throw new Error('The npx-created durable schedule changed or disappeared after recovery');
+    }
+    const diagnostics = await observer.request('host.diagnostics.query', {});
+    if (
+      !diagnostics.residencies.some((entry) => entry.label === 'scheduled-task' && entry.count > 0)
+    ) {
+      throw new Error('The release smoke schedule does not hold a Host residency');
+    }
+  };
+  const exitSurface = async (entrypoint, prepare) => {
+    const result = await runPtyScenario({
+      ptySpawn,
+      command: process.execPath,
+      args: [entrypoint],
+      cwd: workspace,
+      environment,
+      marker: '/setup',
+      onMarker: async (terminal) => {
+        await prepare();
+        await observer.close();
+        observer = undefined;
+        terminal.write('/exit\r');
+      },
+      timeoutMs: PROCESS_TIMEOUT_MS,
+    });
+    if (result.exitCode !== 0)
+      throw new Error(`Schedule smoke Surface exited with ${result.exitCode}`);
+  };
+  await withCleanup(
+    async () => {
+      await exitSurface(join(temporaryPackage, 'dist', 'cli.js'), async () => {
+        const connected = await connect();
+        source = {
+          rootId: observer.rootId,
+          hostEpoch: observer.hostEpoch,
+          pid: connected.registration.pid,
+        };
+        const created = await observer.request('scheduled-task.mutate', {
+          kind: 'create',
+          input: {
+            title: 'release-smoke npx durable schedule',
+            intentBody: '',
+            schedule: { kind: 'once', runAt: Date.now() + 24 * 60 * 60 * 1_000 },
+            effect: { kind: 'notify', channel: 'local' },
+          },
+        });
+        if (created.kind !== 'task') throw new Error('Unable to create the release smoke schedule');
+        task = created.task;
+        await assertSchedule();
+      });
+      // This must succeed before any forced cleanup or schedule deletion: the
+      // source still has durable work, but its temporary invocation has ended.
+      await waitForRuntimeHostShutdown(packageRoot, dataRoots.workspaceRoot);
+      const deadline = Date.now() + 5_000;
+      while (processExists(source.pid) && Date.now() < deadline) await delay(50);
+      if (processExists(source.pid))
+        throw new Error('The npx-owned Host outlived its CLI invocation');
+      renameSync(cacheSlot, join(root, 'removed-npx-cache-slot'));
+      if (existsSync(temporaryPackage)) throw new Error('The old npx package path still exists');
+
+      await exitSurface(cliEntrypoint, async () => {
+        const connected = await connect();
+        if (observer.rootId !== source.rootId || observer.hostEpoch === source.hostEpoch) {
+          throw new Error('Persistent CLI did not start a fresh Host for the same State Root');
+        }
+        recovered = { hostEpoch: observer.hostEpoch, pid: connected.registration.pid };
+        await assertSchedule();
+      });
+      // Past the idle grace plus a margin for a loaded runner's process exit, so
+      // a Host that lost its residency cannot still read as alive.
+      await delay(RELEASE_SMOKE_IDLE_GRACE_MS + 3_000);
+      const connected = await connect();
+      if (
+        observer.hostEpoch !== recovered.hostEpoch ||
+        connected.registration.pid !== recovered.pid
+      ) {
+        throw new Error('The persistent Host was replaced after its Surface exited');
+      }
+      await assertSchedule();
+      const deleted = await observer.request('scheduled-task.mutate', {
+        kind: 'delete',
+        taskId: task.id,
+      });
+      if (deleted.kind !== 'deleted')
+        throw new Error('Unable to remove the release smoke schedule');
+    },
+    (completed) =>
+      runCleanupSteps([
+        () => observer?.close(),
+        () => settleRuntimeHost(packageRoot, dataRoots.workspaceRoot, completed),
+      ]),
+  );
+}
+
+function scheduleFacts(task) {
+  return {
+    id: task.id,
+    title: task.title,
+    status: task.status,
+    schedule: task.schedule,
+    effect: task.effect,
+    nextFireAt: task.nextFireAt,
+  };
+}
+
 async function allocateLoopbackPort() {
   const server = createServer();
   await new Promise((resolve, reject) => {
@@ -1268,6 +1444,7 @@ function runPtyScenario({
   return new Promise((resolvePromise, reject) => {
     let output = '';
     let markerSeen = false;
+    let markerAction = Promise.resolve();
     let outputActionApplied = false;
     let settled = false;
     const terminal = ptySpawn(command, args, {
@@ -1312,7 +1489,13 @@ function runPtyScenario({
       if (!markerSeen && output.includes(marker)) {
         markerSeen = true;
         try {
-          onMarker?.(terminal, output);
+          markerAction = Promise.resolve(onMarker?.(terminal, output)).catch((error) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            terminal.kill();
+            reject(error);
+          });
         } catch (error) {
           settled = true;
           clearTimeout(timer);
@@ -1323,13 +1506,18 @@ function runPtyScenario({
     });
     terminal.onExit(({ exitCode, signal }) => {
       if (settled) return;
-      settled = true;
-      clearTimeout(timer);
       if (!markerSeen) {
+        settled = true;
+        clearTimeout(timer);
         reject(new Error(`PTY command exited before ${JSON.stringify(marker)}: ${output}`));
         return;
       }
-      resolvePromise({ exitCode, signal, output });
+      void markerAction.then(() => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolvePromise({ exitCode, signal, output });
+      });
     });
   });
 }
@@ -1390,6 +1578,8 @@ function runProcess(command, args, { cwd, environment, timeoutMs }) {
 }
 
 function isolatedEnvironment(home) {
+  if (!installedIdleGraceEnvVar)
+    throw new Error('Installed client exports no IDLE_GRACE_MS_ENV_VAR');
   const appData = join(home, 'AppData', 'Roaming');
   const localAppData = join(home, 'AppData', 'Local');
   const temporaryDirectory = join(home, 'tmp');
@@ -1410,6 +1600,7 @@ function isolatedEnvironment(home) {
     TERM: 'xterm-256color',
     NO_PROXY: '127.0.0.1,localhost',
     no_proxy: '127.0.0.1,localhost',
+    [installedIdleGraceEnvVar]: String(RELEASE_SMOKE_IDLE_GRACE_MS),
   };
 }
 

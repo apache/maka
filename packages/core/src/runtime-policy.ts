@@ -25,7 +25,7 @@ import type {
 } from './llm-connections.js';
 import type { ThinkingLevel } from './model-thinking.js';
 import type { ProviderType } from './provider-registry.js';
-import type { RelayModelProfile } from './model-thinking.js';
+import type { ModelOverride } from './model-thinking.js';
 import {
   networkProxyCredentialTarget,
   type ChatDefaultPermissionMode,
@@ -53,6 +53,7 @@ export {
   decodeCanonicalRuntimePolicy,
   normalizeNetworkProxyCredentialTarget,
   decodeRuntimePolicyV2,
+  decodeRuntimePolicyV3,
   normalizeNetworkProxyUpdate,
   normalizeRuntimePolicyMutation,
 } from './runtime-policy/policy-codec.js';
@@ -67,8 +68,9 @@ export {
   decodeCanonicalConnectionCatalogEntry,
   decodeConnectionModelId,
   decodeConnectionCredentialTarget,
-  decodeRelayModelProfilesTable,
+  decodeModelOverridesTable,
   decodeConnectionModel,
+  decodeConnectionModels,
   decodeConnectionName,
   decodeConnectionSlug,
   decodeConnectionTarget,
@@ -153,6 +155,7 @@ export interface RuntimePolicy {
   readonly chatDefaults: {
     readonly permissionMode: ChatDefaultPermissionMode;
     readonly thinkingLevel?: ThinkingLevel;
+    readonly codeModeEnabled?: boolean;
   };
   readonly webSearch: {
     readonly enabled: boolean;
@@ -160,6 +163,7 @@ export interface RuntimePolicy {
   };
   readonly subagents: SubagentSettings;
   readonly shell: ShellSettings;
+  readonly externalAgents: { readonly antigravity: { readonly executable: string } };
 }
 
 export interface RuntimePolicySnapshot {
@@ -187,6 +191,7 @@ export type RuntimePolicyMutation =
   | { readonly kind: 'set_chat_defaults'; readonly value: RuntimePolicy['chatDefaults'] }
   | { readonly kind: 'set_web_search'; readonly value: RuntimePolicy['webSearch'] }
   | { readonly kind: 'set_subagents'; readonly value: RuntimePolicy['subagents'] }
+  | { readonly kind: 'set_external_agents'; readonly value: RuntimePolicy['externalAgents'] }
   | { readonly kind: 'set_shell'; readonly value: RuntimePolicy['shell'] }
   | { readonly kind: 'patch_agent_settings'; readonly value: AgentRuntimeSettingsPatch };
 
@@ -253,10 +258,11 @@ export function createDefaultRuntimePolicy(): RuntimePolicy {
     memory: { enabled: true, agentReadEnabled: false },
     workspaceInstructions: { enabled: true },
     privacy: { incognitoActive: false },
-    chatDefaults: { permissionMode: 'ask' },
+    chatDefaults: { permissionMode: 'bypass' },
     webSearch: { enabled: false, defaultProvider: 'model' },
     subagents: { presets: [] },
     shell: { preference: 'auto', executable: '' },
+    externalAgents: { antigravity: { executable: '' } },
   };
 }
 
@@ -281,12 +287,8 @@ export interface ConnectionConfiguration {
   readonly baseUrl?: string;
   readonly enabled: boolean;
   readonly enabledModelIds: readonly string[];
-  /**
-   * Per-model relay declarations (thinking levels, vision, context window),
-   * as a typed table scoped to `enabledModelIds` — never an extras bag.
-   * Execution paths read it through the shared `relayModelProfile` seam.
-   */
-  readonly relayModelProfiles?: Readonly<Record<string, RelayModelProfile>>;
+  /** Connection-scoped user declarations, independent of the enabled selection. */
+  readonly modelOverrides?: Readonly<Record<string, ModelOverride>>;
   readonly requestBodyOverlay?: JsonObject;
 }
 
@@ -297,8 +299,6 @@ export interface ConnectionCatalogEntry extends ConnectionConfiguration {
   readonly modelSource?: ConnectionModelDiscoveryResult['source'];
   readonly modelsFetchedAt?: ConnectionModelDiscoveryResult['fetchedAt'];
   readonly lastTest?: ConnectionTestSummary;
-  /** Digest of the model-facts subset used when `lastTest` was recorded. */
-  readonly lastTestModelFactsFingerprint?: string;
 }
 
 export type ConnectionOnboardingTarget =
@@ -335,7 +335,7 @@ export interface ConnectionCatalogEntryUpdate {
    * against); `null` clears all declarations; a table replaces them wholly.
    * Profile-blind writers simply omit the key and can never clobber.
    */
-  readonly relayModelProfiles?: Readonly<Record<string, RelayModelProfile>> | null;
+  readonly modelOverrides?: Readonly<Record<string, ModelOverride>> | null;
   /** Absent leaves the overlay unchanged; null clears it; an object replaces it. */
   readonly requestBodyOverlay?: JsonObject | null;
 }

@@ -17,18 +17,88 @@
  * under the License.
  */
 
+import {
+  assertCoordinationIdentityPairing,
+  buildSessionHeader,
+  toSummary,
+} from './session-store-values.js';
+export {
+  normalizeSessionHeader,
+  decodePersistedSessionHeader,
+  createUserMessage,
+} from './session-store-values.js';
+import {
+  type VersionedSessionIdentity,
+  SessionMetadataVersionConflictError,
+  type SessionHeaderSnapshot,
+  type ProbeSessionRemovalResult,
+  type SessionCatalogRecord,
+  type SessionCatalogPageCursor,
+  EXTERNAL_SESSION_IMPORT_LOOKUP_MAX_SOURCE_IDS,
+  EXTERNAL_SESSION_IMPORT_LOOKUP_MAX_RECENT_SESSION_IDS,
+  type ExternalSessionImportLookupResult,
+  type SessionCatalogPageResult,
+  type CreateStableSessionRequest,
+  type WorkHubMessageAssignmentRequest,
+  type WorkHubMessageAssignmentResult,
+  type CreateStableSessionResult,
+  type ProbeStableSessionCreateResult,
+  type UpdateSessionConfigurationRequest,
+  type SessionTranscriptMessageLookupRequest,
+  type SessionMessageScanRequest,
+  type SessionMessageScanPage,
+  type CoordinationTranscriptReference,
+  type CoordinationTranscriptIndexRecord,
+  type CoordinationTranscriptIndexState,
+  type SessionAuthorityStore,
+} from './session-store-contract.js';
+export {
+  isSafeSessionId,
+  assertSafeSessionId,
+  SessionNotFoundError,
+  isSessionNotFoundError,
+  type SessionHeaderSnapshot,
+  type ProbeSessionRemovalResult,
+  type SessionCatalogRecord,
+  type SessionCatalogPageCursor,
+  EXTERNAL_SESSION_IMPORT_LOOKUP_MAX_SOURCE_IDS,
+  EXTERNAL_SESSION_IMPORT_LOOKUP_MAX_RECENT_SESSION_IDS,
+  type ExternalSessionImportLookupResult,
+  type SessionCatalogPageResult,
+  type CreateStableSessionRequest,
+  type WorkHubMessageAssignmentRequest,
+  type WorkHubMessageAssignmentResult,
+  type StableSessionCreateInput,
+  type CreateStableSessionResult,
+  type ProbeStableSessionCreateResult,
+  type UpdateSessionConfigurationRequest,
+  type SessionTranscriptStorageFragment,
+  type SessionTranscriptMessageLookupRequest,
+  type SessionMessageScanRequest,
+  type SessionMessageScanRecord,
+  type SessionMessageScanPage,
+  type SessionTranscriptPageRequest,
+  type SessionTranscriptStoragePage,
+  type SessionTranscriptRecordScanRequest,
+  type SessionTranscriptRecordScanPage,
+  type SessionTurnContribution,
+  type SessionTurnContributionPage,
+  type SessionStore,
+  type CoordinationTranscriptReference,
+  type CoordinationTranscriptIndexRecord,
+  type CoordinationTranscriptIndexState,
+  type SessionAuthorityStore,
+} from './session-store-contract.js';
+
 import { join } from 'node:path';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import {
   createSqliteSessionMetadataStore,
-  type SessionConfigurationMetadataUpdate,
   type SessionCatalogRevisionState,
   type SessionMetadataRecord,
   type SessionRemovalProbe,
-  SessionMetadataVersionConflictError,
   type SqliteSessionMetadataStore,
   type StableSessionCreateProbe,
-  type VersionedSessionIdentity,
 } from './sqlite-session-metadata-store.js';
 import { isDiscardableConversationCopy } from './session-conversation-copy.js';
 import {
@@ -39,23 +109,8 @@ import { DEFAULT_SESSION_NAME, normalizeUserSessionName } from '@maka/core/sessi
 import {
   decodeCanonicalMessage,
   deriveTurnRecords,
-  isSessionBlockedReason,
-  isSessionConversationCopy,
-  isSubagentSessionParent,
-  isSubagentSessionRuntime,
-  isSubagentSessionSpawn,
-  isSessionStatus,
-  isWorkHubCoordinationSessionId,
-  subagentSessionRuntimeSummary,
   WORKHUB_COORDINATION_SESSION_ID,
-  WORKHUB_COORDINATION_SESSION_ROLE,
 } from '@maka/core/session';
-import { isCollaborationMode } from '@maka/core/collaboration';
-import { isOrchestrationMode } from '@maka/core/orchestration';
-import { decodePersistedPermissionMode, isPermissionMode } from '@maka/core/permission';
-import type { PersistedValue } from '@maka/core/persisted-value';
-import { isSubagentWorkspaceBinding } from '@maka/core/subagent-workspace';
-import { WORKSPACE_AUTHORITY_SESSION_ID } from '@maka/core/workspace-version-authority';
 import type {
   AgentGraphOperatorProvisionRequest,
   AgentGraphOperatorProvisionResult,
@@ -71,422 +126,30 @@ import type {
 
 import type { CreateSessionInput, SessionListFilter } from '@maka/core/runtime-inputs';
 
-import {
-  isSessionToolProfile,
-  type SessionHeader,
-  type SessionHeaderPatch,
-  type SessionConversationCopy,
-  type SessionExternalOrigin,
-  type SessionSummary,
-  type SessionRole,
-  type StoredMessage,
-  type TurnRecord,
-  type TurnStateMessage,
-  type UserMessage,
-  type WorkHubDelegationAssignedMessage,
-  type WorkHubDelegationReplacementAbortedMessage,
-  type WorkHubDelegationReplacementRequestedMessage,
-  type WorkHubActionClaim,
-  type WorkHubActionClaimOutcome,
-  type WorkHubDelegationStopRequestedMessage,
-  type WorkHubDelegationStopResolvedMessage,
-  type WorkHubDelegationSupersededMessage,
+import type {
+  SessionHeader,
+  SessionHeaderPatch,
+  SessionExternalOrigin,
+  SessionSummary,
+  StoredMessage,
+  TurnRecord,
+  AssistantMessage,
+  UserMessage,
+  WorkHubDelegationAssignedMessage,
+  WorkHubDelegationReplacementAbortedMessage,
+  WorkHubDelegationReplacementRequestedMessage,
+  WorkHubActionClaim,
+  WorkHubActionClaimOutcome,
+  WorkHubDelegationStopRequestedMessage,
+  WorkHubDelegationStopResolvedMessage,
+  WorkHubDelegationSupersededMessage,
 } from '@maka/core/session';
 import type {
   MarkMessagesHandedOffInput,
-  MessageAdmissionStore,
   PendingMessageAdmission,
 } from './message-admission-store.js';
-import {
-  isVisibleSessionMessage,
-  lastMessagePreviewForMessages,
-  latestVisibleMessageAt,
-  projectSessionCatalogMessages,
-} from './session-message-projection.js';
+import { projectSessionCatalogMessages } from './session-message-projection.js';
 export { projectSessionCatalogMessages };
-
-const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
-
-export function isSafeSessionId(sessionId: string): boolean {
-  return SESSION_ID_PATTERN.test(sessionId);
-}
-
-export function assertSafeSessionId(sessionId: string): void {
-  if (!isSafeSessionId(sessionId)) throw new Error(`Invalid Session id: ${sessionId}`);
-}
-export class SessionNotFoundError extends Error {
-  readonly name = 'SessionNotFoundError';
-  readonly code = 'session_not_found';
-
-  constructor(readonly sessionId: string) {
-    super(`Session metadata not found: ${sessionId}`);
-  }
-}
-
-export function isSessionNotFoundError(error: unknown): error is SessionNotFoundError {
-  return error instanceof SessionNotFoundError;
-}
-
-export class SessionReadMarkerMessageNotFoundError extends Error {
-  readonly name = 'SessionReadMarkerMessageNotFoundError';
-  readonly code = 'session_read_marker_message_not_found';
-
-  constructor(
-    readonly sessionId: string,
-    readonly messageId: string,
-  ) {
-    super(`Session read marker message does not exist: ${messageId}`);
-  }
-}
-
-export interface SessionHeaderSnapshot {
-  readonly header: SessionHeader;
-  readonly revision: number;
-  readonly committedAt: number;
-}
-
-export type ProbeSessionRemovalResult =
-  | { readonly kind: 'present'; readonly record: SessionHeaderSnapshot }
-  | { readonly kind: 'removed' }
-  | { readonly kind: 'absent' };
-
-export interface SessionCatalogRecord extends SessionHeaderSnapshot {
-  readonly activityAt: number;
-  readonly summary: SessionSummary;
-}
-
-export interface SessionCatalogPageCursor {
-  readonly activityAt: number;
-  readonly sessionId: string;
-}
-
-export const EXTERNAL_SESSION_IMPORT_LOOKUP_MAX_SOURCE_IDS = 256;
-export const EXTERNAL_SESSION_IMPORT_LOOKUP_MAX_RECENT_SESSION_IDS = 16;
-
-export interface ExternalSessionImportLookupResult {
-  readonly sourceSessionId: string;
-  readonly livePublishedImportCount: number;
-  readonly recentSessionIds: readonly string[];
-}
-
-export type SessionCatalogPageResult =
-  | {
-      readonly kind: 'page';
-      readonly revision: `sha256:${string}`;
-      readonly records: readonly SessionCatalogRecord[];
-      readonly hasMore: boolean;
-    }
-  | {
-      readonly kind: 'revision_changed';
-      readonly expectedRevision: `sha256:${string}`;
-      readonly actualRevision: `sha256:${string}`;
-    };
-
-export interface CreateStableSessionRequest {
-  readonly sessionId: string;
-  readonly requestFingerprint: string;
-  readonly input: StableSessionCreateInput;
-}
-
-export interface WorkHubMessageAssignmentRequest {
-  readonly assignment: WorkHubDelegationAssignedMessage;
-  readonly admission: PendingMessageAdmission;
-  /** Present exactly when this assignment atomically supersedes an earlier link. */
-  readonly supersession?: WorkHubDelegationSupersededMessage;
-  /** Present exactly when the assignment creates its target Session. */
-  readonly create?: CreateStableSessionRequest;
-}
-
-export interface WorkHubMessageAssignmentResult {
-  readonly kind: 'assigned' | 'existing';
-  readonly targetCreated: boolean;
-  readonly assignment: WorkHubDelegationAssignedMessage;
-}
-
-export type StableSessionCreateInput = CreateSessionInput & {
-  readonly conversationCopy?: SessionConversationCopy;
-  readonly role?: SessionRole;
-};
-
-export type CreateStableSessionResult =
-  | { readonly kind: 'created'; readonly record: SessionHeaderSnapshot }
-  | { readonly kind: 'existing'; readonly record: SessionHeaderSnapshot }
-  | {
-      readonly kind: 'conflict';
-      readonly reason: 'identity_mismatch' | 'removed';
-    };
-
-export type ProbeStableSessionCreateResult =
-  | { readonly kind: 'absent' }
-  | { readonly kind: 'existing'; readonly record: SessionHeaderSnapshot }
-  | {
-      readonly kind: 'conflict';
-      readonly reason: 'identity_mismatch' | 'removed';
-    };
-
-export type UpdateSessionConfigurationRequest = SessionConfigurationMetadataUpdate;
-
-export interface SessionTranscriptStorageFragment {
-  readonly sequence: number;
-  readonly byteOffset: number;
-  readonly totalBytes: number;
-  readonly payloadDigest: `sha256:${string}` | null;
-  readonly data: Buffer;
-}
-
-export interface SessionTranscriptMessageLookupRequest {
-  readonly messageIds: readonly string[];
-  readonly throughSequence: number | null;
-  readonly maxBytes: number;
-  readonly maxMessages: number;
-}
-
-export interface SessionTranscriptPageRequest {
-  readonly direction: 'older' | 'newer';
-  /** Inclusive durable high-water mark. Omit only for the first read. */
-  readonly throughSequence?: number | null;
-  /** Inclusive sequence position for this read. Defaults to the watermark edge. */
-  readonly position?: number;
-  /** Continuation byte offset within position. */
-  readonly byteOffset?: number;
-  readonly maxBytes: number;
-  readonly maxMessages: number;
-}
-
-export interface SessionTranscriptStoragePage {
-  readonly throughSequence: number | null;
-  /** Returned in traversal order for the requested direction. */
-  readonly fragments: readonly SessionTranscriptStorageFragment[];
-  readonly rawBytes: number;
-  readonly next: {
-    readonly position: number;
-    readonly byteOffset: number | null;
-  } | null;
-}
-
-export interface SessionTranscriptRecordScanRequest {
-  readonly direction: 'older' | 'newer';
-  readonly throughSequence?: number | null;
-  readonly position?: number;
-  readonly maxStoredBytes: number;
-  readonly maxMessages: number;
-}
-
-export interface SessionTranscriptRecordScanPage {
-  readonly throughSequence: number | null;
-  readonly records: readonly { readonly sequence: number; readonly message: StoredMessage }[];
-  readonly nextPosition: number | null;
-}
-
-export interface SessionTurnContribution {
-  readonly turnId: string;
-  readonly firstSequence: number;
-  readonly latestState: {
-    readonly sequence: number;
-    readonly message: TurnStateMessage;
-  } | null;
-  readonly userPromptPreview: string | null;
-  readonly hasAssistantMessage: boolean;
-  readonly hasAssistantOutput: boolean;
-  readonly hasToolResult: boolean;
-  readonly hasFailedToolResult: boolean;
-  readonly hasAbortNote: boolean;
-}
-
-export interface SessionTurnContributionPage {
-  readonly throughSequence: number | null;
-  readonly contributions: readonly SessionTurnContribution[];
-  readonly nextPosition: number | null;
-}
-
-export interface SessionTurnLandmark {
-  readonly turnId: string;
-  readonly sequence: number;
-  readonly label: string;
-}
-
-export interface SessionTurnLandmarkSnapshot {
-  readonly throughSequence: number | null;
-  readonly landmarks: readonly SessionTurnLandmark[];
-}
-
-export interface SessionStore {
-  create(input: CreateSessionInput, initialBoundary?: ExecutionBoundary): Promise<SessionHeader>;
-  list(filter?: SessionListFilter): Promise<SessionSummary[]>;
-  /** Enumerate durable metadata without reading transcript bodies. */
-  listHeaders(): Promise<SessionHeader[]>;
-  listForRecovery(): Promise<SessionHeader[]>;
-  /** Read only the durable header without triggering connection-lock self-healing. */
-  readHeaderSnapshot(sessionId: string): Promise<SessionHeader>;
-  /** Read durable messages without triggering connection-lock self-healing. */
-  readMessagesSnapshot(sessionId: string): Promise<StoredMessage[]>;
-  /** Read one byte-bounded page directly from the durable append-only ledger. */
-  readTranscriptPageSnapshot(
-    sessionId: string,
-    request: SessionTranscriptPageRequest,
-  ): Promise<SessionTranscriptStoragePage>;
-  readTranscriptHighWaterSnapshot(sessionId: string): Promise<number | null>;
-  readTurnContributionsSnapshot(
-    sessionId: string,
-    throughSequence: number | null,
-    position: number,
-    maxContributions: number,
-  ): Promise<SessionTurnContributionPage>;
-  readTurnLandmarksSnapshot(
-    sessionId: string,
-    maxLandmarks: number,
-  ): Promise<SessionTurnLandmarkSnapshot>;
-  /** Read durable messages for startup recovery. */
-  readMessagesForRecovery(sessionId: string): Promise<StoredMessage[]>;
-  /** Derive durable turns without triggering connection-lock self-healing. */
-  listTurnsSnapshot(sessionId: string): Promise<TurnRecord[]>;
-  readHeader(sessionId: string): Promise<SessionHeader>;
-  readMessages(sessionId: string): Promise<StoredMessage[]>;
-  listTurns(sessionId: string): Promise<TurnRecord[]>;
-  appendMessage(sessionId: string, message: StoredMessage): Promise<void>;
-  appendMessages(sessionId: string, messages: StoredMessage[]): Promise<void>;
-  updateHeader(sessionId: string, patch: SessionHeaderPatch): Promise<SessionHeader>;
-  setFlagged(sessionId: string, isFlagged: boolean): Promise<void>;
-  rename(sessionId: string, name: string): Promise<void>;
-  setGeneratedTitleIfAbsent(sessionId: string, title: string): Promise<SessionHeader | null>;
-  remove(sessionId: string): Promise<void>;
-  close?(): Promise<void>;
-}
-
-export interface SessionAuthorityStore extends SessionStore, MessageAdmissionStore {
-  /** Decode a bounded ledger range for an authority-owned wire projection. */
-  readTranscriptRecordsSnapshot(
-    sessionId: string,
-    request: SessionTranscriptRecordScanRequest,
-  ): Promise<SessionTranscriptRecordScanPage>;
-  /** Read a bounded set of durable messages at an inclusive transcript watermark. */
-  readTranscriptMessagesSnapshot(
-    sessionId: string,
-    request: SessionTranscriptMessageLookupRequest,
-  ): Promise<StoredMessage[]>;
-  /** Observe successful durable ledger appends. Listeners must not throw. */
-  subscribeTranscriptChanges(listener: (sessionId: string) => void): () => void;
-  /** Wait until the SQLite authority is ready for cross-domain transactions. */
-  ready(): Promise<void>;
-  /** Atomically create a Session from already-converted Maka raw messages. */
-  createImportedSession(
-    input: CreateSessionInput,
-    messages: readonly StoredMessage[],
-    externalOrigin: SessionExternalOrigin,
-  ): Promise<SessionHeader>;
-  /** Look up live published imports for a bounded page of source Sessions. */
-  lookupExternalSessionImports(
-    adapterId: string,
-    sourceSessionIds: readonly string[],
-    recentSessionIdLimit: number,
-  ): Promise<readonly ExternalSessionImportLookupResult[]>;
-  createSubagent(
-    input: CreateSessionInput,
-    initialBoundary?: ExecutionBoundary,
-  ): Promise<{ header: SessionHeader; created: boolean }>;
-  createAgentGraphOperator(
-    input: CreateSessionInput,
-    request: AgentGraphOperatorProvisionRequest,
-    expectedRevision: number,
-    initialBoundary?: ExecutionBoundary,
-  ): Promise<{ header: SessionHeader } & AgentGraphOperatorProvisionResult>;
-  readExecutionBoundary(sessionId: string): Promise<ExecutionBoundary>;
-  createSandboxBoundaryRequest(
-    input: CreateSandboxBoundaryRequest,
-  ): Promise<SandboxBoundaryRequest>;
-  readSandboxBoundaryRequest(
-    sessionId: string,
-    requestId: string,
-  ): Promise<SandboxBoundaryRequest | undefined>;
-  listPendingSandboxBoundaryRequests(sessionId: string): Promise<SandboxBoundaryRequest[]>;
-  /** Requests already closed against the user because the host restarted. */
-  listSandboxBoundaryRestartClosures(sessionId: string): Promise<SandboxBoundaryRequest[]>;
-  settleSandboxBoundaryRequest(
-    input: SettleSandboxBoundaryRequest,
-  ): Promise<SandboxBoundarySettlement>;
-  setExecutionBoundaryKind(
-    sessionId: string,
-    kind: 'managed' | 'bypass',
-    projection?: {
-      permissionMode: SessionHeader['permissionMode'];
-      labels?: readonly string[];
-    },
-  ): Promise<ExecutionBoundary>;
-  probeStableSessionCreate(
-    sessionId: string,
-    requestFingerprint: string,
-  ): Promise<ProbeStableSessionCreateResult>;
-  createStableSession(
-    request: CreateStableSessionRequest,
-    initialBoundary?: ExecutionBoundary,
-  ): Promise<CreateStableSessionResult>;
-  /** Atomically persist a WorkHub linkage and the target Message admission. */
-  assignWorkHubMessage(
-    request: WorkHubMessageAssignmentRequest,
-  ): Promise<WorkHubMessageAssignmentResult>;
-  readWorkHubAssignment(actionId: string): Promise<WorkHubDelegationAssignedMessage | undefined>;
-  /** Newest active assignment first, across every requested target. */
-  readActiveWorkHubAssignmentsByTarget(
-    targetSessionIds: readonly string[],
-    maxAssignmentsPerTarget?: number,
-  ): Promise<readonly WorkHubDelegationAssignedMessage[]>;
-  readWorkHubReplacement(
-    delegationId: string,
-  ): Promise<WorkHubDelegationReplacementRequestedMessage | undefined>;
-  readWorkHubReplacementAbort(
-    delegationId: string,
-  ): Promise<WorkHubDelegationReplacementAbortedMessage | undefined>;
-  readWorkHubSupersession(
-    delegationId: string,
-  ): Promise<WorkHubDelegationSupersededMessage | undefined>;
-  readWorkHubStopRequest(
-    delegationId: string,
-  ): Promise<WorkHubDelegationStopRequestedMessage | undefined>;
-  readWorkHubStopResolution(
-    delegationId: string,
-  ): Promise<WorkHubDelegationStopResolvedMessage | undefined>;
-  /**
-   * Durably binds one action identity to one exact WorkHub operation before its
-   * effect. Survives removal of the target Session so a committed destructive
-   * claim can still converge afterwards.
-   */
-  claimWorkHubAction(claim: WorkHubActionClaim): Promise<WorkHubActionClaimOutcome>;
-  readWorkHubActionClaim(actionId: string): Promise<WorkHubActionClaim | undefined>;
-  discardStableConversationCopy(sessionId: string, requestFingerprint: string): Promise<boolean>;
-  listCatalogPage(
-    filter: SessionListFilter | undefined,
-    cursor: SessionCatalogPageCursor | undefined,
-    limit: number,
-    expectedRevision?: `sha256:${string}`,
-  ): Promise<SessionCatalogPageResult>;
-  readHeaderRecordSnapshot(sessionId: string): Promise<SessionHeaderSnapshot>;
-  readCatalogRecord(sessionId: string): Promise<SessionCatalogRecord>;
-  updateHeaderVersioned(
-    sessionId: string,
-    patch: SessionHeaderPatch,
-    expectedRevision: number,
-  ): Promise<SessionHeaderSnapshot>;
-  updateSessionConfiguration(
-    sessionId: string,
-    input: UpdateSessionConfigurationRequest,
-  ): Promise<SessionHeaderSnapshot>;
-  markSessionReadThroughMessage(
-    sessionId: string,
-    messageId: string,
-  ): Promise<SessionHeaderSnapshot>;
-  probeSessionRemoval(sessionId: string): Promise<ProbeSessionRemovalResult>;
-  setSessionsArchivedVersioned(
-    sessions: readonly VersionedSessionIdentity[],
-    isArchived: boolean,
-  ): Promise<SessionHeaderSnapshot[]>;
-  removeSessionsVersioned(
-    sessions: readonly VersionedSessionIdentity[],
-    archiveSessions?: readonly VersionedSessionIdentity[],
-  ): Promise<string[]>;
-  reconcileOrphanedAgentGraphRetirements(): Promise<string[]>;
-  listPendingSessionRetirementCleanupIds(sessionId?: string): Promise<string[]>;
-  completeSessionRetirementCleanup(sessionId: string): Promise<void>;
-}
 
 export function createSessionStore(workspaceRoot: string): SessionAuthorityStore {
   return new SqliteSessionStore(workspaceRoot);
@@ -533,6 +196,7 @@ class SqliteSessionStore implements SessionAuthorityStore {
     input: CreateSessionInput,
     messages: readonly StoredMessage[],
     externalOrigin: SessionExternalOrigin,
+    options: { readonly onCommitStarted?: () => void } = {},
   ): Promise<SessionHeader> {
     await this.ensureReady();
     assertNoConversationCopyMetadata(input);
@@ -547,6 +211,7 @@ class SqliteSessionStore implements SessionAuthorityStore {
       externalOrigin,
       transcriptLedgerVersion: 0,
     };
+    options.onCommitStarted?.();
     const outcome = await this.metadata.importSession(
       header,
       canonicalMessages,
@@ -877,6 +542,13 @@ class SqliteSessionStore implements SessionAuthorityStore {
     return this.metadata.listSandboxBoundaryRestartClosures(sessionId);
   }
 
+  async hasExplicitSandboxBoundaryDenial(
+    identities: readonly { sessionId: string; runId: string; turnId: string }[],
+  ): Promise<boolean> {
+    await this.ensureReady();
+    return this.metadata.hasExplicitSandboxBoundaryDenial(identities);
+  }
+
   async settleSandboxBoundaryRequest(
     input: SettleSandboxBoundaryRequest,
   ): Promise<SandboxBoundarySettlement> {
@@ -898,41 +570,9 @@ class SqliteSessionStore implements SessionAuthorityStore {
 
   async list(filter?: SessionListFilter): Promise<SessionSummary[]> {
     await this.ensureReady();
-    const records = (await this.metadata.list(filter, 'ordinary')).filter(
-      (record) => record.header.conversationCopy?.state !== 'preparing',
-    );
-    const withPreviews: Array<{
-      record: SessionMetadataRecord;
-      previewMessages: StoredMessage[];
-    }> = [];
-    for (const record of records) {
-      const previewMessages = await this.metadata.readPreviewMessages(record.header.id);
-      withPreviews.push({ record, previewMessages });
-    }
-    withPreviews.sort((a, b) => {
-      const aLastMessageAt = maxTimestamp(
-        a.record.header.lastMessageAt,
-        latestVisibleMessageAt(a.previewMessages),
-      );
-      const bLastMessageAt = maxTimestamp(
-        b.record.header.lastMessageAt,
-        latestVisibleMessageAt(b.previewMessages),
-      );
-      const tsDelta = (bLastMessageAt ?? 0) - (aLastMessageAt ?? 0);
-      return tsDelta !== 0 ? tsDelta : a.record.header.id.localeCompare(b.record.header.id);
-    });
-
-    const summaries: SessionSummary[] = [];
-    for (let index = 0; index < withPreviews.length; index += 1) {
-      const { record, previewMessages } = withPreviews[index]!;
-      const { header } = record;
-      let messages = previewMessages.slice(-10);
-      if (index < 3) {
-        messages = (await this.metadata.readMessages(header.id)).slice(-10);
-      }
-      summaries.push(toSummary(header, messages));
-    }
-    return summaries;
+    return (await this.metadata.list(filter, 'ordinary'))
+      .filter((record) => record.header.conversationCopy?.state !== 'preparing')
+      .map((record) => toCatalogSummary(record.header, record.lastMessagePreview));
   }
 
   async listCatalogPage(
@@ -965,11 +605,7 @@ class SqliteSessionStore implements SessionAuthorityStore {
   }
 
   async listForRecovery(): Promise<SessionHeader[]> {
-    const headers = await this.listHeaders();
-    for (const header of headers) {
-      await this.metadata.readMessagesForRecovery(header.id);
-    }
-    return headers;
+    return this.listHeaders();
   }
 
   async listHeaders(): Promise<SessionHeader[]> {
@@ -991,9 +627,12 @@ class SqliteSessionStore implements SessionAuthorityStore {
     return projectHeaderSnapshot(await this.metadata.read(sessionId));
   }
 
-  async readCatalogRecord(sessionId: string): Promise<SessionCatalogRecord> {
+  async readCatalogRecord(
+    sessionId: string,
+    roleScope: 'ordinary' | 'recoverable' = 'ordinary',
+  ): Promise<SessionCatalogRecord> {
     await this.ensureCatalogProjectionReadable();
-    const record = await this.metadata.readCatalogRecord(sessionId);
+    const record = await this.metadata.readCatalogRecord(sessionId, roleScope);
     return {
       ...projectHeaderSnapshot(record),
       activityAt: record.activityAt,
@@ -1006,14 +645,6 @@ class SqliteSessionStore implements SessionAuthorityStore {
     return this.metadata.readMessages(sessionId);
   }
 
-  async readTranscriptPageSnapshot(
-    sessionId: string,
-    request: SessionTranscriptPageRequest,
-  ): Promise<SessionTranscriptStoragePage> {
-    await this.ensureReady();
-    return this.metadata.readTranscriptPage(sessionId, request);
-  }
-
   async readTranscriptMessagesSnapshot(
     sessionId: string,
     request: SessionTranscriptMessageLookupRequest,
@@ -1022,45 +653,31 @@ class SqliteSessionStore implements SessionAuthorityStore {
     return this.metadata.readTranscriptMessages(sessionId, request);
   }
 
-  async readTranscriptRecordsSnapshot(
-    sessionId: string,
-    request: SessionTranscriptRecordScanRequest,
-  ): Promise<SessionTranscriptRecordScanPage> {
-    await this.ensureReady();
-    return this.metadata.readTranscriptRecords(sessionId, request);
-  }
-
   async readTranscriptHighWaterSnapshot(sessionId: string): Promise<number | null> {
     await this.ensureReady();
     return this.metadata.readTranscriptHighWater(sessionId);
   }
 
-  async readTurnContributionsSnapshot(
-    sessionId: string,
-    throughSequence: number | null,
-    position: number,
-    maxContributions: number,
-  ): Promise<SessionTurnContributionPage> {
+  async readCoordinationTranscriptIndexState(): Promise<CoordinationTranscriptIndexState> {
     await this.ensureReady();
-    return this.metadata.readTurnContributions(
-      sessionId,
-      throughSequence,
-      position,
-      maxContributions,
-    );
+    return this.metadata.readCoordinationTranscriptIndexState();
   }
 
-  async readTurnLandmarksSnapshot(
-    sessionId: string,
-    maxLandmarks: number,
-  ): Promise<SessionTurnLandmarkSnapshot> {
+  async appendCoordinationTranscriptIndex(
+    records: readonly CoordinationTranscriptReference[],
+  ): Promise<void> {
     await this.ensureReady();
-    return this.metadata.readTurnLandmarks(sessionId, maxLandmarks);
+    return this.metadata.appendCoordinationTranscriptIndex(records);
   }
 
-  async readMessagesForRecovery(sessionId: string): Promise<StoredMessage[]> {
+  async readCoordinationTranscriptIndex(request: {
+    direction: 'older' | 'newer';
+    throughSequence: number;
+    position: number;
+    limit: number;
+  }): Promise<readonly CoordinationTranscriptIndexRecord[]> {
     await this.ensureReady();
-    return this.metadata.readMessagesForRecovery(sessionId);
+    return this.metadata.readCoordinationTranscriptIndex(request);
   }
 
   async listTurnsSnapshot(sessionId: string): Promise<TurnRecord[]> {
@@ -1073,6 +690,27 @@ class SqliteSessionStore implements SessionAuthorityStore {
 
   async readMessages(sessionId: string): Promise<StoredMessage[]> {
     return this.readMessagesSnapshot(sessionId);
+  }
+
+  async listLegacyTranscriptCandidateSessions(
+    sessionIds: readonly string[],
+    terms: readonly string[],
+  ): Promise<string[] | undefined> {
+    await this.ensureReady();
+    return this.metadata.listLegacyTranscriptCandidateSessions(sessionIds, terms);
+  }
+
+  async countLegacyTranscriptMessages(sessionIds: readonly string[]): Promise<number> {
+    await this.ensureReady();
+    return this.metadata.countLegacyTranscriptMessages(sessionIds);
+  }
+
+  async readMessagesAfter(
+    sessionId: string,
+    request: SessionMessageScanRequest,
+  ): Promise<SessionMessageScanPage> {
+    await this.ensureReady();
+    return this.metadata.readMessagesAfter(sessionId, request);
   }
 
   async listTurns(sessionId: string): Promise<TurnRecord[]> {
@@ -1092,6 +730,15 @@ class SqliteSessionStore implements SessionAuthorityStore {
       projectSessionCatalogMessages(messages),
     );
     for (const listener of this.transcriptChangeListeners) listener(sessionId);
+  }
+
+  /** @see SqliteSessionMetadataStore.commitMessageCatalogProjection */
+  async commitMessageCatalogProjection(
+    sessionId: string,
+    message: UserMessage | AssistantMessage,
+  ): Promise<void> {
+    await this.ensureReady();
+    await this.metadata.commitMessageCatalogProjection(sessionId, message);
   }
 
   async commitMessageAdmission(
@@ -1135,9 +782,13 @@ class SqliteSessionStore implements SessionAuthorityStore {
     await this.metadata.updateMessageAdmission(admission);
   }
 
-  async reorderMessageAdmissions(sessionId: string, messageIds: readonly string[]): Promise<void> {
+  async reorderMessageAdmissions(
+    sessionId: string,
+    messageIds: readonly string[],
+    disposition: 'steering' | 'followup' = 'followup',
+  ): Promise<void> {
     await this.ensureReady();
-    await this.metadata.reorderMessageAdmissions(sessionId, messageIds);
+    await this.metadata.reorderMessageAdmissions(sessionId, messageIds, disposition);
   }
 
   async cancelMessageAdmissions(sessionId: string, messageIds: readonly string[]): Promise<void> {
@@ -1175,42 +826,6 @@ class SqliteSessionStore implements SessionAuthorityStore {
   ): Promise<SessionHeaderSnapshot> {
     await this.ensureReady();
     return projectHeaderSnapshot(await this.metadata.updateSessionConfiguration(sessionId, input));
-  }
-
-  async markSessionReadThroughMessage(
-    sessionId: string,
-    messageId: string,
-  ): Promise<SessionHeaderSnapshot> {
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      const record = await this.readHeaderRecordSnapshot(sessionId);
-      const messages = await this.readMessagesSnapshot(sessionId);
-      const visibleMessages = messages.filter(isVisibleSessionMessage);
-      const targetIndex = visibleMessages.findIndex((message) => message.id === messageId);
-      if (targetIndex < 0) {
-        throw new SessionReadMarkerMessageNotFoundError(sessionId, messageId);
-      }
-      const currentIndex =
-        record.header.lastReadMessageId === undefined
-          ? -1
-          : visibleMessages.findIndex((message) => message.id === record.header.lastReadMessageId);
-      const hasUnread = targetIndex < visibleMessages.length - 1;
-      if (
-        targetIndex < currentIndex ||
-        (targetIndex === currentIndex && record.header.hasUnread === hasUnread)
-      ) {
-        return record;
-      }
-      try {
-        return await this.updateHeaderVersioned(
-          sessionId,
-          { lastReadMessageId: messageId, hasUnread },
-          record.revision,
-        );
-      } catch (error) {
-        if (!(error instanceof SessionMetadataVersionConflictError) || attempt === 2) throw error;
-      }
-    }
-    throw new Error('Session read marker retry loop did not terminate');
   }
 
   async probeSessionRemoval(sessionId: string): Promise<ProbeSessionRemovalResult> {
@@ -1320,291 +935,6 @@ function workHubIdentitySuffix(value: string): string {
   return createHash('sha256').update(value, 'utf8').digest('hex').slice(0, 48);
 }
 
-/**
- * The reserved identity and the reserved role are one fact, and the invariant
- * belongs to every creator that builds a header — subagents and Agent Graph
- * operators included, whose inputs carry no role today.
- */
-function assertCoordinationIdentityPairing(sessionId: string, role: SessionRole | undefined): void {
-  if (isWorkHubCoordinationSessionId(sessionId) !== (role === WORKHUB_COORDINATION_SESSION_ROLE)) {
-    throw new Error('WorkHub Coordination Session identity and role must be claimed together');
-  }
-}
-
-function buildSessionHeader(
-  workspaceRoot: string,
-  input: CreateSessionInput & { readonly role?: SessionRole },
-  sessionId: string = randomUUID(),
-  conversationCopy?: SessionConversationCopy,
-): SessionHeader {
-  if (
-    input.projectId !== undefined &&
-    input.projectId !== null &&
-    (typeof input.projectId !== 'string' || input.projectId.length === 0)
-  ) {
-    throw new Error('Invalid project id');
-  }
-  const now = Date.now();
-  assertSafeSessionId(sessionId);
-  assertCoordinationIdentityPairing(sessionId, input.role);
-  const name =
-    input.name === undefined ? DEFAULT_SESSION_NAME : normalizeRequiredSessionName(input.name);
-  const header: SessionHeader = {
-    id: sessionId,
-    ...(input.role === undefined ? {} : { role: input.role }),
-    workspaceRoot,
-    cwd: input.cwd,
-    ...(input.projectId !== undefined ? { projectId: input.projectId } : {}),
-    createdAt: now,
-    name,
-    titleIsManual: false,
-    isFlagged: false,
-    labels: input.labels ?? [],
-    isArchived: false,
-    status: input.status ?? 'active',
-    ...(input.blockedReason ? { blockedReason: input.blockedReason } : {}),
-    statusUpdatedAt: now,
-    ...(input.parentSessionId ? { parentSessionId: input.parentSessionId } : {}),
-    ...(input.branchOfTurnId ? { branchOfTurnId: input.branchOfTurnId } : {}),
-    ...(input.subagentParent ? { subagentParent: input.subagentParent } : {}),
-    ...(input.subagentRuntime ? { subagentRuntime: input.subagentRuntime } : {}),
-    ...(input.subagentSpawn ? { subagentSpawn: input.subagentSpawn } : {}),
-    ...(input.subagentWorkspace ? { subagentWorkspace: input.subagentWorkspace } : {}),
-    ...(conversationCopy ? { conversationCopy } : {}),
-    ...(input.revisionRootSessionId ? { revisionRootSessionId: input.revisionRootSessionId } : {}),
-    ...(input.revisionParentSessionId
-      ? { revisionParentSessionId: input.revisionParentSessionId }
-      : {}),
-    ...(input.revisionOfTurnId ? { revisionOfTurnId: input.revisionOfTurnId } : {}),
-    ...(input.revisionIndex !== undefined ? { revisionIndex: input.revisionIndex } : {}),
-    ...(input.revisionState ? { revisionState: input.revisionState } : {}),
-    hasUnread: false,
-    backend: 'ai-sdk',
-    ...(input.llmConnectionId === undefined ? {} : { llmConnectionId: input.llmConnectionId }),
-    llmConnectionSlug: input.llmConnectionSlug,
-    // A subagent Session's route is chosen by the spawn that created it and is
-    // never re-targeted, so it is born frozen. Every other Session freezes on
-    // its first user Message.
-    connectionLocked: input.subagentParent !== undefined,
-    model: input.model ?? 'default',
-    ...(input.toolProfile !== undefined ? { toolProfile: input.toolProfile } : {}),
-    permissionMode: input.permissionMode,
-    collaborationMode: input.collaborationMode ?? 'agent',
-    orchestrationMode: input.orchestrationMode ?? 'default',
-    ...(input.thinkingLevel !== undefined ? { thinkingLevel: input.thinkingLevel } : {}),
-    schemaVersion: 1,
-  };
-  assertValidSessionLineage(header);
-  return header;
-}
-
-function normalizeRequiredSessionName(name: string): string {
-  const normalized = normalizeUserSessionName(name);
-  if (!normalized.ok) throw new Error(normalized.error);
-  return normalized.value;
-}
-
-/** Validate and normalize a current SessionHeader before canonical persistence. */
-export function normalizeSessionHeader(
-  header: SessionHeader,
-  sessionId: string = header.id,
-): SessionHeader {
-  const valid =
-    header.id === sessionId &&
-    (header.role === undefined || header.role === WORKHUB_COORDINATION_SESSION_ROLE) &&
-    typeof header.workspaceRoot === 'string' &&
-    typeof header.cwd === 'string' &&
-    (header.projectId === undefined ||
-      header.projectId === null ||
-      (typeof header.projectId === 'string' && header.projectId.length > 0)) &&
-    isFiniteNumber(header.createdAt) &&
-    (header.lastMessageAt === undefined || isFiniteNumber(header.lastMessageAt)) &&
-    typeof header.name === 'string' &&
-    typeof header.titleIsManual === 'boolean' &&
-    typeof header.isFlagged === 'boolean' &&
-    Array.isArray(header.labels) &&
-    header.labels.every((label) => typeof label === 'string') &&
-    typeof header.isArchived === 'boolean' &&
-    !Object.prototype.hasOwnProperty.call(header, 'archivedAt') &&
-    isSessionStatus(header.status) &&
-    (header.blockedReason === undefined || isSessionBlockedReason(header.blockedReason)) &&
-    (header.statusUpdatedAt === undefined || isFiniteNumber(header.statusUpdatedAt)) &&
-    (header.parentSessionId === undefined || typeof header.parentSessionId === 'string') &&
-    (header.branchOfTurnId === undefined || typeof header.branchOfTurnId === 'string') &&
-    isValidConversationCopyLineage(header) &&
-    isValidRevisionLineage(header) &&
-    isValidSubagentSessionLineage(header) &&
-    isValidSessionExternalOrigin(header.externalOrigin) &&
-    (header.lastReadMessageId === undefined || typeof header.lastReadMessageId === 'string') &&
-    typeof header.hasUnread === 'boolean' &&
-    isPersistedBackendKind(header.backend) &&
-    (header.llmConnectionId === undefined ||
-      (typeof header.llmConnectionId === 'string' && header.llmConnectionId.length > 0)) &&
-    typeof header.llmConnectionSlug === 'string' &&
-    typeof header.connectionLocked === 'boolean' &&
-    typeof header.model === 'string' &&
-    (header.toolProfile === undefined || isSessionToolProfile(header.toolProfile)) &&
-    isPermissionMode(header.permissionMode) &&
-    isCollaborationMode(header.collaborationMode) &&
-    isOrchestrationMode(header.orchestrationMode) &&
-    (header.transcriptLedgerVersion === undefined ||
-      header.transcriptLedgerVersion === 0 ||
-      header.transcriptLedgerVersion === 1) &&
-    header.schemaVersion === 1;
-  if (!valid) {
-    throw new Error(`Invalid session header for session ${sessionId}: malformed fields`);
-  }
-  const normalizedName = normalizeSessionName(header.name);
-  if (header.blockedReason === undefined) {
-    const { blockedReason: _blockedReason, ...withoutBlockedReason } = header;
-    return { ...withoutBlockedReason, name: normalizedName };
-  }
-  return { ...header, name: normalizedName };
-}
-
-export function decodePersistedSessionHeader(
-  persisted: PersistedValue<SessionHeader>,
-  sessionId?: string,
-): SessionHeader {
-  const header = persisted as unknown as SessionHeader;
-  const permissionMode = decodePersistedPermissionMode(header.permissionMode);
-  if (permissionMode === undefined) {
-    return normalizeSessionHeader(header, sessionId ?? header.id);
-  }
-  return normalizeSessionHeader(
-    permissionMode === header.permissionMode ? header : { ...header, permissionMode },
-    sessionId ?? header.id,
-  );
-}
-
-function isValidSessionExternalOrigin(origin: SessionHeader['externalOrigin']): boolean {
-  if (origin === undefined) return true;
-  return (
-    typeof origin === 'object' &&
-    origin !== null &&
-    typeof origin.adapterId === 'string' &&
-    origin.adapterId.length > 0 &&
-    typeof origin.sourceSessionId === 'string' &&
-    origin.sourceSessionId.length > 0
-  );
-}
-
-function isValidRevisionLineage(header: SessionHeader): boolean {
-  const values = [
-    header.revisionRootSessionId,
-    header.revisionParentSessionId,
-    header.revisionOfTurnId,
-    header.revisionIndex,
-    header.revisionState,
-  ];
-  if (values.every((value) => value === undefined)) return true;
-  return (
-    typeof header.revisionRootSessionId === 'string' &&
-    isSafeSessionId(header.revisionRootSessionId) &&
-    typeof header.revisionParentSessionId === 'string' &&
-    isSafeSessionId(header.revisionParentSessionId) &&
-    typeof header.revisionOfTurnId === 'string' &&
-    header.revisionOfTurnId.length > 0 &&
-    header.revisionOfTurnId.length <= 128 &&
-    Number.isSafeInteger(header.revisionIndex) &&
-    header.revisionIndex! >= 2 &&
-    (header.revisionState === 'preparing' || header.revisionState === 'committed')
-  );
-}
-
-function assertValidSessionLineage(header: SessionHeader): void {
-  if (!isValidConversationCopyLineage(header)) {
-    throw new Error('Invalid Session conversation-copy lineage');
-  }
-  if (!isValidRevisionLineage(header)) {
-    throw new Error('Invalid session revision lineage');
-  }
-  if (!isValidSubagentSessionLineage(header)) {
-    throw new Error('Invalid subagent session lineage');
-  }
-}
-
-function isValidConversationCopyLineage(header: SessionHeader): boolean {
-  const copy = header.conversationCopy;
-  if (copy === undefined) return true;
-  if (
-    !isSessionConversationCopy(copy) ||
-    !isSafeSessionId(copy.sourceSessionId) ||
-    copy.sourceSessionId === header.id ||
-    header.subagentParent !== undefined
-  ) {
-    return false;
-  }
-  if (copy.kind === 'branch') {
-    const revisionClear =
-      header.revisionRootSessionId === undefined &&
-      header.revisionParentSessionId === undefined &&
-      header.revisionOfTurnId === undefined &&
-      header.revisionIndex === undefined &&
-      header.revisionState === undefined;
-    if (!revisionClear || header.parentSessionId !== copy.sourceSessionId) {
-      return false;
-    }
-    // An empty copy (absent `sourceTurnId`) records provenance
-    // (`parentSessionId`) but must not fabricate a `branchOfTurnId`, and is only
-    // valid for a side conversation; a through-turn copy must anchor to it.
-    return copy.sourceTurnId === undefined
-      ? header.branchOfTurnId === undefined && copy.intent === 'side_conversation'
-      : header.branchOfTurnId === copy.sourceTurnId;
-  }
-  // Revision copies always carry a turn boundary (enforced at decode).
-  return (
-    copy.sourceTurnId !== undefined &&
-    header.revisionParentSessionId === copy.sourceSessionId &&
-    header.revisionOfTurnId === copy.sourceTurnId
-  );
-}
-
-function isValidSubagentSessionLineage(header: SessionHeader): boolean {
-  if (header.subagentParent === undefined) {
-    return (
-      header.subagentRuntime === undefined &&
-      header.subagentSpawn === undefined &&
-      header.subagentWorkspace === undefined
-    );
-  }
-  if (
-    !isSubagentSessionParent(header.subagentParent) ||
-    !isSafeSessionId(header.subagentParent.parentSessionId) ||
-    header.parentSessionId !== undefined ||
-    header.branchOfTurnId !== undefined ||
-    header.revisionRootSessionId !== undefined ||
-    header.revisionParentSessionId !== undefined ||
-    header.revisionOfTurnId !== undefined ||
-    header.revisionIndex !== undefined ||
-    header.revisionState !== undefined
-  ) {
-    return false;
-  }
-  return (
-    (header.subagentRuntime === undefined &&
-      header.subagentSpawn === undefined &&
-      header.subagentWorkspace === undefined) ||
-    (isSubagentSessionRuntime(header.subagentRuntime) &&
-      isSubagentSessionSpawn(header.subagentSpawn) &&
-      (header.subagentWorkspace === undefined ||
-        isSubagentWorkspaceBinding(header.subagentWorkspace)))
-  );
-}
-
-/**
- * Decode guard for a durable session header. `'fake'` stays accepted:
- * narrowing it here would make every session written by a build that shipped
- * FakeBackend fail `normalizeSessionHeader` and read back as malformed (#3211).
- */
-function isPersistedBackendKind(value: unknown): value is SessionHeader['backend'] {
-  return value === 'ai-sdk' || value === 'fake';
-}
-
-function isFiniteNumber(value: unknown): value is number {
-  return typeof value === 'number' && Number.isFinite(value);
-}
-
 function assertNoConversationCopyMetadata(input: CreateSessionInput): void {
   if (Object.prototype.hasOwnProperty.call(input, 'conversationCopy')) {
     throw new Error('Conversation copy metadata requires createStableSession()');
@@ -1639,54 +969,6 @@ function projectStableSessionCreateProbe(
     : probe;
 }
 
-function toSummary(header: SessionHeader, messages: StoredMessage[] = []): SessionSummary {
-  const preview = lastMessagePreviewForMessages(messages);
-  const derivedLastMessageAt = latestVisibleMessageAt(messages);
-  const lastMessageAt = maxTimestamp(header.lastMessageAt, derivedLastMessageAt);
-  return {
-    id: header.id,
-    cwd: header.cwd,
-    ...(header.projectId !== undefined ? { projectId: header.projectId } : {}),
-    name: normalizeSessionName(header.name),
-    isFlagged: header.isFlagged,
-    isArchived: header.isArchived,
-    labels: header.labels,
-    hasUnread: header.hasUnread,
-    lastMessageAt,
-    ...(preview ? { lastMessagePreview: preview } : {}),
-    status: header.status,
-    ...(header.blockedReason ? { blockedReason: header.blockedReason } : {}),
-    ...(header.statusUpdatedAt !== undefined ? { statusUpdatedAt: header.statusUpdatedAt } : {}),
-    ...(header.parentSessionId ? { parentSessionId: header.parentSessionId } : {}),
-    ...(header.branchOfTurnId ? { branchOfTurnId: header.branchOfTurnId } : {}),
-    ...(header.subagentParent ? { subagentParent: header.subagentParent } : {}),
-    ...(header.subagentRuntime
-      ? {
-          subagentRuntime: subagentSessionRuntimeSummary(header.subagentRuntime),
-        }
-      : {}),
-    ...(header.subagentWorkspace ? { subagentWorkspace: header.subagentWorkspace } : {}),
-    ...(header.revisionRootSessionId
-      ? { revisionRootSessionId: header.revisionRootSessionId }
-      : {}),
-    ...(header.revisionParentSessionId
-      ? { revisionParentSessionId: header.revisionParentSessionId }
-      : {}),
-    ...(header.revisionOfTurnId ? { revisionOfTurnId: header.revisionOfTurnId } : {}),
-    ...(header.revisionIndex !== undefined ? { revisionIndex: header.revisionIndex } : {}),
-    ...(header.revisionState ? { revisionState: header.revisionState } : {}),
-    backend: header.backend,
-    ...(header.llmConnectionId === undefined ? {} : { llmConnectionId: header.llmConnectionId }),
-    llmConnectionSlug: header.llmConnectionSlug,
-    connectionLocked: header.connectionLocked,
-    model: header.model,
-    permissionMode: header.permissionMode,
-    collaborationMode: header.collaborationMode ?? 'agent',
-    orchestrationMode: header.orchestrationMode ?? 'default',
-    ...(header.thinkingLevel !== undefined ? { thinkingLevel: header.thinkingLevel } : {}),
-  };
-}
-
 function toCatalogSummary(
   header: SessionHeader,
   lastMessagePreview: string | undefined,
@@ -1694,34 +976,5 @@ function toCatalogSummary(
   return {
     ...toSummary(header),
     ...(lastMessagePreview === undefined ? {} : { lastMessagePreview }),
-  };
-}
-
-function maxTimestamp(left: number | undefined, right: number | undefined): number | undefined {
-  if (left === undefined) return right;
-  if (right === undefined) return left;
-  return Math.max(left, right);
-}
-
-function normalizeSessionName(name: string): string {
-  return name === 'New Session' ? DEFAULT_SESSION_NAME : name;
-}
-
-export function createUserMessage(input: {
-  turnId: string;
-  text: string;
-  displayText?: string;
-  attachments?: UserMessage['attachments'];
-  inlineReferences?: UserMessage['inlineReferences'];
-}): UserMessage {
-  return {
-    type: 'user',
-    id: randomUUID(),
-    turnId: input.turnId,
-    ts: Date.now(),
-    text: input.text,
-    ...(input.displayText !== undefined ? { displayText: input.displayText } : {}),
-    attachments: input.attachments,
-    ...(input.inlineReferences !== undefined ? { inlineReferences: input.inlineReferences } : {}),
   };
 }

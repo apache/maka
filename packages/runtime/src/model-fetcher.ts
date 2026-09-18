@@ -23,15 +23,13 @@ import {
   effectiveBaseUrl,
   isModelModality,
   providerAuthSupportsApiKey,
-  type LlmConnection,
   type ModelInfo,
   type ModelModality,
 } from '@maka/core/llm-connections';
-import { generalizedErrorMessage } from '@maka/core/redaction';
 import {
   CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION,
   CONNECTION_MODEL_ID_MAX_LENGTH,
-  normalizeConnectionModelDiscoveryResult,
+  decodeConnectionModels,
 } from '@maka/core/runtime-policy';
 import { anthropicV1Url, googleApiUrl } from './provider-urls.js';
 import { openAiCodexHeaders } from './subscription-auth.js';
@@ -44,7 +42,6 @@ import {
   fetchForConnectionEffect,
   type ConnectionEffectFetch,
   type ConnectionEffectFetchDependency,
-  type ConnectionEffectFetchOptions,
   type ConnectionEffectResponse,
 } from './connection-effect-fetch.js';
 import {
@@ -114,7 +111,7 @@ type RawGitHubCopilotModel = {
   name?: string;
   model_picker_enabled?: boolean;
   supported_endpoints?: string[];
-  policy?: { state?: string };
+  policy?: unknown;
   capabilities?: {
     limits?: {
       max_context_window_tokens?: number;
@@ -137,28 +134,6 @@ type FireworksModelDiscovery = Extract<
   (typeof PROVIDER_REGISTRY)[keyof typeof PROVIDER_REGISTRY]['modelDiscovery'],
   { kind: 'fireworks' }
 >;
-
-export async function fetchProviderModels(
-  connection: LlmConnection,
-  apiKey: string,
-  options: ConnectionEffectFetchOptions = {},
-): Promise<ModelInfo[]> {
-  try {
-    return normalizeDiscoveredModels(
-      await fetchProviderModelsStrict(connection, apiKey, options.fetch),
-    );
-  } catch (error) {
-    // Preserve status-bearing discovery errors so the sync layer can classify
-    // auth/protocol/network failures; only wrap unknown errors for display.
-    if (
-      error instanceof OpenAiCodexDiscoveryError ||
-      error instanceof ProviderModelDiscoveryHttpError
-    ) {
-      throw error;
-    }
-    throw new Error(generalizedErrorMessage(error, 'Failed to fetch provider models'));
-  }
-}
 
 export async function runConnectionModelDiscoveryEffect(
   connection: ConnectionEffectConnection,
@@ -244,7 +219,10 @@ async function fetchProviderModelsStrict(
       return filterDiscoveredModels(models, discovery.filter);
     }
     case 'openai':
-    case 'openai-compatible': {
+    case 'openai-compatible':
+    // The CLI transport lists models through the Provider API's `/models`,
+    // which every plan may read.
+    case 'commandcode-cli': {
       const r = await fetchForConnectionEffect(
         fetchFn,
         modelListUrl(baseUrl, discovery.path, discovery.query),
@@ -262,9 +240,6 @@ async function fetchProviderModelsStrict(
       );
       if (!r.ok) {
         await r.cancel();
-        if (connection.providerType === 'xai-oauth') {
-          throw new ProviderModelDiscoveryHttpError(r.status);
-        }
         throw new ConnectionEffectHttpError(r.status);
       }
       const data = await readProviderJson<{ data?: unknown } | unknown[]>(r);
@@ -280,6 +255,13 @@ async function fetchProviderModelsStrict(
         .filter((model) => discovery.filter !== 'language-models' || model.type === 'language')
         .map(toModelInfo)
         .filter((model): model is ModelInfo => model !== null);
+      if (discovery.modelProtocols === 'commandcode') {
+        for (const model of models) {
+          if (/^(?:anthropic\/)?claude-/i.test(model.id)) {
+            model.apiProtocol = 'anthropic-messages';
+          }
+        }
+      }
       return filterDiscoveredModels(models, discovery.filter);
     }
     case 'google': {
@@ -365,7 +347,7 @@ function cloudflareModelsUrl(baseUrl: string, page: number): string {
   return url.toString();
 }
 
-function normalizeDiscoveredModels(models: ModelInfo[]): ModelInfo[] {
+function normalizeConnectionEffectModels(models: ModelInfo[]): readonly ModelInfo[] {
   const unique = new Map<string, ModelInfo>();
   for (const model of models) {
     if (typeof model?.id !== 'string') continue;
@@ -383,20 +365,19 @@ function normalizeDiscoveredModels(models: ModelInfo[]): ModelInfo[] {
       throw new ConnectionEffectInvalidResponseError('Provider returned too many models');
     }
   }
-  return [...unique.values()];
-}
-
-function normalizeConnectionEffectModels(models: ModelInfo[]): readonly ModelInfo[] {
   try {
-    return normalizeConnectionModelDiscoveryResult({
-      models: normalizeDiscoveredModels(models),
-      source: 'fetched',
-      fetchedAt: 0,
-    }).models;
+    return decodeConnectionModels([...unique.values()]);
   } catch (error) {
     throw new ConnectionEffectInvalidResponseError('Provider returned invalid model metadata', {
       cause: error,
     });
+  }
+}
+
+export class GitHubCopilotModelPolicyError extends Error {
+  constructor() {
+    super('GitHub Copilot model policy is not enabled');
+    this.name = 'GitHubCopilotModelPolicyError';
   }
 }
 
@@ -419,11 +400,16 @@ export async function fetchGitHubCopilotModels(
     throw new ConnectionEffectHttpError(response.status);
   }
   const payload = await readProviderJson<{ data?: unknown }>(response);
-  return providerObjectArray<RawGitHubCopilotModel>(
+  const rawModels = providerObjectArray<RawGitHubCopilotModel>(
     payload.data,
     'GitHub Copilot models',
     true,
-  ).flatMap(toGitHubCopilotModelInfo);
+  );
+  const models = rawModels.flatMap(toGitHubCopilotModelInfo);
+  if (models.length === 0 && rawModels.some(isGitHubCopilotModelBlockedByPolicy)) {
+    throw new GitHubCopilotModelPolicyError();
+  }
+  return models;
 }
 
 type RawOpenAiCodexModel = {
@@ -434,26 +420,6 @@ type RawOpenAiCodexModel = {
 };
 
 /**
- * Discovery error carrying the HTTP status, so callers (syncOpenAiCodexConnection)
- * can classify auth failures (401/403) vs protocol errors (4xx) vs transient
- * network failures without string-matching the message.
- */
-export class OpenAiCodexDiscoveryError extends ConnectionEffectHttpError {
-  constructor(status: number) {
-    super(status);
-    this.name = 'OpenAiCodexDiscoveryError';
-  }
-}
-
-/** Structured status for standard provider `/models` endpoints. */
-export class ProviderModelDiscoveryHttpError extends ConnectionEffectHttpError {
-  constructor(status: number) {
-    super(status);
-    this.name = 'ProviderModelDiscoveryHttpError';
-  }
-}
-
-/**
  * Discover models from the ChatGPT/Codex OAuth backend
  * (`chatgpt.com/backend-api/codex/models`). Unlike the public OpenAI API
  * `/v1/models`, this endpoint reports the slugs the signed-in ChatGPT account
@@ -462,7 +428,7 @@ export class ProviderModelDiscoveryHttpError extends ConnectionEffectHttpError {
  * dropped; the rest are sorted by `priority` (ascending) to match the
  * ChatGPT/Codex picker order.
  */
-export async function fetchOpenAiCodexModels(
+async function fetchOpenAiCodexModels(
   baseUrl: string,
   accessToken: string,
   fetchFn?: ConnectionEffectFetch,
@@ -481,7 +447,7 @@ export async function fetchOpenAiCodexModels(
   );
   if (!response.ok) {
     await response.cancel();
-    throw new OpenAiCodexDiscoveryError(response.status);
+    throw new ConnectionEffectHttpError(response.status);
   }
   const payload = await readProviderJson<{ models?: unknown }>(response);
   const models = providerObjectArray<RawOpenAiCodexModel>(
@@ -498,7 +464,7 @@ export async function fetchOpenAiCodexModels(
   visible.sort((a, b) => priorityOfOpenAiCodexModel(a) - priorityOfOpenAiCodexModel(b));
   return visible.map((model) => {
     const entry: ModelInfo = { id: (model.slug as string).trim() };
-    const contextWindow = contextWindowOfOpenAiCodexModel(model);
+    const contextWindow = providerTokenLimit(model.context_window);
     if (contextWindow !== undefined) entry.contextWindow = contextWindow;
     return entry;
   });
@@ -510,12 +476,9 @@ function priorityOfOpenAiCodexModel(model: RawOpenAiCodexModel): number {
     : 10_000;
 }
 
-function contextWindowOfOpenAiCodexModel(model: RawOpenAiCodexModel): number | undefined {
-  return typeof model.context_window === 'number' &&
-    Number.isFinite(model.context_window) &&
-    model.context_window > 0
-    ? model.context_window
-    : undefined;
+function providerTokenLimit(value: unknown): number | undefined {
+  // Invalid upstream metadata makes no claim about the model's limit.
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : undefined;
 }
 
 function toGitHubCopilotModelInfo(model: RawGitHubCopilotModel): ModelInfo[] {
@@ -523,7 +486,12 @@ function toGitHubCopilotModelInfo(model: RawGitHubCopilotModel): ModelInfo[] {
     typeof model.id !== 'string' ||
     !model.id ||
     model.model_picker_enabled !== true ||
-    model.policy?.state === 'disabled' ||
+    // GitHub historically returned enabled/disabled/unconfigured policy gates.
+    // A policy-free model needs no acknowledgement; when the gate is present,
+    // Maka can use the model only after another client has enabled it. Maka has
+    // no policy-acceptance flow, so fail closed over unconfigured and unknown
+    // states instead of advertising a model that inference will reject.
+    !isGitHubCopilotModelPolicyEnabled(model.policy) ||
     model.capabilities?.supports?.tool_calls !== true
   )
     return [];
@@ -557,19 +525,46 @@ function toGitHubCopilotModelInfo(model: RawGitHubCopilotModel): ModelInfo[] {
     limits?.vision?.supported_media_types?.some(
       (type) => typeof type === 'string' && type.startsWith('image/'),
     ) === true;
-  const contextWindow = limits?.max_context_window_tokens ?? limits?.max_prompt_tokens;
+  const contextWindow =
+    providerTokenLimit(limits?.max_context_window_tokens) ??
+    providerTokenLimit(limits?.max_prompt_tokens);
+  const maxOutputTokens = providerTokenLimit(limits?.max_output_tokens);
   return [
     {
       id: model.id,
       ...(model.name ? { displayName: model.name } : {}),
-      ...(typeof contextWindow === 'number' ? { contextWindow } : {}),
-      ...(typeof limits?.max_output_tokens === 'number'
-        ? { maxOutputTokens: limits.max_output_tokens }
-        : {}),
+      ...(contextWindow === undefined ? {} : { contextWindow }),
+      ...(maxOutputTokens === undefined ? {} : { maxOutputTokens }),
       apiProtocol,
       capabilities: { vision, reasoning, functionCalling: true },
     },
   ];
+}
+
+function isGitHubCopilotModelPolicyEnabled(policy: unknown): boolean {
+  if (policy === undefined) return true;
+  if (!policy || typeof policy !== 'object' || Array.isArray(policy)) return false;
+  return (policy as Record<string, unknown>).state === 'enabled';
+}
+
+function isGitHubCopilotModelBlockedByPolicy(model: RawGitHubCopilotModel): boolean {
+  if (
+    typeof model.id !== 'string' ||
+    !model.id ||
+    model.model_picker_enabled !== true ||
+    model.capabilities?.supports?.tool_calls !== true ||
+    !Array.isArray(model.supported_endpoints) ||
+    !model.supported_endpoints.some((endpoint) =>
+      ['/v1/messages', '/responses', '/chat/completions'].includes(endpoint),
+    )
+  ) {
+    return false;
+  }
+  if (!model.policy || typeof model.policy !== 'object' || Array.isArray(model.policy)) {
+    return false;
+  }
+  const state = (model.policy as Record<string, unknown>).state;
+  return state === 'disabled' || state === 'unconfigured';
 }
 
 async function fetchCohereModels(
@@ -620,12 +615,11 @@ async function fetchCohereModels(
         }
         assertOptionalArray(model.endpoints, 'model endpoints');
         if (!model.endpoints?.includes('chat')) return [];
+        const contextWindow = providerTokenLimit(model.context_length);
         return [
           {
             id: model.name,
-            ...(typeof model.context_length === 'number'
-              ? { contextWindow: model.context_length }
-              : {}),
+            ...(contextWindow === undefined ? {} : { contextWindow }),
           },
         ];
       }),
@@ -681,12 +675,11 @@ async function fetchFireworksModels(
     authorization: `Bearer ${apiKey}`,
   };
   const signal = AbortSignal.timeout(MODEL_FETCH_TIMEOUT_MS);
+  let rawModelCount = 0;
   const fetchPages = async <T extends object>(
     path: string,
     query: Readonly<Record<string, string>>,
     itemKey: 'accounts' | 'models',
-    maxItems: number,
-    reserveItems?: (count: number) => void,
   ): Promise<T[]> => {
     const items: T[] = [];
     const seenPageTokens = new Set<string>();
@@ -718,10 +711,15 @@ async function fetchFireworksModels(
         nextPageToken?: unknown;
       }>(response);
       const rawItems = providerObjectArray<T>(data[itemKey], `Fireworks ${itemKey}`);
-      reserveItems?.(rawItems.length);
+      if (itemKey === 'models') {
+        rawModelCount += rawItems.length;
+        if (rawModelCount > CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION) {
+          throw new ConnectionEffectInvalidResponseError('Provider returned too many models');
+        }
+      }
       items.push(...rawItems);
-      if (items.length > maxItems) {
-        throw new ConnectionEffectInvalidResponseError(`Provider returned too many ${itemKey}`);
+      if (itemKey === 'accounts' && items.length > FIREWORKS_MAX_ACCOUNTS) {
+        throw new ConnectionEffectInvalidResponseError('Provider returned too many accounts');
       }
       pageToken = nextProviderPageToken(data.nextPageToken);
       if (!pageToken) return items;
@@ -736,7 +734,6 @@ async function fetchFireworksModels(
     discovery.accountsPath,
     { pageSize: String(FIREWORKS_PAGE_SIZE) },
     'accounts',
-    FIREWORKS_MAX_ACCOUNTS,
   );
   const accountNames = [
     ...accounts.flatMap((account) =>
@@ -747,13 +744,6 @@ async function fetchFireworksModels(
   if (accountNames.length > FIREWORKS_MAX_ACCOUNTS) {
     throw new ConnectionEffectInvalidResponseError('Provider returned too many accounts');
   }
-  let rawModelCount = 0;
-  const reserveModels = (count: number) => {
-    rawModelCount += count;
-    if (rawModelCount > CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION) {
-      throw new ConnectionEffectInvalidResponseError('Provider returned too many models');
-    }
-  };
   const modelLists: RawFireworksModel[][] = [];
   for (let index = 0; index < accountNames.length; index += FIREWORKS_ACCOUNT_CONCURRENCY) {
     modelLists.push(
@@ -761,13 +751,7 @@ async function fetchFireworksModels(
         accountNames
           .slice(index, index + FIREWORKS_ACCOUNT_CONCURRENCY)
           .map((accountName) =>
-            fetchPages<RawFireworksModel>(
-              `/v1/${accountName}/models`,
-              discovery.query,
-              'models',
-              CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION,
-              reserveModels,
-            ),
+            fetchPages<RawFireworksModel>(`/v1/${accountName}/models`, discovery.query, 'models'),
           ),
       )),
     );
@@ -775,6 +759,7 @@ async function fetchFireworksModels(
 
   return modelLists.flat().flatMap((model) => {
     if (!model.name) return [];
+    const contextWindow = providerTokenLimit(model.contextLength);
     const capabilities: NonNullable<ModelInfo['capabilities']> = {};
     if (typeof model.supportsImageInput === 'boolean')
       capabilities.vision = model.supportsImageInput;
@@ -784,7 +769,7 @@ async function fetchFireworksModels(
       {
         id: model.name,
         ...(model.displayName ? { displayName: model.displayName } : {}),
-        ...(typeof model.contextLength === 'number' ? { contextWindow: model.contextLength } : {}),
+        ...(contextWindow === undefined ? {} : { contextWindow }),
         ...(Object.keys(capabilities).length ? { capabilities } : {}),
       },
     ];
@@ -800,7 +785,9 @@ function toModelInfo(model: RawProviderModel): ModelInfo | null {
     model.providers,
     'model providers',
   );
-  const contextWindow = model.context_length ?? model.context_window;
+  const contextWindow =
+    providerTokenLimit(model.context_length) ?? providerTokenLimit(model.context_window);
+  const maxOutputTokens = providerTokenLimit(model.max_tokens);
   const capabilities: NonNullable<ModelInfo['capabilities']> = {};
   if (model.input_modalities?.includes('image')) capabilities.vision = true;
   if (typeof model.capabilities?.reasoning === 'boolean')
@@ -835,8 +822,8 @@ function toModelInfo(model: RawProviderModel): ModelInfo | null {
   return {
     id: model.id,
     ...(model.display_name || model.name ? { displayName: model.display_name ?? model.name } : {}),
-    ...(typeof contextWindow === 'number' ? { contextWindow } : {}),
-    ...(typeof model.max_tokens === 'number' ? { maxOutputTokens: model.max_tokens } : {}),
+    ...(contextWindow === undefined ? {} : { contextWindow }),
+    ...(maxOutputTokens === undefined ? {} : { maxOutputTokens }),
     ...(Object.keys(capabilities).length ? { capabilities } : {}),
   };
 }
@@ -912,6 +899,7 @@ function nextProviderPageToken(value: unknown): string | undefined {
 }
 
 function classifyDiscoveryError(error: unknown): ConnectionEffectError {
+  if (error instanceof GitHubCopilotModelPolicyError) return { kind: 'auth' };
   if (error instanceof ConnectionEffectFetchError) return { kind: error.kind };
   if (error instanceof ConnectionEffectHttpError) {
     return classifyConnectionEffectStatus(error.status);

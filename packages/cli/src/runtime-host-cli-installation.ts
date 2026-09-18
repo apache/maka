@@ -120,15 +120,23 @@ export async function resolveRuntimeHostNpmGlobalInstallation(
 }
 
 export async function isTemporaryNpxInstallation(
-  path: string,
+  path: string = fileURLToPath(new URL('../', import.meta.url)),
   input: {
     readonly environment: NodeJS.ProcessEnv;
     readonly homeDir: string;
-  },
+    readonly platform?: NodeJS.Platform;
+  } = { environment: process.env, homeDir: homedir() },
 ): Promise<boolean> {
   const canonicalPath = await realpath(path).catch(() => resolve(path));
+  const defaultCache =
+    (input.platform ?? process.platform) === 'win32'
+      ? join(input.environment.LOCALAPPDATA || input.homeDir, 'npm-cache')
+      : join(input.homeDir, '.npm');
   const cacheRoots = await Promise.all(
-    [input.environment.npm_config_cache, join(input.homeDir, '.npm')].flatMap((root) =>
+    [
+      input.environment.npm_config_cache ?? input.environment.NPM_CONFIG_CACHE,
+      defaultCache,
+    ].flatMap((root) =>
       root ? [realpath(resolve(root, '_npx')).catch(() => resolve(root, '_npx'))] : [],
     ),
   );

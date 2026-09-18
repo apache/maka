@@ -142,7 +142,6 @@ function runtimeInput(h: LedgerHarness) {
     runId: RUN_ID,
     invocationId: INVOCATION_ID,
     runtimeCommitSink: h.sink,
-    appendMessage: async () => {},
     newId: nextId(),
     now: () => 1,
     getPermissionPauseTarget: () => null,

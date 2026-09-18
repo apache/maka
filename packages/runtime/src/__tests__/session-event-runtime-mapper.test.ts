@@ -80,13 +80,16 @@ describe('SessionEvent Runtime mapper', () => {
         ts: 1,
         type: 'steering_message',
         messageId: 'steering-message',
-        content: { text: '<invoked-skill>Prepared</invoked-skill>' },
+        content: {
+          text: '<invoked-skill>Prepared</invoked-skill>',
+        },
         submittedContentDigest: digest,
       },
       ctx,
     );
 
     assert.equal(runtimeEvent.refs?.sourceMessageDigest, digest);
+    assert.equal(runtimeEvent.content?.kind, 'text');
   });
 
   test('maps provider retry progress as a partial non-terminal runtime fact', () => {

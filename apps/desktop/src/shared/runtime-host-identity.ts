@@ -17,6 +17,17 @@
  * under the License.
  */
 
+export interface TerminalCloseChange {
+  readonly sessionId: string;
+  readonly ref: string;
+  readonly status: 'pending' | 'unknown' | 'closed';
+}
+
+export interface TerminalRecovery {
+  readonly resources: import('@maka/core/events').ShellRunUpdate[];
+  readonly closes: TerminalCloseChange[];
+}
+
 export interface DesktopHostRef {
   readonly hostId: string;
 }

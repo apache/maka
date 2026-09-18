@@ -181,6 +181,7 @@ export function DailyReviewSettingsPage(props: { connections: readonly Projected
             label={copy.model}
             isLabelHidden
             options={modelOptions}
+            hasSearch
             placement="below"
             isDisabled={formDisabled || modelOptions.length === 0}
             onChange={(value) => void patchConfig('modelKey', {

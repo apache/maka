@@ -43,15 +43,12 @@
  * Pure: no IO, no network, no clock. Given the registry it is a total function.
  */
 
-import { lookupModelProviderOverride, openAiAdapterApiProtocol } from '@maka/core/model-metadata';
+import { lookupModelRuntimeOverride, openAiAdapterApiProtocol } from '@maka/core/model-metadata';
 import {
   PROVIDER_REGISTRY,
   type ProviderDefaults,
-  type ProviderModelDiscovery,
-  type ProviderRuntimeAdapter,
   type ProviderType,
 } from '@maka/core/provider-registry';
-import { resolveRuntimeProviderAdapter } from '../provider-runtime-policy.js';
 
 export const PROVIDER_CONTRACT_DIMENSIONS = [
   'discovery',
@@ -62,8 +59,6 @@ export const PROVIDER_CONTRACT_DIMENSIONS = [
 
 export type ProviderContractDimension = (typeof PROVIDER_CONTRACT_DIMENSIONS)[number];
 
-export type ProviderContractCellState = 'generated' | 'override' | 'not-applicable';
-
 /** The four request wires a generated cell can be executed against. */
 export type ProviderContractWire =
   | 'openai-chat'
@@ -71,11 +66,15 @@ export type ProviderContractWire =
   | 'google-generate'
   | 'cohere-v2';
 
-/** Runtime-adapter kinds whose request wire is provider-specific (auth, headers,
+/** Providers whose request wire is provider-specific (auth, headers,
  * per-model protocol) and therefore cannot be generated from the declaration. */
-export const SUBSCRIPTION_WIRE_ADAPTER_KINDS: ReadonlySet<ProviderRuntimeAdapter['kind']> = new Set(
-  ['openai-codex', 'github-copilot'],
-);
+export const SUBSCRIPTION_WIRE_PROVIDER_TYPES: ReadonlySet<ProviderType> = new Set([
+  'openai-codex',
+  'github-copilot',
+  // Not a subscription, but the same shape of exception: a provider-specific
+  // wire (the CLI's `/alpha/generate`) no generated executor can drive.
+  'commandcode-go',
+]);
 
 /**
  * The wire a provider's Runtime adapter speaks, which its `/models` endpoint
@@ -120,15 +119,12 @@ export interface ProviderContractDiscoveryPlan {
 
 /** Derived expectation for a generated `reasoning-replay` cell. */
 export interface ProviderContractReasoningReplayPlan {
-  /** Field the upstream response carries reasoning in. */
-  sourceField: 'reasoning_content';
   /** Field the next request must carry the replayed reasoning in. */
   replayField: 'reasoning_content' | 'reasoning';
 }
 
 export interface ProviderContractGeneratedCell {
   state: 'generated';
-  dimension: ProviderContractDimension;
   /** Present for wire dimensions (`exact-model-id`, `tool-loop`, `reasoning-replay`). */
   wire?: ProviderContractWire;
   /** Present for the `discovery` dimension. */
@@ -139,18 +135,14 @@ export interface ProviderContractGeneratedCell {
 
 export interface ProviderContractOverrideCell {
   state: 'override';
-  dimension: ProviderContractDimension;
   /** Stable `${providerType}:${dimension}` key a named hand-written test registers against. */
   overrideKey: string;
-  /** Human-readable statement of the provider-specific contract the override owns. */
-  contract: string;
 }
 
 export type ProviderContractReverseAssertion = 'must-not-request-models-endpoint';
 
 export interface ProviderContractNotApplicableCell {
   state: 'not-applicable';
-  dimension: ProviderContractDimension;
   /** Human-readable justification derived from the provider declaration. */
   reason: string;
   /** An assertion the executor must still hold even though the dimension is N/A. */
@@ -175,8 +167,6 @@ export interface ProviderContractEdgeWireSample {
 
 export interface ProviderContractRow {
   providerType: ProviderType;
-  adapterKind: ProviderRuntimeAdapter['kind'];
-  discoveryKind: ProviderModelDiscovery['kind'];
   /** Deterministic model id generated cells drive through discovery and the wire. */
   sampleModelId: string;
   /** Declared edge-shaped ids the wire executor drives in addition to {@link sampleModelId}. */
@@ -224,7 +214,7 @@ function wireForProtocol(protocol: ProviderWireProtocol): ProviderContractWire {
  */
 function sampleModelIdFor(providerType: ProviderType, def: ProviderDefaults): string {
   const usesDefaultWire = (id: string): boolean => {
-    if (lookupModelProviderOverride(providerType, id)) return false;
+    if (lookupModelRuntimeOverride(providerType, id)) return false;
     if (usesOpenAiResponsesWire(providerType, def, id)) return false;
     return true;
   };
@@ -236,7 +226,7 @@ function usesOpenAiResponsesWire(
   def: ProviderDefaults,
   modelId: string,
 ): boolean {
-  const adapter = resolveRuntimeProviderAdapter(def.runtimeAdapter);
+  const adapter = def.runtimeAdapter;
   const supportsResponses =
     adapter.kind === 'openai' ||
     (adapter.kind === 'openai-compatible' && adapter.responses !== undefined);
@@ -245,60 +235,16 @@ function usesOpenAiResponsesWire(
   );
 }
 
-/**
- * Edge-shaped model ids each provider's account surface can really serve —
- * slashes, dots, colon-suffixed quantization/cloud tags, vendor casing — that
- * the plain first-fallback sample does not exercise. The generated wire
- * executor drives every declared id end-to-end (exact-model-id + tool-loop) on
- * the wire resolved for that id, proving exact-id preservation is not an
- * artifact of simple ids. Future providers enter by declaration alone.
- */
-const EDGE_WIRE_SAMPLE_MODEL_IDS: Partial<Record<ProviderType, readonly string[]>> = {
-  'opencode-go': ['kimi-k2.7-code'],
-  localai: ['localai/Qwen3-8B-Instruct-GGUF:Q4_K_M'],
-  'lm-studio': ['lmstudio-community/Qwen3-Coder-30B-A3B-Instruct-GGUF'],
-  'minimax-coding-plan': ['MiniMax-M2.7-highspeed'],
-  'tencent-tokenhub': ['hy3-preview'],
-};
-
-/**
- * Resolve the wire a declared edge id executes on, mirroring the runtime's
- * per-model resolution order: a models.dev per-model override wins, then the
- * native OpenAI adapter's declared per-id protocol, then the provider's
- * default protocol wire. Ids that resolve outside the four executable wires
- * (e.g. OpenAI Responses) must be owned by a named override instead of an edge
- * declaration; declaring one here is a plan-construction error.
- */
-function edgeWireSamplesFor(
-  providerType: ProviderType,
-  def: ProviderDefaults,
-): ProviderContractEdgeWireSample[] {
-  return (EDGE_WIRE_SAMPLE_MODEL_IDS[providerType] ?? []).map((modelId) => {
-    const override = lookupModelProviderOverride(providerType, modelId);
-    if (override) {
-      switch (override.npm) {
-        case '@ai-sdk/anthropic':
-          return { modelId, wire: 'anthropic-messages' as const };
-        case '@ai-sdk/google':
-          return { modelId, wire: 'google-generate' as const };
-        case '@ai-sdk/openai-compatible':
-          return { modelId, wire: 'openai-chat' as const };
-        default:
-          throw new Error(
-            `edge wire sample ${providerType}/${modelId} resolves to ${override.npm}, which has no ` +
-              'generated wire; own it with a named override binding instead of an edge declaration',
-          );
-      }
-    }
-    if (usesOpenAiResponsesWire(providerType, def, modelId)) {
-      throw new Error(
-        `edge wire sample ${providerType}/${modelId} routes to the OpenAI Responses wire, which has no ` +
-          'generated executor; own it with a named override binding instead of an edge declaration',
-      );
-    }
-    return { modelId, wire: wireForProtocol(wireProtocolFor(def)) };
-  });
-}
+const EDGE_WIRE_SAMPLES: Partial<Record<ProviderType, readonly ProviderContractEdgeWireSample[]>> =
+  {
+    'opencode-go': [{ modelId: 'kimi-k2.7-code', wire: 'openai-chat' }],
+    localai: [{ modelId: 'localai/Qwen3-8B-Instruct-GGUF:Q4_K_M', wire: 'openai-chat' }],
+    'lm-studio': [
+      { modelId: 'lmstudio-community/Qwen3-Coder-30B-A3B-Instruct-GGUF', wire: 'openai-chat' },
+    ],
+    'minimax-coding-plan': [{ modelId: 'MiniMax-M2.7-highspeed', wire: 'anthropic-messages' }],
+    'tencent-tokenhub': [{ modelId: 'hy3-preview', wire: 'openai-chat' }],
+  };
 
 function discoveryCell(providerType: ProviderType, def: ProviderDefaults): ProviderContractCell {
   const discovery = def.modelDiscovery;
@@ -306,50 +252,38 @@ function discoveryCell(providerType: ProviderType, def: ProviderDefaults): Provi
     case 'fallback':
       return {
         state: 'not-applicable',
-        dimension: 'discovery',
         reason: discovery.reason,
         reverseAssertion: 'must-not-request-models-endpoint',
       };
     case 'cloudflare':
       return {
         state: 'override',
-        dimension: 'discovery',
         overrideKey: overrideKeyFor(providerType, 'discovery'),
-        contract: 'Cloudflare Workers AI native paginated /ai/models/search discovery',
       };
     case 'fireworks':
       return {
         state: 'override',
-        dimension: 'discovery',
         overrideKey: overrideKeyFor(providerType, 'discovery'),
-        contract: 'Fireworks account pagination discovery over /v1/accounts + per-account /models',
       };
     case 'cohere':
       return {
         state: 'override',
-        dimension: 'discovery',
         overrideKey: overrideKeyFor(providerType, 'discovery'),
-        contract: 'Cohere native V2 paginated /v1/models discovery (endpoint=chat)',
       };
     case 'ollama':
       return {
         state: 'override',
-        dimension: 'discovery',
         overrideKey: overrideKeyFor(providerType, 'discovery'),
-        contract: 'Ollama native /api/tags discovery',
       };
     case 'protocol':
       if (discovery.auth === 'github-copilot') {
         return {
           state: 'override',
-          dimension: 'discovery',
           overrideKey: overrideKeyFor(providerType, 'discovery'),
-          contract: 'GitHub Copilot subscription /models discovery (picker + endpoint gating)',
         };
       }
       return {
         state: 'generated',
-        dimension: 'discovery',
         discovery: {
           protocol: wireProtocolFor(def),
           auth:
@@ -380,16 +314,13 @@ function wireDimensionCell(
   if (def.runtimeAdapter.kind === 'unavailable') {
     return {
       state: 'not-applicable',
-      dimension,
       reason: `${providerType} has no Runtime adapter and cannot send`,
     };
   }
-  if (SUBSCRIPTION_WIRE_ADAPTER_KINDS.has(def.runtimeAdapter.kind)) {
+  if (SUBSCRIPTION_WIRE_PROVIDER_TYPES.has(providerType)) {
     return {
       state: 'override',
-      dimension,
       overrideKey: overrideKeyFor(providerType, dimension),
-      contract: `${def.runtimeAdapter.kind} subscription wire is provider-specific (per-model protocol, headers, auth)`,
     };
   }
   if (
@@ -398,60 +329,46 @@ function wireDimensionCell(
   ) {
     return {
       state: 'override',
-      dimension,
       overrideKey: overrideKeyFor(providerType, dimension),
-      contract:
-        'OpenAI Responses relay wire is provider-specific until the matrix has a generated Responses executor',
     };
   }
-  return { state: 'generated', dimension, wire: wireForProtocol(wireProtocolFor(def)) };
+  return { state: 'generated', wire: wireForProtocol(wireProtocolFor(def)) };
 }
 
 function reasoningReplayCell(
   providerType: ProviderType,
   def: ProviderDefaults,
 ): ProviderContractCell {
-  const adapter = resolveRuntimeProviderAdapter(def.runtimeAdapter);
+  const adapter = def.runtimeAdapter;
   if (adapter.kind === 'unavailable') {
     return {
       state: 'not-applicable',
-      dimension: 'reasoning-replay',
       reason: `${providerType} has no Runtime adapter and cannot send`,
     };
   }
-  if (SUBSCRIPTION_WIRE_ADAPTER_KINDS.has(adapter.kind)) {
+  if (SUBSCRIPTION_WIRE_PROVIDER_TYPES.has(providerType)) {
     return {
       state: 'override',
-      dimension: 'reasoning-replay',
       overrideKey: overrideKeyFor(providerType, 'reasoning-replay'),
-      contract: `${adapter.kind} replays reasoning on its provider-specific per-model wire`,
     };
   }
   if (adapter.kind === 'openai-compatible' && adapter.responses !== undefined) {
     return {
       state: 'override',
-      dimension: 'reasoning-replay',
       overrideKey: overrideKeyFor(providerType, 'reasoning-replay'),
-      contract:
-        'The explicitly declared Responses adapter owns its provider-specific continuation representation',
     };
   }
   if (adapter.kind === 'openai-compatible') {
     if (adapter.replayAssistantReasoningDetails === true) {
       return {
         state: 'override',
-        dimension: 'reasoning-replay',
         overrideKey: overrideKeyFor(providerType, 'reasoning-replay'),
-        contract:
-          'Signed reasoning_details are replayed byte-for-byte (ZenMux), beyond a plain field rename',
       };
     }
     return {
       state: 'generated',
-      dimension: 'reasoning-replay',
       wire: 'openai-chat',
       reasoningReplay: {
-        sourceField: 'reasoning_content',
         replayField: adapter.replayAssistantReasoningAs ?? 'reasoning_content',
       },
     };
@@ -459,17 +376,14 @@ function reasoningReplayCell(
   if (adapter.kind === 'openai' && adapter.apiProtocol === 'openai-responses') {
     return {
       state: 'override',
-      dimension: 'reasoning-replay',
       overrideKey: overrideKeyFor(providerType, 'reasoning-replay'),
-      contract: 'Native OpenAI Responses reasoning items retain their provider continuation state',
     };
   }
   // Native Anthropic / OpenAI / Google / Cohere SDKs own signed reasoning replay
-  // opaquely; except for the stateless Agent Plan contract above, the Maka
-  // provider layer adds no wire transform to derive from.
+  // opaquely; except for the declared per-adapter Responses contracts above, the
+  // Maka provider layer adds no wire transform to derive from.
   return {
     state: 'not-applicable',
-    dimension: 'reasoning-replay',
     reason: 'vendor-sdk-owns-signed-reasoning-replay',
   };
 }
@@ -478,16 +392,14 @@ function isRow(def: ProviderDefaults): boolean {
   return def.status === 'ready';
 }
 
-export function buildProviderContractRow(
+function buildProviderContractRow(
   providerType: ProviderType,
   def: ProviderDefaults,
 ): ProviderContractRow {
   return {
     providerType,
-    adapterKind: def.runtimeAdapter.kind,
-    discoveryKind: def.modelDiscovery.kind,
     sampleModelId: sampleModelIdFor(providerType, def),
-    edgeWireSamples: edgeWireSamplesFor(providerType, def),
+    edgeWireSamples: EDGE_WIRE_SAMPLES[providerType] ?? [],
     cells: {
       discovery: discoveryCell(providerType, def),
       'exact-model-id': wireDimensionCell('exact-model-id', providerType, def),
@@ -497,39 +409,25 @@ export function buildProviderContractRow(
   };
 }
 
-/**
- * Derive the full conformance matrix plan from a provider registry. Defaults to
- * the live {@link PROVIDER_REGISTRY}; accepts an explicit registry so tests can
- * probe the derivation with fixtures.
- */
-export function buildProviderContractMatrixPlan(
-  registry: Readonly<Record<string, ProviderDefaults>> = PROVIDER_REGISTRY,
-): ProviderContractMatrixPlan {
-  const rows = (Object.entries(registry) as Array<[ProviderType, ProviderDefaults]>)
+/** Derive the full conformance matrix plan from the live {@link PROVIDER_REGISTRY}. */
+function buildProviderContractMatrixPlan(): ProviderContractMatrixPlan {
+  const rows = (Object.entries(PROVIDER_REGISTRY) as Array<[ProviderType, ProviderDefaults]>)
     .filter(([, def]) => isRow(def))
     .map(([providerType, def]) => buildProviderContractRow(providerType, def));
   return { dimensions: PROVIDER_CONTRACT_DIMENSIONS, rows };
 }
 
-/** A single (provider, dimension) coordinate flattened from the plan. */
-export interface ProviderContractCellEntry {
-  providerType: ProviderType;
-  dimension: ProviderContractDimension;
-  cell: ProviderContractCell;
-  row: ProviderContractRow;
-}
-
-/** Flatten the plan into one entry per (provider, dimension) cell, in a stable order. */
+/** Flatten the plan into one cell per (provider, dimension), in a stable order. */
 export function listProviderContractCells(
   plan: ProviderContractMatrixPlan,
-): ProviderContractCellEntry[] {
-  const entries: ProviderContractCellEntry[] = [];
+): ProviderContractCell[] {
+  const cells: ProviderContractCell[] = [];
   for (const row of plan.rows) {
     for (const dimension of plan.dimensions) {
-      entries.push({ providerType: row.providerType, dimension, cell: row.cells[dimension], row });
+      cells.push(row.cells[dimension]);
     }
   }
-  return entries;
+  return cells;
 }
 
 /** The live plan for the current registry. */

@@ -32,6 +32,7 @@ import {
 import { createCredentialMcpOAuthStorage, McpClientManager } from '@maka/mcp';
 import { createFileCredentialStore } from '@maka/storage/credential-store';
 import {
+  AtomicFileWriteCommitUnknownError,
   createMcpConfigStore,
   assertMcpEndpointPolicyOnChanges,
   McpConfigSourceError,
@@ -150,6 +151,12 @@ export type TuiMcpActionResult =
       readonly status: 'tested';
       readonly test: McpTestResult;
       readonly effect: TuiMcpActionEffect;
+    }
+  | {
+      readonly status: 'failed';
+      readonly reason: 'commit-unknown';
+      readonly cause: AtomicFileWriteCommitUnknownError;
+      readonly reconciliationError?: unknown;
     }
   | {
       readonly status: 'conflict';
@@ -644,12 +651,18 @@ class TuiMcpControllerImpl implements TuiMcpController {
       committed = await waitForAbort(transaction, signal);
     } catch (error) {
       if (error instanceof TuiMcpMutationError) return error.result;
+      if (error instanceof AtomicFileWriteCommitUnknownError) {
+        return this.#reconcilePublishedMutation(error, signal, cleanupTimeoutMs);
+      }
       if (this.#closed || signal?.aborted) {
         const cleanup = cleanupSignal(cleanupTimeoutMs);
         try {
           committed = await waitForAbort(transaction, cleanup);
         } catch (settlementError) {
           if (settlementError instanceof TuiMcpMutationError) return settlementError.result;
+          if (settlementError instanceof AtomicFileWriteCommitUnknownError) {
+            return this.#reconcilePublishedMutation(settlementError, signal, cleanupTimeoutMs);
+          }
           if (credentialRetirementStarted) {
             // The tombstone write is now irreversible. It may already be
             // durable even though the credential operation has not settled,
@@ -661,6 +674,9 @@ class TuiMcpControllerImpl implements TuiMcpController {
               if (transactionError instanceof TuiMcpMutationError) {
                 return transactionError.result;
               }
+              if (transactionError instanceof AtomicFileWriteCommitUnknownError) {
+                return this.#reconcilePublishedMutation(transactionError, signal, cleanupTimeoutMs);
+              }
               this.#publicationSuppressed = false;
               this.#updateSnapshot({ configuration: 'out_of_sync' });
               return { status: 'failed', reason: 'persist-failed' };
@@ -670,6 +686,8 @@ class TuiMcpControllerImpl implements TuiMcpController {
               transaction,
               () => previous,
               () => changedIds,
+              signal,
+              cleanupTimeoutMs,
             );
             this.#publicationSuppressed = false;
             this.#updateSnapshot({ configuration: 'out_of_sync' });
@@ -698,6 +716,85 @@ class TuiMcpControllerImpl implements TuiMcpController {
         return { status: 'failed', reason: 'persist-failed' };
       }
     }
+    return (
+      await this.#synchronizeCommittedConfig(committed, {
+        previous,
+        changedIds,
+        rollbackOnCancel: !credentialRetirementStarted,
+        signal,
+        cleanupTimeoutMs,
+      })
+    ).result;
+  }
+
+  async #reconcilePublishedMutation(
+    error: AtomicFileWriteCommitUnknownError,
+    signal?: AbortSignal,
+    cleanupTimeoutMs?: number,
+  ): Promise<TuiMcpActionResult> {
+    // The transform has already published, including any credential
+    // retirement. Reload its authority; never replay or roll back those effects.
+    this.#preparedImport = undefined;
+    let reconciliationError: unknown;
+    if (!this.#closed) {
+      try {
+        const committed = await waitForAbort(
+          this.#deps.configStore.get(),
+          signal?.aborted ? cleanupSignal(cleanupTimeoutMs) : signal,
+        );
+        if (!this.#closed) {
+          ({ reconciliationError } = await this.#synchronizeCommittedConfig(committed, {
+            changedIds: changedServerIds(this.#config ?? committed, committed),
+            rollbackOnCancel: false,
+            signal,
+            cleanupTimeoutMs,
+          }));
+        }
+      } catch (failure) {
+        if (!this.#closed) {
+          reconciliationError = failure;
+          this.#publicationSuppressed = false;
+          this.#snapshot = freezeSnapshot({
+            ...this.#snapshot,
+            configuration: 'out_of_sync',
+            servers: this.#snapshot.servers.map((server) => ({
+              ...server,
+              synchronized: false,
+            })),
+          });
+          this.#notify();
+        }
+      }
+    }
+    // Reconciliation does not establish the missing durability fence,
+    // and its own failure must not replace the original write error.
+    return {
+      status: 'failed',
+      reason: 'commit-unknown',
+      cause: error,
+      ...(reconciliationError === undefined ? {} : { reconciliationError }),
+    };
+  }
+
+  async #synchronizeCommittedConfig(
+    committed: McpConfigFile,
+    {
+      previous,
+      changedIds,
+      rollbackOnCancel,
+      signal,
+      cleanupTimeoutMs,
+    }: {
+      readonly previous?: McpConfigFile;
+      readonly changedIds: readonly string[];
+      readonly rollbackOnCancel: boolean;
+      readonly signal?: AbortSignal;
+      readonly cleanupTimeoutMs?: number;
+    },
+  ): Promise<{
+    readonly result: TuiMcpActionResult;
+    readonly reconciliationError?: unknown;
+  }> {
     this.#preparedImport = undefined;
     this.#config = cloneConfig(committed);
     this.#updateSnapshot({ configuration: 'synchronizing' });
@@ -713,25 +810,27 @@ class TuiMcpControllerImpl implements TuiMcpController {
       this.#refreshManagerSnapshot();
       const effect = await this.#settlePublication(signal);
       throwIfAborted(signal);
-      return { status: 'applied', effect };
-    } catch {
-      if (!credentialRetirementStarted && (this.#closed || signal?.aborted)) {
+      return { result: { status: 'applied', effect } };
+    } catch (error) {
+      if (rollbackOnCancel && (this.#closed || signal?.aborted)) {
         const rolledBack = await this.#rollbackCancelledMutation(
           previous,
           committed,
           changedIds,
           cleanupSignal(cleanupTimeoutMs),
         );
-        if (!rolledBack) return { status: 'failed', reason: 'rollback-failed' };
+        if (!rolledBack) return { result: { status: 'failed', reason: 'rollback-failed' } };
         return {
-          status: 'failed',
-          reason: this.#closed ? 'closed' : 'cancelled',
+          result: {
+            status: 'failed',
+            reason: this.#closed ? 'closed' : 'cancelled',
+          },
         };
       }
       this.#publicationSuppressed = false;
       this.#updateSnapshot({ configuration: 'out_of_sync' });
       this.#refreshManagerSnapshot();
-      if (credentialRetirementStarted && (this.#closed || signal?.aborted)) {
+      if (!rollbackOnCancel && (this.#closed || signal?.aborted)) {
         const cleanup = cleanupSignal(cleanupTimeoutMs);
         await this.#settleCancelledConnections(changedIds, cleanup);
         this.#refreshManagerSnapshot();
@@ -739,7 +838,7 @@ class TuiMcpControllerImpl implements TuiMcpController {
       } else {
         await this.#settlePublication(signal);
       }
-      return { status: 'applied', effect: 'sync_failed' };
+      return { result: { status: 'applied', effect: 'sync_failed' }, reconciliationError: error };
     }
   }
 
@@ -914,10 +1013,16 @@ class TuiMcpControllerImpl implements TuiMcpController {
     transaction: Promise<McpConfigFile>,
     previous: () => McpConfigFile | undefined,
     serverIds: () => readonly string[],
+    signal?: AbortSignal,
+    cleanupTimeoutMs?: number,
   ): void {
     void transaction
       .then((committed) => this.#rollbackCancelledMutation(previous(), committed, serverIds()))
-      .catch(() => undefined);
+      .catch((error) => {
+        if (error instanceof AtomicFileWriteCommitUnknownError) {
+          return this.#reconcilePublishedMutation(error, signal, cleanupTimeoutMs);
+        }
+      });
   }
 
   async #settleCancelledConnection(serverId: string, signal?: AbortSignal): Promise<boolean> {

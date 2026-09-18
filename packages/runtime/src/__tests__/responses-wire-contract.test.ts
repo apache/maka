@@ -29,7 +29,6 @@ import { buildProviderOptions, getAIModel } from '../model-factory.js';
 import { ModelAdapter } from '../model-adapter.js';
 import { TOOL_SEARCH_PROVIDER_NAME } from '../tool-availability.js';
 import { resolveModelRuntime } from '../model-runtime.js';
-import { resolveRuntimeProviderAdapter } from '../provider-runtime-policy.js';
 import { lowerModelTools } from '../model-adapter.js';
 import { openAiResponsesBaseUrl, openResponsesUrl } from '../provider-urls.js';
 
@@ -193,7 +192,7 @@ describe('responses wire contract', () => {
     assert.deepEqual(sessionHeaders, ['session-opencode-go']);
   });
 
-  test('sends the OpenCode Go session identity through Chat and Messages adapters', async () => {
+  test('sends OpenCode Go and Free session identities through their model adapters', async () => {
     const requests: Array<{ url: string; sessionHeader: string | null }> = [];
     const fetch = (async (url: string | URL | Request, init?: RequestInit) => {
       const request = new Request(url, init);
@@ -229,13 +228,18 @@ describe('responses wire contract', () => {
       });
     }) as typeof globalThis.fetch;
 
-    for (const modelId of ['kimi-k2.7-code', 'minimax-m3']) {
+    for (const [providerType, modelId] of [
+      ['opencode-go', 'kimi-k2.7-code'],
+      ['opencode-go', 'minimax-m3'],
+      ['opencode-free', 'nemotron-3-ultra-free'],
+      ['opencode-free', 'nemotron-3-ultra-free'],
+    ] as const) {
       const model = getAIModel({
-        connection: conn('opencode-go'),
+        connection: conn(providerType),
         apiKey: '[redacted]',
         modelId,
         fetch,
-        sessionId: 'session-opencode-go',
+        sessionId: `session-${providerType}`,
       });
       await model.doGenerate({
         prompt: [{ role: 'user', content: [{ type: 'text', text: 'ping' }] }],
@@ -250,6 +254,14 @@ describe('responses wire contract', () => {
       {
         url: 'https://opencode.ai/zen/go/v1/messages',
         sessionHeader: 'session-opencode-go',
+      },
+      {
+        url: 'https://opencode.ai/zen/v1/chat/completions',
+        sessionHeader: 'session-opencode-free',
+      },
+      {
+        url: 'https://opencode.ai/zen/v1/chat/completions',
+        sessionHeader: 'session-opencode-free',
       },
     ]);
   });
@@ -334,6 +346,17 @@ describe('responses wire contract', () => {
       contract: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
     });
 
+    const moonshotGlobal = resolveModelRuntime(
+      { providerType: 'moonshot-global', slug: 'moonshot-global' },
+      'kimi-k3',
+    );
+    assert.deepEqual(moonshotGlobal.reasoningReplay, {
+      kind: 'responses',
+      contract: { adapter: 'open-responses', reasoningReplay: 'plaintext-summary' },
+    });
+    assert.equal(moonshotGlobal.responsesProviderOptionsKey, 'moonshot-global');
+    assert.equal(moonshotGlobal.responsesReplayProfile, 'moonshot-global');
+
     const relay = resolveModelRuntime(
       { providerType: 'openai-responses-compatible' },
       'relay-model',
@@ -373,49 +396,6 @@ describe('responses wire contract', () => {
       ).parallelToolCalls,
       true,
     );
-  });
-
-  test('enables Responses only through an explicit supported contract', () => {
-    const configured = Object.entries(PROVIDER_REGISTRY).flatMap(([providerType, definition]) => {
-      const adapter = resolveRuntimeProviderAdapter(definition.runtimeAdapter);
-      return adapter.kind === 'openai-compatible' && adapter.responses
-        ? [{ providerType, contract: adapter.responses }]
-        : [];
-    });
-
-    assert.deepEqual(configured, [
-      {
-        providerType: 'deepseek',
-        contract: { adapter: 'open-responses', reasoningReplay: 'plaintext-content' },
-      },
-      {
-        providerType: 'xai',
-        contract: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
-      },
-      {
-        providerType: 'xai-oauth',
-        contract: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
-      },
-      {
-        providerType: 'alibaba-token-plan-cn',
-        contract: {
-          adapter: 'open-responses',
-          reasoningReplay: 'plaintext-summary',
-          compatibility: 'alibaba-token-plan',
-        },
-      },
-      {
-        providerType: 'alibaba-token-plan',
-        contract: {
-          adapter: 'open-responses',
-          reasoningReplay: 'plaintext-summary',
-          compatibility: 'alibaba-token-plan',
-        },
-      },
-    ]);
-
-    const relay = PROVIDER_REGISTRY['openai-responses-compatible'].runtimeAdapter;
-    assert.equal(relay.kind, 'openai');
   });
 
   test('every encrypted-content Responses contract asks for encrypted reasoning', () => {

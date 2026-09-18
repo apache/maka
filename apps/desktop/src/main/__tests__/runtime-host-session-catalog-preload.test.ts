@@ -32,6 +32,15 @@ function session(id: string, activityAt: number): DesktopSessionSummary {
   return { id, activityAt } as DesktopSessionSummary;
 }
 
+test('local pending Sessions sort by local creation without inventing Host activity', () => {
+  const existing = ownerSession('existing', 1);
+  const pending = { ...ownerSession('pending', 0), activityAt: undefined, localState: 'pending' as const, localCreatedAt: 2 };
+  assert.deepEqual(reconcileRuntimeHostSessionCatalog([], {
+    sessions: [existing, pending], completeHostIds: [], knownOwnerProfileIds: ['owner-profile'], guestSessions: [],
+  }), [pending, existing]);
+  assert.equal(pending.activityAt, undefined);
+});
+
 function ownerSession(
   id: string,
   activityAt: number,

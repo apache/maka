@@ -24,15 +24,16 @@ import { MAX_ATTACHMENT_BYTES } from '@maka/core/attachments';
 import {
   createToolResultArchiveCapability,
   type ToolResultArchiveCapability,
-  type ToolResultArchiveRecorderInput,
+  type ToolResultArchiveRecorder,
 } from '@maka/runtime/tool-result-archive-capability';
 import { isPathInside } from '@maka/runtime/path-containment';
-import { stableToolResultArchiveArtifactId } from '@maka/runtime/tool-result-archive';
-import { type ToolArtifactRecorderInput } from '@maka/runtime/tool-artifacts';
 import {
-  type ToolResultArchiveReaderInput,
-  type ToolResultArchiveReadResult,
-} from '@maka/runtime/context-budget';
+  createLedgerArchivePreparer,
+  createLedgerArchiveResourceReader,
+} from '@maka/runtime/ledger-tool-result-archive-reader';
+import type { ToolResultArchiveEvidenceReader } from '@maka/core/tool-result-archive-evidence';
+import { type ToolArtifactRecorderInput } from '@maka/runtime/tool-artifacts';
+import type { ToolResultArchiveReaderInput } from '@maka/runtime/context-budget';
 import { type ToolResultArchiveResourceReadInput } from '@maka/runtime/tool-result-archive-resource';
 import type { InteractiveArtifactStoreWriter } from '@maka/storage/artifact-stores';
 import type { SessionManagerDeps } from '@maka/runtime/session-manager';
@@ -43,9 +44,8 @@ export interface HostExecutionArtifactServices {
   recordToolArtifacts(event: ToolArtifactRecorderInput): Promise<void>;
   publishChildWorkspacePatch: NonNullable<SessionManagerDeps['publishChildWorkspacePatch']>;
   /**
-   * One archive authority over the session artifact store (#2026). All three
-   * reads and the writer address the same store, so the host has no way to hand
-   * out half of it.
+   * New archives use the Session ledger. Legacy Artifact refs are retained as
+   * historical data but are deliberately unavailable through this capability.
    */
   toolResultArchive: ToolResultArchiveCapability;
 }
@@ -55,6 +55,7 @@ export function createHostExecutionArtifactServices(input: {
   requestDrain: () => void;
   sessionAdmission: SessionAdmissionGate;
   sessions: SessionPresenceReader;
+  archiveEvidence?: ToolResultArchiveEvidenceReader;
 }): HostExecutionArtifactServices {
   const runWrite = async <T>(operation: () => Promise<T>): Promise<T> => {
     try {
@@ -92,6 +93,29 @@ export function createHostExecutionArtifactServices(input: {
     }
   };
 
+  const prepareLedger = input.archiveEvidence
+    ? createLedgerArchivePreparer(input.archiveEvidence)
+    : undefined;
+  const readLedgerResource = input.archiveEvidence
+    ? createLedgerArchiveResourceReader(input.archiveEvidence)
+    : undefined;
+  const prepareLedgerForCommit: ToolResultArchiveRecorder = async (event) => {
+    const accepted = { ...event };
+    if (!prepareLedger || !(await prepareLedger(accepted))) return;
+    return {
+      ledger: true,
+      commitTransition: (transition, persist) =>
+        input.sessionAdmission.runOrJoin(accepted.sessionId, async () => {
+          if (
+            (await input.sessions.probeSessionRemoval(accepted.sessionId)).kind !== 'present' ||
+            !(await prepareLedger(accepted))
+          )
+            return false;
+          await persist(transition);
+          return true;
+        }),
+    };
+  };
   const services: HostExecutionArtifactServices = {
     recordToolArtifacts,
     publishChildWorkspacePatch: async ({ sessionId, turnId, binding, patch }) => {
@@ -111,40 +135,11 @@ export function createHostExecutionArtifactServices(input: {
       return artifact;
     },
     toolResultArchive: createToolResultArchiveCapability({
-      archiveToolResult: (event: ToolResultArchiveRecorderInput) =>
-        runWrite(async () => {
-          const artifactId = stableToolResultArchiveArtifactId(event);
-          const existing = await input.artifacts.getInSession(event.sessionId, artifactId);
-          if (existing.record) {
-            const read = await readArchive(input.artifacts, {
-              artifactId,
-              sessionId: event.sessionId,
-              bodySha256: event.bodySha256,
-              originalBytes: event.originalBytes,
-              maxBytes: event.originalBytes,
-            });
-            if (!read.ok) {
-              throw new Error(`Tool result archive identity conflict: ${read.reason}`);
-            }
-            return { artifactId };
-          }
-          const artifact = await input.artifacts.create({
-            id: artifactId,
-            sessionId: event.sessionId,
-            turnId: event.turnId,
-            name: `archived-${event.toolName}-${event.runtimeEventId}.json`,
-            kind: 'file',
-            content: event.serializedResult,
-            mimeType: 'application/json',
-            source: 'tool_result_archive',
-            summary: `Archived ${event.toolName} tool result for context budget replay`,
-          });
-          return { artifactId: artifact.id };
-        }),
-      readToolResultArchive: (event: ToolResultArchiveReaderInput) =>
-        readArchive(input.artifacts, event),
+      archiveToolResult: prepareLedgerForCommit,
       readArchivedToolResultResource: (event: ToolResultArchiveResourceReadInput) =>
-        readArchive(input.artifacts, event),
+        event.storage === 'ledger' || event.storage === 'event'
+          ? (readLedgerResource?.(event) ?? { ok: false, reason: 'read_failed' })
+          : { ok: false, reason: 'read_failed' },
     }),
   };
   return Object.freeze(services);
@@ -197,28 +192,4 @@ async function readBoundedSourceFile(cwd: string, sourcePath: string): Promise<B
 
 function contentBytes(content: string | Uint8Array): number {
   return typeof content === 'string' ? Buffer.byteLength(content, 'utf8') : content.byteLength;
-}
-
-async function readArchive(
-  artifacts: InteractiveArtifactStoreWriter,
-  event: Pick<
-    ToolResultArchiveReaderInput,
-    'artifactId' | 'sessionId' | 'bodySha256' | 'originalBytes' | 'maxBytes'
-  >,
-): Promise<ToolResultArchiveReadResult> {
-  const entry = await artifacts.getInSession(event.sessionId, event.artifactId);
-  const record = entry.record;
-  if (!record) return { ok: false, reason: 'not_found' };
-  if (record.source !== 'tool_result_archive') return { ok: false, reason: 'source_mismatch' };
-  if (record.sizeBytes !== event.originalBytes) return { ok: false, reason: 'size_mismatch' };
-  const read = await artifacts.readTextInSession(event.sessionId, event.artifactId, {
-    maxBytes: event.maxBytes ?? event.originalBytes,
-  });
-  if (!read.ok) return read;
-  if (sha256(read.text) !== event.bodySha256) return { ok: false, reason: 'corrupt' };
-  return { ok: true, serializedResult: read.text };
-}
-
-function sha256(text: string): string {
-  return createHash('sha256').update(text).digest('hex');
 }

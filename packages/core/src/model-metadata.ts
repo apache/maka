@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { ModelInfo, ProviderType } from './llm-connections.js';
+import type { ModelInfo, ProviderType, ProviderRuntimeAdapter } from './llm-connections.js';
 import type { ThinkingOptions } from './model-thinking.js';
 import {
   GENERATED_MODELS_DEV_METADATA,
@@ -69,15 +69,36 @@ let refreshedMetadata: ModelsDevMetadata | undefined;
  * and read Host-resolved catalog entries rather than their own merge.
  */
 export function installRefreshedModelMetadata(metadata: ModelsDevMetadata | undefined): void {
+  if (metadata !== undefined) assertWireTokenLimits(metadata);
   refreshedMetadata = metadata;
+}
+
+/**
+ * The wire carries a token limit only as a positive integer
+ * (decodeConnectionModel), so a table installed here must already be in that
+ * domain: one model outside it fails the Host's own output validation and
+ * takes the whole catalog page down. Refusing at install keeps the snapshot
+ * this build shipped, with the offending model named.
+ */
+function assertWireTokenLimits(table: ModelsDevMetadata): void {
+  for (const [providerType, models] of Object.entries(table)) {
+    for (const [modelId, metadata] of Object.entries(models)) {
+      for (const key of ['contextWindow', 'inputLimit', 'maxOutputTokens'] as const) {
+        const value = metadata[key];
+        if (value === undefined) continue;
+        if (!Number.isSafeInteger(value) || value < 1) {
+          throw new Error(
+            `model metadata ${providerType}/${modelId} has an invalid ${key}: ${String(value)}`,
+          );
+        }
+      }
+    }
+  }
 }
 
 function activeMetadata(): ModelsDevMetadata {
   return refreshedMetadata ?? bundledModelMetadata;
 }
-const generatedModelProviderOverrides: Partial<
-  Record<ProviderType, Record<string, { npm: string; api?: string }>>
-> = GENERATED_MODELS_DEV_MODEL_PROVIDER_OVERRIDES;
 
 /** Access paths that serve a canonical provider's model catalog. */
 const GENERATED_METADATA_PROVIDER_ALIASES: Partial<Record<ProviderType, ProviderType>> = {
@@ -88,6 +109,11 @@ const GENERATED_METADATA_PROVIDER_ALIASES: Partial<Record<ProviderType, Provider
 
 function generatedMetadataProviderType(providerType: ProviderType): ProviderType {
   return GENERATED_METADATA_PROVIDER_ALIASES[providerType] ?? providerType;
+}
+
+/** Whether discovery is the complete usable model catalog for this account. */
+export function providerReportsCompleteModelCatalog(providerType: ProviderType): boolean {
+  return providerType === 'github-copilot';
 }
 
 /**
@@ -103,6 +129,8 @@ export function lookupModelMetadata(providerType: ProviderType, modelId: string)
   const id = modelId.trim();
   const metadataProviderType = generatedMetadataProviderType(providerType);
   const generated = activeMetadata()[metadataProviderType]?.[id];
+  const providerMetadata =
+    providerType === 'openai-codex' ? withoutInputLimit(generated) : generated;
   const statics = staticModelMetadata();
   const override =
     statics[providerType]?.[id] ??
@@ -111,13 +139,13 @@ export function lookupModelMetadata(providerType: ProviderType, modelId: string)
       : providerType === 'opencode-free'
         ? statics.opencode?.[id]
         : undefined);
-  if (!generated) return override ?? {};
-  if (!override) return generated;
+  if (!providerMetadata) return override ?? {};
+  if (!override) return providerMetadata;
   return {
-    ...generated,
+    ...providerMetadata,
     ...override,
-    capabilities: { ...generated.capabilities, ...override.capabilities },
-    modalities: override.modalities ?? generated.modalities,
+    capabilities: { ...providerMetadata.capabilities, ...override.capabilities },
+    modalities: override.modalities ?? providerMetadata.modalities,
   };
 }
 
@@ -140,20 +168,23 @@ export function modelMetadataIdsForProvider(providerType: ProviderType): string[
   );
 }
 
-export function lookupModelProviderOverride(
+export function lookupModelRuntimeOverride(
   providerType: ProviderType,
   modelId: string,
-): { npm: string; api?: string } | undefined {
-  return generatedModelProviderOverrides[providerType]?.[modelId.trim()];
+): { adapter: ProviderRuntimeAdapter; baseUrl?: string } | undefined {
+  const overrides: Partial<
+    Record<ProviderType, Record<string, { adapter: ProviderRuntimeAdapter; baseUrl?: string }>>
+  > = GENERATED_MODELS_DEV_MODEL_PROVIDER_OVERRIDES;
+  return overrides[providerType]?.[modelId.trim()];
 }
 
 /**
  * The request wire a model served over the OpenAI adapter must use.
  *
  * Provider/model routing facts live here even when the concrete Responses SDK
- * and replay policy are delegated to a Runtime profile. This is the single
- * declared source of the default protocol split, expressed through the
- * {@link ModelInfo.apiProtocol} seam.
+ * and replay policy are declared on the provider's `ProviderRuntimeAdapter`.
+ * This is the single declared source of the default protocol split, expressed
+ * through the {@link ModelInfo.apiProtocol} seam.
  */
 export function openAiAdapterApiProtocol(
   modelId: string,
@@ -246,7 +277,15 @@ const GOOGLE_MODEL_OVERRIDES: Record<string, ModelMetadata> = {
 // catalog says. Base facts come from the active table, falling back to the
 // shipped snapshot so a model upstream stops listing keeps a display name.
 function openAiOAuthBase(active: ModelsDevMetadata, modelId: string): ModelMetadata {
-  return active.openai?.[modelId] ?? GENERATED_MODELS_DEV_METADATA.openai[modelId] ?? {};
+  const metadata = active.openai?.[modelId] ?? GENERATED_MODELS_DEV_METADATA.openai[modelId];
+  return withoutInputLimit(metadata) ?? {};
+}
+
+/** OAuth model metadata must not inherit public OpenAI API input limits. */
+function withoutInputLimit(metadata: ModelMetadata | undefined): ModelMetadata | undefined {
+  if (!metadata) return undefined;
+  const { inputLimit: _inputLimit, ...withoutLimit } = metadata;
+  return withoutLimit;
 }
 
 function openAiOAuthModelMetadata(active: ModelsDevMetadata): Record<string, ModelMetadata> {

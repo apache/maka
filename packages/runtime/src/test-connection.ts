@@ -19,7 +19,14 @@
 
 import { randomUUID } from 'node:crypto';
 import {
+  buildCommandCodeCliRequest,
+  commandCodeCliGenerateUrl,
+  commandCodeCliHeaders,
+  summarizeCommandCodeCliStream,
+} from './commandcode-cli-language-model.js';
+import {
   PROVIDER_REGISTRY,
+  effectiveBaseUrl,
   providerDefaultsOf,
   providerFallbackModelIds,
   connectionModelsEnumerateAccount,
@@ -28,11 +35,12 @@ import {
   type ConnectionTestResult,
   type LlmConnection,
 } from '@maka/core/llm-connections';
-import { anthropicV1Url, googleApiUrl, openResponsesUrl } from './provider-urls.js';
+import { openResponsesUrl } from './provider-urls.js';
 import { resolveModelRuntime } from './model-runtime.js';
 import { fetchGitHubCopilotModels } from './model-fetcher.js';
 import {
   CONNECTION_EFFECT_ERROR_BODY_MAX_BYTES,
+  CONNECTION_EFFECT_JSON_BODY_MAX_BYTES,
   ConnectionEffectFetchError,
   fetchForConnectionEffect,
   type ConnectionEffectFetch,
@@ -159,7 +167,10 @@ async function testConnectionStrict(
   if (!defaults) {
     return { ok: false, errorMessage: `Unknown provider type "${connection.providerType}"` };
   }
-  const sessionId = connection.providerType === 'opencode-go' ? randomUUID() : undefined;
+  const sessionId =
+    connection.providerType === 'opencode-go' || connection.providerType === 'opencode-free'
+      ? randomUUID()
+      : undefined;
   const auth = defaults.authKind;
   const secret = auth === 'none' ? '' : apiKey;
   const testModel = resolveConnectionTestModel(
@@ -172,9 +183,16 @@ async function testConnectionStrict(
     return { ok: false, errorMessage: 'No model to test' };
   }
   if (connection.providerType === 'opencode-free' && !model?.trim()) {
+    const brokenModelIds = new Set(defaults.brokenModelIds ?? []);
     const candidates = [
-      ...new Set([...connectionEnabledModelIds(connection), ...providerFallbackModelIds(defaults)]),
+      ...new Set([
+        ...connectionEnabledModelIds(connection).filter((id) => !brokenModelIds.has(id)),
+        ...providerFallbackModelIds(defaults),
+      ]),
     ];
+    if (candidates.length === 0) {
+      return { ok: false, errorMessage: 'No model to test' };
+    }
     let lastFailure: ConnectionTestResult | undefined;
     for (let index = 0; index < candidates.length; index += 1) {
       const candidate = candidates[index]!;
@@ -230,24 +248,15 @@ async function testConnectionModel(
   if (providerDefaultsOf(connection.providerType)?.runtimeAdapter.kind === 'unavailable') {
     return retiredProviderTestResult(connection.providerType);
   }
+  if (connection.providerType === 'github-copilot') {
+    return probeGitHubCopilot(effectiveBaseUrl(connection), secret, testModel, t0, fetchFn);
+  }
   const { adapter, baseUrl, wire } = resolveModelRuntime(connection, testModel);
   const requestHeaders = withOpenCodeSessionHeader(connection.providerType, sessionId);
 
   switch (adapter.kind) {
     case 'anthropic':
-      return await probeAnthropic(
-        connection,
-        baseUrl,
-        secret,
-        testModel,
-        t0,
-        fetchFn,
-        requestHeaders,
-      );
-    case 'unavailable':
-      // Unreachable: the guard above returns first. The arm keeps the switch
-      // exhaustive so a newly retired provider cannot slip past it.
-      return retiredProviderTestResult(connection.providerType);
+      return await probeAnthropic(adapter, baseUrl, secret, testModel, t0, fetchFn, requestHeaders);
     case 'openai':
       return wire === 'openai-responses'
         ? await probeOpenAIResponses(baseUrl, secret, testModel, t0, fetchFn, requestHeaders)
@@ -276,8 +285,6 @@ async function testConnectionModel(
             timeoutMs,
             requestHeaders,
           );
-    case 'github-copilot':
-      return await probeGitHubCopilot(baseUrl, secret, testModel, t0, fetchFn);
     case 'google':
       return await probeGoogle(
         baseUrl,
@@ -289,7 +296,65 @@ async function testConnectionModel(
       );
     case 'cohere':
       return await probeCohere(baseUrl, secret, testModel, t0, fetchFn);
+    case 'commandcode-cli':
+      return await probeCommandCodeCli(baseUrl, secret, testModel, t0, fetchFn, requestHeaders);
   }
+}
+
+async function probeCommandCodeCli(
+  baseUrl: string,
+  apiKey: string,
+  model: string,
+  t0: number,
+  fetchFn: ConnectionEffectFetch | undefined,
+  requestHeaders: Readonly<Record<string, string>> | undefined,
+): Promise<ConnectionTestResult> {
+  const { body } = buildCommandCodeCliRequest(
+    { prompt: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }], maxOutputTokens: 16 },
+    { modelId: model },
+  );
+  const r = await fetchForConnectionEffect(fetchFn, commandCodeCliGenerateUrl(baseUrl), {
+    method: 'POST',
+    headers: { ...commandCodeCliHeaders(apiKey, 'maka'), ...(requestHeaders ?? {}) },
+    body: JSON.stringify(body),
+    timeoutMs: CONNECTION_TEST_TIMEOUT_MS,
+  });
+  if (!r.ok) return httpFailure(r, t0);
+  // HTTP 200 is only the handshake on this wire. The generation adapter fails
+  // the send on an in-band `error` event and on a stream that ends without a
+  // `finish`, so a probe that stopped at the status would store a connection
+  // as verified whose very next send is rejected.
+  const outcome = summarizeCommandCodeCliStream(
+    await r.readText(CONNECTION_EFFECT_JSON_BODY_MAX_BYTES),
+  );
+  const latencyMs = Date.now() - t0;
+  if (outcome.error) {
+    const { message, statusCode } = outcome.error;
+    return {
+      ok: false,
+      latencyMs,
+      errorMessage: message.slice(0, 200),
+      ...(statusCode === undefined ? {} : { statusCode }),
+      errorClass: commandCodeCliStreamErrorClass(statusCode),
+    };
+  }
+  if (!outcome.finished) {
+    return {
+      ok: false,
+      latencyMs,
+      errorMessage: 'The Command Code GO stream ended before the turn finished',
+      errorClass: 'network',
+    };
+  }
+  return { ok: true, latencyMs, modelTested: model };
+}
+
+function commandCodeCliStreamErrorClass(statusCode: number | undefined): ConnectionTestErrorClass {
+  if (statusCode === 401 || statusCode === 403) return 'auth';
+  if (statusCode === 429 || (statusCode !== undefined && statusCode >= 500)) {
+    return 'provider_unavailable';
+  }
+  return 'unknown';
 }
 
 async function probeGitHubCopilot(
@@ -367,7 +432,10 @@ function retiredProviderTestResult(providerType: string): ConnectionTestResult {
 }
 
 async function probeAnthropic(
-  connection: Pick<ConnectionEffectConnection, 'providerType'>,
+  adapter: Extract<
+    import('@maka/core/llm-connections').ProviderRuntimeAdapter,
+    { kind: 'anthropic' }
+  >,
   baseUrl: string,
   secret: string,
   model: string,
@@ -377,12 +445,15 @@ async function probeAnthropic(
 ): Promise<ConnectionTestResult> {
   const headers: Record<string, string> = {
     ...requestHeaders,
-    'x-api-key': secret,
+    ...(adapter.auth === 'bearer'
+      ? { authorization: `Bearer ${secret}` }
+      : { 'x-api-key': secret }),
     'anthropic-version': '2023-06-01',
     'content-type': 'application/json',
   };
 
-  const r = await fetchForConnectionEffect(fetchFn, anthropicV1Url(baseUrl, '/messages'), {
+  const url = `${stripTrailing(baseUrl)}/messages`;
+  const r = await fetchForConnectionEffect(fetchFn, url, {
     method: 'POST',
     headers,
     body: JSON.stringify({
@@ -482,9 +553,7 @@ async function probeGoogle(
   normalizeBaseUrl: boolean,
   fetchFn: ConnectionEffectFetch | undefined,
 ): Promise<ConnectionTestResult> {
-  const url = normalizeBaseUrl
-    ? googleApiUrl(baseUrl, `/models/${encodeURIComponent(model)}:generateContent`, apiKey)
-    : `${stripTrailing(baseUrl)}/models/${encodeURIComponent(model)}:generateContent`;
+  const url = `${stripTrailing(baseUrl)}/models/${encodeURIComponent(model)}:generateContent${normalizeBaseUrl ? `?key=${encodeURIComponent(apiKey)}` : ''}`;
   const r = await fetchForConnectionEffect(fetchFn, url, {
     method: 'POST',
     headers: {
@@ -508,8 +577,6 @@ async function httpFailure(r: ConnectionEffectResponse, t0: number): Promise<Con
     await r.cancel();
     return {
       ok: false,
-      errorMessage:
-        'OAuth 已登录，但当前账号或 provider 正在 rate limit。请稍后重试，或先切换到其它可用模型。',
       statusCode,
       errorClass: 'provider_unavailable',
       latencyMs: Date.now() - t0,

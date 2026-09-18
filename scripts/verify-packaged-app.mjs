@@ -173,9 +173,18 @@ export async function findRendererTarget(port, child, { timeoutMs = 90_000 } = {
       });
       if (response.ok) {
         const targets = await response.json();
-        const page = targets.find(
-          (target) => target.type === 'page' && target.webSocketDebuggerUrl,
-        );
+        // Startup and recovery windows can appear before the application.
+        // Only the packaged main entry owns the bridge and app-shell contract;
+        // selecting the first page pins subsequent probes to a temporary window.
+        const page = targets.find((target) => {
+          if (target.type !== 'page' || !target.webSocketDebuggerUrl) return false;
+          try {
+            const url = new URL(target.url);
+            return url.protocol === 'file:' && url.pathname.endsWith('/dist-renderer/index.html');
+          } catch {
+            return false;
+          }
+        });
         if (page) return page;
       }
     } catch (error) {

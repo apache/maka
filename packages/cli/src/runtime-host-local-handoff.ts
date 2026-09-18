@@ -21,10 +21,12 @@ import { createHash, randomUUID } from 'node:crypto';
 import { realpath, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join, posix, resolve, win32 } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import {
   claimLocalHostProcessDeployment,
   handoffLocalHostProcessDeployment,
   readLocalHostDeploymentRecord,
+  resolveRuntimeHostManagedDeploymentAuthority,
   type LocalHostDeploymentAuthorityOptions,
   type LocalHostProcessDeploymentClaimAdapter,
   type LocalHostProcessDeploymentClaimResult,
@@ -33,7 +35,11 @@ import {
   type RuntimeHostInstallationOwner,
 } from '@maka/runtime-host/operator';
 import { compareProductReleaseVersions } from '@maka/runtime-host/operator/update-package-evidence';
-import { connectExistingRuntimeHost } from '@maka/runtime-host/client';
+import {
+  connectExistingRuntimeHost,
+  forceTerminateObservedRegisteredRuntimeHost,
+  type RuntimeHostProcessIdentity,
+} from '@maka/runtime-host/client';
 import {
   INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
   RUNTIME_HOST_PROTOCOL_VERSION,
@@ -107,12 +113,14 @@ interface RuntimeHostLocalHandoffDeps {
 }
 
 interface RuntimeHostLocalRestartDeps extends RuntimeHostLocalHandoffDeps {
+  readonly resolveManagedAuthority: typeof resolveRuntimeHostManagedDeploymentAuthority;
   readonly resolveCandidate: typeof resolveRuntimeHostRegistryUpdateCandidate;
   readonly connectExisting: typeof connectExistingRuntimeHost;
   readonly activateTarget: (
     input: RuntimeHostTargetActivationInput,
   ) => Promise<RuntimeHostTargetActivation>;
   readonly retireSource: typeof launchRuntimeHostLocalSourceRetirement;
+  readonly terminateObservedHost: typeof forceTerminateObservedRegisteredRuntimeHost;
 }
 
 export type RuntimeHostLocalProcessLifecycleAdapter = Omit<
@@ -134,6 +142,7 @@ export interface RuntimeHostNpmGlobalReconciliationRequest {
 }
 
 export type RuntimeHostNpmGlobalRestartResult =
+  | { readonly kind: 'changed' }
   | LocalHostProcessDeploymentClaimResult
   | LocalHostProcessDeploymentHandoffResult
   | {
@@ -151,13 +160,17 @@ export async function restartRuntimeHostNpmGlobalDeployment(
   input: {
     readonly rootPath: string;
     readonly registration: HostRegistration;
+    readonly processIdentity?: RuntimeHostProcessIdentity;
     readonly installationOptions?: Parameters<typeof resolveRuntimeHostNpmGlobalInstallation>[0];
     readonly deploymentPathOptions?: RuntimeHostLocalDeploymentPathOptions;
     readonly activeWorkPolicy?: 'refuse_active_work' | 'interrupt_active_work';
+    readonly signal?: AbortSignal;
+    readonly expectedInstallation?: RuntimeHostNpmGlobalInstallation;
   },
   authorityOptions: LocalHostDeploymentAuthorityOptions = {},
   overrides: Partial<RuntimeHostLocalRestartDeps> = {},
 ): Promise<RuntimeHostNpmGlobalRestartResult> {
+  input.signal?.throwIfAborted();
   if (input.registration.lifecycleMode !== 'ephemeral') {
     return {
       kind: 'operator_required',
@@ -169,15 +182,23 @@ export async function restartRuntimeHostNpmGlobalDeployment(
     withPackage: withRuntimeHostRegistryUpdatePackage,
     prepareDeployment: prepareRuntimeHostPackageDeployment,
     readRecord: readLocalHostDeploymentRecord,
+    resolveManagedAuthority: resolveRuntimeHostManagedDeploymentAuthority,
     claim: claimLocalHostProcessDeployment,
     handoff: handoffLocalHostProcessDeployment,
     resolveCandidate: resolveRuntimeHostRegistryUpdateCandidate,
     connectExisting: connectExistingRuntimeHost,
     activateTarget: launchRuntimeHostTargetActivator,
     retireSource: launchRuntimeHostLocalSourceRetirement,
+    terminateObservedHost: forceTerminateObservedRegisteredRuntimeHost,
     ...overrides,
   };
+  if (await deps.resolveManagedAuthority(input.registration.rootId)) {
+    return { kind: 'operator_required', reason: 'unowned_host' };
+  }
   const installation = await deps.resolveInstallation(input.installationOptions);
+  if (input.expectedInstallation && !isDeepStrictEqual(installation, input.expectedInstallation)) {
+    return { kind: 'changed' };
+  }
   const current = await deps.readRecord(input.registration.rootId, authorityOptions);
   const sourceOwner = current?.state.kind === 'handoff' ? current.state.from : current?.state.owner;
   if (sourceOwner && !sameOwner(sourceOwner, installation.owner)) {
@@ -264,11 +285,15 @@ export async function restartRuntimeHostNpmGlobalDeployment(
     stagedTarget: RuntimeHostLocalStagedDeployment,
     inheritableAuthorityLeaseFd: number,
   ): Promise<{ readonly kind: 'target_present' | 'active_work' }> => {
+    input.signal?.throwIfAborted();
     if (rootId !== input.registration.rootId) {
       throw new RuntimeHostLocalHandoffError(
         'root_changed',
         'The local Runtime Host State Root changed before restart',
       );
+    }
+    if (await deps.resolveManagedAuthority(rootId)) {
+      throw new Error('The managed Runtime Host requires its operator to perform replacement');
     }
     const observed = await deps.connectExisting({
       rootPath: input.rootPath,
@@ -327,6 +352,7 @@ export async function restartRuntimeHostNpmGlobalDeployment(
         expectedHostEpoch: registration.hostEpoch,
         activeWorkPolicy,
         inheritableAuthorityLeaseFd,
+        ...(input.signal ? { signal: input.signal } : {}),
       });
       if (retired === 'active_work') return { kind: 'active_work' };
       if (retired === 'operator_required') {
@@ -342,6 +368,18 @@ export async function restartRuntimeHostNpmGlobalDeployment(
         throw new Error('The exact target did not activate after source retirement began');
       }
       return { kind: 'target_present' };
+    }
+    // Older source packages cannot negotiate retirement. Explicit consent may
+    // use Desktop's exact-process recovery, inside this existing deployment
+    // transaction and only after staging the verified successor.
+    if (activeWorkPolicy === 'interrupt_active_work' && input.processIdentity) {
+      input.signal?.throwIfAborted();
+      const stopped = await deps.terminateObservedHost(
+        { rootPath: input.rootPath, registration: input.registration },
+        { processIdentity: input.processIdentity, isCurrent: () => !input.signal?.aborted },
+      );
+      if (!stopped)
+        throw new Error('The observed Runtime Host changed before it could be stopped safely');
     }
     const activated = await activateExactTarget(
       rootId,
@@ -462,6 +500,11 @@ export async function reconcilePreparedRuntimeHostNpmGlobalDeployment(
   request: RuntimeHostNpmGlobalReconciliationRequest & {
     readonly installation: RuntimeHostNpmGlobalInstallation;
     readonly staged: RuntimeHostLocalStagedDeployment;
+    /** Captured owner observation, not permission to follow a later owner. */
+    readonly expectedOwner?: {
+      readonly revision: string;
+      readonly owner: RuntimeHostInstallationOwner;
+    };
   },
   lifecycle: RuntimeHostLocalProcessLifecycleAdapter,
   authorityOptions: LocalHostDeploymentAuthorityOptions = {},
@@ -486,6 +529,17 @@ export async function reconcilePreparedRuntimeHostNpmGlobalDeployment(
     return request.staged;
   };
   const current = await overrides.readRecord(request.rootId, authorityOptions);
+  if (
+    request.expectedOwner &&
+    (current?.state.kind !== 'owned' ||
+      current.revision !== request.expectedOwner.revision ||
+      !sameOwner(current.state.owner, request.expectedOwner.owner))
+  ) {
+    throw new RuntimeHostLocalHandoffError(
+      'source_owner_mismatch',
+      'The observed local Host owner changed before update reconciliation',
+    );
+  }
   if (!current) {
     return overrides.claim(
       {
@@ -502,10 +556,14 @@ export async function reconcilePreparedRuntimeHostNpmGlobalDeployment(
   return overrides.handoff(
     {
       rootId: request.rootId,
-      expectedRevision: current.revision,
+      // The same captured CAS token is checked again by begin_handoff under
+      // the authority lock. Never substitute a newly observed owner revision.
+      expectedRevision: request.expectedOwner?.revision ?? current.revision,
       transactionId:
         current.state.kind === 'handoff' ? current.state.transactionId : request.transactionId,
-      from: current.state.kind === 'handoff' ? current.state.from : current.state.owner,
+      from:
+        request.expectedOwner?.owner ??
+        (current.state.kind === 'handoff' ? current.state.from : current.state.owner),
       to: request.installation.owner,
       target: request.target,
       activeWorkPolicy: request.activeWorkPolicy,
@@ -570,7 +628,7 @@ export async function prepareRuntimeHostNpmGlobalStagedDeployment(
   };
 }
 
-async function openRuntimeHostNpmGlobalStagedDeployment(
+export async function openRuntimeHostNpmGlobalStagedDeployment(
   input: {
     readonly rootId: string;
     readonly owner: RuntimeHostInstallationOwner & { readonly kind: 'cli' };
@@ -638,6 +696,25 @@ async function requireCandidateEntrypoint(packageRoot: string): Promise<string> 
     throw invalidStagedPackage('The staged Runtime Host candidate is redirected');
   }
   return candidate;
+}
+
+/** Read-only capability check against the same verified source package the transaction uses. */
+export async function runtimeHostNpmGlobalSourceRetirementAvailable(input: {
+  readonly rootId: string;
+  readonly owner: RuntimeHostNpmGlobalInstallation['owner'];
+  readonly source: RuntimeHostUpdateCandidate;
+  readonly deploymentPathOptions?: RuntimeHostLocalDeploymentPathOptions;
+}): Promise<boolean> {
+  const source = await openRuntimeHostNpmGlobalStagedDeployment(
+    {
+      rootId: input.rootId,
+      owner: input.owner,
+      target: input.source,
+      transactionId: 'source-capability-probe',
+    },
+    input.deploymentPathOptions,
+  );
+  return hasSourceRetirementHelper(source);
 }
 
 async function hasSourceRetirementHelper(

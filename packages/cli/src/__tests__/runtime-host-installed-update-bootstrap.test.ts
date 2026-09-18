@@ -23,6 +23,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { runRuntimeHostInstalledUpdateBootstrap } from '../runtime-host-installed-update-bootstrap.js';
+import { parseRuntimeHostCommand } from '../runtime-host-cli.js';
 
 const INTEGRITY = `sha512-${Buffer.alloc(64, 9).toString('base64')}`;
 
@@ -38,12 +39,19 @@ test('launches update coordination from a copy outside the mutable npm-global pa
     writeFile(archivePath, 'archive'),
   ]);
   let launched = false;
+  const expectedSource = {
+    rootId: 'a'.repeat(64),
+    deploymentRevision: 'observed-revision',
+    ownerInstallationId: 'npm-global:slot',
+    hostEpoch: 'observed-host',
+  };
 
   const exitCode = await runRuntimeHostInstalledUpdateBootstrap(
     {
       rootPath: join(root, 'state'),
       selector: { kind: 'channel', channel: 'next' },
       allowInterruptActiveTasks: true,
+      expectedSource,
     },
     {
       resolveInstallation: async () => ({
@@ -65,6 +73,7 @@ test('launches update coordination from a copy outside the mutable npm-global pa
         assert.equal(input.currentVersion, '1.0.0');
         assert.equal(input.targetVersion, '2.0.0');
         assert.equal(input.allowInterruptActiveTasks, true);
+        assert.deepEqual(input.expectedSource, expectedSource);
         return 7;
       },
     },
@@ -72,6 +81,46 @@ test('launches update coordination from a copy outside the mutable npm-global pa
 
   assert.equal(exitCode, 7);
   assert.equal(launched, true);
+});
+
+test('copied update coordinator accepts only a complete observed-source fence', () => {
+  const command = [
+    'local-update-apply',
+    '--root',
+    '/state',
+    '--archive',
+    '/target.tgz',
+    '--installed-package-root',
+    '/global/maka-agent',
+    '--installed-cli-path',
+    '/global/maka-agent/dist/cli.js',
+    '--current-version',
+    '1.0.0',
+    '--target-version',
+    '2.0.0',
+    '--target-integrity',
+    INTEGRITY,
+  ];
+  const identity = [
+    '--expected-root-id',
+    'a'.repeat(64),
+    '--expected-deployment-revision',
+    'revision',
+    '--expected-owner-installation-id',
+    'npm-global:slot',
+    '--expected-host-epoch',
+    'epoch',
+  ];
+  const parsed = parseRuntimeHostCommand([...command, ...identity]);
+  assert.equal(parsed.kind, 'runtime-host-local-update-apply');
+  if (parsed.kind !== 'runtime-host-local-update-apply') assert.fail('expected update command');
+  assert.deepEqual(parsed.expectedSource, {
+    rootId: 'a'.repeat(64),
+    deploymentRevision: 'revision',
+    ownerInstallationId: 'npm-global:slot',
+    hostEpoch: 'epoch',
+  });
+  assert.equal(parseRuntimeHostCommand([...command, ...identity.slice(0, -2)]).kind, 'error');
 });
 
 test('rejects unsupported downgrades before package acquisition', async () => {

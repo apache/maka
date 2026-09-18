@@ -399,6 +399,7 @@ export function AppearanceSettingsPage(props: {
           {(Object.entries(copy.themeOptions) as Array<[ThemePreference, { label: string; help: string }]>).map(([value, option]) => (
             <SelectableCard
               key={value}
+              data-maka-assistant-target={`theme.${value}`}
               label={option.label}
               isSelected={props.themePref === value}
               onChange={() => void setTheme(value)}

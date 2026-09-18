@@ -33,6 +33,7 @@ import type {
   RuntimeInvocationLineage,
 } from './runtime-event.js';
 import { isTerminalRuntimeEvent } from './runtime-event.js';
+import type { WorkHubRoutingDecision } from './workhub-routing.js';
 
 export interface RuntimeInvocationRecord {
   sessionId: string;
@@ -228,7 +229,7 @@ export function isSessionInlineInvocation(opening: RuntimeEventInvocationOpenedC
   const lineage = opening.lineage;
   return (
     lineage?.parentRunId === undefined ||
-    (opening.source.kind === 'continuation' && lineage.agentId === undefined)
+    (opening.source.kind !== 'fresh' && lineage.agentId === undefined)
   );
 }
 
@@ -239,9 +240,16 @@ export type RootExecutionDescriptor =
       maxSteps?: number;
     }
   | {
-      /** Tool-free conversational execution admitted only by WorkHub authority. */
+      /** Conversational execution admitted only by WorkHub authority. */
       kind: 'workhub_coordination';
+      /** Host-authenticated Desktop provider identity, including its credential owner. */
+      capabilityBinding?: `sha256:${string}`;
+      operation?: 'action';
+      /** Stable request identity shared by physical action retries. */
+      actionId?: string;
       inputDigest: `sha256:${string}`;
+      /** Model-derived, Policy-owned advice bound before the main Turn starts. */
+      routingDecision?: WorkHubRoutingDecision;
     }
   | { kind: 'regenerate'; sourceTurnId: string }
   | { kind: 'context_compact' }

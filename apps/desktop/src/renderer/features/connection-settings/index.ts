@@ -24,6 +24,10 @@ export {
 } from './services-context.js';
 export type {
   ApiKeyOnboardingBridge,
+  CommandCodeBrowserLoginBridge,
+  CommandCodeBrowserLoginCredentials,
+  CommandCodeBrowserLoginResult,
+  CommandCodeBrowserLoginStartResult,
   ConnectionOAuthBridge,
   ConnectionOAuthProviderBridge,
   ConnectionSettingsServices,
@@ -37,9 +41,15 @@ export {
   providerPanelActionErrorMessage,
 } from './provider-panel-shared.js';
 export { OnboardingStepForm } from './onboarding-step-form.js';
-export { getProviderSettingsCopy } from './settings-provider-copy.js';
-export { subscriptionResultMessage } from './subscription-result-message.js';
+export { CommandCodeBrowserLoginSection } from './commandcode-browser-login-section.js';
+export { CommandCodeBrowserLoginFlow } from './commandcode-browser-login-flow.js';
+export { getProviderSettingsCopy, subscriptionActionErrorMessage, subscriptionResultMessage } from './settings-provider-copy.js';
 export type { ProviderSettingsCopy } from './settings-provider-copy.js';
 export type {
   CredentialPresenceStatus,
 } from './provider-panel-shared.js';
+
+export { GenericProviderMark } from './generic-provider-mark.js';
+export { parseContextWindowInput } from './context-window-input.js';
+export { CapabilityEditor } from './provider-capability-editor.js';
+export { AddModelDialog, ModelParametersDialog } from './provider-add-model-dialog.js';

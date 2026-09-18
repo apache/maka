@@ -17,13 +17,12 @@
  * under the License.
  */
 
-import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { constants as fsConstants, type BigIntStats } from 'node:fs';
 import { lstat, open, realpath, stat } from 'node:fs/promises';
 import { isAbsolute, join, normalize, parse, resolve } from 'node:path';
-import { promisify } from 'node:util';
 
+import { execGitText } from './git-exec.js';
 import { hasEnclosingGitEntry } from './git-entry.js';
 import { publishMarkerFile, readBoundedMarkerFile } from './marker-file.js';
 
@@ -32,8 +31,6 @@ export const WORKSPACE_MARKER_SCHEMA_VERSION = 1 as const;
 export const WORKSPACE_IDENTITY_PREFIX = 'workspace:v1:' as const;
 const MAX_WORKSPACE_MARKER_BYTES = 4_096;
 const MAX_GIT_EXCLUDE_BYTES = 1024 * 1024;
-const execFileAsync = promisify(execFile);
-
 interface WorkspaceMarker {
   schemaVersion: typeof WORKSPACE_MARKER_SCHEMA_VERSION;
   workspaceId: string;
@@ -152,21 +149,10 @@ async function createWorkspaceMarker(
 async function ensureWorkspaceMarkerIgnored(workspacePath: string): Promise<void> {
   if (!(await hasEnclosingGitEntry(workspacePath))) return;
 
-  const env: NodeJS.ProcessEnv = { ...process.env, GIT_OPTIONAL_LOCKS: '0' };
-  delete env.GIT_DIR;
-  delete env.GIT_WORK_TREE;
-  delete env.GIT_INDEX_FILE;
-  delete env.GIT_COMMON_DIR;
-  const { stdout } = await execFileAsync(
-    'git',
-    ['-C', workspacePath, 'rev-parse', '--path-format=absolute', '--git-path', 'info/exclude'],
-    {
-      env,
-      encoding: 'utf8',
-      maxBuffer: 64 * 1024,
-      timeout: 3_000,
-      windowsHide: true,
-    },
+  const stdout = await execGitText(
+    workspacePath,
+    ['rev-parse', '--path-format=absolute', '--git-path', 'info/exclude'],
+    { maxBuffer: 64 * 1024, timeoutMs: 3_000 },
   );
   const excludePath = stdout.trim();
   if (!isAbsolute(excludePath)) {

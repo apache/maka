@@ -228,6 +228,7 @@ test('production collaboration retains distinct Guest mounts, exact requests and
     sessionId: sessionIds[0]!,
     transcript: { kind: 'none' },
   });
+  await subscription.ready();
   const frames: SubscriptionFrame[] = [];
   const events = (async () => {
     for await (const frame of subscription) frames.push(frame);

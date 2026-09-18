@@ -27,9 +27,9 @@
  * Outlines were traced (potrace, deterministic) from the `maka` lockup in
  * `apps/desktop/assets/icon.png`, which is the app icon shipped with the
  * desktop build — so the empty-state mark and the dock icon cannot drift
- * apart. Paths are filled with `currentColor` so the mark inherits the
- * surface's text colour and works in both themes; callers set the opacity
- * they want rather than baking a tint in here.
+ * apart. Paths are filled with `currentColor`, set to the fixed brand colour
+ * (`--maka-brand`, DESIGN.md) so every surface shows the same mark. It is
+ * set inline, so only `style` can override it; a class `color` rule loses.
  */
 
 import { MAKA_WORDMARK_PATH } from '@maka/core/maka-wordmark';
@@ -54,7 +54,7 @@ export function MakaWordmark({ width = 104, className, style, title }: MakaWordm
       viewBox="0 0 460 120"
       width={width}
       className={className}
-      style={style}
+      style={{ color: 'var(--maka-brand)', ...style }}
       role={title ? 'img' : undefined}
       aria-hidden={title ? undefined : 'true'}
       aria-label={title}

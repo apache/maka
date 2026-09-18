@@ -127,10 +127,12 @@ export async function main(argv = process.argv) {
   }
   lines.push('};', '');
   lines.push(
-    `export const GENERATED_MODELS_DEV_MODEL_PROVIDER_OVERRIDES: Record<${providerTypeUnion}, Record<string, { npm: string; api?: string }>> = {`,
+    `export const GENERATED_MODELS_DEV_MODEL_PROVIDER_OVERRIDES: Record<${providerTypeUnion}, Record<string, { adapter: import('./provider-registry.js').ProviderRuntimeAdapter; baseUrl?: string }>> = {`,
   );
   for (const [provider, overrides] of Object.entries(generatedModelProviderOverrides)) {
-    lines.push(`  ${JSON.stringify(provider)}: ${JSON.stringify(overrides)},`);
+    lines.push(
+      `  ${JSON.stringify(provider)}: ${JSON.stringify(normalizeRuntimeOverrides(provider, overrides))},`,
+    );
   }
   lines.push('};', '');
   lines.push(
@@ -527,7 +529,12 @@ async function assertGeneratedOutputs(metadataPath, pricingPath, source) {
   );
   assert.deepEqual(
     metadataModule.GENERATED_MODELS_DEV_MODEL_PROVIDER_OVERRIDES,
-    source.projection.providerOverrides,
+    Object.fromEntries(
+      Object.entries(source.projection.providerOverrides).map(([provider, overrides]) => [
+        provider,
+        normalizeRuntimeOverrides(provider, overrides),
+      ]),
+    ),
     `${metadataPath} is stale; run npm run sync:model-metadata`,
   );
   assert.deepEqual(
@@ -567,10 +574,50 @@ function toModelProviderOverride(providerId, modelId, override) {
       `models.dev model ${providerId}/${modelId} has an unsupported provider override`,
     );
   }
-  return {
-    npm: override.npm,
-    ...(override.api ? { api: override.api } : {}),
+  return { npm: override.npm, ...(override.api ? { api: override.api } : {}) };
+}
+
+// An npm package name says which SDK speaks to the endpoint, not which
+// reasoning carrier the provider actually returns. A generated `openai`
+// row may only mirror a Responses contract the registry already declares
+// (protocolAdapters or runtimeAdapter); providers without one get the
+// honest `none`. The catalog contract test pins this map against
+// PROVIDER_REGISTRY, so a new declaration forces an update here.
+const GENERATED_OPENAI_RESPONSES_CONTRACTS = {
+  'github-copilot': { adapter: 'openai', reasoningReplay: 'encrypted-content' },
+  opencode: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
+  'opencode-go': { adapter: 'openai', reasoningReplay: 'encrypted-content' },
+};
+
+function normalizeRuntimeOverrides(provider, overrides) {
+  // A generated row shadows the provider's declared runtimeAdapter wholesale
+  // for the ids it covers — including any chat-lane reasoning replay fields
+  // the registry declares (e.g. zenmux's signed reasoning_details). That is a
+  // deliberate trade: models.dev's npm package is treated as the adapter
+  // authority for those ids.
+  const adapters = {
+    '@ai-sdk/anthropic': { kind: 'anthropic', auth: 'api-key', normalizeBaseUrl: true },
+    '@ai-sdk/google': { kind: 'google', normalizeBaseUrl: false },
+    '@ai-sdk/openai': {
+      kind: 'openai',
+      responses: GENERATED_OPENAI_RESPONSES_CONTRACTS[provider] ?? {
+        adapter: 'openai',
+        reasoningReplay: 'none',
+      },
+    },
+    '@ai-sdk/openai-compatible': { kind: 'openai-compatible', name: 'provider' },
   };
+  return Object.fromEntries(
+    Object.entries(overrides).map(([modelId, override]) => {
+      if (!Object.hasOwn(adapters, override.npm)) {
+        throw new Error(`models.dev model ${modelId} uses unsupported SDK ${override.npm}`);
+      }
+      return [
+        modelId,
+        { adapter: adapters[override.npm], ...(override.api ? { baseUrl: override.api } : {}) },
+      ];
+    }),
+  );
 }
 
 export function toPricing(providerType, modelId, model) {

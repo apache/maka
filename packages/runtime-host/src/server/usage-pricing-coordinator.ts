@@ -17,7 +17,9 @@
  * under the License.
  */
 
-import { createHash } from 'node:crypto';
+import { JsonArrayPageBudget } from './json-array-page-budget.js';
+
+import { createHash, randomUUID } from 'node:crypto';
 import type {
   PricingConfig,
   ToolInvocationRecord,
@@ -61,6 +63,8 @@ import {
   type UsageQueryResult,
 } from '../protocol/index.js';
 import type { UsagePricingOperationHandlerMap } from './operation-dispatcher.js';
+import type { UsageScreenRequest, UsageScreenResult } from '@maka/core/settings';
+import { finalizeUsageScreenResult } from '../protocol/usage-screen.js';
 import { RuntimePolicyActivationGate } from './runtime-policy-activation-gate.js';
 import {
   readCanonicalUsageBuckets,
@@ -85,6 +89,7 @@ export class HostUsagePricingCoordinator {
   // reserved-role, coordination, and legacy sessions the catalog omits.
   readonly #readSessionTitle?: (sessionId: string) => Promise<string | undefined>;
   #poisonDrainRequested = false;
+  readonly #screenGeneration = randomUUID();
 
   constructor(
     stores: InteractiveUsageStoresWriter,
@@ -131,6 +136,8 @@ export class HostUsagePricingCoordinator {
 
   async #queryUsage(input: UsageQueryInput): Promise<OperationOutcome<'usage.query'>> {
     try {
+      if (input.kind === 'screen' || input.kind === 'activity')
+        return { ok: true, result: await this.#queryScreen(input) };
       const now = Date.now();
       if (input.kind === 'summary') {
         const merged = mergeUsageSummary(
@@ -240,6 +247,40 @@ export class HostUsagePricingCoordinator {
     } catch (error) {
       return this.#mapReadFailure<'usage.query'>(error, 'Usage authority');
     }
+  }
+
+  async #queryScreen(input: UsageScreenRequest): Promise<UsageScreenResult> {
+    if (input.kind === 'screen') {
+      // The existing writer finishes repair before the synchronous read starts.
+      await this.#stores.modelCalls.catchUpModelCallProjection();
+    } else if (!input.revision.startsWith(`${this.#screenGeneration}_`)) {
+      return { kind: 'revision_changed' };
+    }
+    const result = await this.#stores.readUsageScreen(
+      input.kind === 'activity'
+        ? { ...input, revision: input.revision.slice(this.#screenGeneration.length + 1) }
+        : input,
+    );
+    if (result.kind !== 'screen' && result.kind !== 'activity') return result;
+    const page = result.kind === 'screen' ? result.screen : result.page;
+    page.revision = `${this.#screenGeneration}_${page.revision}`;
+    page.logs = page.logs.map((row) => ({
+      ...row,
+      id: projectIdentity(row.id),
+      provider: row.provider ? projectIdentity(row.provider) : '',
+      model: row.model ? projectIdentity(row.model) : '',
+      ...(row.toolName === undefined ? {} : { toolName: projectIdentity(row.toolName) }),
+      ...(row.sessionId === undefined ? {} : { sessionId: projectIdentity(row.sessionId) }),
+      ...(row.turnId === undefined ? {} : { turnId: projectIdentity(row.turnId) }),
+      ...(row.sessionName === undefined ? {} : { sessionName: projectText(row.sessionName) }),
+    }));
+    // Preserve complete collections: capacity is checked before codec/transport.
+    if (result.kind === 'screen') {
+      for (const row of result.screen.byProvider) row.provider = projectIdentity(row.provider);
+      for (const row of result.screen.byModel) row.model = projectIdentity(row.model);
+      for (const row of result.screen.byTool) row.tool = projectIdentity(row.tool);
+    }
+    return finalizeUsageScreenResult(result);
   }
 
   async #queryPricing(input: PricingQueryInput): Promise<OperationOutcome<'pricing.query'>> {
@@ -417,20 +458,19 @@ function createPricingPage(
   offset: number,
 ): PricingQueryResult {
   const items: EffectivePricingEntry[] = [];
+  const budget = new JsonArrayPageBudget(PRICING_PAGE_MAX_BYTES, {
+    kind: 'page',
+    revision,
+    offset,
+    entries: [],
+    nextOffset: null,
+  });
   for (let index = offset; index < entries.length; index += 1) {
     if (items.length >= PRICING_PAGE_MAX_ITEMS) break;
     const item = entries[index];
     if (!item) break;
-    const candidate = [...items, item];
-    const nextOffset = offset + candidate.length;
-    const page: PricingQueryResult = {
-      kind: 'page',
-      revision,
-      offset,
-      entries: candidate,
-      nextOffset: nextOffset < entries.length ? nextOffset : null,
-    };
-    if (jsonBytes(page) > PRICING_PAGE_MAX_BYTES) {
+    const nextOffset = offset + items.length + 1;
+    if (!budget.tryAppend(item, nextOffset < entries.length ? nextOffset : null)) {
       if (items.length === 0) {
         throw new Error('Canonical pricing entry exceeds the wire page limit');
       }
@@ -478,20 +518,13 @@ function usagePage(
 ): Extract<UsageQueryResult, { kind: 'buckets' }> {
   const source = allItems.slice(offset, offset + limit);
   const items: UsageBucket[] = [];
+  const budget = new JsonArrayPageBudget(
+    USAGE_PAGE_MAX_BYTES,
+    bucketPageResult([], total, offset, null, provenance),
+  );
   for (const item of source) {
-    const candidate = [...items, item];
-    const nextOffset = offset + candidate.length;
-    if (
-      jsonBytes(
-        bucketPageResult(
-          candidate,
-          total,
-          offset,
-          nextOffset < total ? nextOffset : null,
-          provenance,
-        ),
-      ) > USAGE_PAGE_MAX_BYTES
-    ) {
+    const nextOffset = offset + items.length + 1;
+    if (!budget.tryAppend(item, nextOffset < total ? nextOffset : null)) {
       break;
     }
     items.push(item);
@@ -537,21 +570,13 @@ function usageLogPage(
   provenance?: UsageProvenance,
 ): Extract<UsageQueryResult, { kind: 'logs' }> {
   const items: UsageLogProjection[] = [];
+  const budget = new JsonArrayPageBudget(
+    USAGE_PAGE_MAX_BYTES,
+    logPageResult(source, [], total, offset, null, provenance),
+  );
   for (const item of allItems.slice(0, limit)) {
-    const candidate = [...items, item];
-    const nextOffset = offset + candidate.length;
-    if (
-      jsonBytes(
-        logPageResult(
-          source,
-          candidate,
-          total,
-          offset,
-          nextOffset < total ? nextOffset : null,
-          provenance,
-        ),
-      ) > USAGE_PAGE_MAX_BYTES
-    ) {
+    const nextOffset = offset + items.length + 1;
+    if (!budget.tryAppend(item, nextOffset < total ? nextOffset : null)) {
       break;
     }
     items.push(item);
@@ -735,8 +760,4 @@ function projectCodePoint(codePoint: string): string {
   return scalar !== undefined && (scalar <= 0x1f || (scalar >= 0x7f && scalar <= 0x9f))
     ? '\ufffd'
     : codePoint;
-}
-
-function jsonBytes(value: unknown): number {
-  return Buffer.byteLength(JSON.stringify(value), 'utf8');
 }

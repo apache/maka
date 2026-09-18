@@ -19,6 +19,7 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { resolveConnectionModelCatalog } from '@maka/core/model-catalog';
 import type { RuntimeHostConnection } from '../client/connection.js';
 import {
   RuntimeHostCatalogReadError,
@@ -214,6 +215,15 @@ test('rejects a repeated Skill catalog cursor instead of looping forever', async
 
 test('reassembles per-item relay profiles into the connection profile table', async () => {
   const profile = { thinkingLevels: ['low'], vision: false, contextWindow: 65_536 } as const;
+  const [entry] = resolveConnectionModelCatalog({
+    slug: 'relay',
+    providerType: 'openai-compatible',
+    defaultModel: '',
+    models: [],
+    modelSource: 'fetched',
+    enabledModelIds: [],
+    modelOverrides: { declared: profile },
+  });
   const connection = fakeConnection(async (_operation, input) => {
     const continuation = input.kind === 'continue';
     return {
@@ -222,32 +232,37 @@ test('reassembles per-item relay profiles into the connection profile table', as
       defaultTarget: null,
       connectionCount: 1,
       items: continuation
-        ? [{ kind: 'enabled_model_id', connectionIndex: 0, itemIndex: 1, modelId: 'plain' }]
+        ? [
+            {
+              kind: 'catalog_entry',
+              connectionIndex: 0,
+              itemIndex: 0,
+              entry,
+              modelOverride: profile,
+            },
+          ]
         : [
-            connectionHeader(2),
+            { ...connectionHeader(1), catalogEntryCount: 1 },
             {
               kind: 'enabled_model_id',
               connectionIndex: 0,
               itemIndex: 0,
-              modelId: 'declared',
-              relayProfile: profile,
+              modelId: 'plain',
             },
           ],
-      nextCursor: continuation
-        ? null
-        : { connectionIndex: 0, part: 'enabled_model_id', itemIndex: 1 },
+      nextCursor: continuation ? null : { connectionIndex: 0, part: 'catalog_entry', itemIndex: 0 },
     };
   });
 
   const catalog = await readRuntimeHostConnectionCatalog(connection);
   assert.deepEqual(catalog.connections, [
     {
-      enabledModelIds: ['declared', 'plain'],
+      enabledModelIds: ['plain'],
       models: [],
-      catalogEntries: [],
+      catalogEntries: [entry],
       // Only the profiled model lands in the reassembled table — the item
       // shape is wire-only and never surfaces per item downstream.
-      relayModelProfiles: { declared: profile },
+      modelOverrides: { declared: profile },
     },
   ]);
 });

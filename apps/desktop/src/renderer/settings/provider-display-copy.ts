@@ -74,6 +74,11 @@ export const PROVIDER_DISPLAY_COPY = {
     'zh-TW': { name: 'Moonshot', description: 'Moonshot 官方 API 連線', badge: 'API' },
     en: { name: 'Moonshot', description: 'Official Moonshot API access.', badge: 'API' },
   },
+  'moonshot-global': {
+    'zh-CN': { name: 'Moonshot 国际版', description: 'Moonshot 国际版官方 API 接入', badge: 'API' },
+    'zh-TW': { name: 'Moonshot 國際版', description: 'Moonshot 國際版官方 API 連線', badge: 'API' },
+    en: { name: 'Moonshot Global', description: 'Official Moonshot international API access.', badge: 'API' },
+  },
   'zai-coding-plan': {
     'zh-CN': { name: 'Z.AI Coding Plan', description: '智谱 · OpenAI 兼容', badge: 'Coding' },
     'zh-TW': { name: 'Z.AI Coding Plan', description: '智譜 · OpenAI 相容', badge: 'Coding' },
@@ -293,6 +298,16 @@ export const PROVIDER_DISPLAY_COPY = {
     'zh-CN': { name: 'OpenCode Free', description: '免费匿名 OpenCode Zen 模型，无需密钥，按 IP 限速', badge: 'Free' },
     'zh-TW': { name: 'OpenCode Free', description: '免費匿名 OpenCode Zen 模型，無需金鑰，按 IP 限速', badge: 'Free' },
     en: { name: 'OpenCode Free', description: 'Free anonymous OpenCode Zen models — no API key, IP-limited.', badge: 'Free' },
+  },
+  commandcode: {
+    'zh-CN': { name: 'Command Code', description: '使用 Command Code 套餐额度，连接后自动获取模型。', badge: 'Coding' },
+    'zh-TW': { name: 'Command Code', description: '使用 Command Code 方案額度，連線後自動取得模型。', badge: 'Coding' },
+    en: { name: 'Command Code', description: 'Use your Command Code plan credits. Models are fetched when you connect.', badge: 'Coding' },
+  },
+  'commandcode-go': {
+    'zh-CN': { name: 'Command Code GO', description: 'GO 套餐专用：走官方 CLI 的私有通道发送请求。连接后自动获取模型。', badge: 'Coding' },
+    'zh-TW': { name: 'Command Code GO', description: 'GO 方案專用：走官方 CLI 的私有通道傳送請求。連線後自動取得模型。', badge: 'Coding' },
+    en: { name: 'Command Code GO', description: 'For the GO plan: sends through the official CLI\'s private transport. Models are fetched when you connect.', badge: 'Coding' },
   },
   groq: {
     'zh-CN': { name: 'Groq', description: 'LPU 高速推理托管开源模型', badge: 'API' },

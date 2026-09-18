@@ -19,15 +19,12 @@
 
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import type { StoredMessage } from '@maka/core/session';
 import {
   buildStatusPatch,
-  buildTurnStateMessage,
   isTerminalRunStatus,
   normalizeStopSessionSource,
   statusFromEvent,
   turnStatusFromEvent,
-  turnHasRetainedOutput,
   workHubDirectStopAbortSource,
 } from '../session-projection-helpers.js';
 
@@ -62,80 +59,6 @@ describe('session projection helpers', () => {
       blockedReason: undefined,
       statusUpdatedAt: 101,
     });
-  });
-
-  test('buildTurnStateMessage preserves lineage and terminal status fields', () => {
-    assert.deepStrictEqual(
-      buildTurnStateMessage({
-        id: 'state-1',
-        turnId: 'turn-1',
-        ts: 100,
-        status: 'aborted',
-        lineage: {
-          parentTurnId: 'parent',
-          retriedFromTurnId: 'retry-source',
-          regeneratedFromTurnId: 'regen-source',
-          branchOfTurnId: 'branch-source',
-          parentSessionId: 'parent-session',
-        },
-        abortSource: 'renderer.stop_button',
-        partialOutputRetained: true,
-      }),
-      {
-        type: 'turn_state',
-        id: 'state-1',
-        turnId: 'turn-1',
-        ts: 100,
-        status: 'aborted',
-        parentTurnId: 'parent',
-        retriedFromTurnId: 'retry-source',
-        regeneratedFromTurnId: 'regen-source',
-        branchOfTurnId: 'branch-source',
-        parentSessionId: 'parent-session',
-        abortedAt: 100,
-        abortSource: 'renderer.stop_button',
-        partialOutputRetained: true,
-      },
-    );
-
-    assert.partialDeepStrictEqual(
-      buildTurnStateMessage({
-        id: 'state-2',
-        turnId: 'turn-2',
-        ts: 101,
-        status: 'failed',
-        partialOutputRetained: false,
-      }),
-      {
-        type: 'turn_state',
-        id: 'state-2',
-        turnId: 'turn-2',
-        ts: 101,
-        status: 'failed',
-        errorClass: 'unknown',
-        partialOutputRetained: false,
-      },
-    );
-  });
-
-  test('turnHasRetainedOutput only treats visible assistant text and tool results as retained output', () => {
-    const messages: StoredMessage[] = [
-      { type: 'assistant', id: 'blank', turnId: 'turn-1', ts: 1, text: '   ', modelId: 'model' },
-      { type: 'assistant', id: 'other', turnId: 'turn-2', ts: 2, text: 'kept', modelId: 'model' },
-      {
-        type: 'tool_result',
-        id: 'tool',
-        turnId: 'turn-3',
-        ts: 3,
-        toolUseId: 'call-1',
-        isError: false,
-        content: { kind: 'text', text: 'ok' },
-      },
-    ];
-
-    assert.strictEqual(turnHasRetainedOutput(messages, 'turn-1'), false);
-    assert.strictEqual(turnHasRetainedOutput(messages, 'turn-2'), true);
-    assert.strictEqual(turnHasRetainedOutput(messages, 'turn-3'), true);
   });
 
   test('projects terminal run statuses and session terminal events', () => {

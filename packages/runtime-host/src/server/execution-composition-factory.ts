@@ -18,9 +18,9 @@
  */
 
 import type { PublishedProjectDirectoryRoot } from './project-directory-authority.js';
-import {
+import type {
   createExecutionRuntimeHostComposition,
-  type ExecutionRuntimeHostComposition,
+  ExecutionRuntimeHostComposition,
 } from './execution-composition.js';
 import type { RuntimeHostCompositionContext } from './host-kernel.js';
 import {
@@ -29,6 +29,7 @@ import {
 } from './host-composition.js';
 
 export interface ExecutionRuntimeHostCompositionSourceOptions {
+  readonly initialization?: import('../client/connect-or-spawn.js').HostedRuntimeInitialization;
   readonly projectDirectoryRoots?: readonly PublishedProjectDirectoryRoot[];
 }
 
@@ -44,12 +45,18 @@ export async function createExecutionRuntimeHostCompositionSource(
   dependencies: ExecutionRuntimeHostCompositionDependencies = {},
 ): Promise<RuntimeHostCompositionSource> {
   const compositionOptions = {
+    ...(options.initialization ? { initialization: options.initialization } : {}),
     ...(options.projectDirectoryRoots
       ? { projectDirectoryRoots: options.projectDirectoryRoots }
       : {}),
   };
-  const createComposition = dependencies.createComposition ?? createExecutionRuntimeHostComposition;
-  return defineInteractiveRuntimeHostComposition((context) =>
-    createComposition(context, compositionOptions),
-  );
+  return defineInteractiveRuntimeHostComposition(async (context) => {
+    // Load the execution graph only after the candidate owns the root and the
+    // kernel has published its listener. Cold imports must not hide recovery
+    // from connecting clients or delay candidates that lose the owner lock.
+    const createComposition =
+      dependencies.createComposition ??
+      (await import('./execution-composition.js')).createExecutionRuntimeHostComposition;
+    return createComposition(context, compositionOptions);
+  });
 }

@@ -17,9 +17,9 @@
  * under the License.
  */
 
-import { type BrowserWindow, type Session, shell, WebContentsView } from 'electron';
+import { BrowserWindow, type Session, shell, type View, WebContentsView } from 'electron';
 import { CdpBridge, type AutomationEndpoint } from './cdp-bridge.js';
-import type { BrowserOriginLease } from './browser-host.js';
+import type { BrowserActionLease, BrowserOriginLease } from './browser-host.js';
 import { BrowserOriginLeaseTracker } from './browser-origin-lease.js';
 import { browserViewWebPreferences } from './options.js';
 import {
@@ -45,16 +45,19 @@ const VIEWPORT_RESTORE_POLL_MS = 16;
 
 /**
  * Owns ONE embedded browser per conversation: a native WebContentsView attached
- * to the single app window, floating above the renderer DOM. The renderer
- * reserves a strip and mirrors its on-screen rect via setViewport; the view
- * starts hidden + zero-bounds so an ordinary chat reserves nothing. Page,
- * history, and the CDP automation live and die with the conversation.
+ * to one app-owned renderer's native parent, floating above its renderer DOM.
+ * The renderer reserves a strip and mirrors its on-screen rect via setViewport;
+ * the view starts hidden + zero-bounds so an ordinary chat reserves nothing.
+ * Page, history, and the CDP automation live and die with the conversation.
  *
- * The window is shared, but each conversation gets its own controller/view, so
- * switching conversations never shows another conversation's page (the view
- * manager hides the ones not in front).
+ * Each conversation gets its own controller/view under its renderer's native
+ * parent. Main and WorkHub own disjoint Session sets; dock/float reparents the
+ * persistent WorkHub View that contains its browser child.
  */
 export class BrowserViewController {
+  private ownerParent: View;
+  private backgroundActions = 0;
+  private backgroundViewport = false;
   private readonly view: WebContentsView;
   private destroyed = false;
   /** True while the view holds real on-screen bounds (last setViewport painted it). */
@@ -65,15 +68,43 @@ export class BrowserViewController {
   );
 
   constructor(
-    private readonly window: BrowserWindow,
+    private parent: View,
     private readonly sessionId: string,
     private readonly onState: (sessionId: string, state: BrowserState) => void,
   ) {
+    this.ownerParent = parent;
     this.view = new WebContentsView({ webPreferences: browserViewWebPreferences() });
-    this.window.contentView.addChildView(this.view);
+    this.parent.addChildView(this.view);
     this.view.setVisible(false);
     this.applySecurityBackstop();
     this.wireEvents();
+  }
+
+  hasParent(parent: View): boolean {
+    return this.parent === parent;
+  }
+
+  /** Move the same page between its persistent owner and a visible presenter. */
+  setParent(parent: View): void {
+    if (this.destroyed || parent === this.parent) return;
+    this.parent.removeChildView(this.view);
+    parent.addChildView(this.view);
+    this.parent = parent;
+    this.refreshRendering();
+  }
+
+  hasOwner(parent: View): boolean { return this.ownerParent === parent; }
+
+  setOwner(parent: View): void { this.ownerParent = parent; }
+
+  park(): void {
+    this.setViewport(null);
+    this.setParent(this.ownerParent);
+  }
+
+  async capturePage(): Promise<string | undefined> {
+    if (this.destroyed || !this.shownWithBounds) return undefined;
+    return (await this.wc.capturePage()).toDataURL();
   }
 
   private get wc() {
@@ -193,32 +224,64 @@ export class BrowserViewController {
   setViewport(rect: BrowserViewRect | null): void {
     if (this.destroyed) return;
     const bounds = viewportBounds(rect);
-    const show = Boolean(bounds);
-    // Background throttling tracks shown-ness, toggled only on the transition.
-    // A HIDDEN conversation's cached page must throttle so a backgrounded one
-    // can't burn CPU/battery (the visible lease forbids driving it anyway). A
-    // SHOWN view keeps full speed: a native CDP click hit-tests a composited
-    // frame, which the OS drops on a throttled view whenever the app isn't
-    // focused — so "shown but app unfocused" still has to stay un-throttled to
-    // let the approved click land. (hideAllExcept fires setViewport(null) on
-    // every switch away, so this is where a conversation going off screen
-    // restores its throttle.)
-    if (show !== this.shownWithBounds && !this.wc.isDestroyed()) {
-      this.wc.setBackgroundThrottling(!show);
-    }
     if (!bounds) {
       this.shownWithBounds = false;
       this.view.setVisible(false);
+      this.refreshRendering();
       return;
     }
     this.shownWithBounds = true;
     this.view.setBounds(bounds);
     this.view.setVisible(true);
+    this.refreshRendering();
+  }
+
+  /** Called only for a background-authorized action, never by renderer IPC. */
+  beginBackgroundAction(): BrowserActionLease {
+    this.backgroundActions += 1;
+    this.refreshRendering();
+    const { width, height } = this.view.getBounds();
+    const ready = Promise.all([
+      this.wc.debugger.sendCommand('Emulation.setFocusEmulationEnabled', { enabled: true }),
+      this.hasLiveViewport() ? Promise.resolve() : this.wc.debugger.sendCommand('Emulation.setDeviceMetricsOverride', {
+        width: width || 1024, height: height || 768, deviceScaleFactor: 0, mobile: false,
+      }).then(() => { this.backgroundViewport = true; this.refreshRendering(); }),
+    ]).then(() => {});
+    return { ready, release: async () => {
+      this.backgroundActions -= 1;
+      this.refreshRendering();
+      if (this.backgroundActions === 0 && !this.destroyed && !this.wc.isDestroyed()) {
+        // Cancellation may already have detached the debugger, which clears
+        // its emulation state together with the abandoned connection.
+        await this.wc.debugger.sendCommand('Emulation.setFocusEmulationEnabled', { enabled: false }).catch(() => {});
+      }
+    } };
+  }
+
+  /** Native visibility stays authoritative; hidden pages run only while leased. */
+  refreshRendering(): void {
+    if (this.destroyed || this.wc.isDestroyed()) return;
+    const visible = this.hasLiveViewport();
+    const background = this.backgroundActions > 0 && !visible;
+    this.wc.setBackgroundThrottling(!visible && !background);
+    // Retain passive hidden metrics between actions so responsive page state
+    // does not oscillate through a zero-size viewport. Native layout wins on show.
+    if (visible && this.backgroundViewport) {
+      this.backgroundViewport = false;
+      void this.wc.debugger.sendCommand('Emulation.clearDeviceMetricsOverride').catch(() => {});
+    }
   }
 
   /** Visible-lease input: the view is on screen with non-empty bounds (see canDrive). */
   hasLiveViewport(): boolean {
-    return !this.destroyed && this.shownWithBounds;
+    if (this.destroyed || !this.shownWithBounds) return false;
+    try {
+      const window = BrowserWindow.fromWebContents(this.wc);
+      return this.parent.getVisible() && !!window && !window.isDestroyed() &&
+        window.isVisible() && !window.isMinimized();
+    } catch {
+      return false;
+    }
   }
 
   /** True when this view's renderer is background-throttled (hidden). Read-only. */
@@ -263,16 +326,13 @@ export class BrowserViewController {
       }
     }
     if (!this.automation) this.automation = new CdpBridge(this.wc);
-    // Background throttling is governed by setViewport (shown ⇒ un-throttled),
-    // not here: the visible lease only drives a view while its conversation is
-    // on screen, so by the time automation runs the view is already shown and
-    // un-throttled, and a later switch away re-throttles it via setViewport(null).
     return this.automation.start();
   }
 
   async detachAutomation(): Promise<void> {
     await this.automation?.stop();
     this.automation = null;
+    this.backgroundViewport = false;
   }
 
   async dispose(): Promise<void> {
@@ -289,7 +349,7 @@ export class BrowserViewController {
     await this.automation?.stop().catch(() => {});
     this.automation = null;
     try {
-      if (!this.window.isDestroyed()) this.window.contentView.removeChildView(this.view);
+      this.parent.removeChildView(this.view);
     } catch {
       /* window already torn down */
     }

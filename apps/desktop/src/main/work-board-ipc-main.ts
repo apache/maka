@@ -19,6 +19,7 @@
 
 import type { IpcMain } from 'electron';
 import type { WorkBoardItem, WorkBoardPage } from '@maka/core/work-board';
+import { redactSecrets } from '@maka/core/redaction';
 import {
   createWorkBoardStore,
   WorkBoardStoreError,
@@ -47,6 +48,14 @@ export function registerWorkBoardIpc(input: {
   readonly workspaceRoot: string;
   readonly mainWindowController: MainWindowController;
   readonly store?: WorkBoardStore;
+  /**
+   * Proves that a linked Session belongs to the live Host target and, when
+   * the board item is project-scoped, to that item's project.
+   */
+  readonly validateLinkedSession: (
+    link: unknown,
+    expectedProjectId?: string,
+  ) => Promise<boolean>;
   readonly now?: () => number;
 }): WorkBoardIpcRegistration {
   const store = input.store ?? createWorkBoardStore(input.workspaceRoot);
@@ -153,6 +162,41 @@ export function registerWorkBoardIpc(input: {
     },
   );
 
+  input.ipcMain.handle(
+    'workBoard:linkSession',
+    async (_event, id: unknown, link: unknown, _options?: unknown): Promise<WorkBoardIpcResult<WorkBoardItem>> => {
+      try {
+        const itemId = requireWorkBoardId(id);
+        const item = await store.get(itemId);
+        if (!item || item.scope.kind !== 'project') {
+          throw new WorkBoardStoreError(
+            'invalid_input',
+            'Only project-scoped Work Board items can link a Session',
+          );
+        }
+        if (!(await input.validateLinkedSession(link, item.scope.projectId))) {
+          throw new WorkBoardStoreError(
+            'invalid_input',
+            'Work Board linked Session does not belong to an available Runtime Host project',
+          );
+        }
+        // CAS on the revision read above: the async Host validation must not
+        // race a concurrent mutation (e.g. the item being moved to another
+        // project), or a Session validated for project A could be written into
+        // the now-B item. The store enforces this inside its write transaction.
+        const linked = await store.linkSession(
+          itemId,
+          link,
+          { expectedRevision: item.revision } as WorkBoardMutationOptions | undefined,
+        );
+        emitChanged();
+        return { ok: true, value: linked };
+      } catch (error) {
+        return { ok: false, ...workBoardFailure(error) };
+      }
+    },
+  );
+
   return {
     close: () => store.close(),
   };
@@ -166,14 +210,12 @@ function requireWorkBoardId(id: unknown): string {
 }
 
 function workBoardFailure(error: unknown): {
-  readonly code: WorkBoardStoreErrorCode | 'unknown';
-  readonly message: string;
+  readonly error: { readonly code: WorkBoardStoreErrorCode | 'unknown' };
 } {
-  if (error instanceof WorkBoardStoreError) {
-    return { code: error.code, message: error.message };
+  if (error instanceof WorkBoardStoreError && error.code !== 'corrupt_record') {
+    return { error: { code: error.code } };
   }
-  return {
-    code: 'unknown',
-    message: error instanceof Error ? error.message : 'Work Board operation failed',
-  };
+  const detail = error instanceof Error ? error.stack ?? error.message : String(error);
+  console.error('[work-board] operation failed:', redactSecrets(detail));
+  return { error: { code: error instanceof WorkBoardStoreError ? error.code : 'unknown' } };
 }

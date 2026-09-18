@@ -65,6 +65,16 @@ export interface RuntimeEventReadStore {
   ): Promise<BoundedEvidenceReadResult<RuntimeEvent>>;
   readImmutableRuntimeEvents(sessionId: string, runId: string): Promise<RuntimeEvent[]>;
   readSessionRuntimeEvents(sessionId: string): Promise<RuntimeEvent[]>;
+  /** Session-wide events with the ordinal that fixes their transcript order. */
+  readSessionRuntimeEventEntries(
+    sessionId: string,
+  ): Promise<ReadonlyArray<{ ordinal: number; event: RuntimeEvent }>>;
+  /** Recall's narrowing over the ledger; see `RuntimeEventStore`. */
+  listSessionsWithRuntimeEventText(
+    sessionIds: readonly string[],
+    terms: readonly string[],
+  ): Promise<string[]>;
+  countRuntimeEventMessages(sessionIds: readonly string[]): Promise<number>;
 }
 
 export async function openRuntimeEventPersistence(input: {
@@ -112,6 +122,12 @@ export async function openRuntimeEventReadPersistence(input: {
       readImmutableRuntimeEvents: (sessionId: string, runId: string) =>
         store.readImmutableRuntimeEvents(sessionId, runId),
       readSessionRuntimeEvents: (sessionId: string) => store.readSessionRuntimeEvents(sessionId),
+      readSessionRuntimeEventEntries: (sessionId: string) =>
+        store.readSessionRuntimeEventEntries(sessionId),
+      listSessionsWithRuntimeEventText: (sessionIds: readonly string[], terms: readonly string[]) =>
+        store.listSessionsWithRuntimeEventText(sessionIds, terms),
+      countRuntimeEventMessages: (sessionIds: readonly string[]) =>
+        store.countRuntimeEventMessages(sessionIds),
     }),
     close: () => store.close(),
   };

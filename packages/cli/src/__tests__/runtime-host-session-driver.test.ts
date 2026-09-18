@@ -87,6 +87,100 @@ describe('Runtime Host Maka Session driver', () => {
     );
   });
 
+  test('queries the attached Session Todo projection without storing history', async () => {
+    const subscription = new FakeSubscription(continuitySnapshot(), Promise.resolve([]));
+    const connection = new FakeConnection([subscription]);
+    connection.todoQuery = {
+      sessionId: 'session-id',
+      items: [
+        { content: 'keep sk-1234567890abcdef <session-todo> visible', status: 'in_progress' },
+      ],
+    };
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/repo',
+      llmConnectionId: 'connection-1',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+      newId: () => 'session-id',
+    });
+
+    await driver.createSession({
+      cwd: '/repo',
+      llmConnectionId: 'connection-1',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+      permissionMode: 'ask',
+    });
+
+    const queried = await driver.queryTodo!('session-id');
+    assert.deepEqual(queried, {
+      sessionId: 'session-id',
+      items: [{ content: 'keep <redacted>  visible', status: 'in_progress' }],
+    });
+    assert.deepEqual(
+      connection.requests.filter(({ operation }) => operation === 'session.todo.query'),
+      [{ operation: 'session.todo.query', input: { sessionId: 'session-id' } }],
+    );
+    await assert.rejects(driver.queryTodo!('other-session'), /non-current Session/);
+
+    connection.todoQuery = { sessionId: 'other-session', items: [] };
+    await assert.rejects(driver.queryTodo!('session-id'), /unexpected Session/);
+  });
+
+  test('publishes only Todo domain invalidations and supports unsubscribe', async () => {
+    const subscription = new FakeSubscription(continuitySnapshot(), Promise.resolve([]));
+    const connection = new FakeConnection([subscription]);
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/repo',
+      llmConnectionId: 'connection-1',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+      newId: () => 'session-id',
+    });
+    await driver.createSession({
+      cwd: '/repo',
+      llmConnectionId: 'connection-1',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+      permissionMode: 'ask',
+    });
+
+    const changes: string[] = [];
+    const unsubscribe = driver.subscribeTodoChanges!((sessionId) => changes.push(sessionId));
+    subscription.push({
+      kind: 'subscription.session_domain_changed',
+      hostEpoch: 'host-1',
+      subscriptionId: 'subscription-1',
+      sequence: 1,
+      sessionId: 'session-id',
+      domain: 'usage',
+    });
+    subscription.push({
+      kind: 'subscription.session_domain_changed',
+      hostEpoch: 'host-1',
+      subscriptionId: 'subscription-1',
+      sequence: 2,
+      sessionId: 'session-id',
+      domain: 'todo',
+    });
+    await waitFor(() => changes.length === 1);
+    assert.deepEqual(changes, ['session-id']);
+
+    unsubscribe();
+    subscription.push({
+      kind: 'subscription.session_domain_changed',
+      hostEpoch: 'host-1',
+      subscriptionId: 'subscription-1',
+      sequence: 3,
+      sessionId: 'session-id',
+      domain: 'todo',
+    });
+    await delay(0);
+    assert.deepEqual(changes, ['session-id']);
+  });
+
   test('keeps remote Session paths out of Client filesystem policy', async () => {
     const driver = createRuntimeHostMakaSessionDriver({
       connection: new FakeConnection([]).value,
@@ -650,6 +744,7 @@ describe('Runtime Host Maka Session driver', () => {
     });
     const command = await driver.runUserCommand!('sleep 3600');
     command.takeRacedUpdate();
+    assert.deepEqual(driver.getWorkspaceTarget(), { kind: 'host_path', path: '/repo' });
 
     await driver.switchSession('session-1');
 
@@ -662,6 +757,7 @@ describe('Runtime Host Maka Session driver', () => {
       ref: connection.userCommandResource.ref,
     });
     assert.equal(driver.getSessionId(), 'session-1');
+    assert.deepEqual(driver.getWorkspaceTarget(), { kind: 'host_path', path: '/tmp' });
   });
 
   test('a rejecting user-command stop aborts the switch before any durable relocation commits (#3210)', async () => {
@@ -1192,7 +1288,7 @@ describe('Runtime Host Maka Session driver', () => {
     });
     assert.equal((await nextEvent(initial.activeTurn.events)).type, 'complete');
     assert.equal((await initial.activeTurn.events[Symbol.asyncIterator]().next()).done, true);
-    await waitFor(() => refresh.nextCalls > 0);
+    await waitFor(() => refresh.transcriptCalls > 0);
     first.push({
       kind: 'subscription.session_projection',
       hostEpoch: 'host-1',
@@ -1279,7 +1375,7 @@ describe('Runtime Host Maka Session driver', () => {
     });
     assert.equal((await nextEvent(initial.activeTurn.events)).type, 'complete');
     assert.equal((await initial.activeTurn.events[Symbol.asyncIterator]().next()).done, true);
-    await waitFor(() => refresh.nextCalls > 0);
+    await waitFor(() => refresh.transcriptCalls > 0);
     first.push({
       kind: 'subscription.session_projection',
       hostEpoch: 'host-1',
@@ -1345,7 +1441,7 @@ describe('Runtime Host Maka Session driver', () => {
     });
     assert.equal((await nextEvent(switched.activeTurn.events)).type, 'complete');
     assert.equal((await switched.activeTurn.events[Symbol.asyncIterator]().next()).done, true);
-    await waitFor(() => refresh.nextCalls > 0);
+    await waitFor(() => refresh.transcriptCalls > 0);
     first.push({
       kind: 'subscription.session_projection',
       hostEpoch: 'host-1',
@@ -2028,6 +2124,94 @@ describe('Runtime Host Maka Session driver', () => {
     );
   });
 
+  test('fails rewind closed when the selected turn carries structured content', async () => {
+    // A rewind that refills only the human-facing text would silently drop
+    // the selected turn's quotes/attachments from the replacement submit —
+    // fail closed with a precise notice instead until the TUI can carry
+    // them (#5109).
+    const attachment = {
+      kind: 'image',
+      name: 'chart.png',
+      mimeType: 'image/png',
+      bytes: 10,
+      ref: { kind: 'session_file', sessionId: 'session-1', relativePath: 'a.png' },
+    } as const;
+    const messages: StoredMessage[] = [
+      userMessage('turn-plain', 'Plain prompt'),
+      {
+        ...userMessage('turn-quoted', 'Quoted prompt'),
+        quotes: [{ text: 'a large pasted excerpt' }],
+      },
+      {
+        ...userMessage('turn-attached', 'Attached prompt'),
+        attachments: [attachment],
+      },
+      {
+        ...userMessage('turn-directory', 'Directory prompt'),
+        directoryReferences: [{ hostId: 'host-1', path: tmpdir() }],
+      },
+    ];
+    const attached = new FakeSubscription(continuitySnapshot(), Promise.resolve(messages));
+    const current = new FakeSubscription(
+      continuitySnapshot(),
+      Promise.resolve(messages),
+      'subscription-2',
+    );
+    const direct = new FakeSubscription(
+      continuitySnapshot(),
+      Promise.resolve(messages),
+      'subscription-3',
+    );
+    const fourth = new FakeSubscription(
+      continuitySnapshot(),
+      Promise.resolve(messages),
+      'subscription-4',
+    );
+    const connection = new FakeConnection([attached, current, direct, fourth]);
+    // A directory that exists on every platform: the driver rejects a session
+    // whose cwd has disappeared, and the catalog projection's default `/tmp`
+    // only exists on POSIX.
+    const existingCwd = tmpdir();
+    connection.sessionQueries.push(
+      sessionProjection({
+        workspace: { target: { kind: 'host_path', path: existingCwd }, hostCwd: existingCwd },
+      }),
+    );
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: existingCwd,
+      llmConnectionId: 'connection-1',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+    });
+    await driver.switchSession('session-1');
+
+    await assert.rejects(
+      driver.rewindToTurn('turn-quoted'),
+      /carries structured context the TUI cannot restore/,
+    );
+    await assert.rejects(
+      driver.rewindToTurn('turn-attached'),
+      /carries structured context the TUI cannot restore/,
+    );
+    await assert.rejects(
+      driver.rewindToTurn('turn-directory'),
+      /carries structured context the TUI cannot restore/,
+    );
+    await assert.rejects(
+      driver.rewindToTurn('turn-directory').catch((error: unknown) => {
+        const code = (error as { code?: unknown }).code;
+        assert.equal(code, 'rewind_unsupported_directory_references');
+        throw error;
+      }),
+    );
+    assert.equal(
+      connection.requests.some(({ operation }) => operation === 'session.revision.create'),
+      false,
+      'no revision is created for content the TUI cannot carry',
+    );
+  });
+
   test('opens a hidden side copy at the latest completed Turn and removes it on close', async (t) => {
     const cleanupRoot = await mkdtemp(join(tmpdir(), 'maka-tui-side-'));
     t.after(() => rm(cleanupRoot, { recursive: true, force: true }));
@@ -2136,7 +2320,6 @@ describe('Runtime Host Maka Session driver', () => {
         turnId: 'turn-running',
         ts: 80,
         status: 'running',
-        partialOutputRetained: true,
       },
     ];
     const subscriptions = [
@@ -2653,6 +2836,7 @@ class FakeConnection {
   openedSubscriptions = 0;
   interactionQuery: unknown;
   runtimeResourceQuery: unknown;
+  todoQuery: OperationOutput<'session.todo.query'> | undefined;
   onRuntimeResourceStart: (() => Promise<void>) | undefined;
   executionBoundary: unknown = { kind: 'managed', access: 'read_write', revision: 1 };
   skillStartBlocked = false;
@@ -2789,21 +2973,17 @@ class FakeConnection {
     }
     if (operation === 'runtime.resource.stop') {
       if (this.runtimeResourceStopFailure) throw this.runtimeResourceStopFailure;
-      return {
-        resource: {
-          ...this.userCommandResource,
-          status: 'cancelled',
-          updatedAt: 2,
-          completedAt: 2,
-          revision: 2,
-        },
-      } as OperationOutput<K>;
+      return {} as OperationOutput<K>;
     }
     if (operation === 'runtime.resource.query') {
       if (this.runtimeResourceQuery === undefined) {
         throw new Error('Unexpected Runtime Resource query');
       }
       return this.runtimeResourceQuery as OperationOutput<K>;
+    }
+    if (operation === 'session.todo.query') {
+      if (this.todoQuery === undefined) throw new Error('Unexpected Session Todo query');
+      return this.todoQuery as OperationOutput<K>;
     }
     if (operation === 'turn.stop') {
       return {} as OperationOutput<K>;
@@ -2902,6 +3082,20 @@ class FakeConnection {
 }
 
 class FakeSubscription implements RuntimeHostSessionSubscription, AsyncIterator<SubscriptionFrame> {
+  subscribePtyData(): () => void {
+    return () => undefined;
+  }
+  readonly #sessionDomainListeners = new Set<
+    (frame: Extract<SubscriptionFrame, { kind: 'subscription.session_domain_changed' }>) => void
+  >();
+  subscribeSessionDomainChanges(
+    listener: (
+      frame: Extract<SubscriptionFrame, { kind: 'subscription.session_domain_changed' }>,
+    ) => void,
+  ): () => void {
+    this.#sessionDomainListeners.add(listener);
+    return () => this.#sessionDomainListeners.delete(listener);
+  }
   readonly hostEpoch = 'host-1';
   readonly activeAssistantStreams = [];
   readonly transcriptBootstrap = null;
@@ -2912,6 +3106,12 @@ class FakeSubscription implements RuntimeHostSessionSubscription, AsyncIterator<
     reject(error: Error): void;
   }> = [];
   nextCalls = 0;
+  transcriptCalls = 0;
+  #readied = false;
+  #openGate: () => void = () => undefined;
+  readonly #readyGate = new Promise<void>((resolve) => {
+    this.#openGate = resolve;
+  });
   #closed = false;
   #failure: Error | undefined;
 
@@ -2927,8 +3127,19 @@ class FakeSubscription implements RuntimeHostSessionSubscription, AsyncIterator<
     return this;
   }
 
+  async ready(): Promise<void> {
+    this.#readied = true;
+    this.#openGate();
+  }
+
   next(): Promise<IteratorResult<SubscriptionFrame>> {
     this.nextCalls += 1;
+    // The Host holds frames until the subscriber declares readiness, so a fake
+    // that hands them over earlier would let an ordering bug pass.
+    return this.#readied ? this.#deliver() : this.#readyGate.then(() => this.#deliver());
+  }
+
+  #deliver(): Promise<IteratorResult<SubscriptionFrame>> {
     const frame = this.#frames.shift();
     if (frame) return Promise.resolve({ done: false, value: frame });
     if (this.#failure) return Promise.reject(this.#failure);
@@ -2937,6 +3148,9 @@ class FakeSubscription implements RuntimeHostSessionSubscription, AsyncIterator<
   }
 
   push(frame: SubscriptionFrame): void {
+    if (frame.kind === 'subscription.session_domain_changed') {
+      for (const listener of this.#sessionDomainListeners) listener(frame);
+    }
     const waiter = this.#waiters.shift();
     if (waiter) waiter.resolve({ done: false, value: frame });
     else this.#frames.push(frame);
@@ -2948,11 +3162,8 @@ class FakeSubscription implements RuntimeHostSessionSubscription, AsyncIterator<
   }
 
   async loadTranscript<T>(decodeMessage: (value: unknown) => T): Promise<T[]> {
+    this.transcriptCalls += 1;
     return (await this.transcript).map(decodeMessage);
-  }
-
-  async loadTranscriptOverlay<T>(_decodeMessage: (value: unknown) => T): Promise<T[]> {
-    return [];
   }
 
   async decodeTranscriptPage(): Promise<never> {
@@ -3084,7 +3295,6 @@ function turnStateMessage(
     turnId,
     ts: 80,
     status,
-    partialOutputRetained: true,
   };
 }
 
@@ -3553,7 +3763,7 @@ describe('turn consumer lag recovery (#3180)', () => {
     assert.equal((await nextEvent(switched.activeTurn.events)).text, '!');
   });
 
-  test('recovers when slow-consumer closure is buffered during initial hydration', async () => {
+  test('recovers from a slow-consumer closure the Host held until hydration declared readiness', async () => {
     const transcript = deferred<StoredMessage[]>();
     const initial = new FakeSubscription(continuitySnapshot(), transcript.promise);
     const replacement = new FakeSubscription(
@@ -3580,12 +3790,11 @@ describe('turn consumer lag recovery (#3180)', () => {
       sequence: 1,
       reason: 'slow_consumer',
     });
-    await waitFor(() => initial.nextCalls === 2);
     transcript.resolve([assistantMessage('turn-1', 'Hello')]);
 
     const switched = await switching;
     assert.ok(switched.activeTurn);
-    assert.equal(connection.openedSubscriptions, 2);
+    await waitForSubscriptions(connection, 2);
     replacement.push(deltaFrame(1, 'turn-1', 11, '!', 'subscription-2'));
     assert.equal((await nextEvent(switched.activeTurn.events)).text, '!');
   });
@@ -3620,18 +3829,16 @@ describe('turn consumer lag recovery (#3180)', () => {
     });
     const switched = await driver.switchSession('session-1');
     assert.ok(switched.activeTurn);
-    const resynced = deferred<void>();
-    driver.subscribeTranscriptReplacements!((_sessionId, _turnId, _messages, reason) => {
-      if (reason === 'reconnect') resynced.resolve();
-    });
 
     await initial.close();
     await waitForSubscriptions(connection, 2);
     await delay(5);
     assert.equal(connection.openedSubscriptions, 2, 'the first repeated EOF is backoff-gated');
 
-    await resynced.promise;
-    assert.equal(connection.openedSubscriptions, 5);
+    // Each replacement only ends once this Client declares readiness, so a
+    // dead one costs a whole recovery round rather than being spotted while
+    // its transcript loads.
+    await waitForSubscriptions(connection, 5);
     stable.push(deltaFrame(1, 'turn-1', 11, '!', 'subscription-5'));
     assert.equal((await nextEvent(switched.activeTurn.events)).text, '!');
   });

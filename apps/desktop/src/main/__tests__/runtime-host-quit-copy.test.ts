@@ -19,53 +19,21 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { DesktopLocalHostRetirementError } from '../runtime-host-desktop-manager.js';
-import {
-  buildRuntimeHostActiveQuitDialog,
-  buildRuntimeHostQuitFailureDialog,
-} from '../runtime-host-quit-copy.js';
+import { buildRuntimeHostActiveQuitDialog } from '../runtime-host-quit-copy.js';
 
-const failure = new DesktopLocalHostRetirementError(
-  {
-    hostId: 'root-id',
-    hostEpoch: 'host-epoch',
-    lifecycleMode: 'ephemeral',
-    rootPath: '/state/root',
-    pid: 4242,
-    forceTerminationAvailable: true,
-  },
-  { cause: new Error('writer release timed out') },
-);
-const manualFailure = new DesktopLocalHostRetirementError(
-  { ...failure.facts, forceTerminationAvailable: false },
-  { cause: failure.cause },
-);
-
-for (const locale of ['en', 'zh-CN'] as const) {
-  test(`quit failure copy exposes actionable Host facts in ${locale}`, () => {
-    const dialog = buildRuntimeHostQuitFailureDialog(manualFailure, locale);
-
-    assert.match(dialog.options.detail ?? '', /4242/);
-    assert.match(dialog.options.detail ?? '', /host-epoch/);
-    assert.match(dialog.options.detail ?? '', /\/state\/root/);
-    assert.match(dialog.options.detail ?? '', /writer release timed out/);
-  });
-}
-
-test('manual recovery copy names a cross-platform process-management concept', () => {
-  const english = buildRuntimeHostQuitFailureDialog(manualFailure, 'en').options.detail ?? '';
-  const chinese = buildRuntimeHostQuitFailureDialog(manualFailure, 'zh-CN').options.detail ?? '';
-
-  assert.match(english, /operating system's process-management tool/);
-  assert.match(chinese, /操作系统的进程管理工具/);
-  assert.doesNotMatch(`${english}\n${chinese}`, /Activity Monitor|Task Manager|活动监视器|任务管理器/);
-});
-
-test('quit dialogs default to preserving background work', () => {
+test('quit dialog defaults to preserving background work', () => {
   const active = buildRuntimeHostActiveQuitDialog('en');
-  const recovery = buildRuntimeHostQuitFailureDialog(failure, 'en');
 
   assert.equal(active.decisions[active.options.defaultId ?? -1], 'cancel');
-  assert.equal(recovery.decisions[recovery.options.defaultId ?? -1], 'cancel');
-  assert.deepEqual(recovery.decisions, ['retry', 'force', 'cancel']);
+  assert.deepEqual(active.decisions, ['quit', 'cancel']);
+});
+
+test('quit dialog copy promises durable recovery in every locale', () => {
+  const english = buildRuntimeHostActiveQuitDialog('en').options.detail ?? '';
+  const chinese = buildRuntimeHostActiveQuitDialog('zh-CN').options.detail ?? '';
+  const traditional = buildRuntimeHostActiveQuitDialog('zh-TW').options.detail ?? '';
+
+  assert.match(english, /durable state/);
+  assert.match(chinese, /持久状态/);
+  assert.match(traditional, /持久狀態/);
 });

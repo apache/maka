@@ -19,6 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { REQUEST_COMPOSITION_MAX_TOOL_DESCRIPTION_LENGTH } from '@maka/core/run-composition';
 import { createManagedExecutionBoundary } from '@maka/core/sandbox-boundary';
 import { createWorkspaceWritePermissionProfile } from '@maka/core/permission-profile';
 import type {
@@ -501,3 +502,18 @@ function fakeProvider(tools: McpBoundTool[], call: McpToolProvider['callTool']):
     callTool: call,
   };
 }
+
+test('MCP descriptions are normalized to the Request Composition bound', () => {
+  const oversized = 'x'.repeat(REQUEST_COMPOSITION_MAX_TOOL_DESCRIPTION_LENGTH + 1);
+  const [tool] = buildMcpTools(
+    fakeProvider(
+      [boundTool({ ...descriptor('server', 'large'), description: oversized }, binding('large'))],
+      async () => ({ content: [{ type: 'text', text: 'unused' }] }),
+    ),
+  );
+
+  assert.equal(
+    tool?.description,
+    oversized.slice(0, REQUEST_COMPOSITION_MAX_TOOL_DESCRIPTION_LENGTH),
+  );
+});

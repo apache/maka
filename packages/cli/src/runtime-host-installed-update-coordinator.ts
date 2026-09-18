@@ -28,7 +28,10 @@ import {
   waitForRuntimeHostReady,
   type RuntimeHostConnection,
 } from '@maka/runtime-host/client';
-import { type LocalHostDeploymentAuthorityOptions } from '@maka/runtime-host/operator';
+import {
+  resolveRuntimeHostManagedDeploymentAuthority,
+  type LocalHostDeploymentAuthorityOptions,
+} from '@maka/runtime-host/operator';
 import {
   INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
   RUNTIME_HOST_PROTOCOL_VERSION,
@@ -61,6 +64,7 @@ const OFFLINE_REGISTRY = 'http://127.0.0.1:9/';
 interface RuntimeHostInstalledUpdateCoordinatorDeps {
   readonly resolveInstallation: typeof resolveRuntimeHostNpmGlobalInstallation;
   readonly resolveRoot: typeof resolveStorageRoot;
+  readonly resolveManagedAuthority: typeof resolveRuntimeHostManagedDeploymentAuthority;
   readonly connectExisting: typeof connectExistingRuntimeHost;
   readonly waitForReady: typeof waitForRuntimeHostReady;
   readonly prepareRetirement: typeof prepareConnectedRuntimeHostRetirement;
@@ -81,6 +85,15 @@ export interface RuntimeHostInstalledUpdateCoordinatorInput {
   readonly currentVersion: string;
   readonly target: RuntimeHostUpdateCandidate;
   readonly allowInterruptActiveTasks: boolean;
+  /** Optional observed-source consent; ordinary explicit CLI updates keep their existing policy. */
+  readonly expectedSource?: RuntimeHostInstalledUpdateExpectedSource;
+}
+
+export interface RuntimeHostInstalledUpdateExpectedSource {
+  readonly rootId: string;
+  readonly deploymentRevision: string;
+  readonly ownerInstallationId: string;
+  readonly hostEpoch: string;
 }
 
 export async function runRuntimeHostInstalledUpdateCoordinator(
@@ -91,6 +104,7 @@ export async function runRuntimeHostInstalledUpdateCoordinator(
   const deps: RuntimeHostInstalledUpdateCoordinatorDeps = {
     resolveInstallation: resolveRuntimeHostNpmGlobalInstallation,
     resolveRoot: resolveStorageRoot,
+    resolveManagedAuthority: resolveRuntimeHostManagedDeploymentAuthority,
     connectExisting: connectExistingRuntimeHost,
     waitForReady: waitForRuntimeHostReady,
     prepareRetirement: prepareConnectedRuntimeHostRetirement,
@@ -112,6 +126,16 @@ export async function runRuntimeHostInstalledUpdateCoordinator(
     );
   }
   const root = await deps.resolveRoot({ path: input.rootPath, kind: 'interactive' });
+  if (
+    input.expectedSource &&
+    (root.rootId !== input.expectedSource.rootId ||
+      installation.owner.installationId !== input.expectedSource.ownerInstallationId)
+  ) {
+    throw new Error('The observed local Host installation owner changed before update.');
+  }
+  if (await deps.resolveManagedAuthority(root.rootId)) {
+    throw new Error('The managed Runtime Host must be updated through its installed operator.');
+  }
   const transactionId = updateTransactionId(root.rootId, installation, input.target);
 
   return deps.withArchive(input.target, input.archivePath, async ({ packageRoot, archivePath }) => {
@@ -150,7 +174,21 @@ export async function runRuntimeHostInstalledUpdateCoordinator(
       return 'target_present';
     };
     const prepare = async (inheritableAuthorityLeaseFd: number) => {
+      if (await deps.resolveManagedAuthority(root.rootId)) {
+        throw new Error('The managed Runtime Host must be updated through its installed operator.');
+      }
       observation = await observeCurrentHost(input.rootPath, root.rootId, deps);
+      // This callback runs under the existing deployment-authority lease.
+      // Do not turn the TUI's consent for one observed Host into retirement of
+      // a successor that appeared while the archive/coordinator was prepared.
+      if (
+        input.expectedSource &&
+        observation.registration?.hostEpoch !== input.expectedSource.hostEpoch
+      ) {
+        await observation.connection?.close();
+        observation = {};
+        throw new Error('The observed Runtime Host changed before update retirement.');
+      }
       if (observation.registration && observation.registration.lifecycleMode !== 'ephemeral') {
         throw new Error('Only an ephemeral local Runtime Host can be updated by this CLI');
       }
@@ -209,6 +247,17 @@ export async function runRuntimeHostInstalledUpdateCoordinator(
             : 'refuse_active_work',
           installation,
           staged,
+          ...(input.expectedSource
+            ? {
+                expectedOwner: {
+                  revision: input.expectedSource.deploymentRevision,
+                  owner: {
+                    kind: 'cli' as const,
+                    installationId: input.expectedSource.ownerInstallationId,
+                  },
+                },
+              }
+            : {}),
         },
         {
           prepareUnownedHostCutover: (_rootId, _target, _staged, _policy, leaseFd) =>

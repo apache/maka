@@ -264,6 +264,47 @@ test('a Session observation reopens safely after its first connection starts dra
   await connection.close();
 });
 
+test('an initial Session observation stays pinned to the concrete connection it started on', async () => {
+  const first = connectionHarness(
+    'first',
+    () => undefined,
+    async () => {
+      first.disconnect();
+      throw new RuntimeHostOperationError(
+        'subscription.open',
+        'host_draining',
+        'Runtime Host is draining',
+      );
+    },
+  );
+  const replacement = connectionHarness(
+    'replacement',
+    () => undefined,
+    async () => ({ subscriptionId: 'replacement-subscription' }),
+  );
+  const reconnected = deferred();
+  const connection = await createRuntimeHostReconnectingConnection({
+    initialConnection: first.connection,
+    connect: async () => {
+      reconnected.resolve();
+      return replacement.connection;
+    },
+  });
+
+  await assert.rejects(
+    connection.openSessionSubscriptionOnce({
+      sessionId: 'session-1',
+      transcript: { kind: 'none' },
+    }),
+    (error: unknown) =>
+      error instanceof RuntimeHostOperationError && error.code === 'host_draining',
+  );
+  await reconnected.promise;
+  assert.equal(first.openedSubscriptions, 1);
+  assert.equal(replacement.openedSubscriptions, 0);
+  await connection.close();
+});
+
 test('a reconnecting Client rejects a different Host composition permanently', async () => {
   const first = connectionHarness('first', () => undefined);
   const replacement = connectionHarness('replacement', () => undefined, undefined, {
