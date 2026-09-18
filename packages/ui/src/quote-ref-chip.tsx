@@ -20,7 +20,8 @@
 import { useLayoutEffect, useRef, useState } from 'react';
 import { Button } from '@astryxdesign/core/Button';
 import { IconButton } from '@astryxdesign/core/IconButton';
-import { MessagesSquare, TextQuote, X } from './icons.js';
+import { Tooltip } from '@astryxdesign/core/Tooltip';
+import { MessageSquare, MessagesSquare, TextQuote, X } from './icons.js';
 import { cn } from './utils.js';
 import type { UiLocale } from '@maka/core/ui-locale';
 import type { QuoteRef } from '@maka/core/events';
@@ -38,6 +39,38 @@ export function quoteProvenanceSummary(quote: QuoteRef, locale: UiLocale): strin
   if (!Number.isFinite(quote.sourceCapturedAt) || quote.sourceCapturedAt < 0 || quote.sourceCapturedAt > 8.64e15) return undefined;
   const capturedAt = new Date(quote.sourceCapturedAt).toISOString();
   return getConversationCopy(locale).messages.sessionSnapshotCaptured(capturedAt, quote.sourceTruncated === true);
+}
+
+/**
+ * The structured read of a quote: what was selected, then what the user said
+ * about it. Shared by the staged token in the composer and the chip on a sent
+ * message so neither surface can drift from the other.
+ */
+export function QuoteTooltipContent(props: { quote: QuoteRef }) {
+  const locale = useUiLocale();
+  const copy = getConversationCopy(locale).messages;
+  const provenance = quoteProvenanceSummary(props.quote, locale);
+  return (
+    <div className="maka-quote-tooltip">
+      <div className="maka-quote-tooltip-row">
+        <span className="maka-quote-tooltip-label">{copy.quoteSelectedTextLabel}</span>
+        <span className="maka-quote-tooltip-value">
+          {stripQuoteHeadingMarkers(props.quote.text)}
+        </span>
+      </div>
+      {props.quote.comment ? (
+        <div className="maka-quote-tooltip-row">
+          <span className="maka-quote-tooltip-label">{copy.quoteCommentLabel}</span>
+          <span className="maka-quote-tooltip-value">{props.quote.comment}</span>
+        </div>
+      ) : null}
+      {provenance ? (
+        <div className="maka-quote-tooltip-row">
+          <span className="maka-quote-tooltip-value">{provenance}</span>
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 /** Inline quote chip for the composer (removable) and sent user messages (read-only). */
@@ -68,12 +101,14 @@ export function QuoteRefChip(props: {
   }, [expanded, displayText, label, provenance]);
 
   const canExpand = clipped || expanded;
+  // A collapsed chip shows one line of its excerpt, so naming the control after
+  // that line keeps two quotes in one message from reading as the same button.
   const a11yLabel = canExpand
     ? `${expanded ? copy.quoteCollapseAriaLabel : copy.quoteExpandAriaLabel}: ${fullWithProvenance}`
     : fullWithProvenance;
   const SourceIcon = props.quote.sourceSessionId ? MessagesSquare : TextQuote;
 
-  return (
+  const chip = (
     <span
       className={cn(
         'maka-quote-chip',
@@ -81,12 +116,16 @@ export function QuoteRefChip(props: {
         props.onRemove ? 'maka-quote-chip-removable' : 'maka-quote-chip-readonly',
         props.className,
       )}
-      title={expanded ? undefined : fullWithProvenance}
     >
       <SourceIcon
         className={cn('maka-quote-chip-icon', expanded && 'maka-quote-chip-icon-expanded')}
         aria-hidden="true"
       />
+      {/* Marks that the excerpt carries a note. The note itself lives in the
+          tooltip and the model-facing content, not in the chip's own line. */}
+      {props.quote.comment ? (
+        <MessageSquare className="maka-quote-chip-comment-icon" aria-hidden="true" />
+      ) : null}
       <Button
         type="button"
         variant="ghost"
@@ -124,5 +163,14 @@ export function QuoteRefChip(props: {
         />
       ) : null}
     </span>
+  );
+
+  // An expanded chip already shows the excerpt in full; a tooltip over it
+  // would only repeat what is on screen.
+  if (expanded) return chip;
+  return (
+    <Tooltip content={<QuoteTooltipContent quote={props.quote} />} focusTrigger="always">
+      {chip}
+    </Tooltip>
   );
 }
