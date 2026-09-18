@@ -389,7 +389,7 @@
           "react": 1
         },
         "importSpecifiers": 9,
-        "nonTriviaTokens": 2275
+        "nonTriviaTokens": 2299
       },
       "src/renderer/app-shell-context-compaction.ts": {
         "importDeclarations": 0,
@@ -419,7 +419,7 @@
           "@maka/core/redaction": 1
         },
         "importSpecifiers": 1,
-        "nonTriviaTokens": 391
+        "nonTriviaTokens": 393
       },
       "src/renderer/app-shell-detail-panel.tsx": {
         "importDeclarations": 0,
@@ -538,7 +538,7 @@
       "src/renderer/app-shell-project-actions.ts": {
         "importDeclarations": 4,
         "bridgePaths": {
-          "window.maka.app.openPath": 3,
+          "window.maka.app.openPath": 4,
           "window.maka.app.resolveProjectGitInfo": 1,
           "window.maka.projects.add": 1,
           "window.maka.projects.archive": 1,
@@ -563,7 +563,7 @@
           "./session-workspace-errors": 1
         },
         "importSpecifiers": 7,
-        "nonTriviaTokens": 2157
+        "nonTriviaTokens": 2284
       },
       "src/renderer/app-shell-revision-actions.ts": {
         "importDeclarations": 4,
@@ -756,7 +756,7 @@
           "useNewTaskChoice": 1,
           "useOnboardingSnapshot": 1,
           "usePlanModeState": 1,
-          "useRef": 16,
+          "useRef": 17,
           "useSessionCollaborationDialog": 1,
           "useSessionEventHealthPolling": 1,
           "useSessionNavigationReads": 1,
@@ -862,7 +862,7 @@
           "react": 1
         },
         "importSpecifiers": 100,
-        "nonTriviaTokens": 13127
+        "nonTriviaTokens": 13231
       },
       "src/renderer/use-app-shell-composer-quotes.ts": {
         "importDeclarations": 0,
