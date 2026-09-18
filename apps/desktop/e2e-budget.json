@@ -9,6 +9,10 @@
       "tests": 1,
       "electron": "the folder reference has to survive a renderer reload and still agree with the Host's session record"
     },
+    "composer-session-reference.spec.ts": {
+      "tests": 1,
+      "electron": "the referenced transcript snapshot crosses renderer, preload, main process, and Runtime Host boundaries before the staged quote can be sent"
+    },
     "expected-failure-feedback.spec.ts": {
       "tests": 2,
       "electron": "WorkHub attachment rejection crosses a native file dialog, preload and main; Session settings and Plan failures must preserve their codes through a real contextBridge IPC round trip"
