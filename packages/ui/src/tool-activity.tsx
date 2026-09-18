@@ -91,10 +91,8 @@ import {
 import {
   TOOL_OUTPUT_BODY_CLASS,
   TOOL_OUTPUT_NOTE_CLASS,
-  describeQuietJsonPresentation,
   ToolOutputSurface,
   ToolResultPreview,
-  type QuietJsonPresentation,
 } from './tool-activity/tool-result-preview.js';
 import { getToolActivityCopy } from './tool-activity/copy.js';
 import { dotForStatus, type StatusSemantic } from './status-vocabulary.js';
@@ -200,7 +198,7 @@ type DetailDecision = {
         result: Extract<ToolResultContent, { kind: 'json' }>;
         args: unknown;
       }
-    | { kind: 'quietText'; presentation: QuietJsonPresentation }
+    | { kind: 'quietText'; body: string; title?: string }
     | { kind: 'argsOnly'; text: string }
     | { kind: 'none' };
 };
@@ -215,24 +213,16 @@ function describeToolCall(
   const permissionDenied = isPermissionDeniedToolResult(item.result);
   const running = activityObserved && isInFlightToolStatus(toolActivityPresentationStatus(item));
   const ptyControlResult = item.toolName === 'WriteStdin' && item.result?.kind === 'shell_run';
-  const ownedPanel = (() => {
-    if (!item.result) return undefined;
-    if (isConnectorTool(item.toolName) && item.result.kind === 'json') {
-      return { renderer: 'load-tool' as const, result: item.result };
-    }
-    switch (item.result.kind) {
-      case 'terminal':
-      case 'shell_run':
-      case 'web_search':
-      case 'web_search_error':
-      case 'file_diff':
-      case 'rive_workflow':
-        return { renderer: 'default' as const };
-      default:
-        return undefined;
-    }
-  })();
-  const ownsPanel = ownedPanel !== undefined || requiresBypass;
+  const loadToolResult = isConnectorTool(item.toolName) && item.result?.kind === 'json'
+    ? item.result
+    : undefined;
+  const resultOwnsPanel = item.result?.kind === 'terminal'
+    || item.result?.kind === 'shell_run'
+    || item.result?.kind === 'web_search'
+    || item.result?.kind === 'web_search_error'
+    || item.result?.kind === 'file_diff'
+    || item.result?.kind === 'rive_workflow';
+  const ownsPanel = Boolean(loadToolResult || resultOwnsPanel || requiresBypass);
   const showResult = item.result !== undefined && !permissionDenied && !requiresBypass;
   const displayResult = showResult && item.result
     ? withLiveStreamFallback(item.result, item.outputChunks, {
@@ -256,28 +246,30 @@ function describeToolCall(
     requiresBypass,
   };
 
-  if (showResult && ownedPanel && displayResult) {
-    if (ownedPanel.renderer === 'load-tool') {
+  if (showResult && displayResult) {
+    if (loadToolResult) {
       return {
         decorations,
         body: {
           kind: 'loadTool',
-          result: ownedPanel.result,
+          result: loadToolResult,
           args: item.args,
         },
       };
     }
-    return {
-      decorations,
-      body: {
-        kind: 'result',
-        result: displayResult,
-        presentation: 'owned',
-        toolName: item.toolName,
-        args: item.args,
-        shellRunSource: item.shellRunSource,
-      },
-    };
+    if (resultOwnsPanel) {
+      return {
+        decorations,
+        body: {
+          kind: 'result',
+          result: displayResult,
+          presentation: 'owned',
+          toolName: item.toolName,
+          args: item.args,
+          shellRunSource: item.shellRunSource,
+        },
+      };
+    }
   }
 
   if (showLiveStream && item.outputChunks) {
@@ -294,11 +286,17 @@ function describeToolCall(
   }
 
   if (!ownsPanel && displayResult?.kind === 'json') {
+    const quiet = formatQuietJsonValue(displayResult.value, locale);
+    // Keep structured quiet JSON raw: generic permission-text replacement
+    // could rewrite a path, command, or query in the headline.
     return {
       decorations,
       body: {
         kind: 'quietText',
-        presentation: describeQuietJsonPresentation(displayResult.value, locale, invocationLine),
+        body: quiet.body,
+        title: quiet.headline && quiet.headline !== invocationLine
+          ? quiet.headline
+          : invocationLine,
       },
     };
   }
@@ -332,7 +330,7 @@ function describeToolCall(
       decorations,
       body: {
         kind: 'quietText',
-        presentation: { body: invocationLine },
+        body: invocationLine,
       },
     };
   }
@@ -364,8 +362,8 @@ function ToolCallDetailBody(props: {
       return (
         <div data-slot="tool-output" className="maka-tool-output-stack">
           <ToolCodeBlock
-            code={body.presentation.body}
-            title={body.presentation.title}
+            code={body.body}
+            title={body.title}
             actionIdentity={props.actionIdentity}
           />
         </div>

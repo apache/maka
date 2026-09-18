@@ -405,8 +405,7 @@ describe('tool activity presentation', () => {
     assert.match(markup, /已脱敏/);
     assert.match(markup, /输出已截断/);
     assert.doesNotMatch(markup, /尚无输出/);
-    const panels = markup.match(/data-slot="tool-output"/g) ?? [];
-    assert.equal(panels.length, 1);
+    assert.equal(outputPanelCount(markup), 1);
   });
 
   it('keeps redacted/truncated meta when live chunks are empty bodies', () => {
@@ -437,8 +436,7 @@ describe('tool activity presentation', () => {
 
     assert.match(markup, /已脱敏/);
     assert.match(markup, /输出已截断/);
-    const panels = markup.match(/data-slot="tool-output"/g) ?? [];
-    assert.equal(panels.length, 1);
+    assert.equal(outputPanelCount(markup), 1);
   });
 
   it('keeps provider call ids out of output action names', () => {
@@ -493,7 +491,7 @@ describe('tool activity presentation', () => {
   });
 
   it('renders each owned-panel family through one un-nested output surface', () => {
-    const cases: Array<{ item: ToolActivityItem; kind: string; text: RegExp }> = [
+    const cases: Array<{ item: ToolActivityItem; kind: string; text: RegExp; panels?: number }> = [
       {
         item: {
           toolUseId: 'owned-diff',
@@ -596,13 +594,68 @@ describe('tool activity presentation', () => {
         kind: 'pty-shell',
         text: /pty-output/,
       },
+      {
+        item: {
+          toolUseId: 'owned-web-search',
+          toolName: 'web_search',
+          status: 'completed',
+          args: { query: 'Maka' },
+          result: {
+            kind: 'web_search',
+            provider: 'tavily',
+            query: 'Maka',
+            rows: [],
+          },
+        },
+        kind: 'web_search',
+        text: /Maka/,
+        panels: 0,
+      },
+      {
+        item: {
+          toolUseId: 'owned-web-search-error',
+          toolName: 'web_search',
+          status: 'completed',
+          args: { query: 'Maka' },
+          result: {
+            kind: 'web_search_error',
+            ok: false,
+            provider: 'tavily',
+            query: 'Maka',
+            reason: 'invalid_credentials',
+            message: 'search failed',
+          },
+        },
+        kind: 'web_search_error',
+        text: /search failed/,
+        panels: 0,
+      },
+      {
+        item: {
+          toolUseId: 'owned-rive-workflow',
+          toolName: 'rive_workflow',
+          status: 'completed',
+          args: { action: 'run' },
+          result: {
+            kind: 'rive_workflow',
+            ok: true,
+            action: 'run',
+            command: [],
+            ids: {},
+            summary: 'workflow complete',
+          },
+        },
+        kind: 'rive_workflow',
+        text: /workflow complete/,
+        panels: 0,
+      },
     ];
 
-    for (const { item, kind, text } of cases) {
+    for (const { item, kind, text, panels } of cases) {
       const markup = renderToStaticMarkup(createElement(ToolCallDetail, { item }));
       assert.match(markup, new RegExp(`data-kind="${kind}"`));
       assert.match(markup, text);
-      assert.equal(outputPanelCount(markup), 1, `${kind} owns exactly one panel`);
+      assert.equal(outputPanelCount(markup), panels ?? 1, `${kind} owns its expected panel count`);
     }
   });
 
@@ -692,13 +745,13 @@ describe('tool activity presentation', () => {
     const argsOnly = renderToStaticMarkup(createElement(ToolCallDetail, {
       item: {
         toolUseId: 'args-only',
-        toolName: 'CustomTool',
+        toolName: 'todo_write',
         status: 'completed',
-        args: { alpha: 1, beta: true },
+        args: {},
       } satisfies ToolActivityItem,
     }));
-    assert.match(argsOnly, /alpha/);
-    assert.match(argsOnly, /beta/);
+    assert.match(argsOnly, /language="json"/);
+    assert.match(argsOnly, /（空）/);
     assert.equal(outputPanelCount(argsOnly), 1);
   });
 
