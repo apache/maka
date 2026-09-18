@@ -101,10 +101,10 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 164 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 165 as const;
 // 164: Client Plugin bundles, desktop-ui composition, generation-fenced Host
 // Remote calls, and pull streams are projected through strict Host contracts.
-// 164: WorkHub coordination resolve adds a model_required error code. Older
+// 165: WorkHub coordination resolve adds a model_required error code. Older
 // peers reject the new operation outcome rather than misdiagnosing prose.
 // 163: Session reference quotes carry strict capture and truncation provenance.
 // Epoch-162 peers reject the added QuoteRef fields.
