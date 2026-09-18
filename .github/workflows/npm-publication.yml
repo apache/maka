@@ -99,7 +99,7 @@ jobs:
     needs: [identity, cli]
     runs-on: ubuntu-24.04
     environment: npm-publication
-    timeout-minutes: 20
+    timeout-minutes: 60
     permissions:
       contents: read
       id-token: write
@@ -176,15 +176,20 @@ jobs:
         env:
           NIGHTLY_VERSION: ${{ steps.npm-nightly.outputs.version }}
         run: |
-          for attempt in {1..12}; do
-            published="$(npm view "maka-agent@$NIGHTLY_VERSION" version --registry https://registry.npmjs.org/ 2>/dev/null || true)"
-            tagged="$(npm view maka-agent dist-tags.nightly --registry https://registry.npmjs.org/ 2>/dev/null || true)"
+          # npm scans a published version before it becomes readable, so the
+          # registry can stay silent for minutes after `npm publish` returns.
+          # Poll the exact version for up to 45 minutes, revalidating the cache
+          # on every attempt so a cached packument cannot keep hiding it.
+          for attempt in {1..135}; do
+            published="$(npm view "maka-agent@$NIGHTLY_VERSION" version --registry https://registry.npmjs.org/ --prefer-online 2>/dev/null || true)"
+            tagged="$(npm view maka-agent dist-tags.nightly --registry https://registry.npmjs.org/ --prefer-online 2>/dev/null || true)"
             if [[ "$published" == "$NIGHTLY_VERSION" && "$tagged" == "$NIGHTLY_VERSION" ]]; then
               exit 0
             fi
-            sleep 5
+            echo "attempt $attempt: published='$published' tagged='$tagged'" >&2
+            sleep 20
           done
-          echo "npm Nightly did not become readable with the exact nightly tag" >&2
+          echo "npm Nightly did not become readable with the exact nightly tag after 45 minutes; a pending publish-time scan hides a version until it finishes" >&2
           exit 1
 
       - name: Record the published Product Nightly version

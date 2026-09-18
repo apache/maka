@@ -1,3 +1,15 @@
+---
+doc_id: workhub-domain-language
+title: "WorkHub domain language"
+language: en
+source_language: en
+implementation_status: current
+document_status: current
+translation_status: source-only
+last_verified: 2026-09-13
+owners:
+  - maka-backend
+---
 <!--
   Licensed to the Apache Software Foundation (ASF) under one
   or more contributor license agreements.  See the NOTICE file
@@ -151,6 +163,13 @@ A crashed renderer is disposed and recreated when WorkHub is reopened or docked.
 An empty dock exposes Retry so recovery does not depend on a layout change.
 The new view reconnects to the same Host-owned Session; unsent in-memory drafts
 are not crash-persistent.
+
+WorkHub uses the main window's shared Workbar. Floating moves only the conversation
+and composer; browser, usage and other panels remain in the main workspace. The
+floating composer's usage button reveals that workspace without docking or resizing
+the conversation. The browser page retains its coordination owner when Main presents
+it, and returns hidden to that owner's native container when Main closes or switches
+sessions. Browser and conversation WebContentsViews are siblings, never nested.
 
 The composer retains a Stop requested before admission for that exact Session/Turn.
 A lost dispatched response leaves admission unresolved; a later observation delivers

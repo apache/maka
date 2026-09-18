@@ -20,6 +20,5 @@
 export {
   createTranscriptRestoreLifecycle,
   prepareTranscriptForSend,
-  refreshTranscriptTurnLandmarks,
   restoreSessionTranscriptRange,
 } from './controller/transcript-reading-position.js';

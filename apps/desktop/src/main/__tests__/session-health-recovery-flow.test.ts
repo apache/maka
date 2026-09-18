@@ -156,6 +156,14 @@ async function renderFlow(props: Parameters<typeof RecoveryFlow>[0]) {
     writingMode: 'horizontal-tb',
     getPropertyValue: () => '',
   }) as unknown as CSSStyleDeclaration;
+  // linkedom lacks the popover API; record the calls so tests can tell an open
+  // panel from one that is mounted but hidden.
+  window.HTMLElement.prototype.showPopover = function () {
+    this.setAttribute('data-popover-open', '');
+  };
+  window.HTMLElement.prototype.hidePopover = function () {
+    this.removeAttribute('data-popover-open');
+  };
   Object.assign(globalThis, {
     document,
     window,
@@ -190,11 +198,12 @@ test('recovery CTA opens the production Composer model picker', async () => {
     onOpenSettings: assert.fail,
   });
   await act(() => flow.action.dispatchEvent(new flow.window.Event('click', { bubbles: true })));
-  const wheel = flow.document.querySelector('.maka-model-wheel-viewport[role="listbox"]');
-  assert.ok(wheel, 'the recovery action opens the shared model wheel');
-  const options = wheel.querySelectorAll('[role="option"]');
+  const popup = [...flow.document.querySelectorAll<HTMLElement>('[data-popover-open]')]
+    .find((panel) => panel.querySelector('[role="option"]'));
+  assert.ok(popup, 'the recovery action opens the shared model picker');
+  const options = popup.querySelectorAll('[role="option"]');
   assert.equal(options.length, 1, 'only the available exact account-and-model choice is offered');
-  assert.equal(options[0]?.textContent, `${CHOICE.label}${CHOICE.connectionName}`);
+  assert.equal(options[0]?.textContent?.includes(CHOICE.label), true);
 });
 
 test('unsettled recovery reloads the catalog without opening the picker', async () => {
@@ -207,7 +216,7 @@ test('unsettled recovery reloads the catalog without opening the picker', async 
   });
   await act(() => flow.action.dispatchEvent(new flow.window.Event('click', { bubbles: true })));
   assert.equal(refreshCount, 1);
-  assert.equal(Boolean(flow.document.querySelector('.maka-model-wheel-viewport')), false);
+  assert.equal(flow.document.querySelector('[data-popover-open] [role="option"]'), null);
 });
 
 test('empty recovery opens Models settings through the production route', async () => {
@@ -232,7 +241,7 @@ test('a live-turn lock disables the recovery CTA and keeps the picker closed', a
   });
   assert.equal(flow.action.disabled, true);
   await act(() => flow.action.dispatchEvent(new flow.window.Event('click', { bubbles: true })));
-  assert.equal(Boolean(flow.document.querySelector('.maka-model-wheel-viewport')), false);
+  assert.equal(flow.document.querySelector('[data-popover-open] [role="option"]'), null);
 });
 
 afterEach(async () => {

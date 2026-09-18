@@ -24,7 +24,7 @@ import { LocaleProvider } from '@maka/ui';
 import type { StoredMessage } from '@maka/core/session';
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
 import { useAppShellSessionWorkspace } from '../../renderer/use-app-shell-session-workspace.js';
-import { createRecoveringDesktopTranscriptRangeController, DesktopTranscriptRangeStore } from '../../renderer/platform/desktop/desktop-transcript-range-store.js';
+import { createDesktopTranscriptRangeController, DesktopTranscriptRangeStore } from '../../renderer/platform/desktop/desktop-transcript-range-store.js';
 import { encodeDesktopTranscriptSnapshot } from '../desktop-transcript-ipc.js';
 
 /**
@@ -78,7 +78,7 @@ describe('session workspace action identity', () => {
     const row = (id: string): StoredMessage => ({ id, type: 'user', text: id, turnId: id, ts: 1 });
     const a = [row('a-message')];
     const c = [row('c-message')];
-    const reader = (id: string) => createRecoveringDesktopTranscriptRangeController(
+    const reader = (id: string) => createDesktopTranscriptRangeController(
       new DesktopTranscriptRangeStore(id), async () => { throw new Error('unexpected read'); }, { onError() {} },
     );
     const readerA = reader(sessionA);
@@ -137,28 +137,20 @@ describe('session workspace action identity', () => {
     act(() => workspace.setActiveId(sessionA));
     assert.deepEqual(workspace.retiredSessionIds([{ id: sessionB }]), [sessionA]);
 
-    // The real publication scheduler may hold a ready source while the reader
-    // is interacting. A retired queued source may not replace the displayed
-    // Session or publish its reader.
+    // A retired source may not replace the displayed Session or publish its reader.
     act(() => workspace.setActiveId(sessionC));
     for (const batch of encodeDesktopTranscriptSnapshot({
+      beginsAtTurnBoundary: true,
       sessionId: 'c', generation: 'publication', hostEpoch: 'host',
-      durableThrough: null, durable: [], overlay: c, hasOlder: false, hasNewer: false,
+      durableThrough: 0, durable: c.map((message, sequence) => ({ sequence, message })), hasOlder: false,
     })) readerC.store.accept(batch);
-    let blocked = true;
-    let idle!: () => void;
-    const detach = workspace.sessionUiController.transcriptViewportNavigation.attachCommitScheduler(sessionC, {
-      commitIfIdle: (commit) => { if (blocked) return false; commit(); return true; },
-      subscribeToIdle: (listener) => { idle = listener; return () => {}; },
-    });
     let publications = 0;
-    await act(async () => workspace.publishTranscript(
-      sessionC, readerC, workspace.captureSelection(), () => { publications += 1; },
-    ));
-    assert.equal(workspace.activeId, sessionB);
+    const retiredSelection = workspace.captureSelection();
     act(() => workspace.clearOwnedSessionState(sessionC));
-    await act(async () => { blocked = false; idle(); });
-    assert.equal(publications, 0, 'retirement revokes queued publication');
+    await act(async () => workspace.publishTranscript(
+      sessionC, readerC, retiredSelection, () => { publications += 1; },
+    ));
+    assert.equal(publications, 0, 'retirement revokes publication');
     assert.equal(workspace.activeId, sessionB);
     assert.equal(workspace.transcriptRangeRef.current, undefined);
     await act(async () => {
@@ -170,7 +162,6 @@ describe('session workspace action identity', () => {
     assert.equal((workspace.messages as StoredMessage[])[0]?.id, 'c-message');
     assert.equal(workspace.publishedTranscriptRange?.sessionId, sessionC);
     assert.equal(workspace.transcriptRangeRef.current, readerC);
-    await act(async () => detach());
   });
 
   it('keeps every action identity fixed across re-renders', () => {

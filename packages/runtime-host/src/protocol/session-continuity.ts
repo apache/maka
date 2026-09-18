@@ -28,6 +28,7 @@ import {
   requireEntityId,
   requireExactRecord,
   requireId,
+  requireOpaqueIdentity,
   requireRecord,
 } from './codec.js';
 import { invalidProtocolFrame } from './errors.js';
@@ -142,6 +143,7 @@ export interface SessionProjectionFrame extends SubscriptionEnvelope {
 }
 
 export interface SessionAssistantDelta {
+  interrupted?: true;
   kind: 'text' | 'thinking';
   turnId: string;
   runId: string;
@@ -365,14 +367,28 @@ export const SESSION_CONTINUITY_OPERATION_SPECS = {
       if (
         input.transcript.kind === 'tail' &&
         output.transcript &&
-        output.transcript.durable.rawBytes + output.transcript.overlay.rawBytes >
-          input.transcript.maxBytes
+        output.transcript.durable.rawBytes > input.transcript.maxBytes
       ) {
         throw invalidProtocolFrame('Session transcript bootstrap exceeds requested byte limit');
       }
     },
   }),
   'subscription.close': defineOperation({
+    mode: 'control',
+    availability: 'ready',
+    errors: SUBSCRIPTION_CLOSE_ERRORS,
+    decodeInput: decodeSubscriptionCloseInput,
+    decodeOutput: decodeSubscriptionCloseResult,
+  }),
+  /**
+   * The subscriber can take frames now.
+   *
+   * The Host holds a new subscription's frames until this arrives. What it
+   * holds includes the in-flight answer a mid-stream subscriber has not seen,
+   * which is as large as the answer and so cannot be handed to a client that
+   * is still assembling the state those frames apply to.
+   */
+  'subscription.ready': defineOperation({
     mode: 'control',
     availability: 'ready',
     errors: SUBSCRIPTION_CLOSE_ERRORS,
@@ -739,6 +755,7 @@ function decodeAssistantDelta(value: unknown): SessionAssistantDelta {
     'text',
     'reset',
     'complete',
+    'interrupted',
   ]);
   assertRequiredKeys(record, 'Session assistant delta', [
     'kind',
@@ -753,6 +770,12 @@ function decodeAssistantDelta(value: unknown): SessionAssistantDelta {
   }
   if (record.complete !== undefined && record.complete !== true) {
     throw invalidProtocolFrame('Invalid Session assistant delta completion');
+  }
+  if (
+    record.interrupted !== undefined &&
+    (record.interrupted !== true || record.complete !== true)
+  ) {
+    throw invalidProtocolFrame('Interrupted assistant delta must be complete');
   }
   if (record.reset !== undefined && record.reset !== true) {
     throw invalidProtocolFrame('Invalid Session assistant delta reset');
@@ -779,6 +802,7 @@ function decodeAssistantDelta(value: unknown): SessionAssistantDelta {
           ),
     ...(record.reset === true ? { reset: true as const } : {}),
     ...(record.complete === true ? { complete: true as const } : {}),
+    ...(record.interrupted === true ? { interrupted: true as const } : {}),
   };
 }
 
@@ -813,7 +837,7 @@ function decodeSessionToolEvent(value: unknown): SessionToolEvent {
     id: requireId(record.id, 'Session tool event id'),
     turnId: requireEntityId(record.turnId, 'turnId'),
     ts: requireCount(record.ts, 'Session tool event timestamp'),
-    toolUseId: requireId(record.toolUseId, 'toolUseId'),
+    toolUseId: requireOpaqueIdentity(record.toolUseId, 'toolUseId'),
   };
   if (record.type === 'tool_start') {
     const allowed = [
@@ -882,7 +906,9 @@ function decodeSessionToolEvent(value: unknown): SessionToolEvent {
       ...(record.argsPreview === undefined
         ? {}
         : { argsPreview: structuredClone(record.argsPreview) }),
-      ...(record.stepId === undefined ? {} : { stepId: requireEntityId(record.stepId, 'stepId') }),
+      ...(record.stepId === undefined
+        ? {}
+        : { stepId: requireOpaqueIdentity(record.stepId, 'stepId') }),
       ...(record.shellRunRef === undefined
         ? {}
         : { shellRunRef: decodeRuntimeResourceRef(record.shellRunRef) }),

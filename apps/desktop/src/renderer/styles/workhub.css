@@ -148,7 +148,9 @@
 
   .workHubLive, .workHubDock { width: 100%; height: 100%; min-width: 0; min-height: 0; }
   .workHubLive { position: relative; display: flex; flex-direction: column; background: var(--background); }
-  .workHubLive > .maka-chat-layout { flex: 1; min-height: 0; }
+  .workHubWorkspace { display: flex; flex: 1; min-height: 0; }
+  .workHubWorkspace > .mainColumn { display: flex; flex: 1; min-width: 0; min-height: 0; }
+  .workHubWorkspace > .mainColumn > .maka-chat-layout { flex: 1; min-height: 0; }
   .workHubLiveWelcome, .workHubDockPlaceholder { display: grid; justify-items: center; align-content: center; gap: var(--space-3); padding: var(--space-6); min-height: 220px; text-align: center; }
   .workHubDockPlaceholder { height: 100%; }
   .workHubDockBackdrop { display: block; width: 100%; height: 100%; object-fit: fill; }
@@ -156,11 +158,15 @@
   .workHubLiveError { padding: var(--space-3); }
   .workHubComposerSurface { position: relative; width: 100%; }
   .workHubComposerContent { position: relative; }
-  /* Top-layer content still needs room inside the native window. Measuring
-     this leading space grows the bottom-anchored window upward, without
-     changing the composer's layout or its controls' screen positions. */
-  .workHubLive[data-placement='floating'][data-conversation-expanded='false'] .workHubComposerSurface:has(.maka-model-wheel-anchor[data-open='true'])::before {
-    content: ''; display: block; height: 136px;
+  /* Compact WorkHub keeps its original inline wheel footprint. Other hosts
+     keep the button footprint and paint the same wheel over that position. */
+  .workHubLive[data-placement='floating'][data-conversation-expanded='false'] .maka-model-wheel-anchor[data-open='true'] {
+    width: min(264px, 55vw); height: var(--maka-model-wheel-height);
+  }
+  /* Selector popups stay translucent over the transparent WorkHub surface. */
+  .workHubLive .astryx-selector-popup {
+    background: color-mix(in oklch, var(--background-elevated) 94%, transparent);
+    backdrop-filter: blur(12px);
   }
   .workHubComposerActions { display: flex; align-items: center; gap: 2px; margin-left: auto; }
   .workHubRevealMark { position: absolute; inset: 32px 0 calc(var(--workhub-composer-height, 96px) + 12px); display: grid; place-items: center; z-index: 3; color: var(--foreground); opacity: 0; pointer-events: none; }
@@ -198,7 +204,7 @@
   .workHubLive[data-placement='floating'] .maka-chat-layout { background: transparent; }
   /* Keep the sticky dock bottom-aligned even before the native window has
      grown enough to fit its composer, 32px scroll button and 12px gaps. */
-  .workHubLive[data-placement='floating'][data-conversation-expanded='true'] > .maka-chat-layout {
+  .workHubLive[data-placement='floating'][data-conversation-expanded='true'] > .workHubWorkspace {
     position: absolute; bottom: 0; width: 100%; height: calc(100% - 32px);
     min-height: calc(var(--workhub-composer-height, 96px) + 56px);
   }
@@ -218,7 +224,7 @@
   .workHubLive[data-conversation-expanded='false'] .maka-composer-editor { padding-right: 24px; }
   .workHubLive[data-conversation-expanded='false'] .maka-composer-editor [contenteditable='true'] { padding-block: 6px; overscroll-behavior-y: contain; scrollbar-gutter: stable; scrollbar-width: thin; scroll-padding-block: 6px; }
   .workHubLive[data-conversation-expanded='false'] .workHubComposerSurface { position: relative; -webkit-app-region: drag; }
-  .workHubLive[data-conversation-expanded='false'] .workHubComposerSurface :is(button, input, textarea, [contenteditable='true'], [role='listbox'], [role='option'], a) { -webkit-app-region: no-drag; }
+  .workHubLive[data-conversation-expanded='false'] .workHubComposerSurface :is(button, input, textarea, [contenteditable='true'], [role='listbox'], [role='option'], dialog, a) { -webkit-app-region: no-drag; }
   .workHubExpandButton { position: absolute; top: 6px; right: 8px; z-index: 2; color: var(--muted-foreground); -webkit-app-region: no-drag; }
 
 html:has(.workHubLive), body:has(.workHubLive), #root:has(.workHubLive) { background: transparent; }

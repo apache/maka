@@ -3070,8 +3070,10 @@ test('run settlement hands off only steering admissions with immutable proof', a
 
 test('run materialization preserves exact Root source receipt fallback order', async () => {
   const fixture = createFixture();
-  fixture.receipts.set('exact-root', matchingSourceReceipt('exact-root', 42));
-  fixture.receipts.set('exact-second', matchingSourceReceipt('exact-second', 43));
+  const exactRoot = matchingSourceReceipt('exact-root', 42);
+  const exactSecond = matchingSourceReceipt('exact-second', 43);
+  fixture.receipts.set('exact-root', exactRoot);
+  fixture.receipts.set('exact-second', exactSecond);
 
   await fixture.coordinator.materializeMessageHandoffsForRun({
     ...ROOT,
@@ -3085,13 +3087,11 @@ test('run materialization preserves exact Root source receipt fallback order', a
       messageIds: ['exact-root', 'exact-second'],
       provenRootMessages: [
         {
-          messageId: 'exact-root',
-          content: { text: 'canonical exact-root' },
+          ...exactRoot.sourceMessage,
           admittedAt: 42,
         },
         {
-          messageId: 'exact-second',
-          content: { text: 'canonical exact-second' },
+          ...exactSecond.sourceMessage,
           admittedAt: 43,
         },
       ],

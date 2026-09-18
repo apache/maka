@@ -135,7 +135,10 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
     () =>
       hasProjectActions
         ? {
-            onNew: (projectId) => chromeRef.current.projectActions?.onNew(projectId),
+            onNew: (projectId) => {
+              chromeRef.current.onExitWorkHub();
+              return chromeRef.current.projectActions?.onNew(projectId);
+            },
             onRename: (projectId, name) =>
               chromeRef.current.projectActions?.onRename(projectId, name),
             onArchive: (projectId) => chromeRef.current.projectActions?.onArchive(projectId),

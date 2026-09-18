@@ -21,7 +21,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { agentGraphIdForRootSession } from '@maka/runtime/stream-graph-coordinator';
 import {
-  notifySandboxBoundaryGraphWake,
+  resolveSandboxBoundaryRootSession,
   sandboxBoundaryGraphWakeRoot,
 } from '../server/sandbox-boundary-graph-wake.js';
 
@@ -78,9 +78,8 @@ test('rejects graph operator lineage that is not owned by its parent Session', a
   );
 });
 
-test('reads durable operator lineage before notifying only its root graph', async () => {
+test('resolves durable operator lineage for only its root graph', async () => {
   const reads: string[] = [];
-  const wakes: string[] = [];
   const headers = new Map([
     [
       'graph-operator',
@@ -106,16 +105,17 @@ test('reads durable operator lineage before notifying only its root graph', asyn
       return header;
     },
   };
-  const notify = async (sessionId: string) => {
-    wakes.push(sessionId);
-  };
-
   const graphIds = idsFor('root-session');
-  await notifySandboxBoundaryGraphWake('graph-operator', reader, graphIds, notify);
-  await notifySandboxBoundaryGraphWake('ordinary-child', reader, graphIds, notify);
+  assert.equal(
+    await resolveSandboxBoundaryRootSession('graph-operator', reader, graphIds),
+    'root-session',
+  );
+  assert.equal(
+    await resolveSandboxBoundaryRootSession('ordinary-child', reader, graphIds),
+    undefined,
+  );
 
   assert.deepEqual(reads, ['graph-operator', 'ordinary-child']);
-  assert.deepEqual(wakes, ['root-session']);
 });
 
 function idsFor(rootSessionId: string) {

@@ -43,7 +43,7 @@ import {
 import { SessionAdmissionGate } from '../server/session-admission-gate.js';
 import type { SessionContinuityFrameSink } from '../server/session-continuity-service.js';
 import type { SessionTranscriptReader } from '../server/session-transcript-reader.js';
-import { ClientSessionSubscription } from '../client/session-subscription.js';
+import { clientSubscription } from './fixtures/client-session-subscription.js';
 import { transcriptReader } from './fixtures/session-transcript-reader.js';
 import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
 
@@ -68,7 +68,7 @@ test('open is an inactive publication barrier and live sequence starts at nextSe
     new SessionAdmissionGate(),
   );
   const sink = new RecordingSink();
-  const connection = coordinator.attachConnection('connection-1', sink);
+  const connection = attachTestConnection(coordinator, 'connection-1', sink);
 
   const opening = coordinator.handlers['subscription.open'](
     { sessionId: SESSION_ID, transcript: { kind: 'none' } },
@@ -126,7 +126,7 @@ test('Guest revocation wins a concurrent subscription open', async () => {
       },
     },
   );
-  coordinator.attachConnection('guest-connection', new RecordingSink());
+  attachTestConnection(coordinator, 'guest-connection', new RecordingSink());
 
   const opening = coordinator.handlers['subscription.open'](
     { sessionId: SESSION_ID, transcript: { kind: 'none' } },
@@ -154,7 +154,7 @@ test('forwards the durable steering echo to subscribers as a session event', asy
     async () => canonical(),
     new SessionAdmissionGate(),
   );
-  const connection = coordinator.attachConnection('connection-1', sink);
+  const connection = attachTestConnection(coordinator, 'connection-1', sink);
   const opened = await open(coordinator, 'connection-1');
   connection.activate(opened.subscriptionId);
   await delayImmediate();
@@ -217,7 +217,7 @@ test('projects model-only user content out of Guest queue and steering frames', 
       subscribeGrantRevocations: () => () => undefined,
     },
   );
-  const connection = coordinator.attachConnection('guest-connection', sink);
+  const connection = attachTestConnection(coordinator, 'guest-connection', sink);
   const opened = await open(
     coordinator,
     'guest-connection',
@@ -267,7 +267,7 @@ test('open snapshot includes pending Interactions from the canonical projection'
     async () => canonical({ interactions: { pending: [pending] } }),
     new SessionAdmissionGate(),
   );
-  const connection = coordinator.attachConnection('connection-1', new RecordingSink());
+  const connection = attachTestConnection(coordinator, 'connection-1', new RecordingSink());
 
   const opened = await open(coordinator, 'connection-1');
   assert.deepEqual(opened.snapshot.interactions, { pending: [pending] });
@@ -282,7 +282,7 @@ test('open identifies every assistant stream that is still active and round-trip
     async () => canonical(),
     new SessionAdmissionGate(),
   );
-  coordinator.attachConnection('connection-1', new RecordingSink());
+  attachTestConnection(coordinator, 'connection-1', new RecordingSink());
   await open(coordinator, 'connection-1');
   await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', textEvent(1));
   await coordinator.acceptRuntimeEvent(
@@ -295,7 +295,7 @@ test('open identifies every assistant stream that is still active and round-trip
     messageId: 'message-3',
   });
 
-  coordinator.attachConnection('connection-2', new RecordingSink());
+  attachTestConnection(coordinator, 'connection-2', new RecordingSink());
   const active = await open(coordinator, 'connection-2');
   assert.deepEqual(active.activeAssistantStreams, [
     { kind: 'text', turnId: 'turn-1', messageId: 'message-1' },
@@ -322,7 +322,7 @@ test('open identifies every assistant stream that is still active and round-trip
     'run-1',
     textCompleteEvent('message-1', 'chunk-1'),
   );
-  coordinator.attachConnection('connection-3', new RecordingSink());
+  attachTestConnection(coordinator, 'connection-3', new RecordingSink());
   const remaining = await open(coordinator, 'connection-3');
   assert.deepEqual(remaining.activeAssistantStreams, [
     { kind: 'thinking', turnId: 'turn-1', messageId: 'message-2' },
@@ -340,7 +340,7 @@ test('open identifies every assistant stream that is still active and round-trip
     'run-1',
     textCompleteEvent('message-3', 'chunk-2'),
   );
-  coordinator.attachConnection('connection-4', new RecordingSink());
+  attachTestConnection(coordinator, 'connection-4', new RecordingSink());
   const completed = await open(coordinator, 'connection-4');
   assert.deepEqual(completed.activeAssistantStreams, []);
   coordinator.close();
@@ -353,7 +353,7 @@ test('publishes a non-prefix final value as an authoritative replacement', async
     new SessionAdmissionGate(),
   );
   const sink = new RecordingSink();
-  const connection = coordinator.attachConnection('connection-1', sink);
+  const connection = attachTestConnection(coordinator, 'connection-1', sink);
   const opened = await open(coordinator, 'connection-1');
   connection.activate(opened.subscriptionId);
 
@@ -361,12 +361,17 @@ test('publishes a non-prefix final value as an authoritative replacement', async
     ...textEvent(1),
     text: 'draft',
   });
-  await coordinator.acceptRuntimeEvent(
-    SESSION_ID,
-    'run-1',
-    textCompleteEvent('message-1', 'final'),
-  );
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', {
+    ...textCompleteEvent('message-1', 'final'),
+    interrupted: true,
+  });
   await waitFor(() => sink.frames.length === 3);
+  const interrupted = decodeSubscriptionFrame(
+    JSON.parse(encodeProtocolMessage(sink.frames[2]!).toString('utf8')),
+  );
+  assert.ok(
+    interrupted.kind === 'subscription.session_delta' && interrupted.delta.interrupted === true,
+  );
 
   assert.deepEqual(
     sink.frames.map((frame) =>
@@ -395,7 +400,7 @@ test('coalesces reasoning parts and completes the step before later steps contin
     new SessionAdmissionGate(),
   );
   const sink = new RecordingSink();
-  const connection = coordinator.attachConnection('connection-1', sink);
+  const connection = attachTestConnection(coordinator, 'connection-1', sink);
   const opened = await open(coordinator, 'connection-1');
   connection.activate(opened.subscriptionId);
 
@@ -458,7 +463,7 @@ test('terminal fence suppresses ordinary refresh until the exact terminal cut pu
     new SessionAdmissionGate(),
   );
   const sink = new RecordingSink();
-  const connection = coordinator.attachConnection('connection-1', sink);
+  const connection = attachTestConnection(coordinator, 'connection-1', sink);
   const opened = await open(coordinator, 'connection-1');
   connection.activate(opened.subscriptionId);
 
@@ -488,72 +493,6 @@ test('terminal fence suppresses ordinary refresh until the exact terminal cut pu
   coordinator.close();
 });
 
-test('does not reuse an active transcript overlay after terminal publication', async () => {
-  let projection = canonical();
-  const partial = assistantMessage('partial');
-  const baseReader = transcriptReader([], [partial]);
-  let overlayReads = 0;
-  const reader: SessionTranscriptReader = {
-    ...baseReader,
-    readActiveOverlay: async (sessionId, rootTurn) => {
-      overlayReads += 1;
-      if (
-        !rootTurn ||
-        rootTurn.status === 'completed' ||
-        rootTurn.status === 'failed' ||
-        rootTurn.status === 'cancelled'
-      ) {
-        return [];
-      }
-      return baseReader.readActiveOverlay(sessionId, rootTurn);
-    },
-  };
-  const coordinator = new SessionContinuityCoordinator(
-    HOST_EPOCH,
-    async () => projection,
-    new SessionAdmissionGate(),
-    undefined,
-    reader,
-  );
-  await coordinator.holdTerminalPublication(SESSION_ID, 'turn-1', 'run-1');
-  coordinator.attachConnection('connection-active-overlay', new RecordingSink());
-  const active = await open(coordinator, 'connection-active-overlay', {
-    kind: 'tail',
-    maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
-  });
-  assert.ok((active.transcript?.overlay.rawBytes ?? 0) > 0);
-  assert.equal(overlayReads, 1);
-
-  projection = canonical({
-    rootTurn: {
-      sessionId: SESSION_ID,
-      turnId: 'turn-1',
-      runId: 'run-1',
-      status: 'completed',
-      terminalEventId: 'event-terminal',
-    },
-  });
-  await coordinator.publishTerminalProjection(SESSION_ID, 'turn-1', 'run-1');
-
-  coordinator.attachConnection('connection-terminal-overlay', new RecordingSink());
-  const terminal = await open(coordinator, 'connection-terminal-overlay', {
-    kind: 'tail',
-    maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
-  });
-  assert.equal(terminal.snapshot.rootTurn?.status, 'completed');
-  assert.equal(terminal.transcript?.overlay.rawBytes, 0);
-  assert.equal(overlayReads, 1);
-  const client = new ClientSessionSubscription(
-    terminal,
-    async () => undefined,
-    async () => {
-      throw new Error('empty terminal transcript unexpectedly requested another page');
-    },
-  );
-  assert.deepEqual(await client.loadTranscript((value) => value), []);
-  coordinator.close();
-});
-
 test('detached canonical refreshes coalesce before Store I/O', async () => {
   let projection = canonical();
   let reads = 0;
@@ -572,7 +511,7 @@ test('detached canonical refreshes coalesce before Store I/O', async () => {
     new SessionAdmissionGate(),
   );
   const sink = new RecordingSink();
-  const connection = coordinator.attachConnection('connection-1', sink);
+  const connection = attachTestConnection(coordinator, 'connection-1', sink);
   const opened = await open(coordinator, 'connection-1');
   connection.activate(opened.subscriptionId);
 
@@ -601,7 +540,7 @@ test('in-flight canonical refresh observes an invalidation after its first read'
     new SessionAdmissionGate(),
   );
   const sink = new RecordingSink();
-  const connection = coordinator.attachConnection('connection-1', sink);
+  const connection = attachTestConnection(coordinator, 'connection-1', sink);
   const opened = await open(coordinator, 'connection-1');
   connection.activate(opened.subscriptionId);
 
@@ -636,7 +575,7 @@ test('reports a detached canonical publication failure to the Host lifecycle', a
     new SessionAdmissionGate(),
     (error) => observed.resolve(error),
   );
-  const connection = coordinator.attachConnection('connection-1', new RecordingSink());
+  const connection = attachTestConnection(coordinator, 'connection-1', new RecordingSink());
   const opened = await open(coordinator, 'connection-1');
   connection.activate(opened.subscriptionId);
 
@@ -652,7 +591,7 @@ test('rejects a live event that is not owned by the canonical root', async () =>
     async () => canonical(),
     new SessionAdmissionGate(),
   );
-  const connection = coordinator.attachConnection('connection-1', new RecordingSink());
+  const connection = attachTestConnection(coordinator, 'connection-1', new RecordingSink());
   const opened = await open(coordinator, 'connection-1');
   connection.activate(opened.subscriptionId);
 
@@ -670,7 +609,7 @@ test('coalesces Agent graph invalidations onto the Session subscription sequence
     new SessionAdmissionGate(),
   );
   const sink = new RecordingSink();
-  const connection = coordinator.attachConnection('connection-1', sink);
+  const connection = attachTestConnection(coordinator, 'connection-1', sink);
   const opened = await open(coordinator, 'connection-1');
   connection.activate(opened.subscriptionId);
 
@@ -709,7 +648,7 @@ test('coalesces typed domain invalidations without publishing continuity project
     new SessionAdmissionGate(),
   );
   const sink = new RecordingSink();
-  const connection = coordinator.attachConnection('connection-1', sink);
+  const connection = attachTestConnection(coordinator, 'connection-1', sink);
   const opened = await open(coordinator, 'connection-1');
   connection.activate(opened.subscriptionId);
 
@@ -756,7 +695,7 @@ test('fans one bounded Runtime Resource burst out to an inherited Session view',
     },
   );
   const sink = new RecordingSink();
-  const connection = coordinator.attachConnection('connection-1', sink);
+  const connection = attachTestConnection(coordinator, 'connection-1', sink);
   const outcome = await coordinator.handlers['subscription.open'](
     { sessionId: childSessionId, transcript: { kind: 'none' } },
     connectionContext('connection-1'),
@@ -765,7 +704,7 @@ test('fans one bounded Runtime Resource burst out to an inherited Session view',
   if (!outcome.ok) return;
   connection.activate(outcome.result.subscriptionId);
   const guestSink = new RecordingSink();
-  const guestConnection = coordinator.attachConnection('guest-connection', guestSink);
+  const guestConnection = attachTestConnection(coordinator, 'guest-connection', guestSink);
   const guestOutcome = await coordinator.handlers['subscription.open'](
     { sessionId: childSessionId, transcript: { kind: 'none' } },
     connectionContext('guest-connection', {
@@ -825,7 +764,7 @@ test('publishes live PTY bytes independently of the Session continuity sequence'
     new SessionAdmissionGate(),
   );
   const sink = new RecordingSink();
-  const connection = coordinator.attachConnection('connection-1', sink);
+  const connection = attachTestConnection(coordinator, 'connection-1', sink);
   const opened = await open(coordinator, 'connection-1');
   connection.activate(opened.subscriptionId);
 
@@ -896,7 +835,7 @@ test('PTY overflow is bounded and requests terminal-only recovery while Session 
   );
   const blocked = deferred<void>();
   const frames: SubscriptionFrame[] = [];
-  const connection = coordinator.attachConnection('connection-1', {
+  const connection = attachTestConnection(coordinator, 'connection-1', {
     async send(frame) {
       frames.push(frame);
       if (frame.kind === 'subscription.runtime_resource_pty_data' && frames.length === 1)
@@ -939,8 +878,8 @@ test('slow subscriber receives a terminal eviction without delaying another subs
   );
   const slowSink = new RecordingSink();
   const fastSink = new RecordingSink();
-  const slowConnection = coordinator.attachConnection('connection-slow', slowSink);
-  const fastConnection = coordinator.attachConnection('connection-fast', fastSink);
+  const slowConnection = attachTestConnection(coordinator, 'connection-slow', slowSink);
+  const fastConnection = attachTestConnection(coordinator, 'connection-fast', fastSink);
   const slow = await open(coordinator, 'connection-slow');
   const fast = await open(coordinator, 'connection-fast');
   fastConnection.activate(fast.subscriptionId);
@@ -979,8 +918,8 @@ test('coalesces queued assistant deltas instead of evicting a slow subscriber', 
   );
   const slowSink = new RecordingSink();
   const fastSink = new RecordingSink();
-  const slowConnection = coordinator.attachConnection('connection-slow', slowSink);
-  const fastConnection = coordinator.attachConnection('connection-fast', fastSink);
+  const slowConnection = attachTestConnection(coordinator, 'connection-slow', slowSink);
+  const fastConnection = attachTestConnection(coordinator, 'connection-fast', fastSink);
   const slow = await open(coordinator, 'connection-slow');
   const fast = await open(coordinator, 'connection-fast');
   fastConnection.activate(fast.subscriptionId);
@@ -1026,7 +965,7 @@ test('keeps stream, kind, and completion boundaries when coalescing deltas', asy
     new SessionAdmissionGate(),
   );
   const sink = new RecordingSink();
-  const connection = coordinator.attachConnection('connection-1', sink);
+  const connection = attachTestConnection(coordinator, 'connection-1', sink);
   const opened = await open(coordinator, 'connection-1');
 
   await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', textEvent(1, 'message-1'));
@@ -1090,7 +1029,7 @@ test('keeps coalesced deltas within the protocol text and frame limits', async (
     new SessionAdmissionGate(),
   );
   const sink = new RecordingSink();
-  const connection = coordinator.attachConnection('connection-1', sink);
+  const connection = attachTestConnection(coordinator, 'connection-1', sink);
   const opened = await open(coordinator, 'connection-1');
 
   // Each delta is individually protocol-valid, but merging the two would
@@ -1135,8 +1074,8 @@ test('removal closes every Session subscriber at the admitted sequence boundary'
   );
   const desktopSink = new RecordingSink();
   const tuiSink = new RecordingSink();
-  const desktop = coordinator.attachConnection('connection-desktop', desktopSink);
-  const tui = coordinator.attachConnection('connection-tui', tuiSink);
+  const desktop = attachTestConnection(coordinator, 'connection-desktop', desktopSink);
+  const tui = attachTestConnection(coordinator, 'connection-tui', tuiSink);
   const desktopSubscription = await open(coordinator, 'connection-desktop');
   const tuiSubscription = await open(coordinator, 'connection-tui');
   desktop.activate(desktopSubscription.subscriptionId);
@@ -1166,17 +1105,16 @@ test('removal closes every Session subscriber at the admitted sequence boundary'
   coordinator.close();
 });
 
-test('open returns a bounded durable tail and an immutable active overlay', async () => {
+test('open returns a bounded immutable durable tail', async () => {
   const durable: StoredMessage[] = [assistantMessage('durable')];
-  const overlay = [assistantMessage('live overlay')];
   const coordinator = new SessionContinuityCoordinator(
     HOST_EPOCH,
     async () => canonical(),
     new SessionAdmissionGate(),
     undefined,
-    transcriptReader(durable, overlay),
+    transcriptReader(durable),
   );
-  const connection = coordinator.attachConnection('connection-1', new RecordingSink());
+  const connection = attachTestConnection(coordinator, 'connection-1', new RecordingSink());
   const opened = await open(coordinator, 'connection-1', {
     kind: 'tail',
     maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
@@ -1184,7 +1122,7 @@ test('open returns a bounded durable tail and an immutable active overlay', asyn
   connection.activate(opened.subscriptionId);
   assert.ok(opened.transcript);
   if (!opened.transcript) return;
-  const client = new ClientSessionSubscription(
+  const client = clientSubscription(
     opened,
     async () => undefined,
     async () => {
@@ -1192,411 +1130,13 @@ test('open returns a bounded durable tail and an immutable active overlay', asyn
     },
   );
   durable[0] = assistantMessage('mutated after open');
-  overlay[0] = assistantMessage('mutated after open');
-  assert.deepEqual(await client.loadTranscript((value) => value), [
-    assistantMessage('live overlay'),
-  ]);
+  assert.deepEqual(await client.loadTranscript((value) => value), [assistantMessage('durable')]);
   coordinator.close();
 });
 
-test('shares one immutable active overlay preparation until the Session changes', async () => {
-  const baseReader = transcriptReader(
-    [assistantMessage('durable')],
-    [assistantMessage('overlay'.repeat(8 * 1024))],
-  );
-  let overlayReads = 0;
+test('reports a durable bootstrap read failure as unavailable persistence', async () => {
   const reader: SessionTranscriptReader = {
-    ...baseReader,
-    readActiveOverlay: async (...args) => {
-      overlayReads += 1;
-      return baseReader.readActiveOverlay(...args);
-    },
-  };
-  const coordinator = new SessionContinuityCoordinator(
-    HOST_EPOCH,
-    async () => canonical(),
-    new SessionAdmissionGate(),
-    undefined,
-    reader,
-  );
-  coordinator.attachConnection('connection-overlay-1', new RecordingSink());
-  coordinator.attachConnection('connection-overlay-2', new RecordingSink());
-  await open(coordinator, 'connection-overlay-1', {
-    kind: 'tail',
-    maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
-  });
-  await open(coordinator, 'connection-overlay-2', {
-    kind: 'tail',
-    maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
-  });
-  assert.equal(overlayReads, 1);
-
-  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', textEvent(1));
-  coordinator.attachConnection('connection-overlay-3', new RecordingSink());
-  await open(coordinator, 'connection-overlay-3', {
-    kind: 'tail',
-    maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
-  });
-  assert.equal(overlayReads, 2);
-  coordinator.close();
-});
-
-test('queues concurrent overlay preparation instead of rejecting an empty overlay', async () => {
-  const firstRead = deferred<void>();
-  let reads = 0;
-  const reader = transcriptReader([]);
-  const boundedReader: SessionTranscriptReader = {
-    ...reader,
-    readActiveOverlay: async () => {
-      reads += 1;
-      if (reads === 1) await firstRead.promise;
-      return [];
-    },
-  };
-  const coordinator = new SessionContinuityCoordinator(
-    HOST_EPOCH,
-    async (sessionId) => canonicalFor(sessionId),
-    new SessionAdmissionGate(),
-    undefined,
-    boundedReader,
-  );
-  coordinator.attachConnection('connection-queued-1', new RecordingSink());
-  coordinator.attachConnection('connection-queued-2', new RecordingSink());
-
-  const first = openForSession(coordinator, 'connection-queued-1', 'session-queued-1');
-  await waitFor(() => reads === 1);
-  const second = openForSession(coordinator, 'connection-queued-2', 'session-queued-2');
-  await delayImmediate();
-  assert.equal(reads, 1);
-  let runtimeEventAccepted = false;
-  const acceptRuntimeEvent = coordinator
-    .acceptRuntimeEvent('session-queued-2', 'run-1', previewEvent())
-    .finally(() => {
-      runtimeEventAccepted = true;
-    });
-  await delayImmediate();
-  assert.equal(runtimeEventAccepted, true);
-  await acceptRuntimeEvent;
-
-  firstRead.resolve();
-  const [firstResult, secondResult] = await Promise.all([first, second]);
-  assert.ok(firstResult.transcript);
-  assert.ok(secondResult.transcript);
-  assert.equal(reads, 2);
-  coordinator.close();
-});
-
-test('rechecks a reusable overlay cache after queued preparation reaches capacity', async () => {
-  const firstCanonicalRead = deferred<void>();
-  let canonicalReads = 0;
-  let overlayReads = 0;
-  const baseReader = transcriptReader([]);
-  const reader: SessionTranscriptReader = {
-    ...baseReader,
-    readActiveOverlay: async (sessionId) => {
-      overlayReads += 1;
-      return [
-        assistantMessage(
-          sessionId === 'session-retained'
-            ? 'x'.repeat(2 * 1024 * 1024)
-            : 'x'.repeat(15 * 1024 * 1024),
-        ),
-      ];
-    },
-  };
-  const coordinator = new SessionContinuityCoordinator(
-    HOST_EPOCH,
-    async (sessionId) => {
-      if (sessionId === 'session-shared' && canonicalReads++ === 0) {
-        await firstCanonicalRead.promise;
-      }
-      return canonicalFor(sessionId);
-    },
-    new SessionAdmissionGate(),
-    undefined,
-    reader,
-  );
-  coordinator.attachConnection('connection-retained', new RecordingSink());
-  coordinator.attachConnection('connection-shared-1', new RecordingSink());
-  coordinator.attachConnection('connection-shared-2', new RecordingSink());
-  await openForSession(coordinator, 'connection-retained', 'session-retained');
-
-  const first = openForSession(coordinator, 'connection-shared-1', 'session-shared');
-  await delayImmediate();
-  const second = openForSession(coordinator, 'connection-shared-2', 'session-shared');
-  firstCanonicalRead.resolve();
-
-  const [firstResult, secondResult] = await Promise.all([first, second]);
-  assert.ok(firstResult.transcript);
-  assert.ok(secondResult.transcript);
-  assert.equal(overlayReads, 2);
-  coordinator.close();
-});
-
-test('keeps a shared overlay retained while another subscription open consumes it', async () => {
-  const durable = [
-    {
-      type: 'user' as const,
-      id: 'durable-1',
-      turnId: 'turn-1',
-      ts: 1,
-      text: 'history',
-    },
-  ];
-  const baseReader = transcriptReader(durable, [assistantMessage('partial')]);
-  const secondPageStarted = deferred<void>();
-  const continueSecondPage = deferred<void>();
-  let pageReads = 0;
-  const reader: SessionTranscriptReader = {
-    ...baseReader,
-    readDurablePage: async (...args) => {
-      pageReads += 1;
-      if (pageReads === 2) {
-        secondPageStarted.resolve();
-        await continueSecondPage.promise;
-      }
-      return baseReader.readDurablePage(...args);
-    },
-  };
-  const coordinator = new SessionContinuityCoordinator(
-    HOST_EPOCH,
-    async () => canonical(),
-    new SessionAdmissionGate(),
-    undefined,
-    reader,
-  );
-  coordinator.attachConnection('connection-shared-overlay-1', new RecordingSink());
-  coordinator.attachConnection('connection-shared-overlay-2', new RecordingSink());
-  const first = await openForSession(coordinator, 'connection-shared-overlay-1', SESSION_ID);
-  const second = openForSession(coordinator, 'connection-shared-overlay-2', SESSION_ID);
-  await secondPageStarted.promise;
-
-  assert.deepEqual(
-    await coordinator.handlers['session.transcript.overlay.release'](
-      { subscriptionId: first.subscriptionId },
-      connectionContext('connection-shared-overlay-1'),
-    ),
-    { ok: true, result: { subscriptionId: first.subscriptionId } },
-  );
-  continueSecondPage.resolve();
-  assert.ok((await second).transcript);
-  coordinator.close();
-});
-
-test('cancels a queued overlay preparation when its connection closes', async () => {
-  const firstRead = deferred<void>();
-  let reads = 0;
-  const reader = transcriptReader([]);
-  const boundedReader: SessionTranscriptReader = {
-    ...reader,
-    readActiveOverlay: async () => {
-      reads += 1;
-      if (reads === 1) await firstRead.promise;
-      return [];
-    },
-  };
-  const coordinator = new SessionContinuityCoordinator(
-    HOST_EPOCH,
-    async (sessionId) => canonicalFor(sessionId),
-    new SessionAdmissionGate(),
-    undefined,
-    boundedReader,
-  );
-  coordinator.attachConnection('connection-cancel-1', new RecordingSink());
-  const queuedConnection = coordinator.attachConnection('connection-cancel-2', new RecordingSink());
-
-  const first = openForSession(coordinator, 'connection-cancel-1', 'session-cancel-1');
-  await waitFor(() => reads === 1);
-  const queued = openForSession(coordinator, 'connection-cancel-2', 'session-cancel-2');
-  await delayImmediate();
-  queuedConnection.close();
-  await assert.rejects(queued, /Session transcript is unavailable/);
-  assert.equal(reads, 1);
-
-  firstRead.resolve();
-  assert.ok((await first).transcript);
-  coordinator.close();
-});
-
-test('fails fast when retained active overlays leave no preparation capacity', async () => {
-  let generation = 0;
-  const baseReader = transcriptReader([]);
-  const reader: SessionTranscriptReader = {
-    ...baseReader,
-    readActiveOverlay: async () => [
-      assistantMessage(`${generation}:${'x'.repeat(15 * 1024 * 1024)}`),
-    ],
-  };
-  const coordinator = new SessionContinuityCoordinator(
-    HOST_EPOCH,
-    async () => canonical(),
-    new SessionAdmissionGate(),
-    undefined,
-    reader,
-  );
-  const opened: Array<{ abort(subscriptionId: string): void; subscriptionId: string }> = [];
-  for (let index = 0; index < 2; index += 1) {
-    const connection = coordinator.attachConnection(
-      `connection-overlay-budget-${index}`,
-      new RecordingSink(),
-    );
-    const result = await open(coordinator, `connection-overlay-budget-${index}`, {
-      kind: 'tail',
-      maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
-    });
-    opened.push({ abort: connection.abort, subscriptionId: result.subscriptionId });
-    generation += 1;
-    await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', textEvent(index + 1));
-  }
-
-  coordinator.attachConnection('connection-overlay-budget-full', new RecordingSink());
-  const unavailable = await coordinator.handlers['subscription.open'](
-    {
-      sessionId: SESSION_ID,
-      transcript: { kind: 'tail', maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES },
-    },
-    connectionContext('connection-overlay-budget-full'),
-  );
-  assert.deepEqual(unavailable, {
-    ok: false,
-    error: {
-      code: 'operation_unavailable',
-      message: 'Runtime Host transcript overlay capacity reached',
-    },
-  });
-
-  opened[0]!.abort(opened[0]!.subscriptionId);
-  const recovered = await open(coordinator, 'connection-overlay-budget-full', {
-    kind: 'tail',
-    maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
-  });
-  assert.ok(recovered.transcript);
-  coordinator.close();
-});
-
-test('releases retained overlays after their materialization is acknowledged', async () => {
-  let generation = 0;
-  const baseReader = transcriptReader([]);
-  const reader: SessionTranscriptReader = {
-    ...baseReader,
-    readActiveOverlay: async () => [
-      assistantMessage(`${generation}:${'x'.repeat(15 * 1024 * 1024)}`),
-    ],
-  };
-  const coordinator = new SessionContinuityCoordinator(
-    HOST_EPOCH,
-    async () => canonical(),
-    new SessionAdmissionGate(),
-    undefined,
-    reader,
-  );
-
-  for (let index = 0; index < 3; index += 1) {
-    const connectionId = `connection-consumed-overlay-${index}`;
-    coordinator.attachConnection(connectionId, new RecordingSink());
-    const opened = await open(coordinator, connectionId, {
-      kind: 'tail',
-      maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
-    });
-    await consumeBootstrapOverlay(coordinator, connectionId, opened);
-    generation += 1;
-    await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', textEvent(index + 1));
-  }
-  coordinator.close();
-});
-
-test('treats overlay release as idempotent after teardown without crossing connection ownership', async () => {
-  const coordinator = new SessionContinuityCoordinator(
-    HOST_EPOCH,
-    async () => canonical(),
-    new SessionAdmissionGate(),
-    undefined,
-    transcriptReader([], [assistantMessage('partial')]),
-  );
-  const owner = coordinator.attachConnection('connection-release-owner', new RecordingSink());
-  coordinator.attachConnection('connection-release-foreign', new RecordingSink());
-  const opened = await openForSession(coordinator, 'connection-release-owner', SESSION_ID);
-  const input = { subscriptionId: opened.subscriptionId };
-
-  assert.deepEqual(
-    await coordinator.handlers['session.transcript.overlay.release'](
-      input,
-      connectionContext('connection-release-foreign'),
-    ),
-    {
-      ok: false,
-      error: { code: 'not_found', message: 'Session subscription was not found' },
-    },
-  );
-  owner.abort(opened.subscriptionId);
-  assert.deepEqual(
-    await coordinator.handlers['session.transcript.overlay.release'](
-      input,
-      connectionContext('connection-release-owner'),
-    ),
-    { ok: true, result: input },
-  );
-  coordinator.close();
-});
-
-test('opens a terminal Session without reserving active overlay preparation capacity', async () => {
-  const overlay = assistantMessage('x'.repeat(9 * 1024 * 1024));
-  const coordinator = new SessionContinuityCoordinator(
-    HOST_EPOCH,
-    async (sessionId) =>
-      sessionId === 'session-terminal'
-        ? canonicalFor(sessionId, { rootTurn: null })
-        : canonicalFor(sessionId),
-    new SessionAdmissionGate(),
-    undefined,
-    transcriptReader([], [overlay]),
-  );
-  for (const index of [1, 2]) {
-    const connectionId = `connection-retained-${index}`;
-    coordinator.attachConnection(connectionId, new RecordingSink());
-    await openForSession(coordinator, connectionId, `session-retained-${index}`);
-  }
-  coordinator.attachConnection('connection-terminal', new RecordingSink());
-
-  const opened = await openForSession(coordinator, 'connection-terminal', 'session-terminal');
-
-  assert.equal(opened.transcript?.overlayMessageCount, 0);
-  coordinator.close();
-});
-
-test('releases the active overlay budget after the last transcript subscriber leaves', async () => {
-  const overlay = assistantMessage('x'.repeat(15 * 1024 * 1024));
-  const coordinator = new SessionContinuityCoordinator(
-    HOST_EPOCH,
-    async (sessionId) => canonicalFor(sessionId),
-    new SessionAdmissionGate(),
-    undefined,
-    transcriptReader([], [overlay]),
-  );
-
-  for (let index = 0; index < 5; index += 1) {
-    const connectionId = `connection-idle-overlay-${index}`;
-    const sessionId = `session-idle-overlay-${index}`;
-    const connection = coordinator.attachConnection(connectionId, new RecordingSink());
-    const outcome = await coordinator.handlers['subscription.open'](
-      {
-        sessionId,
-        transcript: { kind: 'tail', maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES },
-      },
-      connectionContext(connectionId),
-    );
-    assert.equal(outcome.ok, true);
-    if (!outcome.ok) continue;
-    connection.abort(outcome.result.subscriptionId);
-  }
-  coordinator.close();
-});
-
-test('releases the active overlay budget when subscription open fails after preparation', async () => {
-  const overlay = assistantMessage('x'.repeat(15 * 1024 * 1024));
-  const baseReader = transcriptReader([], [overlay]);
-  const reader: SessionTranscriptReader = {
-    ...baseReader,
+    ...transcriptReader([]),
     readDurableHighWater: async () => 0,
     readDurablePage: async () => {
       throw new Error('injected durable bootstrap failure');
@@ -1604,34 +1144,29 @@ test('releases the active overlay budget when subscription open fails after prep
   };
   const coordinator = new SessionContinuityCoordinator(
     HOST_EPOCH,
-    async (sessionId) => canonicalFor(sessionId),
+    async () => canonical(),
     new SessionAdmissionGate(),
     undefined,
     reader,
   );
-
-  for (let index = 0; index < 5; index += 1) {
-    const connectionId = `connection-failed-overlay-${index}`;
-    coordinator.attachConnection(connectionId, new RecordingSink());
-    const outcome = await coordinator.handlers['subscription.open'](
-      {
-        sessionId: `session-failed-overlay-${index}`,
-        transcript: { kind: 'tail', maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES },
-      },
-      connectionContext(connectionId),
-    );
-    assert.deepEqual(outcome, {
-      ok: false,
-      error: { code: 'persistence_failed', message: 'Session transcript is unavailable' },
-    });
-  }
+  attachTestConnection(coordinator, 'connection-failed-bootstrap', new RecordingSink());
+  const outcome = await coordinator.handlers['subscription.open'](
+    {
+      sessionId: SESSION_ID,
+      transcript: { kind: 'tail', maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES },
+    },
+    connectionContext('connection-failed-bootstrap'),
+  );
+  assert.deepEqual(outcome, {
+    ok: false,
+    error: { code: 'persistence_failed', message: 'Session transcript is unavailable' },
+  });
   coordinator.close();
 });
 
-test('releases the active overlay budget when its connection closes during open', async () => {
+test('rejects a subscription open whose connection closes during transcript bootstrap', async () => {
   const durable = [assistantMessage('durable')];
-  const overlay = assistantMessage('x'.repeat(15 * 1024 * 1024));
-  const baseReader = transcriptReader(durable, [overlay]);
+  const baseReader = transcriptReader(durable);
   const pageStarted = deferred<void>();
   const continuePage = deferred<void>();
   let delayFirstPage = true;
@@ -1653,34 +1188,22 @@ test('releases the active overlay budget when its connection closes during open'
     undefined,
     reader,
   );
-  const interrupted = coordinator.attachConnection(
-    'connection-interrupted-overlay',
+  const interrupted = attachTestConnection(
+    coordinator,
+    'connection-interrupted',
     new RecordingSink(),
   );
   const opening = coordinator.handlers['subscription.open'](
     {
-      sessionId: 'session-interrupted-overlay',
+      sessionId: 'session-interrupted',
       transcript: { kind: 'tail', maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES },
     },
-    connectionContext('connection-interrupted-overlay'),
+    connectionContext('connection-interrupted'),
   );
   await pageStarted.promise;
   interrupted.close();
   continuePage.resolve();
   await assert.rejects(opening, /connection closed during subscription open/);
-
-  for (let index = 0; index < 2; index += 1) {
-    const connectionId = `connection-after-interruption-${index}`;
-    coordinator.attachConnection(connectionId, new RecordingSink());
-    const outcome = await coordinator.handlers['subscription.open'](
-      {
-        sessionId: `session-after-interruption-${index}`,
-        transcript: { kind: 'tail', maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES },
-      },
-      connectionContext(connectionId),
-    );
-    assert.equal(outcome.ok, true);
-  }
   coordinator.close();
 });
 
@@ -1717,7 +1240,7 @@ test('fits a transcript bootstrap inside a near-limit subscription open response
     undefined,
     transcriptReader(durable),
   );
-  coordinator.attachConnection('connection-open-budget', new RecordingSink());
+  attachTestConnection(coordinator, 'connection-open-budget', new RecordingSink());
   const opened = await open(coordinator, 'connection-open-budget', {
     kind: 'tail',
     maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
@@ -1733,102 +1256,342 @@ test('fits a transcript bootstrap inside a near-limit subscription open response
   coordinator.close();
 });
 
-test('open reconciles the active assistant prefix into its overlay seed', async () => {
-  const coordinator = new SessionContinuityCoordinator(
-    HOST_EPOCH,
-    async () => canonical(),
-    new SessionAdmissionGate(),
-    undefined,
-    transcriptReader([assistantMessage('chunk-1')], [assistantMessage('chunk-1')]),
-  );
-  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', textEvent(1));
-  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', textEvent(2));
-  coordinator.attachConnection('connection-live-prefix', new RecordingSink());
-  const opened = await open(coordinator, 'connection-live-prefix', {
-    kind: 'tail',
-    maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
-  });
-  const client = new ClientSessionSubscription(
-    opened,
-    async () => undefined,
-    async () => {
-      throw new Error('bounded bootstrap unexpectedly required continuation');
-    },
-  );
-  assert.deepEqual(await client.loadTranscript((value) => value), [
-    assistantMessage('chunk-1chunk-2'),
-  ]);
-  coordinator.close();
-});
-
-test('a non-prefix durable final replaces a stale active assistant draft', async () => {
-  const coordinator = new SessionContinuityCoordinator(
-    HOST_EPOCH,
-    async () => canonical(),
-    new SessionAdmissionGate(),
-    undefined,
-    transcriptReader([assistantMessage('authoritative final')], [assistantMessage('draft')]),
-  );
-  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', {
-    ...textEvent(1),
-    text: 'draft',
-  });
-  coordinator.attachConnection('connection-final-handoff', new RecordingSink());
-  const opened = await open(coordinator, 'connection-final-handoff', {
-    kind: 'tail',
-    maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
-  });
-  const client = new ClientSessionSubscription(
-    opened,
-    async () => undefined,
-    async () => {
-      throw new Error('bounded bootstrap unexpectedly required continuation');
-    },
-  );
-  assert.deepEqual(await client.loadTranscript((value) => value), [
-    assistantMessage('authoritative final'),
-  ]);
-  coordinator.close();
-});
-
-test('binds durable handoff reconciliation to the bootstrap watermark', async () => {
-  const durable: StoredMessage[] = [];
-  const partial = assistantMessage('part');
-  const final = assistantMessage('partial complete');
-  const baseReader = transcriptReader(durable, [partial]);
-  const reader: SessionTranscriptReader = {
-    ...baseReader,
-    readDurableMessagesById: async (...args) => {
-      const messages = await baseReader.readDurableMessagesById(...args);
-      durable.push(final);
-      return messages;
-    },
+test('a running Turn row committed after open reaches the subscriber as transcript progress', async () => {
+  const prompt: StoredMessage = {
+    type: 'user',
+    id: 'user-1',
+    turnId: 'turn-1',
+    ts: 1,
+    text: 'hello',
   };
+  const durable: StoredMessage[] = [prompt];
   const coordinator = new SessionContinuityCoordinator(
     HOST_EPOCH,
     async () => canonical(),
     new SessionAdmissionGate(),
     undefined,
-    reader,
+    transcriptReader(durable),
   );
-  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', {
-    ...textEvent(1),
-    text: partial.text,
-  });
-  coordinator.attachConnection('connection-fixed-handoff', new RecordingSink());
-  const opened = await open(coordinator, 'connection-fixed-handoff', {
+  const sink = new RecordingSink();
+  const connection = attachTestConnection(coordinator, 'connection-running-row', sink);
+  const opened = await open(coordinator, 'connection-running-row', {
     kind: 'tail',
     maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
   });
-  assert.equal(opened.transcript?.throughSequence, null);
-  const client = new ClientSessionSubscription(
-    opened,
-    async () => undefined,
-    async () => {
-      throw new Error('the fixed empty watermark unexpectedly exposed a later durable row');
+  connection.activate(opened.subscriptionId);
+  assert.equal(opened.snapshot.rootTurn?.status, 'running');
+  assert.equal(opened.transcript?.durable.throughSequence, 0);
+
+  durable.push(assistantMessage('first step'));
+  coordinator.enqueueTranscriptAdvanced(SESSION_ID);
+  await waitFor(() => sink.frames.length === 1);
+
+  const frame = sink.frames[0];
+  assert.equal(frame?.kind, 'subscription.transcript_advanced');
+  if (frame?.kind !== 'subscription.transcript_advanced') return;
+  assert.equal(frame.throughSequence, 1);
+  const page = await coordinator.handlers['session.transcript.page'](
+    {
+      subscriptionId: opened.subscriptionId,
+      direction: 'newer',
+      throughSequence: frame.throughSequence,
+      cursor: null,
+      anchorSequence: 0,
+      maxBytes: SESSION_TRANSCRIPT_PAGE_MAX_BYTES,
+    },
+    connectionContext('connection-running-row'),
+  );
+  assert.ok(page.ok);
+  if (!page.ok) return;
+  assert.deepEqual(
+    page.result.fragments.map((fragment) =>
+      JSON.parse(Buffer.from(fragment.data, 'base64').toString('utf8')),
+    ),
+    [assistantMessage('first step')],
+  );
+  coordinator.close();
+});
+
+test('opening mid-stream pays out the streamed prefix before live deltas without a gap', async () => {
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => canonical(),
+    new SessionAdmissionGate(),
+  );
+  let streamed = '';
+  for (let index = 0; index < 24; index += 1) {
+    const text = `${index}:${'x'.repeat(8 * 1024)}`;
+    streamed += text;
+    await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', { ...textEvent(index), text });
+  }
+  const sink = new RecordingSink();
+  const connection = attachTestConnection(coordinator, 'connection-mid-stream', sink);
+  const opened = await open(coordinator, 'connection-mid-stream');
+  assert.deepEqual(opened.activeAssistantStreams, [
+    { kind: 'text', turnId: 'turn-1', messageId: 'message-1' },
+  ]);
+  connection.activate(opened.subscriptionId);
+  for (const text of ['live-1', 'live-2']) {
+    streamed += text;
+    await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', { ...textEvent(99), text });
+  }
+  await coordinator.acceptRuntimeEvent(
+    SESSION_ID,
+    'run-1',
+    textCompleteEvent('message-1', streamed),
+  );
+  await waitFor(() =>
+    sink.frames.some(
+      (frame) => frame.kind === 'subscription.session_delta' && frame.delta.complete,
+    ),
+  );
+
+  let received = '';
+  for (const [index, frame] of sink.frames.entries()) {
+    assert.equal(frame.kind, 'subscription.session_delta');
+    if (frame.kind !== 'subscription.session_delta') return;
+    assert.equal(frame.sequence, opened.nextSequence + index);
+    decodeSubscriptionFrame(JSON.parse(encodeProtocolMessage(frame).toString('utf8')));
+    assert.equal(frame.delta.reset, undefined);
+    assert.equal(frame.delta.startOffset, received.length);
+    received += frame.delta.text;
+    if (frame.delta.complete) assert.equal(frame, sink.frames.at(-1));
+  }
+  assert.equal(received, streamed);
+  coordinator.close();
+});
+
+// #5365: the in-flight answer a mid-stream subscriber has not seen is as large
+// as the answer. Delivering it as soon as the open result flushed handed it to
+// a Client that was still assembling the state those frames apply to, whose
+// preparation buffer is sized for live traffic, not for a whole answer.
+test('holds every frame, including the in-flight answer, until the subscriber declares readiness', async () => {
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => canonical(),
+    new SessionAdmissionGate(),
+  );
+  let streamed = '';
+  for (let index = 0; index < 24; index += 1) {
+    const text = `${index}:${'x'.repeat(8 * 1024)}`;
+    streamed += text;
+    await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', { ...textEvent(index), text });
+  }
+  const sink = new RecordingSink();
+  const connection = attachTestConnection(coordinator, 'connection-unready', sink);
+  const opened = await open(coordinator, 'connection-unready');
+  streamed += 'live-1';
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', { ...textEvent(99), text: 'live-1' });
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(sink.frames.length, 0);
+
+  connection.activate(opened.subscriptionId);
+  await coordinator.acceptRuntimeEvent(
+    SESSION_ID,
+    'run-1',
+    textCompleteEvent('message-1', streamed),
+  );
+  await waitFor(() =>
+    sink.frames.some(
+      (frame) => frame.kind === 'subscription.session_delta' && frame.delta.complete,
+    ),
+  );
+  let received = '';
+  for (const frame of sink.frames) {
+    assert.equal(frame.kind, 'subscription.session_delta');
+    if (frame.kind !== 'subscription.session_delta') return;
+    received += frame.delta.text;
+  }
+  assert.equal(received, streamed);
+  coordinator.close();
+});
+
+// #5365: a subscriber has one delivery order. A message that needs no catch-up
+// used to be delivered and completed while an earlier message was still being
+// paid out, so the answers arrived in the opposite order to the one the Host
+// produced and a reader picking "the last answer" picked the earlier one.
+test('a later message cannot complete ahead of the prefix a subscriber is still being paid', async () => {
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => canonical(),
+    new SessionAdmissionGate(),
+  );
+  let first = '';
+  for (let index = 0; index < 24; index += 1) {
+    const text = `${index}:${'x'.repeat(8 * 1024)}`;
+    first += text;
+    await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', { ...textEvent(index), text });
+  }
+  const sink = new GatedSink();
+  const connection = attachTestConnection(coordinator, 'connection-order', sink);
+  const opened = await open(coordinator, 'connection-order');
+  connection.activate(opened.subscriptionId);
+
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', textCompleteEvent('message-1', first));
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', {
+    ...textEvent(0, 'message-2'),
+    text: 'FINAL ANSWER',
+  });
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', {
+    ...textCompleteEvent('message-2', 'FINAL ANSWER'),
+    messageId: 'message-2',
+  });
+  sink.release();
+  await waitFor(() => completionOrder(sink).length === 2);
+
+  assert.deepEqual(completionOrder(sink), ['message-1', 'message-2']);
+  coordinator.close();
+});
+
+// #5365: the Turn ending does not unsay what the Host already streamed. The
+// terminal publication used to drop every unpaid backlog, so a subscriber was
+// left holding a truncated answer that the client then reported as complete.
+test('a terminal publication finishes the prefix it found unpaid instead of dropping it', async () => {
+  let projection = canonical({
+    rootTurn: { sessionId: SESSION_ID, turnId: 'turn-1', runId: 'run-1', status: 'running' },
+  });
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => projection,
+    new SessionAdmissionGate(),
+  );
+  let streamed = '';
+  for (let index = 0; index < 24; index += 1) {
+    const text = `${index}:${'x'.repeat(8 * 1024)}`;
+    streamed += text;
+    await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', { ...textEvent(index), text });
+  }
+  const sink = new GatedSink();
+  const connection = attachTestConnection(coordinator, 'connection-terminal', sink);
+  const opened = await open(coordinator, 'connection-terminal');
+  connection.activate(opened.subscriptionId);
+  await coordinator.acceptRuntimeEvent(
+    SESSION_ID,
+    'run-1',
+    textCompleteEvent('message-1', streamed),
+  );
+
+  await coordinator.holdTerminalPublication(SESSION_ID, 'turn-1', 'run-1');
+  projection = canonical({
+    rootTurn: {
+      sessionId: SESSION_ID,
+      turnId: 'turn-1',
+      runId: 'run-1',
+      status: 'completed',
+      terminalEventId: 'event-terminal',
+    },
+  });
+  await coordinator.publishTerminalProjection(SESSION_ID, 'turn-1', 'run-1');
+  sink.release();
+  await waitFor(() => completionOrder(sink).length === 1);
+
+  let received = '';
+  for (const frame of sink.frames) {
+    if (frame.kind !== 'subscription.session_delta') continue;
+    assert.equal(frame.delta.startOffset, received.length);
+    received += frame.delta.text;
+  }
+  assert.equal(received, streamed);
+  coordinator.close();
+});
+
+test('a stream completing before a mid-stream subscriber catches up is still paid out in full', async () => {
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => canonical(),
+    new SessionAdmissionGate(),
+  );
+  let streamed = '';
+  for (let index = 0; index < 48; index += 1) {
+    const text = `${index}:${'x'.repeat(8 * 1024)}`;
+    streamed += text;
+    await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', { ...textEvent(index), text });
+  }
+  const sink = new RecordingSink();
+  const connection = attachTestConnection(coordinator, 'connection-late-complete', sink);
+  const opened = await open(coordinator, 'connection-late-complete');
+  await coordinator.acceptRuntimeEvent(
+    SESSION_ID,
+    'run-1',
+    textCompleteEvent('message-1', streamed),
+  );
+  connection.activate(opened.subscriptionId);
+  await waitFor(() =>
+    sink.frames.some(
+      (frame) =>
+        frame.kind === 'subscription.closed' ||
+        (frame.kind === 'subscription.session_delta' && frame.delta.complete),
+    ),
+  );
+
+  let received = '';
+  for (const frame of sink.frames) {
+    assert.equal(frame.kind, 'subscription.session_delta');
+    if (frame.kind !== 'subscription.session_delta') return;
+    assert.equal(frame.delta.startOffset, received.length);
+    received += frame.delta.text;
+  }
+  assert.equal(received, streamed);
+  coordinator.close();
+});
+
+test('commit-driven transcript progress waits for a fenced terminal publication', async () => {
+  let projection = canonical();
+  const durable: StoredMessage[] = [assistantMessage('first')];
+  const reader = transcriptReader(durable);
+  let highWaterReads = 0;
+  const admission = new SessionAdmissionGate();
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => projection,
+    admission,
+    undefined,
+    {
+      ...reader,
+      readDurableHighWater: async (sessionId) => {
+        highWaterReads += 1;
+        return reader.readDurableHighWater(sessionId);
+      },
     },
   );
-  assert.deepEqual(await client.loadTranscript((value) => value), [partial]);
+  const sink = new RecordingSink();
+  const connection = attachTestConnection(coordinator, 'connection-fenced', sink);
+  const opened = await open(coordinator, 'connection-fenced', {
+    kind: 'tail',
+    maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
+  });
+  connection.activate(opened.subscriptionId);
+  await coordinator.holdTerminalPublication(SESSION_ID, 'turn-1', 'run-1');
+  const readsBeforeCommit = highWaterReads;
+
+  durable.push({
+    type: 'turn_state',
+    id: 'state-1',
+    turnId: 'turn-1',
+    ts: 2,
+    status: 'completed',
+  });
+  coordinator.enqueueTranscriptAdvanced(SESSION_ID);
+  await admission.run(SESSION_ID, async () => undefined);
+  await delayImmediate();
+  assert.equal(highWaterReads, readsBeforeCommit);
+  assert.equal(sink.frames.length, 0);
+
+  projection = canonical({
+    rootTurn: {
+      sessionId: SESSION_ID,
+      turnId: 'turn-1',
+      runId: 'run-1',
+      status: 'completed',
+      terminalEventId: 'event-terminal',
+    },
+  });
+  await coordinator.publishTerminalProjection(SESSION_ID, 'turn-1', 'run-1');
+  await waitFor(() => sink.frames.length === 2);
+  assert.deepEqual(
+    sink.frames.map((frame) => frame.kind),
+    ['subscription.transcript_advanced', 'subscription.session_projection'],
+  );
   coordinator.close();
 });
 
@@ -1841,8 +1604,8 @@ test('large transcript messages are paged and cursors remain subscription-owned'
     undefined,
     transcriptReader([message]),
   );
-  const owner = coordinator.attachConnection('connection-owner', new RecordingSink());
-  const sibling = coordinator.attachConnection('connection-sibling', new RecordingSink());
+  const owner = attachTestConnection(coordinator, 'connection-owner', new RecordingSink());
+  const sibling = attachTestConnection(coordinator, 'connection-sibling', new RecordingSink());
   const opened = await open(coordinator, 'connection-owner', {
     kind: 'tail',
     maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
@@ -1850,7 +1613,7 @@ test('large transcript messages are paged and cursors remain subscription-owned'
   assert.ok(opened.transcript?.durable.nextCursor);
   if (!opened.transcript?.durable.nextCursor) return;
   const firstCursor = opened.transcript.durable.nextCursor;
-  const client = new ClientSessionSubscription(
+  const client = clientSubscription(
     opened,
     async () => undefined,
     async (input) => {
@@ -1867,9 +1630,8 @@ test('large transcript messages are paged and cursors remain subscription-owned'
   const foreign = await coordinator.handlers['session.transcript.page'](
     {
       subscriptionId: opened.subscriptionId,
-      source: 'durable',
       direction: 'older',
-      throughSequence: opened.transcript.throughSequence,
+      throughSequence: opened.transcript.durable.throughSequence,
       cursor: firstCursor,
       anchorSequence: null,
       maxBytes: 1024,
@@ -1905,7 +1667,7 @@ test('an in-flight transcript page cannot outlive its owning connection', async 
     undefined,
     reader,
   );
-  const connection = coordinator.attachConnection('connection-1', new RecordingSink());
+  const connection = attachTestConnection(coordinator, 'connection-1', new RecordingSink());
   const opened = await open(coordinator, 'connection-1', {
     kind: 'tail',
     maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
@@ -1916,9 +1678,8 @@ test('an in-flight transcript page cannot outlive its owning connection', async 
   const reading = coordinator.handlers['session.transcript.page'](
     {
       subscriptionId: opened.subscriptionId,
-      source: 'durable',
       direction: 'older',
-      throughSequence: opened.transcript.throughSequence,
+      throughSequence: opened.transcript.durable.throughSequence,
       cursor,
       anchorSequence: null,
       maxBytes: 1024,
@@ -1942,9 +1703,9 @@ test('an in-flight transcript page cannot outlive its Guest observation grant', 
   let blockPage = false;
   const reader: SessionTranscriptReader = {
     ...baseReader,
-    readDurableRecords: async (sessionId, request) => {
+    readDurablePage: async (sessionId, request, project) => {
       if (blockPage) await continued.promise;
-      return baseReader.readDurableRecords(sessionId, request);
+      return baseReader.readDurablePage(sessionId, request, project);
     },
   };
   const grant = {
@@ -1971,7 +1732,7 @@ test('an in-flight transcript page cannot outlive its Guest observation grant', 
       },
     },
   );
-  coordinator.attachConnection('guest-connection', new RecordingSink());
+  attachTestConnection(coordinator, 'guest-connection', new RecordingSink());
   const opened = await open(
     coordinator,
     'guest-connection',
@@ -1992,9 +1753,8 @@ test('an in-flight transcript page cannot outlive its Guest observation grant', 
   const reading = coordinator.handlers['session.transcript.page'](
     {
       subscriptionId: opened.subscriptionId,
-      source: 'durable',
       direction: 'older',
-      throughSequence: opened.transcript.throughSequence,
+      throughSequence: opened.transcript.durable.throughSequence,
       cursor,
       anchorSequence: null,
       maxBytes: 1024,
@@ -2027,7 +1787,7 @@ test('a durable append refresh advances transcript before its completion event',
     reader,
   );
   const sink = new RecordingSink();
-  const connection = coordinator.attachConnection('connection-1', sink);
+  const connection = attachTestConnection(coordinator, 'connection-1', sink);
   const opened = await open(coordinator, 'connection-1', {
     kind: 'tail',
     maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
@@ -2052,7 +1812,11 @@ test('absolute live offsets survive a gap with no connected subscribers', async 
     async () => canonical(),
     new SessionAdmissionGate(),
   );
-  const firstConnection = coordinator.attachConnection('connection-first', new RecordingSink());
+  const firstConnection = attachTestConnection(
+    coordinator,
+    'connection-first',
+    new RecordingSink(),
+  );
   const first = await open(coordinator, 'connection-first');
   firstConnection.activate(first.subscriptionId);
   await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', textEvent(1));
@@ -2061,17 +1825,23 @@ test('absolute live offsets survive a gap with no connected subscribers', async 
 
   await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', textEvent(2));
   const sink = new RecordingSink();
-  const secondConnection = coordinator.attachConnection('connection-second', sink);
+  const secondConnection = attachTestConnection(coordinator, 'connection-second', sink);
   const second = await open(coordinator, 'connection-second');
   secondConnection.activate(second.subscriptionId);
   await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', textEvent(3));
-  await waitFor(() => sink.frames.length === 1);
+  await waitFor(() => sink.frames.length === 2);
 
-  const frame = sink.frames[0];
-  assert.equal(frame?.kind, 'subscription.session_delta');
-  if (frame?.kind === 'subscription.session_delta') {
-    assert.equal(frame.delta.startOffset, 'chunk-1'.length + 'chunk-2'.length);
-  }
+  assert.deepEqual(
+    sink.frames.map((frame) =>
+      frame.kind === 'subscription.session_delta'
+        ? { startOffset: frame.delta.startOffset, text: frame.delta.text }
+        : frame.kind,
+    ),
+    [
+      { startOffset: 0, text: 'chunk-1chunk-2' },
+      { startOffset: 'chunk-1chunk-2'.length, text: 'chunk-3' },
+    ],
+  );
   coordinator.close();
 });
 
@@ -2082,7 +1852,7 @@ test('keeps the current provider retry on the live Turn until the next content e
     new SessionAdmissionGate(),
   );
   const liveSink = new RecordingSink();
-  const live = coordinator.attachConnection('connection-live', liveSink);
+  const live = attachTestConnection(coordinator, 'connection-live', liveSink);
   const opened = await open(coordinator, 'connection-live');
   assert.equal(opened.snapshot.rootTurn && 'providerRetry' in opened.snapshot.rootTurn, false);
   live.activate(opened.subscriptionId);
@@ -2109,7 +1879,7 @@ test('keeps the current provider retry on the live Turn until the next content e
     ts: 1,
     reason: 'rate_limit' as const,
   };
-  coordinator.attachConnection('connection-remount', new RecordingSink());
+  attachTestConnection(coordinator, 'connection-remount', new RecordingSink());
   const remounted = await open(coordinator, 'connection-remount');
   assert.deepEqual(
     remounted.snapshot.rootTurn && 'providerRetry' in remounted.snapshot.rootTurn
@@ -2128,7 +1898,7 @@ test('keeps the current provider retry on the live Turn until the next content e
   );
 
   await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', textEvent(1));
-  coordinator.attachConnection('connection-after-text', new RecordingSink());
+  attachTestConnection(coordinator, 'connection-after-text', new RecordingSink());
   const afterText = await open(coordinator, 'connection-after-text');
   assert.equal(
     afterText.snapshot.rootTurn && 'providerRetry' in afterText.snapshot.rootTurn,
@@ -2148,7 +1918,7 @@ test('rejoin seeds tool_result_preview at the open nextSequence without sequence
   await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', previewEvent());
 
   const sink = new RecordingSink();
-  const connection = coordinator.attachConnection('connection-rejoin', sink);
+  const connection = attachTestConnection(coordinator, 'connection-rejoin', sink);
   const opened = await open(coordinator, 'connection-rejoin');
   assert.equal(opened.nextSequence, 1);
 
@@ -2160,7 +1930,7 @@ test('rejoin seeds tool_result_preview at the open nextSequence without sequence
   assert.equal(sink.frames[0].sequence, 1);
   assert.equal(sink.frames[0].event.type, 'tool_result_preview');
 
-  const client = new ClientSessionSubscription(
+  const client = clientSubscription(
     opened,
     async () => {},
     async () => {
@@ -2180,7 +1950,7 @@ test('live tool_start projects intent and a bounded args preview, never full arg
     new SessionAdmissionGate(),
   );
   const sink = new RecordingSink();
-  const connection = coordinator.attachConnection('connection-tool-start', sink);
+  const connection = attachTestConnection(coordinator, 'connection-tool-start', sink);
   const opened = await open(coordinator, 'connection-tool-start');
   connection.activate(opened.subscriptionId);
 
@@ -2216,7 +1986,7 @@ test('live tool_start never forwards a generic input payload as argsPreview', as
     new SessionAdmissionGate(),
   );
   const sink = new RecordingSink();
-  const connection = coordinator.attachConnection('connection-tool-input', sink);
+  const connection = attachTestConnection(coordinator, 'connection-tool-input', sink);
   const opened = await open(coordinator, 'connection-tool-input');
   connection.activate(opened.subscriptionId);
 
@@ -2267,7 +2037,7 @@ test('tool_result clears retained tool_result_preview so a later open does not s
   });
 
   const sink = new RecordingSink();
-  const connection = coordinator.attachConnection('connection-after-settle', sink);
+  const connection = attachTestConnection(coordinator, 'connection-after-settle', sink);
   const opened = await open(coordinator, 'connection-after-settle');
   assert.equal(opened.nextSequence, 1);
   connection.activate(opened.subscriptionId);
@@ -2291,7 +2061,7 @@ test('publishes only the minimal sandbox failure reason from a tool result', asy
     new SessionAdmissionGate(),
   );
   const sink = new RecordingSink();
-  const connection = coordinator.attachConnection('connection-1', sink);
+  const connection = attachTestConnection(coordinator, 'connection-1', sink);
   const opened = await open(coordinator, 'connection-1');
   connection.activate(opened.subscriptionId);
 
@@ -2334,7 +2104,7 @@ test('publishes only the bounded shell-run correlation from poll args', async ()
     new SessionAdmissionGate(),
   );
   const sink = new RecordingSink();
-  const connection = coordinator.attachConnection('connection-1', sink);
+  const connection = attachTestConnection(coordinator, 'connection-1', sink);
   const opened = await open(coordinator, 'connection-1');
   connection.activate(opened.subscriptionId);
   const ref = 'maka://runtime/background-tasks/bg-1';
@@ -2367,12 +2137,63 @@ test('publishes only the bounded shell-run correlation from poll args', async ()
   coordinator.close();
 });
 
+/**
+ * A connection whose `activate` is the Client's own `subscription.ready`.
+ *
+ * Frames start where a subscriber says it can take them, so a test that starts
+ * them any other way is not exercising the path a Client uses.
+ */
+function attachTestConnection(
+  coordinator: SessionContinuityCoordinator,
+  connectionId: string,
+  sink: SessionContinuityFrameSink,
+  identity?: TestIdentity,
+) {
+  const connection = coordinator.attachConnection(connectionId, sink);
+  return {
+    ...connection,
+    activate: (subscriptionId: string) =>
+      coordinator.handlers['subscription.ready'](
+        { subscriptionId },
+        connectionContext(connectionId, identity),
+      ),
+  };
+}
+
 class RecordingSink implements SessionContinuityFrameSink {
   readonly frames: SubscriptionFrame[] = [];
 
   async send(frame: SubscriptionFrame): Promise<void> {
     this.frames.push(frame);
   }
+}
+
+/** Records frames but holds each send until released, so a backlog stays unpaid. */
+class GatedSink implements SessionContinuityFrameSink {
+  readonly frames: SubscriptionFrame[] = [];
+  #held: Array<() => void> = [];
+  #open = false;
+
+  async send(frame: SubscriptionFrame): Promise<void> {
+    this.frames.push(frame);
+    if (this.#open) return;
+    await new Promise<void>((resolve) => this.#held.push(resolve));
+  }
+
+  release(): void {
+    this.#open = true;
+    const held = this.#held;
+    this.#held = [];
+    for (const resume of held) resume();
+  }
+}
+
+function completionOrder(sink: { frames: SubscriptionFrame[] }): string[] {
+  return sink.frames.flatMap((frame) =>
+    frame.kind === 'subscription.session_delta' && frame.delta.complete
+      ? [frame.delta.messageId]
+      : [],
+  );
 }
 
 function textCompleteEvent(messageId: string, text: string) {
@@ -2401,101 +2222,6 @@ async function open(
   if (!outcome.ok) throw new Error(outcome.error.message);
   assert.equal(outcome.ok, true);
   return outcome.result;
-}
-
-async function openForSession(
-  coordinator: SessionContinuityCoordinator,
-  connectionId: string,
-  sessionId: string,
-) {
-  const outcome = await coordinator.handlers['subscription.open'](
-    {
-      sessionId,
-      transcript: { kind: 'tail', maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES },
-    },
-    connectionContext(connectionId),
-  );
-  if (!outcome.ok) throw new Error(outcome.error.message);
-  return outcome.result;
-}
-
-async function consumeBootstrapOverlay(
-  coordinator: SessionContinuityCoordinator,
-  connectionId: string,
-  opened: Awaited<ReturnType<typeof open>>,
-): Promise<void> {
-  assert.ok(opened.transcript);
-  let cursor = opened.transcript.overlay.nextCursor;
-  let finalCursor: string | null = null;
-  while (cursor !== null) {
-    finalCursor = cursor;
-    const outcome = await coordinator.handlers['session.transcript.page'](
-      {
-        subscriptionId: opened.subscriptionId,
-        source: 'overlay',
-        direction: 'older',
-        throughSequence: opened.transcript.throughSequence,
-        cursor,
-        anchorSequence: null,
-        maxBytes: SESSION_TRANSCRIPT_PAGE_MAX_BYTES,
-      },
-      connectionContext(connectionId),
-    );
-    assert.equal(outcome.ok, true);
-    if (!outcome.ok) throw new Error('Transcript overlay page failed');
-    if (outcome.result.nextCursor === null) {
-      assert.deepEqual(
-        await coordinator.handlers['session.transcript.page'](
-          {
-            subscriptionId: opened.subscriptionId,
-            source: 'overlay',
-            direction: 'older',
-            throughSequence: opened.transcript.throughSequence,
-            cursor,
-            anchorSequence: null,
-            maxBytes: SESSION_TRANSCRIPT_PAGE_MAX_BYTES,
-          },
-          connectionContext(connectionId),
-        ),
-        outcome,
-      );
-    }
-    cursor = outcome.result.nextCursor;
-  }
-  const released = await coordinator.handlers['session.transcript.overlay.release'](
-    { subscriptionId: opened.subscriptionId },
-    connectionContext(connectionId),
-  );
-  assert.deepEqual(released, {
-    ok: true,
-    result: { subscriptionId: opened.subscriptionId },
-  });
-  assert.deepEqual(
-    await coordinator.handlers['session.transcript.overlay.release'](
-      { subscriptionId: opened.subscriptionId },
-      connectionContext(connectionId),
-    ),
-    released,
-  );
-  assert.ok(finalCursor);
-  assert.deepEqual(
-    await coordinator.handlers['session.transcript.page'](
-      {
-        subscriptionId: opened.subscriptionId,
-        source: 'overlay',
-        direction: 'older',
-        throughSequence: opened.transcript.throughSequence,
-        cursor: finalCursor,
-        anchorSequence: null,
-        maxBytes: SESSION_TRANSCRIPT_PAGE_MAX_BYTES,
-      },
-      connectionContext(connectionId),
-    ),
-    {
-      ok: false,
-      error: { code: 'invalid_request', message: 'Transcript overlay has been released' },
-    },
-  );
 }
 
 function connectionContext(

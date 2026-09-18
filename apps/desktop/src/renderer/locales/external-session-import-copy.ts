@@ -18,6 +18,7 @@
  */
 
 import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
+import type { ExternalSessionLimit } from '@maka/core/external-session';
 
 /**
  * 设置 › 活动 › 导入任务.
@@ -72,10 +73,7 @@ type ExternalSessionImportCopy = {
   importFailedNoModel: string;
   /** The source conversation could not be read or converted (e.g. too large). */
   importFailedSourceUnreadable: string;
-  importRecoveredTitle: string;
-  importRecoveredDescription: (name: string) => string;
-  importNotRecordedTitle: string;
-  importNotRecordedDescription: string;
+  importFailedSourceLimit: (limit: ExternalSessionLimit) => string;
   importOutcomeUnknownTitle: string;
   /**
    * Takes the conversation names because this is the only place that can say
@@ -146,7 +144,7 @@ const COPY = {
     bundleUnreadable: '文件无法读取，或它来自这个版本不认识的 Maka。',
     bundleFailed: '操作失败。',
     sourceLabel: '来源',
-    sourceNames: { codex: 'Codex', 'claude-code': 'Claude Code', 'maka-bundle': 'Maka 会话文件' },
+    sourceNames: { codex: 'Codex', 'claude-code': 'Claude Code', opencode: 'OpenCode', 'maka-bundle': 'Maka 会话文件' },
     includeArchived: '包含已归档的对话',
     searchLabel: '搜索',
     searchHelp: '匹配对话标题与项目路径。留空显示全部。',
@@ -158,11 +156,9 @@ const COPY = {
     emptyDescription: '当前来源中没有找到符合条件的根对话。',
     unavailableTitle: '没有检测到支持的 Agent',
     // The title already says nothing was detected, so this says what to do
-    // about it instead of saying it again. It names Codex because the renderer
-    // only ever learns which sources *were* detected — nothing but a copy
-    // string can tell someone with none what to go install. The second half is
-    // the promise that earns the permission to read another app's files.
-    unavailableDescription: '在本机使用过 Codex 后，它的对话会出现在这里。Maka 只读取这些文件，不会修改。',
+    // about it instead of saying it again. The renderer only learns which
+    // sources were detected, so this copy names the supported local Agents.
+    unavailableDescription: '在本机使用过 Codex、Claude Code 或 OpenCode 后，它们的对话会出现在这里。Maka 只读取这些文件，不会修改。',
     loadFailedTitle: '无法读取外部对话',
     loadFailedFallback: '外部对话目录暂时无法读取，请重试。',
     retry: '重试',
@@ -185,10 +181,13 @@ const COPY = {
     importFailedFallback: '该对话无法转换或保存。请检查来源后重试。',
     importFailedNoModel: '没有可用的模型连接，无法为导入的任务选择模型。请先在 设置 · 模型 中配置并启用一个模型后再导入。',
     importFailedSourceUnreadable: '无法读取或转换该对话，它可能过大、已损坏或暂时无法读取。请检查来源后重试。',
-    importRecoveredTitle: '已确认导入',
-    importRecoveredDescription: (name) => `「${name}」导入的任务现已可用。`,
-    importNotRecordedTitle: '没有发现新任务',
-    importNotRecordedDescription: '没有记录到新的任务，可以安全重试。',
+    importFailedSourceLimit: (limit) => `该对话超过导入限制：${{
+      transcript_bytes: '源文件大小',
+      record_bytes: '单条记录大小',
+      records: '记录数量',
+      converted_bytes: '转换后内容大小',
+      messages: '消息数量',
+    }[limit.kind]}最多 ${limit.max.toLocaleString('zh-CN')}${limit.kind.endsWith('_bytes') ? ' 字节' : ' 条'}。请缩小源对话；直接重试不会改变此限制。`,
     importOutcomeUnknownTitle: '需要确认导入结果',
     selectAllAriaLabel: '全选或全不选',
     selectedCount: (selected, listed) => `已选 ${selected} / ${listed}`,
@@ -200,7 +199,7 @@ const COPY = {
     batchFailed: (count) => `另有 ${count} 个没能导入。`,
     batchNothingImported: '没有对话被导入。',
     importOutcomeUnknownDescription: (names) =>
-      `以下对话的导入结果无法确认：${names.map((name) => `「${name}」`).join('、')}。请先在任务列表中查找，已经出现的不要再次导入。`,
+      `以下对话的导入结果无法确认：${names.map((name) => `「${name}」`).join('、')}。可以先在任务列表中查找，也可以再次导入；再次导入会创建独立任务。`,
   },
   'zh-TW': {
     modeLabel: '匯入或匯出',
@@ -227,7 +226,7 @@ const COPY = {
     bundleUnreadable: '檔案無法讀取，或它來自這個版本不認識的 Maka。',
     bundleFailed: '操作失敗。',
     sourceLabel: '來源',
-    sourceNames: { codex: 'Codex', 'claude-code': 'Claude Code', 'maka-bundle': 'Maka 工作階段檔案' },
+    sourceNames: { codex: 'Codex', 'claude-code': 'Claude Code', opencode: 'OpenCode', 'maka-bundle': 'Maka 工作階段檔案' },
     includeArchived: '包含已歸檔的對話',
     searchLabel: '搜尋',
     searchHelp: '符合對話標題與專案路徑。留空顯示全部。',
@@ -239,11 +238,9 @@ const COPY = {
     emptyDescription: '目前來源中沒有找到符合條件的根對話。',
     unavailableTitle: '沒有檢測到支援的 Agent',
     // The title already says nothing was detected, so this says what to do
-    // about it instead of saying it again. It names Codex because the renderer
-    // only ever learns which sources *were* detected — nothing but a copy
-    // string can tell someone with none what to go install. The second half is
-    // the promise that earns the permission to read another app's files.
-    unavailableDescription: '在本機使用過 Codex 後，它的對話會出現在這裡。Maka 只讀取這些檔案，不會修改。',
+    // about it instead of saying it again. The renderer only learns which
+    // sources were detected, so this copy names the supported local Agents.
+    unavailableDescription: '在本機使用過 Codex、Claude Code 或 OpenCode 後，它們的對話會出現在這裡。Maka 只讀取這些檔案，不會修改。',
     loadFailedTitle: '無法讀取外部對話',
     loadFailedFallback: '外部對話目錄暫時無法讀取，請重試。',
     retry: '重試',
@@ -266,10 +263,13 @@ const COPY = {
     importFailedFallback: '該對話無法轉換或儲存。請檢查來源後重試。',
     importFailedNoModel: '沒有可用的模型連線，無法為匯入的任務選擇模型。請先在 設定 · 模型 中設定並啟用一個模型後再匯入。',
     importFailedSourceUnreadable: '無法讀取或轉換該對話，它可能過大、已損毀或暫時無法讀取。請檢查來源後重試。',
-    importRecoveredTitle: '已確認匯入',
-    importRecoveredDescription: (name) => `「${name}」匯入的任務現已可用。`,
-    importNotRecordedTitle: '沒有發現新任務',
-    importNotRecordedDescription: '沒有記錄到新的任務，可以安全重試。',
+    importFailedSourceLimit: (limit) => `該對話超過匯入限制：${{
+      transcript_bytes: '來源檔案大小',
+      record_bytes: '單筆記錄大小',
+      records: '記錄數量',
+      converted_bytes: '轉換後內容大小',
+      messages: '訊息數量',
+    }[limit.kind]}最多 ${limit.max.toLocaleString('zh-TW')}${limit.kind.endsWith('_bytes') ? ' 位元組' : ' 筆'}。請縮小來源對話；直接重試不會改變此限制。`,
     importOutcomeUnknownTitle: '需要確認匯入結果',
     selectAllAriaLabel: '全選或全部取消選取',
     selectedCount: (selected, listed) => `已選 ${selected} / ${listed}`,
@@ -281,7 +281,7 @@ const COPY = {
     batchFailed: (count) => `另有 ${count} 個無法匯入。`,
     batchNothingImported: '沒有匯入任何對話。',
     importOutcomeUnknownDescription: (names) =>
-      `以下對話的匯入結果無法確認：${names.map((name) => `「${name}」`).join('、')}。請先在任務列表中查詢，已經出現的不要再次匯入。`,
+      `以下對話的匯入結果無法確認：${names.map((name) => `「${name}」`).join('、')}。可以先在任務列表中查詢，也可以再次匯入；再次匯入會建立獨立任務。`,
   },
   en: {
     modeLabel: 'Import or export',
@@ -310,7 +310,7 @@ const COPY = {
     bundleUnreadable: 'The file could not be read, or it came from a Maka this build does not know.',
     bundleFailed: 'That did not work.',
     sourceLabel: 'Source',
-    sourceNames: { codex: 'Codex', 'claude-code': 'Claude Code', 'maka-bundle': 'Maka session file' },
+    sourceNames: { codex: 'Codex', 'claude-code': 'Claude Code', opencode: 'OpenCode', 'maka-bundle': 'Maka session file' },
     includeArchived: 'Include archived conversations',
     searchLabel: 'Search',
     searchHelp: 'Matches the conversation title and the project path. Empty shows everything.',
@@ -322,7 +322,7 @@ const COPY = {
     emptyDescription: 'No matching root conversations were found in this source.',
     unavailableTitle: 'No supported Agent detected',
     unavailableDescription:
-      'Once Codex has been used on this machine, its conversations appear here. Maka only reads those files and never modifies them.',
+      'Once Codex, Claude Code, or OpenCode has been used on this machine, its conversations appear here. Maka only reads those files and never modifies them.',
     loadFailedTitle: 'Could not read external conversations',
     loadFailedFallback: 'The external session directory is temporarily unavailable. Try again.',
     retry: 'Retry',
@@ -348,11 +348,13 @@ const COPY = {
       'No usable model connection to attach the imported task to. Configure and enable a model in Settings · Models, then import again.',
     importFailedSourceUnreadable:
       'This conversation could not be read or converted — it may be too large, malformed, or temporarily unreadable. Check the source and try again.',
-    importRecoveredTitle: 'Import confirmed',
-    importRecoveredDescription: (name) =>
-      `The imported task is available now for “${name}”.`,
-    importNotRecordedTitle: 'No new task found',
-    importNotRecordedDescription: 'No new task was recorded, so it is safe to retry.',
+    importFailedSourceLimit: (limit) => `This conversation exceeds the import limit: ${{
+      transcript_bytes: 'source file size',
+      record_bytes: 'single record size',
+      records: 'record count',
+      converted_bytes: 'converted content size',
+      messages: 'message count',
+    }[limit.kind]} allows at most ${limit.max.toLocaleString('en')}${limit.kind.endsWith('_bytes') ? ' bytes' : ''}. Reduce the source conversation; retrying it unchanged will not help.`,
     importOutcomeUnknownTitle: 'Check the import result',
     selectAllAriaLabel: 'Select all or none',
     selectedCount: (selected, listed) => `${selected} / ${listed} selected`,
@@ -365,7 +367,7 @@ const COPY = {
     batchFailed: (count) => `${count} more could not be imported.`,
     batchNothingImported: 'No conversation was imported.',
     importOutcomeUnknownDescription: (names) =>
-      `Maka could not confirm the outcome of these imports: ${names.map((name) => `“${name}”`).join(', ')}. Look in the task list first, and do not import again anything that is already there.`,
+      `Maka could not confirm the outcome of these imports: ${names.map((name) => `“${name}”`).join(', ')}. Check the task list or import again; importing again creates an independent task.`,
   },
 } satisfies UiCatalog<ExternalSessionImportCopy>;
 

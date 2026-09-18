@@ -37,9 +37,13 @@ type ResearchItem = Readonly<{ title: string; body: string }>;
 type ResearchOption = Readonly<{ label: string; body: string }>;
 type ResearchStarter = Readonly<{ label: string; prompt: string }>;
 
-/** Compact token count for chip labels: 45,200 → "45k". */
+/** Compact token count: 999 → "999", 45,200 → "45.2k", 128,000 → "128k", 1,048,576 → "1M". */
 function formatCompactTokenCount(count: number): string {
   if (count < 1_000) return `${count}`;
+  if (count >= 1_000_000) {
+    const millions = count / 1_000_000;
+    return `${millions >= 100 ? Math.round(millions) : Math.round(millions * 10) / 10}M`;
+  }
   const thousands = count / 1_000;
   return `${thousands >= 100 ? Math.round(thousands) : Math.round(thousands * 10) / 10}k`;
 }
@@ -222,9 +226,6 @@ export interface ConversationCopy {
     allowSession: string;
   };
   questions: {
-    keyboardHint: string;
-    other: string;
-    otherDescription: string;
     otherAriaLabel: string;
     otherPlaceholder: string;
     stop: string;
@@ -282,10 +283,9 @@ export interface ConversationCopy {
     assistant: string;
     processing: string;
     continuing: string;
-    awaitingModelOutput: string;
+    workingPhrases: readonly string[];
     processDetails: string;
     processDuration: (minutes: number, seconds: number) => string;
-    processNeedsAttention: string;
     providerRetryScheduled: (seconds: number, attempt: number, maxAttempts: number) => string;
     providerRetryStarted: (attempt: number, maxAttempts: number) => string;
     providerRetryWaiting: (attempt: number, maxAttempts: number) => string;
@@ -390,6 +390,7 @@ export interface ConversationCopy {
     loadFailed: string;
     loading: string;
     retryLoad: string;
+    loadEarlierHistory: string;
     quoteSelection: string;
     askInSidePanel: string;
     noMessages: string;
@@ -544,7 +545,7 @@ const CONVERSATION_COPY = {
       reject: '拒绝',
       allowSession: '本任务允许',
     },
-    questions: { keyboardHint: '1–9 选择 · ↑↓ 切换 · Enter 确认 · Esc 继续说明', other: '其他', otherDescription: '输入一个不同的答案。', otherAriaLabel: '其他答案', otherPlaceholder: '输入你的答案', stop: '停止', stopping: '停止中…', previous: '上一题', submitting: '正在提交…', submit: '提交答案', next: '下一题' },
+    questions: { otherAriaLabel: '其他答案', otherPlaceholder: '输入你的答案', stop: '停止', stopping: '停止中…', previous: '上一题', submitting: '正在提交…', submit: '提交答案', next: '下一题' },
     forms: { keyboardHint: '1–9 选择 · ↑↓ 切换 · Enter 确认 · Esc 取消', requester: (name) => `由 ${name} 请求`, requesterWithSource: (name, source) => `由 ${name} 请求 · ${source}`, required: '必填', optional: '选填', include: (label) => `提供：${label}`, enabled: (label) => `启用：${label}`, enterValue: '输入内容', enterNumber: '输入数字', constraintSeparator: '；', lengthConstraint: (minimum, maximum) => minimum === undefined ? `最多 ${maximum} 个字符` : maximum === undefined ? `至少 ${minimum} 个字符` : `长度 ${minimum}–${maximum} 个字符`, numberConstraint: (minimum, maximum) => minimum === undefined ? `最大值 ${maximum}` : maximum === undefined ? `最小值 ${minimum}` : `范围 ${minimum}–${maximum}`, itemConstraint: (minimum, maximum) => minimum === undefined ? `最多选择 ${maximum} 项` : maximum === undefined ? `至少选择 ${minimum} 项` : `选择 ${minimum}–${maximum} 项`, formatConstraint: { email: '格式：email', uri: '格式：URI', date: '格式：date（YYYY-MM-DD）', 'date-time': '格式：date-time（RFC 3339）' }, invalid: '请提供符合要求的值。', cancel: '取消', decline: '拒绝', accept: '提交', submitting: '正在提交…' },
     mentions: { noFiles: '未找到文件', noSkills: '暂无技能', noCommandsOrSkills: '没有匹配的命令或技能', filesAriaLabel: '工作区文件', skillsAriaLabel: '技能', commandsAndSkillsAriaLabel: '命令和技能', commandsGroup: '命令', skillsGroup: 'Skills', loading: '加载中…' },
     workspace: {
@@ -553,7 +554,7 @@ const CONVERSATION_COPY = {
       chooseAriaLabel: (label, branch) => branch ? `选择项目：${label}，当前分支 ${branch}` : `选择项目：${label}`,
     },
     messages: {
-      you: '你', assistant: 'Maka', processing: '正在处理…', continuing: '继续中…', awaitingModelOutput: '等待模型输出…', processDetails: '执行过程', processDuration: (minutes, seconds) => `用时 ${minutes > 0 ? `${minutes}分 ` : ''}${seconds}秒`, processNeedsAttention: '执行过程 · 需要处理', providerRetryScheduled: (seconds, attempt, maxAttempts) => `${formatRetryDelay(seconds, { day: '天', hour: '小时', minute: '分', second: '秒' })}后重试（${attempt}/${maxAttempts}）`, providerRetryStarted: (attempt, maxAttempts) => `正在重试（${attempt}/${maxAttempts}）`, providerRetryWaiting: (attempt, maxAttempts) => `等待重试（${attempt}/${maxAttempts}）`, providerRetryReason: { stream_truncated: '响应中途断开', network: '网络中断', provider_capacity: '模型服务暂时满载', provider_unavailable: '模型服务暂时不可用', rate_limit: '触发模型速率限制', timeout: '请求超时', unknown: '模型请求失败' }, failureDetailsUnavailable: '无可用诊断详情。', safeResumePending: '正在检查…', safeResume: '继续这一轮', thinking: '深度思考', truncated: '已截断', copied: '已复制', copying: '复制中', copyFailed: '复制失败', copy: '复制', editMessage: '编辑并重发', editMessageDisabledRunning: '当前回答仍在进行中，结束后再编辑', editMessageDisabledAttachments: '包含附件的历史消息暂不支持编辑并重发', editMessageDisabledQuotes: '包含引用的历史消息暂不支持编辑并重发', editMessageDisabledTransformedText: '包含已展开上下文的历史消息暂不支持编辑并重发',
+      you: '你', assistant: 'Maka', processing: '正在处理…', continuing: '继续中…', workingPhrases: ['正在琢磨…', '正在推敲…', '正在盘算…', '正在钻研…', '正在忙活…', '正在梳理…', '正在打磨…', '正在鼓捣…', '正在酝酿…', '正在攻坚…', '正在权衡…', '正在拾掇…'], processDetails: '执行过程', processDuration: (minutes, seconds) => `用时 ${minutes > 0 ? `${minutes} 分 ` : ''}${seconds} 秒`, providerRetryScheduled: (seconds, attempt, maxAttempts) => `${formatRetryDelay(seconds, { day: '天', hour: '小时', minute: '分', second: '秒' })}后重试（${attempt}/${maxAttempts}）`, providerRetryStarted: (attempt, maxAttempts) => `正在重试（${attempt}/${maxAttempts}）`, providerRetryWaiting: (attempt, maxAttempts) => `等待重试（${attempt}/${maxAttempts}）`, providerRetryReason: { stream_truncated: '响应中途断开', network: '网络中断', provider_capacity: '模型服务暂时满载', provider_unavailable: '模型服务暂时不可用', rate_limit: '触发模型速率限制', timeout: '请求超时', unknown: '模型请求失败' }, failureDetailsUnavailable: '无可用诊断详情。', safeResumePending: '正在检查…', safeResume: '继续这一轮', thinking: '深度思考', truncated: '已截断', copied: '已复制', copying: '复制中', copyFailed: '复制失败', copy: '复制', editMessage: '编辑并重发', editMessageDisabledRunning: '当前回答仍在进行中，结束后再编辑', editMessageDisabledAttachments: '包含附件的历史消息暂不支持编辑并重发', editMessageDisabledQuotes: '包含引用的历史消息暂不支持编辑并重发', editMessageDisabledTransformedText: '包含已展开上下文的历史消息暂不支持编辑并重发',
       editMessageDisabledDirectoryReferences: '包含文件夹引用的历史消息暂不支持编辑并重发',
       userAriaLabel: '你发送的消息', systemAriaLabel: '系统消息', assistantAriaLabel: 'Maka 的回答', answerActionsAriaLabel: (context) => `回答操作${context ? `：${context}` : ''}`, answerActionAriaLabel: (action, context) => `${action}回答${context ? `：${context}` : ''}`, messageActionAriaLabel: (action, context) => `${action}消息${context ? `：${context}` : ''}`, sourceAriaLabel: '本轮回答的来源', derivativesAriaLabel: '本轮回答的衍生', scheduledTaskTriggered: '定时任务触发', scheduledTaskTitle: (id) => `由定时任务触发 · ${id}`, legacyAutomationTriggered: '旧版自动化（仅历史）', legacyAutomationTitle: (id) => `由旧版自动化触发 · ${id} · 仅保留历史，不会再次执行`, goalContinued: 'Goal 自动继续', goalTitle: (id) => `由 Goal 继续执行 · ${id}`, agentGraphTriggered: 'Agent Graph 自动继续', agentGraphTitle: (graphId) => `由 Agent Graph 调度器触发 · ${graphId}`,
       thinkingTruncatedTitle: '部分 reasoning 已截断；显示的是最近的内容', outputTruncatedTitle: '助手输出已超过单次回合上限，超出部分未渲染。如需完整内容请重新生成或查看持久化的任务日志。', removeAttachmentAriaLabel: (name) => `移除 ${name}`, quoteLabel: '引用', quoteExpandAriaLabel: '展开引用全文', quoteCollapseAriaLabel: '收起引用', removeQuoteAriaLabel: '移除引用', aborted: '已中断', abortedByStop: '已中断 · 由停止按钮触发',
@@ -563,7 +564,7 @@ const CONVERSATION_COPY = {
         contextCompacted: '已压缩较早的上下文。',
         contextCompactionFailedOpen: '上下文压缩失败。',
         contextProviderDropping: (used, prior) =>
-          `供应商在丢弃或改写上下文：追加了内容，它报告的输入却是 ${used.toLocaleString('zh-CN')} tokens，与之前的 ${prior.toLocaleString('zh-CN')} 相比没有增长。在连接设置里为该模型声明上下文窗口，让 Maka 先行压缩。`,
+          `追加内容后，供应商报告的输入 token 数没有增长，可能发生了上下文裁剪或改写（${used.toLocaleString('zh-CN')} tokens，与之前的 ${prior.toLocaleString('zh-CN')} 相比没有增长）。如果持续出现，请检查模型实际支持的上下文容量与连接设置是否一致。`,
         contextWindowSuggestion: (tokens, declared) =>
           declared === undefined
             ? `供应商拒绝了这次请求。该模型未声明上下文窗口；上次成功的用量约 ${tokens} tokens，可将窗口设为该值让 Maka 先行压缩。`
@@ -576,9 +577,9 @@ const CONVERSATION_COPY = {
           '已经压缩过历史，供应商仍然说这次请求太大。剩下的部分还包含系统提示、工具定义、摘要和最近的原文，缩短这条消息是你能控制的那一半。',
         contextUsageLabel: '用量',
         contextUsageShare: (used, window) =>
-          `已用 ${used.toLocaleString('zh-CN')} / ${window.toLocaleString('zh-CN')} token（${Math.round((used / window) * 100)}%）`,
+          `上下文窗口：已用 ${Math.round((used / window) * 100)}%（${formatCompactTokenCount(used)} / ${formatCompactTokenCount(window)} token）`,
         contextUsageNoWindow: (used) =>
-          `已用 ${used.toLocaleString('zh-CN')} token；上下文上限未知`,
+          `已用 ${formatCompactTokenCount(used)} token；上下文窗口上限未知`,
         contextUsageUnavailable: '暂无用量数据',
         contextUsageOpen: '打开用量追踪',
         stepLimit: '已达到本轮工具步骤上限，任务可能尚未完成。发送“继续”即可接着处理。',
@@ -612,7 +613,7 @@ const CONVERSATION_COPY = {
       },
       clearGoal: (condition, iteration, max, status) => `自主执行目标进行中：「${condition}」（第 ${iteration}/${max} 轮，${status}）。系统每轮后自动续行；点击可清除目标、停止续行。`, clearGoalAriaLabel: (iteration, max) => `清除自主执行目标（已进行 ${iteration}/${max} 轮）`, goalProgress: (iteration, max) => `目标 ${iteration} / ${max}`, goalRunningAriaLabel: '自主目标正在运行', goalWaitingAriaLabel: '自主目标正在等待条件变化',
       goalPausedAriaLabel: '自主目标已暂停', pauseGoalAriaLabel: (iteration, max) => `暂停自主执行目标（已进行 ${iteration}/${max} 轮）`, resumeGoalAriaLabel: (iteration, max) => `恢复自主执行目标（已进行 ${iteration}/${max} 轮）`, pauseGoal: (condition, iteration, max, status) => `暂停自主执行目标：「${condition}」（第 ${iteration}/${max} 轮，${status}）。暂停后立即停止自动续行，不再消耗令牌；可随时恢复。`, resumeGoal: (condition, iteration, max) => `恢复自主执行目标：「${condition}」（第 ${iteration}/${max} 轮）。恢复后立即继续自动续行。`, goalElapsed: (elapsedMs) => formatGoalElapsedUnits(elapsedMs, { second: ' 秒', minute: ' 分钟', hour: ' 小时', day: ' 天' }), goalTokens: (spent, budget) => `${formatCompactTokenCount(spent)} / ${formatCompactTokenCount(budget)}`,
-      loadFailed: '任务载入失败', loading: '载入中…', retryLoad: '重试载入', quoteSelection: '引用', askInSidePanel: '在侧栏追问', noMessages: '暂无消息',
+      loadFailed: '任务载入失败', loading: '载入中…', retryLoad: '重试载入', loadEarlierHistory: '载入更早的记录', quoteSelection: '引用', askInSidePanel: '在侧栏追问', noMessages: '暂无消息',
       branchBeforeInterrupt: '从中断前分支', sessionContextAriaLabel: '任务上下文', sessionLineageAriaLabel: '任务来源', sessionContextMore: (count) => `更多任务上下文（${count}）`,
       titlebarIdentityAriaLabel: '当前任务', openProjectFolderAction: '打开项目文件夹', projectInfo: '项目信息', copyProjectPath: '复制路径',
       openParentSession: (name) => `返回父任务「${name}」`,
@@ -702,7 +703,7 @@ const CONVERSATION_COPY = {
       reject: '拒絕',
       allowSession: '本任務允許',
     },
-    questions: { keyboardHint: '1–9 選擇 · ↑↓ 切換 · Enter 確認 · Esc 繼續說明', other: '其他', otherDescription: '輸入一個不同的答案。', otherAriaLabel: '其他答案', otherPlaceholder: '輸入你的答案', stop: '停止', stopping: '停止中…', previous: '上一題', submitting: '正在提交…', submit: '提交答案', next: '下一題' },
+    questions: { otherAriaLabel: '其他答案', otherPlaceholder: '輸入你的答案', stop: '停止', stopping: '停止中…', previous: '上一題', submitting: '正在提交…', submit: '提交答案', next: '下一題' },
     forms: { keyboardHint: '1–9 選擇 · ↑↓ 切換 · Enter 確認 · Esc 取消', requester: (name) => `由 ${name} 請求`, requesterWithSource: (name, source) => `由 ${name} 請求 · ${source}`, required: '必填', optional: '選填', include: (label) => `提供：${label}`, enabled: (label) => `啟用：${label}`, enterValue: '輸入內容', enterNumber: '輸入數字', constraintSeparator: '；', lengthConstraint: (minimum, maximum) => minimum === undefined ? `最多 ${maximum} 個字元` : maximum === undefined ? `至少 ${minimum} 個字元` : `長度 ${minimum}–${maximum} 個字元`, numberConstraint: (minimum, maximum) => minimum === undefined ? `最大值 ${maximum}` : maximum === undefined ? `最小值 ${minimum}` : `範圍 ${minimum}–${maximum}`, itemConstraint: (minimum, maximum) => minimum === undefined ? `最多選取 ${maximum} 項` : maximum === undefined ? `至少選取 ${minimum} 項` : `選取 ${minimum}–${maximum} 項`, formatConstraint: { email: '格式：email', uri: '格式：URI', date: '格式：date（YYYY-MM-DD）', 'date-time': '格式：date-time（RFC 3339）' }, invalid: '請提供符合要求的值。', cancel: '取消', decline: '拒絕', accept: '提交', submitting: '正在提交…' },
     mentions: { noFiles: '未找到檔案', noSkills: '暫無技能', noCommandsOrSkills: '沒有符合的命令或技能', filesAriaLabel: '工作區檔案', skillsAriaLabel: '技能', commandsAndSkillsAriaLabel: '命令和技能', commandsGroup: '命令', skillsGroup: 'Skills', loading: '載入中…' },
     workspace: {
@@ -711,7 +712,7 @@ const CONVERSATION_COPY = {
       chooseAriaLabel: (label, branch) => branch ? `選擇專案：${label}，目前分支 ${branch}` : `選擇專案：${label}`,
     },
     messages: {
-      you: '你', assistant: 'Maka', processing: '正在處理…', continuing: '繼續中…', awaitingModelOutput: '等待模型輸出…', processDetails: '執行過程', processDuration: (minutes, seconds) => `用時 ${minutes > 0 ? `${minutes}分 ` : ''}${seconds}秒`, processNeedsAttention: '執行過程 · 需要處理', providerRetryScheduled: (seconds, attempt, maxAttempts) => `${formatRetryDelay(seconds, { day: '天', hour: '小時', minute: '分', second: '秒' })}後重試（${attempt}/${maxAttempts}）`, providerRetryStarted: (attempt, maxAttempts) => `正在重試（${attempt}/${maxAttempts}）`, providerRetryWaiting: (attempt, maxAttempts) => `等待重試（${attempt}/${maxAttempts}）`, providerRetryReason: { stream_truncated: '回應中途斷開', network: '網路中斷', provider_capacity: '模型服務暫時滿載', provider_unavailable: '模型服務暫時不可用', rate_limit: '觸發模型速率限制', timeout: '請求超時', unknown: '模型請求失敗' }, failureDetailsUnavailable: '無可用診斷詳情。', safeResumePending: '正在檢查…', safeResume: '繼續這一輪', thinking: '深度思考', truncated: '已截斷', copied: '已複製', copying: '複製中', copyFailed: '複製失敗', copy: '複製', editMessage: '編輯並重發', editMessageDisabledRunning: '目前回答仍在進行中，結束後再編輯', editMessageDisabledAttachments: '包含附件的歷史訊息暫不支援編輯並重發', editMessageDisabledQuotes: '包含引用的歷史訊息暫不支援編輯並重發', editMessageDisabledTransformedText: '包含已展開上下文的歷史訊息暫不支援編輯並重發',
+      you: '你', assistant: 'Maka', processing: '正在處理…', continuing: '繼續中…', workingPhrases: ['正在琢磨…', '正在推敲…', '正在盤算…', '正在鑽研…', '正在忙活…', '正在梳理…', '正在打磨…', '正在鼓搗…', '正在醞釀…', '正在攻堅…', '正在權衡…', '正在拾掇…'], processDetails: '執行過程', processDuration: (minutes, seconds) => `用時 ${minutes > 0 ? `${minutes} 分 ` : ''}${seconds} 秒`, providerRetryScheduled: (seconds, attempt, maxAttempts) => `${formatRetryDelay(seconds, { day: '天', hour: '小時', minute: '分', second: '秒' })}後重試（${attempt}/${maxAttempts}）`, providerRetryStarted: (attempt, maxAttempts) => `正在重試（${attempt}/${maxAttempts}）`, providerRetryWaiting: (attempt, maxAttempts) => `等待重試（${attempt}/${maxAttempts}）`, providerRetryReason: { stream_truncated: '回應中途斷開', network: '網路中斷', provider_capacity: '模型服務暫時滿載', provider_unavailable: '模型服務暫時不可用', rate_limit: '觸發模型速率限制', timeout: '請求超時', unknown: '模型請求失敗' }, failureDetailsUnavailable: '無可用診斷詳情。', safeResumePending: '正在檢查…', safeResume: '繼續這一輪', thinking: '深度思考', truncated: '已截斷', copied: '已複製', copying: '複製中', copyFailed: '複製失敗', copy: '複製', editMessage: '編輯並重發', editMessageDisabledRunning: '目前回答仍在進行中，結束後再編輯', editMessageDisabledAttachments: '包含附件的歷史訊息暫不支援編輯並重發', editMessageDisabledQuotes: '包含引用的歷史訊息暫不支援編輯並重發', editMessageDisabledTransformedText: '包含已展開上下文的歷史訊息暫不支援編輯並重發',
       editMessageDisabledDirectoryReferences: '包含資料夾引用的歷史訊息暫不支援編輯並重發',
       userAriaLabel: '你傳送的訊息', systemAriaLabel: '系統訊息', assistantAriaLabel: 'Maka 的回答', answerActionsAriaLabel: (context) => `回答操作${context ? `：${context}` : ''}`, answerActionAriaLabel: (action, context) => `${action}回答${context ? `：${context}` : ''}`, messageActionAriaLabel: (action, context) => `${action}訊息${context ? `：${context}` : ''}`, sourceAriaLabel: '本輪迴答的來源', derivativesAriaLabel: '本輪迴答的衍生', scheduledTaskTriggered: '定時任務觸發', scheduledTaskTitle: (id) => `由定時任務觸發 · ${id}`, legacyAutomationTriggered: '舊版自動化（僅歷史）', legacyAutomationTitle: (id) => `由舊版自動化觸發 · ${id} · 僅保留歷史，不會再次執行`, goalContinued: 'Goal 自動繼續', goalTitle: (id) => `由 Goal 繼續執行 · ${id}`, agentGraphTriggered: 'Agent Graph 自動繼續', agentGraphTitle: (graphId) => `由 Agent Graph 排程器觸發 · ${graphId}`,
       thinkingTruncatedTitle: '部分 reasoning 已截斷；顯示的是最近的內容', outputTruncatedTitle: '助手輸出已超過單次回合上限，超出部分未渲染。如需完整內容請重新生成或檢視持久化的任務記錄。', removeAttachmentAriaLabel: (name) => `移除 ${name}`, quoteLabel: '引用', quoteExpandAriaLabel: '展開引用全文', quoteCollapseAriaLabel: '收起引用', removeQuoteAriaLabel: '移除引用', aborted: '(已中斷)', abortedByStop: '(已中斷 · 由停止按鈕觸發)',
@@ -721,7 +722,7 @@ const CONVERSATION_COPY = {
         contextCompacted: '已壓縮較早的上下文。',
         contextCompactionFailedOpen: '上下文壓縮失敗。',
         contextProviderDropping: (used, prior) =>
-          `供應商在丟棄或改寫上下文：追加了內容，它報告的輸入卻是 ${used.toLocaleString('zh-TW')} tokens，與之前的 ${prior.toLocaleString('zh-TW')} 相比沒有成長。在連線設定裡為該模型宣告上下文視窗，讓 Maka 先行壓縮。`,
+          `追加內容後，供應商回報的輸入 token 數沒有成長，可能發生了上下文裁剪或改寫（${used.toLocaleString('zh-TW')} tokens，與之前的 ${prior.toLocaleString('zh-TW')} 相比沒有成長）。如果持續出現，請檢查模型實際支援的上下文容量與連線設定是否一致。`,
         contextWindowSuggestion: (tokens, declared) =>
           declared === undefined
             ? `供應商拒絕了這次請求。該模型未宣告上下文視窗；上次成功的用量約 ${tokens} tokens，可將視窗設為該值讓 Maka 先行壓縮。`
@@ -734,9 +735,9 @@ const CONVERSATION_COPY = {
           '已經壓縮過歷史，供應商仍然說這次請求太大。剩下的部分還包含系統提示、工具定義、摘要和最近的原文，縮短這則訊息是你能控制的那一半。',
         contextUsageLabel: '用量',
         contextUsageShare: (used, window) =>
-          `已用 ${used.toLocaleString('zh-TW')} / ${window.toLocaleString('zh-TW')} token（${Math.round((used / window) * 100)}%）`,
+          `上下文視窗：已用 ${Math.round((used / window) * 100)}%（${formatCompactTokenCount(used)} / ${formatCompactTokenCount(window)} token）`,
         contextUsageNoWindow: (used) =>
-          `已用 ${used.toLocaleString('zh-TW')} token；上下文上限未知`,
+          `已用 ${formatCompactTokenCount(used)} token；上下文視窗上限未知`,
         contextUsageUnavailable: '暫無用量資料',
         contextUsageOpen: '開啟用量追蹤',
         stepLimit: '已達到本輪工具步驟上限，任務可能尚未完成。傳送“繼續”即可接著處理。',
@@ -770,7 +771,7 @@ const CONVERSATION_COPY = {
       },
       clearGoal: (condition, iteration, max, status) => `自主執行目標進行中：「${condition}」（第 ${iteration}/${max} 輪，${status}）。系統每輪後自動續行；點選可清除目標、停止續行。`, clearGoalAriaLabel: (iteration, max) => `清除自主執行目標（已進行 ${iteration}/${max} 輪）`, goalProgress: (iteration, max) => `目標 ${iteration} / ${max}`, goalRunningAriaLabel: '自主目標正在執行', goalWaitingAriaLabel: '自主目標正在等待條件變化',
       goalPausedAriaLabel: '自主目標已暫停', pauseGoalAriaLabel: (iteration, max) => `暫停自主執行目標（已進行 ${iteration}/${max} 輪）`, resumeGoalAriaLabel: (iteration, max) => `恢復自主執行目標（已進行 ${iteration}/${max} 輪）`, pauseGoal: (condition, iteration, max, status) => `暫停自主執行目標：「${condition}」（第 ${iteration}/${max} 輪，${status}）。暫停後立即停止自動續行，不再消耗權杖；可隨時恢復。`, resumeGoal: (condition, iteration, max) => `恢復自主執行目標：「${condition}」（第 ${iteration}/${max} 輪）。恢復後立即繼續自動續行。`, goalElapsed: (elapsedMs) => formatGoalElapsedUnits(elapsedMs, { second: ' 秒', minute: ' 分鐘', hour: ' 小時', day: ' 天' }), goalTokens: (spent, budget) => `${formatCompactTokenCount(spent)} / ${formatCompactTokenCount(budget)}`,
-      loadFailed: '任務載入失敗', loading: '載入中…', retryLoad: '重試載入', quoteSelection: '引用', askInSidePanel: '在側欄追問', noMessages: '暫無訊息',
+      loadFailed: '任務載入失敗', loading: '載入中…', retryLoad: '重試載入', loadEarlierHistory: '載入更早的記錄', quoteSelection: '引用', askInSidePanel: '在側欄追問', noMessages: '暫無訊息',
       branchBeforeInterrupt: '從中斷前分支', sessionContextAriaLabel: '任務上下文', sessionLineageAriaLabel: '任務來源', sessionContextMore: (count) => `更多工上下文（${count}）`,
       titlebarIdentityAriaLabel: '目前任務', openProjectFolderAction: '開啟專案資料夾', projectInfo: '專案資訊', copyProjectPath: '複製路徑',
       openParentSession: (name) => `返回父任務「${name}」`,
@@ -886,7 +887,7 @@ const CONVERSATION_COPY = {
       reject: 'Reject',
       allowSession: 'Allow for this task',
     },
-    questions: { keyboardHint: '1–9 select · ↑↓ navigate · Enter confirm · Esc explain', other: 'Other', otherDescription: 'Enter a different answer.', otherAriaLabel: 'Other answer', otherPlaceholder: 'Enter your answer', stop: 'Stop', stopping: 'Stopping…', previous: 'Previous', submitting: 'Submitting…', submit: 'Submit answers', next: 'Next' },
+    questions: { otherAriaLabel: 'Other answer', otherPlaceholder: 'Enter your answer', stop: 'Stop', stopping: 'Stopping…', previous: 'Previous', submitting: 'Submitting…', submit: 'Submit answers', next: 'Next' },
     forms: { keyboardHint: '1–9 select · ↑↓ navigate · Enter confirm · Esc cancel', requester: (name) => `Requested by ${name}`, requesterWithSource: (name, source) => `Requested by ${name} · ${source}`, required: 'Required', optional: 'Optional', include: (label) => `Provide ${label}`, enabled: (label) => `Enable ${label}`, enterValue: 'Enter a value', enterNumber: 'Enter a number', constraintSeparator: ' · ', lengthConstraint: (minimum, maximum) => minimum === undefined ? `At most ${maximum} characters` : maximum === undefined ? `At least ${minimum} characters` : `${minimum}–${maximum} characters`, numberConstraint: (minimum, maximum) => minimum === undefined ? `Maximum ${maximum}` : maximum === undefined ? `Minimum ${minimum}` : `Range ${minimum}–${maximum}`, itemConstraint: (minimum, maximum) => minimum === undefined ? `Select at most ${maximum}` : maximum === undefined ? `Select at least ${minimum}` : `Select ${minimum}–${maximum}`, formatConstraint: { email: 'Format: email', uri: 'Format: URI', date: 'Format: date (YYYY-MM-DD)', 'date-time': 'Format: date-time (RFC 3339)' }, invalid: 'Provide a value that meets the requirements.', cancel: 'Cancel', decline: 'Decline', accept: 'Submit', submitting: 'Submitting…' },
     mentions: { noFiles: 'No files found', noSkills: 'No skills available', noCommandsOrSkills: 'No matching commands or skills', filesAriaLabel: 'Workspace files', skillsAriaLabel: 'Skills', commandsAndSkillsAriaLabel: 'Commands and skills', commandsGroup: 'Commands', skillsGroup: 'Skills', loading: 'Loading…' },
     workspace: {
@@ -895,7 +896,7 @@ const CONVERSATION_COPY = {
       chooseAriaLabel: (label, branch) => branch ? `Choose project: ${label}, current branch ${branch}` : `Choose project: ${label}`,
     },
     messages: {
-      you: 'You', assistant: 'Maka', processing: 'Working…', continuing: 'Continuing…', awaitingModelOutput: 'Waiting for model output…', processDetails: 'Execution process', processDuration: (minutes, seconds) => `Worked for ${minutes > 0 ? `${minutes}m ` : ''}${seconds}s`, processNeedsAttention: 'Execution process · Needs attention', providerRetryScheduled: (seconds, attempt, maxAttempts) => `Retrying in ${formatRetryDelay(seconds, { day: 'd', hour: 'h', minute: 'm', second: 's' })} (${attempt}/${maxAttempts})`, providerRetryStarted: (attempt, maxAttempts) => `Retrying (${attempt}/${maxAttempts})`, providerRetryWaiting: (attempt, maxAttempts) => `Waiting to retry (${attempt}/${maxAttempts})`, providerRetryReason: { stream_truncated: 'Response stream ended before completion', network: 'Network interrupted', provider_capacity: 'The model service is temporarily at capacity', provider_unavailable: 'Model service temporarily unavailable', rate_limit: 'Model rate limit reached', timeout: 'Request timed out', unknown: 'Model request failed' }, failureDetailsUnavailable: 'No diagnostic details are available.', safeResumePending: 'Checking…', safeResume: 'Continue this turn', thinking: 'Thinking', truncated: 'Truncated', copied: 'Copied', copying: 'Copying', copyFailed: 'Copy failed', copy: 'Copy', editMessage: 'Edit & resend', editMessageDisabledRunning: 'Wait for this answer to finish before editing', editMessageDisabledAttachments: 'Edit & resend does not yet support messages with attachments', editMessageDisabledQuotes: 'Edit & resend does not yet support messages with quotes', editMessageDisabledTransformedText: 'Edit & resend does not yet support messages with expanded context',
+      you: 'You', assistant: 'Maka', processing: 'Working…', continuing: 'Continuing…', workingPhrases: ['Pondering…', 'Tinkering…', 'Untangling…', 'Digging in…', 'Mulling…', 'Chewing on it…', 'Wrangling…', 'Piecing it together…'], processDetails: 'Execution process', processDuration: (minutes, seconds) => `Worked for ${minutes > 0 ? `${minutes}m ` : ''}${seconds}s`, providerRetryScheduled: (seconds, attempt, maxAttempts) => `Retrying in ${formatRetryDelay(seconds, { day: 'd', hour: 'h', minute: 'm', second: 's' })} (${attempt}/${maxAttempts})`, providerRetryStarted: (attempt, maxAttempts) => `Retrying (${attempt}/${maxAttempts})`, providerRetryWaiting: (attempt, maxAttempts) => `Waiting to retry (${attempt}/${maxAttempts})`, providerRetryReason: { stream_truncated: 'Response stream ended before completion', network: 'Network interrupted', provider_capacity: 'The model service is temporarily at capacity', provider_unavailable: 'Model service temporarily unavailable', rate_limit: 'Model rate limit reached', timeout: 'Request timed out', unknown: 'Model request failed' }, failureDetailsUnavailable: 'No diagnostic details are available.', safeResumePending: 'Checking…', safeResume: 'Continue this turn', thinking: 'Thinking', truncated: 'Truncated', copied: 'Copied', copying: 'Copying', copyFailed: 'Copy failed', copy: 'Copy', editMessage: 'Edit & resend', editMessageDisabledRunning: 'Wait for this answer to finish before editing', editMessageDisabledAttachments: 'Edit & resend does not yet support messages with attachments', editMessageDisabledQuotes: 'Edit & resend does not yet support messages with quotes', editMessageDisabledTransformedText: 'Edit & resend does not yet support messages with expanded context',
       editMessageDisabledDirectoryReferences: 'Edit & resend does not yet support messages with folder references',
       userAriaLabel: 'Your message', systemAriaLabel: 'System message', assistantAriaLabel: "Maka's response", answerActionsAriaLabel: (context) => `Response actions${context ? `: ${context}` : ''}`, answerActionAriaLabel: (action, context) => `${action} response${context ? `: ${context}` : ''}`, messageActionAriaLabel: (action, context) => `${action} message${context ? `: ${context}` : ''}`, sourceAriaLabel: 'Source of this response', derivativesAriaLabel: 'Responses derived from this one', scheduledTaskTriggered: 'Triggered by scheduled task', scheduledTaskTitle: (id) => `Triggered by scheduled task · ${id}`, legacyAutomationTriggered: 'Legacy Automation (history only)', legacyAutomationTitle: (id) => `Triggered by legacy Automation · ${id} · Historical only; it will not run again`, goalContinued: 'Continued by Goal', goalTitle: (id) => `Continued by Goal · ${id}`, agentGraphTriggered: 'Continued by Agent Graph', agentGraphTitle: (graphId) => `Triggered by the Agent Graph scheduler · ${graphId}`,
       thinkingTruncatedTitle: 'Some reasoning was truncated; showing the most recent content', outputTruncatedTitle: 'The assistant output exceeded the per-turn limit. Regenerate it or inspect the persisted task log for the complete content.', removeAttachmentAriaLabel: (name) => `Remove ${name}`, quoteLabel: 'Quote', quoteExpandAriaLabel: 'Show the full quoted excerpt', quoteCollapseAriaLabel: 'Collapse the quoted excerpt', removeQuoteAriaLabel: 'Remove quote', aborted: 'Interrupted', abortedByStop: 'Interrupted · Stop button',
@@ -905,7 +906,7 @@ const CONVERSATION_COPY = {
         contextCompacted: 'Earlier context compacted.',
         contextCompactionFailedOpen: 'Context compaction failed.',
         contextProviderDropping: (used, prior) =>
-          `The provider is dropping or rewriting context: content was appended, and it counted ${used.toLocaleString('en-US')} input tokens against ${prior.toLocaleString('en-US')} before, which is no growth. Declare a context window for this model in the connection settings so Maka compacts first.`,
+          `After content was appended, the provider-reported input token count did not grow; context may have been truncated or rewritten (${used.toLocaleString('en-US')} tokens versus ${prior.toLocaleString('en-US')} before). If this persists, check that the model's actual context capacity and the connection settings agree.`,
         contextWindowSuggestion: (tokens, declared) =>
           declared === undefined
             ? `The provider rejected this request. No context window is declared for this model; the last accepted usage was about ${tokens} tokens — set the window to that value so Maka compacts first.`
@@ -918,9 +919,9 @@ const CONVERSATION_COPY = {
           'History was compacted and the provider still called this request too large. What remains also carries the system prompt, the tool schemas, the summary and the recent tail; shortening this message is the part you control.',
         contextUsageLabel: 'Usage',
         contextUsageShare: (used, window) =>
-          `This request used ${used.toLocaleString('en-US')} / ${window.toLocaleString('en-US')} tokens (${Math.round((used / window) * 100)}%).`,
+          `Context window: ${Math.round((used / window) * 100)}% used (${formatCompactTokenCount(used)} / ${formatCompactTokenCount(window)} tokens).`,
         contextUsageNoWindow: (used) =>
-          `This request used ${used.toLocaleString('en-US')} tokens; no context limit is available for this model.`,
+          `This request used ${formatCompactTokenCount(used)} tokens; no context limit is available for this model.`,
         contextUsageUnavailable: 'No usage data is available for this request.',
         contextUsageOpen: 'Open usage trace',
         stepLimit: 'Reached the configured step limit. The task may be incomplete. Send “continue” to resume.',
@@ -954,7 +955,7 @@ const CONVERSATION_COPY = {
       },
       clearGoal: (condition, iteration, max, status) => `Autonomous goal in progress: “${condition}” (iteration ${iteration}/${max}, ${status}). Maka continues after each iteration; click to clear the goal and stop continuing.`, clearGoalAriaLabel: (iteration, max) => `Clear autonomous goal after ${iteration}/${max} iterations`, goalProgress: (iteration, max) => `Goal ${iteration} of ${max}`, goalRunningAriaLabel: 'Autonomous goal running', goalWaitingAriaLabel: 'Autonomous goal waiting for conditions to change',
       goalPausedAriaLabel: 'Autonomous goal paused', pauseGoalAriaLabel: (iteration, max) => `Pause autonomous goal after ${iteration}/${max} iterations`, resumeGoalAriaLabel: (iteration, max) => `Resume autonomous goal after ${iteration}/${max} iterations`, pauseGoal: (condition, iteration, max, status) => `Pause autonomous goal: “${condition}” (iteration ${iteration}/${max}, ${status}). Pausing stops autonomous continuation immediately — no more tokens burn; resume any time.`, resumeGoal: (condition, iteration, max) => `Resume autonomous goal: “${condition}” (iteration ${iteration}/${max}). Resuming continues autonomous iteration immediately.`, goalElapsed: (elapsedMs) => formatGoalElapsedUnits(elapsedMs, { second: 's', minute: 'm', hour: 'h', day: 'd' }), goalTokens: (spent, budget) => `${formatCompactTokenCount(spent)} / ${formatCompactTokenCount(budget)}`,
-      loadFailed: 'Task failed to load', loading: 'Loading…', retryLoad: 'Retry', quoteSelection: 'Quote', askInSidePanel: 'Ask in side panel', noMessages: 'No messages yet',
+      loadFailed: 'Task failed to load', loading: 'Loading…', retryLoad: 'Retry', loadEarlierHistory: 'Load earlier history', quoteSelection: 'Quote', askInSidePanel: 'Ask in side panel', noMessages: 'No messages yet',
       branchBeforeInterrupt: 'Branched before interruption', sessionContextAriaLabel: 'Task context', sessionLineageAriaLabel: 'Task origin', sessionContextMore: (count) => `More task context (${count})`,
       titlebarIdentityAriaLabel: 'Current task', openProjectFolderAction: 'Open project folder', projectInfo: 'Project information', copyProjectPath: 'Copy path',
       openParentSession: (name) => `Return to parent task “${name}”`,

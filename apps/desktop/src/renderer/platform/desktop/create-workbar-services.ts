@@ -19,14 +19,17 @@
 
 import type { MakaBridge } from '../../../preload/bridge-contract.js';
 import type { ShellRunUpdate } from '@maka/core/events';
-import { isTerminalShellRunStatus } from '@maka/core/shell-run';
-import { DESKTOP_TERMINAL_LAUNCH_PREFIX } from '../../../shared/runtime-host-identity.js';
+import {
+  isDesktopTerminalShellRun,
+  isTerminalShellRunStatus,
+} from '@maka/core/shell-run';
 import type { WorkbarServices } from '../../features/workbar';
 import { readSettledMessagesFrom } from './session-message-settlement.js';
 import { expectSessionUpdate } from './create-session-settings-services.js';
 
 export type DesktopWorkbarBridge = Pick<
   MakaBridge,
+  | 'appWindow'
   | 'app'
   | 'artifacts'
   | 'attachments'
@@ -36,7 +39,8 @@ export type DesktopWorkbarBridge = Pick<
   | 'sessions'
   | 'shellRuns'
   | 'transcripts'
->;
+> &
+  Partial<Pick<MakaBridge, 'workBoard'>>;
 
 export interface DesktopWorkbarServiceDependencies {
   readSettledMessages: typeof readSettledMessagesFrom;
@@ -47,13 +51,23 @@ const DEFAULT_DEPENDENCIES: DesktopWorkbarServiceDependencies = {
 };
 
 function isDesktopTerminal(update: ShellRunUpdate): boolean {
-  return update.ownership.kind === 'local' &&
-    update.sourceTurnId.startsWith(DESKTOP_TERMINAL_LAUNCH_PREFIX) &&
-    update.sourceTurnId === update.sourceToolCallId &&
-    update.result.mode === 'pty';
+  return (
+    update.ownership.kind === 'local' &&
+    isDesktopTerminalShellRun({ ...update, mode: update.result.mode })
+  );
 }
 
 /** The only Desktop-to-Workbar adapter. It narrows the preload bridge by tool. */
+export function createDesktopInspectorService(bridge: Pick<MakaBridge, 'inspector' | 'sessions'>) {
+  return {
+    trace: (sessionId: string, cursor?: string) => bridge.inspector.trace(sessionId, cursor),
+    summary: (sessionId: string) => bridge.inspector.summary(sessionId),
+    context: (sessionId: string) => bridge.inspector.context(sessionId),
+    subscribeSessionEvents: (sessionId: string, handler: Parameters<MakaBridge['sessions']['subscribeEvents']>[1]) => bridge.sessions.subscribeEvents(sessionId, handler),
+    subscribeUsageChanges: (sessionId: string, handler: () => void) => bridge.inspector.subscribeUsageChanges(sessionId, handler),
+  };
+}
+
 export function createDesktopWorkbarServices(
   bridge: DesktopWorkbarBridge = window.maka,
   dependencies: DesktopWorkbarServiceDependencies = DEFAULT_DEPENDENCIES,
@@ -91,6 +105,7 @@ export function createDesktopWorkbarServices(
   };
 
   return {
+    popupMenu: (input) => bridge.appWindow.popupMenu(input),
     review: {
       read: (input) => bridge.gitReview.read(input),
       subscribeSessionEvents: (sessionId, handler) =>
@@ -118,6 +133,7 @@ export function createDesktopWorkbarServices(
     browser: {
       setActiveSession: (sessionId) => bridge.browser.setActiveSession(sessionId),
       setViewport: (input) => bridge.browser.setViewport(input),
+      capturePage: (sessionId) => bridge.browser.capturePage(sessionId),
       navigate: (sessionId, url) => bridge.browser.navigate(sessionId, url),
       back: (sessionId) => bridge.browser.back(sessionId),
       forward: (sessionId) => bridge.browser.forward(sessionId),
@@ -142,16 +158,15 @@ export function createDesktopWorkbarServices(
       saveAs: (sessionId, artifactId) =>
         bridge.app.saveArtifactAs(sessionId, artifactId),
     },
-    inspector: {
-      trace: (sessionId, cursor) => bridge.inspector.trace(sessionId, cursor),
-      summary: (sessionId) => bridge.inspector.summary(sessionId),
-      context: (sessionId) => bridge.inspector.context(sessionId),
-      subscribeSessionEvents: (sessionId, handler) =>
-        bridge.sessions.subscribeEvents(sessionId, handler),
-      subscribeUsageChanges: (sessionId, handler) =>
-        bridge.inspector.subscribeUsageChanges(sessionId, handler),
-    },
+    inspector: createDesktopInspectorService(bridge),
     attachments: bridge.attachments,
+    ...(bridge.workBoard
+      ? {
+          workBoard: {
+            linkSession: (id, link) => bridge.workBoard!.linkSession(id, link),
+          },
+        }
+      : {}),
     sideChat: {
       listSessions: () => bridge.sessions.list(),
       listTurns: (sessionId) => bridge.sessions.listTurns(sessionId),

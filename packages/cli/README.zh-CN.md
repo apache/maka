@@ -74,6 +74,11 @@ npm 上有两条 dist-tag，且二者不可互换：
 无关的 `maka` 包不是本项目。`runtime-host service install` 使用上面的持久全局安装；
 `runtime-host setup` 会从 `npx` 调用的精确 package 创建自己的托管副本。
 
+## 容器
+
+从精确的已发布 npm 版本构建和运行本地 glibc CLI 镜像，并持久化配置，见
+[容器指南](https://github.com/apache/maka/blob/main/packages/cli/container/README.md)。
+
 ## 第一次运行
 
 进入希望 Agent 工作的项目目录，然后启动 Maka：

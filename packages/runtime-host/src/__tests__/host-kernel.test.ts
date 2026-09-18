@@ -49,14 +49,21 @@ import {
   RuntimeHostRequestInterruptedError,
   type RuntimeHostConnection,
 } from '../client/index.js';
-import { connectOrSpawnRuntimeHostWithDependencies } from '../client/connect-or-spawn.js';
+import {
+  IDLE_GRACE_MS_ENV_VAR,
+  connectOrSpawnRuntimeHostWithDependencies,
+} from '../client/connect-or-spawn.js';
 import {
   launchDetachedRuntimeHostCandidate,
   type DetachedCandidateAttempt,
   type DetachedCandidateLaunch,
   type DetachedCandidateInput,
 } from '../client/launcher.js';
-import { readHostRegistration, RUNTIME_HOST_REGISTRATION_FILE } from '../control/registration.js';
+import {
+  readHostRegistration,
+  writeHostRegistration,
+  RUNTIME_HOST_REGISTRATION_FILE,
+} from '../control/registration.js';
 import {
   readCandidateStartupDiagnostic,
   writeCandidateStartupDiagnostic,
@@ -183,6 +190,59 @@ describe('non-serving Runtime Host kernel', () => {
 
       assert.deepEqual(result, { kind: 'failed', reason: 'stored_data_incompatible' });
     });
+  });
+
+  const launchedIdleGraceMs = async (
+    input: { idleGraceMs?: number },
+    env: NodeJS.ProcessEnv,
+  ): Promise<number | undefined> => {
+    let launched: number | undefined;
+    await withHostPaths(async (paths) => {
+      let connectCalls = 0;
+      await connectOrSpawnRuntimeHostWithDependencies(
+        {
+          ...input,
+          rootPath: paths.root,
+          protocol: CURRENT_PROTOCOL,
+          compositionId: KERNEL_COMPOSITION.descriptor.id,
+          candidateEntrypoint: KERNEL_CANDIDATE_ENTRYPOINT,
+          electionDeadlineMs: 100,
+        },
+        {
+          env,
+          random: () => 0,
+          connectHost: async () => {
+            connectCalls += 1;
+            return connectCalls === 1
+              ? {
+                  kind: 'unavailable' as const,
+                  reason: 'not_registered' as const,
+                  endpointConnected: false,
+                }
+              : { kind: 'election_deadline_elapsed' as const, endpointConnected: false };
+          },
+          launchCandidate: (candidate) => {
+            launched = candidate.idleGraceMs;
+            return {
+              spawned: Promise.resolve({
+                pid: 4242,
+                exited: new Promise<never>(() => undefined),
+              }),
+            };
+          },
+        },
+      );
+    });
+    return launched;
+  };
+
+  test('forwards the environment idle grace to the Candidate', async () => {
+    assert.equal(await launchedIdleGraceMs({}, { [IDLE_GRACE_MS_ENV_VAR]: '2000' }), 2_000);
+  });
+
+  test('an explicit idle grace takes precedence over the environment', async () => {
+    const env = { [IDLE_GRACE_MS_ENV_VAR]: 'not-a-number' };
+    assert.equal(await launchedIdleGraceMs({ idleGraceMs: 0 }, env), 0);
   });
 
   test('reports an operational migration blocker as a permanent election failure', async () => {
@@ -3581,6 +3641,51 @@ describe('non-serving Runtime Host kernel', () => {
       const owner = await tryAcquireInteractiveRootOwner(replacement);
       assert.ok(owner);
       await owner?.close();
+    });
+  });
+
+  test('preserves a stale endpoint errno through connection and election diagnostics', async () => {
+    await withHostPaths(async (paths) => {
+      const candidate = await startTestRuntimeHostCandidate(paths, {
+        rootPath: paths.root,
+        idleGraceMs: 10_000,
+      });
+      assert.equal(candidate.kind, 'winner');
+      if (candidate.kind !== 'winner') return;
+      const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
+      const { controlDirectory } = await prepareStorageRootControlDirectory(capability);
+      const registration = await readHostRegistration(controlDirectory);
+      assert.ok(registration);
+      await candidate.host.close();
+      await writeHostRegistration(controlDirectory, registration);
+
+      const connection = await connectRuntimeHost({
+        rootPath: paths.root,
+        protocol: CURRENT_PROTOCOL,
+      });
+      assert.equal(connection.kind, 'unavailable');
+      if (connection.kind !== 'unavailable') return;
+      assert.equal(connection.reason, 'connect_failed');
+      assert.deepEqual(connection.connectionFailure, { phase: 'connect', code: 'ENOENT' });
+
+      const result = await connectOrSpawnRuntimeHostWithDependencies(
+        {
+          rootPath: paths.root,
+          protocol: CURRENT_PROTOCOL,
+          compositionId: KERNEL_COMPOSITION.descriptor.id,
+          candidateEntrypoint: KERNEL_CANDIDATE_ENTRYPOINT,
+          electionDeadlineMs: 1_000,
+        },
+        {
+          random: () => 0.5,
+          launchCandidate: () => ({ spawned: Promise.resolve({ pid: process.pid }) }),
+        },
+      );
+      assert.equal(result.kind, 'failed');
+      if (result.kind !== 'failed') return;
+      assert.equal(result.reason, 'startup_timeout');
+      assert.deepEqual(result.diagnostic?.lastConnectionFailure, connection.connectionFailure);
+      assert.equal(JSON.stringify(result.diagnostic).includes(registration.endpoint), false);
     });
   });
 

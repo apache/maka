@@ -22,8 +22,6 @@ import {
   transcriptRestoreTarget,
 } from './controller/transcript-reading-position.js';
 
-export { TranscriptReadSupersededError } from './controller/transcript-reading-position.js';
-
 export const transcriptReadingPosition = {
   currentRange: currentTranscriptRange,
   restoreTarget: transcriptRestoreTarget,
@@ -32,6 +30,7 @@ export const transcriptReadingPosition = {
 export {
   TranscriptReadingPositionController,
   type TranscriptReadingPositionCommands,
+  type TranscriptTurnIndex,
 } from './controller/transcript-reading-position-controller.js';
 
 export {

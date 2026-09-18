@@ -55,7 +55,8 @@ export interface SessionWorkspaceActions {
   isSessionSelected(sessionId: string | undefined): boolean;
   retiredSessionIds(sessions: readonly { id: string }[]): string[];
   setActiveId(next: string | undefined): void;
-  startNewSession(): void;
+  startNewSession(): number;
+  readSelectionRevision(): number;
   clearOwnedSessionState(sessionId: string): void;
   setMessages: MessageListUpdater;
   commitTranscript(sessionId: string, messages: StoredMessage[], controller?: DesktopTranscriptRangeController): boolean;
@@ -100,14 +101,7 @@ export function createSessionWorkspaceActions(deps: {
   ): TransientUserMessage[] {
     const pending = transientMessagesBySessionRef.current.get(sessionId);
     if (!pending || pending.size === 0) return [];
-    let includeTransient = true;
-    try {
-      const range = transcriptRangeRef.current?.store.range();
-      includeTransient = range?.sessionId !== sessionId || !range.hasNewer;
-    } catch {
-      // An unopened transcript has no historical range to hide the live tail from.
-    }
-    const projected = reconcileTransientMessages(pending, durable, { includeTransient });
+    const projected = reconcileTransientMessages(pending, durable);
     if (pending.size === 0) {
       transientMessagesBySessionRef.current.delete(sessionId);
     }
@@ -200,12 +194,17 @@ export function createSessionWorkspaceActions(deps: {
     return true;
   }
 
-  function startNewSession(): void {
+  function startNewSession(): number {
     markNewTaskReloadIntent();
     setActiveId(undefined);
     messagesRef.current = [];
     setMessagesState([]);
     setTransientMessagesState([]);
+    return selectionRevisionRef.current;
+  }
+
+  function readSelectionRevision(): number {
+    return selectionRevisionRef.current;
   }
 
   function clearOwnedSessionState(sessionId: string): void {
@@ -237,6 +236,7 @@ export function createSessionWorkspaceActions(deps: {
     },
     setActiveId,
     startNewSession,
+    readSelectionRevision,
     clearOwnedSessionState,
     setMessages,
     commitTranscript,

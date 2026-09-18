@@ -151,8 +151,10 @@ interface MidTurnFixtureOptions {
   finalAtSecondCall?: boolean;
   /** One request and no tool call, so only the step-0 comparison can fire. */
   singleRequest?: boolean;
-  /** Add a third tool step whose result outgrows even a rolled-forward fold (finding A). */
-  rollingOverflow?: boolean;
+  /** Leading tool-call steps before the final text step (default 2). */
+  toolSteps?: number;
+  /** Per provider-call reported usage, keyed by 1-based call number. */
+  usageByCall?: Record<number, { input: number; output: number }>;
   /** Tool-search availability with a huge deferred schema (finding D). */
   bigToolGroup?: boolean;
   /** The first step emits assistant text before its tool call (finding B). */
@@ -233,7 +235,16 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
       return usage(options.firstStepUsage.input, options.firstStepUsage.output);
     return usage(100, 20);
   };
-  const toolCallChunks = (id: string, name: string, args: object): LanguageModelV4StreamPart[] => [
+  const usageOverride = (call: number): ReturnType<typeof usage> | undefined => {
+    const override = options.usageByCall?.[call];
+    return override ? usage(override.input, override.output) : undefined;
+  };
+  const toolCallChunks = (
+    id: string,
+    name: string,
+    args: object,
+    call: number,
+  ): LanguageModelV4StreamPart[] => [
     { type: 'stream-start', warnings: [] },
     {
       type: 'tool-call',
@@ -247,10 +258,10 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
         id === 'tool-1' && options.firstStepFinishReason === 'length'
           ? { unified: 'length', raw: 'length' }
           : { unified: 'tool-calls', raw: 'tool_calls' },
-      usage: id === 'tool-1' ? firstStepUsage() : usage(150, 30),
+      usage: usageOverride(call) ?? (id === 'tool-1' ? firstStepUsage() : usage(150, 30)),
     },
   ];
-  const doneChunks = (): LanguageModelV4StreamPart[] => [
+  const doneChunks = (call: number): LanguageModelV4StreamPart[] => [
     { type: 'stream-start', warnings: [] },
     { type: 'text-start', id: 'text-1' },
     { type: 'text-delta', id: 'text-1', delta: 'done' },
@@ -258,18 +269,25 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
     {
       type: 'finish',
       finishReason: { unified: 'stop', raw: 'stop' },
-      usage: options.finalStepUsage
-        ? usage(options.finalStepUsage.input, options.finalStepUsage.output)
-        : usage(120, 10),
+      usage:
+        usageOverride(call) ??
+        (options.finalStepUsage
+          ? usage(options.finalStepUsage.input, options.finalStepUsage.output)
+          : usage(120, 10)),
     },
   ];
+  const toolStepPath = (call: number): string =>
+    ['one.md', 'two.md', 'three.md'][call - 1] ?? `step-${call}.md`;
+  const toolSteps = options.toolSteps ?? 2;
   const chunksForCall = (call: number): LanguageModelV4StreamPart[] => {
     if (options.bigToolGroup) {
-      return call === 1 ? toolCallChunks('tool-1', 'tool_search', { query: 'Big' }) : doneChunks();
+      return call === 1
+        ? toolCallChunks('tool-1', 'tool_search', { query: 'Big' }, call)
+        : doneChunks(call);
     }
-    if (options.singleRequest) return doneChunks();
+    if (options.singleRequest) return doneChunks(call);
     if (call === 1) {
-      const first = toolCallChunks('tool-1', 'Read', { path: 'one.md' });
+      const first = toolCallChunks('tool-1', 'Read', { path: 'one.md' }, call);
       if (!options.assistantTextInFirstStep) return first;
       return [
         first[0]!,
@@ -283,11 +301,10 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
         ...first.slice(1),
       ];
     }
-    if (options.finalAtSecondCall) return doneChunks();
-    if (call === 2) return toolCallChunks('tool-2', 'Read', { path: 'two.md' });
-    if (options.rollingOverflow && call === 3)
-      return toolCallChunks('tool-3', 'Read', { path: 'three.md' });
-    return doneChunks();
+    if (options.finalAtSecondCall) return doneChunks(call);
+    if (call <= toolSteps)
+      return toolCallChunks(`tool-${call}`, 'Read', { path: toolStepPath(call) }, call);
+    return doneChunks(call);
   };
   const model = new MockLanguageModelV4({
     doStream: async (streamOptions: { abortSignal?: AbortSignal }) => {
@@ -1039,7 +1056,7 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
 
   test('bounds malformed-summary attempts across later steps in the same turn', async () => {
     const fixture = buildFixture({
-      rollingOverflow: true,
+      toolSteps: 3,
       summarize: () => {
         throw new HistoryCompactSummarizerError('malformed_summary_missing_section');
       },
@@ -1060,7 +1077,7 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
     // call. Live evidence: 15 consecutive failed summarizer calls over ~47
     // minutes on a provider that answers slowly and fails (#4634).
     const fixture = buildFixture({
-      rollingOverflow: true,
+      toolSteps: 3,
       summarize: () => {
         throw new HistoryCompactSummarizerError('provider_error');
       },
@@ -1138,15 +1155,33 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
     assert.match(thirdPrompt, /tool_result_pruned/);
   });
 
-  test('compacts at most once per send', async () => {
-    // The proactive fold already covers everything except the live head. A
-    // second fold in the same send would buy the small verbatim tail and cost
-    // the most recent context, so the send spends one call and no more.
-    const fixture = buildFixture({ priorChars: 2_000, rollingOverflow: true });
+  test('compacts at most once per step, and again once a step is accepted', async () => {
+    // The budget is one fold per logical step, not one per send. The first
+    // fold covers everything except the live head, so re-entering on that same
+    // step would buy the small verbatim tail and cost the most recent context.
+    // The steps after it are different requests the provider accepted, and
+    // their own results put the baseline back over the window, so each earns
+    // its own fold instead of running out of remedies mid-turn.
+    //
+    // Against the 190-token window: step 0 reports 100/40, so the second
+    // request folds; the folded request is accepted at 60/10, back inside the
+    // window; the step after it reports 150/30 and crosses again.
+    const fixture = buildFixture({
+      priorChars: 2_000,
+      toolSteps: 3,
+      usageByCall: { 1: { input: 100, output: 40 }, 2: { input: 60, output: 10 } },
+    });
     await runFixtureTurn(fixture, consumer);
 
-    assert.equal(fixture.summarizerCalls, 1);
-    assert.equal(fixture.recorded.length, 1);
+    assert.equal(fixture.summarizerCalls, 2);
+    assert.equal(fixture.recorded.length, 2);
+    // The second fold covers the step the first one left out.
+    assert.equal(
+      fixture.recorded[1]!.coverage.eventCount > fixture.recorded[0]!.coverage.eventCount,
+      true,
+    );
+    const complete = fixture.events.find((event) => event.type === 'complete');
+    assert.equal(complete?.type === 'complete' ? complete.stopReason : undefined, 'end_turn');
   });
 
   test('a prune-rescuable step is rescued by the prune, not compacted (review finding C)', async () => {
@@ -1330,7 +1365,10 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
       (message): message is { type: 'system_note'; kind: string; data?: unknown } =>
         (message as { kind?: string }).kind === 'context_provider_dropping',
     );
-    assert.deepEqual(note?.data, { inputTokens: 3_716, priorInputTokens: 3_716 });
+    assert.deepEqual(note?.data, {
+      inputTokens: 3_716,
+      priorInputTokens: 3_716,
+    });
   });
 
   test('does not report dropping across the boundary when the input grew', async () => {
@@ -1406,10 +1444,14 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
     await runFixtureTurn(fixture, consumer);
 
     const note = fixture.messages.find(
-      (message): message is { type: 'system_note'; kind: string } =>
+      (message): message is { type: 'system_note'; kind: string; data?: unknown } =>
         (message as { type?: string }).type === 'system_note',
     );
     assert.equal(note?.kind, 'context_provider_dropping');
+    assert.deepEqual(note?.data, {
+      inputTokens: 100,
+      priorInputTokens: 100,
+    });
   });
 
   test('records provider context dropping only for an unshaped usage decrease', async () => {
@@ -1421,10 +1463,14 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
     await runFixtureTurn(fixture, consumer);
 
     const note = fixture.messages.find(
-      (message): message is { type: 'system_note'; kind: string } =>
+      (message): message is { type: 'system_note'; kind: string; data?: unknown } =>
         (message as { type?: string }).type === 'system_note',
     );
     assert.equal(note?.kind, 'context_provider_dropping');
+    assert.deepEqual(note?.data, {
+      inputTokens: 50,
+      priorInputTokens: 100,
+    });
   });
 
   test('does not call provider context dropping when active pruning explains the decrease', async () => {

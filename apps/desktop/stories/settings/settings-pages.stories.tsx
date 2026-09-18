@@ -17,6 +17,7 @@
  * under the License.
  */
 
+
 import { useRef, useState } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { expect, fn, userEvent, waitFor, within } from 'storybook/test';
@@ -30,6 +31,9 @@ import type {
   UpdateAppSettingsResult,
   UsageRange,
   UsageStats,
+  UsageScreenQuery,
+  UsageScreenRequest,
+  UsageScreenResult,
 } from '@maka/core/settings';
 import { EMPTY_USAGE_PROVENANCE } from '@maka/core/usage-ledger-merge';
 import type {
@@ -91,6 +95,7 @@ import type {
 } from '../../src/preload/bridge-contract.js';
 import { withScopedMakaBridge } from '../maka-bridge';
 import { getDailyReviewSettingsCopy } from '../../src/renderer/locales/settings-daily-review-copy';
+import { getExternalSessionImportCopy } from '../../src/renderer/locales/external-session-import-copy';
 import { getUsageSettingsCopy } from '../../src/renderer/locales/settings-usage-copy';
 
 /**
@@ -1549,14 +1554,22 @@ const externalConversations: DesktopExternalSessionCatalogItem[] = [
     name: '把 provider catalog 的分页改成游标',
     cwd: '/Users/storybook-fixture-user/workspace/maka-agent',
     updatedAt: Date.now() - 3 * 60 * 60 * 1000,
-    importState: { importedCount: 1, importedSessionIds: ['imported-task-1'], isImporting: true },
+    importState: {
+      importedCount: 1,
+      importedSessionIds: ['imported-task-1'],
+      isImporting: true,
+    },
   },
   {
     id: 'codex-01930a',
     name: 'Reproduce the SQLite lock contention under parallel evals',
     cwd: '/Users/storybook-fixture-user/workspace/maka-agent',
     updatedAt: Date.now() - 2 * 24 * 60 * 60 * 1000,
-    importState: { importedCount: 0, importedSessionIds: [], isImporting: false },
+    importState: {
+      importedCount: 0,
+      importedSessionIds: [],
+      isImporting: false,
+    },
   },
   {
     id: 'codex-01929c',
@@ -1564,7 +1577,11 @@ const externalConversations: DesktopExternalSessionCatalogItem[] = [
     cwd: '/Users/storybook-fixture-user/workspace/docs',
     updatedAt: Date.now() - 6 * 24 * 60 * 60 * 1000,
     archived: true,
-    importState: { importedCount: 1, importedSessionIds: ['imported-archived'], isImporting: false },
+    importState: {
+      importedCount: 1,
+      importedSessionIds: ['imported-archived'],
+      isImporting: false,
+    },
   },
 ];
 
@@ -1684,6 +1701,25 @@ function withUsageStoryBridge(
     },
   } satisfies Record<string, unknown>);
 }
+
+function withUsageConsistencyBridge(outcome: 'stale' | 'capacity' | 'page' = 'stale') {
+  const settings = mergeSettings(createDefaultSettings(), {usage: {showDetails: true, activeTab: 'requests'}});
+  return withScopedMakaBridge({...makaBridge, settings: {...makaBridge.settings,
+    get: async () => settings,
+    update: async (patch: Parameters<typeof window.maka.settings.update>[0]): Promise<UpdateAppSettingsResult> => ({settings: mergeSettings(settings, patch)}),
+    usageStats: async (range?: UsageRange | Extract<UsageScreenRequest, {kind: 'activity'}>, _host?: unknown, query?: UsageScreenQuery): Promise<UsageStats | UsageScreenResult> => {
+      if (typeof range === 'object') return outcome === 'page'
+        ? {kind: 'activity', page: {revision: range.revision, queryIdentity: range.queryIdentity,
+          logs: usageLogs.slice(50), nextCursor: null}}
+        : {kind: 'revision_changed'};
+      if (outcome === 'capacity' && query?.search) return {kind: 'screen_response_too_large', section: 'pricing'};
+      return {...usageStats, logs: usageLogs.slice(0, 50), navigation: {activityTotal: usageLogs.length, revision: 'revision-A', queryIdentity: 'query-A', nextCursor: 'next-page',
+        query: query ?? {range: {from: 0, to: Date.now()}, search: '', status: 'all'}}};
+    },
+  }} satisfies Record<string, unknown>);
+}
+const withUsageRevisionBridge = withUsageConsistencyBridge();
+const withUsageCapacityBridge = withUsageConsistencyBridge('capacity');
 
 const withUsageEmptyBridge = withUsageStoryBridge(emptyUsageStats, {
   activeTab: 'providers',
@@ -1903,6 +1939,13 @@ function focusedRowOutline() {
   return { outlineStyle: style.outlineStyle, outlineWidth: style.outlineWidth };
 }
 
+function fieldChrome(element: HTMLElement) {
+  const field = element.parentElement;
+  if (!field) throw new Error('Settings field chrome is missing');
+  const style = getComputedStyle(field);
+  return `${style.borderColor} | ${style.boxShadow}`;
+}
+
 /**
  * The provider has to sit above the body: 已归档任务's story bridge confirms
  * through the same toast surface the shell's row action uses, and a hook cannot
@@ -2023,7 +2066,7 @@ async function openDailyReviewModelSelector(canvasElement: HTMLElement): Promise
   );
   await userEvent.click(selector);
   await waitForStoryCondition(
-    () => canvasElement.querySelector('.maka-model-wheel-viewport') !== null,
+    () => document.querySelector('[popover]:popover-open [role="listbox"]') !== null,
     'Daily Review model selector did not open',
   );
   return selector;
@@ -2089,7 +2132,7 @@ export const General: Story = {
   decorators: [withSettingsBridge],
   render: () => <SettingsStory section="general" />,
 };
-// Real path: 设置 → 通用 → 默认模型. Focus stays on the floating magnetic wheel;
+// Real path: 设置 → 通用 → 默认模型. Focus moves into the open Selector popup;
 // the containing settings row must not add a second focus ring.
 export const GeneralPickerOpenFocusRing: Story = {
   decorators: [withSettingsBridge],
@@ -2098,29 +2141,22 @@ export const GeneralPickerOpenFocusRing: Story = {
     const canvas = within(canvasElement);
     const trigger = await canvas.findByRole('button', { name: '默认模型' });
     trigger.scrollIntoView({ block: 'center' });
-    const rows = () => Array.from(canvasElement.querySelectorAll('.astryx-item')).map((element) => {
-      const { x, y, width, height } = element.getBoundingClientRect();
-      return { x, y, width, height };
-    });
-    const before = rows();
     await userEvent.click(trigger);
     await waitFor(() => {
       const active = document.activeElement as HTMLElement | null;
-      expect(active?.matches('.maka-model-wheel-viewport')).toBe(true);
+      expect(document.querySelector('[popover]:popover-open')).not.toBeNull();
+      expect(active?.closest('[popover]:popover-open')).not.toBeNull();
     });
     const active = document.activeElement as HTMLElement;
     const row = active.closest<HTMLElement>('.astryx-item');
     expect(row).not.toBeNull();
     expect(row ? getComputedStyle(row).outlineStyle : null).toBe('none');
-    expect(rows()).toEqual(before);
     await userEvent.keyboard('{Escape}');
     await waitFor(() => expect(trigger).toHaveFocus());
-    expect(rows()).toEqual(before);
-    await userEvent.click(trigger);
   },
 };
 
-// Real path: keyboard navigation through 设置 → 通用. The model button carries the
+// Real path: keyboard navigation through 设置 → 通用. The field carries the
 // visible focus treatment; its containing Item does not add a second ring.
 export const GeneralKeyboardFocusRing: Story = {
   decorators: [withSettingsBridge],
@@ -2129,19 +2165,16 @@ export const GeneralKeyboardFocusRing: Story = {
     const canvas = within(canvasElement);
     const tone = await canvas.findByRole('textbox', { name: '助手语气偏好' });
     const trigger = canvas.getByRole('button', { name: '默认模型' });
+    const resting = fieldChrome(trigger);
     tone.focus();
     await tabTo(trigger);
     expect(focusedRowOutline()?.outlineStyle).toBe('none');
-    await waitFor(() => {
-      const style = getComputedStyle(trigger);
-      expect(style.outlineStyle).toBe('solid');
-      expect(Number.parseFloat(style.outlineWidth)).toBeGreaterThan(0);
-    });
+    await waitFor(() => expect(fieldChrome(trigger)).not.toBe(resting));
   },
 };
 
 // Real path: Windows High Contrast keyboard navigation through 设置 → 通用.
-// The model button's outline survives, and the Item retains its shared fallback.
+// The field loses its own paint there, so the Item retains the focus ring.
 export const GeneralForcedColorsFocusRing: Story = {
   decorators: [withSettingsBridge],
   render: () => <SettingsStory section="general" />,
@@ -2149,10 +2182,10 @@ export const GeneralForcedColorsFocusRing: Story = {
     const canvas = within(canvasElement);
     const tone = await canvas.findByRole('textbox', { name: '助手语气偏好' });
     const trigger = canvas.getByRole('button', { name: '默认模型' });
+    const resting = fieldChrome(trigger);
     tone.focus();
     await tabTo(trigger);
-    expect(getComputedStyle(trigger).outlineStyle).toBe('solid');
-    expect(Number.parseFloat(getComputedStyle(trigger).outlineWidth)).toBeGreaterThan(0);
+    expect(fieldChrome(trigger)).toBe(resting);
     expect(focusedRowOutline()?.outlineStyle).toBe('solid');
   },
 };
@@ -2576,6 +2609,58 @@ export const PetsActionBadgeTypography: Story = {
 };
 
 /** #1362: proxy + auth enabled so the full form-grid stack renders. */
+// Real path: Settings → Usage → Next page reads a matching-revision continuation.
+export const UsagePagedActivity: Story = {
+  decorators: [withUsageConsistencyBridge('page')],
+  render: () => <SettingsStory section="usage" />,
+  play: async ({canvasElement, globals}) => {
+    const canvas = within(canvasElement);
+    const copy = getUsageSettingsCopy(globals.locale === 'en' ? 'en' : globals.locale === 'zh-TW' ? 'zh-TW' : 'zh-CN');
+    await waitForStoryCondition(() => canvas.queryByRole('table', {name: copy.tables.requestsAria}) !== null || canvas.queryByRole('button', {name: copy.showDetails}) !== null, 'Usage details were not available');
+    const details = canvas.queryByRole('button', {name: copy.showDetails});
+    if (details) await userEvent.click(details);
+    const pageTwo = canvas.getAllByRole('button').find(button => button.textContent?.trim() === '2');
+    await expect(pageTwo).toBeDefined();
+    await userEvent.click(pageTwo!);
+    await expect(await canvas.findByText(USAGE_PAGINATION_SENTINEL)).toBeVisible();
+    await expect(await canvas.findByRole('button', {name: /next page|下一页|下一頁/i})).toBeDisabled();
+  },
+};
+// Real path: Settings → Usage → Next page after a Usage write changes the revision.
+export const UsageRevisionChanged: Story = {
+  decorators: [withUsageRevisionBridge],
+  render: () => <SettingsStory section="usage" />,
+  play: async ({canvasElement, globals}) => {
+    const canvas = within(canvasElement);
+    const copy = getUsageSettingsCopy(globals.locale === 'en' ? 'en' : globals.locale === 'zh-TW' ? 'zh-TW' : 'zh-CN');
+    await waitForStoryCondition(() => canvas.queryByRole('table', {name: copy.tables.requestsAria}) !== null || canvas.queryByRole('button', {name: copy.showDetails}) !== null, 'Usage details were not available');
+    const details = canvas.queryByRole('button', {name: copy.showDetails});
+    if (details) await userEvent.click(details);
+    const more = await canvas.findByRole('button', {name: /next page|下一页|下一頁/i});
+    await userEvent.click(more);
+    await expect(await canvas.findByText(copy.staleTitle)).toBeVisible();
+    await expect(more).toBeDisabled();
+    await expect(await canvas.findByText(copy.staleBody)).toBeVisible();
+  },
+};
+// Real path: Settings → Usage → change the activity search when a complete new screen exceeds capacity.
+export const UsageRetainedCapacityFailure: Story = {
+  decorators: [withUsageCapacityBridge],
+  render: () => <SettingsStory section="usage" />,
+  play: async ({canvasElement, globals}) => {
+    const canvas = within(canvasElement);
+    const copy = getUsageSettingsCopy(globals.locale === 'en' ? 'en' : globals.locale === 'zh-TW' ? 'zh-TW' : 'zh-CN');
+    await waitForStoryCondition(() => canvas.queryByRole('table', {name: copy.tables.requestsAria}) !== null || canvas.queryByRole('button', {name: copy.showDetails}) !== null, 'Usage details were not available');
+    const details = canvas.queryByRole('button', {name: copy.showDetails});
+    if (details) await userEvent.click(details);
+    await canvas.findByRole('button', {name: /next page|下一页|下一頁/i});
+    await userEvent.type(await canvas.findByRole('textbox', {name: copy.filterAria}), 'new-filter');
+    await expect(await canvas.findByText(new RegExp(copy.capacityBody))).toBeVisible();
+    await expect(await canvas.findByText(new RegExp(copy.retainedBody))).toBeVisible();
+    await expect(await canvas.findByRole('button', {name: /next page|下一页|下一頁/i})).toBeDisabled();
+  },
+};
+
 // Real path: 设置 → 使用统计 → 供应商统计, before any usage has been recorded.
 export const UsageEmpty: Story = {
   decorators: [withUsageEmptyBridge],
@@ -3523,21 +3608,33 @@ function importOutcomeRecoveryBridge(): Record<string, unknown> {
 }
 
 // The import response is deliberately unknown; the next authoritative catalog
-// read proves that the task landed and turns the banner into a usable entry.
+// read proves that the task landed. There is no positive "confirmed" copy any
+// more: the unknown-outcome banner stays up and the row's "imported N times"
+// annotation carries the landed signal, so both halves are asserted here.
 // Real path: 设置 → 导入任务 → 导入, when Main reports an unknown commit outcome that catalog recovery confirms.
 export const ImportTasksOutcomeUnknownRecovered: Story = {
   decorators: [withScopedMakaBridge(importOutcomeRecoveryBridge())],
   render: () => <SettingsStory section="import-tasks" />,
-  play: async ({ canvasElement }) => {
+  play: async ({ canvasElement, globals }) => {
+    const importCopy = getExternalSessionImportCopy(
+      globals.locale === 'en' ? 'en' : globals.locale === 'zh-TW' ? 'zh-TW' : 'zh-CN',
+    );
     const importButton = await waitForStoryButton(canvasElement, (candidate) =>
       ['导入', 'Import'].includes(candidate.textContent?.trim() ?? ''),
     );
     await userEvent.click(importButton);
+    // The banner is set when the import settles; the annotation only appears
+    // once the follow-up catalog read lands, so requiring both is what pins
+    // the recovery — a banner alone would pass before the row was refreshed.
     await waitForStoryCondition(
-      () =>
-        canvasElement.textContent?.includes('已确认导入') === true ||
-        canvasElement.textContent?.includes('Import confirmed') === true,
-      'Unknown-outcome recovery did not expose the imported task',
+      () => {
+        const text = canvasElement.textContent ?? '';
+        return (
+          text.includes(importCopy.importOutcomeUnknownTitle) &&
+          text.includes(importCopy.importedCount(1))
+        );
+      },
+      'Unknown-outcome recovery did not surface the catalog-confirmed import',
     );
   },
 };

@@ -32,20 +32,26 @@ export interface ProcessingFold {
   children: FoldedTimelineChild[];
 }
 
-export type FoldedTimelineEntry = TurnTimelineItem | ProcessingFold;
+export type FoldedTimelineEntry = Extract<TurnTimelineItem, { kind: 'user' | 'text' }> | ProcessingFold;
 
-export function foldTimeline(items: readonly TurnTimelineItem[]): FoldedTimelineEntry[] {
+export function foldTimeline(items: readonly TurnTimelineItem[]): {
+  entries: FoldedTimelineEntry[];
+  finalReply: Extract<TurnTimelineItem, { kind: 'text' }> | undefined;
+} {
   const out: FoldedTimelineEntry[] = [];
+  let finalReply: Extract<TurnTimelineItem, { kind: 'text' }> | undefined;
   let anchor = 'start';
   let buffer: FoldedTimelineChild[] = [];
   const flush = (): void => {
+    if (buffer.length === 0) return;
     // Imported transcripts can record reasoning after the visible reply.
     // Ignore that trailing reasoning when locating the answer, but stop at
     // tool activity: text before tools is still process commentary.
     const replyIndex = buffer.findLastIndex((item) => item.kind !== 'thinking');
-    const answer = buffer[replyIndex]?.kind === 'text'
-      ? buffer.splice(replyIndex, 1)[0]
-      : undefined;
+    const candidate = buffer[replyIndex];
+    const answer = candidate?.kind === 'text' ? candidate : undefined;
+    if (answer) buffer.splice(replyIndex, 1);
+    finalReply = answer;
     if (buffer.length > 0) {
       out.push({ kind: 'processing', id: anchor, children: buffer });
     }
@@ -57,10 +63,15 @@ export function foldTimeline(items: readonly TurnTimelineItem[]): FoldedTimeline
       flush();
       out.push(item);
       anchor = item.messageId;
+      finalReply = undefined;
+    } else if (item.kind === 'text' && item.interrupted) {
+      buffer.push(item);
+      flush();
+      anchor = item.messageId;
     } else {
       buffer.push(item);
     }
   }
   flush();
-  return out;
+  return { entries: out, finalReply };
 }

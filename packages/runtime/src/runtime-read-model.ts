@@ -36,10 +36,6 @@ import {
   type RuntimeEventReadModelDiagnostic,
   type RuntimeEventTerminalFact,
 } from './runtime-event-read-model.js';
-import {
-  buildRuntimeEventModelReplayPlan,
-  type RuntimeEventModelReplayPlan,
-} from './model-history.js';
 
 const CANONICAL_PERMISSION_READ_CONCURRENCY = 8;
 
@@ -56,7 +52,6 @@ export interface RuntimeReadModelSessionView {
   invocations: RuntimeInvocationRecord[];
   diagnostics: RuntimeEventReadModelDiagnostic[];
   terminalFacts: RuntimeEventTerminalFact[];
-  replayPlan: RuntimeEventModelReplayPlan;
 }
 
 export class RuntimeReadModelError extends Error {
@@ -129,8 +124,7 @@ export class RuntimeReadModel {
 
       // No terminal event yet: the invocation is still open, or the process died
       // holding it. Either way its own events are the whole truth about it, read
-      // as a running turn reads — the arriving text presented as settled. No
-      // durable ordinals exist for them yet, so they keep ledger order.
+      // as a running turn reads — the arriving text presented as settled.
       if (!invocation.terminalEvent) {
         inFlightTurnIds.add(invocation.turnId);
         appendOrderedEvents(ordered, activePresentationRuntimeEvents(runEvents), runIndex);
@@ -212,7 +206,6 @@ export class RuntimeReadModel {
       invocations: input.invocations,
       diagnostics,
       terminalFacts: input.terminalFacts ?? [],
-      replayPlan: buildRuntimeEventModelReplayPlan(input.events),
     };
   }
 

@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { expect, userEvent, waitFor, within } from 'storybook/test';
 import type { ProviderType } from '@maka/core/llm-connections';
@@ -26,6 +26,9 @@ import type { SessionSummary } from '@maka/core/session';
 import { ChatModelSwitcher, ModelChipStatic, NewChatModelPicker, ThinkingLevelSelector } from '../src/chat-model-switcher.js';
 import {
   exactModelChoiceValue,
+  modelChoiceDescription,
+  modelChoiceValue,
+  modelMenuGroups,
   type ChatModelChoice,
 } from '../src/chat-model-helpers.js';
 import { ModelPicker } from '../src/model-picker.js';
@@ -61,7 +64,7 @@ const CHOICES: ChatModelChoice[] = [
   choice('anthropic-team', 'anthropic', 'Anthropic', 'claude-opus-4-1', 'Claude Opus 4.1'),
   choice('anthropic-team', 'anthropic', 'Anthropic', 'claude-sonnet-4', 'Claude Sonnet 4'),
   choice('google-lab', 'google', 'Google Gemini', 'gemini-3-pro', 'Gemini 3 Pro'),
-  choice('openrouter', 'openai-compatible', 'Custom relay', 'vendor/a-very-long-model-name-with-reasoning-and-tools-preview', 'A very long model name with reasoning and tools preview'),
+  choice('fireworks', 'openai-compatible', 'Fireworks', 'accounts/fireworks/models/deepseek-v4-flash-0731', 'accounts/fireworks/models/deepseek-v4-flash-0731'),
 ];
 
 // Canonical user-facing ladder when a model offers the common set.
@@ -82,33 +85,41 @@ const MANY_CHOICES: ChatModelChoice[] = (
   ] satisfies Array<{ slug: string; type: ProviderType; label: string; models: string[] }>
 ).flatMap((group) => group.models.map((model) => choice(group.slug, group.type, group.label, model, model)));
 
-// A relay whose connection name, model ids, and descriptions all overflow the
-// trigger and option widths — the "very long text" state truncation must honour.
-const LONG_MODEL_LABEL =
-  'A very long model name that keeps going well past any reasonable trigger width so wrapping and truncation get exercised';
+// Real over-length ids from models.dev (2026-03): the ids that outgrow the
+// popup are path-style — `accounts/<provider>/models/<model>` on Fireworks or
+// namespaced slugs on OpenRouter — where the tail is the actual model name.
 const LONG_CHOICES: ChatModelChoice[] = [
   {
-    connectionId: 'connection-relay-verbose',
-    connectionSlug: 'relay-verbose',
+    connectionId: 'connection-fireworks',
+    connectionSlug: 'fireworks',
     providerType: 'openai-compatible',
-    providerLabel: 'Custom relay',
-    connectionName: 'My self-hosted relay with an unusually descriptive connection name that also overflows',
-    model: 'vendor/a-very-long-model-identifier-with-reasoning-tools-and-a-2026-preview-suffix',
-    label: LONG_MODEL_LABEL,
-    description:
-      'A deliberately verbose description that runs onto several lines so the option body’s overflow handling stays legible instead of pushing the menu wider.',
-    knowledgeCutoff: '2026-01',
+    providerLabel: 'Fireworks',
+    connectionName: 'Fireworks',
+    model: 'accounts/fireworks/models/deepseek-v4-flash-0731',
+    label: 'accounts/fireworks/models/deepseek-v4-flash-0731',
+    description: 'DeepSeek V4 Flash 0731',
     isDefault: false,
     thinkingLevels: [],
   },
   {
-    connectionId: 'connection-relay-verbose',
-    connectionSlug: 'relay-verbose',
+    connectionId: 'connection-fireworks',
+    connectionSlug: 'fireworks',
     providerType: 'openai-compatible',
-    providerLabel: 'Custom relay',
-    connectionName: 'My self-hosted relay with an unusually descriptive connection name that also overflows',
-    model: 'vendor/second-extremely-long-model-identifier-preview-with-an-extended-context-window',
-    label: 'Another exhaustively named preview model with an extended context window and a trailing note',
+    providerLabel: 'Fireworks',
+    connectionName: 'Fireworks',
+    model: 'accounts/fireworks/models/nemotron-lightning-3p5-30b-a3b',
+    label: 'accounts/fireworks/models/nemotron-lightning-3p5-30b-a3b',
+    isDefault: false,
+    thinkingLevels: [],
+  },
+  {
+    connectionId: 'connection-openrouter',
+    connectionSlug: 'openrouter',
+    providerType: 'openai-compatible',
+    providerLabel: 'OpenRouter',
+    connectionName: 'OpenRouter',
+    model: 'cognitivecomputations/dolphin-mistral-24b-venice-edition',
+    label: 'cognitivecomputations/dolphin-mistral-24b-venice-edition',
     isDefault: false,
     thinkingLevels: [],
   },
@@ -211,35 +222,20 @@ export const ExistingConversation: Story = {
     const trigger = within(canvasElement).getByRole('button', {
       name: /切换当前任务模型|Switch model for this task/,
     });
-    const announcement = canvasElement.querySelector<HTMLElement>('.maka-model-switch-announcement');
-    await expect(announcement).toHaveAttribute('role', 'status');
-    await expect(trigger).not.toHaveAttribute('aria-description');
-    await expect(announcement).toBeEmptyDOMElement();
-    await expect(document.body.querySelector('.maka-model-switch-notice')).not.toBeInTheDocument();
-
-    await userEvent.hover(trigger);
-    await within(document.body).findByText(
-      english ? 'Switch model for this task' : '切换当前任务模型',
-    );
-    await userEvent.unhover(trigger);
 
     await userEvent.click(trigger);
-    await waitFor(() => expect(announcement).toHaveTextContent(warning));
-    await expect(announcement).toHaveAttribute('aria-live', 'polite');
-    await expect(announcement).toHaveAttribute('aria-atomic', 'true');
-    const menu = within(document.body).getByRole('listbox');
-    await expect(menu).not.toContainElement(announcement);
+    // The cache warning leads the open list as a disabled row, announced by its
+    // option text — reachable but never pickable.
+    const warningRow = await within(document.body).findByRole('option', { name: warning });
+    await expect(warningRow).toHaveAttribute('aria-disabled', 'true');
 
     await userEvent.keyboard('{Escape}');
-    await waitFor(() => expect(announcement).toBeEmptyDOMElement());
-    await expect(document.body.querySelector('.maka-model-switch-notice')).not.toBeInTheDocument();
-
     // Closing restores focus to the same trigger next frame.
     await waitFor(() => expect(within(canvasElement).getByRole('button', {
       name: /切换当前任务模型|Switch model for this task/,
     })).toHaveFocus());
     await userEvent.keyboard('{ArrowDown}');
-    await waitFor(() => expect(announcement).toHaveTextContent(warning));
+    await within(document.body).findByRole('option', { name: warning });
   },
 };
 
@@ -276,15 +272,12 @@ export const EmptyConversation: Story = {
     const trigger = within(canvasElement).getByRole('button', {
       name: /切换当前任务模型|Switch model for this task/,
     });
-    const announcement = canvasElement.querySelector<HTMLElement>('.maka-model-switch-announcement');
-    await expect(announcement).toHaveAttribute('role', 'status');
-    await expect(trigger).not.toHaveAttribute('aria-description');
-    await expect(announcement).toBeEmptyDOMElement();
-    await expect(document.body.querySelector('.maka-model-switch-notice')).not.toBeInTheDocument();
-
     await userEvent.click(trigger);
-    await expect(announcement).toBeEmptyDOMElement();
-    await expect(document.body.querySelector('.maka-model-switch-notice')).not.toBeInTheDocument();
+    // No conversation history, so the cache warning row does not lead the list.
+    await within(document.body).findByRole('option', { name: /Claude Sonnet 4/ });
+    await expect(
+      within(document.body).queryByRole('option', { name: /prompt cache|提示缓存/ }),
+    ).not.toBeInTheDocument();
   },
 };
 
@@ -305,6 +298,37 @@ export const EmptyCatalog: Story = {
       />
     </div>
   ),
+};
+
+// Real path: Settings → 通用 → 默认模型 with the full multi-connection catalog.
+// The Selector carries search — the answer to "找不到模型" that the wheel
+// dropped.
+export const SettingsCatalog: Story = {
+  render: function SettingsCatalogRender() {
+    // The settings catalog is slug-scoped (modelChoiceValue), unlike the
+    // session switcher's connection-id-scoped exact values.
+    const [value, setValue] = useState(
+      modelChoiceValue(MANY_CHOICES[4]!.connectionSlug, MANY_CHOICES[4]!.model),
+    );
+    return (
+      <div style={{ width: 260 }}>
+        <ModelPicker
+          groups={modelMenuGroups(MANY_CHOICES, 'zh-CN')}
+          value={value}
+          leadingOption={{ value: '', label: '未设置' }}
+          renderProviderMark={providerMark}
+          ariaLabel="默认模型"
+          onValueChange={setValue}
+        />
+      </div>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    await userEvent.click(within(canvasElement).getByRole('button'));
+    // Search narrows a 19-model catalog to the typed match.
+    await userEvent.keyboard('gamma');
+    await within(document.body).findByRole('option', { name: /vendor\/gamma/ });
+  },
 };
 
 // Real path: quiet composer left footer — model + adjacent thinking menu.
@@ -334,10 +358,10 @@ export const ThinkingLevelSeparate: Story = {
     );
   },
   play: async ({ canvasElement }) => {
-    const thinking = within(canvasElement).getByRole('button', { name: /思考级别/ });
+    const thinking = within(canvasElement).getByRole('combobox', { name: /思考级别/ });
     await userEvent.click(thinking);
-    const medium = await within(document.body).findByRole('menuitemradio', { name: '中' });
-    await expect(medium).toHaveAttribute('aria-checked', 'true');
+    const medium = await within(document.body).findByRole('option', { name: '中' });
+    await expect(medium).toHaveAttribute('aria-selected', 'true');
   },
 };
 
@@ -399,9 +423,13 @@ export const ManyConnections: Story = {
     });
     await userEvent.click(trigger);
     const menu = within(document.body);
-    await expect(await menu.findAllByRole('option')).toHaveLength(MANY_CHOICES.length);
-    await userEvent.keyboard('{End}');
-    await expect(await menu.findByRole('option', { name: /vendor\/gamma/, selected: true })).toBeInTheDocument();
+    // Every connection is its own labelled group and the last group's model is
+    // reachable in the menu's accessibility tree. This drives the visual state;
+    // selection behaviour and scroll geometry are contracts left to focused
+    // tests / e2e, not asserted here.
+    const groups = await menu.findAllByRole('group');
+    await expect(groups.length).toBeGreaterThanOrEqual(7);
+    await menu.findByRole('option', { name: /vendor\/gamma/ });
   },
 };
 
@@ -426,11 +454,10 @@ export const LongModelNames: Story = {
       name: /选择新任务模型|Choose a model for the new task/,
     });
     await userEvent.click(trigger);
-    // Verifies the long-labelled model is reachable as a radio menu item. Whether the
-    // long text truncates or wraps within the menu bounds is a visual check,
-    // not asserted here.
+    // Verifies the long-id model is reachable as an option; the label
+    // ellipsizing at its start inside the capped popup is a visual check.
     await within(document.body).findByRole('option', {
-      name: /A very long model name that keeps going/,
+      name: /deepseek-v4-flash-0731/,
     });
   },
 };

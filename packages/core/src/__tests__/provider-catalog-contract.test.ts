@@ -25,7 +25,10 @@ import {
   validateConnectionBaseUrl,
   validateSlug,
 } from '../llm-connections.js';
-import { GENERATED_MODELS_DEV_METADATA } from '../model-metadata.generated.js';
+import {
+  GENERATED_MODELS_DEV_METADATA,
+  GENERATED_MODELS_DEV_MODEL_PROVIDER_OVERRIDES,
+} from '../model-metadata.generated.js';
 import {
   CATALOG_PROVIDER_TYPES,
   PROVIDER_REGISTRY,
@@ -45,6 +48,20 @@ describe('provider connection slug derivation contract', () => {
     assert.equal(derived, 'openai-100');
     assert.ok(!existing.includes(derived));
     assert.equal(validateSlug(derived), null);
+  });
+});
+
+describe('Moonshot provider regions', () => {
+  it('offers the international API as its own provider', () => {
+    const global = PROVIDER_REGISTRY['moonshot-global'];
+    assert.equal(global.baseUrl, 'https://api.moonshot.ai/v1');
+    assert.equal(global.category, 'overseas');
+    assert.deepEqual(global.runtimeAdapter, {
+      kind: 'openai',
+      apiProtocol: 'openai-responses',
+      responses: { adapter: 'open-responses', reasoningReplay: 'plaintext-summary' },
+    });
+    assert.ok(global.fallbackModels.includes('kimi-k3'));
   });
 });
 
@@ -81,17 +98,125 @@ describe('provider catalog contract — structural invariants over CATALOG_PROVI
     }
   });
 
-  it('delegates Alibaba Token Plan execution through one explicit Runtime profile', () => {
-    const delegated = Object.entries(PROVIDER_REGISTRY).flatMap(([providerType, definition]) => {
-      const adapter = definition.runtimeAdapter;
-      return adapter.kind === 'openai-compatible' && adapter.runtimeProfile
-        ? [{ providerType, runtimeProfile: adapter.runtimeProfile }]
-        : [];
+  it('pins every declared Responses reasoning contract', () => {
+    const declared = Object.entries(PROVIDER_REGISTRY).flatMap(([providerType, definition]) => {
+      const adapters = [
+        ['runtimeAdapter', definition.runtimeAdapter],
+        ...Object.entries(definition.protocolAdapters ?? {}).map(
+          ([protocol, adapter]) => [`protocolAdapters.${protocol}`, adapter] as const,
+        ),
+      ] as const;
+      return adapters.flatMap(([via, adapter]) =>
+        (adapter.kind === 'openai' ||
+          adapter.kind === 'openai-codex' ||
+          adapter.kind === 'openai-compatible') &&
+        adapter.responses
+          ? [{ providerType, via, contract: adapter.responses }]
+          : [],
+      );
     });
-    assert.deepEqual(delegated, [
-      { providerType: 'alibaba-token-plan-cn', runtimeProfile: 'alibaba-token-plan' },
-      { providerType: 'alibaba-token-plan', runtimeProfile: 'alibaba-token-plan' },
+    assert.deepEqual(declared, [
+      {
+        providerType: 'volcengine-agent-plan',
+        via: 'runtimeAdapter',
+        contract: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
+      },
+      {
+        providerType: 'openai',
+        via: 'runtimeAdapter',
+        contract: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
+      },
+      {
+        providerType: 'deepseek',
+        via: 'runtimeAdapter',
+        contract: { adapter: 'open-responses', reasoningReplay: 'plaintext-content' },
+      },
+      {
+        providerType: 'moonshot-global',
+        via: 'runtimeAdapter',
+        contract: { adapter: 'open-responses', reasoningReplay: 'plaintext-summary' },
+      },
+      {
+        providerType: 'xai',
+        via: 'runtimeAdapter',
+        contract: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
+      },
+      {
+        providerType: 'xai-oauth',
+        via: 'runtimeAdapter',
+        contract: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
+      },
+      {
+        providerType: 'opencode',
+        via: 'protocolAdapters.openai-responses',
+        contract: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
+      },
+      {
+        providerType: 'opencode-go',
+        via: 'protocolAdapters.openai-responses',
+        contract: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
+      },
+      {
+        providerType: 'alibaba-token-plan-cn',
+        via: 'runtimeAdapter',
+        contract: {
+          adapter: 'open-responses',
+          reasoningReplay: 'plaintext-summary',
+          compatibility: 'alibaba-token-plan',
+        },
+      },
+      {
+        providerType: 'alibaba-token-plan',
+        via: 'runtimeAdapter',
+        contract: {
+          adapter: 'open-responses',
+          reasoningReplay: 'plaintext-summary',
+          compatibility: 'alibaba-token-plan',
+        },
+      },
+      {
+        providerType: 'openai-responses-compatible',
+        via: 'runtimeAdapter',
+        contract: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
+      },
+      {
+        providerType: 'github-copilot',
+        via: 'protocolAdapters.openai-responses',
+        contract: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
+      },
+      {
+        providerType: 'openai-codex',
+        via: 'runtimeAdapter',
+        contract: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
+      },
     ]);
+  });
+
+  it('keeps generated models.dev overrides on the declared contract or none', () => {
+    // The sync script cannot read the registry, so it mirrors this rule from
+    // a pinned provider map. A generated `openai` row may only carry a
+    // contract the provider declares — on `protocolAdapters['openai-responses']`
+    // or its `runtimeAdapter`; without either, the honest value is `none`.
+    for (const [providerType, rows] of Object.entries(
+      GENERATED_MODELS_DEV_MODEL_PROVIDER_OVERRIDES,
+    )) {
+      const definition = PROVIDER_REGISTRY[providerType as ProviderType];
+      const protocolAdapter = definition?.protocolAdapters?.['openai-responses'];
+      const runtimeAdapter = definition?.runtimeAdapter;
+      const declared =
+        (protocolAdapter && 'responses' in protocolAdapter
+          ? protocolAdapter.responses
+          : undefined) ??
+        (runtimeAdapter && 'responses' in runtimeAdapter ? runtimeAdapter.responses : undefined);
+      for (const [modelId, row] of Object.entries(rows)) {
+        if (row.adapter.kind !== 'openai') continue;
+        assert.deepEqual(
+          row.adapter.responses,
+          declared ?? { adapter: 'openai', reasoningReplay: 'none' },
+          `${providerType}/${modelId} generated Responses contract must equal the provider's declared contract, or 'none' when undeclared`,
+        );
+      }
+    }
   });
 });
 

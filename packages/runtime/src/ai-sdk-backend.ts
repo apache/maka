@@ -395,7 +395,6 @@ export class AiSdkBackend implements AgentBackend {
       targetConnectionId: input.header.llmConnectionId,
       targetProviderStateIdentity: input.providerStateIdentity,
       now: this.now,
-      modelAdapter: this.modelAdapter,
       createProviderRequestTracker: (trackerInput) =>
         this.providerTelemetry.createTracker(trackerInput),
       materializeRuntimeReplayPlan: (

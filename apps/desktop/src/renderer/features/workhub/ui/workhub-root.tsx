@@ -17,16 +17,20 @@
  * under the License.
  */
 
-import { useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { ChatSurfaceLayout, UserQuestionPrompt, MakaWordmark, useUiLocale, type ComposerHandle } from '@maka/ui';
 import { Button, IconButton } from '@astryxdesign/core';
 import { ChevronDown, PictureInPicture2, Undo2, X } from '@maka/ui/icons';
+import { useLiveContextUsage } from '../../../application/contracts/session-inspector/use-live-context-usage.js';
+import { selectLatestRequestUsage } from '../../../application/contracts/session-inspector/latest-request-usage.js';
 import { WorkHubProgressCard } from './workhub-progress-card.js';
 import { WorkHubComposer } from './workhub-composer.js';
 import { WorkHubConversation } from './workhub-conversation.js';
 import { FormInteractionPrompt } from '@maka/ui';
+import { getShellCopy } from '../../../locales/shell-copy.js';
+import { WorkbarEdgeToggle } from '../../../application/contracts/workbar-edge-toggle.js';
 import { WorkHubNavigationRail } from './workhub-navigation-rail.js';
-import { WorkHubHighlightProvider, WorkHubHighlightContext, WorkHubHueProvider } from './workhub-work-identity.js';
+import { useWorkHubHighlightState, WorkHubHighlightContext, WorkHubHueProvider } from './workhub-work-identity.js';
 import { getWorkHubRailCopy } from '../../../locales/workhub-copy.js';
 import { useWorkHubController } from '../controller/use-workhub-controller.js';
 import type { WorkHubControlSnapshot } from '../../../../shared/workhub-control.js';
@@ -67,13 +71,19 @@ function revealWordmark(element: HTMLDivElement | null, content: HTMLDivElement 
 }
 
 export function WorkHubRoot() {
-  return <WorkHubHighlightProvider><WorkHubContents /></WorkHubHighlightProvider>;
-}
-
-function WorkHubContents() {
-  const { selectWork } = useContext(WorkHubHighlightContext);
-  const controller = useWorkHubController(() => selectWork(undefined));
+  const highlight = useWorkHubHighlightState();
+  const controller = useWorkHubController(() => highlight.selectWork(undefined));
   const { services, session, transcript, busy } = controller;
+  useEffect(() => {
+    services.bindBrowserSession(controller.sessionId ?? null);
+    return () => services.bindBrowserSession(null);
+  }, [services, controller.sessionId]);
+  const modelChoice = controller.choices.find((choice) =>
+    choice.connectionId === session?.llmConnectionId && choice.connectionSlug === session?.llmConnectionSlug && choice.model === session?.model,
+  );
+  const thinkingLevels = modelChoice?.thinkingLevels ?? [];
+  const liveContextUsage = useLiveContextUsage({ inspector: services.inspector, sessionId: controller.sessionId, model: session?.model, providerType: modelChoice?.providerType });
+  const thinkingLevel = session?.thinkingLevel && thinkingLevels.includes(session.thinkingLevel) ? session.thinkingLevel : undefined;
   const locale = useUiLocale();
   const t = workHubLiveCopy[locale];
   const shortcutLabel = navigator.platform.toLowerCase().includes('mac') ? '⌘⇧K' : 'Ctrl+Shift+K';
@@ -265,8 +275,10 @@ function WorkHubContents() {
     void task.catch(controller.report);
   };
   return (
+    <WorkHubHighlightContext.Provider value={highlight}>
     <WorkHubHueProvider sessionIds={[...tasks.map((task) => task.target.sessionId), ...delegatedSessionIds]}>
     <section ref={surface} data-progress={progress} data-progress-editing={editingProgress} className="workHubLive workhub-surface" data-placement={presentation?.placement ?? 'docked'} data-conversation-expanded={showConversation} aria-label={t.title}>
+      {!floating && presentation?.workbar && <WorkbarEdgeToggle label={getShellCopy(locale).chrome[presentation.workbar.collapsed ? 'expandWorkbar' : 'collapseWorkbar']} {...presentation.workbar} onToggle={() => call(services.presentation.toggleWorkbar())} />}
       {progress && <WorkHubProgressCard ref={progressHeader} request={presentation.progressRequest!} control={control} liveTurn={controller.liveTurn} messages={transcript.messages} busy={Boolean(controller.activeTurn) || controller.sending} onOpen={() => {
         setConversationExpanded(true);
         if (presentation.progressRequest !== undefined) call(services.presentation.expandProgress(presentation.progressRequest));
@@ -279,10 +291,10 @@ function WorkHubContents() {
         </div>
       </div>}
       <div className="workHubRevealMark" ref={revealMark} aria-hidden="true"><MakaWordmark width={192} /></div>
+      <div className="workHubWorkspace"><div className="mainColumn">
       <ChatSurfaceLayout
         scrollButton={showConversation ? undefined : null}
         style={!showConversation ? { height: expandedLayoutHeight, flex: 'none', position: 'absolute', bottom: 0, width: '100%' } : undefined}
-        onReturnToTail={transcript.hasNewer ? controller.loadLatest : undefined}
         composer={
           <div className="workHubComposerSurface" ref={composerSurface} onFocusCapture={editProgress} onPointerUpCapture={editProgress}>
             {(controller.error || control?.error) && (
@@ -324,11 +336,26 @@ function WorkHubContents() {
               onStop={controller.stop}
               activeSession={session}
               activeModel={session?.model}
+              activeModelLabel={modelChoice?.label}
+              activeProviderType={modelChoice?.providerType}
               activeModelConnectionId={session?.llmConnectionId}
               activeModelConnectionSlug={session?.llmConnectionSlug}
               modelChoices={controller.choices}
+              pickerPresentation={showConversation ? 'popover' : 'wheel'}
+              pickersReadOnly={Boolean(controller.activeQuestion || controller.activeForm)}
               maxInputRows={progress && !editingProgress ? 1 : showConversation ? undefined : 6}
               onModelChange={controller.changeModel}
+              modelSwitchAvailability={controller.configuringModel ? { available: false, pending: true, reason: 'pending' } : undefined}
+              contextUsage={session ? {
+                usageTokens: liveContextUsage?.usageTokens ?? selectLatestRequestUsage(transcript.messages, session.model, session),
+                declaredContextWindow: modelChoice?.declaredContextWindow,
+                meteredContextWindow: liveContextUsage?.contextWindow,
+                metadataContextWindow: modelChoice?.contextWindow,
+                onOpen: () => call(services.presentation.openUsage()),
+              } : undefined}
+              activeThinkingLevels={thinkingLevels}
+              activeThinkingLevel={thinkingLevel}
+              onThinkingLevelChange={controller.changeThinkingLevel}
               modelSwitchHasHistory={transcript.messages.length > 0}
               footerAccessory={
                 <div className="workHubComposerActions">
@@ -356,10 +383,8 @@ function WorkHubContents() {
           scrollBehavior="auto"
           onNew={() => composer.current?.focus()}
           messages={[...transcript.messages]}
-          hasOlderHistory={transcript.hasOlder}
-          hasNewerHistory={transcript.hasNewer}
-          onPrefetchHistory={controller.prefetchHistory}
-          onRetainWindow={controller.retainWindow}
+          hasEarlierHistory={transcript.hasOlder}
+          onLoadEarlierHistory={controller.loadEarlier}
           transientMessages={controller.transientMessages}
           viewportNavigation={controller.viewportNavigation}
           liveTurns={controller.liveTurns}
@@ -378,7 +403,9 @@ function WorkHubContents() {
         </div></div>
         </div>
       </ChatSurfaceLayout>
+      </div></div>
     </section>
     </WorkHubHueProvider>
+    </WorkHubHighlightContext.Provider>
   );
 }

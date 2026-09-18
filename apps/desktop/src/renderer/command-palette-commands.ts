@@ -54,7 +54,7 @@ import type { UiLocale } from '@maka/core/ui-locale';
 import type { NavSelection } from '@maka/ui';
 import { getShellCopy } from './locales/shell-copy.js';
 import { SETTINGS_NAV } from './settings/settings-nav.js';
-import type { Command } from './command-palette-types.js';
+import type { Command } from './features/overlays/index.js';
 
 /**
  * Helper composing the palette's base command list (everything except the

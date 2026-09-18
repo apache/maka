@@ -96,6 +96,7 @@ test('Side Chat follow-ups survive queue actions, Host handoffs and reconnect', 
     const companion = page.locator('.maka-quote-companion');
     const sideComposer = companion.locator(COMPOSER_INPUT);
     await sideComposer.fill(FAKE_HOLD_OPEN_PROMPT);
+    await awaitSendReady(companion);
     await sideComposer.press('Enter');
     await expect(companion).toContainText('Fake backend waiting');
     const forkId = await page.evaluate(async (existingIds) => {
@@ -106,6 +107,8 @@ test('Side Chat follow-ups survive queue actions, Host handoffs and reconnect', 
     const queued = companion.locator('.maka-composer-queue');
     for (const text of ['first follow-up', 'second follow-up', 'retract this follow-up']) {
       await sideComposer.fill(text);
+      // The queue is optimistic; its appearance does not settle send admission.
+      await awaitSendReady(companion);
       await sideComposer.press('Enter');
       await expect(queued).toContainText(text);
     }
@@ -127,6 +130,7 @@ test('Side Chat follow-ups survive queue actions, Host handoffs and reconnect', 
     await expect(companion.getByRole('button', { name: '停止', exact: true })).toBeVisible();
 
     await sideComposer.fill('steer the current response');
+    await awaitSendReady(companion);
     await sideComposer.press('Shift+Enter');
     await expect(companion).toContainText('Acknowledged steering: steer the current response');
     await expect(queued.locator('.maka-composer-queue-text')).toHaveText([
@@ -147,15 +151,18 @@ test('Side Chat follow-ups survive queue actions, Host handoffs and reconnect', 
     // Hold a second Turn before its first token, queue two successors, then
     // release it by steering. All three replies must survive the Host handoffs.
     await sideComposer.fill(FAKE_WAIT_FOR_STEERING_PROMPT);
+    await awaitSendReady(companion);
     await sideComposer.press('Enter');
     await expect(companion.getByRole('button', { name: '停止', exact: true })).toBeVisible();
     for (const text of ['successor one', 'successor two']) {
       await sideComposer.fill(text);
+      await awaitSendReady(companion);
       await sideComposer.press('Enter');
       await expect(queued).toContainText(text);
     }
     await page.screenshot({ path: testInfo.outputPath('side-chat-queue.png'), fullPage: true });
     await sideComposer.fill('release the held response');
+    await awaitSendReady(companion);
     await sideComposer.press('Shift+Enter');
     await expect(companion).toContainText('Acknowledged steering: release the held response');
     await expect(companion).toContainText('Fake backend received: successor one', { timeout: 20_000 });
@@ -165,10 +172,12 @@ test('Side Chat follow-ups survive queue actions, Host handoffs and reconnect', 
     await page.screenshot({ path: testInfo.outputPath('side-chat-settled.png'), fullPage: true });
 
     await sideComposer.fill(FAKE_WAIT_FOR_STEERING_PROMPT);
+    await awaitSendReady(companion);
     await sideComposer.press('Enter');
     await expect(companion.getByRole('button', { name: '停止', exact: true })).toBeVisible();
     for (const text of ['reconnected successor one', 'reconnected successor two']) {
       await sideComposer.fill(text);
+      await awaitSendReady(companion);
       await sideComposer.press('Enter');
       await expect(queued).toContainText(text);
     }

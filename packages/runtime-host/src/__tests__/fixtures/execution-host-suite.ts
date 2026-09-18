@@ -738,6 +738,8 @@ export class ExecutionFixture {
             messageId: input.messageId,
             content,
             submittedContentDigest: contentDigest,
+            submittedPlacement: 'current_turn',
+            skillInvocation: { loaded: [], failed: [], receipts: [] },
             placement: 'current_turn',
             disposition: 'turn_started',
           },
@@ -1556,6 +1558,7 @@ export async function waitForTerminalTurn(
     { sessionId, transcript: { kind: 'none' } },
     PROCESS_TIMEOUT_MS,
   );
+  await subscription.ready();
   try {
     return await withTimeout(
       (async () => {

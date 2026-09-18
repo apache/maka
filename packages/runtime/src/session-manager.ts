@@ -30,6 +30,11 @@
  */
 
 import type { WorkHubActionReceipt } from '@maka/core/workhub-action-result';
+import {
+  countRecallSearchableMessages,
+  listRecallCandidateSessions,
+  type RecallCandidateStores,
+} from './recall-candidates.js';
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -71,7 +76,7 @@ import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import type { PermissionMode } from '@maka/core/permission';
 import { isCanonicalReadOnlyPermissionProfile } from '@maka/core/permission-profile';
-import { DEFAULT_TOOL_MODE } from '@maka/core/tool-mode';
+import { DEFAULT_TOOL_MODE, type ToolMode } from '@maka/core/tool-mode';
 import type {
   CreateSandboxBoundaryRequest,
   ExecutionBoundary,
@@ -85,6 +90,7 @@ import {
   PLAN_USER_ABANDON_REASON,
   PLAN_USER_CANCEL_REASON,
   PlanConflictError,
+  activePlanExecution,
   type ApprovePlanProposalInput,
   type PlanMutationResult,
   type PlanSessionState,
@@ -308,6 +314,8 @@ export interface SpawnChildSessionInput {
   agentProfile: AgentProfile;
   /** User-approved catalog selector. The runtime resolves its frozen model target. */
   subagentId?: string;
+  /** Optional plugin executor. Non-preset children inherit the parent's executor. */
+  executorId?: string;
   prompt: string;
   name?: string;
   turnId?: string;
@@ -353,6 +361,7 @@ export interface ProvisionAgentGraphOperatorInput {
   workId: string;
   agentId?: string;
   subagentId?: string;
+  executorId?: string;
   operatorId: string;
   source: AgentGraphScheduleUpdateSource;
   edges: AgentGraphProvisionedEdge[];
@@ -524,6 +533,7 @@ export interface SessionConfigurationStoreUpdate {
   readonly expectedVersion: number;
   readonly configuration: {
     readonly backend: SessionHeader['backend'];
+    readonly executorId?: string;
     readonly llmConnectionId?: string;
     readonly llmConnectionSlug: string;
     readonly connectionLocked: boolean;
@@ -593,6 +603,17 @@ export interface RegenerateTurnSource {
 
 export interface SessionStore {
   create(input: CreateSessionInput, initialBoundary?: ExecutionBoundary): Promise<SessionHeader>;
+  /**
+   * Recall's narrowing over pre-ledger transcripts: the Sessions among the
+   * given ones whose transcript rows contain a folded term. A superset, never
+   * an answer; `undefined` declines the fast path. See `recall-candidates.ts`.
+   */
+  listLegacyTranscriptCandidateSessions?(
+    sessionIds: readonly string[],
+    terms: readonly string[],
+  ): Promise<string[] | undefined>;
+  /** Pre-ledger transcript rows of searchable types, for recall's idf term. */
+  countLegacyTranscriptMessages?(sessionIds: readonly string[]): Promise<number>;
   createSubagent(
     input: CreateSessionInput,
     initialBoundary?: ExecutionBoundary,
@@ -820,6 +841,8 @@ interface SessionManagerBaseDeps {
     list(): Promise<SubagentPresetListItem[]>;
     resolve(id: string): Promise<ResolvedSubagentPreset>;
   };
+  /** Host gate for an executor that must remain visible in a newly created child Session. */
+  assertChildExecutorAvailable?: (parentSessionId: string, executorId: string) => void;
   /** Host-owned filesystem isolation for worktree-backed child Sessions. */
   worktreeChildExecutor?: SubagentWorktreeExecutor;
   listArtifactsForTurn?: (sessionId: string, turnId: string) => Promise<ArtifactRecord[]>;
@@ -840,6 +863,8 @@ interface SessionManagerBaseDeps {
   inspectContinuationSafety?: (sessionId: string) => Promise<RuntimeContinuationSafetyObservation>;
   continuationFailpoint?: (point: RuntimeContinuationFailpoint) => Promise<void>;
   runBackendActivation?: BackendActivationBoundary;
+  /** Host policy for a fresh turn; continuations retain their invocation snapshot. */
+  resolveFreshTurnToolMode?: (header: SessionHeader) => Promise<ToolMode | undefined>;
   safeBoundaryResumeEnabled?: boolean;
   /** Hosted composition capability. Omit for the production embedded queue. */
   messageAuthority?: RuntimeMessageAuthority;
@@ -1033,6 +1058,20 @@ export class SessionManager {
       sourceCwd: header.cwd,
       ...(header.projectId !== undefined ? { sourceProjectId: header.projectId } : {}),
     });
+  }
+
+  private async resolveChildToolNames(
+    parentSessionId: string,
+    parentHeader: SessionHeader,
+    definition: AgentDefinition,
+  ): Promise<string[]> {
+    const availableChildTools = await this.childToolsForSession(parentSessionId);
+    assertAgentDefinitionRunnable({
+      definition,
+      tools: availableChildTools,
+      worktreeChildExecutorAvailable: await this.isWorktreeChildExecutorAvailable(parentHeader),
+    });
+    return buildToolsForAgentDefinition(availableChildTools, definition).map((tool) => tool.name);
   }
 
   private async finalizeAndListChildTurnArtifacts(
@@ -1308,6 +1347,31 @@ export class SessionManager {
 
   async getMessages(sessionId: string): Promise<StoredMessage[]> {
     return (await this.getSessionView(sessionId)).messages;
+  }
+
+  /**
+   * Recall's narrowing: which of the given Sessions could hold a message
+   * containing a folded term, from the ledger and the pre-ledger transcript
+   * tables together. A superset of the Sessions that match, never an answer;
+   * `undefined` means the fast path declined and recall reads every transcript.
+   */
+  async listRecallCandidateSessions(
+    sessionIds: readonly string[],
+    terms: readonly string[],
+  ): Promise<string[] | undefined> {
+    return listRecallCandidateSessions(this.recallCandidateStores(), sessionIds, terms);
+  }
+
+  /** Corpus size for recall's idf term, across both transcript stores. */
+  async countRecallSearchableMessages(sessionIds: readonly string[]): Promise<number | undefined> {
+    return countRecallSearchableMessages(this.recallCandidateStores(), sessionIds);
+  }
+
+  private recallCandidateStores(): RecallCandidateStores {
+    return {
+      transcripts: this.deps.store,
+      ...(this.deps.runtimeEventStore ? { ledger: this.deps.runtimeEventStore } : {}),
+    };
   }
 
   async getContextDiagnostics(sessionId: string): Promise<ContextDiagnostics> {
@@ -2118,6 +2182,52 @@ export class SessionManager {
     return planStore.interruptActiveExecution(sessionId, reason, operationId);
   }
 
+  async settleActivePlanExecutionAfterRootTurn(
+    sessionId: string,
+    rootStatus: 'completed' | 'failed' | 'cancelled',
+    operationId: string,
+  ): Promise<PlanMutationResult | null> {
+    // A surface without Plan authority has no Plan state to settle, and the
+    // natural "unavailable" error must not be raised into the root Turn's
+    // terminal transition.
+    if (!this.hasPlanAuthority()) return null;
+    if (rootStatus === 'failed' || rootStatus === 'cancelled') {
+      return this.interruptActivePlanExecution(
+        sessionId,
+        rootStatus === 'cancelled'
+          ? 'Plan execution was interrupted because the Runtime root Turn was cancelled.'
+          : 'Plan execution was interrupted because the Runtime root Turn failed.',
+        operationId,
+      );
+    }
+
+    const planStore = this.requirePlanStore();
+    const state = await planStore.readState(sessionId);
+    const execution = activePlanExecution(state);
+    if (!execution) return null;
+    const terminal = execution.steps.every(
+      (step) => step.status === 'completed' || step.status === 'skipped',
+    );
+    if (!terminal) {
+      return this.interruptActivePlanExecution(
+        sessionId,
+        'Plan execution was interrupted because the Runtime root Turn completed before all Plan steps reached a terminal state.',
+        operationId,
+      );
+    }
+
+    // The root Turn is already terminal, so there is no live Run to stop and no
+    // backend to dispose. The write stays idempotent on both routes: replaying
+    // the operation is reconciled by the store's receipt, and reaching this line
+    // again after the commit finds no active execution left to update.
+    return planStore.updateExecution({
+      operationId,
+      sessionId,
+      executionId: execution.executionId,
+      steps: execution.steps.map((step) => ({ id: step.id, status: step.status })),
+    });
+  }
+
   async remove(sessionId: string): Promise<void> {
     const shellRunClose = await this.deps.shellRuns?.terminateSession(sessionId);
     try {
@@ -2610,15 +2720,13 @@ export class SessionManager {
     const definition = resolvedPreset
       ? requireBuiltinAgentDefinitionByProfile(resolvedPreset.profile)
       : requireBuiltinAgentDefinition(input.agentId!);
-    const availableChildTools = await this.childToolsForSession(input.source.sessionId);
-    assertAgentDefinitionRunnable({
-      definition,
-      tools: availableChildTools,
-      worktreeChildExecutorAvailable: await this.isWorktreeChildExecutorAvailable(parentHeader),
-    });
-    const resolvedToolNames = buildToolsForAgentDefinition(availableChildTools, definition).map(
-      (tool) => tool.name,
-    );
+    const executorId = input.executorId ?? (resolvedPreset ? undefined : parentHeader.executorId);
+    if (executorId) {
+      this.deps.assertChildExecutorAvailable?.(input.source.sessionId, executorId);
+    }
+    const resolvedToolNames = executorId
+      ? []
+      : await this.resolveChildToolNames(input.source.sessionId, parentHeader, definition);
     const childPermissionMode =
       parentHeader.permissionMode === 'bypass' ? 'bypass' : definition.permissionMode;
 
@@ -2646,6 +2754,7 @@ export class SessionManager {
         toolNames: resolvedToolNames,
         categoryPolicy: {},
         systemPrompt: definition.systemPrompt,
+        executorId: executorId ?? null,
         ...(resolvedPreset
           ? {
               preset: {
@@ -2682,20 +2791,28 @@ export class SessionManager {
         cwd: workspace?.worktreePath ?? parentHeader.cwd,
         ...(parentHeader.projectId !== undefined ? { projectId: parentHeader.projectId } : {}),
         name: resolvedPreset?.name ?? definition.name,
-        ...(resolvedPreset
-          ? { llmConnectionId: resolvedPreset.connectionId }
-          : parentHeader.llmConnectionId === undefined
-            ? {}
-            : { llmConnectionId: parentHeader.llmConnectionId }),
-        llmConnectionSlug: resolvedPreset?.connectionSlug ?? parentHeader.llmConnectionSlug,
-        model: resolvedPreset?.model ?? parentHeader.model,
-        ...(resolvedPreset
-          ? resolvedPreset.thinkingLevel !== undefined
-            ? { thinkingLevel: resolvedPreset.thinkingLevel }
-            : {}
-          : parentHeader.thinkingLevel !== undefined
-            ? { thinkingLevel: parentHeader.thinkingLevel }
-            : {}),
+        ...(executorId
+          ? {
+              executorId,
+              llmConnectionSlug: `executor:${executorId}`,
+              model: executorId,
+            }
+          : {
+              ...(resolvedPreset
+                ? { llmConnectionId: resolvedPreset.connectionId }
+                : parentHeader.llmConnectionId === undefined
+                  ? {}
+                  : { llmConnectionId: parentHeader.llmConnectionId }),
+              llmConnectionSlug: resolvedPreset?.connectionSlug ?? parentHeader.llmConnectionSlug,
+              model: resolvedPreset?.model ?? parentHeader.model,
+              ...(resolvedPreset
+                ? resolvedPreset.thinkingLevel !== undefined
+                  ? { thinkingLevel: resolvedPreset.thinkingLevel }
+                  : {}
+                : parentHeader.thinkingLevel !== undefined
+                  ? { thinkingLevel: parentHeader.thinkingLevel }
+                  : {}),
+            }),
         permissionMode: childPermissionMode,
         collaborationMode: 'agent',
         orchestrationMode: 'default',
@@ -3203,15 +3320,12 @@ export class SessionManager {
     this.assertActiveParentRun(parentSessionId, parentRun, input.spawnedBy.parentTurnId);
 
     const definition = requireBuiltinAgentDefinitionByProfile(input.agentProfile);
-    const availableChildTools = await this.childToolsForSession(parentSessionId);
-    assertAgentDefinitionRunnable({
-      definition,
-      tools: availableChildTools,
-      worktreeChildExecutorAvailable: await this.isWorktreeChildExecutorAvailable(parentHeader),
-    });
-    const resolvedToolNames = buildToolsForAgentDefinition(availableChildTools, definition).map(
-      (tool) => tool.name,
-    );
+    const executorId =
+      input.executorId ?? (input.resolvedPreset ? undefined : parentHeader.executorId);
+    if (executorId) this.deps.assertChildExecutorAvailable?.(parentSessionId, executorId);
+    const resolvedToolNames = executorId
+      ? []
+      : await this.resolveChildToolNames(parentSessionId, parentHeader, definition);
 
     const proposedTurnId = input.turnId ?? this.deps.newId();
     const proposedRunId = input.runId ?? this.deps.newId();
@@ -3225,20 +3339,29 @@ export class SessionManager {
         cwd: workspace?.worktreePath ?? parentHeader.cwd,
         ...(parentHeader.projectId !== undefined ? { projectId: parentHeader.projectId } : {}),
         name: input.name ?? input.resolvedPreset?.name ?? definition.name,
-        ...(input.resolvedPreset
-          ? { llmConnectionId: input.resolvedPreset.connectionId }
-          : parentHeader.llmConnectionId === undefined
-            ? {}
-            : { llmConnectionId: parentHeader.llmConnectionId }),
-        llmConnectionSlug: input.resolvedPreset?.connectionSlug ?? parentHeader.llmConnectionSlug,
-        model: input.resolvedPreset?.model ?? parentHeader.model,
-        ...(input.resolvedPreset
-          ? input.resolvedPreset.thinkingLevel !== undefined
-            ? { thinkingLevel: input.resolvedPreset.thinkingLevel }
-            : {}
-          : parentHeader.thinkingLevel !== undefined
-            ? { thinkingLevel: parentHeader.thinkingLevel }
-            : {}),
+        ...(executorId
+          ? {
+              executorId,
+              llmConnectionSlug: `executor:${executorId}`,
+              model: executorId,
+            }
+          : {
+              ...(input.resolvedPreset
+                ? { llmConnectionId: input.resolvedPreset.connectionId }
+                : parentHeader.llmConnectionId === undefined
+                  ? {}
+                  : { llmConnectionId: parentHeader.llmConnectionId }),
+              llmConnectionSlug:
+                input.resolvedPreset?.connectionSlug ?? parentHeader.llmConnectionSlug,
+              model: input.resolvedPreset?.model ?? parentHeader.model,
+              ...(input.resolvedPreset
+                ? input.resolvedPreset.thinkingLevel !== undefined
+                  ? { thinkingLevel: input.resolvedPreset.thinkingLevel }
+                  : {}
+                : parentHeader.thinkingLevel !== undefined
+                  ? { thinkingLevel: parentHeader.thinkingLevel }
+                  : {}),
+            }),
         permissionMode: definition.permissionMode,
         collaborationMode: 'agent',
         orchestrationMode: 'default',
@@ -3956,7 +4079,7 @@ export class SessionManager {
       kind: 'invocation_opened',
       protocol: 'invocation_opened_v1',
       route:
-        session.llmConnectionId === undefined
+        session.llmConnectionId === undefined || session.backend === 'plugin-executor'
           ? {
               provenance: 'unknown',
               backendKind: session.backend,
@@ -5029,6 +5152,7 @@ export function headerToSummary(h: SessionHeader): SessionSummary {
     ...(h.revisionIndex !== undefined ? { revisionIndex: h.revisionIndex } : {}),
     ...(h.revisionState ? { revisionState: h.revisionState } : {}),
     backend: h.backend,
+    ...(h.executorId ? { executorId: h.executorId } : {}),
     ...(h.llmConnectionId === undefined ? {} : { llmConnectionId: h.llmConnectionId }),
     llmConnectionSlug: h.llmConnectionSlug,
     connectionLocked: h.connectionLocked,
@@ -5124,33 +5248,47 @@ function childSessionRequestFingerprint(
   parentSessionId: string,
   input: Pick<
     ResolvedSpawnChildSessionInput,
-    'spawnedBy' | 'agentProfile' | 'prompt' | 'swarm' | 'resolvedPreset'
+    'spawnedBy' | 'agentProfile' | 'executorId' | 'prompt' | 'swarm' | 'resolvedPreset'
   >,
 ): string {
-  const payload = input.resolvedPreset
+  const payload = input.executorId
     ? [
-        2,
+        3,
         parentSessionId,
         input.spawnedBy.parentRunId,
         input.spawnedBy.parentTurnId,
         input.spawnedBy.toolCallId,
         input.agentProfile,
-        input.resolvedPreset,
+        input.executorId,
+        input.resolvedPreset ?? null,
         input.prompt,
         input.swarm?.swarmId ?? null,
         input.swarm?.itemId ?? null,
       ]
-    : [
-        1,
-        parentSessionId,
-        input.spawnedBy.parentRunId,
-        input.spawnedBy.parentTurnId,
-        input.spawnedBy.toolCallId,
-        input.agentProfile,
-        input.prompt,
-        input.swarm?.swarmId ?? null,
-        input.swarm?.itemId ?? null,
-      ];
+    : input.resolvedPreset
+      ? [
+          2,
+          parentSessionId,
+          input.spawnedBy.parentRunId,
+          input.spawnedBy.parentTurnId,
+          input.spawnedBy.toolCallId,
+          input.agentProfile,
+          input.resolvedPreset,
+          input.prompt,
+          input.swarm?.swarmId ?? null,
+          input.swarm?.itemId ?? null,
+        ]
+      : [
+          1,
+          parentSessionId,
+          input.spawnedBy.parentRunId,
+          input.spawnedBy.parentTurnId,
+          input.spawnedBy.toolCallId,
+          input.agentProfile,
+          input.prompt,
+          input.swarm?.swarmId ?? null,
+          input.swarm?.itemId ?? null,
+        ];
   return createHash('sha256').update(JSON.stringify(payload)).digest('hex');
 }
 
@@ -5201,7 +5339,8 @@ function sessionConfigurationWithPermissionMode(
 ): SessionConfigurationTransitionRequest['configuration'] {
   return {
     backend: header.backend,
-    ...(header.llmConnectionId === undefined ? {} : { llmConnectionId: header.llmConnectionId }),
+    executorId: header.executorId,
+    llmConnectionId: header.llmConnectionId,
     llmConnectionSlug: header.llmConnectionSlug,
     connectionLocked: header.connectionLocked,
     model: header.model,
@@ -5218,6 +5357,7 @@ function sessionConfigurationMatchesExceptPermissionMode(
 ): boolean {
   return (
     header.backend === configuration.backend &&
+    header.executorId === configuration.executorId &&
     header.llmConnectionId === configuration.llmConnectionId &&
     header.llmConnectionSlug === configuration.llmConnectionSlug &&
     header.connectionLocked === configuration.connectionLocked &&

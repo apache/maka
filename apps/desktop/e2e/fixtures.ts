@@ -18,7 +18,7 @@
  */
 
 import { _electron as electron, test as base, expect } from '@playwright/test';
-import type { ElectronApplication, Page } from '@playwright/test';
+import type { ElectronApplication, Locator, Page } from '@playwright/test';
 import { execFile } from 'node:child_process';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -80,7 +80,7 @@ export async function ensureSidebarExpanded(page: Page): Promise<void> {
  * The control reflects local admission readiness, not Host connectivity.
  * Merely mounting the editor does not mean target selection has finished.
  */
-export async function awaitSendReady(page: Page): Promise<void> {
+export async function awaitSendReady(page: Page | Locator): Promise<void> {
   await expect(page.locator('.maka-composer button[type="submit"]')).toBeEnabled({
     timeout: 20_000,
   });
@@ -394,6 +394,7 @@ export async function withE2eWindow(
   {
     seed,
     readinessSelector,
+    readinessTimeoutMs = 20_000,
     e2eFixtureScenario,
     locale,
     platform,
@@ -407,6 +408,8 @@ export async function withE2eWindow(
   }: {
     seed: boolean;
     readinessSelector: string;
+    /** Raise only for a scenario whose seeding is itself heavy enough to delay the first paint. */
+    readinessTimeoutMs?: number;
     e2eFixtureScenario?: string;
     locale?: 'zh-CN' | 'zh-TW' | 'en';
     /** #1312: force app:info's platform so the window boots natively into that platform's `data-os` cascade. */
@@ -444,7 +447,8 @@ export async function withE2eWindow(
     // host locale. E2e-fixture workspaces use the explicit renderer override.
     if (locale && !e2eFixtureScenario) await seedE2eLocale(userDataDir, locale);
     // xvfb throttles a hidden window's compositor to ~1fps. Geometry fixtures
-    // opt in locally; every fixture is visible on isolated CI X.
+    // opt in locally; on CI Linux every fixture is visible, because the display
+    // there is headless and no one is watching it.
     const visibleWindow = showWindow || isCiLinuxDisplay();
     app = await electron.launch({
       // A visible fixture window is revealed inactively, which needs XWayland
@@ -485,7 +489,7 @@ export async function withE2eWindow(
     }
     // Centralize the cold-start wait so test bodies are flake-free under retries:0.
     try {
-      await page.waitForSelector(readinessSelector, { timeout: 20_000 });
+      await page.waitForSelector(readinessSelector, { timeout: readinessTimeoutMs });
       if (invocableSkills) {
         await waitForInvocableSkills(page, ['project-only', 'workspace-only']);
       }
@@ -503,7 +507,7 @@ export async function withE2eWindow(
         env: buildFixtureEnv(userDataDir, homeDir, { scenario: e2eFixtureScenario, locale, platform, showWindow: visibleWindow }),
       });
       const restored = await app.firstWindow();
-      await restored.waitForSelector(readinessSelector, { timeout: 20_000 });
+      await restored.waitForSelector(readinessSelector, { timeout: readinessTimeoutMs });
       return restored;
     } });
   } finally {
@@ -530,8 +534,8 @@ type E2eTestFixtures = {
   renameFocusWindow: { page: Page; app: ElectronApplication };
   parentRemovalWindow: Page;
   railRenderWindow: Page;
-  promptRailWindow: Page;
   partialHistoryWindow: Page;
+  largeHistoryWindow: { page: Page; app: ElectronApplication };
   newTaskTargetWindow: Page;
   directoryReferenceWindow: { page: Page; folder: string };
   accessibilityNarrativeWindow: Page;
@@ -646,27 +650,8 @@ export const test = base.extend<E2eTestFixtures>({
       use,
     );
   },
-  // A multi-prompt transcript. Each cost assertion gets an isolated Host and
-  // renderer so observation state cannot bleed between tests. The window is
-  // shown because these cases drive the real compositor through CDP.
-  promptRailWindow: async ({}, use) => {
-    await withE2eWindow({
-      seed: false,
-      // A rendered turn, deliberately not the rail: Playwright treats a
-      // zero-area element as hidden, so gating readiness on a tick would turn
-      // every rail regression into a 20s cold-start timeout instead of the
-      // assertion that names it.
-      readinessSelector: '[data-turn-id]',
-      e2eFixtureScenario: 'chat-prompt-rail',
-      // Every other fixture window names its locale; without one the renderer
-      // takes the host's, so any test that reaches a control by its label
-      // passes on a Chinese desktop and cannot find it on an English CI runner.
-      locale: 'zh-CN',
-      showWindow: true,
-    }, use);
-  },
-  // A transcript larger than the bounded Desktop range. Clicking an unloaded
-  // prompt exercises the real load-around path and its partial-history UI.
+  // A transcript larger than the Desktop history budget, so earlier Turns load
+  // only through the load-earlier control.
   partialHistoryWindow: async ({}, use) => {
     await withE2eWindow({
       seed: false,
@@ -675,6 +660,22 @@ export const test = base.extend<E2eTestFixtures>({
       locale: 'zh-CN',
       showWindow: true,
     }, use);
+  },
+  // Three transcripts past the real 64 MiB history budget, for weighing what
+  // holding the loaded history costs the renderer. Writing them is hundreds of
+  // MiB of durable transcript, which is why the cold-start wait is raised.
+  largeHistoryWindow: async ({}, use) => {
+    await withE2eWindow(
+      {
+        seed: false,
+        readinessSelector: '[data-turn-id]',
+        readinessTimeoutMs: 300_000,
+        e2eFixtureScenario: 'chat-large-history',
+        locale: 'zh-CN',
+        showWindow: true,
+      },
+      async (page, { app }) => use({ page, app }),
+    );
   },
   // A data-backed conversation with settled tool evidence and the workbar open
   // beside it. Shown because the accessibility journey follows real native

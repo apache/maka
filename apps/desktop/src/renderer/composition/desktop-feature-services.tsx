@@ -34,6 +34,7 @@ import { SessionNavigationServicesProvider } from '../features/session-navigatio
 import { SessionSettingsServicesProvider } from '../features/session-settings';
 import { TaskEntryServicesProvider } from '../features/task-entry';
 import { WorkbarServicesProvider } from '../features/workbar';
+import { OverlaysServicesProvider } from '../features/overlays/index.js';
 import { createDesktopAppUpdateServices } from '../platform/desktop/create-app-update-services';
 import { createDesktopGoalServices } from '../platform/desktop/create-goal-services';
 import { createDesktopConnectionSettingsServices } from '../platform/desktop/create-connection-settings-services';
@@ -46,6 +47,7 @@ import { createDesktopSessionBundleServices } from '../platform/desktop/create-s
 import { createDesktopSessionSettingsServices } from '../platform/desktop/create-session-settings-services';
 import { createDesktopTaskEntryServices } from '../platform/desktop/create-task-entry-services';
 import { createDesktopWorkbarServices } from '../platform/desktop/create-workbar-services';
+import { createDesktopOverlaysServices } from '../platform/desktop/create-overlays-services';
 import { observeReactPerformanceMeasures } from '../platform/desktop/react-performance-measures';
 
 if (import.meta.env.DEV) {
@@ -62,6 +64,7 @@ export function createDesktopFeatureServices() {
     externalAgentSettings: createDesktopExternalAgentSettingsServices(),
     goal: createDesktopGoalServices(),
     moduleHub: createDesktopModuleHubServices(),
+    overlays: createDesktopOverlaysServices(),
     runtimeHostManagement: createDesktopRuntimeHostManagementServices(),
     sessionCollaboration: createDesktopSessionCollaborationServices(),
     sessionNavigation: createDesktopSessionNavigationServices(),
@@ -91,7 +94,9 @@ export function DesktopFeatureServicesProvider(props: {
                         <ConversationServicesProvider services={props.services.conversation}>
                           <WorkHubServicesProvider services={props.services.workHub}>
                             <SessionBundleServicesProvider services={props.services.sessionBundle}>
-                              {props.children}
+                              <OverlaysServicesProvider services={props.services.overlays}>
+                                {props.children}
+                              </OverlaysServicesProvider>
                             </SessionBundleServicesProvider>
                           </WorkHubServicesProvider>
                         </ConversationServicesProvider>

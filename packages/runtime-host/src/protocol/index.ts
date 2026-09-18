@@ -101,7 +101,20 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 151 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 162 as const;
+// 162: Runtime Resource control and stop replies drop the unused resource
+// snapshot; start replies allow compact state. Older peers require snapshots.
+// 161: Session transcript reads return the whole transcript under a byte budget,
+// and every page says whether it stops between two Turns. The windowed read's
+// range edges are gone, and the Turn landmark query takes a Turn to look up, so
+// a peer older than this epoch asks for what this Host no longer answers.
+// 160: Usage queries add revision-consistent screens and revision-bound activity pages.
+// 159: External Session catalog queries distinguish adapter source limits from
+// persistence failures. Older Clients reject the new closed error code.
+// 158: Session transcripts advance per committed RuntimeEvent; the active overlay is gone.
+// 154: External Session import results distinguish committed Sessions from typed source limits.
+// 153: Sessions may select plugin executors and Plugin Platform queries expose them.
+// 152: Assistant completions and transcript rows preserve interrupted responses.
 // 151: WorkHub selects and delegates through a durable Host Form interaction.
 // 150: Message admission accepts an empty-text Message that carries a quote or
 // an attachment (#4804). Peers older than this epoch reject that frame at

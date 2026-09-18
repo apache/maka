@@ -23,8 +23,7 @@ import type { HostHandoffView, OpenHostHandoffSurface } from '@maka/runtime-host
 import { readableAppIconPath } from './app-icon-surface.js';
 import { installApplicationMenu } from './application-menu.js';
 import { installDesktopStartupBranding } from './desktop-shell-presentation.js';
-import { isIsolatedE2e } from './startup-context.js';
-import { resolveWindowRevealMode, type WindowRevealMode } from './window-reveal.js';
+import { revealMode } from './startup-context.js';
 import {
   createStartupProgressWindow,
   type StartupPhase,
@@ -36,24 +35,10 @@ let handoffUsesStartup = false;
 
 const focus = () => progress?.focus();
 
-/**
- * The run's reveal mode as it reads before the Runtime Host boot resolves its
- * own copy. Every input is available pre-ready (`app.isPackaged` included), so
- * a dialog raised during startup can consult the same answer the windows do.
- */
-export function startupRevealMode(): WindowRevealMode {
-  return resolveWindowRevealMode(
-    isIsolatedE2e || Boolean(process.env.MAKA_E2E_FIXTURE),
-    process.env.MAKA_E2E_SHOW_WINDOW === '1',
-    app.isPackaged,
-  );
-}
-
 /** Called after ready, before importing the asynchronous Runtime Host boot. */
 export function showDesktopStartupProgress(
   copyDiagnostics: (phase: StartupPhase) => void | Promise<void>,
 ): void {
-  const revealMode = startupRevealMode();
   installDesktopStartupBranding(revealMode);
   // Automated runs retain their one-main-window contract and never steal focus.
   if (revealMode !== 'active') return;
@@ -102,7 +87,7 @@ export function createDesktopHostHandoffSurface(resolveLocale: () => Promise<UiL
         ownWindow = true;
         window = createStartupProgressWindow({
           locale, dark: nativeTheme.shouldUseDarkColors, icon: readableAppIconPath('default'),
-          revealMode: startupRevealMode(),
+          revealMode,
           createWindow: (options) => new BrowserWindow(options),
           copyDiagnostics: () => clipboard.writeText(JSON.stringify(latest, null, 2)),
           onError: (error) => console.error('[runtime-host] handoff presentation failed:', error),

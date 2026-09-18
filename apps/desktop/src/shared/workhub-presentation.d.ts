@@ -24,9 +24,15 @@ export interface WorkHubHostRect {
   readonly height: number;
 }
 
+export interface WorkHubWorkbarState {
+  readonly collapsed: boolean;
+  readonly placement: 'right' | 'bottom';
+}
+
 export interface WorkHubHost {
   readonly visible: boolean;
   readonly occluded?: boolean;
+  readonly workbar?: WorkHubWorkbarState;
   readonly rect: WorkHubHostRect;
 }
 
@@ -36,10 +42,11 @@ export interface WorkHubPresentationSnapshot {
   readonly shortcutRegistered: boolean;
   readonly rendererCrashed: boolean;
   readonly progressRequest?: number;
+  readonly workbar?: WorkHubWorkbarState;
 }
 
 export type WorkHubMainNavigation =
-  | { readonly kind: 'workhub' }
+  | { readonly kind: 'workhub'; readonly panelAction?: 'usage' | 'toggle' }
   | { readonly kind: 'session'; readonly sessionKey: string };
 
 export interface WorkHubPresentationBridge {
@@ -53,6 +60,8 @@ export interface WorkHubPresentationBridge {
   detach(): Promise<void>;
   dock(): Promise<void>;
   hide(): Promise<void>;
+  openUsage(): Promise<void>;
+  toggleWorkbar(): Promise<void>;
   openSession(sessionKey: string): Promise<void>;
   subscribe(handler: (snapshot: WorkHubPresentationSnapshot) => void): () => void;
   /** Visible top edge inside the animation canvas, in CSS pixels. */
