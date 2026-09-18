@@ -30,6 +30,20 @@ Keep this directory small. Prefer product code that uses the dependency's
 published API; only patch for bugs that block shipping and cannot be worked
 around at the call site.
 
+## `electron-updater@6.8.9`
+
+GitHub can continue serving a withdrawn prerelease in `releases.atom` after
+the Release and its channel metadata are gone. The GitHub provider otherwise
+pins that first same-channel entry, retries its missing `dev.yml`, falls back
+to its missing `latest.yml`, and never considers the next complete entry.
+
+For prerelease channels only, the patch retains eligible Atom entries in feed
+order and advances when both metadata names return 404. Other HTTP and parsing
+failures remain terminal, stable-release selection is unchanged, and the
+withdrawn candidate is never offered or downloaded. Remove the patch when
+electron-updater ships equivalent missing-metadata candidate selection. The
+provider regression is in `scripts/desktop-nightly.test.mjs`.
+
 ## `run@2.1.4` and `@ai-sdk/code-mode@1.0.56`
 
 Code Mode awaits normal Runtime tools, including user interactions. The upstream
