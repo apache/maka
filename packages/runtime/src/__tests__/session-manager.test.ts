@@ -5009,6 +5009,39 @@ describe('SessionManager manual compaction and quiescent session changes', () =>
 });
 
 describe('SessionManager permission mode updates', () => {
+  test('preserves the plugin executor when widening permission with an active turn', async () => {
+    const store = new VersionedConfigurationMemorySessionStore();
+    const kernel = new DelegatingRuntimeKernel();
+    const manager = new SessionManager({
+      store,
+      backends: new BackendRegistry(),
+      newId: nextId(),
+      now: nextNow(977),
+      runtimeKernel: kernel,
+    });
+    const session = await manager.createSession(
+      makeInput({ permissionMode: 'explore', executorId: 'codex' }),
+    );
+    const current = await store.readHeaderRecordSnapshot(session.id);
+    kernel.activeRuns = true;
+
+    const next = await manager.transitionSessionConfiguration(session.id, {
+      expectedRevision: current.revision,
+      clearConnectionBlock: false,
+      permissionModeOnly: true,
+      configuration: configurationForHeader(current.header, { permissionMode: 'bypass' }),
+    });
+
+    assert.strictEqual(next.header.backend, 'plugin-executor');
+    assert.strictEqual(next.header.executorId, 'codex');
+    assert.strictEqual(next.header.permissionMode, 'bypass');
+    assert.strictEqual(next.revision, current.revision + 1);
+    assert.deepStrictEqual((await store.readHeaderRecordSnapshot(session.id)).header, next.header);
+    assert.strictEqual((await store.readExecutionBoundary(session.id)).kind, 'bypass');
+    assert.deepStrictEqual(kernel.stopped, []);
+    assert.deepStrictEqual(kernel.disposed, []);
+  });
+
   test('configuration authority rejects a stale revision without changing the committed grant', async () => {
     const store = new VersionedConfigurationMemorySessionStore();
     const manager = new SessionManager({
@@ -14345,7 +14378,7 @@ class CheckpointRecorderContractProbeBackend implements AgentBackend {
 class MemorySessionStore implements SessionStore {
   private headers = new Map<string, SessionHeader>();
   private messages = new Map<string, StoredMessage[]>();
-  private executionBoundaries = new Map<string, ExecutionBoundary>();
+  protected readonly executionBoundaries = new Map<string, ExecutionBoundary>();
   private sandboxBoundaryRequests = new Map<string, SandboxBoundaryRequest>();
   readonly failReadMessagesFor = new Set<string>();
   readonly failNextReadMessagesFor = new Map<string, number>();
@@ -14477,31 +14510,6 @@ class MemorySessionStore implements SessionStore {
         : createGenesisExecutionBoundary(header.permissionMode),
     );
     return header;
-  }
-
-  async setExecutionBoundaryKind(
-    sessionId: string,
-    kind: 'managed' | 'bypass',
-    projection?: {
-      permissionMode: SessionHeader['permissionMode'];
-      labels?: readonly string[];
-    },
-  ) {
-    const current = await this.readHeader(sessionId);
-    const permissionMode =
-      projection?.permissionMode ??
-      (kind === 'bypass'
-        ? 'bypass'
-        : current.permissionMode === 'bypass'
-          ? 'ask'
-          : current.permissionMode);
-    await this.updateHeader(sessionId, {
-      permissionMode,
-      ...(projection?.labels ? { labels: [...projection.labels] } : {}),
-    });
-    const boundary = createGenesisExecutionBoundary(permissionMode);
-    this.executionBoundaries.set(sessionId, boundary);
-    return boundary;
   }
 
   async readExecutionBoundary(sessionId: string): Promise<ExecutionBoundary> {
@@ -14693,6 +14701,16 @@ class VersionedConfigurationMemorySessionStore extends MemorySessionStore {
     };
   }
 
+  override async updateHeader(
+    sessionId: string,
+    patch: Partial<SessionHeader>,
+  ): Promise<SessionHeader> {
+    if (Object.hasOwn(patch, 'permissionMode')) {
+      throw new Error('permissionMode must be projected by the configuration transition');
+    }
+    return super.updateHeader(sessionId, patch);
+  }
+
   async updateSessionConfiguration(
     sessionId: string,
     input: SessionConfigurationStoreUpdate,
@@ -14707,14 +14725,7 @@ class VersionedConfigurationMemorySessionStore extends MemorySessionStore {
     if (revision !== input.expectedVersion) {
       throw new Error('injected configuration revision conflict');
     }
-    await super.setExecutionBoundaryKind(
-      sessionId,
-      input.configuration.permissionMode === 'bypass' ? 'bypass' : 'managed',
-      {
-        permissionMode: input.configuration.permissionMode,
-        labels: input.configuration.labels,
-      },
-    );
+    // Only configuration authority may project permissionMode into the header.
     const header = await super.updateHeader(sessionId, {
       ...input.configuration,
       labels: [...input.configuration.labels],
@@ -14726,6 +14737,10 @@ class VersionedConfigurationMemorySessionStore extends MemorySessionStore {
           }
         : {}),
     });
+    this.executionBoundaries.set(
+      sessionId,
+      createGenesisExecutionBoundary(input.configuration.permissionMode),
+    );
     this.forcedBoundaries.delete(sessionId);
     this.revisions.set(sessionId, revision + 1);
     return { header, revision: revision + 1, committedAt: revision + 1 };
@@ -14740,7 +14755,7 @@ class VersionedConfigurationMemorySessionStore extends MemorySessionStore {
     if (revision !== expectedRevision) {
       throw new SessionConfigurationRevisionConflictError(expectedRevision, revision);
     }
-    const header = await super.updateHeader(sessionId, patch);
+    const header = await this.updateHeader(sessionId, patch);
     this.revisions.set(sessionId, revision + 1);
     return { header, revision: revision + 1, committedAt: revision + 1 };
   }
@@ -15389,6 +15404,7 @@ function configurationForHeader(
 ): SessionConfigurationTransitionRequest['configuration'] {
   return {
     backend: header.backend,
+    executorId: header.executorId,
     ...(header.llmConnectionId === undefined ? {} : { llmConnectionId: header.llmConnectionId }),
     llmConnectionSlug: header.llmConnectionSlug,
     connectionLocked: header.connectionLocked,
