@@ -110,7 +110,6 @@ import {
   type PlanSessionState,
   type PlanStepStatus,
   type PlanStore,
-  type UpdatePlanExecutionInput,
 } from '@maka/core/plan';
 import { MockLanguageModelV4, simulateReadableStream } from 'ai/test';
 import { createTestAiSdkBackend } from './execution-boundary-test-helpers.js';
@@ -533,35 +532,6 @@ describe('SessionManager Plan control boundaries', () => {
 });
 
 describe('SessionManager Plan terminal settlement', () => {
-  test('a completed root Turn commits the terminal steps the model already reported', async () => {
-    const harness = await mountPlanSettlement('session-1', [
-      ['step-1', 'completed'],
-      ['step-2', 'skipped'],
-    ]);
-
-    const result = await harness.manager.settleActivePlanExecutionAfterRootTurn(
-      harness.sessionId,
-      'completed',
-      'plan_root_terminal_run-1',
-    );
-
-    assert.equal(result?.event.type, 'plan_execution_completed');
-    assert.deepEqual(harness.updates, [
-      {
-        operationId: 'plan_root_terminal_run-1',
-        sessionId: harness.sessionId,
-        executionId: 'execution-1',
-        steps: [
-          { id: 'step-1', status: 'completed' },
-          { id: 'step-2', status: 'skipped' },
-        ],
-      },
-    ]);
-    // Every step is already terminal, so there is nothing to interrupt: the
-    // settlement keeps the running backend instead of disposing it.
-    assert.deepEqual(harness.runtimeKernel.disposed, []);
-  });
-
   test('a completed root Turn interrupts an execution that never reached a terminal step', async () => {
     const harness = await mountPlanSettlement('session-1', [
       ['step-1', 'in_progress'],
@@ -575,7 +545,6 @@ describe('SessionManager Plan terminal settlement', () => {
     );
 
     assert.equal(result?.event.type, 'plan_execution_interrupted');
-    assert.deepEqual(harness.updates, []);
     assert.deepEqual(harness.runtimeKernel.disposed, [harness.sessionId]);
     assert.match(harness.interrupts[0]?.reason ?? '', /completed before all Plan steps/);
   });
@@ -594,7 +563,6 @@ describe('SessionManager Plan terminal settlement', () => {
       );
 
       assert.equal(result?.event.type, 'plan_execution_interrupted');
-      assert.deepEqual(harness.updates, []);
       assert.deepEqual(harness.runtimeKernel.disposed, [harness.sessionId]);
       assert.match(harness.interrupts[0]?.reason ?? '', expected);
     }
@@ -633,10 +601,11 @@ describe('SessionManager Plan terminal settlement', () => {
     );
   });
 
-  test('settling an execution that already finished writes nothing', async (t) => {
+  test('a closed execution is no longer active, so the settlement leaves the store alone', async (t) => {
     const harness = await mountRealPlanSettlement();
     t.after(harness.close);
-    // The Turn that ran the plan already reported every step through the store.
+    // The Turn that ran the plan already reported every step through the store,
+    // which closes the execution and clears the active pointer in one event.
     await harness.store.updateExecution({
       sessionId: harness.sessionId,
       executionId: harness.executionId,
@@ -661,6 +630,7 @@ describe('SessionManager Plan terminal settlement', () => {
       (await harness.store.readState(harness.sessionId)).storeVersion,
       completed.storeVersion,
     );
+    assert.deepEqual(harness.runtimeKernel.disposed, [], 'nothing was left to interrupt');
   });
 
   test('a Session without Plan authority settles nothing', async () => {
@@ -13139,7 +13109,9 @@ class GatedSteeringBackend implements AgentBackend {
 
 /**
  * A Session with Plan authority whose active execution carries the given step
- * statuses, plus the two writes the terminal settlement can make. Operation
+ * statuses. An active execution can only be settled by interruption — the store
+ * closes an execution in the same event that makes its last step terminal — so
+ * the double refuses the completion write rather than modelling one. Operation
  * receipts stay empty here: the store that records them is exercised on its
  * production implementation below.
  */
@@ -13149,13 +13121,11 @@ async function mountPlanSettlement(
 ): Promise<{
   manager: SessionManager;
   sessionId: string;
-  updates: UpdatePlanExecutionInput[];
   interrupts: Array<{ sessionId: string; reason: string; operationId: string | undefined }>;
   runtimeKernel: DelegatingRuntimeKernel;
 }> {
   const store = new MemorySessionStore();
   const runtimeKernel = new DelegatingRuntimeKernel();
-  const updates: UpdatePlanExecutionInput[] = [];
   const interrupts: Array<{
     sessionId: string;
     reason: string;
@@ -13208,25 +13178,13 @@ async function mountPlanSettlement(
           state: { ...structuredClone(planState), activeExecutionId: undefined, storeVersion: 3 },
         };
       },
-      updateExecution: async (input: UpdatePlanExecutionInput) => {
-        updates.push(input);
-        return {
-          event: {
-            id: input.operationId ?? 'update-operation',
-            sessionId: input.sessionId,
-            ts: 3,
-            storeVersion: 3,
-            type: 'plan_execution_completed',
-            executionId: input.executionId,
-            steps: structuredClone(planState.executions[0]!.steps),
-          } satisfies PlanEvent,
-          state: { ...structuredClone(planState), activeExecutionId: undefined, storeVersion: 3 },
-        };
+      updateExecution: async () => {
+        throw new Error('the terminal settlement must not complete an active execution');
       },
     } as unknown as PlanStore,
   });
   await manager.createSession(makeInput());
-  return { manager, sessionId, updates, interrupts, runtimeKernel };
+  return { manager, sessionId, interrupts, runtimeKernel };
 }
 
 /**

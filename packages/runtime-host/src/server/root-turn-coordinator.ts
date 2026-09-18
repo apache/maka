@@ -95,6 +95,7 @@ import type {
   TurnStartInput,
   TurnStopInput,
 } from '../protocol/index.js';
+import { boundedFailureDiagnostic } from './failure-diagnostic.js';
 import type { RuntimeHostResidency } from './host-kernel.js';
 import type { HostInteractionCoordinator } from './interaction-coordinator.js';
 import {
@@ -3131,17 +3132,30 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
     if (settlement) active.observationSettled = Promise.resolve(settlement);
   }
 
+  /**
+   * Plan settlement is post-terminal bookkeeping. The Runtime terminal fact is
+   * authoritative, so a Plan store failure must never revoke it: the failure is
+   * reported and the Host drains, leaving the residual execution to startup
+   * recovery instead of failing a Turn whose Run already completed.
+   */
   private async settlePlanAfterTerminalTurn(
     sessionId: string,
     active: ActiveRootTurn,
     status: 'completed' | 'failed' | 'cancelled',
   ): Promise<void> {
     if (!this.manager.hasPlanAuthority()) return;
-    await this.manager.settleActivePlanExecutionAfterRootTurn(
-      sessionId,
-      status,
-      `plan_root_terminal_${active.runId}`,
-    );
+    try {
+      await this.manager.settleActivePlanExecutionAfterRootTurn(
+        sessionId,
+        status,
+        `plan_root_terminal_${active.runId}`,
+      );
+    } catch (error) {
+      console.error(
+        `[runtime-host] Plan settlement failed after terminal root Turn session=${sessionId} turn=${active.turnId} run=${active.runId}: ${boundedFailureDiagnostic(error)}`,
+      );
+      this.requestHostDrain();
+    }
   }
 
   private completeTerminalTransition(sessionId: string, active: ActiveRootTurn): Promise<void> {
