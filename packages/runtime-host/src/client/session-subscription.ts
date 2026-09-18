@@ -507,11 +507,14 @@ export class ClientSessionSubscription
       }
     }
 
-    this.#offer(frame);
     if (frame.kind === 'subscription.closed') {
+      // Record the reason before the offer: a full client queue makes #offer
+      // throw 'slow_consumer', which would otherwise discard the real reason
+      // the Host gave for closing this subscription.
       this.#closedReason = frame.reason;
       this.#doneAfterQueue = true;
     }
+    this.#offer(frame);
   }
 
   finish(): void {

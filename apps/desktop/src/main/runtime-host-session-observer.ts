@@ -35,7 +35,10 @@ import type {
   SubscriptionFrame,
 } from "@maka/runtime-host/protocol";
 import type { DesktopRuntimeHostClient } from "./runtime-host-client.js";
-import { RuntimeHostSubscriptionError } from "@maka/runtime-host/client";
+import {
+  RuntimeHostOperationError,
+  RuntimeHostSubscriptionError,
+} from "@maka/runtime-host/client";
 import {
   DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES,
   DESKTOP_TRANSCRIPT_GLOBAL_CACHE_MAX_BYTES,
@@ -51,6 +54,7 @@ import {
   type PreparedSessionSubscription,
   RuntimeHostSessionSubscriptionOwner,
   SessionRemovedSubscriptionError,
+  TranscriptCacheCapacityError,
 } from "./runtime-host-session-subscription-owner.js";
 import {
   type DesktopSequencedTranscriptMessage,
@@ -964,6 +968,16 @@ export class RuntimeHostSessionObserver {
     state: ObservedSessionState,
     error: Error,
   ): void {
+    // A recovery that loses the race to a deletion learns it as a
+    // 'subscription.open' not_found — the same terminal shape as an explicit
+    // session_removed, not a generic error.
+    if (
+      error instanceof RuntimeHostOperationError &&
+      error.operation === 'subscription.open' &&
+      error.code === 'not_found'
+    ) {
+      error = new SessionRemovedSubscriptionError(error.message);
+    }
     if (error instanceof SessionRemovedSubscriptionError) {
       this.#emitSessionsChanged("deleted", state.sessionId);
       void this.#closeState(state);
@@ -1039,9 +1053,9 @@ export class RuntimeHostSessionObserver {
         throw new Error('Runtime Host Session observer changed before activation');
       }
       state.snapshot = structuredClone(subscription.snapshot);
-      state.replica = subscription.replica;
       this.#cacheTranscript(subscription.replica.snapshot());
       subscription.replica.adoptResidentAccounting();
+      state.replica = subscription.replica;
       state.projector = projector;
       previousReplica?.close();
       this.#resetTranscriptConsumers(state);
@@ -1544,7 +1558,9 @@ export class RuntimeHostSessionObserver {
     this.#transcriptPreparationBytes += deltaBytes;
     if (deltaBytes > 0 && !this.#touchReplica(state, state)) {
       this.#transcriptPreparationBytes -= deltaBytes;
-      throw new RangeError('Desktop transcript preparation exceeds the global cache limit');
+      throw new TranscriptCacheCapacityError(
+        'Desktop transcript preparation exceeds the global cache limit',
+      );
     }
   }
 

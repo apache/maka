@@ -80,6 +80,16 @@ export class SessionRemovedSubscriptionError extends Error {
   readonly name = "SessionRemovedSubscriptionError";
 }
 
+/**
+ * A transcript read could not charge its decode bytes to the global cache
+ * budget. The charge was already rolled back, so the subscription is healthy;
+ * reporting it as a failure would only tear the subscription down under
+ * memory pressure. The next frame retries the read.
+ */
+export class TranscriptCacheCapacityError extends RangeError {
+  readonly name = "TranscriptCacheCapacityError";
+}
+
 /** Owns exactly one replaceable Host subscription for one Desktop Session. */
 export class RuntimeHostSessionSubscriptionOwner {
   readonly #deps: RuntimeHostSessionSubscriptionOwnerDeps;
@@ -367,8 +377,7 @@ export class RuntimeHostSessionSubscriptionOwner {
           // Leaving the iterator awaits its return() — the subscription's
           // close handshake — so the failure has to be on its way to teardown
           // before this loop exits, not after.
-          this.#failAttempt(attempt, error);
-          return;
+          if (this.#failAttempt(attempt, error)) return;
         }
       }
       if (!this.#closed) {
@@ -379,25 +388,37 @@ export class RuntimeHostSessionSubscriptionOwner {
     }
   }
 
-  #failAttempt(attempt: SubscriptionAttempt, error: unknown): void {
-    if (this.#closed || (this.#attempt !== attempt && this.#candidate !== attempt)) return;
+  /**
+   * Routes a reported failure. Returns false only when the failure was
+   * absorbed and the caller's context (a pump, a catch-up) may keep running;
+   * every classified path leaves the attempt dead or being replaced.
+   */
+  #failAttempt(attempt: SubscriptionAttempt, error: unknown): boolean {
+    if (this.#closed || (this.#attempt !== attempt && this.#candidate !== attempt)) {
+      return true;
+    }
     // A transcript read that raced the subscription's death only sees its
     // dead-state mask ('connection_closed'); the subscription itself knows
     // the real reason, and it is already recorded before the mask can fire.
+    // A closed frame is the Host's own death statement — it is recorded
+    // before any terminalError can exist, so it always outranks the
+    // synthesized mask a dying transport stores afterwards.
     const failure = asError(
-      attempt.handle.terminalError ??
-        (attempt.handle.closedReason === undefined
-          ? undefined
-          : subscriptionClosedError(attempt.handle.closedReason)) ??
-        error,
+      attempt.handle.closedReason === undefined
+        ? (attempt.handle.terminalError ?? error)
+        : subscriptionClosedError(attempt.handle.closedReason),
     );
     if (attempt.phase !== 'active') {
       attempt.fail(failure);
-    } else if (isRecoverableSubscriptionFailure(failure)) {
-      this.#replaceReadyTask(this.#establish(attempt, failure));
-    } else {
-      this.#deps.terminalFailure(failure);
+      return true;
     }
+    if (failure instanceof TranscriptCacheCapacityError) return false;
+    if (isRecoverableSubscriptionFailure(failure)) {
+      this.#replaceReadyTask(this.#establish(attempt, failure));
+      return true;
+    }
+    this.#deps.terminalFailure(failure);
+    return true;
   }
 
   #replaceReadyTask(task: Promise<void>): void {

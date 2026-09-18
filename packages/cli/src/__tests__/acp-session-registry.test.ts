@@ -3112,6 +3112,8 @@ class FakeSubscription implements RuntimeHostSessionSubscription, AsyncIterator<
   readonly hostEpoch = 'host-1';
   readonly activeAssistantStreams = [];
   readonly transcriptBootstrap = null;
+  readonly terminalError = undefined;
+  readonly closedReason = undefined;
   #transcriptWatermark: number | null = null;
   readonly #frames: SubscriptionFrame[] = [];
   readonly #waiters: Array<{

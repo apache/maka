@@ -46,7 +46,10 @@ import {
   type RuntimeHostSessionObserverTarget,
   type RuntimeHostTranscriptTarget,
 } from "../runtime-host-session-observer.js";
-import { RuntimeHostSessionSubscriptionOwner } from '../runtime-host-session-subscription-owner.js';
+import {
+  RuntimeHostSessionSubscriptionOwner,
+  TranscriptCacheCapacityError,
+} from '../runtime-host-session-subscription-owner.js';
 import {
   AsyncFrameQueue,
   continuitySnapshot,
@@ -3369,6 +3372,98 @@ test('feeds the surviving projector rows that went durable while the replica was
   )!;
   assert.equal(admission.outcome, 'admitted');
   assert.equal(admission.turnId, 'turn-1');
+  await observer.close();
+});
+
+test('keeps the subscription alive when a catch-up decode hits the cache capacity gate', async () => {
+  const firstEvents = new AsyncFrameQueue();
+  const target = eventTarget(1);
+  let watermark = 2;
+  let failDecode = false;
+  let decodeAttempts = 0;
+  const observer = new RuntimeHostSessionObserver({
+    client: {
+      openSession: async (_sessionId: string) =>
+        runtimeHostSessionFixture({
+          snapshot: continuitySnapshot(),
+          events: firstEvents,
+          transcriptBootstrap: { durable: transcriptPage('older', 2) },
+          transcriptWatermark: () => watermark,
+          loadTranscriptPage: async (input) =>
+            transcriptPage(input.direction, input.throughSequence ?? 3),
+          decodeTranscriptPage: async (page) => {
+            decodeAttempts += 1;
+            if (failDecode) {
+              throw new TranscriptCacheCapacityError(
+                'Desktop transcript preparation exceeds the global cache limit',
+              );
+            }
+            return {
+              messages:
+                page.direction === 'newer'
+                  ? rowsThrough(page.throughSequence, 20).slice(3)
+                  : rowsThrough(page.throughSequence, 20),
+              nextCursor: page.nextCursor,
+            };
+          },
+          async close() {},
+        }),
+    },
+    emitSessionsChanged() {},
+  });
+  await observer.observe('session-1', 'observer-1', target);
+
+  // The pump's catch-up decode hits the capacity gate: the charge was already
+  // rolled back, so the only thing a failure report could do is tear down a
+  // healthy subscription. The frame is consumed and the subscription lives.
+  failDecode = true;
+  watermark = 3;
+  firstEvents.push({
+    kind: 'subscription.transcript_advanced',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-session-1',
+    sessionId: 'session-1',
+    sequence: 1,
+    throughSequence: 3,
+  });
+  await waitFor(() => decodeAttempts >= 2);
+
+  failDecode = false;
+  watermark = 4;
+  firstEvents.push({
+    kind: 'subscription.transcript_advanced',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-session-1',
+    sessionId: 'session-1',
+    sequence: 2,
+    throughSequence: 4,
+  });
+
+  const batches: DesktopTranscriptBatch[] = [];
+  await observer.openTranscript('session-1', 'consumer-1', {
+    id: 7,
+    send(_channel, batch) {
+      batches.push(batch);
+      queueMicrotask(() =>
+        observer.acknowledgeTranscript(
+          'consumer-1',
+          batch.generation,
+          batch.deliverySequence!,
+          7,
+        ),
+      );
+    },
+    once() {},
+    off() {},
+  });
+  await waitFor(() =>
+    batches.some((batch) => durableSequences(batch).includes(4)),
+  );
+  assert.ok(
+    !target.observations.some(
+      (event) => event.type === 'host_observation_error',
+    ),
+  );
   await observer.close();
 });
 
