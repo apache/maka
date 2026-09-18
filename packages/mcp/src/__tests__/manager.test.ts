@@ -106,13 +106,15 @@ describe('McpClientManager E2E', { concurrency: false }, () => {
         block = true;
         const abort = new AbortController();
         const executing = manager[action]('remote', { signal: abort.signal });
-        const outcome = executing.catch(() => undefined);
+        const outcome = executing.catch((error: unknown) => error);
         await readStarted.promise;
-        abort.abort(new Error('cancel post-discovery read'));
+        const reason = new Error('cancel post-discovery read');
+        abort.abort(reason);
         const settled = await settlesWithin(outcome, 250);
         release.resolve();
-        await outcome;
+        const error = await outcome;
         assert.equal(settled, true);
+        assert.equal(error, reason);
         assert.equal(manager.status('remote')?.state, 'disconnected');
         assert.equal(manager.toolSnapshot().tools.length, 0);
       });
@@ -676,10 +678,11 @@ describe('McpClientManager E2E', { concurrency: false }, () => {
 
       const disconnecting = manager.disconnect('remote');
       await assert.rejects(manager.callTool(stale, {}), /tool binding is stale/u);
-      await assert.rejects(manager.connect('remote'), /server "remote" is closing/u);
       assert.equal(countProtocolMethod(fixture, 'tools/call'), callsBefore);
       await disconnecting;
       assert.equal(manager.status('remote')?.state, 'disconnected');
+      await manager.connect('remote');
+      await assert.rejects(manager.callTool(stale, {}), /tool binding is stale/u);
     });
 
     test('revokes bindings and refresh authority as soon as close begins', async () => {
@@ -1525,6 +1528,52 @@ describe('McpClientManager E2E', { concurrency: false }, () => {
       assert.deepEqual(manager.toolSnapshot().tools, []);
     });
 
+    test('post-handshake cancellation joins stdio process reaping before rejection', async (t) => {
+      const root = await mkdtemp(join(tmpdir(), 'maka-mcp-list-abort-'));
+      const eventLog = join(root, 'events.jsonl');
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const manager = createManager();
+      const abort = new AbortController();
+      const syncing = manager.sync(
+        {
+          version: MCP_CONFIG_VERSION,
+          mcpServers: {
+            fixture: {
+              command: process.execPath,
+              args: [fixturePath, '--slow-tool-list', '--ignore-sigterm', '--hold-stdin-open'],
+              env: { MAKA_MCP_STDIO_EVENT_LOG: eventLog },
+              protocol: 'legacy',
+            },
+          },
+        },
+        { signal: abort.signal },
+      );
+      await pollFor(
+        async () => {
+          try {
+            return (await readFile(eventLog, 'utf8')).includes('"event":"tools-list"');
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+            throw error;
+          }
+        },
+        { timeoutMs: 2_000, pollMs: 5 },
+      );
+      const start = (await readFile(eventLog, 'utf8'))
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => JSON.parse(line) as { event: string; pid: number })
+        .find((event) => event.event === 'start')!;
+      const reason = new Error('cancel initial tool discovery');
+      abort.abort(reason);
+      await assert.rejects(syncing, (error) => error === reason);
+      const alive = processExists(start.pid);
+      if (alive) process.kill(start.pid, 'SIGKILL');
+      assert.equal(alive, false);
+      assert.equal(manager.status('fixture')?.state, 'disconnected');
+      assert.deepEqual(manager.toolSnapshot().tools, []);
+    });
+
     test('a repeated disconnect joins the original stdio teardown before reconnecting', async (t) => {
       const root = await mkdtemp(join(tmpdir(), 'maka-mcp-repeat-disconnect-'));
       const eventLog = join(root, 'events.jsonl');
@@ -1754,6 +1803,93 @@ describe('McpClientManager E2E', { concurrency: false }, () => {
       assert.match(String('error' in result ? result.error : ''), /cancel parallel removals/u);
       assert.equal(manager.status('fast')?.state, 'disabled');
       assert.equal(manager.status('slow'), undefined);
+    });
+
+    test('a queued sync cancels before its sibling settles without releasing the sync lane', async () => {
+      const reading = deferred<void>();
+      const release = deferred<void>();
+      const manager = createManager({
+        oauthStorage: {
+          get: async () => {
+            reading.resolve();
+            await release.promise;
+            return undefined;
+          },
+          set: async () => undefined,
+          delete: async () => undefined,
+        },
+      });
+      await manager.sync({
+        version: MCP_CONFIG_VERSION,
+        mcpServers: { remote: { url: 'https://example.com/mcp', enabled: false } },
+      });
+      const first = manager.sync({ version: MCP_CONFIG_VERSION, mcpServers: {} });
+      await reading.promise;
+      const abort = new AbortController();
+      const queued = manager.sync(
+        {
+          version: MCP_CONFIG_VERSION,
+          mcpServers: { cancelled: { command: 'unused', enabled: false } },
+        },
+        { signal: abort.signal },
+      );
+      const reason = new Error('cancel queued sync');
+      abort.abort(reason);
+      const rejected = rejectsWithin(queued, 100, /cancel queued sync/u);
+      const next = manager.sync({
+        version: MCP_CONFIG_VERSION,
+        mcpServers: { next: { command: 'unused', enabled: false } },
+      });
+      const early = await rejected;
+      const nextEarly = await settlesWithin(next, 30);
+      release.resolve();
+      await first;
+      await assert.rejects(queued, (error) => error === reason);
+      await next;
+      assert.equal(early, true);
+      assert.equal(nextEarly, false);
+      assert.equal(manager.status('cancelled'), undefined);
+      assert.equal(manager.status('next')?.state, 'disabled');
+    });
+
+    test('bare connect joins an aborted disconnect before creating the next stdio child', async (t) => {
+      const root = await mkdtemp(join(tmpdir(), 'maka-mcp-connect-teardown-'));
+      const eventLog = join(root, 'events.jsonl');
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const manager = createManager();
+      const config = fixtureConfig(['--ignore-sigterm', '--hold-stdin-open']);
+      config.mcpServers.fixture = {
+        ...config.mcpServers.fixture,
+        env: { MAKA_MCP_STDIO_EVENT_LOG: eventLog },
+        protocol: 'legacy',
+      };
+      await manager.sync(config);
+      const starts = async () =>
+        (await readFile(eventLog, 'utf8'))
+          .split('\n')
+          .filter(Boolean)
+          .map((line) => JSON.parse(line) as { event: string; pid: number })
+          .filter((event) => event.event === 'start');
+      const original = (await starts())[0]!;
+      const abort = new AbortController();
+      const disconnect = manager.disconnect('fixture', false, { signal: abort.signal });
+      abort.abort(new Error('stop waiting for disconnect'));
+      await assert.rejects(disconnect);
+      const retry = manager.connect('fixture');
+      const observed = retry.then(
+        (status) => status,
+        (error: unknown) => error,
+      );
+      const early = await settlesWithin(observed, 50);
+      process.kill(original.pid, 'SIGKILL');
+      const status = await observed;
+      for (const child of await starts()) {
+        if (processExists(child.pid)) process.kill(child.pid, 'SIGKILL');
+      }
+      assert.equal(early, false);
+      assert.ok(!(status instanceof Error));
+      assert.equal((status as { state: string }).state, 'connected');
+      assert.equal((await starts()).length, 2);
     });
 
     test('cancels installation after remote tool discovery starts', async () => {

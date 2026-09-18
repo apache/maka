@@ -457,15 +457,22 @@ export class McpClientManager {
 
   sync(config: McpConfigFile, options: { signal?: AbortSignal } = {}): Promise<void> {
     if (this.closed) return Promise.reject(new Error('MCP client manager is closed'));
+    if (options.signal?.aborted) return Promise.reject(abortReason(options.signal));
     const snapshot = structuredClone(config);
+    // Only the queue wait may be abandoned. Once started, sync owns its
+    // transports and credential writes and must join their settlement.
+    const queuedAbort = new AbortController();
+    const abortQueued = () => queuedAbort.abort(abortReason(options.signal));
+    options.signal?.addEventListener('abort', abortQueued, { once: true });
     const operation = this.syncQueue
       .catch(() => {})
       .then(() => {
+        options.signal?.removeEventListener('abort', abortQueued);
         throwIfAborted(options.signal);
         return this.syncNow(snapshot, options.signal);
       });
     this.syncQueue = operation;
-    return operation;
+    return waitForAbort(operation, queuedAbort.signal);
   }
 
   private async syncNow(config: McpConfigFile, signal?: AbortSignal): Promise<void> {
@@ -622,7 +629,15 @@ export class McpClientManager {
   ): Promise<McpServerStatus> {
     if (this.closed) throw new Error('MCP client manager is closed');
     throwIfAborted(options.signal);
-    const entry = this.requireConnection(serverId);
+    let entry = this.requireConnection(serverId);
+    while (entry.teardown) {
+      await waitForAbort(entry.teardown, options.signal);
+      throwIfAborted(options.signal);
+      if (this.closed) throw new Error('MCP client manager is closed');
+      // A remove may have retired this id while we joined its teardown.
+      // Only a later sync may recreate that config; connect never resurrects it.
+      entry = this.requireConnection(serverId);
+    }
     if (entry.closing) throw new Error(`MCP server "${serverId}" is closing`);
     if (entry.credentialCleanupOwed) {
       // Fail closed: the previous endpoint's credentials still exist, so no
@@ -1400,6 +1415,9 @@ export class McpClientManager {
             stderrTail: entry.status.stderrTail,
           });
         }
+        // The abort reason belongs to the caller, not an untrusted server.
+        // Preserve its identity after cleanup; remote failures remain scrubbed.
+        throw abortReason(signal);
       } else {
         this.markError(entry, exposedError);
       }
@@ -1707,11 +1725,15 @@ export class McpClientManager {
         fetchFn,
       });
     } catch (error) {
+      throwIfAborted(options.signal);
       throw scrubbedError(error, this.secretsFor(serverId, config));
     }
     if (result === 'AUTHORIZED') {
       this.interactiveRounds.delete(serverId);
-      await this.reconnect(serverId).catch(() => {});
+      await this.reconnect(serverId, options).catch(() => {
+        throwIfAborted(options.signal);
+      });
+      throwIfAborted(options.signal);
       return { status: 'authorized' };
     }
     if (!authorizationUrl) {
@@ -1830,6 +1852,7 @@ export class McpClientManager {
         fetchFn,
       });
     } catch (error) {
+      throwIfAborted(options.signal);
       // A token endpoint can reflect what it was sent (a static clientSecret,
       // a header value, a token — or this round's authorization code) into
       // error_description; none of it may reach the renderer through the
@@ -1847,7 +1870,7 @@ export class McpClientManager {
     // Round over: release before reconnect, which the round gate would
     // otherwise defer.
     this.interactiveRounds.delete(serverId);
-    return this.reconnect(serverId);
+    return this.reconnect(serverId, options);
   }
 
   /** The persisted-but-unfinished interactive round, if any — enough for
@@ -3131,12 +3154,11 @@ async function safeClose(
   transport?: Transport,
   subscription?: McpSubscription,
 ): Promise<void> {
+  // Capture the stdio reaper before client.close() can clear the SDK's child
+  // handle. Every cleanup path joins the same transport-owned promise.
+  const transportClose = transport && closeTransport(transport);
   const subscriptionClose = subscription?.close().catch(() => {});
-  await Promise.all([
-    subscriptionClose,
-    client?.close().catch(() => {}),
-    transport?.close().catch(() => {}),
-  ]);
+  await Promise.all([subscriptionClose, client?.close().catch(() => {}), transportClose]);
 }
 
 function abortReason(signal?: AbortSignal): Error {
@@ -3180,13 +3202,11 @@ async function connectCandidate(
     // SDK v2's server/discover probes currently use their timeout but not the
     // Client.connect signal. Closing the candidate transport aborts either an
     // HTTP probe or the disposable stdio sibling before a late session starts.
-    abortClose ??= closeAbortedTransport(transport);
+    abortClose ??= closeTransport(transport);
   };
   if (signal.aborted) {
-    await transport.close().catch(() => {});
-    throw signal.reason instanceof Error
-      ? signal.reason
-      : new Error(String(signal.reason ?? 'MCP connection aborted'));
+    await closeTransport(transport);
+    throw abortReason(signal);
   }
   signal.addEventListener('abort', closeOnAbort, { once: true });
   try {
@@ -3197,7 +3217,17 @@ async function connectCandidate(
   }
 }
 
-function closeAbortedTransport(transport: Transport): Promise<void> {
+const transportClosures = new WeakMap<Transport, Promise<void>>();
+
+function closeTransport(transport: Transport): Promise<void> {
+  const existing = transportClosures.get(transport);
+  if (existing) return existing;
+  const closing = reapTransport(transport);
+  transportClosures.set(transport, closing);
+  return closing;
+}
+
+function reapTransport(transport: Transport): Promise<void> {
   if (transport instanceof StdioClientTransport) {
     // @modelcontextprotocol/client is pinned to 2.0.0. In that release the
     // public close() clears its child handle before the shutdown finishes, so

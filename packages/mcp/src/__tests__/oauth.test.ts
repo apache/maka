@@ -485,10 +485,101 @@ describe('McpClientManager OAuth E2E', () => {
     await reconnectStarted.promise;
     abort.abort(new Error('cancelled authorization reconnect'));
 
+    const settled = await Promise.race([
+      clearing.then(
+        () => true,
+        () => true,
+      ),
+      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 150)),
+    ]);
     await assert.rejects(clearing, /cancelled authorization reconnect/u);
+    assert.equal(settled, true, 'abort must settle before the 300ms connect timeout');
     assert.equal((await storage.get('remote'))?.tokens, undefined);
     assert.equal(manager.status('remote')?.state, 'disconnected');
   });
+
+  for (const action of ['start', 'finish'] as const) {
+    test(`${action}Authorization cancels its trailing reconnect with the caller reason`, async () => {
+      const reconnecting = deferred<void>();
+      let holdReconnect = false;
+      const fixture = await createOAuthFixture({
+        holdMcpRequest: async () => {
+          if (!holdReconnect) return false;
+          reconnecting.resolve();
+          return true;
+        },
+        holdRefresh: async () => {
+          holdReconnect = true;
+        },
+      });
+      const memory = createMemoryMcpOAuthStorage();
+      let arm = false;
+      const storage: McpOAuthStorage = {
+        ...memory,
+        set: async (id, record) => {
+          await memory.set(id, record);
+          if (arm && record.tokens) holdReconnect = true;
+        },
+      };
+      const manager = new McpClientManager({
+        oauthStorage: storage,
+        timeouts: { remoteConnectMs: 800 },
+      });
+      managers.push(manager);
+      await manager.sync(config(fixture.mcpUrl));
+      const abort = new AbortController();
+      let operation: Promise<unknown>;
+      if (action === 'start') {
+        const record = await memory.get('remote');
+        await memory.set('remote', {
+          ...record,
+          serverUrl: fixture.mcpUrl,
+          clientInformation: { client_id: 'stored-client' },
+          tokens: {
+            access_token: 'stale-token',
+            token_type: 'Bearer',
+            refresh_token: fixture.refreshToken,
+          },
+        });
+        arm = true;
+        operation = manager.startAuthorization('remote', 'http://127.0.0.1:39995/callback', {
+          signal: abort.signal,
+        });
+      } else {
+        const start = await manager.startAuthorization(
+          'remote',
+          'http://127.0.0.1:39995/callback',
+          { state: 'reconnect-cancel' },
+        );
+        assert.equal(start.status, 'redirect');
+        if (start.status !== 'redirect') return;
+        const consent = await fetch(start.authorizationUrl, { redirect: 'manual' });
+        const code = new URL(consent.headers.get('location')!).searchParams.get('code')!;
+        arm = true;
+        operation = manager.finishAuthorization(
+          'remote',
+          { code, state: 'reconnect-cancel' },
+          { signal: abort.signal },
+        );
+      }
+      const outcome = operation.then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      await reconnecting.promise;
+      const reason = new Error('cancel OAuth reconnect');
+      abort.abort(reason);
+      const early = await Promise.race([
+        outcome.then(() => true),
+        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 150)),
+      ]);
+      const error = await outcome;
+      assert.equal(early, true);
+      assert.equal(error, reason);
+      assert.equal(manager.status('remote')?.state, 'disconnected');
+      assert.ok((await memory.get('remote'))?.tokens, 'completed authorization stays committed');
+    });
+  }
 
   test('the probe speaks the current protocol version to strict POST-only servers', async () => {
     const fixture = await createOAuthFixture({

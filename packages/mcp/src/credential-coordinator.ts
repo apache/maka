@@ -28,7 +28,7 @@
 // transition atomic — not merely each storage call — and make revocation
 // terminal in every interleaving, including across processes:
 //
-// - a flow that began before a logout may finish its reads, but its writes
+// - after a logout reaches its commit boundary, writes from an older flow
 //   are refused: in-process by the epoch, cross-process by the generation
 //   it captured on its first read no longer matching the tombstone's;
 // - a write that began before the logout completes first — the queued
@@ -84,9 +84,8 @@ export class McpCredentialCoordinator {
     return this.epochs.get(serverId) ?? 0;
   }
 
-  /** Terminal erase: bumps the in-process epoch first (in-flight flows in
-   * this process become stale immediately), then — inside the lane, behind
-   * any write already in progress — replaces the record with a tombstone
+  /** Terminal erase: inside the lane, behind any write already in progress,
+   * bumps the in-process epoch immediately before replacing the record with a tombstone
    * whose generation is advanced by one. The tombstone is what makes the
    * revocation terminal for OTHER processes: their flows captured the old
    * generation and every later write verifies it against the stored one.
@@ -103,24 +102,20 @@ export class McpCredentialCoordinator {
       onCommitStarted?: () => void;
     } = {},
   ): Promise<void> {
-    this.assertNotAbandoned(serverId, options.signal);
-    this.epochs.set(serverId, this.epoch(serverId) + 1);
+    this.assertNotAbandoned(options.signal);
     let rejectAbandoned!: (error: Error) => void;
     const abandoned = new Promise<never>((_resolve, reject) => {
       rejectAbandoned = reject;
     });
-    const onAbort = () =>
-      rejectAbandoned(
-        new Error(`MCP credential erase for "${serverId}" was abandoned before it landed`),
-      );
+    const onAbort = () => rejectAbandoned(abortReason(options.signal));
     options.signal?.addEventListener('abort', onAbort, { once: true });
     const operation = this.run(serverId, async () => {
-      this.assertNotAbandoned(serverId, options.signal);
+      this.assertNotAbandoned(options.signal);
       const basis = await Promise.race([this.storage.get(serverId), abandoned]);
       // Re-check after the read: the abandonment may have landed while the
       // storage read was in flight — committing past it would erase a
       // record the caller no longer owns.
-      this.assertNotAbandoned(serverId, options.signal);
+      this.assertNotAbandoned(options.signal);
       // Absence still gets a tombstone: a cross-process flow that captured
       // generation 0 on absence must not CAS its credentials back in after
       // this revocation.
@@ -136,6 +131,10 @@ export class McpCredentialCoordinator {
       // Stop racing cancellation before notifying the caller: that callback
       // may synchronously abort, but the matching write must now settle.
       options.signal?.removeEventListener('abort', onAbort);
+      // A queued or read-only erase that was cancelled must not revoke an
+      // otherwise valid login. The lane orders earlier writes before this
+      // tombstone; the epoch fences older flows from writing after it.
+      this.epochs.set(serverId, this.epoch(serverId) + 1);
       options.onCommitStarted?.();
       await this.commit(serverId, basis, tombstone);
     });
@@ -146,9 +145,9 @@ export class McpCredentialCoordinator {
     }
   }
 
-  private assertNotAbandoned(serverId: string, signal?: AbortSignal): void {
+  private assertNotAbandoned(signal?: AbortSignal): void {
     if (signal?.aborted) {
-      throw new Error(`MCP credential erase for "${serverId}" was abandoned before it landed`);
+      throw abortReason(signal);
     }
   }
 
@@ -260,7 +259,7 @@ export class McpCredentialCoordinator {
 
   private assertGuard(serverId: string, guard: FlowGuard): void {
     if (guard.signal?.aborted) {
-      throw new Error(`MCP authorization for "${serverId}" was abandoned before the write landed`);
+      throw abortReason(guard.signal);
     }
     if (this.epoch(serverId) !== guard.epoch) {
       throw new Error(`MCP credentials for "${serverId}" were cleared during the operation`);
@@ -285,4 +284,10 @@ export class McpCredentialCoordinator {
     }
     await this.storage.set(serverId, record);
   }
+}
+
+function abortReason(signal?: AbortSignal): Error {
+  return signal?.reason instanceof Error
+    ? signal.reason
+    : new Error(String(signal?.reason ?? 'aborted'));
 }

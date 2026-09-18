@@ -51,7 +51,7 @@ describe('McpCredentialCoordinator', () => {
     round.abort();
     releaseGet();
 
-    await assert.rejects(write, /abandoned/u);
+    await assert.rejects(write, (error) => error === round.signal.reason);
     assert.deepEqual(writes, []);
   });
 
@@ -89,7 +89,7 @@ describe('McpCredentialCoordinator', () => {
     assert.equal(backing.get('remote')?.tokens?.access_token, 'r2-rotated');
   });
 
-  test('a logout landing during the storage read blocks the commit too', async () => {
+  test('logout follows an earlier write and fences every subsequent write from that flow', async () => {
     let releaseGet!: () => void;
     const gate = new Promise<void>((resolve) => {
       releaseGet = resolve;
@@ -117,11 +117,13 @@ describe('McpCredentialCoordinator', () => {
     releaseGet();
     await erasing.catch(() => {});
 
-    await assert.rejects(write, /cleared/u);
-    // Only the tombstone landed; the flow's write never did.
-    assert.equal(writes.length, 1);
-    assert.equal(writes[0]?.codeVerifier, undefined);
-    assert.equal(writes[0]?.generation, 1);
+    await write;
+    // The preceding write settles before the erase takes effect. Once the
+    // tombstone lands, this flow can no longer resurrect any credentials.
+    assert.equal(writes.length, 2);
+    assert.equal(writes[1]?.codeVerifier, undefined);
+    assert.equal(writes[1]?.generation, 1);
+    await assert.rejects(flow.set('remote', { codeVerifier: 'stale' }), /cleared/u);
   });
 
   test('an abandoned erase cannot tombstone the record a newer login stored', async () => {
@@ -156,14 +158,17 @@ describe('McpCredentialCoordinator', () => {
     stored = { version: 7, generation: 0 };
     releaseGet();
 
-    await assert.rejects(erasing, /abandoned/u);
+    await assert.rejects(erasing, (error) => error === round.signal.reason);
     assert.equal(writes.length, 0);
     assert.equal(stored.version, 7);
 
     // An already-abandoned erase never reaches storage at all.
     const aborted = new AbortController();
     aborted.abort();
-    await assert.rejects(coordinator.erase('remote', { signal: aborted.signal }), /abandoned/u);
+    await assert.rejects(
+      coordinator.erase('remote', { signal: aborted.signal }),
+      (error) => error === aborted.signal.reason,
+    );
     assert.equal(writes.length, 0);
   });
 
@@ -263,5 +268,41 @@ describe('McpCredentialCoordinator', () => {
     releaseWrite();
     await erasing;
     assert.deepEqual(stored, { version: 2, generation: 1 });
+  });
+
+  test('cancelling a queued erase preserves the preceding login flow and its abort reason', async () => {
+    const reading = deferred<void>();
+    const release = deferred<void>();
+    const writes: McpOAuthRecord[] = [];
+    const coordinator = new McpCredentialCoordinator({
+      get: async () => {
+        reading.resolve();
+        await release.promise;
+        return undefined;
+      },
+      set: async (_id, record) => {
+        writes.push(record);
+      },
+      delete: async () => undefined,
+    });
+    const flow = coordinator.flowStorage('remote');
+    const writing = flow.set('remote', { codeVerifier: 'active-login' });
+    const observedWrite = writing.then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    await reading.promise;
+    const abort = new AbortController();
+    const erasing = coordinator.erase('remote', { signal: abort.signal });
+    const observedErase = erasing.catch((error: unknown) => error);
+    const reason = new Error('cancel queued logout');
+    abort.abort(reason);
+    const error = await observedErase;
+    release.resolve();
+    const writeError = await observedWrite;
+    assert.equal(error, reason);
+    assert.equal(writeError, undefined);
+    assert.equal(writes.length, 1);
+    assert.equal(writes[0]?.codeVerifier, 'active-login');
   });
 });
