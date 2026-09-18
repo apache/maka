@@ -1889,7 +1889,6 @@ export async function createExecutionRuntimeHostComposition(
     const interactiveTurns = new HostInteractiveTurnCoordinator({
       executions: coordinator,
       turns: stores.agentRunStore,
-      runtime: manager,
     });
     // Compile-time guarantee that the three Turn coordinators together cover
     // every key in TURN_OPERATION_SPECS. Domain composition seeds all domain
@@ -1905,7 +1904,6 @@ export async function createExecutionRuntimeHostComposition(
       ? new SessionTurnAccessRequestCoordinator({
           authority: context.sessionAccessAuthority,
           startTurn: interactiveTurns.handlers['turn.start'],
-          regenerateTurn: interactiveTurns.handlers['turn.regenerate'],
           hostEpoch: context.hostEpoch,
           acquireResidency: () => context.acquireResidency('collaboration-turn-request'),
           requestDrain: context.requestDrain,

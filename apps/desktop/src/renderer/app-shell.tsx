@@ -1466,16 +1466,6 @@ function AppShellContent({
     refreshSessions,
     toastApi,
   });
-  const handleSwitchToBypassAndRetry = useCallback(
-    async (turnId: string) => {
-      const selectionIsCurrent = captureSelection();
-      const switched = await setPermissionMode('bypass');
-      if (!switched || !selectionIsCurrent()) return;
-      await handleTurnFooterAction(turnId, 'regenerate');
-    },
-    [captureSelection, handleTurnFooterAction, setPermissionMode],
-  );
-
   const {
     beginEditUserMessage,
     prepareRevisionSend,
@@ -2576,7 +2566,6 @@ function AppShellContent({
                     sessionId={sharedSessionActive ? activeId : undefined}
                     deriveTurnPresentation={deriveTurnPresentation}
                     ownerTurnFooterAction={handleTurnFooterAction}
-                    turnActionRegistry={turnActionRegistry}
                   >
                     {(turnActions) => (
                   <ChatMessageSurface
@@ -2611,7 +2600,6 @@ function AppShellContent({
                 onRetryMessages={activeId ? () => void retryMessages(activeId) : undefined}
                 deriveTurnPresentation={turnActions.deriveTurnPresentation}
                 onTurnFooterAction={turnActions.onTurnFooterAction}
-                onSwitchToBypassAndRetry={sharedSessionActive ? undefined : handleSwitchToBypassAndRetry}
                 onEditUserMessage={sharedSessionActive ? undefined : (turnId) => { void beginEditUserMessage(turnId); }}
                 safeResumeAction={!sharedSessionActive && activeId ? {
                   pending: resumePendingSessionId === activeId,

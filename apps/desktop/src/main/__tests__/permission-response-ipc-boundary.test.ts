@@ -23,7 +23,6 @@ import { describe, it } from 'node:test';
 import {
   normalizeBranchFromTurnInput,
   normalizeClientCapabilityResponse,
-  normalizeRegenerateTurnInput,
   normalizeReviseBeforeTurnInput,
   normalizeRuntimeHostBranchFromTurnInput,
   normalizeRuntimeHostReviseBeforeTurnInput,
@@ -88,10 +87,6 @@ describe('permission response IPC boundary', () => {
   });
 
   it('normalizes turn actions and rejects malformed identifiers', () => {
-    assert.deepEqual(normalizeRegenerateTurnInput({ sourceTurnId: 'turn-2', turnId: 'turn-3' }), {
-      sourceTurnId: 'turn-2',
-      turnId: 'turn-3',
-    });
     // A through-turn branch keeps its sourceTurnId; a spurious copyId is dropped.
     assert.deepEqual(
       normalizeBranchFromTurnInput({ sourceTurnId: 'turn-legacy', copyId: 'ignored-here' }),
@@ -143,7 +138,6 @@ describe('permission response IPC boundary', () => {
     );
 
     const invalidActions: Array<() => unknown> = [
-      () => normalizeRegenerateTurnInput({ sourceTurnId: 'turn-1', turnId: 1 }),
       () =>
         normalizeBranchFromTurnInput({
           sourceTurnId: 'turn-1',
