@@ -860,8 +860,9 @@ export function useSkillsController(
       ref: SkillLocationRef,
       createIfMissing: boolean,
     ): Promise<void> => {
-      const contextId = skillLocationSnapshot?.contextId;
-      if (!contextId) return;
+      const location = skillLocationSnapshot?.locations.find((entry) => entry.ref === ref);
+      const contextId = location && skillLocationSnapshot?.contextIds[location.scope];
+      if (!contextId || !skillLocationSnapshot) return;
       const isCurrent = () =>
         isSkillsSurfaceActive() &&
         inputRef.current.clientPathsAccessible &&
@@ -939,7 +940,7 @@ export function useSkillsController(
       ...(input.clientPathsAccessible
         ? {
             onOpenSkill: openSkill,
-            ...(skillLocationSnapshot?.contextId
+            ...(skillLocationSnapshot?.locations.length
               ? { onOpenSkillLocation: openSkillLocation }
               : {}),
             onImportManagedSkillSource: importManagedSkillSource,

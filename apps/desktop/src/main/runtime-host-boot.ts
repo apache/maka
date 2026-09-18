@@ -1768,6 +1768,7 @@ function registerHostClientIpc(
     workspaceRoot,
     mainWindowController,
     getSelectedWorkspaceTarget: () => selectedDesktopWorkspaceTarget(target),
+    getSelectedProject: () => requireRuntimePolicyTarget(target).projectManagement.current(),
     resolveNewSessionWorkspaceTarget: async (projectId) => {
       if (typeof projectId === "string") {
         return { kind: "project", projectId };

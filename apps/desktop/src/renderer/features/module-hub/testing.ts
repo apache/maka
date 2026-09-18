@@ -138,7 +138,7 @@ export function createFakeModuleHubServices(
     },
     skills: {
       list: async () => [],
-      listLocations: async () => ({ contextId: null, locations: [] }),
+      listLocations: async () => ({ contextIds: {}, locations: [] }),
       listManagedSources: async () => [],
       listBundledCatalog: async () => [],
       importManagedSource: async () =>

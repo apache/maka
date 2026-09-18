@@ -175,21 +175,31 @@ export interface RejectedSkillDefinition {
  *
  * Returns containment roots so `scanSkillDir` can reject ancestor-level
  * symlink escapes (e.g. `repo/.agents -> /outside`).
+ * A null cwd omits Project locations without substituting another scope's root.
  */
 export function resolveSkillDiscoveryPaths(
-  cwd: string,
+  cwd: string | null,
   workspaceRoot: string,
   homeDir?: string,
 ): { entries: SkillDiscoveryEntry[]; dirs: string[]; stateRoot: string } {
   const home = homeDir ?? homedir();
   const entries: SkillDiscoveryEntry[] = [
-    { dir: join(cwd, '.maka', 'skills'), containmentRoot: cwd, scope: 'project', source: 'maka' },
-    {
-      dir: join(cwd, '.agents', 'skills'),
-      containmentRoot: cwd,
-      scope: 'project',
-      source: 'agents',
-    },
+    ...(cwd === null
+      ? []
+      : [
+          {
+            dir: join(cwd, '.maka', 'skills'),
+            containmentRoot: cwd,
+            scope: 'project' as const,
+            source: 'maka' as const,
+          },
+          {
+            dir: join(cwd, '.agents', 'skills'),
+            containmentRoot: cwd,
+            scope: 'project' as const,
+            source: 'agents' as const,
+          },
+        ]),
     {
       dir: join(workspaceRoot, 'skills'),
       containmentRoot: workspaceRoot,

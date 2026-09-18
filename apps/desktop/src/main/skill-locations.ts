@@ -37,9 +37,24 @@ export type ResolveSkillLocationResult =
     };
 
 export interface SkillLocationContext {
-  readonly projectRoot: string;
+  readonly projectRoot: string | null;
   readonly workspaceRoot: string;
   readonly homeDirectory?: string;
+}
+
+export function skillLocationScope(ref: string): SkillLocation['scope'] | undefined {
+  switch (ref) {
+    case 'project:maka':
+    case 'project:agents':
+      return 'project';
+    case 'workspace:legacy':
+      return 'workspace';
+    case 'user:maka':
+    case 'user:agents':
+      return 'user';
+    default:
+      return undefined;
+  }
 }
 
 export async function listSkillLocations(
@@ -71,6 +86,11 @@ export async function resolveSkillLocation(
   ref: string,
   createIfMissing: boolean,
 ): Promise<ResolveSkillLocationResult> {
+  const scope = skillLocationScope(ref);
+  if (!scope) return { ok: false, reason: 'unknown_location' };
+  if (scope === 'project' && context.projectRoot === null) {
+    return { ok: false, reason: 'read_failed' };
+  }
   const discovery = resolveSkillDiscoveryPaths(
     context.projectRoot,
     context.workspaceRoot,

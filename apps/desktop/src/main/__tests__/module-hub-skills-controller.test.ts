@@ -45,7 +45,7 @@ function skill(id: string): SkillEntry {
 
 function skillLocations(project: string): SkillLocationsSnapshot {
   return {
-    contextId: project,
+    contextIds: { project },
     locations: [{
       ref: "project:agents",
       scope: "project",
@@ -235,7 +235,7 @@ test("Skills mutations preserve refresh combinations and suppress inactive or ca
       },
       listLocations: async () => {
         calls.push("locations");
-        return { contextId: null, locations: [] };
+        return { contextIds: {}, locations: [] };
       },
       listManagedSources: async () => {
         calls.push("sources");
@@ -479,7 +479,7 @@ test("stale Skills refresh errors do not outlive a newer successful generation",
         locationReads += 1;
         return locationReads === 1
           ? staleLocationRead.promise
-          : { contextId: null, locations: [] };
+          : { contextIds: {}, locations: [] };
       },
     },
   });
@@ -500,7 +500,7 @@ test("stale Skills refresh errors do not outlive a newer successful generation",
   );
 
   staleHostRecheck.resolve(host);
-  staleLocationRead.resolve({ contextId: null, locations: [] });
+  staleLocationRead.resolve({ contextIds: {}, locations: [] });
   await act(async () => staleRefresh);
   assert.deepEqual(records, []);
 });
@@ -625,4 +625,40 @@ test("a late Skill location response cannot restore the previous Project's direc
   });
   assert.equal(controller().host.skillLocations[0]?.path, "/project-b/.agents/skills");
   assert.deepEqual(records, []);
+});
+
+test("independent Skill locations stay actionable when the Project has no usable context", async () => {
+  const { root } = installReactRenderer();
+  const records: ToastRecord[] = [];
+  const opened: unknown[] = [];
+  const defaults = createFakeModuleHubServices();
+  const snapshot: SkillLocationsSnapshot = {
+    contextIds: { workspace: 'workspace-context', user: 'user-context' },
+    locations: [
+      { ref: 'project:agents', scope: 'project', source: 'agents', path: '/missing/.agents/skills', status: 'read_failed', skillCount: 0 },
+      { ref: 'workspace:legacy', scope: 'workspace', source: 'legacy', path: '/workspace/skills', status: 'available', skillCount: 0 },
+      { ref: 'user:agents', scope: 'user', source: 'agents', path: '/home/.agents/skills', status: 'missing', skillCount: 0 },
+    ],
+  };
+  const services = createFakeModuleHubServices({
+    skills: {
+      ...defaults.skills,
+      list: async () => { throw new Error('Project is unavailable'); },
+      listLocations: async () => snapshot,
+      openLocation: async (ref, options) => { opened.push({ ref, ...options }); return { ok: true }; },
+    },
+  });
+  await act(async () => renderController(root, services, input(records, { clientPathsAccessible: true })));
+  await act(async () => controller().refreshProjectSkills());
+  assert.deepEqual(controller().host.skillLocations, snapshot.locations);
+  const open = controller().host.onOpenSkillLocation;
+  assert.ok(open);
+  await act(async () => open('project:agents', true));
+  assert.deepEqual(opened, []);
+  await act(async () => open('workspace:legacy', false));
+  await act(async () => open('user:agents', true));
+  assert.deepEqual(opened, [
+    { ref: 'workspace:legacy', contextId: 'workspace-context', createIfMissing: false },
+    { ref: 'user:agents', contextId: 'user-context', createIfMissing: true },
+  ]);
 });

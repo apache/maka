@@ -20,8 +20,8 @@
 import type { SkillLocation } from '@maka/ui';
 
 export interface SkillLocationsSnapshot {
-  /** Opaque identity of the workspace that supplied these locations. */
-  readonly contextId: string | null;
+  /** Opaque identities bound to this Host and each independently resolved scope. */
+  readonly contextIds: Readonly<Partial<Record<SkillLocation['scope'], string>>>;
   readonly locations: SkillLocation[];
 }
 
