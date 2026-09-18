@@ -21,13 +21,7 @@ import { useLayoutEffect, useRef, useState } from 'react';
 import { Button } from '@astryxdesign/core/Button';
 import { IconButton } from '@astryxdesign/core/IconButton';
 import { HoverCard } from '@astryxdesign/core/HoverCard';
-import {
-  Blockquote,
-  MetadataList,
-  MetadataListItem,
-  Text,
-  VStack,
-} from '@astryxdesign/core';
+import { MetadataList, MetadataListItem, Text, VStack } from '@astryxdesign/core';
 import { MessageSquareQuote, MessagesSquare, TextQuote, X } from './icons.js';
 import { cn } from './utils.js';
 import type { UiLocale } from '@maka/core/ui-locale';
@@ -65,11 +59,9 @@ export function QuoteHoverCardContent(props: { quote: QuoteRef }) {
     <VStack gap={2} className="maka-quote-hover-card">
       <MetadataList columns="single" label={{ position: 'top' }}>
         <MetadataListItem label={copy.quoteSelectedTextLabel}>
-          <Blockquote cite={props.quote.label}>
-            <Text type="inherit" maxLines={4} textWrap="wrap">
-              {stripQuoteHeadingMarkers(props.quote.text)}
-            </Text>
-          </Blockquote>
+          <Text maxLines={4} textWrap="wrap">
+            {stripQuoteHeadingMarkers(props.quote.text)}
+          </Text>
         </MetadataListItem>
         {props.quote.comment ? (
           <MetadataListItem label={copy.quoteCommentLabel}>

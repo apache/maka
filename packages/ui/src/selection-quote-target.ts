@@ -93,3 +93,61 @@ export function resolveQuoteTarget(
   if (turnId === null) return null;
   return { text, turnId };
 }
+
+/**
+ * Rebuilds a DOM Range covering a stored excerpt inside a turn element, so a
+ * staged quote's note can be edited where the excerpt lives rather than over
+ * the composer's token. The match folds whitespace the way
+ * {@link normalizeQuoteText} does: a selection spanning element boundaries
+ * stores newlines the raw text nodes never carried, so a literal search would
+ * miss every multi-block quote.
+ */
+export function findQuoteTextRange(turn: Element, excerpt: string): Range | null {
+  const document = turn.ownerDocument;
+  const walker = document.createTreeWalker(turn, NodeFilter.SHOW_TEXT);
+  const nodes: Text[] = [];
+  let raw = '';
+  for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+    nodes.push(node as Text);
+    raw += node.nodeValue ?? '';
+  }
+  const boundary: number[] = [];
+  let haystack = '';
+  let pendingSpace = false;
+  for (let i = 0; i < raw.length; i += 1) {
+    if (/\s/.test(raw[i])) {
+      if (haystack.length > 0) pendingSpace = true;
+      continue;
+    }
+    if (pendingSpace) {
+      haystack += ' ';
+      boundary.push(i);
+      pendingSpace = false;
+    }
+    haystack += raw[i];
+    boundary.push(i);
+  }
+  const needle = normalizeQuoteText(excerpt);
+  if (needle === null) return null;
+  const at = haystack.indexOf(needle);
+  if (at === -1) return null;
+  // The needle is trimmed, so both ends resolve to real text-node characters.
+  const startRaw = boundary[at];
+  const endRaw = boundary[at + needle.length - 1] + 1;
+  const range = document.createRange();
+  let offset = 0;
+  let started = false;
+  for (const node of nodes) {
+    const length = node.nodeValue?.length ?? 0;
+    if (!started && startRaw < offset + length) {
+      range.setStart(node, startRaw - offset);
+      started = true;
+    }
+    if (started && endRaw <= offset + length) {
+      range.setEnd(node, endRaw - offset);
+      return range;
+    }
+    offset += length;
+  }
+  return null;
+}

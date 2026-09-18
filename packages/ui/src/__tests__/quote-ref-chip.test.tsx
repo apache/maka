@@ -70,9 +70,7 @@ test('the structured read names what was selected and what was said about it', a
   );
   const card = container.querySelector('.maka-quote-hover-card');
   assert.ok(card);
-  const blockquote = card.querySelector('blockquote');
-  assert.match(blockquote?.textContent ?? '', /the deploy failed at step three/);
-  assert.match(blockquote?.querySelector('cite')?.textContent ?? '', /Assistant/);
+  assert.match(card.textContent ?? '', /the deploy failed at step three/);
   assert.match(card.textContent ?? '', /Selected text/);
   assert.match(card.textContent ?? '', /Your comment/);
   assert.match(card.textContent ?? '', /is this the retry path\?/);
@@ -82,7 +80,7 @@ test('a quote with no note reads as the excerpt alone', async () => {
   const container = await render(<QuoteHoverCardContent quote={QUOTE} />);
   const card = container.querySelector('.maka-quote-hover-card');
   assert.ok(card);
-  assert.ok(card.querySelector('blockquote'));
+  assert.match(card.textContent ?? '', /the deploy failed at step three/);
   assert.doesNotMatch(card.textContent ?? '', /Your comment/);
 });
 

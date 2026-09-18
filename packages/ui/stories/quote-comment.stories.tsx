@@ -19,10 +19,16 @@
 
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { expect, userEvent, waitFor } from 'storybook/test';
-import { useState, type ComponentProps } from 'react';
+import { useRef, useState, type ComponentProps } from 'react';
 import type { QuoteRef } from '@maka/core/events';
 import type { SessionSummary, StoredMessage } from '@maka/core/session';
-import { ChatSurfaceLayout, ChatView, Composer } from '../src/components.js';
+import {
+  ChatSurfaceLayout,
+  ChatView,
+  Composer,
+  type ChatViewHandle,
+} from '../src/components.js';
+import { findQuoteTextRange } from '../src/selection-quote-target.js';
 import type { ChatModelChoice } from '../src/chat-model-helpers.js';
 
 // Fidelity convention (#1433): every story below names the real app path
@@ -117,6 +123,95 @@ function userMessage(id: string, turnId: string, text: string, quotes: QuoteRef[
   return { type: 'user', id, turnId, ts: NOW, text, quotes };
 }
 
+const ASSISTANT_REPLY = ANNOTATED_QUOTE.text;
+
+function applyComment(quotes: QuoteRef[], index: number, comment: string): QuoteRef[] {
+  return quotes.map((quote, i) => {
+    if (i !== index) return quote;
+    const { comment: _drop, ...rest } = quote;
+    return comment ? { ...rest, comment } : rest;
+  });
+}
+
+/** The loop the app wires: select → annotate → stage → reopen the note over
+ *  the excerpt itself. Quotes live in story state the way AppShell holds them. */
+function TranscriptQuoteLoop() {
+  const chatViewRef = useRef<ChatViewHandle>(null);
+  const [quotes, setQuotes] = useState<QuoteRef[]>([]);
+  return (
+    <ChatSurfaceLayout
+      composer={
+        <Composer
+          {...baseComposer}
+          pendingQuotes={quotes}
+          onRemoveQuote={(index) => setQuotes((current) => current.filter((_, i) => i !== index))}
+          onEditQuoteComment={(index, comment) => setQuotes((current) => applyComment(current, index, comment))}
+          onAnnotateQuote={(index) => {
+            const quote = quotes[index];
+            return (
+              quote !== undefined &&
+              (chatViewRef.current?.openQuoteAnnotation({
+                index,
+                text: quote.text,
+                turnId: quote.sourceTurnId,
+                comment: quote.comment,
+              }) ?? false)
+            );
+          }}
+        />
+      }
+    >
+      <ChatView
+        {...baseChat}
+        handleRef={chatViewRef}
+        messages={[
+          {
+            type: 'assistant',
+            id: 'a-3',
+            turnId: 'turn-3',
+            ts: NOW,
+            text: ASSISTANT_REPLY,
+            modelId: 'claude-sonnet-4-5',
+          },
+        ]}
+        onQuoteSelection={(selection) =>
+          setQuotes((current) => [
+            ...current,
+            {
+              text: selection.text,
+              sourceTurnId: selection.turnId,
+              ...(selection.comment ? { comment: selection.comment } : {}),
+            },
+          ])
+        }
+        onQuoteAnnotationSubmit={(index, comment) =>
+          setQuotes((current) => applyComment(current, index, comment))
+        }
+      />
+    </ChatSurfaceLayout>
+  );
+}
+
+function needleTextNode(): Text | null {
+  const turn = document.querySelector('[data-turn-id="turn-3"]');
+  if (!turn) return null;
+  const walker = document.createTreeWalker(turn, NodeFilter.SHOW_TEXT);
+  for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+    if ((node.nodeValue ?? '').includes('接口已跑通')) return node as Text;
+  }
+  return null;
+}
+
+async function visiblePanel(): Promise<HTMLElement> {
+  return waitFor(() => {
+    const panel = [...document.querySelectorAll<HTMLElement>('.maka-quote-comment-panel')].find(
+      (candidate) => candidate.checkVisibility(),
+    );
+    expect(panel).toBeTruthy();
+    return panel as HTMLElement;
+  });
+}
+
 function Frame({ children, width = 960 }: { children: React.ReactNode; width?: number }) {
   return (
     <div
@@ -189,6 +284,76 @@ export const AnnotationPanelOpen: Story = {
           panel.checkVisibility(),
         ),
       ).toHaveLength(1),
+    );
+  },
+};
+
+// Real path, end to end: select text in the transcript → 引用 → write the note in
+// the panel under the selection → the staged token → clicking the token reopens
+// the note over the excerpt itself, not beside the composer.
+export const TranscriptQuoteGesture: Story = {
+  render: () => (
+    <Frame>
+      <div style={{ padding: '0 24px', width: '100%', display: 'flex' }}>
+        <TranscriptQuoteLoop />
+      </div>
+    </Frame>
+  ),
+  play: async () => {
+    // The selection is the only source of truth — restoring a real Range over
+    // the excerpt is what a user's drag produces.
+    const turn = await waitFor(() => {
+      const el = document.querySelector('[data-turn-id="turn-3"]');
+      expect(el).toBeTruthy();
+      return el as HTMLElement;
+    });
+    // The transcript's first renders replace the turn's text nodes while the
+    // virtualizer measures; a range over a node that is about to be replaced
+    // collapses with it. Wait until the excerpt's node has been quiet for
+    // longer than the hook's 350ms settle, so the range it selects still
+    // points at live DOM when the quote is read.
+    await waitFor(
+      async () => {
+        const first = needleTextNode();
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        expect(first !== null && first === needleTextNode()).toBe(true);
+      },
+      { timeout: 8000 },
+    );
+    const range = findQuoteTextRange(turn, ASSISTANT_REPLY);
+    expect(range).toBeTruthy();
+    window.getSelection()?.addRange(range as Range);
+    const quoteAction = await waitFor(() => {
+      const button = [...document.querySelectorAll('button')].find(
+        (candidate) => candidate.textContent === '引用',
+      );
+      expect(button).toBeTruthy();
+      return button as HTMLElement;
+    });
+    await userEvent.click(quoteAction);
+    const panel = await visiblePanel();
+    const noteField = panel.querySelector('textarea');
+    expect(noteField).toBeTruthy();
+    // The layer's mousedown preventDefault keeps userEvent's focus-driven
+    // typing from reaching the field; drive the controlled input directly.
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
+    setter?.call(noteField, '按 debug 技能核对限流规则，再判断是否能降速继续。');
+    noteField?.dispatchEvent(new Event('input', { bubbles: true }));
+    const submit = [...panel.querySelectorAll('button')].find(
+      (candidate) => candidate.textContent === '引用',
+    );
+    expect(submit).toBeTruthy();
+    await userEvent.click(submit as HTMLElement);
+    const token = await waitFor(() => {
+      const el = document.querySelector('.maka-composer-quote-token');
+      expect(el).toBeTruthy();
+      return el as HTMLElement;
+    });
+    // The token's editor anchors back at the excerpt, with the note prefilled.
+    await userEvent.click(token);
+    const reopened = await visiblePanel();
+    expect(reopened.querySelector('textarea')).toHaveValue(
+      '按 debug 技能核对限流规则，再判断是否能降速继续。',
     );
   },
 };
