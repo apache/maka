@@ -35,9 +35,6 @@ import {
   type DesktopTranscriptReplicaOptions,
 } from './desktop-transcript-replica.js';
 
-const MAX_PENDING_FRAMES = 32;
-const MAX_PENDING_FRAME_BYTES = 256 * 1024;
-
 type SessionSubscriptionClient = Pick<DesktopRuntimeHostClient, "openSession">;
 
 export interface PreparedSessionSubscription {
@@ -64,14 +61,12 @@ export interface RuntimeHostSessionSubscriptionOwnerDeps {
 
 interface SubscriptionAttempt {
   readonly handle: DesktopRuntimeHostSession;
-  readonly pendingFrames: SubscriptionFrame[];
   preparationFailure?: {
     readonly promise: Promise<Error>;
     readonly resolve: (error: Error) => void;
   };
-  pendingFrameBytes: number;
   replica?: DesktopTranscriptReplica;
-  phase: 'preparing' | 'active' | 'retiring';
+  phase: 'preparing' | 'active';
   failure?: Error;
   fail(error: Error): void;
 }
@@ -86,7 +81,6 @@ export class RuntimeHostSessionSubscriptionOwner {
   #attempt?: SubscriptionAttempt;
   #candidate?: SubscriptionAttempt;
   #readyTask: Promise<void> = Promise.resolve();
-  #refreshTask?: Promise<void>;
   #started = false;
   #closed = false;
   #ptyInterests: readonly string[] = [];
@@ -121,16 +115,6 @@ export class RuntimeHostSessionSubscriptionOwner {
     return update;
   }
 
-  refresh(): Promise<void> {
-    if (this.#refreshTask) return this.#refreshTask;
-    const task = this.#refresh();
-    const tracked = task.finally(() => {
-      if (this.#refreshTask === tracked) this.#refreshTask = undefined;
-    });
-    this.#refreshTask = tracked;
-    return tracked;
-  }
-
   async close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
@@ -148,63 +132,30 @@ export class RuntimeHostSessionSubscriptionOwner {
     ]);
   }
 
-  async #refresh(): Promise<void> {
+  /**
+   * Rebuilds the transcript tail on the live subscription after the replica
+   * was evicted. Answers the new replica only when this call swapped it into
+   * the active attempt; a concurrent recovery installs its own replica through
+   * activation, so the caller must not install anything then.
+   */
+  async reseedTranscriptReplica(): Promise<DesktopTranscriptReplica | undefined> {
     await this.waitUntilReady();
-    this.#assertOpen();
-    const readyTask = this.#readyTask;
-    const previous = this.#attempt;
-    if (!previous) throw ownerClosed();
-    let attempt: SubscriptionAttempt | undefined;
-    try {
-      const prepared = await this.#prepare();
-      attempt = prepared.attempt;
-      if (attempt.failure) throw attempt.failure;
-      previous.phase = 'retiring';
-      const activate = await this.#prepareActivation(attempt, prepared.prepared, false);
-      if (attempt.failure) throw attempt.failure;
-      if (this.#closed || this.#candidate !== attempt || this.#attempt !== previous) {
-        throw ownerClosed();
-      }
-      activate();
-      this.#candidate = undefined;
-      this.#attempt = attempt;
-      previous.replica?.close();
-      await previous.handle.close().catch(() => undefined);
-      attempt.phase = 'active';
-      attempt.preparationFailure = undefined;
-      await attempt.handle.ready();
-    } catch (error) {
-      const failure = asError(error);
-      if (attempt && this.#attempt === attempt) {
-        this.#replaceReadyTask(this.#establish(attempt, failure));
-        await this.waitUntilReady();
-        return;
-      }
-      if (attempt && this.#candidate === attempt) this.#candidate = undefined;
-      attempt?.replica?.close();
-      await attempt?.handle.close().catch(() => undefined);
-      if (this.#attempt === previous && previous.phase === 'retiring') {
-        if (previous.failure) {
-          this.#replaceReadyTask(this.#establish(previous, previous.failure));
-          await this.waitUntilReady();
-          return;
-        }
-        previous.phase = 'active';
-        try {
-          await this.#drainPendingFrames(previous);
-        } catch (error) {
-          const recoveryError = asError(error);
-          this.#replaceReadyTask(this.#establish(previous, recoveryError));
-          await this.waitUntilReady();
-          return;
-        }
-      }
-      if (this.#readyTask !== readyTask) {
-        await this.waitUntilReady();
-        if (this.#attempt?.replica?.resident) return;
-      }
-      throw failure;
+    if (this.#closed) return undefined;
+    const attempt = this.#attempt;
+    if (!attempt || attempt.phase !== 'active') return undefined;
+    const evicted = attempt.replica;
+    if (evicted?.resident) return undefined;
+    const replica = await DesktopTranscriptReplica.reseed(
+      attempt.handle,
+      this.#deps.transcriptReplicaOptions,
+    );
+    if (this.#closed || this.#attempt !== attempt || attempt.replica !== evicted) {
+      replica.close();
+      return undefined;
     }
+    attempt.replica = replica;
+    evicted?.close();
+    return replica;
   }
 
   async #establish(failed?: SubscriptionAttempt, initialError?: Error): Promise<void> {
@@ -289,9 +240,7 @@ export class RuntimeHostSessionSubscriptionOwner {
 
     const attempt: SubscriptionAttempt = {
       handle,
-      pendingFrames: [],
       preparationFailure: createPreparationFailure(),
-      pendingFrameBytes: 0,
       phase: "preparing",
       fail(error) {
         if (attempt.failure) return;
@@ -373,22 +322,7 @@ export class RuntimeHostSessionSubscriptionOwner {
             // broken contract rather than a consumer falling behind.
             throw new Error('Runtime Host sent a Session frame before the subscriber was ready');
           }
-          if (attempt.phase === 'retiring') {
-            const frameBytes = Buffer.byteLength(JSON.stringify(frame), 'utf8');
-            if (
-              attempt.pendingFrames.length >= MAX_PENDING_FRAMES ||
-              attempt.pendingFrameBytes + frameBytes > MAX_PENDING_FRAME_BYTES
-            ) {
-              throw new RuntimeHostSubscriptionError(
-                'slow_consumer',
-                'Runtime Host Session transcript could not keep up with live events',
-              );
-            }
-            attempt.pendingFrames.push(frame);
-            attempt.pendingFrameBytes += frameBytes;
-          } else {
-            await this.#deps.acceptFrame(frame);
-          }
+          await this.#deps.acceptFrame(frame);
         } catch (error) {
           // Leaving the iterator awaits its return() — the subscription's
           // close handshake — so the failure has to be on its way to teardown
@@ -423,15 +357,6 @@ export class RuntimeHostSessionSubscriptionOwner {
       if (this.#closed || this.#readyTask !== task) return;
       this.#deps.terminalFailure(asError(error));
     });
-  }
-
-  async #drainPendingFrames(attempt: SubscriptionAttempt): Promise<void> {
-    while (attempt.pendingFrames.length > 0) {
-      const frame = attempt.pendingFrames.shift()!;
-      attempt.pendingFrameBytes -= Buffer.byteLength(JSON.stringify(frame), 'utf8');
-      await this.#deps.acceptFrame(frame);
-      if (attempt.failure) throw attempt.failure;
-    }
   }
 
   #assertOpen(): void {

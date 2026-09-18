@@ -292,7 +292,7 @@ export class RuntimeHostSessionObserver {
     try {
       await Promise.race([state.subscriptionOwner.waitUntilReady(), cancelled]);
       if (!state.replica?.resident) {
-        await Promise.race([state.subscriptionOwner.refresh(), cancelled]);
+        await Promise.race([this.#reseedReplica(state), cancelled]);
       }
       if (this.#pendingTranscriptConsumers.get(consumerId) !== pending) await cancelled;
       replica = state.replica!;
@@ -388,6 +388,22 @@ export class RuntimeHostSessionObserver {
     this.#touchReplica(state);
   }
 
+  /**
+   * Installs the replica the owner reseeded on the live subscription. Mirrors
+   * the replica half of activation: new generation, so consumers reseed from
+   * scratch. A concurrent recovery installs its own replica through activation
+   * instead — the owner answers nothing then, and there is nothing to install.
+   */
+  async #reseedReplica(state: ObservedSessionState): Promise<void> {
+    const replica = await state.subscriptionOwner.reseedTranscriptReplica();
+    if (!replica) return;
+    state.replica = replica;
+    this.#cacheTranscript(replica.snapshot());
+    replica.adoptResidentAccounting();
+    this.#resetTranscriptConsumers(state);
+    this.#touchReplica(state);
+  }
+
   /** Every message of one Turn, whether or not any consumer holds it. */
   async readTranscriptTurn(sessionId: string, turnId: string): Promise<StoredMessage[]> {
     this.#assertOpen();
@@ -395,7 +411,7 @@ export class RuntimeHostSessionObserver {
     state.pendingTranscriptConsumers += 1;
     try {
       await state.subscriptionOwner.waitUntilReady();
-      if (!state.replica?.resident) await state.subscriptionOwner.refresh();
+      if (!state.replica?.resident) await this.#reseedReplica(state);
       const replica = state.replica;
       if (!replica?.resident) throw new Error('Desktop transcript replica is unavailable');
       const landmark = (await this.#client.listSessionTurnLandmarks?.(sessionId, turnId))

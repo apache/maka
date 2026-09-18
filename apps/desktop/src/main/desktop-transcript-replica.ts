@@ -125,6 +125,7 @@ export class DesktopTranscriptReplica {
   private constructor(
     handle: DesktopRuntimeHostSession,
     options: DesktopTranscriptReplicaOptions,
+    durable: SessionTranscriptPage,
   ) {
     this.#handle = handle;
     this.sessionId = handle.snapshot.session.sessionId;
@@ -137,20 +138,58 @@ export class DesktopTranscriptReplica {
     this.#maxMessageBytes = options.maxMessageBytes ?? DESKTOP_TRANSCRIPT_MESSAGE_MAX_BYTES;
     this.#accountPreparationBytes = options.accountPreparationBytes ?? (() => undefined);
     this.#onChange = options.onChange ?? (() => undefined);
-    this.#durableThrough = handle.transcriptBootstrap.durable.throughSequence;
-    this.#hasOlder = handle.transcriptBootstrap.durable.nextCursor !== null;
-    this.#beginsAtTurnBoundary = handle.transcriptBootstrap.durable.endsAtTurnBoundary;
+    this.#durableThrough = durable.throughSequence;
+    this.#hasOlder = durable.nextCursor !== null;
+    this.#beginsAtTurnBoundary = durable.endsAtTurnBoundary;
   }
 
   static async prepare(
     handle: DesktopRuntimeHostSession,
     options: DesktopTranscriptReplicaOptions = {},
   ): Promise<DesktopTranscriptReplica> {
-    const replica = new DesktopTranscriptReplica(handle, options);
+    return this.#install(handle, options, handle.transcriptBootstrap.durable);
+  }
+
+  /**
+   * Rebuilds the tail on a live subscription whose replica was evicted. The
+   * bootstrap page is stale by then — the durable tail is re-read at the
+   * current watermark, then one catch-up closes whatever landed during the
+   * fetch.
+   */
+  static async reseed(
+    handle: DesktopRuntimeHostSession,
+    options: DesktopTranscriptReplicaOptions = {},
+  ): Promise<DesktopTranscriptReplica> {
+    const watermark = handle.transcriptWatermark;
+    const durable = watermark === null
+      ? handle.transcriptBootstrap.durable
+      : await handle.loadTranscriptPage({
+          direction: 'older',
+          throughSequence: watermark,
+          cursor: null,
+          anchorSequence: null,
+          maxBytes: SESSION_TRANSCRIPT_PAGE_MAX_BYTES,
+        });
+    const replica = await this.#install(handle, options, durable);
     try {
-      await replica.#withDecodedPage(handle.transcriptBootstrap.durable, (durable) => {
-        replica.#installDurable(durable.messages);
-        replica.#hasOlder = durable.nextCursor !== null;
+      await replica.advance();
+    } catch (error) {
+      replica.close();
+      throw error;
+    }
+    return replica;
+  }
+
+  static async #install(
+    handle: DesktopRuntimeHostSession,
+    options: DesktopTranscriptReplicaOptions,
+    durable: SessionTranscriptPage,
+  ): Promise<DesktopTranscriptReplica> {
+    const replica = new DesktopTranscriptReplica(handle, options, durable);
+    try {
+      await replica.#withDecodedPage(durable, (decoded) => {
+        replica.#installDurable(decoded.messages);
+        replica.#hasOlder = decoded.nextCursor !== null;
       });
       replica.#evictToBudget();
       return replica;
