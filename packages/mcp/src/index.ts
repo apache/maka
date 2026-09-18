@@ -512,7 +512,14 @@ export class McpClientManager {
     const connectIds: string[] = [];
     for (const [serverId, serverConfig] of Object.entries(config.mcpServers)) {
       const fingerprint = stableConfigFingerprint(serverConfig);
-      const current = this.connections.get(serverId);
+      let current = this.connections.get(serverId);
+      if (current?.teardown) {
+        // A cancelled remover may still own this physical connection. Let it
+        // finish before deciding whether the desired entry must be recreated.
+        await waitForAbort(current.teardown, signal);
+        throwIfAborted(signal);
+        current = this.connections.get(serverId);
+      }
       if (current && current.fingerprint !== fingerprint) {
         // A changed endpoint URL invalidates the credentials: replaying the
         // old server's bearer token against a new URL is exactly the leak to
@@ -1324,8 +1331,9 @@ export class McpClientManager {
       }
       const authenticated =
         !isMcpStdioConfig(entry.config) && this.oauthStorage
-          ? Boolean((await this.oauthStorage.get(serverId))?.tokens)
+          ? Boolean((await waitForAbort(this.oauthStorage.get(serverId), signal))?.tokens)
           : undefined;
+      throwIfAborted(signal);
       this.update(entry, {
         serverId,
         state: 'connected',

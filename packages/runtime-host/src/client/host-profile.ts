@@ -296,6 +296,14 @@ export interface RuntimeHostCapabilityProviderCredentialStore {
     expectedRevision: string | null,
     credential: string | null,
   ): Promise<RuntimeHostCapabilityProviderCredentialMutationResult>;
+  /** Restore the complete stored record behind a snapshot, including a
+   * different owner's record hidden by its public credential projection. */
+  restore?(
+    target: RuntimeHostRemoteProfileIncarnation,
+    ownerClientInstanceId: string,
+    expectedRevision: string,
+    previous: RuntimeHostCapabilityProviderCredentialSnapshot,
+  ): Promise<RuntimeHostCapabilityProviderCredentialMutationResult>;
 }
 
 export interface RuntimeHostCapabilityProviderCredentialSnapshot {
@@ -398,6 +406,31 @@ export function createRuntimeHostCapabilityProviderCredentialStore(
 ): RuntimeHostCapabilityProviderCredentialStore {
   const getSecretSnapshot = credentials.getSecretSnapshot?.bind(credentials);
   const compareAndSetSecretRevision = credentials.compareAndSetSecretRevision?.bind(credentials);
+  const snapshotRecords = new WeakMap<
+    RuntimeHostCapabilityProviderCredentialSnapshot,
+    { slot: string; value: string | null }
+  >();
+  const projectSnapshot = (
+    target: RuntimeHostRemoteProfileIncarnation,
+    ownerClientInstanceId: string,
+    stored: { value: string | null; revision: string | null },
+  ): RuntimeHostCapabilityProviderCredentialSnapshot => {
+    const decoded =
+      stored.value === null ? undefined : decodeCapabilityProviderCredential(stored.value);
+    const snapshot = {
+      credential:
+        decoded?.ownerClientInstanceId === requireClientInstanceId(ownerClientInstanceId) &&
+        decoded.profileIncarnationId === requireProfileIncarnationId(target.profileIncarnationId)
+          ? decoded.credential
+          : null,
+      revision: stored.revision,
+    };
+    snapshotRecords.set(snapshot, {
+      slot: profileCredentialSlot(target.profile),
+      value: stored.value,
+    });
+    return snapshot;
+  };
   const locator = (
     target: RuntimeHostRemoteProfileIncarnation,
     ownerClientInstanceId: string,
@@ -422,16 +455,7 @@ export function createRuntimeHostCapabilityProviderCredentialStore(
           ),
           revision: null,
         };
-    if (stored.value === null) return { credential: null, revision: stored.revision };
-    const decoded = decodeCapabilityProviderCredential(stored.value);
-    return {
-      credential:
-        decoded.ownerClientInstanceId === requireClientInstanceId(ownerClientInstanceId) &&
-        decoded.profileIncarnationId === requireProfileIncarnationId(target.profileIncarnationId)
-          ? decoded.credential
-          : null,
-      revision: stored.revision,
-    };
+    return projectSnapshot(target, ownerClientInstanceId, stored);
   };
   return {
     get: async (target, ownerClientInstanceId) =>
@@ -461,30 +485,33 @@ export function createRuntimeHostCapabilityProviderCredentialStore(
                 : encodeCapabilityProviderCredential(target, ownerClientInstanceId, credential),
             );
             if (result.committed) return result;
-            const current = result.current.value;
-            if (current === null) {
-              return {
-                committed: false as const,
-                current: {
-                  credential: null,
-                  revision: result.current.revision,
-                },
-              };
-            }
-            const decoded = decodeCapabilityProviderCredential(current);
             return {
               committed: false as const,
-              current: {
-                credential:
-                  decoded.ownerClientInstanceId ===
-                    requireClientInstanceId(ownerClientInstanceId) &&
-                  decoded.profileIncarnationId ===
-                    requireProfileIncarnationId(target.profileIncarnationId)
-                    ? decoded.credential
-                    : null,
-                revision: result.current.revision,
-              },
+              current: projectSnapshot(target, ownerClientInstanceId, result.current),
             };
+          },
+          restore: async (
+            target: RuntimeHostRemoteProfileIncarnation,
+            ownerClientInstanceId: string,
+            expectedRevision: string,
+            previous: RuntimeHostCapabilityProviderCredentialSnapshot,
+          ) => {
+            const slot = profileCredentialSlot(target.profile);
+            const record = snapshotRecords.get(previous);
+            if (!record || record.slot !== slot)
+              throw new Error('Unknown capability-provider credential snapshot');
+            const result = await compareAndSetSecretRevision(
+              slot,
+              'runtime_host_capability_provider',
+              expectedRevision,
+              record.value,
+            );
+            return result.committed
+              ? result
+              : {
+                  committed: false as const,
+                  current: projectSnapshot(target, ownerClientInstanceId, result.current),
+                };
           },
         }
       : {}),

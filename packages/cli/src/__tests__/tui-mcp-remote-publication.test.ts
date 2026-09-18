@@ -18,9 +18,14 @@
  */
 
 import assert from 'node:assert/strict';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createFileCredentialStore } from '@maka/storage/credential-store';
 import test from 'node:test';
 import {
   RuntimeHostProfileConnectionError,
+  createRuntimeHostCapabilityProviderCredentialStore,
   sameRemoteRuntimeHostProfileTarget,
   type RemoteRuntimeHostProfile,
   type RuntimeHostCapabilityProviderCredentialStore,
@@ -412,6 +417,101 @@ test('remote TUI publication restores a removed credential when cancellation lan
   assert.equal(connections.length, 2);
   await target.closePublication?.();
 });
+
+for (const operation of ['set', 'remove'] as const) {
+  test(`remote TUI cancelled ${operation} preserves another owner's stored credential`, async (t) => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-provider-owner-'));
+    t.after(() => rm(root, { recursive: true, force: true }));
+    const credentials = createRuntimeHostCapabilityProviderCredentialStore(
+      createFileCredentialStore(root),
+    );
+    const profileTarget = { profile: PROFILE, profileIncarnationId: PROFILE_INCARNATION_ID };
+    await credentials.set(profileTarget, 'owner-a', 'provider-a');
+    const abort = new AbortController();
+    const profiles = profileDeps();
+    const target = createRemoteTuiMcpPublicationTarget(
+      { clientDataRoot: root, ...profileTarget, ownerClientInstanceId: 'owner-b' },
+      {
+        ...profiles,
+        profiles: {
+          ...profiles.profiles,
+          mutateRemoteProfileIfCurrent: async (expected, mutation) => {
+            const committed = await profiles.profiles.mutateRemoteProfileIfCurrent(
+              expected,
+              mutation,
+            );
+            abort.abort(new Error('cancel owner-b mutation'));
+            return committed;
+          },
+        },
+        credentials,
+        loadClientInstanceId: async () => 'provider-client',
+        connectProfile: async () => connectionHarness('connection').connection,
+      },
+    );
+    t.after(() => target.closePublication?.());
+    const latest = await availability(target);
+    await waitFor(() => latest().kind === 'unavailable', 'initial credential read');
+    const result =
+      operation === 'set'
+        ? target.setCredential?.('provider-b', { signal: abort.signal })
+        : target.removeCredential?.({ signal: abort.signal });
+    assert.ok(result);
+    await assert.rejects(result, /cancel owner-b mutation/u);
+    assert.equal(await credentials.get(profileTarget, 'owner-a'), 'provider-a');
+    assert.equal(await credentials.get(profileTarget, 'owner-b'), null);
+  });
+
+  test(`remote TUI cancelled queued ${operation} restores the initial connection`, async (t) => {
+    const credentials = credentialHarness('provider-old');
+    const connecting = deferred();
+    const release = deferred();
+    const connected: string[] = [];
+    const target = createRemoteTuiMcpPublicationTarget(
+      {
+        clientDataRoot: '/client-data',
+        profile: PROFILE,
+        profileIncarnationId: PROFILE_INCARNATION_ID,
+        ownerClientInstanceId: 'terminal-client',
+      },
+      {
+        ...profileDeps(),
+        credentials: credentials.store,
+        loadClientInstanceId: async () => 'provider-client',
+        connectProfile: async (input) => {
+          connected.push(input.credential!);
+          if (connected.length === 1) {
+            connecting.resolve();
+            await release.promise;
+            input.signal?.throwIfAborted();
+          }
+          return connectionHarness(`connection-${connected.length}`).connection;
+        },
+      },
+    );
+    t.after(() => target.closePublication?.());
+    const latest = await availability(target);
+    await connecting.promise;
+    const abort = new AbortController();
+    const changing =
+      operation === 'set'
+        ? target.setCredential?.('provider-new', { signal: abort.signal })
+        : target.removeCredential?.({ signal: abort.signal });
+    assert.ok(changing);
+    abort.abort(new Error('cancel queued credential operation'));
+    release.resolve();
+    await assert.rejects(changing, /cancel queued credential operation/u);
+    assert.deepEqual(connected, ['provider-old', 'provider-old']);
+    assert.equal(latest().kind, 'connected');
+    assert.equal(
+      await credentials.store.get(
+        { profile: PROFILE, profileIncarnationId: PROFILE_INCARNATION_ID },
+        'terminal-client',
+      ),
+      'provider-old',
+    );
+  });
+}
 
 test('remote TUI publication fails closed while the same provider lifetime is active', async () => {
   const credentials = credentialHarness('provider-secret');

@@ -659,6 +659,54 @@ describe('Runtime Host profiles', () => {
     assert.equal(await credentials.get(target, 'owner-b'), 'provider-b');
   });
 
+  test('opaque provider restoration preserves another owner and rejects a newer ABA write', async () => {
+    const path = await profilePath();
+    const credentials = createRuntimeHostCapabilityProviderCredentialStore(
+      createFileCredentialStore(join(dirname(path), 'credentials')),
+    );
+    assert.ok(credentials.read);
+    assert.ok(credentials.compareAndSet);
+    assert.ok(credentials.restore);
+    const target = {
+      profile: remoteProfile('office', 'wss://a.example.com', ROOT_A),
+      profileIncarnationId: 'incarnation-a',
+    };
+    await credentials.set(target, 'owner-a', 'provider-a');
+    const prior = await credentials.read(target, 'owner-b');
+    assert.equal(prior.credential, null);
+    assert.doesNotMatch(JSON.stringify(prior), /provider-a/u);
+    const written = await credentials.compareAndSet(
+      target,
+      'owner-b',
+      prior.revision,
+      'provider-b',
+    );
+    assert.ok(written.committed);
+    assert.equal(
+      (await credentials.restore(target, 'owner-b', written.revision, prior)).committed,
+      true,
+    );
+    assert.equal(await credentials.get(target, 'owner-a'), 'provider-a');
+    assert.equal(await credentials.get(target, 'owner-b'), null);
+
+    const nextPrior = await credentials.read(target, 'owner-b');
+    const nextWrite = await credentials.compareAndSet(
+      target,
+      'owner-b',
+      nextPrior.revision,
+      'provider-b',
+    );
+    assert.ok(nextWrite.committed);
+    await credentials.set(target, 'owner-c', 'provider-c');
+    await credentials.set(target, 'owner-b', 'provider-b');
+    const restored = await credentials.restore(target, 'owner-b', nextWrite.revision, nextPrior);
+    assert.equal(restored.committed, false);
+    if (restored.committed) return;
+    assert.equal(restored.current.credential, 'provider-b');
+    assert.equal(await credentials.get(target, 'owner-b'), 'provider-b');
+    assert.equal(await credentials.get(target, 'owner-a'), null);
+  });
+
   test('capability-provider deletion rejects when its credential changed after the read', async () => {
     const path = await profilePath();
     const raw = createFileCredentialStore(join(dirname(path), 'credentials'));

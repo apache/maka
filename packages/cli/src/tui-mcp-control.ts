@@ -275,6 +275,7 @@ class TuiMcpControllerImpl implements TuiMcpController {
       }
     | undefined;
   #actionLane: Promise<void> = Promise.resolve();
+  readonly #mutationVersions = new Map<string, symbol>();
   readonly #lifetimeAbort = new AbortController();
   #publicationSuppressed = false;
   #publicationRequested = false;
@@ -450,7 +451,7 @@ class TuiMcpControllerImpl implements TuiMcpController {
     }
   }
 
-  #serializeAction(work: () => Promise<TuiMcpActionResult>): Promise<TuiMcpActionResult> {
+  #serializeAction<T>(work: () => Promise<T>): Promise<T> {
     const run = this.#actionLane.then(work, work);
     this.#actionLane = run.then(
       () => undefined,
@@ -520,7 +521,10 @@ class TuiMcpControllerImpl implements TuiMcpController {
     }
     if (action.kind === 'test') {
       try {
-        const test = await this.#deps.manager.test(action.serverId, { signal });
+        const test = await waitForAbort(
+          this.#deps.manager.test(action.serverId, { signal }),
+          signal,
+        );
         throwIfAborted(signal);
         const effect = await this.#settlePublication(signal);
         throwIfAborted(signal);
@@ -545,7 +549,7 @@ class TuiMcpControllerImpl implements TuiMcpController {
     }
     if (action.kind === 'reconnect') {
       try {
-        await this.#deps.manager.reconnect(action.serverId, { signal });
+        await waitForAbort(this.#deps.manager.reconnect(action.serverId, { signal }), signal);
         throwIfAborted(signal);
         const effect = await this.#settlePublication(signal);
         throwIfAborted(signal);
@@ -587,6 +591,7 @@ class TuiMcpControllerImpl implements TuiMcpController {
     let changedIds: string[] = [];
     let committed: McpConfigFile;
     let credentialRetirementStarted = false;
+    const mutationVersion = Symbol('MCP mutation');
     const transaction = this.#deps.configStore.transform(async (current) => {
       if (this.#closed) {
         throw new TuiMcpMutationError({ status: 'failed', reason: 'closed' });
@@ -602,6 +607,12 @@ class TuiMcpControllerImpl implements TuiMcpController {
       const { next } = prepared;
       previous = cloneConfig(current);
       changedIds = changedServerIds(current, next);
+      // Same-value retries still own their target. A content hash alone
+      // cannot distinguish them from the write an older action compensates.
+      const touchedIds =
+        action.kind === 'commit_import'
+          ? Object.keys(this.#preparedImport!.imported.mcpServers)
+          : [action.serverId];
       try {
         assertMcpEndpointPolicyOnChanges(current, next);
       } catch {
@@ -610,6 +621,7 @@ class TuiMcpControllerImpl implements TuiMcpController {
           reason: 'invalid-config',
         });
       }
+      for (const serverId of touchedIds) this.#mutationVersions.set(serverId, mutationVersion);
       try {
         for (const [serverId, previous] of Object.entries(current.mcpServers)) {
           if (!mcpConfigChangeRetiresCredentials(previous, next.mcpServers[serverId])) continue;
@@ -686,6 +698,7 @@ class TuiMcpControllerImpl implements TuiMcpController {
               transaction,
               () => previous,
               () => changedIds,
+              mutationVersion,
               signal,
               cleanupTimeoutMs,
             );
@@ -700,6 +713,7 @@ class TuiMcpControllerImpl implements TuiMcpController {
             committed,
             changedIds,
             cleanup,
+            mutationVersion,
           );
           if (!rolledBack) return { status: 'failed', reason: 'rollback-failed' };
           return {
@@ -723,6 +737,7 @@ class TuiMcpControllerImpl implements TuiMcpController {
         rollbackOnCancel: !credentialRetirementStarted,
         signal,
         cleanupTimeoutMs,
+        mutationVersion,
       })
     ).result;
   }
@@ -784,12 +799,14 @@ class TuiMcpControllerImpl implements TuiMcpController {
       rollbackOnCancel,
       signal,
       cleanupTimeoutMs,
+      mutationVersion,
     }: {
       readonly previous?: McpConfigFile;
       readonly changedIds: readonly string[];
       readonly rollbackOnCancel: boolean;
       readonly signal?: AbortSignal;
       readonly cleanupTimeoutMs?: number;
+      readonly mutationVersion?: symbol;
     },
   ): Promise<{
     readonly result: TuiMcpActionResult;
@@ -800,17 +817,29 @@ class TuiMcpControllerImpl implements TuiMcpController {
     this.#updateSnapshot({ configuration: 'synchronizing' });
     this.#refreshManagerSnapshot();
     this.#publicationSuppressed = true;
+    let synchronizationError: unknown;
     try {
       throwIfAborted(signal);
-      await waitForAbort(this.#deps.manager.sync(committed, { signal }), signal);
+      try {
+        await waitForAbort(this.#deps.manager.sync(committed, { signal }), signal);
+      } catch (error) {
+        synchronizationError = error;
+      }
       throwIfAborted(signal);
       this.#publicationSuppressed = false;
       if (this.#closed) throw new Error('MCP controller closed');
-      this.#updateSnapshot({ configuration: 'ready' });
+      this.#updateSnapshot({
+        configuration: synchronizationError === undefined ? 'ready' : 'out_of_sync',
+      });
       this.#refreshManagerSnapshot();
       const effect = await this.#settlePublication(signal);
       throwIfAborted(signal);
-      return { result: { status: 'applied', effect } };
+      return synchronizationError === undefined
+        ? { result: { status: 'applied', effect } }
+        : {
+            result: { status: 'applied', effect: 'sync_failed' },
+            reconciliationError: synchronizationError,
+          };
     } catch (error) {
       if (rollbackOnCancel && (this.#closed || signal?.aborted)) {
         const rolledBack = await this.#rollbackCancelledMutation(
@@ -818,6 +847,7 @@ class TuiMcpControllerImpl implements TuiMcpController {
           committed,
           changedIds,
           cleanupSignal(cleanupTimeoutMs),
+          mutationVersion,
         );
         if (!rolledBack) return { result: { status: 'failed', reason: 'rollback-failed' } };
         return {
@@ -830,15 +860,16 @@ class TuiMcpControllerImpl implements TuiMcpController {
       this.#publicationSuppressed = false;
       this.#updateSnapshot({ configuration: 'out_of_sync' });
       this.#refreshManagerSnapshot();
-      if (!rollbackOnCancel && (this.#closed || signal?.aborted)) {
-        const cleanup = cleanupSignal(cleanupTimeoutMs);
+      const cleanup = cleanupSignal(cleanupTimeoutMs);
+      if (this.#closed || signal?.aborted) {
         await this.#settleCancelledConnections(changedIds, cleanup);
         this.#refreshManagerSnapshot();
-        await this.#settleCancelledPublication(cleanup);
-      } else {
-        await this.#settlePublication(signal);
       }
-      return { result: { status: 'applied', effect: 'sync_failed' }, reconciliationError: error };
+      await this.#settleCancelledPublication(cleanup);
+      return {
+        result: { status: 'applied', effect: 'sync_failed' },
+        reconciliationError: synchronizationError ?? error,
+      };
     }
   }
 
@@ -955,7 +986,13 @@ class TuiMcpControllerImpl implements TuiMcpController {
     committed: McpConfigFile,
     serverIds: readonly string[],
     signal?: AbortSignal,
+    mutationVersion?: symbol,
   ): Promise<boolean> {
+    const ownedIds = serverIds.filter(
+      (serverId) =>
+        mutationVersion === undefined || this.#mutationVersions.get(serverId) === mutationVersion,
+    );
+    if (serverIds.length > 0 && ownedIds.length === 0) return true;
     if (!previous) {
       this.#publicationSuppressed = false;
       this.#updateSnapshot({ configuration: 'out_of_sync' });
@@ -966,7 +1003,7 @@ class TuiMcpControllerImpl implements TuiMcpController {
         this.#deps.configStore.transform(async (current) => {
           throwIfAborted(signal);
           const servers = { ...current.mcpServers };
-          for (const serverId of serverIds) {
+          for (const serverId of ownedIds) {
             if (
               configRevision(servers[serverId]) !== configRevision(committed.mcpServers[serverId])
             ) {
@@ -991,7 +1028,7 @@ class TuiMcpControllerImpl implements TuiMcpController {
       );
       this.#config = cloneConfig(restored);
       if (this.#closed) return true;
-      for (const serverId of serverIds) {
+      for (const serverId of ownedIds) {
         if (!this.#deps.manager.disconnect) continue;
         await waitForAbort(this.#deps.manager.disconnect(serverId, false, { signal }), signal);
       }
@@ -1013,16 +1050,37 @@ class TuiMcpControllerImpl implements TuiMcpController {
     transaction: Promise<McpConfigFile>,
     previous: () => McpConfigFile | undefined,
     serverIds: () => readonly string[],
+    mutationVersion: symbol,
     signal?: AbortSignal,
     cleanupTimeoutMs?: number,
   ): void {
     void transaction
-      .then((committed) => this.#rollbackCancelledMutation(previous(), committed, serverIds()))
-      .catch((error) => {
-        if (error instanceof AtomicFileWriteCommitUnknownError) {
-          return this.#reconcilePublishedMutation(error, signal, cleanupTimeoutMs);
-        }
-      });
+      .then(
+        (committed) =>
+          this.#serializeAction(() =>
+            this.#rollbackCancelledMutation(
+              previous(),
+              committed,
+              serverIds(),
+              cleanupSignal(cleanupTimeoutMs),
+              mutationVersion,
+            ),
+          ),
+        (error) => {
+          if (error instanceof AtomicFileWriteCommitUnknownError) {
+            return this.#serializeAction(async () => {
+              if (
+                serverIds().some(
+                  (serverId) => this.#mutationVersions.get(serverId) === mutationVersion,
+                )
+              ) {
+                await this.#reconcilePublishedMutation(error, signal, cleanupTimeoutMs);
+              }
+            });
+          }
+        },
+      )
+      .catch(() => undefined);
   }
 
   async #settleCancelledConnection(serverId: string, signal?: AbortSignal): Promise<boolean> {

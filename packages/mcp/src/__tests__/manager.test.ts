@@ -81,6 +81,43 @@ describe('McpClientManager E2E', { concurrency: false }, () => {
       assertLegacyHandshake(fixture);
     });
 
+    for (const action of ['test', 'reconnect'] as const) {
+      test(`caller abort releases ${action} during the post-discovery credential read`, async () => {
+        const fixture = await createRemoteFixture('streamable-http');
+        const readStarted = deferred<void>();
+        const release = deferred<void>();
+        let block = false;
+        let priorLists = 0;
+        const manager = createManager({
+          oauthStorage: {
+            get: async () => {
+              if (block && countProtocolMethod(fixture, 'tools/list') > priorLists) {
+                readStarted.resolve();
+                await release.promise;
+              }
+              return undefined;
+            },
+            set: async () => undefined,
+            delete: async () => undefined,
+          },
+        });
+        await manager.sync(remoteConfig(fixture.url));
+        priorLists = countProtocolMethod(fixture, 'tools/list');
+        block = true;
+        const abort = new AbortController();
+        const executing = manager[action]('remote', { signal: abort.signal });
+        const outcome = executing.catch(() => undefined);
+        await readStarted.promise;
+        abort.abort(new Error('cancel post-discovery read'));
+        const settled = await settlesWithin(outcome, 250);
+        release.resolve();
+        await outcome;
+        assert.equal(settled, true);
+        assert.equal(manager.status('remote')?.state, 'disconnected');
+        assert.equal(manager.toolSnapshot().tools.length, 0);
+      });
+    }
+
     test('caller abort stops waiting on the initial OAuth credential read', async () => {
       const readStarted = deferred<void>();
       const releaseRead = deferred<void>();
@@ -1539,6 +1576,43 @@ describe('McpClientManager E2E', { concurrency: false }, () => {
         timeoutMs: 1_000,
         pollMs: 5,
       });
+    });
+
+    test('sync restores a desired stdio entry after an aborted removal teardown', async (t) => {
+      const root = await mkdtemp(join(tmpdir(), 'maka-mcp-restore-closing-'));
+      const eventLog = join(root, 'events.jsonl');
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const manager = createManager();
+      const config = fixtureConfig(['--ignore-sigterm', '--hold-stdin-open']);
+      config.mcpServers.fixture = {
+        ...config.mcpServers.fixture,
+        env: { MAKA_MCP_STDIO_EVENT_LOG: eventLog },
+        protocol: 'legacy',
+      };
+      await manager.sync(config);
+      const starts = async () =>
+        (await readFile(eventLog, 'utf8'))
+          .split('\n')
+          .filter(Boolean)
+          .map((line) => JSON.parse(line) as { event: string; pid: number })
+          .filter((event) => event.event === 'start');
+      const original = (await starts())[0]!;
+      const abort = new AbortController();
+      const removing = manager.disconnect('fixture', true, { signal: abort.signal });
+      abort.abort(new Error('cancel removal wait'));
+      await assert.rejects(removing, /cancel removal wait/u);
+      const restoring = manager.sync(config);
+      const early = await settlesWithin(restoring, 50);
+      process.kill(original.pid, 'SIGKILL');
+      await restoring;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      const status = manager.status('fixture');
+      for (const child of await starts()) {
+        if (processExists(child.pid)) process.kill(child.pid, 'SIGKILL');
+      }
+      assert.equal(early, false);
+      assert.equal(status?.state, 'connected');
+      assert.equal((await starts()).length, 2);
     });
 
     test('a joining caller aborts only its wait for a shared in-flight connect', async (t) => {

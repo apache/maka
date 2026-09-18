@@ -220,6 +220,8 @@ class RemoteTuiMcpPublicationTarget implements TuiMcpPublicationTarget {
     credential: string,
     options: { readonly signal?: AbortSignal } = {},
   ): Promise<void> {
+    if (options.signal?.aborted) return Promise.reject(abortReason(options.signal));
+    const interruptedConnect = this.#connectAbort !== undefined;
     this.#cancelConnect();
     return this.#serialize(async () => {
       if (this.#closed) throw new Error('Remote MCP publication is closed');
@@ -271,12 +273,15 @@ class RemoteTuiMcpPublicationTarget implements TuiMcpPublicationTarget {
             await this.#connect(restoration.current.credential);
           }
         }
+        if (options.signal?.aborted && interruptedConnect) await this.#restoreConnectionIntent();
         throw error;
       }
     });
   }
 
   removeCredential(options: { readonly signal?: AbortSignal } = {}): Promise<void> {
+    if (options.signal?.aborted) return Promise.reject(abortReason(options.signal));
+    const interruptedConnect = this.#connectAbort !== undefined;
     this.#cancelConnect();
     return this.#serialize(async () => {
       if (this.#closed) throw new Error('Remote MCP publication is closed');
@@ -325,6 +330,7 @@ class RemoteTuiMcpPublicationTarget implements TuiMcpPublicationTarget {
             await this.#connect(restoration.current.credential);
           } else this.#setUnavailable('credential_required');
         }
+        if (options.signal?.aborted && interruptedConnect) await this.#restoreConnectionIntent();
         throw error;
       }
     });
@@ -333,6 +339,13 @@ class RemoteTuiMcpPublicationTarget implements TuiMcpPublicationTarget {
   closePublication(): Promise<void> {
     this.#cancelConnect();
     return this.#beginClose({ waitForOperations: true });
+  }
+
+  async #restoreConnectionIntent(): Promise<void> {
+    if (this.#closed || this.#connection) return;
+    const current = await this.#readCredential(this.#profileTarget());
+    if (current.credential === null) this.#setUnavailable('credential_required');
+    else await this.#connect(current.credential);
   }
 
   #serialize<T>(work: () => Promise<T>): Promise<T> {
@@ -454,8 +467,10 @@ class RemoteTuiMcpPublicationTarget implements TuiMcpPublicationTarget {
   async #deleteCredential(
     target: RuntimeHostRemoteProfileIncarnation,
     previous: RuntimeHostCapabilityProviderCredentialSnapshot,
-  ): Promise<RuntimeHostCapabilityProviderCredentialSnapshot> {
-    if (previous.credential === null) return previous;
+  ): Promise<RuntimeHostCapabilityProviderCredentialSnapshot | undefined> {
+    // An owner-filtered absence can hide another owner's stored record.
+    // A no-op owns no write and must never be compensated.
+    if (previous.credential === null) return undefined;
     if (this.#deps.credentials.compareAndSet && this.#deps.credentials.read) {
       const result = await this.#deps.credentials.compareAndSet(
         target,
@@ -485,13 +500,20 @@ class RemoteTuiMcpPublicationTarget implements TuiMcpPublicationTarget {
       this.#deps.credentials.read &&
       written.revision !== null
     ) {
-      const result: RuntimeHostCapabilityProviderCredentialMutationResult =
-        await this.#deps.credentials.compareAndSet(
-          target,
-          this.#input.ownerClientInstanceId,
-          written.revision,
-          previous.credential,
-        );
+      const result: RuntimeHostCapabilityProviderCredentialMutationResult = this.#deps.credentials
+        .restore
+        ? await this.#deps.credentials.restore(
+            target,
+            this.#input.ownerClientInstanceId,
+            written.revision,
+            previous,
+          )
+        : await this.#deps.credentials.compareAndSet(
+            target,
+            this.#input.ownerClientInstanceId,
+            written.revision,
+            previous.credential,
+          );
       if (result.committed) {
         return {
           restored: true,
