@@ -46,10 +46,7 @@ import {
   type RuntimeHostSessionObserverTarget,
   type RuntimeHostTranscriptTarget,
 } from "../runtime-host-session-observer.js";
-import {
-  RuntimeHostSessionSubscriptionOwner,
-  TranscriptCacheCapacityError,
-} from '../runtime-host-session-subscription-owner.js';
+import { RuntimeHostSessionSubscriptionOwner } from '../runtime-host-session-subscription-owner.js';
 import {
   AsyncFrameQueue,
   continuitySnapshot,
@@ -3394,7 +3391,7 @@ test('keeps the subscription alive when a catch-up decode hits the cache capacit
           decodeTranscriptPage: async (page) => {
             decodeAttempts += 1;
             if (failDecode) {
-              throw new TranscriptCacheCapacityError(
+              throw new RangeError(
                 'Desktop transcript preparation exceeds the global cache limit',
               );
             }

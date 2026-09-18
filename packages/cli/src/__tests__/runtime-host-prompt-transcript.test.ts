@@ -383,8 +383,6 @@ class TranscriptSubscription
     interactions: { pending: [] },
   };
   readonly transcriptBootstrap: SessionTranscriptBootstrap;
-  readonly terminalError = undefined;
-  readonly closedReason = undefined;
   #transcriptWatermark: number | null;
   readonly pages: Omit<SessionTranscriptPageInput, 'subscriptionId'>[] = [];
   readonly #decoded = new WeakMap<

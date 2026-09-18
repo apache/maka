@@ -74,9 +74,11 @@ export interface RuntimeHostSessionSubscription extends AsyncIterable<Subscripti
    * The subscription's own death certificate: the failure that terminated it,
    * or the reason on a received `subscription.closed` frame. A transcript read
    * racing the death only sees the dead-state mask; classify by this instead.
+   * Optional introspection — fakes that never produce a certificate need not
+   * declare it.
    */
-  readonly terminalError: Error | undefined;
-  readonly closedReason: SubscriptionClosedFrame['reason'] | undefined;
+  readonly terminalError?: Error | undefined;
+  readonly closedReason?: SubscriptionClosedFrame['reason'] | undefined;
   loadTranscript<T>(decodeMessage: (value: unknown) => T): Promise<T[]>;
   decodeTranscriptPage<T>(
     page: SessionTranscriptPage,

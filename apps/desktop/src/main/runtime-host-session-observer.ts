@@ -54,7 +54,6 @@ import {
   type PreparedSessionSubscription,
   RuntimeHostSessionSubscriptionOwner,
   SessionRemovedSubscriptionError,
-  TranscriptCacheCapacityError,
 } from "./runtime-host-session-subscription-owner.js";
 import {
   type DesktopSequencedTranscriptMessage,
@@ -1558,9 +1557,7 @@ export class RuntimeHostSessionObserver {
     this.#transcriptPreparationBytes += deltaBytes;
     if (deltaBytes > 0 && !this.#touchReplica(state, state)) {
       this.#transcriptPreparationBytes -= deltaBytes;
-      throw new TranscriptCacheCapacityError(
-        'Desktop transcript preparation exceeds the global cache limit',
-      );
+      throw new RangeError('Desktop transcript preparation exceeds the global cache limit');
     }
   }
 

@@ -80,16 +80,6 @@ export class SessionRemovedSubscriptionError extends Error {
   readonly name = "SessionRemovedSubscriptionError";
 }
 
-/**
- * A transcript read could not charge its decode bytes to the global cache
- * budget. The charge was already rolled back, so the subscription is healthy;
- * reporting it as a failure would only tear the subscription down under
- * memory pressure. The next frame retries the read.
- */
-export class TranscriptCacheCapacityError extends RangeError {
-  readonly name = "TranscriptCacheCapacityError";
-}
-
 /** Owns exactly one replaceable Host subscription for one Desktop Session. */
 export class RuntimeHostSessionSubscriptionOwner {
   readonly #deps: RuntimeHostSessionSubscriptionOwnerDeps;
@@ -177,7 +167,7 @@ export class RuntimeHostSessionSubscriptionOwner {
         error instanceof RuntimeHostSubscriptionError ||
         error instanceof RuntimeHostOperationError
       ) {
-        this.#failAttempt(attempt, error);
+        this.#failAttempt(attempt, error, true);
         await this.waitUntilReady();
         return undefined;
       }
@@ -202,7 +192,7 @@ export class RuntimeHostSessionSubscriptionOwner {
     // Rows committed between the reseed's fetch and this commit are still
     // unread; the catch-up is an attempt read, so a dead handle takes the
     // same recovery path as a pump-frame rejection.
-    void replica.advance().catch((error) => this.#failAttempt(attempt, error));
+    void replica.advance().catch((error) => this.#failAttempt(attempt, error, true));
     return replica;
   }
 
@@ -377,23 +367,36 @@ export class RuntimeHostSessionSubscriptionOwner {
           // Leaving the iterator awaits its return() — the subscription's
           // close handshake — so the failure has to be on its way to teardown
           // before this loop exits, not after.
-          if (this.#failAttempt(attempt, error)) return;
+          if (
+            this.#failAttempt(
+              attempt,
+              error,
+              frame.kind === 'subscription.transcript_advanced',
+            )
+          ) {
+            return;
+          }
         }
       }
       if (!this.#closed) {
         throw new Error("Runtime Host Session subscription ended unexpectedly");
       }
     } catch (error) {
-      this.#failAttempt(attempt, error);
+      this.#failAttempt(attempt, error, false);
     }
   }
 
   /**
-   * Routes a reported failure. Returns false only when the failure was
-   * absorbed and the caller's context (a pump, a catch-up) may keep running;
-   * every classified path leaves the attempt dead or being replaced.
+   * Routes a reported failure. `absorbUnclassified` marks read-only callers
+   * (transcript catch-up, reseed reads) whose failures are always safe to
+   * retry on the next frame. Returns false only when the failure was
+   * absorbed; every classified path leaves the attempt dead or replaced.
    */
-  #failAttempt(attempt: SubscriptionAttempt, error: unknown): boolean {
+  #failAttempt(
+    attempt: SubscriptionAttempt,
+    error: unknown,
+    absorbUnclassified: boolean,
+  ): boolean {
     if (this.#closed || (this.#attempt !== attempt && this.#candidate !== attempt)) {
       return true;
     }
@@ -412,11 +415,22 @@ export class RuntimeHostSessionSubscriptionOwner {
       attempt.fail(failure);
       return true;
     }
-    if (failure instanceof TranscriptCacheCapacityError) return false;
     if (isRecoverableSubscriptionFailure(failure)) {
       this.#replaceReadyTask(this.#establish(attempt, failure));
       return true;
     }
+    if (
+      failure instanceof RuntimeHostSubscriptionError ||
+      failure instanceof SessionRemovedSubscriptionError
+    ) {
+      this.#deps.terminalFailure(failure);
+      return true;
+    }
+    // Unclassified errors carry no evidence of subscription death. A read
+    // failure is safe to absorb — the watermark is still ahead and the next
+    // frame retries it — but anything else may be a committed frame
+    // mutation that will not be replayed, so it still dies loudly.
+    if (absorbUnclassified) return false;
     this.#deps.terminalFailure(failure);
     return true;
   }

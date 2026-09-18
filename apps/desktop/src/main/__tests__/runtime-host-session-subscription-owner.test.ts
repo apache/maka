@@ -46,7 +46,10 @@ test('dispatches a frame failure before the subscription iterator finishes closi
   const returnGate = deferred<void>();
   const events = new BlockingReturnQueue(returnGate.promise);
   let terminal: Error | undefined;
-  const injected = new Error('frame handling failed');
+  const injected = new RuntimeHostSubscriptionError(
+    'connection_closed',
+    'frame handling failed',
+  );
   const owner = new RuntimeHostSessionSubscriptionOwner({
     client: {
       openSession: async () =>
@@ -82,6 +85,50 @@ test('dispatches a frame failure before the subscription iterator finishes closi
   });
 
   returnGate.resolve(undefined);
+  await owner.close();
+});
+
+test('absorbs an unclassified transcript read failure and keeps consuming', async () => {
+  const events = new AsyncFrameQueue();
+  let accepted = 0;
+  let terminal: Error | undefined;
+  const owner = new RuntimeHostSessionSubscriptionOwner({
+    client: {
+      openSession: async () =>
+        runtimeHostSessionFixture({
+          snapshot: continuitySnapshot(),
+          events,
+          async close() {},
+        }),
+    },
+    sessionId: 'session-1',
+    now: Date.now,
+    prepareActivation: async () => () => {},
+    installReseededReplica: () => {},
+    acceptFrame: () => {
+      accepted += 1;
+      if (accepted === 1) throw new Error('transient read failure');
+    },
+    recoveryStarted: () => {},
+    recoveryCompleted: () => {},
+    recoveryFailed: () => {},
+    terminalFailure: (error) => {
+      terminal = error;
+    },
+  });
+  owner.start();
+  await owner.waitUntilReady();
+
+  // A transcript frame's acceptFrame is a pure read: its rejection carries no
+  // evidence of subscription death, so the pump consumes the next frame
+  // instead of tearing the subscription down.
+  events.push(transcriptFrame(1));
+  events.push(transcriptFrame(2));
+  await pollFor(() => accepted === 2, {
+    attempts: 50,
+    message: 'pump stopped consuming after an absorbed read failure',
+  });
+  assert.equal(terminal, undefined);
   await owner.close();
 });
 
