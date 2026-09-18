@@ -36,6 +36,7 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/application/contracts/feature-services.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/application/contracts/session-inspector/session-inspector-panel.tsx` | shell-chrome-or-panel | Banner, Button, EmptyState, Heading, Section, Text, VStack | aligned — uses Astryx (Banner, Button, EmptyState, Heading, Section, Text, VStack) | aligned |
 | `apps/desktop/src/renderer/application/contracts/settings-presentation/runtime-host-settings-target.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
+| `apps/desktop/src/renderer/application/contracts/settings-presentation/settings-navigation.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/application/contracts/settings-presentation/settings-route-header.tsx` | other | HStack, Heading, IconButton, Text, Toolbar, VStack | aligned — uses Astryx (HStack, Heading, IconButton, Text, Toolbar, VStack) | aligned |
 | `apps/desktop/src/renderer/application/contracts/settings-presentation/settings-section.tsx` | other | Divider, HStack, Heading, Item, Text, VStack | aligned — uses Astryx (Divider, HStack, Heading, Item, Text, VStack) | aligned |
 | `apps/desktop/src/renderer/application/contracts/workbar-edge-toggle.tsx` | shell-chrome-or-panel | Button | aligned — uses Astryx (Button) | aligned |
