@@ -301,7 +301,7 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
           sessionId: created.id,
           expectedRevision: configurationRevision,
           patch: {
-            permissionMode: 'bypass',
+            permissionMode: 'ask',
             orchestrationMode: 'default',
           },
         }),
