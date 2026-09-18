@@ -1,0 +1,5 @@
+{
+  "epoch": 162,
+  "files": ["packages/runtime-host/src/protocol/workhub-coordination.ts"],
+  "reason": "Exports the existing WorkHub missing-default-model message as a shared constant for the Desktop IPC adapter. The literal, error code, operation, wire frames, and all protocol shapes remain unchanged; older and newer peers observe identical protocol behavior."
+}
