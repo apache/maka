@@ -20,12 +20,14 @@
 import { WORKHUB_COORDINATION_SESSION_ID } from '@maka/core/session';
 import { AttachmentIngestBlockedError } from '@maka/core/attachments';
 import { RuntimeHostOperationError, RuntimeHostRequestInterruptedError } from '@maka/runtime-host/client';
+import { WORKHUB_COORDINATION_DEFAULT_MODEL_REQUIRED_MESSAGE } from '@maka/runtime-host/protocol';
 import { prepareIngestItems, resolveAttachmentRefs } from './attachment-ingest.js';
 import type { DesktopRuntimeHostClient } from './runtime-host-client.js';
 import { handleReconnectableRead, handleReconciledControl, rethrowReconnectableReadFailure, type ReconnectableReadIpcMain } from './ipc-reconnect-policy.js';
 import type {
   WorkHubAnswerInput,
   WorkHubAnswerResult,
+  WorkHubCoordinationSessionResolution,
   WorkHubPrepareAttachmentsResult,
 } from '../shared/workhub-conversation.js';
 import { toDesktopHostSessionSummary } from './runtime-host-session-catalog-ipc-main.js';
@@ -54,9 +56,21 @@ export function registerRuntimeHostWorkHubIpc(
   handleReconnectableRead(ipcMain, 'workhub:getSession', async () =>
     toDesktopHostSessionSummary(await client.getWorkHubSession()),
   );
-  ipcMain.handle('workhub:resolveCoordinationSession', () =>
-    client.resolveWorkHubCoordinationSession(),
-  );
+  ipcMain.handle('workhub:resolveCoordinationSession', async (): Promise<WorkHubCoordinationSessionResolution> => {
+    try {
+      return await client.resolveWorkHubCoordinationSession();
+    } catch (error) {
+      if (
+        error instanceof RuntimeHostOperationError &&
+        error.operation === 'workhub.coordination.resolve' &&
+        error.code === 'operation_conflict' &&
+        error.message === WORKHUB_COORDINATION_DEFAULT_MODEL_REQUIRED_MESSAGE
+      ) {
+        return { kind: 'model_required' };
+      }
+      throw error;
+    }
+  });
   type Attempt = WorkHubAnswerInput & { readonly originHostEpoch: string };
   const unknown = (attempt: Attempt): WorkHubAnswerResult => ({
     kind: 'unknown', originHostEpoch: attempt.originHostEpoch,

@@ -29,7 +29,7 @@ import type { IpcHandler } from '../ipc-reconnect-policy.js';
 import type { DesktopSessionStopResult } from '../../preload/bridge-contract.js';
 import type { AttachmentRef } from '@maka/core/events';
 import type { StoredMessage } from '@maka/core/session';
-import { WorkHubServicesProvider, type WorkHubServices, type WorkHubTranscriptSnapshot } from '../../renderer/features/workhub/index.js';
+import { WorkHubModelConfigurationRequiredError, WorkHubServicesProvider, type WorkHubServices, type WorkHubTranscriptSnapshot } from '../../renderer/features/workhub/index.js';
 import { useWorkHubController } from '../../renderer/features/workhub/testing.js';
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
 
@@ -129,7 +129,7 @@ async function mountController(failFirstRead = false, overrides: Partial<WorkHub
       createElement(WorkHubServicesProvider, { services }, createElement(Probe)),
     }));
   });
-  assert.equal(controller.sessionId, sessionId);
+  if (!overrides.resolve) assert.equal(controller.sessionId, sessionId);
   return {
     get submissions() { return submissions; },
     get controller() { return controller; }, get openCount() { return openCount; },
@@ -147,6 +147,16 @@ async function mountController(failFirstRead = false, overrides: Partial<WorkHub
     publish(messages: StoredMessage[]) { publish({ messages, ready: true, hasOlder: false }); },
   };
 }
+
+test('WorkHub presents model setup instead of a retry-only resolution error', async () => {
+  const h = await mountController(false, {
+    resolve: async () => { throw new WorkHubModelConfigurationRequiredError(); },
+  });
+
+  assert.equal(h.controller.modelSetupRequired, true);
+  assert.equal(h.controller.error, undefined);
+  assert.equal(h.controller.canRetry, false);
+});
 
 test('WorkHub model and thinking selection share versioned saves and reject stale reads', async () => {
   type Session = Awaited<ReturnType<WorkHubServices['getSession']>>;

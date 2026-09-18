@@ -19,7 +19,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { useWorkHubServices } from '../services.js';
-export function WorkHubMainNavigation(props: { workbarReady: boolean; onOpenUsage(): void; onToggleWorkbar(): void; onOpenWorkHub(): void; onOpenSession(sessionId: string): void }) {
+export function WorkHubMainNavigation(props: { workbarReady: boolean; onOpenUsage(): void; onToggleWorkbar(): void; onOpenWorkHub(): void; onOpenSession(sessionId: string): void; onOpenSettings(section: 'models'): void }) {
   const [pendingAction, setPendingAction] = useState<'usage' | 'toggle'>();
   const { presentation } = useWorkHubServices();
   const current = useRef(props); current.current = props;
@@ -28,6 +28,7 @@ export function WorkHubMainNavigation(props: { workbarReady: boolean; onOpenUsag
       current.current.onOpenWorkHub();
       setPendingAction(navigation.panelAction);
     }
+    else if (navigation.kind === 'settings') { setPendingAction(undefined); current.current.onOpenSettings(navigation.section); }
     else { setPendingAction(undefined); current.current.onOpenSession(navigation.sessionKey); }
   }), [presentation]);
   useEffect(() => {

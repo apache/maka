@@ -36,7 +36,10 @@ import type { WorkHubAnswerInput, WorkHubAnswerResult } from '../../../../shared
 import type { AttachmentRef, FollowUpMode, MessageQueueEntryProjection, MessageQueuePlacement } from '@maka/core/events';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { ChatModelChoice } from '@maka/core/chat-model-choice';
-import { startWorkHubCoordinationLifecycle } from '../../../application/contracts/workhub-workspace/coordination-lifecycle.js';
+import {
+  startWorkHubCoordinationLifecycle,
+  WorkHubModelConfigurationRequiredError,
+} from '../../../application/contracts/workhub-workspace/coordination-lifecycle.js';
 import { useWorkHubServices } from '../services.js';
 import { workHubLiveCopy } from '../locales/workhub-live-copy.js';
 import type { WorkHubServices, WorkHubTranscript, WorkHubTranscriptSnapshot } from '../ports.js';
@@ -90,6 +93,7 @@ export function useWorkHubController(onSubmit?: () => void) {
   const [sending, setSending] = useState(false);
   const [stopPending, setStopPending] = useState(false);
   const [error, setError] = useState<string>();
+  const [modelSetupRequired, setModelSetupRequired] = useState(false);
   const [readError, setReadError] = useState<string>();
   const [readRevision, setReadRevision] = useState(0);
   const retryResolution = useRef<() => void>(() => undefined);
@@ -216,9 +220,17 @@ export function useWorkHubController(onSubmit?: () => void) {
           setSessionId(undefined);
           setStopPending(false);
           setError(undefined);
+          setModelSetupRequired(false);
         },
         onResolved: setSessionId,
         reportFailure: (reason, action) => {
+          if (reason instanceof WorkHubModelConfigurationRequiredError) {
+            setError(undefined);
+            setModelSetupRequired(true);
+            retryResolution.current = action;
+            return;
+          }
+          setModelSetupRequired(false);
           report(reason);
           retryResolution.current = action;
         },
@@ -616,7 +628,8 @@ export function useWorkHubController(onSubmit?: () => void) {
     sending,
     stopPending,
     error: readError ?? error,
-    canRetry: Boolean(readError || (!sessionId && error) || (error && (pendingSend.current?.admission === 'unknown' || pendingSend.current?.admission === 'rejected'))),
+    modelSetupRequired,
+    canRetry: Boolean(readError || (!modelSetupRequired && !sessionId && error) || (error && (pendingSend.current?.admission === 'unknown' || pendingSend.current?.admission === 'rejected'))),
     send,
     stop,
     changeModel,

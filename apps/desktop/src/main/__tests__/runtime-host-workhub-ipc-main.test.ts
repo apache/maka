@@ -19,6 +19,8 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { RuntimeHostOperationError } from '@maka/runtime-host/client';
+import { WORKHUB_COORDINATION_DEFAULT_MODEL_REQUIRED_MESSAGE } from '@maka/runtime-host/protocol';
 import type { IpcHandler } from '../ipc-reconnect-policy.js';
 import { registerRuntimeHostWorkHubIpc } from '../runtime-host-workhub-ipc-main.js';
 
@@ -66,4 +68,30 @@ test('returns a structured WorkHub attachment rejection across IPC', async () =>
     Array.from({ length: 9 }, () => ({})),
   );
   assert.deepEqual(result, { ok: false, code: 'count_limit' });
+});
+
+test('returns a structured model setup state across IPC', async () => {
+  const handlers = new Map<string, IpcHandler>();
+  registerRuntimeHostWorkHubIpc(
+    {
+      resolveWorkHubCoordinationSession: async () => {
+        throw new RuntimeHostOperationError(
+          'workhub.coordination.resolve',
+          'operation_conflict',
+          WORKHUB_COORDINATION_DEFAULT_MODEL_REQUIRED_MESSAGE,
+        );
+      },
+    } as unknown as Parameters<typeof registerRuntimeHostWorkHubIpc>[0],
+    {
+      handle(channel, handler) {
+        handlers.set(channel, handler);
+      },
+    },
+    {},
+  );
+
+  const resolve = handlers.get('workhub:resolveCoordinationSession');
+  assert.ok(resolve);
+  const result = await resolve({ sender: { id: 7 } } as Parameters<IpcHandler>[0]);
+  assert.deepEqual(result, { kind: 'model_required' });
 });

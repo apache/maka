@@ -297,7 +297,14 @@ export function WorkHubRoot() {
         style={!showConversation ? { height: expandedLayoutHeight, flex: 'none', position: 'absolute', bottom: 0, width: '100%' } : undefined}
         composer={
           <div className="workHubComposerSurface" ref={composerSurface} onFocusCapture={editProgress} onPointerUpCapture={editProgress}>
-            {(controller.error || control?.error) && (
+            {controller.modelSetupRequired && (
+              <div className="workHubLiveError workHubModelSetup" role="alert">
+                <span>{t.modelRequired}</span>
+                <Button label={t.openModelSettings} variant="primary" onClick={() => call(services.presentation.openSettings('models'))} />
+                <Button label={t.checkModel} variant="ghost" onClick={controller.retry} />
+              </div>
+            )}
+            {!controller.modelSetupRequired && (controller.error || control?.error) && (
               <div className="workHubLiveError" role="alert">
                 {controller.error ?? t.controlFailed}
                 {controller.canRetry && (

@@ -85,6 +85,8 @@ export const WORKHUB_COORDINATION_TEXT_MAX_BYTES = 48 * 1024;
 const COORDINATION_TITLE_MAX_BYTES = 512;
 const CANDIDATE_SET_ID_MAX_BYTES = 96;
 export const WORKHUB_COORDINATION_CANDIDATE_MAX_ITEMS = 32;
+export const WORKHUB_COORDINATION_DEFAULT_MODEL_REQUIRED_MESSAGE =
+  'WorkHub Coordination Session requires an available default model';
 
 const RESOLVE_ERRORS = [
   'host_not_ready',

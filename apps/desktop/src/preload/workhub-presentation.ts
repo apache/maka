@@ -40,6 +40,7 @@ export const workHubPresentationBridge: WorkHubPresentationBridge = {
   openUsage: () => ipcRenderer.invoke('workhub-presentation:command', 'usage'),
   toggleWorkbar: () => ipcRenderer.invoke('workhub-presentation:command', 'toggle-workbar'),
   openSession: (sessionKey) => ipcRenderer.invoke('workhub-presentation:command', 'session', sessionKey),
+  openSettings: (section) => ipcRenderer.invoke('workhub-presentation:command', 'settings', section),
   subscribe: (handler) => subscribe('workhub-presentation:changed', handler),
   onViewportInset: (handler) => subscribe('workhub-presentation:viewport-inset', handler),
   onFocusComposer: (handler) => subscribe('workhub-presentation:focus-composer', handler),

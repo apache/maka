@@ -47,7 +47,8 @@ export interface WorkHubPresentationSnapshot {
 
 export type WorkHubMainNavigation =
   | { readonly kind: 'workhub'; readonly panelAction?: 'usage' | 'toggle' }
-  | { readonly kind: 'session'; readonly sessionKey: string };
+  | { readonly kind: 'session'; readonly sessionKey: string }
+  | { readonly kind: 'settings'; readonly section: 'models' };
 
 export interface WorkHubPresentationBridge {
   ready(): Promise<void>;
@@ -63,6 +64,7 @@ export interface WorkHubPresentationBridge {
   openUsage(): Promise<void>;
   toggleWorkbar(): Promise<void>;
   openSession(sessionKey: string): Promise<void>;
+  openSettings(section: 'models'): Promise<void>;
   subscribe(handler: (snapshot: WorkHubPresentationSnapshot) => void): () => void;
   /** Visible top edge inside the animation canvas, in CSS pixels. */
   onViewportInset(handler: (inset: number) => void): () => void;

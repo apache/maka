@@ -49,6 +49,10 @@ import type {
   WorkHubCoordinationConfigureModelInput,
 } from '../protocol/index.js';
 import { WORKHUB_COORDINATION_TEXT_MAX_BYTES } from '../protocol/index.js';
+import {
+  WORKHUB_COORDINATION_DEFAULT_MODEL_REQUIRED_MESSAGE,
+  type WorkHubCoordinationSelectAndDelegateInput,
+} from '../protocol/workhub-coordination.js';
 import type {
   ConnectionContext,
   WorkHubCoordinationOperationHandlerMap,
@@ -68,7 +72,6 @@ import {
   RuntimeInteractionFailStopError,
 } from '@maka/runtime/interaction-authority';
 import type { HostInteractionCoordinator } from './interaction-coordinator.js';
-import type { WorkHubCoordinationSelectAndDelegateInput } from '../protocol/workhub-coordination.js';
 import type { SessionContinuityCoordinator } from './session-continuity-coordinator.js';
 import type { WorkHubTargetExecutionAuthority } from './workhub-target-execution-authority.js';
 import {
@@ -1106,7 +1109,7 @@ function createTargetFailure(error: unknown): OperationOutcome<'workhub.coordina
   }
   return failure(
     'operation_conflict',
-    'WorkHub Coordination Session requires an available default model',
+    WORKHUB_COORDINATION_DEFAULT_MODEL_REQUIRED_MESSAGE,
   );
 }
 
