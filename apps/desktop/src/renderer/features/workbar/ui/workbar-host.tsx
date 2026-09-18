@@ -157,9 +157,11 @@ export function WorkbarHost({ model: props }: { model: WorkbarHostModel }) {
             }} />,
           previewFocus.composerTarget,
         )}
-      {previewFocus.composerTarget && previewFocus.focusedPreview && props.activeId &&
+      {previewFocus.composerTarget && props.activeId && !props.hidden && !props.rightCollapsed && props.workspace !== 'workhub' &&
+        (previewFocus.activeRightTab?.kind === 'files' || previewFocus.activeRightTab?.kind === 'browser') &&
         createPortal(
           <RecentTurnOverlay key={props.activeId} sessionId={props.activeId}
+            hidden={!previewFocus.focusedPreview}
             sourceSession={props.sourceSession} onHeightChange={previewFocus.setOverlayHeight}
             minimized={previewFocus.minimized} onMinimize={previewFocus.minimize} onRestore={previewFocus.restore} />,
           previewFocus.composerTarget,

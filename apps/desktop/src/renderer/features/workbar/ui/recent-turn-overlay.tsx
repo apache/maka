@@ -29,6 +29,7 @@ import { useWorkbarServices } from '../services-context.js';
 
 const COPY: Record<UiLocale, {
   recent: string;
+  interrupted: string;
   processing: string;
   processingFor: (elapsed: number) => string;
   noReply: string;
@@ -40,19 +41,19 @@ const COPY: Record<UiLocale, {
   restore: string;
 }> = {
   'zh-CN': {
-    recent: '最近一条', processing: '正在处理', processingFor: (elapsed) => elapsed < 60
+    recent: '最近一条', interrupted: '本轮已中断', processing: '正在处理', processingFor: (elapsed) => elapsed < 60
       ? `已处理 ${elapsed} 秒` : `已处理 ${Math.floor(elapsed / 60)} 分钟 ${elapsed % 60} 秒`,
     noReply: '暂无最近回复', runningTool: '正在运行', finishedTool: '运行了', waiting: '等待下一步…', readFailed: '暂时无法读取最近回复',
     minimize: '收起输入区', restore: '继续输入',
   },
   'zh-TW': {
-    recent: '最近一則', processing: '正在處理', processingFor: (elapsed) => elapsed < 60
+    recent: '最近一則', interrupted: '本輪已中斷', processing: '正在處理', processingFor: (elapsed) => elapsed < 60
       ? `已處理 ${elapsed} 秒` : `已處理 ${Math.floor(elapsed / 60)} 分鐘 ${elapsed % 60} 秒`,
     noReply: '尚無最近回覆', runningTool: '正在執行', finishedTool: '執行了', waiting: '等待下一步…', readFailed: '暫時無法讀取最近回覆',
     minimize: '收起輸入區', restore: '繼續輸入',
   },
   en: {
-    recent: 'Latest reply', processing: 'Working', processingFor: (elapsed) => elapsed < 60
+    recent: 'Latest reply', interrupted: 'Turn interrupted', processing: 'Working', processingFor: (elapsed) => elapsed < 60
       ? `Working for ${elapsed}s` : `Working for ${Math.floor(elapsed / 60)}m ${elapsed % 60}s`,
     noReply: 'No recent reply', runningTool: 'Running', finishedTool: 'Ran', waiting: 'Waiting for the next step…', readFailed: 'Unable to load the latest reply',
     minimize: 'Minimize composer', restore: 'Continue typing',
@@ -89,6 +90,7 @@ function visibleLiveItems(turn: LiveTurnProjection | undefined): RecentItem[] | 
 export function RecentTurnOverlay(props: {
   sessionId: string;
   sourceSession?: SessionSummary;
+  hidden?: boolean;
   onHeightChange(height: number): void;
   minimized?: boolean;
   onMinimize?(): void;
@@ -103,6 +105,7 @@ export function RecentTurnOverlay(props: {
   const [expanded, setExpanded] = useState(false);
   const [observed, setObserved] = useState(false);
   const [runningTurnId, setRunningTurnId] = useState<string | null | undefined>();
+  const [interruptedTurnId, setInterruptedTurnId] = useState<string>();
   const [liveTurns, setLiveTurns] = useState<LiveTurnBuffer>();
   const [settledReply, setSettledReply] = useState<{ turnId: string; revision: number; text?: string }>();
   const [readError, setReadError] = useState(false);
@@ -112,7 +115,7 @@ export function RecentTurnOverlay(props: {
   const running = runningTurnId === undefined
     ? Boolean(props.sourceSession?.runningTurnIds?.length || (lastLive && !lastLive.terminal))
     : runningTurnId !== null;
-  const activeLive = liveTurns?.find((turn) => turn.turnId === runningTurnId) ?? lastLive;
+  const activeLive = runningTurnId ? liveTurns?.find((turn) => turn.turnId === runningTurnId) : lastLive;
   const lastLiveTurnId = lastLive?.turnId;
 
   useLayoutEffect(() => {
@@ -129,6 +132,7 @@ export function RecentTurnOverlay(props: {
     let disposed = false;
     const offEvents = sideChat.subscribeEvents(props.sessionId, (event) => {
       if (disposed) return;
+      if (event.type === 'abort' || event.type === 'error') setInterruptedTurnId(event.turnId);
       setLiveTurns((current) => applyLiveTurnBufferEvent(current, event, locale)?.slice(-2));
     }, () => { if (!disposed) setObserved(true); }, () => { if (!disposed) setObserved(true); }, (projection) => {
       if (disposed || !projection?.available) return;
@@ -176,22 +180,29 @@ export function RecentTurnOverlay(props: {
   const startedAt = activeLive?.startedAt ?? props.sourceSession?.statusUpdatedAt;
   const elapsed = startedAt && now >= startedAt && now - startedAt < 24 * 60 * 60 * 1_000
     ? Math.floor((now - startedAt) / 1_000) : undefined;
-  const label = running ? elapsed === undefined ? copy.processing : copy.processingFor(elapsed) : copy.recent;
-  const liveItems = running ? visibleLiveItems(activeLive) : undefined;
   const settledText = settledReply?.revision === revision &&
     (!lastLiveTurnId || settledReply.turnId === lastLiveTurnId) ? settledReply.text : undefined;
+  const interrupted = !running && lastLiveTurnId && interruptedTurnId === lastLiveTurnId;
+  const label = running ? elapsed === undefined ? copy.processing : copy.processingFor(elapsed)
+    : interrupted ? copy.interrupted : copy.recent;
+  // A stopped turn may never write an assistant text_complete. Keep its
+  // bounded live projection until a persisted answer replaces it.
+  const liveItems = running || (!settledText && activeLive?.terminal) ? visibleLiveItems(activeLive) : undefined;
 
   useLayoutEffect(() => {
     if (expanded && !props.minimized && followRef.current && contentRef.current) {
       contentRef.current.scrollTop = contentRef.current.scrollHeight;
     }
-  }, [expanded, props.minimized, liveItems?.at(-1)?.text]);
+  }, [expanded, props.hidden, props.minimized, liveItems?.at(-1)?.text]);
+
+  // Keep the active preview's bounded stream across focus/restore, without
+  // duplicating its reply in the split view's DOM or accessibility tree.
+  if (props.hidden) return <div ref={rootRef} hidden />;
 
   return <div ref={rootRef} className="maka-recent-turn-overlay" data-expanded={!props.minimized && expanded || undefined}>
     <ProgressCard label={label} status={props.minimized ? `${label} · ${copy.restore}` : label} active={running}
-      summary={props.minimized || expanded ? undefined : boundedText(running
-        ? liveItems?.at(-1)?.text || copy.waiting
-        : settledText || (readError ? copy.readFailed : copy.noReply))}
+      summary={props.minimized || expanded ? undefined : boundedText(
+        liveItems?.at(-1)?.text || (running ? copy.waiting : settledText || (readError ? copy.readFailed : copy.noReply)))}
       primaryAction={{
         label: props.minimized ? `${label} · ${copy.restore}` : label,
         expanded: props.minimized ? undefined : expanded,
@@ -212,12 +223,12 @@ export function RecentTurnOverlay(props: {
         const el = event.currentTarget;
         followRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
       }}>
-      {running ? liveItems?.length ? liveItems.map((item) => item.kind === 'text'
+      {liveItems?.length ? liveItems.map((item) => item.kind === 'text'
         ? <div key={item.id} className="maka-recent-turn-message"><MarkdownBody text={boundedText(item.text)} density="compact" /></div>
         : <div key={item.id} className="maka-recent-turn-tool">
           {item.readsFiles ? <FolderOpen size={16} aria-hidden="true" /> : <Terminal size={16} aria-hidden="true" />}
           <span>{item.busy ? copy.runningTool : copy.finishedTool} {item.text}</span></div>)
-        : <p className="maka-recent-turn-placeholder">{copy.waiting}</p>
+        : running ? <p className="maka-recent-turn-placeholder">{copy.waiting}</p>
       : <div className="maka-recent-turn-message">
           {settledText ? <MarkdownBody text={boundedText(settledText)} density="compact" />
             : <p className="maka-recent-turn-placeholder">{readError ? copy.readFailed : copy.noReply}</p>}

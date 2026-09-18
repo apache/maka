@@ -870,6 +870,7 @@ function bridge(options: {
   recentEvents?: SessionEvent[];
   recentRunning?: boolean;
   recentCompletesAfterMs?: number;
+  recentStopReason?: 'end_turn' | 'user_stop';
   recentPendingReads?: number;
   recentStartedAgoMs?: number;
   browserViewport?: (input: { sessionId: string; rect: unknown }) => void;
@@ -1035,7 +1036,8 @@ function bridge(options: {
           ? event : { ...event, ts: Date.now() - options.recentStartedAgoMs + index * 1_000 }));
         onSeeded?.();
         const timer = options.recentCompletesAfterMs === undefined ? undefined : window.setTimeout(() => {
-          handler({ type: 'complete', id: 'recent-complete', turnId: 'source-turn', ts: NOW + 2_000, stopReason: 'end_turn' });
+          if (options.recentStopReason === 'user_stop') handler({ type: 'abort', id: 'recent-abort', turnId: 'source-turn', ts: NOW + 2_000, reason: 'user_stop' });
+          handler({ type: 'complete', id: 'recent-complete', turnId: 'source-turn', ts: NOW + 2_000, stopReason: options.recentStopReason ?? 'end_turn' });
           onExecution?.({ type: 'host_execution', available: true, rootTurn: {
             sessionId: SESSION_ID, turnId: 'source-turn', runId: 'story-run', status: 'completed',
             terminalEventId: 'recent-complete',
@@ -1904,6 +1906,31 @@ export const FilesRecentTurnHandoff: Story = {
     await canvas.findByText(/The latest check is complete/);
     expect(canvas.getByRole('textbox', { name: 'Session draft' })).toBe(draft);
     expect(draft).toHaveValue('A follow-up draft');
+  },
+};
+
+// Real path: focused Browser → stop before text_complete → keep the partial reply readable.
+export const BrowserRecentInterrupted: Story = {
+  decorators: [bridge({ browserState: LOADED_BROWSER_STATE, recentRunning: true,
+    recentCompletesAfterMs: 1_500, recentStopReason: 'user_stop', recentMessages: [],
+    recentEvents: [{ type: 'text_delta', id: 'partial-delta', turnId: 'source-turn', messageId: 'partial-message',
+      text: 'The partial reply remains readable after stopping.', ts: NOW }] })],
+  render: () => <FocusedHostFlow tab="browser" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole('button', { name: '聚焦网页' }));
+    await userEvent.click(await canvas.findByRole('button', { name: /正在处理|已处理/ }));
+    // The fixture deliberately stops at 1.5s, after the running panel opens.
+    await waitFor(() => expect(canvas.getByRole('button', { name: '本轮已中断' })).toBeVisible(), { timeout: 5_000 });
+    expect(canvas.getByText('The partial reply remains readable after stopping.')).toBeVisible();
+    expect(canvas.queryByText('暂无最近回复')).toBeNull();
+    await userEvent.click(canvas.getByRole('button', { name: '本轮已中断' }));
+    expect(canvas.getByText('The partial reply remains readable after stopping.')).toBeVisible();
+    await userEvent.click(canvas.getByRole('button', { name: '还原分栏' }));
+    expect(canvas.queryByText('The partial reply remains readable after stopping.')).toBeNull();
+    await userEvent.click(canvas.getByRole('button', { name: '聚焦网页' }));
+    expect(canvas.getByRole('button', { name: '本轮已中断' })).toBeVisible();
+    expect(canvas.getByText('The partial reply remains readable after stopping.')).toBeVisible();
   },
 };
 
