@@ -28,12 +28,9 @@ import {
 import type { LlmConnection } from '@maka/core/llm-connections';
 import {
   buildCommandCodeCliRequest,
-  COMMANDCODE_CLI_TRANSPORT_ENVIRONMENT_VARIABLE,
   COMMANDCODE_CLI_VERSION,
   CommandCodeCliLanguageModel,
-  CommandCodeCliTransportDisabledError,
   commandCodeCliHeaders,
-  isCommandCodeCliTransportEnabled,
   mapFinishReason,
   projectSlugFromPath,
   toolParametersSchema,
@@ -51,16 +48,6 @@ import {
 } from './conformance-harness.js';
 
 after(closeAllJsonServers);
-
-const FLAG = COMMANDCODE_CLI_TRANSPORT_ENVIRONMENT_VARIABLE;
-let savedFlag: string | undefined;
-beforeEach(() => {
-  savedFlag = process.env[FLAG];
-});
-afterEach(() => {
-  if (savedFlag === undefined) delete process.env[FLAG];
-  else process.env[FLAG] = savedFlag;
-});
 
 function respondCliStream(response: ServerResponse, events: readonly unknown[]): void {
   response.writeHead(200, { 'content-type': 'text/event-stream' });
@@ -464,19 +451,9 @@ describe('runtime wiring', () => {
     assert.equal(runtime.baseUrl, 'https://api.commandcode.ai');
   });
 
-  test('the transport is off until the install opts in', async () => {
-    delete process.env[FLAG];
-    assert.equal(isCommandCodeCliTransportEnabled(), false);
-    assert.throws(
-      () => getAIModel({ connection, apiKey: 'k', modelId: 'deepseek/deepseek-v4.1-flash' }),
-      CommandCodeCliTransportDisabledError,
-    );
-    const disabled = await testConnection(connection, 'k', 'deepseek/deepseek-v4.1-flash');
-    assert.equal(disabled.ok, false);
-    assert.match(disabled.errorMessage ?? '', /MAKA_COMMANDCODE_CLI_TRANSPORT_EXPERIMENTAL=1/u);
-
-    process.env[FLAG] = '1';
-    assert.equal(isCommandCodeCliTransportEnabled(), true);
+  // Choosing this provider is the choice to use this wire: nothing else routes
+  // here, and no other provider falls back to it.
+  test('a Command Code GO connection builds the CLI transport', () => {
     const model = getAIModel({ connection, apiKey: 'k', modelId: 'deepseek/deepseek-v4.1-flash' });
     assert.ok(model instanceof CommandCodeCliLanguageModel);
   });
@@ -508,7 +485,6 @@ describe('runtime wiring', () => {
   });
 
   test('the connection test posts one tiny CLI generate and reads the status', async () => {
-    process.env[FLAG] = '1';
     const urls: string[] = [];
     const server = await startJsonServer(async (request, response) => {
       urls.push(String(request.url));
@@ -528,7 +504,6 @@ describe('runtime wiring', () => {
   });
 
   test('the connection test fails on an in-band error behind HTTP 200', async () => {
-    process.env[FLAG] = '1';
     const server = await startJsonServer((_request, response) => {
       respondCliStream(response, [
         {
@@ -550,7 +525,6 @@ describe('runtime wiring', () => {
   });
 
   test('the connection test fails when the stream never reaches finish', async () => {
-    process.env[FLAG] = '1';
     const server = await startJsonServer((_request, response) => {
       response.writeHead(200, { 'content-type': 'text/event-stream' });
       response.end(`data: ${JSON.stringify({ type: 'text-delta', text: 'cut' })}\n\n`);
@@ -566,7 +540,6 @@ describe('runtime wiring', () => {
   });
 
   test('a rate-limited stream error reports the provider, not the credential', async () => {
-    process.env[FLAG] = '1';
     const server = await startJsonServer((_request, response) => {
       respondCliStream(response, [
         { type: 'error', error: { message: 'slow down', statusCode: 429 } },

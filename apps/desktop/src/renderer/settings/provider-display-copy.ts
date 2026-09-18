@@ -305,9 +305,9 @@ export const PROVIDER_DISPLAY_COPY = {
     en: { name: 'Command Code', description: 'Use your Command Code plan credits. Models are fetched when you connect.', badge: 'Coding' },
   },
   'commandcode-go': {
-    'zh-CN': { name: 'Command Code GO', description: 'GO 套餐专用：走官方 CLI 的私有通道发送请求，需在本机开启实验开关。连接后自动获取模型。', badge: 'Coding' },
-    'zh-TW': { name: 'Command Code GO', description: 'GO 方案專用：走官方 CLI 的私有通道傳送請求，需在本機開啟實驗開關。連線後自動取得模型。', badge: 'Coding' },
-    en: { name: 'Command Code GO', description: 'For the GO plan: sends through the official CLI\'s private transport; needs this install\'s experimental flag. Models are fetched when you connect.', badge: 'Coding' },
+    'zh-CN': { name: 'Command Code GO', description: 'GO 套餐专用：走官方 CLI 的私有通道发送请求。连接后自动获取模型。', badge: 'Coding' },
+    'zh-TW': { name: 'Command Code GO', description: 'GO 方案專用：走官方 CLI 的私有通道傳送請求。連線後自動取得模型。', badge: 'Coding' },
+    en: { name: 'Command Code GO', description: 'For the GO plan: sends through the official CLI\'s private transport. Models are fetched when you connect.', badge: 'Coding' },
   },
   groq: {
     'zh-CN': { name: 'Groq', description: 'LPU 高速推理托管开源模型', badge: 'API' },

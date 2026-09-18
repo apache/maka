@@ -241,6 +241,11 @@ const zhCopy = {
   add: {
     slugIssues: { required: '请填写连接标识', format: '连接标识只能包含小写字母、数字和连字符', too_long: '连接标识不能超过 64 个字符' }, duplicateSlug: '连接标识已存在', cloudflareAccount: '请填写 Cloudflare Account ID', endpointRequired: '这个供应商需要填写服务地址',
     accountLogin: '请到账号连接完成登录；登录成功后会自动创建模型连接。',
+    transportNoticeTitle: '这个供应商走官方 CLI 的私有通道',
+    transportNoticeDetail:
+      '请求发往该 CLI 使用的接口，并带上它的身份标识，而不是 Maka 的；该接口不属于已公开的 Provider API。',
+    transportAcknowledgeLabel: '我了解上述情况，并自行承担',
+    transportAcknowledgeRequired: '请先勾选上面的确认再添加。',
     apiKeyPlaceholder: '输入或粘贴 API Key', cancel: '取消', accountTitle: '使用账号连接登录',
     advancedRequest: '高级请求设置', expandAdvancedRequest: '展开高级请求设置', collapseAdvancedRequest: '收起高级请求设置',
     requestHeaders: '自定义请求头', headerName: '请求头名称', headerValue: '请求头值', retainedHeaderValue: '保留已保存的值', addHeader: '添加请求头', removeHeader: '移除', noRequestHeaders: '未设置自定义请求头。',
@@ -439,6 +444,11 @@ const zhTwCopy = {
   add: {
     slugIssues: { required: '請填寫連線標識', format: '連線標識只能包含小寫字母、數字和連字號', too_long: '連線標識不能超過 64 個字元' }, duplicateSlug: '連線標識已存在', cloudflareAccount: '請填寫 Cloudflare Account ID', endpointRequired: '這個供應商需要填寫服務地址',
     accountLogin: '請到帳號連線完成登入；登入成功後會自動建立模型連線。',
+    transportNoticeTitle: '這個供應商走官方 CLI 的私有通道',
+    transportNoticeDetail:
+      '請求發往該 CLI 使用的介面，並帶上它的身分標示，而不是 Maka 的；該介面不屬於已公開的 Provider API。',
+    transportAcknowledgeLabel: '我了解上述情況，並自行承擔',
+    transportAcknowledgeRequired: '請先勾選上面的確認再新增。',
     apiKeyPlaceholder: '輸入或貼上 API Key', cancel: '取消', accountTitle: '使用帳號連線登入',
     advancedRequest: '高階請求設定', expandAdvancedRequest: '展開高階請求設定', collapseAdvancedRequest: '收起高階請求設定',
     requestHeaders: '自訂請求頭', headerName: '請求頭名稱', headerValue: '請求頭值', retainedHeaderValue: '保留已儲存的值', addHeader: '新增請求頭', removeHeader: '移除', noRequestHeaders: '未設定自訂請求頭。',
@@ -638,6 +648,11 @@ const enCopy: ProviderSettingsCopy = {
   add: {
     slugIssues: { required: 'Enter a connection identifier', format: 'Connection identifiers use lowercase letters, digits, and hyphens', too_long: 'Connection identifiers are at most 64 characters' }, duplicateSlug: 'Connection identifier already exists', cloudflareAccount: 'Enter the Cloudflare Account ID', endpointRequired: 'This provider requires a service URL',
     accountLogin: 'Complete sign-in under account connections. A model connection is created automatically afterward.',
+    transportNoticeTitle: 'This provider uses the official CLI\'s private transport',
+    transportNoticeDetail:
+      'Requests go to the endpoint that CLI uses and carry its identity headers rather than Maka\'s. The endpoint is not part of the published Provider API.',
+    transportAcknowledgeLabel: 'I understand and accept this for my install',
+    transportAcknowledgeRequired: 'Tick the acknowledgement above before adding.',
     apiKeyPlaceholder: 'Enter or paste API key', cancel: 'Cancel', accountTitle: 'Sign in with an account connection',
     advancedRequest: 'Advanced request settings', expandAdvancedRequest: 'Show advanced request settings', collapseAdvancedRequest: 'Hide advanced request settings',
     requestHeaders: 'Custom request headers', headerName: 'Header name', headerValue: 'Header value', retainedHeaderValue: 'Keep saved value', addHeader: 'Add header', removeHeader: 'Remove', noRequestHeaders: 'No custom request headers.',

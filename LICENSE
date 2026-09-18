@@ -465,16 +465,19 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 
-electron-builder dependency patch
+electron-builder dependency patches
 
 Source: https://www.npmjs.com/package/app-builder-lib/v/26.15.3
+        https://www.npmjs.com/package/electron-updater/v/6.8.9
 Repository: https://github.com/electron-userland/electron-builder
-Version: 26.15.3
+Versions: app-builder-lib 26.15.3; electron-updater 6.8.9
 Dependency patch: patches/app-builder-lib+26.15.3.patch
+                  patches/electron-updater+6.8.9.patch
 License: MIT
 
-Maka redistributes a source patch that omits modification and access times
-from ZIP archives. The following MIT License applies to that material:
+Maka redistributes source patches that omit modification and access times
+from ZIP archives and skip withdrawn prereleases whose update metadata is
+missing. The following MIT License applies to that material:
 
 The MIT License (MIT)
 

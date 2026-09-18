@@ -883,6 +883,22 @@ async function waitForStoryText(canvasElement: HTMLElement, text: string): Promi
   throw new Error(`Story text did not render: ${text}`);
 }
 
+function expectModuleBodyAlignedWithHeader(canvasElement: HTMLElement): void {
+  const heading = canvasElement.querySelector<HTMLElement>('.astryx-layout-header h1');
+  const body = canvasElement.querySelector<HTMLElement>(
+    '.maka-module-page-rows, .maka-daily-review-report',
+  );
+  if (!heading || !body) throw new Error('Module page geometry did not render');
+  const headingBounds = heading.getBoundingClientRect();
+  const bodyBounds = body.getBoundingClientRect();
+  const leftDelta = Math.abs(bodyBounds.left - headingBounds.left);
+  if (leftDelta > 1 || bodyBounds.width > 900) {
+    throw new Error(
+      `Module body is ${Math.round(leftDelta)}px outside the header content lane and ${Math.round(bodyBounds.width)}px wide`,
+    );
+  }
+}
+
 // Real path: sidebar → 扩展 → 技能, before any Skill or bundled catalog entry exists.
 export const ExtensionsSkillsEmpty: Story = {
   render: () => <ExtensionsSkillsSurface />,
@@ -922,6 +938,10 @@ export const HostAutomationsDailyReview: Story = {
 // Real path: sidebar → 扩展 → 技能, with several installed Skills.
 export const ExtensionsSkillsInstalled: Story = {
   render: () => <ExtensionsSkillsSurface skills={INSTALLED_SKILLS} />,
+  play: async ({ canvasElement }) => {
+    await waitForStoryText(canvasElement, 'git-flow');
+    expectModuleBodyAlignedWithHeader(canvasElement);
+  },
 };
 
 // Real path: sidebar → 扩展 → 技能, with bundled Skills available to install.
@@ -967,6 +987,7 @@ export const ExtensionsSkillsInspector: Story = {
     );
     row.click();
     await waitForStoryText(canvasElement, '固定到技能上下文');
+    expectModuleBodyAlignedWithHeader(canvasElement);
   },
 };
 
@@ -1027,6 +1048,7 @@ export const ExtensionsMcpConfigured: Story = {
     );
     installed.click();
     await waitForStoryText(canvasElement, 'filesystem');
+    expectModuleBodyAlignedWithHeader(canvasElement);
   },
 };
 
@@ -1106,6 +1128,10 @@ export const ScheduledTasks: Story = {
 // lives on the settings menu item rather than this page.
 export const ScheduledTasksConfigured: Story = {
   render: () => <ScheduledTasksSurface tasks={CONFIGURED_TASKS} />,
+  play: async ({ canvasElement }) => {
+    await waitForStoryText(canvasElement, '每周发布风险复盘');
+    expectModuleBodyAlignedWithHeader(canvasElement);
+  },
 };
 
 // A newer external settings read wins over a slow local write in the Module
@@ -1173,6 +1199,7 @@ export const ScheduledTasksInspector: Story = {
     );
     row.click();
     await waitForStoryText(canvasElement, '立即触发');
+    expectModuleBodyAlignedWithHeader(canvasElement);
   },
 };
 
@@ -1284,6 +1311,7 @@ export const ScheduledDailyReviewReport: Story = {
     );
     view.click();
     await waitForStoryText(canvasElement, '返回活动');
+    expectModuleBodyAlignedWithHeader(canvasElement);
   },
 };
 

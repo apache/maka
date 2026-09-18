@@ -18,7 +18,7 @@
  */
 
 import { realpath } from 'node:fs/promises';
-import type { SessionEvent, ShellRunSnapshotResult, ShellRunUpdate } from '@maka/core/events';
+import type { SessionEvent, ShellRunStateResult, ShellRunUpdate } from '@maka/core/events';
 import type { OrchestrationMode } from '@maka/core/orchestration';
 import type { PermissionMode } from '@maka/core/permission';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
@@ -138,7 +138,7 @@ export function skillInvocationBlockedMessage(skillInvocation: SkillInvocationRe
 
 export interface MakaUserCommand {
   readonly commandId: string;
-  readonly result: ShellRunSnapshotResult;
+  readonly result: ShellRunStateResult;
   /** Returns the newest update that raced the initial card into the transcript. */
   takeRacedUpdate(): ShellRunUpdate['result'] | undefined;
 }

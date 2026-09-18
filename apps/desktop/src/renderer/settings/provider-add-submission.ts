@@ -106,7 +106,8 @@ export type AddProviderIssue =
   | { readonly field: 'apiKey'; readonly reason: 'required' }
   | { readonly field: 'accountId'; readonly reason: 'required' }
   | { readonly field: 'baseUrl'; readonly reason: 'required' }
-  | { readonly field: 'form'; readonly reason: 'experimental' };
+  | { readonly field: 'form'; readonly reason: 'experimental' }
+  | { readonly field: 'form'; readonly reason: 'acknowledgement' };
 
 export interface AddProviderDraft {
   readonly providerType: ProviderType;
@@ -115,6 +116,25 @@ export interface AddProviderDraft {
   readonly apiKey: string;
   readonly cloudflareAccountId: string;
   readonly baseUrl: string;
+  /** Ticked by the user for a provider that states something before it is added. */
+  readonly acknowledged?: boolean;
+}
+
+/**
+ * Providers whose transport a user should be told about before choosing it.
+ *
+ * Command Code GO reaches the wire the official CLI uses, presenting that
+ * CLI's identity headers rather than Maka's; the endpoint is not part of the
+ * published Provider API. That is a fact about what the request looks like on
+ * the other end, so a user gets to see it while deciding rather than
+ * afterwards.
+ */
+export const PROVIDERS_REQUIRING_ACKNOWLEDGEMENT: ReadonlySet<ProviderType> = new Set([
+  'commandcode-go',
+]);
+
+export function providerRequiresAcknowledgement(providerType: ProviderType): boolean {
+  return PROVIDERS_REQUIRING_ACKNOWLEDGEMENT.has(providerType);
 }
 
 /**
@@ -147,7 +167,13 @@ export function validateAddProviderDraft(draft: AddProviderDraft): AddProviderIs
   // missing one — it just has not composed it yet.
   const requiresBaseUrl = !defaults.baseUrl && !isCloudflareWorkersAi;
   if (requiresBaseUrl && !draft.baseUrl.trim()) return { field: 'baseUrl', reason: 'required' };
+  // Experimental first, deliberately: a provider that is both cannot be added
+  // at all, so telling the user to answer a question that would not unblock
+  // them would be the wrong of the two answers.
   if (defaults.status === 'phase3-experimental') return { field: 'form', reason: 'experimental' };
+  if (providerRequiresAcknowledgement(draft.providerType) && draft.acknowledged !== true) {
+    return { field: 'form', reason: 'acknowledgement' };
+  }
   return null;
 }
 

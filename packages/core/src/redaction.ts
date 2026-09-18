@@ -237,6 +237,16 @@ export function classifyGeneralizedError(error: unknown): GeneralizedErrorClass 
   const lower = redactSecrets(message).toLowerCase();
   if (lower.includes('timeout')) return 'timeout';
   if (lower.includes('429') || lower.includes('rate')) return 'rate_limited';
+  // builder-util-runtime appends generic authentication-token advice to HTTP
+  // 404 errors. electron-updater has already classified this particular case
+  // as a missing channel artifact, so it is not evidence of bad credentials.
+  if (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    error.code === 'ERR_UPDATER_CHANNEL_FILE_NOT_FOUND'
+  )
+    return undefined;
   if (lower.includes('401') || lower.includes('403') || isAuthenticationErrorText(lower))
     return 'auth_failed';
   if (/\b5\d\d\b/.test(lower)) return 'provider_error';

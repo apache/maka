@@ -37,10 +37,7 @@ import { generateText, isStepCount, streamText, tool } from 'ai';
 import { z } from 'zod';
 import { discoverModels } from './model-discovery-fixture.js';
 import { buildProviderOptions, getAIModel } from '../model-factory.js';
-import {
-  COMMANDCODE_CLI_TRANSPORT_ENVIRONMENT_VARIABLE,
-  COMMANDCODE_CLI_VERSION,
-} from '../commandcode-cli-language-model.js';
+import { COMMANDCODE_CLI_VERSION } from '../commandcode-cli-language-model.js';
 import { buildSubscriptionModelFetch } from '../subscription-model-fetch.js';
 import {
   readBody,
@@ -1435,30 +1432,22 @@ async function runCommandCodeCliWire(): Promise<void> {
   };
   connection.models = await discoverModels(connection, 'cc-go-key');
 
-  const previousFlag = process.env[COMMANDCODE_CLI_TRANSPORT_ENVIRONMENT_VARIABLE];
-  process.env[COMMANDCODE_CLI_TRANSPORT_ENVIRONMENT_VARIABLE] = '1';
-  try {
-    const result = await generateText({
-      model: getAIModel({ connection, apiKey: 'cc-go-key', modelId, fetch }),
-      // A model models.dev does not describe resolves no thinking level, so
-      // the effort rides the adapter's own provider-options key directly.
-      providerOptions: { 'commandcode-cli': { reasoningEffort: 'medium' } },
-      tools: {
-        echo: tool({
-          description: 'Echo text',
-          inputSchema: z.object({ text: z.string() }),
-          execute: async ({ text }) => ({ echoed: text }),
-        }),
-      },
-      stopWhen: isStepCount(3),
-      prompt: 'Echo hello',
-    });
-    assert.equal(result.text, 'Echoed hello.');
-  } finally {
-    if (previousFlag === undefined)
-      delete process.env[COMMANDCODE_CLI_TRANSPORT_ENVIRONMENT_VARIABLE];
-    else process.env[COMMANDCODE_CLI_TRANSPORT_ENVIRONMENT_VARIABLE] = previousFlag;
-  }
+  const result = await generateText({
+    model: getAIModel({ connection, apiKey: 'cc-go-key', modelId, fetch }),
+    // A model models.dev does not describe resolves no thinking level, so
+    // the effort rides the adapter's own provider-options key directly.
+    providerOptions: { 'commandcode-cli': { reasoningEffort: 'medium' } },
+    tools: {
+      echo: tool({
+        description: 'Echo text',
+        inputSchema: z.object({ text: z.string() }),
+        execute: async ({ text }) => ({ echoed: text }),
+      }),
+    },
+    stopWhen: isStepCount(3),
+    prompt: 'Echo hello',
+  });
+  assert.equal(result.text, 'Echoed hello.');
 
   assert.equal(requestBodies.length, 2);
   const [first, second] = requestBodies as [
