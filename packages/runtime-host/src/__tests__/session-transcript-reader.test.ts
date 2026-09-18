@@ -22,7 +22,10 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { seedInvocation } from '@maka/runtime/test-only/invocation-fixture';
+import {
+  seedInvocation,
+  type TestInvocationOpeningOverrides,
+} from '@maka/runtime/test-only/invocation-fixture';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import {
   WORKHUB_COORDINATION_SESSION_ID,
@@ -44,6 +47,10 @@ import {
   createSessionTranscriptReader,
   TRANSCRIPT_TURN_MAX_BYTES,
 } from '../server/session-transcript-reader.js';
+import {
+  createSessionTranscriptBootstrap,
+  readSessionTranscriptPage,
+} from '../server/session-transcript-pager.js';
 
 for (const coordination of [false, true])
   test(`pages ${coordination ? 'WorkHub' : 'ordinary'} running Turn rows as their events commit`, async () => {
@@ -359,17 +366,26 @@ for (const coordination of [false, true])
       });
       assert.equal(durable.throughSequence, await read.readDurableHighWater(session.id));
       assert.ok(durable.throughSequence !== null);
-      assert.deepEqual(
-        durable.fragments.map((fragment) => {
+      const ids = (page: typeof durable) =>
+        page.fragments.map((fragment) => {
           const message = JSON.parse(fragment.data.toString('utf8')) as StoredMessage;
           return { type: message.type, id: message.id };
-        }),
-        [
-          { type: 'user', id: 'user-0' },
-          { type: 'turn_state', id: 'terminal-0' },
-          { type: 'user', id: 'user-1' },
-        ],
-      );
+        });
+      // Three rows would stop inside the running Turn, so the page ends before it.
+      assert.deepEqual(ids(durable), [
+        { type: 'user', id: 'user-0' },
+        { type: 'turn_state', id: 'terminal-0' },
+      ]);
+      assert.equal(durable.endsAtTurnBoundary, true);
+      assert.ok(durable.next);
+      const running = await read.readDurablePage(session.id, {
+        direction: 'newer',
+        throughSequence: durable.throughSequence,
+        position: durable.next.position,
+        maxBytes: 1024,
+        maxMessages: 1,
+      });
+      assert.deepEqual(ids(running), [{ type: 'user', id: 'user-1' }]);
       if (largeBash) {
         await stores.runtimeEventStore.appendRuntimeEvent(
           session.id,
@@ -583,7 +599,7 @@ test('pages the ledger without materializing Turns it takes no rows from', async
     );
     assert.equal(JSON.parse(head.fragments[0]!.data.toString()).text, 'prompt 0');
     const landmarks = await decoding('landmarks', SMALL_TURN_BUDGET, () =>
-      read.readDurableTurnLandmarks(session.id, 3),
+      read.readDurableTurnLandmarks(session.id, { maxLandmarks: 3, turnId: null }),
     );
     assert.deepEqual(
       landmarks.landmarks.map((item) => item.label),
@@ -797,16 +813,120 @@ test('serves a running Turn that encloses two separated Turns', async () => {
   });
 });
 
+test('ends a page between Turns only outside a nested Turn', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-nested-page-boundary-'));
+  await withNestedTranscript(base, async (read, sessionId) => {
+    await seed(read.stores, sessionId, 'outer');
+    await read.text('outer', 'outer-before');
+    await seed(read.stores, sessionId, 'inner');
+    await read.text('inner', 'inner-a');
+    await read.end('inner', 'inner-end');
+    await read.text('outer', 'outer-after');
+    await read.end('outer', 'outer-end');
+    await seed(read.stores, sessionId, 'later');
+    await read.text('later', 'later-a');
+    await read.end('later', 'later-end');
+    const throughSequence = (await read.readDurableHighWater(sessionId))!;
+
+    for (const direction of ['older', 'newer'] as const) {
+      const stops: Array<readonly [string, boolean]> = [];
+      let position: number | undefined;
+      for (let page = 0; page < 16; page++) {
+        const result = await read.readDurablePage(sessionId, {
+          direction,
+          throughSequence,
+          ...(position === undefined ? {} : { position }),
+          maxBytes: 1 << 20,
+          maxMessages: 1,
+        });
+        const { id } = JSON.parse(result.fragments[0]!.data.toString()) as StoredMessage;
+        stops.push([id, result.endsAtTurnBoundary]);
+        if (result.next === null) break;
+        position = result.next.position;
+      }
+      const between = direction === 'newer' ? 'outer-end' : 'later-a';
+      assert.deepEqual(
+        stops,
+        stops.map(([id], index) => [id, id === between || index === stops.length - 1] as const),
+        direction,
+      );
+    }
+  });
+});
+
+test('does not end a page where a handoff resumes the same Turn', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-handoff-page-boundary-'));
+  await withNestedTranscript(base, async (read, sessionId) => {
+    await seed(read.stores, sessionId, 'first');
+    await read.text('first', 'first-a');
+    await read.pause('first', 'first-paused', 'resumed');
+    await seed(read.stores, sessionId, 'resumed', {
+      turnId: 'turn-first',
+      opening: {
+        source: {
+          kind: 'handoff',
+          rootRunId: 'first',
+          sourceInvocationId: 'first',
+          sourceRunId: 'first',
+          sourceTurnId: 'turn-first',
+          sourceRuntimeEventHighWater: 2,
+          claimId: 'claim-1',
+          boundaryDigest: `sha256:${'0'.repeat(64)}`,
+        },
+      },
+    });
+    await read.text('resumed', 'resumed-a', 'turn-first');
+    await read.end('resumed', 'resumed-end', 'turn-first');
+    await seed(read.stores, sessionId, 'later');
+    await read.text('later', 'later-a');
+    await read.end('later', 'later-end');
+    const throughSequence = (await read.readDurableHighWater(sessionId))!;
+
+    for (const direction of ['older', 'newer'] as const) {
+      const stops: Array<readonly [string, boolean]> = [];
+      let position: number | undefined;
+      for (let page = 0; page < 16; page++) {
+        const result = await read.readDurablePage(sessionId, {
+          direction,
+          throughSequence,
+          ...(position === undefined ? {} : { position }),
+          maxBytes: 1 << 20,
+          maxMessages: 1,
+        });
+        const { id } = JSON.parse(result.fragments[0]!.data.toString()) as StoredMessage;
+        stops.push([id, result.endsAtTurnBoundary]);
+        if (result.next === null) break;
+        position = result.next.position;
+      }
+      const between = direction === 'newer' ? 'resumed-end' : 'later-a';
+      assert.deepEqual(
+        stops,
+        stops.map(([id], index) => [id, id === between || index === stops.length - 1] as const),
+        direction,
+      );
+    }
+
+    const lookup = (turnId: string) =>
+      read.readDurableTurnLandmarks(sessionId, { maxLandmarks: 1, turnId });
+    assert.deepEqual((await lookup('turn-first')).landmarks, [
+      { turnId: 'turn-first', sequence: 1 * 8, lastSequence: 6 * 8 + 7, label: '' },
+    ]);
+    assert.deepEqual((await lookup('turn-missing')).landmarks, []);
+  });
+});
+
 const seed = (
   stores: Awaited<ReturnType<typeof openInteractiveExecutionStoresForWrite>>,
   sessionId: string,
   runId: string,
+  overrides: { turnId?: string; opening?: TestInvocationOpeningOverrides } = {},
 ) =>
   seedInvocation(stores.runtimeEventStore, {
     sessionId,
     runId,
-    turnId: `turn-${runId}`,
+    turnId: overrides.turnId ?? `turn-${runId}`,
     openedAt: 0,
+    ...(overrides.opening ? { opening: overrides.opening } : {}),
   });
 
 /** A reader over an empty Session, with the appenders these fixtures build from. */
@@ -815,8 +935,9 @@ async function withNestedTranscript(
   body: (
     read: ReturnType<typeof createSessionTranscriptReader> & {
       stores: Awaited<ReturnType<typeof openInteractiveExecutionStoresForWrite>>;
-      text(runId: string, id: string): Promise<unknown>;
-      end(runId: string, id: string): Promise<unknown>;
+      text(runId: string, id: string, turnId?: string): Promise<unknown>;
+      end(runId: string, id: string, turnId?: string): Promise<unknown>;
+      pause(runId: string, id: string, successor: string): Promise<unknown>;
     },
     sessionId: string,
   ) => Promise<void>,
@@ -834,7 +955,12 @@ async function withNestedTranscript(
       permissionMode: 'ask',
     });
     let ts = 0;
-    const append = (runId: string, id: string, overrides: Partial<RuntimeEvent>) =>
+    const append = (
+      runId: string,
+      id: string,
+      overrides: Partial<RuntimeEvent>,
+      turnId = `turn-${runId}`,
+    ) =>
       stores.runtimeEventStore.appendRuntimeEvent(
         session.id,
         runId,
@@ -842,7 +968,7 @@ async function withNestedTranscript(
           id,
           invocationId: runId,
           runId,
-          turnId: `turn-${runId}`,
+          turnId,
           ts: ++ts,
           ...overrides,
         }),
@@ -854,21 +980,233 @@ async function withNestedTranscript(
           canonicalPermissionOutcomes: { readPermissionOutcome: async () => undefined },
         }),
         stores,
-        text: (runId, id) =>
+        text: (runId, id, turnId) =>
+          append(
+            runId,
+            id,
+            {
+              role: 'model',
+              author: 'agent',
+              content: { kind: 'text', text: id },
+              refs: { storedMessageId: id },
+            },
+            turnId,
+          ),
+        end: (runId, id, turnId) =>
+          append(runId, id, { status: 'completed', actions: { endInvocation: true } }, turnId),
+        pause: (runId, id, successor) =>
           append(runId, id, {
-            role: 'model',
-            author: 'agent',
-            content: { kind: 'text', text: id },
-            refs: { storedMessageId: id },
+            actions: {
+              endInvocation: true,
+              handoffPause: {
+                protocol: 'runtime_handoff_pause_v1',
+                handoffId: `${runId}-handoff`,
+                remainingSteps: null,
+                hostEpoch: 'old-host',
+                rootRunId: runId,
+                successorRunId: successor,
+                successorInvocationId: successor,
+                claimId: `${runId}-claim`,
+              },
+            },
           }),
-        end: (runId, id) =>
-          append(runId, id, { status: 'completed', actions: { endInvocation: true } }),
       },
       session.id,
     );
   } finally {
     await owner.close();
     await rm(base, { recursive: true, force: true });
+  }
+}
+
+test('cuts a byte-sized page back to the last whole Turn on it', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-page-boundary-'));
+  const capability = await resolveStorageRoot({ path: join(base, 'root'), kind: 'interactive' });
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(owner);
+  try {
+    const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+    const session = await stores.sessionStore.create({
+      cwd: capability.canonicalPath,
+      llmConnectionId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+      llmConnectionSlug: 'fake',
+      model: 'fake-model',
+      permissionMode: 'ask',
+    });
+    await seedLargeTurns(stores, session.id);
+
+    const read = createSessionTranscriptReader({
+      stores,
+      canonicalPermissionOutcomes: { readPermissionOutcome: async () => undefined },
+    });
+    const throughSequence = await read.readDurableHighWater(session.id);
+
+    for (const direction of ['older', 'newer'] as const) {
+      const paged: number[] = [];
+      let position: number | undefined;
+      let pages = 0;
+      for (; pages < 32; pages++) {
+        const result = await read.readDurablePage(session.id, {
+          direction,
+          throughSequence,
+          ...(position === undefined ? {} : { position }),
+          // Wide enough for more than one Turn and narrow enough to run out
+          // partway through the next one.
+          maxBytes: 100 * 1024,
+          maxMessages: 64,
+        });
+        if (result.fragments.length === 0) break;
+        assert.equal(result.endsAtTurnBoundary, true, `${direction} page ${pages}`);
+        // Nothing arrives in slices: a page that would cut a row gives that
+        // row's Turn back instead.
+        for (const fragment of result.fragments) {
+          assert.equal(fragment.byteOffset, 0, `${direction} page ${pages}`);
+          assert.equal(fragment.data.byteLength, fragment.totalBytes, `${direction} page ${pages}`);
+        }
+        paged.push(...result.fragments.map((fragment) => fragment.sequence));
+        if (result.next?.position === undefined || result.next.position === null) break;
+        position = result.next.position;
+      }
+      assert.ok(pages > 1, `${direction} needs more than one page to be worth cutting`);
+
+      const sweep = await read.readDurablePage(session.id, {
+        direction,
+        throughSequence,
+        maxBytes: 1 << 20,
+        maxMessages: 64,
+      });
+      assert.deepEqual(
+        paged,
+        sweep.fragments.map((fragment) => fragment.sequence),
+        direction,
+      );
+    }
+  } finally {
+    await owner.close();
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+test('cuts a guest page where it cuts an owner page', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-shared-page-boundary-'));
+  const capability = await resolveStorageRoot({ path: join(base, 'root'), kind: 'interactive' });
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(owner);
+  try {
+    const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+    const session = await stores.sessionStore.create({
+      cwd: capability.canonicalPath,
+      llmConnectionId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+      llmConnectionSlug: 'fake',
+      model: 'fake-model',
+      permissionMode: 'ask',
+    });
+    await seedLargeTurns(stores, session.id);
+
+    const reader = createSessionTranscriptReader({
+      stores,
+      canonicalPermissionOutcomes: { readPermissionOutcome: async () => undefined },
+    });
+    const throughSequence = await reader.readDurableHighWater(session.id);
+    const hidden = await reader.readDurablePage(
+      session.id,
+      { direction: 'older', throughSequence, maxBytes: 1 << 20, maxMessages: 64 },
+      () => null,
+    );
+    assert.equal(hidden.fragments.length, 0);
+
+    // A guest's rows are rewritten before they are weighed, so their pages are
+    // cut somewhere else than an owner's. Where they may be cut is the same
+    // question, and it has the same answer.
+    for (const projection of ['owner', 'shared'] as const) {
+      const { bootstrap, state } = await createSessionTranscriptBootstrap({
+        reader,
+        sessionId: session.id,
+        subscriptionId: `subscription-${projection}`,
+        throughSequence,
+        maxBytes: 100 * 1024,
+        projection,
+      });
+      let page = bootstrap.durable;
+      let pages = 0;
+      for (; pages < 32; pages++) {
+        assert.equal(page.endsAtTurnBoundary, true, `${projection} page ${pages}`);
+        for (const fragment of page.fragments) {
+          assert.equal(fragment.byteOffset, 0, `${projection} page ${pages}`);
+          assert.equal(
+            Buffer.byteLength(fragment.data, 'base64'),
+            fragment.totalBytes,
+            `${projection} page ${pages}`,
+          );
+        }
+        if (page.nextCursor === null) break;
+        page = await readSessionTranscriptPage({
+          reader,
+          state,
+          request: {
+            subscriptionId: `subscription-${projection}`,
+            direction: 'older',
+            throughSequence,
+            cursor: page.nextCursor,
+            anchorSequence: null,
+            maxBytes: 100 * 1024,
+          },
+        });
+      }
+      assert.ok(pages > 1, `${projection} needs more than one page to be worth cutting`);
+    }
+  } finally {
+    await owner.close();
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+/**
+ * Six independent Turns, each carrying one row the size a real transcript
+ * holds. Rows this large are the point: a page cut by bytes lands inside one
+ * of them far more often than it lands between two Turns.
+ */
+async function seedLargeTurns(
+  stores: Awaited<ReturnType<typeof openInteractiveExecutionStoresForWrite>>,
+  sessionId: string,
+) {
+  const body = 'x'.repeat(40 * 1024);
+  let counter = 0;
+  for (let index = 0; index < 6; index++) {
+    const runId = `run-${index}`;
+    await seedInvocation(stores.runtimeEventStore, {
+      sessionId,
+      runId,
+      turnId: `turn-${index}`,
+      openedAt: index,
+    });
+    await stores.runtimeEventStore.appendRuntimeEvent(
+      sessionId,
+      runId,
+      runtimeEvent(sessionId, {
+        id: `${runId}-event-${counter++}`,
+        invocationId: runId,
+        runId,
+        turnId: `turn-${index}`,
+        ts: counter,
+        role: 'model',
+        author: 'agent',
+        content: { kind: 'text', text: body },
+      }),
+    );
+    await stores.runtimeEventStore.appendRuntimeEvent(
+      sessionId,
+      runId,
+      runtimeEvent(sessionId, {
+        id: `${runId}-event-${counter++}`,
+        invocationId: runId,
+        runId,
+        turnId: `turn-${index}`,
+        ts: counter,
+        status: 'completed',
+        actions: { endInvocation: true },
+      }),
+    );
   }
 }
 

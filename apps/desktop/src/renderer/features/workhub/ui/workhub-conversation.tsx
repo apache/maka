@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { useContext, useMemo, useState, type ComponentProps, type CSSProperties } from 'react';
+import { useContext, useMemo, type ComponentProps, type CSSProperties } from 'react';
 import { ChatView, useUiLocale } from '@maka/ui';
 import type { UiLocale } from '@maka/core/ui-locale';
 import { Button, Link, Text } from '@astryxdesign/core';
@@ -53,16 +53,6 @@ export function WorkHubConversation(props: ComponentProps<typeof ChatView> & { w
   const workHubIdentityHue = useWorkHubIdentityHue(assignments.map((work) => work.targetSessionId));
   const locale = useUiLocale();
   const copy = workHubLiveCopy[locale];
-  const [loadingHistory, setLoadingHistory] = useState(false);
-  const [historyError, setHistoryError] = useState(false);
-  async function loadHistory(edge: 'older' | 'newer') {
-    if (loadingHistory) return;
-    setLoadingHistory(true);
-    setHistoryError(false);
-    try { await chat.onPrefetchHistory?.(edge); }
-    catch { setHistoryError(true); }
-    finally { setLoadingHistory(false); }
-  }
   // A coordination turn can delegate to several Works. Keep every label and
   // leave its shared bar neutral rather than attributing the entire turn to one.
   const worksByTurn = useMemo(() => {
@@ -132,9 +122,6 @@ export function WorkHubConversation(props: ComponentProps<typeof ChatView> & { w
     {selected && <div className="workhub-conversation-filter" role="region" aria-label={copy.filterConversation}>
       <Text type="supporting">{selected.name}</Text>
       <Button variant="ghost" label={copy.clearConversationFilter} onClick={() => highlight.selectWork(undefined)} />
-      {chat.hasOlderHistory && <Button variant="ghost" label={copy.olderConversations} isDisabled={loadingHistory} onClick={() => void loadHistory('older')} />}
-      {chat.hasNewerHistory && <Button variant="ghost" label={copy.newerConversations} isDisabled={loadingHistory} onClick={() => void loadHistory('newer')} />}
-      {historyError && <span role="alert">{copy.controlFailed}</span>}
     </div>}
     <ChatView {...chat}
     scrollTargetTurn={navigationTurn && highlight.navigationWork ? { turnId: navigationTurn, nonce: highlight.navigationWork.nonce, preserveFocus: true } : chat.scrollTargetTurn}
@@ -143,8 +130,6 @@ export function WorkHubConversation(props: ComponentProps<typeof ChatView> & { w
     transientMessages={selected ? chat.transientMessages?.filter((message) => message.hostTurnId && matchingTurns.has(message.hostTurnId)) : chat.transientMessages}
     activeTurn={activeTurn}
     emptyOverride={selected ? <p>{copy.noWorkConversation}</p> : chat.emptyOverride}
-    onRetainWindow={selected ? undefined : chat.onRetainWindow}
-    onPrefetchHistory={selected ? undefined : chat.onPrefetchHistory}
     turnDecorations={turnDecorations}
     promptRailDecorations={promptRailDecorations}
     onPromptRailHighlight={(turnId) => highlight.highlight(turnId ? workByTurn.get(turnId) : undefined)}

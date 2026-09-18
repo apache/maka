@@ -166,11 +166,14 @@ import {
 import { immutableSteeringMessageId, isRuntimeStorageSafeId } from './runtime-event-invariants.js';
 import { assertNoReservedWorkspaceAuthorityAppend } from './runtime-event-authority.js';
 import {
+  rebuildTranscriptTurnExtents,
+  recordTranscriptTurnExtent,
   RuntimeTranscriptQuery,
   TERMINAL_RUNTIME_EVENT_SQL,
-  type RuntimeTranscriptLandmark,
   type RuntimeTranscriptRun,
   type RuntimeTranscriptRunRequest,
+  type RuntimeTranscriptTurn,
+  type RuntimeTranscriptTurnsRequest,
 } from './runtime-transcript-query.js';
 
 export { SQLITE_RUNTIME_SCHEMA_VERSION } from './sqlite-runtime-schema.js';
@@ -576,16 +579,17 @@ export class SqliteRuntimeStore
     return this.readTransaction(() => this.transcriptQuery().run(sessionId, request, project));
   }
 
-  async readTranscriptLandmarks(
+  async readTranscriptTurns(
     sessionId: string,
-    throughOrdinal: number,
-    limit: number,
-  ): Promise<RuntimeTranscriptLandmark[]> {
+    request: RuntimeTranscriptTurnsRequest,
+  ): Promise<RuntimeTranscriptTurn[]> {
     assertRuntimeStorageSafeId(sessionId, 'Invalid session id');
-    assertInvocationSearchLimit(limit);
-    return this.readTransaction(() =>
-      this.transcriptQuery().landmarks(sessionId, throughOrdinal, limit),
-    );
+    return this.readTransaction(() => this.transcriptQuery().turns(sessionId, request));
+  }
+
+  async readTranscriptTurnCrossing(sessionId: string, ordinal: number): Promise<boolean> {
+    assertRuntimeStorageSafeId(sessionId, 'Invalid session id');
+    return this.readTransaction(() => this.transcriptQuery().crossing(sessionId, ordinal));
   }
 
   /**
@@ -1682,6 +1686,7 @@ export class SqliteRuntimeStore
         WHERE session_id = :sessionId
       `)
         .run({ sessionId });
+      rebuildTranscriptTurnExtents(this.db, sessionId);
     });
   }
 
@@ -4105,6 +4110,11 @@ export class SqliteRuntimeStore
         VALUES (?, ?, ?)
       `)
       .run(canonicalEvent.sessionId, ordinal, canonicalEvent.id);
+    recordTranscriptTurnExtent(
+      this.db,
+      { ...canonicalEvent, kind: runtimeEventKind(canonicalEvent) },
+      ordinal,
+    );
     this.noteEventCommit(canonicalEvent.sessionId);
     this.deleteCompletedPartialSnapshot(canonicalEvent);
     return next;

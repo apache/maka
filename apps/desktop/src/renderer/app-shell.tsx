@@ -25,7 +25,6 @@ import {
   useMemo,
   useRef,
   useState,
-  type CSSProperties,
   type Dispatch,
   type SetStateAction,
 } from 'react';
@@ -140,6 +139,7 @@ import {
 } from './app-shell-context-compaction';
 import { AppShellTopbarActions } from './app-shell-chrome-actions';
 import { AppShellDetailPanel } from './app-shell-detail-panel';
+import { appShellFrameStyle } from './shell/frame-style';
 import { AppShellOverlays } from './app-shell-overlays';
 import type { ArchivedTasksBridge } from './settings/tasks-settings-page';
 import { CustomPetCompanion } from './custom-pet-companion';
@@ -414,11 +414,7 @@ function AppShellContent({
   const [newTaskPermissionChoice, setNewTaskPermissionChoice, clearNewTaskPermissionChoice] =
     useNewTaskChoice<ChatDefaultPermissionMode>(currentNewTaskDraftKey);
   const transcriptReadingCommands = useRef<Conversation.TranscriptReadingPositionCommands>(null);
-  const [transcriptTurnIndex, setTranscriptTurnIndex] = useState<{
-    sessionId: string;
-    throughSequence: number | null;
-    turns: readonly { turnId: string; sequence: number; label: string }[];
-  }>();
+  const [transcriptTurnIndex, setTranscriptTurnIndex] = useState<Conversation.TranscriptTurnIndex>();
   const [petCompletionNonce, setPetCompletionNonce] = useState(0);
   const [navigationState, setNavigationState] = useState(() => readNavigationState());
   const navSelection = navigationState.selection;
@@ -572,7 +568,7 @@ function AppShellContent({
   const newTaskPermissionMode =
     newTaskPermissionChoice ??
     taskEntry.selectors.selectedHost?.chatDefaults.permissionMode ??
-    'ask';
+    'bypass';
   const setNewTaskPermissionMode = setNewTaskPermissionChoice;
   useEffect(() => {
     if (!appearanceHydrated) return;
@@ -1444,7 +1440,7 @@ function AppShellContent({
     updateTransientMessage,
     removeTransientMessage,
     transcriptRangeRef,
-    onFollowLatest: (sessionId) => transcriptReadingCommands.current?.prepareSend(sessionId) ?? Promise.resolve(true),
+    onFollowLatest: (sessionId) => transcriptReadingCommands.current?.prepareSend(sessionId) ?? true,
     isMessagePublished,
     setInteractionBySession: sessionUiController.setInteractionBySession,
     onInteractionChanged: markInteractionChanged,
@@ -2238,12 +2234,11 @@ function AppShellContent({
       /* The frame is the shared owner for dimensions consumed by both shell
          columns and titlebar chrome. CSS clears the titlebar reserve when the
          responsive layout moves the workbar below the conversation. */
-      style={
-        ({
-          '--maka-session-workbar-width': `${workbar.host.rightWidth}px`,
-          '--maka-sidenav-width': sessionListCollapsed ? 0 : `${sessionListWidth}px`,
-        } as CSSProperties)
-      }
+      style={appShellFrameStyle({
+        sessionListCollapsed,
+        sessionListWidth,
+        workbarRightWidth: workbar.host.rightWidth,
+      })}
     >
       <Conversation.TranscriptReadingPositionController
         commands={transcriptReadingCommands}
@@ -2253,19 +2248,15 @@ function AppShellContent({
         rangeController={transcriptRangeRef}
         messages={messages}
         searchTarget={searchScrollTarget}
-        landmarkSessionId={ownerActiveId ?? null}
         clearSearchTarget={() => setSearchScrollTarget(null)}
         sessionUi={sessionUiController}
-        turnIndex={transcriptTurnIndex}
+        landmarkSessionId={ownerActiveId ?? null}
+        listTurnLandmarks={(sessionId, turnId) => window.maka.sessions.listTurnLandmarks(sessionId, turnId)}
         setTurnIndex={setTranscriptTurnIndex}
-        listTurnLandmarks={(sessionId) => window.maka.sessions.listTurnLandmarks(sessionId)}
         onRestoreError={(error, sessionId) => sessionUiController.setMessageLoadErrorBySession((current) => ({
           ...current,
           [sessionId]: localizedShellErrorMessage(error, desktopConversationCopy.actions.operationFailedFallback, uiLocale),
         }))}
-        onNavigationError={(error, sessionId) => showSessionError(sessionId,
-          desktopConversationCopy.actions.messageReadFailedTitle,
-          localizedShellErrorMessage(error, desktopConversationCopy.actions.operationFailedFallback, uiLocale))}
       />
       <Conversation.LiveTurnReconciler
         controller={sessionUiController}
@@ -2414,9 +2405,6 @@ function AppShellContent({
                 scrollToBottomLabel={
                   desktopConversationCopy.actions.scrollMainToBottom
                 }
-                onReturnToTail={activeTranscriptRange?.hasNewer
-                  ? () => transcriptReadingCommands.current?.returnToLatest()
-                  : undefined}
                 hidden={workHubActive || !sessionsSelected}
                 composer={
                   <>
@@ -2511,7 +2499,7 @@ function AppShellContent({
                   activeModel={activeModel}
                   activeModelLabel={activeModelLabel}
                   activeProviderType={activeConnection?.providerType}
-                  latestRequestUsageTokens={selectLatestRequestUsage(messages, activeTranscriptRange, activeModel, activeSessionForModelControls)}
+                  latestRequestUsageTokens={selectLatestRequestUsage(messages, activeModel, activeSessionForModelControls)}
                   onOpenContextUsage={() => commands.toggleTool('inspector')}
                   LiveContextUsageProbe={LiveContextUsageProbe}
                   contextUsageSessionId={ownerActiveId}
@@ -2595,11 +2583,10 @@ function AppShellContent({
                 sessionUiController={sessionUiController}
                 activeSessionId={activeId}
                 activeTurn={Conversation.chatTurnActivity(activeExecution)}
-                hasOlderHistory={activeTranscriptRange?.hasOlder}
-                hasNewerHistory={activeTranscriptRange?.hasNewer}
-                onPrefetchHistory={(edge) =>
-                  transcriptReadingCommands.current?.prefetchHistory(edge) ?? Promise.resolve(false)}
-                onRetainWindow={(band) => transcriptReadingCommands.current?.retainWindow(band)}
+                hasEarlierHistory={activeTranscriptRange?.hasOlder}
+                onLoadEarlierHistory={() => transcriptReadingCommands.current?.loadEarlier()}
+                transcriptTurnIndex={activeId && transcriptTurnIndex?.sessionId === activeId ? transcriptTurnIndex.turns : undefined}
+                onLoadTranscriptTurn={(turn) => transcriptReadingCommands.current?.loadEarlier(turn.sequence)}
                 liveContentSeedRevision={liveContent.liveContentSeedRevision(activeEventSeed, activeId)}
                 messages={messages}
                 transientMessages={transientMessages}
@@ -2648,14 +2635,6 @@ function AppShellContent({
                 )}
                 onReadingAnchorChange={activeId
                   ? (turnId) => transcriptReadingCommands.current?.captureAnchor(turnId)
-                  : undefined}
-                transcriptTurnIndex={
-                  transcriptTurnIndex && transcriptTurnIndex.sessionId === activeId
-                    ? transcriptTurnIndex.turns
-                    : undefined
-                }
-                onLoadTranscriptTurn={activeId
-                  ? (target) => openSessionInChat(activeId, target.turnId, target.sequence)
                   : undefined}
                 scrollBehavior={readScrollMotionBehavior()}
                 branchBanner={branchBanner}

@@ -25,6 +25,23 @@ import {
   selectPromptRailTick,
 } from '../prompt-anchor-rail.js';
 
+test('indexed Turns outside the loaded range precede it, and loaded Turns keep their own entries', () => {
+  const loaded = [
+    { turnId: 'turn-3', label: 'Prompt 3', reply: 'Answer 3' },
+    { turnId: 'turn-4', label: 'Prompt 4', reply: 'Answer 4' },
+  ];
+  const index = [
+    { turnId: 'turn-1', sequence: 8, label: 'Prompt 1' },
+    { turnId: 'turn-3', sequence: 40, label: 'Prompt 3' },
+  ];
+  assert.deepEqual(mergePromptAnchorRailTurns(loaded, index, new Set(['turn-2', 'turn-3', 'turn-4'])), [
+    { turnId: 'turn-1', sequence: 8, label: 'Prompt 1' },
+    ...loaded,
+  ]);
+  assert.equal(mergePromptAnchorRailTurns(loaded, undefined, new Set()), loaded);
+  assert.equal(mergePromptAnchorRailTurns(loaded, index.slice(1), new Set(['turn-3'])), loaded);
+});
+
 const orderedTurnIds = Array.from({ length: 120 }, (_, index) => `turn-${index + 1}`);
 const sampledRailTurnIds = Array.from({ length: 64 }, (_, railIndex) =>
   orderedTurnIds[Math.round(railIndex * 119 / 63)]!,
@@ -115,73 +132,6 @@ test('keeps the active tick visible when the rail viewport resizes', () => {
   cleanup();
   assert.equal(disconnected, true);
 });
-
-test('merges complete-index landmarks with the resident transcript range', () => {
-  const turns = mergePromptAnchorRailTurns(
-    [
-      { turnId: 'turn-1', label: 'Prompt 1', reply: 'Answer 1' },
-      { turnId: 'turn-3', label: 'Prompt 3', reply: 'Answer 3' },
-    ],
-    [
-      { turnId: 'turn-1', sequence: 0, label: 'Prompt 1' },
-      { turnId: 'turn-2', sequence: 2, label: 'Prompt 2' },
-      { turnId: 'turn-3', sequence: 4, label: 'Prompt 3' },
-    ],
-  );
-
-  assert.deepEqual(turns, [
-    {
-      turnId: 'turn-1',
-      label: 'Prompt 1',
-      reply: 'Answer 1',
-      sequence: 0,
-    },
-    {
-      turnId: 'turn-2',
-      label: 'Prompt 2',
-      reply: '',
-      sequence: 2,
-    },
-    {
-      turnId: 'turn-3',
-      label: 'Prompt 3',
-      reply: 'Answer 3',
-      sequence: 4,
-    },
-  ]);
-});
-
-test('preserves every projected turn without a durable landmark index', () => {
-  assert.deepEqual(
-    mergePromptAnchorRailTurns([
-      { turnId: 'overlay-turn', label: 'Streaming prompt', reply: '' },
-    ]),
-    [{
-      turnId: 'overlay-turn',
-      label: 'Streaming prompt',
-      reply: '',
-    }],
-  );
-});
-
-test('updates landmark content when its body enters a later resident range', () => {
-  const index = [
-    { turnId: 'turn-1', sequence: 0, label: 'Prompt 1' },
-    { turnId: 'turn-2', sequence: 2, label: 'Prompt 2' },
-  ];
-  const historical = mergePromptAnchorRailTurns(
-    [{ turnId: 'turn-1', label: 'Prompt 1', reply: 'Answer 1' }],
-    index,
-  );
-  const intermediate = mergePromptAnchorRailTurns(
-    [{ turnId: 'turn-2', label: 'Prompt 2', reply: 'Answer 2' }],
-    index,
-  );
-
-  assert.deepEqual(historical.map((turn) => turn.reply), ['Answer 1', '']);
-  assert.deepEqual(intermediate.map((turn) => turn.reply), ['', 'Answer 2']);
-});
-
 
 function box(top: number, bottom: number): DOMRect {
   return { top, bottom } as DOMRect;

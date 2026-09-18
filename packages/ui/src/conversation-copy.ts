@@ -37,9 +37,13 @@ type ResearchItem = Readonly<{ title: string; body: string }>;
 type ResearchOption = Readonly<{ label: string; body: string }>;
 type ResearchStarter = Readonly<{ label: string; prompt: string }>;
 
-/** Compact token count for chip labels: 45,200 → "45k". */
+/** Compact token count: 999 → "999", 45,200 → "45.2k", 128,000 → "128k", 1,048,576 → "1M". */
 function formatCompactTokenCount(count: number): string {
   if (count < 1_000) return `${count}`;
+  if (count >= 1_000_000) {
+    const millions = count / 1_000_000;
+    return `${millions >= 100 ? Math.round(millions) : Math.round(millions * 10) / 10}M`;
+  }
   const thousands = count / 1_000;
   return `${thousands >= 100 ? Math.round(thousands) : Math.round(thousands * 10) / 10}k`;
 }
@@ -222,9 +226,6 @@ export interface ConversationCopy {
     allowSession: string;
   };
   questions: {
-    keyboardHint: string;
-    other: string;
-    otherDescription: string;
     otherAriaLabel: string;
     otherPlaceholder: string;
     stop: string;
@@ -389,6 +390,7 @@ export interface ConversationCopy {
     loadFailed: string;
     loading: string;
     retryLoad: string;
+    loadEarlierHistory: string;
     quoteSelection: string;
     askInSidePanel: string;
     noMessages: string;
@@ -543,7 +545,7 @@ const CONVERSATION_COPY = {
       reject: '拒绝',
       allowSession: '本任务允许',
     },
-    questions: { keyboardHint: '1–9 选择 · ↑↓ 切换 · Enter 确认 · Esc 继续说明', other: '其他', otherDescription: '输入一个不同的答案。', otherAriaLabel: '其他答案', otherPlaceholder: '输入你的答案', stop: '停止', stopping: '停止中…', previous: '上一题', submitting: '正在提交…', submit: '提交答案', next: '下一题' },
+    questions: { otherAriaLabel: '其他答案', otherPlaceholder: '输入你的答案', stop: '停止', stopping: '停止中…', previous: '上一题', submitting: '正在提交…', submit: '提交答案', next: '下一题' },
     forms: { keyboardHint: '1–9 选择 · ↑↓ 切换 · Enter 确认 · Esc 取消', requester: (name) => `由 ${name} 请求`, requesterWithSource: (name, source) => `由 ${name} 请求 · ${source}`, required: '必填', optional: '选填', include: (label) => `提供：${label}`, enabled: (label) => `启用：${label}`, enterValue: '输入内容', enterNumber: '输入数字', constraintSeparator: '；', lengthConstraint: (minimum, maximum) => minimum === undefined ? `最多 ${maximum} 个字符` : maximum === undefined ? `至少 ${minimum} 个字符` : `长度 ${minimum}–${maximum} 个字符`, numberConstraint: (minimum, maximum) => minimum === undefined ? `最大值 ${maximum}` : maximum === undefined ? `最小值 ${minimum}` : `范围 ${minimum}–${maximum}`, itemConstraint: (minimum, maximum) => minimum === undefined ? `最多选择 ${maximum} 项` : maximum === undefined ? `至少选择 ${minimum} 项` : `选择 ${minimum}–${maximum} 项`, formatConstraint: { email: '格式：email', uri: '格式：URI', date: '格式：date（YYYY-MM-DD）', 'date-time': '格式：date-time（RFC 3339）' }, invalid: '请提供符合要求的值。', cancel: '取消', decline: '拒绝', accept: '提交', submitting: '正在提交…' },
     mentions: { noFiles: '未找到文件', noSkills: '暂无技能', noCommandsOrSkills: '没有匹配的命令或技能', filesAriaLabel: '工作区文件', skillsAriaLabel: '技能', commandsAndSkillsAriaLabel: '命令和技能', commandsGroup: '命令', skillsGroup: 'Skills', loading: '加载中…' },
     workspace: {
@@ -575,9 +577,9 @@ const CONVERSATION_COPY = {
           '已经压缩过历史，供应商仍然说这次请求太大。剩下的部分还包含系统提示、工具定义、摘要和最近的原文，缩短这条消息是你能控制的那一半。',
         contextUsageLabel: '用量',
         contextUsageShare: (used, window) =>
-          `已用 ${used.toLocaleString('zh-CN')} / ${window.toLocaleString('zh-CN')} token（${Math.round((used / window) * 100)}%）`,
+          `上下文窗口：已用 ${Math.round((used / window) * 100)}%（${formatCompactTokenCount(used)} / ${formatCompactTokenCount(window)} token）`,
         contextUsageNoWindow: (used) =>
-          `已用 ${used.toLocaleString('zh-CN')} token；上下文上限未知`,
+          `已用 ${formatCompactTokenCount(used)} token；上下文窗口上限未知`,
         contextUsageUnavailable: '暂无用量数据',
         contextUsageOpen: '打开用量追踪',
         stepLimit: '已达到本轮工具步骤上限，任务可能尚未完成。发送“继续”即可接着处理。',
@@ -611,7 +613,7 @@ const CONVERSATION_COPY = {
       },
       clearGoal: (condition, iteration, max, status) => `自主执行目标进行中：「${condition}」（第 ${iteration}/${max} 轮，${status}）。系统每轮后自动续行；点击可清除目标、停止续行。`, clearGoalAriaLabel: (iteration, max) => `清除自主执行目标（已进行 ${iteration}/${max} 轮）`, goalProgress: (iteration, max) => `目标 ${iteration} / ${max}`, goalRunningAriaLabel: '自主目标正在运行', goalWaitingAriaLabel: '自主目标正在等待条件变化',
       goalPausedAriaLabel: '自主目标已暂停', pauseGoalAriaLabel: (iteration, max) => `暂停自主执行目标（已进行 ${iteration}/${max} 轮）`, resumeGoalAriaLabel: (iteration, max) => `恢复自主执行目标（已进行 ${iteration}/${max} 轮）`, pauseGoal: (condition, iteration, max, status) => `暂停自主执行目标：「${condition}」（第 ${iteration}/${max} 轮，${status}）。暂停后立即停止自动续行，不再消耗令牌；可随时恢复。`, resumeGoal: (condition, iteration, max) => `恢复自主执行目标：「${condition}」（第 ${iteration}/${max} 轮）。恢复后立即继续自动续行。`, goalElapsed: (elapsedMs) => formatGoalElapsedUnits(elapsedMs, { second: ' 秒', minute: ' 分钟', hour: ' 小时', day: ' 天' }), goalTokens: (spent, budget) => `${formatCompactTokenCount(spent)} / ${formatCompactTokenCount(budget)}`,
-      loadFailed: '任务载入失败', loading: '载入中…', retryLoad: '重试载入', quoteSelection: '引用', askInSidePanel: '在侧栏追问', noMessages: '暂无消息',
+      loadFailed: '任务载入失败', loading: '载入中…', retryLoad: '重试载入', loadEarlierHistory: '载入更早的记录', quoteSelection: '引用', askInSidePanel: '在侧栏追问', noMessages: '暂无消息',
       branchBeforeInterrupt: '从中断前分支', sessionContextAriaLabel: '任务上下文', sessionLineageAriaLabel: '任务来源', sessionContextMore: (count) => `更多任务上下文（${count}）`,
       titlebarIdentityAriaLabel: '当前任务', openProjectFolderAction: '打开项目文件夹', projectInfo: '项目信息', copyProjectPath: '复制路径',
       openParentSession: (name) => `返回父任务「${name}」`,
@@ -701,7 +703,7 @@ const CONVERSATION_COPY = {
       reject: '拒絕',
       allowSession: '本任務允許',
     },
-    questions: { keyboardHint: '1–9 選擇 · ↑↓ 切換 · Enter 確認 · Esc 繼續說明', other: '其他', otherDescription: '輸入一個不同的答案。', otherAriaLabel: '其他答案', otherPlaceholder: '輸入你的答案', stop: '停止', stopping: '停止中…', previous: '上一題', submitting: '正在提交…', submit: '提交答案', next: '下一題' },
+    questions: { otherAriaLabel: '其他答案', otherPlaceholder: '輸入你的答案', stop: '停止', stopping: '停止中…', previous: '上一題', submitting: '正在提交…', submit: '提交答案', next: '下一題' },
     forms: { keyboardHint: '1–9 選擇 · ↑↓ 切換 · Enter 確認 · Esc 取消', requester: (name) => `由 ${name} 請求`, requesterWithSource: (name, source) => `由 ${name} 請求 · ${source}`, required: '必填', optional: '選填', include: (label) => `提供：${label}`, enabled: (label) => `啟用：${label}`, enterValue: '輸入內容', enterNumber: '輸入數字', constraintSeparator: '；', lengthConstraint: (minimum, maximum) => minimum === undefined ? `最多 ${maximum} 個字元` : maximum === undefined ? `至少 ${minimum} 個字元` : `長度 ${minimum}–${maximum} 個字元`, numberConstraint: (minimum, maximum) => minimum === undefined ? `最大值 ${maximum}` : maximum === undefined ? `最小值 ${minimum}` : `範圍 ${minimum}–${maximum}`, itemConstraint: (minimum, maximum) => minimum === undefined ? `最多選取 ${maximum} 項` : maximum === undefined ? `至少選取 ${minimum} 項` : `選取 ${minimum}–${maximum} 項`, formatConstraint: { email: '格式：email', uri: '格式：URI', date: '格式：date（YYYY-MM-DD）', 'date-time': '格式：date-time（RFC 3339）' }, invalid: '請提供符合要求的值。', cancel: '取消', decline: '拒絕', accept: '提交', submitting: '正在提交…' },
     mentions: { noFiles: '未找到檔案', noSkills: '暫無技能', noCommandsOrSkills: '沒有符合的命令或技能', filesAriaLabel: '工作區檔案', skillsAriaLabel: '技能', commandsAndSkillsAriaLabel: '命令和技能', commandsGroup: '命令', skillsGroup: 'Skills', loading: '載入中…' },
     workspace: {
@@ -733,9 +735,9 @@ const CONVERSATION_COPY = {
           '已經壓縮過歷史，供應商仍然說這次請求太大。剩下的部分還包含系統提示、工具定義、摘要和最近的原文，縮短這則訊息是你能控制的那一半。',
         contextUsageLabel: '用量',
         contextUsageShare: (used, window) =>
-          `已用 ${used.toLocaleString('zh-TW')} / ${window.toLocaleString('zh-TW')} token（${Math.round((used / window) * 100)}%）`,
+          `上下文視窗：已用 ${Math.round((used / window) * 100)}%（${formatCompactTokenCount(used)} / ${formatCompactTokenCount(window)} token）`,
         contextUsageNoWindow: (used) =>
-          `已用 ${used.toLocaleString('zh-TW')} token；上下文上限未知`,
+          `已用 ${formatCompactTokenCount(used)} token；上下文視窗上限未知`,
         contextUsageUnavailable: '暫無用量資料',
         contextUsageOpen: '開啟用量追蹤',
         stepLimit: '已達到本輪工具步驟上限，任務可能尚未完成。傳送“繼續”即可接著處理。',
@@ -769,7 +771,7 @@ const CONVERSATION_COPY = {
       },
       clearGoal: (condition, iteration, max, status) => `自主執行目標進行中：「${condition}」（第 ${iteration}/${max} 輪，${status}）。系統每輪後自動續行；點選可清除目標、停止續行。`, clearGoalAriaLabel: (iteration, max) => `清除自主執行目標（已進行 ${iteration}/${max} 輪）`, goalProgress: (iteration, max) => `目標 ${iteration} / ${max}`, goalRunningAriaLabel: '自主目標正在執行', goalWaitingAriaLabel: '自主目標正在等待條件變化',
       goalPausedAriaLabel: '自主目標已暫停', pauseGoalAriaLabel: (iteration, max) => `暫停自主執行目標（已進行 ${iteration}/${max} 輪）`, resumeGoalAriaLabel: (iteration, max) => `恢復自主執行目標（已進行 ${iteration}/${max} 輪）`, pauseGoal: (condition, iteration, max, status) => `暫停自主執行目標：「${condition}」（第 ${iteration}/${max} 輪，${status}）。暫停後立即停止自動續行，不再消耗權杖；可隨時恢復。`, resumeGoal: (condition, iteration, max) => `恢復自主執行目標：「${condition}」（第 ${iteration}/${max} 輪）。恢復後立即繼續自動續行。`, goalElapsed: (elapsedMs) => formatGoalElapsedUnits(elapsedMs, { second: ' 秒', minute: ' 分鐘', hour: ' 小時', day: ' 天' }), goalTokens: (spent, budget) => `${formatCompactTokenCount(spent)} / ${formatCompactTokenCount(budget)}`,
-      loadFailed: '任務載入失敗', loading: '載入中…', retryLoad: '重試載入', quoteSelection: '引用', askInSidePanel: '在側欄追問', noMessages: '暫無訊息',
+      loadFailed: '任務載入失敗', loading: '載入中…', retryLoad: '重試載入', loadEarlierHistory: '載入更早的記錄', quoteSelection: '引用', askInSidePanel: '在側欄追問', noMessages: '暫無訊息',
       branchBeforeInterrupt: '從中斷前分支', sessionContextAriaLabel: '任務上下文', sessionLineageAriaLabel: '任務來源', sessionContextMore: (count) => `更多工上下文（${count}）`,
       titlebarIdentityAriaLabel: '目前任務', openProjectFolderAction: '開啟專案資料夾', projectInfo: '專案資訊', copyProjectPath: '複製路徑',
       openParentSession: (name) => `返回父任務「${name}」`,
@@ -885,7 +887,7 @@ const CONVERSATION_COPY = {
       reject: 'Reject',
       allowSession: 'Allow for this task',
     },
-    questions: { keyboardHint: '1–9 select · ↑↓ navigate · Enter confirm · Esc explain', other: 'Other', otherDescription: 'Enter a different answer.', otherAriaLabel: 'Other answer', otherPlaceholder: 'Enter your answer', stop: 'Stop', stopping: 'Stopping…', previous: 'Previous', submitting: 'Submitting…', submit: 'Submit answers', next: 'Next' },
+    questions: { otherAriaLabel: 'Other answer', otherPlaceholder: 'Enter your answer', stop: 'Stop', stopping: 'Stopping…', previous: 'Previous', submitting: 'Submitting…', submit: 'Submit answers', next: 'Next' },
     forms: { keyboardHint: '1–9 select · ↑↓ navigate · Enter confirm · Esc cancel', requester: (name) => `Requested by ${name}`, requesterWithSource: (name, source) => `Requested by ${name} · ${source}`, required: 'Required', optional: 'Optional', include: (label) => `Provide ${label}`, enabled: (label) => `Enable ${label}`, enterValue: 'Enter a value', enterNumber: 'Enter a number', constraintSeparator: ' · ', lengthConstraint: (minimum, maximum) => minimum === undefined ? `At most ${maximum} characters` : maximum === undefined ? `At least ${minimum} characters` : `${minimum}–${maximum} characters`, numberConstraint: (minimum, maximum) => minimum === undefined ? `Maximum ${maximum}` : maximum === undefined ? `Minimum ${minimum}` : `Range ${minimum}–${maximum}`, itemConstraint: (minimum, maximum) => minimum === undefined ? `Select at most ${maximum}` : maximum === undefined ? `Select at least ${minimum}` : `Select ${minimum}–${maximum}`, formatConstraint: { email: 'Format: email', uri: 'Format: URI', date: 'Format: date (YYYY-MM-DD)', 'date-time': 'Format: date-time (RFC 3339)' }, invalid: 'Provide a value that meets the requirements.', cancel: 'Cancel', decline: 'Decline', accept: 'Submit', submitting: 'Submitting…' },
     mentions: { noFiles: 'No files found', noSkills: 'No skills available', noCommandsOrSkills: 'No matching commands or skills', filesAriaLabel: 'Workspace files', skillsAriaLabel: 'Skills', commandsAndSkillsAriaLabel: 'Commands and skills', commandsGroup: 'Commands', skillsGroup: 'Skills', loading: 'Loading…' },
     workspace: {
@@ -917,9 +919,9 @@ const CONVERSATION_COPY = {
           'History was compacted and the provider still called this request too large. What remains also carries the system prompt, the tool schemas, the summary and the recent tail; shortening this message is the part you control.',
         contextUsageLabel: 'Usage',
         contextUsageShare: (used, window) =>
-          `This request used ${used.toLocaleString('en-US')} / ${window.toLocaleString('en-US')} tokens (${Math.round((used / window) * 100)}%).`,
+          `Context window: ${Math.round((used / window) * 100)}% used (${formatCompactTokenCount(used)} / ${formatCompactTokenCount(window)} tokens).`,
         contextUsageNoWindow: (used) =>
-          `This request used ${used.toLocaleString('en-US')} tokens; no context limit is available for this model.`,
+          `This request used ${formatCompactTokenCount(used)} tokens; no context limit is available for this model.`,
         contextUsageUnavailable: 'No usage data is available for this request.',
         contextUsageOpen: 'Open usage trace',
         stepLimit: 'Reached the configured step limit. The task may be incomplete. Send “continue” to resume.',
@@ -953,7 +955,7 @@ const CONVERSATION_COPY = {
       },
       clearGoal: (condition, iteration, max, status) => `Autonomous goal in progress: “${condition}” (iteration ${iteration}/${max}, ${status}). Maka continues after each iteration; click to clear the goal and stop continuing.`, clearGoalAriaLabel: (iteration, max) => `Clear autonomous goal after ${iteration}/${max} iterations`, goalProgress: (iteration, max) => `Goal ${iteration} of ${max}`, goalRunningAriaLabel: 'Autonomous goal running', goalWaitingAriaLabel: 'Autonomous goal waiting for conditions to change',
       goalPausedAriaLabel: 'Autonomous goal paused', pauseGoalAriaLabel: (iteration, max) => `Pause autonomous goal after ${iteration}/${max} iterations`, resumeGoalAriaLabel: (iteration, max) => `Resume autonomous goal after ${iteration}/${max} iterations`, pauseGoal: (condition, iteration, max, status) => `Pause autonomous goal: “${condition}” (iteration ${iteration}/${max}, ${status}). Pausing stops autonomous continuation immediately — no more tokens burn; resume any time.`, resumeGoal: (condition, iteration, max) => `Resume autonomous goal: “${condition}” (iteration ${iteration}/${max}). Resuming continues autonomous iteration immediately.`, goalElapsed: (elapsedMs) => formatGoalElapsedUnits(elapsedMs, { second: 's', minute: 'm', hour: 'h', day: 'd' }), goalTokens: (spent, budget) => `${formatCompactTokenCount(spent)} / ${formatCompactTokenCount(budget)}`,
-      loadFailed: 'Task failed to load', loading: 'Loading…', retryLoad: 'Retry', quoteSelection: 'Quote', askInSidePanel: 'Ask in side panel', noMessages: 'No messages yet',
+      loadFailed: 'Task failed to load', loading: 'Loading…', retryLoad: 'Retry', loadEarlierHistory: 'Load earlier history', quoteSelection: 'Quote', askInSidePanel: 'Ask in side panel', noMessages: 'No messages yet',
       branchBeforeInterrupt: 'Branched before interruption', sessionContextAriaLabel: 'Task context', sessionLineageAriaLabel: 'Task origin', sessionContextMore: (count) => `More task context (${count})`,
       titlebarIdentityAriaLabel: 'Current task', openProjectFolderAction: 'Open project folder', projectInfo: 'Project information', copyProjectPath: 'Copy path',
       openParentSession: (name) => `Return to parent task “${name}”`,

@@ -22,8 +22,6 @@ import {
   buildCommandCodeCliRequest,
   commandCodeCliGenerateUrl,
   commandCodeCliHeaders,
-  CommandCodeCliTransportDisabledError,
-  isCommandCodeCliTransportEnabled,
   summarizeCommandCodeCliStream,
 } from './commandcode-cli-language-model.js';
 import {
@@ -311,9 +309,6 @@ async function probeCommandCodeCli(
   fetchFn: ConnectionEffectFetch | undefined,
   requestHeaders: Readonly<Record<string, string>> | undefined,
 ): Promise<ConnectionTestResult> {
-  if (!isCommandCodeCliTransportEnabled()) {
-    return { ok: false, errorMessage: new CommandCodeCliTransportDisabledError().message };
-  }
   const { body } = buildCommandCodeCliRequest(
     { prompt: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }], maxOutputTokens: 16 },
     { modelId: model },
@@ -438,7 +433,7 @@ function retiredProviderTestResult(providerType: string): ConnectionTestResult {
 
 async function probeAnthropic(
   adapter: Extract<
-    import('./provider-runtime-policy.js').RuntimeProviderAdapter,
+    import('@maka/core/llm-connections').ProviderRuntimeAdapter,
     { kind: 'anthropic' }
   >,
   baseUrl: string,

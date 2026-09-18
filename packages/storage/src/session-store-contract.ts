@@ -291,6 +291,12 @@ export interface SessionTranscriptStoragePage {
     readonly position: number;
     readonly byteOffset: number | null;
   } | null;
+  /**
+   * Whether no Turn has rows on both sides of where this page stops. A change
+   * of owner between rows does not say that: a nested Turn's rows sit between
+   * the rows of the Turn around it.
+   */
+  readonly endsAtTurnBoundary: boolean;
 }
 
 export interface SessionTranscriptRecordScanRequest {
@@ -321,17 +327,6 @@ export interface SessionTurnContributionPage {
   readonly throughSequence: number | null;
   readonly contributions: readonly SessionTurnContribution[];
   readonly nextPosition: number | null;
-}
-
-export interface SessionTurnLandmark {
-  readonly turnId: string;
-  readonly sequence: number;
-  readonly label: string;
-}
-
-export interface SessionTurnLandmarkSnapshot {
-  readonly throughSequence: number | null;
-  readonly landmarks: readonly SessionTurnLandmark[];
 }
 
 export interface SessionStore {

@@ -188,7 +188,7 @@ Host 同时限制每页项目数和编码后的 JSON 字节数。若下一项使
 导入在宣布持久化提交开始前，先完成 canonical 输入校验和确定性 catalog 投影。然后创建 `transcriptLedgerVersion: 0` 的暂存 Session。Ledger 物化完成后才升级为已发布状态，并出现在任务列表和 catalog 的副本统计中。
 
 - 物化前失败：删除暂存 Session。
-- Host 重启：`recover()` 继续处理版本 0 的 Session。
+- Host 重启：`recover()` 继续处理版本 0 的 Session。每个 staged Session 独立恢复；若准备和删除都失败，该 Session 保持未发布，等待后续 Host 启动时再次恢复，不会阻断其他 staged Session 或 Host 启动。
 - 只有已发布副本计入 `importedCount`。
 - 同一来源的两个并发导入请求由 Host 合并到同一个 in-flight Promise；前一次结束后的再次显式导入会创建独立副本。
 

@@ -70,24 +70,17 @@ export const LayoutDoesNotCreateReaderIntent: Story = {
     const authority = createTranscriptScrollAuthority();
     const detach = authority.attach(root);
     try {
-      authority.releasePin();
-      root.scrollTop = root.scrollHeight - root.clientHeight - 30;
       await settled();
-      let readerMoves = 0;
-      authority.subscribeToReaderScroll((phase) => {
-        if (phase === 'scroll') readerMoves += 1;
-      });
       above.style.height = '407.8px';
       await settled();
       below.style.height = '800.2px';
       await settled();
-      await expect(readerMoves).toBe(0);
-      await expect(authority.getSnapshot().pinned).toBe(false);
+      await expect(authority.getSnapshot().pinned).toBe(true);
 
       root.dispatchEvent(new WheelEvent('wheel', { deltaY: -2, bubbles: true }));
       root.scrollTop -= 2;
       await settled();
-      await expect(readerMoves).toBe(1);
+      await expect(authority.getSnapshot().pinned).toBe(false);
     } finally {
       detach();
     }
@@ -118,8 +111,6 @@ export const OpposingResizesKeepFollowingTheTail: Story = {
       // Leave the rAF callback: mutations made inside it are observed by RO
       // in that same rendering step, before a pending scroll can be delivered.
       await new Promise<void>((resolve) => setTimeout(resolve, 0));
-      let readerMoves = 0;
-      authority.subscribeToReaderScroll(() => { readerMoves += 1; });
 
       const previousHeight = root.scrollHeight;
       // Queue a real scroll event from a tail write. Before it arrives, layout
@@ -133,7 +124,6 @@ export const OpposingResizesKeepFollowingTheTail: Story = {
       expect(root.scrollHeight).toBeGreaterThan(previousHeight);
       await settled();
 
-      expect(readerMoves).toBe(0);
       expect(authority.getSnapshot().pinned).toBe(true);
       expect(root.scrollHeight - root.clientHeight - root.scrollTop).toBeLessThanOrEqual(4);
     } finally {

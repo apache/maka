@@ -35,7 +35,7 @@ const input = {
   direction: 'older' as const,
   throughSequence: 3,
   cursor: null,
-  anchorSequence: 2,
+  anchorSequence: null,
   maxBytes: 1024,
 };
 const payloadDigest = `sha256:${'a'.repeat(64)}` as const;
@@ -55,9 +55,8 @@ const page = {
       data: Buffer.from('test').toString('base64'),
     },
   ],
-  rangeBoundarySequence: 2,
-  protectedTurnSequence: 2,
   nextCursor: 'opaque-cursor',
+  endsAtTurnBoundary: false,
 };
 
 test('Session transcript protocol accepts bounded correlated pages and bootstraps', () => {
@@ -87,6 +86,7 @@ test('a maximum single-fragment continuation remains transport safe', () => {
       },
     ],
     nextCursor: 'c'.repeat(1_024),
+    endsAtTurnBoundary: false,
   };
   assert.deepEqual(decodeSessionTranscriptPage(result), result);
   const encoded = encodeProtocolMessage({
@@ -114,6 +114,7 @@ test('a maximum multi-message page remains transport safe', () => {
       data: Buffer.alloc(fragmentBytes, 0x61).toString('base64'),
     })),
     nextCursor: 'c'.repeat(1_024),
+    endsAtTurnBoundary: false,
   };
   assert.deepEqual(decodeSessionTranscriptPage(result), result);
   assert.ok(
@@ -126,19 +127,20 @@ test('a maximum multi-message page remains transport safe', () => {
   );
 });
 
+test('Session transcript anchors only start durable reads of newer rows', () => {
+  const newer = { ...input, direction: 'newer' as const, anchorSequence: 2 };
+  assert.deepEqual(decodeSessionTranscriptPageInput(newer), newer);
+  assert.throws(
+    () => decodeSessionTranscriptPageInput({ ...newer, cursor: 'cursor' }),
+    isProtocolError,
+  );
+  assert.throws(
+    () => decodeSessionTranscriptPageInput({ ...newer, direction: 'older' }),
+    isProtocolError,
+  );
+});
+
 test('Session transcript protocol rejects malformed and uncorrelated values', () => {
-  assert.throws(
-    () => decodeSessionTranscriptPageInput({ ...input, cursor: 'cursor', anchorSequence: 2 }),
-    isProtocolError,
-  );
-  assert.throws(
-    () => decodeSessionTranscriptPage({ ...page, rangeBoundarySequence: 4 }),
-    isProtocolError,
-  );
-  assert.throws(
-    () => decodeSessionTranscriptPage({ ...page, protectedTurnSequence: 4 }),
-    isProtocolError,
-  );
   assert.throws(
     () =>
       decodeSessionTranscriptPage({

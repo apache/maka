@@ -44,7 +44,9 @@ interface RawRow {
 interface PendingEntry {
   data: string;
   bytes: number;
+  generation: number;
   dropped: boolean;
+  started: boolean;
 }
 
 interface SanitizedBuffer {
@@ -109,6 +111,10 @@ export class PtyScreenCollector {
     this.lastGood = blankPtyOutput(cols, rows);
   }
 
+  get available(): boolean {
+    return !this.failure && !this.disposed;
+  }
+
   accept(data: string): void {
     if (!data) return;
     if (!this.dataOpen || this.disposed) {
@@ -117,23 +123,46 @@ export class PtyScreenCollector {
     }
     const generation = ++this.admittedGeneration;
     const bytes = Buffer.byteLength(data, 'utf8');
-    const entry: PendingEntry = { data, bytes, dropped: false };
+    // node-pty delivers many tiny events per tick; each queued parse is paced
+    // by the headless terminal's write scheduler, so queue depth — not byte
+    // volume — is what stalls cut-bound operations. Merge unstarted data into
+    // the tail entry: byte order is preserved and protocol replies already
+    // batch per write call.
+    const tail = this.pending.at(-1);
+    if (
+      tail &&
+      !tail.dropped &&
+      !tail.started &&
+      tail.bytes + bytes <= PTY_PARSER_HIGH_WATER_BYTES
+    ) {
+      tail.data += data;
+      tail.bytes += bytes;
+      tail.generation = generation;
+    } else {
+      this.enqueue({ data, bytes, generation, dropped: false, started: false });
+    }
     this.pendingBytes += bytes;
-    this.pending.push(entry);
     this.evictOldestIfOverBudget();
     this.options.onDirty(generation);
+  }
 
-    const parse = this.sequence.then(() => (entry.dropped ? undefined : this.write(entry.data)));
+  private enqueue(entry: PendingEntry): void {
+    this.pending.push(entry);
+    const parse = this.sequence.then(() => {
+      if (entry.dropped) return undefined;
+      entry.started = true;
+      return this.write(entry.data);
+    });
     this.sequence = parse.then(
       () => {
         if (entry.dropped) return;
-        this.parsedGeneration = generation;
-        this.pendingBytes -= bytes;
+        this.parsedGeneration = entry.generation;
+        this.pendingBytes -= entry.bytes;
         const index = this.pending.indexOf(entry);
         if (index >= 0) this.pending.splice(index, 1);
       },
       (error: unknown) => {
-        if (!entry.dropped) this.pendingBytes -= bytes;
+        if (!entry.dropped) this.pendingBytes -= entry.bytes;
         this.fail(asError(error, 'PTY parser failed'));
       },
     );

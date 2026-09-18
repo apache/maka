@@ -1700,11 +1700,13 @@ export class DesktopRuntimeHostClient {
 
   async listSessionTurnLandmarks(
     sessionId: string,
+    turnId: string | null = null,
   ): Promise<OperationOutput<'session.turn_landmarks.query'>> {
     this.#assertOpen();
     return this.request('session.turn_landmarks.query', {
       sessionId,
-      maxLandmarks: 64,
+      maxLandmarks: turnId === null ? 64 : 1,
+      turnId,
     });
   }
 

@@ -408,17 +408,6 @@ for (const backend of ['Local', 'Memory'] as const) {
       assert.deepEqual(await read('newer', 1, 2), [
         { invocationId: settled.invocationId, first: 1, last: 2, ordinals: [1, 2] },
       ]);
-      assert.deepEqual(
-        (await s.readTranscriptLandmarks(sessionId, 6, 8)).map((landmark) => ({
-          invocationId: landmark.invocation.invocationId,
-          first: landmark.firstOrdinal,
-          prompt: landmark.prompt?.event.id,
-        })),
-        [
-          { invocationId: settled.invocationId, first: 1, prompt: 'settled-prompt' },
-          { invocationId: running.invocationId, first: 4, prompt: 'running-prompt' },
-        ],
-      );
 
       await s.importConversationCopyRuntimeEvents(sessionId, [
         {
@@ -432,6 +421,140 @@ for (const backend of ['Local', 'Memory'] as const) {
       assert.equal(commits.length, 7);
     });
   });
+  test(
+    backend + ': a transcript Turn spans every visible invocation carrying its turnId',
+    async () => {
+      await withProvider(make(), async ({ runtimeEventStore: s }) => {
+        const sessionId = 'turn-extent-session';
+        const invocation = (name: string, turnId = `${name}-turn`) => ({
+          sessionId,
+          runId: `${name}-run`,
+          turnId,
+          invocationId: `${name}-invocation`,
+        });
+        const outer = invocation('outer');
+        const inner = invocation('inner');
+        const resumed = invocation('resumed', outer.turnId);
+        const hidden = invocation('hidden');
+        const later = invocation('later');
+        const opened = (run: typeof outer, opening: Parameters<typeof invocationOpening>[0] = {}) =>
+          buildInvocationOpenedEvent({
+            id: `${run.invocationId}-opened`,
+            run,
+            openedAt: 1,
+            opening: invocationOpening(opening),
+          });
+        const text = (run: typeof outer, id: string, role: 'user' | 'model'): RuntimeEvent => ({
+          ...run,
+          id,
+          ts: 2,
+          partial: false,
+          role,
+          author: role === 'user' ? 'user' : 'agent',
+          content: { kind: 'text', text: id },
+        });
+        const ending = (run: typeof outer): RuntimeEvent => ({
+          ...run,
+          id: `${run.invocationId}-ended`,
+          ts: 3,
+          partial: false,
+          role: 'system',
+          author: 'system',
+          actions: { endInvocation: true },
+          status: 'completed',
+        });
+        for (const event of [
+          opened(outer), // 1
+          text(outer, 'outer-prompt', 'user'), // 2
+          opened(inner), // 3
+          text(inner, 'inner-prompt', 'user'), // 4
+          ending(inner), // 5
+          opened(hidden, { lineage: { parentRunId: outer.runId } }), // 6
+          text(hidden, 'hidden-answer', 'model'), // 7
+          opened(resumed, {
+            source: {
+              kind: 'handoff',
+              rootRunId: outer.runId,
+              sourceInvocationId: outer.invocationId,
+              sourceRunId: outer.runId,
+              sourceTurnId: outer.turnId,
+              sourceRuntimeEventHighWater: 2,
+              claimId: 'handoff-claim',
+              boundaryDigest: `sha256:${'0'.repeat(64)}`,
+            },
+          }), // 8
+          text(resumed, 'resumed-answer', 'model'), // 9
+          ending(resumed), // 10
+          opened(later), // 11
+          text(later, 'later-prompt', 'user'), // 12
+        ]) {
+          await s.appendRuntimeEvent(sessionId, event.runId, event);
+        }
+
+        const extents = (turns: Awaited<ReturnType<typeof s.readTranscriptTurns>>) =>
+          turns.map(({ turnId, firstOrdinal, lastOrdinal, prompt }) => ({
+            turnId,
+            firstOrdinal,
+            lastOrdinal,
+            prompt: prompt?.event.id,
+          }));
+        assert.deepEqual(
+          extents(await s.readTranscriptTurns(sessionId, { throughOrdinal: 12, limit: 8 })),
+          [
+            { turnId: outer.turnId, firstOrdinal: 1, lastOrdinal: 10, prompt: 'outer-prompt' },
+            { turnId: inner.turnId, firstOrdinal: 3, lastOrdinal: 5, prompt: 'inner-prompt' },
+            { turnId: later.turnId, firstOrdinal: 11, lastOrdinal: 12, prompt: 'later-prompt' },
+          ],
+        );
+        assert.deepEqual(
+          extents(await s.readTranscriptTurns(sessionId, { throughOrdinal: 10, limit: 1 })),
+          [{ turnId: inner.turnId, firstOrdinal: 3, lastOrdinal: 5, prompt: 'inner-prompt' }],
+        );
+        assert.deepEqual(
+          extents(await s.readTranscriptTurns(sessionId, { turnId: outer.turnId })).map(
+            ({ lastOrdinal }) => lastOrdinal,
+          ),
+          [10],
+        );
+        assert.deepEqual(await s.readTranscriptTurns(sessionId, { turnId: hidden.turnId }), []);
+        const crossings: number[] = [];
+        for (let ordinal = 1; ordinal <= 13; ordinal += 1) {
+          if (await s.readTranscriptTurnCrossing(sessionId, ordinal)) crossings.push(ordinal);
+        }
+        assert.deepEqual(crossings, [2, 3, 4, 5, 6, 7, 8, 9, 10, 12]);
+
+        // Repair renumbers every ordinal, so the extents move with them.
+        await s.resequenceSessionEventOrdinals(sessionId);
+        const entries = await s.readSessionRuntimeEventEntries(sessionId);
+        const ordinalsOf = (turnId: string) =>
+          entries.filter((entry) => entry.event.turnId === turnId).map((entry) => entry.ordinal);
+        const [moved] = await s.readTranscriptTurns(sessionId, { turnId: outer.turnId });
+        assert.deepEqual(
+          [moved?.firstOrdinal, moved?.lastOrdinal],
+          [Math.min(...ordinalsOf(outer.turnId)), Math.max(...ordinalsOf(outer.turnId))],
+        );
+
+        // The opening decides visibility, so events committed before it count.
+        const early = invocation('early');
+        await s.appendRuntimeEvent(sessionId, early.runId, text(early, 'early-prompt', 'user'));
+        await s.appendRuntimeEvent(sessionId, early.runId, opened(early));
+        const earlyOrdinals = (await s.readSessionRuntimeEventEntries(sessionId))
+          .filter((entry) => entry.event.turnId === early.turnId)
+          .map((entry) => entry.ordinal);
+        assert.deepEqual(
+          extents(await s.readTranscriptTurns(sessionId, { turnId: early.turnId })),
+          [
+            {
+              turnId: early.turnId,
+              firstOrdinal: Math.min(...earlyOrdinals),
+              lastOrdinal: Math.max(...earlyOrdinals),
+              prompt: 'early-prompt',
+            },
+          ],
+        );
+      });
+    },
+  );
   test(backend + ': steering reorder preserves unselected and followup queue slots', async () => {
     await withProvider(make(), async ({ sessionStore: s }, root) => {
       const session = await s.create(sessionInput(root));
