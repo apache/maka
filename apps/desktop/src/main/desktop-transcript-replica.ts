@@ -23,7 +23,10 @@ import {
   createRuntimeHostSessionProjectionSeed,
   type RuntimeHostSessionProjectionSeed,
 } from '@maka/runtime-host/adapter';
-import { RuntimeHostSubscriptionError } from '@maka/runtime-host/client';
+import {
+  RuntimeHostOperationError,
+  RuntimeHostSubscriptionError,
+} from '@maka/runtime-host/client';
 import {
   SESSION_TRANSCRIPT_PAGE_MAX_BYTES,
   type SessionTranscriptPage,
@@ -111,14 +114,13 @@ export class DesktopTranscriptReplica {
   readonly #durable = new Map<number, ResidentMessage>();
   #residentBytes = 0;
   #durableThrough: number | null;
-  #targetThrough: number | null;
   #hasOlder: boolean;
   #beginsAtTurnBoundary: boolean;
   #resident = true;
   #residentExternallyAccounted = true;
   #closed = false;
+  #failure: Error | undefined;
   #catchUpTask: Promise<void> | undefined;
-  #operationTail = Promise.resolve();
 
   private constructor(
     handle: DesktopRuntimeHostSession,
@@ -136,7 +138,6 @@ export class DesktopTranscriptReplica {
     this.#accountPreparationBytes = options.accountPreparationBytes ?? (() => undefined);
     this.#onChange = options.onChange ?? (() => undefined);
     this.#durableThrough = handle.transcriptBootstrap.durable.throughSequence;
-    this.#targetThrough = this.#durableThrough;
     this.#hasOlder = handle.transcriptBootstrap.durable.nextCursor !== null;
     this.#beginsAtTurnBoundary = handle.transcriptBootstrap.durable.endsAtTurnBoundary;
   }
@@ -178,13 +179,12 @@ export class DesktopTranscriptReplica {
   }
 
   get projectionSeed(): RuntimeHostSessionProjectionSeed {
-    this.#assertResident();
+    this.#assertLive();
     return createRuntimeHostSessionProjectionSeed(this.messages(), this.#handle.snapshot);
   }
 
   snapshot(): DesktopTranscriptReplicaSnapshot {
-    this.#assertOpen();
-    this.#assertResident();
+    this.#assertLive();
     return {
       sessionId: this.sessionId,
       generation: this.generation,
@@ -197,8 +197,7 @@ export class DesktopTranscriptReplica {
   }
 
   messages(): StoredMessage[] {
-    this.#assertOpen();
-    this.#assertResident();
+    this.#assertLive();
     return this.#orderedDurable().map((entry) => entry.message);
   }
 
@@ -207,8 +206,7 @@ export class DesktopTranscriptReplica {
   }
 
   latestDurableVisibleMessageId(): string | null {
-    this.#assertOpen();
-    this.#assertResident();
+    this.#assertLive();
     let latest: ResidentMessage | undefined;
     for (const entry of this.#durable.values()) {
       if (
@@ -300,25 +298,46 @@ export class DesktopTranscriptReplica {
     return durable;
   }
 
-  advance(throughSequence: number): Promise<void> {
+  advance(): Promise<void> {
+    if (this.#failure) return Promise.reject(this.#failure);
     this.#assertOpen();
-    if (this.#targetThrough === null || throughSequence > this.#targetThrough) {
-      this.#targetThrough = throughSequence;
-    }
+    const target = this.#handle.transcriptWatermark;
     if (!this.#resident) {
-      this.#durableThrough = this.#targetThrough;
+      if (
+        target !== null &&
+        (this.#durableThrough === null || target > this.#durableThrough)
+      ) {
+        this.#durableThrough = target;
+      }
       return Promise.resolve();
     }
-    this.#catchUpTask ??= this.#enqueue(() => this.#catchUp()).finally(() => {
-      this.#catchUpTask = undefined;
-      if (
-        !this.#closed &&
-        this.#targetThrough !== null &&
-        (this.#durableThrough === null || this.#targetThrough > this.#durableThrough)
-      ) {
-        void this.advance(this.#targetThrough).catch(() => undefined);
-      }
-    });
+    if (
+      target === null ||
+      (this.#durableThrough !== null && target <= this.#durableThrough)
+    ) {
+      return Promise.resolve();
+    }
+    this.#catchUpTask ??= this.#catchUp().then(
+      () => {
+        this.#catchUpTask = undefined;
+        const watermark = this.#handle.transcriptWatermark;
+        // A frame that arrived mid-catch-up may not be covered by it, so a
+        // settled read re-arms once to close that gap. A rejection never
+        // re-arms — this replica's read failures are permanent for the
+        // subscription it is bound to.
+        if (
+          this.#isLive() &&
+          watermark !== null &&
+          (this.#durableThrough === null || watermark > this.#durableThrough)
+        ) {
+          void this.advance().catch(() => undefined);
+        }
+      },
+      (error: unknown) => {
+        this.#catchUpTask = undefined;
+        throw error;
+      },
+    );
     return this.#catchUpTask;
   }
 
@@ -346,8 +365,26 @@ export class DesktopTranscriptReplica {
   }
 
   async #catchUp(): Promise<void> {
+    try {
+      await this.#readToWatermark();
+    } catch (error) {
+      // A Runtime Host read failure is permanent for the subscription this
+      // replica is bound to. Latch it so later calls fail with the same error
+      // instead of retrying a dead subscription — the owner decides whether
+      // recovery means replacing this replica or the whole subscription.
+      if (
+        error instanceof RuntimeHostSubscriptionError ||
+        error instanceof RuntimeHostOperationError
+      ) {
+        this.#failure ??= error;
+      }
+      throw error;
+    }
+  }
+
+  async #readToWatermark(): Promise<void> {
     while (this.#isLive()) {
-      const target = this.#targetThrough;
+      const target = this.#handle.transcriptWatermark;
       if (target === null) return;
       const anchorSequence = this.#durableThrough;
       if (anchorSequence !== null && target <= anchorSequence) return;
@@ -561,7 +598,7 @@ export class DesktopTranscriptReplica {
   }
 
   #isLive(): boolean {
-    return !this.#closed && this.#resident;
+    return !this.#closed && this.#resident && this.#failure === undefined;
   }
 
   #assertOpen(): void {
@@ -569,6 +606,7 @@ export class DesktopTranscriptReplica {
   }
 
   #assertLive(): void {
+    if (this.#failure) throw this.#failure;
     this.#assertOpen();
     this.#assertResident();
   }
@@ -577,12 +615,6 @@ export class DesktopTranscriptReplica {
     if (!this.#resident) {
       throw new Error('Desktop transcript replica was evicted');
     }
-  }
-
-  #enqueue<T>(operation: () => Promise<T>): Promise<T> {
-    const task = this.#operationTail.then(operation);
-    this.#operationTail = task.then(() => undefined, () => undefined);
-    return task;
   }
 }
 

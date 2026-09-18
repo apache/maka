@@ -56,10 +56,12 @@ test('a history page reaches an oversized earlier Turn without disturbing the ta
 test('tail catch-up evicts only the oldest Turns and always keeps the newest complete', async () => {
   const fixture = await oversizedHistoryFixture();
   try {
-    await fixture.replica.advance(4);
+    fixture.setWatermark(4);
+    await fixture.replica.advance();
     assert.deepEqual(sequences(fixture.replica), [2, 3, 4]);
 
-    await fixture.replica.advance(6);
+    fixture.setWatermark(6);
+    await fixture.replica.advance();
 
     assert.deepEqual(
       sequences(fixture.replica),
@@ -234,7 +236,8 @@ test('a second Turn reached by advancing evicts the oversized first Turn', async
   try {
     assert.deepEqual(sequences(fixture.replica), [0, 1]);
 
-    await fixture.replica.advance(3);
+    fixture.setWatermark(3);
+    await fixture.replica.advance();
 
     assert.deepEqual(sequences(fixture.replica), [2, 3]);
     const answer = fixture.replica.messages().at(-1);
@@ -320,6 +323,7 @@ async function oversizedHistoryFixture(options: { live?: boolean } = {}) {
     records: options.live ? records.slice(0, 2) : records.slice(2, 4),
     hasMore: !options.live,
   });
+  let watermark: number | null = through;
   const handle = runtimeHostSessionFixture({
     snapshot: {
       schemaVersion: SESSION_CONTINUITY_SCHEMA_VERSION,
@@ -335,6 +339,7 @@ async function oversizedHistoryFixture(options: { live?: boolean } = {}) {
     transcript: Promise.resolve([]),
     events: { async *[Symbol.asyncIterator]() {} },
     transcriptBootstrap: { durable: bootstrapPage },
+    transcriptWatermark: () => watermark,
     decodeTranscriptPage: async (candidate) => {
       const decoded = decodedPages.get(candidate);
       assert.ok(decoded, 'the replica must decode the page returned by its Host request');
@@ -352,7 +357,12 @@ async function oversizedHistoryFixture(options: { live?: boolean } = {}) {
     },
     async close() {},
   });
-  return { replica: await DesktopTranscriptReplica.prepare(handle) };
+  return {
+    replica: await DesktopTranscriptReplica.prepare(handle),
+    setWatermark: (value: number | null) => {
+      watermark = value;
+    },
+  };
 }
 
 function message(

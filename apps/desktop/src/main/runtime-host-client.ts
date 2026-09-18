@@ -211,6 +211,7 @@ export interface DesktopRuntimeHostSession {
   readonly snapshot: SessionContinuitySnapshot;
   readonly activeAssistantStreams: readonly SessionAssistantStreamIdentity[];
   readonly transcriptBootstrap: SessionTranscriptBootstrap;
+  readonly transcriptWatermark: number | null;
   readonly events: AsyncIterable<SubscriptionFrame>;
   /** Frames are held by the Host until this resolves. */
   ready(): Promise<void>;
@@ -1851,6 +1852,10 @@ class DesktopSessionHandle implements DesktopRuntimeHostSession {
     this.activeAssistantStreams = subscription.activeAssistantStreams;
     this.transcriptBootstrap = subscription.transcriptBootstrap;
     this.events = subscription;
+  }
+
+  get transcriptWatermark(): number | null {
+    return this.subscription.transcriptWatermark;
   }
 
   ready(): Promise<void> {

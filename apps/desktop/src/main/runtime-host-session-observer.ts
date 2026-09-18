@@ -747,7 +747,7 @@ export class RuntimeHostSessionObserver {
 
   async #acceptFrame(state: ObservedSessionState, frame: SubscriptionFrame): Promise<void> {
     if (frame.kind === 'subscription.transcript_advanced') {
-      await state.replica?.advance(frame.throughSequence);
+      await state.replica?.advance();
       return;
     }
     if (frame.kind === "subscription.runtime_resource_pty_data") {

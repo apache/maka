@@ -1,0 +1,177 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { RuntimeHostSubscriptionError } from '@maka/runtime-host/client';
+import {
+  SESSION_CONTINUITY_SCHEMA_VERSION,
+  type SessionContinuitySnapshot,
+  type SessionTranscriptPage,
+} from '@maka/runtime-host/protocol';
+import { DesktopTranscriptReplica } from '../desktop-transcript-replica.js';
+import { runtimeHostSessionFixture } from './runtime-host-session-test-fixture.js';
+
+test('latches a dead subscription instead of re-arming the catch-up read', async () => {
+  const failure = new RuntimeHostSubscriptionError(
+    'connection_closed',
+    'Session subscription closed during transcript loading',
+  );
+  let pageReads = 0;
+  const handle = runtimeHostSessionFixture({
+    snapshot: continuitySnapshot(),
+    transcript: Promise.resolve([]),
+    events: emptyEvents(),
+    transcriptWatermark: () => 8,
+    loadTranscriptPage: async () => {
+      pageReads += 1;
+      throw failure;
+    },
+    async close() {},
+  });
+  const replica = await DesktopTranscriptReplica.prepare(handle);
+
+  await assert.rejects(replica.advance(), (error) => error === failure);
+  await flushMicrotasks();
+  assert.equal(pageReads, 1);
+
+  await assert.rejects(replica.advance(), (error) => error === failure);
+  assert.equal(pageReads, 1);
+  assert.throws(() => replica.messages(), (error: unknown) => error === failure);
+  await handle.close();
+});
+
+test('retries a read on the next advance when the failure is not the subscription', async () => {
+  let pageReads = 0;
+  const handle = runtimeHostSessionFixture({
+    snapshot: continuitySnapshot(),
+    transcript: Promise.resolve([]),
+    events: emptyEvents(),
+    transcriptWatermark: () => 8,
+    loadTranscriptPage: async () => {
+      pageReads += 1;
+      if (pageReads === 1) throw new Error('transient read failure');
+      return page(8);
+    },
+    decodeTranscriptPage: async (requested) => ({
+      messages: [
+        {
+          identity: requested.throughSequence ?? 0,
+          message: {
+            type: 'assistant',
+            id: 'row-8',
+            turnId: 'turn-1',
+            ts: 8,
+            text: 'done',
+            modelId: 'test-model',
+          },
+        },
+      ],
+      nextCursor: null,
+    }),
+    async close() {},
+  });
+  const replica = await DesktopTranscriptReplica.prepare(handle);
+
+  await assert.rejects(replica.advance(), /transient read failure/);
+  await replica.advance();
+  assert.equal(pageReads, 2);
+  assert.equal(replica.durableThrough, 8);
+  await handle.close();
+});
+
+test('follows the subscription watermark rather than an announced frame', async () => {
+  let watermark = 4;
+  const handle = runtimeHostSessionFixture({
+    snapshot: continuitySnapshot(),
+    transcript: Promise.resolve([]),
+    events: emptyEvents(),
+    transcriptWatermark: () => watermark,
+    loadTranscriptPage: async (input) => page(input.throughSequence),
+    decodeTranscriptPage: async (requested) => ({
+      messages: [
+        {
+          identity: requested.throughSequence ?? 0,
+          message: {
+            type: 'assistant',
+            id: `row-${requested.throughSequence}`,
+            turnId: 'turn-1',
+            ts: 1,
+            text: 'done',
+            modelId: 'test-model',
+          },
+        },
+      ],
+      nextCursor: null,
+    }),
+    async close() {},
+  });
+  const replica = await DesktopTranscriptReplica.prepare(handle);
+
+  await replica.advance();
+  assert.equal(replica.durableThrough, 4);
+  watermark = 9;
+  await replica.advance();
+  assert.equal(replica.durableThrough, 9);
+  await handle.close();
+});
+
+function flushMicrotasks(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
+function emptyEvents(): AsyncIterable<never> {
+  return (async function* () {})();
+}
+
+function page(throughSequence: number | null): SessionTranscriptPage {
+  return {
+    kind: 'page',
+    sessionId: 'session-1',
+    direction: 'newer',
+    throughSequence,
+    rawBytes: 1,
+    fragments: [],
+    nextCursor: null,
+    endsAtTurnBoundary: true,
+  };
+}
+
+function continuitySnapshot(): SessionContinuitySnapshot {
+  return {
+    schemaVersion: SESSION_CONTINUITY_SCHEMA_VERSION,
+    session: {
+      sessionId: 'session-1',
+      metadataRevision: 1,
+      status: 'running',
+      createdAt: 1,
+      isArchived: false,
+    },
+    projectionRevision: 1,
+    rootTurn: null,
+    goal: null,
+    queue: {
+      hostEpoch: 'host-1',
+      queueRevision: 0,
+      steering: [],
+      followup: [],
+    },
+    interactions: { pending: [] },
+  };
+}

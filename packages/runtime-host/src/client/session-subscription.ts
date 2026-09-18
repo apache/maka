@@ -67,6 +67,8 @@ export interface RuntimeHostSessionSubscription extends AsyncIterable<Subscripti
   readonly snapshot: SessionContinuitySnapshot;
   readonly activeAssistantStreams: readonly SessionAssistantStreamIdentity[];
   readonly transcriptBootstrap: SessionTranscriptBootstrap | null;
+  /** Newest durable sequence the Host announced; updated before the frame is handed out. */
+  readonly transcriptWatermark: number | null;
   loadTranscript<T>(decodeMessage: (value: unknown) => T): Promise<T[]>;
   decodeTranscriptPage<T>(
     page: SessionTranscriptPage,
@@ -110,6 +112,9 @@ export class ClientSessionSubscription
     input: SessionTranscriptPageInput,
   ) => Promise<SessionTranscriptPage>;
   readonly #expectedSessionId: string;
+  get transcriptWatermark(): number | null {
+    return this.#latestTranscriptThroughSequence;
+  }
   readonly #queue: QueuedFrame[] = [];
   readonly #ptyListeners = new Set<(frame: SessionRuntimeResourcePtyDataFrame) => void>();
   readonly #sessionDomainListeners = new Set<(frame: SessionDomainChangedFrame) => void>();

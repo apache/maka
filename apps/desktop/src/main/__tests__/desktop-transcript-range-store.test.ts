@@ -846,11 +846,13 @@ test('advances a projected transcript across hidden durable records', async () =
   const visibleAdvancePage = transcriptPage('newer', null, 5);
   const hiddenAdvancePage = transcriptPage('newer', null, 6);
   const changes: { durableUpserts: readonly { sequence: number }[] }[] = [];
+  let watermark = 1;
   const handle = runtimeHostSessionFixture({
     snapshot: continuitySnapshot(),
     transcript: Promise.resolve([]),
     events: { async *[Symbol.asyncIterator]() {} },
     transcriptBootstrap: { durable: bootstrapPage },
+    transcriptWatermark: () => watermark,
     decodeTranscriptPage: async (page) => ({
       messages:
         page === bootstrapPage
@@ -870,8 +872,10 @@ test('advances a projected transcript across hidden durable records', async () =
 
   // Sequences 1, 2, 5, and 6 are valid Host-private records omitted from the
   // Guest projection. The physical watermark still advances across them.
-  await replica.advance(5);
-  await replica.advance(6);
+  watermark = 5;
+  await replica.advance();
+  watermark = 6;
+  await replica.advance();
 
   assert.equal(replica.durableThrough, 6);
   assert.deepEqual(replica.snapshot().durable.map(({ sequence }) => sequence), [0, 3, 4]);
@@ -892,11 +896,13 @@ test('keeps an oversized Turn visible when the watermark advances onto it', asyn
   };
   const bootstrapPage = transcriptPage('older', null, older.identity);
   const newerPage = transcriptPage('newer', null, latest.identity);
+  let watermark = 0;
   const handle = runtimeHostSessionFixture({
     snapshot: continuitySnapshot(),
     transcript: Promise.resolve([]),
     events: { async *[Symbol.asyncIterator]() {} },
     transcriptBootstrap: { durable: bootstrapPage },
+    transcriptWatermark: () => watermark,
     decodeTranscriptPage: async (page) => page === bootstrapPage
       ? { messages: [older], nextCursor: null }
       : { messages: [latest], nextCursor: null },
@@ -905,7 +911,8 @@ test('keeps an oversized Turn visible when the watermark advances onto it', asyn
   });
   const replica = await DesktopTranscriptReplica.prepare(handle);
 
-  await replica.advance(latest.identity);
+  watermark = latest.identity;
+  await replica.advance();
 
   assert.deepEqual(replica.snapshot().durable.map(({ sequence }) => sequence), [latest.identity]);
 });
@@ -930,11 +937,13 @@ test('keeps an oversized settled Turn visible before a trailing session note', a
   };
   const bootstrapPage = transcriptPage('older', null, older.identity);
   const newerPage = transcriptPage('newer', null, trailingNote.identity);
+  let watermark = 0;
   const handle = runtimeHostSessionFixture({
     snapshot: continuitySnapshot(),
     transcript: Promise.resolve([]),
     events: { async *[Symbol.asyncIterator]() {} },
     transcriptBootstrap: { durable: bootstrapPage },
+    transcriptWatermark: () => watermark,
     decodeTranscriptPage: async (page) => page === bootstrapPage
       ? { messages: [older], nextCursor: null }
       : { messages: [latest, trailingNote], nextCursor: null },
@@ -943,7 +952,8 @@ test('keeps an oversized settled Turn visible before a trailing session note', a
   });
   const replica = await DesktopTranscriptReplica.prepare(handle);
 
-  await replica.advance(trailingNote.identity);
+  watermark = trailingNote.identity;
+  await replica.advance();
 
   assert.ok(replica.snapshot().durable.some(({ sequence }) => sequence === latest.identity));
 });
@@ -1003,11 +1013,13 @@ test('does not drive a discarded replica terminal when a contiguous catch-up is 
   const newerGate = deferred<void>();
   const newerEntered = deferred<void>();
   const changes: DesktopTranscriptReplicaChange[] = [];
+  let watermark = 4;
   const handle = runtimeHostSessionFixture({
     snapshot: continuitySnapshot(),
     transcript: Promise.resolve([]),
     events: { async *[Symbol.asyncIterator]() {} },
     transcriptBootstrap: { durable: bootstrapPage },
+    transcriptWatermark: () => watermark,
     decodeTranscriptPage: async (candidate) => candidate === bootstrapPage
       ? { messages, nextCursor: null }
       : { messages: [appended], nextCursor: null },
@@ -1023,7 +1035,8 @@ test('does not drive a discarded replica terminal when a contiguous catch-up is 
     onChange: (_replica, change) => changes.push(change),
   });
 
-  const advancing = replica.advance(5);
+  watermark = 5;
+  const advancing = replica.advance();
   await newerEntered.promise;
   replica.discard();
   assert.equal(replica.resident, false);
@@ -1052,11 +1065,13 @@ test('a transcript opened between catch-up pages can join the change that follow
   const secondGate = deferred<void>();
   const secondEntered = deferred<void>();
   const changes: DesktopTranscriptReplicaChange[] = [];
+  let watermark = 2;
   const handle = runtimeHostSessionFixture({
     snapshot: continuitySnapshot(),
     transcript: Promise.resolve([]),
     events: { async *[Symbol.asyncIterator]() {} },
     transcriptBootstrap: { durable: bootstrapPage },
+    transcriptWatermark: () => watermark,
     decodeTranscriptPage: async (candidate) => candidate === bootstrapPage
       ? { messages: bootstrap, nextCursor: null }
       : candidate === first
@@ -1075,7 +1090,8 @@ test('a transcript opened between catch-up pages can join the change that follow
     onChange: (_replica, change) => changes.push(change),
   });
 
-  const advancing = replica.advance(6);
+  watermark = 6;
+  const advancing = replica.advance();
   await secondEntered.promise;
   // The first page is installed; the second is pending. A transcript opening
   // now must be told the watermark its rows actually reach.

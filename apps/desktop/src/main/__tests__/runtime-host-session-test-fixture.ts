@@ -33,6 +33,7 @@ export function runtimeHostSessionFixture(input: {
   readonly transcript: Promise<StoredMessage[]>;
   readonly events: AsyncIterable<SubscriptionFrame>;
   readonly transcriptBootstrap?: DesktopRuntimeHostSession['transcriptBootstrap'];
+  transcriptWatermark?: () => number | null;
   decodeTranscriptPage?: DesktopRuntimeHostSession['decodeTranscriptPage'];
   loadTranscriptPage?: DesktopRuntimeHostSession['loadTranscriptPage'];
   ready?: DesktopRuntimeHostSession['ready'];
@@ -50,16 +51,40 @@ export function runtimeHostSessionFixture(input: {
   const readyGate = new Promise<void>((resolve) => {
     releaseFrames = resolve;
   });
+  let framesReady = false;
+  void readyGate.then(() => {
+    framesReady = true;
+  });
+  let transcriptWatermark = transcriptBootstrap.durable.throughSequence;
   return {
     hostEpoch: 'host-1',
     subscriptionId: `subscription-${sessionId}`,
     snapshot: input.snapshot,
     activeAssistantStreams: input.activeAssistantStreams ?? [],
     transcriptBootstrap,
-    events: (async function* () {
-      await readyGate;
-      yield* input.events;
-    })(),
+    get transcriptWatermark() {
+      return input.transcriptWatermark ? input.transcriptWatermark() : transcriptWatermark;
+    },
+    events: {
+      [Symbol.asyncIterator]() {
+        const iterator = input.events[Symbol.asyncIterator]();
+        return {
+          next() {
+            const result = framesReady ? iterator.next() : readyGate.then(() => iterator.next());
+            // Tapping the settled result keeps the watermark ahead of the
+            // consumer's acceptFrame without adding a hop to its await chain.
+            void result.then((settled) => {
+              if (!settled.done && settled.value.kind === 'subscription.transcript_advanced') {
+                transcriptWatermark = settled.value.throughSequence;
+              }
+            }, () => {});
+            return result;
+          },
+          return: iterator.return?.bind(iterator),
+          throw: iterator.throw?.bind(iterator),
+        };
+      },
+    },
     loadTranscript: () => input.transcript,
     decodeTranscriptPage: input.decodeTranscriptPage ??
       (async (page): Promise<DecodedSessionTranscriptPage<StoredMessage>> => ({
