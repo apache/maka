@@ -72,10 +72,15 @@ export function useComposerQuotes(options: { readonly draftKey: string }) {
     publish();
   }, [bucket, publish]);
 
-  const clearQuotes = useCallback((): void => {
-    bucket.splice(0, bucket.length);
+  // An explicit owner key clears another draft's bucket — the revision
+  // lifecycle re-keys its restored quotes across the commit and clears both
+  // the source and the branch-child keys (#5109 review); the live draft is
+  // the default for composer flows.
+  const clearQuotes = useCallback((ownerKey = options.draftKey): void => {
+    const target = pendingByKeyRef.current[ownerKey];
+    if (target) target.splice(0, target.length);
     publish();
-  }, [bucket, publish]);
+  }, [options.draftKey, publish]);
 
   const clearAllQuotes = useCallback((): void => {
     for (const quotes of Object.values(pendingByKeyRef.current)) quotes.splice(0, quotes.length);

@@ -1492,6 +1492,12 @@ function AppShellContent({
     composerRef,
     messages,
     hasPendingAttachments: () => hasPendingContext,
+    stagedContext: () => ({
+      quotes: pendingQuotes,
+      attachments: submittableAttachments ?? [],
+      restoreQuotes,
+      clearQuotes,
+    }),
     openSessionInChat,
     refreshSessions,
     setMessages,
@@ -1581,26 +1587,14 @@ function AppShellContent({
       if (queued) delete retractedWorkspaceReferencesRef.current[sessionId];
       return queued;
     }
-    if (
-      revisionSend &&
-      revision &&
-      text.trim() === revision.originalText.trim() &&
-      !hasPendingContext
-    ) {
-      const actionCopy = getDesktopConversationCopy(uiLocale).actions;
-      toastApi.info(actionCopy.revisionReadyTitle, actionCopy.revisionUnchanged);
-      return false;
-    }
     if (revisionSend && revision) {
       const actionCopy = getDesktopConversationCopy(uiLocale).actions;
-      if (hasPendingContext) {
-        toastApi.info(actionCopy.revisionUnavailableTitle, actionCopy.revisionAttachmentsUnsupported);
-        return false;
-      }
       if (slashCommand) {
         toastApi.info(actionCopy.revisionUnavailableTitle, actionCopy.revisionCommandUnsupported);
         return false;
       }
+      // The unchanged / mixed-context refusals live inside the revision
+      // lifecycle (prepareRevisionSend), which toasts and stops the send.
       if (!(await prepareRevisionSend(text))) return false;
     }
     if (slashCommand?.kind === 'compact') {

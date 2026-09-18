@@ -3454,6 +3454,85 @@ describe('renderer architecture base-tree derivation (git fixtures)', () => {
     });
   });
 
+  it('sanctions a shell file migrating onto @maka/ui relative to the derived base tree', async () => {
+    // Only files named app-shell* enter the legacyAppShell ledger section,
+    // and every section file needs an ownership entry to pass validation.
+    const LEGACY_SHELL_WIDGET = 'src/renderer/app-shell-widget.ts';
+    const seed = architectureConfig({
+      rootDebt: { [RENDERER_ENTRY_PATH]: emptyDebt() },
+      ownership: [
+        {
+          capability: 'fixture-root',
+          targetZone: 'bootstrap',
+          legacyPaths: [RENDERER_ENTRY_PATH],
+        },
+        {
+          capability: 'fixture-shell-widget',
+          targetZone: 'shell',
+          legacyPaths: [LEGACY_SHELL_WIDGET],
+        },
+      ],
+    });
+    await withGitFixture(async (fixture) => {
+      // The base file carries more debt than the head ever will: the migration
+      // edge must be the only delta under test, so every priced metric shrinks.
+      await fixture.writeFiles({
+        [LEGACY_SHELL_WIDGET]: `
+          import { existsSync } from 'node:fs';
+          import { join } from 'node:path';
+
+          const widgetSlots = ['header', 'body', 'footer'];
+          const resolveWidgetPath = (root: string, name: string) =>
+            existsSync(join(root, name)) ? join(root, name) : root;
+
+          export const legacyWidget = {
+            name: 'legacy-widget',
+            slots: widgetSlots,
+            resolve: resolveWidgetPath,
+          };
+        `,
+      });
+      await fixture.writeLedger(seed);
+      const base = fixture.commit('base');
+
+      await fixture.writeFiles({
+        [LEGACY_SHELL_WIDGET]: `
+          import { revisionStage } from '@maka/ui';
+
+          export const legacyWidget = { name: 'legacy-widget', stage: revisionStage };
+        `,
+      });
+      await fixture.writeLedger(seed);
+      fixture.commit('migrate a legacy shell file onto @maka/ui');
+
+      for (const args of [['--base', base], ['--base', base, '--strict-base']]) {
+        assertPassed(fixture.runChecker(args), base, args.join(' '));
+      }
+    });
+  });
+
+  it('keeps pricing an @maka/ui edge gained by a root debt entry under --strict-base', async () => {
+    await withGitFixture(async (fixture) => {
+      await fixture.writeLedger();
+      const base = fixture.commit('base');
+      await fixture.writeFiles({
+        [RENDERER_ENTRY_PATH]: `
+          import { revisionStage } from '@maka/ui';
+          export const main = revisionStage;
+        `,
+      });
+      await fixture.writeLedger();
+      fixture.commit('point the root entry at @maka/ui');
+
+      const result = fixture.runChecker(['--base', base, '--strict-base']);
+      assert.notEqual(result.status, 0);
+      assert.match(
+        result.stderr,
+        /^- src\/renderer\/main\.tsx: new dependency debt @maka\/ui/mu,
+      );
+    });
+  });
+
   it('does not wedge on a base ledger that under-reports its own tree (#4250)', async () => {
     await withGitFixture(async (fixture) => {
       // The base ledger only knows one legacy file while the base *tree*

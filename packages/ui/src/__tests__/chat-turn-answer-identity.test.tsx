@@ -409,6 +409,85 @@ test('does not edit and resend a message with folder references', async () => {
 });
 
 /**
+ * Quotes and attachments restage into the revision draft (#5109): a selected
+ * user message carrying either stays editable, unlike folder references,
+ * whose Host-owned session binding has no client-side restage path.
+ */
+test('keeps an attachment-carrying message editable', async () => {
+  const { container, root } = domRoot();
+  let editCalls = 0;
+  const turn = {
+    ...turnWith([{ ...ANSWER, live: false }]),
+    status: 'completed' as const,
+    user: {
+      id: 'ask-with-image',
+      role: 'user' as const,
+      text: 'Read this chart',
+      ts: 1,
+      attachments: [
+        {
+          kind: 'image' as const,
+          name: 'chart.png',
+          mimeType: 'image/png',
+          bytes: 10,
+          ref: { kind: 'session_file' as const, sessionId: 'session-1', relativePath: 'a.png' },
+        },
+      ],
+    },
+  };
+
+  await act(() => {
+    root.render(
+      <LocaleProvider locale="en">
+        <TurnView turn={turn} onEditUserMessage={() => { editCalls += 1; }} />
+      </LocaleProvider>,
+    );
+  });
+
+  const editButton = container.querySelector('[data-action="edit"]');
+  assert.ok(editButton, 'the edit action renders');
+  assert.doesNotMatch(
+    editButton.getAttribute('aria-label') ?? '',
+    /does not yet support/,
+  );
+  await act(() => editButton.dispatchEvent(new window.Event('click', { bubbles: true })));
+  assert.equal(editCalls, 1, 'the selected message quotes and attachments restage');
+});
+
+test('keeps a quote-carrying message editable', async () => {
+  const { container, root } = domRoot();
+  let editCalls = 0;
+  const turn = {
+    ...turnWith([]),
+    status: 'completed' as const,
+    user: {
+      id: 'ask-with-quote',
+      role: 'user' as const,
+      text: 'Explain this excerpt',
+      ts: 1,
+      quotes: [{ text: 'selected excerpt', sourceTurnId: 'turn-0' }],
+    },
+  };
+
+  await act(() => {
+    root.render(
+      <LocaleProvider locale="en">
+        <TurnView turn={turn} onEditUserMessage={() => { editCalls += 1; }} />
+      </LocaleProvider>,
+    );
+  });
+
+  const editButton = container.querySelector('[data-action="edit"]');
+  assert.ok(editButton, 'the edit action renders');
+  assert.doesNotMatch(
+    editButton.getAttribute('aria-label') ?? '',
+    /does not yet support/,
+  );
+  await act(() => editButton.dispatchEvent(new window.Event('click', { bubbles: true })));
+  assert.equal(editCalls, 1, 'the selected message quotes restage into the draft');
+});
+
+/**
  * A structured-only user message (#4804) — empty inline text carrying a
  * quote — must render the quote without an empty text bubble, while keeping
  * the metadata row (timestamp, copy) and its edit entry, which used to be
