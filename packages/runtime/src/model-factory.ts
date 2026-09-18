@@ -61,11 +61,7 @@ import {
   type ResolvedModelRuntime,
 } from './model-runtime.js';
 import { openAiCodexHeaders } from './subscription-auth.js';
-import {
-  CommandCodeCliLanguageModel,
-  CommandCodeCliTransportDisabledError,
-  isCommandCodeCliTransportEnabled,
-} from './commandcode-cli-language-model.js';
+import { CommandCodeCliLanguageModel } from './commandcode-cli-language-model.js';
 import { createRequestCustomizationFetch } from './request-customization-fetch.js';
 import { createStreamUsageFallbackFetch } from './stream-usage-fallback-fetch.js';
 import { withOpenCodeSessionHeader } from './opencode-session-header.js';
@@ -181,10 +177,6 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
       return createCohere({ apiKey, baseURL, fetch: requestFetch })(modelId);
 
     case 'commandcode-cli':
-      // Off by default; the operator's flag is read where the request is
-      // built so a stored connection cannot send through a transport this
-      // install never opted into.
-      if (!isCommandCodeCliTransportEnabled()) throw new CommandCodeCliTransportDisabledError();
       return new CommandCodeCliLanguageModel({
         modelId,
         apiKey,

@@ -40,6 +40,7 @@ import {
   CircleGauge,
   FileText,
   ListTodo,
+  MessagesSquare,
   Network,
   Pencil,
   Plus,
@@ -144,6 +145,15 @@ export interface ComposerSkillOption {
   description?: string;
 }
 
+/** Session metadata offered by the Composer's `@Session` reference picker. */
+export interface ComposerSessionReference {
+  id: string;
+  name: string;
+  status?: string;
+  lastMessageAt?: number;
+  lastMessagePreview?: string;
+}
+
 export interface ComposerSlashCommandOption {
   id: string;
   name: string;
@@ -155,6 +165,11 @@ export interface ComposerSlashCommandOption {
 type ComposerSlashSuggestion =
   | { kind: 'command'; command: ComposerSlashCommandOption; group: string }
   | { kind: 'skill'; skill: ComposerSkillOption; group: string };
+
+type ComposerMentionSuggestion = {
+  kind: 'session';
+  session: ComposerSessionReference;
+};
 
 /**
  * The draft text a chosen Skill becomes. This is the product-wide invocation
@@ -348,6 +363,16 @@ export const Composer = forwardRef<
      * case a large paste behaves like any other paste.
      */
     onPasteAsQuote?(input: { text: string; label?: string }): void;
+    /** Other Sessions available for a read-only, bounded Composer reference. */
+    sessionReferences?: ReadonlyArray<ComposerSessionReference>;
+    /** Called when the user selects a Session from the `@` picker. */
+    onPickSessionReference?(session: ComposerSessionReference): void | Promise<void>;
+    /** Session references selected but not yet read at the send boundary. */
+    pendingSessionReferences?: ReadonlyArray<ComposerSessionReference>;
+    /** Remove a selected Session reference before it is resolved for send. */
+    onRemovePendingSessionReference?(sessionId: string): void;
+    /** Wait for a picked Session reference to settle before committing a send. */
+    waitForSessionReference?(): Promise<boolean>;
     modelLabel?: string;
     activeSession?: SessionSummary;
     activeModelConnectionId?: string;
@@ -356,6 +381,14 @@ export const Composer = forwardRef<
     activeModelLabel?: string;
     activeProviderType?: ProviderType;
     modelChoices?: ChatModelChoice[];
+    /** Model-picker surface; 'wheel' is the collapsed WorkHub's inline picker, and any non-popover surface drops the thinking picker to a bottom sheet. */
+    pickerPresentation?: 'popover' | 'bottom-sheet' | 'wheel';
+    /**
+     * Close the model/thinking pickers' open surfaces while an interaction
+     * prompt occludes the composer — a bottom sheet stays a modal dialog even
+     * inside a `hidden` subtree, which would inert the whole window.
+     */
+    pickersReadOnly?: boolean;
     /** Maximum input height in the upstream editor's row units. */
     maxInputRows?: number;
     /** Whether this Session already has conversation history whose provider prompt cache may be rebuilt by a switch. */
@@ -529,6 +562,7 @@ export const Composer = forwardRef<
   } & ComposerGoalProps
 >(function Composer(props, ref) {
   const formRef = useRef<HTMLFormElement>(null);
+  const composerAnchorRef = useRef<HTMLDivElement>(null);
   /** Astryx's imperative handle on the contentEditable input. */
   const inputHandleRef = useRef<ChatComposerInputHandle>(null);
   /** ChatComposerInput's root, from which the editable node is resolved. */
@@ -538,7 +572,7 @@ export const Composer = forwardRef<
   }
   const [dragActive, setDragActive] = useState(false);
   const [sendPending, setSendPending] = useState(false);
-  const [modelPickerOpen, setModelPickerOpen] = useState(false);
+  const [modelPickerNonce, setModelPickerNonce] = useState(0);
   const modelSwitchAvailability =
     props.modelSwitchAvailability ??
     deriveComposerModelSwitchAvailability({
@@ -547,7 +581,13 @@ export const Composer = forwardRef<
     });
   const modelSwitchAvailabilityRef = useRef(modelSwitchAvailability);
   modelSwitchAvailabilityRef.current = modelSwitchAvailability;
-  useLayoutEffect(() => setModelPickerOpen(false), [props.activeSession?.id]);
+  // Any non-popover model surface means a window too small for an anchored
+  // popup; the thinking picker has no wheel, so it drops to a bottom sheet.
+  const thinkingPresentation =
+    props.pickerPresentation && props.pickerPresentation !== 'popover'
+      ? 'bottom-sheet'
+      : 'popover';
+  useLayoutEffect(() => setModelPickerNonce(0), [props.activeSession?.id]);
   const [pendingImportAction, setPendingImportAction] = useState<ComposerImportActionId | null>(null);
   const composerMountedRef = useMountedRef();
   const sendPendingRef = useRef(false);
@@ -925,6 +965,8 @@ export const Composer = forwardRef<
     mentionSkills: props.mentionSkills,
     slashCommands: props.slashCommands,
     onSearchMentionFiles: props.onSearchMentionFiles,
+    sessionReferences: props.sessionReferences,
+    onPickSessionReference: props.onPickSessionReference,
     commandsGroup: mentionCopy.commandsGroup,
     skillsGroup: mentionCopy.skillsGroup,
   });
@@ -932,22 +974,39 @@ export const Composer = forwardRef<
     mentionSkills: props.mentionSkills,
     slashCommands: props.slashCommands,
     onSearchMentionFiles: props.onSearchMentionFiles,
+    sessionReferences: props.sessionReferences,
+    onPickSessionReference: props.onPickSessionReference,
     commandsGroup: mentionCopy.commandsGroup,
     skillsGroup: mentionCopy.skillsGroup,
   };
 
   const searchSourcesRef = useRef<{ files: SearchSource; skills: SearchSource }>(null);
   if (!searchSourcesRef.current) {
-    const runFileSearch = (query: string): Promise<SearchableItem[]> => {
-      const search = mentionSourceRef.current.onSearchMentionFiles;
-      return (search ? search(query) : Promise.resolve([])).then((files) =>
-        files
-          .filter((file) => mentionQueryMatches(query, file.relativePath))
-          .slice(0, 50)
-          .map((file) => ({ id: file.relativePath, label: file.relativePath })),
-      );
+    const runMentionSearch = (query: string): Promise<SearchableItem[]> => {
+      const source = mentionSourceRef.current;
+      const sessionOnly = /\s/u.test(query);
+      const searchQuery = query.trim();
+      const files = !sessionOnly && source.onSearchMentionFiles
+        ? source.onSearchMentionFiles(searchQuery).then((entries) =>
+            entries
+              .filter((file) => mentionQueryMatches(searchQuery, file.relativePath))
+              .slice(0, 25)
+              .map((file) => ({ id: file.relativePath, label: file.relativePath })),
+          )
+        : Promise.resolve<SearchableItem[]>([]);
+      const sessions = source.onPickSessionReference
+        ? (source.sessionReferences ?? [])
+            .filter((session) => mentionQueryMatches(searchQuery, session.name))
+            .slice(0, 25)
+            .map((session) => ({
+              id: `session:${session.id}`,
+              label: session.name,
+              auxiliaryData: { kind: 'session', session } satisfies ComposerMentionSuggestion,
+            }))
+        : [];
+      return files.then((fileItems) => [...fileItems, ...sessions].slice(0, 50));
     };
-    const files = createTriggerSearchSource<SearchableItem>(runFileSearch);
+    const files = createTriggerSearchSource<SearchableItem>(runMentionSearch);
     const listSlashSuggestions = (rawQuery: string): SearchableItem[] => {
       const source = mentionSourceRef.current;
       const skills = source.mentionSkills ?? [];
@@ -1021,35 +1080,58 @@ export const Composer = forwardRef<
   const triggers = useMemo<ChatComposerTrigger[]>(() => {
     const sources = searchSourcesRef.current!;
     const list: ChatComposerTrigger[] = [];
-    if (props.onSearchMentionFiles) {
+    if (props.onSearchMentionFiles || props.onPickSessionReference) {
       list.push({
         character: '@',
+        menuAnchorRef: composerAnchorRef,
         searchSource: sources.files,
-        menuLabel: mentionCopy.filesAriaLabel,
-        emptySearchResultsText: mentionCopy.noFiles,
+        menuLabel:
+          props.sessionReferences !== undefined && props.onPickSessionReference !== undefined
+            ? mentionCopy.filesAndSessionsAriaLabel
+            : mentionCopy.filesAriaLabel,
+        emptySearchResultsText:
+          props.sessionReferences !== undefined && props.onPickSessionReference !== undefined
+            ? mentionCopy.noFilesOrSessions
+            : mentionCopy.noFiles,
         loadingText: mentionCopy.loading,
-        renderItem: (item) => (
-          <>
-            <FileText size={ICON_SIZE.control} aria-hidden="true" className="maka-composer-mention-icon" />
-            <span className="maka-composer-mention-text">
-              <span className="maka-composer-mention-name">{inlineReferenceFileBasename(item.id)}</span>
-              <span className="maka-composer-mention-secondary">{item.id}</span>
-            </span>
-          </>
-        ),
-        // The token serializes back to `@<path>`, so the mention reaches the
-        // model exactly as the plain-text popup used to splice it in — it just
-        // reads as a chip while the draft is being composed.
-        //
-        // One difference, and it is not free: `insertToken` anchors the token
-        // with U+00A0 rather than a plain space. `composerWireText` normalizes
-        // that away on send, and the skill token grammar's `\s` boundary
-        // matches it either way — but `findActiveTrigger` accepts only ' ' and
-        // '\n' as a trigger boundary, so typing `@` directly after a chip
-        // opens no menu until the user types a space. That boundary set is
-        // internal to `useTriggerMenu`; the fix belongs upstream.
-        onSelect: (item): ChatComposerToken =>
-          inlineReferenceToken(workspaceFileInlineReference(item.id)),
+        renderItem: (item) => {
+          const suggestion = item.auxiliaryData as ComposerMentionSuggestion | undefined;
+          if (suggestion?.kind === 'session') {
+            const { session } = suggestion;
+            return (
+              <>
+                <MessagesSquare size={ICON_SIZE.control} aria-hidden="true" className="maka-composer-mention-icon" />
+                <span className="maka-composer-mention-name maka-composer-session-option">{session.name}</span>
+              </>
+            );
+          }
+          const fileName = inlineReferenceFileBasename(item.id);
+          return (
+            <>
+              <FileText size={ICON_SIZE.control} aria-hidden="true" className="maka-composer-mention-icon" />
+              <span className="maka-composer-mention-text">
+                <span className="maka-composer-mention-name">{fileName}</span>
+                <span className="maka-composer-mention-secondary">
+                  {item.id === fileName ? null : item.id}
+                </span>
+              </span>
+            </>
+          );
+        },
+        // File references remain inline tokens; Session references are held as
+        // QuoteRefs by the host so selecting one does not add an opaque id to
+        // the message text.
+        onSelect: (item): string | ChatComposerToken => {
+          const suggestion = item.auxiliaryData as ComposerMentionSuggestion | undefined;
+          if (suggestion?.kind === 'session') {
+            void mentionSourceRef.current.onPickSessionReference?.(suggestion.session);
+            // Session references are held as QuoteRefs by the host, not as
+            // serialized draft text. Returning an empty string only removes
+            // the trigger query from the editor.
+            return '';
+          }
+          return inlineReferenceToken(workspaceFileInlineReference(item.id));
+        },
       });
     }
     if (
@@ -1150,6 +1232,8 @@ export const Composer = forwardRef<
   }, [
     locale,
     Boolean(props.onSearchMentionFiles),
+    props.sessionReferences,
+    Boolean(props.onPickSessionReference),
     props.mentionSkills,
     props.slashCommands,
   ]);
@@ -1165,7 +1249,13 @@ export const Composer = forwardRef<
     const editable = editableNode();
     if (editable?.getAttribute('aria-expanded') !== 'true') return;
     editable.dispatchEvent(new Event('input', { bubbles: true }));
-  }, [locale, props.mentionSkills, props.slashCommands]);
+  }, [
+    locale,
+    props.mentionSkills,
+    props.sessionReferences,
+    props.slashCommands,
+    Boolean(props.onPickSessionReference),
+  ]);
 
   /**
    * An open menu must follow the caret, not just the text. `useTriggerMenu`
@@ -1263,7 +1353,7 @@ export const Composer = forwardRef<
       },
       openModelPicker() {
         if (!modelSwitchAvailabilityRef.current.available) return;
-        setModelPickerOpen(true);
+        setModelPickerNonce((nonce) => nonce + 1);
       },
     }),
     [],
@@ -1276,6 +1366,7 @@ export const Composer = forwardRef<
   // disabled state, send/stop toggle) as text.
   const hasStagedContext =
     (props.pendingQuotes?.length ?? 0) > 0 ||
+    (props.pendingSessionReferences?.length ?? 0) > 0 ||
     (props.allowAttachmentOnlySend === true && (props.pendingAttachments?.length ?? 0) > 0);
 
   async function sendCurrent(followUpMode?: FollowUpMode) {
@@ -1297,6 +1388,11 @@ export const Composer = forwardRef<
     setSendPending(true);
     let sent: boolean | void;
     try {
+      if (props.waitForSessionReference) {
+        const referenceReady = await props.waitForSessionReference();
+        if (!referenceReady) return;
+      }
+      if (!composerMountedRef.current || activeDraftKey() !== submittedDraftKey) return;
       const metadata: ComposerSendMetadata = {
         ...(workspaceFileReferences.length > 0 ? { workspaceFileReferences } : {}),
         ...(followUpMode ? { followUpMode } : {}),
@@ -1526,7 +1622,7 @@ export const Composer = forwardRef<
    * Skill is a chip in the draft itself, visible where it will be sent from.
    */
   const drawerTokenCount =
-    (props.pendingQuotes?.length ?? 0) +
+    (props.pendingQuotes?.filter((quote) => !quote.sourceSessionId).length ?? 0) +
     (props.pendingAttachments?.length ?? 0) +
     (props.pendingDirectories?.length ?? 0);
   /** The last staged image opened from a chip (Lightbox media shape). Kept
@@ -1722,6 +1818,7 @@ export const Composer = forwardRef<
         onSubmit={submit}
       >
         <AstryxChatComposer
+          ref={composerAnchorRef}
           className="maka-composer-astryx"
           data-maka-contract="composer-inner"
           // Unreachable, and required. The shell only submits its own value,
@@ -1781,7 +1878,7 @@ export const Composer = forwardRef<
                     onRemove={props.onRemoveDirectory ? () => props.onRemoveDirectory?.(index) : undefined}
                   />
                 ))}
-                {props.pendingQuotes?.map((quote, index) => (
+                {props.pendingQuotes?.map((quote, index) => quote.sourceSessionId ? null : (
                   <Token
                     key={`${quote.sourceTurnId ?? 'quote'}-${index}`}
                     size="sm"
@@ -1865,6 +1962,39 @@ export const Composer = forwardRef<
                 event.stopPropagation();
               }}
             >
+              {((props.pendingSessionReferences?.length ?? 0) > 0 || props.pendingQuotes?.some((quote) => quote.sourceSessionId)) && (
+                <div className="maka-composer-session-references" role="group" aria-label={copy.stagedContext}>
+                  {props.pendingSessionReferences?.map((session) => (
+                    <Tooltip
+                      key={session.id}
+                      content={`${getConversationCopy(locale).messages.sessionSnapshotLabel(session.name)} · ${getConversationCopy(locale).messages.sessionSnapshotPending}`}
+                      focusTrigger="always"
+                    >
+                      <Token
+                        size="md"
+                        className="maka-composer-session-token"
+                        icon={<MessagesSquare size={16} aria-hidden="true" />}
+                        label={`${getConversationCopy(locale).messages.sessionSnapshotLabel(session.name)} · ${getConversationCopy(locale).messages.sessionSnapshotPending}`}
+                        isLabelHidden
+                        endContent={<span className="maka-composer-session-token-name">{session.name}</span>}
+                        onRemove={props.onRemovePendingSessionReference
+                          ? () => props.onRemovePendingSessionReference?.(session.id)
+                          : undefined}
+                      />
+                    </Tooltip>
+                  ))}
+                  {props.pendingQuotes?.map((quote, index) => quote.sourceSessionId ? (
+                    <Token
+                      key={`session-quote:${index}`}
+                      size="md"
+                      className="maka-composer-session-token"
+                      icon={<MessagesSquare size={16} aria-hidden="true" />}
+                      label={quote.sourceSessionName ?? quote.label ?? ''}
+                      onRemove={props.onRemoveQuote ? () => props.onRemoveQuote?.(index) : undefined}
+                    />
+                  ) : null)}
+                </div>
+              )}
               <ChatComposerInput
                 ref={inputRootRef}
                 handleRef={inputHandleRef}
@@ -2125,6 +2255,8 @@ export const Composer = forwardRef<
               <div className="maka-model-selection-controls">
                 {props.activeSession ? (
                   <ChatModelSwitcher
+                    presentation={props.pickerPresentation}
+                    isReadOnly={props.pickersReadOnly}
                     activeSession={props.activeSession}
                     activeModelConnectionId={props.activeModelConnectionId}
                     activeModelConnectionSlug={props.activeModelConnectionSlug}
@@ -2135,8 +2267,7 @@ export const Composer = forwardRef<
                     hasConversationHistory={props.modelSwitchHasHistory}
                     availability={modelSwitchAvailability}
                     disabledReason={modelSwitcherDisabledReason}
-                    isMenuOpen={modelPickerOpen}
-                    onMenuOpenChange={setModelPickerOpen}
+                    openNonce={modelPickerNonce}
                     hideUnavailableCurrentOption={props.hideUnavailableCurrentModel}
                     renderProviderMark={props.renderProviderMark}
                     onChange={props.onModelChange}
@@ -2144,6 +2275,8 @@ export const Composer = forwardRef<
                 ) : props.onPickNewChatModel && (props.modelChoices?.length ?? 0) > 0 ? (
                   <NewChatModelPicker
                     label={modelChipLabel}
+                    presentation={props.pickerPresentation}
+                    isReadOnly={props.pickersReadOnly}
                     choices={props.modelChoices ?? []}
                     currentValue={
                       props.newChatModel
@@ -2169,6 +2302,8 @@ export const Composer = forwardRef<
                   <ThinkingLevelSelector
                     levels={props.activeThinkingLevels ?? []}
                     current={props.activeThinkingLevel}
+                    presentation={thinkingPresentation}
+                    isReadOnly={props.pickersReadOnly}
                     onChange={props.onThinkingLevelChange}
                     disabled={!modelSwitchAvailability.available}
                     disabledReason={thinkingSwitcherDisabledReason}
@@ -2177,6 +2312,8 @@ export const Composer = forwardRef<
                   <ThinkingLevelSelector
                     levels={props.newChatThinkingLevels ?? []}
                     current={props.newChatThinkingLevel}
+                    presentation={thinkingPresentation}
+                    isReadOnly={props.pickersReadOnly}
                     onChange={props.onNewChatThinkingLevelChange}
                   />
                 )}
