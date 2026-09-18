@@ -18,8 +18,7 @@
  */
 
 import { useEffect, type Ref } from 'react';
-import { IconButton } from '@astryxdesign/core';
-import { MakaWordmark, useUiLocale, type LiveTurnProjection } from '@maka/ui';
+import { ProgressCard, useUiLocale, type LiveTurnProjection } from '@maka/ui';
 import { ArrowRight, X } from '@maka/ui/icons';
 import type { StoredMessage } from '@maka/core/session';
 import type { WorkHubControlSnapshot } from '../../../../shared/workhub-control.js';
@@ -59,13 +58,8 @@ export function WorkHubProgressCard({ ref, request, control, liveTurn, messages,
     });
     return () => { cancelAnimationFrame(first); cancelAnimationFrame(second); };
   }, [presentation, request]);
-  return <aside ref={ref} className="workHubProgressCard" aria-label={t.progressTitle}>
-    <div className="workHubProgressHeader">
-      <span className="workHubProgressBrand"><MakaWordmark width={42} /></span>
-      <span className="workHubProgressStatus" role="status"><i data-active={busy || control?.phase === 'acting'} />{status}</span>
-      <IconButton className="workHubProgressOpen" size="sm" variant="ghost" label={t.progressOpen} tooltip={t.progressOpen} icon={<ArrowRight size={12} />} onClick={onOpen} />
-      <IconButton className="workHubProgressClose" size="sm" variant="ghost" icon={<X size={12} />} label={t.progressClose} onClick={() => { void presentation.hide().catch(console.error); }} />
-    </div>
-    <p className="workHubProgressText">{spoken?.replace(/\s+/g, ' ').trim() || t.progressHint}</p>
-  </aside>;
+  return <ProgressCard ref={ref} className="workHubProgressCard" label={t.progressTitle}
+    status={status} active={busy || control?.phase === 'acting'} summary={spoken || t.progressHint}
+    primaryAction={{ label: t.progressOpen, icon: <ArrowRight size={12} />, onClick: onOpen }}
+    secondaryAction={{ label: t.progressClose, icon: <X size={12} />, onClick: () => { void presentation.hide().catch(console.error); } }} />;
 }

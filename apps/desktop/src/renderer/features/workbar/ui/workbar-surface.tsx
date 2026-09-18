@@ -388,6 +388,9 @@ export function WorkbarSurface(props: {
   onToggleRightPanel(): void;
   panelsState: SessionWorkbarPanelsState;
   rightCollapsed: boolean;
+  focusedPreview?: 'files' | 'browser' | null;
+  onTogglePreviewFocus?(kind: 'files' | 'browser'): void;
+  onPreviewExit?(): void;
   bottomOpen: boolean;
   onActivateTab: (placement: SessionWorkbarPlacement, tabId: string) => void;
   onCloseTab: (placement: SessionWorkbarPlacement, tab: SessionWorkbarTab) => void;
@@ -532,6 +535,9 @@ export function WorkbarSurface(props: {
                 key={props.sessionId}
                 sessionId={props.sessionId!}
                 hidden={props.hidden || !active}
+                focused={placement === 'right' && props.focusedPreview === 'browser'}
+                onToggleFocus={placement === 'right' && props.onTogglePreviewFocus ? () => props.onTogglePreviewFocus?.('browser') : undefined}
+                onPreviewExit={placement === 'right' ? props.onPreviewExit : undefined}
               />
             </Suspense>
           );
@@ -542,6 +548,9 @@ export function WorkbarSurface(props: {
                 key={props.sessionId}
                 sessionId={props.sessionId!}
                 refreshEnabled={!props.hidden && panelVisible}
+                focused={placement === 'right' && props.focusedPreview === 'files'}
+                onToggleFocus={placement === 'right' && props.onTogglePreviewFocus ? () => props.onTogglePreviewFocus?.('files') : undefined}
+                onPreviewExit={placement === 'right' ? props.onPreviewExit : undefined}
                 onCountChange={(count) => setArtifactCount((current) =>
                   current.sessionId === props.sessionId && current.count === count
                     ? current : { sessionId: props.sessionId, count })}

@@ -18,6 +18,7 @@
  */
 
 export * from './artifact-preview-registry.js';
+export * from './progress-card.js';
 export * from './assistant-stream.js';
 export * from './chat-empty-hero.js';
 export * from './chat-model-helpers.js';

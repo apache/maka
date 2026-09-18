@@ -18,7 +18,10 @@
  */
 
 import { lazy, Suspense, type ComponentProps, type CSSProperties } from 'react';
+import { createPortal } from 'react-dom';
+import { GripVertical, ICON_SIZE } from '@maka/ui/icons';
 import { Card } from '@astryxdesign/core/Card';
+import { IconButton } from '@astryxdesign/core/IconButton';
 import { ResizeHandle, type ResizableProps } from '@astryxdesign/core/Resizable';
 import { Spinner } from '@astryxdesign/core/Spinner';
 import { Composer, useToast, useUiLocale } from '@maka/ui';
@@ -26,6 +29,10 @@ import type { ChatModelChoice } from '@maka/core/chat-model-choice';
 import type { SessionSummary } from '@maka/core/session';
 import type { WorkBoardItem, WorkBoardLinkedSession } from '@maka/core/work-board';
 import { confirmBypassPermission, getShellCopy } from '../../../locales/shell-copy';
+import { getArtifactCopy } from '../../../locales/artifact-copy';
+import { getBrowserCopy } from '../../../locales/browser-copy';
+import { useFocusedPreview } from '../controller/use-focused-preview.js';
+import { RecentTurnOverlay } from './recent-turn-overlay.js';
 import type {
   SessionWorkbarPanelsState,
   SessionWorkbarPlacement,
@@ -129,16 +136,40 @@ export function WorkbarHost({ model: props }: { model: WorkbarHostModel }) {
   const locale = useUiLocale();
   const toast = useToast();
   const copy = getShellCopy(locale).app;
+  const previewFocus = useFocusedPreview({ host: props });
   const style = {
     '--maka-session-bottom-panel-height': `${props.bottomHeight}px`,
   } as CSSProperties;
 
   return (
     <>
+      {previewFocus.composerTarget && !previewFocus.focusedPreview && props.activeId && props.workspace !== 'workhub' &&
+        previewFocus.activeRightTab?.kind === 'files' && !props.rightCollapsed &&
+        createPortal(
+          <IconButton className="maka-composer-drag-handle" size="sm" variant="ghost" draggable
+            label={getArtifactCopy(locale).pane.moveComposer}
+            tooltip={getArtifactCopy(locale).pane.moveComposer}
+            icon={<GripVertical size={ICON_SIZE.control} aria-hidden="true" />}
+            onDragStart={(event) => event.dataTransfer.setData('application/x-maka-composer', props.activeId!)}
+            onClick={() => {
+              previewFocus.toggle('files');
+              requestAnimationFrame(() => previewFocus.composerTarget?.querySelector<HTMLElement>('[contenteditable="true"]')?.focus());
+            }} />,
+          previewFocus.composerTarget,
+        )}
+      {previewFocus.composerTarget && props.activeId && !props.hidden && !props.rightCollapsed && props.workspace !== 'workhub' &&
+        (previewFocus.activeRightTab?.kind === 'files' || previewFocus.activeRightTab?.kind === 'browser') &&
+        createPortal(
+          <RecentTurnOverlay key={props.activeId} sessionId={props.activeId}
+            hidden={!previewFocus.focusedPreview}
+            sourceSession={props.sourceSession} onHeightChange={previewFocus.setOverlayHeight}
+            minimized={previewFocus.minimized} onMinimize={previewFocus.minimize} onRestore={previewFocus.restore} />,
+          previewFocus.composerTarget,
+        )}
       {props.activeId && !props.rightCollapsed && (
         <ResizeHandle
           className="maka-workbar-resize-handle maka-workbar-resize-handle-right"
-          resizable={props.rightResizable}
+          resizable={previewFocus.rightResizable}
           direction="horizontal"
           isReversed
           isAlwaysVisible={false}
@@ -157,7 +188,11 @@ export function WorkbarHost({ model: props }: { model: WorkbarHostModel }) {
           label={copy.resizeWorkbar}
         />
       )}
-        <div className="maka-workbar-layout-vars" style={style}>
+        <div className="maka-workbar-layout-vars" style={style} ref={previewFocus.surfaceRef}>
+          <div className="maka-preview-collapse-hint" role="status">
+            {previewFocus.activeRightTab?.kind === 'browser'
+              ? getBrowserCopy(locale).releaseToFocus : getArtifactCopy(locale).pane.releaseToFocus}
+          </div>
           <Suspense
             fallback={
               <SessionWorkbarFallback
@@ -177,6 +212,9 @@ export function WorkbarHost({ model: props }: { model: WorkbarHostModel }) {
               onToggleRightPanel={props.onToggleRightPanel}
               panelsState={props.panelsState}
               rightCollapsed={props.rightCollapsed}
+              focusedPreview={previewFocus.focusedPreview}
+              onTogglePreviewFocus={previewFocus.toggle}
+              onPreviewExit={previewFocus.clear}
               bottomOpen={props.bottomOpen}
               onActivateTab={props.onActivateTab}
               onCloseTab={props.onCloseTab}

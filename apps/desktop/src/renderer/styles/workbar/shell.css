@@ -46,6 +46,292 @@
   min-height: 0;
 }
 
+.maka-detail-with-artifacts[data-preview-resizing] .maka-session-workbar[data-placement="right"] {
+  transition: none;
+}
+.maka-detail-with-artifacts[data-preview-collapse-ready] > .maka-workbar-resize-handle-right {
+  background: var(--maka-brand);
+}
+.maka-preview-collapse-hint { display: none; }
+.maka-detail-with-artifacts[data-preview-collapse-ready] .maka-preview-collapse-hint {
+  display: block;
+  position: absolute;
+  z-index: 6;
+  top: 50%;
+  right: calc(var(--maka-session-workbar-width) + var(--space-2));
+  max-width: calc(100% - var(--maka-session-workbar-width) - var(--space-4));
+  box-sizing: border-box;
+  padding: var(--space-2);
+  border: var(--border-width-hairline) solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--background-elevated);
+  color: var(--foreground);
+  box-shadow: 0 4px 16px rgb(0 0 0 / 0.12);
+  font: var(--maka-text-supporting);
+  text-align: center;
+  pointer-events: none;
+}
+
+.maka-detail-with-artifacts > .mainColumn .maka-chat-layout > :last-child > :last-child {
+  position: relative;
+}
+
+.maka-composer-drag-handle {
+  position: absolute;
+  z-index: 2;
+  top: -18px;
+  right: max(var(--space-4), calc((100% - var(--maka-reading-measure)) / 2));
+  display: none;
+  place-items: center;
+  width: 28px;
+  height: 24px;
+  border: var(--border-width-hairline) solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--background-elevated);
+  color: var(--muted-foreground);
+  cursor: grab;
+}
+
+.maka-detail-with-artifacts:has(.maka-artifact-preview-screen) .maka-composer-drag-handle {
+  display: grid;
+}
+
+.maka-composer-drag-handle:is(:hover, :focus-visible) {
+  color: var(--foreground);
+  background: var(--state-hover-bg);
+}
+
+.maka-composer-drag-handle:focus-visible {
+  outline: var(--focus-ring-width) solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.maka-recent-turn-overlay {
+  position: absolute;
+  z-index: 4;
+  bottom: calc(100% - 1px);
+  left: 0;
+  width: 100%;
+  max-height: min(44dvh, 620px, max(48px, calc(100dvh - var(--maka-focused-dock-height, 64px) - 200px)));
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: var(--border-width-hairline) solid var(--border);
+  border-bottom: 0;
+  border-radius: var(--radius-chat) var(--radius-chat) 0 0;
+  background: var(--background-elevated);
+  box-shadow: 0 8px 28px rgb(0 0 0 / 0.12);
+  color: var(--foreground);
+  pointer-events: auto;
+}
+
+/* The card header stays visible while the latest-turn body scrolls. */
+.maka-recent-turn-overlay > .maka-progress-card { flex: 0 0 auto; }
+
+.maka-recent-turn-content {
+  min-height: 0;
+  overflow: auto;
+  padding: var(--space-2) var(--space-4) var(--space-5);
+  overscroll-behavior: contain;
+  font: var(--maka-text-body);
+  font-size: 16px;
+  line-height: 1.5;
+}
+
+.maka-recent-turn-message [role="document"],
+.maka-recent-turn-message [role="paragraph"] {
+  font-size: 16px;
+  line-height: 1.5;
+}
+
+.maka-recent-turn-message { min-width: 0; overflow-wrap: anywhere; }
+.maka-recent-turn-message + .maka-recent-turn-message,
+.maka-recent-turn-tool + .maka-recent-turn-message { margin-top: var(--space-3); }
+.maka-recent-turn-tool {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: var(--space-2) 0;
+  color: var(--muted-foreground);
+  font: var(--maka-text-body);
+  font-size: 15px;
+}
+.maka-recent-turn-tool svg { flex: 0 0 auto; }
+.maka-recent-turn-tool span { min-width: 0; overflow-wrap: anywhere; }
+.maka-recent-turn-placeholder { margin: 0; color: var(--muted-foreground); font: var(--maka-text-supporting); }
+
+@media (max-width: 600px) {
+  .maka-recent-turn-overlay { max-height: min(52dvh, 400px, max(48px, calc(100dvh - var(--maka-focused-dock-height, 94px) - 200px))); }
+}
+
+/* Keep the mounted chat/composer tree in place; the document takes the grid
+   while only the existing dock remains interactive above it. */
+.maka-detail-with-artifacts[data-preview-focused] {
+  grid-template-areas: "right";
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+}
+
+/* Keep the native window controls and task title in their own row when the
+   preview expands across the conversation's former titlebar space. */
+.appFrame:has(.maka-detail-with-artifacts[data-preview-focused]) .maka-window-titlebar {
+  --maka-titlebar-workbar-reserve: 0px;
+}
+.appFrame .maka-detail-with-artifacts[data-preview-focused] .maka-session-workbar[data-placement="right"] > .maka-session-workbar-toolbar {
+  margin-top: var(--maka-plate-titlebar-clearance);
+}
+.appFrame .maka-detail-with-artifacts[data-preview-focused] .maka-session-workbar-panel[data-overlay][data-placement="right"] {
+  padding-top: calc(2 * var(--maka-plate-titlebar-clearance));
+}
+
+.maka-detail-with-artifacts[data-preview-focused] > .mainColumn {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  padding: 0;
+  background: transparent;
+  pointer-events: none;
+}
+
+.maka-detail-with-artifacts[data-preview-focused] .mainColumn > :not(.maka-chat-layout) {
+  visibility: hidden;
+}
+
+.maka-detail-with-artifacts[data-preview-focused] > .mainColumn .maka-chat-layout {
+  height: 100%;
+  background: transparent;
+  pointer-events: none;
+  overflow: visible;
+}
+
+.maka-detail-with-artifacts[data-preview-focused] > .mainColumn .maka-chat-layout > :first-child,
+.maka-detail-with-artifacts[data-preview-focused] > .mainColumn .maka-chat-layout > :last-child > :first-child,
+.maka-detail-with-artifacts[data-preview-focused] > .mainColumn .maka-chat-layout > :last-child > :nth-child(2) {
+  visibility: hidden;
+}
+
+.maka-detail-with-artifacts[data-preview-focused] > .mainColumn .maka-chat-layout > :last-child > :last-child {
+  position: absolute;
+  inset: auto auto var(--space-4) 50%;
+  transform: translateX(-50%);
+  z-index: 4;
+  width: min(68vw, 1200px, calc(100% - 2 * var(--space-4)));
+  padding: 0;
+  background: transparent;
+  pointer-events: auto;
+  container: focused-composer / inline-size;
+}
+
+.maka-detail-with-artifacts[data-preview-focused] .maka-composer {
+  position: relative;
+  z-index: 5;
+  padding: 0;
+}
+
+.maka-detail-with-artifacts[data-preview-focused] .maka-composer-astryx {
+  width: 100%;
+  max-width: none;
+}
+
+.maka-detail-with-artifacts[data-preview-focused] .maka-composer-astryx > .astryx-chat-composer-drawer,
+.maka-detail-with-artifacts[data-preview-focused] .maka-composer-astryx > div:has(> div:first-child .maka-composer-input) {
+  border-top: 0;
+  border-radius: 0 0 var(--radius-chat) var(--radius-chat);
+}
+
+.maka-detail-with-artifacts[data-preview-focused] .maka-composer-astryx > .astryx-chat-composer-drawer {
+  border-radius: 0;
+  background-image: none;
+}
+
+.maka-detail-with-artifacts[data-preview-focused][data-preview-dock-minimized] .maka-composer {
+  display: none;
+}
+
+.maka-detail-with-artifacts[data-preview-focused][data-preview-dock-minimized] .maka-recent-turn-overlay {
+  bottom: 0;
+  right: 0;
+  left: auto;
+  width: min(320px, 100%);
+  max-height: none;
+  border-bottom: var(--border-width-hairline) solid var(--border);
+  border-radius: var(--radius-chat);
+}
+
+/* The plain composer can be one continuous row over a document. A staged
+   drawer changes Astryx's first row, so it naturally keeps the full layout. */
+@container focused-composer (min-width: 680px) {
+  .maka-detail-with-artifacts[data-preview-focused] .maka-composer-astryx > div:has(> div:first-child .maka-composer-input):not(:has(.maka-composer-mode-button, .maka-composer-workspace)) {
+    display: grid;
+    grid-template-columns: 32px minmax(0, 1fr) auto auto 32px;
+    align-items: center;
+    column-gap: var(--space-2);
+    min-height: 64px;
+    padding: var(--space-1-5) var(--space-3);
+    box-sizing: border-box;
+  }
+
+  .maka-detail-with-artifacts[data-preview-focused] .maka-composer-astryx > div:has(> div:first-child .maka-composer-input):not(:has(.maka-composer-mode-button, .maka-composer-workspace)) > div:first-child {
+    grid-column: 2;
+    grid-row: 1;
+    min-width: 0;
+  }
+
+  .maka-detail-with-artifacts[data-preview-focused] .maka-composer-astryx > div:has(> div:first-child .maka-composer-input):not(:has(.maka-composer-mode-button, .maka-composer-workspace)) > div:nth-child(2),
+  .maka-detail-with-artifacts[data-preview-focused] .maka-composer-astryx > div:has(> div:first-child .maka-composer-input):not(:has(.maka-composer-mode-button, .maka-composer-workspace)) > div:nth-child(2) > div:first-child,
+  .maka-detail-with-artifacts[data-preview-focused] .maka-composer-astryx > div:has(> div:first-child .maka-composer-input):not(:has(.maka-composer-mode-button, .maka-composer-workspace)) .maka-composer-left-controls {
+    display: contents;
+  }
+
+  .maka-detail-with-artifacts[data-preview-focused] .maka-composer-astryx > div:has(> div:first-child .maka-composer-input):not(:has(.maka-composer-mode-button, .maka-composer-workspace)) .maka-composer-plus-menu { grid-column: 1; grid-row: 1; }
+  .maka-detail-with-artifacts[data-preview-focused] .maka-composer-astryx > div:has(> div:first-child .maka-composer-input):not(:has(.maka-composer-mode-button, .maka-composer-workspace)) .maka-model-selection-controls { grid-column: 3; grid-row: 1; }
+  .maka-detail-with-artifacts[data-preview-focused] .maka-composer-astryx > div:has(> div:first-child .maka-composer-input):not(:has(.maka-composer-mode-button, .maka-composer-workspace)) .permissionModeIcon { grid-column: 4; grid-row: 1; }
+  .maka-detail-with-artifacts[data-preview-focused] .maka-composer-astryx > div:has(> div:first-child .maka-composer-input):not(:has(.maka-composer-mode-button, .maka-composer-workspace)) > div:nth-child(2) > div:nth-child(2) { grid-column: 5; grid-row: 1; }
+}
+
+.maka-detail-with-artifacts[data-preview-focused] .maka-composer button:has(svg.lucide-square) {
+  border-radius: 50%;
+  background: var(--foreground);
+  color: var(--background);
+}
+
+.maka-detail-with-artifacts[data-preview-focused] .maka-composer button[type="submit"][aria-disabled="true"] {
+  background: var(--muted-foreground);
+  color: var(--background);
+}
+
+@media (max-width: 990px) {
+  .maka-detail-with-artifacts[data-preview-focused] > .mainColumn .maka-chat-layout > :last-child > :last-child {
+    width: calc(100% - 2 * var(--space-4));
+  }
+}
+
+.maka-detail-with-artifacts[data-preview-focused] .maka-session-workbar[data-placement="right"],
+.maka-detail-with-artifacts[data-preview-focused] .maka-session-workbar-panel[data-overlay][data-placement="right"] {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  max-height: none;
+  margin-left: 0;
+  margin-top: 0;
+  grid-template-columns: minmax(0, 1fr);
+  justify-content: stretch;
+  transition: none;
+}
+
+.maka-detail-with-artifacts[data-preview-focused] .maka-session-workbar[data-placement="right"] > *,
+.maka-detail-with-artifacts[data-preview-focused] .maka-session-workbar-panel[data-overlay][data-placement="right"] > * {
+  width: 100%;
+}
+
+.maka-detail-with-artifacts[data-preview-focused] :is(
+  .maka-workbar-resize-handle,
+  .maka-session-workbar[data-placement="bottom"],
+  .maka-session-workbar-panel[data-placement="bottom"]
+) {
+  display: none;
+}
+
 .maka-workbar-layout-vars,
 .maka-workbar-workspace-contents {
   display: contents;

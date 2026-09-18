@@ -6,7 +6,7 @@ Generated against `@astryxdesign/core@0.6.1` (195 component exports).
 
 Wiki bar: Design Conventions · API Use-the-System · Theming · Container Padding.
 
-**Totals:** 284 files — blocker 0, reimplementation 0, polish 4, aligned 280.
+**Totals:** 286 files — blocker 0, reimplementation 0, polish 4, aligned 282.
 
 ## Exclusions (explicit)
 
@@ -113,8 +113,9 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/features/workbar/tools/review/session-review-panel.tsx` | shell-chrome-or-panel | Banner, Button, Collapsible, CollapsibleGroup, EmptyState, HStack, Section, Skeleton, Text, VStack | aligned — uses Astryx (Banner, Button, Collapsible, CollapsibleGroup, EmptyState, HStack, Section, Skeleton) | aligned |
 | `apps/desktop/src/renderer/features/workbar/tools/side-chat/quote-companion-panel.tsx` | shell-chrome-or-panel | Banner | aligned — uses Astryx (Banner) | aligned |
 | `apps/desktop/src/renderer/features/workbar/tools/terminal/session-terminal-panel.tsx` | shell-chrome-or-panel | Banner, EmptyState | aligned — uses Astryx (Banner, EmptyState) | aligned |
+| `apps/desktop/src/renderer/features/workbar/ui/recent-turn-overlay.tsx` | shell-chrome-or-panel | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/features/workbar/ui/side-chat-close-confirmation.tsx` | shell-chrome-or-panel | Button, CheckboxInput, Dialog, DialogHeader, HStack, Layout, LayoutContent, LayoutFooter, Text, VStack | aligned — uses Astryx (Button, CheckboxInput, Dialog, DialogHeader, HStack, Layout, LayoutContent, LayoutFooter) | aligned |
-| `apps/desktop/src/renderer/features/workbar/ui/workbar-host.tsx` | shell-chrome-or-panel | Card, ResizeHandle, Spinner | aligned — uses Astryx (Card, ResizeHandle, Spinner) | aligned |
+| `apps/desktop/src/renderer/features/workbar/ui/workbar-host.tsx` | shell-chrome-or-panel | Card, IconButton, ResizeHandle, Spinner | aligned — uses Astryx (Card, IconButton, ResizeHandle, Spinner) | aligned |
 | `apps/desktop/src/renderer/features/workbar/ui/workbar-surface.tsx` | shell-chrome-or-panel | Badge, Button, Card, Heading, Icon, Kbd, List, ListItem, Section, Spinner, Tab, TabList | aligned — uses Astryx (Badge, Button, Card, Heading, Icon, Kbd, List, ListItem) | aligned |
 | `apps/desktop/src/renderer/features/workhub/ui/control-overlay.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/features/workhub/ui/cursor.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
@@ -124,7 +125,7 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/features/workhub/ui/workhub-conversation.tsx` | other | Button, Link, Text | aligned — uses Astryx (Button, Link, Text) | aligned |
 | `apps/desktop/src/renderer/features/workhub/ui/workhub-dock.tsx` | other | Button | aligned — uses Astryx (Button) | aligned |
 | `apps/desktop/src/renderer/features/workhub/ui/workhub-navigation-rail.tsx` | other | Button, List, ListItem, StatusDot | aligned — uses Astryx (Button, List, ListItem, StatusDot) | aligned |
-| `apps/desktop/src/renderer/features/workhub/ui/workhub-progress-card.tsx` | other | IconButton | aligned — uses Astryx (IconButton) | aligned |
+| `apps/desktop/src/renderer/features/workhub/ui/workhub-progress-card.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/features/workhub/ui/workhub-root.tsx` | other | Button, IconButton | aligned — uses Astryx (Button, IconButton) | aligned |
 | `apps/desktop/src/renderer/features/workhub/ui/workhub-surface-switch.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/features/workhub/ui/workhub-work-identity.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
@@ -284,6 +285,7 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `packages/ui/src/primitives/chat.tsx` | primitive | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `packages/ui/src/primitives/module-page.tsx` | primitive | Dialog, DialogHeader, HStack, Heading, Layout, LayoutContent, LayoutHeader, LayoutPanel, ResizeHandle, StackItem, Text, VStack | aligned — uses Astryx (Dialog, DialogHeader, HStack, Heading, Layout, LayoutContent, LayoutHeader, LayoutPanel) | aligned |
 | `packages/ui/src/primitives/stat-tile.tsx` | primitive | none | aligned — no raw controls; no Astryx JSX usage | aligned |
+| `packages/ui/src/progress-card.tsx` | ui-composition | Button, IconButton | aligned — uses Astryx (Button, IconButton) | aligned |
 | `packages/ui/src/prompt-anchor-rail.tsx` | ui-composition | Button, HoverCard | aligned — uses Astryx (Button, HoverCard) | aligned |
 | `packages/ui/src/quote-ref-chip.tsx` | ui-composition | Button, IconButton | aligned — uses Astryx (Button, IconButton) | aligned |
 | `packages/ui/src/relative-time.tsx` | ui-composition | none | aligned — no raw controls; no Astryx JSX usage | aligned |
