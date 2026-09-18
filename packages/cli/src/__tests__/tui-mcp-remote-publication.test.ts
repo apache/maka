@@ -26,6 +26,7 @@ import test from 'node:test';
 import {
   RuntimeHostProfileConnectionError,
   createRuntimeHostCapabilityProviderCredentialStore,
+  createClientRuntimeHostProfileCatalog,
   sameRemoteRuntimeHostProfileTarget,
   type RemoteRuntimeHostProfile,
   type RuntimeHostCapabilityProviderCredentialStore,
@@ -510,6 +511,70 @@ for (const operation of ['set', 'remove'] as const) {
       ),
       'provider-old',
     );
+  });
+}
+
+for (const phase of ['filtered-absence', 'cas-conflict'] as const) {
+  test(`remote TUI uncommitted deletion reconnects with the current credential: ${phase}`, async (t) => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-provider-current-'));
+    t.after(() => rm(root, { recursive: true, force: true }));
+    const raw = createFileCredentialStore(root);
+    const credentials = createRuntimeHostCapabilityProviderCredentialStore(raw);
+    const profiles = createClientRuntimeHostProfileCatalog(root, raw);
+    await profiles.save(PROFILE, 'terminal-token');
+    const resolved = await profiles.resolve(PROFILE.id);
+    assert.ok(resolved?.profile.kind === 'remote' && resolved.profileIncarnationId);
+    const targetProfile = {
+      profile: resolved.profile,
+      profileIncarnationId: resolved.profileIncarnationId,
+    };
+    await credentials.set(targetProfile, 'owner-b', 'provider-b-old');
+    const abort = new AbortController();
+    const readStarted = deferred();
+    const releaseRead = deferred();
+    let holdRead = false;
+    const connections: string[] = [];
+    const target = createRemoteTuiMcpPublicationTarget(
+      { clientDataRoot: root, ...targetProfile, ownerClientInstanceId: 'owner-b' },
+      {
+        profiles,
+        subscribeProfileChanges: () => () => undefined,
+        credentials: {
+          ...credentials,
+          read: async (...args) => {
+            assert.ok(credentials.read);
+            const snapshot = await credentials.read(...args);
+            if (holdRead) {
+              holdRead = false;
+              readStarted.resolve();
+              await releaseRead.promise;
+            }
+            return snapshot;
+          },
+        },
+        loadClientInstanceId: async () => 'provider-client',
+        connectProfile: async (input) => {
+          connections.push(input.credential!);
+          return connectionHarness(`connection-${connections.length}`).connection;
+        },
+      },
+    );
+    t.after(() => target.closePublication?.());
+    const latest = await availability(target);
+    await waitFor(() => latest().kind === 'connected', 'initial connection');
+    if (phase === 'filtered-absence') await credentials.set(targetProfile, 'owner-a', 'provider-a');
+    holdRead = true;
+    const removing = target.removeCredential?.({ signal: abort.signal });
+    assert.ok(removing);
+    const outcome = removing.catch((error: unknown) => error);
+    await readStarted.promise;
+    await credentials.set(targetProfile, 'owner-b', 'provider-b-current');
+    if (phase === 'filtered-absence') abort.abort(new Error('cancel uncommitted removal'));
+    releaseRead.resolve();
+    await outcome;
+    assert.equal(await credentials.get(targetProfile, 'owner-b'), 'provider-b-current');
+    assert.deepEqual(connections, ['provider-b-old', 'provider-b-current']);
+    assert.equal(latest().kind, 'connected');
   });
 }
 

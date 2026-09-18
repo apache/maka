@@ -35,6 +35,7 @@ import { createFileCredentialStore } from '@maka/storage/credential-store';
 import {
   AtomicFileWriteCommitUnknownError,
   createMcpConfigStore,
+  normalizeMcpConfig,
 } from '@maka/storage/mcp-config-store';
 import { createTuiMcpController, type TuiMcpPublicationAvailability } from '../tui-mcp-control.js';
 import { waitFor } from './tui-terminal-mock.js';
@@ -817,7 +818,9 @@ for (const scenario of [
     assert.equal(transforms, 1);
     assert.equal(retirements, 1);
     assert.equal(reloads, 1);
-    const published = JSON.parse(await readFile(join(root, 'mcp.json'), 'utf8')) as McpConfigFile;
+    const published = normalizeMcpConfig(
+      JSON.parse(await readFile(join(root, 'mcp.json'), 'utf8')),
+    );
     if (scenario === 'edit' || scenario === 'publication-failure') {
       assert.equal((published.mcpServers.docs as { url: string }).url, 'https://new.example/mcp');
     } else if (scenario === 'newer-config') {
@@ -1425,6 +1428,160 @@ test('TUI MCP late compensation preserves a successful same-value retry', async 
   assert.equal((await store.get()).mcpServers.docs.enabled, false);
   assert.equal(controller.configForEdit('docs')?.config.enabled, false);
   assert.equal(controller.snapshot().configuration, 'ready');
+});
+
+test('TUI MCP late compensation preserves another controller same-value retry', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-mcp-two-controller-retry-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const storeA = createMcpConfigStore(root);
+  const storeB = createMcpConfigStore(root);
+  await storeA.upsert('docs', { command: 'server', enabled: true });
+  const release = deferred<void>();
+  let transforms = 0;
+  const controllerA = createTuiMcpController(
+    { workspaceRoot: root, connection: connectionHarness().connection },
+    {
+      configStore: {
+        get: () => storeA.get(),
+        transform: async (apply) => {
+          const number = ++transforms;
+          const committed = await storeA.transform(apply);
+          if (number === 1) await release.promise;
+          return committed;
+        },
+      },
+      manager: managementManager([]).manager,
+      createProvider: () => undefined,
+      actionTimeoutMs: 200,
+    },
+  );
+  const controllerB = createTuiMcpController(
+    { workspaceRoot: root, connection: connectionHarness().connection },
+    {
+      configStore: storeB,
+      manager: managementManager([]).manager,
+      createProvider: () => undefined,
+    },
+  );
+  t.after(async () => {
+    release.resolve();
+    await controllerA.close();
+    await controllerB.close();
+  });
+  await waitFor(
+    () =>
+      controllerA.snapshot().initialization === 'ready' &&
+      controllerB.snapshot().initialization === 'ready',
+    'both controllers initialized',
+  );
+  const action = { kind: 'set_enabled', serverId: 'docs', enabled: false } as const;
+  assert.deepEqual(await controllerA.execute(action), {
+    status: 'failed',
+    reason: 'rollback-failed',
+  });
+  assert.equal((await controllerB.execute(action)).status, 'applied');
+  release.resolve();
+  await pollFor(
+    () => transforms === 2 && controllerA.snapshot().configuration !== 'synchronizing',
+    { timeoutMs: 1_000, pollMs: 5 },
+  );
+  await controllerA.execute({ kind: 'test', serverId: 'docs' });
+  assert.equal((await storeB.get()).mcpServers.docs.enabled, false);
+  assert.equal(controllerA.configForEdit('docs')?.config.enabled, false);
+  assert.equal(controllerA.snapshot().configuration, 'ready');
+  assert.equal(controllerB.configForEdit('docs')?.config.enabled, false);
+});
+
+test('TUI MCP reports refused rollback and reconciles an unrelated newer store write', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-mcp-superseded-rollback-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const store = createMcpConfigStore(root);
+  const syncing = deferred<void>();
+  let syncs = 0;
+  const manager = managementManager([], {
+    sync: async (_config, options) => {
+      if (++syncs !== 2) return;
+      syncing.resolve();
+      await new Promise<void>((_resolve, reject) => {
+        options?.signal?.addEventListener('abort', () => reject(options.signal?.reason), {
+          once: true,
+        });
+      });
+    },
+  });
+  const controller = createTuiMcpController(
+    { workspaceRoot: root, connection: connectionHarness().connection },
+    { configStore: store, manager: manager.manager, createProvider: () => undefined },
+  );
+  t.after(() => controller.close());
+  await waitFor(() => controller.snapshot().initialization === 'ready', 'initialization');
+  const abort = new AbortController();
+  const adding = controller.execute(
+    { kind: 'add', serverId: 'docs', config: { command: 'server' } },
+    { signal: abort.signal },
+  );
+  await syncing.promise;
+  await createMcpConfigStore(root).upsert('other', { command: 'other-server' });
+  abort.abort(new Error('cancel after a newer transaction'));
+  assert.deepEqual(await adding, { status: 'failed', reason: 'rollback-failed' });
+  const current = await store.get();
+  assert.deepEqual(Object.keys(current.mcpServers).sort(), ['docs', 'other']);
+  for (const id of ['docs', 'other']) {
+    assert.deepEqual(controller.configForEdit(id)?.config, current.mcpServers[id]);
+  }
+  assert.equal(controller.snapshot().configuration, 'ready');
+});
+
+test('TUI MCP cancelled precommit credential read releases the shared configuration lock', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-mcp-erase-lock-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const store = createMcpConfigStore(root);
+  await store.upsert('remote', { url: 'https://example.com/mcp', enabled: false });
+  const started = deferred<void>();
+  const release = deferred<void>();
+  let writes = 0;
+  const manager = new McpClientManager({
+    oauthStorage: {
+      get: async () => {
+        started.resolve();
+        await release.promise;
+        return undefined;
+      },
+      set: async () => {
+        writes += 1;
+      },
+      delete: async () => {
+        writes += 1;
+      },
+    },
+  });
+  const controller = createTuiMcpController(
+    { workspaceRoot: root, connection: connectionHarness().connection },
+    { configStore: store, manager, createProvider: () => undefined, actionTimeoutMs: 300 },
+  );
+  t.after(async () => {
+    release.resolve();
+    await controller.close();
+  });
+  await waitFor(() => controller.snapshot().initialization === 'ready', 'initialization');
+  const abort = new AbortController();
+  const removing = controller.execute(
+    { kind: 'remove', serverId: 'remote' },
+    { signal: abort.signal },
+  );
+  await started.promise;
+  abort.abort(new Error('cancel before credential write'));
+  await removing;
+  const added = await controller.execute({
+    kind: 'add',
+    serverId: 'unrelated',
+    config: { command: 'server', enabled: false },
+  });
+  release.resolve();
+  assert.equal(added.status, 'applied');
+  assert.equal(writes, 0);
+  assert.ok((await store.get()).mcpServers.remote);
+  assert.ok((await store.get()).mcpServers.unrelated);
 });
 
 test('TUI MCP cancellation during failed-sync publication rolls back the mutation', async (t) => {

@@ -103,10 +103,20 @@ export class McpCredentialCoordinator {
       onCommitStarted?: () => void;
     } = {},
   ): Promise<void> {
+    this.assertNotAbandoned(serverId, options.signal);
     this.epochs.set(serverId, this.epoch(serverId) + 1);
-    await this.run(serverId, async () => {
+    let rejectAbandoned!: (error: Error) => void;
+    const abandoned = new Promise<never>((_resolve, reject) => {
+      rejectAbandoned = reject;
+    });
+    const onAbort = () =>
+      rejectAbandoned(
+        new Error(`MCP credential erase for "${serverId}" was abandoned before it landed`),
+      );
+    options.signal?.addEventListener('abort', onAbort, { once: true });
+    const operation = this.run(serverId, async () => {
       this.assertNotAbandoned(serverId, options.signal);
-      const basis = await this.storage.get(serverId);
+      const basis = await Promise.race([this.storage.get(serverId), abandoned]);
       // Re-check after the read: the abandonment may have landed while the
       // storage read was in flight — committing past it would erase a
       // record the caller no longer owns.
@@ -123,9 +133,17 @@ export class McpCredentialCoordinator {
       // not report cancellation or compensate related state until this commit
       // settles: an atomic backend can durably land the tombstone before its
       // promise becomes observable as fulfilled.
+      // Stop racing cancellation before notifying the caller: that callback
+      // may synchronously abort, but the matching write must now settle.
+      options.signal?.removeEventListener('abort', onAbort);
       options.onCommitStarted?.();
       await this.commit(serverId, basis, tombstone);
     });
+    try {
+      await Promise.race([operation, abandoned]);
+    } finally {
+      options.signal?.removeEventListener('abort', onAbort);
+    }
   }
 
   private assertNotAbandoned(serverId: string, signal?: AbortSignal): void {

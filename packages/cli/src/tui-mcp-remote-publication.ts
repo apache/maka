@@ -318,14 +318,12 @@ class RemoteTuiMcpPublicationTarget implements TuiMcpPublicationTarget {
         throwIfAborted(options.signal);
         this.#setUnavailable('credential_required');
       } catch (error) {
-        if (options.signal?.aborted && disconnected) {
+        if (!this.#closed && disconnected && (options.signal?.aborted || deleted === undefined)) {
           const rollbackTarget = target ?? this.#profileTarget();
-          const prior =
-            previous === undefined ? await this.#readCredential(rollbackTarget) : previous;
           const restoration =
-            deleted !== undefined
-              ? await this.#restoreCredential(rollbackTarget, prior, deleted)
-              : { restored: true, current: prior };
+            deleted !== undefined && previous !== undefined
+              ? await this.#restoreCredential(rollbackTarget, previous, deleted)
+              : { restored: false, current: await this.#readCredential(rollbackTarget) };
           if (restoration.current.credential !== null) {
             await this.#connect(restoration.current.credential);
           } else this.#setUnavailable('credential_required');

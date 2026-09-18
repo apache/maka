@@ -113,6 +113,8 @@ Server id 是稳定 identity。配置 reconciliation 使用完整 normalized con
 
 version 1、缺失 version 或 version 2 的 wrapper 可单向读取为 version 3 projection，但 `get()` 不静默改写文件；`transform`、`upsert` 或 `remove` 才持久化 version 3。version 1 不接受任何 `protocol`，version 2 只接受 remote `protocol`，version 3 才允许 stdio `protocol`。当前客户端遇到显式未知/未来 wrapper 或 malformed JSON 必须拒绝，不能用一次导入绕过原文件的读取失败并覆盖其原始字节。Desktop renderer 只提交原始 JSON；main process 在 storage normalizer 内解释 wrapper/direct-map、与当前配置合并并持久化，因此导入和正常写入不会形成两套 schema authority。remote headers 仍位于 `mcp.json`，文件和目录分别强制 `0600`/`0700`；后续迁移到 Keychain-backed credential store。
 
+每次 store 写入（包括同值更新）都会在同一原子文档中更新内部 `_makaWriteRevision`；规范化读取和导入不暴露该字段。取消补偿在共享文件锁内检查原事务版本，再执行凭据清理和配置恢复，因此其他 controller 或进程的新写入不会被旧补偿覆盖。版本保护覆盖整份文档：即使后续写入只修改其他 server，也会拒绝旧补偿；TUI 报告 `rollback-failed` 并同步当前磁盘配置。缺少版本字段的外部写入同样使旧事务失去补偿权。
+
 stdio `protocol` 不只是 wire-format 偏好，也是进程副作用授权：
 
 - `legacy`（包括旧配置省略字段）直接启动一个实际 server，不产生探测进程。

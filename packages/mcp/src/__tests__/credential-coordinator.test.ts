@@ -18,6 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { deferred } from '@maka/core/test-only/async-primitives';
 import { describe, test } from 'node:test';
 import { McpCredentialCoordinator } from '../credential-coordinator.js';
 import type { McpOAuthRecord, McpOAuthStorage } from '../oauth.js';
@@ -165,6 +166,61 @@ describe('McpCredentialCoordinator', () => {
     await assert.rejects(coordinator.erase('remote', { signal: aborted.signal }), /abandoned/u);
     assert.equal(writes.length, 0);
   });
+
+  for (const phase of ['queued', 'reading'] as const) {
+    test(`erase cancellation releases precommit ${phase} waiting without a late write`, async () => {
+      const entered = deferred<void>();
+      const release = deferred<void>();
+      let writes = 0;
+      const coordinator = new McpCredentialCoordinator({
+        get: async () => {
+          if (phase === 'reading') {
+            entered.resolve();
+            await release.promise;
+          }
+          return undefined;
+        },
+        set: async () => {
+          writes += 1;
+        },
+        delete: async () => {
+          writes += 1;
+        },
+      });
+      const blocker =
+        phase === 'queued'
+          ? coordinator.run('remote', async () => {
+              entered.resolve();
+              await release.promise;
+            })
+          : undefined;
+      const abort = new AbortController();
+      let commitStarted = false;
+      const erasing = coordinator.erase('remote', {
+        signal: abort.signal,
+        onCommitStarted: () => {
+          commitStarted = true;
+        },
+      });
+      const outcome = erasing.then(
+        () => 'resolved',
+        () => 'rejected',
+      );
+      await entered.promise;
+      abort.abort(new Error('stop precommit erase'));
+      const settled = await Promise.race([
+        outcome,
+        new Promise<string>((resolve) => setTimeout(() => resolve('pending'), 100)),
+      ]);
+      release.resolve();
+      await blocker;
+      await outcome;
+      await coordinator.run('remote', async () => undefined);
+      assert.equal(settled, 'rejected');
+      assert.equal(commitStarted, false);
+      assert.equal(writes, 0);
+    });
+  }
 
   test('an erase ignores cancellation after its irreversible commit boundary', async () => {
     let releaseWrite!: () => void;
