@@ -1168,8 +1168,12 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
         steps: [{ label: 'Continue' }],
       } as never,
       ctx(undefined, { toolCallId: 'sequence' }),
-    )) as { modelText?: string };
+    )) as { modelText?: string; text: string; error?: string };
     assert.doesNotMatch(result.modelText ?? '', /Fresh observation/);
+    assert.doesNotMatch(result.text, /element_sequence ok/);
+    assert.match(result.text, /failed after 1 of 1 steps: reobserve_required/);
+    assert.match(result.modelText ?? '', /call action:"observe"/);
+    assert.equal(result.error, 'reobserve_required');
     assert.equal(tools.sessionEvents.snapshot('s1').status, 'reobserve_required');
   });
 

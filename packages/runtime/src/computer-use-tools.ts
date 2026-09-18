@@ -1882,6 +1882,7 @@ export function buildComputerUseTools(deps: {
             // One observation at the end, whatever happened: the model needs a
             // current frame either to carry on or to work out what went wrong.
             let final: CuObservation | undefined;
+            let closingBlock: CuaSessionActionBlockReason | undefined;
             try {
               const lease = state.beforeObservation();
               if (lease.ok) {
@@ -1908,13 +1909,21 @@ export function buildComputerUseTools(deps: {
                   lease.lease,
                   await capture(true).catch(() => capture(false)),
                 );
+                if (!final) {
+                  const valid = state.validateObservationLease(lease.lease);
+                  closingBlock = valid.ok ? 'reobserve_required' : valid.reason;
+                }
+              } else {
+                closingBlock = lease.reason;
               }
             } catch {
               final = undefined;
             }
             const headline = stopped
               ? `maka_computer.element_sequence stopped at step ${done.length} of ${input.steps.length}: ${stopped}`
-              : `maka_computer.element_sequence ok (${done.length} of ${input.steps.length} steps)`;
+              : closingBlock
+                ? `maka_computer.element_sequence failed after ${done.length} of ${input.steps.length} steps: ${closingBlock} — ${SESSION_BLOCK_RECOVERY[closingBlock]}`
+                : `maka_computer.element_sequence ok (${done.length} of ${input.steps.length} steps)`;
             const persistedTail = final
               ? `\nFresh observation: ${persistedObservationText(final)}`
               : '';
@@ -1928,7 +1937,11 @@ export function buildComputerUseTools(deps: {
             return {
               text: `${headline}${persistedTail}`,
               modelText: `${headline}\n${stepLines}${modelTail}`,
-              ...(stopped && isComputerUseErrorCode(stopped) ? { error: stopped } : {}),
+              ...(stopped && isComputerUseErrorCode(stopped)
+                ? { error: stopped }
+                : closingBlock
+                  ? { error: closingBlock }
+                  : {}),
               ...(final?.screenshot
                 ? {
                     screenshot: {
