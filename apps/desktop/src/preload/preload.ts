@@ -456,21 +456,25 @@ async function runtimeHostSessionRef(sessionId: string): Promise<{
   readonly sessionId: string;
 }> {
   const ref = parseDesktopSessionKey(sessionId);
-  await runtimeHostScopeList();
-  const recordedProfileId = runtimeHostSessionProfiles.get(sessionId);
-  let scope: DesktopTargetScope | undefined;
-  if (recordedProfileId) {
-    const scopeKey = runtimeHostProfiles.get(recordedProfileId);
-    scope = scopeKey ? runtimeHostScopes.get(scopeKey) : undefined;
-    if (!scope || scope.hostId !== ref.hostId) {
-      throw new Error('The Runtime Host for this task is unavailable');
+  // The profile maps are already kept current by the identities push channel;
+  // only pull on a miss so routine calls (every terminal keystroke) stay local.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (attempt > 0) await runtimeHostScopeList();
+    const recordedProfileId = runtimeHostSessionProfiles.get(sessionId);
+    let scope: DesktopTargetScope | undefined;
+    if (recordedProfileId) {
+      const scopeKey = runtimeHostProfiles.get(recordedProfileId);
+      const recorded = scopeKey ? runtimeHostScopes.get(scopeKey) : undefined;
+      if (recorded?.hostId === ref.hostId) scope = recorded;
+    } else {
+      const candidates = [...runtimeHostScopes.values()].filter(
+        ({ hostId }) => hostId === ref.hostId,
+      );
+      if (candidates.length === 1) scope = candidates[0];
     }
-  } else {
-    const candidates = [...runtimeHostScopes.values()].filter(({ hostId }) => hostId === ref.hostId);
-    if (candidates.length === 1) scope = candidates[0];
+    if (scope) return { scope, sessionId: ref.sessionId };
   }
-  if (!scope) throw new Error('The Runtime Host for this task is unavailable');
-  return { scope, sessionId: ref.sessionId };
+  throw new Error('The Runtime Host for this task is unavailable');
 }
 
 function hostAttachmentRefs(
@@ -2283,6 +2287,28 @@ const makaBridge = {
         session.sessionId,
       ) as TurnRecord[];
       return turns.map((turn) => projectDesktopTurnRecord(session.scope, turn));
+    },
+    async readSnapshot(
+      sessionId: string,
+      options?: { maxChars?: number },
+    ): Promise<import('@maka/core/session-reference').SessionSnapshot> {
+      const session = await runtimeHostSessionRef(sessionId);
+      const snapshot = await ipcRenderer.invoke(
+        'sessions:readSnapshot',
+        session.scope,
+        session.sessionId,
+        options,
+      ) as import('@maka/core/session-reference').SessionSnapshot;
+      return {
+        ...snapshot,
+        reference: {
+          ...snapshot.reference,
+          sessionId: recordRuntimeHostSessionScope(
+            session.scope,
+            snapshot.reference.sessionId,
+          ),
+        },
+      };
     },
     listTurnLandmarks(sessionId, turnId = null) {
       return invokeProjectedSessionRuntimeHost('sessions:listTurnLandmarks', sessionId, turnId);

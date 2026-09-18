@@ -61,6 +61,7 @@ type AutoOpenTarget =
   | 'detail-alibaba'
   | 'detail-static'
   | 'detail-relay'
+  | 'detail-large'
   | 'add'
   | 'catalog'
   | 'oauth'
@@ -136,6 +137,18 @@ const configuredConnections = [
     lastTestStatus: 'verified',
   }),
 ];
+
+const largeConnection = makeConnection({
+  slug: 'openrouter-large',
+  name: 'OpenRouter',
+  providerType: 'openrouter',
+  defaultModel: 'fixture/model-001',
+  models: Array.from({ length: 444 }, (_, index) => ({
+    id: `fixture/model-${String(index + 1).padStart(3, '0')}`,
+    displayName: `Fixture model ${String(index + 1).padStart(3, '0')}`,
+  })),
+  modelSource: 'fetched',
+});
 
 const alibabaTokenPlanConnections = [
   makeConnection({
@@ -686,6 +699,7 @@ function clickAutoOpenTarget(root: HTMLElement, target: AutoOpenTarget): boolean
     || target === 'detail-alibaba'
     || target === 'detail-static'
     || target === 'detail-relay'
+    || target === 'detail-large'
   ) {
     // ListItem's clickable surface is an invisible button inside the row, so
     // the row is located by its slug hook and the button taken from within it.
@@ -696,6 +710,8 @@ function clickAutoOpenTarget(root: HTMLElement, target: AutoOpenTarget): boolean
           ? 'alibaba-token-plan-cn'
           : target === 'detail-static'
             ? 'ark-plan'
+            : target === 'detail-large'
+              ? 'openrouter-large'
             : 'relay-house';
     const row = root.querySelector<HTMLElement>(`[data-connection-slug="${slug}"]`);
     const detailButton = row?.querySelector('button') ?? null;
@@ -788,6 +804,22 @@ export const ConnectionDetailPage: Story = {
       autoOpen="detail"
     />
   ),
+};
+
+// Real path: 设置 → 模型 → an OpenRouter connection after fetching hundreds of models.
+// The fetched snapshot is local; browsing it never needs an API key.
+export const LargeConnectionDetail: Story = {
+  render: () => (
+    <ProviderStory
+      bridge={createBridge({ connections: [largeConnection], defaultSlug: 'openrouter-large' })}
+      autoOpen="detail-large"
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    await waitFor(() => {
+      expect(canvasElement.querySelectorAll('button[aria-label*="Fixture model"]').length).toBe(444);
+    }, { timeout: 20_000 });
+  },
 };
 
 // Fixed endpoints are inspectable but not editable. Alibaba is the high-signal

@@ -55,6 +55,7 @@ import {
 import { buildToolsForAgentDefinition } from '@maka/runtime/agent-catalog';
 import { buildRecallTools } from '@maka/runtime/recall-tools';
 import { RECALL_SYNTHETIC_TEXT_PATTERNS } from '@maka/runtime/recall-candidates';
+import { createRecallMaterialFetch } from './recall-material-fetch.js';
 import { buildBuiltinTools } from '@maka/runtime/builtin-tools';
 import { createLocalContinuationSafetyInspector } from '@maka/runtime/continuation-safety';
 import { createConfiguredSubagentCatalog } from '@maka/runtime/configured-subagent-catalog';
@@ -526,12 +527,15 @@ export async function createExecutionRuntimeHostComposition(
       sessionAdmission,
       sessions: stores.sessionStore,
     });
+    // Shared with recall's material fetch, so a file brought in from another
+    // Session is answered by the same reader that answers one stored here.
+    const attachmentResources = createArtifactAttachmentResourceReader({
+      artifactStore: openedArtifactStore,
+    });
     const builtinTools = {
       shellRuns: runtimeResources,
       runtimeResources,
-      attachmentResources: createArtifactAttachmentResourceReader({
-        artifactStore: openedArtifactStore,
-      }),
+      attachmentResources,
       backgroundTasks: runtimeResources,
       ptyControls: runtimeResources,
       ...(openedContextOffloadStore
@@ -708,6 +712,10 @@ export async function createExecutionRuntimeHostComposition(
           .countRecallSearchableMessages(sessionIds)
           .catch(() => undefined)) ?? null,
       syntheticTextPatterns: RECALL_SYNTHETIC_TEXT_PATTERNS,
+      fetchMaterial: createRecallMaterialFetch({
+        artifacts: openedArtifactStore,
+        attachments: attachmentResources,
+      }),
       searchFacts: async ({ sessionId, terms, limit }) => {
         const workspaceKey = sessionId
           ? await stores.sessionStore
